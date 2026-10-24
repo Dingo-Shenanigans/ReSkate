@@ -2,7 +2,6 @@
 #include "skate_style.h"
 #include "Extension/UI/skate_theme.h"
 #include "Extension/UI/NativeMenu/native_tools_view.h"
-#include "Extension/Skater/drone_flight.h"
 
 #include <algorithm>
 #include <array>
@@ -10,8 +9,8 @@
 #include <imgui_internal.h>
 #include <string>
 
-// The ADDONS page (what ReSkate adds to skate.: the drone, Board Break, Road Rash and Hall of Meat,
-// music) and the full screen menu's HOME page.
+// The ADDONS page (what ReSkate adds to skate.: music; what plugins add has its own section)
+// and the full screen menu's HOME page.
 namespace dingosdk::overlay::menu {
 using namespace theme;
 namespace {
@@ -63,79 +62,35 @@ void addon_tile(SkateMenu& menu, const char* id, const char* title, const char* 
     end_card();
 }
 
-void all_addons(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
-    const auto on_off = [](bool available, bool on) -> const char* { return !available ? "NOT AVAILABLE" : on ? "ON" : "OFF"; };
-    const auto colour = [](bool available, bool on) { return !available ? skate_theme::tile_light : on ? skate_theme::good : skate_theme::tile_light; };
-    addon_tile(menu, "addon-drone", "DRONE", "Fly an FPV drone from the free camera, or let it follow you and film your line.", nullptr, 0,
-               addon_drone);
-    // Two a row full screen; the hidden ones (addon_hidden) leave no gap.
-    int placed = 1;
-    const auto next = [&] {
-        if (console_style() && placed++ % 2) ImGui::SameLine(0, px(12));
-    };
-    const auto& bb = model.board_break;
-    if (!addon_hidden(model, addon_board_break)) {
-        next();
-        addon_tile(menu, "addon-board-break", "BOARD BREAK", "Slams snap your board, boards wear out, and every crack has its sound.",
-                   on_off(bb.available, bb.enabled), colour(bb.available, bb.enabled), addon_board_break);
-    }
-    const auto& rash = model.road_rash;
-    if (!addon_hidden(model, addon_road_rash)) {
-        next();
-        addon_tile(menu, "addon-road-rash", "ROAD RASH", "Bails leave marks that build up: dust, scrapes, bruises, wounds.",
-                   on_off(rash.available, rash.enabled), colour(rash.available, rash.enabled), addon_road_rash);
-    }
-    const auto& meat = model.hall_of_meat;
-    next();
-    addon_tile(menu, "addon-hall-of-meat", "HALL OF MEAT", "Your bails show the bones they hurt and score a Meat card.",
-               on_off(meat.available, meat.enabled), colour(meat.available, meat.enabled), addon_hall_of_meat);
-    const auto& grind = model.grind_exit;
-    next();
-    addon_tile(menu, "addon-grind-exits", "GRIND EXITS", "Press LT or RT while grinding to pick the side you pop out to.",
-               on_off(grind.available, grind.enabled), colour(grind.available, grind.enabled), addon_grind_exits);
-    next();
+void all_addons(SkateMenu& menu, const CallbacksV3& callbacks) {
     addon_tile(menu, "addon-music", "MUSIC", "Spotify, YouTube Music, your own files and online radio through the game's music player.",
                nullptr, 0, addon_music);
-    next();
+    if (console_style()) ImGui::SameLine(0, px(12));
     // Not a page of its own: it takes the screen, the way it does from F8.
     addon_tile(menu, "addon-animator-studio", "ANIMATOR STUDIO",
-               "Record a trick, move the skater frame by frame, and your version plays in game. F8 opens it too.",
+               "Edit the game's animations frame by frame and play your saved tricks. F8 opens it too.",
                callbacks.queue_console_command ? "OPEN" : "NOT AVAILABLE", skate_theme::tile_light, addon_music,
                [&callbacks] { quietly(callbacks, "animstudio open"); });
 }
 }
 
-bool addon_hidden(const Model& model, int addon) {
-    return (addon == addon_board_break && model.board_break.off) || (addon == addon_road_rash && model.road_rash.off);
-}
-
 void addons_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
     menu.addon = std::clamp(menu.addon, 0, static_cast<int>(addon_count) - 1);
-    if (addon_hidden(model, menu.addon)) menu.addon = menu.fullscreen_drawn ? addon_all : addon_drone; // (a window has no overview)
+    if (menu.addon == addon_all && !menu.fullscreen_drawn) menu.addon = addon_first; // (a window has no overview)
     // A window lists the addons in its side rail; full screen has no rail, so they are tabs here
-    // (LT / RT on a controller), without the hidden ones.
+    // (LT / RT on a controller).
     if (menu.fullscreen_drawn) {
-        static constexpr std::array<const char*, addon_count> names{"ALL ADDONS", "DRONE", "BOARD BREAK", "ROAD RASH", "HALL OF MEAT",
-                                                                    "GRIND EXITS", "MUSIC"};
-        std::vector<const char*> labels;
-        std::vector<int> shown;
-        for (int a = 0; a < addon_count; ++a)
-            if (!addon_hidden(model, a)) labels.push_back(names[static_cast<std::size_t>(a)]), shown.push_back(a);
-        int tab = static_cast<int>(std::find(shown.begin(), shown.end(), menu.addon) - shown.begin());
-        category_tabs(menu, tab, labels, "addon-tabs");
-        menu.addon = shown[static_cast<std::size_t>(std::clamp(tab, 0, static_cast<int>(shown.size()) - 1))];
+        static constexpr std::array<const char*, addon_count> names{"ALL ADDONS", "MUSIC"};
+        std::vector<const char*> labels(names.begin(), names.end());
+        category_tabs(menu, menu.addon, labels, "addon-tabs");
+        menu.addon = std::clamp(menu.addon, 0, static_cast<int>(addon_count) - 1);
     }
     ImGui::PushID(menu.addon);
     switch (menu.addon) {
-    case addon_drone: drone_page(menu, model, callbacks); break;
     case addon_music: music_page(menu, model, callbacks); break;
     default:
         ImGui::BeginChild("addon", ImVec2(0, page_body_height(menu)), ImGuiChildFlags_NavFlattened);
-        if (menu.addon == addon_board_break) board_break_addon(menu, model, callbacks);
-        else if (menu.addon == addon_road_rash) road_rash_addon(menu, model, callbacks);
-        else if (menu.addon == addon_hall_of_meat) hall_of_meat_addon(menu, model, callbacks);
-        else if (menu.addon == addon_grind_exits) grind_exits_addon(menu, model, callbacks);
-        else all_addons(menu, model, callbacks);
+        all_addons(menu, callbacks);
         ImGui::EndChild();
         break;
     }
@@ -263,34 +218,6 @@ void home_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks
         if (home_tile(menu, "##freecam", "FREECAM", on_off(debug.free_camera), size, debug.camera_available && callbacks.queue_debug,
                       debug.free_camera, false, "Leave your skater and fly the camera.") == 1)
             request(DebugAction::set_free_camera, !debug.free_camera);
-        place(width, 1);
-        const bool flying = drone::is_enabled() && debug.free_camera;
-        if (home_tile(menu, "##drone", "DRONE", flying ? "FLYING" : "FLY IT", size, debug.camera_available && callbacks.queue_console_command, flying,
-                      false, "Take off with the FPV drone, or land it. Its settings are in Addons > Drone.") == 1) {
-            if (flying) quietly(callbacks, "dronemode 0"), quietly(callbacks, "freecam 0");
-            else quietly(callbacks, "freecam 1"), quietly(callbacks, "dronemode 1");
-        }
-        // (The addons that are hidden, addon_hidden, leave no gap.)
-        int column = 2;
-        const auto& bb = model.board_break;
-        if (!addon_hidden(model, addon_board_break)) {
-            place(width, column++);
-            if (home_tile(menu, "##board-break", "BOARD BREAK", on_off(bb.enabled), size, bb.available && callbacks.queue_console_command, bb.enabled,
-                          false, "Slams snap your board. Its deck and settings are in Addons > Board Break.") == 1)
-                quietly(callbacks, bb.enabled ? "boardbreak 0" : "boardbreak 1");
-        }
-        const auto& rash = model.road_rash;
-        if (!addon_hidden(model, addon_road_rash)) {
-            place(width, column++);
-            if (home_tile(menu, "##road-rash", "ROAD RASH", on_off(rash.enabled), size, rash.available && callbacks.queue_console_command, rash.enabled,
-                          false, "Bails leave marks that build up: dust, scrapes, bruises, wounds.") == 1)
-                quietly(callbacks, rash.enabled ? "roadrash 0" : "roadrash 1");
-        }
-        place(width, column);
-        const auto& meat = model.hall_of_meat;
-        if (home_tile(menu, "##hall-of-meat", "HALL OF MEAT", on_off(meat.enabled), size, meat.available && callbacks.queue_console_command,
-                      meat.enabled, false, "Your bails show the bones they hurt and score a Meat card.") == 1)
-            quietly(callbacks, meat.enabled ? "hallofmeat 0" : "hallofmeat 1");
     }
     ImGui::Dummy(ImVec2(0, px(18)));
 
@@ -312,7 +239,7 @@ void home_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks
         if (home_tile(menu, "##go-map", "MAP", "Travel, parks, time and weather", size, true, false, false, "Pick a map and load it.", false) == 1)
             open_page(menu, page_map);
         place(width, 3);
-        if (home_tile(menu, "##go-addons", "ADDONS", "Drone, Board Break, grind exits, music", size, true, false, false,
+        if (home_tile(menu, "##go-addons", "ADDONS", "Music", size, true, false, false,
                       "What ReSkate adds to skate.", false) == 1)
             open_page(menu, page_addons, addon_all);
         place(width, 4);

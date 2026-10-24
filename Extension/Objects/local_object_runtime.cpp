@@ -65,16 +65,26 @@ void fill_object_categories(std::uintptr_t result, const profile::Snapshot& snap
         if (info.build_kit && installed_item_owned(snapshot, key, info.hash, true))
             owned.push_back({key, info.category, object_title(key, catalog.value(key, dingosdk::Json::object()))});
     // Titles come from the cache's category records. Their icons are cdn:/ links
-    // that cannot load offline, and the browser would draw the link as text.
+    // that cannot load offline, and the browser would draw the link as text, so
+    // each category uses an object thumbnail instead.
     const auto layout = objects::browser_layout(owned, content_cache::catalogs());
     std::vector<ObjectServiceCategory> categories(layout.size());
     std::vector<std::vector<ObjectServiceSubcategory>> subcategories(layout.size());
     // The DTOs borrow these strings until the native parser has copied them.
     std::vector<std::vector<std::string>> icons(layout.size());
+    // Sized up front so the borrowed pointers stay valid (no reallocation).
+    std::vector<std::string> category_icons(layout.size());
     for (std::size_t index = 0; index < layout.size(); ++index) {
         const auto& group = layout[index];
         auto& parent = categories[index]; auto& children = subcategories[index];
         parent.id.set(group.id); parent.title.set(group.title);
+        // The category bar shows its first tile's thumbnail in place of the
+        // cache's offline-only icon. Left unset, every tab drew the game's
+        // empty-icon placeholder. Same "baseitem:" path as the tiles below.
+        if (!group.tiles.empty()) {
+            category_icons[index] = "baseitem:" + group.tiles.front().items.front();
+            parent.icon.set(category_icons[index]);
+        }
         parent.hash = cosmetic_hash(group.id);
         parent.priority = static_cast<std::uint32_t>(index);
         children.resize(group.tiles.size());

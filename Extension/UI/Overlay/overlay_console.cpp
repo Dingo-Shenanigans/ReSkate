@@ -220,7 +220,9 @@ void submit_console_command() {
     try {
         const auto& registry = dingosdk::console::game_commands();
         if (registry.echoes(parsed.arguments)) output("> " + command);
-        if (!parsed || registry.local(parsed.arguments, s.model)) {
+        // A command ReSkate does not know may be a plugin's, which run on the game thread
+        // (Extension/Plugins); one no plugin has either is answered there as unknown.
+        if (!parsed || (registry.knows(parsed.arguments) && registry.local(parsed.arguments, s.model))) {
             registry.execute(command, s.model, output);
             return;
         }

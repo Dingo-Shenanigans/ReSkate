@@ -19,13 +19,13 @@ inline constexpr std::string_view name(Context context) noexcept {
 enum class Channel {
     runtime, level, player, skater, flow, command, launcher, hooks, graphics, input,
     ui, profile, progression, customization, world, objects, settings, music, news,
-    assets, network, diagnostics, park, subworld, count
+    assets, network, diagnostics, park, subworld, plugins, count
 };
 inline constexpr std::size_t channel_count = static_cast<std::size_t>(Channel::count);
 inline constexpr std::array<std::string_view, channel_count> channel_names{
     "Runtime", "Level", "Player", "Skater", "Flow", "Console", "Launcher", "Hooks",
     "Graphics", "Input", "UI", "Profile", "Progression", "Customization", "World",
-    "Objects", "Settings", "Music", "News", "Assets", "Network", "Diagnostics", "Park", "Subworld"};
+    "Objects", "Settings", "Music", "News", "Assets", "Network", "Diagnostics", "Park", "Subworld", "Plugins"};
 // Defaults for existing subsystem callsites; hooks with a different native owner
 // must pass their context explicitly instead of deriving it from message text.
 inline constexpr Context default_context(Channel channel) noexcept {

@@ -28,4 +28,8 @@ Download get(std::wstring_view url, const std::filesystem::path& destination,
 // fails, and `result`, when given, says how.
 std::optional<std::string> get_text(std::wstring_view url, std::uint64_t max_bytes,
     std::uint32_t timeout_seconds, const wchar_t* agent, Download* result = nullptr, Watch* watch = nullptr);
+// Content-Length of an HTTPS HEAD, when the server gives one. The body is not read. Nothing
+// when the request fails or the length is absent: a caller can go on without a size.
+std::optional<std::uint64_t> content_length(std::wstring_view url, std::uint32_t timeout_seconds,
+    const wchar_t* agent, Watch* watch = nullptr);
 }

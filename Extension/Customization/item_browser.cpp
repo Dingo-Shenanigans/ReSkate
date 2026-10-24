@@ -62,6 +62,11 @@ constexpr std::uint32_t notice_icon = 0x3514a765;  // NoticeViewModel.IconOverri
 constexpr char notice_info_texture[] = "ui/textures/icons/generic/img_generic_info_64";
 // The game's own star (UI/Textures/Common/Shapes/Bespoke), as its asset is named.
 constexpr char star_texture[] = "UI/Textures/comMon/Shapes/Bespoke/img_Star_Fill_64";
+// The game's check marks, for the tiles plugins mark (the first that is loaded on the screen). The
+// brushed one first: the menus' own hand-drawn look. (Pull request 269.)
+constexpr std::array<std::string_view, 3> check_textures{"UI/Textures/comMon/Shapes/Bespoke/img_Icon_BrushCheckmark_256_256_256",
+                                                         "UI/Textures/Common/Shapes/Bespoke/img_Icon_RoughCheckmark_White_128",
+                                                         "UI/Textures/Icons/Generic/img_Generic_Check_64"};
 
 std::uint32_t schema_of(md::Address type) { return type ? md::read<std::uint32_t>(md::read<md::Address>(type)) : 0; }
 
@@ -140,6 +145,7 @@ struct Grid {
     std::vector<std::uint64_t> shown;    // item models of the rows the game's list has now
     int focused{-1};                     // row in `shown`
     bool failed{};
+    bool held{};                         // it shows a plugin's list with nothing in it: one tile, for the highlight
 };
 
 struct State {
@@ -147,11 +153,14 @@ struct State {
     md::Address manager{};
     Layout layout;
     std::vector<Grid> grids;
-    // A favorite's tile shows a star where its rarity icon is: its item model points at our copy of its
-    // rarity style, which has the star for an icon. One copy per rarity style, made when first needed.
-    std::map<std::uint64_t, md::Value> starred;        // the game's style -> our starred copy
+    // A favorite's tile shows a star where its rarity icon is, and a tile a plugin marks a check: its
+    // item model points at our copy of its rarity style, which has the star or the check for an icon.
+    // One copy per rarity style and mark, made when first needed.
+    std::map<std::pair<std::uint64_t, int>, md::Value> starred; // (the game's style, 0 star / 1 check) -> our copy
     std::map<std::uint64_t, std::uint64_t> restyled;   // item model -> the game's style it had
-    bool star_unavailable{};
+    bool star_unavailable{}, check_unavailable{};
+    std::optional<std::vector<std::string>> show; // a plugin's list for the grid that has the focus, as of this update
+    Keys marked;                                   // the tiles plugins mark, as of this update
     unsigned tick{};
     Favorites favorites;
     std::string search;
@@ -174,6 +183,10 @@ struct Shared {
     std::string search;
     bool search_pending{};
     std::vector<std::string> pokes;
+    std::string show_owner;
+    std::optional<std::vector<std::string>> show;
+    std::map<std::string, std::vector<std::string>, std::less<>> marks; // by owner
+    std::atomic<bool> asked{}; // a plugin's request waits: the next tick acts on it
     std::atomic<unsigned> toggles{}, cycles{};
     std::atomic<int> filter{-1};
     std::atomic<bool> status{};
@@ -221,6 +234,20 @@ Rows read_rows(const md::Context& context, md::Value items, const Layout& layout
     return rows;
 }
 
+// Every item's title as the grids showed it this session (a mod's item has none in the game's own
+// catalog), for plugins (reskate.outfit.title).
+struct Titles {
+    std::mutex mutex;
+    std::map<std::string, std::string, std::less<>> by_key;
+};
+Titles& titles() { static auto* value = new Titles; return *value; }
+void remember_title(const std::string& key, const std::string& title) {
+    if (key.empty() || title.empty()) return;
+    auto& t = titles();
+    std::lock_guard lock(t.mutex);
+    if (t.by_key.size() < 65536) t.by_key.insert_or_assign(key, title);
+}
+
 // The catalog item behind a tile's item model. Empty key: the tile does not show a cosmetic.
 Item resolve(const md::Context& context, std::uint64_t content) {
     Item item;
@@ -236,6 +263,7 @@ Item resolve(const md::Context& context, std::uint64_t content) {
     item.key = md::string(md::read<md::Address>(at + context.member(data.type, data_key).offset), 255);
     item.title = md::string(md::read<md::Address>(at + context.member(data.type, data_title).offset), 255);
     item.category = md::string(md::read<md::Address>(at + context.member(data.type, data_category).offset), 96);
+    remember_title(item.key, item.title);
     const auto& catalogs = content_cache::catalogs();
     item.modded = catalogs.available && !catalogs.items.contains(folded(item.key));
     return item;
@@ -255,43 +283,64 @@ void release(const md::Context& context, Grid& grid) {
     }
 }
 
-std::uint64_t starred_source(const State& s, std::uint64_t style) {
+// The game's style our copy `style` was made from, and which mark it carries; {0, -1} for the game's own.
+std::pair<std::uint64_t, int> starred_source(const State& s, std::uint64_t style) {
     for (const auto& [source, copy] : s.starred) if (copy.handle == style) return source;
-    return 0;
+    return {0, -1};
+}
+// The item a tile model shows, whichever grid it came from.
+const Item* known(const State& s, std::uint64_t content) {
+    for (const auto& grid : s.grids)
+        for (const auto& item : grid.native)
+            if (item.content == content) return &item;
+    return nullptr;
 }
 
-// Gives every favorite in the grid its star and takes it from the others. The game sets an item's style
-// when its tile is first shown (and again when the tile comes back into view), so this repeats.
+// Gives every favorite the grid shows its star and every tile a plugin marks a check (the check wins
+// when it is both), and takes them from the others. The game sets an item's style when its tile is
+// first shown (and again when the tile comes back into view), so this repeats.
 void mark(State& s, const md::Context& context, const Grid& grid) {
-    if (s.star_unavailable) return;
-    for (const auto& item : grid.native) {
-        const md::Value view{item.content, context.type_of(item.content)};
+    for (const auto content : grid.shown) {
+        const auto* item = known(s, content);
+        if (!item) continue;
+        const md::Value view{item->content, context.type_of(item->content)};
         if (schema_of(view.type) != ownable_view) continue;
         const auto at = context.address(view) + inline_offset(context, view.type, rarity_path);
         const auto current = md::read<md::Ref>(at).handle & ~std::uint64_t{1};
-        const auto source = starred_source(s, current);
-        if (s.favorites.keys.contains(item.key)) {
-            if (!current || source) continue;
-            auto copy = s.starred.find(current);
-            if (copy == s.starred.end()) {
-                const md::Value style{current, context.type_of(current)};
-                if (schema_of(style.type) != rarity_style.hash) continue;
-                const auto made = context.create(rarity_style, (GetTickCount64() << 12) | (++s.serial & 0xfff));
-                copy = s.starred.emplace(current, made).first;
-                context.copy(made, context.address(style));
-                if (!md::publish_texture(context, context.field(made, rarity_icon), star_texture)) {
-                    s.star_unavailable = true;
-                    logging::log(Level::warning, Channel::customization,
-                        "Item browser: the game's star icon is not loaded here; favorites show no star.");
-                    return;
-                }
-            }
-            context.set(context.path(view, {rarity_path[0], rarity_path[1]}), md::Ref{0, copy->second.handle});
-            s.restyled[item.content] = current;
-        } else if (source) {
+        const auto [source, has] = starred_source(s, current);
+        const int wanted = s.marked.contains(item->key) && !s.check_unavailable ? 1
+                           : s.favorites.keys.contains(item->key) && !s.star_unavailable ? 0
+                                                                                         : -1;
+        if (wanted == has) continue;
+        if (wanted < 0) {
             context.set(context.path(view, {rarity_path[0], rarity_path[1]}), md::Ref{0, source});
-            s.restyled.erase(item.content);
+            s.restyled.erase(item->content);
+            continue;
         }
+        const auto base = source ? source : current;
+        if (!base) continue;
+        auto copy = s.starred.find({base, wanted});
+        if (copy == s.starred.end()) {
+            const md::Value style{base, context.type_of(base)};
+            if (schema_of(style.type) != rarity_style.hash) continue;
+            const auto made = context.create(rarity_style, (GetTickCount64() << 12) | (++s.serial & 0xfff));
+            context.copy(made, context.address(style));
+            bool published{};
+            if (wanted == 0) published = md::publish_texture(context, context.field(made, rarity_icon), star_texture);
+            else
+                for (const auto name : check_textures)
+                    if ((published = md::publish_texture(context, context.field(made, rarity_icon), name))) break;
+            if (!published) {
+                try { context.destroy(made); } catch (const std::exception&) {}
+                (wanted == 0 ? s.star_unavailable : s.check_unavailable) = true;
+                logging::log(Level::warning, Channel::customization, "Item browser: the game's {} icon is not loaded here; {} show none.",
+                             wanted == 0 ? "star" : "check", wanted == 0 ? "favorites" : "marked items");
+                continue;
+            }
+            copy = s.starred.emplace(std::pair{base, wanted}, made).first;
+        }
+        context.set(context.path(view, {rarity_path[0], rarity_path[1]}), md::Ref{0, copy->second.handle});
+        s.restyled[item->content] = base;
     }
 }
 
@@ -351,6 +400,45 @@ std::vector<std::byte> take_rows(const std::vector<std::byte>& from, const std::
     return out;
 }
 
+// A tile for a grid: row `index` of `from`'s own list (its copy in `backing`).
+struct Pick {
+    const Grid* from{};
+    unsigned index{};
+};
+// What a grid shows: its own tiles as the order and the filters have them; or, while a plugin's list
+// is shown, that list's items from every item grid of the screen, in its order, less what the search
+// leaves out. A list with nothing in it keeps the grid's first tile (`held`): an empty grid cannot
+// take the focus back.
+std::vector<Pick> picks_for(const State& s, Grid& grid) {
+    std::vector<Pick> out;
+    grid.held = false;
+    if (!s.show) {
+        for (const auto index : arrange(grid.native, s.favorites.keys, s.search, s.filter)) out.push_back({&grid, index});
+        return out;
+    }
+    Keys seen;
+    const auto take = [&](const Grid& from, const std::string& key) {
+        if (from.failed || !from.backing.handle) return false;
+        for (unsigned i = 0; i < from.native.size(); ++i)
+            if (from.native[i].key == key) {
+                if (matches(from.native[i], s.search)) out.push_back({&from, i});
+                return true;
+            }
+        return false;
+    };
+    for (const auto& key : *s.show) {
+        if (key.empty() || !seen.insert(key).second) continue;
+        if (take(grid, key)) continue;
+        for (const auto& other : s.grids)
+            if (&other != &grid && take(other, key)) break;
+    }
+    if (out.empty() && !grid.native.empty()) {
+        out.push_back({&grid, 0});
+        grid.held = true;
+    }
+    return out;
+}
+
 void sync(State& s, const md::Context& context, Grid& grid, bool verify) {
     if (grid.failed) return;
     grid.items = context.field(grid.list, owned_items);
@@ -366,9 +454,8 @@ void sync(State& s, const md::Context& context, Grid& grid, bool verify) {
         if (ours) {
             // Same item models as we published: check they still show the same items.
             for (std::size_t i = 0; i < items.size() && ours; ++i) {
-                const auto known = std::find_if(grid.native.begin(), grid.native.end(),
-                    [&](const Item& item) { return item.content == items[i].content; });
-                ours = known != grid.native.end() && known->key == items[i].key;
+                const auto* was = known(s, items[i].content);
+                ours = was && was->key == items[i].key;
             }
         }
         if (!ours) {
@@ -379,14 +466,27 @@ void sync(State& s, const md::Context& context, Grid& grid, bool verify) {
             grid.shown = rows.content;
         }
     }
-    const auto order = arrange(grid.native, s.favorites.keys, s.search, s.filter);
+    const auto picks = picks_for(s, grid);
     std::vector<std::uint64_t> wanted;
-    wanted.reserve(order.size());
-    for (const auto index : order) wanted.push_back(grid.native[index].content);
+    wanted.reserve(picks.size());
+    for (const auto& pick : picks) wanted.push_back(pick.from->native[pick.index].content);
     if (wanted == grid.shown) return;
-    unsigned count{}, stride{};
-    const auto source = context.array(context.field(grid.backing, owned_items), 4096, count, stride);
-    md::require(count == grid.native.size() && stride == s.layout.stride, "Item grid copy differs.");
+    // The rows, out of each grid's own copy.
+    std::map<const Grid*, std::vector<std::byte>> copies;
+    std::vector<std::byte> source;
+    for (const auto& pick : picks) {
+        auto copy = copies.find(pick.from);
+        if (copy == copies.end()) {
+            unsigned count{}, stride{};
+            auto bytes = context.array(context.field(pick.from->backing, owned_items), 4096, count, stride);
+            md::require(count == pick.from->native.size() && stride == s.layout.stride, "Item grid copy differs.");
+            copy = copies.emplace(pick.from, std::move(bytes)).first;
+        }
+        const auto* row = copy->second.data() + std::size_t{pick.index} * s.layout.stride;
+        source.insert(source.end(), row, row + s.layout.stride);
+    }
+    std::vector<unsigned> order(picks.size());
+    for (unsigned i = 0; i < order.size(); ++i) order[i] = i;
     const auto focused = grid.focused < 0 ? -1 : std::min(grid.focused, static_cast<int>(order.size()) - 1);
     context.array(grid.items, take_rows(source, order, s.layout, focused), static_cast<unsigned>(order.size()));
     const auto after = read_rows(context, grid.items, s.layout);
@@ -544,6 +644,35 @@ View view() {
     return sh.view;
 }
 void toggle_focused_favorite() noexcept { shared().toggles.fetch_add(1); }
+std::string show_items(std::string owner, std::optional<std::vector<std::string>> keys) {
+    auto& sh = shared();
+    std::lock_guard lock(sh.mutex);
+    if (sh.show && !sh.show_owner.empty() && sh.show_owner != owner) {
+        if (!keys) return {};
+        return sh.show_owner + " shows its list";
+    }
+    sh.show_owner = keys ? owner : std::string{};
+    sh.show = std::move(keys);
+    sh.asked.store(true);
+    return {};
+}
+void mark_items(std::string owner, std::vector<std::string> keys) {
+    auto& sh = shared();
+    std::lock_guard lock(sh.mutex);
+    if (keys.empty()) sh.marks.erase(owner);
+    else sh.marks.insert_or_assign(std::move(owner), std::move(keys));
+    sh.asked.store(true);
+}
+void release_owner(std::string_view owner) {
+    auto& sh = shared();
+    std::lock_guard lock(sh.mutex);
+    if (sh.show_owner == owner) {
+        sh.show.reset();
+        sh.show_owner.clear();
+    }
+    if (const auto found = sh.marks.find(owner); found != sh.marks.end()) sh.marks.erase(found);
+    sh.asked.store(true);
+}
 void set_search(std::string text) {
     auto& sh = shared();
     std::lock_guard lock(sh.mutex);
@@ -551,6 +680,12 @@ void set_search(std::string text) {
     sh.search_pending = true;
 }
 void set_filter(Filter filter) noexcept { shared().filter.store(static_cast<int>(filter)); }
+std::string known_title(std::string_view key) {
+    auto& t = titles();
+    std::lock_guard lock(t.mutex);
+    const auto found = t.by_key.find(key);
+    return found == t.by_key.end() ? std::string() : found->second;
+}
 const overlay::ItemBrowserHost* overlay_host() noexcept {
     static const overlay::ItemBrowserHost host{
         [] {
@@ -604,6 +739,7 @@ void before_level_transition(unsigned next, std::uintptr_t base) noexcept {
             s.restyled.clear();
             s.layout = {};
             s.open = false;
+            s.check_unavailable = s.star_unavailable = false;
             s.notice_info = 0; // (its texture may go with the level)
         });
     } catch (...) {}
@@ -671,10 +807,11 @@ void follow_focus(State& s, Shared& sh, std::uintptr_t base) {
         const auto rows = read_rows(context, context.field(grid->list, owned_items), s.layout);
         if (rows.focused < 0 || static_cast<std::size_t>(rows.focused) >= rows.content.size()) return;
         const auto content = rows.content[static_cast<std::size_t>(rows.focused)];
-        const auto item = std::find_if(grid->native.begin(), grid->native.end(), [&](const Item& i) { return i.content == content; });
-        if (item == grid->native.end() || item->key == next.focused_key) return;
+        const auto* item = known(s, content);
+        if (!item || grid->held || item->key == next.focused_key) return;
         next.focused_title = item->title;
         next.focused_key = item->key;
+        next.focused_category = item->category;
         next.focused_favorite = s.favorites.keys.contains(item->key);
     }
     std::lock_guard shared_lock(sh.mutex);
@@ -687,7 +824,8 @@ void update(std::uintptr_t base) noexcept {
     try {
         if (s.lifetime.blocked()) return;
         const auto now = GetTickCount64();
-        if (now < s.next_sync) {
+        // A plugin's request waits for nothing: the next tick acts on it.
+        if (now < s.next_sync && !sh.asked.exchange(false)) {
             if (s.open && s.manager && s.active_list) follow_focus(s, sh, base);
             return;
         }
@@ -720,6 +858,9 @@ void update(std::uintptr_t base) noexcept {
             std::lock_guard shared_lock(sh.mutex);
             if (std::exchange(sh.search_pending, false)) s.search = sh.search;
             pokes.swap(sh.pokes);
+            s.show = sh.show;
+            s.marked.clear();
+            for (const auto& [owner, keys] : sh.marks) s.marked.insert(keys.begin(), keys.end());
         }
         if (const auto filter = sh.filter.exchange(-1); filter >= 0 && filter <= static_cast<int>(Filter::game))
             s.filter = static_cast<Filter>(filter);
@@ -734,8 +875,7 @@ void update(std::uintptr_t base) noexcept {
                 // Its screen closed: gone at the next scan, but no longer what the player is in now.
                 if (context.type_of(grid.list.handle) != grid.list.type) continue;
                 active = &grid;
-                for (const auto& item : grid.native)
-                    if (item.content == grid.shown[static_cast<std::size_t>(grid.focused)]) focused = &item;
+                if (!grid.held) focused = known(s, grid.shown[static_cast<std::size_t>(grid.focused)]);
                 break;
             }
         };
@@ -748,7 +888,17 @@ void update(std::uintptr_t base) noexcept {
                 s.favorites.keys.contains(key) ? "added" : "removed");
         }
         ++s.tick;
+        // While a plugin's list is shown only the grid that has the focus shows it: the others are out of
+        // sight (and some are other screens'), so they are left as they are.
+        const Grid* showing = nullptr;
+        if (s.show)
+            for (const auto& grid : s.grids)
+                if (grid.focused >= 0 && !grid.failed && context.type_of(grid.list.handle) == grid.list.type) {
+                    showing = &grid;
+                    break;
+                }
         for (auto& grid : s.grids) {
+            if (showing && &grid != showing) continue;
             try {
                 sync(s, context, grid, rescan);
                 if (rescan || (grid.focused >= 0 && s.tick % 3 == 0)) mark(s, context, grid);
@@ -781,15 +931,25 @@ void update(std::uintptr_t base) noexcept {
         next.open = s.open;
         next.search = s.search;
         next.filter = s.filter;
-        if (active) {
+        next.showing = s.show.has_value();
+        if (active && s.show) {
+            next.held = active->held;
+            next.shown = active->held ? 0 : static_cast<unsigned>(active->shown.size());
+            next.total = static_cast<unsigned>(s.show->size());
+            for (const auto& item : active->native)
+                if (!item.key.empty()) next.grid_keys.push_back(item.key);
+        } else if (active) {
             const auto blanks = leading_blanks(active->native);
             next.shown = static_cast<unsigned>(active->shown.size()) - (std::min)(blanks, static_cast<unsigned>(active->shown.size()));
             next.total = static_cast<unsigned>(active->native.size()) - blanks;
             for (const auto& item : active->native) next.favorites += s.favorites.keys.contains(item.key);
+            for (const auto& item : active->native)
+                if (!item.key.empty()) next.grid_keys.push_back(item.key);
         }
         if (focused) {
             next.focused_title = focused->title;
             next.focused_key = focused->key;
+            next.focused_category = focused->category;
             next.focused_favorite = s.favorites.keys.contains(focused->key);
         }
         std::lock_guard shared_lock(sh.mutex);

@@ -9,6 +9,7 @@
 #include "Extension/Throwdowns/throwdown_relay.h"
 #include "Extension/UI/NativeMenu/native_menu_dump.h"
 #include "Extension/Assets/live_mods.h"
+#include "Engine/Game/Multiplayer/session_tools.h"
 #include <algorithm>
 #include <array>
 
@@ -222,10 +223,11 @@ void register_multiplayer_commands(Commands &registry) {
     auto lab_args = argument("verb_and_arguments", Type::text, true);
     lab_args.rest = true;
     lab_args.complete = [](const Model &, auto) {
-        return std::vector<std::string>{"status", "ai", "spawn", "join", "start", "destroy", "mmid", "trace", "endturn", "score", "mirror", "attempt", "relay"};
+        return std::vector<std::string>{"status", "ai", "spawn", "join", "start", "solo", "destroy", "mmid", "trace", "endturn", "score", "mirror", "attempt", "relay"};
     };
     auto lab = action("throwdown", "Throwdown lab: add virtual participants, spawn/start/destroy queues (research aid)",
                       Group::console, {std::move(lab_args)});
+    lab.aliases={"dingo throwdown"};
     lab.run = [](const Model &model, const Values &values, const Output &out) {
         std::optional<std::array<float, 3>> skater;
         if (model.debug.skater_position_valid) skater = model.debug.skater_position;

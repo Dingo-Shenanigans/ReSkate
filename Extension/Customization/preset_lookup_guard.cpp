@@ -4,6 +4,7 @@
 #include "Engine/Core/Platform/memory.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/native_cosmetics.h"
+#include "Extension/Skater/layer_materials.h"
 #include <atomic>
 #include <mutex>
 #include <set>
@@ -77,11 +78,47 @@ std::string preset_name(void *preset) {
     char buffer[200]{};
     return memory::peek_cstring(text, buffer, sizeof(buffer) - 1) > 0 ? std::string(buffer) : std::string{};
 }
+// An item worn on top is built by another kind's slot, which puts its preset on that kind's
+// material ("Outfit_Top_mat"), one its mesh does not use: the mesh draws with no textures. So the
+// preset of such an item (layer_materials.h) goes on the item's own kind's material too ("Bottom_mat"),
+// as its own slot would have put it; for the item in its own slot that is the same material, and
+// nothing more is done.
+bool layers_ready{};
+void own_material(void *state, void *preset, void *reference) {
+    const auto name = preset_name(preset);
+    const char *material_name = name.empty() ? nullptr : layer_materials::material_for(name);
+    if (!material_name) return;
+    using Userdata = void *(*)(void *, int, const char *);
+    const auto userdata = reinterpret_cast<Userdata>(image + native::script_userdata);
+    auto *const *item_block = static_cast<void *const *>(userdata(state, 1, "AppearanceItem"));
+    void *material = userdata(state, 2, "AppearanceMaterial");
+    void *item = item_block ? *item_block : nullptr;
+    if (!item || !material) return;
+    using ItemMaterial = void *(*)(void *, int, bool, unsigned, const char *, std::uint8_t);
+    void *own = reinterpret_cast<ItemMaterial>(image + native::item_material)(
+        item, 0, true, layer_materials::name_hash(material_name), material_name, 0xff);
+    if (!own || own == material) return;
+    std::uintptr_t preset_name_field{};
+    memory::read_bytes(reinterpret_cast<std::uintptr_t>(preset) + 0x18, &preset_name_field, sizeof(preset_name_field));
+    reinterpret_cast<void (*)(void *, std::uintptr_t)>(image + native::material_preset_name)(own, preset_name_field);
+    reinterpret_cast<void (*)(void *, void *)>(image + native::material_item)(own, item);
+    reinterpret_cast<void (*)(void *, void *)>(image + native::material_preset)(own, reference);
+    static std::mutex logged_mutex;
+    static std::set<std::string> logged;
+    std::lock_guard lock(logged_mutex);
+    if (logged.size() < 64 && logged.insert(name).second)
+        logging::log(logging::Level::info, logging::Channel::customization,
+                     "Outfit layers: {} is on its own material, {}, as well as its slot's.", name, material_name);
+}
 int add_preset(void *state) {
     const auto reference = reinterpret_cast<void *(*)(void *, int)>(image + native::script_preset_reference)(state, 3);
     if (const auto preset = reference ? reinterpret_cast<void *(*)(void *, int)>(image + native::referenced_preset)(reference, 0) : nullptr) {
         std::uint64_t bad{};
-        if (preset_parameters_sound(preset, bad)) return original_add_preset.load()(state);
+        if (preset_parameters_sound(preset, bad)) {
+            const auto result = original_add_preset.load()(state);
+            if (layers_ready) own_material(state, preset, reference);
+            return result;
+        }
         // Left out, as a preset that is not there: the item shows without it.
         static std::mutex refused_mutex;
         static std::set<std::string> refused;
@@ -112,6 +149,14 @@ bool start_add_preset(std::uintptr_t base) {
         !matches(base + native::referenced_preset, native::referenced_preset_prefix))
         return false;
     image = base;
+    layers_ready = matches(base + native::script_userdata, native::script_userdata_prefix) &&
+                   matches(base + native::item_material, native::item_material_prefix) &&
+                   matches(base + native::material_preset_name, native::material_preset_name_prefix) &&
+                   matches(base + native::material_item, native::material_item_prefix) &&
+                   matches(base + native::material_preset, native::material_preset_prefix);
+    if (!layers_ready)
+        logging::log(logging::Level::warning, logging::Channel::customization,
+                     "Items worn on top keep their slot's material: the game's material functions differ from this build's.");
     auto *target = reinterpret_cast<void *>(base + native::add_shader_preset);
     void *previous{};
     if (hook_prepare(target, reinterpret_cast<void *>(&add_preset), &previous) != HookOk) return false;

@@ -6,6 +6,8 @@
 #include "Engine/Game/Build/20260929/engine.h"
 #include "Engine/Game/Build/20260929/local_player_card.h"
 #include "Extension/Throwdowns/native_throwdowns.h"
+#include "Extension/Throwdowns/native_flag_session.h"
+#include "Extension/Throwdowns/throwdown_kit.h"
 #include "Extension/Multiplayer/Steam/steam_social.h"
 
 namespace dingosdk::profile_runtime {
@@ -211,8 +213,11 @@ bool publish_player_card(const profile::CosmeticLoadout& value) {
         // In-throwdown / throwdown-host flags. The throwdown Quit action does
         // nothing unless the first is set; the second is only for the local
         // player's own drop (a joined one is left, not cancelled).
-        const bool throwdown = multiplayer::local_throwdown_active();
-        const bool host = multiplayer::local_throwdown_host();
+        // A plugin match counts when it asks to be an activity (kit::match().in_activity); its
+        // host is whoever placed its flag.
+        const bool plugin_match = throwdowns::kit::match().in_activity;
+        const bool throwdown = multiplayer::local_throwdown_active() || plugin_match;
+        const bool host = multiplayer::local_throwdown_host() || (plugin_match && multiplayer::native_flag::hosting());
         static bool logged_state{};
         if (const auto field = n.field(model, handle, 11, UINT32_MAX, false))
             n.publish(model, field, s.base + addr::engine::bool_type, &throwdown);

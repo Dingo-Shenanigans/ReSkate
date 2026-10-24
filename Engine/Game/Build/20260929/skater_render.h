@@ -7,7 +7,7 @@
 namespace dingosdk::game::build::v20260929::skater_render {
 // Supported SHA-256 fbce74d5e28ef525dbba2cb4adbebc13405bdbd88f31bc940bca45e4ae88b8f9.
 // The local skater as the renderer draws it: the skinning matrices of its mesh and the camera of
-// the same picture (Extension/HallOfMeat/hall_of_meat_render.h). Read 2026-10-06; the draw packet,
+// the same picture (Extension/Skater/xray_render.h). Read 2026-10-06; the draw packet,
 // the render view and the handle chain were first used by gBGYo's ReSkate fork
 // (github.com/gBGYo/ReSkate).
 //

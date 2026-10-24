@@ -6,7 +6,7 @@
 
 // The card for a map a multiplayer session needs and this PC does not have
 // (Extension/Assets/map_download.h), laid out as the mod's page is: its icon, name, author,
-// version and description, then what is being asked or done. It asks whether to download it,
+// version, size and description, then what is being asked or done. It asks whether to download it,
 // in the middle of the screen with the controls under it as the game's own menus have them.
 // Once the player has said yes it becomes a small card at the right edge, with the download,
 // the install and the apply, so they can skate on while they wait; it goes when the map is in
@@ -223,6 +223,8 @@ void draw_asked_map(State& s) {
     std::vector<Fact> facts{{"Author", card.author}};
     if (!card.version.empty()) facts.push_back({"Version", card.version});
     facts.push_back({"From", card.installed ? std::string("Your Mods folder, switched off") : std::string("Thunderstore")});
+    // A download or an update. A mod that is here and only switched off has nothing to fetch.
+    if (asking && !card.installed && card.bytes) facts.push_back({"Size", megabytes(card.bytes)});
 
     // The controls under the card: the pad's own names for its buttons when one is connected.
     dingosdk::ControllerInput pad;

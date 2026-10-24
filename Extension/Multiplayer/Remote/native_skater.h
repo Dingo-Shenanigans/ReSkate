@@ -46,6 +46,12 @@ void set_local_pose_filter(LocalPoseFilter filter) noexcept;
 using LocalBoardFilter = void (*)(std::vector<Transform> &board) noexcept;
 void set_local_board_filter(LocalBoardFilter filter) noexcept;
 void set_animation_evaluated_listener(AnimationEvaluated listener) noexcept;
+// Separate registration from the plugin pose filter: opening the studio must
+// not replace the filter that publishes plugin animations to other players.
+void set_animation_studio_pose_filter(LocalPoseFilter filter) noexcept;
+// A pose override of the local skater (Extension/Skater/skater_animation.cpp): called after the
+// listener above, so it sees (and may change) the pose first person left.
+void set_pose_override_listener(AnimationEvaluated listener) noexcept;
 // The same, for Animation Studio: called after the listener above, so it sees (and may change) the
 // pose first person left.
 void set_animation_studio_listener(AnimationEvaluated listener) noexcept;
@@ -53,6 +59,12 @@ void set_animation_studio_listener(AnimationEvaluated listener) noexcept;
 // its animation interface (animation holder + 0xc0), on the calling thread.
 using RenderPosePublished = void (*)(std::uintptr_t animation_interface) noexcept;
 void set_render_pose_listener(RenderPosePublished listener) noexcept;
+// The pose override again, when a pose is handed to the renderer (after the listener above): what it
+// writes then is what is drawn. And for the board, before the listener above, with the render data
+// the pose was handed over in.
+void set_pose_override_render_listener(RenderPosePublished listener) noexcept;
+using BoardPosePublished = void (*)(std::uintptr_t animation_interface, std::uintptr_t render_data) noexcept;
+void set_pose_override_board_listener(BoardPosePublished listener) noexcept;
 // Animation Studio again, when the local skater's pose is handed to the renderer (after the
 // listener above): what it writes then is what is drawn.
 void set_animation_studio_render_listener(RenderPosePublished listener) noexcept;

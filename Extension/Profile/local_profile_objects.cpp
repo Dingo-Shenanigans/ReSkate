@@ -1,4 +1,5 @@
 #include "runtime_internal.h"
+#include "Engine/Game/Build/20260929/local_placements.h"
 #include "Extension/Objects/local_placements_runtime.h"
 #include "Extension/Objects/ParkEditor/park_editor_runtime.h"
 #include "Extension/Objects/ParkEditor/park_editor_surface.h"
@@ -50,15 +51,34 @@ bool delete_local_placed_object(std::string_view map, std::uint64_t token) {
     return begin_placement_delete({token});
 }
 bool teleport_local_skater(const std::array<float, 3>& position) {
+    return teleport_local_skater_transform({1,0,0,0,0,1,0,0,0,0,1,0,position[0],position[1],position[2],1});
+}
+bool teleport_local_skater_transform(const std::array<float,16>& transform) {
     std::lock_guard lock(local_runtime().native_mutex);
     auto& r = placements_runtime();
     if (!local_runtime().active || !r.teleport || !r.transition_ctor || !r.transition_destroy) return false;
-    for (const auto v : position)
+    for (const auto v : transform)
         if (!std::isfinite(v) || std::abs(v) > 1e6f) return false;
-    r.position_teleport = position;
+    r.position_teleport = transform;
     r.position_teleport_at = GetTickCount64();
     return true;
 }
+// Upright at the spot, facing `heading` (radians about world up): the root's rows are right
+// (cos h, 0, -sin h), up, forward (sin h, 0, cos h); h = 0 faces +Z.
+bool teleport_local_skater_heading(const std::array<float, 3>& position, float heading) {
+    if (!std::isfinite(heading)) return false;
+    const float sh = std::sin(heading), ch = std::cos(heading);
+    return teleport_local_skater_transform({ch, 0, -sh, 0, 0, 1, 0, 0, sh, 0, ch, 0, position[0], position[1], position[2], 1});
+}
+bool local_skater_teleport_pending() {
+    std::lock_guard lock(local_runtime().native_mutex);
+    const auto& r = placements_runtime();
+    if (r.position_teleport) return true;
+    std::uintptr_t manager{}; std::uint32_t phase{};
+    return read(local_runtime().base + addr::local_placements::teleport_manager, manager) && manager &&
+        read(manager, phase) && phase != 0;
+}
+
 std::optional<float> local_ground_height(float x, float z, float top, float bottom) {
     std::lock_guard lock(local_runtime().native_mutex);
     auto& r = placements_runtime();

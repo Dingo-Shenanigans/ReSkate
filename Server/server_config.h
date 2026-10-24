@@ -88,9 +88,10 @@ inline constexpr unsigned max_spawned_parks = 16;
 // back, so a restart keeps it.
 inline constexpr unsigned dedicated_tps = 20;
 // The tools the server can take away from single players (lock, throwdown_locks): noclip with
-// teleporting, No Bail, the boosts, and their own physics tuning.
-inline constexpr std::uint8_t lock_noclip = 1, lock_nobail = 2, lock_boosts = 4, lock_tuning = 8;
-inline constexpr std::uint8_t lock_movement = lock_noclip | lock_nobail | lock_boosts; // what the role's "movement" gives
+// teleporting, No Bail, the boosts, their own physics tuning, and placing objects. "all" is the
+// first four, as throwdown_locks has always read it: objects are only ever locked by name.
+inline constexpr std::uint8_t lock_noclip = 1, lock_nobail = 2, lock_boosts = 4, lock_tuning = 8, lock_objects = 16, lock_ollies = 32;
+inline constexpr std::uint8_t lock_movement = lock_noclip | lock_nobail | lock_boosts | lock_ollies; // what the role's "movement" gives
 inline constexpr std::uint8_t lock_all = lock_movement | lock_tuning;
 struct ServerConfig {
     std::filesystem::path file;
@@ -211,9 +212,6 @@ struct ServerConfig {
     // and the trails and fire of costumes and skateboards. Off: nothing of them is relayed and
     // players' games show each other without them.
     bool sync_effects = true;
-    // Players see each other's FPV drones (the marker where a player's drone is). Off: none are
-    // relayed, and players' games neither send theirs nor show anyone's.
-    bool sync_drones = true;
     // Whether players may use noclip (and teleport) / No Bail / the boosts (admins always may).
     bool noclip = true, no_bail = true, boosts = true;
     // Players skate with the game's own physics tuning, not copies they edited.

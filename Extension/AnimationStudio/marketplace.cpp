@@ -5,7 +5,7 @@
 #include "Engine/Core/Json/json.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Vfs/https_download.h"
-#include "Extension/HallOfMeat/hall_of_meat_skeleton.h"
+#include "Extension/Skater/xray_skeleton.h"
 #include "miniz.h"
 #include <Windows.h>
 #include <bcrypt.h>
@@ -970,7 +970,7 @@ void publish(const std::string& pack_name, const std::string& wanted_version, co
 }
 void take_installed_mods() {
     std::filesystem::path game;
-    try { game = hall_of_meat::game_folder(); } catch (...) { return; }
+    try { game = xray::game_folder(); } catch (...) { return; }
     auto& m = market();
     {
         std::lock_guard lock(m.mutex);

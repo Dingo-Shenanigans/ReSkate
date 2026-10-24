@@ -53,6 +53,9 @@ struct ChatBudget {
 };
 // Throwdown messages per sender per 5 s: offers, joins, starts and ~4 scores a second.
 inline constexpr unsigned throwdown_burst = 60;
+// Plugin messages (Extension/Plugins/plugin_wire.h) ride the same packets on a budget of their own:
+// a plugin may send a few a second for a whole session (a drone's place, a game mode's state).
+inline constexpr unsigned plugin_burst = 200;
 // The party the echo test shows its mirrored player in (a real lobby has none until its
 // players form one).
 inline constexpr std::uint32_t lobby_party = 1;
@@ -137,7 +140,7 @@ struct Peer {
         std::uint64_t at{};
     };
     std::vector<ChatProof> chat_proofs, chat_waiting;
-    ChatBudget throwdown_budget, party_budget;
+    ChatBudget throwdown_budget, party_budget, plugin_budget;
     // Host: how the guest's mods change trick scoring, as they reported it (Engine/Vfs/mod_scoring.h):
     // nothing until the report arrives, 0 for the game's own. member.scoring is the verdict.
     std::optional<std::uint64_t> scoring;
@@ -168,9 +171,9 @@ struct Session {
     unsigned object_limit{}; // objects each player may have placed; 0: no limit
     bool object_scaling{true}; // the dedicated server lets players resize what they place
     bool sync_effects{true};   // the dedicated server has players see each other's skater effects
-    bool sync_drones{true};    // the dedicated server has players see each other's FPV drones
     // What guests may use: the host's choice, or the host's roster for a guest.
     bool guest_noclip = true, guest_no_bail = true, guest_boosts = true;
+    bool guest_ollies = true; // a dedicated server's lock only: a lobby host has no such choice
     // Host: guests skate with its physics tuning. Guest: the host's roster says so (a
     // dedicated server's guests skate with the game's own).
     bool enforce_tuning = true;
@@ -586,7 +589,7 @@ void apply_object_limit(Session &s, unsigned limit);
 void apply_object_scaling(Session &s, bool allowed);
 // Stores what guests may use and applies it to the local player (the host and a dedicated
 // server's admins are exempt).
-void apply_guest_tools(Session &s, bool noclip, bool no_bail, bool boosts);
+void apply_guest_tools(Session &s, bool noclip, bool no_bail, bool boosts, bool ollies = true);
 // Shows the chosen nametags: ReSkate's (and none of the game's nametags or compass
 // arrows), the game's own, or none.
 void apply_nametags(const Session &s);

@@ -46,6 +46,7 @@ package::Name wanted;            // under mutex
 std::string version;             // under mutex: the one to download
 std::string newest;              // under mutex
 std::string description;         // under mutex: Thunderstore's, or the installed mod's own
+std::uint64_t package_bytes{};   // under mutex: the zip's Content-Length
 bool installed_off{};            // under mutex: here already, switched off
 std::string last_failed;         // under mutex: a package not to offer again this run
 https::Watch watch;
@@ -228,11 +229,15 @@ void check() {
         // Another version is only worth fetching when it is the host's: any other leaves the two apart still.
         if (update && choice.version != multiplayer::map_package_version(need_package()))
             return fail("That version is not on Thunderstore any more. Ask the " + host_word(need_server()) + " to update the map, or install its version yourself.");
+        // The package page names the version and not its size. The download's Content-Length is
+        // what the card shows; the body is not fetched until the player says yes.
+        const auto length = https::content_length(package::download_url(name, choice.version), 8, agent, &watch);
         {
             std::lock_guard lock(mutex);
             version = choice.version;
             newest = choice.newest;
             description = choice.description;
+            package_bytes = length.value_or(0);
         }
         // Its icon for the card: small, and not worth holding the question up for long.
         if (!choice.icon.empty())
@@ -407,6 +412,7 @@ void offer(const multiplayer::MapNeed& asked) {
         version.clear();
         newest.clear();
         description.clear();
+        package_bytes = 0;
         installed_off = false;
     }
     overlay::set_map_download_icon({});
@@ -471,6 +477,7 @@ View view() {
     out.author = wanted.owner;
     out.version = version;
     out.description = description;
+    out.bytes = package_bytes;
     if (out.stage == Stage::applying) {
         const auto now = live_mods::progress();
         out.step = now.done;

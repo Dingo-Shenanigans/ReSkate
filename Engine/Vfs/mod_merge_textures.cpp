@@ -41,7 +41,8 @@ std::optional<std::uint32_t> block_at(std::span<const std::byte> encoded, std::u
 } // namespace
 
 StreamedTextures stream_resident_textures(const CasStore& store, const fs::path& root, fb::BinaryBundle& manifest, std::vector<fb::BundleFileInfo>& files, std::size_t first,
-                                          const std::set<fb::Guid>& tocChunks, const fs::path& gameRoot) {
+                                          const std::set<fb::Guid>& tocChunks, const fs::path& gameRoot,
+                                          const std::vector<std::uint32_t>* only) {
     StreamedTextures result;
     if (manifest.chunks.empty() || manifest.chunkMetadata.empty()) return result;
     std::optional<native_db::Node> records;
@@ -57,6 +58,7 @@ StreamedTextures stream_resident_textures(const CasStore& store, const fs::path&
     for (std::size_t index = 0; index < manifest.resources.size(); ++index) {
         auto& asset = manifest.resources[index];
         if (asset.resourceType != fb::texture_resource_type || resourcesAt + index >= files.size()) continue;
+        if (only && std::ranges::find(*only, static_cast<std::uint32_t>(resourcesAt + index)) == only->end()) continue;
         const auto& file = files[resourcesAt + index];
         if (!file.location.patch) continue;   // the game's own texture
         try {

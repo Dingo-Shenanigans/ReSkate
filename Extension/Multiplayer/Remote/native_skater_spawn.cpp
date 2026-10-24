@@ -21,6 +21,45 @@ namespace {
 bool code(std::uintptr_t base, std::uintptr_t address) {
     return address >= base && address < base + supported_build::game_image_size;
 }
+// Whether the game's destroy of `entity` (engine::destroy_entity, 0x2b689f0) reaches code: it
+// calls its owner's bus (owner + 8) through slot 3 (0x2b94c50), which, for the bus's root entity
+// (bus + 0x28, which a remote actor always is), calls the parent bus (bus + 0x20) through slot 3.
+// In 2.1.1's crash reports (Skate.exe+0x2b94cd0, 573 of them) that parent pointer had been made
+// one less than the parent's address while the actor lived (the same parent is at bus + 0x48),
+// so the game read a vtable out of the middle of one and faulted; what writes it is not known
+// (2026-10-21).
+bool destroy_reaches_code(std::uintptr_t base, std::uintptr_t entity, std::uintptr_t owner, std::string &damage) {
+    try {
+        const auto bus = ptr(owner, 8);
+        if (!code(base, ptr(ptr(bus), 0x18))) {
+            damage = std::format("owner {:#x}, bus {:#x}", owner, bus);
+            return false;
+        }
+        if (ptr(bus, 0x28) != entity) return true;
+        const auto up = ptr(bus, 0x20);
+        if (up % 8 || !code(base, ptr(ptr(up), 0x18))) {
+            damage = std::format("bus {:#x}, parent {:#x}, root bus {:#x}", bus, up, ptr(bus, 0x48));
+            return false;
+        }
+        return true;
+    } catch (const Unavailable &) {
+        damage = std::format("owner {:#x} unreadable", owner);
+        return false;
+    }
+}
+// A remote actor whose destroy would crash the game is left where it is, forgotten: a stray actor
+// for the rest of the level, where the game would have closed.
+void note_damaged_destroy(const char *what, std::uintptr_t entity, const std::string &damage) {
+    static std::atomic<unsigned> said{};
+    if (said.fetch_add(1, std::memory_order_relaxed) >= 8) return;
+    try {
+        logging::log(logging::Level::warning, logging::Channel::network,
+                     "Multiplayer: a remote {}'s link to the game's entity tree is damaged ({}; entity {:#x}), where the game "
+                     "would have crashed destroying it; it is left alive and forgotten.",
+                     what, damage, entity);
+    } catch (...) {
+    }
+}
 // Entity+0x628 is a cache written by the post-construction callback
 // (native::component_cache_callback). The factory's component collection is available before that cache.
 std::uintptr_t skater_component(std::uintptr_t base, std::uintptr_t entity) {
@@ -243,8 +282,12 @@ void remove_board(std::uintptr_t base) {
     }
     if (entity && shared().hooks && GetCurrentThreadId() == shared().engine_thread &&
         ptr(entity) == base + addr::engine::board_entity_vtable && ptr(entity, 0x20) == r.context &&
-        ptr(entity, 0x40) == parent)
-        shared().original_destroy(entity, parent);
+        ptr(entity, 0x40) == parent) {
+        if (std::string damage; destroy_reaches_code(base, entity, parent, damage))
+            shared().original_destroy(entity, parent);
+        else
+            note_damaged_destroy("board", entity, damage);
+    }
 }
 std::string show_board(std::uintptr_t base, const NativeFrame &local, const Pose &pose) {
     auto &r = remote();
@@ -432,8 +475,12 @@ void remove_remote(std::uintptr_t base) noexcept {
         if (entity && shared().hooks && GetCurrentThreadId() == shared().engine_thread &&
             ptr(entity) == base + addr::engine::skater_entity_vtable && ptr(entity, 0x20) == context &&
             ptr(entity, 0x40) == parent &&
-            !ptr(entity, 0xf8))
-            shared().original_destroy(entity, ptr(entity, 0x40));
+            !ptr(entity, 0xf8)) {
+            if (std::string damage; destroy_reaches_code(base, entity, ptr(entity, 0x40), damage))
+                shared().original_destroy(entity, ptr(entity, 0x40));
+            else
+                note_damaged_destroy("skater", entity, damage);
+        }
     } catch (...) { /* Level teardown may have already invalidated the entity. */
     }
 }

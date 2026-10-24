@@ -1,6 +1,5 @@
 // Launcher mod manager: install from .zip and folders, the Mods list and mods.json.
 #include "Launcher/mod_manager.h"
-#include "Launcher/official_mods.h"
 
 #include "Engine/Vfs/builtin_pack_format.h"
 #include "Engine/Vfs/builtin_packs.h"
@@ -457,92 +456,14 @@ int main() {
         }
     }
 
-    // Official mods (Launcher/official_mods.h): the backend's list, read strictly.
+    // A retired mod (the deprecated first Board Break) is left out by ReSkate; every other mod is the player's.
     {
-        const auto parsed = official_mods::parse_list(R"({"community":"reskate","mods":[
-            {"full_name":"Fourth_Studio-Board_Break_Pack","owner":"Fourth_Studio","name":"Board_Break_Pack","title":"Board Break Pack",
-             "description":"Decks","icon":"https://gcdn.thunderstore.io/live/icon.png","version":"2.3.0",
-             "download_url":"https://thunderstore.io/package/download/Fourth_Studio/Board_Break_Pack/2.3.0/","file_size":1},
-            {"full_name":"Fourth_Studio-Road_Rash","owner":"Fourth_Studio","name":"Road_Rash"},
-            {"full_name":"Evil-Mod","version":"1.0.0","download_url":"https://example.com/evil.zip"},
-            {"full_name":"../escape"}, {"full_name":"Fourth_Studio-Road_Rash"}, 7]})");
-        check(parsed.size() == 3 && parsed[0].full_name == "Fourth_Studio-Board_Break_Pack" && parsed[0].version == "2.3.0" &&
-                  parsed[0].title == "Board Break Pack" && parsed[0].icon.starts_with("https://gcdn.thunderstore.io/") &&
-                  parsed[1].full_name == "Fourth_Studio-Road_Rash" && parsed[1].version.empty() && parsed[1].title == "Road Rash" &&
-                  parsed[2].full_name == "Evil-Mod" && parsed[2].version.empty() && parsed[2].download_url.empty(),
-              "The official list keeps what it should: no odd names, no duplicates, no downloads from elsewhere");
-        check(official_mods::parse_list("<html>go away</html>").empty() && official_mods::parse_list(R"({"lobbies":3})").empty(),
-              "Anything else is no list");
-        const auto fallback = official_mods::fallback_list();
-        check(fallback.size() == 2 && fallback[0].full_name == "Fourth_Studio-Board_Break_Pack" && fallback[1].full_name == "Fourth_Studio-Road_Rash",
-              "ReSkate's own list is Board Break and Road Rash");
-    }
-    // A copy the player installed is moved in rather than downloaded again; the deprecated first
-    // Board Break is retired; mods.json forgets both; every other mod stays as it was.
-    {
-        const auto store = root / L"official" / L"Mods";
-        fs::create_directories(store / L"Fourth_Studio-Road_Rash");
-        fs::create_directories(store / L"Fourth_Studio-Board_Break");
-        fs::create_directories(store / L"Someone-Other_Mod");
-        std::ofstream(store / L"Fourth_Studio-Road_Rash" / L"layout.toc") << "toc";
-        std::ofstream(store / L"Fourth_Studio-Road_Rash" / L"manifest.json") << R"({"name":"Road_Rash","version_number":"1.0.0"})";
-        std::ofstream(store / L"Someone-Other_Mod" / L"layout.toc") << "toc";
-        std::ofstream(store / L"mods.json") << R"({"schema":1,"mods":[{"name":"Fourth_Studio-Road_Rash","enabled":true},)"
-                                               R"({"name":"Fourth_Studio-Board_Break","enabled":true},{"name":"Someone-Other_Mod","enabled":false}]})";
-        const auto official = official_mods::fallback_list();
-        const auto done = official_mods::adopt_and_retire(store, official);
-        const auto adopted = store / L".reskate-official" / L"Fourth_Studio-Road_Rash";
-        check(done.size() == 2 && read(adopted / L"layout.toc") == "toc" && read(adopted / L".official-version").starts_with("1.0.0") &&
-                  !fs::exists(store / L"Fourth_Studio-Road_Rash") && !fs::exists(store / L"Fourth_Studio-Board_Break") &&
-                  fs::exists(store / L"Someone-Other_Mod" / L"layout.toc"),
-              "An installed official mod moves in, a retired one goes, the others stay");
-        const auto remaining = mods::scan_mods(store.parent_path());
-        check(remaining.issue.empty() && remaining.missing.empty() && remaining.entries.size() == 1 &&
-                  remaining.entries[0].mod.name == "Someone-Other_Mod" && !remaining.entries[0].enabled,
-              "mods.json forgets them and keeps the rest as it was");
-        const auto packs = mods::official_packs(store);
-        check(packs.size() == 1 && packs[0].name == "Fourth_Studio-Road_Rash" && mods::kept_by_reskate(store, "Fourth_Studio-Road_Rash") &&
-                  mods::kept_by_reskate(store, "fourth_studio-board_break") && !mods::kept_by_reskate(store, "Someone-Other_Mod") &&
-                  !mods::kept_by_reskate(store, "Fourth_Studio-Board_Break_Pack"),
-              "The game takes in the official mods in place, and leaves out Mods folder copies of them");
-        // Installed again from somewhere: that copy goes, the official one stays.
-        fs::create_directories(store / L"Fourth_Studio-Road_Rash");
-        std::ofstream(store / L"Fourth_Studio-Road_Rash" / L"layout.toc") << "again";
-        check(official_mods::adopt_and_retire(store, official).size() == 1 && !fs::exists(store / L"Fourth_Studio-Road_Rash") &&
-                  read(adopted / L"layout.toc") == "toc",
-              "A second copy of an official mod goes, the official one stays");
-        check(official_mods::adopt_and_retire(store, official).empty(), "Nothing is done twice");
-        // Turned off in the launcher: still in place, but the game takes it in no more.
-        check(!mods::official_off(store, "Fourth_Studio-Road_Rash") && mods::set_official_off(store, "Fourth_Studio-Road_Rash", true) &&
-                  mods::official_off(store, "fourth_studio-road_rash") && mods::official_packs(store).empty() &&
-                  mods::official_packs(store, true).size() == 1 && fs::exists(adopted / L"layout.toc"),
-              "An official mod turned off stays in place and is left out");
-        check(mods::set_official_off(store, "Fourth_Studio-Road_Rash", true) && mods::set_official_off(store, "Fourth_Studio-Road_Rash", false) &&
-                  !mods::official_off(store, "Fourth_Studio-Road_Rash") && mods::official_packs(store).size() == 1 &&
-                  read(store / L".reskate-official" / L"official-off.txt").empty(),
-              "Turned on again, it is taken in again");
-        check(!mods::set_official_off(store, "a/b", true) && !mods::set_official_off(store, "", true), "Only a folder name is written");
-    }
-    // Live (RESKATE_OFFICIAL_LIVE=1): the whole of it, against ReSkate and Thunderstore, into a
-    // scratch Mods folder: the list, each mod's latest version downloaded and put in place.
-    if (GetEnvironmentVariableW(L"RESKATE_OFFICIAL_LIVE", nullptr, 0)) {
-        const auto store = root / L"live" / L"Mods";
+        const auto store = root / L"retired" / L"Mods";
         fs::create_directories(store);
-        official_mods::start(store);
-        check(official_mods::wait(std::chrono::minutes(1)), "The list was read in time");
-        check(mods::official_packs(store).empty(), "Nothing is downloaded until asked");
-        for (const auto& mod : official_mods::snapshot().mods) official_mods::install(store, mod.full_name);
-        check(official_mods::wait(std::chrono::minutes(5)), "The official mods were installed in time");
-        const auto state = official_mods::snapshot();
-        std::cout << "  official mods from " << state.source << ":\n";
-        for (const auto& mod : state.mods)
-            std::cout << "    " << mod.full_name << " v" << mod.installed << " (latest v" << mod.version << "): " << mod.status << '\n';
-        for (const auto& pack : mods::official_packs(store)) {
-            std::size_t files{};
-            for (const auto& entry : fs::recursive_directory_iterator(pack.directory)) files += entry.is_regular_file();
-            std::cout << "    in place: " << pack.name << ", " << files << " files\n";
-        }
-        check(!state.mods.empty() && mods::official_packs(store).size() == state.mods.size(), "Every official mod is in place");
+        check(mods::kept_by_reskate(store, "fourth_studio-board_break") && mods::kept_by_reskate(store, "Fourth_Studio-Board_Break") &&
+                  !mods::kept_by_reskate(store, "Fourth_Studio-Road_Rash") && !mods::kept_by_reskate(store, "Someone-Other_Mod") &&
+                  !mods::kept_by_reskate(store, ""),
+              "Only a retired mod is left out");
     }
 
     std::error_code ignored;

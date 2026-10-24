@@ -1,6 +1,7 @@
 // Animation Studio's keyframes apart from the game: turning numbers, blending keys, what a profile
 // and a clip file hold, and that edits never grow a pose.
 #include "Extension/AnimationStudio/anim_core.h"
+#include "Extension/UI/Overlay/descriptor_slots.h"
 #include "Extension/AnimationStudio/skater_joint_limits.h"
 #include <map>
 #include "Extension/AnimationStudio/skater_mirror.h"
@@ -408,6 +409,26 @@ void clips_read_back_and_broken_ones_are_refused() {
     bool refused = false;
     try { (void)clip_from_bytes(cut); } catch (const std::runtime_error&) { refused = true; }
     check(refused, "A cut-short clip is refused");
+    clip.turned_only = {0, 1, 1};
+    for (const bool board : {false, true}) {
+        if (board) clip.board.resize(clip.times.size());
+        const auto packed = clip_bytes(clip);
+        const auto native = clip_from_bytes(packed);
+        check(native.turned_only == clip.turned_only && !native.keeps_position(0) && native.keeps_position(2) &&
+              native.board.size() == clip.board.size() && near(native.frames[4].position[2], 3),
+              "2.1.2 rotation-only masks round-trip with or without a board while preserving the compressed pose");
+        auto invalid = packed;
+        invalid[21 + clip.times.size() * 4] = 2;
+        refused = false;
+        try { (void)clip_from_bytes(invalid); } catch (const std::runtime_error&) { refused = true; }
+        check(refused, "A corrupt rotation-only mask is refused");
+    }
+    Clip asymmetric;
+    asymmetric.joints = skeleton_joints; asymmetric.times = {0}; asymmetric.frames.resize(skeleton_joints);
+    asymmetric.turned_only.resize(skeleton_joints); asymmetric.turned_only[341] = 1;
+    const auto mirrored = mirror_clip(asymmetric);
+    check(mirrored.keeps_position(mirror_joint[341]) && !mirrored.keeps_position(341),
+          "Mirrored native clips preserve the matching limb's rotation-only ownership");
 }
 } // namespace
 

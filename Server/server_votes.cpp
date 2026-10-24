@@ -372,13 +372,9 @@ std::string Host::start_poll(Guest *starter, std::string_view text, std::string 
     poll.id = vote_ids_;
     poll.ends = now_ + microseconds(config_.votes.poll_seconds);
     if (!admin) vote_cooldowns_[starter->member.id] = now_ + microseconds(config_.votes.cooldown);
-    std::string choices;
-    for (std::size_t i = 0; i < poll.answers.size(); ++i) choices += (i ? "  " : "") + std::string("/") + std::to_string(i + 1) + " " + poll.answers[i];
     vote_ = std::move(poll);
+    // The card shows the question and its answers; chat does not repeat them.
     const auto who = starter ? guest_name(*starter) : std::string("The server");
-    send_chat(who + " asks: " + vote_->label + " (" + std::to_string(config_.votes.poll_seconds) +
-              " s). Answer on the card at the right of your screen, or type:");
-    send_chat(choices);
     log_("[poll] " + who + " started a poll: " + vote_->label + " " + joined(vote_->answers, " | "));
     check_vote(false);
     return {};
@@ -406,6 +402,17 @@ void Host::answer_poll(Guest &guest, std::size_t answer) {
     if (!added && chosen->second == answer) return reply(guest, "You already answered " + poll.answers[answer] + ".");
     chosen->second = answer;
     check_vote(false);
+}
+
+bool Host::answers_vote(const Guest &guest, std::string_view line) const {
+    if (!vote_) return false;
+    // "/2", "/yes", or the same after "/vote", as chat_command takes them.
+    const auto [first, rest] = split(line);
+    auto verb = lower(first);
+    if (verb == "vote") verb = lower(split(rest).first);
+    if (vote_->kind == VoteKind::poll)
+        return verb.size() == 1 && verb[0] >= '1' && static_cast<std::size_t>(verb[0] - '0') <= vote_->answers.size();
+    return guest.member.id != vote_->target && (verb == "yes" || verb == "y" || verb == "no" || verb == "n");
 }
 
 // `by` nullptr: the server console, which may always end it.
@@ -496,9 +503,8 @@ void Host::check_vote(bool expired) {
             if (top && count[i] == top) leaders.push_back(done.answers[i]);
         const auto outcome = !top ? std::string("nobody answered") : leaders.size() > 1 ? "a tie: " + joined(leaders, ", ")
                                                                                         : leaders.front() + " wins";
-        const auto line = "Poll \"" + done.label + "\" ended: " + answer_count(done.answers, count) + " (" + outcome + ").";
-        send_chat(line);
-        log_("[poll] " + line);
+        // The card shows the result for a while; chat does not repeat it.
+        log_("[poll] Poll \"" + done.label + "\" ended: " + answer_count(done.answers, count) + " (" + outcome + ").");
         // A console poll-run: the winning answer's command, as the console. A tie or no answer runs nothing.
         if (!done.run.empty() && top && leaders.size() == 1) log_(command(fill(done.run, "{answer}", leaders.front())));
         return;

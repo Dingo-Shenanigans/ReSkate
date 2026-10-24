@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <string_view>
 
 namespace dingosdk::game::build::v20260929::ui_textures {
@@ -59,6 +60,19 @@ inline constexpr float thrasher_wordmark_arch = 0.70f;
 // A tile with rough, hand-cut edges (256 x 256): about 16 pixels of each edge are rough.
 inline constexpr Texture rough_tile{root_toc, root_bundle, "ui/textures/common/tiles/img_tilebackground_roughfull_256_256_256",
     {}, {}, 32.0f / 256};
+// skate.'s own loading screen's board doing kickflips beside its "Loading..." (the imports of
+// UI/Foundations/Loading/LoadScreen/DingoLoadScreen_Widget, found for the Animator Studio, PR 297): a
+// flipbook, flip_Skateboard_Kickflip_256, of 27 frames at 30 a second, 9 across and 3 down its texture
+// (2304 x 768 for a 2160 screen). Kept with the widget, or in the level roots: tried in that order.
+inline constexpr std::string_view loading_board_name =
+    "ui/textures/common/flipbooks/loading/flip_skateboard_kickflip_256_win32_"
+    "6143a1fc-cfd7-13ed-c764-164f1af9c663_0_2160_c2cf948c-5744-ac69-b92d-360134ba7b45_input";
+inline constexpr std::array<Texture, 3> loading_board{{
+    {"Win32/globals.toc", "win32/ui/foundations/loading/loadscreen/dingoloadscreen_widget_bundle", loading_board_name},
+    {root_toc, root_bundle, loading_board_name},
+    {bam_toc, "win32/levels/game/bam_levelroot/bam_levelroot", loading_board_name},
+}};
+inline constexpr int loading_board_frames = 27, loading_board_columns = 9, loading_board_rows = 3;
 // A film's scratches and dust, light on black (2048 x 2048, opaque): drawn by their brightness over a panel.
 inline constexpr Texture scratches{root_toc, root_bundle,
     "ui/textures/common/backgrounds/img_background_slicedgrainytexture01_2048_2048_2048"};

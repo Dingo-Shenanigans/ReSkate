@@ -36,6 +36,7 @@ struct MergeReport {
         std::string lost;
         std::string asset;
         std::size_t assets{};
+        std::vector<std::string> areas;   // what those assets are, in a player's words (asset_area)
     };
     std::vector<Conflict> conflicts;
     // Nothing was built: the check before the merge found `conflicts` (MergeOptions::conflicts_first).
@@ -92,7 +93,7 @@ struct MergeOptions {
     // the others against it. Reading every mod's items and meshes again is most of what
     // adding one map would otherwise wait on.
     std::vector<std::string> checked;
-    // Look for mods that conflict (find_conflicts) before building anything, and when some do,
+    // Look for mods that conflict (ConflictChecker, mod_conflicts.h) before building anything, and when some do,
     // stop there (MergeReport::stopped_for_conflicts) so the caller merges once without them.
     bool conflicts_first{};
 };

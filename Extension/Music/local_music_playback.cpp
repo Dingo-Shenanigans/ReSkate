@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <random>
 
 namespace dingosdk::profile_runtime {
 namespace {
@@ -274,6 +275,26 @@ bool selector_overruns(std::uintptr_t queue, std::uintptr_t playlist_asset,
     return false;
 }
 
+// The game's shuffle (the selector's slot 0x10, 0x148eb60) keeps the candidates it has not tried
+// in a table of 1024 on its own stack, fills only that many, and then picks rand() % the whole
+// count and moves the last into the picked place (0x148ed17, 0x148edcc): with more candidates it
+// writes past its table, over its caller's callbacks and saved registers (2.1.1: about 1,700
+// crash reports at a dozen sites, from merged music mods' playlists of 1,130 to 1,780 songs;
+// 2026-10-21).
+constexpr std::uint32_t selector_table_size = 1024;
+
+// A place in the queue's candidates other than the one playing, as the game's shuffle would
+// have chosen. -1 when there is none.
+std::int32_t own_pick(std::uintptr_t queue, std::uint32_t candidates) noexcept {
+    if (!candidates || candidates > 0x7fffffffu) return -1;
+    std::int32_t current{-1};
+    (void)read_at(queue + 0x70, current);
+    thread_local std::minstd_rand random{static_cast<std::uint32_t>(GetTickCount64() ^ reinterpret_cast<std::uintptr_t>(&current))};
+    auto pick = static_cast<std::int32_t>(random() % candidates);
+    if (candidates > 1 && pick == current) pick = static_cast<std::int32_t>((static_cast<std::uint32_t>(pick) + 1) % candidates);
+    return pick;
+}
+
 bool pending_song_request(std::uintptr_t queue, bool& pending) noexcept {
     std::uintptr_t begin{}, end{};
     pending = false;
@@ -501,6 +522,13 @@ std::int32_t __fastcall music_select_next_hook(std::uintptr_t queue, std::uintpt
     // next while a Spotify station is on.
     // Only of the queue the station is on: the others (a speaker's in the world, the one a song
     // grabbed from a speaker plays on) go on to their next songs for reasons of their own.
+    // Without a station, the player's own channel's queue is kept for plugins' next
+    // (spotify_station::game_next).
+    if (std::uint8_t asked{}; !spotify_station::active() && dingosdk::memory::peek(queue + 0xf1, asked)) {
+        std::uint32_t channel{};
+        if (const auto base = image_base.load(std::memory_order_acquire); base && native_queue_channel(base, queue, channel))
+            spotify_station::plain_song_chosen(queue, channel, asked != 0);
+    }
     if (std::uint8_t asked{}; spotify_station::active() && dingosdk::memory::peek(queue + 0xf1, asked)) {
         std::uint32_t channel{};
         if (const auto base = image_base.load(std::memory_order_acquire); base && native_queue_channel(base, queue, channel)) {
@@ -518,7 +546,8 @@ std::int32_t __fastcall music_select_next_hook(std::uintptr_t queue, std::uintpt
         // The game is not asked when its answer would be read from beyond the asset's songs:
         // no song is chosen, as when the game finds none (selector_overruns).
         std::int32_t chosen = -1;
-        if (std::uint32_t candidates{}, songs{}; selector_overruns(queue, playlist_asset, candidates, songs)) {
+        std::uint32_t candidates{}, songs{};
+        if (selector_overruns(queue, playlist_asset, candidates, songs)) {
             static std::atomic<unsigned> said{};
             if (said.fetch_add(1, std::memory_order_relaxed) < 8) {
                 try {
@@ -528,6 +557,19 @@ std::int32_t __fastcall music_select_next_hook(std::uintptr_t queue, std::uintpt
                         "Next song: channel {} (queue 0x{:x}) has {} candidate(s) for a playlist asset of {} song(s) that scores "
                         "them by its own list, where the game would have crashed; no song was chosen for it.",
                         channel, queue, candidates, songs);
+                } catch (...) {}
+            }
+        } else if (candidates > selector_table_size) {
+            // (selector_overruns sets the count only for a queue the game's shuffle scores.)
+            chosen = own_pick(queue, candidates);
+            static std::atomic<unsigned> said{};
+            if (said.fetch_add(1, std::memory_order_relaxed) < 8) {
+                try {
+                    std::uint32_t channel{~0u};
+                    native_queue_channel(image_base.load(std::memory_order_acquire), queue, channel);
+                    dingosdk::logging::log(dingosdk::logging::Level::info, dingosdk::logging::Channel::music,
+                        "Next song: channel {} has {} candidate(s), more than the {} the game's shuffle holds, where the game "
+                        "would have crashed; ReSkate chose place {} for it.", channel, candidates, selector_table_size, chosen);
                 } catch (...) {}
             }
         } else {

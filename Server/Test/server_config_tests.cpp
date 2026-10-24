@@ -183,10 +183,10 @@ int run() {
     check(load_config(file).throwdown_locks == (lock_nobail | lock_tuning), "Throwdown locks lost");
     std::ofstream(file, std::ios::binary) << R"({"players": {"throwdown_locks": ["boosts", "jetpack", 3, "teleport"]}})";
     check(load_config(file).throwdown_locks == (lock_boosts | lock_noclip), "Bad throwdown locks not cleaned");
-    check(parse_lock_tools("all") == lock_all && parse_lock_tools(" NoBail , tuning") == (lock_nobail | lock_tuning) &&
+    check(parse_lock_tools("all") == lock_all && parse_lock_tools(" NoBail , tuning") == (lock_nobail | lock_tuning) && parse_lock_tools("ollies") == lock_ollies &&
               !parse_lock_tools("") && !parse_lock_tools("nobail,") && !parse_lock_tools("fly"),
           "Lock tool names not read");
-    check(lock_tools_text(lock_all) == "noclip, nobail, boosts, tuning" && lock_tools_text(0) == "none", "Lock tool names not written");
+    check(lock_tools_text(lock_all) == "noclip, nobail, boosts, tuning, ollies" && lock_tools_text(0) == "none", "Lock tool names not written");
 
     // A config from before the sections: every setting is read from where it was, under the name
     // it had, and the file is written back in sections, in reading order, with nothing called new

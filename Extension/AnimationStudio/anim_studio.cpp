@@ -19,8 +19,7 @@
 #include "Extension/Multiplayer/Remote/native_pose_layout.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
 #include "Extension/Skater/ai_skaters.h"
-#include "Extension/BoardBreak/board_break_model.h"
-#include "Extension/HallOfMeat/hall_of_meat_skeleton.h"
+#include "Extension/Skater/xray_skeleton.h"
 #include "Extension/Profile/runtime_internal.h"
 #include "native_library.h"
 #include <Windows.h>
@@ -381,12 +380,18 @@ Joint board_parent(const std::array<NativeBone, board_bones>& b) noexcept { retu
 // has it (a wide deck's sit further out); only its lean and steer are taken off. Bones 4 and 8 the trucks, 5 and
 // 9 their baseplates.
 void hold_trucks_at_rest(std::array<NativeBone, board_bones>& b) noexcept {
-    struct Truck { std::size_t truck, plate; const board_break::TruckRest* rest; };
-    for (const Truck t : {Truck{4, 5, &board_break::back_truck_rest}, Truck{8, 9, &board_break::front_truck_rest}}) {
-        const Quat facing = normalised(Quat{t.rest->facing.x, t.rest->facing.y, t.rest->facing.z, t.rest->facing.w});
+    // Preview rest transforms only; Board Break itself now belongs to a plugin.
+    struct TruckRest { Quat facing; Vec3 at, effector; };
+    static constexpr TruckRest back{{-0.3641458f, -0.3641458f, -0.6061335f, 0.6061335f},
+                                    {0.0005361f, -0.0183003f, -0.2344986f}, {0.0395021f, 0, 0}};
+    static constexpr TruckRest front{{-0.6061674f, 0.6061674f, 0.3640894f, 0.3640894f},
+                                     {0.0005361f, -0.0182917f, 0.2346680f}, {0.0395677f, 0, 0}};
+    struct Truck { std::size_t truck, plate; const TruckRest* rest; };
+    for (const Truck t : {Truck{4, 5, &back}, Truck{8, 9, &front}}) {
+        const Quat facing = normalised(t.rest->facing);
         const Vec3 at{b[t.truck].position[0], b[t.truck].position[1], b[t.truck].position[2]};
-        const Vec3 rest_at{t.rest->at.x, t.rest->at.y, t.rest->at.z};
-        const auto effector = rotate(facing, Vec3{t.rest->effector.x, t.rest->effector.y, t.rest->effector.z});
+        const Vec3 rest_at = t.rest->at;
+        const auto effector = rotate(facing, t.rest->effector);
         const auto plate = rotate(conjugate(facing), Vec3{rest_at[0] + effector[0] - at[0], rest_at[1] + effector[1] - at[1],
                                                           rest_at[2] + effector[2] - at[2]});
         if (!finite(Joint{{1, 1, 1}, facing, plate})) continue;
@@ -4038,7 +4043,7 @@ TickResult tick(std::uintptr_t base, std::uintptr_t component, bool open, float 
             multiplayer::set_animation_studio_listener(&on_animation);
             multiplayer::set_animation_studio_render_listener(&on_render);
             multiplayer::set_animation_studio_board_listener(&on_board_render);
-            multiplayer::set_local_pose_filter(&on_send);
+            multiplayer::set_animation_studio_pose_filter(&on_send);
             multiplayer::set_local_board_filter(&on_send_board);
             installed = true;
             logging::log(Level::info, Channel::skater, "Animation Studio: listening to the skater's animation.");
@@ -6181,7 +6186,7 @@ NativeDocumentPage native_asset_fields(const std::string& asset, const std::stri
                     document = std::make_shared<const Json>(Json::parse(std::string((std::istreambuf_iterator<char>(in)), {}), JsonLimits{16 * 1024 * 1024, 64, 2 * 1024 * 1024}));
                 } else if (!resource && row && !row->toc.empty() && !row->bundle.empty()) {
                     // A library built in game keeps no copies of the documents: they are read from the game itself.
-                    document = std::make_shared<const Json>(native_library::document_from_game(hall_of_meat::game_folder(), row->toc, row->bundle, row->asset));
+                    document = std::make_shared<const Json>(native_library::document_from_game(xray::game_folder(), row->toc, row->bundle, row->asset));
                 } else
                     throw std::runtime_error("Typed document missing; rebuild the trick library in SETTINGS.");
             } catch (const std::exception& e) { cached_error = e.what(); }
@@ -6347,7 +6352,7 @@ void run_library_build() {
         std::filesystem::remove_all(old, error);
         if (const auto space = std::filesystem::space(folder, error); !error && space.available < 2'500'000'000ull)
             throw std::runtime_error("the trick library needs about 2 GB free on the drive the game is on");
-        const auto report = native_library::build(hall_of_meat::game_folder(), staging, [&](std::string_view step, std::size_t done, std::size_t total) {
+        const auto report = native_library::build(xray::game_folder(), staging, [&](std::string_view step, std::size_t done, std::size_t total) {
             std::lock_guard lock(b.mutex);
             b.state.step = std::string(step);
             b.state.done = done;

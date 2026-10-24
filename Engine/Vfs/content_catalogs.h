@@ -36,6 +36,9 @@ struct Catalogs {
     Json challenges = Json::object();
     std::vector<std::string> entitlements;
     std::set<std::string> open_items;
+    // Items some record grants (an offer, bundle, pack or reward), free or not,
+    // and the ones tagged as a brand collab.
+    std::set<std::string> granted_items, collab_items;
     // Build-kit categories in record order.
     std::vector<ObjectCategory> object_categories;
     std::vector<TravelLocation> travel_locations;

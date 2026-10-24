@@ -32,6 +32,19 @@ bool queue_local_park_paste(const EditorPasteRequest &);
 bool queue_local_park_object_set(const EditorObjectSetRequest &);
 bool queue_local_park_delete(const EditorDeleteRequest &);
 void tick_local_park_editor() noexcept;
+struct WorldRayHit {
+    bool cast{}, hit{};
+    std::array<float, 3> at{};
+    std::uint64_t when{}; // GetTickCount64 of the cast
+    bool available{}; // Native client collision API and world were ready.
+};
+void queue_world_ray(std::uint32_t id, const std::array<float, 3> &origin, const std::array<float, 3> &direction, float length);
+WorldRayHit world_ray(std::uint32_t id);
+// Client collision queries used by mode placement do not require the park
+// editor, its placement store, or the server object manager to be enabled.
+// Runs only on the verified local client update thread.
+void tick_local_world_rays() noexcept;
+
 // Invoked through the console's verified game-thread dispatcher. `texts`
 // carries a park mod's name, author, version and description (mod-create:
 // all four; mod-details: the same after the folder in `argument`).

@@ -54,6 +54,9 @@ template<class T> std::optional<T> saved_gameplay_setting(const void* reference)
 
 void save_gameplay_setting(const void* reference, const dingosdk::Json& value);
 
+// The player's Default Stance Is Goofy setting, once the game has read or changed it.
+std::optional<bool> game_stance_goofy() noexcept;
+
 bool gameplay_get_bool(std::uintptr_t m, const void* a);
 
 float gameplay_get_number(std::uintptr_t m, const void* a);

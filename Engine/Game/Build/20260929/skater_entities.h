@@ -7,6 +7,9 @@
 namespace dingosdk::game::build::v20260929::skater_entities {
 // Blueprint asset TypeInfo. Named character blueprints derive from it.
 inline constexpr std::uintptr_t blueprint_type = 0x7586ce8;
+// ObjectBlueprint ClassInfo: a world object's blueprint (props, checkpoints), a different branch
+// of the type hierarchy from the skater Blueprint above.
+inline constexpr std::uintptr_t object_blueprint_type = 0x75043a8;
 // Secondary vtables of the skater animation component (engine::skater_component_vtable) at +0x38 and +0x40.
 inline constexpr std::array<std::uintptr_t, 2> skater_component_base_vtables{0x61705e8, 0x6170650};
 // ClientSkaterSource::applyAppearance. It enables the customization component and requests
@@ -42,6 +45,12 @@ inline constexpr std::array<unsigned char, 16> release_reference_prefix{
 inline constexpr std::uintptr_t place_entity = 0x53ed70;
 inline constexpr std::array<unsigned char, 12> place_entity_prefix{
     0x41,0xb1,0x01,0x45,0x0f,0xb6,0xc1,0xe9,0x44,0xfe,0xa3,0x02};
+// Generic SpatialEntity setter used by place_entity. Copies both matrix halves
+// into the owned transform collection, then notifies components via +0x108.
+inline constexpr std::uintptr_t move_spatial_entity = 0x2f7ebc0;
+inline constexpr std::array<unsigned char, 22> move_spatial_entity_prefix{
+    0x48,0x83,0xec,0x48,0x4c,0x8b,0x59,0x70,0xc5,0xfc,0x10,0x02,
+    0xc5,0xfc,0x10,0x4a,0x20,0x41,0x0f,0xb6,0x53,0x0a};
 inline constexpr std::uintptr_t initialize_placement = 0x2f7d670;
 inline constexpr std::array<unsigned char, 15> initialize_placement_prefix{
     0x4c,0x8b,0xdc,0x53,0x55,0x56,0x57,0x48,0x83,0xec,0x68,0xf6,0x41,0x28,0x08};

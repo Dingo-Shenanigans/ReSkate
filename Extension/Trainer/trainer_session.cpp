@@ -9,10 +9,11 @@
 
 namespace dingosdk::trainer {
 namespace {
-// version, table id, six multipliers, count; then an index and a value per class field.
-constexpr std::uint8_t version = 1;
-constexpr std::size_t header = 1 + 4 + 6 * 4 + 2, row = 2 + 4;
-static_assert(header + class_field_count * row <= max_physics_extras, "every class value must fit in a session's physics extras");
+// version, table id, six multipliers (in version 2 then Underflip speed and a byte: 1 for the under part only), count;
+// then an index and a value per class field.
+constexpr std::uint8_t version = 1, version_underflip = 2;
+constexpr std::size_t header = 1 + 4 + 6 * 4 + 2, header_underflip = header + 4 + 1, row = 2 + 4;
+static_assert(header_underflip + class_field_count * row <= max_physics_extras, "every class value must fit in a session's physics extras");
 static_assert(class_field_count <= 0xffff);
 constexpr float class_value_high = 1.0e6f; // what the trainer holds its own edits to
 
@@ -53,12 +54,17 @@ std::uint32_t class_table_id() noexcept {
 std::vector<std::uint8_t> encode_session_extras(const SessionExtras &extras) {
     std::vector<std::uint8_t> out;
     if (extras.stock()) return out;
-    out.reserve(header + extras.classes.size() * row);
-    put(out, version);
+    const bool underflip = extras.underflip_speed != 1.0f || extras.underflip_split;
+    out.reserve((underflip ? header_underflip : header) + extras.classes.size() * row);
+    put(out, underflip ? version_underflip : version);
     put(out, class_table_id());
     for (const float value : {extras.flip_speed, extras.hippy_height, extras.nocomply_height, extras.boneless_height,
                               extras.offboard_height, extras.cruise})
         put(out, value);
+    if (underflip) {
+        put(out, extras.underflip_speed);
+        put(out, static_cast<std::uint8_t>(extras.underflip_split ? 1 : 0));
+    }
     auto classes = extras.classes;
     std::erase_if(classes, [](const auto &entry) { return entry.first >= class_field_count || !std::isfinite(entry.second); });
     std::ranges::stable_sort(classes, {}, [](const auto &entry) { return entry.first; });
@@ -74,7 +80,9 @@ std::vector<std::uint8_t> encode_session_extras(const SessionExtras &extras) {
 std::optional<SessionExtras> decode_session_extras(std::span<const std::uint8_t> bytes) {
     SessionExtras extras;
     if (bytes.empty()) return extras;
-    if (bytes.size() < header || bytes.size() > max_physics_extras || bytes[0] != version) return std::nullopt;
+    const bool underflip = bytes[0] == version_underflip;
+    const std::size_t head = underflip ? header_underflip : header;
+    if (bytes.size() < head || bytes.size() > max_physics_extras || (bytes[0] != version && !underflip)) return std::nullopt;
     std::size_t at = 1;
     const auto table = take<std::uint32_t>(bytes, at);
     std::array<float, 6> numbers;
@@ -88,8 +96,16 @@ std::optional<SessionExtras> decode_session_extras(std::span<const std::uint8_t>
     extras.boneless_height = std::clamp(numbers[3], height_low, height_high);
     extras.offboard_height = std::clamp(numbers[4], height_low, height_high);
     extras.cruise = numbers[5] > 0 && numbers[5] < cruise_high ? numbers[5] : 0.0f;
+    if (underflip) {
+        const auto value = take<float>(bytes, at);
+        if (!std::isfinite(value)) return std::nullopt;
+        extras.underflip_speed = std::clamp(value, flip_low, flip_high);
+        const auto split = take<std::uint8_t>(bytes, at);
+        if (split > 1) return std::nullopt;
+        extras.underflip_split = split == 1;
+    }
     const std::size_t count = take<std::uint16_t>(bytes, at);
-    if (bytes.size() != header + count * row) return std::nullopt;
+    if (bytes.size() != head + count * row) return std::nullopt;
     const bool same_table = table == class_table_id();
     int previous = -1;
     for (std::size_t i = 0; i < count; ++i) {

@@ -1,4 +1,5 @@
 #include "trainer_classes.h"
+#include "trainer_gamestate.h"
 #include "Engine/Core/Log/logging.h"
 #include <windows.h>
 #include <algorithm>
@@ -65,13 +66,26 @@ int mirror_field(const MirrorSlot &slot) noexcept {
 struct FlipCurve {
     std::uintptr_t curve{}, points{};
     std::vector<float> outputs;
-    float low{}, high{}; // the bounds the curve clamps its output to (+0x20, +0x24)
+    float low{}, high{}; // the input range the curve is read over (MinX, MaxX at +0x20, +0x24): never written
 };
 constexpr std::size_t curve_point = 0x1c, curve_x = 0xc, curve_y = 0x14, curve_points_at = 0x18;
+// The point that tells what a curve holds: its largest output (some curves start at 0).
+std::size_t probe_point(const FlipCurve &curve) noexcept {
+    std::size_t best{};
+    for (std::size_t i = 1; i < curve.outputs.size(); ++i)
+        if (std::abs(curve.outputs[i]) > std::abs(curve.outputs[best])) best = i;
+    return best;
+}
+std::uintptr_t probe_address(const FlipCurve &curve) noexcept { return curve.points + probe_point(curve) * curve_point + curve_y; }
+float probe_output(const FlipCurve &curve) noexcept { return curve.outputs[probe_point(curve)]; }
 struct Found {
     std::mutex mutex;
     std::vector<FlipCurve> flip;
     float flip_wanted{1}, flip_written{1};
+    bool flip_used{}; // a flip speed other than the game's is set, though not written at this moment
+    bool states_used{}; // the game states are wanted for something else
+    std::vector<std::uintptr_t> gates; // where the flick warp limit's number lives
+    float gate_wanted{flip_gate_stock}; // the seconds before landing a flip must be round by
     Copies copies;
     MirrorCopies mirror_copies;
     std::array<std::array<int, 15>, mirror_count> mirror_fields{};
@@ -80,6 +94,8 @@ struct Found {
     bool ready{};
     std::atomic<bool> searching{};
     std::atomic<std::uint64_t> searches{};
+    std::atomic<std::uint64_t> search_started{}; // GetTickCount64 when the running search began
+    std::uintptr_t curve_type{};                 // the first eight bytes of any FloatCurve, once known
     bool dirty{};
 };
 Found &found() {
@@ -221,6 +237,14 @@ void collect_eights(std::uintptr_t start, std::size_t size, const std::vector<st
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {}
 }
+// The curves the flip speed slider scales, a bit per curve in memory order: only curve 4,
+// GestureSpeedToFlipSpeed, the stick's speed to the speed of the flip. Measured with the owner on
+// flat ground, 2026-10-06 (outputs x0.3, nothing else touched): kickflips at about half the
+// game's turn rate, plain ollies 0.39 to 0.40 m with 0.62 s of air, the same as untouched.
+// 0.4.0 to 0.4.2 also scaled curves 3, 6 and 7 (what a flick adds to the HEIGHT of the pop) and
+// every curve's input range at +0x20 / +0x24 (MinX and MaxX, not output bounds as was thought):
+// that made a slow flip a low ollie. Curves 0 and 1 changed neither the flip nor the pop.
+std::atomic<std::uint32_t> flip_curve_mask{0x10};
 // One curve's points: false unless it has `count` points starting at (x0, y0).
 bool read_curve(std::uintptr_t curve, std::uint32_t count, float x0, float y0, FlipCurve &out) noexcept {
     std::uintptr_t points{};
@@ -244,24 +268,73 @@ bool read_curve(std::uintptr_t curve, std::uint32_t count, float x0, float y0, F
 // OllieSpeedToFlipSpeed, two flick sensitivity curves. As they ship: the first runs
 // (0, 0.4)..(0.9, 1.4) on three points, the second starts at (0.35, 0.65), the fifth at
 // (0, 0.05), the sixth is flat at 1.
-std::vector<FlipCurve> find_flip_curves(std::uintptr_t curve_type) {
+// `objects`: every FloatCurve in memory (collect_typed).
+std::vector<FlipCurve> find_flip_curves(std::vector<std::uintptr_t> objects) {
     std::vector<FlipCurve> result;
-    std::vector<std::uintptr_t> objects, runs;
-    each_region([&](std::uintptr_t start, std::size_t size) { collect_typed(start, size, curve_type, objects); });
+    std::vector<std::uintptr_t> runs;
     std::ranges::sort(objects);
     if (objects.size() < 8) return result;
     each_region([&](std::uintptr_t start, std::size_t size) { collect_eights(start, size, objects, runs); });
     for (const auto run : runs) {
         std::array<std::uintptr_t, 8> curves{};
         if (!peek(run, curves)) continue;
-        std::array<FlipCurve, 4> speed;
+        // In memory order: 0 and 1 a speed against the flick (new controls and legacy), 2 a
+        // multiplier for a high flick (1 to 2), 3, 6 and 7 what a flick adds to the height of the
+        // pop (0 to 2.75 over the stick's speed), 4 the stick's speed to the flip speed, 5 the
+        // ollie's speed to the flip speed (flat 1). All seven are checked to know the run is the
+        // flip trick tuning; flip_curve_mask says which are scaled.
+        std::array<FlipCurve, 7> speed;
         if (!read_curve(curves[0], 3, 0.0f, 0.4f, speed[0]) || !read_curve(curves[1], 3, 0.35f, 0.65f, speed[1]) ||
-            !read_curve(curves[4], 3, 0.0f, 0.05f, speed[2]) || !read_curve(curves[5], 2, 0.0f, 1.0f, speed[3]))
+            !read_curve(curves[4], 3, 0.0f, 0.05f, speed[2]) || !read_curve(curves[5], 2, 0.0f, 1.0f, speed[3]) ||
+            !read_curve(curves[3], 4, 0.0f, 0.0f, speed[4]) || !read_curve(curves[6], 4, 0.0f, 0.0f, speed[5]) ||
+            !read_curve(curves[7], 4, 0.0f, 0.0f, speed[6]))
             continue;
-        for (auto &curve : speed)
-            if (std::ranges::none_of(result, [&](const FlipCurve &known) { return known.points == curve.points; })) result.push_back(std::move(curve));
+        // Which of them the flip speed scales: a bit per curve, in memory order (see flip_curve_mask).
+        static constexpr std::size_t memory_index[]{0, 1, 4, 5, 3, 6, 7};
+        const auto mask = flip_curve_mask.load(std::memory_order_relaxed);
+        for (std::size_t i = 0; i < speed.size(); ++i)
+            if (auto &curve = speed[i]; ((mask >> memory_index[i]) & 1u) &&
+                                        std::ranges::none_of(result, [&](const FlipCurve &known) { return known.points == curve.points; }))
+                result.push_back(std::move(curve));
     }
     return result;
+}
+// The flip gate. A flip trick's clip stretches its flip by 1 / the flip speed, but never past
+// Float.Anim.MaxTrickFlickWarpTime, which an expression of the animation graph sets to the time
+// left before landing less one number: 1/6 s as shipped. That number sits in the expression's
+// kernel between words that do not change; far below zero, the limit never binds and a slow flip
+// stays slow all the way to the ground.
+constexpr float gate_stock = flip_gate_stock, gate_off = flip_gate_off;
+// The words around the number: enough to know a place already found is still the rule.
+bool gate_shape(std::uintptr_t address, std::uintptr_t low, std::uintptr_t high) noexcept {
+    if (address < low + 12 || address + 12 > high) return false;
+    const auto *words = reinterpret_cast<const std::uint32_t *>(address);
+    return words[2] == 0x2419u && words[-3] == 0x00010300u && !words[-2] && !words[-1] && !words[1];
+}
+// A search also wants the number itself (the game's, or the trainer's "off"): other expressions
+// share the shape.
+bool is_gate(std::uintptr_t address, std::uintptr_t low, std::uintptr_t high) noexcept {
+    if (!gate_shape(address, low, high)) return false;
+    const auto word = *reinterpret_cast<const std::uint32_t *>(address);
+    return word == bits(gate_stock) || word == bits(gate_off);
+}
+void collect_gates(std::uintptr_t start, std::size_t size, std::vector<std::uintptr_t> &gates) noexcept {
+    __try {
+        const auto *words = reinterpret_cast<const std::uint32_t *>(start);
+        for (std::size_t i = 2; i < size / 4; ++i)
+            if (words[i] == 0x2419u && is_gate(start + (i - 2) * 4, start, start + size) && gates.size() < 16) gates.push_back(start + (i - 2) * 4);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+bool gate_still_there(std::uintptr_t address) noexcept {
+    __try {
+        MEMORY_BASIC_INFORMATION info{};
+        if (VirtualQuery(reinterpret_cast<void *>(address), &info, sizeof(info)) != sizeof(info) || info.State != MEM_COMMIT || info.Protect != PAGE_READWRITE)
+            return false;
+        const auto low = reinterpret_cast<std::uintptr_t>(info.BaseAddress);
+        return gate_shape(address, low, low + info.RegionSize);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
 }
 DWORD WINAPI search(void *) noexcept {
     auto &f = found();
@@ -285,15 +358,23 @@ DWORD WINAPI search(void *) noexcept {
         MirrorCopies fresh_mirrors;
         const auto started = GetTickCount64();
         std::size_t bytes{};
+        // One walk over memory for everything that can be looked for at once: under memory pressure each walk
+        // pages the whole game back in, and there were five.
+        std::vector<std::uintptr_t> gates, curve_objects;
+        const auto curve_type_known = f.curve_type; // only this thread writes it
         MEMORY_BASIC_INFORMATION info{};
         for (std::uintptr_t at = 0x10000; at < 0x7fffffff0000ull && VirtualQuery(reinterpret_cast<void *>(at), &info, sizeof(info)) == sizeof(info);
              at = reinterpret_cast<std::uintptr_t>(info.BaseAddress) + info.RegionSize) {
             if (info.State != MEM_COMMIT || info.Protect != PAGE_READWRITE || info.Type == MEM_IMAGE) continue;
-            search_region(reinterpret_cast<std::uintptr_t>(info.BaseAddress), info.RegionSize, anchors, filter, fresh, fresh_mirrors, f.mirror_fields,
-                          stock.data());
+            const auto start = reinterpret_cast<std::uintptr_t>(info.BaseAddress);
+            search_region(start, info.RegionSize, anchors, filter, fresh, fresh_mirrors, f.mirror_fields, stock.data());
+            find_state_objects(start, info.RegionSize); // the flip states' objects (trainer_gamestate.cpp)
+            collect_gates(start, info.RegionSize, gates);
+            if (curve_type_known) collect_typed(start, info.RegionSize, curve_type_known, curve_objects);
             bytes += info.RegionSize;
         }
-        std::size_t classes{}, copies{};
+        const auto scanned = GetTickCount64();
+        std::size_t classes{}, copies{}, native{};
         {
             std::lock_guard lock(f.mutex);
             for (std::size_t c = 0; c < class_count; ++c) {
@@ -325,7 +406,7 @@ DWORD WINAPI search(void *) noexcept {
                             (void)put(base + i * 4, f.written[index]);
                 kept.insert(kept.end(), fresh_mirrors[m].begin(), fresh_mirrors[m].end());
                 f.mirror_copies[m] = std::move(kept);
-                copies += f.mirror_copies[m].size();
+                native += f.mirror_copies[m].size();
             }
             f.ready = true;
             f.dirty = true;
@@ -346,35 +427,164 @@ DWORD WINAPI search(void *) noexcept {
             std::uintptr_t curve{};
             if (push_copy && peek(push_copy + 0x10, curve) && curve) (void)peek(curve, curve_type);
         }
+        if (curve_type && curve_type != curve_type_known) {
+            curve_objects.clear(); // first search, or the type moved: one more walk for the curves
+            each_region([&](std::uintptr_t start, std::size_t size) { collect_typed(start, size, curve_type, curve_objects); });
+        }
+        if (curve_type) f.curve_type = curve_type;
         if (curve_type) {
             bool have;
             {
                 std::lock_guard lock(f.mutex);
                 have = !f.flip.empty();
             }
-            // Curves already scaled no longer look like the shipped ones: keep those.
-            if (!have) {
-                auto curves = find_flip_curves(curve_type);
-                std::lock_guard lock(f.mutex);
-                flip_found = curves.size();
-                f.flip = std::move(curves);
-                f.flip_written = 1;
-                f.dirty = true;
+            // Curves already scaled no longer look like the shipped ones: those are kept while they
+            // still hold what was written. Fresh ones (the game builds new ones with a new skater)
+            // hold the game's own outputs and are brought level.
+            (void)have;
+            auto curves = find_flip_curves(std::move(curve_objects));
+            std::lock_guard lock(f.mutex);
+            std::erase_if(f.flip, [&](const FlipCurve &curve) {
+                float y{};
+                return curve.outputs.empty() || !peek(probe_address(curve), y) ||
+                       std::abs(y - probe_output(curve) * f.flip_written) > 0.001f * std::max(1.0f, std::abs(y));
+            });
+            for (auto &curve : curves) {
+                if (std::ranges::any_of(f.flip, [&](const FlipCurve &known) { return known.points == curve.points; })) continue;
+                if (f.flip_written != 1) {
+                    for (std::size_t i = 0; i < curve.outputs.size(); ++i) (void)put(curve.points + i * curve_point + curve_y, curve.outputs[i] * f.flip_written);
+                }
+                f.flip.push_back(std::move(curve));
             }
+            flip_found = f.flip.size();
+            f.dirty = true;
+        }
+        std::size_t gates_found{};
+        {
+            std::lock_guard lock(f.mutex);
+            // One already known may hold a number of the trainer's own that a search does not look for.
+            for (const auto known : f.gates)
+                if (std::ranges::find(gates, known) == gates.end() && gate_still_there(known)) gates.push_back(known);
+            f.gates = std::move(gates);
+            gates_found = f.gates.size();
         }
         logging::write(logging::Level::info, logging::Channel::skater,
-                       std::format("Trainer: found {} of {} game tuning classes ({} copies) and {} flip trick speed curves in {} MB, {} ms.", classes,
-                                   class_count, copies, flip_found, bytes >> 20, GetTickCount64() - started));
+                       std::format("Trainer: found {} of {} game tuning classes ({} copies, {} native), {} flip trick speed curves, {} flip landing limit and the flip states{} in {} MB, {} ms ({} ms the walk over memory).",
+                                   classes, class_count, copies, native, flip_found, gates_found, flip_states_found() ? "" : " (not found)", bytes >> 20, GetTickCount64() - started,
+                                   scanned - started));
     } catch (...) {}
     f.searches.fetch_add(1, std::memory_order_release);
     f.searching.store(false, std::memory_order_release);
     return 0;
 }
+// The game puts its own numbers back whenever it builds these objects again (a respawn, a
+// teleport, a new session) and may build new ones beside them: what was written once does not
+// stay written. Once a second, every copy that is wanted different from the game's own is
+// checked: one that went back to the game's number is written again, one that holds neither is
+// someone else's memory now and is forgotten.
+bool same(float a, float b) noexcept { return std::abs(a - b) <= 1e-5f * std::max(1.0f, std::abs(b)); }
+// Brings every known copy of the flip gate's number to what is wanted; forgets the ones that are
+// someone else's memory now.
+std::size_t write_gates(Found &f) noexcept {
+    std::erase_if(f.gates, [](std::uintptr_t address) { return !gate_still_there(address); });
+    std::size_t count{};
+    const float want = f.gate_wanted;
+    for (const auto address : f.gates) {
+        float now{};
+        if (peek(address, now) && now != want && put(address, want)) ++count;
+    }
+    return count;
+}
+void write_flip_curve(const FlipCurve &curve, float factor) noexcept {
+    for (std::size_t i = 0; i < curve.outputs.size(); ++i) (void)put(curve.points + i * curve_point + curve_y, curve.outputs[i] * factor);
+}
+} // namespace
+
+bool refresh_classes(std::uint64_t now) noexcept {
+    auto &f = found();
+    static std::uint64_t next{}, next_log{};
+    if (now < next) return false;
+    next = now + 1000;
+    std::unique_lock lock(f.mutex, std::try_to_lock);
+    if (!lock.owns_lock() || !f.ready || f.searching.load(std::memory_order_acquire)) return false;
+    bool lost = false;
+    std::size_t repaired{};
+    repaired += write_gates(f);
+    lost = lost || (f.gate_wanted != gate_stock && f.gates.empty());
+    // On the ground the curves hold the game's own (the flip speed is written in the air only):
+    // one that holds something else is someone else's memory now.
+    if (f.flip_used && f.flip_written == 1) {
+        std::erase_if(f.flip, [&](const FlipCurve &curve) {
+            float y{};
+            return curve.outputs.empty() || !peek(probe_address(curve), y) || !same(y, probe_output(curve));
+        });
+        lost = lost || f.flip.empty();
+    }
+    if (f.flip_written != 1) {
+        std::erase_if(f.flip, [&](const FlipCurve &curve) {
+            float y{};
+            if (curve.outputs.empty() || !peek(probe_address(curve), y)) return true;
+            if (same(y, probe_output(curve) * f.flip_written)) return false;
+            if (!same(y, probe_output(curve))) return true;
+            write_flip_curve(curve, f.flip_written);
+            ++repaired;
+            return false;
+        });
+        lost = lost || f.flip.empty();
+    }
+    for (std::size_t c = 0; c < class_count; ++c) {
+        const auto &spec = class_specs[c];
+        std::size_t probe = spec.count;
+        for (std::size_t i = 0; i < spec.count && probe == spec.count; ++i)
+            if (f.written[spec.first + i] != class_fields[spec.first + i].stock) probe = i;
+        if (probe == spec.count) continue; // the class holds the game's own: nothing to keep
+        std::erase_if(f.copies[c], [&](Copy copy) {
+            float value{};
+            if (!peek(copy.base + field_offset(spec, probe, copy.slots), value)) return true;
+            if (same(value, f.written[spec.first + probe])) return false;
+            if (!same(value, class_fields[spec.first + probe].stock)) return true;
+            for (std::size_t i = 0; i < spec.count; ++i)
+                if (const auto index = spec.first + i; f.written[index] != class_fields[index].stock)
+                    (void)put(copy.base + field_offset(spec, i, copy.slots), f.written[index]);
+            ++repaired;
+            return false;
+        });
+        lost = lost || f.copies[c].empty();
+    }
+    for (std::size_t m = 0; m < mirror_count; ++m) {
+        const auto &fields = f.mirror_fields[m];
+        std::size_t probe = fields.size();
+        for (std::size_t i = 0; i < mirrors[m].slots.size() && probe == fields.size(); ++i)
+            if (fields[i] >= 0 && f.written[fields[i]] != class_fields[fields[i]].stock) probe = i;
+        if (probe == fields.size()) continue;
+        std::erase_if(f.mirror_copies[m], [&](std::uintptr_t base) {
+            float value{};
+            if (!peek(base + probe * 4, value)) return true;
+            if (same(value, f.written[fields[probe]])) return false;
+            if (!same(value, class_fields[fields[probe]].stock)) return true;
+            for (std::size_t i = 0; i < mirrors[m].slots.size(); ++i)
+                if (fields[i] >= 0 && f.written[fields[i]] != class_fields[fields[i]].stock) (void)put(base + i * 4, f.written[fields[i]]);
+            ++repaired;
+            return false;
+        });
+        lost = lost || f.mirror_copies[m].empty();
+    }
+    if ((repaired || lost) && now >= next_log) {
+        next_log = now + 10000;
+        logging::write(logging::Level::info, logging::Channel::skater,
+                       std::format("Trainer: the game put its own numbers back in {} tuning objects: written again{}.", repaired,
+                                   lost ? "; some are gone, looking for the new ones" : ""));
+    }
+    return lost;
+}
+
+namespace {
 } // namespace
 
 void find_classes() noexcept {
     auto &f = found();
     if (f.searching.exchange(true, std::memory_order_acq_rel)) return;
+    f.search_started.store(GetTickCount64(), std::memory_order_release);
     const auto thread = CreateThread(nullptr, 0, search, nullptr, 0, nullptr);
     if (thread) {
         SetThreadPriority(thread, THREAD_PRIORITY_BELOW_NORMAL);
@@ -384,7 +594,35 @@ void find_classes() noexcept {
     }
 }
 bool finding_classes() noexcept { return found().searching.load(std::memory_order_acquire); }
+std::uint64_t class_search_ms() noexcept {
+    auto &f = found();
+    if (!f.searching.load(std::memory_order_acquire)) return 0;
+    return GetTickCount64() - f.search_started.load(std::memory_order_acquire) + 1;
+}
 std::uint64_t class_searches() noexcept { return found().searches.load(std::memory_order_acquire); }
+std::uint64_t class_search_found() noexcept {
+    auto &f = found();
+    std::lock_guard lock(f.mutex);
+    std::uint64_t all{};
+    const auto add = [&](std::uintptr_t address) { all = (all ^ address) * 0x100000001b3ull; };
+    for (const auto &list : f.copies) {
+        std::uint64_t sum{}; // the order within a class is the search's, not the game's
+        for (const auto copy : list) sum += copy.base;
+        add(sum + list.size());
+    }
+    for (const auto &list : f.mirror_copies) {
+        std::uint64_t sum{};
+        for (const auto base : list) sum += base;
+        add(sum + list.size());
+    }
+    std::uint64_t sum{};
+    for (const auto address : f.gates) sum += address;
+    add(sum + f.gates.size());
+    sum = 0;
+    for (const auto &curve : f.flip) sum += curve.points;
+    add(sum + f.flip.size());
+    return all;
+}
 std::size_t class_copies(std::size_t index) noexcept {
     auto &f = found();
     if (index >= class_count) return 0;
@@ -400,10 +638,24 @@ void want_class_value(std::size_t field, float value) noexcept {
         f.dirty = true;
     }
 }
+float class_value_wanted(const char *key, const char *field) noexcept {
+    for (std::size_t c = 0; c < class_count; ++c) {
+        if (_stricmp(class_specs[c].key, key) != 0) continue;
+        for (std::size_t i = 0; i < class_specs[c].count; ++i) {
+            const auto index = class_specs[c].first + i;
+            if (_stricmp(class_fields[index].name, field) != 0) continue;
+            auto &f = found();
+            std::lock_guard lock(f.mutex);
+            const float wanted = f.wanted[index];
+            return wanted == wanted ? wanted : class_fields[index].stock;
+        }
+    }
+    return 0;
+}
 bool classes_wanted() noexcept {
     auto &f = found();
     std::lock_guard lock(f.mutex);
-    if (f.flip_wanted != 1) return true;
+    if (f.flip_wanted != 1 || f.flip_used || f.states_used || f.gate_wanted != gate_stock) return true;
     for (std::size_t i = 0; i < class_field_count; ++i)
         if (f.wanted[i] != class_fields[i].stock) return true;
     return false;
@@ -418,14 +670,11 @@ std::size_t apply_classes() noexcept {
         // A curve whose first output is not what was last written is no longer that curve.
         std::erase_if(f.flip, [&](const FlipCurve &curve) {
             float y{};
-            return curve.outputs.empty() || !peek(curve.points + curve_y, y) || std::abs(y - curve.outputs[0] * f.flip_written) > 0.001f * std::max(1.0f, std::abs(y));
+            return curve.outputs.empty() || !peek(probe_address(curve), y) || std::abs(y - probe_output(curve) * f.flip_written) > 0.001f * std::max(1.0f, std::abs(y));
         });
         for (const auto &curve : f.flip) {
             for (std::size_t i = 0; i < curve.outputs.size(); ++i)
                 if (put(curve.points + i * curve_point + curve_y, curve.outputs[i] * f.flip_wanted)) ++count;
-            // The bounds move with the outputs, or the curve clamps the scaled values back.
-            (void)put(curve.curve + 0x20, curve.low > 0 ? curve.low * f.flip_wanted : curve.low);
-            (void)put(curve.curve + 0x24, curve.high > 0 ? curve.high * f.flip_wanted : curve.high);
         }
         f.flip_written = f.flip_wanted;
     }
@@ -460,12 +709,35 @@ std::size_t apply_classes() noexcept {
 }
 void want_flip_speed(float factor) noexcept {
     auto &f = found();
-    if (!(factor > 0.01f) || !(factor < 100.0f)) return;
+    if (!(factor >= 0.005f) || !(factor <= 1000.0f)) return;
     std::lock_guard lock(f.mutex);
     if (f.flip_wanted != factor) {
         f.flip_wanted = factor;
         f.dirty = true;
     }
+}
+void flip_speed_in_use(bool used) noexcept {
+    auto &f = found();
+    std::lock_guard lock(f.mutex);
+    f.flip_used = used;
+}
+void states_in_use(bool used) noexcept {
+    auto &f = found();
+    std::lock_guard lock(f.mutex);
+    f.states_used = used;
+}
+void want_flip_gate(float seconds) noexcept {
+    auto &f = found();
+    if (!(seconds == seconds)) return;
+    std::lock_guard lock(f.mutex);
+    if (f.gate_wanted == seconds) return;
+    f.gate_wanted = seconds;
+    (void)write_gates(f);
+}
+std::size_t flip_gates() noexcept {
+    auto &f = found();
+    std::lock_guard lock(f.mutex);
+    return f.gates.size();
 }
 std::size_t flip_curves() noexcept {
     auto &f = found();
@@ -500,7 +772,7 @@ std::string classes_summary() {
         result += std::format("{}{}:{}+{}", c ? ", " : "", class_specs[c].key, f.copies[c].size() - static_cast<std::size_t>(slots), slots);
     }
     for (std::size_t m = 0; m < mirror_count; ++m) result += std::format(", native copy {}:{}", m, f.mirror_copies[m].size());
-    result += std::format(", flip trick speed curves:{}", f.flip.size());
+    result += std::format(", flip trick speed curves:{}, flip landing limit:{}{}", f.flip.size(), f.gates.size(), f.gate_wanted == gate_stock ? std::string{} : std::format(" (held at {:.3f} s)", f.gate_wanted));
     return result;
 }
 } // namespace dingosdk::trainer

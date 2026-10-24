@@ -54,6 +54,30 @@ inline constexpr std::uintptr_t referenced_preset = 0x16fe9c0;
 inline constexpr std::size_t preset_parameters = 0x20;
 inline constexpr std::size_t preset_parameter_size = 40;
 inline constexpr std::size_t preset_parameter_key = 0x18;
+// What item:addEsShaderPreset does with the item, the material and the preset, besides keeping the
+// preset with the item (2026-10-21, for items worn on top: layer_materials.h):
+// - the Lua argument as a userdata of a type: (state, argument number, type name) -> its block, which
+//   holds the native AppearanceItem; an AppearanceMaterial argument is the material itself;
+// - an AppearanceItem's material by name (AppearanceItem:addMaterial): (item, 0, has name, name hash,
+//   name, variant 0xff) -> the material, made when the item has none of that name. The name is kept:
+//   it must outlive the item;
+// - then on the material: (material, the preset's name), (material, item), (material, the preset's
+//   Lua reference).
+inline constexpr std::uintptr_t script_userdata = 0x3362860;
+inline constexpr std::array<unsigned char, 16> script_userdata_prefix{
+    0x48,0x89,0x5c,0x24,0x08,0x48,0x89,0x74,0x24,0x10,0x57,0x48,0x83,0xec,0x20,0x49};
+inline constexpr std::uintptr_t item_material = 0x131e5e0;
+inline constexpr std::array<unsigned char, 24> item_material_prefix{
+    0x48,0x89,0x5c,0x24,0x08,0x48,0x89,0x6c,0x24,0x10,0x56,0x57,0x41,0x56,0x48,0x83,
+    0xec,0x50,0x0f,0xb6,0xb4,0x24,0x98,0x00};
+inline constexpr std::uintptr_t material_preset_name = 0x1313150;
+inline constexpr std::array<unsigned char, 16> material_preset_name_prefix{
+    0x48,0x89,0x54,0x24,0x10,0x48,0x83,0xec,0x48,0x48,0x81,0xc1,0x48,0x01,0x00,0x00};
+inline constexpr std::uintptr_t material_item = 0x1330480;
+inline constexpr std::array<unsigned char, 16> material_item_prefix{
+    0x48,0x89,0x54,0x24,0x10,0x55,0x56,0x41,0x54,0x41,0x55,0x41,0x56,0x41,0x57,0x48};
+inline constexpr std::uintptr_t material_preset = 0x1312ce0;
+inline constexpr std::array<unsigned char, 9> material_preset_prefix{0x48,0x83,0xc1,0x08,0xe9,0x97,0x6c,0x01,0x00};
 inline constexpr std::array<unsigned char, 17> referenced_preset_prefix{
     0x48,0x8b,0x09,0x48,0x85,0xc9,0x74,0x07,0x48,0x8b,0x01,0x48,0xff,0x60,0x18,0x33,0xc0};
 }

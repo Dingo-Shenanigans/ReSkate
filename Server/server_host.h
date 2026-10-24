@@ -27,6 +27,7 @@
 #include <array>
 
 namespace dingosdk::server {
+class ServerPlugins;
 using namespace multiplayer;
 
 // The host side of a ReSkate session without a game: admission, the roster,
@@ -75,9 +76,16 @@ class Host {
     void send_player_chat(std::uint64_t steam_id, std::string_view text);
     void broadcast_player_chat(std::string_view text);
     bool teleport_player(std::uint64_t steam_id, float x, float y, float z);
+    bool is_banned(std::uint64_t id) const;
+    // A player's locks (lock_*, server_config.h), and making them exactly `locks` as an admin's
+    // lock and unlock would (logged, and the player told): the tools that changed.
+    std::uint8_t player_locks(std::uint64_t id) const { return locks_of(id); }
+    std::uint8_t set_locks(std::uint64_t id, std::uint8_t locks, const std::string &source);
     std::optional<std::array<float, 3>> player_position(std::uint64_t steam_id) const;
     void drop(std::uint64_t id, const std::string &reason, const std::string &detail = {});
     void change_map(std::string_view map); // a level name, level path or destination
+    // A plugin message from the server's plugins (server_plugins.h) to one player, or everyone (0).
+    void send_plugin_message(std::uint64_t to, const std::vector<std::uint8_t> &bytes);
 
     enum class VoteKind { map, kick, time, custom, poll, extend };
 
@@ -183,7 +191,6 @@ class Host {
         OutfitBudget outfit_budget;
         SoundBudget sound_budget;
         EffectBudget effect_budget;
-        EffectBudget drone_budget; // FPV drone markers (drone_beacon.h): a few a second
         // Their poses read this pass, passed on once all of the pass's messages are read
         // (relay_poses), and how many of their effects packets were passed on in it.
         std::vector<Packet> relay_poses;
@@ -191,7 +198,7 @@ class Host {
         ChatRate chat_rate;
         std::uint64_t typing_notice{}; // last accepted "still typing", so a flood is not relayed
         bool typing{};                 // an "on" was passed along and no "off" since
-        ChatBudget admin_budget, throwdown_budget, party_budget;
+        ChatBudget admin_budget, throwdown_budget, party_budget, plugin_budget;
         SpeedCheck speed;           // how fast their game runs, from their pose timestamps
         bool speeding{};            // flagged: out of linked activities (config speed_check)
         std::uint64_t speed_normal_since{}; // flagged, but measuring normal again since then
@@ -304,6 +311,8 @@ class Host {
     JoinBackoff join_backoff_; // Steam IDs whose attempts to join keep failing
     std::optional<PasswordKey> password_;
     std::uint64_t id_{}, secret_{}, epoch_{}, map_{}, world_ = 1;
+    // Plugins' server copies (server_plugins.h), from start on.
+    std::shared_ptr<ServerPlugins> plugins_;
     std::uint32_t sequence_{};
     VoicePolicy voice_policy_;
     std::uint32_t object_clears_{};
@@ -430,7 +439,6 @@ class Host {
     void send_words(Guest &);          // the server's own filtered chat words (server_words.h)
     void send_next_maps(Guest &);      // the maps the vote for the next one will offer
     void roles_changed();              // after any change to the roles or who has them
-    bool is_banned(std::uint64_t id) const;
     void save();
 
     // `detail` is for the log alone: the player is told `reason`.
@@ -464,6 +472,8 @@ class Host {
     std::string start_poll(Guest *starter, std::string_view text, std::string run = {});
     void cast_vote(Guest &, bool yes);
     void answer_poll(Guest &, std::size_t answer);
+    // Whether a chat command (without its "/") answers the running vote or poll for this player.
+    bool answers_vote(const Guest &, std::string_view line) const;
     std::string end_poll(Guest *by);
     void check_vote(bool expired);
     void cancel_vote(const std::string &why);

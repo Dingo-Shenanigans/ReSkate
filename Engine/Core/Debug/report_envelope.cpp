@@ -52,8 +52,11 @@ void merge_details(const std::filesystem::path& dump, Json& event) {
     try {
         const auto details = Json::parse(text, {max_event_details_bytes, 16, 65536});
         if (!details.is_object()) return;
+        // (level and fingerprint: a stuck load's report is a warning of its own kind, not a crash.)
         for (const auto& [key, value] : details.items())
-            if (key == "breadcrumbs" || key == "contexts" || key == "user" || key == "extra") event[key] = value;
+            if (key == "breadcrumbs" || key == "contexts" || key == "user" || key == "extra" ||
+                (key == "level" && value.is_string()) || (key == "fingerprint" && value.is_array()))
+                event[key] = value;
     } catch (...) {}
 }
 }

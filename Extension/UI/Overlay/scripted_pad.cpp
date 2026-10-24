@@ -1,8 +1,9 @@
 #include "scripted_pad.h"
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <mutex>
-#include <utility>
 
 namespace dingosdk::overlay {
 namespace {
@@ -14,20 +15,12 @@ struct State {
     std::chrono::steady_clock::time_point last_tick, done_at;
     bool active{};
     DWORD packet{};
-    PadReads reads;
+    // A stick held (hold_stick).
+    int stick{};
+    SHORT value{};
+    std::chrono::steady_clock::time_point held_until{};
 };
 State &state() { static auto *value = new State; return *value; }
-// Whether `address` is in Skate.exe's own image, worked out once: a read from the game's code, not an overlay's.
-bool in_game_image(const void *address) noexcept {
-    static const auto image = [] {
-        const auto base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
-        const auto *dos = reinterpret_cast<const IMAGE_DOS_HEADER *>(base);
-        const auto *nt = reinterpret_cast<const IMAGE_NT_HEADERS *>(base + dos->e_lfanew);
-        return std::pair{base, base + nt->OptionalHeader.SizeOfImage};
-    }();
-    const auto at = reinterpret_cast<std::uintptr_t>(address);
-    return at >= image.first && at < image.second;
-}
 constexpr std::chrono::milliseconds linger{2000}, no_ticks{250}, tick_length{17};
 // One game tick of the script. The caller holds s.mutex.
 void advance(State &s, std::chrono::steady_clock::time_point now) {
@@ -54,12 +47,27 @@ void pad_tick() noexcept {
     std::lock_guard lock(s.mutex);
     if (s.active) advance(s, std::chrono::steady_clock::now());
 }
-bool scripted_pad(DWORD user, XINPUT_STATE &output, const void *caller) noexcept {
+void hold_stick(int stick, float value, unsigned milliseconds) noexcept {
+    auto &s = state();
+    std::lock_guard lock(s.mutex);
+    s.stick = stick < 0 || stick > 3 ? 2 : stick;
+    s.value = static_cast<SHORT>(std::lround(std::clamp(value, -1.0f, 1.0f) * 32767.0f));
+    s.held_until = value == 0 ? std::chrono::steady_clock::time_point{}
+                              : std::chrono::steady_clock::now() + std::chrono::milliseconds(milliseconds);
+}
+bool scripted_pad(DWORD user, XINPUT_STATE &output) noexcept {
     auto &s = state();
     if (user != 0) return false;
     std::lock_guard lock(s.mutex);
-    if (!s.active) return false;
     const auto now = std::chrono::steady_clock::now();
+    if (!s.active) {
+        if (now >= s.held_until) return false;
+        output.Gamepad = XINPUT_GAMEPAD{};
+        SHORT* axes[] = {&output.Gamepad.sThumbLX, &output.Gamepad.sThumbLY, &output.Gamepad.sThumbRX, &output.Gamepad.sThumbRY};
+        *axes[s.stick] = s.value;
+        output.dwPacketNumber = ++s.packet;
+        return true;
+    }
     // With no game ticks, time alone moves the script on.
     while (s.current + 1 < s.steps.size() && now - s.last_tick > no_ticks) advance(s, s.last_tick + tick_length);
     const bool done = s.current + 1 == s.steps.size();
@@ -69,13 +77,6 @@ bool scripted_pad(DWORD user, XINPUT_STATE &output, const void *caller) noexcept
     }
     output.Gamepad = done ? XINPUT_GAMEPAD{} : s.steps[s.current].pad;
     output.dwPacketNumber = ++s.packet;
-    ++s.reads.all;
-    if (in_game_image(caller)) ++s.reads.by_game_code;
     return true;
-}
-PadReads pad_reads_answered() noexcept {
-    auto &s = state();
-    std::lock_guard lock(s.mutex);
-    return s.reads;
 }
 } // namespace dingosdk::overlay

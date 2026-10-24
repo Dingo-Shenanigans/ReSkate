@@ -437,7 +437,7 @@ void apply_now() {
         std::lock_guard lock(state_mutex);
         // Set with the manifests, so the client tick sees both in one update.
         if (needed) reload_ready = true;
-        mods::board_break_applied(catalog);
+        mods::variants_applied(catalog);
         pending_levels = mods::level_manifest_paths(catalog);
         applied.emplace();
         for (const auto &mod : catalog.mods) applied->push_back(mod.name);
@@ -506,8 +506,8 @@ ApplyEffect preview(const mods::ModList &list) {
     };
     bool reload{};
     for (const auto &name : before) {
-        // One of a Board Break deck pack's decks stands for the pack (mod_catalog.h).
-        if (const auto pack = mods::board_break_pack_of(name); named(now, pack.empty() ? name : pack)) continue;
+        // A variant stands for the mod that holds it (mod_catalog.h).
+        if (const auto owner = mods::variant_owner(name); named(now, owner.empty() ? name : owner)) continue;
         const auto *entry = entry_of(name);
         // Content ReSkate keeps itself (builtin_packs.h) is in no mod list, and stays.
         if (!entry && (name.starts_with("reskate-builtin-") || mods::kept_by_reskate(list.root, name))) continue;

@@ -517,6 +517,41 @@ int run(const std::filesystem::path &fixtures) {
         run_for(1000000);
         check(said("passed (2 yes, 0 no, 2 needed of 2 votes)") == 1, "A vote nobody could change any more was not decided at once");
     }
+    // Poll answers: the same /2 in two polls back to back is an answer in each (chat turns
+    // repeats away, answers not), twice in one poll it is still one; a chat line said twice is
+    // still turned away. The card shows the question and the result, so chat names neither; the
+    // log has the result.
+    {
+        const auto said = [&](std::string_view text) {
+            return std::count_if(a.chat.begin(), a.chat.end(), [&](const std::string &line) { return line.find(text) != std::string::npos; });
+        };
+        const auto logged = [&](std::string_view text) {
+            return std::count_if(log.begin(), log.end(), [&](const std::string &line) { return line.find(text) != std::string::npos; });
+        };
+        auto &c = games.at(76561198000000003ULL);
+        command("poll First? | yes | no");
+        a.say("/2", now);
+        c.say("/2", now);
+        run_for(1000000);
+        a.say("/2", now);
+        run_for(1000000);
+        check(said("You already answered no.") == 1, "A second answer in the same poll was not answered as one");
+        command("poll end");
+        run_for(1000000);
+        check(logged("Poll \"First?\" ended: yes 0, no 2 (no wins).") == 1, "A poll counted an answer given twice twice");
+        check(!said("First?"), "A poll's question or result was repeated in chat");
+        command("poll Second? | yes | no");
+        a.say("/2", now);
+        run_for(1000000);
+        command("poll end");
+        run_for(1000000);
+        check(logged("Poll \"Second?\" ended: yes 0, no 1 (no wins).") == 1, "The same answer in the next poll was turned away");
+        c.say("hello again", now);
+        run_for(1000000);
+        c.say("hello again", now);
+        run_for(1000000);
+        check(said("hello again") == 1, "The same chat line twice in a row was not turned away");
+    }
     // The rotation: the minutes left are announced, the vote's maps are drawn a minute ahead,
     // and the vote decides: staying adds time, a map changes to it.
     {

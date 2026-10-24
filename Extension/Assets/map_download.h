@@ -42,6 +42,7 @@ struct View {
     bool installed{};           // asking: the mod is here but switched off, so nothing is downloaded
     std::string have;           // the version installed here, when the host's is another and replaces it
     bool choice{true};          // asking: the answer a controller has picked (true: download)
+    std::uint64_t bytes{};               // asking: the zip's Content-Length; 0 when the server did not say
     std::uint64_t received{}, total{};   // downloading; total 0 when the size is not known
     std::uint32_t yes_bind{}, no_bind{}; // the vote binds, which answer the card
 };

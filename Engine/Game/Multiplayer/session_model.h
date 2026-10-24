@@ -179,6 +179,8 @@ struct MultiplayerModel {
     bool object_scaling{true};
     // Host setting: whether guests may use noclip / No Bail (the host and server admins always may).
     bool guest_noclip{true}, guest_no_bail{true}, guest_boosts{true};
+    // Whether this player may ollie: false only while a dedicated server locks it for them.
+    bool guest_ollies{true};
     // Host setting: guests skate with the host's physics tuning (on a dedicated server: the
     // game's own). Guest: what that does here, while enforced.
     bool enforce_tuning{true};

@@ -3,8 +3,10 @@
 #include <winhttp.h>
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <fstream>
 #include <iterator>
 #include <mutex>
@@ -187,6 +189,74 @@ Download get(std::wstring_view url, const std::filesystem::path& destination,
     output.complete = true;
     result.ok = true;
     return result;
+}
+
+std::optional<std::uint64_t> content_length(std::wstring_view url, std::uint32_t timeout_seconds,
+    const wchar_t* agent, Watch* watch) {
+    const auto started = now_us();
+    const auto timeout_deadline = started + std::uint64_t{timeout_seconds} * 1000000;
+    const auto stop = [&]() -> DWORD {
+        if (watch && watch->cancel.load()) return ERROR_CANCELLED;
+        const auto external = watch ? watch->deadline_us.load() : 0;
+        const auto deadline = external && external < timeout_deadline ? external : timeout_deadline;
+        return now_us() >= deadline ? ERROR_TIMEOUT : ERROR_SUCCESS;
+    };
+    if (stop() || url.empty() || url.size() >= 4096 || url.find_first_of(L"\r\n\t #") != std::wstring_view::npos)
+        return std::nullopt;
+    const std::wstring address(url);
+    URL_COMPONENTS parts{}; parts.dwStructSize = sizeof(parts);
+    parts.dwHostNameLength = parts.dwUrlPathLength = parts.dwExtraInfoLength =
+        parts.dwUserNameLength = parts.dwPasswordLength = static_cast<DWORD>(-1);
+    if (!WinHttpCrackUrl(address.c_str(), static_cast<DWORD>(address.size()), 0, &parts) ||
+        parts.nScheme != INTERNET_SCHEME_HTTPS || !parts.dwHostNameLength || parts.dwUserNameLength || parts.dwPasswordLength)
+        return std::nullopt;
+    const std::wstring host(parts.lpszHostName, parts.dwHostNameLength);
+    std::wstring resource = parts.dwUrlPathLength ? std::wstring(parts.lpszUrlPath, parts.dwUrlPathLength) : L"/";
+    if (parts.dwExtraInfoLength) resource.append(parts.lpszExtraInfo, parts.dwExtraInfoLength);
+    Internet session{WinHttpOpen(agent, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, nullptr, nullptr, WINHTTP_FLAG_ASYNC)};
+    if (!session.value || !WinHttpSetTimeouts(session.value, 5000, 5000, 10000, 10000)) return std::nullopt;
+    Internet connection{WinHttpConnect(session.value, host.c_str(), parts.nPort, 0)};
+    if (!connection.value) return std::nullopt;
+    Internet request{WinHttpOpenRequest(connection.value, L"HEAD", resource.c_str(), nullptr, nullptr,
+                                      WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE)};
+    if (!request.value) return std::nullopt;
+    AsyncRequest async;
+    DWORD redirect = WINHTTP_OPTION_REDIRECT_POLICY_DISALLOW_HTTPS_TO_HTTP;
+    DWORD logon = WINHTTP_AUTOLOGON_SECURITY_LEVEL_HIGH;
+    if (!WinHttpSetOption(request.value, WINHTTP_OPTION_REDIRECT_POLICY, &redirect, sizeof(redirect)) ||
+        !WinHttpSetOption(request.value, WINHTTP_OPTION_AUTOLOGON_POLICY, &logon, sizeof(logon)))
+        return std::nullopt;
+    DWORD_PTR context = reinterpret_cast<DWORD_PTR>(&async);
+    if (!WinHttpSetOption(request.value, WINHTTP_OPTION_CONTEXT_VALUE, &context, sizeof(context))) return std::nullopt;
+    if (WinHttpSetStatusCallback(request.value, AsyncRequest::callback,
+            WINHTTP_CALLBACK_FLAG_SENDREQUEST_COMPLETE | WINHTTP_CALLBACK_FLAG_HEADERS_AVAILABLE |
+            WINHTTP_CALLBACK_FLAG_REQUEST_ERROR | WINHTTP_CALLBACK_FLAG_HANDLES, 0) == WINHTTP_INVALID_STATUS_CALLBACK)
+        return std::nullopt;
+    async.value = std::exchange(request.value, nullptr);
+    const auto finish = [&](BOOL accepted) -> DWORD {
+        if (!accepted && GetLastError() != ERROR_IO_PENDING) return GetLastError();
+        return async.wait(stop);
+    };
+    if (stop()) return std::nullopt;
+    async.prepare(WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE);
+    if (finish(WinHttpSendRequest(async.value, nullptr, 0, nullptr, 0, 0, context))) return std::nullopt;
+    async.prepare(WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE);
+    if (stop() || finish(WinHttpReceiveResponse(async.value, nullptr))) return std::nullopt;
+    DWORD status{}, size = sizeof(status);
+    if (!WinHttpQueryHeaders(async.value, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                            nullptr, &status, &size, nullptr) || status != 200)
+        return std::nullopt;
+    // As text: a number query is 32 bits, and a map can be larger than that.
+    wchar_t digits[32]{};
+    size = sizeof(digits);
+    if (!WinHttpQueryHeaders(async.value, WINHTTP_QUERY_CONTENT_LENGTH, WINHTTP_HEADER_NAME_BY_INDEX,
+                            digits, &size, WINHTTP_NO_HEADER_INDEX) || !digits[0])
+        return std::nullopt;
+    wchar_t* end{};
+    errno = 0;
+    const auto length = std::wcstoull(digits, &end, 10);
+    if (end == digits || *end || errno == ERANGE || !length) return std::nullopt;
+    return length;
 }
 
 std::optional<std::string> get_text(std::wstring_view url, std::uint64_t max_bytes,

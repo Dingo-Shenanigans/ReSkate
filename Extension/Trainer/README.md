@@ -1,27 +1,99 @@
 # ReSkate Trainer
 
-A TRAINER page in the ReSkate menu (Insert): live physics tuning, presets, practice markers and a
+The SANDBOX page in the ReSkate menu (Insert): live physics tuning, tricklining, Skate 3 presets, practice markers and a
 telemetry HUD. It ships no game data: the list of values is built at run time from the player's own
 `Gameplay/SkatePhysicsTuning`.
 
 ## What it does
 
+**Flip trick speed, for all tricks or one by one.** "Flip trick speed" (TUNE > POP AND TRICKS) makes every flip trick turn slower or faster without changing your pop; "Advanced trick speed" under it gives each of 16 tricks a speed of its own. Below 1 a flip is slow from the start and is not hurried round before you land. **Give it about 15 seconds after every level load**: the trainer has to find the game's flip animations again before the speeds take hold, and the card says so while it looks.
+
+**Pump power.** "Pump power" (TUNE > PUMPING) sizes what pumping a transition gives: 1 is the game's own, 2 is about one more of the game's pumps on top of each of yours, 10 and up is a rocket, under 1 takes speed away. The game still decides when you are pumping. Like the flip speed it needs about 15 seconds after a level load.
+
 | Tab | What you get |
 |---|---|
-| **TUNE** | Three lists: REALISTIC, FUN and EVERYTHING. Each opens on the dials: every built-in preset as one slider (Ollie height, Push speed, Body flip and spin speed, Bail resistance, Grind lock-on and friction, on-foot jump and sprint, glide, torpedo), where 1 is the game's own and the preset's button jumps to the preset; then the switches (Realistic and Hardcore, Auto Push, No Speed Wobble, Smooth Surfaces, Long Wheelbase, Never bail), the trick sliders (flip trick speed, no comply, boneless, hippy and off-board jump height) and the values themselves: a short plainly named list, or under EVERYTHING the whole table (the physics tuning's values, one multiplier per curve and graph, and the 314 values of the game's other tuning classes) with search, groups, "only what I changed", locks, your own saved presets and a preset a map applies every time it loads. Changes apply while you skate. Values the game was never found or seen reading are hidden unless you ask for them. **Reset everything**, above the tabs, puts the game back as it shipped. |
+| **TUNE** | One page of sections, each folding open and shut: PRESETS AND QUICK SETTINGS (every kind of preset in one card: Skate 3 on one of its difficulties, the grind and transition feels, the built-in styles, your own; and under it a list of everything that is changed right now, to change in place, hide, or jump to where it lives), POP AND TRICKS (gravity, ollie and trick heights, flip trick speed for all tricks or one by one, body flips and spins), SPEED AND PUSHING, BAILS AND LANDINGS, GRINDS (feel like skate. or Skate 3, exits and transfers, pops off a grind), TRICKLINING (the board bending boost with its rules, revert friction, Dark Pop, manuals), TRANSITION (coping grinds, coming back in, handplants, lip tricks, vert airs), PUMPING (pump power and the game's own pump settings), ON FOOT, and EVERY VALUE (the whole tuning table). A section that holds a change says so on its bar and has a reset of its own. One search box looks through all of it. |
 | **PRACTICE** | Game speed and pause, five marker slots per map (save / go / clear), return to the marker after a bail, teleport to coordinates or to the waypoint you placed on the pause map (onto the surface there), copy your position (game or Blender axes). |
 | **MAP & HUD** | Speed and air-time HUD, a read-out after every jump (takeoff speed and angle, height, distance, drop, landing speed, spin and flip), telemetry recording to CSV, and whatever the map's author ships for the trainer. |
+
+ReSkate's Noclip, No Bail and boosts are on SKATER > CHEATS, with Revert Boost (Sivaes); Hall of Meat, Road Rash, Board Break and the
+grind exits are on ADDONS.
 
 The HUD, the jump read-out and the controller shortcuts are off until you switch them on (MAP & HUD,
 PRACTICE): a player who never opens the trainer sees and feels nothing of it.
 
-Controller, once switched on: hold **LB + RB**, then D-pad **up** saves the marker, **down** goes to it,
-**left / right** pick the slot.
+Open the menu with **Insert**, as in ReSkate (the trainer's own controller combo, LB + RB + click the right stick, is gone:
+it is also how you bail). With the menu open the controller works in it. With the marker shortcuts switched on: hold **LB + RB**, then D-pad **up** saves the marker,
+**down** goes to it, **left / right** pick the slot.
 
-Everything is also a console command (`~`): `trainer open [tune|practice|map|realistic|fun|everything]`, `trainer status`, `trainer set <id> <value>`,
-`trainer find <words>`, `trainer preset apply|remove <name>`, `trainer dial <multiplier> <preset name>`,
-`trainer reset <id>|all|tricks|presets|everything`, `trainer marker save|go|clear [slot]`,
+Everything is also a console command (`~`): `trainer open [tune|practice|map|movement|presets|game|pop|speed|bails|grinds|tricklining|transition|pumping|foot|everything]`, `trainer status`, `trainer set <id> <value>`,
+`trainer find <words>`, `trainer preset apply|remove|export <name>`, `trainer preset import`, `trainer dial <multiplier> <preset name>`,
+`trainer reset <id>|all|tricks|presets|everything|section <name>`, `trainer marker save|go|clear [slot]`,
 `trainer tp <x> <y> <z>`, `trainer waypoint [info]`, `trainer ground <x> <z>`, `trainer where`, `trainer jumps`, `trainer dump`, `trainer selftest`.
+
+## Quick settings
+
+The first section of TUNE is **PRESETS AND QUICK SETTINGS**.
+
+- **PRESETS** is every kind of preset in one card: the whole game (skate. or Skate 3 on one of its difficulties), the grind feel,
+  the transition feel, Skate 3's tricklining extras, the built-in styles and your own saved presets. Blue is on; press again to
+  take it off.
+- **QUICK SETTINGS** lists everything that is changed right now, whatever section it lives in, grouped by section. Change a row
+  right there. Pick a preset and the list fills with everything it sets.
+- **Hide** takes a row off the list without changing it (it comes back by itself the next time it changes from the game's own,
+  or with "Show hidden"). **Go to** opens the section the row lives in and scrolls to it, with the related settings around it.
+  **Reset** puts that one row back to the game's own. The card's title folds the whole list away.
+
+## Wallies and moves on foot
+
+The game has switches of its own that it ships turned off. The trainer can turn them on (`trainer foot`, and rows in the menu for the measured ones):
+
+- **Wallie: Wallies** (TUNE > POP AND TRICKS). Ride at a kerb, ledge or wall and pop just before it; the board climbs it. The rows beside it
+  are the numbers of the game's wallie script: how early the pop may come, the lowest obstacle it looks at, the extra pop, the forward
+  push as it climbs, the fastest speed it works at.
+- **On foot: Double and triple jump** (TUNE > ON FOOT). Press jump again right as you land: 0.8 m, then 1.4 m, then 3.1 m.
+- **Flips and spins on foot**: jump, hold LT or RT and push the left stick (forward or back flips, sideways spins). Roll: LT and the stick on the ground.
+- **On foot: Jump on release**: the jump goes when you let go of the button. **On foot: Wipeout bounce**: a slam bounces and slides on.
+- **Sprint speed** has no 10 m/s limit any more: the game's cut rises with the speed you set.
+
+## Gravity
+
+**Gravity** (TUNE > POP AND TRICKS) is gravity in the air, on the board and on foot, as a multiple of the game's own. Measured
+with a scripted ollie: x 0.5 falls at 5.5 m/s2 and the same pop goes 0.70 m for 1.05 s (the game's: 0.36 m, 0.58 s); x 1.5 falls
+at 15.8 m/s2. It acts in the air only: rolling downhill, grinds and a bailed skater keep the game's own. The game aims an air off
+a ramp back at the ramp with its own gravity, so with another gravity a vert air can come down somewhere else.
+
+## Stock, presets and your game's own settings
+
+Above the tabs: **RESET EVERYTHING**, a badge, and your presets.
+
+- The badge reads **STOCK** when nothing at all is changing how the game plays, and otherwise says what is: "MODIFIED: 14 values,
+  grind settings, No Bail". Counted: every changed tuning value, the trick, grind, transition, pumping and bending settings, No
+  Bail, Noclip, Dark Pop and the game speed. Not counted: Hall of Meat, the HUD, a locked value that is still the game's own.
+- **RESET EVERYTHING** puts all of that back, clears every lock and stops loading a preset on this map. Your saved presets stay.
+- **Presets**: set the game up, type a name, Save. A preset holds every changed value and every setting of the trainer's own; Load
+  sets them on top of what is set now (press RESET EVERYTHING first for exactly the preset), Turn off puts them back to the game's
+  own. Manage: share a preset as one line of text (`RST1:...`), import one, delete one, or load one by itself whenever this map
+  loads. Not in a preset: locks, No Bail, Noclip, Dark Pop, the game speed.
+- **Rows marked GAME SETTING are your game's own settings** (Pump assist, Pump strength, Forward to push): the same values the
+  game's Settings menu shows. Changing one here changes it there and the other way round. They are yours, not the trainer's: no
+  preset carries them, no reset touches them, and they never count as MODIFIED.
+- **Rows that read "your game setting: on / off"** (the grind and transition settings) are also settings of your own game, but the
+  trainer never changes them: ticking one *holds* it on or off for as long as the trainer says so ("held on", with yours shown
+  beside it). Your own value is not written anywhere, the game's Settings screen keeps showing yours, and it is back the moment
+  you press "Game's own", pick the skate. feel, press RESET EVERYTHING, join a host's enforced session, or quit.
+
+## Presets to pass around
+
+Two starting points between the game's own feel and Realistic. Copy a whole line (from `RST1:` to the end), then press
+**Manage > Import from clipboard**; it is added to your presets and nothing changes until you load it. They are first guesses to
+tune from, not measured targets.
+
+MiddleGround
+RST1:eyJuYW1lIjoiTWlkZGxlR3JvdW5kIiwicmVza2F0ZV90cmFpbmVyIjoxLCJ2YWx1ZXMiOnsicGh5c2ljc2FpcnN0YXRlcy5tYXhzcGluc3BlZWQiOjUyMC4wLCJwaHlzaWNzYm9keXNwaW4ubWF4ZGVsdGF2c3RpbWUgeCI6MC44NjY2NjY2NjY2NjY2NjY3LCJwaHlzaWNzYm9keXNwaW4ubWF4ZGVsdGF2c3RpbWVlYXN5IHgiOjAuODY2NjY2NjY2NjY2NjY2NywicGh5c2ljc2JvZHlzcGluLnBic3ZzdF9lYXN5IHgiOjAuODY2NjY2NjY2NjY2NjY2NywicGh5c2ljc2JvZHlzcGluLnByb3Bib2R5c3BpbnZzdGltZSB4IjowLjg2NjY2NjY2NjY2NjY2NjcsInBoeXNpY3NqdW1wLm1heGhlaWdodHZzc3BlZWQgeCI6MC44ODI1Mzk2NTU4MjA0NjMzLCJwaHlzaWNzanVtcC5taW5oZWlnaHR2c3NwZWVkIHgiOjAuOTAzNzAzNjg3NzQzNzIyMiwicGh5c2ljc21vZGUuanVtcG1heGhlaWdodCI6MS4zOSwicGh5c2ljc21vZGUuanVtcG1pbmhlaWdodCI6MS4yMiwicGh5c2ljc21vZGUubWF4YXV0b2JvZHlzcGluc3BlZWQiOjcuMCwicGh5c2ljc3JlY2tvbmluZy5mbGlwc2NhbGFyIjowLjksInRyaWNrLmZsaXBfc3BlZWQiOjAuODUwMDAwMDIzODQxODU3OX19
+
+SimLite
+RST1:eyJuYW1lIjoiU2ltTGl0ZSIsInJlc2thdGVfdHJhaW5lciI6MSwidmFsdWVzIjp7InBoeXNpY3NhaXJzdGF0ZXMubWF4c3BpbnNwZWVkIjo0ODAuMCwicGh5c2ljc2JvZHlzcGluLm1heGRlbHRhdnN0aW1lIHgiOjAuOCwicGh5c2ljc2JvZHlzcGluLm1heGRlbHRhdnN0aW1lZWFzeSB4IjowLjgsInBoeXNpY3Nib2R5c3Bpbi5wYnN2c3RfZWFzeSB4IjowLjgsInBoeXNpY3Nib2R5c3Bpbi5wcm9wYm9keXNwaW52c3RpbWUgeCI6MC44LCJwaHlzaWNzanVtcC5tYXhoZWlnaHR2c3NwZWVkIHgiOjAuNzk5OTk5OTc1Nzc5NzAwNiwicGh5c2ljc2p1bXAubWluaGVpZ2h0dnNzcGVlZCB4IjowLjg1MTg1MTgzNjgwNzYwNywicGh5c2ljc21vZGUuanVtcG1heGhlaWdodCI6MS4yNiwicGh5c2ljc21vZGUuanVtcG1pbmhlaWdodCI6MS4xNSwicGh5c2ljc21vZGUubWF4YXV0b2JvZHlzcGluc3BlZWQiOjYuNCwicGh5c2ljc21vZGUuc3BlZWR3b2JibGVzdGFydHNwZWVkIjoxMS4wLCJwaHlzaWNzcmVja29uaW5nLmZsaXBzY2FsYXIiOjAuOCwidHJpY2suZmxpcF9zcGVlZCI6MC43NX19
 
 ## For map makers: `trainer.json`
 
@@ -116,7 +188,7 @@ the same option builds the `trainer_session_extras`, `trainer_landing` and `trai
   out as the class lays them out (`trainer_classes.cpp`; the table in `trainer_classes.inc` is
   generated from the game's own data). The search reads all of the game's writable memory, so it
   only runs for a player with a use for it: one of those values or the flip speed is not the
-  game's own (theirs, or a host's they skate with), or the EVERYTHING list is open. Then it runs
+  game's own (theirs, or a host's they skate with), or the EVERY VALUE section is open. Then it runs
   on its own thread a few seconds after a level loads, and at most three times per level;
   `trainer classes` says what it found. Native code keeps its own copy of the push speeds, found
   and written the same way.

@@ -78,6 +78,9 @@ DWORD test_get_temp_path(DWORD capacity, LPWSTR output) {
 #undef now_us
 
 namespace dingosdk::https {
+std::optional<std::uint64_t> content_length(std::wstring_view, std::uint32_t, const wchar_t*, Watch*) {
+    return std::nullopt;
+}
 std::optional<std::string> get_text(std::wstring_view, std::uint64_t, std::uint32_t,
     const wchar_t*, Download* result, Watch* watch) {
     fixture::require(watch && watch->deadline_us.load() == map_download::deadline.load(),

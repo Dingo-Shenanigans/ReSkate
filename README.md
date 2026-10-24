@@ -15,17 +15,16 @@ the launcher, the runtime that loads into the game, and the dedicated server.
   - Join dedicated servers from the in-game server browser.
   - Proximity voice chat, and text chat with emotes and an optional bad-word filter.
   - Parties in lobbies and on dedicated servers: invite, join, leave, promote.
-  - Throwdowns with other players (Jam, Spot Battle and S.K.A.T.E.), and co-op challenges.
+  - Throwdowns with other players (Jam, Spot Battle and S.K.A.T.E.), and co-op challenges. Plugins add
+    throwdown modes of their own to the Throwdowns page ([contrib/throwdown-kit.md](contrib/throwdown-kit.md)).
 - **In-game menu and console.**
   - Map and fast travel.
   - World: time of day, population, district levels, rotating parks.
   - The **Park Editor**: place, move and save objects with freecam, snapping and undo. Save a selection as a
     set and place it again anywhere, on any map.
   - Skater options: first person, movement, boosts, noclip.
-  - **Hall of Meat** (off by default): bail and see the bones you hurt, with a skate. 3 style Meat card.
-  - **Grind exit triggers** (off by default): press LT or RT while grinding to pick the side you pop
-    out to (toe / heel, or left / right), whatever trick and spin you do
-    ([how it works](Extension/Skater/GRIND_EXITS.md)).
+  - Hall of Meat, grind exit triggers, Board Break, Road Rash and the FPV drone are plugin mods now
+    ([contrib/plugins](contrib/plugins)). Board Break and Road Rash ship inside their asset mods.
   - Progression, controls, graphics and multiplayer settings.
 - **Mods.**
   - Drop a mod in `Mods/` and it is merged into the game at launch. Mods can add custom maps, loading
@@ -249,7 +248,7 @@ Useful launcher flags:
 | `--log-trace` | the same as `--log-level=trace`; an explicit `--log-level` wins |
 | `-wconsole` | also show the log live in a console window while the game runs |
 | `--menu-key=0x2D`, `--console-key=0xC0` | menu and console keys (virtual-key codes) |
-| `-map <name>` | load that map as soon as the game is up, e.g. `-map "San Vansterdam"`; the name is a map's name, short name or asset path, or the start of one |
+| `-map <name>` | load that map as soon as the game is up, e.g. `-map "San Vansterdam"`; the name is a map's name, short name or asset path, or the start of one. Over the start map chosen in Settings > GAME |
 | `--no-loose-files` | ignore loose Lua and config files beside the game |
 | `--gpu-diagnostics` | record extra detail when the graphics driver crashes (DRED) |
 

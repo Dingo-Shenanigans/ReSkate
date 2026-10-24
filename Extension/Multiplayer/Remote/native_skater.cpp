@@ -1,10 +1,10 @@
 #include "native_skater_internal.h"
-#include "native_prop.h"
 #include "native_pose_layout.h"
 #include "puppet_cost.h"
+#include "Extension/World/world_entities.h"
 #include "Extension/Multiplayer/Session/monotonic_clock.h"
 #include "Extension/Multiplayer/Session/peer_slots.h"
-#include "Extension/BoardBreak/board_break.h"
+#include "Extension/Skater/board_pose.h"
 #include "Engine/Core/Hooks/hooks.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Game/Build/20260929/engine.h"
@@ -337,6 +337,9 @@ void observe_destruction(std::uintptr_t entity) {
 bool render_pose_hook(std::uintptr_t animation_interface, std::uintptr_t render_data) {
     // Animation Studio's board, before the pose is handed on: what the renderer takes is ours.
     const bool result = shared().original_render_pose(animation_interface, render_data);
+    // A pose override's board (skater_animation.cpp), with the renderer's own pointer to the pose.
+    if (const auto listener = shared().override_board_listener.load(std::memory_order_acquire); result && listener)
+        listener(animation_interface, render_data);
     // Animation Studio's board, with the renderer's own pointer to the pose (render_data +0x10).
     if (const auto listener = shared().studio_board_listener.load(std::memory_order_acquire); result && listener)
         listener(animation_interface, render_data);
@@ -350,11 +353,15 @@ bool render_pose_hook(std::uintptr_t animation_interface, std::uintptr_t render_
         const PeerScope scope(slot);
         apply_render_pose(animation_interface, render_data);
     }
+    // A pose override of the local skater, after everything that ran since its animation update.
+    if (const auto listener = shared().override_render_listener.load(std::memory_order_acquire); result && listener)
+        listener(animation_interface);
     // Animation Studio's pose of the local skater, after everything that ran since its animation update.
     if (const auto listener = shared().studio_render_listener.load(std::memory_order_acquire); result && listener)
         listener(animation_interface);
-    // Last, so that what it does to a board's pose (another player's included) is what is drawn.
-    if (result) board_break::on_render_pose(animation_interface);
+    // Last, so that what it does to a board's pose (another player's included) is what is drawn:
+    // the breakable deck's parts, and plugins' board (reskate.board).
+    if (result) board_pose::on_render_pose(animation_interface);
     return result;
 }
 void animation_hook(std::uintptr_t component, std::uintptr_t update) {
@@ -389,13 +396,13 @@ void animation_hook(std::uintptr_t component, std::uintptr_t update) {
     shared().original_animation(component, update);
     if (const auto listener = shared().evaluated_listener.load(std::memory_order_acquire))
         listener(component);
+    if (const auto listener = shared().override_listener.load(std::memory_order_acquire))
+        listener(component);
     if (const auto listener = shared().studio_listener.load(std::memory_order_acquire))
         listener(component);
 }
 void destroy_hook(std::uintptr_t entity, std::uintptr_t owner) {
-    // Other SDK-created actors share this hook; they must forget the entity
-    // before the engine frees it.
-    prop_entity_destroyed(entity);
+    world_entities::entity_destroyed(entity);
     if (const auto listener = shared().destroyed_listener.load(std::memory_order_acquire))
         listener(entity);
     // The first slot watching it as either skater or board.
@@ -535,6 +542,8 @@ NativeFrame capture_local(std::uintptr_t base, std::uintptr_t client, bool captu
                     frame.pose.skater[hidden.joint].scale = hidden.scale;
                 if (const auto filter = shared().pose_filter.load(std::memory_order_acquire))
                     filter(component, frame.pose.skater);
+                if (const auto filter = shared().studio_pose_filter.load(std::memory_order_acquire))
+                    filter(component, frame.pose.skater);
                 frame.detail =
                     frame.pose.skater.empty() ? "Waiting for skater animation buffers." : "Local pose ready.";
             } catch (const std::exception &e) {
@@ -619,6 +628,9 @@ void set_animation_evaluated_listener(AnimationEvaluated listener) noexcept {
 void set_local_pose_filter(LocalPoseFilter filter) noexcept {
     shared().pose_filter.store(filter, std::memory_order_release);
 }
+void set_animation_studio_pose_filter(LocalPoseFilter filter) noexcept {
+    shared().studio_pose_filter.store(filter, std::memory_order_release);
+}
 void set_local_board_filter(LocalBoardFilter filter) noexcept {
     shared().board_filter.store(filter, std::memory_order_release);
 }
@@ -630,5 +642,14 @@ void set_animation_studio_board_listener(StudioBoardPublished listener) noexcept
 }
 void set_animation_studio_render_listener(RenderPosePublished listener) noexcept {
     shared().studio_render_listener.store(listener, std::memory_order_release);
+}
+void set_pose_override_listener(AnimationEvaluated listener) noexcept {
+    shared().override_listener.store(listener, std::memory_order_release);
+}
+void set_pose_override_render_listener(RenderPosePublished listener) noexcept {
+    shared().override_render_listener.store(listener, std::memory_order_release);
+}
+void set_pose_override_board_listener(BoardPosePublished listener) noexcept {
+    shared().override_board_listener.store(listener, std::memory_order_release);
 }
 } // namespace dingosdk::multiplayer

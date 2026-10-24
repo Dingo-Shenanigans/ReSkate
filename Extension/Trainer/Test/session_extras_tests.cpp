@@ -19,6 +19,7 @@ void check(bool condition, const std::string &message) {
 }
 // The encoding's layout, for the cases that break it: version, table, six numbers, count, rows.
 constexpr std::size_t table_at = 1, numbers_at = 5, count_at = 29, rows_at = 31;
+constexpr std::size_t header_at_split = 33; // version 2: Underflip speed at 29, then the under part byte
 template <class T> void poke(std::vector<std::uint8_t> &bytes, std::size_t at, T value) { std::memcpy(bytes.data() + at, &value, sizeof(T)); }
 std::pair<std::uint16_t, float> row(std::size_t index, float value) { return {static_cast<std::uint16_t>(index), value}; }
 }
@@ -63,6 +64,29 @@ int main() {
     const auto only = decode_session_extras(encode_session_extras(heights));
     check(only && *only == heights && encode_session_extras(heights).size() == rows_at, "multipliers alone travel without rows");
 
+    // Underflip speed: version 2 only when it is not 1, so an older guest still reads a host who leaves it alone.
+    check(bytes[0] == 1, "a host with the game's own underflip speed writes version 1");
+    SessionExtras underflip = host;
+    underflip.underflip_speed = 0.25f;
+    const auto underflip_bytes = encode_session_extras(underflip);
+    check(underflip_bytes[0] == 2 && underflip_bytes.size() == bytes.size() + 5, "a changed underflip speed writes version 2, 5 bytes longer");
+    const auto underflip_guest = decode_session_extras(underflip_bytes);
+    check(underflip_guest && *underflip_guest == underflip, "a guest reads the host's underflip speed");
+    SessionExtras split = host;
+    split.underflip_split = true;
+    const auto split_bytes = encode_session_extras(split);
+    const auto split_guest = decode_session_extras(split_bytes);
+    check(split_bytes[0] == 2 && split_guest && *split_guest == split, "the under part only setting alone travels too (version 2)");
+    {
+        auto odd = split_bytes;
+        odd[header_at_split] = 2;
+        check(!decode_session_extras(odd), "an under part byte that is not 0 or 1 is refused");
+    }
+    SessionExtras underflip_only;
+    underflip_only.underflip_speed = 3.0f;
+    check(!underflip_only.stock() && !encode_session_extras(underflip_only).empty(), "an underflip speed alone is not the game's own");
+    check(!decode_session_extras(std::vector<std::uint8_t>(underflip_bytes.begin(), underflip_bytes.end() - 1)), "a version 2 encoding cut short is refused");
+
     // Not an encoding.
     const auto refused = [&](std::vector<std::uint8_t> broken) { return !decode_session_extras(broken); };
     check(refused({1}), "a lone byte is refused");
@@ -95,7 +119,7 @@ int main() {
     // Values no trainer holds are brought into range rather than handed to the game.
     {
         auto wild = bytes;
-        poke<float>(wild, numbers_at, 50.0f);          // flip speed
+        poke<float>(wild, numbers_at, 5000.0f);        // flip speed (past flip_high)
         poke<float>(wild, numbers_at + 4, 1.0e9f);     // hippy jump height
         poke<float>(wild, numbers_at + 8, -3.0f);      // no comply height
         poke<float>(wild, numbers_at + 20, 5000.0f);   // auto push speed

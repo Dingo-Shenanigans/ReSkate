@@ -422,9 +422,6 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
         throw std::invalid_argument("Invalid voice packet");
     if (p.kind == PacketKind::effects && (!p.map || !p.source || !valid_impacts(p.impacts)))
         throw std::invalid_argument("Invalid effects packet");
-    if (p.kind == PacketKind::drone && (!p.map || !p.source || !valid_drone_position(p.drone_position) ||
-                                         !valid_drone_rotation(p.drone_rotation)))
-        throw std::invalid_argument("Invalid drone packet");
     if (p.kind == PacketKind::chat && (!p.source || !valid_chat_text(p.text)))
         throw std::invalid_argument("Invalid chat message");
     if (p.kind == PacketKind::typing && !p.source)
@@ -500,8 +497,7 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
         p.kind != PacketKind::throwdown && p.kind != PacketKind::teleport && p.kind != PacketKind::physics_tuning &&
         p.kind != PacketKind::party && p.kind != PacketKind::scoring && p.kind != PacketKind::physics_extras &&
         p.kind != PacketKind::effects && p.kind != PacketKind::permissions && p.kind != PacketKind::words &&
-        p.kind != PacketKind::next_maps && p.kind != PacketKind::typing &&
-        p.kind != PacketKind::drone)
+        p.kind != PacketKind::next_maps && p.kind != PacketKind::typing)
         throw std::invalid_argument("Unknown packet kind");
     const auto payload = greeting ? 72
                          : p.kind == PacketKind::away
@@ -642,11 +638,6 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
             w.integer(impact.material, 2);
         }
     }
-    if (p.kind == PacketKind::drone) {
-        w.integer(p.drone_active ? 1 : 0, 1);
-        for (const auto v : p.drone_position) w.integer(std::bit_cast<std::uint32_t>(v), 4);
-        for (const auto v : p.drone_rotation) w.integer(std::bit_cast<std::uint32_t>(v), 4);
-    }
     if (p.kind == PacketKind::physics_extras) {
         w.integer(p.extras.size(), 2);
         w.bytes.insert(w.bytes.end(), p.extras.begin(), p.extras.end());
@@ -758,7 +749,7 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
         w.integer(p.object_limit, 2);
         w.integer(p.object_scaling ? 1 : 0, 1);
         w.integer(p.sync_effects ? 1 : 0, 1);
-        w.integer(p.sync_drones ? 1 : 0, 1);
+        w.integer(1, 1); // was whether players saw each other's FPV drones; read and passed over
         w.integer(p.force_world_layers, 1);
         // One mode per world-layer catalog row; both peers read the same catalog
         // from the same game build.
@@ -775,7 +766,7 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
         w.integer(static_cast<std::uint16_t>(std::lround(p.voice_range)), 2);
         if (p.server_votes > 7) throw std::invalid_argument("Invalid server votes");
         w.integer((p.guest_noclip ? 1U : 0U) | (p.guest_no_bail ? 2U : 0U) | (p.guest_boosts ? 4U : 0U) |
-                      (static_cast<unsigned>(p.server_votes) << 3) | (p.enforce_tuning ? 64U : 0U), 1);
+                      (static_cast<unsigned>(p.server_votes) << 3) | (p.enforce_tuning ? 64U : 0U) | (p.guest_ollies ? 128U : 0U), 1);
         if (p.server_polls > static_cast<std::uint8_t>(ServerPolls::everyone) || p.server_custom_votes.size() > server_custom_vote_limit ||
             !std::all_of(p.server_custom_votes.begin(), p.server_custom_votes.end(), [](const auto &v) { return valid_server_custom_vote(v); }))
             throw std::invalid_argument("Invalid server votes");
@@ -1021,14 +1012,6 @@ std::optional<Packet> decode(std::span<const std::uint8_t> bytes) noexcept {
                 impact.material = static_cast<std::uint16_t>(r.integer(2));
             }
             if (!valid_impacts(p.impacts)) return {};
-        } else if (p.kind == PacketKind::drone) {
-            if (!p.map || !p.source || bytes.size() - r.at != drone_wire_size) return {};
-            const auto flag = r.integer(1);
-            if (flag > 1) return {};
-            p.drone_active = flag != 0;
-            for (auto &v : p.drone_position) v = r.number();
-            for (auto &v : p.drone_rotation) v = r.number();
-            if (!valid_drone_position(p.drone_position) || !valid_drone_rotation(p.drone_rotation)) return {};
         } else if (p.kind == PacketKind::physics_extras) {
             const auto length = r.integer(2);
             if (!p.source || length > max_physics_extras || length != bytes.size() - r.at)
@@ -1215,9 +1198,7 @@ std::optional<Packet> decode(std::span<const std::uint8_t> bytes) noexcept {
             const auto shared_effects = r.integer(1);
             if (shared_effects > 1) return {};
             p.sync_effects = shared_effects != 0;
-            const auto shared_drones = r.integer(1);
-            if (shared_drones > 1) return {};
-            p.sync_drones = shared_drones != 0;
+            if (r.integer(1) > 1) return {}; // the FPV drones' old switch
             const auto forced = r.integer(1);
             if (forced > 1) return {};
             p.force_world_layers = forced != 0;
@@ -1242,12 +1223,12 @@ std::optional<Packet> decode(std::span<const std::uint8_t> bytes) noexcept {
             p.voice_range = static_cast<float>(r.integer(2));
             if (!valid_voice_range(p.voice_range)) return {};
             const auto tools = r.integer(1);
-            if (tools > 127) return {};
             p.guest_noclip = (tools & 1) != 0;
             p.guest_no_bail = (tools & 2) != 0;
             p.guest_boosts = (tools & 4) != 0;
             p.server_votes = static_cast<std::uint8_t>((tools >> 3) & 7);
             p.enforce_tuning = (tools & 64) != 0;
+            p.guest_ollies = (tools & 128) != 0;
             const auto polls = r.integer(1), custom = r.integer(1);
             if (polls > static_cast<std::uint8_t>(ServerPolls::everyone) || custom > server_custom_vote_limit) return {};
             p.server_polls = static_cast<std::uint8_t>(polls);

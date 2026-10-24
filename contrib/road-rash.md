@@ -2,13 +2,14 @@
 
 Bails leave marks on the local skater that build up over a session: road dust and a graze first,
 then scrapes and bruises, then raw wounds, a bruised face and (if the player leaves it on) blood.
-Built into ReSkate; the pictures themselves come from a content mod.
+A plugin, [road-rash](plugins/road-rash), that ships inside the Road Rash item pack: the pictures
+themselves are the pack's skin items. It was built into ReSkate until 2026-10; what follows is how
+that worked, and how the plugin still works.
 
-Code: [road_rash.cpp](../Extension/RoadRash/road_rash.cpp) (client thread),
-[road_rash_model.h](../Extension/RoadRash/road_rash_model.h) (the rules on their own, with
-[tests](../Extension/RoadRash/Test/road_rash_tests.cpp)),
-[skater_items.h](../Extension/RoadRash/skater_items.h) (reading and changing the skater's recipe),
-[road_rash_commands.cpp](../Extension/RoadRash/road_rash_commands.cpp) (console).
+Code: the plugin's Lua in [plugins/road-rash/plugin](plugins/road-rash/plugin), and the core
+service it wears its marks through, reskate.outfit:
+[outfit_overlay.cpp](../Extension/Skater/outfit_overlay.cpp) and
+[skater_items.h](../Extension/Skater/skater_items.h) (reading and changing the skater's recipe).
 
 ## What the player gets
 

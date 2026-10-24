@@ -3,9 +3,11 @@
 #include "Extension/Progression/local_entitlement_trigger_runtime.h"
 #include "local_gameplay_settings.h"
 #include "local_user_settings.h"
+#include "Extension/Trainer/trainer_gamestate.h"
 #include <optional>
 #include <string_view>
 #include <array>
+#include <atomic>
 
 namespace dingosdk::profile_runtime {
 // Applied gameplay values live in an ECS cache even when the user-value
@@ -96,9 +98,61 @@ void save_gameplay_setting(const void* reference, const dingosdk::Json& value) {
     } catch (...) { dingosdk::logging::event(dingosdk::logging::Channel::settings, "{\"event\":\"local_gameplay_setting_save_failed\"}"); }
 }
 
+// The player's own stance (Gameplay Preferences' Default Stance Is Goofy), seen as the game reads
+// or changes it: a plugin's flick pictures follow it. Its setting is found once by its key
+// (one naming both "stance" and "goofy"); every other setting asset is checked once per thread.
+namespace {
+std::atomic<std::uintptr_t> stance_asset{};
+std::atomic<int> stance_value{-1};
+void note_stance(const void* reference, bool value) noexcept {
+    std::uintptr_t asset{};
+    if (!reference || !memory::peek(reinterpret_cast<std::uintptr_t>(reference), asset)) return;
+    asset &= ~std::uintptr_t{4};
+    if (!asset) return;
+    if (const auto known = stance_asset.load(std::memory_order_relaxed); known != asset) {
+        if (known) return;
+        thread_local std::array<std::uintptr_t, 256> checked{};
+        auto& slot = checked[((asset >> 4) ^ (asset >> 12)) & 255];
+        if (slot == asset) return;
+        slot = asset;
+        PreserveError preserve;
+        try {
+            std::string key;
+            if (!gameplay_setting_key(reference, key)) return;
+            std::string lower;
+            for (const unsigned char c : key) lower += static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
+            if (lower.find("goofy") == std::string::npos || lower.find("stance") == std::string::npos) return;
+            stance_asset.store(asset, std::memory_order_relaxed);
+            dingosdk::logging::log(dingosdk::logging::Level::info, dingosdk::logging::Channel::settings,
+                                   "Player stance: read from the game's \"{}\" setting.", key);
+        } catch (...) { return; }
+    }
+    if (stance_value.exchange(value ? 1 : 0, std::memory_order_relaxed) != (value ? 1 : 0))
+        dingosdk::logging::log(dingosdk::logging::Level::info, dingosdk::logging::Channel::settings,
+                               "Player stance: {}.", value ? "goofy" : "regular");
+}
+}
+
+std::optional<bool> game_stance_goofy() noexcept {
+    const auto value = stance_value.load(std::memory_order_relaxed);
+    if (value < 0) return {};
+    return value == 1;
+}
+
 bool gameplay_get_bool(std::uintptr_t m, const void* a) {
-    if (const auto value = saved_gameplay_setting<bool>(a)) return *value;
-    return gameplay_settings().get_bool(m, a);
+    // The trainer's grind settings ("Grinds feel like Skate 3"): forced for as long as the trainer holds them.
+    // Never to the game's own Settings screen: it shows, and would save, the player's own value.
+    if (const auto forced = dingosdk::trainer::forced_gameplay_bool(a); forced && !gameplay_user_edit()) {
+        note_stance(a, *forced);
+        return *forced;
+    }
+    if (const auto value = saved_gameplay_setting<bool>(a)) {
+        note_stance(a, *value);
+        return *value;
+    }
+    const bool value = gameplay_settings().get_bool(m, a);
+    note_stance(a, value);
+    return value;
 }
 
 float gameplay_get_number(std::uintptr_t m, const void* a) {
@@ -124,9 +178,13 @@ void gameplay_set_bool(std::uintptr_t m, const void* a, bool v) {
         PreserveError preserve; std::string key;
     }
     if (!gameplay_user_edit()) {
-        gameplay_settings().set_bool(m, a, saved_gameplay_setting<bool>(a).value_or(v)); return;
+        const bool applied = saved_gameplay_setting<bool>(a).value_or(v);
+        gameplay_settings().set_bool(m, a, applied);
+        note_stance(a, applied);
+        return;
     }
     gameplay_settings().set_bool(m, a, v);
+    note_stance(a, v);
     save_gameplay_setting(a, v);
 }
 

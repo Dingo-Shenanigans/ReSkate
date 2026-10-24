@@ -24,7 +24,9 @@ struct NametagPlayer {
     std::uint32_t color{0xffffffffU}; // IM_COL32 layout
     std::string tag;                  // role badge before the name, as in chat ("" for none)
     bool talking{};
-    bool flying_drone{}; // flying ReSkate's FPV drone (Skater/drone_beacon.h)
+    // A plugin's short tag for the player (reskate.session.tag), above the name; "" for none.
+    std::string extra;
+    std::uint32_t extra_color{0xffffffffU};
     // The player's recent chat lines to show as bubbles above the head, oldest first. Empty
     // draws no bubbles.
     std::vector<NametagBubble> bubbles;
