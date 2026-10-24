@@ -1,7 +1,7 @@
 """The Animator Studio's loading picture in the MARKET's own branding: its wall (dark concrete, grip-tape grit, blue spray
-in the corners, halftone, grey flecks, a huge worn word low across it), the reskate. wordmark printed and worn, the dry
-blue brush stroke with "animator studio" on it and paint running off it, and BUILT BY on torn paper. Made from the same
-pieces as the MARKET (market_art/make_market_art.py), so it is the same look.
+left and right, halftone, grey flecks, a huge worn word low across it), the reskate. wordmark lightly worn, the clean
+blue paint band with "animator studio" on it and paint running off it, and BUILT BY on torn paper. The wall is made from
+the same pieces as the MARKET (market_art/make_market_art.py), so it is the same look.
 
     python make_loading_gritty.py
 
@@ -17,7 +17,7 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / "market_art"))
-import make_market_art as art  # noqa: E402  (its pieces: spray, halftone, grey_dots, grunge_word, brush_stroke)
+import make_market_art as art  # noqa: E402  (its pieces: spray, halftone, grey_dots, grunge_word)
 
 REPO = HERE.parents[1]
 FONTS = REPO / "External" / "fonts"
@@ -27,37 +27,20 @@ OUT_ASSET = REPO / "assets" / "animator_studio" / "loading.jpg"
 PREVIEW = Path(r"C:\Users\Fourt\AppData\Local\Temp\claude\C--Users-Fourt\2ab0674e-9ffe-4afb-a488-7a96406c2044\scratchpad\thumb")
 
 W, H = 3840, 1620           # 21:9, as the MARKET's wall
-SEEN = round(H * 16 / 9)    # what a 16:9 screen shows of it: the middle
+SEEN = round(H * 16 / 9)    # what a 16:9 screen shows of it: the middle (the game fits it to cover the screen)
 L0 = (W - SEEN) // 2        # its left edge
 BLUE = art.BLUE
 INK = (16, 18, 24)
+PAPER = (244, 241, 233)
 CREDITS = "22SH, FOURTH, NORMS, STEEZ"
-rnd = random.Random(24)
 
 
 def font(name, size):
     return ImageFont.truetype(str(FONTS / name), size)
 
 
-def brush(width, height, seed):
-    """The MARKET's dry blue brush stroke (make_market_art.brush_stroke), its dry ends short: no streaks out at its sides."""
-    rng = np.random.default_rng(seed)
-    yy_, xx_ = np.mgrid[0:height, 0:width].astype(np.float32)
-    u, v_ = xx_ / width, (yy_ - height / 2) / (height / 2)
-    wob = lambda: np.asarray(Image.fromarray((rng.random((1, 40)) * 255).astype(np.uint8)).resize((width, 1), Image.BICUBIC), np.float32)[0] / 255 - 0.5
-    top_, bottom_ = 0.80 + 0.10 * wob(), 0.82 + 0.10 * wob()
-    # rounded off at its ends, so it does not end in a square
-    end = np.clip(np.minimum(u / 0.035, (1 - u) / 0.035), 0, 1)
-    reach = np.sqrt(np.clip(1 - (1 - end) ** 2, 0, 1))
-    inside = (v_ > -top_[None, :] * reach) & (v_ < bottom_[None, :] * reach)
-    streaks = np.asarray(Image.fromarray((rng.random((height, 8)) * 255).astype(np.uint8)).resize((width, height), Image.BICUBIC), np.float32) / 255
-    dry = np.clip(np.minimum(u / 0.05, (1 - u) / 0.06), 0, 1)
-    a = inside * np.clip((streaks - (1 - dry) * 0.9) * 3 + dry * 0.75, 0, 1)
-    a *= (rng.random((height, width)) > 0.03 * (1 - dry) + 0.008)
-    out = np.zeros((height, width, 4), np.uint8)
-    out[..., 0], out[..., 1], out[..., 2] = art.BLUE
-    out[..., 3] = (np.clip(a, 0, 1) * 255).astype(np.uint8)
-    return Image.fromarray(out)
+def layer():
+    return Image.new("RGBA", (W, H), (0, 0, 0, 0))
 
 
 # ---- the wall, as the MARKET's ------------------------------------------------------------------------------
@@ -76,92 +59,152 @@ wall = Image.fromarray(np.clip(np.dstack([v * 255 * 0.84, v * 255 * 0.92, v * 25
 ghost = art.grunge_word("reskate.", FONTS / "Montserrat-ExtraBold.ttf", 900, 7, 0.36)
 ghost.putalpha(ghost.getchannel("A").point(lambda p: int(p * 0.075)))
 wall.alpha_composite(ghost, (int(W * 0.5 - ghost.width / 2), int(H - ghost.height + 120)))
-# Halftone: blue in the low right, grey in the top left; spray in those corners and one low down; grey flecks.
+# Halftone: blue in the low right, grey in the top left.
 wall.alpha_composite(art.halftone(1400, 1000, 22, (1400, 1000), 1150, BLUE, 105), (L0 + SEEN - 1400 + 120, H - 1000))
 wall.alpha_composite(art.halftone(900, 700, 20, (0, 0), 800, (170, 178, 196), 30), (L0 - 120, 0))
-wall.alpha_composite(art.spray(1400, 1000, 11, [(1120, 760, 300, 3800), (520, 960, 100, 600)], drips=7), (L0 + SEEN - 1400 + 160, H - 1000 + 40))
-wall.alpha_composite(art.spray(1100, 900, 12, [(220, 220, 270, 3200)], drips=5), (L0 - 260, -120))
-wall.alpha_composite(art.spray(600, 480, 13, [(300, 230, 95, 700)], drips=3), (L0 + int(SEEN * 0.14), H - 470))
+# Spray: one on the left (high) and one on the right (low), each with a small one near it, all whole on a 16:9 screen.
+# The droplets thin out to nothing by REACH x its radius (the market's spray flings the odd one much further), and each
+# splatter sits at least that far in from the screen's edges, so none of it is cut off.
+REACH = 1.95
+view = np.clip(np.minimum((xx - L0) / 40, (L0 + SEEN - xx) / 40), 0, 1) * np.clip(np.minimum(yy / 40, (H - yy) / 40), 0, 1)
+sprays = layer()
+for cx, cy, r, droplets, seed, runs in ((L0 + 385, 425, 180, 2400, 12, 5), (L0 + 250, 770, 55, 320, 13, 1),
+                                        (L0 + SEEN - 405, H - 445, 190, 2600, 11, 5), (L0 + SEEN - 205, H - 770, 60, 360, 14, 1)):
+    half = int(r * REACH) + 8
+    blot = art.spray(2 * half, 2 * half, seed, [(half, half, r, droplets)], drips=runs)
+    by_, bx_ = np.mgrid[0:2 * half, 0:2 * half].astype(np.float32)
+    far = np.hypot(bx_ - half, by_ - half) / r
+    fade = np.clip((REACH - far) / (REACH - 1.55), 0, 1) ** 1.5
+    blot.putalpha(Image.fromarray((np.asarray(blot.getchannel("A"), np.float32) * fade).astype(np.uint8)))
+    assert L0 + 20 <= cx - half and cx + half <= L0 + SEEN - 20 and 20 <= cy - half and cy + half <= H - 20, ("spray off the screen", cx, cy, r)
+    sprays.alpha_composite(blot, (cx - half, cy - half))
+lost = np.asarray(sprays.getchannel("A"), np.float32) * (1 - view)
+assert lost.max() == 0, "spray past the screen's edge"
+wall.alpha_composite(sprays)
 wall.alpha_composite(art.grey_dots(W, H, 14, 420))
 canvas = wall
 
-# ---- the lockup, big in the middle ----------------------------------------------------------------------------------
-WORD_W = SEEN * 0.74
+# ---- the sizes: the word three quarters of what a 16:9 screen shows ------------------------------------------
 probe = ImageDraw.Draw(Image.new("L", (10, 10)))
+WORD = "reskate."
 size = 700
-while probe.textlength("reskate.", font=font("Montserrat-ExtraBold.ttf", size)) > WORD_W:
+while probe.textlength(WORD, font=font("Montserrat-ExtraBold.ttf", size)) > SEEN * 0.74:
     size -= 4
-word = art.grunge_word("reskate.", FONTS / "Montserrat-ExtraBold.ttf", size, 3, 0.10)  # printed, worn
-# Still whole: the worn print over the solid letters (86% where it flaked), so it reads at a glance. The solid letters are
-# set where grunge_word sets them (30 px in from its box).
-wf_ = font("Montserrat-ExtraBold.ttf", size)
-box_ = probe.textbbox((0, 0), "reskate.", font=wf_)
-clean = Image.new("L", word.size, 0)
-ImageDraw.Draw(clean).text((30 - box_[0], 30 - box_[1]), "reskate.", font=wf_, fill=255)
-solid = np.asarray(clean, np.float32)
-worn = np.asarray(word.getchannel("A"), np.float32)
-word.putalpha(Image.fromarray(np.maximum(worn, solid * 0.86).astype(np.uint8)))
-# grunge_word leaves 30 px round the letters; its box is the letters' own.
-band_w, band_h = int(word.width * 0.86), int(size * 0.42)
-gap1, gap2 = int(size * 0.06), int(size * 0.30)
+wf = font("Montserrat-ExtraBold.ttf", size)
+word_w = probe.textlength(WORD, font=wf)
+cap_h = -probe.textbbox((0, 0), WORD, font=wf, anchor="ls")[1]
+band_h = size * 0.46
+band_gap = size * 0.10       # baseline to the band's top
+credits_gap = size * 0.22    # band's bottom to the paper
 strip_h = int(size * 0.22)
-block_h = word.height - 60 + gap1 + band_h + gap2 + strip_h
-top = int(H / 2 - block_h / 2) - 30
-wx = int(W / 2 - word.width / 2)
-shadow = Image.new("RGBA", word.size, (0, 0, 0, 0))
-shadow.putalpha(word.getchannel("A").point(lambda p: int(p * 0.55)))
-shadow_layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-shadow_layer.alpha_composite(shadow, (wx + int(size * 0.018), top + int(size * 0.03)))
-canvas = Image.alpha_composite(canvas, shadow_layer.filter(ImageFilter.GaussianBlur(size * 0.025)))
-paper_white = (244, 241, 233)
-word_rgb = Image.new("RGBA", word.size, paper_white + (255,))
-word_rgb.putalpha(word.getchannel("A"))
-canvas.alpha_composite(word_rgb, (wx, top))
-word_bottom = top + word.height - 30
+block_h = cap_h + band_gap + band_h + credits_gap + strip_h
+top = H / 2 - block_h / 2 - size * 0.03
+base_y = top + cap_h
+x0 = W / 2 - word_w / 2
 
-# The blue: the MARKET's dry brush stroke, laid under the word.
-bx, by = int(W / 2 - band_w / 2), word_bottom + gap1
-stroke = brush(band_w, band_h, 41)
-# Drips running off its bottom: gather under it, run thin, end in a bead. Drawn at twice the size, blurred and cut.
-S = 2
-dm = Image.new("L", (band_w * S, (band_h + int(size * 0.9)) * S), 0)
-dd = ImageDraw.Draw(dm)
-for at, length, width in ((0.10, 0.75, 0.050), (0.24, 0.30, 0.034), (0.47, 0.48, 0.040), (0.69, 0.24, 0.030), (0.82, 0.95, 0.046), (0.94, 0.36, 0.036)):
-    x = band_w * at
-    y0 = band_h * 0.80
-    run = band_h * length * 2.0
-    w0 = band_h * width * 1.6
-    neck = w0 * 4.0
-    left, right = [], []
+# ---- the word, in one go (the font's own spacing), its edges clean -----------------------------------------------
+# Worn only lightly: the ink a touch thinner in soft patches, no speckle or scratches, so it reads clean.
+letters = Image.new("L", (W, H), 0)
+ImageDraw.Draw(letters).text((x0, base_y), WORD, font=wf, fill=255, anchor="ls")
+nrng = np.random.default_rng(7)
+
+
+def noise(cells_x, cells_y):
+    return np.asarray(Image.fromarray(nrng.random((cells_y, cells_x)).astype(np.float32), mode="F").resize((W, H), Image.BICUBIC), np.float32)
+
+
+patches = 0.55 * noise(W // 260 + 2, H // 260 + 2) + 0.30 * noise(W // 90 + 2, H // 90 + 2) + 0.15 * noise(W // 30 + 2, H // 30 + 2)
+thin = 1 - np.clip((patches - 0.30) / 0.30, 0, 1)  # 0 full ink, 1 where it wore thinnest
+la = np.asarray(letters, np.float32) / 255
+word_rgba = np.zeros((H, W, 4), np.uint8)
+word_rgba[..., :3] = np.clip(np.array(PAPER, np.float32)[None, None, :] * (1 - 0.06 * thin)[..., None], 0, 255).astype(np.uint8)
+word_rgba[..., 3] = (np.clip(la * (1 - 0.07 * thin), 0, 1) * 255).astype(np.uint8)
+shadow = layer()
+ImageDraw.Draw(shadow).text((x0 + size * 0.022, base_y + size * 0.03), WORD, font=wf, fill=(0, 0, 0, 160), anchor="ls")
+canvas = Image.alpha_composite(canvas, shadow.filter(ImageFilter.GaussianBlur(size * 0.03)))
+canvas = Image.alpha_composite(canvas, Image.fromarray(word_rgba))
+
+# ---- the paint: one clean band, its edges soft and a little uneven, its ends rounded; drips running off it ------------
+# The same band as make_loading_concrete.py: no dry brush ends, so no lines out at its sides.
+rnd = random.Random(11)
+SCALE = 2  # drawn at half size, blurred and cut at the middle grey: smooth, organic edges
+mask = Image.new("L", (W // SCALE, H // SCALE), 0)
+md = ImageDraw.Draw(mask)
+t0x, t1x = (x0 + word_w * 0.10) / SCALE, (x0 + word_w * 0.92) / SCALE
+t0y = (base_y + band_gap) / SCALE
+bh = band_h / SCALE
+phase = [rnd.uniform(0, 6.28) for _ in range(10)]
+
+
+def sway(s, k, amp):
+    # the stroke's sway, and the brush's own small unevenness along the edge
+    return amp * (0.50 * math.sin(s * 3.1 + phase[k]) + 0.26 * math.sin(s * 9.7 + phase[k + 1]) + 0.14 * math.sin(s * 23.0 + phase[k + 2]) +
+                  0.07 * math.sin(s * 71.0 + phase[k + 1] * 3) + 0.05 * math.sin(s * 137.0 + phase[k] * 5))
+
+
+steps = 400
+top_pts, bottom_pts = [], []
+for i in range(steps + 1):
+    s = i / steps
+    x = t0x + (t1x - t0x) * s
+    thick = bh * (1.0 - 0.06 * s)  # the brush loads at the start and runs a touch thinner towards the end
+    mid = t0y + bh / 2 + sway(s, 6, bh * 0.05)
+    top_pts.append((x, mid - thick / 2 + sway(s, 0, bh * 0.07)))
+    bottom_pts.append((x, mid + thick / 2 + sway(s, 3, bh * 0.07)))
+md.polygon(top_pts + bottom_pts[::-1], fill=255)
+# Rounded ends, flatter and a touch lopsided, as a brush leaves them.
+for (x, yt), (_, yb), lean in ((top_pts[0], bottom_pts[0], -1), (top_pts[-1], bottom_pts[-1], 1)):
+    r = (yb - yt) / 2
+    cx, cy = x + lean * r * 0.05, (yt + yb) / 2 + r * 0.06 * lean
+    md.ellipse([cx - r * 0.58, cy - r * 0.97, cx + r * 0.58, cy + r * 1.0], fill=255)
+    md.ellipse([cx + lean * r * 0.12 - r * 0.34, cy - r * 0.72, cx + lean * r * 0.12 + r * 0.34, cy + r * 0.86], fill=255)
+# Drips: a neck where the paint gathers under the band, a thin run down, and a bead at its end.
+bottom_at = lambda x: bottom_pts[min(steps, max(0, round((x - t0x) / (t1x - t0x) * steps)))][1]
+for at, length, width in ((0.07, 0.55, 0.050), (0.19, 0.22, 0.034), (0.43, 0.36, 0.040), (0.66, 0.18, 0.030), (0.80, 0.70, 0.046), (0.93, 0.28, 0.036)):
+    x = t0x + (t1x - t0x) * at
+    y0 = bottom_at(x) - bh * 0.08
+    run = bh * length * 2.2
+    w0 = bh * width * 2.0  # the run's width
+    neck = w0 * 4.0        # how wide it gathers at the band
+    pts_l, pts_r = [], []
     for j in range(41):
         u = j / 40
         y = y0 + run * u
         wdt = w0 + (neck - w0) * (1 - u) ** 5 + w0 * 0.15 * math.exp(-((u - 0.85) / 0.08) ** 2)
-        wob = w0 * 0.12 * math.sin(u * 7 + at * 20)
-        left.append(((x - wdt / 2 + wob) * S, y * S))
-        right.append(((x + wdt / 2 + wob) * S, y * S))
-    dd.polygon(left + right[::-1], fill=255)
+        wobble = w0 * 0.12 * math.sin(u * 7 + at * 20)
+        pts_l.append((x - wdt / 2 + wobble, y))
+        pts_r.append((x + wdt / 2 + wobble, y))
+    md.polygon(pts_l + pts_r[::-1], fill=255)
     bead = w0 * 0.95
-    dd.ellipse([(x - bead) * S, (y0 + run - bead * 0.9) * S, (x + bead) * S, (y0 + run + bead * 1.1) * S], fill=255)
-dm = dm.filter(ImageFilter.GaussianBlur(3)).point(lambda p: 255 if p > 118 else 0).resize((band_w, band_h + int(size * 0.9)), Image.LANCZOS)
-drips = Image.new("RGBA", dm.size, BLUE + (0,))
-drips.putalpha(dm)
-paint = Image.new("RGBA", dm.size, (0, 0, 0, 0))
-paint.alpha_composite(drips)
-paint.alpha_composite(stroke, (0, 0))
-paint_shadow = Image.new("RGBA", paint.size, (0, 0, 0, 0))
-paint_shadow.putalpha(paint.getchannel("A").point(lambda p: int(p * 0.45)))
-layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-layer.alpha_composite(paint_shadow, (bx + 8, by + 14))
-canvas = Image.alpha_composite(canvas, layer.filter(ImageFilter.GaussianBlur(10)))
-canvas.alpha_composite(paint, (bx, by))
-# Its words, printed in ink, worn a little.
-label = art.grunge_word("animator studio", FONTS / "Montserrat-ExtraBold.ttf", int(band_h * 0.56), 5, 0.06)
-label_rgb = Image.new("RGBA", label.size, INK + (255,))
-label_rgb.putalpha(label.getchannel("A"))
-canvas.alpha_composite(label_rgb, (int(W / 2 - label.width / 2), int(by + band_h * 0.5 - label.height / 2)))
+    md.ellipse([x - bead, y0 + run - bead * 0.9, x + bead, y0 + run + bead * 1.1], fill=255)
+mask = mask.filter(ImageFilter.GaussianBlur(3.2)).point(lambda p: 255 if p > 118 else 0).filter(ImageFilter.GaussianBlur(0.8))
+mask = mask.resize((W, H), Image.LANCZOS)
+# The paint itself: the blue, a little darker where the brush ran thin, a sheen along the top of the band.
+paint_rgb = np.zeros((H, W, 3), dtype=np.float32)
+paint_rgb[...] = BLUE
+streak = np.asarray(Image.effect_noise((48, H // 3), 40).resize((W, H), Image.BICUBIC)).astype(np.float32)  # along the stroke
+paint_rgb *= (0.93 + 0.07 * (streak / 255.0))[..., None]
+sheen_y0, sheen_y1 = (t0y + bh * 0.08) * SCALE, (t0y + bh * 0.48) * SCALE
+sheen = np.clip(1 - np.abs(yy - (sheen_y0 + sheen_y1) / 2) / ((sheen_y1 - sheen_y0) / 2), 0, 1) ** 2
+paint_rgb = np.clip(paint_rgb + sheen[..., None] * 9, 0, 255)
+paint = Image.fromarray(paint_rgb.astype(np.uint8)).convert("RGBA")
+paint.putalpha(mask)
+paint_shadow = layer()
+paint_shadow.putalpha(mask.point(lambda p: p * 120 // 255))
+shadow_moved = layer()
+shadow_moved.paste(paint_shadow, (int(size * 0.012), int(size * 0.02)))
+canvas = Image.alpha_composite(canvas, shadow_moved.filter(ImageFilter.GaussianBlur(size * 0.02)))
+canvas = Image.alpha_composite(canvas, paint)
+# Its words, in the middle of the band.
+label = layer()
+lb = ImageDraw.Draw(label)
+lf = font("Montserrat-ExtraBold.ttf", round(band_h * 0.62))
+text_w = lb.textlength("animator studio", font=lf)
+lb.text(((t0x + t1x) * SCALE / 2 - text_w / 2, base_y + band_gap + band_h * 0.5), "animator studio", font=lf, fill=INK + (255,), anchor="lm")
+canvas = Image.alpha_composite(canvas, label)
 
 # ---- BUILT BY, on a strip of torn white paper, a little crooked ------------------------------------------------------
+prnd = random.Random(24)
 paper_tex = Image.open(MARKET / "paper_white.jpg").convert("RGB")
 cs = int(strip_h * 0.48)
 light_f, bold_f = font("Montserrat-SemiBold.ttf", cs), font("Montserrat-ExtraBold.ttf", cs)
@@ -175,17 +218,17 @@ torn = Image.new("L", sheet.size, 0)
 pts = []
 x = M
 while x < M + pw:  # the top edge, torn
-    pts.append((x, M + rnd.uniform(-5, 5)))
-    x += rnd.uniform(10, 26)
-pts.append((M + pw + rnd.uniform(-6, 6), M + rnd.uniform(-4, 4)))
+    pts.append((x, M + prnd.uniform(-5, 5)))
+    x += prnd.uniform(10, 26)
+pts.append((M + pw + prnd.uniform(-6, 6), M + prnd.uniform(-4, 4)))
 for t in (0.3, 0.6, 0.9):
-    pts.append((M + pw + rnd.uniform(-7, 7), M + ph * t))
+    pts.append((M + pw + prnd.uniform(-7, 7), M + ph * t))
 x = M + pw
 while x > M:  # the bottom edge, torn
-    pts.append((x, M + ph + rnd.uniform(-6, 6)))
-    x -= rnd.uniform(10, 26)
+    pts.append((x, M + ph + prnd.uniform(-6, 6)))
+    x -= prnd.uniform(10, 26)
 for t in (0.9, 0.6, 0.3):
-    pts.append((M + rnd.uniform(-7, 7), M + ph * t))
+    pts.append((M + prnd.uniform(-7, 7), M + ph * t))
 ImageDraw.Draw(torn).polygon(pts, fill=255)
 tex = paper_tex.resize((max(pw + 2 * M, 1024), max(ph + 2 * M, 1024))).crop((0, 0, pw + 2 * M, ph + 2 * M)).convert("RGBA")
 tex.putalpha(torn)
@@ -193,34 +236,21 @@ sheet.alpha_composite(tex)
 sd = ImageDraw.Draw(sheet)
 sd.text((M + pad, M + ph / 2), "BUILT BY ", font=light_f, fill=(70, 70, 76, 255), anchor="lm")
 sd.text((M + pad + w1, M + ph / 2), CREDITS, font=bold_f, fill=INK + (255,), anchor="lm")
-paper_only = sheet.copy()
-# Two strips of tape over its ends, their ends torn, a sheen along them.
-for tx, ang in ((M - 20, 30), (M + pw - 150, -26)):
-    tw, th = 180, 58
-    tape = Image.new("RGBA", (tw, th), (0, 0, 0, 0))
-    edge_pts = [(x, rnd.uniform(0, 2)) for x in range(0, tw + 1, 18)]
-    edge_pts += [(tw - rnd.uniform(0, 12), y) for y in range(0, th + 1, 7)]
-    edge_pts += [(x, th - rnd.uniform(0, 2)) for x in range(tw, -1, -18)]
-    edge_pts += [(rnd.uniform(0, 12), y) for y in range(th, -1, -7)]
-    ImageDraw.Draw(tape).polygon(edge_pts, fill=(222, 222, 216, 200))
-    ImageDraw.Draw(tape).rectangle([0, th * 0.22, tw, th * 0.40], fill=(255, 255, 255, 30))
-    tape = tape.rotate(ang, expand=True, resample=Image.BICUBIC)
-    sheet.alpha_composite(tape, (int(tx), int(M - tape.height / 2 + 6)))
 sheet = sheet.rotate(-1.2, expand=True, resample=Image.BICUBIC)
-paper_only = paper_only.rotate(-1.2, expand=True, resample=Image.BICUBIC)
 sh = Image.new("RGBA", sheet.size, (0, 0, 0, 0))
-sh.putalpha(paper_only.getchannel("A").point(lambda p: int(p * 0.6)))
-sy = by + band_h + gap2 - M
+sh.putalpha(sheet.getchannel("A").point(lambda p: int(p * 0.6)))
+sy = int(base_y + band_gap + band_h + credits_gap) - (sheet.height - ph) // 2
 sx = int(W / 2 - sheet.width / 2)
-layer = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-layer.alpha_composite(sh, (sx + 10, sy + 18))
-canvas = Image.alpha_composite(canvas, layer.filter(ImageFilter.GaussianBlur(12)))
+lay = layer()
+lay.alpha_composite(sh, (sx + 10, sy + 18))
+canvas = Image.alpha_composite(canvas, lay.filter(ImageFilter.GaussianBlur(12)))
 canvas.alpha_composite(sheet, (sx, sy))
 
-# ---- grain over all of it, as the MARKET's wall has ---------------------------------------------------------------
+# ---- grain over all of it, as the MARKET's wall has (lighter over the word) -------------------------------------------
 final = canvas.convert("RGB")
-noise = np.asarray(Image.effect_noise((W, H), 20)).astype(np.float32) - 128
-final = Image.fromarray(np.clip(np.asarray(final).astype(np.float32) + noise[..., None] * 0.14, 0, 255).astype(np.uint8))
+grain = np.asarray(Image.effect_noise((W, H), 20)).astype(np.float32) - 128
+on_word = np.asarray(letters.filter(ImageFilter.MaxFilter(5)), np.float32) / 255
+final = Image.fromarray(np.clip(np.asarray(final).astype(np.float32) + (grain * 0.14 * (1 - 0.7 * on_word))[..., None], 0, 255).astype(np.uint8))
 final.save(OUT_FULL)
 final.resize((3072, round(3072 * H / W)), Image.LANCZOS).save(OUT_ASSET, quality=93, subsampling=0, optimize=True)
 final.crop((L0, 0, L0 + SEEN, H)).resize((1280, 720), Image.LANCZOS).save(PREVIEW / "loading_gritty_169.jpg", quality=90)
