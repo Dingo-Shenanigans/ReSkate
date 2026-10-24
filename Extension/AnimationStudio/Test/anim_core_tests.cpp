@@ -92,7 +92,8 @@ void market_package_words() {
     check(crew_member("fiendskateboards") != nullptr && crew_member("LeafBro") != nullptr && crew_member("Someone") == nullptr &&
               crew_member("leaf.bro") == nullptr,
           "THE CREW is found by team (not by name), in any case");
-    check(builder_of("fourth_studio") != nullptr && builder_of("WorthlessNorms") != nullptr && builder_of("WorthlessNorms")->name == "Norms" &&
+    // Norms has no Thunderstore team yet (marketplace.h), so nothing is found for the one he will make.
+    check(builder_of("fourth_studio") != nullptr && builder_of("WorthlessNorms") == nullptr &&
               builder_of("worthless") != nullptr && builder_of("worthless")->name == "Steez" &&
               builder_of("") == nullptr && builder_of("Fourth") == nullptr,
           "BUILT BY is found by their Thunderstore team, and only one with a team");
