@@ -1,4 +1,5 @@
 #include "plugin_game_runtime.h"
+#include "Extension/Objects/placement_physics.h"
 #include "plugin_session_feed.h"
 #include "plugin_content.h"
 #include "Runtime/runtime_internal.h"
@@ -169,6 +170,17 @@ std::filesystem::path game_folder() {
 class RealGame final : public Game {
 public:
     explicit RealGame(std::uintptr_t base) : base_(base) {}
+    std::string object_physics(std::string_view plugin, std::uint64_t id, const std::optional<ObjectPhysics>& options) override {
+        return placement_physics::configure(base_, plugin, id, options);
+    }
+    std::string object_velocity(std::string_view plugin, std::uint64_t id, const Vec3& value) override {
+        return placement_physics::velocity(plugin, id, value);
+    }
+    std::string object_pose(std::string_view plugin, std::uint64_t id, const Vec3& at, const std::array<float, 4>& q) override {
+        return placement_physics::pose(plugin, id, at, q);
+    }
+    std::optional<ObjectMotion> object_motion(std::string_view plugin, std::uint64_t id) override { return placement_physics::sample(plugin, id); }
+    std::optional<MarkerEvents> marker_events(std::string_view plugin) override { return placement_physics::marker_events(base_, plugin); }
 
     // ---- the local skater ----------------------------------------------------------------------
     std::optional<std::uint32_t> physics_state() override {
@@ -1594,6 +1606,7 @@ public:
         return done > 32 ? std::string{} : std::string("the folder could not be opened");
     }
     void release(std::string_view plugin) override {
+        placement_physics::release(plugin);
         if (capture_owner_ == plugin) {
             capture::recorder().discard();
             capture_owner_.clear();
