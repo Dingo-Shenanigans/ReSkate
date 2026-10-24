@@ -8507,7 +8507,6 @@ void shortcuts(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 corn
         const char* arrow = u.controls_open ? ">" : "<";
         const auto t = text_size(f.heading, 20 * k, arrow);
         text(d, f.heading, 20 * k, ImVec2((ta.x + tb.x - t.x) * 0.5f, (ta.y + tb.y - t.y) * 0.5f), lit ? white : IM_COL32(200, 200, 205, 255), arrow);
-        if (lit) ImGui::SetTooltip(u.controls_open ? "Hide the shortcuts (F1)" : "Show the shortcuts (F1)");
     }
     if (out > 0.01f) skate_theme::rough_rect(d, qa, qb, IM_COL32(12, 12, 14, 200), 93, k);
     for (std::size_t i = 0; i < list.size() && out > 0.01f; ++i) {
@@ -9205,10 +9204,6 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
             text(d, f.bold, fs, ImVec2(x - flag_w + tail + 4 * k, top + (flag_h - tw.y) * 0.5f), IM_COL32(16, 18, 24, 255), name);
             d->PopClipRect();
         }
-        if (on_catch && !u.catch_drag)
-            ImGui::SetTooltip(none ? "No catch found: drag to the frame the board is caught, to hold it off big drops and stairs."
-                              : v.catch_set ? "Your catch: held in the air off big drops and stairs. Drag it; double-click for the studio's."
-                                            : "The studio's catch: held in the air off big drops and stairs. Drag it to the frame you want held.");
         if (on_catch && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
             if (v.catch_set) {
                 studio::begin_change();
