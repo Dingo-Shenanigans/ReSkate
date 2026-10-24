@@ -9143,6 +9143,18 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
             }
         }
     }
+    // Before the pop the game has not named the trick yet, so keys there never play in game: that stretch is
+    // darker, and the ruler over it says why.
+    if (v.has_clip && v.takeoff > 0) {
+        const float from = std::max(x_of(0), ruler_left), to = std::min(x_of(v.takeoff), ruler_right);
+        if (to > from) {
+            d->AddRectFilled(ImVec2(from, at.y + header_h), ImVec2(to, at.y + size.y), IM_COL32(0, 0, 0, 90));
+            const auto& io = ImGui::GetIO();
+            if (!u.blocked && !u.bracket_drag && io.MousePos.x >= from && io.MousePos.x < to && io.MousePos.y >= at.y &&
+                io.MousePos.y <= at.y + header_h)
+                ImGui::SetTooltip("Before the pop. Keys here do not play in game: the game names the trick only when the skater is in the air.");
+        }
+    }
     // The brackets: the window the animation works in, drawn over the rows, with the window shaded. Either
     // one retimes the animation into the new window. Each is labelled and has a grab area wide enough to
     // catch: a 3 px line was a hard thing to hit.
