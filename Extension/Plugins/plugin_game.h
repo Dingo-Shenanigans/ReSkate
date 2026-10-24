@@ -1,5 +1,6 @@
 #pragma once
 #include "plugin_wave.h"
+#include "plugin_ui_values.h"
 #include "Engine/Core/Json/json.h"
 #include "Extension/AnimationStudio/anim_core.h"
 #include "Extension/Throwdowns/throwdown_kit.h"
@@ -258,6 +259,7 @@ struct Progress {
 class Game {
 public:
     virtual ~Game() = default;
+    virtual std::string publish_ui_values(std::string_view /*plugin*/, const ui_values::Values&) { return unavailable; }
     // ---- the local skater ----------------------------------------------------------------------
     // Its physics state (100s riding, 200s in the air, 300 a wipeout, 400s grinding, 504 off the
     // board), or empty without a skater; and how many wipeouts it has had this session.

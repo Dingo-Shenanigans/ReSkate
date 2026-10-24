@@ -1,4 +1,5 @@
 #include "plugin_game_runtime.h"
+#include "plugin_ui_values.h"
 #include "plugin_session_feed.h"
 #include "plugin_content.h"
 #include "Runtime/runtime_internal.h"
@@ -169,6 +170,9 @@ std::filesystem::path game_folder() {
 class RealGame final : public Game {
 public:
     explicit RealGame(std::uintptr_t base) : base_(base) {}
+    std::string publish_ui_values(std::string_view plugin, const ui_values::Values& values) override {
+        return ui_values::publish(base_, plugin, values);
+    }
 
     // ---- the local skater ----------------------------------------------------------------------
     std::optional<std::uint32_t> physics_state() override {
@@ -1594,6 +1598,7 @@ public:
         return done > 32 ? std::string{} : std::string("the folder could not be opened");
     }
     void release(std::string_view plugin) override {
+        ui_values::release(base_, plugin);
         if (capture_owner_ == plugin) {
             capture::recorder().discard();
             capture_owner_.clear();

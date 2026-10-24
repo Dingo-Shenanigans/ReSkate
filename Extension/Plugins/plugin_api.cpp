@@ -746,6 +746,7 @@ void Api::install(Plugin& plugin, lua_State* L) {
     install_services_api(plugin, L);
     install_kit_api(plugin, L);
     install_capture_api(plugin, L);
+    install_values_api(plugin, L);
     readonly();
     lua_setglobal(L, "reskate");
     lua_pushcfunction(L, ApiFunctions::print, "print");
