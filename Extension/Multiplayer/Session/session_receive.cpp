@@ -774,6 +774,8 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
             s.join_destination = p.destination;
             s.map_label = p.map_label;
             s.map_package = p.map_package;
+            // (Only a dedicated server needs plugins of its players.)
+            if (dedicated_host(s)) s.required_plugins = p.required_plugins;
             s.world = p.world;
             s.join_map_authorized |= p.map_authorized;
             link->last_packet = now;
@@ -1219,6 +1221,7 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
         }
     }
     update_scoring(s, now); // before the roster, so a host's own flag goes out with it
+    update_presence(s, now);
     tick_host_parties(s, now); // and the lobby's parties, which the roster carries
     if (s.mode == Mode::host && world_playing(s, local) && (s.roster_dirty || now - s.last_roster > 2000000))
         send_roster(s, now);

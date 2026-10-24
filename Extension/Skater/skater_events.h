@@ -50,6 +50,8 @@ std::vector<BodyHit> take_hits();
 std::vector<Fall> take_falls();
 // The board's velocity in the last step (m/s), while it is known.
 std::optional<std::array<float, 3>> board_velocity() noexcept;
+// Its spin then (angular velocity in the world, radians a second), while it is known.
+std::optional<std::array<float, 3>> board_spin() noexcept;
 Slam last_slam() noexcept;
 // From No Bail's hooks (no_bail.cpp), beside Board Break's: a cause recorded, a wipeout chosen.
 void note_cause(std::int32_t reason, float magnitude) noexcept;

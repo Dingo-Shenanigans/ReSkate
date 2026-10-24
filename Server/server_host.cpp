@@ -207,12 +207,103 @@ void Host::send_plugin_message(std::uint64_t to, const std::vector<std::uint8_t>
     if (auto *guest = find(to); guest && guest->handshaken) send_packet(*guest, p, true, false);
 }
 
+// ---- Players the server's plugins hide from others ------------------------------------------------
+std::string Host::plugin_hide(std::string_view plugin, std::uint64_t target, const std::vector<std::uint64_t> &viewers, bool skater, bool voice,
+                              bool sound) {
+    const auto *hidden = find(target);
+    if (!hidden || !hidden->handshaken) return "that player is not on the server";
+    std::vector<Guest *> from;
+    for (auto &[id, guest] : guests_)
+        if (guest->handshaken && id != target && (viewers.empty() || std::find(viewers.begin(), viewers.end(), id) != viewers.end()))
+            from.push_back(guest.get());
+    if (from.empty()) return viewers.empty() ? "nobody else is on the server" : "none of those players is on the server";
+    // Their games would take a party member or a throwdown's player away mid-way.
+    const auto party = parties_.party_of(target);
+    for (const auto *viewer : from) {
+        if (party && parties_.party_of(viewer->member.id) == party) return "they share a party";
+        if (activity_.together(target, viewer->member.id)) return "they are in a throwdown together";
+    }
+    std::vector<std::string> names;
+    for (auto *viewer : from) {
+        auto &entry = hidden_[viewer->member.id][target];
+        // Wholly from now: not introduced again until shown (introduce), and sent afresh then.
+        if (skater && !entry.skater) {
+            viewer->unmet.insert(target);
+            viewer->pose_sender.forget(target);
+            viewer->sound_sender.forget(target);
+            viewer->object_delivery.sent.erase(target);
+            if (viewer->object_delivery.source == target) viewer->object_delivery.chunks.clear();
+        }
+        entry = {std::string(plugin), skater, skater || voice, skater || sound};
+        names.push_back(guest_name(*viewer));
+    }
+    log_("[hide] " + guest_name(*hidden) + (skater ? " hidden from " : std::string(voice && sound ? " muted for " : voice ? " voice muted for " : " sound muted for ")) +
+         (viewers.empty() ? std::string("everyone") : std::to_string(names.size()) + " player(s)") + " by plugin " + std::string(plugin));
+    roster_dirty_ = true;
+    return {};
+}
+
+std::string Host::plugin_unhide(std::string_view plugin, std::uint64_t target, const std::vector<std::uint64_t> &viewers) {
+    bool shown{};
+    for (auto viewer = hidden_.begin(); viewer != hidden_.end();) {
+        if (viewers.empty() || std::find(viewers.begin(), viewers.end(), viewer->first) != viewers.end())
+            if (const auto found = viewer->second.find(target); found != viewer->second.end() && found->second.plugin == plugin) {
+                viewer->second.erase(found);
+                shown = true;
+            }
+        viewer = viewer->second.empty() ? hidden_.erase(viewer) : std::next(viewer);
+    }
+    if (!shown) return "the plugin hides that player from none of them";
+    const auto *guest = find(target);
+    log_("[hide] " + (guest ? guest_name(*guest) : std::to_string(target)) + " shown again by plugin " + std::string(plugin));
+    roster_dirty_ = true;
+    return {};
+}
+
+void Host::plugin_hides_release(std::string_view plugin) {
+    bool shown{};
+    for (auto viewer = hidden_.begin(); viewer != hidden_.end();) {
+        shown |= std::erase_if(viewer->second, [&](const auto &entry) { return entry.second.plugin == plugin; }) > 0;
+        viewer = viewer->second.empty() ? hidden_.erase(viewer) : std::next(viewer);
+    }
+    if (shown) roster_dirty_ = true;
+}
+
+const Host::Hidden *Host::hidden_from(std::uint64_t viewer, std::uint64_t target) const {
+    if (hidden_.empty()) return nullptr;
+    const auto found = hidden_.find(viewer);
+    if (found == hidden_.end()) return nullptr;
+    const auto entry = found->second.find(target);
+    return entry == found->second.end() ? nullptr : &entry->second;
+}
+
+bool Host::hidden_between(std::uint64_t a, std::uint64_t b) const {
+    const auto *one = hidden_from(a, b), *other = hidden_from(b, a);
+    return (one && one->skater) || (other && other->skater);
+}
+
+void Host::hidden_left(std::uint64_t player) {
+    hidden_.erase(player);
+    for (auto viewer = hidden_.begin(); viewer != hidden_.end();) {
+        viewer->second.erase(player);
+        viewer = viewer->second.empty() ? hidden_.erase(viewer) : std::next(viewer);
+    }
+}
+
 std::optional<std::array<float, 3>> Host::player_position(std::uint64_t steam_id) const {
     auto it = guests_.find(steam_id);
     if (it != guests_.end() && it->second && it->second->latest_root) {
         return it->second->latest_root->position;
     }
     return std::nullopt;
+}
+
+std::vector<Host::SkaterPose> Host::skater_poses() const {
+    std::vector<SkaterPose> list;
+    for (const auto &[id, guest] : guests_)
+        if (guest && guest->handshaken && guest->world_ready && guest->latest_root && guest->pose_arrival && now_ >= guest->pose_arrival)
+            list.push_back({id, *guest->latest_root, now_ - guest->pose_arrival});
+    return list;
 }
 
 // A player without the map is downloading it: the clock they are loading against starts over
@@ -231,7 +322,20 @@ void Host::fetching(Guest &guest) {
     else if (guest.travel_since) guest.travel_since = now_;
 }
 std::string Host::invite() const { return format_invite({id_, secret_}); }
+std::vector<std::string> Host::required_plugins() const {
+    std::vector<std::string> out;
+    for (const auto &plugin : config_.required_plugins)
+        if (!refused_plugins_.contains(plugin)) out.push_back(plugin);
+    // (The config is checked as it is read; one edited in since is sent only when it is valid.)
+    return multiplayer::valid_required_plugins(out) ? out : std::vector<std::string>{};
+}
+
 std::string Host::map_name() const { return map_label(config_.map); }
+std::string Host::map_level() const {
+    const auto destination = map_destination(config_.map);
+    const auto split = destination.find('|');
+    return split == std::string::npos ? destination : destination.substr(split + 1);
+}
 std::string Host::wire_map_label() const { // players without the map's mod still see its name
     auto label = map_name();
     cut_text(label, max_member_name);
@@ -541,6 +645,10 @@ void Host::broadcast(const Packet &packet, bool reliable, bool fresh, std::uint6
         auto &p = *guest;
         if (!p.handshaken || id == except || (gameplay && !p.world_ready)) continue;
         if ((only && !only->contains(id)) || (skip && skip->contains(id))) continue;
+        // A player a plugin hides from this one (plugin_hide): nothing of them, or not their voice or sound.
+        if (const auto *hidden = hidden_from(id, packet.source);
+            hidden && (hidden->skater ? gameplay : (packet.kind == PacketKind::voice && hidden->voice) || (packet.kind == PacketKind::audio && hidden->sound)))
+            continue;
         if (packet.kind == PacketKind::voice) {
             if (!voice_policy_.accepts(packet.voice)) continue;
             // Each listener fades voices by their own hearing distance; the server
@@ -726,6 +834,8 @@ void Host::introduce() {
                 continue;
             }
             ++it;
+            // Hidden from them by a plugin: introduced once shown again (plugin_unhide).
+            if (const auto *hidden = hidden_from(id, other->member.id); hidden && hidden->skater) continue;
             float distance = std::numeric_limits<float>::max();
             if (g.latest_root && other->latest_root) {
                 distance = 0;
@@ -810,11 +920,15 @@ void Host::send_roster() {
         if (m.party && std::none_of(p.members.begin(), p.members.end(),
                                     [&](const Member &o) { return o.party == m.party && o.party_leader; }))
             m.party_leader = true; // the first listed member of a party missing its leader
-    // An announcement for one player: everyone else's roster goes without it. And a player with
-    // locked tools is told those are off for them. Everyone else gets the same roster; players
-    // whose roster differs in the same way share one.
+    // An announcement for one player: everyone else's roster goes without it. A player with
+    // locked tools is told those are off for them, and one with a plugin's card or poll is shown
+    // it (by its id) over the server's; one a plugin hides players from (plugin_hide) is sent a
+    // roster without them, so their game takes those skaters away. Everyone else gets the same
+    // roster; players whose roster differs in the same way share one.
     struct Variant {
         bool noclip{}, no_bail{}, boosts{}, ollies{}, enforce_tuning{}, announcement{};
+        std::uint32_t plugin_card{}, plugin_poll{};
+        std::vector<std::uint64_t> hidden; // in order
         auto operator<=>(const Variant &) const = default;
     };
     const Variant common{config_.noclip, config_.no_bail, config_.boosts, true, config_.enforce_tuning, !announcement_for_};
@@ -824,6 +938,11 @@ void Host::send_roster() {
         if (!guest->handshaken) continue;
         auto variant = common;
         variant.announcement = !announcement_for_ || id == announcement_for_;
+        if (const auto card = plugin_cards_.find(id); card != plugin_cards_.end()) variant.plugin_card = card->second.card.id;
+        if (const auto poll = plugin_polls_.find(id); poll != plugin_polls_.end()) variant.plugin_poll = poll->second.id;
+        if (const auto from = hidden_.find(id); from != hidden_.end())
+            for (const auto &[target, what] : from->second)
+                if (what.skater) variant.hidden.push_back(target);
         if (const auto locks = locks_of(id)) {
             // Without "movement" (send_permissions), the tools their role gives are said here instead.
             const bool movement = (locks & lock_movement) && has(id, multiplayer::role_movement);
@@ -840,15 +959,22 @@ void Host::send_roster() {
         others.insert(id);
     }
     const auto shown = p.announcement;
+    const auto vote = p.vote;
+    const auto members = p.members;
     if (announcement_for_) p.announcement = {};
     broadcast(p, true, false, 0, nullptr, others.empty() ? nullptr : &others);
     for (const auto &[variant, players] : variants) {
+        p.members = members;
+        std::erase_if(p.members, [&](const Member &m) { return std::binary_search(variant.hidden.begin(), variant.hidden.end(), m.id); });
         p.guest_noclip = variant.noclip;
         p.guest_no_bail = variant.no_bail;
         p.guest_boosts = variant.boosts;
         p.guest_ollies = variant.ollies;
         p.enforce_tuning = variant.enforce_tuning;
         p.announcement = variant.announcement ? shown : multiplayer::ServerAnnouncement{};
+        p.vote = vote;
+        // The same card and poll ids: the same card and poll, so any of these players' is theirs.
+        if (variant.plugin_card || variant.plugin_poll) plugin_screens_roster(*players.begin(), p.announcement, p.vote);
         broadcast(p, true, false, 0, &players);
     }
     roster_dirty_ = false;
@@ -870,7 +996,46 @@ void Host::send_chat(std::string_view text, Guest *only) {
     message.text = clean_chat_text(text);
     if (message.text.empty()) return;
     if (only) send_packet(*only, message, true, false);
-    else broadcast(message, true, false);
+    else {
+        broadcast(message, true, false);
+        record_chat(0, "Server", message.text, true);
+    }
+}
+void Host::record_chat(std::uint64_t sender, std::string name, std::string text, bool server) {
+    chat_log_.push_back({++chat_sequence_, sender, std::move(name), std::move(text), server});
+    while (chat_log_.size() > 64) chat_log_.pop_front();
+}
+std::vector<Host::ChatRecord> Host::chat_since(std::uint64_t sequence) const {
+    std::vector<ChatRecord> out;
+    for (const auto &line : chat_log_)
+        if (line.sequence > sequence) out.push_back(line);
+    return out;
+}
+bool Host::chat_to_plugins(Guest &guest, std::string_view line) {
+    if (!plugins_ || !plugins_->hears_chat()) return false;
+    record_chat(guest.member.id, guest_name(guest), "/" + std::string(line), false);
+    return true;
+}
+std::string Host::plugin_map(std::string_view map) {
+    // As the console's map: a destination the server has, saved so it starts on it again.
+    if (map.empty() || !valid_map_destination(map_destination(map)) || !valid_map_destination(map_destination(map_setting(map))))
+        return "no single map is called \"" + std::string(map) + "\" (travel.levels lists them)";
+    if (!installed_map(map)) return "this server does not have that map";
+    if (map_hash(map_destination(map)) == map_) return "the server is already on that map";
+    change_map(map);
+    save();
+    roster_dirty_ = true;
+    log_("[map] A plugin changed the map to " + map_name() + ".");
+    return {};
+}
+std::string Host::plugin_time_of_day(std::string_view time) {
+    if (world_layers().empty()) return "the server has no world layers (world-layers.json beside it)";
+    if (!config_.world_layer_sync) return "the server lets players keep their own world layers (layer-sync is off)";
+    if (auto why = set_time_of_day(time); !why.empty()) return why;
+    save();
+    roster_dirty_ = true;
+    log_("[world] A plugin set the time of day to " + std::string(time) + ".");
+    return {};
 }
 bool Host::allowed_words(Guest &guest, std::string_view text) {
     if (!text::contains_forbidden_words(text)) return true;
@@ -1018,6 +1183,8 @@ void Host::drop(std::uint64_t id, const std::string &reason, const std::string &
         guest->sound_sender.forget(id);
     }
     party_left(id, name);
+    plugin_screens_left(id);
+    hidden_left(id);
     // Their vote cooldown stays (tick() drops it once it has run out): leaving and coming
     // back does not let a player start another vote sooner.
     // One voter fewer, or the player a kick vote was about. Counted in tick(): a passing kick
@@ -1217,6 +1384,7 @@ void Host::receive(std::uint64_t peer, std::span<const std::uint8_t> bytes, std:
             offer.destination = map_destination(config_.map);
             offer.map_label = wire_map_label();
             offer.map_package = map_package(config_.map);
+            offer.required_plugins = required_plugins();
             offer.challenge = link->password_challenge;
             offer.map_authorized = authorized;
             send_required(*link, encode_wire(offer));
@@ -1337,6 +1505,7 @@ void Host::receive(std::uint64_t peer, std::span<const std::uint8_t> bytes, std:
         }
         log_("[chat] " + guest_name(*link) + ": " + p.text);
         broadcast(p, true, false, p.source);
+        record_chat(peer, guest_name(*link), p.text, false);
         return;
     }
     // Grey dots above the sender. Not a chat line, and not logged. A player who may not
@@ -1418,6 +1587,15 @@ void Host::receive(std::uint64_t peer, std::span<const std::uint8_t> bytes, std:
     if (!link->world_ready) return;
     if (!routed_source(p, link->member, peer, true, id_)) return;
     if (p.kind == PacketKind::away) return drop(peer, "A player ended their session.");
+    // At their game though their skater may stand still (a plugin's drone): their time away starts
+    // again. Counted once in present_least_us, so a flood of them does nothing more.
+    if (p.kind == PacketKind::present) {
+        if (link->present_at && now_ < link->present_at + multiplayer::present_least_us) return;
+        link->present_at = now_;
+        link->last_packet = now_;
+        active(*link);
+        return;
+    }
     if (p.kind == PacketKind::objects) {
         const auto before = link->objects.revision();
         if (link->objects.receive(p.objects) == ObjectState::Result::invalid)
@@ -1499,8 +1677,9 @@ void Host::receive_cosmetics() {
 
 // Players who have been away longer than the server allows ("afk_kick_minutes") are removed,
 // with a warning a minute before. Away is doing nothing a player at their game does: not
-// moving, speaking, typing in chat or changing their objects. Admins stay, and so does anyone
-// whose game is still loading the map.
+// moving, speaking, typing in chat, changing their objects or working the controls (their game's
+// presence notice, PacketKind::present). Admins stay, and so does anyone whose game is still
+// loading the map.
 void Host::remove_away() {
     if (!config_.afk_kick) return;
     const auto limit = static_cast<std::uint64_t>(config_.afk_kick) * 60000000;
@@ -1595,6 +1774,7 @@ void Host::sync_objects() {
                 for (std::size_t attempt = 0; attempt < sources.size(); ++attempt) {
                     const auto &source = sources[delivery.cursor++ % sources.size()];
                     if (source.id == id || !source.state->revision()) continue;
+                    if (const auto *hidden = hidden_from(id, source.id); hidden && hidden->skater) continue; // plugin_hide
                     const auto previous = delivery.sent.find(source.id);
                     const auto since = previous != delivery.sent.end() && previous->second.first == source.epoch
                                            ? previous->second.second : 0;

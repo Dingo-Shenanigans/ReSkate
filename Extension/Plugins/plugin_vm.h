@@ -67,6 +67,10 @@ struct Limits {
 
 // The game, as plugins see it (Environment, plugin_host.h, gives the host these).
 using Vec3 = std::array<float, 3>;
+// A console command a plugin added, or a subcommand it declared for one (Plugin::commands).
+struct CommandInfo {
+    std::string name, args, help;
+};
 struct SkaterState {
     Vec3 position{};
     // Radians about world up, -pi to pi: 0 faces +Z, pi/2 faces +X, and a higher heading is turned
@@ -76,6 +80,9 @@ struct SkaterState {
     float vertical{};     // metres per second, up
     bool airborne{};
     float air_time{};     // seconds into the jump going on
+    // The skater root's right axis, and whether it rides switch (Extension/Skater/launches.h), when known.
+    std::optional<Vec3> right;
+    bool switch_stance{};
 };
 enum class Teleport { sent, unavailable, forbidden };
 // A trick of the local skater, read from the score HUD (Extension/Skater/trick_watch.h).
@@ -217,6 +224,7 @@ public:
     // The wider set's events, each to a plugin with its permission and a handler for it.
     void skater_changed(const char* state, const char* previous);
     void bailed(std::uint64_t wipeouts, std::optional<SlamNews> slam);
+    void launched(const LaunchNews& launch);
     // A game event with plain data (board_landed, body_hit, bail_end), to a plugin with `permission`.
     void game_event(std::string_view event, std::string_view permission, const Json& data);
     void chat_line(const ChatLine& line);
@@ -250,7 +258,9 @@ public:
     std::size_t memory() const noexcept { return memory_; }
     double tick_ms() const noexcept { return last_window_ms_; }
     // Its console commands and their help.
-    std::vector<std::pair<std::string, std::string>> commands() const;
+    // Its console commands, and the subcommands each declared ("prop random", run by "prop"'s
+    // function): the name, its arguments as help shows them, and its help.
+    std::vector<CommandInfo> commands() const;
     bool has(std::string_view permission) const { return manifest_.permissions.contains(permission); }
     // Over a limit or stopped: the API refuses every call until the VM is closed.
     bool halted() const noexcept { return halt_ != Halt::none || memory_exceeded_; }
@@ -264,7 +274,8 @@ private:
     friend struct ServicesApi;
     friend struct KitApi;
     friend struct CaptureApi;
-    struct Command { std::string help; int function{}; };
+    struct Subcommand { std::string name, args, help; };
+    struct Command { std::string help; int function{}; std::vector<Subcommand> subcommands; };
     struct Timer { double due{}, every{}; int function{}; };
     using Clock = std::chrono::steady_clock;
     enum class Halt { none, time, memory, stopped };

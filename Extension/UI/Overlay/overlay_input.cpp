@@ -472,6 +472,8 @@ dingosdk::overlay::FlightInput read_player_flight_controller() {
 namespace dingosdk::overlay {
 void begin_input_access() noexcept { ++detail::overlay_input_access; }
 void end_input_access() noexcept { --detail::overlay_input_access; }
+std::uint64_t controls_touched_at() noexcept { return detail::controls_at.load(std::memory_order_relaxed); }
+void note_joystick(std::uint32_t buttons, const std::array<float, 6>& axes) noexcept { detail::note_pad(5, buttons, axes); }
 Gamepad read_gamepad() {
     const auto sample = read_controller_sample();
     Gamepad out;
@@ -484,6 +486,8 @@ Gamepad read_gamepad() {
     out.left_trigger = static_cast<float>(sample.pad.bLeftTrigger) / 255.0f;
     out.right_trigger = static_cast<float>(sample.pad.bRightTrigger) / 255.0f;
     out.buttons = sample.pad.wButtons;
+    // (A PlayStation controller the game reads itself is seen here, when ReSkate reads it.)
+    detail::note_pad(4, out.buttons, {out.left_x, out.left_y, out.right_x, out.right_y, out.left_trigger, out.right_trigger});
     return out;
 }
 } // namespace dingosdk::overlay

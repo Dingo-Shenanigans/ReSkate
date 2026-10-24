@@ -569,6 +569,9 @@ NativeFrame capture_local(std::uintptr_t base, std::uintptr_t client, bool captu
         cache = {base, client, frame.context, player, frame.entity, frame.parent, component,
                  frame.board_entity};
         frame.ready = true;
+        // The pose as it is sent, after anyone who changes only what is drawn of the board has had it.
+        if (capture_pose)
+            if (const auto filter = shared().sent_pose_filter.load(std::memory_order_acquire)) filter(component, frame.pose);
     } catch (const std::exception &e) {
         cache = {};
         frame.detail = e.what();
@@ -624,6 +627,9 @@ void set_render_pose_listener(RenderPosePublished listener) noexcept {
 }
 void set_animation_evaluated_listener(AnimationEvaluated listener) noexcept {
     shared().evaluated_listener.store(listener, std::memory_order_release);
+}
+void set_local_sent_pose_filter(LocalSentPoseFilter filter) noexcept {
+    shared().sent_pose_filter.store(filter, std::memory_order_release);
 }
 void set_local_pose_filter(LocalPoseFilter filter) noexcept {
     shared().pose_filter.store(filter, std::memory_order_release);

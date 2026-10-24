@@ -24,7 +24,7 @@ namespace dingosdk::outfit_overlay {
 namespace {
 using skater_items::SkaterItems;
 using skater_items::lower;
-constexpr std::string_view allowed[] = {"tattoo", "moles", "eyewear"};
+constexpr std::string_view allowed[] = {"tattoo", "moles", "eyewear", "hand"};
 
 struct Wanted {
     std::string owner, item;
@@ -387,7 +387,7 @@ bool allowed_slot(std::string_view slot) noexcept {
 std::string set(std::string owner, std::string slot, std::string item, std::vector<float> placement, bool covers) {
     auto& s = state();
     slot = lower(slot);
-    if (!allowed_slot(slot)) return "only tattoo, moles and eyewear slots";
+    if (!allowed_slot(slot)) return "only tattoo, moles, eyewear and hand wear slots";
     if (const auto taken = s.wanted.find(slot); taken != s.wanted.end() && taken->second.owner != owner) return taken->second.owner + " has that slot";
     if (!content_cache::catalogs().available) return "the paid items are not known yet; try again in a moment";
     if (profile_runtime::reserved_cosmetic(item)) return "that is a paid store item";

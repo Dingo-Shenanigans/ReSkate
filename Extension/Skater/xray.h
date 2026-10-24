@@ -33,4 +33,7 @@ struct Pose {
 };
 // Render thread, as a plugin draws it: false while there is no picture of the skater.
 bool latest(Pose& pose);
+// Client thread: the local skater not drawn on this screen while any plugin asks (reskate.skater.hide),
+// through the same renderer hook. False when the renderer's hooks are unavailable.
+bool hide(std::string_view owner, bool on);
 }

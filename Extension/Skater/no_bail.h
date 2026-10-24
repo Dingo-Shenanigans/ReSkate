@@ -197,7 +197,7 @@ struct DarkPopLast {
     unsigned freeze_writes{}, freeze_held{}, freeze_lost{};
 };
 DarkPopLast dark_pop_last() noexcept;
-// Further listeners on the same steps (skater_events.h, grind_exit.h), independent of the observer
+// Further listeners on the same steps (skater_events.h, launches.h), independent of the observer
 // above so none displaces another. Same thread and timing. Adding one already there, or removing one that is not, does nothing;
 // false when all slots are taken.
 inline constexpr std::size_t no_bail_step_listener_slots = 4;

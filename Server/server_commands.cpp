@@ -827,25 +827,8 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
                        (config_.world_layer_sync ? "." : ". Turn on layer-sync to apply them to everyone."));
     }
     if (name == "tod") {
-        // Every map's seven time layers ("<map>_tod_<n>_<name>"): one on and the rest off, or
-        // all back to the level's own. Set for every map, so it holds across map changes.
-        static constexpr std::array<std::string_view, 8> times{"default", "morning", "noon", "afternoon",
-                                                               "evening", "night", "weatherday", "weathernight"};
-        const auto wanted = lower(argument);
-        const auto found = std::find(times.begin(), times.end(), wanted);
-        if (found == times.end()) return "tod default|morning|noon|afternoon|evening|night|weatherday|weathernight";
-        const auto slot = static_cast<char>('0' + (found - times.begin()));
-        unsigned count{};
-        for (const auto &layer : world_layers()) {
-            const auto at = layer.key.find("_tod_");
-            if (at == std::string::npos || at + 5 >= layer.key.size()) continue;
-            if (slot == '0') config_.layers.erase(layer.key);
-            else config_.layers[layer.key] = layer.key[at + 5] == slot ? "on" : "off";
-            ++count;
-        }
-        if (!count) return "world-layers.json has no time-of-day layers.";
-        apply_layers();
-        return changed("Time of day set to " + std::string(*found) +
+        if (auto why = set_time_of_day(argument); !why.empty()) return why;
+        return changed("Time of day set to " + lower(argument) +
                        (config_.world_layer_sync ? " for everyone." : ". Turn on layer-sync to apply it to everyone."));
     }
     if (name == "layer") {
@@ -1019,6 +1002,27 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
     if (console && plugins_)
         if (auto answer = plugins_->command(line)) return *answer;
     return "Unknown command \"" + std::string(action) + "\". Type help.";
+}
+std::string Host::set_time_of_day(std::string_view time) {
+    // Every map's seven time layers ("<map>_tod_<n>_<name>"): one on and the rest off, or
+    // all back to the level's own. Set for every map, so it holds across map changes.
+    static constexpr std::array<std::string_view, 8> times{"default", "morning", "noon", "afternoon",
+                                                           "evening", "night", "weatherday", "weathernight"};
+    const auto wanted = lower(time);
+    const auto found = std::find(times.begin(), times.end(), wanted);
+    if (found == times.end()) return "tod default|morning|noon|afternoon|evening|night|weatherday|weathernight";
+    const auto slot = static_cast<char>('0' + (found - times.begin()));
+    unsigned count{};
+    for (const auto &layer : world_layers()) {
+        const auto at = layer.key.find("_tod_");
+        if (at == std::string::npos || at + 5 >= layer.key.size()) continue;
+        if (slot == '0') config_.layers.erase(layer.key);
+        else config_.layers[layer.key] = layer.key[at + 5] == slot ? "on" : "off";
+        ++count;
+    }
+    if (!count) return "world-layers.json has no time-of-day layers.";
+    apply_layers();
+    return {};
 }
 std::string Host::lock_name(std::uint64_t id, const Guest *guest) const {
     if (guest) return guest_name(*guest);

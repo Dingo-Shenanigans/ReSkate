@@ -28,7 +28,9 @@ inline constexpr int bones = 16, first_writable = 2;
 
 // Client thread. One owner holds the local board's bones at a time; empty when taken, else why not.
 std::string set(std::string_view owner, int bone, const Bone& value, Space space);
-std::string hide(std::string_view owner, int bone);
+// `everyone`: hidden from the other players too (the board as you are sent: Extension/Multiplayer/
+// Remote/native_skater.h's sent pose filter), not only on this screen.
+std::string hide(std::string_view owner, int bone, bool everyone = false);
 void clear(std::string_view owner, int bone = -1);
 // These bones go out of sight on every board, other players' included (a breakable deck's
 // stretches, which the game would draw as cracks).

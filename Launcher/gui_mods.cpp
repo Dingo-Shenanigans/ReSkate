@@ -391,17 +391,34 @@ std::string pair_reason(const ConflictPair& pair) {
            std::format(" ({} {})", pair.row->assets, pair.row->assets == 1 ? "file" : "files");
 }
 
-// What a mod brings, for the list's Type column.
-std::string kind_of(const mods::Mod& mod) {
-    if (!mod.levels.empty()) return mod.levels.size() == 1 ? "Map" : std::format("{} maps", mod.levels.size());
-    if (!mod.park_maps.empty()) return "Park";
-    if (mod.provides_layout) return "Game data";
-    return "Nothing";
+// What a mod brings, for the list's Type column: what says most about it, and on hover all of it.
+struct Kind {
+    std::string label, tip;
+};
+Kind kind_of(const mods::Mod& mod) {
+    const auto parts = mods::mod_contents(mod);
+    if (parts.empty()) return {"Nothing", "Holds nothing ReSkate loads"};
+    std::string all;
+    for (std::size_t at = 0; at < parts.size(); ++at) {
+        auto part = parts[at];
+        if (at) part[0] = static_cast<char>(std::tolower(static_cast<unsigned char>(part[0])));
+        all += (at == 0 ? "" : at + 1 == parts.size() ? " and " : ", ") + part;
+    }
+    return {parts.size() == 1 ? parts.front() : parts.front() + " +", "Holds: " + all};
 }
 
 // The rows the list shows, as places in the load order: what the search and the
 // filter leave, in the order asked for.
-std::vector<int> visible_mods(const ModsPanel& panel, const thunderstore::Installed& installed) {
+// An installed mod's categories, as Thunderstore lists its package ("No category" when it lists none,
+// or does not list the mod at all).
+constexpr const char* no_category = "No category";
+std::vector<std::string> categories_of(const ModsPanel& panel, const mods::Mod& mod) {
+    const auto found = panel.categories_by_folder.find(mod.name);
+    if (found == panel.categories_by_folder.end() || found->second.empty()) return {no_category};
+    return found->second;
+}
+
+std::vector<int> visible_mods(const ModsPanel& panel, const thunderstore::Installed& installed, const thunderstore::CategoryFilter& categories) {
     const auto& entries = panel.list.entries;
     const auto query = folded(panel.search.data());
     std::vector<int> view;
@@ -419,6 +436,7 @@ std::vector<int> visible_mods(const ModsPanel& panel, const thunderstore::Instal
         case 7: keep = mod.outdated.empty() && (!conflict_winner(panel, mod.name).empty() || conflict_beats(panel, mod.name)); break;
         default: break;
         }
+        if (keep && !categories.empty()) keep = thunderstore::shown_by(categories_of(panel, mod), categories);
         if (keep && !query.empty())
             keep = folded(mod.title).find(query) != std::string::npos ||
                    folded(mod.name).find(query) != std::string::npos ||
@@ -622,7 +640,7 @@ struct Columns {
 };
 // Where the right-hand columns of a row `width` wide start, from its left edge.
 struct RightColumns {
-    float more, status, type, update;
+    float more, status, type;
 };
 RightColumns right_columns(float width) {
     const Columns c;
@@ -630,7 +648,6 @@ RightColumns right_columns(float width) {
     r.more = width - S(10) - c.more;
     r.status = r.more - S(12) - c.status;
     r.type = r.status - S(12) - c.type;
-    r.update = r.type - S(10) - c.update;
     return r;
 }
 
@@ -757,23 +774,17 @@ void installed_row(const Fonts& fonts, ModsPanel& panel, const thunderstore::Ins
     // The same icon the store shows, so a mod looks like itself on both pages.
     mod_icon(panel, package, ImVec2(start.x + c.icon, middle - S(15)), S(30));
 
-    // Right to left: the menu, how it stands, what it is, and an update waiting for it.
+    // Right to left: the menu, how it stands, and what it is.
     ImGui::SetCursorScreenPos(ImVec2(start.x + r.more, middle - c.more * 0.5f));
     if (more_button("##more", c.more)) menu = true;
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("More");
 
-    float name_end = start.x + r.type - S(12);
-    if (update) {
-        ImGui::SetCursorScreenPos(ImVec2(start.x + r.update, middle - S(14)));
-        push_primary_button();
-        if (ImGui::Button("UPDATE", ImVec2(c.update, S(28)))) request = {Request::Kind::update, {mod.name}};
-        pop_primary_button();
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Thunderstore has v%s", package->latest().number.c_str());
-        name_end = start.x + r.update - S(12);
-    }
     const auto kind = kind_of(mod);
     draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(start.x + r.type, middle - fonts.body->FontSize * 0.5f),
-        color::muted, kind.c_str());
+        color::muted, kind.label.c_str());
+    if (ImGui::IsWindowHovered() &&
+        ImGui::IsMouseHoveringRect(ImVec2(start.x + r.type, start.y), ImVec2(start.x + r.status, start.y + tall)))
+        ImGui::SetTooltip("%s", kind.tip.c_str());
 
     // How it stands: a pill, and on hover why.
     {
@@ -807,24 +818,42 @@ void installed_row(const Fonts& fonts, ModsPanel& panel, const thunderstore::Ins
             ImGui::SetTooltip("%s", tip.c_str());
     }
 
-    // The name, who made it, and its version: with an update waiting, old -> new in blue.
+    // The name, who made it, and its version: with an update waiting, old -> new in blue and the
+    // UPDATE button right after it, so the button sits with the change it makes. A name too long
+    // for the row is cut short before the button rather than pushing it into the Type column.
     {
-        const float x = start.x + c.name;
+        const float x = start.x + c.name, limit = start.x + r.type - S(12);
+        const auto to = update ? (mod.version.empty() ? std::string() : "v" + mod.version + " ") + "\xe2\x86\x92 v" +
+                                     package->latest().number
+                               : std::string();
+        const auto by = mod.author.empty() ? std::string()
+                                           : "by " + mod.author + (mod.version.empty() || update ? std::string() : "  v" + mod.version);
+        const auto wide = [&](ImFont* font, const std::string& text) {
+            return font->CalcTextSizeA(font->FontSize, FLT_MAX, 0, text.c_str()).x;
+        };
+        float name_end = limit;
+        if (update) {
+            const float text = wide(fonts.bold, mod.title) + S(10) + (by.empty() ? 0.0f : wide(fonts.body, by) + S(10)) +
+                               wide(fonts.body, to);
+            const float button_x = std::min(x + text + S(12), limit - c.update);
+            ImGui::SetCursorScreenPos(ImVec2(button_x, middle - S(13)));
+            push_primary_button();
+            if (ImGui::Button("UPDATE", ImVec2(c.update, S(26)))) request = {Request::Kind::update, {mod.name}};
+            pop_primary_button();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Thunderstore has v%s", package->latest().number.c_str());
+            name_end = button_x - S(12);
+        }
         const ImVec4 clip(x, start.y, name_end, start.y + tall);
         const float y = middle - fonts.bold->FontSize * 0.5f, body_y = middle - fonts.body->FontSize * 0.5f;
         draw->AddText(fonts.bold, fonts.bold->FontSize, ImVec2(x, y), entry.enabled ? color::text : color::muted,
                       mod.title.c_str(), nullptr, 0, &clip);
         float after = x + fonts.bold->CalcTextSizeA(fonts.bold->FontSize, FLT_MAX, 0, mod.title.c_str()).x + S(10);
-        if (!mod.author.empty()) {
-            const auto by = "by " + mod.author + (mod.version.empty() || update ? std::string() : "  v" + mod.version);
+        if (!by.empty()) {
             draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(after, body_y), color::muted, by.c_str(), nullptr, 0, &clip);
-            after += fonts.body->CalcTextSizeA(fonts.body->FontSize, FLT_MAX, 0, by.c_str()).x + S(10);
+            after += wide(fonts.body, by) + S(10);
         }
-        if (update) {
-            const auto to = (mod.version.empty() ? std::string() : "v" + mod.version + " ") + "\xe2\x86\x92 v" +
-                            package->latest().number;
+        if (update)
             draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(after, body_y), color::blue, to.c_str(), nullptr, 0, &clip);
-        }
     }
     end_row();
 
@@ -1124,7 +1153,7 @@ void installed_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, co
 
     // ------------------------------------------------ search, filter, order, check, refresh
     const float combo = S(150), check = S(160), refresh = S(96), gap = S(10);
-    ImGui::SetNextItemWidth(std::max(S(140), ImGui::GetContentRegionAvail().x - (combo + gap) * 2 - check - gap - refresh - gap));
+    ImGui::SetNextItemWidth(std::max(S(140), ImGui::GetContentRegionAvail().x - (combo + gap) * 3 - check - gap - refresh - gap));
     // Ctrl+F jumps to the search, as it does in a browser.
     if (!installing && ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_F, false) &&
         !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId))
@@ -1142,6 +1171,15 @@ void installed_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, co
     };
     choice("##installed_filter", filter_names, panel.filter);
     ImGui::SameLine(0, gap);
+    {
+        std::vector<std::pair<std::string, int>> categories;
+        for (const auto& entry : entries)
+            for (const auto& category : categories_of(panel, entry.mod)) ++category_count(categories, category);
+        auto& settings = launcher.settings();
+        if (category_menu("##installed_category", settings.installed_categories_only, settings.installed_categories_hidden, std::move(categories), combo))
+            launcher.save();
+    }
+    ImGui::SameLine(0, gap);
     choice("##installed_order", order_names, panel.order);
     ImGui::SameLine(0, gap);
     {
@@ -1156,7 +1194,7 @@ void installed_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, co
     ImGui::SameLine(0, gap);
     if (ImGui::Button("Refresh", ImVec2(refresh, 0))) refresh_mods(launcher, panel);
 
-    const auto view = visible_mods(panel, installed);
+    const auto view = visible_mods(panel, installed, {launcher.settings().installed_categories_only, launcher.settings().installed_categories_hidden});
     // Dragging, and typing a place, move a mod among the others in the load order: the order the
     // list must be shown in for where it lands to be what it looks like.
     const bool reorder = panel.order == 0 && !installing;

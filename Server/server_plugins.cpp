@@ -1,11 +1,13 @@
 #include "server_plugins.h"
 #include "server_host.h"
+#include "Extension/Plugins/plugin_content.h"
 #include "Extension/Plugins/plugin_host.h"
 #include "Extension/Plugins/plugin_manifest.h"
 #include "Extension/Plugins/plugin_wire.h"
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <format>
 #include <map>
 
@@ -79,12 +81,98 @@ class ServerGame final : public Game {
         host_.set_locks(player, locks, "plugin " + std::string(plugin));
         return {};
     }
+    // The role they have (the one given them, or the server's default role), here or not.
+    std::optional<Role> role(std::uint64_t player) override {
+        if (!multiplayer::individual_steam_id(player)) return std::nullopt; // the server itself has none
+        const auto *held = host_.player_role(player);
+        if (!held) return std::nullopt;
+        return Role{held->name, held->rank, server::staff(held)};
+    }
+    std::vector<ServerPark> server_parks() override {
+        std::vector<ServerPark> result;
+        for (auto &p : host_.park_status()) result.push_back({std::move(p.name), std::move(p.map), p.here, p.spawned, p.objects, p.minutes_left});
+        return result;
+    }
+    std::string spawn_park(std::string_view plugin, std::string_view name, unsigned minutes) override {
+        return host_.plugin_park(plugin, true, name, minutes);
+    }
+    std::string remove_park(std::string_view plugin, std::string_view name) override { return host_.plugin_park(plugin, false, name, 0); }
+    // Cards and polls on the players' screens, as the roster carries the server's own.
+    std::string server_card(std::string_view plugin, const std::vector<std::uint64_t> &players, std::string_view text, unsigned seconds) override {
+        return host_.plugin_card(plugin, players, text, seconds);
+    }
+    std::string server_poll(std::string_view plugin, const std::vector<std::uint64_t> &players, std::string_view question,
+                            const std::vector<std::string> &answers, unsigned seconds, std::uint32_t &id) override {
+        return host_.plugin_poll(plugin, players, question, answers, seconds, id);
+    }
+    std::string server_poll_close(std::string_view plugin, std::uint32_t id) override { return host_.plugin_poll_close(plugin, id); }
+    std::vector<PollNews> take_poll_news() override {
+        std::vector<PollNews> news;
+        for (auto &n : host_.take_poll_news()) news.push_back({std::move(n.plugin), n.id, n.player, n.answer, std::move(n.text), std::move(n.why)});
+        return news;
+    }
+    // A player hidden from others, wholly or only their voice and sound (the roster and relay).
+    std::string server_hide(std::string_view plugin, std::uint64_t target, const std::vector<std::uint64_t> &viewers, const Hiding &what) override {
+        return host_.plugin_hide(plugin, target, viewers, what.skater, what.voice, what.sound);
+    }
+    std::string server_unhide(std::string_view plugin, std::uint64_t target, const std::vector<std::uint64_t> &viewers) override {
+        return host_.plugin_unhide(plugin, target, viewers);
+    }
+    void release(std::string_view plugin) override {
+        host_.plugin_screens_release(plugin);
+        host_.plugin_hides_release(plugin);
+    }
+    // The skaters of the players in the world, as their latest poses put them. The server has
+    // no skater of its own, so this is every player's.
+    std::vector<PeerSkater> peer_skaters() override {
+        std::vector<PeerSkater> result;
+        for (const auto &s : host_.skater_poses()) {
+            const auto &q = s.root.rotation;
+            // The rotation's +Z about world up, as a client's plugin_game_runtime.cpp reads it.
+            const float heading = std::atan2(2 * (q[0] * q[2] + q[3] * q[1]), 1 - 2 * (q[0] * q[0] + q[1] * q[1]));
+            result.push_back({s.id, s.root.position, heading, static_cast<double>(s.age_us) / 1000.0});
+        }
+        return result;
+    }
+    // mods.content: every mod folder in the server's Mods, as a game reads its enabled mods. The
+    // server has no load order or mods.json of its own; the folders come by name, as for its maps.
+    std::string content_list(std::string_view folder, std::vector<ContentFile> &files) override {
+        content::list(mod_folders(), folder, files);
+        return {};
+    }
+    std::string content_read(std::string_view mod, std::string_view folder, std::string_view path, std::string &text) override {
+        return content::read(mod_folders(), mod, folder, path, text);
+    }
     // Through the console's own ban and unban, so they keep its checks and save the bans file.
     std::string ban(std::uint64_t player) override {
         const auto answer = host_.command("ban " + std::to_string(player));
         if (!host_.is_banned(player)) return answer;
         log_("[Plugins] " + answer); // the console's ban leaves logging to the console
         return {};
+    }
+    // Chat as the server passes it on: players' lines, the server's own to everyone, and the
+    // /commands it does not know itself (Host::chat_since).
+    std::vector<ChatLine> chat_since(std::uint64_t sequence) override {
+        std::vector<ChatLine> out;
+        for (auto &line : host_.chat_since(sequence)) out.push_back({line.sequence, line.sender, std::move(line.name), std::move(line.text), false, line.server});
+        return out;
+    }
+    std::string world_map() override { return host_.map_name(); }
+    std::uint64_t world_id() override { return host_.world_id(); }
+    // The maps the server knows, which travel.load switches to (as the console's map does).
+    std::vector<LevelInfo> levels() override {
+        std::vector<LevelInfo> out;
+        for (const auto &level : server::levels()) out.push_back({level.asset, level.name, true});
+        return out;
+    }
+    std::string travel(std::string_view kind, std::string_view target) override {
+        if (kind != "level") return "a dedicated server has no fast travel: load one of its maps (travel.load)";
+        return host_.plugin_map(target);
+    }
+    // The time of day for everyone, as the console's tod sets it; the server has no other world.
+    std::string set_environment(std::string_view kind, std::string_view key, std::string_view) override {
+        if (kind != "tod") return unavailable;
+        return host_.plugin_time_of_day(key);
     }
     std::string unban(std::uint64_t player) override {
         const auto answer = host_.command("unban " + std::to_string(player));
@@ -94,6 +182,15 @@ class ServerGame final : public Game {
     }
 
   private:
+    // Read again at most every 2 s: a plugin may list them every tick.
+    const std::vector<content::Mod> &mod_folders() {
+        const auto now = std::chrono::steady_clock::now();
+        if (!mods_read_ || now - *mods_read_ >= std::chrono::seconds(2)) {
+            mods_read_ = now;
+            mods_ = content::mod_folders(host_.config().mods);
+        }
+        return mods_;
+    }
     bool present(std::uint64_t player) const {
         for (const auto &p : host_.player_list())
             if (p.id == player) return true;
@@ -101,6 +198,8 @@ class ServerGame final : public Game {
     }
     Host &host_;
     ServerPlugins::Log log_;
+    std::vector<content::Mod> mods_;
+    std::optional<std::chrono::steady_clock::time_point> mods_read_;
 };
 
 class ServerEnvironment final : public Environment {
@@ -197,12 +296,17 @@ void ServerPlugins::tick(std::uint64_t now_us) {
         }
         const double dt = s.last_tick ? static_cast<double>(now_us - s.last_tick) / 1000.0 : 0;
         s.last_tick = now_us;
+        // The map the server runs, so plugins hear level_unloading and level_loaded when it
+        // changes, as a game's plugins do (when the server changes it; players load it after).
+        s.plugins.set_level(s.server.map_level());
         s.plugins.tick(dt);
         for (auto &bytes : std::exchange(s.environment.outbox, {})) s.server.send_plugin_message(wire::to_of(bytes), bytes);
     } catch (const std::exception &error) {
         s.log(std::string("[Plugins] error: the plugin tick failed: ") + error.what());
     }
 }
+
+bool ServerPlugins::hears_chat() const { return state_->plugins.wants_chat(); }
 
 void ServerPlugins::receive(std::uint64_t from, const std::vector<std::uint8_t> &bytes) {
     auto &inbox = state_->environment.inbox;
@@ -232,7 +336,9 @@ std::optional<std::string> ServerPlugins::command(std::string_view line) {
     if (verb == "commands") {
         std::string text;
         for (const auto &plugin : s.plugins.status())
-            for (const auto &[name, help] : plugin.commands) text += (text.empty() ? "" : "\n") + std::format("{} - {} ({})", name, help, plugin.id);
+            for (const auto &command : plugin.commands)
+                text += (text.empty() ? "" : "\n") + std::format("{}{}{} - {} ({})", command.name, command.args.empty() ? "" : " ", command.args,
+                                                                  command.help, plugin.id);
         return text.empty() ? std::string("No plugin has a console command.") : text;
     }
     if (!verb.empty() && verb != "list") return std::string("plugin list|commands|reload <id>|off <id>|on <id>");

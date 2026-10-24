@@ -1,6 +1,7 @@
 #pragma once
 #include "Extension/AnimationStudio/anim_core.h"
 #include "Extension/Skater/arm_reach.h"
+#include "Extension/Skater/carry.h"
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -55,19 +56,26 @@ void set_replacements(std::vector<Replacement> list);
 bool record(float seconds);
 bool recording() noexcept;
 std::shared_ptr<const Clip> take_recording();
-// An arm reaching (arm_reach.h), after any clip, in the pose drawn and sent to the other players;
-// none ends it. It holds for 0.3 s: set it every tick. Unlike clips it is allowed in a throwdown.
-void reach(std::optional<arm_reach::Goal> goal);
+// Who sees a pose, a carry or a reach: everyone (the pose drawn here and sent), only the other players
+// (sent, not drawn: you look through a camera your skater is seen holding), or only you (drawn, not sent).
+enum class Shown : std::uint8_t { everyone, others, me };
+// An arm reaching (arm_reach.h), after any clip and carry; none ends it. It holds for 0.3 s: set it
+// every tick. Unlike clips it is allowed in a throwdown.
+void reach(std::optional<arm_reach::Goal> goal, Shown shown = Shown::everyone);
+// Something held out in the hands (carry.h), after any pose and before any reach; none ends it. It
+// holds for 0.3 s: set it every tick. `push_straightens`: riding, the knees straighten (most of the
+// crouch let go) while a foot is down pushing.
+void carry(std::optional<carry::Goal> goal, bool push_straightens = false, Shown shown = Shown::everyone);
 // Joints turned (in their own frame) and scaled on top of the animation and any clip, before any
-// reach, in the pose drawn and sent; `weight` 0..1 of the way. Joints 0 and 1 (the skater's world
-// placement) are left alone. It holds for 0.3 s: set it every tick; empty ends it.
+// carry and reach; `weight` 0..1 of the way. Joints 0 and 1 (the skater's world placement) are left
+// alone. It holds for 0.3 s: set it every tick; empty ends it.
 struct PoseOffset {
     std::uint16_t joint{};
     anim_studio::Quat rotation{0, 0, 0, 1};
     float scale{1};
     anim_studio::Vec3 offset{}; // added to its position, in its parent's frame
 };
-void pose(std::vector<PoseOffset> offsets, float weight);
+void pose(std::vector<PoseOffset> offsets, float weight, Shown shown = Shown::everyone);
 // Where a joint (of the 395) was in the world in the last pose evaluated, after any clip and reach;
 // empty without a skater. Asking keeps that joint read for two seconds, so the first ask comes back
 // empty; at most 32 joints are read at once.

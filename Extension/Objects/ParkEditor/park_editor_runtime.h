@@ -1,6 +1,9 @@
 #pragma once
 #include "Engine/Game/World/park_editor.h"
 #include "Extension/Objects/object_placements.h"
+#include <array>
+#include <optional>
+#include <string>
 
 namespace dingosdk {
 ParkEditorModel local_park_editor();
@@ -32,6 +35,18 @@ bool queue_local_park_paste(const EditorPasteRequest &);
 bool queue_local_park_object_set(const EditorObjectSetRequest &);
 bool queue_local_park_delete(const EditorDeleteRequest &);
 void tick_local_park_editor() noexcept;
+// The world raycast, and the object it meets (reskate.world.pick; world_pick.cpp): where, its root
+// entity (0 for none), its pose as the placements runtime reads it (scale xyz, -, rotation xyzw,
+// position xyz, -), and the world object blueprint it was made from, when that is known.
+struct WorldPick {
+    std::array<float, 3> at{};
+    std::uint64_t entity{};
+    std::optional<std::array<float, 12>> pose;
+    std::string blueprint;
+};
+std::optional<WorldPick> local_world_pick(const std::array<float, 3> &from, const std::array<float, 3> &to);
+// Gives world_entities the physics world (its objects made not solid, and those standing on the floor).
+void register_world_physics() noexcept;
 struct WorldRayHit {
     bool cast{}, hit{};
     std::array<float, 3> at{};

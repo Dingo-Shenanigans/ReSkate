@@ -30,6 +30,7 @@ struct Shared {
     std::deque<Fall> falls;
     std::deque<StepNews> steps;
     std::array<float, 3> velocity{};
+    std::optional<std::array<float, 3>> spin;
     std::uint64_t velocity_at{};
 };
 Shared& shared() {
@@ -65,8 +66,9 @@ bool right_limb(skater_body::Bone bone) {
     default: return false;
     }
 }
-// The board's root body velocity (as the grind exit control and Board Break read it).
-bool read_board_velocity(const NoBailSkater& skater, std::array<float, 3>& velocity) noexcept {
+// The board's root body velocity (as the grind exit control and Board Break read it), and its spin
+// (angular velocity, radians a second) when that reads as one.
+bool read_board_velocity(const NoBailSkater& skater, std::array<float, 3>& velocity, std::optional<std::array<float, 3>>* spin = nullptr) noexcept {
     std::uintptr_t holder{}, physics{}, type{}, bodies{}, owner{};
     std::uint32_t count{};
     if (!memory::peek(skater.core + sstate::board_holder_offset, holder) || !memory::peek(holder + sstate::board_physics_offset, physics) ||
@@ -76,7 +78,13 @@ bool read_board_velocity(const NoBailSkater& skater, std::array<float, 3>& veloc
     const auto body = bodies + sstate::board_root_body * sstate::physics_body_size;
     if (!memory::peek(body + sstate::body_owner_offset, owner) || owner != physics || !memory::peek(body + sstate::body_velocity_offset, velocity))
         return false;
-    return std::all_of(velocity.begin(), velocity.end(), [](float v) { return std::isfinite(v) && std::abs(v) < 1000; });
+    const auto sane = [](const std::array<float, 3>& value) { return std::all_of(value.begin(), value.end(), [](float v) { return std::isfinite(v) && std::abs(v) < 1000; }); };
+    if (spin) {
+        std::array<float, 3> turning{};
+        spin->reset();
+        if (memory::peek(body + sstate::body_spin_offset, turning) && sane(turning)) *spin = turning;
+    }
+    return sane(velocity);
 }
 
 // The physics thread's own.
@@ -98,12 +106,14 @@ void on_step(const NoBailSkater& skater, float seconds, bool wipeout) noexcept {
         std::uint32_t physics{};
         if (memory::peek(skater.context + sstate::physics_state_offset, physics)) {
             std::array<float, 3> v{};
-            const bool known = read_board_velocity(skater, v);
+            std::optional<std::array<float, 3>> spin;
+            const bool known = read_board_velocity(skater, v, &spin);
             const bool air = physics == 200 || physics == 201, grinding = physics >= 400 && physics < 500,
                        rolling = physics >= 100 && physics < 200;
             if (known) {
                 std::lock_guard lock(s.mutex);
                 s.velocity = v;
+                s.spin = spin;
                 s.velocity_at = now;
             }
             if (air && known) {
@@ -217,6 +227,12 @@ std::optional<std::array<float, 3>> board_velocity() noexcept {
     std::lock_guard lock(s.mutex);
     if (!s.velocity_at || GetTickCount64() - s.velocity_at > 250) return std::nullopt;
     return s.velocity;
+}
+std::optional<std::array<float, 3>> board_spin() noexcept {
+    auto& s = shared();
+    std::lock_guard lock(s.mutex);
+    if (!s.velocity_at || GetTickCount64() - s.velocity_at > 250) return std::nullopt;
+    return s.spin;
 }
 Slam last_slam() noexcept {
     auto& l = slam();

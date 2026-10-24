@@ -282,7 +282,11 @@ struct UiApi {
         auto& plugin = plugin_of(L);
         need(L, plugin, "overlay", "world_to_screen");
         const auto on = plugin.services_.world_to_screen(point(L, 2, "the world position"));
-        if (on) lua_pushvector(L, (*on)[0], (*on)[1], (*on)[2]);
+        // A point just in front of the camera and off to the side lands millions of pixels out,
+        // where the drawing functions refuse it; nil here, as for a point behind the camera, so
+        // a plugin that draws what it gets back keeps running.
+        const auto drawable = [](float v) { return std::isfinite(v) && std::fabs(v) <= 1e6f; };
+        if (on && drawable((*on)[0]) && drawable((*on)[1]) && drawable((*on)[2])) lua_pushvector(L, (*on)[0], (*on)[1], (*on)[2]);
         else lua_pushnil(L);
         return 1;
     }

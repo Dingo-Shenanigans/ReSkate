@@ -580,6 +580,35 @@ void Plugin::skater_changed(const char* state, const char* previous) {
     });
 }
 
+// A launch into the air (events.skater), with its velocities as vectors.
+void Plugin::launched(const LaunchNews& launch) {
+    if (state_ != State::running || !has("events.skater")) return;
+    fire_with("launch", [&](lua_State* L) {
+        lua_createtable(L, 0, 8);
+        lua_pushlstring(L, launch.from.data(), launch.from.size());
+        lua_setfield(L, -2, "from");
+        push_position(L, launch.velocity);
+        lua_setfield(L, -2, "velocity");
+        push_position(L, launch.game);
+        lua_setfield(L, -2, "game");
+        if (launch.travel) {
+            push_position(L, Vec3{(*launch.travel)[0], 0, (*launch.travel)[1]});
+            lua_setfield(L, -2, "travel");
+        }
+        lua_pushnumber(L, launch.travel_speed);
+        lua_setfield(L, -2, "travel_speed");
+        lua_pushboolean(L, launch.reason == "applied");
+        lua_setfield(L, -2, "shaped");
+        lua_pushlstring(L, launch.reason.data(), launch.reason.size());
+        lua_setfield(L, -2, "reason");
+        if (!launch.by.empty()) {
+            lua_pushlstring(L, launch.by.data(), launch.by.size());
+            lua_setfield(L, -2, "by");
+        }
+        return 1;
+    });
+}
+
 void Plugin::game_event(std::string_view event, std::string_view permission, const Json& data) {
     if (state_ != State::running || !has(permission)) return;
     fire_with(event, [&](lua_State* L) {
@@ -742,9 +771,12 @@ void Plugin::set_channel(std::string channel) {
     channel_hash_ = wire::channel_of(channel_);
 }
 
-std::vector<std::pair<std::string, std::string>> Plugin::commands() const {
-    std::vector<std::pair<std::string, std::string>> result;
-    for (const auto& [name, command] : commands_) result.emplace_back(name, command.help);
+std::vector<CommandInfo> Plugin::commands() const {
+    std::vector<CommandInfo> result;
+    for (const auto& [name, command] : commands_) {
+        result.push_back({name, {}, command.help});
+        for (const auto& sub : command.subcommands) result.push_back({name + " " + sub.name, sub.args, sub.help});
+    }
     return result;
 }
 

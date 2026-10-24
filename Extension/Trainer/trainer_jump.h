@@ -45,7 +45,7 @@ bool raise_flight(float up, float &was, float &time) noexcept;
 int take_flight_raise() noexcept;
 // The scripted launches since the last call, oldest first; false when there are none.
 bool take_trick_launch(TrickLaunch &out) noexcept;
-// Grind exits (Extension/Skater/grind_exit.h): may change the launch velocity
+// Plugins' launches (Extension/Skater/launches.h): may change the launch velocity
 // (x, y, z at parameters + 0x80) of any call of the game's jump-trajectory setter before the game
 // uses it, given the caller's address relative to the game image (the return address minus 5) and
 // the trajectory object it fills. Runs before the trainer's own trick multipliers. Physics thread;

@@ -528,6 +528,7 @@ int run(int argc, char **argv, bool skip_update) {
     auto next_ban_check = next_advertise;
     bool bans_unread{};
     MapUpdater map_updater; // "maps.latest_versions" and "maps update" (server_map_update.h)
+    RequiredPluginCheck plugin_check; // "plugins.required" (server_map_update.h)
     if (!config.global_bans) write_log("Global bans are off (\"use_global_bans\": false): only this server's own bans apply.");
     write_log(host.command("words")); // reads this server's own chat words
     // Signed in to Steam, as last logged, and when it is looked at again. Players already on stay
@@ -604,6 +605,10 @@ int run(int argc, char **argv, bool skip_update) {
             !maps.lines.empty() || maps.changed) {
             for (const auto &line : maps.lines) write_log(line);
             if (maps.changed) write_log(host.reload_maps());
+        }
+        if (auto plugins = plugin_check.tick(config.required_plugins); plugins.finished) {
+            for (const auto &line : plugins.lines) write_log(line);
+            host.refuse_plugins(std::move(plugins.refused));
         }
         // (The chat word lists come in the same answer, and hold on every server: it is read
         // for them whether or not the bans are used.)

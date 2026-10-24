@@ -606,6 +606,39 @@ int run(const std::filesystem::path &fixtures) {
         command("rotation off");
         command("rotation vote off");
     }
+
+    // ---- Away --------------------------------------------------------------------------------
+    // A player whose skater stands still while their game says they are at it (flying a plugin's
+    // drone) stays; one whose game says nothing is removed when the away limit runs out.
+    {
+        command("afk-kick 2");
+        auto &pilot = add_game(76561198000000071ULL, "Pilot");
+        auto &asleep = add_game(76561198000000072ULL, "Asleep");
+        pilot.map = asleep.map = a.map; // the map and world the server is on now
+        pilot.world = asleep.world = a.world;
+        pilot.hello(now);
+        asleep.hello(now);
+        run_for(2000000);
+        check(pilot.joined && asleep.joined, "The away test's players did not join");
+        // Their games load the map, as a game does once let in, and are in: the time away starts.
+        for (auto *game : {&pilot, &asleep}) {
+            auto loading = game->header(PacketKind::world_ready, now);
+            loading.world_ready = false;
+            game->send(loading);
+        }
+        run_for(2000000);
+        for (int i = 0; i < 9; ++i) {
+            pilot.send(pilot.header(PacketKind::present, now));
+            // A flood of them counts no more than one.
+            pilot.send(pilot.header(PacketKind::present, now));
+            run_for(present_interval_us);
+        }
+        check(wire().closed.contains(asleep.id) && logged("[afk] Asleep was removed after 2 min away."),
+              "A player who did nothing was not removed for being away");
+        check(!wire().closed.contains(pilot.id), "A player whose game said they were at it was removed for being away: " +
+                                                      (wire().closed.contains(pilot.id) ? wire().closed[pilot.id] : std::string{}));
+        command("afk-kick off");
+    }
     check(!wire().closed.contains(admin_id), "The player was disconnected: " + (wire().closed.contains(admin_id) ? wire().closed[admin_id] : std::string{}));
     return failures;
 }

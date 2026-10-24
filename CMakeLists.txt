@@ -151,6 +151,25 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS)
             dingosdk_lz4 dingosdk_zstd dingosdk_miniz dingosdk_word_filter OpenSSL::Crypto dingosdk_plugins dl pthread)
     endif()
     add_test(NAME server_locks COMMAND dingosdk_server_lock_tests)
+    # What the server's plugins see of the server and do there: its players' skaters, its map, its park mods.
+    add_executable(dingosdk_server_plugin_tests Server/Test/server_plugin_tests.cpp Server/server_host.cpp Server/server_party.cpp
+        Extension/Multiplayer/Session/party_book.cpp Server/server_config.cpp Server/server_update.cpp Server/server_release.cpp
+        $<$<BOOL:${WIN32}>:Launcher/updater.cpp> Server/global_bans.cpp Server/server_words.cpp Extension/Multiplayer/developer_identity.cpp
+        Extension/Multiplayer/word_lists.cpp Extension/Multiplayer/Net/protocol.cpp Extension/Multiplayer/Net/delta_codec.cpp
+        Extension/Multiplayer/Net/wire_codec.cpp Extension/Multiplayer/Remote/playback_buffers.cpp
+        Extension/Multiplayer/Session/password.cpp Server/server_activity.cpp Server/server_votes.cpp Server/server_commands.cpp
+        Server/server_parks.cpp Extension/Throwdowns/throwdown_wire.cpp Server/server_plugins.cpp)
+    target_include_directories(dingosdk_server_plugin_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_include_directories(dingosdk_server_plugin_tests SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/External/steam_networking")
+    if(WIN32)
+        target_link_libraries(dingosdk_server_plugin_tests PRIVATE dingosdk_launcher_support dingosdk_world_layer_scan dingosdk_json
+            dingosdk_lz4 dingosdk_zstd dingosdk_logging dingosdk_miniz dingosdk_word_filter dingosdk_https winhttp bcrypt winmm
+            dingosdk_plugins)
+    else()
+        target_link_libraries(dingosdk_server_plugin_tests PRIVATE dingosdk_launcher_support dingosdk_world_layer_scan dingosdk_json
+            dingosdk_lz4 dingosdk_zstd dingosdk_miniz dingosdk_word_filter OpenSSL::Crypto dingosdk_plugins dl pthread)
+    endif()
+    add_test(NAME server_plugins COMMAND dingosdk_server_plugin_tests "${PROJECT_SOURCE_DIR}/Server/Test/fixtures/park_mods")
     add_executable(dingosdk_server_release_tests Server/Test/server_release_tests.cpp Server/server_release.cpp)
     target_include_directories(dingosdk_server_release_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     target_link_libraries(dingosdk_server_release_tests PRIVATE dingosdk_json)
@@ -407,6 +426,12 @@ if(DINGOSDK_BUILD_ANIMATION_STUDIO_TESTS)
         target_include_directories(dingosdk_anim_library_build PRIVATE "${PROJECT_SOURCE_DIR}")
         target_link_libraries(dingosdk_anim_library_build PRIVATE dingosdk_game_archives dingosdk_json bcrypt)
     endif()
+    # Something carried (reskate.skater.carry): held out, aimed, both hands, crouched with the feet kept.
+    add_executable(dingosdk_carry_tests Extension/Skater/Test/carry_tests.cpp Extension/Skater/carry.cpp Extension/Skater/arm_reach.cpp
+        Extension/AnimationStudio/anim_core.cpp)
+    target_include_directories(dingosdk_carry_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_link_libraries(dingosdk_carry_tests PRIVATE dingosdk_json)
+    add_test(NAME carry COMMAND dingosdk_carry_tests)
 endif()
 option(DINGOSDK_BUILD_REPLAY_KEYFRAMES_TESTS "Build replay keyframe smoothing regression tests" OFF)
 if(DINGOSDK_BUILD_REPLAY_KEYFRAMES_TESTS)
@@ -437,20 +462,32 @@ if(DINGOSDK_BUILD_CAPTURE_TESTS AND TARGET dingosdk_capture)
     add_test(NAME capture COMMAND dingosdk_capture_tests "${PROJECT_SOURCE_DIR}/External/fonts")
 endif()
 option(DINGOSDK_BUILD_PLUGIN_TESTS "Build plugin host regression tests" OFF)
-if(DINGOSDK_BUILD_PLUGIN_TESTS AND WIN32)
+if(DINGOSDK_BUILD_PLUGIN_TESTS)
     enable_testing()
     # The plugin host apart from the game: manifests, the reskate API, storage, modules, hot reload,
-    # and the sandbox against plugins written to break it.
+    # and the sandbox against plugins written to break it. These build on Linux too, so they can be
+    # run without Windows.
     add_executable(dingosdk_plugin_tests Extension/Plugins/Test/plugin_tests.cpp)
     target_include_directories(dingosdk_plugin_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     target_link_libraries(dingosdk_plugin_tests PRIVATE dingosdk_plugins)
+    if(NOT WIN32)
+        # The Linux plugins library leaves out finding plugins among the mods; the tests need it.
+        target_sources(dingosdk_plugin_tests PRIVATE Extension/Plugins/plugin_discovery.cpp Engine/Vfs/mod_list.cpp)
+    endif()
     # It also runs the test plugins in contrib/plugins.
     target_compile_definitions(dingosdk_plugin_tests PRIVATE "RESKATE_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\"")
     add_test(NAME plugins COMMAND dingosdk_plugin_tests)
+endif()
+if(DINGOSDK_BUILD_PLUGIN_TESTS AND WIN32)
     # Tricks read from the score HUD's values (Extension/Skater/trick_watch.h), what plugins hear.
     add_executable(dingosdk_trick_watch_tests Extension/Skater/Test/trick_watch_tests.cpp Extension/Skater/trick_watch.cpp)
     target_include_directories(dingosdk_trick_watch_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME trick_watch COMMAND dingosdk_trick_watch_tests)
+    # The board's shader parameters (Extension/Customization/board_material.h): the walk over a board
+    # laid out as the game holds it, what plugins may set, and holding and putting back.
+    add_executable(dingosdk_board_material_tests Extension/Customization/Test/board_material_tests.cpp)
+    target_include_directories(dingosdk_board_material_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME board_material COMMAND dingosdk_board_material_tests)
 endif()
 get_property(project_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
 foreach(target IN LISTS project_targets)

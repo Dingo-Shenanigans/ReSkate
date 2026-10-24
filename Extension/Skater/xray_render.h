@@ -25,4 +25,7 @@ struct Picture {
 };
 // Render thread: the latest picture's, while the renderer draws the local skater.
 bool latest_picture(Picture& picture) noexcept;
+// Client tick: while true (and followed, follow_render), the local skater's draw packets go out
+// not visible, so this screen does not draw it; while hidden there is no picture.
+void hide_skater(bool hidden) noexcept;
 }

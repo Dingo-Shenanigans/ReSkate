@@ -210,6 +210,17 @@ std::set<std::uint64_t> ActivityLog::playing() const {
     return players;
 }
 
+bool ActivityLog::together(std::uint64_t a, std::uint64_t b) const {
+    for (const auto &[key, t] : throwdowns_) {
+        const auto in = [&](std::uint64_t player) {
+            return !t.quit.contains(player) && (key.first == player || std::ranges::find(t.queue, player) != t.queue.end() ||
+                                                std::ranges::find(t.players, player) != t.players.end());
+        };
+        if (in(a) && in(b)) return true;
+    }
+    return false;
+}
+
 void ActivityLog::left(std::uint64_t player) {
     name(player); // keep the name for results after they left
     for (auto it = throwdowns_.begin(); it != throwdowns_.end();) {

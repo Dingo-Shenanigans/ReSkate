@@ -1,5 +1,6 @@
 // The plugin host apart from the game: manifests, the reskate API, storage, modules, hot reload,
 // and the sandbox against plugins written to break it (loops, memory, error floods, escapes).
+#include "Extension/Plugins/plugin_content.h"
 #include "Extension/Plugins/plugin_discovery.h"
 #include "Extension/Plugins/plugin_host.h"
 #include "Extension/Plugins/plugin_manifest.h"
@@ -45,6 +46,13 @@ struct FakeGame final : Game {
         return {};
     }
     void outfit_clear(std::string_view plugin, std::string_view slot) override { calls.push_back(std::format("outfit clear {} {}", plugin, slot)); }
+    std::string camera_cycle(std::string_view plugin, CycleCamera place) override {
+        calls.push_back(std::format("cycle {} {}", plugin, place == CycleCamera::out ? "out" : place == CycleCamera::ready ? "ready" : "active"));
+        return {};
+    }
+    std::vector<CycleNews> cycle_news;
+    std::vector<CycleNews> take_camera_cycle() override { return std::exchange(cycle_news, {}); }
+    void hide_nametags(std::string_view plugin, bool hidden) override { calls.push_back(std::format("nametags {} {}", plugin, hidden ? "off" : "on")); }
     std::set<std::string, std::less<>> installed; // items found by their whole ending, as Pack/<ending>
     std::string outfit_find(std::string_view ending) override {
         if (installed.contains(ending)) return "Pack/" + std::string(ending);
@@ -60,8 +68,25 @@ struct FakeGame final : Game {
         calls.push_back(std::format("board {} {} {:.1f} {}", plugin, bone, value.position[1], world ? "world" : "local"));
         return {};
     }
-    std::string board_hide(std::string_view plugin, int bone) override { calls.push_back(std::format("board hide {} {}", plugin, bone)); return {}; }
+    std::string board_hide(std::string_view plugin, int bone, bool everyone) override {
+        calls.push_back(std::format("board hide {} {}{}", plugin, bone, everyone ? " everyone" : ""));
+        return {};
+    }
     void board_park(std::string_view plugin, std::vector<int> bones) override { calls.push_back(std::format("board park {} {}", plugin, bones.size())); }
+    std::optional<std::vector<BoardParameter>> board_parameters(int part) override {
+        if (part != 1) return std::vector<BoardParameter>{};
+        return std::vector<BoardParameter>{{0x873f48af36e50d59ULL, "colour", {.2f, .3f, .4f}, 0},
+                                           {0x841c7d74837f1d39ULL, "number", {1, 0, 0}, 0},
+                                           {0xb00abec403499469ULL, "integer", {}, 13},
+                                           {0xa5f9a6b8098279adULL, "switch", {}, 1}};
+    }
+    std::string board_set_parameter(std::string_view plugin, int part, std::uint64_t key, std::array<float, 3> value, bool colour) override {
+        calls.push_back(std::format("board parameter {} {} {:016x} {} {:.1f}", plugin, part, key, colour ? "colour" : "number", value[0]));
+        return {};
+    }
+    void board_clear_parameter(std::string_view plugin, int part, std::optional<std::uint64_t> key) override {
+        calls.push_back(std::format("board parameter clear {} {} {}", plugin, part, key ? std::format("{:016x}", *key) : "all"));
+    }
     // The general services a game layer in Lua reads and drives (plugin_api_services.cpp).
     std::optional<SkaterTelemetry> telemetry;
     std::optional<SkaterTelemetry> skater_telemetry(std::string_view) override { return telemetry; }
@@ -121,6 +146,10 @@ struct FakeGame final : Game {
         calls.push_back(std::format("xray {} {}", plugin, on ? "on" : "off"));
         return {};
     }
+    std::string hide_skater(std::string_view plugin, bool hidden) override {
+        calls.push_back(std::format("hide skater {} {}", plugin, hidden ? "on" : "off"));
+        return {};
+    }
     std::string hud_corner(std::string_view plugin, bool hidden) override {
         calls.push_back(std::format("corner {} {}", plugin, hidden ? "on" : "off"));
         return {};
@@ -129,12 +158,12 @@ struct FakeGame final : Game {
         calls.push_back(std::format("slow {} {:.2f}", plugin, speed));
         return {};
     }
-    std::string grind_exit(std::string_view plugin, std::optional<GrindExitWish> wish) override {
-        calls.push_back(wish ? std::format("grind {} {} {} {:.2f}", plugin, wish->side, wish->stance, wish->strength) : std::format("grind {} none", plugin));
+    std::string shape_launch(std::string_view plugin, std::string_view from, std::optional<LaunchShape> shape) override {
+        calls.push_back(std::format("launch {} {} {}", plugin, from, shape && shape->across ? std::format("{:.2f}", *shape->across) : "none"));
         return {};
     }
-    std::vector<GrindPop> pops;
-    std::vector<GrindPop> take_grind_pops(std::string_view) override { return std::exchange(pops, {}); }
+    std::vector<LaunchNews> launches;
+    std::vector<LaunchNews> take_launches() override { return std::exchange(launches, {}); }
     std::string hide_pad(std::string_view plugin, const PadHidden& h) override {
         calls.push_back(std::format("hide {} {} {} {}", plugin, h.left_trigger, h.right_trigger, h.left_x_grinding) +
                         (h.right_stick || h.left_stick_click || h.right_stick_click
@@ -146,8 +175,18 @@ struct FakeGame final : Game {
         return {};
     }
     std::optional<MouseMotion> mouse_motion(std::string_view) override { return MouseMotion{3, -2, 1}; }
-    std::string skater_pose(std::string_view plugin, const std::vector<JointOffset>& offsets, float weight) override {
+    static const char* shown_name(Shown shown) { return shown == Shown::others ? "others" : shown == Shown::me ? "me" : "everyone"; }
+    std::string skater_carry(std::string_view plugin, std::optional<Carry> c) override {
+        calls.push_back(c ? std::format("carry {} {}{} {:.1f} {:.1f} {:.1f} front {:.2f} grip {} w {:.2f} crouch {:.2f} hunch {:.2f} turn {:.2f} step {:.2f}{}{} {}",
+                                        plugin, c->left ? "left" : "right", c->both ? " both" : "", c->front[0], c->front[1], c->front[2],
+                                        c->front_from_grip[2], c->worn.has_value(), c->weight, c->crouch, c->hunch, c->turn, c->step,
+                                        c->still ? " still" : "", c->push_straightens ? " push" : "", shown_name(c->shown))
+                          : std::format("carry {} none", plugin));
+        return {};
+    }
+    std::string skater_pose(std::string_view plugin, const std::vector<JointOffset>& offsets, float weight, Shown shown) override {
         std::string text = std::format("pose {} {:.2f}", plugin, weight);
+        if (shown != Shown::everyone) text += std::format(" {}", shown_name(shown));
         auto sorted = offsets;
         std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.joint < b.joint; });
         for (const auto& o : sorted) text += std::format(" {}:{:.2f},{:.2f},{:.2f},{:.2f}x{:.2f}", o.joint, o.rotation[0], o.rotation[1], o.rotation[2], o.rotation[3], o.scale);
@@ -177,7 +216,8 @@ struct FakeGame final : Game {
     }
     std::string skater_reach(std::string_view plugin, std::optional<Reach> r) override {
         calls.push_back(r ? std::format("reach {} {} {:.1f} {:.1f} {:.1f} {} {:.2f}", plugin, r->left ? "left" : "right", r->at[0], r->at[1], r->at[2],
-                                        r->rotation.has_value(), r->weight)
+                                        r->rotation.has_value(), r->weight) +
+                                (r->shown != Shown::everyone ? std::format(" {}", shown_name(r->shown)) : std::string{})
                           : std::format("reach {} none", plugin));
         return {};
     }
@@ -223,6 +263,7 @@ struct FakeGame final : Game {
         return {};
     }
     std::optional<Vec3> board_velocity() override { return Vec3{1, -2, 3}; }
+    std::optional<Vec3> board_spin() override { return Vec3{0, 4, 0}; }
     std::optional<SlamNews> last_slam() override { return SlamNews{7.5f, 12, 100}; }
     std::string wipeout(float force) override {
         calls.push_back(std::format("wipeout {:.1f}", force));
@@ -239,14 +280,31 @@ struct FakeGame final : Game {
     // World objects as the fake keeps them: by plugin and id, ready at once unless hidden.
     std::map<std::pair<std::string, std::uint32_t>, std::pair<std::string, std::array<float, 16>>> entities;
     std::string entity_set(std::string_view plugin, std::uint32_t id, std::string_view asset, const std::array<float, 16>& m, bool hidden,
-                           std::optional<EntityAttach> attach) override {
+                           std::optional<EntityAttach> attach, bool solid) override {
         if (entities.size() >= 600) return "too many";
         entities[{std::string(plugin), id}] = {std::string(asset) + (hidden ? " hidden" : ""), m};
         calls.push_back(std::format("entity {} {} {} {:.2f} {:.2f} {:.2f} {:.2f}{}{}", plugin, id, asset, m[12], m[13], m[14], m[8], hidden ? " hidden" : "",
-                                    attach ? std::format(" on {} {}", attach->player, attach->joint) : std::string{}));
+                                    attach ? std::format(" on {} {}{}{}{}", attach->player, attach->joint, attach->upright ? " upright" : "", attach->turn ? "" : " held",
+                                                     attach->ground > 0 ? std::format(" ground {:.1f}", attach->ground) : std::string{}) : std::string{}) +
+                        (solid ? "" : " ghost"));
         return {};
     }
     void entity_remove(std::string_view plugin, std::uint32_t id) override { entities.erase({std::string(plugin), id}); }
+    std::optional<std::array<Vec3, 2>> entity_bounds(std::string_view blueprint) override {
+        if (blueprint != "World/Props/TrashCan_01") return std::nullopt;
+        return std::array<Vec3, 2>{Vec3{-0.3f, 0, -0.3f}, Vec3{0.3f, 0.9f, 0.3f}};
+    }
+    std::vector<std::string> entity_blueprints(std::string_view prefix, bool meshes_only) override {
+        std::vector<std::string> out;
+        for (const auto* name : {"World/Props/Bench_01", "World/Props/TrashCan_01", "World/Vehicles/Car_01"})
+            if (std::string_view(name).starts_with(prefix) && (!meshes_only || entity_bounds(name))) out.emplace_back(name);
+        return out;
+    }
+    std::optional<WorldPick> world_pick(const Vec3& from, const Vec3&) override {
+        if (from[1] > 50) return std::nullopt; // the sky: nothing met
+        WorldPick pick{{1, 0, 2}, true, std::array<float, 16>{0, 0, -1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 3, 1}, "World/Props/TrashCan_01"};
+        return pick;
+    }
     void entity_clear(std::string_view plugin) override {
         std::erase_if(entities, [&](const auto& e) { return e.first.first == plugin; });
         calls.push_back("entities clear " + std::string(plugin));
@@ -489,6 +547,53 @@ struct FakeGame final : Game {
         calls.push_back(std::format("announce {} {}", plugin, text));
         return {};
     }
+    std::optional<Role> role(std::uint64_t player) override {
+        if (player == 1) return Role{"moderator", 50, true};
+        return std::nullopt;
+    }
+    std::vector<ServerPark> server_parks() override { return {{"street", "San Vansterdam", true, true, 12, 5}, {"plaza", "Isle of Grom", false, false, 0, 0}}; }
+    std::string spawn_park(std::string_view plugin, std::string_view name, unsigned minutes) override {
+        calls.push_back(std::format("park spawn {} {} {}", plugin, name, minutes));
+        return name == "plaza" ? "plaza belongs on Isle of Grom, and the server is on San Vansterdam." : std::string{};
+    }
+    std::string remove_park(std::string_view plugin, std::string_view name) override {
+        calls.push_back(std::format("park remove {} {}", plugin, name));
+        return {};
+    }
+    std::string server_hide(std::string_view plugin, std::uint64_t target, const std::vector<std::uint64_t>& viewers, const Hiding& what) override {
+        calls.push_back(std::format("hide {} {} from {} skater {} voice {} sound {}", plugin, target, players_text(viewers), what.skater, what.voice,
+                                    what.sound));
+        return target == 9 ? "that player is not on the server" : std::string{};
+    }
+    std::string server_unhide(std::string_view plugin, std::uint64_t target, const std::vector<std::uint64_t>& viewers) override {
+        calls.push_back(std::format("unhide {} {} from {}", plugin, target, players_text(viewers)));
+        return {};
+    }
+    static std::string players_text(const std::vector<std::uint64_t>& players) {
+        std::string text;
+        for (const auto id : players) text += (text.empty() ? "" : ",") + std::to_string(id);
+        return text.empty() ? "all" : text;
+    }
+    std::string server_card(std::string_view plugin, const std::vector<std::uint64_t>& players, std::string_view text, unsigned seconds) override {
+        calls.push_back(std::format("card {} {} {} {}", plugin, players_text(players), text, seconds));
+        return {};
+    }
+    std::uint32_t next_poll = 41;
+    std::string server_poll(std::string_view plugin, const std::vector<std::uint64_t>& players, std::string_view question,
+                            const std::vector<std::string>& answers, unsigned seconds, std::uint32_t& id) override {
+        std::string listed;
+        for (const auto& answer : answers) listed += (listed.empty() ? "" : "|") + answer;
+        calls.push_back(std::format("poll {} {} {} {} {}", plugin, players_text(players), question, listed, seconds));
+        if (players == std::vector<std::uint64_t>{9}) return "that player is not on the server";
+        id = next_poll++;
+        return {};
+    }
+    std::string server_poll_close(std::string_view plugin, std::uint32_t id) override {
+        calls.push_back(std::format("poll close {} {}", plugin, id));
+        return {};
+    }
+    std::vector<PollNews> poll_news;
+    std::vector<PollNews> take_poll_news() override { return std::exchange(poll_news, {}); }
     std::optional<CameraView> camera_view() override { return CameraView{{1, 2, 3}, {0, 0, 1}, 60}; }
     std::string set_camera(std::string_view plugin, const std::array<float, 16>& pose, float fov) override {
         calls.push_back(std::format("camera {} {:.1f} {:.1f} {:.1f} back {:.2f} {:.2f} {:.2f} fov {:.0f}", plugin, pose[12], pose[13], pose[14],
@@ -769,6 +874,9 @@ void a_plugin_loads_ticks_runs_its_commands_and_unloads() {
             reskate.console.print("hello " .. table.concat(args, ",") .. " after " .. ticks)
         end)
         print("printed", 1, true)
+        reskate.console.command("greet", "Greets", function(args) reskate.console.print("greet " .. (args[1] or "")) end,
+            {{name = "loud", args = "[name]", help = "Greets loudly"}, {name = "soft"}})
+        assert(not pcall(reskate.console.command, "bad", "x", function() end, {{name = "Two Words"}}), "a subcommand is one word")
     )", R"("console")")});
     running(host, "hello", environment);
     check(environment.logged("[hello] loaded hello api 1"), "The load handler ran\n" + environment.all());
@@ -778,7 +886,14 @@ void a_plugin_loads_ticks_runs_its_commands_and_unloads() {
     check(environment.printed("hello a,b after 3"), "with its arguments, after its ticks");
     check(host.run_console("HELLO There"), "whatever the case");
     check(!host.run_console("nothing here"), "and other text is left to ReSkate");
-    check(status_of(host, "hello").commands.size() == 1, "Its command is listed");
+    check(status_of(host, "hello").commands.size() == 4, "Its commands are listed, with the subcommands one declared");
+    {
+        const auto commands = status_of(host, "hello").commands;
+        check(std::any_of(commands.begin(), commands.end(),
+                          [](const auto& c) { return c.name == "greet loud" && c.args == "[name]" && c.help == "Greets loudly"; }),
+              "A subcommand is listed with its arguments and help");
+    }
+    check(host.run_console("greet loud") && environment.printed("greet loud"), "and its command's function runs it");
     host.apply({});
     check(environment.logged("[hello] bye after 3"), "Unloading runs its unload handler");
     check(host.status().empty(), "and it is gone");
@@ -803,6 +918,10 @@ void a_permission_must_be_declared() {
         assert(not ok and err:find("needs the \"skater.control\" permission"), err)
         ok, err = pcall(reskate.mods.content, "parks")
         assert(not ok and err:find("needs the \"mods.read\" permission"), err)
+        ok, err = pcall(reskate.board.set_parameter, "grip", "graphic", {r = 1, g = 0, b = 0})
+        assert(not ok and err:find("needs the \"board\" permission"), err)
+        ok, err = pcall(reskate.board.parameters, "deck")
+        assert(not ok and err:find("needs the \"board\" permission"), err)
         reskate.console.print("never")
     )")});
     stopped(host, "bare", "raised an error");
@@ -1220,6 +1339,48 @@ void plugins_place_world_entities() {
     check(environment.logged("[sneaky] false"), "world.entities is needed\n" + environment.all());
 }
 
+// What a prop hunt needs: the props this map has, the one a ray meets (to become it), wearing it
+// upright on another player, and your own skater hidden on your screen.
+void plugins_have_what_a_prop_hunt_needs() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    Host host(environment, Side::client);
+    const std::string main = R"(
+        local props = reskate.entities.blueprints("World/Props/")
+        assert(#props == 2 and props[1] == "World/Props/Bench_01", "the props loaded, by their names' start")
+        assert(#reskate.entities.blueprints() == 3, "all of them")
+        local shown = reskate.entities.blueprints("", true)
+        assert(#shown == 1 and shown[1] == "World/Props/TrashCan_01", "only those with a mesh")
+        local low, high = reskate.entities.bounds("World/Props/TrashCan_01")
+        assert(low.y == 0 and math.abs(high.y - 0.9) < 1e-5, "its box")
+        assert(reskate.entities.bounds("World/Vehicles/Car_01") == nil, "none without a mesh")
+        local hit = reskate.world.pick(vector.create(0, 2, 0), vector.create(0, -2, 0))
+        assert(hit and hit.position.z == 2 and hit.object.blueprint == "World/Props/TrashCan_01", "the object a ray meets")
+        assert(math.abs(hit.object.heading - math.pi / 2) < 1e-4 and hit.object.position.z == 3, "where it is and how it is turned")
+        assert(#hit.object.transform.matrix == 16)
+        assert(reskate.world.pick(vector.create(0, 60, 0), vector.create(0, 70, 0)) == nil, "nothing met")
+        assert(reskate.entities.set(1, hit.object.blueprint, hit.object.transform, false,
+            {player = "76561198000000001", joint = "root", upright = true}), "worn upright, at the feet")
+        assert(reskate.entities.set(2, hit.object.blueprint, {position = vector.create(0, 0, 0), yaw = 45}, false,
+            {joint = "root", turn = false}), "turned as the mod says, whatever the skater does")
+        assert(reskate.entities.set(3, hit.object.blueprint, {position = vector.create(0, 0, 0)}, false,
+            {joint = "hips", turn = false, ground = 1.5}, {solid = false}), "on the floor, not solid")
+        assert(not pcall(reskate.entities.set, 4, hit.object.blueprint, {position = vector.create(0, 0, 0)}, false, {joint = "hips", ground = 80}),
+            "the floor within 50 m")
+        assert(reskate.skater.hide(true))
+        reskate.log("disguised")
+    )";
+    host.apply({package("prophunt", {{manifest_file, manifest(R"("world.entities", "world.raycast", "skater.control")")}, {"plugin/main.lua", main}})});
+    ticks(host, environment, 1);
+    running(host, "prophunt", environment);
+    check(environment.logged("[prophunt] disguised"), "A prop hunt finds, becomes and wears a prop\n" + environment.all());
+    check(game.called("entity prophunt 1 World/Props/TrashCan_01 1.00 0.00 3.00 1.00 on 76561198000000001 1 upright"),
+          "the prop on the hider's hips, upright\n" + environment.all());
+    check(game.called("hide skater prophunt on"), "your own skater hidden");
+    check(game.called("entity prophunt 2 World/Props/TrashCan_01 0.00 0.00 0.00 0.71 on 0 1 held"), "a prop the skater does not turn\n" + environment.all());
+    check(game.called("entity prophunt 3 World/Props/TrashCan_01 0.00 0.00 0.00 0.00 on 0 7 held ground 1.5 ghost"), "on the floor and not solid\n" + environment.all());
+}
+
 // What a camera mode needs (the Filmer): an arm that reaches, where the hand is, cruise control, the
 // mouse, and the right stick and stick clicks kept from the game.
 void plugins_reach_cruise_and_read_the_mouse() {
@@ -1273,6 +1434,71 @@ void plugins_reach_cruise_and_read_the_mouse() {
     ticks(host, environment, 1);
     check(environment.logged("[sneaky] false false false false false"),
           "skater.animation, skater.read, skater.control, input and overlay are needed\n" + environment.all());
+}
+
+// What the Filmer's port needs besides: something carried (seen by the others only), a pose only you
+// see, a step in the camera height cycle and its event, the nametags held off, the board hidden from
+// everyone, and a camcorder in the hand wear slot.
+void plugins_carry_and_take_a_step_in_the_camera_cycle() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    Host host(environment, Side::client);
+    const std::string main = R"(
+        local steps = {}
+        reskate.on("camera_cycle", function(step) table.insert(steps, step) end)
+        assert(reskate.skater.carry({at = vector.create(1, 2, 3), rotation = {0, 1, 0, 0}, both = true, front = vector.create(0, -0.143, -0.248),
+            grip = {rotation = {0.5, -0.5, 0.5, 0.5}, offset = vector.create(0.12, 0.04, -0.03)}, crouch = 0.22, hunch = 1.0, turn = 0.5,
+            step = 0.5, step_phase = 1.25, still = true, push_straightens = true, weight = 0.75, shown = "others"}))
+        assert(reskate.skater.carry({hand = "left", at = vector.create(0, 1, 0), rotation = {0, 0, 0, 1}}))
+        assert(reskate.skater.carry(nil))
+        assert(not pcall(reskate.skater.carry, {at = vector.create(0, 1, 0)}), "a carry needs a rotation")
+        assert(not pcall(reskate.skater.carry, {at = vector.create(0, 1, 0), rotation = {0, 0, 0, 1}, crouch = 1}), "a crouch is 0 to 0.6 m")
+        assert(not pcall(reskate.skater.carry, {at = vector.create(0, 1, 0), rotation = {0, 0, 0, 1}, shown = "them"}), "shown is everyone, others or me")
+        assert(reskate.skater.pose({[48] = {scale = 0}}, 1, {shown = "me"}))
+        assert(reskate.skater.reach({at = vector.create(1, 2, 3), shown = "others"}))
+        assert(reskate.camera.cycle("ready") and reskate.camera.cycle("active") and reskate.camera.cycle(nil))
+        assert(not pcall(reskate.camera.cycle, "on"), "ready or active")
+        reskate.session.nametags(false)
+        reskate.session.nametags(true)
+        assert(reskate.board.hide(2, {others = true}))
+        assert(reskate.outfit.set("handwear_l", "Own_HandwearGlove_Gen_GloveFingerless_00001"))
+        local ok, why = reskate.outfit.set("shoes", "Own_Shoes_00001")
+        assert(not ok and why == "only tattoo, moles, eyewear and hand wear slots", why)
+        assert(reskate.input.bind("toggle") and reskate.input.bind("slap", "Pad.LB"), "an action with no key of its own, and one with")
+        reskate.on("tick", function()
+            if #steps > 0 then reskate.log("steps " .. table.concat(steps, " ")) steps = {} end
+        end)
+        reskate.log("carried")
+    )";
+    host.apply({package("filmer", {{manifest_file, manifest(R"("skater.animation", "camera", "session.nametags", "board", "outfit", "input")")},
+                                   {"plugin/main.lua", main}})});
+    ticks(host, environment, 1);
+    running(host, "filmer", environment);
+    check(environment.logged("[filmer] carried"), "The calls work\n" + environment.all());
+    check(game.called("carry filmer right both 1.0 2.0 3.0 front -0.25 grip true w 0.75 crouch 0.22 hunch 1.00 turn 0.50 step 0.50 still push others") &&
+              game.called("carry filmer left 0.0 1.0 0.0 front 0.00 grip false w 1.00 crouch 0.00 hunch 0.00 turn 0.00 step 0.00 everyone") &&
+              game.called("carry filmer none"),
+          "Carried in both hands for the others, in one, and let go\n" + environment.all());
+    check(game.called("pose filmer 1.00 me 48:0.00,0.00,0.00,1.00x0.00") && game.called("reach filmer right 1.0 2.0 3.0 false 1.00 others"),
+          "A pose only you see, a reach only the others see\n" + environment.all());
+    check(game.called("cycle filmer ready") && game.called("cycle filmer active") && game.called("cycle filmer out"), "In the cycle, on, and out");
+    check(game.called("nametags filmer off") && game.called("nametags filmer on"), "The nametags held off and given back");
+    check(game.called("board hide filmer 2 everyone"), "The board hidden from everyone");
+    check(game.called("outfit filmer handwear_l Own_HandwearGlove_Gen_GloveFingerless_00001 0 false"), "A camcorder in the hand wear slot");
+    check(game.binds.contains("filmer/toggle") && game.binds["filmer/toggle"] == 0 && game.binds["filmer/slap"] == combo_of("Pad.LB"),
+          "An action the player puts on a key themselves");
+    // The button's steps reach the plugin in the cycle, and nobody else.
+    game.cycle_news = {{"filmer", true}, {"someone", false}, {"filmer", false}};
+    ticks(host, environment, 2);
+    check(environment.logged("[filmer] steps enter leave"), "The camera cycle's steps as events\n" + environment.all());
+    // Each needs its permission.
+    host.apply({package("sneaky", {{manifest_file, manifest()}, {"plugin/main.lua", R"(
+        reskate.log(tostring(pcall(reskate.skater.carry, {at = vector.create(0, 0, 0), rotation = {0, 0, 0, 1}})) .. " " ..
+            tostring(pcall(reskate.camera.cycle, "ready")) .. " " .. tostring(pcall(reskate.session.nametags, false)) .. " " ..
+            tostring(pcall(reskate.on, "camera_cycle", function() end)))
+    )"}})});
+    ticks(host, environment, 1);
+    check(environment.logged("[sneaky] false false false false"), "skater.animation, camera and session.nametags are needed\n" + environment.all());
 }
 
 // Reading a skater's joints, and the physics tuning read and set.
@@ -1554,11 +1780,17 @@ void plugins_draw_on_the_overlay() {
             local on = d:world_to_screen(vector.create(1, 0, -10))
             assert(on and math.abs(on.x - 1060) < 0.01 and math.abs(on.z - 10) < 0.01, "world_to_screen")
             assert(d:world_to_screen(vector.create(0, 0, 5)) == nil, "behind the camera")
+            -- Just in front of the camera and off to the side the point is millions of pixels
+            -- out, which d:poly would refuse.
+            assert(d:world_to_screen(vector.create(1000, 0, -0.06)) == nil, "far off the screen")
+            assert(d:world_to_screen(vector.create(0, 1000, -0.06)) == nil, "far above the screen")
+            assert(d:world_to_screen(vector.create(1, 0, -0.06)), "off the screen but drawable")
             assert(d:size().x == 1920 and d:size().y == 1080)
             assert(not pcall(d.text, d, vector.create(0, 0, 0), "x", {colour = "red"}), "a colour by name")
             assert(not pcall(d.text, d, vector.create(0 / 0, 0, 0), "x"), "NaN")
             assert(not pcall(d.poly, d, {vector.create(0, 0, 0)}), "a polygon of one point")
             assert(not pcall(d.text, d, vector.create(0, 0, 0), string.rep("x", 600)), "a long text")
+            reskate.log("drawn")
         end)
         reskate.console.command("outside", "x", function()
             local ok, err = pcall(saved.text, saved, vector.create(0, 0, 0), "x")
@@ -1582,6 +1814,7 @@ void plugins_draw_on_the_overlay() {
     running(host, "painter", environment);
     check(environment.layers.size() == 1 && environment.layers[0].plugin == "painter" && environment.layers[0].shapes.size() == 8,
           "Its shapes are handed to the overlay each tick\n" + environment.all());
+    check(environment.logged("drawn"), "and the draw handler ran to its end\n" + environment.all());
     const auto& first = environment.layers[0].shapes[0];
     check(first.kind == plugin_ui::Shape::Kind::text && first.text == "hello" && first.style.colour == 0xff0080ff &&
           first.style.size == 24 && first.style.align == 1, "with their style (colours as ImGui keeps them)");
@@ -1881,6 +2114,190 @@ void plugins_server_copies_are_the_authority() {
     running(player_host, "mode-p", player);
 }
 
+// A dedicated server's park mods, for a server copy with server.parks: listed, spawned and removed
+// as the server's park-mod does. Not for a copy without the permission, nor for a player's copy.
+// One player hidden from others, for a server copy with "server": wholly (skater, name, voice,
+// sound) or only their voice or sound, from a player, a list of them or "all", and shown again.
+// Not for a copy without the permission, nor for a player's copy.
+void plugins_server_copies_hide_players() {
+    TestEnvironment server, player, blind;
+    const std::string main = R"(
+        reskate.console.command("hide", "x", function()
+            assert(reskate.server.hide("7", "all"))
+            assert(reskate.server.hide({id = "7"}, {"8", {id = "5"}}))
+            assert(reskate.server.hide("7", "8", {skater = false, voice = true, sound = false}))
+            assert(reskate.server.hide("7", "8", {skater = false, sound = true}))
+            assert(reskate.server.hide("7", "8", {skater = true, name = true}))
+            local ok, why = reskate.server.hide("9", "8")
+            assert(not ok and why == "that player is not on the server", tostring(why))
+            assert(reskate.server.unhide("7", "8"))
+            assert(reskate.server.unhide("7"))
+            assert(not pcall(reskate.server.hide, "7"), "who it is hidden from")
+            assert(not pcall(reskate.server.hide, "7", {}), "at least one viewer")
+            assert(not pcall(reskate.server.hide, "7", "8", {skater = false, voice = false, sound = false}), "it hides something")
+            assert(not pcall(reskate.server.hide, "7", "8", {skater = true, voice = false}), "a hidden skater's voice goes too")
+            assert(not pcall(reskate.server.hide, "7", "8", {skater = false, name = true}), "the name goes with the skater")
+            assert(not pcall(reskate.server.hide, "7", "8", {colour = true}), "only skater, name, voice and sound")
+            assert(not pcall(reskate.server.hide, "7", "8", {skater = "yes"}), "true or false")
+            assert(not pcall(reskate.server.unhide, "nobody"), "a player")
+            reskate.log("hide done")
+        end)
+    )";
+    const auto hider = [&](const char* id, const char* permissions, const char* side) {
+        return package(id, {{manifest_file, manifest(permissions, side)}, {"plugin/main.lua", main}});
+    };
+    Host server_host(server, Side::server), player_host(player, Side::client), blind_host(blind, Side::server);
+    server_host.apply({hider("hide-s", R"("console", "server")", "server")});
+    player_host.apply({hider("hide-p", R"("console", "server")", "client")});
+    blind_host.apply({hider("hide-b", R"("console")", "server")});
+    for (auto* host : {&server_host, &player_host, &blind_host}) host->run_console("hide");
+    check(server.logged("[hide-s] hide done"), "A server copy could not hide players\n" + server.all());
+    for (const auto* call : {"hide hide-s 7 from all skater true voice true sound true", "hide hide-s 7 from 8,5 skater true voice true sound true",
+                             "hide hide-s 7 from 8 skater false voice true sound false", "hide hide-s 7 from 8 skater false voice true sound true",
+                             "hide hide-s 9 from 8 skater true voice true sound true", "unhide hide-s 7 from 8", "unhide hide-s 7 from all"})
+        check(server.fake.called(call), std::string("The server was asked: ") + call + "\n" + server.all());
+    check(!server.fake.called("hide hide-s 7 from 8 skater false voice false sound false") && !server.fake.called("unhide hide-s 0"),
+          "A refused call reached the server");
+    check(!player.logged("hide done") && player.all().find("server copy") != std::string::npos, "A player's copy hid players\n" + player.all());
+    check(!blind.logged("hide done") && blind.all().find("\"server\"") != std::string::npos, "A plugin without server hid players\n" + blind.all());
+    running(server_host, "hide-s", server);
+}
+
+void plugins_server_copies_spawn_park_mods() {
+    TestEnvironment server, player, blind;
+    const std::string main = R"(
+        reskate.console.command("parks", "x", function()
+            local list = reskate.server.parks()
+            assert(#list == 2 and list[1].name == "street" and list[1].here and list[1].spawned and list[1].objects == 12 and list[1].minutes_left == 5)
+            assert(list[2].map == "Isle of Grom" and not list[2].here and not list[2].spawned)
+            assert(reskate.server.park_spawn("street", 30))
+            assert(reskate.server.park_spawn("street"))
+            local ok, why = reskate.server.park_spawn("plaza")
+            assert(not ok and why:find("belongs on Isle of Grom"), why)
+            assert(reskate.server.park_remove("street"))
+            assert(not pcall(reskate.server.park_spawn, "Street"), "a park mod's name, lower case")
+            assert(not pcall(reskate.server.park_spawn, "street 5; map grom"), "one name and nothing else")
+            assert(not pcall(reskate.server.park_spawn, "street", 0), "minutes 1 to 1440")
+            assert(not pcall(reskate.server.park_spawn, "street", 1441), "minutes 1 to 1440")
+            reskate.log("parks done")
+        end)
+    )";
+    const auto parks = [&](const char* id, const char* permissions, const char* side) {
+        return package(id, {{manifest_file, manifest(permissions, side)}, {"plugin/main.lua", main}});
+    };
+    Host server_host(server, Side::server), player_host(player, Side::client), blind_host(blind, Side::server);
+    server_host.apply({parks("parks-s", R"("console", "server.parks")", "server")});
+    player_host.apply({parks("parks-p", R"("console", "server.parks")", "client")});
+    blind_host.apply({parks("parks-b", R"("console", "server")", "server")});
+    for (auto* host : {&server_host, &player_host, &blind_host}) host->run_console("parks");
+    check(server.logged("[parks-s] parks done"), "A server copy could not use the park mods\n" + server.all());
+    check(server.fake.called("park spawn parks-s street 30") && server.fake.called("park spawn parks-s street 0") &&
+              server.fake.called("park spawn parks-s plaza 0") && server.fake.called("park remove parks-s street"),
+          "The spawns and removal did not reach the server, by the plugin's id");
+    check(!server.fake.called("park spawn parks-s Street") && !server.fake.called("park spawn parks-s street 1441"), "A refused call reached the server");
+    check(!player.logged("parks done") && player.all().find("server copy") != std::string::npos,
+          "A player's copy used the server's park mods\n" + player.all());
+    check(!blind.logged("parks done") && blind.all().find("server.parks") != std::string::npos,
+          "A plugin without server.parks used the park mods\n" + blind.all());
+}
+
+// A player's role, for a server copy with server: read-only, nil for one with none. Not for a copy
+// without the permission, nor for a player's copy.
+void plugins_server_copies_see_roles() {
+    TestEnvironment server, player, blind;
+    for (auto* environment : {&server, &player, &blind}) environment->session_now = {true, false, {{1, "Ann", false, false}, {2, "Bob", false, false}}};
+    const std::string main = R"(
+        reskate.console.command("roles", "x", function()
+            local ann, bob = reskate.session.players()[1], reskate.session.players()[2]
+            local role = ann.role
+            assert(role and role.name == "moderator" and role.rank == 50 and role.staff == true)
+            assert(not pcall(function() role.rank = 1000 end), "read-only")
+            assert(bob.role == nil, "nil with no role")
+            reskate.log("roles done")
+        end)
+    )";
+    const auto roles = [&](const char* id, const char* permissions, const char* side) {
+        return package(id, {{manifest_file, manifest(permissions, side)}, {"plugin/main.lua", main}});
+    };
+    Host server_host(server, Side::server), player_host(player, Side::client), blind_host(blind, Side::server);
+    server_host.apply({roles("roles-s", R"("console", "session.read", "server")", "server")});
+    player_host.apply({roles("roles-p", R"("console", "session.read", "server")", "client")});
+    blind_host.apply({roles("roles-b", R"("console", "session.read")", "server")});
+    // a tick first: the host takes the session's players then (Host::follow_session), so they are there to ask
+    ticks(server_host, server, 1);
+    ticks(player_host, player, 1);
+    ticks(blind_host, blind, 1);
+    for (auto* host : {&server_host, &player_host, &blind_host}) host->run_console("roles");
+    check(server.logged("[roles-s] roles done"), "A server copy could not read the players' roles\n" + server.all());
+    check(!player.logged("roles done") && player.all().find("server copy") != std::string::npos,
+          "A player's copy read the players' roles\n" + player.all());
+    check(!blind.logged("roles done") && blind.all().find("\"server\"") != std::string::npos,
+          "A plugin without server read the players' roles\n" + blind.all());
+}
+
+// Cards and polls on players' screens, for a server copy with "server": for a player, a list of
+// them or "all", with checked text, and each answer or close coming back as an event to the plugin
+// that asked. Not for a copy without the permission, nor for a player's copy.
+void plugins_server_copies_show_cards_and_polls() {
+    TestEnvironment server, player, blind;
+    const std::string main = R"(
+        local heard = pcall(reskate.on, "poll_answer", function(e)
+            reskate.log(string.format("answer %d %s %d %s", e.id, e.player, e.answer, e.text))
+        end)
+        pcall(reskate.on, "poll_closed", function(e) reskate.log(string.format("closed %d %s %s", e.id, e.player, e.why)) end)
+        if not heard then reskate.log("no poll events") end
+        reskate.console.command("cards", "x", function()
+            assert(reskate.server.card("all", "Race in 30 s"))
+            assert(reskate.server.card({"7", {id = "8"}}, "Ready?", 5))
+            assert(reskate.server.card({id = "7"}, "Go"))
+            local id = assert(reskate.server.poll("all", "Next track?", {"Docks", "Hill"}, {seconds = 20}))
+            assert(id == 41, tostring(id))
+            assert(reskate.server.poll("7", "Again?", {"Yes", "No", "Later"}) == 42)
+            local none, why = reskate.server.poll("9", "Anyone?", {"a", "b"})
+            assert(none == nil and why == "that player is not on the server", tostring(why))
+            assert(reskate.server.poll_close(41))
+            assert(not pcall(reskate.server.card, "all", ""), "a card says something")
+            assert(not pcall(reskate.server.card, "all", string.rep("x", 121)), "120 characters at most")
+            assert(not pcall(reskate.server.card, "all", "x", 0), "1 to 60 s")
+            assert(not pcall(reskate.server.card, "all", "x", 61), "1 to 60 s")
+            assert(not pcall(reskate.server.card, "everyone", "x"), "a player, a list of them or all")
+            assert(not pcall(reskate.server.card, {}, "x"), "at least one player")
+            assert(not pcall(reskate.server.poll, "all", "", {"a", "b"}), "a question")
+            assert(not pcall(reskate.server.poll, "all", "q?", {"only one"}), "2 to 6 answers")
+            assert(not pcall(reskate.server.poll, "all", "q?", {"1", "2", "3", "4", "5", "6", "7"}), "2 to 6 answers")
+            assert(not pcall(reskate.server.poll, "all", "q?", {"a", string.rep("x", 49)}), "48 characters an answer at most")
+            assert(not pcall(reskate.server.poll, "all", "q?", {"a", ""}), "an answer says something")
+            assert(not pcall(reskate.server.poll, "all", "q?", {"a", "b"}, {seconds = 4}), "5 to 300 s")
+            assert(not pcall(reskate.server.poll_close, "x"), "a poll's id")
+            reskate.log("cards done")
+        end)
+    )";
+    const auto cards = [&](const char* id, const char* permissions, const char* side) {
+        return package(id, {{manifest_file, manifest(permissions, side)}, {"plugin/main.lua", main}});
+    };
+    Host server_host(server, Side::server), player_host(player, Side::client), blind_host(blind, Side::server);
+    server_host.apply({cards("cards-s", R"("console", "server")", "server")});
+    player_host.apply({cards("cards-p", R"("console", "server")", "client")});
+    blind_host.apply({cards("cards-b", R"("console")", "server")});
+    for (auto* host : {&server_host, &player_host, &blind_host}) host->run_console("cards");
+    check(server.logged("[cards-s] cards done"), "A server copy could not show cards and polls\n" + server.all());
+    for (const auto* call : {"card cards-s all Race in 30 s 0", "card cards-s 7,8 Ready? 5", "card cards-s 7 Go 0",
+                             "poll cards-s all Next track? Docks|Hill 20", "poll cards-s 7 Again? Yes|No|Later 0", "poll close cards-s 41"})
+        check(server.fake.called(call), std::string("The server was asked: ") + call + "\n" + server.all());
+    check(!server.fake.called("card cards-s all  0") && !server.fake.called("poll cards-s all q? only one 0"), "A refused call reached the server");
+    // Answers and closes, each to the plugin that asked.
+    server.fake.poll_news = {{"cards-s", 41, 7, 2, "Hill", ""}, {"cards-s", 42, 7, 0, "", "timeout"}, {"someone", 50, 8, 1, "Docks", ""}};
+    ticks(server_host, server, 1);
+    check(server.logged("[cards-s] answer 41 7 2 Hill") && server.logged("[cards-s] closed 42 7 timeout"),
+          "The plugin hears its polls answered and closed\n" + server.all());
+    check(!server.logged("answer 50"), "and only its own");
+    check(!player.logged("cards done") && player.all().find("server copy") != std::string::npos,
+          "A player's copy showed cards\n" + player.all());
+    check(!blind.logged("cards done") && blind.all().find("\"server\"") != std::string::npos && blind.logged("no poll events"),
+          "A plugin without server showed cards or heard polls\n" + blind.all());
+    running(server_host, "cards-s", server);
+}
+
 // Clips on the skater's body: from the package or recorded, played, replacing a trick.
 void plugins_animate_the_skater() {
     TestEnvironment environment;
@@ -2037,10 +2454,27 @@ void the_wider_set_reaches_the_game() {
             assert(reskate.board.hide(3))
             reskate.board.park({12, 13, 14, 15})
             assert(reskate.board.toss({12, 4}, {velocity = vector.create(1, 3, 0), spin = vector.create(0, 5, 0), ground = -2}))
+            local grip = reskate.board.parameters("grip")
+            assert(#grip == 4 and grip[1].key == "873f48af36e50d59" and grip[1].name == "graphic" and grip[1].type == "colour", "the grip's parameters")
+            assert(math.abs(grip[1].value.g - 0.3) < 1e-6 and grip[2].value == 1 and grip[2].name == nil, "a colour and a number")
+            assert(grip[3].type == "integer" and grip[3].value == 13 and grip[4].type == "switch" and grip[4].value == true, "an integer and a switch")
+            assert(#reskate.board.parameters("wheels") == 0)
+            assert(reskate.board.set_parameter("grip", "graphic", {r = 1, g = 0, b = 0}))
+            assert(reskate.board.set_parameter("deck", "841C7D74837F1D39", 2.5))
+            assert(not pcall(reskate.board.parameters, "rail"), "a part is one of four")
+            assert(not pcall(reskate.board.set_parameter, "grip", "123", 1), "a key is 16 hex digits")
+            assert(not pcall(reskate.board.set_parameter, "grip", "graphic", {r = 1}), "a colour has three channels")
+            assert(not pcall(reskate.board.set_parameter, "grip", "graphic", math.huge), "a value is finite")
+            reskate.board.clear_parameter("grip", "base")
+            reskate.board.clear_parameter()
             reskate.log("deck fine")
         end)
         reskate.console.command("physics", "x", function()
             assert(reskate.board.motion().velocity.y == -2)
+            local m = reskate.board.motion()
+            assert(m.spin.y == 4, "the board's spin")
+            assert(m.place.position.y == 0 and m.place.rotation[4] == 1, "where the board is")
+            assert(math.abs(m.deck.position.y - 0.1) < 1e-6, "and its deck, on the board's place")
             assert(reskate.skater.wipeout(2))
             local again, two = reskate.skater.wipeout(2)
             assert(not again and two:find("2 s"), "one wipeout every 2 s")
@@ -2163,6 +2597,9 @@ void the_wider_set_reaches_the_game() {
     check(environment.logged("[wide] deck fine") && game.called("board wide 12 2.0 world") && game.called("board hide wide 3") &&
               game.called("board park wide 4") && game.called("board toss wide 2 3 -2"),
           "A plugin changes what is drawn of the board\n" + environment.all());
+    check(game.called("board parameter wide 1 873f48af36e50d59 colour 1.0") && game.called("board parameter wide 0 841c7d74837f1d39 number 2.5") &&
+              game.called("board parameter clear wide 1 8c46cd354b18a9e2") && game.called("board parameter clear wide -1 all"),
+          "and holds its shader parameters\n" + environment.all());
     host.run_console("physics");
     check(environment.logged("[wide] physics fine") && game.called("wipeout 2.0"), "The board's motion reads, and a wipeout is asked for\n" + environment.all());
     ticks(host, environment, 10);
@@ -2639,6 +3076,54 @@ void a_plugin_reads_the_content_folder_it_names() {
     check(environment.printed("content ok") && game.called("content list parks"), "The plugin reads its content folder\n" + environment.all());
 }
 
+// What the game and a dedicated server read for mods.content (plugin_content.h), from real folders:
+// every mod folder in a Mods folder by name, each one's files under the folder asked for, and the
+// limits a plugin cannot get past.
+void content_is_read_from_the_mod_folders() {
+    namespace content = dingosdk::plugins::content;
+    const auto mods = scratch / "content mods";
+    const auto write = [](const std::filesystem::path& file, const std::string& text) {
+        std::filesystem::create_directories(file.parent_path());
+        std::ofstream(file, std::ios::binary) << text;
+    };
+    write(mods / "b_track" / "parks" / "start.json", "{}");
+    write(mods / "b_track" / "parks" / "deep" / "a" / "b" / "c" / "level4.json", "{}");
+    write(mods / "b_track" / "parks" / "deep" / "a" / "b" / "c" / "d" / "level5.json", "{}");
+    write(mods / "b_track" / "parks" / "half.tmp", "");
+    write(mods / "b_track" / "parks" / "big.json", std::string((1u << 20) + 1, ' '));
+    write(mods / "b_track" / "manifest.json", R"({"name": "B Track", "version_number": "1.0.0"})");
+    write(mods / "A_Park" / "parks" / "z.json", "zz");
+    write(mods / "A_Park" / "reskate-levels.json", "{}");
+    write(mods / "no parks" / "manifest.json", "not JSON");
+    write(mods / ".reskate_plugin_data" / "parks" / "secret.json", "{}");
+    write(mods / "loose.json", "{}");
+
+    const auto found = content::mod_folders(mods);
+    check(found.size() == 3 && found[0].name == "A_Park" && found[1].name == "b_track" && found[2].name == "no parks",
+          "Every mod folder, by name, none hidden");
+    check(found[0].title == "A_Park" && found[1].title == "B Track" && found[2].title == "no parks", "titled as their manifest names them");
+    check(content::mod_folders(scratch / "no such folder").empty(), "No Mods folder, no mods");
+
+    std::vector<Game::ContentFile> files;
+    content::list(found, "parks", files);
+    std::string listed;
+    for (const auto& file : files) listed += std::format("{}:{}:{} ", file.mod, file.path, file.size);
+    check(listed == std::format("A_Park:z.json:2 b_track:big.json:{} b_track:deep/a/b/c/level4.json:2 b_track:start.json:2 ", (1u << 20) + 1),
+          "Mod by mod, sorted, four folders deep at most, no .tmp: " + listed);
+
+    std::string text;
+    check(content::read(found, "B_TRACK", "parks", "start.json", text).empty() && text == "{}", "A file is read, the mod named in any case");
+    check(content::read(found, "b_track", "parks", "missing.json", text) == "not found", "A missing file");
+    check(content::read(found, "b_track", "parks", "big.json", text) == "the file is larger than 1 MB", "A file over 1 MB");
+    check(content::read(found, "nobody", "parks", "start.json", text) == "no such mod is on", "A mod that is not there");
+    check(content::read(found, ".reskate_plugin_data", "parks", "secret.json", text) == "no such mod is on", "A hidden folder is no mod");
+
+    for (int i = 0; i < 1005; ++i) write(mods / "c_many" / "parks" / std::format("{:04}.json", i), "");
+    files.clear();
+    content::list(content::mod_folders(mods), "parks", files);
+    check(files.size() == content::most_files, std::format("At most {} files, {} listed", content::most_files, files.size()));
+}
+
 void board_break_snaps_the_board_on_a_slam() {
     TestEnvironment environment;
     std::filesystem::remove_all(scratch / "storage" / "board-break");
@@ -3105,6 +3590,77 @@ void the_throwdowns_page_lists_the_stock_cards_and_plugin_modes() {
     check(again.revision() > before && again.definitions().size() == 3 && again.definitions()[0].id == "native.skate", "S.K.A.T.E. is back when it goes");
 }
 
+// The Filmer (contrib/plugins/filmer): an AI filmer follows a skater riding a carving line, then you film
+// someone, with your skater carrying the camcorder for the others; all within the 2 ms a tick a plugin has.
+void filmer_follows_and_films() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    const std::string plugin = "filmer";
+    Host host(environment, Side::client);
+    host.apply({contributed(plugin)});
+    running(host, plugin, environment);
+    SkaterTelemetry t;
+    t.skater = true;
+    t.physics_state = 100;
+    t.speed = 6;
+    game.telemetry = t;
+    environment.local_skater = SkaterState{{0, 0.9f, 0}, 0, 6, 0, false, 0};
+    host.set_level("sanvan");
+    const auto ride = [&](int count) {
+        for (int i = 0; i < count; ++i) {
+            auto& skater = *environment.local_skater;
+            static int step = 0;
+            skater.heading = 0.4f * std::sin(static_cast<float>(++step) * 0.012f);
+            skater.position[0] += std::sin(skater.heading) * 6.0f * 0.0167f;
+            skater.position[2] += std::cos(skater.heading) * 6.0f * 0.0167f;
+            game.telemetry->position = skater.position;
+            game.telemetry->heading = skater.heading * 57.29578f;
+            ticks(host, environment, 1);
+        }
+    };
+    check(host.run_console("filmer mode follow"), "filmer mode follow");
+    ride(900);
+    running(host, plugin, environment);
+    check(!environment.logged(".lua:"), "The Filmer follows without an error\n" + environment.all());
+    check(game.called("camera filmer"), "It shows its camera\n" + environment.all());
+    check(game.called("look filmer 1.00 100"), "with the VX look over the fisheye\n" + environment.all());
+    check(game.called("cycle filmer active"), "in the camera height cycle, on");
+    {
+        // Where the AI filmer's lens is: behind the skater (never in front), a filmer's distance off, low.
+        float x{}, y{}, z{};
+        bool found = false;
+        for (auto it = game.calls.rbegin(); it != game.calls.rend() && !found; ++it)
+            if (it->starts_with("camera filmer ")) found = static_cast<bool>(std::istringstream(it->substr(14)) >> x >> y >> z);
+        const auto& at = environment.local_skater->position;
+        const float heading = environment.local_skater->heading;
+        const float dx = x - at[0], dz = z - at[2];
+        const float away = std::sqrt(dx * dx + dz * dz), along = dx * std::sin(heading) + dz * std::cos(heading);
+        std::cout << "Filmer follow: the lens " << away << " m from the skater, " << along << " m along, " << y << " m up\n";
+        check(found && away > 0.8f && away < 6.0f && along < 0.0f && y > 0.0f && y < 1.5f,
+              "The AI filmer rides behind the skater, a filmer's distance off, low\n" + environment.all());
+    }
+    const auto follow_ms = status_of(host, plugin).tick_ms;
+    std::cout << "Filmer follow: " << follow_ms << " ms a tick (its budget is 2 ms)\n";
+    check(follow_ms < 2.0, "The Filmer follows within its 2 ms a tick");
+    // You film the skater ahead of you, holding the camcorder out for the others to see.
+    environment.lines.clear();
+    check(host.run_console("filmer mode film"), "filmer mode film");
+    ride(600);
+    running(host, plugin, environment);
+    check(!environment.logged(".lua:"), "You film without an error\n" + environment.all());
+    check(game.called("carry filmer right both") && game.called(" push others") && game.called("hide skater filmer on") &&
+              game.called("board hide filmer 2"),
+          "Your skater carries the camcorder for the others, and you, looking through it, do not see your skater or board\n" + environment.all());
+    check(game.called("hide filmer false false false stick true false true"), "The right stick and its click are the camera's");
+    const auto film_ms = status_of(host, plugin).tick_ms;
+    std::cout << "Filmer film: " << film_ms << " ms a tick\n";
+    check(film_ms < 2.0, "You film within the 2 ms a tick");
+    check(host.run_console("filmer slap") && environment.printed("Clip 1 marked"), "A slap marks a clip\n" + printed_lines(environment));
+    check(host.run_console("filmer mode off"), "filmer mode off");
+    ticks(host, environment, 30);
+    check(game.called("carry filmer none") && game.called("camera release filmer"), "Off: the camcorder put down and the camera given back\n" + environment.all());
+}
+
 void smokey_throwdowns_register_and_play_one_up() {
     namespace kit = dingosdk::throwdowns::kit;
     TestEnvironment environment;
@@ -3362,10 +3918,13 @@ void grind_exits_pick_the_side() {
     host.apply({contributed("grind-exits")});
     running(host, "grind-exits", environment);
     check(host.run_console("grindexit test"), "grindexit test");
-    check(environment.printed("grindexit: 7 passed, 0 failed") && !environment.printed("FAIL"),
+    check(environment.printed("grindexit: 11 passed, 0 failed") && !environment.printed("FAIL"),
           "Grind exits' own checks pass:\n" + printed_lines(environment) + environment.all());
-    check(game.called("grind grind-exits none"), "It hears its pops from the start");
     check(host.run_console("grindexit stance goofy"), "grindexit stance");
+    // The board travels along (1, 3) (the fake's board velocity), whose left is (0.95, -0.32); the
+    // root's right axis points that way, and a goofy skater riding normal has the toes there.
+    environment.local_skater = SkaterState{{0, 0, 0}, 0, 3, 0, false, 0};
+    environment.local_skater->right = Vec3{1, 0, 0};
     game.pad = PadInput{};
     game.state = 100;
     ticks(host, environment, 2);
@@ -3373,16 +3932,18 @@ void grind_exits_pick_the_side() {
     ticks(host, environment, 2);
     game.pad->right_trigger = 1;
     ticks(host, environment, 2);
-    check(game.called("grind grind-exits heel 2 1.00"), "RT asks for the heel side\n" + environment.all());
+    check(game.called("launch grind-exits grind -1.80"), "RT asks for the heel side, the right of travel\n" + environment.all());
     check(game.called("hide grind-exits false true true"), "and keeps RT and the stick's lean from the game\n" + environment.all());
-    game.pops.push_back({true, "applied", "toe_heel", -1, 1.5f, -1.5f});
+    const std::array<float, 2> travel{0.316f, 0.949f};
+    game.launches.push_back({"grind", {1.708f, 2, -0.569f}, {-1.708f, 2, 0.569f}, travel, 3.2f, "applied", "grind-exits"});
+    game.launches.push_back({"ollie", {0, 3, 4}, {0, 3, 4}, travel, 4, "none", ""});
     ticks(host, environment, 1);
     game.pad->right_trigger = 0;
     ticks(host, environment, 10);
-    check(game.called("grind grind-exits none") && game.called("hide grind-exits false false false"), "Let go, the game's own again");
+    check(game.called("launch grind-exits grind none") && game.called("hide grind-exits false false false"), "Let go, the game's own again");
     environment.lines.clear();
-    check(host.run_console("grindexit") && environment.printed("sides set: 1. Last: right of travel (toe_heel)"),
-          "It counts the pop:\n" + printed_lines(environment));
+    check(host.run_console("grindexit") && environment.printed("seen: 1, sides set: 1. Last: right of travel (toe_heel)"),
+          "It counts the pop out of the grind, not the ollie:\n" + printed_lines(environment));
 }
 void fpv_drone_flies_and_follows() {
     TestEnvironment environment;
@@ -3536,7 +4097,9 @@ int main() {
         run(plugins_draw_on_the_overlay);
         run(plugins_draw_pictures);
         run(plugins_place_world_entities);
+        run(plugins_have_what_a_prop_hunt_needs);
         run(plugins_reach_cruise_and_read_the_mouse);
+        run(plugins_carry_and_take_a_step_in_the_camera_cycle);
         run(plugins_read_joints_and_tune_physics);
         run(plugins_type_and_use_the_room);
         run(plugins_touch_hide_and_ray_at_players);
@@ -3544,6 +4107,10 @@ int main() {
         run(plugins_edit_clips);
         run(animator_studio_records_and_saves);
         run(plugins_server_copies_are_the_authority);
+        run(plugins_server_copies_spawn_park_mods);
+        run(plugins_server_copies_hide_players);
+        run(plugins_server_copies_see_roles);
+        run(plugins_server_copies_show_cards_and_polls);
         run(plugins_animate_the_skater);
         run(plugins_play_their_own_sounds);
         run(plugins_have_menu_panels);
@@ -3563,11 +4130,13 @@ int main() {
         run(dual_stick_edits_the_companions_settings);
         run(rock_to_fakie_relabels_and_records_the_stall);
         run(a_plugin_reads_the_content_folder_it_names);
+        run(content_is_read_from_the_mod_folders);
         run(board_break_snaps_the_board_on_a_slam);
         run(fpv_drone_flies_and_follows);
         run(hall_of_meat_scores_a_bail);
         run(grind_exits_pick_the_side);
         run(smokey_throwdowns_register_and_play_one_up);
+        run(filmer_follows_and_films);
         run(plugins_drive_the_throwdown_kit);
         run(fit_check_turns_the_board_and_saves_it);
         run(item_tabs_keep_tabs_and_wear_on_top);

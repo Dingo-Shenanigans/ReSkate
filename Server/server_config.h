@@ -113,6 +113,12 @@ struct ServerConfig {
     // version (server_map_update.h), looked up at start and every so many minutes.
     bool latest_versions = false;
     unsigned latest_check_minutes = 60;
+    // Thunderstore packages every player must have to join ("plugins.required"): "Owner-Name",
+    // or "Owner-Name-1.2.3" for at least that version. A player without them is offered them on
+    // the card that offers a missing map, and fetches only what Thunderstore lists as a plugin
+    // and what runs Luau code. The server checks each on Thunderstore as it starts and leaves
+    // out one that is not a plugin there (RequiredPluginCheck, server_map_update.h).
+    std::vector<std::string> required_plugins;
     unsigned max_players = 16; // players; the server itself is not one
     // The most poses a second one player is sent (crowd_limits); 0: no limit.
     unsigned crowd_budget = crowd_pose_budget;

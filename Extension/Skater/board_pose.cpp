@@ -1,6 +1,7 @@
 #include "board_pose.h"
 #include "Extension/AnimationStudio/anim_core.h"
 #include "Extension/Multiplayer/Remote/native_pose_layout.h"
+#include "Extension/Multiplayer/Remote/native_skater.h"
 #include <Windows.h>
 #include <algorithm>
 #include <atomic>
@@ -60,6 +61,7 @@ Quat about(const Vec3& axis, float angle) {
 // The pose a bone is written with, as the client tick asked it.
 struct Wanted {
     bool hidden{};
+    bool everyone{}; // hidden from the other players too
     Quat rotation{0, 0, 0, 1};
     Vec3 position{};
     Space space{};
@@ -90,6 +92,8 @@ Shared& shared() {
 }
 std::atomic<std::uintptr_t> base_now{}, holder_now{};
 std::atomic<bool> any{};
+// The bones hidden from everyone, as bits (bone b is bit b), for the sent pose filter without the lock.
+std::atomic<std::uint32_t> hidden_from_all{};
 // How every board is fitted (fit): the baseplates held on the deck, and the wheels' spread. Read by
 // the render hook without the lock; the owner is under it.
 std::atomic<bool> fitted{}, fit_plates{};
@@ -117,7 +121,24 @@ bool store_float(std::uintptr_t address, float value) noexcept {
         return false;
     }
 }
-void refresh_any(Shared& s) { any.store(!s.wanted.empty() || !s.parked.empty() || s.piece.has_value(), std::memory_order_release); }
+void refresh_any(Shared& s) {
+    any.store(!s.wanted.empty() || !s.parked.empty() || s.piece.has_value(), std::memory_order_release);
+    std::uint32_t bits = 0;
+    for (const auto& [b, want] : s.wanted)
+        if (want.hidden && want.everyone) bits |= 1u << b;
+    hidden_from_all.store(bits, std::memory_order_release);
+}
+// The local skater's pose as it is sent: the bones hidden from everyone out of sight in it too, as they
+// are drawn here. board[0] is the board entity's place in the world, then its rig's bones from 0.
+void on_sent_pose(std::uintptr_t, multiplayer::Pose& pose) noexcept {
+    const auto bits = hidden_from_all.load(std::memory_order_acquire);
+    if (!bits) return;
+    for (int b = first_writable; b < bones; ++b)
+        if ((bits & (1u << b)) && static_cast<std::size_t>(b + 1) < pose.board.size()) {
+            auto& at = pose.board[static_cast<std::size_t>(b + 1)].position;
+            if (length(at) < 100.0f) at[1] -= 2000.0f;
+        }
+}
 std::string take(Shared& s, std::string_view owner) {
     if (!s.owner.empty() && s.owner != owner) return s.owner + " holds the board";
     s.owner = owner;
@@ -175,16 +196,16 @@ std::string set(std::string_view owner, int bone, const Bone& value, Space space
     auto& s = shared();
     std::lock_guard lock(s.mutex);
     if (auto why = take(s, owner); !why.empty()) return why;
-    s.wanted[bone] = {false, normalised(value.rotation), value.position, space};
+    s.wanted[bone] = {false, false, normalised(value.rotation), value.position, space};
     refresh_any(s);
     return {};
 }
-std::string hide(std::string_view owner, int bone) {
+std::string hide(std::string_view owner, int bone, bool everyone) {
     if (bone < first_writable || bone >= bones) return "a board's bone is 2 to 15";
     auto& s = shared();
     std::lock_guard lock(s.mutex);
     if (auto why = take(s, owner); !why.empty()) return why;
-    s.wanted[bone] = {true};
+    s.wanted[bone] = {true, everyone};
     refresh_any(s);
     return {};
 }
@@ -265,6 +286,11 @@ void tick(std::uintptr_t base, std::uintptr_t component) noexcept {
     } catch (...) {}
     base_now.store(base, std::memory_order_release);
     holder_now.store(holder, std::memory_order_release);
+    static bool sending{};
+    if (!sending) {
+        multiplayer::set_local_sent_pose_filter(&on_sent_pose);
+        sending = true;
+    }
 }
 
 void on_render_pose(std::uintptr_t animation_interface) noexcept {

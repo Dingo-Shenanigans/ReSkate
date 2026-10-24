@@ -9,8 +9,9 @@
 // owner puts an item in a slot of the skater's recipe (by the slot's name: "tattoo_legl", "moles",
 // "eyewear"); the skater wears them over the outfit through the game's own recipe copy, and is given
 // back to the game while one of its menus is up (the menus change the outfit), when nothing is worn,
-// and when a plugin stops. Only the face and skin layers (tattoos, moles) and eyewear, and never a
-// paid store item. Others see what the skater wears. Client thread throughout.
+// and when a plugin stops. Only the face and skin layers (tattoos, moles), eyewear and hand wear (the
+// game has no menu for it: a camera in the hand), and never a paid store item. Others see what the
+// skater wears. Client thread throughout.
 namespace dingosdk::outfit_overlay {
 // The slots items may go in: a slot's name holds one of these.
 bool allowed_slot(std::string_view slot) noexcept;

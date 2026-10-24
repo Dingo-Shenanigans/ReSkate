@@ -208,7 +208,7 @@ bool nsfw(const ts::Package& package) {
                                        [](const std::string& category) { return lower(category) == "nsfw"; });
 }
 
-std::vector<const ts::Package*> visible_packages(const Store& store, const ts::Installed& installed) {
+std::vector<const ts::Package*> visible_packages(const Store& store, const ts::Installed& installed, const ts::CategoryFilter& categories) {
     const auto query = lower(store.search.data());
     std::vector<const ts::Package*> result;
     for (const auto& package : store.packages) {
@@ -217,7 +217,7 @@ std::vector<const ts::Package*> visible_packages(const Store& store, const ts::I
         // or a category of that name. A deprecated one only shows once installed.
         if (nsfw(package)) continue;
         if (package.deprecated && !have) continue;
-        if (!store.category.empty() && !package.in_category(store.category)) continue;
+        if (!ts::shown_by(package, categories)) continue;
         if (!query.empty() && lower(package.title()).find(query) == std::string::npos &&
             lower(package.owner).find(query) == std::string::npos &&
             lower(package.latest().description).find(query) == std::string::npos) continue;
@@ -240,6 +240,17 @@ std::vector<const ts::Package*> visible_packages(const Store& store, const ts::I
 
 constexpr std::array<const char*, 5> sort_names{"Last updated", "Most downloaded", "Newest", "Top rated", "Name"};
 
+// GET MODS's categories: Thunderstore's, with how many mods are in each, kept in the launcher's settings.
+void category_filter(Launcher& launcher, const Store& store, float width) {
+    std::vector<std::pair<std::string, int>> categories;
+    for (const auto& package : store.packages) {
+        if (nsfw(package)) continue; // (and no category that only they have)
+        for (const auto& category : package.categories) ++category_count(categories, category);
+    }
+    if (category_menu("##category", launcher.settings().mod_categories_only, launcher.settings().mod_categories_hidden, std::move(categories), width))
+        launcher.save();
+}
+
 // What installing `package` does now: install, update or reinstall.
 std::string action_label(const ts::Package& package, const ts::Installed& installed) {
     const auto found = installed.find(ts::folder_for(package.full_name));
@@ -249,6 +260,75 @@ std::string action_label(const ts::Package& package, const ts::Installed& instal
 }
 
 } // namespace
+
+int& category_count(std::vector<std::pair<std::string, int>>& categories, const std::string& category) {
+    for (auto& entry : categories)
+        if (entry.first == category) return entry.second;
+    return categories.emplace_back(category, 0).second;
+}
+
+bool category_menu(const char* id, std::vector<std::string>& only, std::vector<std::string>& hidden,
+                   std::vector<std::pair<std::string, int>> categories, float width) {
+    // One chosen before that no mod has now stays in the list, so it can be put back.
+    for (const auto* list : {&only, &hidden})
+        for (const auto& category : *list) (void)category_count(categories, category);
+    std::sort(categories.begin(), categories.end(), [](const auto& a, const auto& b) { return lower(a.first) < lower(b.first); });
+    const auto in = [](const std::vector<std::string>& list, const std::string& name) { return std::find(list.begin(), list.end(), name) != list.end(); };
+    std::string shown;
+    if (only.empty() && hidden.empty()) shown = "All categories";
+    else if (hidden.empty()) shown = only.size() == 1 ? "Only " + only.front() : std::format("Only {} categories", only.size());
+    else if (only.empty()) shown = hidden.size() == 1 ? "Hiding " + hidden.front() : std::format("Hiding {} categories", hidden.size());
+    else shown = std::format("Only {}, hiding {}", only.size(), hidden.size());
+    ImGui::SetNextItemWidth(width);
+    if (!ImGui::BeginCombo(id, shown.c_str(), ImGuiComboFlags_HeightLarge)) {
+        if (ImGui::IsItemHovered() && !(only.empty() && hidden.empty())) {
+            std::string tip;
+            if (!only.empty()) {
+                tip = "Showing only:";
+                for (const auto& category : only) tip += "\n  " + category;
+            }
+            if (!hidden.empty()) {
+                tip += std::string(tip.empty() ? "" : "\n") + "Hiding:";
+                for (const auto& category : hidden) tip += "\n  " + category;
+            }
+            ImGui::SetTooltip("%s", tip.c_str());
+        }
+        return false;
+    }
+    bool changed = false;
+    ImGui::PushStyleColor(ImGuiCol_Text, color::muted);
+    ImGui::TextUnformatted("Click a category to show only it,");
+    ImGui::TextUnformatted("again to hide it, again for either.");
+    ImGui::PopStyleColor();
+    if (ImGui::Selectable("Every category", only.empty() && hidden.empty(), ImGuiSelectableFlags_DontClosePopups)) {
+        changed = !only.empty() || !hidden.empty();
+        only.clear();
+        hidden.clear();
+    }
+    ImGui::Separator();
+    for (const auto& [category, mods] : categories) {
+        const bool is_only = in(only, category), is_hidden = in(hidden, category);
+        const auto label = std::format("{}  {}  ({})##{}", is_only ? "+" : is_hidden ? "-" : " ", category, mods, category);
+        ImGui::PushStyleColor(ImGuiCol_Text, is_only ? color::good : is_hidden ? color::danger : color::text);
+        if (ImGui::Selectable(label.c_str(), is_only || is_hidden, ImGuiSelectableFlags_DontClosePopups)) {
+            // Either, then shown only, then hidden, then either again.
+            if (is_only) {
+                std::erase(only, category);
+                hidden.push_back(category);
+            } else if (is_hidden) {
+                std::erase(hidden, category);
+            } else {
+                only.push_back(category);
+            }
+            changed = true;
+        }
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("%s", is_only ? "Shown only. Click to hide it." : is_hidden ? "Hidden. Click to show it as any other." : "Click to show only this category (and any others shown only).");
+    }
+    ImGui::EndCombo();
+    return changed;
+}
 
 // Placed by hand: a row lays its own icon, text and badges out.
 void mod_icon(ModsPanel& panel, const thunderstore::Package* package, ImVec2 position, float size) {
@@ -300,6 +380,8 @@ void collect_listing(ModsPanel& panel) {
     if (store.incoming_error.empty()) {
         store.packages = std::move(store.incoming);
         store.loaded = true;
+        panel.categories_by_folder.clear();
+        for (const auto& package : store.packages) panel.categories_by_folder[ts::folder_for(package.full_name)] = package.categories;
         store.error.clear();
     } else {
         store.error = std::move(store.incoming_error);
@@ -484,20 +566,7 @@ void browse_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, float
         ImGui::SetKeyboardFocusHere();
     ImGui::InputTextWithHint("##search", "Search mods  (Ctrl+F)", store.search.data(), store.search.size());
     ImGui::SameLine();
-    std::vector<std::string> categories;
-    for (const auto& package : store.packages) {
-        if (nsfw(package)) continue;   // (and no category that only they have)
-        for (const auto& category : package.categories)
-            if (std::find(categories.begin(), categories.end(), category) == categories.end()) categories.push_back(category);
-    }
-    std::sort(categories.begin(), categories.end());
-    ImGui::SetNextItemWidth(combo);
-    if (ImGui::BeginCombo("##category", store.category.empty() ? "All categories" : store.category.c_str())) {
-        if (ImGui::Selectable("All categories", store.category.empty())) store.category.clear();
-        for (const auto& category : categories)
-            if (ImGui::Selectable(category.c_str(), store.category == category)) store.category = category;
-        ImGui::EndCombo();
-    }
+    category_filter(launcher, store, combo);
     ImGui::SameLine();
     ImGui::SetNextItemWidth(combo);
     if (ImGui::BeginCombo("##sort", sort_names[static_cast<std::size_t>(std::clamp(store.sort, 0, 4))])) {
@@ -550,7 +619,7 @@ void browse_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, float
     }
     ImGui::Spacing();
     const float body = std::max(S(120), height - (ImGui::GetCursorPosY() - top));
-    const auto packages = visible_packages(store, installed);
+    const auto packages = visible_packages(store, installed, {launcher.settings().mod_categories_only, launcher.settings().mod_categories_hidden});
 
     // ------------------------------------------------ the list
     ImGui::BeginChild("##store_list", ImVec2(0, body), ImGuiChildFlags_NavFlattened);

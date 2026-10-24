@@ -2,6 +2,7 @@
 #include "Extension/UI/Overlay/overlay.h"
 #include "Extension/Multiplayer/developer_identity.h"
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -64,6 +65,9 @@ void publish_custom_nametags(std::uintptr_t base, std::vector<NametagPlayer> pla
                              bool show_bubbles, float bubble_distance, float name_distance = 120.f,
                              bool dots = true) noexcept;
 void set_custom_nametags_enabled(bool enabled) noexcept;
+// Held off for now (a plugin's reskate.session.nametags(false), filming): no names drawn over the
+// players while it lasts, whatever the nametag setting is; chat bubbles still show.
+inline std::atomic<bool> nametags_held_off{false};
 bool custom_nametags_enabled() noexcept;
 // The overlay's feed (any thread): nothing while off, stale, or while the game hides nametags.
 overlay::Nametags custom_nametags();

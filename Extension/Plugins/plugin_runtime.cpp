@@ -12,6 +12,7 @@
 #include "Extension/UI/Overlay/overlay.h"
 #include "Extension/Console/commands.h"
 #include "Extension/Profile/local_profile_runtime.h"
+#include "Extension/Skater/launches.h"
 #include "Extension/Skater/score_hud.h"
 #include "Extension/Skater/trick_watch.h"
 #include "Extension/Trainer/trainer.h"
@@ -70,7 +71,12 @@ public:
         const auto t = trainer::telemetry();
         if (!t.skater) return std::nullopt;
         const float heading = std::remainder(t.heading * std::numbers::pi_v<float> / 180, 2 * std::numbers::pi_v<float>);
-        return SkaterState{t.position, heading, t.speed, t.vertical, t.airborne, t.air_time};
+        SkaterState state{t.position, heading, t.speed, t.vertical, t.airborne, t.air_time};
+        if (const auto facing = launches::facing()) {
+            state.right = facing->right;
+            state.switch_stance = facing->switch_stance;
+        }
+        return state;
     }
     // As the console's tp: refused in a session whose host has turned teleporting (and noclip) off.
     Teleport teleport(std::string_view plugin, const Vec3& position, float heading) override {
@@ -448,14 +454,35 @@ std::string list_commands() {
     std::string text;
     const auto add = [&](const std::vector<Status>& all, std::string_view suffix) {
         for (const auto& plugin : all)
-            for (const auto& [name, help] : plugin.commands) {
+            for (const auto& command : plugin.commands) {
                 if (!text.empty()) text += '\n';
-                text += std::format("{} - {} ({}{})", name, help, plugin.id, suffix);
+                text += std::format("{}{}{} - {} ({}{})", command.name, command.args.empty() ? "" : " ", command.args, command.help, plugin.id,
+                                    suffix);
             }
     };
     add(host->status(), "");
     if (serving) add(server_host->status(), "@server"); // run when no player's copy has the command
     return text.empty() ? "No plugin has a console command." : text;
+}
+
+std::vector<CommandHint> command_hints() {
+    static std::vector<CommandHint> hints;
+    static std::uint64_t next{};
+    const auto now = GetTickCount64();
+    if (now < next) return hints;
+    next = now + 500;
+    hints.clear();
+    if (!host) return hints;
+    const auto add = [&](const std::vector<Status>& all, std::string_view suffix) {
+        for (const auto& plugin : all)
+            for (const auto& command : plugin.commands)
+                if (std::none_of(hints.begin(), hints.end(), [&](const auto& hint) { return hint.name == command.name; }))
+                    hints.push_back({command.name, command.args, command.help, plugin.id + std::string(suffix)});
+    };
+    add(host->status(), "");
+    if (serving) add(server_host->status(), "@server");
+    std::sort(hints.begin(), hints.end(), [](const auto& a, const auto& b) { return a.name < b.name; });
+    return hints;
 }
 
 // "<id>@server" names a server copy (on this game while it hosts a lobby); a plain id, the player's copy.

@@ -228,7 +228,7 @@ std::vector<std::byte> Context::array(Value value, unsigned maximum, unsigned& c
     return result;
 }
 void Context::array(Value target, std::span<const std::byte> bytes, unsigned count) const {
-    require(kind(target.type) == 4 && count <= 1024, "Native menu list is invalid.");
+    require(kind(target.type) == 4 && count <= 4096, "Native menu list is invalid.");
     const auto stride = size(read<Address>(read<Address>(target.type) + 0x30));
     require(bytes.size() == static_cast<std::size_t>(count) * stride, "Native menu list element size differs.");
     address(target);

@@ -34,7 +34,7 @@ struct State {
     RenderView view_original{};
     std::array<std::atomic<std::uint32_t>, build::render_modes> indices{no_index, no_index};
     std::atomic<std::uint64_t> indices_until{};
-    std::atomic<bool> found_logged{};
+    std::atomic<bool> found_logged{}, hiding{}, hide_logged{};
     std::mutex lock; // guards the picture's parts
     std::vector<game::LinearTransform> skin;
     std::uint64_t skin_at{};
@@ -76,6 +76,21 @@ std::uint32_t render_index(std::uintptr_t base, std::uintptr_t entity, std::size
     return handle >= build::first_handle ? handle - build::first_handle : no_index;
 }
 
+// One of the local skater's render objects (riding or walking), while the client tick follows them.
+bool local_object(State& s, std::uintptr_t object) noexcept {
+    std::uint32_t index{};
+    return GetTickCount64() <= s.indices_until.load(std::memory_order_acquire) && pointer_at(object) == s.base + build::render_object_vtable &&
+           memory::peek(object + build::render_index_offset, index) &&
+           (index == s.indices[0].load(std::memory_order_acquire) || index == s.indices[1].load(std::memory_order_acquire));
+}
+bool clear_byte(std::uintptr_t address) noexcept {
+    __try {
+        *reinterpret_cast<volatile std::uint8_t*>(address) = 0;
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
 // Render threads, after each skinned draw packet: the local skater's visible one, as skinning
 // matrices in the world.
 void observe_packet(std::uintptr_t object, std::uintptr_t packet) {
@@ -116,6 +131,12 @@ void draw_packet_hook(std::uintptr_t object, std::uintptr_t packet) {
     s.draw_original(object, packet);
     LastError error;
     try {
+        // Hidden on this screen (reskate.skater.hide): the packet goes out not visible.
+        if (s.hiding.load(std::memory_order_acquire) && packet && local_object(s, object)) {
+            if (clear_byte(packet + build::packet_visible_offset) && !s.hide_logged.exchange(true))
+                logging::log(logging::Level::info, logging::Channel::graphics, "Skater hide: the local skater's draw packets go out not visible.");
+            return;
+        }
         observe_packet(object, packet);
     } catch (...) { /* A lost picture is never worth the renderer. */ }
 }
@@ -249,6 +270,7 @@ void follow_render(bool wanted) noexcept {
     s.indices_until.store(GetTickCount64() + lease_ms, std::memory_order_release);
 }
 
+void hide_skater(bool hidden) noexcept { state().hiding.store(hidden, std::memory_order_release); }
 bool latest_picture(Picture& picture) noexcept {
     auto& s = state();
     const auto now = GetTickCount64();

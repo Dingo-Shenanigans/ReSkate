@@ -1,5 +1,6 @@
 #include "plugin_game_runtime.h"
 #include "plugin_session_feed.h"
+#include "plugin_content.h"
 #include "Runtime/runtime_internal.h"
 #include "plugin_ui.h"
 #include "Engine/Game/World/park_rotation.h"
@@ -18,12 +19,16 @@
 #include "Extension/Skater/skater_events.h"
 #include "Extension/Skater/outfit_overlay.h"
 #include "Extension/Skater/board_pose.h"
+#include "Extension/Customization/board_material.h"
 #include "Engine/Vfs/mod_catalog.h"
 #include "Engine/Core/Log/logging.h"
 #include <mutex>
 #include "Extension/Assets/live_mods.h"
 #include "Extension/Skater/game_speed.h"
-#include "Extension/Skater/grind_exit.h"
+#include "Extension/Skater/launches.h"
+#include "Extension/Skater/pad_hide.h"
+#include "Engine/Game/Skater/first_person_cycle.h"
+#include "Extension/Multiplayer/Hud/custom_nametags.h"
 #include "Extension/Skater/xray.h"
 #include "Extension/UI/hud_corner.h"
 #include "Extension/Throwdowns/custom_modes.h"
@@ -225,10 +230,12 @@ public:
         return status.starts_with("error: ") ? status.substr(7) : std::string{};
     }
     std::string entity_set(std::string_view plugin, std::uint32_t id, std::string_view asset, const std::array<float, 16>& matrix, bool hidden,
-                           std::optional<EntityAttach> attach) override {
-        if (!attach) return world_entities::set(plugin, id, std::string(asset), matrix, hidden);
+                           std::optional<EntityAttach> attach, bool solid) override {
+        register_world_physics();
+        if (!attach) return world_entities::set(plugin, id, std::string(asset), matrix, hidden, std::nullopt, solid);
         world_entities::set_joint_source(&joint_matrix);
-        return world_entities::set(plugin, id, std::string(asset), matrix, hidden, world_entities::Attach{attach->player, attach->joint});
+        return world_entities::set(plugin, id, std::string(asset), matrix, hidden,
+                                   world_entities::Attach{attach->player, attach->joint, attach->upright, attach->turn, attach->ground}, solid);
     }
     // Where a skater's joint is (world_entities' attach): the local skater's as its pose is evaluated,
     // another player's as the session draws it.
@@ -260,6 +267,34 @@ public:
     void entity_clear(std::string_view plugin) override { world_entities::clear(plugin); }
     int entity_status(std::string_view plugin, std::uint32_t id) override { return static_cast<int>(world_entities::status(plugin, id)); }
     bool entities_ready(std::string_view plugin) override { return world_entities::ready(plugin); }
+    std::vector<std::string> entity_blueprints(std::string_view prefix, bool meshes_only) override {
+        return world_entities::blueprints(base_, prefix, 4096, meshes_only);
+    }
+    std::optional<std::array<Vec3, 2>> entity_bounds(std::string_view blueprint) override {
+        const auto box = world_entities::blueprint_bounds(base_, blueprint);
+        if (!box) return std::nullopt;
+        return std::array<Vec3, 2>{(*box)[0], (*box)[1]};
+    }
+    std::optional<WorldPick> world_pick(const Vec3& from, const Vec3& to) override {
+        const auto pick = local_world_pick(from, to);
+        if (!pick) return std::nullopt;
+        WorldPick out{pick->at, pick->entity != 0 || !pick->blueprint.empty(), std::nullopt, pick->blueprint};
+        if (pick->pose) {
+            // The pose: scale xyz, -, rotation xyzw, position xyz. Rows: the rotated x, y and z axes
+            // times their scale (the same rotation objects.list's heading reads), then position.
+            const auto& p = *pick->pose;
+            const float x = p[4], y = p[5], z = p[6], w = p[7];
+            const std::array<std::array<float, 3>, 3> axes{{{1 - 2 * (y * y + z * z), 2 * (x * y + z * w), 2 * (x * z - y * w)},
+                                                           {2 * (x * y - z * w), 1 - 2 * (x * x + z * z), 2 * (y * z + x * w)},
+                                                           {2 * (x * z + y * w), 2 * (y * z - x * w), 1 - 2 * (x * x + y * y)}}};
+            std::array<float, 16> m{};
+            for (int row = 0; row < 3; ++row)
+                for (int k = 0; k < 3; ++k) m[row * 4 + k] = axes[row][k] * p[row];
+            m[12] = p[8], m[13] = p[9], m[14] = p[10], m[15] = 1;
+            out.matrix = m;
+        }
+        return out;
+    }
     std::string set_environment(std::string_view kind, std::string_view key, std::string_view value) override {
         if (kind == "tod") return time_of_day(key);
         if (kind == "control") {
@@ -345,6 +380,11 @@ public:
     void set_nametag(std::string_view plugin, std::uint64_t player, std::string text, std::uint32_t colour) override {
         plugin_feed::set_tag(std::string(plugin), player, std::move(text), colour);
     }
+    void hide_nametags(std::string_view plugin, bool hidden) override {
+        if (hidden) nametag_hiders_.emplace(plugin);
+        else if (const auto at = nametag_hiders_.find(plugin); at != nametag_hiders_.end()) nametag_hiders_.erase(at);
+        multiplayer::nametags_held_off.store(!nametag_hiders_.empty(), std::memory_order_relaxed);
+    }
     std::string voice_volume(std::uint64_t player, float volume) override {
         const auto id = std::to_string(player);
         const auto mute = multiplayer::command("voice-mute", id + (volume <= 0 ? " on" : " off"));
@@ -425,7 +465,7 @@ public:
 
     // ---- input -------------------------------------------------------------------------------------------
     std::string bind(std::string_view plugin, std::string_view action, std::uint32_t combo) override {
-        if (!valid_action_binding(combo)) return "that is not a key or pad combo";
+        if (combo && !valid_action_binding(combo)) return "that is not a key or pad combo"; // (0: none of its own)
         binds_[{std::string(plugin), std::string(action)}].own = combo;
         publish_binds();
         return {};
@@ -470,7 +510,7 @@ public:
     std::string board_set(std::string_view plugin, int bone, const BoardBone& value, bool world) override {
         return board_pose::set(plugin, bone, {value.position, value.rotation, value.scale}, world ? board_pose::Space::world : board_pose::Space::local);
     }
-    std::string board_hide(std::string_view plugin, int bone) override { return board_pose::hide(plugin, bone); }
+    std::string board_hide(std::string_view plugin, int bone, bool everyone) override { return board_pose::hide(plugin, bone, everyone); }
     void board_clear(std::string_view plugin, int bone) override { board_pose::clear(plugin, bone); }
     void board_park(std::string_view plugin, std::vector<int> bones) override { board_pose::park(plugin, std::move(bones)); }
     std::string board_toss(std::string_view plugin, std::vector<int> bones, const Vec3& velocity, const Vec3& spin, float ground) override {
@@ -479,6 +519,24 @@ public:
     std::string board_fit(std::string_view plugin, std::optional<BoardFit> fit) override {
         if (!fit) return board_pose::fit(plugin, std::nullopt);
         return board_pose::fit(plugin, board_pose::Fit{fit->plates, fit->axle});
+    }
+    std::optional<std::vector<BoardParameter>> board_parameters(int part) override {
+        const auto found = board_material::read(static_cast<board_material::Part>(part));
+        if (!found) return std::nullopt;
+        std::vector<BoardParameter> out;
+        for (const auto& p : *found) {
+            using board_material::Kind;
+            const char* type = p.kind == Kind::colour ? "colour" : p.kind == Kind::number ? "number" : p.kind == Kind::integer ? "integer"
+                             : p.kind == Kind::toggle ? "switch" : "other";
+            out.push_back({p.key, type, p.value, p.integer});
+        }
+        return out;
+    }
+    std::string board_set_parameter(std::string_view plugin, int part, std::uint64_t key, std::array<float, 3> value, bool colour) override {
+        return board_material::set(plugin, static_cast<board_material::Part>(part), key, value, colour);
+    }
+    void board_clear_parameter(std::string_view plugin, int part, std::optional<std::uint64_t> key) override {
+        board_material::clear(plugin, part < 0 ? std::nullopt : std::optional(static_cast<board_material::Part>(part)), key);
     }
     // ---- variants ------------------------------------------------------------------------------------
     // The mod's folder is read again at most every 2 s: a menu page asks every frame.
@@ -563,6 +621,10 @@ public:
         xray::prepare(plugin, on);
         return {};
     }
+    std::string hide_skater(std::string_view plugin, bool hidden) override {
+        if (!xray::hide(plugin, hidden)) return "hiding the skater is unavailable for this game build";
+        return {};
+    }
     std::string hud_corner(std::string_view plugin, bool hidden) override {
         hud_corner::ask(plugin, hidden);
         return {};
@@ -573,14 +635,12 @@ public:
         return {};
     }
     float game_speed_now() override { return game_speed::current(); }
-    std::string grind_exit(std::string_view plugin, std::optional<GrindExitWish> wish) override {
-        std::optional<grind_exit::Wish> w;
-        if (wish) {
-            using Side = grind_exit::Wish::Side;
-            w = grind_exit::Wish{wish->side == "toe" ? Side::toe : wish->side == "heel" ? Side::heel : wish->side == "right" ? Side::right : Side::left,
-                                 wish->stance, wish->strength};
-        }
-        return grind_exit::wish(plugin, w);
+    std::string shape_launch(std::string_view plugin, std::string_view from, std::optional<LaunchShape> shape) override {
+        const auto kind = launches::from_name(from);
+        if (!kind) return "a launch is out of a grind, ollie, no_comply or boneless";
+        std::optional<launches::Shape> s;
+        if (shape) s = launches::Shape{shape->across, shape->along, shape->up};
+        return launches::shape(plugin, *kind, s);
     }
     std::string set_throwdown_mode(std::string_view plugin, const ThrowdownMode& m) override {
         multiplayer::custom_throwdowns::Mode mode;
@@ -745,9 +805,13 @@ public:
     void remove_throwdown_mode(std::string_view plugin, std::string_view id) override {
         multiplayer::custom_throwdowns::remove_mode(plugin, id);
     }
-    std::vector<GrindPop> take_grind_pops(std::string_view plugin) override {
-        std::vector<GrindPop> out;
-        for (auto& p : grind_exit::take_pops(plugin)) out.push_back({p.applied, std::move(p.reason), std::move(p.basis), p.toward, p.before, p.after});
+    std::vector<LaunchNews> take_launches() override {
+        std::vector<LaunchNews> out;
+        for (auto& l : launches::take()) {
+            LaunchNews news{launches::name(l.from), l.game, l.velocity, std::nullopt, l.travel_speed, std::move(l.reason), std::move(l.by)};
+            if (l.travel[0] != 0 || l.travel[1] != 0) news.travel = l.travel;
+            out.push_back(std::move(news));
+        }
         return out;
     }
     // A speed boost: off where the session's host turned boosts off, and while a throwdown runs.
@@ -764,10 +828,11 @@ public:
         return {};
     }
     std::string hide_pad(std::string_view plugin, const PadHidden& h) override {
-        if (!grind_exit::available()) return "hiding pad controls is unavailable for this game build";
-        grind_exit::hide(plugin, {h.left_trigger, h.right_trigger, h.left_x_grinding, h.right_stick, h.left_stick_click, h.right_stick_click});
+        if (!pad_hide::available()) return "hiding pad controls is unavailable for this game build";
+        pad_hide::hide(plugin, {h.left_trigger, h.right_trigger, h.left_x_grinding, h.right_stick, h.left_stick_click, h.right_stick_click});
         return {};
     }
+    std::optional<Vec3> board_spin() override { return skater_events::board_spin(); }
     std::optional<Vec3> board_velocity() override {
         skater_events::want();
         return skater_events::board_velocity();
@@ -838,6 +903,7 @@ public:
         if (!joystick::game_in_foreground()) return std::nullopt;
         const auto sample = joystick::poll();
         if (!sample.valid) return std::nullopt;
+        overlay::note_joystick(sample.buttons, sample.axes);
         return StickInput{sample.axes, sample.buttons, sample.name};
     }
     std::string capture_input(std::string_view plugin, bool on) override {
@@ -941,7 +1007,10 @@ public:
         screen_look::slap();
         return {};
     }
-    std::string skater_pose(std::string_view plugin, const std::vector<JointOffset>& offsets, float weight) override {
+    static skater_animation::Shown shown_of(Shown shown) {
+        return shown == Shown::others ? skater_animation::Shown::others : shown == Shown::me ? skater_animation::Shown::me : skater_animation::Shown::everyone;
+    }
+    std::string skater_pose(std::string_view plugin, const std::vector<JointOffset>& offsets, float weight, Shown shown) override {
         const auto now = GetTickCount64();
         if (!poser_.empty() && poser_ != plugin && now < pose_at_ + 300) return offsets.empty() ? std::string{} : poser_ + " poses the skater";
         if (offsets.empty()) {
@@ -955,7 +1024,65 @@ public:
         pose_at_ = now;
         std::vector<skater_animation::PoseOffset> out;
         for (const auto& o : offsets) out.push_back({o.joint, o.rotation, o.scale, o.offset});
-        skater_animation::pose(std::move(out), weight);
+        skater_animation::pose(std::move(out), weight, shown_of(shown));
+        return {};
+    }
+    std::string camera_cycle(std::string_view plugin, CycleCamera state) override {
+        const auto now = GetTickCount64();
+        auto& link = first_person::plugin_link;
+        if (!cycler_.empty() && cycler_ != plugin && now < cycle_at_ + 300)
+            return state == CycleCamera::out ? std::string{} : cycler_ + " is in the camera cycle";
+        if (state == CycleCamera::out) {
+            if (cycler_ == plugin) {
+                link.flags.store(0, std::memory_order_release);
+                cycler_.clear();
+            }
+            return {};
+        }
+        if (cycler_ != plugin) link.request.store(0, std::memory_order_release); // (a step asked of another plugin)
+        cycler_ = plugin;
+        cycle_at_ = now;
+        link.flags.store(static_cast<std::uint8_t>(first_person::plugin_flag_enabled |
+                                                   (state == CycleCamera::active ? first_person::plugin_flag_on : first_person::plugin_flag_can_enter)),
+                         std::memory_order_release);
+        link.published.store(now, std::memory_order_release);
+        return {};
+    }
+    std::vector<CycleNews> take_camera_cycle() override {
+        const auto step = static_cast<first_person::CycleStep>(first_person::plugin_link.request.exchange(0, std::memory_order_acq_rel));
+        if (step == first_person::CycleStep::none || cycler_.empty() || GetTickCount64() >= cycle_at_ + 300) return {};
+        return {{cycler_, step == first_person::CycleStep::enter}};
+    }
+    std::string skater_carry(std::string_view plugin, std::optional<Carry> goal) override {
+        const auto now = GetTickCount64();
+        if (!carrier_.empty() && carrier_ != plugin && now < carry_at_ + 300) {
+            if (!goal) return {};
+            return carrier_ + " has the skater carrying";
+        }
+        if (!goal) {
+            if (carrier_ == plugin) {
+                skater_animation::carry(std::nullopt);
+                carrier_.clear();
+            }
+            return {};
+        }
+        carrier_ = plugin;
+        carry_at_ = now;
+        carry::Goal g;
+        g.hand = goal->left ? arm_reach::Hand::left : arm_reach::Hand::right;
+        g.both = goal->both;
+        g.front = goal->front;
+        g.aim = goal->aim;
+        g.front_from_grip = goal->front_from_grip;
+        if (goal->worn) g.worn = carry::Grip{goal->worn->first, goal->worn->second};
+        g.weight = goal->weight;
+        g.crouch = goal->crouch;
+        g.hunch = goal->hunch;
+        g.still = goal->still;
+        g.turn = goal->turn;
+        g.step = goal->step;
+        g.step_phase = goal->step_phase;
+        skater_animation::carry(g, goal->push_straightens, shown_of(goal->shown));
         return {};
     }
     std::string skater_reach(std::string_view plugin, std::optional<Reach> goal) override {
@@ -978,7 +1105,7 @@ public:
         g.at = goal->at;
         if (goal->rotation) g.rotation = *goal->rotation;
         g.weight = goal->weight;
-        skater_animation::reach(g);
+        skater_animation::reach(g, shown_of(goal->shown));
         return {};
     }
     static Tuning tuning_of(const trainer::TuningValue& v) {
@@ -1045,9 +1172,10 @@ public:
         xray::tick();
         hud_corner::tick();
         game_speed::tick();
-        grind_exit::tick(client);
+        launches::tick(client);
         outfit_overlay::tick();
         board_pose::tick(base, local_skater_component(base, client));
+        board_material::tick(base, client);
         const bool allowed = !multiplayer::local_throwdown_active();
         const auto component = local_skater_component(base, client);
         skater_animation::tick(base, component, allowed);
@@ -1316,13 +1444,9 @@ public:
         tricks::prepare_trick_gestures();
         return tricks::trick_gesture(trick);
     }
-    // ---- content: <mod>/<folder>/ of every enabled mod ---------------------------------------------
+    // ---- content: <mod>/<folder>/ of every enabled mod (plugin_content.h) --------------------------
     // The enabled mods, read again at most every 2 s: a page may list them every frame.
-    struct EnabledMod {
-        std::string name, title;
-        std::filesystem::path directory;
-    };
-    std::vector<EnabledMod> enabled_mods() {
+    std::vector<content::Mod> enabled_mods() {
         const auto now = GetTickCount64();
         if (enabled_read_at_ && now - enabled_read_at_ < 2000) return enabled_mods_;
         enabled_read_at_ = now;
@@ -1333,56 +1457,12 @@ public:
                 if (entry.enabled) enabled_mods_.push_back({entry.mod.name, entry.mod.title.empty() ? entry.mod.name : entry.mod.title, entry.mod.directory});
         return enabled_mods_;
     }
-    static constexpr std::size_t most_content_files = 1000, most_content_bytes = 1u << 20;
     std::string content_list(std::string_view folder, std::vector<ContentFile>& files) override {
-        for (const auto& mod : enabled_mods()) {
-            const auto root = mod.directory / std::filesystem::path(std::string(folder));
-            std::error_code error;
-            if (!std::filesystem::is_directory(root, error)) continue;
-            std::vector<ContentFile> found;
-            for (std::filesystem::recursive_directory_iterator it(root, std::filesystem::directory_options::none, error), end;
-                 !error && it != end; it.increment(error)) {
-                if (it.depth() >= 4) it.disable_recursion_pending();
-                if (!it->is_regular_file(error)) continue;
-                const auto relative = it->path().lexically_relative(root).generic_wstring();
-                std::string path;
-                bool plain = true;
-                for (const auto c : relative) {
-                    if (c < 0x20 || c > 0x7e) plain = false;
-                    path.push_back(static_cast<char>(c));
-                }
-                if (!plain || path.ends_with(".tmp")) continue; // a name a plugin could not ask for again
-                found.push_back({mod.name, mod.title, std::move(path), static_cast<std::uint64_t>(it->file_size(error))});
-                if (files.size() + found.size() >= most_content_files) break;
-            }
-            std::sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return a.path < b.path; });
-            for (auto& file : found) files.push_back(std::move(file));
-            if (files.size() >= most_content_files) break;
-        }
+        content::list(enabled_mods(), folder, files);
         return {};
     }
     std::string content_read(std::string_view mod, std::string_view folder, std::string_view path, std::string& text) override {
-        const auto mods_now = enabled_mods();
-        const auto found = std::find_if(mods_now.begin(), mods_now.end(), [&](const EnabledMod& each) {
-            return each.name.size() == mod.size() && _strnicmp(each.name.c_str(), mod.data(), mod.size()) == 0;
-        });
-        if (found == mods_now.end()) return "no such mod is on";
-        const auto root = found->directory / std::filesystem::path(std::string(folder));
-        const auto file = root / std::filesystem::path(std::string(path));
-        std::error_code error;
-        const auto real_root = std::filesystem::weakly_canonical(root, error);
-        const auto real_file = error ? std::filesystem::path{} : std::filesystem::weakly_canonical(file, error);
-        if (error) return "not found";
-        const auto relative = real_file.lexically_relative(real_root);
-        if (relative.empty() || *relative.begin() == "..") return "outside the mod's folder";
-        if (!std::filesystem::is_regular_file(file, error)) return "not found";
-        const auto size = std::filesystem::file_size(file, error);
-        if (error) return "the file cannot be read";
-        if (size > most_content_bytes) return "the file is larger than 1 MB";
-        std::ifstream in(file, std::ios::binary);
-        text.resize(static_cast<std::size_t>(size));
-        if (!in || !in.read(text.data(), static_cast<std::streamsize>(size))) return "the file cannot be read";
-        return {};
+        return content::read(enabled_mods(), mod, folder, path, text);
     }
     std::string trick_label(std::string_view plugin, std::string_view from, std::string_view to) override {
         return trick_rewrite::label(plugin, from, to);
@@ -1545,6 +1625,7 @@ public:
         board_pose::clear(plugin);
         board_pose::park(plugin, {});
         (void)board_pose::fit(plugin, std::nullopt);
+        board_material::clear(plugin);
         cancel_throwdown(plugin);
         multiplayer::custom_throwdowns::remove_plugin(plugin);
         if (capturer_ == plugin) capturer_.clear();
@@ -1554,10 +1635,12 @@ public:
         (void)freeze(plugin, false);
         hide_hud(plugin, false);
         xray::prepare(plugin, false);
+        xray::hide(plugin, false);
         hud_corner::release(plugin);
         game_speed::ask(plugin, 1.0f);
         held_settings::release(plugin);
-        grind_exit::release(plugin);
+        launches::release(plugin);
+        pad_hide::release(plugin);
         trick_rewrite::release(plugin);
         trainer::release_plugin_tunes(plugin);
         if (reacher_ == plugin) {
@@ -1572,6 +1655,15 @@ public:
             skater_animation::pose({}, 1);
             poser_.clear();
         }
+        if (carrier_ == plugin) {
+            skater_animation::carry(std::nullopt);
+            carrier_.clear();
+        }
+        if (cycler_ == plugin) {
+            first_person::plugin_link.flags.store(0, std::memory_order_release);
+            cycler_.clear();
+        }
+        hide_nametags(plugin, false);
         if (room_owner_ == plugin) room_leave(plugin);
         if (const auto seen = telemetry_seen_.find(plugin); seen != telemetry_seen_.end()) telemetry_seen_.erase(seen);
         plugin_feed::release_tags(std::string(plugin));
@@ -1603,9 +1695,14 @@ private:
         std::vector<std::string> installed;
     };
     std::map<std::string, VariantRead, std::less<>> variant_reads_;
-    std::vector<EnabledMod> enabled_mods_;
+    std::vector<content::Mod> enabled_mods_;
     std::string reacher_; // the plugin holding the skater's arm (skater_reach)
     std::string poser_;   // the plugin turning the skater's joints (skater_pose)
+    std::string carrier_; // the plugin having the skater carry something (skater_carry)
+    std::uint64_t carry_at_{};
+    std::set<std::string, std::less<>> nametag_hiders_; // the plugins holding the nametags off (hide_nametags)
+    std::string cycler_; // the plugin whose camera is in the camera height cycle (camera_cycle)
+    std::uint64_t cycle_at_{};
     std::string room_owner_; // the plugin in the character room (room_open)
     std::uint64_t pose_at_{};
     std::string looker_;  // the plugin whose look is on the screen (screen_look)

@@ -88,7 +88,7 @@ jobs:
       - name: Build runtime, launcher and animation checks
         run: |
           . ./contrib/enter-msvc.ps1
-          cmake --build build/ci-windows --config Release --target dingosdk_runtime dingosdk_launcher dingosdk_animation_studio_tests dingosdk_arm_reach_tests dingosdk_anim_graph_probe dingosdk_plugin_tests --parallel 2
+          cmake --build build/ci-windows --config Release --target dingosdk_runtime dingosdk_launcher dingosdk_animation_studio_tests dingosdk_arm_reach_tests dingosdk_carry_tests dingosdk_anim_graph_probe dingosdk_plugin_tests dingosdk_trick_watch_tests dingosdk_board_material_tests --parallel 2
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Show C++ cache statistics
         if: always()

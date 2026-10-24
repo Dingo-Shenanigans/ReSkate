@@ -114,6 +114,11 @@ Layout layout(const ServerConfig &c) {
     park_limits["objects"] = c.park_limits.objects;
     maps.set("park_limits", std::move(park_limits));
 
+    auto &plugins = root.section("plugins");
+    auto required = Json::array();
+    for (const auto &plugin : c.required_plugins) required.push_back(plugin);
+    plugins.set("required", std::move(required));
+
     auto &players = root.section("players");
     players.set("allow_boosts", c.boosts);
     players.set("allow_no_bail", c.no_bail);
@@ -346,6 +351,9 @@ ServerConfig load_config(const std::filesystem::path &file, std::vector<std::str
     c.rotation_announce = get("maps", "rotation_announce", c.rotation_announce);
     c.latest_versions = get("maps", "latest_versions", c.latest_versions);
     c.latest_check_minutes = std::clamp(get("maps", "latest_check_minutes", c.latest_check_minutes), 5U, 1440U);
+    if (const auto *required = find("plugins", "required"); required && required->is_array())
+        for (const auto &plugin : *required)
+            if (plugin.is_string()) c.required_plugins.push_back(plugin.string());
     if (const auto *parks = find("maps", "parks"); parks && parks->is_object())
         for (unsigned lot = 0; lot < park_lots.size(); ++lot) c.parks[lot] = parks->value(park_lots[lot].key, c.parks[lot]);
     c.world_layer_sync = get("maps", "world_layer_sync", c.world_layer_sync);
@@ -806,7 +814,8 @@ bool custom_command_name_free(std::string_view name) noexcept {
           "object-placement", "object-scaling", "objects", "park", "park-mod", "parties", "party-size", "password", "placement",
           "players", "rate", "reserved", "rotation", "say", "score-allow", "score-check", "speed-check", "status", "teleport",
           "tod", "tpall", "tphere", "tps", "tuning", "tuning-enforce", "unban", "voice", "voice-allow", "voice-range",
-          "vote-cancel", "votes", "welcome", "world-layer-sync", "quit", "exit", "stop", "update"})
+          "vote-cancel", "votes", "welcome", "world-layer-sync", "quit", "exit", "stop", "update",
+          "bone-reach", "lock", "locks", "unlock", "throwdown-locks", "words", "poll-run", "plugin"})
         if (name == taken) return false;
     // A number is an answer to a poll ("/2").
     return !std::all_of(name.begin(), name.end(), [](char c) { return c >= '0' && c <= '9'; });
@@ -872,6 +881,12 @@ std::string config_error(const ServerConfig &c) {
     if (c.kick_minutes > 1440) return "kick_minutes must be 0 (until the server restarts) to 1440.";
     if (c.votes.kick_minutes > 1440) return "votes.kick_minutes must be 0 (until the server restarts) to 1440.";
     if (c.word_warnings > 10) return "word_warnings must be 0 (words are not checked) to 10.";
+    if (c.required_plugins.size() > max_required_plugins)
+        return "plugins.required holds at most " + std::to_string(max_required_plugins) + " plugins.";
+    for (const auto &plugin : c.required_plugins)
+        if (plugin.empty() || !valid_map_package(plugin))
+            return "plugins.required: \"" + plugin + "\" is not a Thunderstore package. Write it as Owner-Name, or Owner-Name-1.2.3 for at least that version.";
+    if (!valid_required_plugins(c.required_plugins)) return "plugins.required names a plugin twice.";
     if (!parse_colour(c.chat_text_color)) return "chat_text_color must be a colour like #D9C8FF.";
     if (!valid_server_name(c.name)) return std::string("name must be ") + server_name_rule + ".";
     for (const auto id : c.reserved)

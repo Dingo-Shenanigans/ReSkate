@@ -261,6 +261,24 @@ int main() {
     for (const auto& entry : mods::scan_mods(game).entries)
         if (entry.mod.name == "Deep_Mod")
             check(entry.mod.park_maps == std::vector<std::string>{"bam", "grom"}, "Park maps are listed");
+
+    // What a mod holds, for the Type column: a plugin is one only when its manifest names code.
+    write(mods / L"Deep_Mod" / L"reskate-plugin.json", R"({"variants":{"folder":"decks"}})");
+    for (const auto& entry : mods::scan_mods(game).entries)
+        if (entry.mod.name == "Deep_Mod")
+            check(!entry.mod.provides_plugin && mods::mod_contents(entry.mod) == std::vector<std::string>{"Parks", "Game data"},
+                  "A reskate-plugin.json without an entry is no plugin");
+    write(mods / L"Deep_Mod" / L"reskate-plugin.json", R"({"entry":"plugin/main.lua","permissions":[]})");
+    write(mods / L"Deep_Mod" / L"reskate-music.json", "{}");
+    write(mods / L"Deep_Mod" / L"reskate-objects.json", "{}");
+    for (const auto& entry : mods::scan_mods(game).entries)
+        if (entry.mod.name == "Deep_Mod")
+            check(entry.mod.provides_plugin &&
+                      mods::mod_contents(entry.mod) == std::vector<std::string>{"Parks", "Plugin", "Game data", "Objects", "Music"},
+                  "Plugins, objects and music are listed with what else the mod holds");
+    std::filesystem::remove(mods / L"Deep_Mod" / L"reskate-plugin.json");
+    std::filesystem::remove(mods / L"Deep_Mod" / L"reskate-music.json");
+    std::filesystem::remove(mods / L"Deep_Mod" / L"reskate-objects.json");
     make_zip(sources / L"parkmod.zip", {{"My Park/manifest.json", R"({"name":"My Park"})"},
                                         {"My Park/parks/bam.park.json", "{}"}});
     check(install(mods, sources / L"parkmod.zip") == "My Park", "A park mod (manifest.json only) installs");
@@ -403,6 +421,45 @@ int main() {
                   !fs::exists(store / L"Team-Empty"),
               "Thunderstore installs refuse a package with nothing to load");
         check(install(store, sources / L"empty.zip") == "empty", "A plain install still takes a description-only mod");
+        make_zip(sources / L"empty-list.zip", {{"manifest.json", R"({"name":"Nothing","dependencies":[]})"}});
+        options.folder = "Team-Empty_List";
+        check(error_of([&] { launcher_mods::install(store, sources / L"empty-list.zip", true, {}, cancel, options); })
+                      .find("plugins and mod packs") != std::string::npos &&
+                  !fs::exists(store / L"Team-Empty_List"),
+              "An empty dependencies list is not a mod pack, and the refusal names plugins and packs");
+
+        // A plugin-only package: reskate-plugin.json is something to load, at the top or one folder down.
+        make_zip(sources / L"plugin.zip", {{"manifest.json", manifest}, {"icon.png", "png"}, {"README.md", "readme"},
+            {"reskate-plugin.json", R"({"api":1})"}, {"main.luau", "-- plugin"}});
+        options.folder = "Team-Plugin";
+        check(launcher_mods::install(store, sources / L"plugin.zip", true, {}, cancel, options) == "Team-Plugin" &&
+                  read(store / L"Team-Plugin" / L"main.luau") == "-- plugin" &&
+                  read(store / L"Team-Plugin" / L"icon.png") == "png",
+              "Thunderstore installs take a plugin-only package");
+        make_zip(sources / L"nested-plugin.zip", {{"manifest.json", manifest}, {"icon.png", "png"}, {"README.md", "readme"},
+            {"Plugin/reskate-plugin.json", R"({"api":1})"}, {"Plugin/main.luau", "-- nested"}});
+        options.folder = "Team-Nested_Plugin";
+        check(launcher_mods::install(store, sources / L"nested-plugin.zip", true, {}, cancel, options) == "Team-Nested_Plugin" &&
+                  read(store / L"Team-Nested_Plugin" / L"reskate-plugin.json") == R"({"api":1})" &&
+                  read(store / L"Team-Nested_Plugin" / L"main.luau") == "-- nested" &&
+                  read(store / L"Team-Nested_Plugin" / L"icon.png") == "png" &&
+                  read(store / L"Team-Nested_Plugin" / L"README.md") == "readme" &&
+                  !fs::exists(store / L"Team-Nested_Plugin" / L"Plugin"),
+              "A plugin one folder down is the mod, and the package files follow it in");
+        const auto plugin_manifest = read(store / L"Team-Nested_Plugin" / L"manifest.json");
+        check(plugin_manifest.find("Desert_Springs") != std::string::npos && plugin_manifest.find(R"("Zee")") != std::string::npos,
+              "The carried manifest.json gets the team as author");
+
+        // A mod pack: nothing of its own to load, only dependencies the launcher installs first.
+        make_zip(sources / L"modpack.zip", {
+            {"manifest.json", R"({"name":"Pack","version_number":"1.0.0","dependencies":["Zee-Desert_Springs-1.2.3"]})"},
+            {"icon.png", "png"}, {"README.md", "readme"}});
+        options.folder = "Team-Pack";
+        check(launcher_mods::install(store, sources / L"modpack.zip", true, {}, cancel, options) == "Team-Pack" &&
+                  read(store / L"Team-Pack" / L"icon.png") == "png",
+              "Thunderstore installs take a mod pack that only lists dependencies");
+        const auto pack = installed("Team-Pack");
+        check(pack && pack->author == "Zee" && pack->version == "1.0.0", "A mod pack is listed with its team as author");
     }
 
     // A built-in pack in ReSkate's own format unpacks to exactly its files (a name with spaces
@@ -464,6 +521,31 @@ int main() {
                   !mods::kept_by_reskate(store, "Fourth_Studio-Road_Rash") && !mods::kept_by_reskate(store, "Someone-Other_Mod") &&
                   !mods::kept_by_reskate(store, ""),
               "Only a retired mod is left out");
+    }
+
+    {
+        // What the mods give the game's data, for emptying the game's shader cache when it changes: the mods
+        // with a layout, in load order, with their files, and the variants in play.
+        const auto park = root / L"signature" / L"Park", skin = root / L"signature" / L"Skin";
+        write(park / L"layout.toc", "toc");
+        write(skin / L"layout.toc", "toc");
+        const std::vector<launcher_mods::DataMod> both{{"Park", park}, {"Skin", skin}}, swapped{{"Skin", skin}, {"Park", park}};
+        const auto before = launcher_mods::game_data_signature(both, {});
+        check(before == launcher_mods::game_data_signature(both, {}), "The same mods give the same signature");
+        check(before != launcher_mods::game_data_signature(swapped, {}), "Another load order is another signature");
+        check(before != launcher_mods::game_data_signature({{"Park", park}}, {}), "A mod taken out is another");
+        check(before != launcher_mods::game_data_signature(both, {{"Skin", "red"}}), "Another variant is another");
+        write(skin / L"Win32" / L"skin.sb", "bundle");
+        check(before != launcher_mods::game_data_signature(both, {}), "A mod's files changing is another");
+        // Emptying the cache: everything in it goes, the folder stays.
+        const auto cache = root / L"cache";
+        write(cache / L"6803938.PcDx12", "shaders");
+        write(cache / L"nested" / L"cache.manifest", "manifest");
+        check(launcher_mods::empty_folder(cache).empty() && fs::is_directory(cache) && fs::is_empty(cache), "The shader cache is emptied, its folder kept");
+        check(launcher_mods::empty_folder(root / L"no such folder").empty(), "No cache folder is nothing to do");
+        check(launcher_mods::game_shader_cache().filename() == L"cache" &&
+                  launcher_mods::game_shader_cache().parent_path().filename() == L"Skate",
+              "The game's shader cache is ReSkate's own, under Game/Skate");
     }
 
     std::error_code ignored;

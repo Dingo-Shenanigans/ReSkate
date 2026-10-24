@@ -1,6 +1,8 @@
 #include "gui_internal.h"
 
 #include "depot_output.h"
+#include "mod_manager.h"
+#include "text_encoding.h"
 #include "start_maps.h"
 
 #include "Engine/Core/Json/json.h"
@@ -76,6 +78,20 @@ Settings load_settings(const fs::path& path) {
         settings.accepted_privacy = json.value("accepted_privacy_version", settings.accepted_privacy);
         settings.accepted_terms = json.value("accepted_terms_version", settings.accepted_terms);
         settings.announcement_hidden = json.value("announcement_hidden", settings.announcement_hidden);
+        // At most 64 categories each, every one a short name.
+        const auto categories = [&](const char* key) {
+            std::vector<std::string> list;
+            if (const auto found = json.find(key); found != json.end() && found->is_array())
+                for (const auto& item : *found)
+                    if (item.is_string() && !item.get<std::string>().empty() && item.get<std::string>().size() <= 64 && list.size() < 64)
+                        list.push_back(item.get<std::string>());
+            return list;
+        };
+        settings.mod_categories_only = categories("mod_categories_only");
+        settings.mod_categories_hidden = categories("mod_categories_hidden");
+        settings.installed_categories_only = categories("installed_categories_only");
+        settings.installed_categories_hidden = categories("installed_categories_hidden");
+        settings.shader_cache_mods = json.value("shader_cache_mods", std::string());
     } catch (const std::exception& exception) {
         logging::log(logging::Level::warning, logging::Channel::launcher, "Ignoring launcher settings: {}", exception.what());
     }
@@ -107,6 +123,11 @@ void save_settings(const fs::path& path, const Settings& settings) {
     json["accepted_privacy_version"] = settings.accepted_privacy;
     json["announcement_hidden"] = settings.announcement_hidden;
     json["accepted_terms_version"] = settings.accepted_terms;
+    json["mod_categories_only"] = settings.mod_categories_only;
+    json["mod_categories_hidden"] = settings.mod_categories_hidden;
+    json["installed_categories_only"] = settings.installed_categories_only;
+    json["installed_categories_hidden"] = settings.installed_categories_hidden;
+    json["shader_cache_mods"] = settings.shader_cache_mods;
     std::ofstream output(path, std::ios::binary | std::ios::trunc);
     output << json.dump(2) << '\n';
 }
@@ -509,13 +530,35 @@ void Launcher::run_download(bool validate) {
     fail(std::format("The Steam download did not finish (exit code {}). {}", code, output.message));
 }
 
+// Shaders the game built for one set of mods, kept in its shader cache and reused by the next launch,
+// were found to break the picture once the mods had changed many times: a launch with other mods than
+// the last one's (what they give the game's data: launcher_mods::game_data_signature) starts the game
+// with its shader cache empty, and it builds the shaders again.
+void clear_shader_cache_if_mods_changed(Settings& settings, const std::string& signature) {
+    if (signature == settings.shader_cache_mods) return;
+    const auto cache = launcher_mods::game_shader_cache();
+    const auto failed = launcher_mods::empty_folder(cache);
+    if (failed.empty()) {
+        logging::log(logging::Level::info, logging::Channel::launcher, "The mods changed since the last launch: the game's shader cache is emptied ({}).",
+                     launcher_text::utf8(cache.wstring()));
+        settings.shader_cache_mods = signature;
+        return;
+    }
+    // (Tried again at the next launch.)
+    for (const auto& line : failed)
+        logging::log(logging::Level::warning, logging::Channel::launcher, "The game's shader cache could not be emptied: {}", line);
+}
+
 // The merge the game does behind its splash, done here instead, so a mod that
 // cannot be merged is a question the launcher can ask rather than a surprise
 // three minutes into a loading screen. The game reuses what this builds.
 bool Launcher::run_mod_merge() {
     const auto root = mods_data_root();
     std::error_code error;
-    if (!fs::is_directory(root / mods::mods_folder, error)) return true;
+    if (!fs::is_directory(root / mods::mods_folder, error)) {
+        clear_shader_cache_if_mods_changed(settings_, {});
+        return true;
+    }
     set(Phase::merging, "Preparing mods", "Merging what is installed", 0);
     trace::Scope timing("launcher.mod_merge", "task");
     auto catalog = mods::load_catalog(root, [this](const mods::MergeProgress& progress) {
@@ -529,6 +572,12 @@ bool Launcher::run_mod_merge() {
         logging::write(logging::Level::info, logging::Channel::launcher, note);
     for (const auto& warning : catalog.warnings)
         logging::write(logging::Level::warning, logging::Channel::launcher, warning);
+    {
+        std::vector<launcher_mods::DataMod> data;
+        for (const auto& mod : catalog.mods)
+            if (mod.provides_layout) data.push_back({mod.name, mod.directory});
+        clear_shader_cache_if_mods_changed(settings_, launcher_mods::game_data_signature(data, catalog.variants_in_play));
+    }
 
     std::vector<ModProblem> problems;
     if (!catalog.issue.empty())

@@ -26,6 +26,12 @@ std::vector<std::vector<std::uint8_t>> take_outgoing() noexcept;
 // The `plugin` console commands.
 std::string describe();
 std::string list_commands();
+// The console commands plugins added, for the console's lookup: each name, its help and the plugin
+// that owns it (a server copy's as "<id>@server"). Client thread; read again at most twice a second.
+struct CommandHint {
+    std::string name, args, help, plugin; // name may be several words: a declared subcommand
+};
+std::vector<CommandHint> command_hints();
 std::string reload(std::string_view id);
 std::string switch_off(std::string_view id);
 std::string switch_on(std::string_view id);

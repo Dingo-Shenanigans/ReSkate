@@ -23,8 +23,10 @@ std::map<std::string, Placement, std::less<>> object_groups(const content_cache:
 Placement object_placement(std::string_view key, const content_cache::Catalogs& catalogs,
     const std::map<std::string, Placement, std::less<>>& groups) {
     const auto id = lower(key);
-    if (!catalogs.items.is_object() || !catalogs.items.contains(id)) return {};
-    const auto& item = catalogs.items.at(id);
+    // The game's own record, or the family a mod gives its object (reskate-objects.json).
+    const auto& records = catalogs.items.contains(id) ? catalogs.items : catalogs.mod_objects;
+    if (!records.contains(id)) return {};
+    const auto& item = records.at(id);
     if (!item.is_object() || !item.contains("group") || !item.at("group").is_string()) return {};
     const auto found = groups.find(item.at("group").string());
     return found == groups.end() ? Placement{} : found->second;

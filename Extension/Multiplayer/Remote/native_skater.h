@@ -49,6 +49,11 @@ void set_animation_evaluated_listener(AnimationEvaluated listener) noexcept;
 // Separate registration from the plugin pose filter: opening the studio must
 // not replace the filter that publishes plugin animations to other players.
 void set_animation_studio_pose_filter(LocalPoseFilter filter) noexcept;
+// Then, with the whole pose capture_local returns (the skater and the board), so a change to what is
+// drawn of the board (Extension/Skater/board_pose.h, a bone hidden from everyone) is in what the
+// others see too. One listener; nullptr for none. Client thread.
+using LocalSentPoseFilter = void (*)(std::uintptr_t component, Pose &pose) noexcept;
+void set_local_sent_pose_filter(LocalSentPoseFilter filter) noexcept;
 // A pose override of the local skater (Extension/Skater/skater_animation.cpp): called after the
 // listener above, so it sees (and may change) the pose first person left.
 void set_pose_override_listener(AnimationEvaluated listener) noexcept;

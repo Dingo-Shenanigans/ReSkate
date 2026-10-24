@@ -426,6 +426,8 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
         throw std::invalid_argument("Invalid chat message");
     if (p.kind == PacketKind::typing && !p.source)
         throw std::invalid_argument("Invalid typing notice");
+    if (p.kind == PacketKind::present && !p.source)
+        throw std::invalid_argument("Invalid presence notice");
     if (p.kind == PacketKind::admin && (!p.source || !valid_admin_text(p.text)))
         throw std::invalid_argument("Invalid admin message");
     if (p.kind == PacketKind::throwdown && (!p.source || p.throwdown.empty() || p.throwdown.size() > max_throwdown_message))
@@ -478,6 +480,8 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
         throw std::invalid_argument("Invalid map name");
     if ((p.kind == PacketKind::map_offer || p.kind == PacketKind::world_state) && !valid_map_package(p.map_package))
         throw std::invalid_argument("Invalid map package");
+    if (!p.required_plugins.empty() && (p.kind != PacketKind::map_offer || !valid_required_plugins(p.required_plugins)))
+        throw std::invalid_argument("Invalid required plugins");
     if (p.map_fetching && (p.world_ready || (p.kind != PacketKind::map_request && p.kind != PacketKind::world_ready)))
         throw std::invalid_argument("Invalid map fetch notice");
     if (p.kind == PacketKind::world_state &&
@@ -497,7 +501,7 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
         p.kind != PacketKind::throwdown && p.kind != PacketKind::teleport && p.kind != PacketKind::physics_tuning &&
         p.kind != PacketKind::party && p.kind != PacketKind::scoring && p.kind != PacketKind::physics_extras &&
         p.kind != PacketKind::effects && p.kind != PacketKind::permissions && p.kind != PacketKind::words &&
-        p.kind != PacketKind::next_maps && p.kind != PacketKind::typing)
+        p.kind != PacketKind::next_maps && p.kind != PacketKind::typing && p.kind != PacketKind::present)
         throw std::invalid_argument("Unknown packet kind");
     const auto payload = greeting ? 72
                          : p.kind == PacketKind::away
@@ -528,6 +532,11 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
             w.bytes.insert(w.bytes.end(), p.map_label.begin(), p.map_label.end());
             w.integer(p.map_package.size(), 1);
             w.bytes.insert(w.bytes.end(), p.map_package.begin(), p.map_package.end());
+            w.integer(p.required_plugins.size(), 1);
+            for (const auto &plugin : p.required_plugins) {
+                w.integer(plugin.size(), 1);
+                w.bytes.insert(w.bytes.end(), plugin.begin(), plugin.end());
+            }
         }
         if (p.kind == PacketKind::map_request) w.integer(p.map_fetching ? 1 : 0, 1);
         if (p.kind == PacketKind::hello) {
@@ -872,6 +881,14 @@ std::optional<Packet> decode(std::span<const std::uint8_t> bytes) noexcept {
                 r.at += static_cast<std::size_t>(length);
                 if (!valid_map_destination(p.destination) || p.map != map_hash(p.destination) || !read_map_label(r, bytes, p))
                     return {};
+                const auto plugins = r.integer(1);
+                if (plugins > max_required_plugins) return {};
+                for (std::uint64_t i = 0; i < plugins; ++i) {
+                    auto plugin = read_text(r, bytes, 1, max_map_package);
+                    if (!plugin) return {};
+                    p.required_plugins.push_back(std::move(*plugin));
+                }
+                if (!valid_required_plugins(p.required_plugins)) return {};
             }
             if (p.kind == PacketKind::map_request) {
                 const auto fetching = r.integer(1);
@@ -1287,6 +1304,8 @@ std::optional<Packet> decode(std::span<const std::uint8_t> bytes) noexcept {
             }
             for (std::uint64_t i = 0; i < removed; ++i) chunk.removed.push_back(r.integer(8));
             if (!valid_object_chunk(chunk)) return {};
+        } else if (p.kind == PacketKind::present) {
+            if (!p.source) return {};
         } else if (p.kind != PacketKind::away)
             return {};
         if (r.at != bytes.size())
@@ -1417,6 +1436,22 @@ bool valid_map_package(std::string_view package) noexcept {
     const auto second = rest.find('-');
     if (!package_word(package.substr(0, first)) || !package_word(rest.substr(0, second))) return false;
     return second == std::string_view::npos || package_version(rest.substr(second + 1));
+}
+bool valid_required_plugins(const std::vector<std::string> &packages) noexcept {
+    if (packages.size() > max_required_plugins) return false;
+    for (std::size_t i = 0; i < packages.size(); ++i) {
+        if (packages[i].empty() || !valid_map_package(packages[i])) return false;
+        // (Twice is twice whatever the version or the case: "A-B" and "a-b-1.0.0" are one package.)
+        const auto name = packages[i].substr(0, packages[i].size() - map_package_version(packages[i]).size());
+        for (std::size_t k = 0; k < i; ++k) {
+            const auto other = packages[k].substr(0, packages[k].size() - map_package_version(packages[k]).size());
+            const auto bare = [](std::string_view text) { return text.ends_with('-') ? text.substr(0, text.size() - 1) : text; };
+            const auto a = bare(name), b = bare(other);
+            if (a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) { return (x | 0x20) == (y | 0x20); }))
+                return false;
+        }
+    }
+    return true;
 }
 std::string map_package_name(std::string_view folder, std::string_view version) {
     const auto dash = folder.find('-');

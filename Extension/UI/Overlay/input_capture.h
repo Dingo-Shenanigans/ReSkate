@@ -1,5 +1,9 @@
 #pragma once
 #include <Windows.h>
+#include <array>
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
 #include <string>
 namespace dingosdk::overlay::detail {
 extern thread_local unsigned overlay_input_access;
@@ -44,4 +48,10 @@ void note_raw_mouse_packet(const RAWMOUSE& mouse);
 void note_raw_mouse_packet(const RAWMOUSE& mouse, bool overlay_owns_pointer);
 // The game window's input messages (keys, mouse), for the input-mode log (input_capture.cpp).
 void note_input_message(UINT message, WPARAM wp) noexcept;
+// The player worked the controls just now (overlay.h controls_touched_at).
+void note_controls() noexcept;
+// A controller's state as it was read: `slot` 0 to 3 the XInput users, 4 ReSkate's own reads
+// (read_gamepad), 5 a joystick a plugin reads; `axes` the sticks (-1 to 1) and triggers (0 to 1).
+void note_pad(std::size_t slot, std::uint32_t buttons, const std::array<float, 6>& axes) noexcept;
+extern std::atomic<ULONGLONG> controls_at;
 }

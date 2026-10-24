@@ -37,6 +37,9 @@ class ActivityLog {
     void tick(std::uint64_t now);
     // The players of the throwdowns running now, but those who quit theirs.
     std::set<std::uint64_t> playing() const;
+    // Whether two players are in one throwdown now: its leader, its queue or its players, but
+    // those who quit.
+    bool together(std::uint64_t a, std::uint64_t b) const;
 
   private:
     struct Throwdown {

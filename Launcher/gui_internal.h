@@ -218,6 +218,14 @@ struct Settings {
     std::uint64_t accepted_privacy{}, accepted_terms{};
     // The version of the home screen's announcement the player hid (0: none): one newer shows.
     std::uint64_t announcement_hidden{};
+    // GET MODS: the Thunderstore categories shown only, and those hidden (thunderstore.h CategoryFilter).
+    std::vector<std::string> mod_categories_only, mod_categories_hidden;
+    // MY MODS: the same for the installed mods, by their Thunderstore categories ("No category" for a
+    // mod Thunderstore does not list, or lists in none).
+    std::vector<std::string> installed_categories_only, installed_categories_hidden;
+    // What the mods gave the game's data at the last launch (launcher_mods::game_data_signature): a
+    // launch with other mods empties the game's shader cache first.
+    std::string shader_cache_mods;
 };
 
 inline constexpr std::array<const char*, 7> log_levels{"trace", "debug", "info", "warning", "error", "critical", "off"};
@@ -495,7 +503,6 @@ struct Store {
 
     // The GET MODS page.
     std::array<char, 96> search{};
-    std::string category;                            // empty = all
     int sort{};
     std::string selected;                            // full_name, while its overview is open
     bool overview{};                                 // the overview popup is showing
@@ -570,6 +577,8 @@ struct ModsPanel {
     std::array<char, 96> search{};
     int filter{};
     int order{};
+    // Each Thunderstore package's categories by the folder it installs into, made again when a listing arrives.
+    std::map<std::string, std::vector<std::string>, std::less<>> categories_by_folder;
     std::set<std::string, std::less<>> marked;
     std::string anchor;                  // the last mod ticked: where a Shift-click range starts
     int place{};                         // typed in a row's "move to position" popup
@@ -700,6 +709,12 @@ ImTextureID package_icon(ModsPanel& panel, const thunderstore::Package& package)
 // when the mod never came from Thunderstore.
 void mod_icon(ModsPanel& panel, const thunderstore::Package* package, ImVec2 position, float size);
 void pump_icons(ModsPanel& panel);
+// A category menu for a list of mods (GET MODS, MY MODS): each category shown only, hidden, or either,
+// a click going round them, with how many mods are in each (category_count adds to that). One chosen
+// before that no mod has now stays in the menu. True when the player changed what is chosen.
+int& category_count(std::vector<std::pair<std::string, int>>& categories, const std::string& category);
+bool category_menu(const char* id, std::vector<std::string>& only, std::vector<std::string>& hidden,
+                   std::vector<std::pair<std::string, int>> categories, float width);
 // The GET MODS page body, under the page header.
 void browse_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, float height, bool installing);
 // Everything Thunderstore knows about one package, in a popup over the page.

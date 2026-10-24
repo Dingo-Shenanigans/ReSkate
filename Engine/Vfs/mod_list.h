@@ -76,6 +76,9 @@ struct Mod {
     std::filesystem::path directory;
     bool provides_layout{};           // has layout.toc, so it becomes a layout layer
     bool provides_levels{};           // has reskate-levels.json
+    bool provides_plugin{};           // its reskate-plugin.json names Luau code to run (an "entry")
+    bool provides_objects{};          // has reskate-objects.json (Quick Drop object names and families)
+    bool provides_music{};            // has reskate-music.json (playlists for its songs)
     // Base maps it ships a park for: parks/<map>.park.json (park editor mods).
     std::vector<std::string> park_maps;
     // Presentation, from manifest.json (or reskate-mod.json). `title` falls back to the folder
@@ -153,6 +156,11 @@ struct ModList {
 // shader block depot entry `name` is in that bundle, or null.
 bool resident_root(const Mod& mod, std::string_view bundle, std::string_view name) noexcept;
 const ResidentAssets::Shader* resident_shader(const Mod& mod, std::string_view bundle, std::string_view name) noexcept;
+
+// What a mod holds, for a player, what says most about it first: "Map" or "3 maps", "Park" or
+// "Parks", "Plugin", "Game data", "Objects", "Music". Empty when it holds none of these. A plugin
+// that also ships game data reads as a plugin first, since its code is what it is for.
+std::vector<std::string> mod_contents(const Mod& mod);
 
 // Folder names travel into engine paths, so only plain ASCII is accepted:
 // letters, digits, space, '_', '-' and '.', not starting with '.'.

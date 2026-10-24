@@ -2,7 +2,12 @@
 
 The candidate starts from studio main `9d5e293` (1.0.8), includes PR #9
 `99c3368` (the game's DefaultStanceIsGoofy option; recording removal), and merges
-the exact official ReSkate `v2.1.2` tag, `97793b7`. Contributor history is retained.
+the source actually used by the published official 2.1.2 DLL, `55a7342`.
+Contributor history is retained. The published release still has the old
+pre-release tag `97793b7`; rebuilding that tag alone would omit 32 later commits.
+The 41,408,000-byte official DLL (release asset 672845693) contains the build
+hash `55a7342dc6e7`, and its verified SHA256 is
+`96112d915c181b696b5cb8ed17b62a74d09ca2900c4383a4500c1fa88bf76e43`.
 The additional drop/catch and branding work on `studio/ux-round-2` (`540fb9a`)
 has been inspected but remains separate from this compatibility build.
 
@@ -17,6 +22,9 @@ The studio's five graphics descriptors follow the plugin pictures and screen
 look ranges in one 28-slot heap. Hardcoded studio slots 4..8 are removed: those
 now belong to plugin images. The studio's loading art resolves game data through
 the new x-ray/game-image helper instead of the removed Hall of Meat module.
+The studio retains its preview truck rest transforms locally, without linking
+the removed Board Break module. Leading-foot offsets live in a dedicated game
+build header rather than the deleted grind-exit header.
 
 The shared animation core retains studio serialization and math while supporting
 2.1.2's rotation-only position ownership masks. FAS1/FAS2 and original FAS3 clips
@@ -38,3 +46,7 @@ presets and recordings. No repository access is needed for a shared DLL file.
 
 This is a compatibility tester candidate; it has not been visually accepted in
 the game. It does not merge the candidate or the still-open PR #9 into main.
+
+For saved custom tricks, enable MY TRICKS > PLAY for the trick before testing in
+the game. Old goofy saves with incorrect stance metadata are not automatically
+retagged; recreate an affected trick if it was saved before the stance fix.

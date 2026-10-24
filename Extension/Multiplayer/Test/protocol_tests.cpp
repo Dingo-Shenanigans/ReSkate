@@ -692,6 +692,22 @@ void chat_codec() {
     auto bad = encode(typing);
     bad.back() = 2; // the on/off byte; anything but 0 or 1 is refused
     check(!decode(bad), "A typing notice with a bad flag decoded");
+    // At the game: nothing but the header, from a sender.
+    Packet present;
+    present.kind = PacketKind::present; present.session = 9; present.epoch = 10; present.map = 11;
+    present.source = 76561198000000001ULL;
+    const auto bytes_present = encode(present);
+    const auto here = decode(bytes_present);
+    check(here && here->kind == PacketKind::present && here->source == present.source && bytes_present.size() == packet_header_size,
+          "A presence notice failed to round-trip, or carried more than its header");
+    check(decode_wire(encode_wire(present)) && decode_wire(encode_wire(present))->kind == PacketKind::present,
+          "A presence notice failed the wire codec");
+    auto longer = bytes_present;
+    longer.push_back(0);
+    longer[8] = 1; // its payload length
+    check(!decode(longer), "A presence notice with a payload decoded");
+    present.source = 0;
+    check(reject(present), "A presence notice without a sender was encoded");
 }
 // Linked throwdowns: the packet carries one opaque message; the message codec is strict.
 void throwdown_codec() {
@@ -1169,6 +1185,28 @@ void dedicated_server_codec() {
     const auto offer_arrived = decode_wire(encode_wire(offered));
     check(offer_arrived && offer_arrived->map_package == "Sandos-Vancouver_Plaza" && offer_arrived->destination == offered.destination,
           "The map's package lost from a map offer");
+    // A dedicated server's required plugins ride on its map offer.
+    check(offer_arrived && offer_arrived->required_plugins.empty(), "A map offer without plugins arrived with some");
+    auto requiring = offered;
+    requiring.required_plugins = {"neekgate-FPV_Drone", "Team-Filmer-1.2.0"};
+    const auto required_arrived = decode_wire(encode_wire(requiring));
+    check(required_arrived && required_arrived->required_plugins == requiring.required_plugins &&
+              required_arrived->map_package == "Sandos-Vancouver_Plaza",
+          "The required plugins lost from a map offer");
+    for (const auto &bad : std::vector<std::vector<std::string>>{{""}, {"Filmer"}, {"Team-Filmer", "team-filmer-1.0.0"},
+                                                                 {"Team-A/B"}, std::vector<std::string>(max_required_plugins + 1, "Team-X")}) {
+        auto wrong = offered;
+        wrong.required_plugins = bad;
+        check(reject(wrong) && !valid_required_plugins(bad), "A required plugin list that is not one encoded");
+    }
+    {
+        std::vector<std::string> sixteen;
+        for (std::size_t i = 0; i < max_required_plugins; ++i) sixteen.push_back("Team-Plugin_" + std::to_string(i));
+        check(valid_required_plugins(sixteen) && valid_required_plugins({}), "A full required plugin list refused");
+    }
+    auto wrong_kind = packaged;
+    wrong_kind.required_plugins = {"Team-Filmer"};
+    check(reject(wrong_kind), "Required plugins encoded on something other than a map offer");
     for (const char *bad : {"Sandos", "Sandos-", "-Plaza", "San dos-Plaza", "Sandos-Plaza-2.0", "Sandos-Plaza-2.0.0.1", "../x-y",
                             "Sandos-Pla/za", "Sandos-Plaza-1.2.3-4", "https://thunderstore.io/x-y"}) {
         auto wrong = packaged;

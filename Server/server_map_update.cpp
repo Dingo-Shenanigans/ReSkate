@@ -1,6 +1,7 @@
 #include "server_map_update.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Vfs/thunderstore_package.h"
+#include "Extension/Multiplayer/Net/protocol.h"
 #ifdef _WIN32
 #include "Engine/Vfs/https_download.h"
 #else
@@ -100,6 +101,59 @@ void set_map_version(const fs::path &mod, const std::string &version) {
         fs::remove(fresh, ignored);
         throw std::runtime_error("its manifest.json could not be replaced (" + moved.message() + ")");
     }
+}
+
+std::string required_plugin_problem(const std::string &package_name, bool &reached) {
+    reached = false;
+    const auto name = package::parse_name(package_name);
+    if (!name) return "it is not a Thunderstore package (Owner-Name, or Owner-Name-1.2.3)";
+    auto bare = *name;
+    bare.version.clear();
+    std::string answer;
+    try {
+        answer = get_text(package::details_url(bare));
+    } catch (const std::exception &failure) {
+        return std::string("Thunderstore could not be asked about it (") + failure.what() + ")";
+    }
+    reached = true;
+    const auto choice = package::choose(answer, bare, community, package::Kind::plugin);
+    if (!choice.ok) return choice.reason.empty() ? "Thunderstore does not list it as a plugin" : choice.reason;
+    if (!name->version.empty() && multiplayer::map_version_newer(name->version, choice.newest))
+        return "Thunderstore's newest version is " + choice.newest + ", older than " + name->version;
+    return {};
+}
+
+RequiredPluginCheck::Done RequiredPluginCheck::tick(const std::vector<std::string> &required) {
+    Done done;
+    if (work_.valid()) {
+        if (work_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) return done;
+        done = work_.get();
+        done.finished = true;
+    }
+    if (!work_.valid() && (!started_ || required != checked_)) {
+        started_ = true;
+        checked_ = required;
+        if (required.empty()) return done;
+        work_ = std::async(std::launch::async, [required] {
+            Done result;
+            for (const auto &plugin : required) {
+                bool reached{};
+                auto problem = required_plugin_problem(plugin, reached);
+                if (problem.empty()) continue;
+                if (problem.ends_with('.')) problem.pop_back();
+                if (reached) {
+                    result.refused.insert(plugin);
+                    result.lines.push_back("Required plugin " + plugin + " is left out: " + problem + ". Players are only asked for plugins.");
+                } else {
+                    result.lines.push_back("Required plugin " + plugin + " could not be checked: " + problem + ". Players' games check it themselves.");
+                }
+            }
+            if (result.lines.empty())
+                result.lines.push_back("Required plugins: " + std::to_string(required.size()) + " checked on Thunderstore; players without them are offered them as they join.");
+            return result;
+        });
+    }
+    return done;
 }
 
 std::vector<MapUpdate> update_maps(const fs::path &mods, const std::string &in_play) {

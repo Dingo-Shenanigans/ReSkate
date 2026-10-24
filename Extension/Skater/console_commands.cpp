@@ -161,22 +161,6 @@ void register_movement_commands(Commands &registry) {
         request_debug(Debug::set_up_velocity_speed, false, 0.0f);
     };
     registry.add(std::move(up_speed));
-    // TEST ONLY (not for the PR): a virtual controller, RESKATE_TEST_PAD=1.
-    auto test_pad = action("testpad", "Test builds: play a script on the virtual controller", Group::movement,
-                           {argument("script", Type::text)});
-    test_pad.inspect = [](const Model &) { return State{true, {}, {}, {}, false}; };
-    test_pad.run = [](const Model &, const Values &args, const Output &out) {
-        out(DingoSDKOverlayTestPad(std::get<std::string>(args[0]).c_str()) ? "Test pad: playing." : "Test pad: off.");
-    };
-    registry.add(std::move(test_pad));
-    auto test_pad_reads = action("testpadreads", "Test builds: how often the game has read the virtual controller", Group::movement);
-    test_pad_reads.inspect = [](const Model &) { return State{true, {}, {}, {}, false}; };
-    test_pad_reads.run = [](const Model &, const Values &, const Output &out) {
-        unsigned all{}, by_game{};
-        DingoSDKOverlayTestPadReads(&all, &by_game);
-        out("Test pad reads answered: " + std::to_string(all) + ", from the game's own code: " + std::to_string(by_game));
-    };
-    registry.add(std::move(test_pad_reads));
     auto anim_save = action("animsave", "Animator Studio: save the animation under a name", Group::movement, {argument("name", Type::text)});
     anim_save.inspect = [](const Model &) { return State{true, {}, {}, {}, false}; };
     anim_save.run = [](const Model &, const Values &args, const Output &out) {
@@ -346,6 +330,14 @@ void register_movement_commands(Commands &registry) {
         };
         registry.add(std::move(entry));
     }
+    // What "bind reskatemenu" runs, for a player who cannot press the menu's key (no Insert key).
+    auto open_menu = action("menu", "Open the ReSkate menu (bind it to a controller combo or key: bind reskatemenu)", Group::console);
+    open_menu.inspect = [](const Model &) { return State{true, {}, {}, {}, false}; };
+    open_menu.run = [](const Model &, const Values &, const Output &out) {
+        overlay::menu_open_flag().store(true);
+        out("Opening the ReSkate menu.");
+    };
+    registry.add(std::move(open_menu));
 }
 void register_ai_commands(Commands &registry) {
     const auto ready = [](const Model &m) {

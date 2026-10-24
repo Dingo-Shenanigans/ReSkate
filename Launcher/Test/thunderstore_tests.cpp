@@ -87,6 +87,21 @@ int main() {
     check(desert.latest().file_size == 5368709120ull, "Sizes over 4 GB survive");
     check(desert.downloads == 15 && desert.in_category("Maps") && !desert.in_category("Audio"),
           "Downloads add up across versions and categories are listed");
+    {
+        // The GET MODS list's categories: hidden ones win, and with any shown only, a package needs one.
+        thunderstore::Package both;
+        both.categories = {"Maps", "Tools"};
+        thunderstore::Package plain;
+        check(thunderstore::shown_by(both, {}) && thunderstore::shown_by(plain, {}), "No filter shows everything");
+        check(thunderstore::shown_by(both, {{"Audio", "Maps"}, {}}) && !thunderstore::shown_by(plain, {{"Maps"}, {}}),
+              "Shown only: a package in any of them shows, one in none does not");
+        check(!thunderstore::shown_by(both, {{}, {"Tools"}}) && thunderstore::shown_by(plain, {{}, {"Tools"}}),
+              "Hidden: a package in it is left out, one without it shows");
+        check(!thunderstore::shown_by(both, {{"Maps"}, {"Tools"}}), "A hidden category wins over one shown only");
+        const std::vector<std::string> none{"No category"};
+        check(thunderstore::shown_by(none, {{"No category"}, {}}) && !thunderstore::shown_by(none, {{}, {"No category"}}),
+              "An installed mod's own categories go by the same rule (MY MODS)");
+    }
     const auto& cam = packages.at(1);
     check(cam.deprecated && cam.latest().icon.empty(), "Flags are read and non-HTTPS icons are dropped");
     check(!error_of([] { thunderstore::parse_listing(R"({"error": "No cache available"})"); }).empty(),

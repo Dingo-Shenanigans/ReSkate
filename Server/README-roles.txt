@@ -185,7 +185,6 @@ What players may do
   object-scaling       object-scaling on|off: whether players may resize objects.
   clear-objects        Delete every placed object.
   effects              effects on|off: whether players see each other's effects.
-  drones               drones on|off: whether players see each other's FPV drones.
   noclip               noclip on|off. (The menu calls it noclip-allow.)
   nobail               nobail on|off. (The menu calls it nobail-allow.)
   boosts               boosts on|off. (The menu calls it boosts-allow.)

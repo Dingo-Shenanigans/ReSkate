@@ -226,6 +226,23 @@ int run() {
               "A config in sections did not read back as it was written");
         std::filesystem::remove_all(folder / "data");
     }
+    // Required plugins: none unless set, kept as written, and only Thunderstore package names.
+    {
+        ServerConfig plugins;
+        check(plugins.required_plugins.empty() && config_error(plugins).find("plugins.required") == std::string::npos,
+              "Required plugins are not off by default");
+        plugins.file = folder / "plugins.json";
+        plugins.required_plugins = {"neekgate-FPV_Drone", "Team-Filmer-1.2.0"};
+        save_config(plugins);
+        check(load_config(plugins.file).required_plugins == plugins.required_plugins &&
+                  text(plugins.file).find("\"required\"") != std::string::npos,
+              "Required plugins were not kept under plugins.required");
+        for (const auto &bad : std::vector<std::vector<std::string>>{{"FPV_Drone"}, {""}, {"neekgate-FPV_Drone", "NEEKGATE-fpv_drone-1.0.0"},
+                                                                     {"neekgate-FPV Drone"}, std::vector<std::string>(17, "Team-X")}) {
+            plugins.required_plugins = bad;
+            check(config_error(plugins).find("plugins.required") != std::string::npos, "A required plugin that is not a package was accepted");
+        }
+    }
     // The away timer: off unless set, and no more than a day.
     {
         ServerConfig away;

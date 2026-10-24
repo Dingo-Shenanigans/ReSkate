@@ -13,7 +13,7 @@
 #include "Engine/Game/Build/supported_build.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Game/Build/20260929/engine.h"
-#include "Engine/Game/Build/20260929/grind_exit.h"
+#include "Engine/Game/Build/20260929/skater_lead_foot.h"
 #include "Engine/Game/Build/20260929/no_bail.h"
 #include "Engine/Game/Build/20260929/skater_state.h"
 #include "Extension/Multiplayer/Remote/native_pose_layout.h"
@@ -146,8 +146,8 @@ std::optional<bool> left_foot_leads(std::uintptr_t base, std::uintptr_t componen
     const auto core = read<std::uintptr_t>(component + 0x70).value_or(0);
     if (!core || read<std::uintptr_t>(core).value_or(0) != base + addr::no_bail::bail_core_vtable) return std::nullopt;
     const auto context = read<std::uintptr_t>(core + 0x3c0).value_or(0);
-    const auto flags = context ? read<std::uint8_t>(context + addr::grind_exit::stance_flags_offset) : std::nullopt;
-    return flags ? std::optional<bool>{(*flags & addr::grind_exit::left_foot_leads_mask) != 0} : std::nullopt;
+    const auto flags = context ? read<std::uint8_t>(context + addr::skater_lead_foot::stance_flags_offset) : std::nullopt;
+    return flags ? std::optional<bool>{(*flags & addr::skater_lead_foot::left_foot_leads_mask) != 0} : std::nullopt;
 }
 // The physics context the stance byte lives in (0 when it cannot be found).
 std::uintptr_t physics_context(std::uintptr_t base, std::uintptr_t component) noexcept {
@@ -163,7 +163,7 @@ std::optional<std::uint8_t> stance_flags(std::uintptr_t base, std::uintptr_t com
     const auto core = read<std::uintptr_t>(component + 0x70).value_or(0);
     if (!core || read<std::uintptr_t>(core).value_or(0) != base + addr::no_bail::bail_core_vtable) return std::nullopt;
     const auto context = read<std::uintptr_t>(core + 0x3c0).value_or(0);
-    return context ? read<std::uint8_t>(context + addr::grind_exit::stance_flags_offset) : std::nullopt;
+    return context ? read<std::uint8_t>(context + addr::skater_lead_foot::stance_flags_offset) : std::nullopt;
 }
 // The skater's body-relative forward speed (context+0x17fc, found 2026-10-22): below zero rolling fakie.
 std::optional<float> forward_speed(std::uintptr_t base, std::uintptr_t component) noexcept {
@@ -2454,7 +2454,7 @@ void tick(Live& l, double at, std::uintptr_t base, std::uintptr_t component, Mot
     const auto trick = current_trick(component);
     write(std::format("{:7.2f}s  {:8s} flags {} (left_foot_leads {})  setting {}  foot toward +z: {:5s}  board going {:5s} ({} m/s)  "
                       "L {} {} {}  R {} {} {}  | placement: {} (L x {} R x {}) render: {}  backwards {}  forward {}  board +z along ({} {} {})  trick {}",
-                      at - started, moving, flag_text, flags ? ((*flags & addr::grind_exit::left_foot_leads_mask) ? "yes" : "no ") : "?  ",
+                      at - started, moving, flag_text, flags ? ((*flags & addr::skater_lead_foot::left_foot_leads_mask) ? "yes" : "no ") : "?  ",
                       goofy_stance() ? "goofy  " : "regular", toward_plus_z, going, fmt(speed), fmt(left[0]), fmt(left[1]), fmt(left[2]),
                       fmt(right[0]), fmt(right[1]), fmt(right[2]), placed_side, fmt(pl[0]), fmt(pr[0]), render_side, backwards, forward, fmt(board_along[0]),
                       fmt(board_along[1]), fmt(board_along[2]), trick.empty() ? "-" : trick));

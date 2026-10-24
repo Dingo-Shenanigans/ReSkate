@@ -14,6 +14,7 @@ struct State {
     std::atomic<bool> ready{};
     std::mutex mutex;
     std::set<std::string, std::less<>> owners; // client thread
+    std::set<std::string, std::less<>> hiders; // client thread: plugins hiding the local skater
     bool hooked{};                             // client thread
     std::atomic<std::uint64_t> drawn_at{};     // render thread -> client tick
 };
@@ -42,18 +43,32 @@ void prepare(std::string_view owner, bool on) {
         s.owners.erase(found);
     }
 }
+bool hide(std::string_view owner, bool on) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    if (!on) {
+        if (const auto found = s.hiders.find(owner); found != s.hiders.end()) s.hiders.erase(found);
+        return true;
+    }
+    if (!s.ready.load(std::memory_order_acquire)) return false;
+    s.hiders.emplace(owner);
+    return true;
+}
 
 void tick() noexcept {
     auto& s = state();
     if (!s.ready.load(std::memory_order_acquire)) return;
     try {
-        bool wanted{};
+        bool xray{}, hiding{};
         {
             std::lock_guard lock(s.mutex);
-            wanted = !s.owners.empty();
+            xray = !s.owners.empty();
+            hiding = !s.hiders.empty();
         }
         const bool drawn = GetTickCount64() - s.drawn_at.load(std::memory_order_acquire) < follow_ms;
-        follow_render(wanted && drawn);
+        follow_render((xray && drawn) || hiding);
+        hide_skater(hiding);
+        const bool wanted = xray || hiding;
         if (wanted != s.hooked && hook_render(wanted)) s.hooked = wanted;
     } catch (...) {
     }

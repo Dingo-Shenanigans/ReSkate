@@ -147,6 +147,7 @@ add_library(dingosdk_plugins STATIC
     Extension/Plugins/plugin_api_services.cpp
     Extension/Plugins/plugin_api_throwdowns.cpp
     Extension/Plugins/plugin_api_capture.cpp
+    Extension/Plugins/plugin_content.cpp
     # The throwdown kit's store and the plugins' modes, which the plugin host and the game's
     # native UI share (kit::flag is the game's: Extension/Throwdowns/native_flag_session.cpp).
     Extension/Throwdowns/throwdown_kit.cpp

@@ -11,6 +11,7 @@
 #include "Engine/Vfs/mod_scoring.h"
 #include "Extension/Multiplayer/Remote/remote_collision.h"
 #include <algorithm>
+#include <atomic>
 #include <stdexcept>
 #include <utility>
 
@@ -312,6 +313,23 @@ void send_typing(Session &s, bool on) {
     auto message = packet(s, PacketKind::typing, now);
     message.typing = on;
     broadcast(s, message, true, false, now);
+}
+namespace {
+std::atomic<std::uint64_t> player_input_at{};
+}
+void note_input() noexcept { player_input_at.store(now_us(), std::memory_order_relaxed); }
+// A dedicated server counts a player away while nothing they do reaches it: their skater's moves,
+// chat, voice or objects. One whose skater stands still while they play (a plugin's drone or
+// camera) says so here.
+void update_presence(Session &s, std::uint64_t now) {
+    if (!dedicated_host(s) || now < s.next_presence) return;
+    const auto input = player_input_at.load(std::memory_order_relaxed);
+    if (!input || input <= s.presence_for) return; // nothing worked since the last notice
+    const auto *host = find_peer(s, s.host_id);
+    if (!host || !host->handshaken) return;
+    if (!send_packet(s, s.host_id, packet(s, PacketKind::present, now), false, true)) return;
+    s.next_presence = now + present_interval_us;
+    s.presence_for = input;
 }
 void send_throwdown(Session &s, std::vector<std::uint8_t> message) {
     if ((s.mode != Mode::host && s.mode != Mode::join) || message.empty() || message.size() > max_throwdown_message) return;

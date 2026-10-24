@@ -42,7 +42,7 @@
 #include "Extension/UI/hud_corner.h"
 #include "Extension/UI/Overlay/game_images.h"
 #include "Extension/Plugins/plugin_runtime.h"
-#include "Extension/Skater/grind_exit.h"
+#include "Extension/Skater/launches.h"
 #include "Extension/Skater/trick_rewrite.h"
 #include "Extension/Skater/camera_observer.h"
 #include "Extension/Progression/entitlement_request_hook.h"
@@ -207,6 +207,19 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
         if (r.custom_levels.present)
             dingosdk::logging::log(dingosdk::logging::Level::info, dingosdk::logging::Channel::level,
                 "Custom-level destinations after merging: {}.", r.custom_levels.levels.size());
+        // Names and Quick Drop families mods give their own objects, before anything lists objects.
+        {
+            std::vector<std::pair<std::string, std::filesystem::path>> object_files;
+            for (const auto& mod : mod_catalog.mods)
+                object_files.emplace_back(mod.name, mod.directory / dingosdk::content_cache::mod_objects_file);
+            const auto declared = dingosdk::content_cache::install_mod_objects(object_files);
+            for (const auto& note : declared.notes)
+                dingosdk::logging::log(dingosdk::logging::Level::warning, dingosdk::logging::Channel::objects,
+                    "Mod objects: {}.", note);
+            if (declared.mods)
+                dingosdk::logging::log(dingosdk::logging::Level::info, dingosdk::logging::Channel::objects,
+                    "Mod objects: {} named by {} mod(s).", declared.objects, declared.mods);
+        }
         auto interposer = GetModuleHandleW(L"sl.interposer.dll");
         if (!interposer) interposer = LoadLibraryExW(interposer_path.c_str(), nullptr,
             LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
@@ -240,6 +253,8 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
         // A map a session needs: hosts say which Thunderstore package theirs is from, and a
         // guest without it is offered it on a card (Extension/Assets/map_download.h).
         dingosdk::multiplayer::set_map_package_lookup(dingosdk::map_download::package_of);
+        // And a dedicated server's required plugins, offered on the same card.
+        dingosdk::multiplayer::set_plugin_check(dingosdk::map_download::missing_plugins, dingosdk::map_download::has_level);
         dingosdk::overlay::set_map_download_feed([]() {
             const auto view = dingosdk::map_download::view();
             using Stage = dingosdk::map_download::Stage;
@@ -264,6 +279,9 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
             card.total = view.total;
             card.yes_bind = view.yes_bind;
             card.no_bind = view.no_bind;
+            for (const auto& item : view.items)
+                card.items.push_back({item.name, item.author, item.version, item.have, item.plugin, item.installed, item.bytes});
+            card.current = view.current;
             return card;
         });
         dingosdk::overlay::set_map_download_answer(dingosdk::map_download::answer);
@@ -485,8 +503,8 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
         dingosdk::overlay::prepare_game_images();
         record("{\"event\":\"skater_physics_initialized\",\"active\":" + std::string(physics ? "true" : "false") + ",\"xray\":" +
                std::string(xray ? "true" : "false") + "}");
-        const bool grind_exits = dingosdk::grind_exit::start(r.base);
-        record("{\"event\":\"grind_exit_initialized\",\"active\":" + std::string(grind_exits ? "true" : "false") + "}");
+        const bool launch_hooks = dingosdk::launches::start(r.base);
+        record("{\"event\":\"launches_initialized\",\"active\":" + std::string(launch_hooks ? "true" : "false") + "}");
         const bool trick_rewrites = dingosdk::trick_rewrite::start(r.base);
         record("{\"event\":\"trick_rewrite_initialized\",\"active\":" + std::string(trick_rewrites ? "true" : "false") + "}");
         dingosdk::overlay::prepare_animation_studio_images();

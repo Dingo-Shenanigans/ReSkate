@@ -1336,6 +1336,9 @@ void update_model(std::uintptr_t client, TickState& frame) {
     dingosdk::update_local_graphics_controls();
     model.graphics = dingosdk::local_profile_graphics_controls();
     model.object_persistence = dingosdk::local_profile_object_persistence();
+    model.plugin_commands.clear();
+    for (auto& hint : dingosdk::plugins::command_hints())
+        model.plugin_commands.push_back({std::move(hint.name), std::move(hint.args), std::move(hint.help), std::move(hint.plugin)});
     // The park list is a disk walk of the Mods folder: only while the menu or the editor shows it.
     dingosdk::set_park_mod_list_visible(r.debug_model.park_editor ||
         GetTickCount64() < r.named_settings_wanted_until.load(std::memory_order_relaxed));
@@ -1548,6 +1551,12 @@ void tick(std::uintptr_t client, std::uintptr_t update) {
             context_ready();
         {
             DINGO_PROFILE_ZONE("tick/multiplayer");
+            // The player at the controls, whatever the controls drive (the skater, or a plugin's drone).
+            static std::uint64_t controls_worked{};
+            if (const auto at = dingosdk::overlay::controls_touched_at(); at != controls_worked) {
+                controls_worked = at;
+                dingosdk::multiplayer::note_player_input();
+            }
             dingosdk::multiplayer::tick(r.base,client,multiplayer_ready,r.multiplayer_map,load_multiplayer_map);
             if (auto notice = dingosdk::multiplayer::take_leave_notice(); !notice.empty())
                 dingosdk::overlay::notify(dingosdk::overlay::NoticeLevel::warning, "Map not installed", std::move(notice));

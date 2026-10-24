@@ -17,15 +17,16 @@ namespace {
 struct Event {
     std::string_view name, permission;
 };
-constexpr std::array<Event, 28> events{{
+constexpr std::array<Event, 31> events{{
     {"load", {}}, {"unload", {}}, {"tick", {}}, {"level_loaded", {}}, {"level_unloading", {}},
     {"trick_started", "events.tricks"}, {"trick_landed", "events.tricks"}, {"line_broken", "events.tricks"},
     {"draw", "overlay"}, {"player_joined", "session.read"}, {"player_left", "session.read"}, {"message", "net.session"},
     {"skater_state", "events.skater"}, {"bail", "events.skater"}, {"chat", "chat.read"}, {"track_changed", "music"},
     {"throwdown", "throwdowns"}, {"action", "input"}, {"screen_closed", "ui.screen"},
     {"board_landed", "events.skater"}, {"body_hit", "events.skater"}, {"bail_end", "events.skater"},
-    {"physics_step", "events.physics"}, {"grind_exit", "events.skater"}, {"trick_notes", "events.tricks"},
-    {"throwdown_ui", "throwdowns"}, {"touch", "session.skaters"}, {"touch_end", "session.skaters"},
+    {"physics_step", "events.physics"}, {"launch", "events.skater"}, {"trick_notes", "events.tricks"},
+    {"throwdown_ui", "throwdowns"}, {"touch", "session.skaters"}, {"touch_end", "session.skaters"}, {"camera_cycle", "camera"},
+    {"poll_answer", "server"}, {"poll_closed", "server"},
 }};
 constexpr std::size_t maximum_key = 128;
 constexpr std::size_t maximum_command = 48;
@@ -412,8 +413,36 @@ struct ApiFunctions {
         if (plugin.commands_.contains(name)) luaL_error(L, "the command \"%s\" is registered already", name.c_str());
         if (const auto refusal = plugin.services_.claim_command(plugin.id(), name); !refusal.empty())
             luaL_error(L, "%s", refusal.c_str());
+        // subcommands = {{name = "random", args = "[start]", help = "..."}, ...}: what the console's
+        // lookup and `plugin commands` show after the name. The function still runs them all.
+        std::vector<Plugin::Subcommand> subcommands;
+        if (!lua_isnoneornil(L, 4)) {
+            luaL_checktype(L, 4, LUA_TTABLE);
+            const int count = static_cast<int>(lua_objlen(L, 4));
+            if (count > 32) luaL_error(L, "at most 32 subcommands");
+            for (int i = 1; i <= count; ++i) {
+                lua_rawgeti(L, 4, i);
+                if (!lua_istable(L, -1)) luaL_error(L, "subcommand %d is not a table {name = ..., args = ..., help = ...}", i);
+                Plugin::Subcommand sub;
+                const auto field = [&](const char* key, std::size_t most) {
+                    lua_getfield(L, -1, key);
+                    std::string value = lua_isnil(L, -1) ? std::string{} : std::string(luaL_checkstring(L, -1));
+                    lua_pop(L, 1);
+                    if (value.size() > most) luaL_error(L, "a subcommand's %s is at most %d characters", key, static_cast<int>(most));
+                    return value;
+                };
+                sub.name = field("name", maximum_command);
+                sub.args = field("args", 80);
+                sub.help = field("help", 200);
+                bool word = !sub.name.empty();
+                for (const char c : sub.name) word = word && ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-');
+                if (!word) luaL_error(L, "subcommand %d's name is not one lowercase word of a-z, 0-9, _ and -", i);
+                subcommands.push_back(std::move(sub));
+                lua_pop(L, 1);
+            }
+        }
         lua_pushvalue(L, 3);
-        plugin.commands_[name] = {help.substr(0, 200), lua_ref(L, -1)};
+        plugin.commands_[name] = {help.substr(0, 200), lua_ref(L, -1), std::move(subcommands)};
         lua_pop(L, 1);
         return 0;
     }
@@ -496,7 +525,7 @@ struct ApiFunctions {
             lua_pushnil(L);
             return 1;
         }
-        lua_createtable(L, 0, 6);
+        lua_createtable(L, 0, 8);
         push_position(L, s->position);
         lua_setfield(L, -2, "position");
         lua_pushnumber(L, s->heading);
@@ -509,6 +538,12 @@ struct ApiFunctions {
         lua_setfield(L, -2, "airborne");
         lua_pushnumber(L, s->air_time);
         lua_setfield(L, -2, "air_time");
+        if (s->right) {
+            push_position(L, *s->right);
+            lua_setfield(L, -2, "right");
+            lua_pushboolean(L, s->switch_stance);
+            lua_setfield(L, -2, "switch");
+        }
         return 1;
     }
     static int skater_position(lua_State* L) {

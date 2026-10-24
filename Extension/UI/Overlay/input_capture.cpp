@@ -8,6 +8,7 @@
 #include "Engine/Game/Input/owned_menu_input.h"
 #include <hidsdi.h>
 #include <atomic>
+#include <cmath>
 #include <format>
 #include <array>
 #include <cstring>
@@ -415,6 +416,7 @@ void filter_pad(bool outer, DWORD user, XINPUT_STATE* output) noexcept {
 // holds the game's input does not hold its controller. That hook's own function is hooked
 // then, so the capture is in front of it again.
 void game_pad_read(DWORD user, XINPUT_STATE* output) noexcept;
+void note_xinput(DWORD user, const XINPUT_STATE& state) noexcept;
 template<std::size_t I>
 DWORD WINAPI captured_front(DWORD user, XINPUT_STATE* output) {
     const bool capture = block_polled_input();
@@ -426,6 +428,7 @@ DWORD WINAPI captured_front(DWORD user, XINPUT_STATE* output) {
         OverlayInputAccess access;
         result = original<DWORD(WINAPI*)(DWORD, XINPUT_STATE*)>(input_hooks().xinput_front[I])(user, output);
     }
+    if (result == ERROR_SUCCESS && output) note_xinput(user, *output);
     // Only the game gets a scripted pad (the character room's walk): ReSkate's own reads get the real one.
     if (outer && output && scripted_pad(user, *output)) return ERROR_SUCCESS;
     if (result == ERROR_SUCCESS && output && capture) {
@@ -529,9 +532,41 @@ struct LastInput {
     std::atomic<std::uint32_t> message{}, message_key{}; // the game window's last input message
 };
 LastInput& last_input() { static auto* value = new LastInput; return *value; }
+std::atomic<ULONGLONG> controls_at{};
+namespace {
+struct PadSeen {
+    bool known{};
+    std::uint32_t buttons{};
+    std::array<float, 6> axes{};
+};
+}
+void note_controls() noexcept { controls_at.store(GetTickCount64(), std::memory_order_relaxed); }
+// A controller counts as worked when a button changes, or a stick or trigger moves an eighth of
+// its travel from where it was last worked: one left resting off centre, or a little noise, does not.
+void note_pad(std::size_t slot, std::uint32_t buttons, const std::array<float, 6>& axes) noexcept {
+    static std::mutex mutex;
+    static std::array<PadSeen, 6> seen{};
+    if (slot >= seen.size()) return;
+    bool moved{};
+    {
+        std::lock_guard lock(mutex);
+        auto& was = seen[slot];
+        moved = was.known && was.buttons != buttons;
+        for (std::size_t i = 0; i < axes.size() && was.known; ++i) moved = moved || std::abs(axes[i] - was.axes[i]) > 0.125f;
+        if (!was.known || moved) was = {true, buttons, axes};
+    }
+    if (moved) note_controls();
+}
+void note_xinput(DWORD user, const XINPUT_STATE& state) noexcept {
+    const auto& g = state.Gamepad;
+    const auto stick = [](SHORT v) { return static_cast<float>(v) / 32768.0f; };
+    note_pad(user, g.wButtons, {stick(g.sThumbLX), stick(g.sThumbLY), stick(g.sThumbRX), stick(g.sThumbRY),
+                                g.bLeftTrigger / 255.0f, g.bRightTrigger / 255.0f});
+}
 void note_input_record(const RAWINPUT& record) noexcept {
     auto& last = last_input();
     if (record.header.dwType == RIM_TYPEKEYBOARD) {
+        note_controls();
         last.key.store(record.data.keyboard.VKey | (std::uint32_t{record.data.keyboard.MakeCode} << 16),
                        std::memory_order_relaxed);
         last.key_device.store(record.header.hDevice, std::memory_order_relaxed);
@@ -543,6 +578,7 @@ void note_input_record(const RAWINPUT& record) noexcept {
         last.mouse_buttons.store(record.data.mouse.usButtonFlags, std::memory_order_relaxed);
         last.mouse_device.store(record.header.hDevice, std::memory_order_relaxed);
         last.mouse_at.store(GetTickCount64(), std::memory_order_relaxed);
+        note_controls();
         if ((record.data.mouse.usButtonFlags & RI_MOUSE_WHEEL) &&
             GetTickCount64() < mode_input_paused_until.load(std::memory_order_relaxed))
             mode_mouse_wheel.fetch_add(static_cast<SHORT>(record.data.mouse.usButtonData) / WHEEL_DELTA, std::memory_order_relaxed);
@@ -562,6 +598,8 @@ void note_input_message(UINT message, WPARAM wp) noexcept {
     last.message.store(message, std::memory_order_relaxed);
     last.message_key.store(static_cast<std::uint32_t>(wp), std::memory_order_relaxed);
     last.message_at.store(GetTickCount64(), std::memory_order_relaxed);
+    // (Windows sends a mouse move message without the mouse moving, as a window comes or goes under it.)
+    if (message != WM_MOUSEMOVE) note_controls();
 }
 // What the game last read from the keyboard and mouse, within the 3 s before now.
 std::string recent_input() {
@@ -859,6 +897,7 @@ DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
         OverlayInputAccess access;
         result = original<DWORD(WINAPI*)(DWORD, XINPUT_STATE*)>(hook)(user, output);
     }
+    if (result == ERROR_SUCCESS && output) note_xinput(user, *output);
     // Only the game gets a scripted pad (the character room's walk): ReSkate's own reads get the real one.
     if (game_poll && output && scripted_pad(user, *output)) return ERROR_SUCCESS;
     if (game_poll && result != ERROR_SUCCESS && user == 0 && output && test_pad_connected()) {

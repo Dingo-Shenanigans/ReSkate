@@ -5,6 +5,7 @@
 #include <fstream>
 #include <map>
 #include <set>
+#include <stdexcept>
 
 namespace dingosdk::content_cache {
 namespace {
@@ -302,13 +303,141 @@ bool Catalogs::reserved(const std::string& key) const {
     return !key.starts_with("dev_") && key.find("_dev_") == std::string::npos && !key.ends_with("_dev");
 }
 
-const Catalogs& catalogs() {
-    static const Catalogs value = [] {
+namespace {
+// reskate-objects.json text: at most 255 bytes, no control characters. Anything else is absent.
+std::optional<std::string> mod_text(const Json& entry, std::string_view field) {
+    if (!entry.contains(field) || !entry.at(field).is_string()) return std::nullopt;
+    const auto& value = entry.at(field).string();
+    if (value.empty() || value.size() > 255 || std::any_of(value.begin(), value.end(), [](char c) {
+            const auto byte = static_cast<unsigned char>(c);
+            return byte < 0x20 || byte == 0x7f;
+        })) return std::nullopt;
+    return value;
+}
+// The entry's priority, or `after` (one past the highest already there) when it gives none.
+std::uint32_t mod_priority(const Json& entry, std::uint32_t after) {
+    if (entry.contains("priority") && entry.at("priority").is_number_integer()) {
+        const auto value = entry.at("priority").get<std::int64_t>();
+        if (value >= 0 && value <= 0xffffffffLL) return static_cast<std::uint32_t>(value);
+    }
+    return after;
+}
+const Json& mod_list(const Json& root, std::string_view name) {
+    static const Json none = Json::array();
+    if (!root.contains(name)) return none;
+    if (!root.at(name).is_array()) throw std::runtime_error(std::string(name) + " is not a list");
+    return root.at(name);
+}
+ObjectCategory* find_category(Catalogs& out, std::string_view id) {
+    for (auto& category : out.object_categories)
+        if (category.id == id) return &category;
+    return nullptr;
+}
+bool family_exists(const Catalogs& out, std::string_view id) {
+    return std::ranges::any_of(out.object_categories, [&](const ObjectCategory& category) {
+        return std::ranges::any_of(category.groups, [&](const ObjectGroup& group) { return group.id == id; });
+    });
+}
+}
+
+std::vector<std::string> add_mod_objects(Catalogs& out, const std::string& json) {
+    const auto root = Json::parse(json);
+    if (!root.is_object() || !root.contains("schema") || !root.at("schema").is_number_integer() ||
+        root.at("schema").get<int>() != 1)
+        throw std::runtime_error("expected schema 1");
+    // Checked before anything is added, so a file that is not this shape adds nothing.
+    const auto& categories = mod_list(root, "categories");
+    const auto& families = mod_list(root, "families");
+    const auto& objects = mod_list(root, "objects");
+    std::vector<std::string> refused;
+    for (std::size_t i = 0; i < categories.size() && i < 64; ++i) {
+        const auto& entry = categories.at(i);
+        const auto id = mod_text(entry, "id");
+        if (!id) { refused.push_back("a category without an id was left out"); continue; }
+        if (find_category(out, *id)) { refused.push_back("category " + *id + " was left out: the id is taken"); continue; }
+        std::uint32_t last{};
+        for (const auto& category : out.object_categories) last = std::max(last, category.priority);
+        // In the Object Browser, as the game's categories tagged "qdbuildkit" are. No icon: the
+        // browser draws its first tile's thumbnail.
+        out.object_categories.push_back({*id, mod_text(entry, "title").value_or(*id), {},
+            mod_priority(entry, last + 1), true, {}});
+    }
+    for (std::size_t i = 0; i < families.size() && i < 1024; ++i) {
+        const auto& entry = families.at(i);
+        const auto id = mod_text(entry, "id");
+        const auto category_id = mod_text(entry, "category");
+        if (!id || !category_id) { refused.push_back("a family without an id and a category was left out"); continue; }
+        if (family_exists(out, *id)) { refused.push_back("family " + *id + " was left out: the id is taken"); continue; }
+        auto* category = find_category(out, *category_id);
+        if (!category) {
+            refused.push_back("family " + *id + " was left out: there is no category " + *category_id);
+            continue;
+        }
+        std::uint32_t last{};
+        for (const auto& group : category->groups) last = std::max(last, group.priority);
+        category->groups.push_back({*id, mod_text(entry, "title").value_or(*id), mod_priority(entry, last + 1)});
+    }
+    for (std::size_t i = 0; i < objects.size() && i < 8192; ++i) {
+        const auto& entry = objects.at(i);
+        const auto key = mod_text(entry, "key");
+        if (!key || lower(key->substr(0, 4)) != "own_") {
+            refused.push_back("an object without an own_ key was left out");
+            continue;
+        }
+        const auto id = lower(*key);
+        // The game's own items keep their names and families, and the first mod to name an object wins.
+        if (out.items.contains(id)) { refused.push_back("object " + id + " was left out: it is the game's"); continue; }
+        if (out.mod_objects.contains(id)) { refused.push_back("object " + id + " was left out: it is already named"); continue; }
+        Json object = Json::object();
+        if (const auto family = mod_text(entry, "family")) {
+            if (!family_exists(out, *family)) {
+                refused.push_back("object " + id + " was left out: there is no family " + *family);
+                continue;
+            }
+            object["group"] = *family;
+            // What the game's own Quick Drop records give as their BuildKitObjectType.
+            object["object_type"] = std::string("QuickDrop");
+        }
+        if (const auto title = mod_text(entry, "title")) object["title"] = *title;
+        if (const auto description = mod_text(entry, "description")) object["description"] = *description;
+        if (!object.size()) { refused.push_back("object " + id + " was left out: it has no title or family"); continue; }
+        out.mod_objects[id] = std::move(object);
+    }
+    return refused;
+}
+
+namespace {
+Catalogs& process_catalogs() {
+    static Catalogs value = [] {
         try {
             if (installed()) return read_catalogs(directory());
         } catch (...) {}
         return Catalogs{};
     }();
     return value;
+}
+}
+
+const Catalogs& catalogs() { return process_catalogs(); }
+
+ModObjectsReport install_mod_objects(const std::vector<std::pair<std::string, std::filesystem::path>>& files) {
+    ModObjectsReport report;
+    auto& out = process_catalogs();
+    for (const auto& [mod, path] : files) {
+        std::error_code error;
+        if (!std::filesystem::is_regular_file(path, error)) continue;
+        try {
+            if (std::filesystem::file_size(path) > JsonLimits{}.bytes) throw std::runtime_error("it is too large");
+            const auto bytes = read_file(path);
+            const auto before = out.mod_objects.size();
+            for (auto& note : add_mod_objects(out, std::string(bytes.begin(), bytes.end())))
+                report.notes.push_back(mod + ": " + note);
+            report.objects += out.mod_objects.size() - before;
+            ++report.mods;
+        } catch (const std::exception& failure) {
+            report.notes.push_back(mod + ": " + mod_objects_file + " was skipped: " + failure.what());
+        }
+    }
+    return report;
 }
 }

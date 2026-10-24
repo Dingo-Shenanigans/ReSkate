@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <cstddef>
 #include <cstdint>
 
 // Remote skater and skateboard cosmetics.
@@ -26,6 +27,27 @@ inline constexpr std::array<unsigned char, 24> set_shader_parameter_prefix{
     0x55,0x48,0x8d,0x6c,0x24,0xc9,0x48,0x81};
 // Initialized ColorRgb type descriptor; validate its type hash, size and index.
 inline constexpr std::uintptr_t color_rgb_type = 0x7780c50;
+// A material instance's own shader parameters (an AppearanceItem's named material): a hash map at
+// +0x268 of buckets, +0x270 its bucket count, +0x274 how many it holds. A node holds its ParamDbKey
+// at +0 (identity, size, type index and count words, then the key's 64-bit hash at +8), the value
+// at +0x10, the value's type object at +0x20, flags at +0x28 (bit 0 set on every live one) and the
+// next node at +0x40. A value written there shows once the material is marked changed at +0x2f6 and
+// its item publishes its materials (publish_materials). Read from the running game's board, 2026-10-22.
+inline constexpr std::size_t material_parameters = 0x268;
+inline constexpr std::size_t material_parameter_buckets = 0x270;
+inline constexpr std::size_t material_parameter_count = 0x274;
+inline constexpr std::size_t material_changed = 0x2f6;
+inline constexpr std::size_t parameter_value = 0x10;
+inline constexpr std::size_t parameter_type = 0x20;
+inline constexpr std::size_t parameter_flags = 0x28;
+inline constexpr std::size_t parameter_next = 0x40;
+// The type hash (the first word of the TypeInfo a type object points to; its size is the word at
+// +6) of each kind of value the board's materials hold: ColorRgb, Float32, an integer (values like
+// 13 on the deck, which pick how it is drawn) and a boolean (a switch the shader was compiled with).
+inline constexpr std::uint32_t color_rgb_type_hash = 0x885eff59;
+inline constexpr std::uint32_t float_type_hash = 0x2bb65c2d;
+inline constexpr std::uint32_t integer_type_hash = 0x8e4a817e;
+inline constexpr std::uint32_t boolean_type_hash = 0x36ed3444;
 // Finds a named entry in a loaded table by the FNV-1a hash of its name:
 // (out, name, table, flag, context) -> out, the fifth passed on the stack.
 // The skater loader's preset lookups reach it through a Lua binding that

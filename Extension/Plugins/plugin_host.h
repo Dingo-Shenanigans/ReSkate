@@ -74,7 +74,7 @@ struct Status {
     std::string reason; // why it is not running
     std::size_t memory{};
     double tick_ms{};
-    std::vector<std::pair<std::string, std::string>> commands;
+    std::vector<CommandInfo> commands; // with the subcommands they declared
 };
 
 class Host final : private Services {
@@ -95,6 +95,9 @@ public:
     void trick(const TrickNews& news);
     // Whether a running plugin has events.tricks: the score HUD is read only then.
     bool wants_tricks() const;
+    // Whether a running plugin has chat.read: a dedicated server then hands it the /commands it
+    // does not know itself.
+    bool wants_chat() const;
     // Runs a plugin's console command when the text starts with one; false when none matched.
     bool run_console(std::string_view text);
     std::vector<Status> status() const;

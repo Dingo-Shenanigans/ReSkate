@@ -59,6 +59,7 @@ struct HookState {
     std::atomic<AnimationEvaluated> evaluated_listener{};
     std::atomic<LocalPoseFilter> pose_filter{};
     std::atomic<LocalPoseFilter> studio_pose_filter{};
+    std::atomic<LocalSentPoseFilter> sent_pose_filter{};
     // A pose override of the local skater (Extension/Skater/skater_animation.cpp), after the one above.
     std::atomic<AnimationEvaluated> override_listener{};
     std::atomic<RenderPosePublished> override_render_listener{};
