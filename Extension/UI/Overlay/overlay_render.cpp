@@ -1000,7 +1000,7 @@ void render(IDXGISwapChain* presented, UINT flags) {
         // Hidden, the overlay still draws while a notice or chat line is on screen.
         if (s.loaded_notice_posted && !notices_pending() && !chat_frame && !game_text_frame && !drone_hud_frame && !skate_hud_frame &&
             !nametag_frame && !meat_frame && !item_browser_frame && !perf_frame && !hub_frame && !map_download_frame &&
-            !animation_studio_loading_pending() && !animation_studio_recording_pending()) return;
+            !animation_studio_loading_pending()) return;
     } else if (!s.ui_was_interactive) {
         s.ui_was_interactive = true;
         s.last_model = {}; // Reopening immediately reads fresh state.
@@ -1062,8 +1062,6 @@ void render(IDXGISwapChain* presented, UINT flags) {
     draw_item_browser();
     draw_animation_studio();
     draw_animation_studio_loading();
-    draw_animation_studio_recording();
-    draw_animation_studio_batch();
     draw_chat();
     draw_map_download();
     sync_menu_cursor(); // close buttons also change visibility, without a key message

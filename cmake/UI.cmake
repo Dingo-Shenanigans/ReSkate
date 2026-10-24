@@ -59,3 +59,11 @@ target_link_libraries(dingosdk_overlay PUBLIC dingosdk_logging dingosdk_profiler
 # The window shown from the moment ReSkate loads until the game's own window appears.
 add_library(dingosdk_startup_window STATIC Extension/UI/Startup/startup_window.cpp)
 target_link_libraries(dingosdk_startup_window PRIVATE gdi32 user32 msimg32 shell32 ole32 windowscodecs)
+
+# TEST ONLY: lists every control the overlay draws, by its ID, with its box on the screen, for game tests to click
+# (Extension/UI/Overlay/Test/ui_control_list.cpp). Off, ImGui is built exactly as without it.
+option(DINGOSDK_UI_TEST_HOOKS "Test builds: list the overlay's controls by ID for game tests" OFF)
+if(DINGOSDK_UI_TEST_HOOKS)
+    target_compile_definitions(dingosdk_imgui PUBLIC IMGUI_ENABLE_TEST_ENGINE)
+    target_sources(dingosdk_imgui PRIVATE "${PROJECT_SOURCE_DIR}/Extension/UI/Overlay/Test/ui_control_list.cpp")
+endif()

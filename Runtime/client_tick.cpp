@@ -1144,57 +1144,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
     // whenever this client is not in play; otherwise every 10 s and 2 s.
     bool requests_loading{};
     { std::lock_guard lock(r.mutex); requests_loading = r.requests.loading(); }
-    // A recording starts from a clean level (anim_studio): the level is loaded again behind the loading screen,
-    // and the recording waits until that load is in (or 15 s, when the load did not show as loading).
-    static bool clean_loading{}, clean_seen{};
-    static ULONGLONG clean_since{};
-    if (dingosdk::anim_studio::take_clean_start() && !current_level.empty()) {
-        std::lock_guard lock(r.mutex);
-        if (r.requests.enqueue(ConsoleRequest{"load " + current_level}, request_context(r), GetCurrentThreadId())) {
-            clean_loading = true;
-            clean_seen = false;
-            clean_since = GetTickCount64();
-        } else {
-            dingosdk::anim_studio::clean_start_done();
-        }
-    }
-    // The studio's loading screen stays up while the game loads. During a recording's clean start the level
-    // itself is loading, so the game counts as loading until this client is in play (13, 21) as well.
-    const bool in_play = state == 13 || state == 21;
-    if (clean_loading) {
-        // The load has begun once the request says so or this client has left play.
-        if (requests_loading || !in_play) clean_seen = true;
-        // and it is over only once the request is done AND this client is back in play. Letting go at the
-        // end of the request alone lifted our screen while the game was still bringing the level up, so the
-        // game's own loading screen came up after ours instead of behind it.
-        if ((clean_seen && !requests_loading && in_play) || GetTickCount64() - clean_since > 30000) {
-            clean_loading = false;
-            dingosdk::anim_studio::clean_start_done();
-        }
-    }
-    // RESKATE_RECORD_ALL=1: the batch starts by itself once the level is in and the skater can be driven, so a
-    // whole run can be started from a shortcut without touching the menus. It fires once per launch.
-    {
-        static const bool wanted = [] {
-            wchar_t value[2]{};
-            return GetEnvironmentVariableW(L"RESKATE_RECORD_ALL", value, 2) == 1 && value[0] == L'1';
-        }();
-        static bool fired = false;
-        static ULONGLONG ready_since = 0;
-        if (wanted && !fired) {
-            if (!in_play) ready_since = 0;
-            else {
-                if (!ready_since) ready_since = GetTickCount64();
-                else if (GetTickCount64() - ready_since > 6000) {
-                    fired = true;
-                    dingosdk::anim_studio::request_record_all();
-                    dingosdk::logging::log(dingosdk::logging::Level::info, dingosdk::logging::Channel::skater,
-                        "Animation Studio: Record all tricks started by RESKATE_RECORD_ALL.");
-                }
-            }
-        }
-    }
-    dingosdk::anim_studio::game_loading_state(requests_loading || (clean_loading && !in_play));
+    dingosdk::anim_studio::game_loading_state(requests_loading);
     const bool world_changed = manifests_applied || requests_loading || (state != 13 && state != 21) ||
         state != r.previous_state || description.level != r.last_level || description.lm_level != r.catalog_level;
     r.catalog_level = description.lm_level;

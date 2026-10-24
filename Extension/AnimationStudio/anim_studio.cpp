@@ -1,8 +1,6 @@
 #include "anim_studio.h"
-#include "trick_batch.h"
 #include "native_asset_names.h"
 #include "pop_grades.h"
-#include "recording_rules.h"
 #include "Engine/Game/Multiplayer/session_tools.h"
 #include "Engine/Core/Log/logging.h"
 #include "anim_research.h"
@@ -21,9 +19,9 @@
 #include "Extension/Multiplayer/Remote/native_pose_layout.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
 #include "Extension/Skater/ai_skaters.h"
-#include "Extension/Skater/grind_exit_control.h"
 #include "Extension/BoardBreak/board_break_model.h"
 #include "Extension/HallOfMeat/hall_of_meat_skeleton.h"
+#include "Extension/Profile/runtime_internal.h"
 #include "native_library.h"
 #include <Windows.h>
 #include <shellapi.h>
@@ -111,8 +109,24 @@ struct CustomTrick {
     std::shared_ptr<const NativeModels> native;
     int order{-1}; // its place in the playlist, when the playlist plays (In turns goes by it)
 };
-// The skater's stance from the grind exit setting: goofy or regular (not set counts as regular).
-bool goofy_stance() noexcept { return dingosdk::grind_exit_control::stance() == 2; }
+// The game's own stance setting (Options, DefaultStanceIsGoofy), kept for the animation thread.
+std::atomic<bool> game_goofy{};
+// On the client thread, again whenever the profile changes: the player can change it in the game's options.
+void read_game_stance() {
+    static std::uint64_t read_at = UINT64_MAX;
+    const auto changes = profile::Store::changes();
+    if (changes == read_at) return;
+    const auto& store = profile_runtime::local_runtime().store;
+    if (!store) return;
+    const bool goofy = store->bool_option("DefaultStanceIsGoofy").value_or(false);
+    const bool was_goofy = game_goofy.exchange(goofy, std::memory_order_acq_rel);
+    if (read_at == UINT64_MAX || was_goofy != goofy)
+        logging::log(Level::info, Channel::skater, "Animation Studio: the game's stance is {}.", goofy ? "goofy" : "regular");
+    read_at = changes;
+}
+// The skater's stance: the game's own setting, the one the game mirrors him by. It was the grind exit setting, with
+// not set read as regular: a goofy rider who never set it had every trick recorded as switch and shown under SWITCH.
+bool goofy_stance() noexcept { return game_goofy.load(std::memory_order_acquire); }
 // The stance a trick was authored in: which foot led on the body its keys were made against. That is what
 // decides whether it is played as it is or mirrored, and the studio's picture of it has to agree, or a
 // trick is shown one way round and played the other. A recording says so in its label, taken from the
@@ -187,7 +201,7 @@ struct Snapshot {
     std::shared_ptr<const Clip> peek_clip;
     std::shared_ptr<const Animation> peek_edits;
     double peek_since{-1};
-    bool open{}, play_in_game{}, armed{}, room{};
+    bool open{}, play_in_game{}, room{};
     float speed{1};
     bool goofy{}; // the way round the studio is working
     bool grab{};       // a hand near the board closes on it
@@ -207,11 +221,6 @@ struct State {
     // The casual stance shown until a trick is picked: the end of the game's mid ollie, standing on the board.
     std::shared_ptr<const Clip> idle_clip;
     bool idle_read{};
-    // Record all tricks (trick_batch.h): the next landed trick is saved to the recorded tricks and the studio stays closed.
-    bool batch{};
-    std::string batch_trick, batch_pop;
-    std::optional<BatchTake> batch_take;
-    bool record_all_requested{};
     Animation edits;
     std::string saved_as; // the library name it was loaded from or saved to
     bool dirty{};
@@ -255,7 +264,6 @@ struct State {
     bool tricks_read{};
     // Mode.
     bool open{}, open_requested{}, open_request_pending{}, confirm_close{};
-    Recording recording{};
     std::string status, failure;
     // Published by the animation thread.
     std::vector<JointView> joints;
@@ -397,30 +405,16 @@ struct Live {
     std::uint64_t seen_generation{~std::uint64_t{0}};
     std::vector<NativeBone> bones;
     std::vector<Joint> pose, sampled;
-    // Recording.
-    struct Frame {
-        double at{};
-        std::vector<Joint> joints;
-        Joint board; // relative to the placement joint
-        bool has_board{};
-    };
+    // The board at takeoff, for the trick played in game.
     std::array<NativeBone, board_bones> board{};
     bool board_ok{};
     float predicted_air{}; // from it: how long this air lasts
-    std::deque<Frame> ring;
-    std::vector<std::vector<Joint>> spare;
-    bool airborne{};
-    bool recording_seen_ground{};
-    ContactWindow contact;
-    double takeoff_at{}, landing_at{};
-    double last_capture{-1};
-    bool recorded_goofy{}, playback_goofy{};
-    std::optional<bool> recorded_switch, playback_switch;
+    bool playback_goofy{};
+    std::optional<bool> playback_switch;
     // In-game playback.
     PlaybackEpisode episode;
     MotionState last_motion{MotionState::unknown};
     std::atomic<MotionState> render_motion{MotionState::unknown};
-    std::string recorded_entry{"unknown"};
     const CustomTrick* game_trick{}; // the saved trick playing now, from snapshot `game_tricks`
     // Where the game is in its own clip for that trick (NativeClock): the time the edits are laid on at.
     NativeClock native_clock;
@@ -491,11 +485,9 @@ struct Live {
     LimbWeights limbs;
     float riding_forward{};       // body-relative forward speed while last riding (below zero: fakie)
     bool playback_fakie{}, playback_backwards{}; // at this trick's takeoff
-    bool recorded_fakie{}, recorded_backwards{}; // at the recorded trick's takeoff
     std::vector<Joint> mirror_scratch;  // the pose being read while his mirrored one is written
     double gave_way_at{-1};             // the whole layer standing back after the trick changed under it
     std::string gave_way_from;
-    std::string recorded_trick; // the game's name of the trick being recorded
     std::vector<Joint> custom;
     // The studio's floor: the skater's Ground joint (375) when the studio opened, which lies on the
     // ground he stands or rides on (measured 2026-10-18: the board's root sits on it while riding, the
@@ -598,11 +590,9 @@ void invalidate_outputs() noexcept {
     } catch (...) {}
 }
 std::atomic<bool> open_flag{};
-// While a recording waits or runs: the local skater's pose and its board as they are drawn (after the
-// body physics and the feet's placement on the board), taken at their render publication. A recording
-// keeps these, so the board and the feet are where the game put them.
-std::atomic<bool> capture_flag{};
 std::atomic<bool> research_capture_flag{};
+// The local skater's pose and its board as they are drawn (after the body physics and the feet's placement on the
+// board), taken at their render publication, for diagnostics and research.
 struct RenderShot {
     std::mutex mutex;
     std::vector<NativeBone> skater;
@@ -638,11 +628,6 @@ Quat room_facing{0, 0, 0, 1};
 bool room_facing_valid{};
 // The loading screen: what it shows, and since when (for the fade).
 std::atomic<Loading> loading_what{Loading::none};
-// A recording starts from a clean level: the game loads it again behind the loading screen, and the skater
-// spawns clean (not half in the ground where the last respawn left him). The client tick takes the request,
-// reloads, and says when the load is in; no trick is recorded meanwhile.
-std::atomic<bool> clean_request{}, clean_hold{};
-std::atomic<double> clean_until{};
 std::atomic<double> loading_since{}, loading_until{};
 Live& live() {
     static auto* l = new Live;
@@ -1236,7 +1221,7 @@ std::shared_ptr<const CustomTricks> read_custom_tricks(const std::string& test_t
                     // The game's clips of the trick's family ("animation/dingo/c_proto_onb_trick_o_kickflip_").
                     std::vector<std::string> families;
                     for (const auto& g : *library) {
-                        if (g.preview_only || g.recorded || g.file.empty()) continue;
+                        if (g.preview_only || g.file.empty()) continue;
                         if (trick_key(g.trick) != trick) continue;
                         add(g);
                         const auto cut = g.asset.rfind('_');
@@ -1246,7 +1231,7 @@ std::shared_ptr<const CustomTricks> read_custom_tricks(const std::string& test_t
                     // Under the same trick name the game also plays its dark and light catches, underflips, held and late
                     // flips: they are followed too, or a trick caught dark played on its own clock, out of step.
                     for (const auto& g : *library) {
-                        if (!g.preview_only || g.recorded || g.file.empty()) continue;
+                        if (!g.preview_only || g.file.empty()) continue;
                         for (const auto& family : families) {
                             if (!g.asset.starts_with(family)) continue;
                             const std::string_view style(g.asset.c_str() + family.size());
@@ -1321,7 +1306,7 @@ bool face_studio_stance(State& s) {
 }
 void publish_locked(State& s, bool edits_changed = true) {
     if (face_studio_stance(s)) edits_changed = true;
-    overrides_allowed.store(s.open || (s.play_in_game && s.recording == Recording::off), std::memory_order_release);
+    overrides_allowed.store(s.open || s.play_in_game, std::memory_order_release);
     auto snap = std::make_shared<Snapshot>();
     snap->clip = s.clip;
     snap->idle = s.idle_clip;
@@ -1349,7 +1334,6 @@ void publish_locked(State& s, bool edits_changed = true) {
         snap->crossfade = s.crossfade;
     }
     snap->room = s.room;
-    snap->armed = s.recording != Recording::off;
     snap->speed = s.edits.speed;
     s.snapshot = std::move(snap);
     ++s.revision;
@@ -1417,20 +1401,11 @@ std::array<float, 16> orbit_matrix(const Vec3& centre, const Orbit& orbit, float
     return m;
 }
 
-// ---- recorded tricks -----------------------------------------------------------------------------
-// Record all tricks keeps each take as <folder>/recorded/<trick>__<pop>.clip.
+// ---- the game's tricks ---------------------------------------------------------------------------
+// Goes up when the trick lists change, so their caches are read again.
 std::atomic<std::uint64_t> tricks_revision{1};
 // Published on the client thread: animation callbacks must not lock AI/session state.
 std::atomic<bool> grade_is_ours{};
-std::string recorded_file_name(const std::string& trick, const std::string& pop) {
-    std::string safe;
-    for (const char c : trick) safe += std::isalnum(static_cast<unsigned char>(c)) ? static_cast<char>(std::tolower(static_cast<unsigned char>(c))) : '_';
-    return safe + "__" + (pop.empty() ? std::string("mid") : pop) + ".clip";
-}
-
-// ---- recording ---------------------------------------------------------------------------------
-constexpr double before_takeoff = 0.7, after_landing = 0.7, ring_seconds = 2.5;
-constexpr double shortest_air = 0.25, longest_air = 8.0;
 
 // A bracket is a key on every body joint at its time, with no turn or move of its own: the start and the end
 // of the animation, keyed on all limbs at once.
@@ -1446,8 +1421,7 @@ void key_all_at(Animation& animation, float seconds) {
         if (!has) set_key(animation, joint.index, seconds, Offset{});
     }
 }
-// The brackets at the ends of the clip, with their keys on every joint: whenever a clip arrives, by a
-// recording or from the game's own library.
+// The brackets at the ends of the clip, with their keys on every joint: whenever a clip arrives.
 void reset_brackets_locked(State& s) {
     if (!s.clip || s.clip->empty()) return;
     ++s.clip_serial; // a clip has arrived: the overlay clears what it was holding
@@ -1456,241 +1430,6 @@ void reset_brackets_locked(State& s) {
     key_all_at(s.edits, 0);
     key_all_at(s.edits, s.clip->duration());
 }
-void finish_recording(Live& l) {
-    auto clip = std::make_shared<Clip>();
-    clip->joints = skeleton_joints;
-    const double start = l.takeoff_at - before_takeoff, end = l.landing_at + after_landing;
-    double first = -1;
-    bool all_board = true;
-    for (const auto& frame : l.ring) {
-        if (frame.at < start || frame.at > end) continue;
-        if (first < 0) first = frame.at;
-        clip->times.push_back(static_cast<float>(frame.at - first));
-        clip->frames.insert(clip->frames.end(), frame.joints.begin(), frame.joints.end());
-        clip->board.push_back(frame.board);
-        all_board &= frame.has_board;
-    }
-    if (!all_board) clip->board.clear();
-    if (clip->times.size() < 8 || first < 0) {
-        auto& s = state();
-        std::lock_guard lock(s.mutex);
-        if (s.recording == Recording::off) return;
-        s.status = "The recording was too short. Try again.";
-        if (s.batch) {
-            s.batch_take = BatchTake{false, {}, {}, "the recording was too short", 0};
-            s.recording = Recording::off;
-            s.batch = false;
-        } else s.recording = Recording::waiting;
-        return;
-    }
-    clip->takeoff = static_cast<float>(std::max(0.0, l.takeoff_at - first));
-    clip->landing = static_cast<float>(std::max(0.0, l.landing_at - first));
-    auto& s = state();
-    std::lock_guard lock(s.mutex);
-    if (s.recording == Recording::off) return; // canceled while the clip was assembled
-    if (s.batch) {
-        // Record all tricks: the take is saved without opening the studio or driving the skater.
-        s.batch = false;
-        s.recording = Recording::off;
-        const float air = clip->landing - clip->takeoff;
-        // Its pop is the one the take asked for, as the game itself grades it (EnumGS.PopHeight, pop_grades.h).
-        const auto grade = pop_grades::take_pop_height();
-        const auto decision = evaluate_recorded_take(true, l.recorded_trick, s.batch_trick, s.batch_pop, grade, !clip->board.empty(), air);
-        BatchTake take{false, l.recorded_trick, decision.pop, {}, air};
-        if (decision.rejection == TakeRejection::missing_trick) take.message = "the game did not name the trick";
-        // Another trick than asked (a varial heelflip that came out a heelflip) would be saved over that trick's clip.
-        else if (decision.rejection == TakeRejection::wrong_trick) take.message = std::format("the game did a {}", take.trick);
-        else if (decision.rejection == TakeRejection::missing_board) take.message = "the board was not recorded";
-        else if (decision.rejection == TakeRejection::invalid_pop) take.message = "the pop could not be classified";
-        else if (decision.rejection == TakeRejection::missing_grade) take.message = "the game did not grade its pop";
-        else if (decision.rejection == TakeRejection::wrong_pop) take.message = std::format("the game called it a {} pop", graded_pop_name(grade));
-        else {
-            try {
-                const auto folder = library_folder() / L"recorded";
-                std::filesystem::create_directories(folder);
-                const auto bytes = clip_bytes(*clip);
-                const auto path = folder / std::filesystem::path(recorded_file_name(take.trick, take.pop));
-                Animation metadata;
-                metadata.name = take.trick;
-                metadata.trick = take.trick;
-                metadata.pop = take.pop;
-                metadata.stance = l.recorded_goofy ? "goofy" : "regular";
-                metadata.switch_stance = l.recorded_switch;
-                metadata.fakie = l.recorded_fakie;
-                metadata.board_backwards = l.recorded_backwards;
-                metadata.source = {"render_capture", "", "animation/dingo/animbase_default_skeleton", "skater-placement"};
-                metadata.entry = l.recorded_entry;
-                metadata.clip.times = {0, clip->duration()};
-                metadata.clip.takeoff = clip->takeoff;
-                metadata.clip.landing = clip->landing;
-                write_preset_file(path, std::string(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
-                auto sidecar = path; sidecar.replace_extension(L".json");
-                write_preset_file(sidecar, to_json(metadata));
-                take.ok = true;
-                tricks_revision.fetch_add(1, std::memory_order_acq_rel);
-            } catch (const std::exception& e) {
-                take.message = e.what();
-            }
-        }
-        logging::log(Level::info, Channel::skater, "Animation Studio: recorded {} ({} pop, {:.2f} s in the air){}{}", take.trick.empty() ? "a trick" : take.trick,
-                     take.pop, air, take.ok ? "" : ": not kept, ", take.message);
-        s.batch_take = std::move(take);
-        publish_locked(s);
-        return;
-    }
-    s.clip = std::move(clip);
-    // A recording is a new document. Old trick/pop/speed/history must not leak into it.
-    s.edits = Animation{};
-    s.previewing = false;
-    s.edits.author = s.your_name;
-    s.saved_as.clear();
-    s.undo.clear();
-    s.redo.clear();
-    s.time = 0; // at its start: on the board, on the ground
-    s.playing = false;
-    s.recording = Recording::off;
-    s.edits.stance = l.recorded_goofy ? "goofy" : "regular";
-    s.edits.switch_stance = l.recorded_switch;
-    // Rolling fakie and the board turned backwards at takeoff: a fakie recording is its own version of the trick.
-    s.edits.fakie = l.recorded_fakie;
-    s.edits.board_backwards = l.recorded_backwards;
-    s.edits.source = {"render_capture", "", "animation/dingo/animbase_default_skeleton", "skater-placement"};
-    s.edits.entry = l.recorded_entry;
-    // A new trick starts clean: the old keys and brackets go, the recording is the only thing there is.
-    s.edits.tracks.clear();
-    reset_brackets_locked(s);
-    if (!l.recorded_trick.empty()) {
-        // Named after the trick the game says it was: saving it makes it play on that trick.
-        s.edits.trick = l.recorded_trick;
-        s.edits.name = l.recorded_trick;
-    }
-    s.open_requested = true;
-    s.open_request_pending = true;
-    s.dirty = true;
-    // Everything the game said at takeoff, so a tester can see what the recording will be played for.
-    const auto lead = clip_leads_right(*s.clip);
-    s.status = std::format("Recorded {} ({:.2f} s in the air, {}{}{}). Edit and save its keys to modify the game's {}.",
-                           l.recorded_trick.empty() ? std::string("a trick") : l.recorded_trick, s.clip->landing - s.clip->takeoff,
-                           lead ? (*lead ? "right foot leading" : "left foot leading") : "lead foot unclear",
-                           l.recorded_fakie ? ", fakie" : "", l.recorded_backwards ? ", board backwards" : "",
-                           l.recorded_trick.empty() ? std::string("trick") : l.recorded_trick);
-    publish_locked(s);
-    logging::log(Level::info, Channel::skater, "Animation Studio: {}", s.status);
-}
-void record(Live& l, double at, bool air, const std::string& trick, MotionState previous) {
-    // Keep a few seconds of poses; reuse the vectors that fall out.
-    std::vector<Joint> joints;
-    if (!l.spare.empty()) {
-        joints = std::move(l.spare.back());
-        l.spare.pop_back();
-    }
-    joints.assign(l.pose.begin(), l.pose.end());
-    double captured_at = -1;
-    {
-        // As drawn, when the render publication has given it lately: what the game shows, feet on the board.
-        auto& shot = render_shot();
-        std::lock_guard shot_lock(shot.mutex);
-        const auto generation = l.generation.load(std::memory_order_acquire);
-        if (shot.skater_generation == generation && fresh_sample(at, shot.at, l.last_capture) && shot.skater.size() == joints.size()) {
-            captured_at = shot.at;
-            for (std::size_t i = 0; i < joints.size(); ++i) joints[i] = joint_of(shot.skater[i]);
-        }
-    }
-    Live::Frame frame{captured_at, std::move(joints), {}, false};
-    if (captured_at >= 0 && frame.joints.size() == skeleton_joints) {
-        // The native animation rig already carries the physical mount. Capturing
-        // joint 380 keeps board and body in exactly the same publication instead
-        // of accepting another board callback up to 50 ms away during a flip.
-        frame.board = frame.joints[skateboard_root_joint];
-        frame.has_board = finite(frame.board);
-    }
-    if (captured_at >= 0) {
-        l.last_capture = captured_at;
-        l.ring.push_back(std::move(frame));
-    } else l.spare.push_back(std::move(frame.joints));
-    const double keep_from = l.airborne || l.landing_at > 0 ? l.takeoff_at - before_takeoff - 0.1 : at - ring_seconds;
-    while (!l.ring.empty() && l.ring.front().at < keep_from) {
-        l.spare.push_back(std::move(l.ring.front().joints));
-        l.ring.pop_front();
-    }
-    auto& s = state();
-    if (!l.airborne && l.landing_at <= 0) {
-        if (!air) l.recording_seen_ground = true;
-        if (air && l.recording_seen_ground) {
-            l.airborne = true;
-            l.takeoff_at = at;
-            // From the game's stance setting, the same one switch_stance worked the switch out against.
-            // Stance and switch are only a lead foot when both come from the same stance: they used to
-            // come from two (the studio's picture and the game's setting), and a recording made with the
-            // studio set the other way then carried the wrong lead foot.
-            l.recorded_goofy = goofy_stance();
-            l.recorded_switch = switch_stance(l.base.load(std::memory_order_acquire), l.component.load(std::memory_order_acquire));
-            l.recorded_fakie = rolling_fakie(l.riding_forward);
-            l.recorded_backwards = board_backwards(l.base.load(std::memory_order_acquire), l.component.load(std::memory_order_acquire));
-            l.recorded_entry = entry_name(previous == MotionState::rail ? EntryKind::rail : previous == MotionState::riding ? EntryKind::ground : EntryKind::unknown);
-            l.contact.since.reset();
-            l.recorded_trick.clear();
-            std::lock_guard lock(s.mutex);
-            s.recording = Recording::in_air;
-            s.status = "In the air...";
-        }
-        return;
-    }
-    if (l.airborne) {
-        if (air) {
-            // The first trick the game names in this air is the one recorded: a flip or tweak after it does not
-            // rename the recording.
-            if (!trick.empty() && l.recorded_trick.empty() && at - l.takeoff_at < 0.3) l.recorded_trick = trick;
-            l.contact.since.reset();
-            if (at - l.takeoff_at > longest_air) {
-                l.airborne = false;
-                l.ring.clear();
-                std::lock_guard lock(s.mutex);
-                s.recording = Recording::waiting;
-                s.status = "That was not a trick (too long in the air). Waiting for the next one.";
-                if (s.batch) {
-                    s.batch_take = BatchTake{false, {}, {}, "too long in the air", 0};
-                    s.recording = Recording::off;
-                    s.batch = false;
-                }
-            }
-            return;
-        }
-        if (!l.contact.observe(at, true)) return;
-        l.airborne = false;
-        if (*l.contact.since - l.takeoff_at < shortest_air) {
-            std::lock_guard lock(s.mutex);
-            s.recording = Recording::waiting;
-            s.status = "Too short a hop. Waiting for a trick.";
-            if (s.batch) {
-                s.batch_take = BatchTake{false, {}, {}, "too short a hop", 0};
-                s.recording = Recording::off;
-                s.batch = false;
-            }
-            return;
-        }
-        l.landing_at = *l.contact.since;
-        std::lock_guard lock(s.mutex);
-        s.recording = Recording::finishing;
-        s.status = "Landed. Finishing the recording...";
-        return;
-    }
-    if (at - l.landing_at >= after_landing) {
-        finish_recording(l);
-        l.landing_at = -1;
-        l.ring.clear();
-    }
-}
-void reset_recording(Live& l) {
-    l.airborne = false;
-    l.recording_seen_ground = false;
-    l.landing_at = -1;
-    l.contact.since.reset();
-    l.last_capture = -1;
-    for (auto& f : l.ring) l.spare.push_back(std::move(f.joints));
-    l.ring.clear();
-}
-
 // The local skater's physics state is the one the header declares (defined further down): in the air on the
 // board it is 200 or 201, on foot 500 to 599, grinding 400 to 499.
 std::optional<bool> in_the_air(std::uintptr_t base, std::uintptr_t component) noexcept {
@@ -1817,7 +1556,6 @@ void research_tick(std::uintptr_t base, std::uintptr_t component, bool open) {
         sample.goofy = goofy_stance();
         if (const auto snap = snapshot()) {
             sample.custom_enabled = snap->play_in_game;
-            sample.recording_armed = snap->armed;
         }
         finished = !r.buffer.append(std::move(sample));
     }
@@ -2883,7 +2621,6 @@ void on_animation(std::uintptr_t component) noexcept {
     try {
         const auto generation = l.generation.load(std::memory_order_acquire);
         if (l.seen_generation != generation) {
-            reset_recording(l);
             l.episode.reset();
             l.last_motion = MotionState::unknown;
             l.game_trick = nullptr;
@@ -2896,14 +2633,14 @@ void on_animation(std::uintptr_t component) noexcept {
             l.seen_generation = generation;
         }
         const auto snap = snapshot();
-        if (!snap || (!diagnostics_capture && !snap->open && !snap->armed && !snap->play_in_game && !research_capture_flag.load(std::memory_order_acquire))) {
+        if (!snap || (!diagnostics_capture && !snap->open && !snap->play_in_game && !research_capture_flag.load(std::memory_order_acquire))) {
             invalidate_outputs();
             l.episode.reset();
             l.game_trick = nullptr;
             SetLastError(error);
             return;
         }
-        if (snap->open || snap->armed || !snap->play_in_game) {
+        if (snap->open || !snap->play_in_game) {
             l.episode.reset();
             l.game_trick = nullptr;
         }
@@ -2945,7 +2682,6 @@ void on_animation(std::uintptr_t component) noexcept {
             if (states_seen.size() < 64 && states_seen.insert(*current_state).second)
                 logging::log(Level::info, Channel::skater, "Animation Studio: physics state {} first seen this session.", *current_state);
         }
-        const auto previous_motion = l.last_motion;
         const auto motion = motion_state(current_state);
         l.last_motion = motion;
         l.render_motion.store(motion, std::memory_order_release);
@@ -2968,7 +2704,6 @@ void on_animation(std::uintptr_t component) noexcept {
             diagnostic.live_switch = switch_stance(base, component);
             diagnostic.goofy = goofy_stance();
             diagnostic.enabled = snap->play_in_game;
-            diagnostic.armed = snap->armed;
             if (diagnostic_pose) diagnostic.native = l.pose;
             if (l.board_ok) diagnostic.native_board = compose(board_parent(l.board), joint_of(l.board[board_mount]));
         }
@@ -2977,23 +2712,11 @@ void on_animation(std::uintptr_t component) noexcept {
         if (!current_state && !snap->open) {
             l.episode.reset();
             l.game_trick = nullptr;
-            if (snap->armed) reset_recording(l);
         }
         if (bailing && !snap->open) {
             l.episode.reset();
             l.game_trick = nullptr;
-            if (snap->armed) {
-                reset_recording(l);
-                auto& s = state();
-                std::lock_guard lock(s.mutex);
-                s.recording = Recording::waiting;
-                s.status = "Bail or off-board: waiting for a clean trick.";
-            }
         }
-        if (clean_hold.load(std::memory_order_acquire) && now_seconds() > clean_until.load(std::memory_order_relaxed)) clean_hold.store(false, std::memory_order_release);
-        if (snap->armed && !snap->open && !bailing && air && !clean_hold.load(std::memory_order_acquire))
-            record(l, at, *air, *air ? current_trick(component) : std::string{}, previous_motion);
-        else if (!snap->armed) reset_recording(l);
 
         // Which joints to write back, and from what.
         std::size_t first = 0, last = 0; // Studio snapshots only. Gameplay publishes an edit schedule.
@@ -3185,7 +2908,7 @@ void on_animation(std::uintptr_t component) noexcept {
             if (snap->limits) limit_keyed_joints(*snap->edits, 0, l.pose);
             first = in_room ? placement_joint : 2;
             last = layout.count;
-        } else if (snap->play_in_game && !snap->armed && !bailing && snap->tricks && !snap->tricks->empty()) {
+        } else if (snap->play_in_game && !bailing && snap->tricks && !snap->tricks->empty()) {
             const bool began = l.episode.observe(at, motion);
             // The probe, while armed: once riding, once on the first frame of the air (the pop's setup is
             // still blending out then), and once well into the air, where the trick's own pieces play.
@@ -3327,7 +3050,7 @@ void on_animation(std::uintptr_t component) noexcept {
                            })) {
                     l.stance_fallback_trick = name;
                     logging::log(Level::info, Channel::skater,
-                                 "Animation Studio: {} uses native animation; no recording for {} pop leading with the {} foot{} ({}).", name, pop,
+                                 "Animation Studio: {} uses native animation; no saved trick for {} pop leading with the {} foot{} ({}).", name, pop,
                                  live.leads_right ? "right" : "left", live.fakie ? ", fakie" : "",
                                  l.playback_front_foot ? "front foot" : "exact stance");
                 }
@@ -3960,7 +3683,7 @@ void on_render(std::uintptr_t animation_interface) noexcept {
             SetLastError(error);
             return;
         }
-        if (diagnostics_capture || capture_flag.load(std::memory_order_acquire) || research_capture_flag.load(std::memory_order_acquire)) {
+        if (diagnostics_capture || research_capture_flag.load(std::memory_order_acquire)) {
             const auto shot_layout = multiplayer::read_native_pose_layout(peek, l.base.load(std::memory_order_acquire), *holder, 512);
             if (shot_layout.buffer && shot_layout.count == skeleton_joints) {
                 auto& shot = render_shot();
@@ -4134,7 +3857,7 @@ void on_board_render(std::uintptr_t animation_interface, std::uintptr_t /*render
         // The board: its mount (bone 2) put where the studio or the custom trick wants it.
         const auto bh = l.board_holder.load(std::memory_order_acquire);
         if (bh && animation_interface != bh + 0xc0) hide_in_room(animation_interface, false);
-        if (bh && animation_interface == bh + 0xc0 && (diagnostics_capture || capture_flag.load(std::memory_order_acquire) || research_capture_flag.load(std::memory_order_acquire))) {
+        if (bh && animation_interface == bh + 0xc0 && (diagnostics_capture || research_capture_flag.load(std::memory_order_acquire))) {
             const auto shot_layout = multiplayer::read_native_pose_layout(peek, l.base.load(std::memory_order_acquire), bh, 64);
             std::array<NativeBone, board_bones> b{};
             if (shot_layout.buffer && shot_layout.count == board_bones && peek(shot_layout.buffer, b.data(), sizeof(b))) {
@@ -4214,6 +3937,7 @@ void on_board_render(std::uintptr_t animation_interface, std::uintptr_t /*render
 // ---- the engine thread ---------------------------------------------------------------------------
 std::shared_ptr<Clip> read_game_clip(const GameTrick& trick); // a clip of the trick library, below
 TickResult tick(std::uintptr_t base, std::uintptr_t component, bool open, float camera_fov) {
+    read_game_stance();
     research_tick(base, component, open);
     auto& l = live();
     auto& s = state();
@@ -4238,8 +3962,7 @@ TickResult tick(std::uintptr_t base, std::uintptr_t component, bool open, float 
             publish_locked(s);
         }
         if (std::isfinite(camera_fov) && camera_fov > 1 && camera_fov < 175) s.fov = camera_fov;
-        capture_flag.store(s.recording != Recording::off, std::memory_order_release);
-        needs_listener = diagnostics_capture || research_capture_flag.load(std::memory_order_acquire) || s.open || room_watch.load() || s.recording != Recording::off || (s.play_in_game && s.tricks && !s.tricks->empty());
+        needs_listener = diagnostics_capture || research_capture_flag.load(std::memory_order_acquire) || s.open || room_watch.load() || (s.play_in_game && s.tricks && !s.tricks->empty());
         result.want_open = s.open_requested;
         result.changed = s.open_request_pending;
         s.open_request_pending = false;
@@ -4295,12 +4018,8 @@ TickResult tick(std::uintptr_t base, std::uintptr_t component, bool open, float 
             try {
                 const auto tricks = game_tricks();
                 const auto& list = *tricks;
-                // The game's own ollie, not a recording of one: recordings keep the board the way round it was,
-                // and most of the old ones were made in switch with the board turned backwards (pushing from
-                // fakie does both), which put his back foot over the nose.
-                auto pick = std::find_if(list.begin(), list.end(), [](const GameTrick& t) { return t.trick == "ollie" && t.pop == "mid" && !t.recorded; });
-                if (pick == list.end())
-                    pick = std::find_if(list.begin(), list.end(), [](const GameTrick& t) { return t.trick == "ollie" && t.pop == "mid"; });
+                // The game's own ollie.
+                auto pick = std::find_if(list.begin(), list.end(), [](const GameTrick& t) { return t.trick == "ollie" && t.pop == "mid"; });
                 if (pick != list.end() || !list.empty()) {
                     auto idle = read_game_clip(pick != list.end() ? *pick : list.front());
                     std::lock_guard lock(s.mutex);
@@ -4418,10 +4137,6 @@ bool room_skater_seen() noexcept { return now_seconds() - room_seen_at.load(std:
 // The game's own load is still going: the loading screen stays until the game has been quiet for a second.
 std::atomic<bool> loading_held{};
 std::atomic<double> game_quiet_since{-1}; // -1: taken to be loading until a tick says otherwise
-// When a clean start finished. The client counts as in play before the game has taken its own loading
-// screen down, so ours stays up a few seconds past that or the game's shows from under it.
-std::atomic<double> clean_done_at{-1};
-constexpr double clean_settle = 6.5; // measured in game: 4.5 let the tail of the game's screen through
 void game_loading_state(bool game_loading) noexcept {
     if (game_loading) game_quiet_since.store(-1, std::memory_order_release);
     else if (game_quiet_since.load() < 0) game_quiet_since.store(now_seconds(), std::memory_order_release);
@@ -4433,7 +4148,6 @@ void set_loading(Loading what, float seconds) noexcept {
         // Taken to be loading from here: the first tick that finds the game quiet starts the countdown, so the
         // screen is never lifted before the client tick has even seen the load begin.
         game_quiet_since.store(-1, std::memory_order_release);
-        clean_done_at.store(-1, std::memory_order_release);
         // A screen that is still showing stays up (no fade in again).
         if (loading_what.exchange(what, std::memory_order_acq_rel) == Loading::none || now > loading_until.load()) loading_since.store(now);
         loading_until.store(now + seconds);
@@ -4447,13 +4161,7 @@ LoadingView loading() noexcept {
     // quiet for a moment, so the level, its title card and its streaming are all done behind it.
     if (loading_held.load() && loading_what.load() != Loading::none) {
         const double quiet = game_quiet_since.load();
-        // A clean start holds it all the way: the walk out of the room, the level loading behind it and the
-        // skater arriving are one screen, instead of ours ending and the game's own coming up after it.
-        const bool clean = clean_hold.load(std::memory_order_acquire);
-        // And for a moment after it, while the game takes its own screen down behind ours.
-        const double done = clean_done_at.load(std::memory_order_acquire);
-        const bool settling = done >= 0 && now - done < clean_settle;
-        if ((!clean && !settling && quiet >= 0 && now - quiet > 1.5) || now - since > longest) {
+        if ((quiet >= 0 && now - quiet > 1.5) || now - since > longest) {
             loading_held.store(false);
             loading_until.store(now);
         } else if (loading_until.load() < now + 0.2) {
@@ -4573,7 +4281,6 @@ View view() {
     v.test_trick = s.test_trick;
     v.test_returned = s.test_returned;
     v.your_name = s.your_name;
-    v.recording = s.recording;
     v.bracket_start = s.edits.start;
     v.bracket_end = s.edits.end;
     v.can_undo = !s.undo.empty();
@@ -4590,11 +4297,6 @@ float frame_time(float seconds) { return std::round(seconds * 30.0f) / 30.0f; }
 // The playhead's frame, for a key: on a frame, never past the clip's end (its length is seldom a whole number of frames).
 float key_time_locked(const State& s) { return std::min(frame_time(s.time), duration_locked(s)); }
 namespace { void write_pack_drafts_locked(State& s); } // with the packs, below
-Recording recording_state() {
-    auto& s = state();
-    std::lock_guard lock(s.mutex);
-    return s.recording;
-}
 namespace { void end_preview_locked(State& s); } // below
 void request_close() {
     auto& s = state();
@@ -4678,43 +4380,6 @@ void set_speed(float speed) {
     s.edits.speed = std::clamp(speed, 0.1f, 4.0f);
     publish_locked(s, false);
 }
-bool take_clean_start() noexcept { return clean_request.exchange(false, std::memory_order_acq_rel); }
-void clean_start_done() noexcept {
-    if (clean_hold.exchange(false, std::memory_order_acq_rel)) clean_done_at.store(now_seconds(), std::memory_order_release);
-}
-void arm_batch_take(const std::string& trick, const std::string& pop) {
-    auto& s = state();
-    std::lock_guard lock(s.mutex);
-    s.batch = true;
-    s.batch_trick = trick;
-    s.batch_pop = pop;
-    s.batch_take.reset();
-    s.recording = Recording::waiting;
-    publish_locked(s);
-}
-void cancel_batch_take() {
-    auto& s = state();
-    std::lock_guard lock(s.mutex);
-    if (!s.batch) return;
-    s.batch = false;
-    s.recording = Recording::off;
-    publish_locked(s);
-}
-std::optional<BatchTake> take_batch_result() {
-    auto& s = state();
-    std::lock_guard lock(s.mutex);
-    return std::exchange(s.batch_take, std::nullopt);
-}
-void request_record_all() {
-    auto& s = state();
-    std::lock_guard lock(s.mutex);
-    s.record_all_requested = true;
-}
-bool take_record_all_request() {
-    auto& s = state();
-    std::lock_guard lock(s.mutex);
-    return std::exchange(s.record_all_requested, false);
-}
 std::optional<std::uint32_t> physics_state(std::uintptr_t base, std::uintptr_t component) noexcept {
     const auto core = component ? read<std::uintptr_t>(component + 0x70) : std::nullopt;
     if (!core || !*core) return std::nullopt;
@@ -4723,14 +4388,6 @@ std::optional<std::uint32_t> physics_state(std::uintptr_t base, std::uintptr_t c
     const auto context = read<std::uintptr_t>(*core + 0x3c0);
     if (!context || !*context) return std::nullopt;
     return read<std::uint32_t>(*context + addr::skater_state::physics_state_offset);
-}
-void cancel_recording() {
-    auto& s = state();
-    std::lock_guard lock(s.mutex);
-    clean_hold.store(false, std::memory_order_release);
-    s.recording = Recording::off;
-    s.status = "Recording cancelled.";
-    publish_locked(s);
 }
 std::atomic<std::uint64_t> room_switches{};
 std::uint64_t room_changes() noexcept { return room_switches.load(std::memory_order_acquire); }
@@ -5452,7 +5109,7 @@ bool copy_saved_to_pops(const std::string& animation, std::string& message) {
         std::string clip;
         {
             std::ifstream in(saved_clip(safe), std::ios::binary);
-            if (!in) throw std::runtime_error(animation + "'s recording is missing.");
+            if (!in) throw std::runtime_error(animation + "'s clip is missing.");
             clip.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
         }
         // "Kickflip high" copies to "Kickflip low", "Kickflip mid", "Kickflip high 2".
@@ -5501,7 +5158,7 @@ bool make_stance_version(const std::string& animation, int version, std::string&
         std::string bytes;
         {
             std::ifstream in(saved_clip(safe), std::ios::binary);
-            if (!in) throw std::runtime_error(animation + "'s recording is missing.");
+            if (!in) throw std::runtime_error(animation + "'s clip is missing.");
             bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
         }
         Clip clip = clip_from_bytes(std::vector<std::uint8_t>(bytes.begin(), bytes.end()));
@@ -6294,7 +5951,7 @@ bool save(std::string& message) {
     std::lock_guard lock(s.mutex);
     if (s.previewing) { message = "This is a preview: open the trick itself to change it."; return false; }
     if (!s.clip || s.clip->empty()) {
-        message = "Record a trick before saving.";
+        message = "Open a trick in TRICKS before saving.";
         return false;
     }
     // A piece of the game's own animation - a setup, a loop, an exit, a transition - has no trick to be named
@@ -6303,7 +5960,7 @@ bool save(std::string& message) {
     // clip playing (arm_live_probe is the search for where to see it).
     const bool native_piece = s.edits.source.kind == "native_asset" && !s.edits.source.asset.empty();
     if (s.edits.trick.empty() && s.clip->takeoff >= 0 && !native_piece) {
-        message = "The game did not say which trick this was, so it could never play. Record it again (TRICKS > Record a trick) or open the game's own trick in TRICKS.";
+        message = "The game did not say which trick this was, so it could never play. Open the game's own trick in TRICKS instead.";
         s.status = message;
         return false;
     }
@@ -6432,42 +6089,6 @@ std::vector<GameTrick> read_catalog() {
         }
     } catch (const std::exception& e) {
         logging::log(Level::warning, Channel::skater, "Animation Studio: the trick library could not be read: {}", e.what());
-    }
-    return out;
-}
-std::vector<GameTrick> read_recorded() {
-    std::vector<GameTrick> out;
-    std::error_code error;
-    const auto folder = library_folder() / L"recorded";
-    for (const auto& entry : std::filesystem::directory_iterator(folder, error)) {
-        if (!entry.is_regular_file(error)) continue;
-        const auto identity = recorded_clip_identity(entry.path().filename().string());
-        if (!identity) continue;
-        GameTrick take;
-        take.trick = trick_key(identity->first); take.pop = identity->second;
-        take.file = entry.path().filename().string(); take.recorded = true;
-        // Old batch clips had no stance sidecar. Preserve their legacy regular assumption.
-        take.switch_stance.reset();
-        auto sidecar = entry.path(); sidecar.replace_extension(L".json");
-        if (std::filesystem::is_regular_file(sidecar, error)) {
-            try {
-                std::ifstream in(sidecar, std::ios::binary);
-                const auto metadata = from_json(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()));
-                take.looping = metadata.loop;
-                if (metadata.trick.empty() || metadata.pop != take.pop) throw std::runtime_error("recorded take metadata does not match its slot");
-                take.trick = trick_key(metadata.trick); take.stance = metadata.stance; take.switch_stance = metadata.switch_stance;
-                take.source = metadata.source; take.entry = metadata.entry;
-                take.fakie = metadata.fakie; take.board_backwards = metadata.board_backwards;
-            } catch (const std::exception& e) {
-                logging::log(Level::warning, Channel::skater, "Recorded take not loaded: {}: {}", take.file, e.what());
-                continue;
-            }
-        }
-        take.label = take.trick;
-        bool first = true;
-        for (auto& c : take.label) { if (c == '_') c = ' '; if (first) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c))); first = c == ' '; }
-        take.category = take.trick.starts_with("nollie") || take.trick.starts_with("n_") ? "Nollie tricks" : "Flip tricks";
-        out.push_back(std::move(take));
     }
     return out;
 }
@@ -6607,7 +6228,7 @@ std::shared_ptr<const std::vector<GameTrick>> game_tricks() {
     std::lock_guard lock(cache.mutex);
     const auto revision = tricks_revision.load(std::memory_order_acquire);
     if (!cache.entries || cache.revision != revision) {
-        cache.entries = std::make_shared<const std::vector<GameTrick>>(merge_game_library(read_catalog(), read_recorded()));
+        cache.entries = std::make_shared<const std::vector<GameTrick>>(sort_game_library(read_catalog()));
         cache.revision = revision;
         logging::log(Level::info, Channel::skater, "Animation Studio: {} game tricks in the library.", cache.entries->size());
     }
@@ -6615,7 +6236,7 @@ std::shared_ptr<const std::vector<GameTrick>> game_tricks() {
 }
 void refresh_game_tricks(std::string& message) {
     tricks_revision.fetch_add(1, std::memory_order_acq_rel);
-    message = "Library refreshed: " + std::to_string(game_tricks()->size()) + " clips (recorded takes preferred per trick/pop).";
+    message = "Library refreshed: " + std::to_string(game_tricks()->size()) + " clips.";
 }
 namespace {
 // The trick library's build on this PC (native_library), one at a time, in the background.
@@ -6834,14 +6455,14 @@ float opening_time(const Clip& clip) noexcept {
 }
 std::shared_ptr<Clip> read_game_clip(const GameTrick& trick) {
     if (!safe_library_clip(trick.file)) throw std::runtime_error("invalid local library clip name");
-    if (!trick.recorded && trick.position_codec != "native-piec-v1-extent")
+    if (trick.position_codec != "native-piec-v1-extent")
         throw std::runtime_error("This native library has outdated position decoding. Rebuild or update it before previewing.");
-    std::ifstream in(library_folder() / (trick.recorded ? L"recorded" : L"library") / std::filesystem::path(trick.file), std::ios::binary);
+    std::ifstream in(library_folder() / L"library" / std::filesystem::path(trick.file), std::ios::binary);
     if (!in) throw std::runtime_error("its file is missing");
     const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     auto clip = std::make_shared<Clip>(clip_from_bytes(bytes));
     if (clip->joints != skeleton_joints) throw std::runtime_error("it is for another skeleton");
-    if (!trick.recorded) place_native_marks(*clip);
+    place_native_marks(*clip);
     return clip;
 }
 namespace {
@@ -6933,8 +6554,8 @@ bool ask_peek(const std::string& key, bool play, std::function<PeekRead()> read)
 bool peek_game_trick(const GameTrick& trick, bool play) {
     if (!safe_library_clip(trick.file)) return false;
     const bool goofy = studio_goofy_now();
-    const auto key = std::string(trick.recorded ? "recorded|" : "library|") + trick.file + (goofy ? "|goofy" : "|regular");
-    return ask_peek(key, play, [trick, key, goofy] { return turned(key, read_game_clip(trick), {}, goofy, !trick.recorded); });
+    const auto key = "library|" + trick.file + (goofy ? "|goofy" : "|regular");
+    return ask_peek(key, play, [trick, key, goofy] { return turned(key, read_game_clip(trick), {}, goofy, true); });
 }
 bool peek_saved(const std::string& animation, bool play) {
     try {
@@ -6989,15 +6610,13 @@ bool load_game_trick(const GameTrick& trick, std::string& message) {
         s.edits.trick = trick.preview_only ? "native:" + trick.asset : trick.trick;
         s.edits.pop = trick.pop;
         s.edits.name = trick.label + " " + trick.pop;
-        // Native clips are canonical regular; batch recordings keep their takeoff metadata.
-        s.edits.stance = trick.stance;
-        s.edits.switch_stance = trick.switch_stance;
-        s.edits.source = trick.recorded ? trick.source : AnimationSource{"native_asset", trick.asset, "animation/dingo/animbase_default_skeleton", "skater-placement"};
-        if (!trick.recorded) s.edits.source.position_codec = trick.position_codec;
+        // The game's clips are labelled regular (authored_goofy knows they stand goofy).
+        s.edits.stance = "regular";
+        s.edits.switch_stance = false;
+        s.edits.source = AnimationSource{"native_asset", trick.asset, "animation/dingo/animbase_default_skeleton", "skater-placement"};
+        s.edits.source.position_codec = trick.position_codec;
         s.edits.entry = trick.entry;
         s.edits.loop = trick.looping;
-        s.edits.fakie = trick.fakie; // a recorded take keeps how it took off
-        s.edits.board_backwards = trick.board_backwards;
         s.clip = std::move(clip);
         reset_brackets_locked(s);
         s.saved_as.clear();
@@ -7075,7 +6694,7 @@ bool load_saved(const std::string& name, std::string& message, bool preview) {
         // A key a frame past the end (rounded onto a frame past it by builds before 2026-10-23) is put on the end.
         for (auto& t : animation.tracks)
             for (auto& k : t.keys) {
-                if (k.time > clip->duration() + 0.1f) throw std::runtime_error("a key lies past its recording");
+                if (k.time > clip->duration() + 0.1f) throw std::runtime_error("a key lies past its clip");
                 k.time = std::min(k.time, clip->duration());
             }
         auto& s = state();

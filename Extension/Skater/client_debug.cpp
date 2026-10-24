@@ -1,6 +1,5 @@
 #include "Extension/AnimationStudio/anim_studio.h"
 #include "Extension/AnimationStudio/studio_room.h"
-#include "Extension/AnimationStudio/trick_batch.h"
 #include "client_source_spawn.h"
 #include "client_source_spawn_internal.h"
 #include "no_bail.h"
@@ -975,7 +974,7 @@ bool first_person_camera_height_write(bool high) noexcept {
     return write.high;
 }
 // FOURTH Animation Studio: hands the studio the local skater every tick, and opens or closes it when
-// it asks (F8, or a finished recording), through the same camera and HUD steps as the Park Editor.
+// it asks (F8), through the same camera and HUD steps as the Park Editor.
 void animation_studio_tick(SourceTrial& trial, std::uintptr_t client, bool can_control, bool phase, DWORD error) {
     auto& debug = trial.debug;
     std::uintptr_t component{};
@@ -997,22 +996,6 @@ void animation_studio_tick(SourceTrial& trial, std::uintptr_t client, bool can_c
     } else debug.studio_brake.valid = false;
     namespace room = anim_studio::room;
     room::tick(trial.base, component, can_control, component && anim_studio::room_wanted());
-    // Record all tricks: asked for in the studio, it starts once the studio has closed and left its room.
-    if (anim_studio::take_record_all_request()) {
-        debug.studio_batch_wanted = GetTickCount64();
-        if (debug.animation_studio) anim_studio::request_open(false);
-    }
-    if (debug.studio_batch_wanted) {
-        if (GetTickCount64() > debug.studio_batch_wanted + 20000) debug.studio_batch_wanted = 0; // the studio stayed open
-        else if (!debug.animation_studio && !debug.studio_room_walk && room::phase() != room::Phase::opening &&
-                 room::phase() != room::Phase::leaving && can_control && component) {
-            debug.studio_batch_wanted = 0;
-            std::string why;
-            if (!anim_studio::batch::start(why)) anim_studio::report(why);
-        }
-    }
-    anim_studio::batch::tick(trial.base, client, component, can_control);
-    if (anim_studio::batch::active()) return; // the studio opens again when it is done
     const auto room_phase = room::phase();
     // The loading screen stays up while the walk to the room or back goes on.
     if (debug.studio_room_walk || room_phase == room::Phase::leaving)
@@ -1095,7 +1078,6 @@ void animation_studio_tick(SourceTrial& trial, std::uintptr_t client, bool can_c
                 throw;
             }
             debug.status = "Animation Studio open.";
-            if (const auto summary = anim_studio::batch::take_summary(); !summary.empty()) anim_studio::report(summary);
         } else {
             debug.animation_studio = false;
             apply(overlay::DebugAction::set_game_ui_hidden, debug.studio_previous_ui);
