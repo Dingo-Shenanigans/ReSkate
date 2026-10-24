@@ -4,6 +4,7 @@
 #include "Engine/Game/Build/20260929/local_placements.h"
 #include "Extension/Customization/local_customization_runtime.h"
 #include "local_placements_runtime.h"
+#include "placement_physics.h"
 #include "Extension/Objects/ParkEditor/park_editor_runtime.h"
 #include "network_object_runtime.h"
 #include "Extension/Profile/runtime_internal.h"
@@ -94,6 +95,7 @@ void queue_placement_save() {
 }
 
 void placement_reset_session() {
+    placement_physics::reset();
     placement_table_changed();
     reset_network_object_world();
     reset_park_editor();
@@ -485,6 +487,7 @@ void update_placement_poses() {
     if (!placement_session_ready()) return;
     update_placement_creates();
     update_park_editor_moves();
+    placement_physics::server_tick();
     update_network_object_moves();
     update_placement_resizes();
     if (!placement_session_ready() || r.clearing || park_editor_owns_placements() || GetTickCount64() < r.next_poll) return;

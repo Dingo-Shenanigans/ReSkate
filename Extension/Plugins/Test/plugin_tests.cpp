@@ -3,6 +3,7 @@
 #include "Extension/Plugins/plugin_content.h"
 #include "Extension/Plugins/plugin_discovery.h"
 #include "Extension/Plugins/plugin_host.h"
+#include "Extension/Objects/placement_geometry.h"
 #include "Extension/Plugins/plugin_manifest.h"
 #include "Extension/Plugins/plugin_session_feed.h"
 #include "Extension/Plugins/plugin_wire.h"
@@ -30,6 +31,49 @@ std::filesystem::path scratch;
 
 // The wider set's game, faked: it records what plugins asked of it and answers as told.
 struct FakeGame final : Game {
+    ObjectPhysicsClaims physics_claims;
+    std::map<std::uint64_t, ObjectPhysics> object_physics_now;
+    std::map<std::uint64_t, ObjectMotion> object_motion_now;
+    std::map<std::uint64_t, std::string> physics_owners;
+    std::map<std::string, MarkerEvents> marker_feed;
+    std::optional<PhysicsActor> actor_now;
+    std::optional<ObjectContact> contact_now;
+    std::optional<PhysicsActor> physics_actor() override { return actor_now; }
+    std::optional<ObjectContact> object_contact(std::string_view plugin, const Vec3&, const Vec3&) override {
+        if (contact_now && physics_claims.owns(plugin, contact_now->id)) return contact_now;
+        return std::nullopt;
+    }
+    std::string object_physics(std::string_view plugin, std::uint64_t id, const std::optional<ObjectPhysics>& value) override {
+        if (!value) {
+            if (!physics_claims.owns(plugin, id)) return "not the owner";
+            physics_claims.erase(id); object_physics_now.erase(id); object_motion_now.erase(id); physics_owners.erase(id); return {};
+        }
+        if (id != 42) return "not a live local placement";
+        if (!valid_object_physics(*value)) return "invalid mass";
+        if (auto why = physics_claims.claim(plugin, id); !why.empty()) return why;
+        object_physics_now[id] = *value; physics_owners[id] = plugin;
+        if (!object_motion_now.contains(id)) object_motion_now[id] = {{1, 0, 2}, {}, {0, 0, 0, 1}, value->dynamic};
+        object_motion_now[id].dynamic = value->dynamic;
+        object_motion_now[id].mass = value->mass;
+        object_motion_now[id].surface = value->surface;
+        object_motion_now[id].authored_mass = 1;
+        return {};
+    }
+    std::string object_velocity(std::string_view plugin, std::uint64_t id, const Vec3& value) override {
+        if (!physics_claims.owns(plugin, id)) return "not the owner";
+        object_motion_now[id].velocity = value; return {};
+    }
+    std::string object_pose(std::string_view plugin, std::uint64_t id, const Vec3& at, const std::array<float, 4>& q) override {
+        if (!physics_claims.owns(plugin, id)) return "not the owner";
+        object_motion_now[id].position = at; object_motion_now[id].rotation = q; return {};
+    }
+    std::optional<ObjectMotion> object_motion(std::string_view plugin, std::uint64_t id) override {
+        if (!physics_claims.owns(plugin, id)) return std::nullopt;
+        return object_motion_now.at(id);
+    }
+    std::optional<MarkerEvents> marker_events(std::string_view plugin) override {
+        return std::exchange(marker_feed[std::string(plugin)], {});
+    }
     std::optional<std::uint32_t> state;
     std::uint64_t wipe{};
     std::vector<std::string> calls;
@@ -622,7 +666,13 @@ struct FakeGame final : Game {
         return {};
     }
     std::vector<std::pair<std::string, std::string>> take_presses() override { return std::exchange(presses, {}); }
-    void release(std::string_view plugin) override { released.emplace_back(plugin); entity_clear(plugin); }
+    void release(std::string_view plugin) override {
+        released.emplace_back(plugin); entity_clear(plugin);
+        std::vector<std::uint64_t> ids;
+        for (const auto& [id, owner] : physics_owners) if (owner == plugin) ids.push_back(id);
+        for (auto id : ids) (void)object_physics(plugin, id, std::nullopt);
+        marker_feed.erase(std::string(plugin));
+    }
     // The game menu, its item grid, what is worn, and a screen capture of something turning once
     // every `turning` frames (reskate.capture, room.turn, menu.game/grid, outfit.board).
     GameMenu menu_now;
@@ -860,6 +910,295 @@ void a_manifest_says_what_a_plugin_is() {
     check(safe_relative_path("a/b.lua") == "a/b.lua", "A path inside the package is kept");
     for (const auto* bad : {"", "/a", "a//b", "./a", "a/../b", "..", "a\\b", "c:a", "a.", "a /b", "a\nb"})
         check(safe_relative_path(bad).empty(), std::string("A path that could leave the package is refused: ") + bad);
+}
+
+void physics_claims_are_bounded_and_exclusive() {
+    ObjectPhysicsClaims claims;
+    check(!claims.claim("a", 0).empty(), "Zero is not a layout ID");
+    check(!claims.claim("", 1).empty(), "A claim needs an owner");
+    for (std::uint64_t id = 1; id <= 32; ++id) check(claims.claim("a", id).empty(), "A plugin can claim 32 objects");
+    check(claims.claim("a", 1).empty(), "An owner may update its existing claim at the limit");
+    check(!claims.claim("b", 1).empty() && claims.owns("a", 1), "Another plugin cannot steal a physics claim");
+    check(!claims.claim("a", 33).empty(), "A plugin cannot claim 33 objects");
+    for (std::uint64_t id = 33; id <= 128; ++id)
+        check(claims.claim(std::to_string((id - 1) / 32), id).empty(), "Other plugins share the bounded global pool");
+    check(!claims.claim("fifth", 129).empty(), "The process limit is 128 objects");
+    claims.erase(1);
+    check(claims.claim("fifth", 129).empty(), "Releasing a claim frees capacity");
+    claims.clear();
+    check(!claims.owns("a", 2), "World reset clears claims");
+    check(!valid_object_velocity({46, 0, 0}) && !valid_object_velocity({32, 32, 0}), "Velocity bounds apply to magnitude");
+    check(!valid_object_rotation({0, 0, 0, 0}) && valid_object_rotation({0, 0, 0, 1}), "Rotation must be a unit quaternion");
+}
+
+void marker_consumers_do_not_replay_or_steal_operations() {
+    MarkerJournal journal;
+    journal.push(1, true);
+    check(journal.poll("a", 1)->events.empty(), "A new subscriber ignores prior operations");
+    check(journal.poll("b", 1)->events.empty(), "Subscribers start independently");
+    journal.push(2, true); journal.push(1, false);
+    check(journal.poll("a", 1)->events == std::vector<std::string>{"returned"}, "Only the local owner's marker is exposed");
+    check(journal.poll("b", 1)->events == std::vector<std::string>{"returned"}, "One subscriber does not drain another's events");
+    check(journal.poll("a", 1)->events.empty(), "An operation is consumed once");
+    for (unsigned i = 0; i < 33; ++i) journal.push(1, true);
+    const auto overflow = journal.poll("a", 1);
+    check(overflow->overflow && overflow->events.size() == 32, "Slow consumers get bounded history and an overflow notice");
+    journal.reset();
+    check(journal.poll("b", 1)->events.empty(), "Level reset drops pending operations");
+    journal.push(1, false); journal.release("a");
+    check(journal.poll("a", 1)->events.empty(), "Reload does not replay operations from the prior instance");
+    for (unsigned i = 0; i < 126; ++i) check(journal.poll(std::to_string(i), 1).has_value(), "Consumer slots are bounded");
+    check(!journal.poll("too-many", 1), "A process has at most 128 consumers");
+    journal.release("a");
+    check(journal.poll("replacement", 1).has_value(), "Unload frees a consumer slot");
+}
+
+void plugins_control_only_claimed_object_physics() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    environment.fake.marker_feed["physics"] = {{"saved", "returned"}, false};
+    host.apply({script("physics", R"(
+        assert(reskate.objects.physics("42", {mass=25, dynamic=true}))
+        assert(reskate.objects.velocity("42", vector.create(3,0,4)))
+        local motion = reskate.objects.motion("42")
+        assert(motion.dynamic and motion.velocity.x == 3 and motion.rotation[4] == 1)
+        assert(reskate.objects.pose("42", vector.create(2,3,4), {0,0,0,1}))
+        assert(reskate.objects.motion("42").position.y == 3)
+        for _, id in ipairs({"0", "-1", "42tail", "42\0tail", "18446744073709551616"}) do
+            assert(not pcall(reskate.objects.physics, id, {}))
+        end
+        assert(not pcall(reskate.objects.physics, 42, {}))
+        assert(not pcall(reskate.objects.physics, "42", {mass=0/0}))
+        assert(not pcall(reskate.objects.physics, "42", {mass=math.huge}))
+        assert(not pcall(reskate.objects.physics, "42", {mass=0}))
+        assert(not pcall(reskate.objects.physics, "42", {mass=20001}))
+        assert(not pcall(reskate.objects.physics, "42", {mass=.09}))
+        assert(not pcall(reskate.objects.physics, "42", {surface=1}))
+        assert(not pcall(reskate.objects.physics, "42", {mass="25"}))
+        assert(not pcall(reskate.objects.physics, "42", {dynamic=1}))
+        assert(not pcall(reskate.objects.velocity, "42", vector.create(32,32,0)))
+        assert(not pcall(reskate.objects.velocity, "42", vector.create(0/0,0,0)))
+        assert(not pcall(reskate.objects.pose, "42", vector.create(0,0,0), {0,0,0,0}))
+        assert(not pcall(reskate.objects.pose, "42", vector.create(0,0,0), {0,0,0,"1"}))
+        assert(not reskate.objects.physics("99", {}))
+        local events, overflow = reskate.marker.events()
+        assert(#events == 2 and events[1] == "saved" and events[2] == "returned" and not overflow)
+        assert(#reskate.marker.events() == 0)
+    )", R"("objects.physics", "marker.read")")});
+    running(host, "physics", environment);
+    check(environment.fake.object_physics_now.at(42).mass == 25, "Typed physics options reach the game");
+    host.apply({script("sneaky", R"(
+        assert(not pcall(reskate.objects.physics, "42", {}))
+        assert(not pcall(reskate.objects.physics, "42", nil))
+        assert(not pcall(reskate.objects.velocity, "42", vector.create(1,0,0)))
+        assert(not pcall(reskate.objects.pose, "42", vector.create(0,0,0), {0,0,0,1}))
+        assert(not pcall(reskate.objects.motion, "42"))
+        assert(not pcall(reskate.marker.events))
+        assert(not pcall(reskate.objects.actor))
+        assert(not pcall(reskate.objects.contact, vector.create(0,0,0), vector.create(1,0,0)))
+    )")});
+    running(host, "sneaky", environment);
+    check(environment.fake.object_physics_now.empty(), "Stopping a plugin releases its physics claims");
+    Game absent;
+    check(absent.object_physics("p", 42, ObjectPhysics{}) == unavailable && !absent.marker_events("p"), "No native provider means unavailable");
+    Host server(environment, Side::server);
+    server.apply({package("server-physics", {{manifest_file, manifest(R"("objects.physics", "marker.read")", "server")},
+        {"plugin/main.lua", R"(
+            assert(not pcall(reskate.objects.physics, "42", {}))
+            assert(not pcall(reskate.objects.motion, "42"))
+            assert(not pcall(reskate.objects.pose, "42", vector.create(0,0,0), {0,0,0,1}))
+            assert(not pcall(reskate.objects.velocity, "42", vector.create(0,0,0)))
+            assert(not pcall(reskate.marker.events))
+        )"}})});
+    running(server, "server-physics", environment);
+}
+
+void quickdrop_plugin_pins_and_favorites_stay_in_lua() {
+    TestEnvironment environment;
+    environment.local_skater = SkaterState{};
+    auto& game = environment.fake;
+    Host host(environment, Side::client);
+    const std::string id = "Dynamic_QuickDrop";
+    const auto source = std::filesystem::path(RESKATE_SOURCE_DIR) / "contrib/examples/dynamic-quickdrop";
+    host.apply({{id, source, "1", {}}});
+    host.set_level("sanvan");
+    ticks(host, environment, 1);
+    running(host, id, environment);
+    check(game.object_physics_now.empty(), "Draft physics is off by default");
+    environment.panels_open = true; environment.shown = id;
+    ticks(host, environment, 10); // Pages are built at 10 Hz, not every tick.
+    using A = plugin_ui::Action;
+    environment.actions = {A{id, "Dynamic QuickDrop", "enabled", true}};
+    ticks(host, environment, 10);
+    running(host, id, environment);
+    check(game.object_physics_now.contains(42), "Explicit opt-in claims an ordinary prop");
+    game.object_motion_now.at(42).position = {5, 0, 6};
+    game.marker_feed[id] = {{"returned"}, false};
+    ticks(host, environment, 1);
+    check(game.object_motion_now.at(42).position[0] == 1, "Marker return restores the original pin pose");
+    environment.actions = {A{id, "Dynamic QuickDrop", "pin_42", false}};
+    ticks(host, environment, 10);
+    game.object_motion_now.at(42).position = {7, 0, 8};
+    game.marker_feed[id] = {{"returned"}, false};
+    ticks(host, environment, 1);
+    check(game.object_motion_now.at(42).position[0] == 7, "An excluded object stays where physics left it");
+    game.object_motion_now.at(42).generation = 2;
+    game.object_motion_now.at(42).position = {9, 0, 10};
+    ticks(host, environment, 1);
+    game.object_motion_now.at(42).position = {11, 0, 12};
+    game.marker_feed[id] = {{"returned"}, false};
+    ticks(host, environment, 1);
+    check(game.object_motion_now.at(42).position[0] == 9, "A replacement lifetime gets a fresh pin rather than an old object's pose");
+    game.object_motion_now.at(42).position = {13, 0, 14};
+    game.marker_feed[id] = {{"returned"}, true};
+    ticks(host, environment, 1);
+    check(game.object_motion_now.at(42).position[0] == 13, "An overflow never replays stale restore operations");
+    game.object_motion_now.at(42).position = {15, 0, 16};
+    ++game.object_motion_now.at(42).edit_revision;
+    ticks(host, environment, 1);
+    game.object_motion_now.at(42).position = {17, 0, 18};
+    game.marker_feed[id] = {{"returned"}, false};
+    ticks(host, environment, 1);
+    check(game.object_motion_now.at(42).position[0] == 15, "A native edit commit replaces the marker snapshot");
+    environment.actions = {A{id, "Dynamic QuickDrop", "fav_42"}};
+    ticks(host, environment, 10);
+    check(game.files.contains(id + "/favorites.json"), "Favorites use sandboxed plugin storage");
+    environment.actions = {A{id, "Dynamic QuickDrop", "place_1"}};
+    ticks(host, environment, 10);
+    check(game.called("place 0 bench_01"), "Favorite spawning goes through the existing object placement API");
+    host.set_level("");
+    check(game.object_physics_now.empty(), "Level unload releases physics claims");
+    running(host, id, environment);
+}
+
+void moving_edges_keep_their_authored_identity() {
+    namespace geometry = dingosdk::placement_geometry;
+    geometry::Edge edge;
+    edge.from = {1, 0, 0, 7}; edge.to = {2, 0, 0, 8};
+    edge.normal_a = {0, 1, 0, 9}; edge.normal_b = {0, 0, 1, 10};
+    edge.identity = {123, 456}; edge.details = {7, 8, 9, 10}; edge.flags = {3, 4, 5, 6};
+    const auto rotated = geometry::transform(edge, {0, 0, .70710678f, .70710678f}, {3, 4, 5});
+    check(geometry::distance2(geometry::xyz(rotated.from), {3, 5, 5}) < .00001f, "Moving edges follow rotation and translation");
+    check(rotated.identity == edge.identity && rotated.details == edge.details && rotated.flags == edge.flags, "Moving edges preserve native chain/shape metadata");
+    check(rotated.from[3] == 7 && rotated.normal_a[3] == 9, "Opaque metadata lanes are not transformed");
+    check(geometry::overlaps(rotated, {3, 5, 5}, {.1f, .1f, .1f}) && !geometry::overlaps(rotated, {0, 0, 0}, {.1f, .1f, .1f}), "Restored edges obey query bounds");
+    const auto restored = geometry::transform(rotated, {0, 0, -.70710678f, .70710678f}, {-4, 3, -5});
+    check(geometry::distance2(geometry::xyz(restored.from), geometry::xyz(edge.from)) < .00001f, "Local edge snapshots round-trip through moving transforms");
+}
+
+void object_contact_queries_are_owned_and_budgeted() {
+    TestEnvironment environment;
+    environment.fake.contact_now = ObjectContact{42, {0,0,1}};
+    environment.fake.actor_now = PhysicsActor{};
+    environment.fake.actor_now->active = true;
+    Host host(environment, Side::client);
+    host.apply({script("queries", R"(
+        assert(reskate.objects.physics("42", {mass=.3,surface=true}))
+        assert(reskate.objects.motion("42").surface)
+        local actor=reskate.objects.actor()
+        assert(actor.active and actor.walking_velocity and actor.wish)
+        assert(not pcall(reskate.objects.contact,vector.create(0,0,0),vector.create(11,0,0)))
+        assert(not pcall(reskate.objects.contact,vector.create(0/0,0,0),vector.create(1,0,0)))
+        for i=1,64 do
+            local hit=reskate.objects.contact(vector.create(0,0,0),vector.create(0,0,1))
+            assert(hit.id=="42" and hit.position.z==1)
+        end
+        assert(not pcall(reskate.objects.contact,vector.create(0,0,0),vector.create(0,0,1)))
+        reskate.on("tick",function()
+            assert(reskate.objects.contact(vector.create(0,0,0),vector.create(0,0,1)))
+        end)
+    )", R"("objects.physics","skater.read","input")"),
+    script("outsider", R"(
+        reskate.on("tick",function()
+        assert(not reskate.objects.physics("42",{}))
+        assert(not reskate.objects.physics("42",nil))
+        assert(reskate.objects.motion("42")==nil)
+        assert(reskate.objects.contact(vector.create(0,0,0),vector.create(0,0,1))==nil)
+        assert(not pcall(reskate.objects.actor))
+        end)
+    )", R"("objects.physics")")});
+    ticks(host,environment,2);
+    running(host,"queries",environment);running(host,"outsider",environment);
+}
+
+void quickdrop_rb_and_contact_policy_run_in_the_real_plugin() {
+    TestEnvironment environment;
+    environment.local_skater=SkaterState{};
+    auto& game=environment.fake;
+    game.actor_now=PhysicsActor{};game.actor_now->active=true;game.actor_now->device=1;
+    game.contact_now=ObjectContact{42,{0,0,1}};
+    game.pad=PadInput{};
+    Host host(environment,Side::client);
+    const std::string id="Dynamic_QuickDrop";
+    host.apply({{id,std::filesystem::path(RESKATE_SOURCE_DIR)/"contrib/examples/dynamic-quickdrop","1",{}}});
+    host.set_level("sanvan");environment.panels_open=true;environment.shown=id;
+    ticks(host,environment,10);
+    using A=plugin_ui::Action;
+    environment.actions={A{id,"Dynamic QuickDrop","enabled",true}};
+    ticks(host,environment,10);
+    check(game.object_physics_now.at(42).mass==55,"The plugin applies its bench mass policy rather than a fixed demonstration mass");
+    game.pad->buttons=0x200;
+    ticks(host,environment,40);
+    game.object_motion_now.at(42).position={5,0,6};
+    game.marker_feed[id]={{"returned"},false};ticks(host,environment,1);
+    check(game.object_motion_now.at(42).position[0]==5,"Holding RB excludes the nearby object from marker recall");
+    ticks(host,environment,40);
+    game.object_motion_now.at(42).position={7,0,8};
+    game.marker_feed[id]={{"returned"},false};ticks(host,environment,1);
+    check(game.object_motion_now.at(42).position[0]==7,"Continuing to hold RB cannot toggle repeatedly");
+    game.pad->buttons=0;ticks(host,environment,1);game.pad->buttons=0x200;ticks(host,environment,40);
+    game.object_motion_now.at(42).position={9,0,10};
+    game.marker_feed[id]={{"returned"},false};ticks(host,environment,1);
+    check(game.object_motion_now.at(42).position[0]==7,"A second deliberate hold includes the current pose");
+    game.pad->buttons=0;
+    game.actor_now->on_foot=true;game.actor_now->grounded=true;game.actor_now->walking_velocity={0,0,3};game.actor_now->wish={0,0,3};
+    game.object_motion_now.at(42).velocity={};
+    ticks(host,environment,1);
+    const auto impact=game.object_motion_now.at(42).velocity[2];
+    check(impact>1,"A confirmed walking-body contact transfers one bounded impact");
+    ticks(host,environment,1);
+    const auto pressure=game.object_motion_now.at(42).velocity[2]-impact;
+    check(pressure>=0&&pressure<impact,"Sustained contact is force-limited rather than a repeated full impulse");
+    running(host,id,environment);
+}
+
+void quickdrop_gameplay_policy_is_a_sandboxed_module() {
+    std::ifstream input(std::filesystem::path(RESKATE_SOURCE_DIR) / "contrib/examples/dynamic-quickdrop/plugin/policy.lua");
+    const std::string policy{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+    check(!policy.empty(), "QuickDrop policy source is present");
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({package("quickdrop-policy", {{manifest_file, manifest()}, {"plugin/policy.lua", policy}, {"plugin/main.lua", R"(
+        local P=require("./policy")
+        assert(P.surface("own_bkrails_test") and P.surface("own_bkledges_test"))
+        assert(P.surface("own_bkskate3_roundrail") and not P.surface("ordinary_bench"))
+        assert(P.mass("bottle",1)==.5 and P.mass("beach_ball",1)==.3)
+        assert(P.mass("bench",1)==55 and P.mass("oil_drum",1)==25)
+        assert(P.mass("bench",142)==142 and P.mass("bench",30000)==20000)
+        assert(P.mass("own_bkrails_test",1)==35 and P.mass("ledge",1)==350)
+        assert(P.delta(25,10,.016,true)>P.delta(350,10,.016,true))
+        assert(P.delta(25,10,.032,false)>P.delta(25,10,.016,false))
+        assert(P.delta(0,10,.016,true)==0 and P.delta(25,-1,.016,true)==0)
+        assert(P.delta(25,1000,.016,true)<=35)
+        local hold={}
+        assert(not P.hold(hold,true,1,true,"a",0)) -- Held during load never toggles.
+        P.hold(hold,true,1,false,"a",1)
+        assert(not P.hold(hold,true,1,true,"a",2))
+        assert(not P.hold(hold,true,1,true,"a",601))
+        assert(P.hold(hold,true,1,true,"a",602)=="a")
+        assert(not P.hold(hold,true,1,true,"a",5000)) -- One toggle per deliberate hold.
+        P.hold(hold,true,1,false,"a",5001)
+        P.hold(hold,true,1,true,"a",5002)
+        assert(not P.hold(hold,true,1,true,"b",5602)) -- Target changes cancel, not retarget.
+        P.hold(hold,true,1,false,"a",6000)
+        P.hold(hold,true,1,true,"a",6001)
+        assert(not P.hold(hold,true,2,true,"a",6601)) -- Controller changes cancel.
+        P.hold(hold,true,2,false,"a",7000)
+        P.hold(hold,true,2,true,"a",7001)
+        assert(not P.hold(hold,false,2,true,"a",7601)) -- Focus/menu loss cancels.
+        assert(not P.hold(hold,true,2,true,"a",9000))
+    )"}})});
+    running(host, "quickdrop-policy", environment);
 }
 
 void a_plugin_loads_ticks_runs_its_commands_and_unloads() {
@@ -4083,6 +4422,14 @@ int main() {
         scratch = std::filesystem::temp_directory_path() / "reskate-plugin-tests";
         std::filesystem::remove_all(scratch);
         run(a_manifest_says_what_a_plugin_is);
+        run(physics_claims_are_bounded_and_exclusive);
+        run(marker_consumers_do_not_replay_or_steal_operations);
+        run(plugins_control_only_claimed_object_physics);
+        run(quickdrop_plugin_pins_and_favorites_stay_in_lua);
+        run(moving_edges_keep_their_authored_identity);
+        run(object_contact_queries_are_owned_and_budgeted);
+        run(quickdrop_rb_and_contact_policy_run_in_the_real_plugin);
+        run(quickdrop_gameplay_policy_is_a_sandboxed_module);
         run(a_plugin_loads_ticks_runs_its_commands_and_unloads);
         run(a_permission_must_be_declared);
         run(command_names_are_checked);
