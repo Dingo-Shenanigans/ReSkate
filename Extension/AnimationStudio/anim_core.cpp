@@ -879,6 +879,8 @@ std::string to_json(const Animation& animation) {
     if (!animation.upgraded.empty()) root["upgraded"] = animation.upgraded;
     if (animation.board_nose_forward) root["board_keys"] = "nose-forward";
     if (animation.catch_at) root["catch"] = *animation.catch_at;
+    if (animation.crossfade) root["crossfade"] = *animation.crossfade;
+    if (animation.catch_hold) root["catch_hold"] = *animation.catch_hold;
     root["start"] = animation.start;
     root["end"] = animation.end;
     root["duration"] = animation.clip.duration();
@@ -955,6 +957,14 @@ Animation from_json(std::string_view text) {
     if (root.contains("catch") && root.at("catch").is_number()) {
         const float at = root.at("catch").get<float>();
         if (std::isfinite(at) && at > 0 && at <= duration + 1.0f / key_fps) result.catch_at = at;
+    }
+    if (root.contains("crossfade") && root.at("crossfade").is_number()) {
+        const float seconds = root.at("crossfade").get<float>();
+        if (std::isfinite(seconds)) result.crossfade = std::clamp(seconds, 0.1f, 0.8f);
+    }
+    if (root.contains("catch_hold") && root.at("catch_hold").is_number()) {
+        const float hold = root.at("catch_hold").get<float>();
+        if (std::isfinite(hold)) result.catch_hold = std::clamp(hold, 0.0f, 1.0f);
     }
     // A window up to a frame past the clip's end (a bracket rounded onto a frame past it, by builds before 2026-10-23)
     // is put back on it rather than refusing the whole trick; anything else wrong is refused.

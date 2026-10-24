@@ -217,4 +217,88 @@ struct EditTransition {
         return current;
     }
 };
+// ---- off a drop: the catch slowed, never held still ------------------------------------------------------------------
+// Off a drop, down stairs or onto a ledge the air is longer or shorter than the trick's own. From just before its catch the
+// trick's time is its own (the game's pose is off the clip by then): it runs slower - or faster - so its landing comes on
+// the game's touchdown, easing into the new pace and out of it again, never standing still and never jumping. `hold` (the
+// trick's CATCH HOLD) says where the extra time goes: 1 around the catch (the knees up long, the legs reaching for the
+// ground late), 0 spread evenly from the catch to the landing. (It held the catch frozen until the ground came: on a big
+// set the skater stood still in the air for two seconds.)
+struct AirStretch {
+    static constexpr float slowest = 0.05f, fastest = 2.2f, ease = 0.1f; // trick seconds a second; seconds to change pace
+    float time{-1}; // the trick's time while it is its own (-1: still the game's clock)
+    float rate{1};
+    bool on() const noexcept { return time >= 0; }
+    void reset() noexcept { *this = {}; }
+    // Its slow part: from a little before the catch to a share of the way on to the landing; after it, its own pace.
+    static float slow_from(float takeoff, float caught) noexcept { return caught - std::min(0.1f, 0.4f * (caught - takeoff)); }
+    static float slow_until(float caught, float land, float hold) noexcept {
+        return std::min(land, caught + std::max(1.0f / 30, (land - caught) * (1 - std::clamp(hold, 0.0f, 1.0f))));
+    }
+    // One update. `clock`: the trick's time by the game's clock; `to_ground`: seconds until the board is down (below 0: not
+    // known); `step`: seconds since the last update. Returns the trick's time.
+    float update(float clock, float to_ground, float step, float takeoff, float caught, float land, float hold) noexcept {
+        if (!(caught > takeoff) || takeoff < 0 || !(land > caught) || !std::isfinite(clock) || clock < 0) return on() ? time : clock;
+        const bool known = std::isfinite(to_ground) && to_ground >= 0;
+        if (!on()) {
+            if (!known || clock < slow_from(takeoff, caught)) return clock;
+            const float left = land - clock; // its own air still to come
+            if (!(to_ground > left + 0.06f) && !(to_ground < left - 0.1f)) return clock; // in step with the game: its clock
+            time = std::min(clock, land - 1.0f / 60);
+            rate = 1;
+        }
+        if (!(step > 0) || !std::isfinite(step)) return time;
+        float want = rate; // the ground not known for a moment: it keeps its pace
+        if (known) {
+            // Aimed at its last moment before the landing, on the touchdown (which brings the landing itself).
+            const float end = land - 1.0f / 60, until = std::min(end, slow_until(caught, land, hold));
+            const float tail = end - std::max(time, until); // after the slow part, at its own pace to the landing
+            // The slow part ends with time to come back up to pace before the tail (none needed when there is no tail).
+            const float ramp = tail > 1.0f / 60 ? 1.5f * ease : 0.0f;
+            want = time < until ? (until - time) / std::max(to_ground - tail - ramp, 0.02f) : (end - time) / std::max(to_ground, 0.02f);
+        }
+        want = std::clamp(want, slowest, fastest);
+        rate += (want - rate) * (1 - std::exp(-step / ease));
+        time = std::min(time + rate * step, land - 1.0f / 60);
+        return time;
+    }
+};
+// The studio's DROP PREVIEW: the trick played as off a drop `metres` lower than its own landing, on the same AirStretch the
+// game's touchdown drives in game, so its CATCH and CATCH HOLD can be set by eye.
+struct DropPlay {
+    float metres{}, takeoff{-1}, caught{-1}, land{-1}, duration{}, hold{default_catch_hold};
+    bool on() const noexcept { return metres > 0.01f && takeoff >= 0 && caught > takeoff && land > caught && duration >= land; }
+};
+// The air off a drop `metres` lower: the clip's own takeoff (the speed that gives it `air`) falling that much further.
+inline float drop_air(float air, float metres) noexcept {
+    if (!(air > 0) || !(metres > 0) || !std::isfinite(air) || !std::isfinite(metres)) return air;
+    const float g = 9.81f, up = g * air / 2;
+    return (up + std::sqrt(up * up + 2 * g * metres)) / g;
+}
+// `real` seconds from the clip's start, off that drop -> the clip's time: its own up to its catch, slowed through it, its
+// landing on the touchdown and its own pace from there.
+inline float drop_clip_time(const DropPlay& p, float real) noexcept {
+    if (!p.on() || !std::isfinite(real) || real <= p.takeoff) return real;
+    const float air = drop_air(p.land - p.takeoff, p.metres), in_air = real - p.takeoff, until = std::min(in_air, air);
+    AirStretch stretch;
+    float time = p.takeoff;
+    for (float t = 0; t < until - 1e-6f;) {
+        const float step = std::min(1.0f / 60, until - t);
+        t += step;
+        time = stretch.update(p.takeoff + t, air - t, step, p.takeoff, p.caught, p.land, p.hold);
+    }
+    if (!stretch.on()) time = std::min(time, p.land - 1.0f / 60);
+    if (in_air <= air) return time;
+    return std::min(p.duration, landed_time(in_air - air, p.land, time));
+}
+// The moment off the drop that shows `clip_time` (the first: it never goes back).
+inline float drop_real_time(const DropPlay& p, float clip_time) noexcept {
+    if (!p.on() || !std::isfinite(clip_time) || clip_time <= p.takeoff) return clip_time;
+    float low = p.takeoff, high = p.duration + drop_air(p.land - p.takeoff, p.metres) + 1;
+    for (int i = 0; i < 40; ++i) {
+        const float mid = (low + high) / 2;
+        (drop_clip_time(p, mid) >= clip_time ? high : low) = mid;
+    }
+    return high;
+}
 } // namespace dingosdk::anim_studio

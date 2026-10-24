@@ -126,6 +126,12 @@ struct View {
     // maker put it there (else the studio found it).
     bool catch_air{}, catch_set{};
     float catch_at{-1};
+    // THIS TRICK: its own Crossfade (empty: the main one), its CATCH HOLD (catch_hold_set: its maker set it), and the
+    // studio's DROP PREVIEW (metres, 0 off) with the extra air that drop gives it (seconds; -1 off).
+    std::optional<float> trick_crossfade;
+    float catch_hold{default_catch_hold};
+    bool catch_hold_set{};
+    float drop_preview{}, drop_extra{-1};
     bool can_undo{}, can_redo{};
     Orbit orbit;
     bool confirm_close{}; // closing was asked with unsaved changes: the studio asks first
@@ -236,6 +242,11 @@ void move_bracket(int which, float seconds);
 // CATCH: where the trick is caught (on a frame, between a frame after the pop and a frame before the landing); below 0
 // gives it back to the studio. Call begin_change once when a drag starts.
 void set_catch(float seconds);
+// THIS TRICK: its own Crossfade in seconds (below 0: the main one again), its CATCH HOLD (0 to 1), and the studio's DROP
+// PREVIEW (metres, 0 off; nothing saved). Call begin_change once when a drag of the first two starts.
+void set_trick_crossfade(float seconds);
+void set_catch_hold(float amount);
+void set_drop_preview(float metres);
 // The joints that can be put somewhere rather than only turned, and how much of the limb above them bends
 // to reach: 3 for a hand or a foot (the elbow or knee and the limb above it bend), 2 for an elbow or a
 // knee (only the upper arm or the thigh turns, so placing a knee never swings the hips). 0 for the rest.

@@ -102,6 +102,7 @@ struct Ui {
     float bracket_dragged_to{-1}; // the frame the held bracket was last moved to
     bool catch_drag{}, catch_began{}; // CATCH is held; its undo step is taken
     float catch_dragged_to{-1};       // the frame it was last moved to
+    bool trick_panel{};               // THIS TRICK is open
     bool dragging_playhead{}, dragging_gizmo{}, orbiting{}, panning{};
     // A key being dragged along its row.
     std::optional<std::uint16_t> key_joint;
@@ -8572,6 +8573,7 @@ void on_new_clip(const studio::View& v) {
     u.dragging_gizmo = u.dragging_playhead = false;
     u.bracket_drag = 0;
     u.catch_drag = false;
+    if (v.drop_preview > 0) studio::set_drop_preview(0); // a new trick plays as it is
     u.axis = -1;
     u.timeline_view = Ui::View::fit;
     u.timeline_zoom = 1;
@@ -8602,6 +8604,94 @@ void zoom_timeline(float factor) {
     u.timeline_view = Ui::View::free; // zooming by hand is leaving FIT or REGION
     u.timeline_zoom = std::clamp(u.timeline_zoom * factor, 1.0f, 16.0f);
     u.zoom_to_playhead = true;
+}
+// ---- THIS TRICK: how it plays in game, for this trick alone ------------------------------------------------------------
+// A slider on the panel: a bar and its knob, dragged with the mouse. The new amount (0 to 1) while it is dragged, else -1.
+float panel_slider(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, float width, float amount, bool enabled, bool* began) {
+    auto& u = ui();
+    const float k = f.k;
+    ImGui::SetCursorScreenPos(ImVec2(at.x - 8 * k, at.y - 12 * k));
+    ImGui::InvisibleButton(id, ImVec2(width + 16 * k, 24 * k));
+    const bool live = enabled && !u.blocked;
+    if (began) *began = live && ImGui::IsItemActivated();
+    float out = -1;
+    if (live && ImGui::IsItemActive()) out = std::clamp((ImGui::GetIO().MousePos.x - at.x) / std::max(1.0f, width), 0.0f, 1.0f);
+    const float shown = std::clamp(out >= 0 ? out : amount, 0.0f, 1.0f);
+    const bool hot = live && (ImGui::IsItemHovered() || ImGui::IsItemActive());
+    d->AddRectFilled(ImVec2(at.x, at.y - 3 * k), ImVec2(at.x + width, at.y + 3 * k), IM_COL32(255, 255, 255, enabled ? 46 : 18), 3 * k);
+    if (enabled) d->AddRectFilled(ImVec2(at.x, at.y - 3 * k), ImVec2(at.x + width * shown, at.y + 3 * k), hot ? white : blue, 3 * k);
+    d->AddCircleFilled(ImVec2(at.x + width * shown, at.y), (hot ? 8.5f : 7.0f) * k, enabled ? white : IM_COL32(255, 255, 255, 50), 20);
+    return out;
+}
+// The pill at the top right of the view opens it: the trick's own Crossfade (OWN on: the main one in SETTINGS is skipped
+// for it), CATCH HOLD (off big drops, where the extra air goes) and DROP PREVIEW (the trick played here as off a drop that
+// high, its catch slowed as the game would). Closed, nothing of it covers the skater.
+void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 corner) {
+    auto& u = ui();
+    const float k = f.k;
+    if (!v.has_clip) return;
+    const std::string pill = u.trick_panel ? "THIS TRICK  -" : "THIS TRICK  +";
+    const auto pw = text_size(f.bold, 13 * k, pill.c_str());
+    const ImVec2 psize(pw.x + 34 * k, 32 * k), pa(corner.x - psize.x, corner.y);
+    if (action(d, f, "##trickpanel", pa, psize, pill, Look::dark, true, u.trick_panel)) {
+        u.trick_panel = !u.trick_panel;
+        if (!u.trick_panel && v.drop_preview > 0) studio::set_drop_preview(0);
+    }
+    if (!u.trick_panel) return;
+    const float w = 420 * k, row = 76 * k;
+    const ImVec2 a(corner.x - w, pa.y + psize.y + 8 * k), b(corner.x, a.y + 16 * k + 3 * row);
+    skate_theme::rough_rect(d, ImVec2(a.x + 5 * k, a.y + 5 * k), ImVec2(b.x + 5 * k, b.y + 5 * k), IM_COL32(0, 0, 0, 120), 75, k);
+    skate_theme::rough_rect(d, a, b, IM_COL32(16, 17, 20, 236), 77, k);
+    const float x = a.x + 20 * k, bw = w - 40 * k;
+    float y = a.y + 16 * k;
+    const auto head = [&](const char* name, const std::string& value, bool enabled, float value_right) {
+        text(d, f.bold, 14 * k, ImVec2(x, y), enabled ? white : faint, name);
+        const auto vw = text_size(f.bold, 14 * k, value.c_str());
+        text(d, f.bold, 14 * k, ImVec2(value_right - vw.x, y), enabled ? soft : faint, value);
+    };
+    const auto note = [&](const char* words) { text(d, f.bold, 11 * k, ImVec2(x, y + 44 * k), faint, elide(f.bold, 11 * k, words, bw)); };
+    // Its own Crossfade, or the main one.
+    {
+        const bool own = v.trick_crossfade.has_value();
+        const float seconds = own ? *v.trick_crossfade : v.crossfade;
+        const ImVec2 oa(x + bw - 66 * k, y - 4 * k);
+        if (action(d, f, "##owncrossfade", oa, ImVec2(66 * k, 24 * k), "OWN", own ? Look::blue : Look::ghost, true, own)) {
+            studio::begin_change();
+            studio::set_trick_crossfade(own ? -1.0f : v.crossfade);
+        }
+        head("CROSSFADE", own ? std::format("{:.2f} s", seconds) : std::format("MAIN {:.2f} s", seconds), true, oa.x - 12 * k);
+        bool began = false;
+        const float amount = panel_slider(d, f, "##trickcrossfade", ImVec2(x, y + 30 * k), bw, (seconds - 0.1f) / 0.7f, own, &began);
+        if (began) studio::begin_change();
+        if (amount >= 0) studio::set_trick_crossfade(0.1f + amount * 0.7f);
+        note(own ? "This trick hands over to the game's next move at its own pace." : "OWN: a crossfade for this trick alone. Off: the main one in SETTINGS.");
+        y += row;
+    }
+    // CATCH HOLD.
+    {
+        const bool can = v.catch_air && v.catch_at >= 0;
+        head("CATCH HOLD", !v.catch_air ? "NO AIR" : v.catch_at < 0 ? "NO CATCH" : std::format("{:.0f}%", v.catch_hold * 100), can, x + bw);
+        bool began = false;
+        const float amount = panel_slider(d, f, "##catchhold", ImVec2(x, y + 30 * k), bw, v.catch_hold, can, &began);
+        if (began) studio::begin_change();
+        if (amount >= 0) studio::set_catch_hold(amount);
+        note("Off big drops: high keeps the catch long and reaches for the ground late.");
+        y += row;
+    }
+    // DROP PREVIEW.
+    {
+        const bool can = v.catch_air && v.catch_at >= 0;
+        const std::string value = !can ? "NEEDS A CATCH" : v.drop_preview < 0.05f ? "OFF"
+                                                                                   : std::format("{:.1f} m   +{:.2f} s AIR", v.drop_preview, std::max(0.0f, v.drop_extra));
+        head("DROP PREVIEW", value, can, x + bw);
+        const float amount = panel_slider(d, f, "##droppreview", ImVec2(x, y + 30 * k), bw, v.drop_preview / 4.0f, can, nullptr);
+        if (amount >= 0) studio::set_drop_preview(amount * 4.0f);
+        note("Plays it here as off a drop this high, the catch slowed as in game.");
+        y += row;
+    }
+    // The rest of the panel takes the mouse, so a click on it does not reach the skater behind it.
+    ImGui::SetCursorScreenPos(a);
+    ImGui::InvisibleButton("##trickpanelback", ImVec2(b.x - a.x, b.y - a.y));
 }
 void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec2 size) {
     auto& u = ui();
@@ -9919,6 +10009,7 @@ void draw_animation_studio() {
         editor_top(d, f, v, display, left, right);
         tool_strip(d, f, v, ImVec2(left + tool_strip_margin * k, 98 * k));
         joint_card(d, f, v, ImVec2(right - 20 * k - side_w, 98 * k), side_w);
+        trick_panel(d, f, v, ImVec2(view_max.x - 16 * k, 98 * k));
         timeline(d, f, v, ImVec2(left, display.y - timeline_h), ImVec2(frame_w, timeline_h));
         selection_bar(d, f, v, (left + right) * 0.5f - side_w * 0.25f, display.y - timeline_h);
         shortcuts(d, f, v, ImVec2(right - 20 * k, display.y - timeline_h - 14 * k), right);

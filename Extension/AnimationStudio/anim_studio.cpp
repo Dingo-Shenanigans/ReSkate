@@ -112,8 +112,10 @@ struct CustomTrick {
     // The clips the game may play for its trick (its own and the library's pops of it), for NativeClock.
     std::shared_ptr<const NativeModels> native;
     int order{-1}; // its place in the playlist, when the playlist plays (In turns goes by it)
-    // The timeline's catch (find_catch): the board caught, the feet back on the deck. -1 none. Held over a longer air.
+    // The timeline's catch (find_catch): the board caught, the feet back on the deck. -1 none. Slowed over a longer air.
     float caught{-1};
+    // Its pop is its own (no pack rule fixed one): it also plays on the pops there is no version of it for.
+    bool own_pop{true};
 };
 // The skater's stance from the grind exit setting: goofy or regular (not set counts as regular).
 // The rider's own stance: the Grind Exits setting when it is set (grindexit stance goofy|regular); else learned from how he
@@ -212,6 +214,7 @@ struct History {
     std::vector<Track> tracks;
     float start{}, end{-1};
     std::optional<float> catch_at; // CATCH, as it was
+    std::optional<float> crossfade, catch_hold; // THIS TRICK, as they were
 };
 struct State {
     std::mutex mutex;
@@ -253,6 +256,9 @@ struct State {
     float catch_guess{-1};
     std::uint64_t catch_guess_from{};
     std::chrono::steady_clock::time_point catch_guessed_at{};
+    // DROP PREVIEW (THIS TRICK): metres (0 off), and while it plays the seconds off the drop and the time last shown.
+    float drop_preview{};
+    float drop_real{-1}, drop_shown{-1};
     // The studio's stance (0 as the game has him, 1 regular, 2 goofy) and the clip turned the other way
     // round, kept so it is mirrored once rather than every frame.
     int stance_choice{};
@@ -458,11 +464,11 @@ struct Live {
     float off_clip{};
     bool off_clip_said{};
     double ridden_left{}, ridden_right{}; // seconds on the board this session with the left foot leading, the right (learn the stance)
-    // The catch latch (catch_latch): the time held at the catch (-1 not held), when it was let go towards the landing, the
-    // time it was at on the touchdown, its last time, and the board's shape for where it touches.
-    float latch_hold{-1};
-    double latch_release_at{-1};
+    // Off a drop (catch_latch): the trick's own clock from just before its catch (AirStretch), the time it was at on the
+    // touchdown, its last time, and the board's shape for where it touches.
+    AirStretch stretch;
     float latch_touch_from{-1}, latch_last{-1};
+    float crossfade_now{-1}; // the playing trick's Crossfade (its own, or the main one)
     BoardShape latch_shape;
     bool latch_shape_ok{};
     // Once the game's pose leaves the clip (its own landing, a recording drifting off it) the trick goes on at
@@ -1255,9 +1261,12 @@ std::shared_ptr<const CustomTricks> read_custom_tricks(const std::string& test_t
             auto animation = std::make_shared<Animation>(from_json(text));
             if (animation->trick.empty()) continue;
             // The pop its pack's rules (or a test) say it plays on.
+            bool own_pop = true;
             if (const auto p = std::find_if(requested.begin(), requested.end(), [&](const Preset& x) { return x.name == entry.stem().string(); });
-                p != requested.end() && p->pack_pop)
+                p != requested.end() && p->pack_pop) {
                 animation->pop = *p->pack_pop;
+                own_pop = false;
+            }
             auto clip_path = entry;
             clip_path.replace_extension(L".clip");
             std::ifstream clip_in(clip_path, std::ios::binary);
@@ -1324,6 +1333,7 @@ std::shared_ptr<const CustomTricks> read_custom_tricks(const std::string& test_t
             auto native = build_native_models(references, 0);
             tricks->push_back({trick, entry.stem().string(), clip, std::move(animation), goofy, right, fakie, std::move(native)});
             tricks->back().caught = find_catch(*clip, *tricks->back().edits);
+            tricks->back().own_pop = own_pop;
             if (const auto p = std::find_if(requested.begin(), requested.end(), [&](const Preset& x) { return x.name == entry.stem().string(); });
                 p != requested.end())
                 tricks->back().order = p->order;
@@ -3432,7 +3442,7 @@ void on_animation(std::uintptr_t component) noexcept {
                         for (const auto& t : *l.game_tricks) {
                             if (t.trick != name || (exact && t.edits->entry != entry_name(l.episode.entry))) continue;
                             candidates.push_back(&t);
-                            described.push_back({t.leads_right, t.fakie, playback_pop_rank(pop, t.edits->pop)});
+                            described.push_back({t.leads_right, t.fakie, playback_pop_rank(pop, t.edits->pop, t.own_pop)});
                         }
                         if (!candidates.empty()) break;
                     }
@@ -3477,7 +3487,7 @@ void on_animation(std::uintptr_t component) noexcept {
                     l.native_clock.reset();
                     if (found) l.native_clock.start(found->native);
                     l.clock_selected_at = at; l.clock_locked_at = -1; l.clock_weight = 0; l.off_clip = 0; l.off_clip_said = false;
-                    l.latch_hold = -1; l.latch_release_at = -1; l.latch_touch_from = l.latch_last = -1;
+                    l.stretch.reset(); l.latch_touch_from = l.latch_last = -1;
                     l.latch_shape_ok = false;
                     if (found && found->caught > 0) {
                         l.latch_shape = board_shape(*found->clip);
@@ -3499,6 +3509,9 @@ void on_animation(std::uintptr_t component) noexcept {
                         logging::log(Level::info, Channel::skater, "Animation Studio: the game does a {} ({} pop by {}, {:.2f} s in the air), playing your {} ({}).", name,
                                      pop.empty() ? "unknown" : pop, graded ? "the game's grade" : "air time", l.predicted_air, found->name,
                                      "authored edits over fresh native pose");
+                    if (found && !found->edits->pop.empty() && found->edits->pop != pop)
+                        logging::log(Level::info, Channel::skater, "Animation Studio: {} is made for a {} pop; with none of yours for a {} pop it plays on this one too.",
+                                     found->name, found->edits->pop, pop.empty() ? "unknown" : pop);
                 }
             }
             if (const auto* trick = l.game_trick) {
@@ -3519,6 +3532,8 @@ void on_animation(std::uintptr_t component) noexcept {
                 }
                 l.played_mirrored = mirror_it;
                 const auto& played = *keys;
+                // Its Crossfade: its own (THIS TRICK: OWN), which skips the main one for it, or the main one (SETTINGS).
+                l.crossfade_now = std::clamp(played.crossfade.value_or(snap->crossfade), 0.1f, 0.8f);
                 // Standing back after the trick changed: the whole layer, over the same 120 ms.
                 const float give_way = l.gave_way_at >= 0 ? std::clamp(1 - static_cast<float>(at - l.gave_way_at) / 0.12f, 0.0f, 1.0f) : 1.0f;
                 const auto& clip = *trick->clip;
@@ -3527,10 +3542,10 @@ void on_animation(std::uintptr_t component) noexcept {
                 // as the game moves into anything else. The brackets only mask the edits, as in the studio.
                 PlaybackSample sampled;
                 NativeClock::Reading reading;
-                // The catch latch. Off a drop, down stairs or over a kicker the game stays in the air longer than the
-                // timeline did: the trick holds its catch - board caught, knees up - for that extra air, plays from its
-                // catch to its landing as the ground comes (looked for under the board), and lands on the touchdown. On
-                // flat ground, in step with the game, the ground comes when the timeline expects it and nothing is held.
+                // Off a drop, down stairs or over a kicker the game stays in the air longer than the timeline did (or
+                // shorter, onto a ledge): from just before its catch the trick takes its own time (AirStretch), slowed
+                // through the catch - board caught, knees up - and on to its landing on the touchdown, the ground looked for
+                // under the board. Never held still. On flat ground, in step with the game, it is the game's clock.
                 std::optional<double> touch_at;
                 if (l.episode.contact.since) touch_at = *l.episode.contact.since;
                 else if (l.episode.phase == PlaybackPhase::landing && l.episode.landing >= 0) touch_at = l.episode.landing;
@@ -3538,8 +3553,8 @@ void on_animation(std::uintptr_t component) noexcept {
                     const float caught = trick->caught, land = clip.landing;
                     if (!(caught > 0) || !(land > caught) || time < 0 || !l.latch_shape_ok) return time;
                     if (touch_at) {
-                        if (l.latch_hold < 0) return time;
-                        if (l.latch_touch_from < 0) l.latch_touch_from = l.latch_last >= 0 ? l.latch_last : l.latch_hold;
+                        if (!l.stretch.on()) return time;
+                        if (l.latch_touch_from < 0) l.latch_touch_from = l.latch_last >= 0 ? l.latch_last : l.stretch.time;
                         return landed_time(static_cast<float>(at - *touch_at), land, l.latch_touch_from);
                     }
                     // How long until the ground, from how high the board's lowest point is over it and how fast it falls.
@@ -3562,21 +3577,15 @@ void on_animation(std::uintptr_t component) noexcept {
                             to_ground = (*vy + std::sqrt(*vy * *vy + 2 * g * h)) / g;
                         }
                     }
-                    const float rest = land - caught; // the timeline from its catch to its landing
-                    if (l.latch_hold < 0 && time >= caught && to_ground && *to_ground > rest + 0.08f) {
-                        l.latch_hold = std::max(caught, l.latch_last >= 0 ? std::min(l.latch_last, time) : caught);
-                        logging::log(Level::info, Channel::skater, "Animation Studio: {} holds its catch at {:.2f} s ({}): {:.2f} s to the ground, {:.2f} s in the timeline.",
-                                     trick->name, l.latch_hold, trick->edits && trick->edits->catch_at && *trick->edits->catch_at == caught ? "its maker's" : "the studio's", *to_ground, rest);
-                    }
-                    if (l.latch_hold >= 0) {
-                        if (l.latch_release_at < 0) {
-                            if (to_ground && *to_ground <= rest + 0.02f) {
-                                l.latch_release_at = at;
-                                logging::log(Level::info, Channel::skater, "Animation Studio: {} plays on from its catch: {:.2f} s to the ground.", trick->name, *to_ground);
-                            } else time = l.latch_hold;
-                        }
-                        if (l.latch_release_at >= 0) time = std::min({time, l.latch_hold + static_cast<float>(at - l.latch_release_at), land - 1.0f / 60});
-                    }
+                    const bool was_on = l.stretch.on();
+                    const float hold = played.catch_hold.value_or(default_catch_hold);
+                    time = l.stretch.update(time, to_ground ? *to_ground : -1.0f, 1.0f / 60, clip.takeoff, caught, land, hold);
+                    if (l.stretch.on() && !was_on)
+                        logging::log(Level::info, Channel::skater,
+                                     "Animation Studio: {} takes its own time from {:.2f} s ({} catch at {:.2f} s, hold {:.0f}%): {:.2f} s to the ground, "
+                                     "{:.2f} s in the timeline.", trick->name, l.stretch.time,
+                                     trick->edits && trick->edits->catch_at && *trick->edits->catch_at == caught ? "its maker's" : "the studio's", caught,
+                                     hold * 100, to_ground ? *to_ground : -1.0f, land - l.stretch.time);
                     l.latch_last = time;
                     return time;
                 };
@@ -3653,7 +3662,8 @@ void on_animation(std::uintptr_t component) noexcept {
                     // next trick) is a smooth crossfade rather than a snap. The trick's end is eased into before it comes.
                     const float target = reading.locked && why.empty() ? 1.0f : 0.0f;
                     constexpr float step = 1.0f / 60, fade_in = 0.1f;
-                    const float fade_out = std::clamp(snap->crossfade, 0.1f, 0.8f); // SETTINGS > In game: Crossfade
+                    // SETTINGS > Tricks: Crossfade, or the trick's own (THIS TRICK: OWN), which skips the main one for it.
+                    const float fade_out = l.crossfade_now;
                     l.clock_weight = target > l.clock_weight ? std::min(target, l.clock_weight + step / fade_in)
                                                              : std::max(target, l.clock_weight - step / fade_out);
                     const auto ease = [](float x) { x = std::clamp(x, 0.0f, 1.0f); return x * x * (3 - 2 * x); };
@@ -3671,13 +3681,13 @@ void on_animation(std::uintptr_t component) noexcept {
                 // the deck as the studio has them; by the touchdown it is the game's pose again, as on flat ground.
                 {
                     const bool touched_down = l.episode.contact.since.has_value() || (l.episode.phase == PlaybackPhase::landing && l.episode.landing >= 0);
-                    const bool off = !touched_down && (l.clock_fallback || (reading.locked && reading.lost) || l.latch_hold >= 0);
+                    const bool off = !touched_down && (l.clock_fallback || (reading.locked && reading.lost) || l.stretch.on());
                     constexpr float off_step = (1.0f / 60) / 0.15f;
                     l.off_clip = off ? std::min(1.0f, l.off_clip + off_step) : std::max(0.0f, l.off_clip - off_step);
                     if (off && !l.off_clip_said) {
                         l.off_clip_said = true;
                         logging::log(Level::info, Channel::skater, "Animation Studio: {} is off the game's clip in the air ({}): keys as made, feet on the deck as in the studio.",
-                                     trick->name, l.clock_fallback ? "no clip of the game's found" : l.latch_hold >= 0 ? "it holds its catch" : "the game holds a pose of its own");
+                                     trick->name, l.clock_fallback ? "no clip of the game's found" : l.stretch.on() ? "it takes its own time off a drop" : "the game holds a pose of its own");
                     }
                 }
                 diagnostic.clock_error = reading.error;
@@ -3736,7 +3746,8 @@ void on_animation(std::uintptr_t component) noexcept {
             }
             play_pieces(l, *snap, at, generation, component, live_placement, scheduled, board_target, board_weight, motion, current_state);
         }
-        trick_blend.store(std::clamp(snap->crossfade * 0.5f, 0.08f, 0.4f), std::memory_order_relaxed);
+        trick_blend.store(std::clamp((l.game_trick && l.crossfade_now > 0 ? l.crossfade_now : snap->crossfade) * 0.5f, 0.08f, 0.4f),
+                          std::memory_order_relaxed);
         publish_gameplay_packet(std::move(scheduled));
         if (diagnostics_capture) {
             diagnostic.observed_phase = snap->open ? "studio_preview" : phase_name(l.episode.phase);
@@ -4848,6 +4859,20 @@ float catch_guess_locked(State& s) {
     }
     return s.catch_guess;
 }
+// The open trick off its DROP PREVIEW: off (on() false) without a drop, air or catch.
+DropPlay drop_play_locked(State& s) {
+    DropPlay p;
+    if (!(s.drop_preview > 0.01f) || !s.clip || s.clip->empty() || !has_air(*s.clip)) return p;
+    const float caught = s.edits.catch_at && catch_fits(*s.clip, *s.edits.catch_at) ? *s.edits.catch_at : catch_guess_locked(s);
+    if (!(caught > 0)) return p;
+    p.metres = s.drop_preview;
+    p.takeoff = s.clip->takeoff;
+    p.caught = caught;
+    p.land = s.clip->landing;
+    p.duration = s.clip->duration();
+    p.hold = s.edits.catch_hold.value_or(default_catch_hold);
+    return p;
+}
 } // namespace
 View view() {
     auto& s = state();
@@ -4963,6 +4988,11 @@ View view() {
         v.catch_set = s.edits.catch_at && catch_fits(*s.clip, *s.edits.catch_at);
         v.catch_at = v.catch_set ? *s.edits.catch_at : catch_guess_locked(s);
     }
+    v.trick_crossfade = s.edits.crossfade;
+    v.catch_hold = s.edits.catch_hold.value_or(default_catch_hold);
+    v.catch_hold_set = s.edits.catch_hold.has_value();
+    v.drop_preview = s.drop_preview;
+    if (const auto drop = drop_play_locked(s); drop.on()) v.drop_extra = drop_air(drop.land - drop.takeoff, drop.metres) - (drop.land - drop.takeoff);
     v.can_undo = !s.undo.empty();
     v.can_redo = !s.redo.empty();
     v.orbit = s.orbit;
@@ -5034,6 +5064,23 @@ void advance(float seconds) {
     std::lock_guard lock(s.mutex);
     if (!s.playing || !s.clip || s.clip->empty() || !(seconds > 0)) return;
     const float duration = s.clip->duration();
+    // DROP PREVIEW: played as off a drop that high, its catch slowed as the game would (AirStretch).
+    if (const auto drop = drop_play_locked(s); drop.on()) {
+        if (s.drop_real < 0 || std::abs(s.time - s.drop_shown) > 1e-4f) s.drop_real = drop_real_time(drop, s.time); // moved by hand
+        s.drop_real += seconds * s.edits.speed;
+        float t = drop_clip_time(drop, s.drop_real);
+        if (t >= duration - 1e-4f) {
+            if (s.edits.loop) s.drop_real = t = 0;
+            else {
+                t = duration;
+                s.playing = false;
+            }
+        }
+        s.time = t;
+        s.drop_shown = t;
+        publish_locked(s, false);
+        return;
+    }
     s.time = advance_time(s.time, seconds, s.edits.speed, duration, s.edits.loop);
     if (!s.edits.loop && s.time >= duration) s.playing = false;
     publish_locked(s, false);
@@ -5193,7 +5240,7 @@ void set_solo(bool on) {
 void begin_change() {
     auto& s = state();
     std::lock_guard lock(s.mutex);
-    s.undo.push_back({s.edits.tracks, s.edits.start, s.edits.end, s.edits.catch_at});
+    s.undo.push_back({s.edits.tracks, s.edits.start, s.edits.end, s.edits.catch_at, s.edits.crossfade, s.edits.catch_hold});
     if (s.undo.size() > 200) s.undo.pop_front();
     s.redo.clear();
 }
@@ -5420,6 +5467,42 @@ void set_catch(float seconds) {
     s.edits.catch_at = at;
     changed_locked(s);
 }
+void set_trick_crossfade(float seconds) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    if (s.previewing || !s.clip || s.clip->empty()) return;
+    if (!std::isfinite(seconds) || seconds < 0) {
+        if (!s.edits.crossfade) return;
+        s.edits.crossfade.reset();
+        s.status = "This trick hands over with the main Crossfade again (SETTINGS).";
+    } else {
+        const float own = std::round(std::clamp(seconds, 0.1f, 0.8f) * 100) / 100;
+        if (s.edits.crossfade && std::abs(*s.edits.crossfade - own) < 0.005f) return;
+        if (!s.edits.crossfade) s.status = "This trick hands over at its own Crossfade: the main one is skipped for it.";
+        s.edits.crossfade = own;
+    }
+    changed_locked(s);
+}
+void set_catch_hold(float amount) {
+    if (!std::isfinite(amount)) return;
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    if (s.previewing || !s.clip || s.clip->empty()) return;
+    const float hold = std::round(std::clamp(amount, 0.0f, 1.0f) * 100) / 100;
+    if (s.edits.catch_hold && std::abs(*s.edits.catch_hold - hold) < 0.005f) return;
+    s.edits.catch_hold = hold;
+    changed_locked(s);
+}
+void set_drop_preview(float metres) {
+    if (!std::isfinite(metres)) return;
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    const float drop = std::round(std::clamp(metres, 0.0f, 4.0f) * 10) / 10;
+    if (std::abs(drop - s.drop_preview) < 0.01f) return;
+    s.drop_preview = drop;
+    s.drop_real = -1;
+    publish_locked(s, false);
+}
 
 void drag_limb(std::uint16_t joint, const Vec3& target_view) {
     auto& s = state();
@@ -5549,10 +5632,12 @@ void undo() {
     std::lock_guard lock(s.mutex);
     if (s.previewing) return; // a preview is to watch only
     if (s.undo.empty()) return;
-    s.redo.push_back({s.edits.tracks, s.edits.start, s.edits.end, s.edits.catch_at});
+    s.redo.push_back({s.edits.tracks, s.edits.start, s.edits.end, s.edits.catch_at, s.edits.crossfade, s.edits.catch_hold});
     s.edits.start = s.undo.back().start;
     s.edits.end = s.undo.back().end;
     s.edits.catch_at = s.undo.back().catch_at;
+    s.edits.crossfade = s.undo.back().crossfade;
+    s.edits.catch_hold = s.undo.back().catch_hold;
     s.edits.tracks = std::move(s.undo.back().tracks);
     s.undo.pop_back();
     changed_locked(s);
@@ -5562,10 +5647,12 @@ void redo() {
     std::lock_guard lock(s.mutex);
     if (s.previewing) return; // a preview is to watch only
     if (s.redo.empty()) return;
-    s.undo.push_back({s.edits.tracks, s.edits.start, s.edits.end, s.edits.catch_at});
+    s.undo.push_back({s.edits.tracks, s.edits.start, s.edits.end, s.edits.catch_at, s.edits.crossfade, s.edits.catch_hold});
     s.edits.start = s.redo.back().start;
     s.edits.end = s.redo.back().end;
     s.edits.catch_at = s.redo.back().catch_at;
+    s.edits.crossfade = s.redo.back().crossfade;
+    s.edits.catch_hold = s.redo.back().catch_hold;
     s.edits.tracks = std::move(s.redo.back().tracks);
     s.redo.pop_back();
     changed_locked(s);

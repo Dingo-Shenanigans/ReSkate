@@ -146,6 +146,13 @@ void packs_and_playlist() {
     const auto with_catch = from_json(text);
     check(with_catch.catch_at && std::abs(*with_catch.catch_at - 0.8f) < 1e-4f, "A trick keeps the catch its maker set");
     check(to_json(with_catch).find("\"catch\"") != std::string::npos, "The catch is saved again with the trick");
+    auto tuned = locked;
+    tuned.crossfade = 0.45f;
+    tuned.catch_hold = 0.8f;
+    const auto tuned_back = from_json(to_json(tuned));
+    check(tuned_back.crossfade && std::abs(*tuned_back.crossfade - 0.45f) < 1e-4f && tuned_back.catch_hold && std::abs(*tuned_back.catch_hold - 0.8f) < 1e-4f,
+          "A trick keeps its own crossfade and catch hold");
+    check(!read.crossfade && !read.catch_hold, "and one without them has the main crossfade and the default hold");
 }
 
 // Every spelling the game has for a trick is one trick: what it says in the air, its scoring data, its flick list.
@@ -988,6 +995,9 @@ void merged_library_and_timing() {
     check(playback_pop_rank("high", "high") == 0 && playback_pop_rank("high", "") == 1 &&
           playback_pop_rank("high", "low") < 0 && playback_pop_rank("mid", "low") < 0,
           "Playback accepts exact or explicitly generic pops, never a different source height");
+    check(playback_pop_rank("low", "mid", true) == 2 && playback_pop_rank("low", "high", true) == 3 && playback_pop_rank("high", "high", true) == 0 &&
+              playback_pop_rank("low", "", true) == 1 && playback_pop_rank("", "mid", true) < 0,
+          "A trick on its own pop plays on the pops it has no version for, the nearest first");
     check(episode_selection_changed("360flip", "360flip", "low", "high") &&
           !episode_selection_changed("360flip", "360flip", "low", "low") &&
           !episode_selection_changed("360flip", "360flip", "", "high"),
@@ -1344,6 +1354,57 @@ void authored_gameplay_matches_f8_limbs_and_source_key_times() {
           "Keys past one second remain active through source reception instead of fading at landing plus 600 ms");
     const auto finished = episode.sample(12, 0.2f, 0.75f, 2, 1, 1, true);
     check(finished.time == 2 && finished.weight == 0 && finished.finished, "Source playback ends and releases at clip duration without looping");
+}
+// Off a drop the catch is slowed, not held: the trick's landing comes by the touchdown, its time never stands still or goes
+// back, and a shorter air plays faster. The studio's DROP PREVIEW plays it the same way.
+void slow_catch_off_drops() {
+    constexpr float step = 1.0f / 60;
+    {
+        const float takeoff = 0.5f, caught = 1.0f, land = 1.1f, air = (land - takeoff) + 1.5f; // a drop 1.5 s longer
+        AirStretch s;
+        float last = -1, slowest = 10;
+        bool still = false;
+        for (float t = step; t < air - 1e-4f; t += step) {
+            const float time = s.update(takeoff + t, air - t, step, takeoff, caught, land, default_catch_hold);
+            if (last >= 0 && time <= last && time < land - 1.0f / 60 - 1e-4f) still = true;
+            if (s.on()) slowest = std::min(slowest, s.rate);
+            last = time;
+        }
+        check(s.on(), "A longer air than its own gives the trick its own time");
+        check(!still, "It never stands still or goes back in the air");
+        check(slowest >= AirStretch::slowest && slowest < 0.3f, "It slows down through the catch");
+        check(land - last < 0.1f, "and comes to its landing by the touchdown");
+        AirStretch flat;
+        const float own = land - takeoff;
+        float shown = -1;
+        for (float t = step; t < own - 1e-4f; t += step) shown = flat.update(takeoff + t, own - t, step, takeoff, caught, land, default_catch_hold);
+        check(!flat.on() && near(shown, takeoff + own - step, 1e-3f), "In step with the game (flat ground) it is the game's clock");
+    }
+    {
+        const float takeoff = 0.5f, caught = 0.8f, land = 1.1f, air = 0.4f; // onto a ledge, 0.2 s sooner
+        AirStretch s;
+        float time = -1;
+        for (float t = step; t < air - 1e-4f; t += step) time = s.update(takeoff + t, air - t, step, takeoff, caught, land, default_catch_hold);
+        check(s.on() && time > takeoff + air + 0.03f, "A shorter air plays faster, on towards its landing");
+    }
+    {
+        const DropPlay p{1.0f, 0.5f, 1.0f, 1.1f, 2.0f, default_catch_hold};
+        check(near(drop_clip_time(p, 0.3f), 0.3f), "Before the pop the drop preview is the clip as it is");
+        const float extra = drop_air(0.6f, 1.0f) - 0.6f;
+        check(extra > 0.2f && extra < 0.6f, "A metre's drop gives it a little more air");
+        float previous = -1;
+        bool back = false;
+        for (float r = 0; r < 3; r += 0.01f) {
+            const float t = drop_clip_time(p, r);
+            if (t < previous - 1e-5f) back = true;
+            previous = t;
+        }
+        check(!back, "It plays on through the drop, never back");
+        check(near(drop_clip_time(p, 0.5f + 0.6f + extra + 0.5f), 1.6f, 0.03f), "From the touchdown at its own pace");
+        check(near(drop_clip_time(p, drop_real_time(p, 1.02f)), 1.02f, 0.01f), "A time on the timeline has its moment in the drop");
+        const DropPlay none{0.0f, 0.5f, 1.0f, 1.1f, 2.0f, default_catch_hold};
+        check(near(drop_clip_time(none, 0.9f), 0.9f), "No drop: the clip as it is");
+    }
 }
 // A trick fitted to the game's air: the flip at its own pace, the landing on the game's touchdown.
 void fitting_the_air_keeps_the_flip() {
@@ -1895,6 +1956,7 @@ int main(int argc, char** argv) {
         preview_trajectory_uses_the_whole_clip();
         native_playback_contracts();
         fitting_the_air_keeps_the_flip();
+        slow_catch_off_drops();
         native_clips_pop_where_the_game_does();
         native_clock_follows_the_game();
         diagnostic_history_is_bounded();

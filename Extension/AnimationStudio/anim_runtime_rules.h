@@ -75,10 +75,19 @@ struct GameplayClipClock {
         return time;
     }
 };
-inline int playback_pop_rank(const std::string& wanted, const std::string& saved) noexcept {
-    // A different source pop has different native body/board motion. Only an
-    // explicitly generic binding may substitute for the requested height.
-    return saved == wanted ? 0 : saved.empty() ? 1 : -1;
+// The pop a saved trick is for, against the pop the game graded: 0 the same, 1 any pop (made so, or a pack's ANY). With
+// `nearest` - a trick on its own pop (a pack's OWN, or no pack) - then the other pops, the nearest first, so a trick made at
+// one pop plays on every pop there is no version of it for: a heelflip saved at mid played on mid pops alone, and the game
+// grades a pop by how it is popped (TEST IN GAME plays on any pop, so there it did play). The game's clock follows the
+// clip of whichever pop it plays and stretches it onto the trick's own air (NativeModels). A pop a pack's LOW, MID or HIGH
+// fixed plays on that pop alone. Below 0: never.
+inline int playback_pop_rank(const std::string& wanted, const std::string& saved, bool nearest = false) noexcept {
+    if (saved == wanted) return 0;
+    if (saved.empty()) return 1;
+    if (!nearest || wanted.empty()) return -1;
+    const auto place = [](const std::string& p) { return p == "low" ? 0 : p == "mid" ? 1 : p == "high" ? 2 : -9; };
+    const int a = place(wanted), b = place(saved);
+    return a < 0 || b < 0 ? -1 : 1 + (a > b ? a - b : b - a);
 }
 inline bool episode_selection_changed(std::string_view selected, std::string_view reported,
                                       std::string_view selected_pop = {}, std::string_view wanted_pop = {}) noexcept {

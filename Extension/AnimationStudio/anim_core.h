@@ -65,6 +65,7 @@ inline constexpr std::uint16_t board_joint = 900;
 // Keys sit on whole frames of the timeline, 30 a second, never between two: anything that moves a key in
 // time puts it back on one, so the timeline never grows odd fractions of a frame between its keys.
 inline constexpr float key_fps = 30.0f;
+inline constexpr float default_catch_hold = 0.6f; // CATCH HOLD when the trick's maker set none (Animation::catch_hold)
 float on_a_frame(float seconds) noexcept;
 // The feet (343 and 10) ride this far above the board's mount, along the board's up: measured in the
 // game, riding, 2026-10-18. The board is pulled under the lower foot by this much on the ground, and
@@ -176,6 +177,12 @@ struct Animation {
     // caught, held in the air off a bigger drop than the clip's and then played on to its landing. Empty: the studio
     // finds the catch itself. Older builds ignore it.
     std::optional<float> catch_at;
+    // Its own Crossfade (seconds, 0.1 to 0.8): how it hands back to the game's next move, in place of the main one
+    // (SETTINGS) for this trick alone. Empty: the main one. Older builds ignore it.
+    std::optional<float> crossfade;
+    // CATCH HOLD (0 to 1): off a bigger drop than its own, where the extra air goes - 1 around the catch (the knees up
+    // long, the legs reaching for the ground late), 0 evenly on to the landing. Empty: default_catch_hold.
+    std::optional<float> catch_hold;
     Track* track(std::uint16_t joint) noexcept;
     const Track* track(std::uint16_t joint) const noexcept;
     std::size_t key_count() const noexcept;
