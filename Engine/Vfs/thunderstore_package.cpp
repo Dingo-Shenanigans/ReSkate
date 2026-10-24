@@ -61,7 +61,7 @@ std::wstring download_url(const Name& name, std::string_view wanted) {
     return wide(std::string(site) + "/package/download/" + name.owner + '/' + name.name + '/' + std::string(wanted) + '/');
 }
 
-Choice choose(std::string_view json, const Name& wanted, std::string_view community) {
+Choice choose(std::string_view json, const Name& wanted, std::string_view community, Kind kind) {
     Choice choice;
     try {
         const auto root = Json::parse(json);
@@ -73,7 +73,8 @@ Choice choose(std::string_view json, const Name& wanted, std::string_view commun
             choice.reason = "Its package on Thunderstore is marked deprecated.";
             return choice;
         }
-        bool listed{}, map{}, rejected{}, nsfw{};
+        const std::string_view category_wanted = kind == Kind::plugin ? "Plugins" : "Maps";
+        bool listed{}, fits{}, rejected{}, nsfw{};
         if (root.contains("community_listings") && root.at("community_listings").is_array())
             for (const auto& listing : root.at("community_listings")) {
                 if (!same(text_of(listing, "community"), community)) continue;
@@ -83,14 +84,18 @@ Choice choose(std::string_view json, const Name& wanted, std::string_view commun
                 if (listing.contains("categories") && listing.at("categories").is_array())
                     for (const auto& category : listing.at("categories"))
                     {
-                        map = map || (category.is_string() && same(category.string(), "Maps"));
+                        fits = fits || (category.is_string() && same(category.string(), category_wanted));
                         nsfw = nsfw || (category.is_string() && same(category.string(), "NSFW"));
                     }
             }
         if (!listed) { choice.reason = "Its package is not listed for ReSkate on Thunderstore."; return choice; }
         if (rejected) { choice.reason = "Its package was rejected by Thunderstore's moderators."; return choice; }
         if (nsfw) { choice.reason = "Its package is marked NSFW on Thunderstore."; return choice; }
-        if (!map) { choice.reason = "Its package is not listed as a map on Thunderstore."; return choice; }
+        if (!fits) {
+            choice.reason = kind == Kind::plugin ? "Its package is not listed as a plugin on Thunderstore."
+                                                 : "Its package is not listed as a map on Thunderstore.";
+            return choice;
+        }
         const auto newest = root.contains("latest") ? text_of(root.at("latest"), "version_number") : std::string();
         if (!version(newest)) { choice.reason = "Thunderstore gave no version of that package."; return choice; }
         choice.newest = newest;

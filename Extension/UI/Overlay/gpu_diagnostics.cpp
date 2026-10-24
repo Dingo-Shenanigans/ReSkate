@@ -4,9 +4,11 @@
 #include "Engine/Core/Debug/crash_report.h"
 
 #include <dxgi1_4.h>
+#include <ShlObj.h>
 #include <wrl/client.h>
 #include <intrin.h>
 #include <format>
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdarg>
@@ -25,8 +27,62 @@ namespace {
 using Microsoft::WRL::ComPtr;
 struct Log {
     std::atomic<bool> removal_recorded{};
+    std::atomic<bool> breadcrumbs{};
 };
 Log& log() { static auto* value = new Log; return *value; }
+
+// After the GPU stops responding, this many launches record its breadcrumbs: enough for one of them
+// to catch the next stop, where it comes every few sessions.
+constexpr int breadcrumb_launches = 3;
+// %LOCALAPPDATA%\ReSkate\gpu-breadcrumbs.txt: how many launches are still to record them.
+std::filesystem::path breadcrumbs_note() {
+    PWSTR local{};
+    std::filesystem::path path;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DONT_VERIFY, nullptr, &local)))
+        path = std::filesystem::path(local) / L"ReSkate" / L"gpu-breadcrumbs.txt";
+    CoTaskMemFree(local);
+    return path;
+}
+int breadcrumbs_left() {
+    const auto path = breadcrumbs_note();
+    int left{};
+    if (FILE* file{}; !path.empty() && _wfopen_s(&file, path.c_str(), L"r") == 0 && file) {
+        if (fscanf_s(file, "%d", &left) != 1) left = 0;
+        std::fclose(file);
+    }
+    return std::clamp(left, 0, breadcrumb_launches);
+}
+void set_breadcrumbs_left(int left) {
+    const auto path = breadcrumbs_note();
+    if (path.empty()) return;
+    std::error_code error;
+    if (left <= 0) {
+        std::filesystem::remove(path, error);
+        return;
+    }
+    std::filesystem::create_directories(path.parent_path(), error);
+    if (FILE* file{}; _wfopen_s(&file, path.c_str(), L"w") == 0 && file) {
+        std::fprintf(file, "%d\n", left);
+        std::fclose(file);
+    }
+}
+}
+
+bool gpu_breadcrumbs() noexcept { return log().breadcrumbs.load(); }
+
+void note_gpu_stopped(DWORD exception_code) noexcept {
+    const auto error = GetLastError();
+    switch (exception_code) {
+    case static_cast<DWORD>(DXGI_ERROR_DEVICE_REMOVED):
+    case static_cast<DWORD>(DXGI_ERROR_DEVICE_HUNG):
+    case static_cast<DWORD>(DXGI_ERROR_DEVICE_RESET):
+    case static_cast<DWORD>(DXGI_ERROR_DRIVER_INTERNAL_ERROR):
+        try { set_breadcrumbs_left(breadcrumb_launches); } catch (...) {}
+        break;
+    default:
+        break;
+    }
+    SetLastError(error);
 }
 
 bool graphics_option_enabled(const wchar_t* name) noexcept {
@@ -40,7 +96,17 @@ void initialize_graphics_diagnostics() noexcept {
     try {
         const bool diagnostic = graphics_option_enabled(L"RESKATE_GPU_DIAGNOSTICS");
         dingosdk::logging::printf(dingosdk::logging::Level::debug, dingosdk::logging::Channel::graphics, "Graphics startup: gpu_diagnostics=%d", diagnostic);
-        if (diagnostic) {
+        // The launches after one in which the GPU stopped responding record its breadcrumbs, for
+        // the report of the next stop. This one counts as one of them.
+        const int left = breadcrumbs_left();
+        if (left > 0) {
+            set_breadcrumbs_left(left - 1);
+            dingosdk::logging::printf(dingosdk::logging::Level::info, dingosdk::logging::Channel::graphics,
+                "GPU breadcrumbs are on for this launch: the GPU stopped responding in a recent session (%d more launch(es) after this one).",
+                left - 1);
+        }
+        log().breadcrumbs = diagnostic || left > 0;
+        if (log().breadcrumbs) {
             // DRED must be configured before the game creates its D3D12 device.
             // Do not enable the debug layer or change the game's device flags.
             ComPtr<ID3D12DeviceRemovedExtendedDataSettings> settings;
@@ -1002,9 +1068,25 @@ void watch_draws(ID3D12GraphicsCommandList* list) noexcept {
     SetLastError(error);
 }
 
+namespace {
+std::atomic<std::uint64_t> render_luid{};
+}
+
+bool render_adapter_luid(LUID& luid) noexcept {
+    const auto value = render_luid.load();
+    if (!value) return false;
+    luid.LowPart = static_cast<DWORD>(value);
+    luid.HighPart = static_cast<LONG>(value >> 32);
+    return true;
+}
+
 void record_gpu_identity(ID3D12Device* device) noexcept {
     static std::atomic<bool> recorded{};
     const auto error = GetLastError();
+    if (device) {
+        const auto luid = device->GetAdapterLuid();
+        render_luid = (static_cast<std::uint64_t>(static_cast<std::uint32_t>(luid.HighPart)) << 32) | luid.LowPart;
+    }
     try {
         ComPtr<IDXGIFactory4> factory;
         ComPtr<IDXGIAdapter1> adapter;
@@ -1018,6 +1100,7 @@ void record_gpu_identity(ID3D12Device* device) noexcept {
                 driver = std::format(L"{}.{}.{}.{}", HIWORD(version.HighPart), LOWORD(version.HighPart), HIWORD(version.LowPart),
                     LOWORD(version.LowPart));
             dingosdk::crash_report::set_gpu(description.Description, driver);
+            dingosdk::crash_report::set_gpu_breadcrumbs(gpu_breadcrumbs());
             dingosdk::logging::write(dingosdk::logging::Level::info, dingosdk::logging::Channel::graphics,
                 std::wstring(L"Graphics card: ") + description.Description + (driver.empty() ? L"" : L", driver " + driver) + L".");
         }
@@ -1028,7 +1111,7 @@ void record_gpu_identity(ID3D12Device* device) noexcept {
 void watch_device_removal(ID3D12Device* device) noexcept {
     static std::atomic<bool> watching{};
     const auto error = GetLastError();
-    if (!device || !graphics_option_enabled(L"RESKATE_GPU_DIAGNOSTICS") || watching.exchange(true)) {
+    if (!device || watching.exchange(true)) {
         SetLastError(error);
         return;
     }
@@ -1050,7 +1133,7 @@ void watch_device_removal(ID3D12Device* device) noexcept {
         dingosdk::logging::write(dingosdk::logging::Level::warning, dingosdk::logging::Channel::graphics,
             "GPU diagnostics: the device-removal watch could not start; failures are recorded when the overlay next draws.");
     }
-    try {
+    if (gpu_breadcrumbs()) try {
         std::thread(watch_video_memory, device->GetAdapterLuid()).detach();
     } catch (...) {}
     SetLastError(error);
@@ -1073,6 +1156,8 @@ void record_device_failure(ID3D12Device* device, HRESULT result,
         const auto reason = device->GetDeviceRemovedReason();
         dingosdk::logging::printf(Level::error, Channel::graphics, "GPU failure: operation=%s result=0x%08lx removed_reason=0x%08lx",
             operation, static_cast<unsigned long>(result), static_cast<unsigned long>(reason));
+        // The next launches record what the GPU was doing, for the report of the next stop.
+        if (reason != S_OK) set_breadcrumbs_left(breadcrumb_launches);
         ComPtr<ID3D12DeviceRemovedExtendedData1> dred;
         if (FAILED(device->QueryInterface(IID_PPV_ARGS(&dred)))) {
             dingosdk::logging::write(Level::error, Channel::graphics, "DRED is unavailable on this device.");
@@ -1085,7 +1170,8 @@ void record_device_failure(ID3D12Device* device, HRESULT result,
         D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT1 breadcrumbs{};
         if (const auto status = dred->GetAutoBreadcrumbsOutput1(&breadcrumbs); FAILED(status)) {
             dingosdk::logging::printf(Level::error, Channel::graphics,
-                "DRED breadcrumbs unavailable (0x%08lx): start the game with --gpu-diagnostics to record them.", static_cast<unsigned long>(status));
+                "DRED breadcrumbs unavailable (0x%08lx): the next %d launches record them.", static_cast<unsigned long>(status),
+                breadcrumb_launches);
         } else {
             unsigned finished{}, running{}, waiting{};
             for (auto* node = breadcrumbs.pHeadAutoBreadcrumbNode; node; node = node->pNext) {

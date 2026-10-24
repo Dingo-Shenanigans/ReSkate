@@ -4,6 +4,11 @@
 
 namespace dingosdk::game::build::v20260929::native_throwdowns {
 // Hooked functions.
+// GetPlayerIsInActivity (6dae8d15). The typed fast thunk calls this same
+// implementation, including calls inlined into the activity pause menu.
+inline constexpr std::uintptr_t player_in_activity = 0x834520;
+inline constexpr std::array<unsigned char,19> player_in_activity_prefix{
+    0x40,0x55,0x48,0x83,0xec,0x20,0x8b,0xe9,0xba,0x89,0x97,0x0f,0xbf,0x48,0x8d,0x4c,0x24,0x38,0xe8};
 // Reports whether a throwdown mode exists in the backend catalogue.
 inline constexpr std::uintptr_t mode_available = 0x807130;
 inline constexpr std::array<unsigned char, 19> mode_available_prefix{

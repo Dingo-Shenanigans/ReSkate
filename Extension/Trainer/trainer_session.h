@@ -12,8 +12,11 @@
 
 namespace dingosdk::trainer {
 // What the trick multipliers may be, here and in the trainer's own options.
-inline constexpr float height_low = 0.05f, height_high = 1.0e6f; // heights; the sliders stop far short, a typed number need not
-inline constexpr float flip_low = 0.1f, flip_high = 3.0f;        // board flip speed: the game's own limit takes over above
+inline constexpr float height_low = 0.001f, height_high = 1.0e6f; // heights; the sliders stop far short, a typed number need not
+inline constexpr float catch_low = 1.0f, catch_high = 100.0f;    // where in a jump a flip is caught, percent of the air time
+inline constexpr float flip_low = 0.01f, flip_high = 1000.0f;     // board flip speed; the slider stops far short, a typed number need not
+inline constexpr float pump_high = 1.0e6f;                             // pump power; 1 is the game's own
+inline constexpr float revert_boost_high = 1.0e6f;                     // revert boost strength; 0 is off
 inline constexpr float cruise_high = 100.0f;                     // auto push, m/s
 
 struct SessionExtras {
@@ -22,6 +25,11 @@ struct SessionExtras {
     float flip_speed{1}, hippy_height{1}, nocomply_height{1}, boneless_height{1}, offboard_height{1};
     // Auto push: the speed a rolling skater is carried up to, m/s; 0: off.
     float cruise{};
+    // x of the game's own while an underflip turns, and whether only its under part does (its flip then at the flip
+    // speed). Sent only when not the game's own (version 2), so a guest on an older trainer still reads a host who
+    // leaves them alone.
+    float underflip_speed{1};
+    bool underflip_split{};
     // Values of the game's tuning classes that are not the game's own: an index into
     // class_fields (trainer_classes.h) and the value, by ascending index.
     std::vector<std::pair<std::uint16_t, float>> classes;

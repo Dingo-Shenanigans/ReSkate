@@ -79,7 +79,7 @@ void shadowed(ImDrawList *draw, ImFont *font, float size, ImVec2 at, ImU32 colou
 // The messages, centred on a plate at the top: the first one large (it slides in when it
 // changes), a trick to copy in white, the rest smaller. Sizes stay near the fonts' baked
 // sizes (title 44, heading 22, bold 17) so the text stays sharp.
-void draw_messages(ImDrawList *draw, const SkateHud &hud, float scale, float alpha_in, float slide) {
+void draw_messages(ImDrawList *draw, const SkateHud &hud, float scale, float alpha_in, float slide, ImU32 accent) {
     auto &s = state();
     if (hud.messages.empty()) return;
     auto *title = s.menu.title ? s.menu.title : ImGui::GetFont();
@@ -98,7 +98,7 @@ void draw_messages(ImDrawList *draw, const SkateHud &hud, float scale, float alp
         const auto &message = hud.messages[i];
         Line line{};
         if (i == 0 && message.kind != SkateHudMessage::Kind::trick) {
-            line = {title, 40.0f * scale, message_colour(message.kind), upper(message.text), {}};
+            line = {title, 40.0f * scale, message.kind == SkateHudMessage::Kind::prompt ? accent : message_colour(message.kind), upper(message.text), {}};
         } else if (message.kind == SkateHudMessage::Kind::trick) {
             line = {heading, 26.0f * scale, theme::white, message.text, {}};
         } else {
@@ -120,8 +120,8 @@ void draw_messages(ImDrawList *draw, const SkateHud &hud, float scale, float alp
     const ImVec2 max(centre + width * 0.5f + pad_x, min.y + height + pad_y * 2.0f);
     theme::rough_rect(draw, min, max, with_alpha(theme::tile, 0.9f * alpha_in), 71u, scale);
     // The plate's stripe takes the first message's colour: orange to act, green or red after.
-    const auto stripe = message_colour(hud.messages.front().kind == SkateHudMessage::Kind::trick
-                                           ? SkateHudMessage::Kind::prompt : hud.messages.front().kind);
+    const auto kind = hud.messages.front().kind;
+    const auto stripe = kind == SkateHudMessage::Kind::trick || kind == SkateHudMessage::Kind::prompt ? accent : message_colour(kind);
     draw->AddRectFilled(ImVec2(min.x, max.y - 4.0f * scale), ImVec2(max.x, max.y), with_alpha(stripe, alpha_in));
     float y = min.y + pad_y;
     for (const auto &line : lines) {
@@ -134,7 +134,7 @@ void draw_messages(ImDrawList *draw, const SkateHud &hud, float scale, float alp
 // Every player's row on the left: whose turn it is marked in blue, eliminated players
 // dimmed, and five S K A T E tiles with the earned ones in red. Returns the panel's bottom
 // and width.
-std::pair<float, float> draw_scoreboard(ImDrawList *draw, HudState &h, float scale) {
+std::pair<float, float> draw_scoreboard(ImDrawList *draw, HudState &h, float scale, std::string_view title, std::string_view penalties, bool lower_left = false) {
     auto &s = state();
     const auto &players = h.hud.players;
     if (players.empty()) return {120.0f * scale, 0.0f};
@@ -146,11 +146,13 @@ std::pair<float, float> draw_scoreboard(ImDrawList *draw, HudState &h, float sca
     for (const auto &player : players)
         name_width = std::max(name_width, bold->CalcTextSizeA(name_size, FLT_MAX, 0.0f, player.name.c_str()).x);
     name_width = std::min(name_width, 240.0f * scale);
-    const float tiles_width = tile * 5.0f + tile_gap * 4.0f;
+    const float tiles_width = tile * static_cast<float>(penalties.size()) + tile_gap * static_cast<float>(penalties.size() - 1);
     const float width = pad * 2.0f + 14.0f * scale + name_width + 14.0f * scale + tiles_width;
-    const float left = 32.0f * scale;
-    float top = 120.0f * scale;
-    shadowed(draw, heading, 18.0f * scale, ImVec2(left + 2.0f * scale, top), theme::grey_text, "S.K.A.T.E.");
+    const float left = (lower_left ? 64.0f : 32.0f) * scale;
+    // Reserve the trick history as well as the line score and multiplier.
+    float top = lower_left ? ImGui::GetIO().DisplaySize.y - 430.0f * scale -
+        26.0f * scale - static_cast<float>(players.size()) * (row + row_gap) : 120.0f * scale;
+    shadowed(draw, heading, 18.0f * scale, ImVec2(left + 2.0f * scale, top), theme::grey_text, std::string(title));
     top += 26.0f * scale;
     for (std::size_t i = 0; i < players.size(); ++i) {
         const auto &player = players[i];
@@ -184,20 +186,28 @@ std::pair<float, float> draw_scoreboard(ImDrawList *draw, HudState &h, float sca
         const float flash = 1.0f - ease_out(seconds_since(seen.second) / 0.7f);
         float x = name_x + name_width + 14.0f * scale;
         const float tile_top = (min.y + max.y) * 0.5f - tile * 0.5f;
-        for (int letter = 0; letter < 5; ++letter, x += tile + tile_gap) {
+        for (int letter = 0; letter < static_cast<int>(penalties.size()); ++letter, x += tile + tile_gap) {
             const bool earned = letter < player.letters;
             const bool newest = earned && letter == player.letters - 1 && flash > 0.0f;
             const float grow = newest ? tile * 0.18f * flash : 0.0f;
             const ImVec2 a(x - grow, tile_top - grow), b(x + tile + grow, tile_top + tile + grow);
-            draw->AddRectFilled(a, b, with_alpha(earned ? theme::danger : theme::tile_grey, alpha), 3.0f * scale);
+            if (lower_left) {
+                // Three separate torn-paper stamps, in the mode's blue palette.
+                // Keep unearned letters legible without looking like penalties.
+                theme::rough_rect(draw, ImVec2(a.x + 2 * scale, a.y + 2 * scale),
+                    ImVec2(b.x + 2 * scale, b.y + 2 * scale), with_alpha(theme::tile, alpha), 33u + letter, scale);
+                theme::rough_rect(draw, a, b, with_alpha(earned ? theme::blue : theme::white,
+                    earned ? alpha : .24f * alpha), 17u + letter * 7u, scale);
+            } else draw->AddRectFilled(a, b, with_alpha(earned ? theme::danger : theme::tile_grey, alpha), 3.0f * scale);
             if (newest)
                 draw->AddRectFilled(a, b, with_alpha(theme::white, 0.6f * flash), 3.0f * scale);
-            const char text[2]{skate_word[static_cast<std::size_t>(letter)], 0};
+            const char text[2]{penalties[static_cast<std::size_t>(letter)], 0};
             const float letter_size = 19.0f * scale;
             const auto extent = heading->CalcTextSizeA(letter_size, FLT_MAX, 0.0f, text);
             draw->AddText(heading, letter_size,
                           ImVec2((a.x + b.x - extent.x) * 0.5f, (a.y + b.y - extent.y) * 0.5f),
-                          with_alpha(earned ? theme::white : theme::grey_text, earned ? alpha : 0.45f * alpha), text);
+                          with_alpha(lower_left ? (earned ? theme::tile : theme::white) :
+                              (earned ? theme::white : theme::grey_text), earned ? alpha : 0.65f * alpha), text);
         }
     }
     return {top + static_cast<float>(players.size()) * (row + row_gap), width};
@@ -249,8 +259,7 @@ bool skate_hud_pending() {
     return true;
 }
 
-void draw_skate_hud() {
-    auto &h = hud_state();
+void draw_throwdown_hud(HudState &h, std::string_view title, std::string_view penalties, ImU32 accent) {
     if (h.hud.messages.empty() && h.hud.players.empty()) return;
     const auto display = ImGui::GetIO().DisplaySize;
     if (display.x <= 0 || display.y <= 0) return;
@@ -262,8 +271,9 @@ void draw_skate_hud() {
         h.headline_at = Clock::now();
     }
     const float shown = ease_out(seconds_since(h.headline_at) / 0.2f);
-    draw_messages(draw, h.hud, scale, shown, (1.0f - shown) * -12.0f * scale);
-    const auto [bottom, width] = draw_scoreboard(draw, h, scale);
+    draw_messages(draw, h.hud, scale, shown, (1.0f - shown) * -12.0f * scale, accent);
+    const auto [bottom, width] = draw_scoreboard(draw, h, scale, title, penalties);
     draw_done_tricks(draw, h.hud, scale, bottom, width);
 }
+void draw_skate_hud() { draw_throwdown_hud(hud_state(), "S.K.A.T.E.", skate_word, theme::bar); }
 } // namespace dingosdk::overlay::detail

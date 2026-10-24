@@ -15,9 +15,7 @@ namespace values = addr::game_state_values;
 using SetInt = std::uintptr_t (*)(std::uintptr_t setter, std::uintptr_t instance, std::int32_t value);
 
 std::atomic<SetInt> original_set_int{};
-// While a take runs: GetTickCount64 at which it stops counting grades as its own (0: no take).
-std::atomic<std::uint64_t> take_until{};
-std::atomic<PopHeight> take_grade{}, latest_grade{};
+std::atomic<PopHeight> latest_grade{};
 std::atomic<std::uint64_t> latest_grade_ms{};
 
 // PopHeight's descriptor is known by its address and its name pointer together, so an address the game frees and gives
@@ -48,7 +46,6 @@ std::uintptr_t set_int_hook(std::uintptr_t setter, std::uintptr_t instance, std:
         const auto now = GetTickCount64();
         latest_grade.store(value, std::memory_order_relaxed);
         latest_grade_ms.store(now, std::memory_order_release);
-        if (const auto until = take_until.load(std::memory_order_acquire); until && now < until) take_grade.store(value, std::memory_order_relaxed);
     }
     return original_set_int.load(std::memory_order_acquire)(setter, instance, value);
 }
@@ -69,21 +66,12 @@ std::string hook_setter(std::uintptr_t base) {
 }
 } // namespace
 
-std::string_view pop_name(PopHeight height) noexcept { return height == 1 ? "low" : height == 2 ? "mid" : height == 3 ? "high" : ""; }
-PopHeight pop_height_of(std::string_view name) noexcept { return name == "low" ? 1 : name == "mid" ? 2 : name == "high" ? 3 : 0; }
-
 bool install(std::uintptr_t base, std::string& why) {
     // Tried once: the answer, and why not, stay for the rest of the game.
     static const std::string failure = hook_setter(base);
     why = failure;
     return failure.empty();
 }
-void begin_take(std::uint64_t lasts_ms) noexcept {
-    take_grade.store(0, std::memory_order_relaxed);
-    take_until.store(GetTickCount64() + lasts_ms, std::memory_order_release);
-}
-void end_take() noexcept { take_until.store(0, std::memory_order_release); }
-PopHeight take_pop_height() noexcept { return take_grade.load(std::memory_order_relaxed); }
 PopHeight pop_height_since(std::uint64_t since_ms) noexcept {
     if (latest_grade_ms.load(std::memory_order_acquire) < since_ms) return 0;
     return latest_grade.load(std::memory_order_relaxed);

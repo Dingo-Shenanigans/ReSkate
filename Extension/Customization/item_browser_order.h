@@ -10,6 +10,7 @@
 // Which tiles of an item grid are shown, and in what order. Pure: no game state, so it is tested on its own.
 namespace dingosdk::item_browser {
 enum class Filter : std::uint8_t { all, favorites, mods, game };
+using Keys = std::set<std::string, std::less<>>;
 inline constexpr std::string_view filter_names[]{"All", "Favorites", "Mods", "Game items"};
 
 struct Item {

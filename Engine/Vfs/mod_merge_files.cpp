@@ -100,6 +100,13 @@ std::uint64_t append_file(const fs::path& from, const fs::path& to) {
     return start;
 }
 
+fs::path inside(const fs::path& output, const fs::path& relative) {
+    const auto normal = relative.lexically_normal();
+    if (normal.empty() || normal.has_root_name() || normal.has_root_directory() || *normal.begin() == L"..")
+        throw std::runtime_error("Refused to write " + path_utf8(relative) + ": it is outside the merged patch's folder");
+    return output / normal;
+}
+
 // Hard link when the volume allows it, so a 400 MB archive costs nothing.
 void link_or_copy(const fs::path& from, const fs::path& to) {
     fs::create_directories(to.parent_path());
@@ -118,8 +125,11 @@ RelativeFiles scan(const fs::path& directory) {
     for (fs::recursive_directory_iterator it(root, error), end; it != end && !error; it.increment(error)) {
         if (!it->is_regular_file(error) || error) { error.clear(); continue; }
         // The game only names archives in ASCII: anything else is not one of its files.
-        const auto relative = ascii_path(fs::relative(it->path(), directory, error));
-        if (error || relative.empty()) { error.clear(); continue; }
+        // Lexically, as the folder is laid out: fs::relative resolves links, and a Win32 (or a
+        // folder in it) that is a junction elsewhere would come out as ../../.., a path the merge
+        // then reads the game's TOC from and writes its own copies to outside the patch folder.
+        const auto relative = ascii_path(it->path().lexically_relative(directory));
+        if (relative.empty() || relative.starts_with("../")) continue;
         const auto extension = lower(ascii_path(it->path().extension()));
         if (extension == ".toc") result.tocs.push_back(relative);
         else if (extension == ".cas") result.archives.push_back(relative);

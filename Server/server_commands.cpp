@@ -1,4 +1,5 @@
 #include "server_host.h"
+#include "server_plugins.h"
 #include "server_words.h"
 #include "server_text.h"
 #include "Engine/Core/Text/word_filter.h"
@@ -19,7 +20,7 @@ constexpr std::string_view help_text =
     "status | net [player] | players | say <text> | msg <player> <text> | msg-party <player> <text> | msg-admins <text> | kick <player> [minutes|restart] | kick-time <minutes>|restart | ban <player or SteamID64> [name] | unban <SteamID64> | bans\n"
     "map <name, e.g. San Vansterdam> | maps [reload] | name <text> | password <text|off> | welcome <text|off> | listed on|off\n"
     "voice on|off | voice-range <50-1000> | distances <full> <half> <half-return> <low> | crowd <n>|off | rate <KB/s> | bone-scale <1-8>|off | bone-reach <0.5-20>|off\n"
-    "placement everyone|admins|nobody | objects <number>|off | object-scaling on|off | effects on|off | drones on|off | clear-objects | noclip on|off | nobail on|off | boosts on|off | tuning on|off\n"
+    "placement everyone|admins|nobody | objects <number>|off | object-scaling on|off | effects on|off | clear-objects | noclip on|off | nobail on|off | boosts on|off | tuning on|off\n"
     "tpall [player] | tphere <player> | teleport <player|SteamID64,SteamID64,...> <player|x y z (y is up)>\n"
     "votes [<vote> on|off|<percent>|seconds|cooldown|min-players <n>] | vote-cancel\n"
     "votes polls off|admins|everyone | votes poll-seconds <n> | votes starter-yes on|off\n"
@@ -612,13 +613,6 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
         return changed(*value ? "Players see each other's skater effects."
                               : "Players no longer see each other's skater effects. Ones already showing stay until that player's skater is shown again.");
     }
-    if (name == "drones") {
-        const auto value = on_off(argument);
-        if (!value) return std::string("drones on|off (now ") + (config_.sync_drones ? "on" : "off") + ")";
-        config_.sync_drones = *value;
-        return changed(*value ? "Players see each other's FPV drones."
-                              : "Players no longer see each other's FPV drones.");
-    }
     if (name == "votes") {
         const auto [text, did] = votes_command(argument);
         return did ? changed(text) : text;
@@ -833,25 +827,8 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
                        (config_.world_layer_sync ? "." : ". Turn on layer-sync to apply them to everyone."));
     }
     if (name == "tod") {
-        // Every map's seven time layers ("<map>_tod_<n>_<name>"): one on and the rest off, or
-        // all back to the level's own. Set for every map, so it holds across map changes.
-        static constexpr std::array<std::string_view, 8> times{"default", "morning", "noon", "afternoon",
-                                                               "evening", "night", "weatherday", "weathernight"};
-        const auto wanted = lower(argument);
-        const auto found = std::find(times.begin(), times.end(), wanted);
-        if (found == times.end()) return "tod default|morning|noon|afternoon|evening|night|weatherday|weathernight";
-        const auto slot = static_cast<char>('0' + (found - times.begin()));
-        unsigned count{};
-        for (const auto &layer : world_layers()) {
-            const auto at = layer.key.find("_tod_");
-            if (at == std::string::npos || at + 5 >= layer.key.size()) continue;
-            if (slot == '0') config_.layers.erase(layer.key);
-            else config_.layers[layer.key] = layer.key[at + 5] == slot ? "on" : "off";
-            ++count;
-        }
-        if (!count) return "world-layers.json has no time-of-day layers.";
-        apply_layers();
-        return changed("Time of day set to " + std::string(*found) +
+        if (auto why = set_time_of_day(argument); !why.empty()) return why;
+        return changed("Time of day set to " + lower(argument) +
                        (config_.world_layer_sync ? " for everyone." : ". Turn on layer-sync to apply it to everyone."));
     }
     if (name == "layer") {
@@ -953,14 +930,14 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
         // last word, so a name may have spaces in it.
         const bool lock = name == "lock";
         auto who = trim(argument);
-        std::optional<std::uint8_t> tools = lock ? std::nullopt : std::optional<std::uint8_t>(lock_all);
+        std::optional<std::uint8_t> tools = lock ? std::nullopt : std::optional<std::uint8_t>(lock_all | lock_objects);
         if (const auto space = who.find_last_of(" \t"); space != std::string_view::npos)
             if (const auto named = parse_lock_tools(who.substr(space + 1))) {
                 tools = named;
                 who = trim(who.substr(0, space));
             }
         if (who.empty() || !tools)
-            return lock ? "lock <player|SteamID64> <tool[,tool...]|all> (tools: noclip, nobail, boosts, tuning)"
+            return lock ? "lock <player|SteamID64> <tool[,tool...]|all> (tools: noclip, nobail, boosts, tuning, ollies, objects)"
                         : "unlock <player|SteamID64> [<tool[,tool...]|all>]";
         auto *guest = target(who);
         if (guest && !guest->handshaken) guest = nullptr;
@@ -1002,7 +979,7 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
         if (argument.empty())
             return "throwdown-locks <tool[,tool...]|all>|off (now " + (config_.throwdown_locks ? lock_tools_text(config_.throwdown_locks) : std::string("off")) + ")";
         const auto tools = lower(argument) == "off" ? std::optional<std::uint8_t>(0) : parse_lock_tools(argument);
-        if (!tools) return "throwdown-locks <tool[,tool...]|all>|off (tools: noclip, nobail, boosts, tuning)";
+        if (!tools) return "throwdown-locks <tool[,tool...]|all>|off (tools: noclip, nobail, boosts, tuning, ollies, objects)";
         // The players of a running throwdown get the new set at once: what it no longer locks
         // unlocked, what it now locks locked (none of it when it is turned off or on: then
         // update_throwdown_locks ends or starts theirs).
@@ -1020,12 +997,47 @@ std::string Host::command(std::string_view line, std::uint64_t admin) {
         return changed(*tools ? "The players of a throwdown have " + lock_tools_text(*tools) + " locked while it runs."
                               : "Throwdowns lock nothing.");
     }
+    // The server's plugins (server_plugins.h): "plugin ...", and their own commands, which never
+    // hide one of the server's.
+    if (console && plugins_)
+        if (auto answer = plugins_->command(line)) return *answer;
     return "Unknown command \"" + std::string(action) + "\". Type help.";
+}
+std::string Host::set_time_of_day(std::string_view time) {
+    // Every map's seven time layers ("<map>_tod_<n>_<name>"): one on and the rest off, or
+    // all back to the level's own. Set for every map, so it holds across map changes.
+    static constexpr std::array<std::string_view, 8> times{"default", "morning", "noon", "afternoon",
+                                                           "evening", "night", "weatherday", "weathernight"};
+    const auto wanted = lower(time);
+    const auto found = std::find(times.begin(), times.end(), wanted);
+    if (found == times.end()) return "tod default|morning|noon|afternoon|evening|night|weatherday|weathernight";
+    const auto slot = static_cast<char>('0' + (found - times.begin()));
+    unsigned count{};
+    for (const auto &layer : world_layers()) {
+        const auto at = layer.key.find("_tod_");
+        if (at == std::string::npos || at + 5 >= layer.key.size()) continue;
+        if (slot == '0') config_.layers.erase(layer.key);
+        else config_.layers[layer.key] = layer.key[at + 5] == slot ? "on" : "off";
+        ++count;
+    }
+    if (!count) return "world-layers.json has no time-of-day layers.";
+    apply_layers();
+    return {};
 }
 std::string Host::lock_name(std::uint64_t id, const Guest *guest) const {
     if (guest) return guest_name(*guest);
     if (const auto seen = seen_names_.find(id); seen != seen_names_.end()) return seen->second;
     return std::to_string(id);
+}
+std::uint8_t Host::set_locks(std::uint64_t id, std::uint8_t locks, const std::string &source) {
+    auto *guest = find(id);
+    if (guest && !guest->handshaken) guest = nullptr;
+    // Locked as an admin locks, so a throwdown ending does not lift what was asked for here.
+    const auto found = locks_.find(id);
+    const std::uint8_t manual = found == locks_.end() ? 0 : found->second.manual;
+    const auto now = locks_of(id);
+    return change_locks(id, guest, locks & ~manual, true, LockBy::admin, source) |
+           change_locks(id, guest, now & ~locks, false, LockBy::admin, source);
 }
 std::uint8_t Host::change_locks(std::uint64_t id, Guest *guest, std::uint8_t tools, bool lock, LockBy by, const std::string &source) {
     const bool automatic = by != LockBy::admin;

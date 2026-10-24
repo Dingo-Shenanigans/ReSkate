@@ -73,6 +73,18 @@ void Host::party_request(Guest &guest, PartyAction action, std::uint64_t player)
         if (!other || !other->handshaken) return reply(guest, "That player is not on the server.");
     }
     const auto their_name = other ? guest_name(*other) : std::string{};
+    // Not into one party with a player a plugin hides from them, or from whom they are hidden
+    // (plugin_hide): their games would have a party member they cannot see.
+    if (other && (action == PartyAction::invite || action == PartyAction::accept || action == PartyAction::join) && !hidden_.empty()) {
+        const auto with = [&](std::uint64_t who) {
+            std::vector<std::uint64_t> group{who};
+            if (const auto *details = parties_.party(parties_.party_of(who))) group.assign(details->members.begin(), details->members.end());
+            return group;
+        };
+        for (const auto a : with(me))
+            for (const auto b : with(player))
+                if (hidden_between(a, b)) return reply(guest, "That party is not open to you right now.");
+    }
     using R = PartyBook::Result;
     auto result = R::ok;
     switch (action) {

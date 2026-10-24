@@ -86,6 +86,9 @@ struct ModRead {
     // own, it could arrive in another mod's bundle without the resources
     // and chunks it was added with.
     std::vector<std::pair<std::string, AssetAddition>> candidates, companions;
+    struct BundleChunk { std::string bundle; AssetAddition addition; fb::BundleFileInfo file; };
+    std::vector<BundleChunk> bundleChunks;
+    std::map<std::string,AssetOverrides::ChunkDefaults,std::less<>> chunkDefaults;
     std::vector<bool> unreadable;                                    // per candidate: never follows
     std::map<std::string, std::set<fb::Guid>, std::less<>> addedIn;  // the documents it added to each bundle, by guid
     std::vector<fb::TocChunk> newChunks;   // TOC chunks the game's TOCs do not have
@@ -99,7 +102,7 @@ struct ModRead {
 ModRead read_mod(const Mod& mod, const RelativeFiles& files, const CasStore& store, const fs::path& baseRoot,
                  const fs::path& gameRoot, Shared<GameToc>& gameTocs, Shared<GameBundle>& gameBundles) {
     ModRead read;
-    auto& [candidates, companions, unreadable, addedIn, newChunks, imported, changes, scripts, notes, failure] = read;
+    auto& [candidates, companions, bundleChunks, chunkDefaults, unreadable, addedIn, newChunks, imported, changes, scripts, notes, failure] = read;
     const auto decoded = [&](std::span<const std::byte> encoded) {
         return fb::ebx::read_document(fb::decode_cas(encoded, {gameRoot}));
     };
@@ -137,6 +140,12 @@ ModRead read_mod(const Mod& mod, const RelativeFiles& files, const CasStore& sto
                     }
                 });
                 if (!modListing || !known.listing) continue;
+                if (!known.listing->manifest.chunkMetadata.empty() && !chunkDefaults.contains(bundleName)) {
+                    AssetOverrides::ChunkDefaults defaults;
+                    defaults.metadata=known.listing->manifest.chunkMetadata;
+                    for (const auto& entry:known.listing->manifest.chunks) defaults.chunks.push_back(entry.guid);
+                    chunkDefaults.emplace(bundleName,std::move(defaults));
+                }
                 const auto& gameListing = known.listing;
                 const auto& original = known.original;
                 for (std::size_t index = 0; index < modListing->manifest.ebx.size(); ++index) {
@@ -201,6 +210,21 @@ ModRead read_mod(const Mod& mod, const RelativeFiles& files, const CasStore& sto
                         scripts.push_back({name, originalScript->second->sha1, std::nullopt, notes.size() - 1});
                     }
                 }
+                // Keep chunk locations, not their potentially large payloads. Only
+                // data named by a retained mesh/texture is read and carried later.
+                const auto& chunks = modListing->manifest.chunks;
+                const auto chunkMetadata = chunks.empty() ? nullptr :
+                    std::make_shared<const std::vector<std::byte>>(modListing->manifest.chunkMetadata);
+                for (std::size_t index = 0; index < chunks.size(); ++index) {
+                    const auto at = modListing->first + modListing->manifest.ebx.size() +
+                        modListing->manifest.resources.size() + index;
+                    if (at >= modListing->files.size()) continue;
+                    AssetAddition addition{mod.name, chunks[index], {}, tocKey};
+                    addition.asset.name = addition.asset.guid.string();
+                    addition.chunk_metadata = chunkMetadata;
+                    addition.chunk_index = index;
+                    bundleChunks.push_back({bundleName, std::move(addition), modListing->files[at]});
+                }
                 // Resources the mod adds, kept to go with an added EBX of the same name
                 // (a wave's sound-bank resource registers the wave with the audio system).
                 for (std::size_t index = 0; index < modListing->manifest.resources.size(); ++index) {
@@ -226,6 +250,10 @@ ModRead read_mod(const Mod& mod, const RelativeFiles& files, const CasStore& sto
             addition.file = document.fileGuid;
             for (const auto& reference : document.imports) addition.names.push_back(reference.fileGuid);
             addedIn[candidates[index].first].insert(addition.file);
+            // Assets the mod's plugin selects at run time (its world objects, HUD variants picked
+            // by size) have no import naming them: its resident list keeps them, as imported
+            // additions are kept, when a map replaces their bundle.
+            if (resident_root(mod, candidates[index].first, addition.asset.name)) imported.insert(addition.file);
         } catch (const std::exception&) { unreadable[index] = true; }
     }
     return read;
@@ -287,7 +315,8 @@ AssetOverrides collect_asset_overrides(const std::vector<const Mod*>& mods,
         const auto* mod = asked[slot].first;
         auto& read = reads[slot];
         if (read.failure) std::rethrow_exception(read.failure);
-        auto& [candidates, companions, unreadable, addedIn, newChunks, imported, changes, scripts, notes, failure] = read;
+        auto& [candidates, companions, bundleChunks, chunkDefaults, unreadable, addedIn, newChunks, imported, changes, scripts, notes, failure] = read;
+        for (auto& [bundle,defaults]:chunkDefaults) out.bundle_chunk_defaults.try_emplace(bundle,std::move(defaults));
         std::size_t changed{};
         // A higher mod's version of an asset, which this mod's change is combined with
         // below, may name what this mod adds.
@@ -354,7 +383,69 @@ AssetOverrides collect_asset_overrides(const std::vector<const Mod*>& mods,
             // One addition per kind and name in a bundle (keep): this mod's, or not.
             const auto& index = addedAt[bundle];
             const auto held = index.find({fb::AssetKind::ebx, lower(companion.asset.name)});
-            if (held != index.end() && found->second[held->second].mod == mod->name) keep(bundle, std::move(companion));
+            // Native mesh material keys do not import their shader depot by EBX GUID/name. A depot
+            // the mod's resident list names goes with its own runtime roots, once all of them come
+            // from this mod (on a replacement map's copy of the bundle too).
+            constexpr std::uint32_t shader_block_depot = 0x73312045;
+            const auto* shader = companion.asset.resourceType == shader_block_depot ? resident_shader(*mod, bundle, companion.asset.name) : nullptr;
+            const bool runtimeShader = shader &&
+                std::all_of(shader->roots.begin(),shader->roots.end(),[&](const auto& root) {
+                    return std::any_of(found->second.begin(),found->second.end(),[&](const auto& addition) {
+                        return addition.mod==mod->name && addition.asset.kind==fb::AssetKind::ebx &&
+                            lower(addition.asset.name)==root;
+                    });
+                });
+            if ((held != index.end() && found->second[held->second].mod == mod->name) || runtimeShader)
+                keep(bundle, std::move(companion));
+        }
+        // A native mesh RES can refer to geometry in its bundle, rather than
+        // the superbundle TOC. Carrying only EBX/RES leaves the engine probing
+        // its chunk hash table forever on replacement-map bundles.
+        if (!bundleChunks.empty()) {
+            std::map<fb::Guid, fb::Guid> aliases;
+            std::vector<bool> starts(0x10000);
+            const auto add_alias = [&](const fb::Guid& bytes, const fb::Guid& id) {
+                aliases.emplace(bytes,id);
+                starts[std::to_integer<std::size_t>(bytes.bytes[0])*256 +
+                       std::to_integer<std::size_t>(bytes.bytes[1])] = true;
+            };
+            for (const auto& chunk : bundleChunks) {
+                const auto& id=chunk.addition.asset.guid;
+                add_alias(id,id);
+                auto swapped=id;
+                std::reverse(swapped.bytes.begin(),swapped.bytes.begin()+4);
+                std::reverse(swapped.bytes.begin()+4,swapped.bytes.begin()+6);
+                std::reverse(swapped.bytes.begin()+6,swapped.bytes.begin()+8);
+                add_alias(swapped,id);
+            }
+            std::map<std::string,std::set<fb::Guid>,std::less<>> referenced;
+            for (auto& [bundle,list] : out.added)
+                for (auto& addition : list) {
+                    if (addition.mod!=mod->name || addition.asset.kind==fb::AssetKind::chunk) continue;
+                    std::vector<std::byte> bytes;
+                    try { bytes=fb::decode_cas(addition.encoded,{gameRoot}); }
+                    catch (const std::exception&) { continue; }
+                    std::set<fb::Guid> named;
+                    for (std::size_t at=0;at+16<=bytes.size();++at) {
+                        if (!starts[std::to_integer<std::size_t>(bytes[at])*256+
+                                    std::to_integer<std::size_t>(bytes[at+1])]) continue;
+                        fb::Guid key;std::memcpy(key.bytes.data(),bytes.data()+at,16);
+                        if (const auto found=aliases.find(key);found!=aliases.end()) named.insert(found->second);
+                    }
+                    addition.chunk_names.assign(named.begin(),named.end());
+                    referenced[bundle].insert(named.begin(),named.end());
+                }
+            std::size_t carried{};
+            for (auto& chunk : bundleChunks) {
+                const auto found=referenced.find(chunk.bundle);
+                if (found==referenced.end() || !found->second.contains(chunk.addition.asset.guid)) continue;
+                const auto& file=chunk.file;
+                chunk.addition.encoded=store.read(file.location.patch?mod->directory:baseRoot,
+                    file.location,file.offset,file.size);
+                if (keep(chunk.bundle,std::move(chunk.addition))) ++carried;
+            }
+            if (carried) report.notes.push_back(mod->name+": "+std::to_string(carried)+
+                " referenced bundle chunk(s) accompany mesh/texture additions into map copies");
         }
         for (auto& change : changes) {
             // What the change names of the assets the mod added beside it. The mod
@@ -419,13 +510,15 @@ AssetOverrides collect_asset_overrides(const std::vector<const Mod*>& mods,
             report.notes.push_back(mod->name + ": " + std::to_string(clash.first) +
                 " added asset(s) share a name with ones " + other + " adds, e.g. " + clash.second +
                 "; other mods' copies of the bundle get " + other + "'s");
-        // The new TOC chunks this mod's carried EBX name (as raw GUID bytes, the way an
-        // EBX stores a ChunkId), so they can follow those assets into other superbundles.
+        // The new TOC chunks this mod's carried EBX or companion RES name, as raw
+        // GUID bytes. Texture pixel ChunkIds live in RES headers, not their EBX.
+        // Scan only retained dependencies so unrelated chunks do not follow them.
         if (!newChunks.empty()) {
             std::vector<std::vector<std::byte>> carried;
             for (const auto& [bundle, list] : out.added)
                 for (const auto& addition : list)
-                    if (addition.mod == mod->name && addition.asset.kind == fb::AssetKind::ebx) try {
+                    if (addition.mod == mod->name && (addition.asset.kind == fb::AssetKind::ebx ||
+                                                     addition.asset.kind == fb::AssetKind::resource)) try {
                         carried.push_back(fb::decode_cas(addition.encoded, {gameRoot}));
                     } catch (const std::exception&) {}
             // Each carried asset is gone through once, for all the chunks together: looking for

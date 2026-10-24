@@ -1,6 +1,8 @@
 #include "native_menu.h"
 #include "native_menu_internal.h"
 #include "native_menu_dump.h"
+#include "throwdown_menu.h"
+#include "Extension/UI/own_ui_writes.h"
 #include "ui_sound.h"
 #include "Extension/Multiplayer/Session/session.h"
 #include "Extension/Multiplayer/Hud/game_ui_state.h"
@@ -25,7 +27,7 @@ constexpr std::string_view store_tab_label = "ID_MENU_STORE", social_tab_label =
 constexpr unsigned social_tab_index = 4; // Before the Store is removed.
 constexpr std::array<unsigned, page_count> page_slots{0, 1};
 // The Store item taken out of the pause menu, its index there, and that menu.
-struct RemovedStore { std::vector<std::byte> item; unsigned index{}; Address core{}; };
+struct RemovedStore { Value item; unsigned index{}; Handle core{}; Address manager{};std::uint32_t key{}; };
 RemovedStore removed_store;
 // When insert() last left a copy of that Store item last in the menu (0: not there); trim_store drops it.
 std::uint64_t store_last_since{};
@@ -138,6 +140,15 @@ void ensure_body(const Context& context) {
     context.array(list, bytes, s.section_total);
     context.set(context.path(s.page, {content, 0x18f8355b}), static_cast<int>(s.section));
     context.set(context.path(s.page, {content, 0x55511280}), static_cast<int>(s.section));
+}
+std::vector<std::byte> removed_store_bytes(const Context& context) {
+    require(removed_store.manager==context.manager && removed_store.item.handle &&
+            context.type_of(removed_store.item.handle)==removed_store.item.type,
+            "Retained native Store item has expired.");
+    std::vector<std::byte> result(stack_item.size);
+    require(memory::peek_bytes(context.address(removed_store.item),result.data(),result.size()),
+            "Retained native Store item is unavailable.");
+    return result;
 }
 void tab_label(const Context& context, Value item, const std::string& name, std::uint32_t key) {
     const auto tab = context.field(item, tab_data);
@@ -277,7 +288,24 @@ void insert(const Context& context) {
     if (const auto store = find_tab(context, list, count, store_tab_label);
         store && !missing.empty() && count - 1 + missing.size() >= 5) {
         const auto at = values.begin() + static_cast<std::ptrdiff_t>(*store) * stride;
-        removed_store = {std::vector<std::byte>(at, at + stride), *store, s.core.handle};
+        // The live Store row is about to disappear. Its TabData includes
+        // owned strings/delegates/texture arrays, so retain one typed row for
+        // this menu instead of keeping borrowed bytes until level teardown.
+        const auto checkpoint=s.owned_models.checkpoint();
+        auto retained=removed_store.item;
+        if(removed_store.manager!=context.manager || removed_store.core!=s.core.handle ||
+           !retained.handle || context.type_of(retained.handle)!=retained.type)retained={};
+        try {
+            if(!retained.handle)retained=make(context,stack_item);
+            context.copy(retained,context.address(context.element(list,*store)));
+        } catch(...) {
+            s.owned_models.rollback(checkpoint,[&](Value value){context.destroy(value);});
+            throw;
+        }
+        const auto key_offset=context.member(context.type(stack_item),key_field).offset;
+        std::uint32_t store_key{};
+        std::memcpy(&store_key,values.data()+std::size_t{*store}*stride+key_offset,sizeof(store_key));
+        removed_store = {retained, *store, s.core.handle, context.manager, store_key};
         values.erase(at, at + stride);
         --count;
         // The game has already opened the page at its selected index, which it keeps
@@ -299,7 +327,8 @@ void insert(const Context& context) {
         ++count;
     }
     if (store_last) {
-        values.insert(values.end(), removed_store.item.begin(), removed_store.item.end());
+        const auto retained=removed_store_bytes(context);
+        values.insert(values.end(), retained.begin(), retained.end());
         ++count;
         store_last_since = GetTickCount64();
     }
@@ -320,8 +349,9 @@ void insert(const Context& context) {
 }
 // The copy is the item last in the stack with the removed Store's key.
 bool is_store_copy(std::span<const std::byte> item) {
-    return removed_store.item.size() == item.size() &&
-        std::equal(item.begin() + 0x568, item.begin() + 0x56c, removed_store.item.begin() + 0x568);
+    if(!removed_store.item.handle || item.size()!=stack_item.size)return false;
+    std::uint32_t key{};std::memcpy(&key,item.data()+0x568,sizeof(key));
+    return key==removed_store.key;
 }
 // Drops the Store copy insert() left last, a few frames after the stack saw it there.
 void trim_store(const Context& context, Value menu) {
@@ -331,7 +361,8 @@ void trim_store(const Context& context, Value menu) {
     auto values = context.array(list, 16, count, stride);
     store_last_since = 0;
     // Not there: the game rebuilt its tabs, the Store back in place, as the menu reopened.
-    if (stride != stack_item.size || count < 6 || !is_store_copy(std::span(values).last(stride))) return;
+    if (stride != stack_item.size || count < 6 || removed_store.manager!=context.manager ||
+        removed_store.core!=menu.handle || !is_store_copy(std::span(values).last(stride))) return;
     const auto target = context.path(menu, {content, 0x18f8355b});
     const auto selected = read<int>(context.address(target));
     if (selected == static_cast<int>(count - 1)) {
@@ -626,6 +657,7 @@ void tick_page(std::uintptr_t base, bool loading) noexcept {
     s.next_render = 0;
 }
 bool prepare_native_menu_level_load(std::uintptr_t base) noexcept {
+    if (!release_native_throwdown_menu(base)) return false;
     if (std::all_of(page_slots.begin(), page_slots.end(), [](unsigned slot) { return page_state(slot).owned_models.empty(); }))
         return true;
     try {
@@ -655,7 +687,7 @@ bool prepare_native_menu_level_load(std::uintptr_t base) noexcept {
                 for (unsigned i = 0; i < count; ++i) {
                     const auto first = values.data() + i * stride;
                     // A Store copy insert() left last: the Store goes back to its own index below.
-                    if (removed_store.core == s.core.handle && i + 1 == count &&
+                    if (removed_store.manager==manager && removed_store.core == s.core.handle && i + 1 == count &&
                         is_store_copy(std::span(first, stride))) continue;
                     std::uint32_t key{}; std::memcpy(&key, first + key_offset, sizeof(key));
                     if (key >= our_key && key < our_key + page_count * 0x100 && (key - our_key) % 0x100 == 0) {
@@ -665,11 +697,13 @@ bool prepare_native_menu_level_load(std::uintptr_t base) noexcept {
                     retained.insert(retained.end(), first, first + stride);
                 }
                 // Put the native Store item back at its original index: it is out while ours are in.
-                if (ours && removed_store.core == s.core.handle && removed_store.item.size() == stride &&
+                bool restored_store{};
+                if (ours && removed_store.manager==manager && removed_store.core == s.core.handle && removed_store.item.handle &&
                     removed_store.index * stride <= retained.size()) {
+                    const auto store=removed_store_bytes(context);
                     retained.insert(retained.begin() + static_cast<std::ptrdiff_t>(removed_store.index) * stride,
-                                    removed_store.item.begin(), removed_store.item.end());
-                    removed_store = {};
+                                    store.begin(), store.end());
+                    restored_store=true;
                 }
                 if (retained.size() == values.size() && std::equal(retained.begin(), retained.end(), values.begin())) return;
                 // Return focus to the first native tab before removing our
@@ -677,6 +711,9 @@ bool prepare_native_menu_level_load(std::uintptr_t base) noexcept {
                 context.set(context.field(stack, 0x18f8355b), 0);
                 context.set(context.field(stack, 0x55511280), 0);
                 context.array(list, retained, static_cast<unsigned>(retained.size() / stride));
+                // Keep the retained source and restoration identity if
+                // publication failed, so a cleanup retry can still restore it.
+                if(restored_store) {removed_store={};store_last_since=0;}
             }, [&](Value value) { context.destroy(value); });
             s.core = {}; s.page = {}; s.menu_item = {};
             s.rows.clear(); s.assets.clear();
@@ -714,12 +751,18 @@ overlay::HubPage native_menu_page() noexcept {
     return {true, page_shown.load(std::memory_order_relaxed)};
 }
 void tick_native_menu(std::uintptr_t base, bool loading) noexcept {
+    const ui::OwnUiWrites own_writes; // Custom labels are not the native trick list.
     run_pending_ui_dump(base);
     // The menu sounds the overlay's pages asked for (ui_sound.h).
     tick_ui_sounds(base, loading);
     // (Read here: it takes the UI model's lock, which a page's tick then holds.)
     game_in_menu.store(!loading && sample_game_ui_state(base).in_menu, std::memory_order_relaxed);
     if (lifetime.blocked()) return;
+    tick_native_throwdown_menu(base, loading, game_in_menu.load(std::memory_order_relaxed));
+    if (native_throwdown_match_active()) {
+        page_seen.store(0,std::memory_order_relaxed);
+        return;
+    }
     for (unsigned slot = 0; slot < page_count; ++slot) {
         current_state = &page_state(slot);
         current_state->slot = slot;

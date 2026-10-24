@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 
-// FOURTH Animation Studio in the game: records a trick off the local skater's own animation, shows it
+// FOURTH Animation Studio in the game: opens one of the game's own tricks, shows it
 // on the skater while the studio is open, and puts the player's keyframes on the native animation.
 //
 // Threads: the overlay (render thread) reads view() and calls the commands; the client tick (engine
@@ -42,7 +42,6 @@ struct Orbit {
     float yaw{0.6f}, pitch{0.18f}, distance{3.4f};
     Vec3 pan{}; // added to the skater's centre
 };
-enum class Recording : std::uint8_t { off, waiting, in_air, finishing };
 struct View {
     bool open{};       // the studio has the screen
     bool pose_seen{};  // a pose of the local skater was read lately
@@ -118,8 +117,7 @@ struct View {
     PlaylistMode playlist_mode{PlaylistMode::fixed};
     std::vector<PlaylistEntry> playlist;
     bool hover_preview{true}; // TRICKS: a trick hovered plays in a little window
-    std::string your_name; // MADE BY, remembered for new recordings and packs
-    Recording recording{};
+    std::string your_name; // MADE BY, remembered for new tricks and packs
     float bracket_start{}, bracket_end{-1}; // the timeline brackets (Animation::start, end)
     // CATCH on the timeline: the moment the trick is caught, held in the air off a bigger drop or down stairs before it
     // plays on to its landing. catch_air: it has air to hold one in; catch_at: -1 when none was found; catch_set: its
@@ -137,12 +135,10 @@ struct View {
     bool confirm_close{}; // closing was asked with unsaved changes: the studio asks first
     std::string pop;      // "" any, "low", "mid", "high"
     std::uint64_t revision{};
-    // Goes up every time a clip arrives: a trick opened, a saved animation loaded, a take recorded, a new
-    // animation started. The overlay starts clean on it.
+    // Goes up every time a clip arrives: a trick opened, a saved animation loaded, a new animation started. The overlay starts clean on it.
     std::uint64_t clip_serial{};
 };
 View view();
-Recording recording_state(); // the one value the overlay checks every frame while the studio is closed
 // Arms a one-off search of the running game for where it keeps the clip it is playing. It is taken riding,
 // at the pop and in the air of the next trick, and written to ReSkate.Tricks/research/live-graph-probe.txt.
 // Read only. Returns what it said.
@@ -182,27 +178,8 @@ void set_time(float seconds);
 void set_playing(bool playing);
 void set_loop(bool loop);
 void set_speed(float speed);
-// A recording starts from a clean level: take_clean_start() once per request, so the client tick loads the
-// level again (behind the loading screen); clean_start_done() when that load is in. Nothing is recorded
-// until then.
-bool take_clean_start() noexcept;
-void clean_start_done() noexcept;
-// Record all tricks (trick_batch.h): the next landed trick is saved as recorded/<trick>__<pop>.clip.
-struct BatchTake {
-    bool ok{};
-    std::string trick, pop, message;
-    float air{};
-};
-// The next take is kept only if the game did `trick` (its own name for it, as kickflip or n_varialheelflip) and graded
-// its pop `pop` ("low", "mid", "high"; pop_grades.h): a clip is saved under the name of the trick that was done.
-void arm_batch_take(const std::string& trick, const std::string& pop);
-void cancel_batch_take();
-std::optional<BatchTake> take_batch_result();
-void request_record_all();      // from the studio's TRICKS
-bool take_record_all_request(); // the client tick takes it once
 // The skater's physics state (100 riding on the ground, 504 on foot), or nothing.
 std::optional<std::uint32_t> physics_state(std::uintptr_t base, std::uintptr_t component) noexcept;
-void cancel_recording();
 void set_play_in_game(bool on);
 // Solo: a turn moves that joint alone. The editable joints hanging off it are turned back by as much,
 // so the limb below keeps the way it faces instead of swinging with its parent. Bones are rigid, so
@@ -415,7 +392,7 @@ void end_peek();       // and one asked for that is not ready yet does not start
 float peek_duration(); // the trick being looked at, in seconds (0 none)
 bool remove(const std::string& name, std::string& message);
 void rename(const std::string& name);
-void set_your_name(const std::string& name); // MADE BY for new recordings and packs, without touching the one open
+void set_your_name(const std::string& name); // MADE BY for new tricks and packs, without touching the one open
 // Camera.
 void set_orbit(const Orbit& orbit);
 void focus_joint(std::uint16_t joint); // the orbit centres on it, or comes off it when it is on it already
@@ -433,7 +410,7 @@ float wanted_fov() noexcept;
 // ---- the game side -------------------------------------------------------------------------------
 // Engine thread, every client tick with the local skater's animation component (0 when there is
 // none). Installs the animation listener the first time it is needed. Returns the open state the
-// studio wants (a finished recording opens it again).
+// studio wants.
 struct TickResult {
     bool want_open{}, changed{};
 };

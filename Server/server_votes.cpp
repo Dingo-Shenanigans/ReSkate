@@ -155,6 +155,12 @@ void Host::chat_command(Guest &guest, std::string_view line) {
         const std::string whisper = "/w <player> <message>: send a private message";
         return reply(guest, (text.empty() ? "This server has no player votes. Type /tp <player> to teleport.\n" : text) + whisper);
     }
+    // A number from a player with a plugin's poll open answers that one, not the server's: it is the
+    // plugin's question, so their role's "votes" is not asked.
+    if (plugin_polls_.contains(guest.member.id)) {
+        const auto word = verb == "vote" ? lower(split(rest).first) : verb;
+        if (word.size() == 1 && word[0] >= '1' && word[0] <= '9' && answer_plugin_poll(guest, static_cast<std::size_t>(word[0] - '1'))) return;
+    }
     if ((verb == "party" || verb == "p") && !may(guest.member.id, multiplayer::role_parties))
         return reply(guest, role_refusal(guest.member.id, "use parties"));
     if ((verb == "w" || verb == "whisper" || verb == "tell") && !may(guest.member.id, multiplayer::role_whisper))
@@ -222,6 +228,9 @@ void Host::chat_command(Guest &guest, std::string_view line) {
             return run_custom_command(guest, custom_command, trim(rest));
     // Admins run any server command from chat, as they do with "mp server". The caller
     // has already logged the line with any password hidden, so it is not logged again here.
+    // A word that is not one of the server's commands is the plugins' while one hears chat: a game
+    // mode's "/race join". They answer the player themselves (server.tell).
+    if (custom_command_name_free(verb) && chat_to_plugins(guest, line)) return;
     if (is_staff(guest.member.id)) {
         const auto id = guest.member.id;
         const auto answer_text = command(line, id);
@@ -372,13 +381,9 @@ std::string Host::start_poll(Guest *starter, std::string_view text, std::string 
     poll.id = vote_ids_;
     poll.ends = now_ + microseconds(config_.votes.poll_seconds);
     if (!admin) vote_cooldowns_[starter->member.id] = now_ + microseconds(config_.votes.cooldown);
-    std::string choices;
-    for (std::size_t i = 0; i < poll.answers.size(); ++i) choices += (i ? "  " : "") + std::string("/") + std::to_string(i + 1) + " " + poll.answers[i];
     vote_ = std::move(poll);
+    // The card shows the question and its answers; chat does not repeat them.
     const auto who = starter ? guest_name(*starter) : std::string("The server");
-    send_chat(who + " asks: " + vote_->label + " (" + std::to_string(config_.votes.poll_seconds) +
-              " s). Answer on the card at the right of your screen, or type:");
-    send_chat(choices);
     log_("[poll] " + who + " started a poll: " + vote_->label + " " + joined(vote_->answers, " | "));
     check_vote(false);
     return {};
@@ -406,6 +411,20 @@ void Host::answer_poll(Guest &guest, std::size_t answer) {
     if (!added && chosen->second == answer) return reply(guest, "You already answered " + poll.answers[answer] + ".");
     chosen->second = answer;
     check_vote(false);
+}
+
+bool Host::answers_vote(const Guest &guest, std::string_view line) const {
+    // "/2", "/yes", or the same after "/vote", as chat_command takes them.
+    const auto [first, rest] = split(line);
+    auto verb = lower(first);
+    if (verb == "vote") verb = lower(split(rest).first);
+    if (const auto poll = plugin_polls_.find(guest.member.id);
+        poll != plugin_polls_.end() && verb.size() == 1 && verb[0] >= '1' && static_cast<std::size_t>(verb[0] - '0') <= poll->second.answers.size())
+        return true;
+    if (!vote_) return false;
+    if (vote_->kind == VoteKind::poll)
+        return verb.size() == 1 && verb[0] >= '1' && static_cast<std::size_t>(verb[0] - '0') <= vote_->answers.size();
+    return guest.member.id != vote_->target && (verb == "yes" || verb == "y" || verb == "no" || verb == "n");
 }
 
 // `by` nullptr: the server console, which may always end it.
@@ -496,9 +515,8 @@ void Host::check_vote(bool expired) {
             if (top && count[i] == top) leaders.push_back(done.answers[i]);
         const auto outcome = !top ? std::string("nobody answered") : leaders.size() > 1 ? "a tie: " + joined(leaders, ", ")
                                                                                         : leaders.front() + " wins";
-        const auto line = "Poll \"" + done.label + "\" ended: " + answer_count(done.answers, count) + " (" + outcome + ").";
-        send_chat(line);
-        log_("[poll] " + line);
+        // The card shows the result for a while; chat does not repeat it.
+        log_("[poll] Poll \"" + done.label + "\" ended: " + answer_count(done.answers, count) + " (" + outcome + ").");
         // A console poll-run: the winning answer's command, as the console. A tie or no answer runs nothing.
         if (!done.run.empty() && top && leaders.size() == 1) log_(command(fill(done.run, "{answer}", leaders.front())));
         return;
@@ -678,6 +696,7 @@ void Host::announce(std::string_view text, std::uint64_t to) {
     roster_dirty_ = true;
 }
 void Host::tick_announcements() { // the timer waits while nobody is on
+    tick_plugin_screens();
     if (announcement_.id && now_ >= announcement_until_) {
         announcement_ = {};
         announcement_for_ = 0;
@@ -693,6 +712,143 @@ void Host::tick_announcements() { // the timer waits while nobody is on
     next_announcement_ %= a.messages.size();
     announce(a.messages[next_announcement_++]);
 }
+// ---- The plugins' cards and polls ------------------------------------------------------------------
+std::vector<Host::Guest *> Host::plugin_screen_players(const std::vector<std::uint64_t> &players, std::string &why) {
+    std::vector<Guest *> found;
+    for (auto &[id, guest] : guests_)
+        if (guest->handshaken && (players.empty() || std::find(players.begin(), players.end(), id) != players.end())) found.push_back(guest.get());
+    if (found.empty())
+        why = players.empty() ? "nobody is on the server" : players.size() == 1 ? "that player is not on the server" : "none of those players is on the server";
+    return found;
+}
+
+std::string Host::plugin_card(std::string_view plugin, const std::vector<std::uint64_t> &players, std::string_view text, unsigned seconds) {
+    const auto line = clean_chat_text(text);
+    if (line.empty()) return "the card has nothing to show";
+    std::string why;
+    const auto shown = plugin_screen_players(players, why);
+    if (shown.empty()) return why;
+    // As long as an announcement of the same text, unless the plugin says.
+    if (!seconds) seconds = static_cast<unsigned>(std::clamp<std::size_t>(5 + line.size() / 20, 6, 15));
+    if (!++announcement_ids_) ++announcement_ids_;
+    std::vector<std::string> names;
+    for (const auto *guest : shown) {
+        plugin_cards_[guest->member.id] = {std::string(plugin), {announcement_ids_, static_cast<std::uint16_t>(seconds), line}, now_ + microseconds(seconds)};
+        names.push_back(guest_name(*guest));
+    }
+    log_("[card by plugin " + std::string(plugin) + " -> " + (players.empty() ? std::string("everyone") : joined(names, ", ")) + "] " + line);
+    roster_dirty_ = true;
+    return {};
+}
+
+std::string Host::plugin_poll(std::string_view plugin, const std::vector<std::uint64_t> &players, std::string_view question,
+                              const std::vector<std::string> &answers, unsigned seconds, std::uint32_t &id) {
+    auto label = clean_chat_text(question);
+    cut_text(label, multiplayer::max_vote_label);
+    std::vector<std::string> choices;
+    for (const auto &answer : answers) {
+        auto choice = clean_chat_text(answer);
+        cut_text(choice, multiplayer::max_vote_answer);
+        if (choice.empty()) return "an answer has nothing to show";
+        choices.push_back(std::move(choice));
+    }
+    if (label.empty()) return "the question has nothing to show";
+    if (choices.size() < 2 || choices.size() > multiplayer::max_vote_answers)
+        return "a poll has 2 to " + std::to_string(multiplayer::max_vote_answers) + " answers";
+    std::string why;
+    const auto shown = plugin_screen_players(players, why);
+    if (shown.empty()) return why;
+    // From the server's own count of votes: no game takes one poll for another.
+    if (!++vote_ids_) ++vote_ids_;
+    id = vote_ids_;
+    const auto ends = now_ + microseconds(seconds ? seconds : config_.votes.poll_seconds);
+    std::vector<std::string> names;
+    for (const auto *guest : shown) {
+        if (plugin_polls_.contains(guest->member.id)) close_plugin_poll(guest->member.id, "replaced");
+        plugin_polls_[guest->member.id] = {std::string(plugin), id, label, choices, ends};
+        names.push_back(guest_name(*guest));
+    }
+    log_("[poll by plugin " + std::string(plugin) + " #" + std::to_string(id) + " -> " +
+         (players.empty() ? std::string("everyone") : joined(names, ", ")) + "] " + label + " | " + joined(choices, " | "));
+    roster_dirty_ = true;
+    return {};
+}
+
+std::string Host::plugin_poll_close(std::string_view plugin, std::uint32_t id) {
+    std::vector<std::uint64_t> open;
+    for (const auto &[player, poll] : plugin_polls_)
+        if (poll.id == id && poll.plugin == plugin) open.push_back(player);
+    if (open.empty()) return "no poll of the plugin's with that id is open";
+    for (const auto player : open) close_plugin_poll(player, "closed");
+    return {};
+}
+
+void Host::plugin_screens_release(std::string_view plugin) {
+    const auto before = plugin_cards_.size() + plugin_polls_.size();
+    std::erase_if(plugin_cards_, [&](const auto &entry) { return entry.second.plugin == plugin; });
+    std::erase_if(plugin_polls_, [&](const auto &entry) { return entry.second.plugin == plugin; });
+    if (plugin_cards_.size() + plugin_polls_.size() != before) roster_dirty_ = true;
+}
+
+void Host::close_plugin_poll(std::uint64_t player, std::string_view why) {
+    const auto found = plugin_polls_.find(player);
+    if (found == plugin_polls_.end()) return;
+    if (poll_news_.size() < 4096) poll_news_.push_back({found->second.plugin, found->second.id, player, 0, {}, std::string(why)});
+    plugin_polls_.erase(found);
+    roster_dirty_ = true;
+}
+
+bool Host::answer_plugin_poll(Guest &guest, std::size_t answer) {
+    const auto found = plugin_polls_.find(guest.member.id);
+    if (found == plugin_polls_.end()) return false;
+    const auto &poll = found->second;
+    if (answer >= poll.answers.size()) {
+        reply(guest, "Answer with /1 to /" + std::to_string(poll.answers.size()) + ".");
+        return true;
+    }
+    // One answer closes it for them: the card goes, and the server's vote or poll shows again if one runs.
+    log_("[poll by plugin " + poll.plugin + " #" + std::to_string(poll.id) + "] " + guest_name(guest) + " answered " +
+         std::to_string(answer + 1) + " " + poll.answers[answer]);
+    if (poll_news_.size() < 4096) poll_news_.push_back({poll.plugin, poll.id, guest.member.id, answer + 1, poll.answers[answer], {}});
+    plugin_polls_.erase(found);
+    roster_dirty_ = true;
+    return true;
+}
+
+void Host::tick_plugin_screens() {
+    if (std::erase_if(plugin_cards_, [&](const auto &entry) { return now_ >= entry.second.until; })) roster_dirty_ = true;
+    std::vector<std::uint64_t> ended;
+    for (const auto &[player, poll] : plugin_polls_)
+        if (now_ >= poll.ends) ended.push_back(player);
+    for (const auto player : ended) close_plugin_poll(player, "timeout");
+}
+
+void Host::plugin_screens_left(std::uint64_t player) {
+    plugin_cards_.erase(player);
+    close_plugin_poll(player, "left");
+}
+
+void Host::plugin_screens_roster(std::uint64_t id, multiplayer::ServerAnnouncement &card, multiplayer::ServerVote &vote) const {
+    const auto left = [&](std::uint64_t until) {
+        return static_cast<std::uint16_t>(std::min<std::uint64_t>(until > now_ ? (until - now_ + 999999) / 1000000 : 0, 65535));
+    };
+    if (const auto found = plugin_cards_.find(id); found != plugin_cards_.end()) {
+        card = found->second.card;
+        card.seconds = left(found->second.until);
+    }
+    if (const auto found = plugin_polls_.find(id); found != plugin_polls_.end()) {
+        const auto &poll = found->second;
+        vote = {};
+        vote.id = poll.id;
+        vote.kind = multiplayer::server_vote_poll;
+        vote.outcome = multiplayer::vote_running;
+        vote.label = poll.question;
+        vote.answers = poll.answers;
+        vote.counts.assign(poll.answers.size(), 0);
+        vote.seconds = left(poll.ends);
+    }
+}
+
 std::pair<std::string, bool> Host::announcements_command(std::string_view argument) {
     auto &a = config_.announcements;
     const auto [what_text, rest] = split(argument);

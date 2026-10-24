@@ -73,23 +73,12 @@ native constrained grind; arbitrary rail motion is a separate, later feature.
 
 ## Ground gesture inspection after upstream integration
 
+The batch recorder and its gesture test (`dingosdk_trick_gesture_tests`) were removed after 1.0.8,
+when recording left the studio. The findings below are kept as research.
+
 The upstream batch recorder decodes ground flip gesture EBX files and generates stick scripts
 instead of fabricating board motion. It excludes `fromgrind` and `underflip` variants. This is
 input recognition data, not the active animation graph or a complete movement inventory.
-
-With `DINGOSDK_BUILD_ANIMATION_STUDIO_TESTS=ON`, Windows builds can run:
-
-```
-dingosdk_trick_gesture_tests <game-root> <output.json>
-```
-
-This reads the installed data using the same decoder as the batch recorder. It exports each
-gesture's enum, nollie flag, hold bounds, ordered arcs, and generated low/mid/high stick scripts.
-It checks finite arc fields, magnitude bounds, unique enum IDs, ordered ticks, bounded scripts
-and neutral release. It sends no gameplay input. Enum/asset identity must still be correlated
-with actual recorded trick strings and animation phase captures; a valid script does not prove
-that the game scored the intended trick or pop height. `ctest -R animation_gestures` runs the
-synthetic boundary cases without game data.
 
 The isolated installation yielded 36 ground gestures, split 18 ollie / 18 nollie. The gesture
 suffixes include `n_heelflip` (also observed in a live diagnostic), while the static clip export

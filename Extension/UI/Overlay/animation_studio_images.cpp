@@ -4,7 +4,7 @@
 #include "Engine/Game/Build/20260929/ui_textures.h"
 #include "Engine/Vfs/game_textures.h"
 #include "Engine/Resource/texture.h"
-#include "Extension/HallOfMeat/hall_of_meat_skeleton.h"
+#include "Extension/Skater/xray_skeleton.h"
 #include <imgui.h>
 #include <windows.h>
 #include <wincodec.h>
@@ -181,7 +181,7 @@ std::optional<frostbite::Image> half_of(const frostbite::Image& image, bool righ
 Images decode() {
     Images result;
     try {
-        vfs::GameTextures textures(hall_of_meat::game_folder());
+        vfs::GameTextures textures(xray::game_folder());
         for (std::size_t index = 0; index < picture_count; ++index) {
             if (index == backdrop_index) {
                 if (const auto whole = read_backdrop()) {

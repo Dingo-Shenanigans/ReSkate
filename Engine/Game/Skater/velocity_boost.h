@@ -5,12 +5,14 @@
 
 namespace dingosdk {
 enum class VelocityBoostDirection { forward, up };
+// The menu sliders end at 300 (forward) and 25 (up); a typed value or the console can go up to this.
+// 0 is a boost that is off (the stock setting): no velocity is added.
+inline constexpr float velocity_boost_speed_max = 10000.0f;
 
 inline std::optional<std::array<float, 3>> velocity_boost_delta(
     const std::array<float, 16>& transform, float speed, VelocityBoostDirection direction,
     const std::array<float, 3>& board_velocity = {}) noexcept {
-    const float maximum = direction == VelocityBoostDirection::up ? 25.0f : 300.0f;
-    if (!std::isfinite(speed) || speed < 1.0f || speed > maximum) return {};
+    if (!std::isfinite(speed) || speed <= 0.0f || speed > velocity_boost_speed_max) return {};
     if (direction == VelocityBoostDirection::up) return std::array<float, 3>{0, speed, 0};
     std::array<float, 3> delta{transform[8], transform[9], transform[10]};
     float length{};

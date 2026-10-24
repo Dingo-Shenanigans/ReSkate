@@ -1,6 +1,7 @@
 #pragma once
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -94,6 +95,17 @@ void grabbed() noexcept;
 bool recent() noexcept;
 // The music channel it is on, or ~0u.
 std::uint32_t channel() noexcept;
+// The game's own soundtrack on the player's channel (the one bound to a playlist that is none of
+// them): what it is playing, as its song's asset reads, and a next as the player's own press asks
+// it (plugins: reskate.music.game_*). Without a station on. The client thread.
+struct GameSong {
+    std::string artist, title;
+};
+std::optional<GameSong> game_song() noexcept;
+bool game_next() noexcept;
+// The player's channel's queue, as the game chose a song for it (local_music_playback.cpp).
+void plain_song_chosen(std::uintptr_t queue, std::uint32_t channel, bool asked) noexcept;
+std::uint32_t plain() noexcept;
 // The client thread, each frame: starts or pauses the outside player as one is entered or left.
 void tick() noexcept;
 // For the console.

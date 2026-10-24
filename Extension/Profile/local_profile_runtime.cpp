@@ -6,6 +6,7 @@
 #include "Extension/Customization/local_player_card_runtime.h"
 #include "Extension/Music/local_music_ui.h"
 #include "Extension/Music/local_music_shelf.h"
+#include "Extension/UI/NativeMenu/native_menu_data.h"
 #include "Extension/Customization/item_browser.h"
 #include "Extension/Music/local_music_playback.h"
 #include "Extension/News/local_news_runtime.h"
@@ -449,7 +450,7 @@ bool initialize_local_profile(std::uintptr_t base, bool authored_offline,
             object_subscribe_contract, object_allocate_contract, object_ctor_contract,
             object_register_contract, object_parse_contract, object_release_contract,
             challenge_begin_contract, challenge_end_contract, challenge_available_contract, challenge_select_contract, challenge_lookup_contract, challenge_end_invoke_contract, challenge_error_contract, challenge_counts_contract, challenge_index_insert_contract, challenge_index_append_contract, challenge_insert_contract, challenge_dispatch_contract, challenge_request_create_contract,
-            rip_score_context_contract})
+            rip_score_context_contract, multiplayer::menu_data::model_record_load_contract})
             if (!matches(base, f)) return false;
         if (!neighborhood_type_contract(base) || !rip_score_type_contract(base) ||
             !challenge_map_type_contract(base)) return false;
@@ -545,6 +546,8 @@ bool initialize_local_profile(std::uintptr_t base, bool authored_offline,
         hook(news_list_contract, &news_list_hook, news_runtime().functions.list);
         hook(news_subscribe_contract, &news_subscribe_hook, news_runtime().functions.subscribe);
         hook(object_subscribe_contract, &object_categories_hook, object_runtime().functions.subscribe);
+        hook(multiplayer::menu_data::model_record_load_contract,
+            &multiplayer::menu_data::model_record_load_hook,multiplayer::menu_data::model_record_load_original);
         if (music_ready) {
             hook(music_ui_initialize_contract, &music_ui_initialize_hook, music_ui_runtime().functions.initialize);
             if (music_ui_runtime().functions.favorite_apply)

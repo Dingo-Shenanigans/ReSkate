@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <filesystem>
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -18,6 +19,10 @@ namespace dingosdk::mods {
 inline constexpr std::size_t maximum_mod_name = 64;
 // Generated state the SDK owns. Folders beginning with a dot are never mods.
 inline constexpr char generated_folder[] = ".reskate";
+// What plugins save (reskate.files), a folder each: Mods/.reskate_plugin_data/<plugin>/. Not in the
+// generated folder, which every full merge deletes, and not in a mod's folder, which its updates
+// replace.
+inline constexpr char plugin_data_folder[] = ".reskate_plugin_data";
 inline constexpr char mods_folder[] = "Mods";
 inline constexpr char order_file[] = "mods.json";
 // The mod's own description, written by its author or by the park editor:
@@ -27,16 +32,53 @@ inline constexpr char manifest_file[] = "manifest.json";
 // The older name for the same information ("version" instead of
 // "version_number"), still read when a mod has no manifest.json.
 inline constexpr char info_file[] = "reskate-mod.json";
+// A plugin mod's manifest (Extension/Plugins/plugin_manifest.h). Besides what the plugin host reads,
+// the merge reads its "resident" list (ResidentAssets) from here.
+inline constexpr char plugin_manifest_file[] = "reskate-plugin.json";
 // ReSkate Studio's stamp in every mod it builds: "ReSkate Studio native Patch v1", then
 // key=value lines, of which skate_sha256=<the Skate.exe it was built for> decides whether the
 // mod loads: game data built for another Skate.exe points into that build's archives.
 inline constexpr char studio_marker_file[] = ".reskate-studio-patch";
+
+// Assets of one of the mod's bundles that the game selects at run time without an import naming them
+// (a plugin's world objects, the HUD widgets it picks by size): kept with the mod's additions when
+// another mod (a map) replaces that bundle, as imported additions are. reskate-plugin.json:
+//   "resident": [{"bundle": "win32/levels/...", "roots": ["world/...", "ui/.../"],
+//                 "shaders": [{"name": "world/.../shaderblockdepot_...", "roots": ["world/...", ...]}]}]
+// Names are lower-case asset names; a root ending in '/' keeps every asset under it. A shader block
+// depot (a resource no EBX imports) goes with its roots when all of them come from the mod.
+struct ResidentAssets {
+    std::string bundle;
+    std::vector<std::string> roots;
+    struct Shader {
+        std::string name;
+        std::vector<std::string> roots;
+    };
+    std::vector<Shader> shaders;
+};
+
+// A mod that brings several takes on the same game data, of which one is in the game at a time (a deck
+// pack's decks: the game has one deck model). reskate-plugin.json:
+//   "variants": {"folder": "decks", "order": ["standard", "wide"], "displaces": ["..._bundlereftable"]}
+// Each folder <folder>/<name>/ with a layout.toc is the variant <name> (lower-case letters, digits and
+// '_'), laid out like a mod folder. "order" is the variants the menus list first, in that order; the
+// first of them loads when none was chosen. "displaces" names the bundles a variant replaces: while one
+// loads, every other mod whose layout lists one of them (the declaring mod's own layout too) is set
+// aside for the run (mod_catalog.h).
+struct Variants {
+    std::string folder;
+    std::vector<std::string> order;
+    std::vector<std::string> displaces;
+};
 
 struct Mod {
     std::string name;                 // folder name directly under Mods/
     std::filesystem::path directory;
     bool provides_layout{};           // has layout.toc, so it becomes a layout layer
     bool provides_levels{};           // has reskate-levels.json
+    bool provides_plugin{};           // its reskate-plugin.json names Luau code to run (an "entry")
+    bool provides_objects{};          // has reskate-objects.json (Quick Drop object names and families)
+    bool provides_music{};            // has reskate-music.json (playlists for its songs)
     // Base maps it ships a park for: parks/<map>.park.json (park editor mods).
     std::vector<std::string> park_maps;
     // Presentation, from manifest.json (or reskate-mod.json). `title` falls back to the folder
@@ -50,6 +92,10 @@ struct Mod {
     std::vector<std::string> levels;
     // What the merge could not use from this mod. Empty once it merged cleanly.
     std::vector<std::string> problems;
+    // From reskate-plugin.json: the assets its bundles keep resident (ResidentAssets).
+    std::vector<ResidentAssets> resident;
+    // From reskate-plugin.json: the variants it holds (Variants), if it declares any.
+    std::optional<Variants> variants;
     // From .reskate-studio-patch: whether the mod has one, and the Skate.exe SHA-256 it records.
     bool studio_marker{};
     std::string skate_sha256;
@@ -74,6 +120,11 @@ struct Exclusion {
 };
 // Names, sizes and write times of every file in the mod folder.
 std::string mod_fingerprint(const std::filesystem::path& directory);
+// Plugins' files from before plugin_data_folder (Mods/.reskate/data/<plugin>/, inside the generated
+// folder a full merge deletes) move to Mods/.reskate_plugin_data/<plugin>/: a plugin's folder whole
+// when it has none there yet, else the files it lacks. Run before anything deletes the generated
+// folder. Never throws; returns what it moved, a line each, for the log.
+std::vector<std::string> keep_plugin_data(const std::filesystem::path& mods_root) noexcept;
 std::map<std::string, Exclusion, std::less<>> read_exclusions(const std::filesystem::path& mods_root) noexcept;
 // Replaces the file; an empty map removes it.
 void write_exclusions(const std::filesystem::path& mods_root,
@@ -101,6 +152,16 @@ struct ModList {
     std::vector<std::string> notes;
 };
 
+// Whether `name` (an asset of `bundle`, either lower-case) is one the mod keeps resident, and the
+// shader block depot entry `name` is in that bundle, or null.
+bool resident_root(const Mod& mod, std::string_view bundle, std::string_view name) noexcept;
+const ResidentAssets::Shader* resident_shader(const Mod& mod, std::string_view bundle, std::string_view name) noexcept;
+
+// What a mod holds, for a player, what says most about it first: "Map" or "3 maps", "Park" or
+// "Parks", "Plugin", "Game data", "Objects", "Music". Empty when it holds none of these. A plugin
+// that also ships game data reads as a plugin first, since its code is what it is for.
+std::vector<std::string> mod_contents(const Mod& mod);
+
 // Folder names travel into engine paths, so only plain ASCII is accepted:
 // letters, digits, space, '_', '-' and '.', not starting with '.'.
 bool valid_mod_name(std::string_view name);
@@ -121,5 +182,13 @@ Mod describe_mod(const std::filesystem::path& directory, std::string name, std::
 // Writes mods.json for `entries` in order, replacing the file atomically.
 // Throws with a readable message on failure.
 void save_mod_order(const std::filesystem::path& mods_root, const std::vector<ModEntry>& entries);
+
+// Whether mods.json lists the mod folder `name` switched off. A folder it does not list loads.
+// Reads mods.json alone, not the mods. Never throws: false when it cannot be read.
+bool mod_disabled(const std::filesystem::path& mods_root, std::string_view name) noexcept;
+// Switches the mod folder `name` on or off in mods.json, every other row as it was; one it does
+// not list yet is added at its end, the bottom of the load order. False when mods.json could not
+// be read (malformed: left for the player to see) or written. Never throws.
+bool set_mod_enabled(const std::filesystem::path& mods_root, std::string_view name, bool enabled) noexcept;
 
 } // namespace dingosdk::mods

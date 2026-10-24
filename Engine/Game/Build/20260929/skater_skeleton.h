@@ -5,7 +5,7 @@
 namespace dingosdk::game::build::v20260929::skater_skeleton {
 // Supported SHA-256 fbce74d5e28ef525dbba2cb4adbebc13405bdbd88f31bc940bca45e4ae88b8f9.
 // The skater's skeleton as skate. itself has it, read from the installed game's data
-// (Extension/HallOfMeat/hall_of_meat_skeleton.h): the player's render skeleton, and the Dem Bones
+// (Extension/Skater/xray_skeleton.h): the player's render skeleton, and the Dem Bones
 // costume, a full-body skeleton outfit skinned to it. Both were first used by gBGYo's ReSkate
 // fork (github.com/gBGYo/ReSkate); read on 2026-10-06.
 //

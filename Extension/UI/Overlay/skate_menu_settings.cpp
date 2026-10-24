@@ -5,6 +5,7 @@
 #include "Engine/Core/Profiling/profiler.h"
 #include "Extension/Music/local_music_playback.h"
 #include "Extension/Profile/local_profile_runtime.h"
+#include "Extension/Plugins/plugin_ui.h"
 
 #include <algorithm>
 #include <array>
@@ -136,7 +137,18 @@ std::uint32_t bind_combo(const ControllerBindingsModel& b, int action) {
 
 void binds_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
     const bool available = model.bindings.available && callbacks.queue_console_command;
+    // Plugins' binds (reskate.input.bind) are rows from plugin_bind_row up, in the order the
+    // plugins' list gives them; the player's combo replaces the plugin's own.
+    constexpr int plugin_bind_row = 1000;
+    const auto plugin_binds = plugin_ui::latest_binds();
     const auto save = [&](int action, std::uint32_t combo) {
+        if (action >= plugin_bind_row) {
+            const auto index = static_cast<std::size_t>(action - plugin_bind_row);
+            if (index < plugin_binds->size())
+                plugin_ui::rebind({(*plugin_binds)[index].plugin, (*plugin_binds)[index].action, combo});
+            feedback(menu, combo ? "Saved." : "Cleared. The plugin's action has no bind now.");
+            return;
+        }
         std::array<char, 512> result{};
         const auto command = std::string("bind ") +
             (action >= 10 ? std::string(action_binds[static_cast<std::size_t>(action - 10)].name) + " " : action == 1 ? "freecamcontroller " : action == 2 ? "freecam " : action == 3 ? "noclip " : action == 4 ? "forwardvelocity " : action == 5 ? "upvelocity " : action == 6 ? "tptofreecam " : action == 8 ? "voteyes " : action == 9 ? "voteno " : "offboardupvelocity ") + std::to_string(combo);
@@ -168,15 +180,37 @@ void binds_page(SkateMenu& menu, const Model& model, const CallbacksV3& callback
              console ? "Hold up to five buttons together, then let go. Nothing for 10 seconds cancels." :
              "Hold up to five keys together, then release them. A-Z, 0-9, Space, F1-F12, Ctrl, Shift and Alt work; controller combos work too.");
     }
+    struct Row {
+        int action;
+        std::string name;
+        std::uint32_t combo;
+    };
+    struct Card {
+        const char* title;
+        std::vector<Row> rows;
+    };
+    std::vector<Card> cards;
     for (const auto& group : bind_groups) {
         if (std::string_view(group.title) == "ONLINE" && model.steam_offline) continue;
+        auto& card = cards.emplace_back(Card{group.title, {}});
+        for (const int action : group.actions) card.rows.push_back({action, bind_name(action), bind_combo(model.bindings, action)});
+    }
+    if (!plugin_binds->empty()) {
+        auto& card = cards.emplace_back(Card{"PLUGINS", {}});
+        for (std::size_t i = 0; i < plugin_binds->size(); ++i) {
+            const auto& bind = (*plugin_binds)[i];
+            card.rows.push_back({plugin_bind_row + static_cast<int>(i), bind.plugin + ": " + bind.action, bind.combo});
+        }
+    }
+    for (const auto& group : cards) {
         begin_card(menu, group.title, group.title);
         ImGui::PushID(group.title);
         if (console) {
             // Full screen: a row a bind, its combo at the right end. A records, Y clears.
             auto* draw = ImGui::GetWindowDrawList();
-            for (const int action : group.actions) {
-                const std::uint32_t combo = bind_combo(model.bindings, action);
+            for (const auto& row : group.rows) {
+                const int action = row.action;
+                const std::uint32_t combo = row.combo;
                 const bool recording = menu.recording_bind == action;
                 ImGui::PushID(action);
                 const auto at = ImGui::GetCursorScreenPos();
@@ -195,8 +229,8 @@ void binds_page(SkateMenu& menu, const Model& model, const CallbacksV3& callback
                 skate_theme::rough_rect(draw, at, end, recording ? paper : lit ? blue : IM_COL32(26, 26, 26, 235),
                                         static_cast<unsigned>(ImGui::GetItemID()) & 0xfff, px(1));
                 const ImU32 text = recording ? skate_theme::black : available ? paper : muted;
-                const auto name = menu.bold->CalcTextSizeA(px(17), FLT_MAX, 0, bind_name(action));
-                draw->AddText(menu.bold, px(17), ImVec2(at.x + px(18), at.y + (height - name.y) * .5f), text, bind_name(action));
+                const auto name = menu.bold->CalcTextSizeA(px(17), FLT_MAX, 0, row.name.c_str());
+                draw->AddText(menu.bold, px(17), ImVec2(at.x + px(18), at.y + (height - name.y) * .5f), text, row.name.c_str());
                 const auto label = recording ? std::string(menu.bind_capture.ready ? "Press the buttons..." : "Let go first...")
                                              : controller_combo_label(combo, controller.style);
                 const auto size = menu.bold->CalcTextSizeA(px(17), FLT_MAX, 0, label.c_str());
@@ -210,11 +244,12 @@ void binds_page(SkateMenu& menu, const Model& model, const CallbacksV3& callback
                 ImGui::TableSetupColumn("Action", ImGuiTableColumnFlags_WidthFixed, px(150));
                 ImGui::TableSetupColumn("Controller combo / key", ImGuiTableColumnFlags_WidthStretch);
                 ImGui::TableSetupColumn("##controls", ImGuiTableColumnFlags_WidthFixed, px(170));
-                for (const int action : group.actions) {
-                    const std::uint32_t combo = bind_combo(model.bindings, action);
+                for (const auto& row : group.rows) {
+                    const int action = row.action;
+                    const std::uint32_t combo = row.combo;
                     ImGui::PushID(action);
                     ImGui::TableNextRow(); ImGui::TableNextColumn();
-                    ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted(bind_name(action));
+                    ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted(row.name.c_str());
                     ImGui::TableNextColumn(); ImGui::AlignTextToFramePadding();
                     const auto label = menu.recording_bind == action ? "Recording..." : controller_combo_label(combo, controller.style);
                     ImGui::TextWrapped("%s", label.c_str());
@@ -232,6 +267,15 @@ void binds_page(SkateMenu& menu, const Model& model, const CallbacksV3& callback
                     ImGui::PopID();
                 }
                 ImGui::EndTable();
+            }
+            ImGui::EndDisabled();
+        }
+        if (std::string_view(group.title) == "PLUGINS") {
+            const bool changed = std::any_of(plugin_binds->begin(), plugin_binds->end(), [](const auto& b) { return b.combo != b.own; });
+            ImGui::BeginDisabled(!changed || menu.recording_bind != 0);
+            if (ImGui::Button("Plugins' own binds", ImVec2(console ? -FLT_MIN : px(200), 0))) {
+                for (const auto& bind : *plugin_binds) plugin_ui::rebind({bind.plugin, bind.action, std::nullopt});
+                feedback(menu, "Every plugin's action is on the plugin's own bind again.");
             }
             ImGui::EndDisabled();
         }

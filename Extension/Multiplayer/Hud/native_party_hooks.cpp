@@ -4,6 +4,7 @@
 #include "Extension/Skater/client_source_spawn.h"
 #include "Extension/Throwdowns/native_type_scan.h"
 #include "Extension/Throwdowns/throwdown_relay.h"
+#include "Extension/Throwdowns/throwdown_kit.h"
 #include "Engine/Core/Platform/memory.h"
 #include "follow_camera.h"
 #include "Extension/Customization/local_player_card_runtime.h"
@@ -557,6 +558,14 @@ std::uint32_t teleport_hook(Address reason, const void *matrix, Address destinat
     // lip mount. While the local player waits for their S.K.A.T.E. turn, the turn start's
     // teleport of the local skater (id 0) lands it on foot. Kept in a static: the native
     // copies the options into its components, but must never see a dead buffer.
+    // A plugin match's countdown (kit::match().input_lock) lands the skater on the board.
+    if(!id && stance && dingosdk::throwdowns::kit::match().input_lock) {
+        static thread_local std::array<std::uint8_t,3> on_board{};
+        if(memory::peek_bytes(stance,on_board.data(),on_board.size())) {
+            on_board[0]=1;
+            return state().teleport(reason,matrix,destination,id,mode,reinterpret_cast<Address>(on_board.data()),transition);
+        }
+    }
     if (!id && stance && throwdown_relay_waits_offboard()) {
         static thread_local std::array<std::uint8_t, 3> on_foot{};
         if (memory::peek_bytes(stance, on_foot.data(), on_foot.size()) && on_foot[0]) {
@@ -872,6 +881,10 @@ void spectate_party_member(std::uint64_t id) noexcept {
             started = id;
         }
     } catch (...) {}
+}
+bool party_spectating() noexcept {
+    auto &s = state();
+    return s.spectating.load(std::memory_order_acquire) != 0 || s.camera_owned;
 }
 void tick_native_party_actions(std::uintptr_t base, std::uintptr_t client, bool ready, bool camera_phase) noexcept {
     auto &s = state();

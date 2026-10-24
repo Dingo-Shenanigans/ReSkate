@@ -2,6 +2,7 @@
 #include "Engine/Game/World/location_travel.h"
 #include "Extension/Multiplayer/Net/protocol.h"
 #include "Extension/World/loading_screen.h"
+#include <algorithm>
 #include <cstdio>
 
 namespace dingosdk::runtime::detail {
@@ -160,8 +161,35 @@ bool queue_location_travel(const char* map) {
     if (!r.requests.enqueue(std::move(request), request_context(r), GetCurrentThreadId())) return false;
     return true;
 }
+// The launcher's start map (Launcher/start_maps.h): a "load <asset> [start point]" at the front of
+// RESKATE_STARTUP_COMMANDS. The map and its start point, or nothing.
+std::optional<std::pair<std::string, std::string>> startup_map() {
+    std::wstring value(4096, L'\0');
+    const auto length = GetEnvironmentVariableW(L"RESKATE_STARTUP_COMMANDS", value.data(), 4096);
+    if (!length || length >= 4096) return std::nullopt;
+    std::string text;
+    for (const auto character : value.substr(0, length)) {
+        if (character == L';') break;
+        text.push_back(character < 128 ? static_cast<char>(character) : '?');
+    }
+    const auto trim = [](std::string piece) {
+        const auto first = piece.find_first_not_of(" \t");
+        if (first == std::string::npos) return std::string{};
+        return piece.substr(first, piece.find_last_not_of(" \t") - first + 1);
+    };
+    text = trim(std::move(text));
+    if (text.size() < 6 || !equals(text.substr(0, 5), "load ")) return std::nullopt;
+    text = trim(text.substr(5));
+    const auto space = text.find(' ');
+    return std::pair{text.substr(0, space), space == std::string::npos ? std::string{} : trim(text.substr(space + 1))};
+}
+// The first level from the splash world: the launcher's start map when it is installed and can load
+// now, else San Vansterdam. So the game opens in the start map, rather than in San Van and then the
+// map (the startup commands' "load" for it is dropped).
 bool queue_menu_bam() {
     auto& r = runtime();
+    std::string name = "San Vansterdam";
+    bool start_map{};
     {
         std::lock_guard lock(r.mutex);
         if (!r.menu_splash_ready || r.observer_failed) return false;
@@ -173,14 +201,35 @@ bool queue_menu_bam() {
             if (equals(level.asset, "Levels/Game/DingoLevel_Root/DingoLevel_Root")) request.asset = level.asset;
             if (equals(level.asset, "levels/game/BAM_LevelRoot/BAM_LevelRoot")) request.lm_level = level.asset;
         }
+        if (const auto wanted = startup_map()) {
+            for (const auto& level : r.model.levels) {
+                if (!level.can_load || !equals(level.asset, wanted->first) || equals(level.asset, request.asset)) continue;
+                // Its start point as the console's "load" picks one: the one asked for, its only one,
+                // or none for a map the game knows. A custom map with several and none asked for is
+                // left to the startup command, which says why.
+                std::string start = wanted->second;
+                if (start.empty())
+                    if (const auto* automatic = level.automatic_start_point()) start = *automatic;
+                const bool known = start.empty() ? level.native_registered || level.start_points.empty()
+                                                 : std::find(level.start_points.begin(), level.start_points.end(), start) != level.start_points.end();
+                if (!known) break;
+                request.lm_level = level.asset;
+                request.lm_start = start;
+                name = level.display_name.empty() ? level.asset : level.display_name;
+                start_map = true;
+                break;
+            }
+        }
         if (request.asset.empty() || request.lm_level.empty()) return false;
         if (!r.requests.enqueue(std::move(request), request_context(r), GetCurrentThreadId())) return false;
         r.menu_load_queued = true;
+        if (start_map) r.startup_map_taken = true;
     }
     // Once accepted, even a log allocation failure must not show the error modal.
     try {
-        activity_line(dingosdk::ConsoleSource::level, "Starting San Vansterdam.");
-        record("{\"event\":\"menu_entry_load_queued\",\"destination\":\"BAM\"}");
+        activity_line(dingosdk::ConsoleSource::level, "Starting " + name + ".");
+        record(start_map ? "{\"event\":\"menu_entry_load_queued\",\"destination\":\"start_map\"}"
+                         : "{\"event\":\"menu_entry_load_queued\",\"destination\":\"BAM\"}");
     } catch (...) {}
     return true;
 }

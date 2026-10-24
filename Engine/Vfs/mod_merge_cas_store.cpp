@@ -29,7 +29,7 @@ CasStore::CasStore(fs::path baseRoot, fs::path output, const native_db::Node& la
 }
 
 fs::path CasStore::archive_path(std::uint32_t installChunk, std::uint16_t archive) const {
-    return output_ / L"Win32" / fs::path(directory(installChunk)) / fs::path(archive_file(archive));
+    return inside(output_, fs::path(L"Win32") / fs::path(directory(installChunk)) / fs::path(archive_file(archive)));
 }
 
 std::uint64_t CasStore::append(const fs::path& path, std::span<const std::byte> encoded) {

@@ -4,11 +4,17 @@
 #include <string>
 
 namespace dingosdk::crash_report {
-inline constexpr DWORD protocol_version = 4;
-// Who asked for the dump: ReSkate's last-chance filter, or the game's own fatal handler about to
-// write its dump (which it does without ever reaching that filter).
-enum class CaptureSource : DWORD { unhandled_exception, game_fatal_handler };
+inline constexpr DWORD protocol_version = 6;
+// Who asked for the dump: ReSkate's last-chance filter, the game's own fatal handler about to
+// write its dump (which it does without ever reaching that filter), or a level load that has sat
+// in one stage for minutes while the game runs on (capture_stuck_load: the game is not ending, so
+// the helper goes on waiting afterwards).
+enum class CaptureSource : DWORD { unhandled_exception, game_fatal_handler, stuck_load };
 inline constexpr DWORD capture_timeout_ms = 15000;
+// A stuck load's dump holds every thread as it was; its exception, made up by the thread that
+// asked, says only that this is not a crash.
+inline constexpr DWORD stuck_load_exception = 0xe0535455;
+inline constexpr DWORD stuck_capture_timeout_ms = 30000;
 struct SharedReport {
     DWORD version{protocol_version};
     DWORD thread_id{};
@@ -24,6 +30,11 @@ struct SharedReport {
     std::array<wchar_t, 128> gpu_name{};
     std::array<wchar_t, 32> gpu_driver{};
     CaptureSource source{};
+    // Whether D3D12's record of the GPU's work (DRED) is on for this launch (gpu_breadcrumbs()).
+    DWORD gpu_breadcrumbs{};
+    // A stuck load's stage ("Starting level load") and how long it had been in it.
+    std::array<wchar_t, 64> stuck_stage{};
+    DWORD stuck_seconds{};
 };
 // Explicitly inherited unnamed handles; no token or paths on the command line.
 enum HandleIndex : std::size_t { mapping, requested, captured, stopping, ready, parent, handle_count };

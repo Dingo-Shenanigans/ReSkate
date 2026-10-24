@@ -1,6 +1,7 @@
 // Animation Studio's keyframes apart from the game: turning numbers, blending keys, what a profile
 // and a clip file hold, and that edits never grow a pose.
 #include "Extension/AnimationStudio/anim_core.h"
+#include "Extension/UI/Overlay/descriptor_slots.h"
 #include "Extension/AnimationStudio/skater_joint_limits.h"
 #include <map>
 #include "Extension/AnimationStudio/skater_mirror.h"
@@ -14,7 +15,6 @@
 #include "Extension/AnimationStudio/native_trick_parts.h"
 #include "Extension/AnimationStudio/marketplace.h"
 #include "Extension/AnimationStudio/marketplace_listing.h"
-#include "Extension/AnimationStudio/recording_rules.h"
 #include <limits>
 #include <filesystem>
 #include <fstream>
@@ -228,21 +228,8 @@ void native_names_and_search() {
     check(variants[0].asset == "source-b", "Human names never change the identity used to open an animation");
 }
 
-void manual_and_scripted_recording_keep_distinct_rules() {
-    const auto manual = evaluate_recorded_take(false, "kickflip", "heelflip", "low", 3, true, 0.7f);
-    check(manual.rejection == TakeRejection::none && manual.pop == "high", "Manual takes accept the recognized trick and actual grade, ignoring stale batch targets");
-    const auto fallback = evaluate_recorded_take(false, "kickflip", "", "", 0, true, 0.5f);
-    check(fallback.rejection == TakeRejection::none && fallback.pop == "mid", "Manual recording still works without native grading hooks");
-    check(evaluate_recorded_take(true, "heelflip", "varialheelflip", "high", 3, true, 0.7f).rejection == TakeRejection::wrong_trick,
-          "Batch recording cannot save the wrong recognized trick");
-    check(evaluate_recorded_take(true, "kickflip", "kickflip", "low", 3, true, 0.7f).rejection == TakeRejection::wrong_pop,
-          "Batch recording keeps the game's actual requested pop grade");
-    check(evaluate_recorded_take(true, "kickflip", "kickflip", "high", 0, true, 0.7f).rejection == TakeRejection::missing_grade,
-          "Batch cannot substitute an air-time guess for missing native grading");
-    check(evaluate_recorded_take(false, "kickflip", "", "", 4, true, 0.7f).pop == "high", "Unknown native enum values use the manual fallback");
-    check(evaluate_recorded_take(false, "", "", "", 3, true, 0.7f).rejection == TakeRejection::missing_trick &&
-          evaluate_recorded_take(false, "kickflip", "", "", 3, false, 0.7f).rejection == TakeRejection::missing_board,
-          "Manual recording still rejects missing identity and board capture");
+void pop_grades_read_back() {
+    check(graded_pop_name(1) == "low" && graded_pop_name(3) == "high" && graded_pop_name(4).empty(), "Only the game's three pop grades have a name");
     check(pop_grade_since(100, 0.5) == 0 && pop_grade_since(5000, 0.5) == 4200,
           "Grade lookup uses a bounded recent time window without unsigned wraparound");
 }
@@ -441,6 +428,26 @@ void clips_read_back_and_broken_ones_are_refused() {
     bool refused = false;
     try { (void)clip_from_bytes(cut); } catch (const std::runtime_error&) { refused = true; }
     check(refused, "A cut-short clip is refused");
+    clip.turned_only = {0, 1, 1};
+    for (const bool board : {false, true}) {
+        if (board) clip.board.resize(clip.times.size());
+        const auto packed = clip_bytes(clip);
+        const auto native = clip_from_bytes(packed);
+        check(native.turned_only == clip.turned_only && !native.keeps_position(0) && native.keeps_position(2) &&
+              native.board.size() == clip.board.size() && near(native.frames[4].position[2], 3),
+              "2.1.2 rotation-only masks round-trip with or without a board while preserving the compressed pose");
+        auto invalid = packed;
+        invalid[21 + clip.times.size() * 4] = 2;
+        refused = false;
+        try { (void)clip_from_bytes(invalid); } catch (const std::runtime_error&) { refused = true; }
+        check(refused, "A corrupt rotation-only mask is refused");
+    }
+    Clip asymmetric;
+    asymmetric.joints = skeleton_joints; asymmetric.times = {0}; asymmetric.frames.resize(skeleton_joints);
+    asymmetric.turned_only.resize(skeleton_joints); asymmetric.turned_only[341] = 1;
+    const auto mirrored = mirror_clip(asymmetric);
+    check(mirrored.keeps_position(mirror_joint[341]) && !mirrored.keeps_position(341),
+          "Mirrored native clips preserve the matching limb's rotation-only ownership");
 }
 } // namespace
 
@@ -977,21 +984,16 @@ void merged_library_and_timing() {
           "A first recognized trick and a late flip can select a preset");
     check(!episode_selection_changed("kickflip", "kickflip") && !episode_selection_changed("kickflip", ""),
           "Pop refinement and a blank name cannot restart the same trick's source clock");
-    check(recorded_clip_identity("n_heelflip__high.clip") == std::pair{std::string("n_heelflip"), std::string("high")},
-          "Recorded filenames preserve the game's underscored trick ID");
-    for (const auto* file : {"../ollie__high.clip", "a\\ollie__high.clip", "a:ollie__high.clip", "ollie__any.clip", "__high.clip"})
-        check(!recorded_clip_identity(file), "Recorded clips reject traversal and ambiguous identities");
+    for (const auto* file : {"../ollie.clip", "a\\ollie.clip", "a:ollie.clip", "ollie.json", ""})
+        check(!safe_library_clip(file), "Library clip names reject traversal and other files");
     GameTrick low{"Flip", "Kickflip", "kickflip", "low", "native-low.clip", "asset-low"};
     auto high = low; high.pop = "high"; high.file = "native-high.clip"; high.asset = "asset-high";
+    GameTrick ollie{"Flip", "Ollie", "ollie", "mid", "ollie-mid.clip", "asset-ollie"};
     GameTrick grind{"Grind", "50-50 entry", "", "", "grind.clip", "grind-asset", true};
-    auto take = high; take.file = "kickflip__high.clip"; take.asset.clear(); take.stance = "goofy"; take.switch_stance = true;
-    const auto library = merge_game_library({low, high, grind}, {take});
-    check(library.size() == 3, "A batch recording replaces only its matching native trick/pop slot");
-    check(library[0].recorded && library[0].file == take.file && library[0].asset == "asset-high" &&
-          library[0].stance == "goofy" && library[0].switch_stance.value_or(false),
-          "High pop is shown first and retains native provenance plus recorded stance");
-    check(!library[1].recorded && library[1].file == low.file && library[2].preview_only,
-          "Other pop heights and grind previews stay available after Record all");
+    const auto library = sort_game_library({low, high, grind, ollie});
+    check(library.size() == 4 && library[0].trick == "ollie" && library[1].file == high.file && library[2].file == low.file,
+          "TRICKS lists ollie first, then each trick high pop first");
+    check(library[3].preview_only, "Grind previews stay in the library, in their own category");
     check(playback_pop_rank("high", "high") == 0 && playback_pop_rank("high", "") == 1 &&
           playback_pop_rank("high", "low") < 0 && playback_pop_rank("mid", "low") < 0,
           "Playback accepts exact or explicitly generic pops, never a different source height");
@@ -1034,7 +1036,7 @@ void merged_library_and_timing() {
         for (const bool goofy : {false, true})
             check(leads_right(goofy, riding_switch(left, goofy)) == !left, "The lead foot is the game's bit, whatever the stance setting says");
     // Read the old way - the bit taken for a switch flag - a goofy skater came out right by luck and a
-    // regular one the wrong way round, every time. Recordings made like that need fix_regular_skater_tags.
+    // regular one the wrong way round, every time.
     check(leads_right(true, false) == !false && leads_right(false, true) != !true, "The bit read as a switch flag is wrong for regular skaters");
     GameplayClipClock clock;
     check(near(clock.advance_air(10, 0.3f, 1, 2), 0.3f), "Newly selected presets begin at takeoff");
@@ -1976,7 +1978,7 @@ int main(int argc, char** argv) {
         trick_names_match();
         packs_and_playlist();
         market_package_words();
-        manual_and_scripted_recording_keep_distinct_rules();
+        pop_grades_read_back();
         mirror_pairs_and_comes_back();
         pieces_are_recognised_by_the_pose();
         bent_joints_match_the_studio();

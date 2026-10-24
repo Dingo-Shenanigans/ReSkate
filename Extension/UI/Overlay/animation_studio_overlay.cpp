@@ -5,7 +5,6 @@
 #include "Extension/AnimationStudio/native_asset_names.h"
 #include "Extension/AnimationStudio/native_trick_parts.h"
 #include "Extension/AnimationStudio/marketplace.h"
-#include "Extension/AnimationStudio/trick_batch.h"
 #include "studio_cover_maker.h"
 #include "studio_market_art.h"
 #include "studio_torn.h"
@@ -2938,7 +2937,7 @@ const std::vector<TrickCard>& trick_cards(const std::shared_ptr<const std::vecto
     std::vector<Made> pieces;
     std::unordered_map<std::string, std::size_t> piece_at;
     for (const auto& t : *tricks) {
-        if (!t.preview_only || t.recorded || t.asset.empty()) continue;
+        if (!t.preview_only || t.asset.empty()) continue;
         for (auto& part : studio::native_trick_parts(t.asset)) {
             const auto key = "*piece:" + part.kind + "/" + part.trick;
             const auto [it, fresh] = piece_at.emplace(key, pieces.size());
@@ -6640,8 +6639,8 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
     case 1: {
         rows.push_back(choice("Stance", v.stance_choice == 1 ? "REGULAR" : v.stance_choice == 2 ? "GOOFY" : v.showing_goofy ? "THE GAME'S (GOOFY)" : "THE GAME'S (REGULAR)",
                               "Which foot leads while you edit. A trick made leading with the other foot is mirrored into this stance the way "
-                              "the game mirrors its own, so the leg you grab is the leg that moves. The game's: the Stance setting in the "
-                              "ReSkate menu, Addons > GRIND EXITS.",
+                              "the game mirrors its own, so the leg you grab is the leg that moves. The game's: the stance set in the "
+                              "game's own options.",
                               [c = v.stance_choice](int by) { studio::set_stance((c + by + 3) % 3); }));
         rows.push_back(on_off("Hands grab the board", v.grab_board,
                               "A hand brought near the deck closes its fingers round it, more the nearer it gets. Shown only: the fingers are "
@@ -6721,7 +6720,7 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
             Setting s;
             s.kind = Setting::Kind::name;
             s.label = "Made by";
-            s.about = "Your name. It goes with every trick you record and every pack you make, so a trick passed on says whose it is.";
+            s.about = "Your name. It goes with every trick you save and every pack you make, so a trick passed on says whose it is.";
             rows.push_back(std::move(s));
         }
         break;
@@ -9638,28 +9637,6 @@ void open_warning(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 d
 }
 } // namespace
 
-// While Record all tricks runs: a strip across the top, as skate.'s own banners, with how far it is.
-void draw_animation_studio_batch() {
-    const auto p = studio::batch::progress();
-    if (!p.active || studio::loading().alpha > 0.99f) return;
-    auto& s = state();
-    const auto display = ImGui::GetIO().DisplaySize;
-    ImFont* heading = s.menu.heading ? s.menu.heading : ImGui::GetFont();
-    ImFont* bold = s.menu.bold ? s.menu.bold : ImGui::GetFont();
-    const float H = display.y;
-    auto* d = ImGui::GetForegroundDrawList();
-    const ImVec2 a(0, 0), b(display.x, 0.085f * H);
-    d->AddRectFilled(a, b, IM_COL32(12, 12, 13, 225));
-    d->AddRectFilled(ImVec2(0, b.y - 0.004f * H), ImVec2(display.x * (p.total ? static_cast<float>(p.place) / static_cast<float>(p.total) : 0.0f), b.y),
-                     skate_theme::blue);
-    const std::string title = p.total ? std::format("RECORDING YOUR TRICKS  {} OF {}", std::min(p.place + 1, p.total), p.total) : std::string("RECORDING YOUR TRICKS");
-    text(d, heading, 0.026f * H, ImVec2(0.034f * display.x, 0.014f * H), skate_theme::white, title);
-    text(d, bold, 0.019f * H, ImVec2(0.034f * display.x, 0.048f * H), IM_COL32(200, 200, 204, 255), p.status);
-    const char* hint = p.stopping ? "STOPPING AFTER THIS TRICK" : "ESC / BACK: STOP AFTER THIS TRICK";
-    const auto hw = text_size(heading, 0.019f * H, hint);
-    text(d, heading, 0.019f * H, ImVec2(display.x - 0.034f * display.x - hw.x, 0.03f * H), p.stopping ? skate_theme::warning : skate_theme::white, hint);
-}
-
 bool animation_studio_open() { return studio::is_open(); }
 
 // Closed, the studio still listens for L3 + R3 held on a controller, which opens it.
@@ -9690,46 +9667,7 @@ void poll_animation_studio_controller() {
 // Over the walk to the studio's room and back: dark grainy concrete, the reskate. wordmark with
 // animator studio on a strip of blue tape, who built it on a paper strip, a tip with a bar, and
 // skate.'s own "Loading..." box with its kickflipping board (animation_studio_images.h).
-bool animation_studio_loading_pending() { return studio::loading().alpha > 0 || studio::batch::active(); }
-// While a trick is being recorded (the studio steps out so you can skate): a strip across the top in the
-// studio's look, and Esc (Back on a controller) goes back to the studio without one.
-bool animation_studio_recording_pending() {
-    return !studio::batch::active() && !studio::is_open() && studio::recording_state() != studio::Recording::off;
-}
-void draw_animation_studio_recording() {
-    if (!animation_studio_recording_pending() || studio::loading().alpha > 0.99f) return;
-    const auto v = studio::view();
-    {
-        constexpr unsigned escape_key = 1u << 3;
-        ControllerInput pad{};
-        DingoSDKOverlayReadControllerInput(&pad, true);
-        if ((DingoSDKOverlayReadPromptKeys() & escape_key) != 0 || (pad.buttons & XINPUT_GAMEPAD_BACK) != 0) {
-            studio::cancel_recording();
-            studio::request_open(true);
-            return;
-        }
-    }
-    auto& s = state();
-    const auto display = ImGui::GetIO().DisplaySize;
-    ImFont* heading = s.menu.heading ? s.menu.heading : ImGui::GetFont();
-    ImFont* bold = s.menu.bold ? s.menu.bold : ImGui::GetFont();
-    const float H = display.y;
-    auto* d = ImGui::GetForegroundDrawList();
-    const ImVec2 b(display.x, 0.085f * H);
-    d->AddRectFilled(ImVec2(0, 0), b, IM_COL32(12, 12, 13, 225));
-    d->AddRectFilled(ImVec2(0, b.y - 0.004f * H), ImVec2(display.x, b.y), skate_theme::blue);
-    const char* what = v.recording == studio::Recording::in_air ? "IN THE AIR..." : v.recording == studio::Recording::finishing ? "LANDED: BACK TO THE STUDIO" : "RECORD A TRICK";
-    text(d, heading, 0.026f * H, ImVec2(0.034f * display.x, 0.014f * H), skate_theme::white, what);
-    text(d, bold, 0.019f * H, ImVec2(0.034f * display.x, 0.048f * H), IM_COL32(200, 200, 204, 255),
-         v.status.empty() ? std::string("Skate and land the trick you want.") : v.status);
-    const char* hint = "ESC / BACK: BACK TO THE STUDIO";
-    const auto hw = text_size(heading, 0.019f * H, hint);
-    text(d, heading, 0.019f * H, ImVec2(display.x - 0.034f * display.x - hw.x, 0.03f * H), skate_theme::white, hint);
-    // A red dot, as a camera's.
-    const float pulse = 0.6f + 0.4f * std::sin(static_cast<float>(ImGui::GetTime()) * 5.0f);
-    d->AddCircleFilled(ImVec2(display.x - 0.034f * display.x - hw.x - 0.022f * H, 0.03f * H + hw.y * 0.5f), 0.008f * H,
-                       IM_COL32(235, 50, 50, static_cast<int>(255 * pulse)));
-}
+bool animation_studio_loading_pending() { return studio::loading().alpha > 0; }
 void draw_animation_studio_loading() {
     const auto l = studio::loading();
     if (l.alpha <= 0) return;

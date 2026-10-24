@@ -3,8 +3,9 @@
 A hard slam can break the local skater's board: at the nose, in the middle or at the tail. Half the
 time the grip tape holds the pieces together and the board folds or an end hangs; otherwise a piece
 comes off, flies and lies where it lands, truck and wheels with it. The board is whole again once
-the skater has picked it up, rides again or respawns. Built into ReSkate; the broken pieces
-themselves come from a content mod with the deck shapes in it.
+the skater has picked it up, rides again or respawns. A plugin, [board-break](plugins/board-break)
+(it was built into ReSkate until 2026-10), that ships inside the Board Break deck pack: the broken
+pieces themselves are the pack's deck models.
 
 Boards also wear: every hard landing, rail hit, grind and slam takes something out of the board of
 the deck in the game, and a worn board steers lazier, wobbles, breaks from less and in the end can
@@ -12,26 +13,22 @@ give way under the rider. A boardslide or darkslide that comes down too hard ont
 the board and throw the rider. A break cracks (and sounds like metal when it happened on metal),
 and the body's hits in a bail are heard where and as hard as they land. The player sets all of it.
 
-Code: [board_break.cpp](../Extension/BoardBreak/board_break.cpp) (client tick, the boards'
-render pose hook, wear, rail snaps), [board_break_model.h](../Extension/BoardBreak/board_break_model.h)
-(the rules and the geometry on their own) and
-[board_break_feel.h](../Extension/BoardBreak/board_break_feel.h) (the settings, what each hit wears,
-what wear does, rail contacts), both with [tests](../Extension/BoardBreak/Test/board_break_tests.cpp),
-[board_break_audio.cpp](../Extension/BoardBreak/board_break_audio.cpp) (the sounds),
-[board_break_commands.cpp](../Extension/BoardBreak/board_break_commands.cpp) (console), and the
-deck's place in the mod list in [mod_catalog.cpp](../Engine/Vfs/mod_catalog.cpp).
+Code: the plugin's Lua in [plugins/board-break/plugin](plugins/board-break/plugin): the break,
+wear, rail snaps, sounds, the deck, its console command and its page. It draws through
+`reskate.board` (set, hide, park and toss the board's bones; `fit` every board for the deck in
+the game), and picks the deck with `reskate.package.variants` and `reskate.package.choose`: the
+pack's decks are variants of its mod, which its `reskate-plugin.json` declares. Nothing in ReSkate
+knows Board Break.
 
 ## What the player gets
 
 - A slam of force 10 or more always breaks the board, a lighter one a quarter of the time, rising
   in between (the force is the bail cause's that led to the wipeout). Now and then a board gives way
   while it is ridden: the nose goes.
-- `boardbreak 0|1`, `boardbreak deck [name|number|next]`, `boardbreak snap [nose|mid|tail]` to look
-  at a break (that one stays until `boardbreak mend` or a respawn). The switch and the deck are in
-  the menus beside Road Rash (Mod Options > Player, and the overlay's Skater page). The overlay has
-  a card BOARD BREAK DECK with a button for each deck, on the Mods page and under the switch: a
-  press asks for that deck, the mods are applied and the level loads again with it. The switch is
-  saved with the profile.
+- `boardbreak 0|1`, `boardbreak snap [nose|mid|tail]` to look at a break (that one stays until
+  `boardbreak mend` or a respawn). Its settings are on its page in the overlay's PLUGINS section.
+  `boardbreak deck [name|number|next]` and the DECK card on that page pick the deck: a press asks
+  for that deck, the mods are applied and the level loads again with it.
 - A break plays back in the replay editor as it happened.
 - **Wear and tear.** Each deck's board wears from 0% (new) to 100% (worn out): a landing coming down
   faster than 3.5 m/s, a hit onto a rail or ledge (harder on a slide than on the trucks), every second
@@ -46,14 +43,12 @@ deck's place in the mod list in [mod_catalog.cpp](../Engine/Vfs/mod_catalog.cpp)
   rider goes down with it. Grinds on the trucks never do.
 - **Sounds.** A crack by the size of the break, a metal one on top when the board broke on metal,
   and the body's hits in a bail, louder the harder they land.
-- **Settings**, on the overlay's Skater page in a card BOARD BREAK SETTINGS (with how worn the board
-  is): always break (for replay clips), rail snaps, wear and tear, break sounds, body hit sounds,
-  break sensitivity (10% to 400%), how many breaks the grip tape holds (0% to 100%), wear speed (0%
-  to 500%), and New board. Always break and wear and tear are also rows in the game's Mod Options.
-  The console has them all: `boardbreak always|sensitivity|joined|rails|wear|wearrate|cracks|bodysounds
-  [value]`, `boardbreak worn [percent]`, `boardbreak status`, and for metal `boardbreak metal
-  mark|unmark|clear|list` and `boardbreak materials`. They are kept, with each deck's wear and the
-  materials marked as metal, in `%LOCALAPPDATA%\ReSkate\BoardBreak.settings`.
+- **Settings**, on the plugin's page in the overlay's PLUGINS section (with how worn the board is):
+  always break (for replay clips), rail snaps, wear and tear, break sounds, body hit sounds, break
+  sensitivity, how many breaks the grip tape holds, wear speed, and New board. The console has them
+  all: `boardbreak always|sensitivity|joined|rails|wear|wearrate|cracks|bodysounds [value]`,
+  `boardbreak worn [percent]`, `boardbreak status`. They are kept, with the board's wear, in the
+  plugin's storage.
 - Without a deck pack installed nothing breaks and nothing is changed.
 
 ## How it works
@@ -82,18 +77,15 @@ deck's place in the mod list in [mod_catalog.cpp](../Engine/Vfs/mod_catalog.cpp)
   that passes the hook (the local one, other players'), the stretches of a whole board are moved
   away like a broken board's deck. The call into Board Break is the last thing the hook does, after
   another player's pose has been written, so that pose's bones do not bring them back.
-- **Which deck is in the game** is a question for the mod list, because any mod that reshapes the
-  deck replaces the same mesh and the one higher in the order has it. When the mods are put
-  together, the Board Break deck the player chose goes first, and what would fight it is set
-  aside for the run: the other Board Break decks, and other mods whose bundle lists name the
-  deck's bundle. Those are left out whole (with the breakable deck in place of its own, a wide-deck
-  mod has its trucks and wheels on a deck they were not made for). mods.json is not changed; the
-  mod list shows them as SET ASIDE.
-- **Another deck without a restart.** The deck mesh is in the items superbundle, which a live apply
-  of the mods already refreshes, and the game reads the mesh when a level loads. Choosing a deck
-  saves the choice, applies the mods and loads the level again (live_mods.h).
-- **The choice** is a line in `%LOCALAPPDATA%\ReSkate\BoardBreak.deck`, not a profile preference:
-  the mods are put together before the profile is there.
+- **Which deck is in the game.** Any mod that reshapes the deck replaces the same mesh, so the
+  pack's decks are variants of its mod: one is in the game at a time, the one the player chose
+  (else the first of the manifest's `order`). The manifest names the deck's bundle in `displaces`,
+  so any other mod that brings a deck model is set aside while a deck is in the game (with the
+  breakable deck in place of its own, a wide-deck mod has its trucks and wheels on a deck they
+  were not made for). The mod list shows those as SET ASIDE.
+- **Another deck without a restart.** `reskate.package.choose(deck)` keeps the choice, applies the
+  mods and loads the level again: the deck mesh is in the items superbundle, which a live apply
+  refreshes, and the game reads it when a level loads.
 - **The sound** is a wave file from the `sounds` folder of an installed deck pack (subfolders
   `light`, `medium`, `heavy`, by the size of the break), played straight to the speakers.
 - **The slam's force** comes through No Bail's existing hooks: the cause it records for the watched
@@ -139,35 +131,35 @@ deck's place in the mod list in [mod_catalog.cpp](../Engine/Vfs/mod_catalog.cpp)
 - **The sounds** play through XAudio2 on a thread of their own, several at once and each at its own
   loudness; 16-bit and 32-bit float wave files both play.
 - **Wider decks, wider trucks.** The game puts each wheel on its truck's bone along the axle, about
-  0.0876 m out. A deck that says so (deck.ini `axle`) has its wheels set further apart, or closer,
-  by the render pose hook: set, not scaled, so a pose that comes by twice is not moved twice, and
-  only what is drawn changes. The deck's own truck model is made to match.
-- Off, the board holds. Without a deck pack in the game the hook returns at once.
+  0.0876 m out. A deck that says so (deck.ini `axle`) has its wheels set further apart, or closer:
+  the plugin reads it and asks `reskate.board.fit{plates = true, axle = ...}`, which sets them in
+  the render pose hook (set, not scaled, so a pose that comes by twice is not moved twice, and only
+  what is drawn changes) and holds the baseplates on the deck, on every board. The deck's own truck
+  model is made to match.
+- Off, the board holds. With no deck in the game the plugin fits nothing.
 
-## The deck packs
+## The deck pack
 
-A deck is a content mod's copy of the deck model (no code), and comes in one of two ways:
+A deck is a copy of the deck model (no code). The Board Break deck pack holds a deck in each
+`decks/<name>/`, laid out like a mod folder (`layout.toc`, `Win32/...`), and the plugin beside
+them (`reskate-plugin.json`, `plugin/`). The plugin's manifest declares the decks:
 
-- a mod folder named `Board_Break_<Name>` holds the deck `<name>`;
-- a deck pack, a mod folder of any name, holds a deck in each `decks/<name>/`, laid out like a mod
-  folder (`layout.toc`, `Win32/...`). The launcher installs one mod folder per package, so this is
-  how one package brings every deck. When the mods are put together each deck inside becomes a mod
-  of its own for the run, listed as `<folder>#<name>`: it is chosen, set aside and switched like a
-  deck in a folder of its own (its archives are placed like a disabled mod's). mods.json and the
-  mod list only know the pack, which counts as loaded when one of its decks is. The launcher takes
-  a folder for a mod only when it has a `layout.toc` of its own. That layout is not one of the
-  pack's decks, whatever the folder is named, and is set aside like any other deck model; it is
-  what an older ReSkate loads from the pack. ReSkate 2.0.6 knows a deck by its folder's name only,
-  so a pack in a folder named `Board_Break_<Name>` (the package `Board_Break_Pack`, installed as
-  `Team-Board_Break_Pack`) with a breakable deck as its own layout breaks boards there with that
-  one deck, and brings all its decks from this version on. The truck model with the baseplates on
-  the effectors belongs in the decks inside the pack only: a ReSkate that does not place those
-  bones would draw the baseplates turning with the hangers, and such a version reads the pack's
-  own layout, never `decks/`.
+```json
+"variants": {
+    "folder": "decks",
+    "order": ["standard", "wide", "concave", "powell", "slim", "egg", "square", "shaped", "oldschool", "pig"],
+    "displaces": ["deck_gen_popsicle_cas_main_bundlereftable"]
+}
+```
 
-The name is what the deck goes by. The ten the feature was made with are standard, wide,
-concave, powell, slim, egg, square, shaped, oldschool and pig, and the console also knows those by
-number. Any other deck that follows the recipe works, with no change to ReSkate:
+The pack's own `layout.toc` is set aside while one of its decks is in the game; it is what an older
+ReSkate loads from the pack. The truck model with the baseplates on the effectors belongs in the
+decks inside the pack only: a ReSkate that does not place those bones would draw the baseplates
+turning with the hangers, and such a version reads the pack's own layout, never `decks/`.
+
+The name is what the deck goes by (its folder's name: letters, digits, `_` and `-`). The ten the
+feature was made with are in the manifest's `order`, which is also how the console numbers them.
+Any other deck folder that follows the recipe works, with no change to ReSkate or the plugin:
 
 - Start from the deck mesh as ReSkate Studio exports it (three parts on the bone Deck: the grip
   sheet, the wood, and a plain copy of the whole deck). Studio only takes back a mesh whose
@@ -186,10 +178,9 @@ number. Any other deck that follows the recipe works, with no change to ReSkate:
 - The sounds are `sounds/light|medium|heavy|metal|body/*.wav` in the folder of any mod that brings
   a deck (a crack size without sounds of its own takes the nearest that has some), and
   `sounds/metal/materials.txt` may list the level's materials that are metal, by number.
-- A deck may say something of itself in a `deck.ini` in its folder (a pack's `decks/<name>/`, or the
-  `Board_Break_<Name>` folder): `label = Old School`, its name in the menus, and `axle = 1.17`, how
-  far apart its wheels sit against a standard board's (0.8 to 1.6), for a deck wider or narrower
-  than the standard one.
+- A deck may say something of itself in a `deck.ini` in its folder (`decks/<name>/deck.ini`):
+  `label = Old School`, its name in the menus, and `axle = 1.17`, how far apart its wheels sit
+  against a standard board's (0.8 to 1.6), for a deck wider or narrower than the standard one.
 
 ## Seen working in game
 
@@ -232,8 +223,8 @@ too fast (the rates are a third of that now).
 - The online route: all of the above ran on the offline profile.
 - The replay editor on this branch (the replay was checked on the older build the feature was
   developed on).
-- The deck card with a deck that is not one of the eight, and with none installed (it draws
-  nothing then).
+- The plugin's DECK card and `boardbreak deck` (2026-10-20, built and tested without the game):
+  choosing a deck, a deck that is not one of the ten, and a pack with no decks.
 - A board that does not pass the render pose hook, with the truck model from a pack: its
   baseplates would follow the hangers.
 - A mod that brings a truck model of its own beside a deck pack: the pack's is the one that loads.

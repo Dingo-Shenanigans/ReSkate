@@ -46,7 +46,7 @@ int main() {
     check(realistic != nullptr, "Realistic is a built-in preset");
     check(hardcore != nullptr, "Hardcore is a built-in preset");
     if (realistic && hardcore) {
-        check((preset_dial("Hardcore").modes & mode_realistic) != 0, "Hardcore shows on the REALISTIC list");
+        check(preset_dial("Hardcore").topic == topic_game && preset_dial("Realistic").topic == topic_game, "Hardcore shows beside Realistic (WHOLE GAME)");
         // Every value Realistic turns down, Hardcore turns down at least as far, so switching
         // from one to the other never makes the game easier.
         for (const auto &rule : realistic->rules) {

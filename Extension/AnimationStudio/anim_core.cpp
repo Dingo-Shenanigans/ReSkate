@@ -1053,9 +1053,13 @@ std::vector<std::uint8_t> clip_bytes(const Clip& clip) {
     put(&frames, 4);
     put(&clip.takeoff, 4);
     put(&clip.landing, 4);
-    const std::uint8_t has_board = board ? 1 : 0;
-    put(&has_board, 1);
+    const bool turned = !clip.turned_only.empty();
+    require(!turned || clip.turned_only.size() == clip.joints, "the clip's rotation-only mask has the wrong size");
+    require(std::all_of(clip.turned_only.begin(), clip.turned_only.end(), [](auto value) { return value <= 1; }), "bad rotation-only mask");
+    const std::uint8_t flags = (board ? 1 : 0) | (turned ? 2 : 0);
+    put(&flags, 1);
     put(clip.times.data(), clip.times.size() * 4);
+    if (turned) put(clip.turned_only.data(), clip.turned_only.size());
     std::vector<std::uint8_t> moves(clip.joints, 0);
     const auto same = [](const Joint& a, const Joint& b) {
         for (std::size_t i = 0; i < 3; ++i)
@@ -1102,13 +1106,21 @@ Clip clip_from_bytes(std::span<const std::uint8_t> bytes) {
     get(&clip.takeoff, 4);
     get(&clip.landing, 4);
     require(clip.joints > 0 && clip.joints <= 512 && frames > 0 && frames <= 20000, "the clip is empty or too large");
+    bool turned = false;
     if (v3) {
-        std::uint8_t has_board{};
-        get(&has_board, 1);
-        board = has_board != 0;
+        std::uint8_t flags{};
+        get(&flags, 1);
+        require(flags <= 3, "the clip file is a newer one");
+        board = (flags & 1) != 0;
+        turned = (flags & 2) != 0;
     }
     clip.times.resize(frames);
     get(clip.times.data(), frames * 4ull);
+    if (turned) {
+        clip.turned_only.resize(clip.joints);
+        get(clip.turned_only.data(), clip.turned_only.size());
+        require(std::all_of(clip.turned_only.begin(), clip.turned_only.end(), [](auto value) { return value <= 1; }), "bad rotation-only mask");
+    }
     for (std::size_t i = 0; i < clip.times.size(); ++i)
         require(std::isfinite(clip.times[i]) && clip.times[i] >= 0 && (i == 0 || clip.times[i] >= clip.times[i - 1]), "the clip's times are out of order");
     if (v3) {
@@ -1186,6 +1198,9 @@ Vec3 mirror_board_vector(const Vec3& v) noexcept { return {-v[0], v[1], v[2]}; }
 Clip mirror_clip(const Clip& clip) {
     if (clip.joints != skeleton_joints) throw std::runtime_error("only a skater clip can be mirrored");
     Clip out = clip;
+    if (clip.turned_only.size() == clip.joints)
+        for (std::uint32_t joint = 0; joint < clip.joints; ++joint)
+            out.turned_only[mirror_joint[joint]] = clip.turned_only[joint];
     for (std::size_t frame = 0; frame < clip.times.size(); ++frame)
         for (std::uint32_t joint = 0; joint < clip.joints; ++joint)
             out.frames[frame * clip.joints + mirror_joint[joint]] = mirror_pose(clip.frames[frame * clip.joints + joint]);

@@ -588,10 +588,6 @@ void object_codec() {
     served.sync_effects = false;
     const auto plain = decode(encode(served));
     check(plain && !plain->sync_effects && listed && listed->sync_effects, "The roster's skater effects rule failed to round-trip");
-    served.sync_drones = false;
-    const auto grounded = decode(encode(served));
-    check(grounded && !grounded->sync_drones && grounded->sync_effects == served.sync_effects && listed && listed->sync_drones,
-          "The roster's drones rule failed to round-trip");
     served.object_scaling = false;
     const auto fixed = decode(encode(served));
     check(fixed && !fixed->object_scaling && listed && listed->object_scaling, "The roster's object scaling rule failed to round-trip");
@@ -696,6 +692,22 @@ void chat_codec() {
     auto bad = encode(typing);
     bad.back() = 2; // the on/off byte; anything but 0 or 1 is refused
     check(!decode(bad), "A typing notice with a bad flag decoded");
+    // At the game: nothing but the header, from a sender.
+    Packet present;
+    present.kind = PacketKind::present; present.session = 9; present.epoch = 10; present.map = 11;
+    present.source = 76561198000000001ULL;
+    const auto bytes_present = encode(present);
+    const auto here = decode(bytes_present);
+    check(here && here->kind == PacketKind::present && here->source == present.source && bytes_present.size() == packet_header_size,
+          "A presence notice failed to round-trip, or carried more than its header");
+    check(decode_wire(encode_wire(present)) && decode_wire(encode_wire(present))->kind == PacketKind::present,
+          "A presence notice failed the wire codec");
+    auto longer = bytes_present;
+    longer.push_back(0);
+    longer[8] = 1; // its payload length
+    check(!decode(longer), "A presence notice with a payload decoded");
+    present.source = 0;
+    check(reject(present), "A presence notice without a sender was encoded");
 }
 // Linked throwdowns: the packet carries one opaque message; the message codec is strict.
 void throwdown_codec() {
@@ -729,6 +741,19 @@ void throwdown_codec() {
         ThrowdownMessage m; m.kind = kind; m.leader = leader; m.id = 5;
         check(decode_throwdown(encode_throwdown(m)) == m, "Throwdown control message failed to round-trip");
     }
+    // An older client's plugin mode tag (still decoded, never sent).
+    ThrowdownMessage mode;
+    mode.kind = ThrowdownMessage::Kind::mode; mode.leader = leader; mode.id = 0x7c8bf0b2;
+    mode.challenge = "demo/duel"; mode.series = "duel"; mode.value = 6;
+    check(decode_throwdown(encode_throwdown(mode)) == mode, "Throwdown mode failed to round-trip");
+    auto stock_flag = mode; stock_flag.series.clear();
+    check(decode_throwdown(encode_throwdown(stock_flag)) == stock_flag, "A mode on Spot Battle's flag failed to round-trip");
+    auto no_plugin = mode; no_plugin.challenge = "duel";
+    check(!valid_throwdown(no_plugin), "A mode without its plugin was valid");
+    auto crowded = mode; crowded.value = 11;
+    check(!valid_throwdown(crowded), "A mode for 11 players was valid");
+    auto spaced_flag = mode; spaced_flag.series = "du el";
+    check(!valid_throwdown(spaced_flag), "A flag name with a space was valid");
     // Coop challenges.
     ThrowdownMessage challenge;
     challenge.kind = ThrowdownMessage::Kind::challenge_start; challenge.leader = leader; challenge.id = 3;
@@ -932,6 +957,13 @@ void dedicated_server_codec() {
     auto no_boosts = roster;
     no_boosts.guest_boosts = false;
     check(decode(encode(no_boosts)) && !decode(encode(no_boosts))->guest_boosts, "Guest boosts permission lost");
+    auto no_ollies = voting;
+    no_ollies.guest_ollies = false;
+    const auto ollies_decoded = decode(encode(no_ollies));
+    check(ollies_decoded && !ollies_decoded->guest_ollies && ollies_decoded->enforce_tuning &&
+              ollies_decoded->server_votes == (server_vote_map | server_vote_time),
+          "Guest ollies permission lost, or it spilled into the other roster bits");
+    check(decoded && decoded->guest_ollies, "Guest ollies should be allowed by default");
     check(decoded && decoded->enforce_tuning, "Physics tuning enforcement lost");
     auto own_tuning = voting;
     own_tuning.enforce_tuning = false;
@@ -986,36 +1018,13 @@ void dedicated_server_codec() {
         try { encode(fx); } catch (const std::invalid_argument &) { refused = true; }
         check(refused, "A material past the game's table was encoded");
     }
-    // A player's FPV drone position, for the marker others see.
+    // 36 was the FPV drone's marker: no game sends it now, and none is made.
     {
         Packet d;
-        d.kind = PacketKind::drone; d.session = 9; d.epoch = 10; d.map = 11; d.source = 12;
-        d.drone_active = true; d.drone_position = {594.5f, 199.15f, -1070.1f};
-        d.drone_rotation = {0.f, 0.38268343f, 0.f, 0.92387953f}; // 45 degrees of yaw
-        const auto back = decode(encode(d));
-        check(back && back->kind == PacketKind::drone && back->drone_active && back->drone_position == d.drone_position &&
-                  back->drone_rotation == d.drone_rotation,
-              "A drone position and facing failed to round-trip");
-        auto tilted = d;
-        tilted.drone_rotation = {0.f, 0.f, 0.f, 0.f};
-        bool turned_away{};
-        try { encode(tilted); } catch (const std::invalid_argument &) { turned_away = true; }
-        check(turned_away, "A drone facing that is not a rotation was encoded");
-        tilted.drone_rotation = {std::numeric_limits<float>::quiet_NaN(), 0.f, 0.f, 1.f};
-        turned_away = false;
-        try { encode(tilted); } catch (const std::invalid_argument &) { turned_away = true; }
-        check(turned_away, "A non-finite drone facing was encoded");
-        d.drone_active = false;
-        const auto stopped = decode(encode(d));
-        check(stopped && !stopped->drone_active, "A drone stop notice failed to round-trip");
-        d.drone_position = {std::numeric_limits<float>::quiet_NaN(), 0.f, 0.f};
+        d.kind = static_cast<PacketKind>(36); d.session = 9; d.epoch = 10; d.map = 11; d.source = 12;
         bool refused{};
         try { encode(d); } catch (const std::invalid_argument &) { refused = true; }
-        check(refused, "A non-finite drone position was encoded");
-        d.drone_position = {2.0e6f, 0.f, 0.f};
-        refused = false;
-        try { encode(d); } catch (const std::invalid_argument &) { refused = true; }
-        check(refused, "A drone position outside the world was encoded");
+        check(refused, "The old drone packet was encoded");
     }
     extras.kind = PacketKind::physics_extras; extras.session = 9; extras.epoch = 10; extras.map = 11; extras.source = player;
     check(decode(encode(extras)) && decode(encode(extras))->kind == PacketKind::physics_extras && decode(encode(extras))->extras.empty(),
@@ -1176,6 +1185,28 @@ void dedicated_server_codec() {
     const auto offer_arrived = decode_wire(encode_wire(offered));
     check(offer_arrived && offer_arrived->map_package == "Sandos-Vancouver_Plaza" && offer_arrived->destination == offered.destination,
           "The map's package lost from a map offer");
+    // A dedicated server's required plugins ride on its map offer.
+    check(offer_arrived && offer_arrived->required_plugins.empty(), "A map offer without plugins arrived with some");
+    auto requiring = offered;
+    requiring.required_plugins = {"neekgate-FPV_Drone", "Team-Filmer-1.2.0"};
+    const auto required_arrived = decode_wire(encode_wire(requiring));
+    check(required_arrived && required_arrived->required_plugins == requiring.required_plugins &&
+              required_arrived->map_package == "Sandos-Vancouver_Plaza",
+          "The required plugins lost from a map offer");
+    for (const auto &bad : std::vector<std::vector<std::string>>{{""}, {"Filmer"}, {"Team-Filmer", "team-filmer-1.0.0"},
+                                                                 {"Team-A/B"}, std::vector<std::string>(max_required_plugins + 1, "Team-X")}) {
+        auto wrong = offered;
+        wrong.required_plugins = bad;
+        check(reject(wrong) && !valid_required_plugins(bad), "A required plugin list that is not one encoded");
+    }
+    {
+        std::vector<std::string> sixteen;
+        for (std::size_t i = 0; i < max_required_plugins; ++i) sixteen.push_back("Team-Plugin_" + std::to_string(i));
+        check(valid_required_plugins(sixteen) && valid_required_plugins({}), "A full required plugin list refused");
+    }
+    auto wrong_kind = packaged;
+    wrong_kind.required_plugins = {"Team-Filmer"};
+    check(reject(wrong_kind), "Required plugins encoded on something other than a map offer");
     for (const char *bad : {"Sandos", "Sandos-", "-Plaza", "San dos-Plaza", "Sandos-Plaza-2.0", "Sandos-Plaza-2.0.0.1", "../x-y",
                             "Sandos-Pla/za", "Sandos-Plaza-1.2.3-4", "https://thunderstore.io/x-y"}) {
         auto wrong = packaged;

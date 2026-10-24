@@ -36,6 +36,9 @@ struct Catalogs {
     Json challenges = Json::object();
     std::vector<std::string> entitlements;
     std::set<std::string> open_items;
+    // Items some record grants (an offer, bundle, pack or reward), free or not,
+    // and the ones tagged as a brand collab.
+    std::set<std::string> granted_items, collab_items;
     // Build-kit categories in record order.
     std::vector<ObjectCategory> object_categories;
     std::vector<TravelLocation> travel_locations;
@@ -52,9 +55,36 @@ struct Catalogs {
     // Song ("Artist - Title") -> its cdn:/ cover art: a song record carries a field-10 message
     // (10.10 artist, 10.11 title, 10.12 artwork).
     std::map<std::string, std::string, std::less<>> music_song_artwork;
+    // Objects mods add, as their reskate-objects.json describes them (add_mod_objects): lower-case
+    // owned asset id -> {"title", "description", "group", "object_type"}, read like `items`. Kept
+    // apart from `items`, which stays the game's own catalogue (store checks, the mod badge).
+    Json mod_objects = Json::object();
     bool reserved(const std::string& key) const;
 };
 // Read once, on first use. Empty (available == false) when no pack is installed.
 const Catalogs& catalogs();
 Catalogs read_catalogs(const std::filesystem::path& folder);
+
+// A mod's names and Quick Drop families for the objects it adds, in its folder:
+//   {"schema": 1,
+//    "categories": [{"id": "category_mine", "title": "My Objects", "priority": 900}],
+//    "families": [{"id": "qdparent_mine_box", "title": "Box", "category": "category_mine"}],
+//    "objects": [{"key": "own_bkprops_mine_box_00001", "title": "Box, Red", "family": "qdparent_mine_box"}]}
+// A family is one Object Browser tile: its objects are the choices X / Square offers there, as with
+// the game's own families. A family may go in one of the game's categories, and an object in one of
+// the game's families. Every list and field but the ids and keys is optional; an entry without a
+// priority goes after the ones already there.
+inline constexpr char mod_objects_file[] = "reskate-objects.json";
+// Adds one mod's reskate-objects.json to `out`. Only adds: a category or family id that is already
+// taken, or an object the game's catalogue (or a mod read earlier) already has, is refused, so a
+// mod can name and group its own objects but never the game's. Returns what was refused, a line
+// each. Throws std::exception on a document that is not this shape, so the caller can skip it.
+std::vector<std::string> add_mod_objects(Catalogs& out, const std::string& json);
+// The process-wide catalogues plus each mod's file (mod name, path), highest priority first.
+// Called once while the runtime starts, before the game runs. Missing files are skipped.
+struct ModObjectsReport {
+    std::size_t mods{}, objects{};
+    std::vector<std::string> notes;  // a line each for every file or entry left out
+};
+ModObjectsReport install_mod_objects(const std::vector<std::pair<std::string, std::filesystem::path>>& files);
 }

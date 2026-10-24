@@ -8,6 +8,7 @@ void trainer_page(SkateMenu &, const Model &, const CallbacksV3 &);
 bool trainer_take_open();
 // True once after a request: the menu should switch to the trainer page.
 bool trainer_page_wanted();
+bool trainer_cheats_wanted(); // `trainer open movement`: Skater > Cheats
 }
 namespace dingosdk::overlay {
 // True while the HUD has something to draw, so the overlay renders with the menu closed.

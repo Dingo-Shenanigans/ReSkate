@@ -15,17 +15,16 @@ the launcher, the runtime that loads into the game, and the dedicated server.
   - Join dedicated servers from the in-game server browser.
   - Proximity voice chat, and text chat with emotes and an optional bad-word filter.
   - Parties in lobbies and on dedicated servers: invite, join, leave, promote.
-  - Throwdowns with other players (Jam, Spot Battle and S.K.A.T.E.), and co-op challenges.
+  - Throwdowns with other players (Jam, Spot Battle and S.K.A.T.E.), and co-op challenges. Plugins add
+    throwdown modes of their own to the Throwdowns page ([contrib/throwdown-kit.md](contrib/throwdown-kit.md)).
 - **In-game menu and console.**
   - Map and fast travel.
   - World: time of day, population, district levels, rotating parks.
   - The **Park Editor**: place, move and save objects with freecam, snapping and undo. Save a selection as a
     set and place it again anywhere, on any map.
   - Skater options: first person, movement, boosts, noclip.
-  - **Hall of Meat** (off by default): bail and see the bones you hurt, with a skate. 3 style Meat card.
-  - **Grind exit triggers** (off by default): press LT or RT while grinding to pick the side you pop
-    out to (toe / heel, or left / right), whatever trick and spin you do
-    ([how it works](Extension/Skater/GRIND_EXITS.md)).
+  - Hall of Meat, grind exit triggers, Board Break, Road Rash and the FPV drone are plugin mods now,
+    installed like any other mod. Board Break and Road Rash ship inside their asset mods.
   - Progression, controls, graphics and multiplayer settings.
 - **Mods.**
   - Drop a mod in `Mods/` and it is merged into the game at launch. Mods can add custom maps, loading
@@ -85,7 +84,7 @@ custom map and then join a server on another map, the screen can stay black
 ### macOS (NotProton / CrossOver)
 
 Steam for Mac with a Wine-based compatibility tool works much the same way; see
-[MACOS-SETUP.md](MACOS-SETUP.md) for its launch option.
+[macOS](https://docs.reskate.dev/macos) in the docs for its launch option.
 
 ### Multiplayer map downloads
 
@@ -112,6 +111,10 @@ being forcibly interrupted. Retry after that work has finished, without restarti
 
 The menu and console keys can be changed in the launcher's Settings.
 
+The music player can play Spotify, YouTube Music, your own music files, internet radio and any app
+on your PC: type `music setup` in the console, and see
+[Music sources](https://docs.reskate.dev/music-sources) in the docs.
+
 In **MAP → ROTATING PARKS** and the controller-friendly **MOD OPTIONS → PARKS** screen,
 **Load Random Parks** chooses and loads one random layout for each of
 San Vansterdam's three slots. Each supported layout has an equal chance; empty lots are excluded and
@@ -135,6 +138,29 @@ accepts `park random` from its console or an admin.
 | Profile (skater, progress, parks) | `%LOCALAPPDATA%\ReSkate\profiles\offline\` |
 | The game's own settings and saves | `%LOCALAPPDATA%\ReSkate\Game\` (kept apart from the normal game) |
 | Launcher settings | `ReSkateLauncher.settings.json` beside the launcher |
+
+### Troubleshooting
+
+**My antivirus says ReSkate is a virus.** It is a false alarm. ReSkate has to load itself into the game as
+it starts, and antivirus programs distrust anything that does that, most of all new programs they have not
+seen much of yet. Only download ReSkate from this page's
+[Releases](https://github.com/Dingo-Shenanigans/ReSkate/releases). If your antivirus removed a file, you can
+bring it back: Windows Security → Protection history → find ReSkate → Restore. An error about SHA-256 right
+after an update usually means the antivirus took the new file.
+
+**The launcher says it cannot run from Steam's skate. folder.** Move `ReSkateLauncher.exe` and `ReSkate.dll`
+into a new, empty folder of their own and run the launcher from there (see [Getting started](#getting-started)).
+
+**The ReSkate menu (Insert) doesn't open.** ReSkate isn't running. On Windows, always start the game with
+**PLAY** in the ReSkate launcher: pressing Play on skate. in Steam starts the normal game, without ReSkate.
+On Linux and macOS, use the launch option in [Linux (Proton)](#linux-proton) or
+[macOS](https://docs.reskate.dev/macos) in the docs.
+
+**The game crashes.** Turn your mods off and try again first: many crashes come from mods. If it still
+crashes, [open an issue](https://github.com/Dingo-Shenanigans/ReSkate/issues/new/choose) with your ReSkate
+version, when it happened and what you were doing, and attach `logs\ReSkate.log`. With **Send crash reports**
+on (it is by default), the crash details have already been sent; see
+[Crash reports and privacy](#crash-reports-and-privacy) for what is sent and how to turn it off.
 
 ## Mods
 
@@ -173,6 +199,27 @@ accepts `park random` from its console or an admin.
   ReSkate serves registered image bytes through a process-local HTTP endpoint bound only to `127.0.0.1`
   on an automatically selected port; no internet hosting is needed. The endpoint exposes no filesystem
   routes and retains at most 64 MiB of artwork. Existing content-cache covers keep their priority.
+- A mod that adds Quick Drop objects can name them and group them into families with a
+  `reskate-objects.json` in its folder. A family is one tile in the Object Browser, and X / Square on it
+  picks between its objects, the way the game's own sizes and colours work:
+
+  ```json
+  {
+    "schema": 1,
+    "categories": [{"id": "category_shoebox", "title": "Shoebox Pads"}],
+    "families": [{"id": "qdparent_shoebox_dc", "title": "DC Shoebox", "category": "category_shoebox"}],
+    "objects": [
+      {"key": "own_bkrails_shoebox_dc_12m", "title": "DC Shoebox 12m", "family": "qdparent_shoebox_dc"},
+      {"key": "own_bkrails_shoebox_dc_6m_red", "title": "DC Shoebox 6m, Red", "family": "qdparent_shoebox_dc"}
+    ]
+  }
+  ```
+
+  `key` is the object's owned asset key. A family can also go in one of the game's categories
+  (`category_ramp`, `category_rail`, ...), and an object in one of the game's families. Titles, a
+  `description` and `priority` (lower first) are optional. The file only adds: ids that are already taken
+  and the game's own items are left out and logged, so a mod cannot rename or regroup the game's objects.
+  The file is read when the game starts.
 
 Only install mods you trust. Mods change game data. Custom Lua scripts (`scripts/Custom`) are
 switched off in this version: nothing in that folder is read or run.
@@ -249,7 +296,7 @@ Useful launcher flags:
 | `--log-trace` | the same as `--log-level=trace`; an explicit `--log-level` wins |
 | `-wconsole` | also show the log live in a console window while the game runs |
 | `--menu-key=0x2D`, `--console-key=0xC0` | menu and console keys (virtual-key codes) |
-| `-map <name>` | load that map as soon as the game is up, e.g. `-map "San Vansterdam"`; the name is a map's name, short name or asset path, or the start of one |
+| `-map <name>` | load that map as soon as the game is up, e.g. `-map "San Vansterdam"`; the name is a map's name, short name or asset path, or the start of one. Over the start map chosen in Settings > GAME |
 | `--no-loose-files` | ignore loose Lua and config files beside the game |
 | `--gpu-diagnostics` | record extra detail when the graphics driver crashes (DRED) |
 
@@ -298,13 +345,16 @@ The source tree loosely follows Frostbite's own layout.
 | `assets/`, `config/` | files built into the binaries: launcher art, emotes, default profile settings |
 | `cmake/` | the build, split by area |
 
-### Supporting a new game build
+### The supported game build
 
-Feature code never contains addresses. Everything tied to one `Skate.exe` lives in
-`Engine/Game/Build/<build>/` and in the pins of
-[supported_build.h](Engine/Game/Build/supported_build.h): file hashes, the Steam depot and manifest, and
-the content cache. A new game build means a new table and new pins. Most hooks and patches check the
-bytes they expect before touching them, so code from the wrong build is refused rather than patched.
+ReSkate supports one `Skate.exe`, build 20260929, and stays on it: it does not follow newer Steam
+builds. The launcher downloads that build, pinned in
+[supported_build.h](Engine/Game/Build/supported_build.h) by file hashes, the Steam depot and manifest, and
+the content cache.
+
+Feature code never contains addresses. Everything tied to the game's code lives in
+`Engine/Game/Build/20260929/`. Most hooks and patches check the bytes they expect before touching them,
+so a different `Skate.exe` is refused rather than patched.
 
 ## Crash reports and privacy
 

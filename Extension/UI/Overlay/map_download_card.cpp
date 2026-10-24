@@ -6,7 +6,9 @@
 
 // The card for a map a multiplayer session needs and this PC does not have
 // (Extension/Assets/map_download.h), laid out as the mod's page is: its icon, name, author,
-// version and description, then what is being asked or done. It asks whether to download it,
+// version, size and description, then what is being asked or done. When a dedicated server
+// needs plugins too, or plugins alone, one card lists everything instead (draw_asked_list), so
+// the player is asked once. It asks whether to download it,
 // in the middle of the screen with the controls under it as the game's own menus have them.
 // Once the player has said yes it becomes a small card at the right edge, with the download,
 // the install and the apply, so they can skate on while they wait; it goes when the map is in
@@ -119,7 +121,12 @@ ImU32 faded(ImU32 colour, float alpha) {
 }
 std::string megabytes(std::uint64_t bytes) {
     const auto mb = static_cast<double>(bytes) / (1024.0 * 1024.0);
-    return mb >= 1024.0 ? std::format("{:.2f} GB", mb / 1024.0) : std::format("{:.0f} MB", mb);
+    return mb >= 1024.0 ? std::format("{:.2f} GB", mb / 1024.0) : bytes && mb < 1.0 ? std::string("1 MB") : std::format("{:.0f} MB", mb);
+}
+// Whether the card lists what is asked for: a map with plugins, or plugins alone. A map alone
+// has its own card, as it always had.
+bool listed(const MapDownloadCard& of) {
+    return of.items.size() > 1 || (of.items.size() == 1 && of.items.front().plugin);
 }
 }
 
@@ -143,7 +150,14 @@ void draw_progress(State& s) {
     const auto display = ImGui::GetIO().DisplaySize;
     const float u = std::min(display.x / 3840.0f, display.y / 2160.0f);
     const bool downloading = card.stage == 2, applying = card.stage == 4;
-    const char* title = downloading ? "DOWNLOADING MAP" : card.stage == 3 ? "INSTALLING MAP" : "APPLYING MAP";
+    // Several packages: which of them is in hand, and its name.
+    const bool several = listed(card);
+    const auto count = several && !applying ? std::format(" {} OF {}", card.current + 1, card.items.size()) : std::string();
+    const std::string title = downloading ? (several ? "DOWNLOADING" + count : "DOWNLOADING MAP")
+                            : card.stage == 3 ? (several ? "INSTALLING" + count : "INSTALLING MAP")
+                            : several ? "APPLYING MODS" : "APPLYING MAP";
+    const std::string name = several && !applying && card.current < card.items.size() ? card.items[card.current].name
+                           : card.map.empty() && !card.items.empty() ? card.items.front().name : card.map;
     const std::string status = downloading ? (card.total ? megabytes(card.received) + " of " + megabytes(card.total) : megabytes(card.received))
                              : card.stage == 3 ? std::string("Putting it in your Mods folder...")
                              : card.step_name.empty() ? std::string("Adding it to the game...") : card.step_name + "...";
@@ -161,10 +175,10 @@ void draw_progress(State& s) {
     else skate_theme::rough_rect(draw, icon_min, icon_max, skate_theme::tile_light, 0x1c1, u * 2);
     const float x = left + icon + between, right = max.x - inset;
     float y = top;
-    draw->AddText(bold, label_size, ImVec2(x, y), theme::blue, title);
+    draw->AddText(bold, label_size, ImVec2(x, y), theme::blue, title.c_str());
     y += label_size + 12 * u;
     draw->PushClipRect(ImVec2(x, y - name_size), ImVec2(right, y + name_size * 2), true);
-    draw->AddText(bold, name_size, ImVec2(x, y), theme::paper, card.map.c_str());
+    draw->AddText(bold, name_size, ImVec2(x, y), theme::paper, name.c_str());
     draw->PopClipRect();
     y += name_size + 18 * u;
     const float share = downloading ? (card.total ? static_cast<float>(card.received) / static_cast<float>(card.total) : -1.0f)
@@ -185,13 +199,138 @@ void draw_progress(State& s) {
 }
 
 void draw_asked_map(State& s);
+void draw_asked_list(State& s);
 void draw_map_download() {
     if (card.stage) {
         auto& s = state();
         if (card.stage != 1) draw_progress(s);
+        else if (listed(card)) draw_asked_list(s);
         else draw_asked_map(s);
     }
     draw_message(); // (over whatever else is up)
+}
+
+// A dedicated server's plugins, with its map when that is missing too: one card that lists all
+// of it, asked once. Laid out as the map's card is (the pause menu's look), a row for each
+// package: what it is, its name and author, and what getting it takes. Answered the same ways.
+void draw_asked_list(State& s) {
+    auto* bold = s.menu.bold ? s.menu.bold : ImGui::GetFont();
+    auto* body = s.menu.body ? s.menu.body : ImGui::GetFont();
+    auto* heading = s.menu.heading ? s.menu.heading : bold;
+    const auto display = ImGui::GetIO().DisplaySize;
+    const float u = std::min(display.x / 3840.0f, display.y / 2160.0f);
+    constexpr ImU32 sticky = IM_COL32(236, 215, 108, 255), sticky_dim = IM_COL32(150, 140, 86, 255);
+    const char* host = card.server ? "server" : "host";
+    const auto width_of = [](ImFont* font, float size, const std::string& text) { return font->CalcTextSizeA(size, FLT_MAX, 0, text.c_str()).x; };
+    const bool with_map = !card.items.front().plugin;
+    const bool all_here = std::all_of(card.items.begin(), card.items.end(), [](const MapDownloadCard::Item& item) { return item.installed; });
+
+    const char* title = with_map ? (card.moved ? "MAP CHANGED" : "MAP AND PLUGINS NEEDED") : "PLUGINS NEEDED";
+    const auto plugins = static_cast<std::size_t>(std::count_if(card.items.begin(), card.items.end(),
+        [](const MapDownloadCard::Item& item) { return item.plugin; }));
+    const std::string headline = with_map ? std::format("{} and {} {}", card.items.front().name, plugins, plugins == 1 ? "plugin" : "plugins")
+                                          : std::format("{} {}", plugins, plugins == 1 ? "plugin" : "plugins");
+    const std::string why = std::format("The {} needs {} to join. Plugins and maps are the only mods a {} can ask for, and they come from Thunderstore.",
+                                        host, card.items.size() == 1 ? "this" : "these", host);
+    const std::string total = card.bytes ? "Downloads " + megabytes(card.bytes) + " in all" : std::string();
+
+    dingosdk::ControllerInput pad;
+    DingoSDKOverlayReadControllerInput(&pad, true);
+    struct Hint { std::string key; const char* what; };
+    const std::vector<Hint> hints{
+        {pad.available ? std::string("D-pad") : std::string("< >"), "Pick"},
+        {pad.available ? dingosdk::controller_combo_label(0x1000, pad.style) : std::string("Enter"), "Select"},
+        {pad.available ? dingosdk::controller_combo_label(0x2000, pad.style) : std::string("Esc"), "Cancel"}};
+    const float key_scale = u * 2, hint_gap = 36 * u;
+    float hints_width{};
+    for (const auto& hint : hints)
+        hints_width += width_of(bold, 12 * key_scale, hint.key) + 20 * key_scale + width_of(bold, 14 * key_scale, hint.what);
+    hints_width += hint_gap * static_cast<float>(hints.size() - 1);
+
+    const float width = 1500 * u, inset = 44 * u, tall = 110 * u, row = 104 * u, row_gap = 12 * u;
+    const float inner = width - inset * 2;
+    const float label_size = 28 * u, name_size = 64 * u, row_name = 36 * u, row_text = 28 * u, text_size = 32 * u;
+    const auto why_extent = body->CalcTextSizeA(text_size, FLT_MAX, inner, why.c_str());
+    // (A long list is cut short to what fits the screen: the rest are said in a line.)
+    const std::size_t most = std::max<std::size_t>(3, static_cast<std::size_t>((display.y * 0.45f) / (row + row_gap)));
+    const std::size_t shown = std::min(card.items.size(), most);
+    float height = inset + label_size + 20 * u + name_size + 24 * u + why_extent.y + 30 * u +
+                   static_cast<float>(shown) * (row + row_gap) + inset + tall + inset;
+    if (shown < card.items.size()) height += row_text + 12 * u;
+    if (!total.empty()) height += row_text + 18 * u;
+    const float under = 34 * u + 20 * key_scale;
+    const ImVec2 min(std::floor((display.x - width) * 0.5f), std::floor((display.y - height - under) * 0.5f)), max(min.x + width, min.y + height);
+    auto* draw = ImGui::GetForegroundDrawList();
+    draw->AddRectFilled(ImVec2(0, 0), display, IM_COL32(0, 0, 0, s.hub_pointer ? 170 : 110));
+    skate_theme::rough_rect(draw, min, max, IM_COL32(26, 26, 26, 250), 0x4d4, u * 2);
+    const float left = min.x + inset, right = max.x - inset;
+    float y = min.y + inset;
+    draw->AddText(bold, label_size, ImVec2(left, y), theme::blue, title);
+    y += label_size + 20 * u;
+    draw->PushClipRect(ImVec2(left, y - name_size), ImVec2(right, y + name_size * 2), true);
+    draw->AddText(heading, name_size, ImVec2(left, y), theme::paper, headline.c_str());
+    draw->PopClipRect();
+    y += name_size + 24 * u;
+    draw->AddText(body, text_size, ImVec2(left, y), theme::muted, why.c_str(), nullptr, inner);
+    y += why_extent.y + 30 * u;
+
+    // A row for each: MAP or PLUGIN, its name and who made it, and on the right what it takes.
+    for (std::size_t at = 0; at < shown; ++at) {
+        const auto& item = card.items[at];
+        const ImVec2 a(left, y), b(right, y + row);
+        skate_theme::rough_rect(draw, a, b, skate_theme::tile, 0x700 + static_cast<unsigned>(at), u * 2);
+        const std::string kind = item.plugin ? "PLUGIN" : "MAP";
+        const float tag_size = 24 * u, tag_pad = 14 * u, tag_width = 150 * u;
+        const ImVec2 tag_min(a.x + 24 * u, a.y + (row - tag_size - tag_pad * 2) * 0.5f),
+            tag_max(tag_min.x + tag_width, tag_min.y + tag_size + tag_pad * 2);
+        skate_theme::rough_rect(draw, tag_min, tag_max, item.plugin ? theme::blue : sticky, 0x720 + static_cast<unsigned>(at), u * 2);
+        draw->AddText(bold, tag_size, ImVec2(tag_min.x + (tag_width - width_of(bold, tag_size, kind)) * 0.5f, tag_min.y + tag_pad),
+                      skate_theme::black, kind.c_str());
+        const std::string what = item.installed ? "Here, switched off"
+                               : !item.have.empty() ? "Update " + item.have + " \xe2\x86\x92 " + item.version
+                               : item.bytes ? megabytes(item.bytes) : std::string("Download");
+        const float what_width = width_of(bold, row_text, what);
+        const float text_x = tag_max.x + 28 * u, text_right = b.x - 24 * u - what_width - 28 * u;
+        draw->PushClipRect(ImVec2(text_x, a.y), ImVec2(text_right, b.y), true);
+        draw->AddText(bold, row_name, ImVec2(text_x, a.y + 14 * u), theme::paper, item.name.c_str());
+        const auto by = "by " + item.author + (item.version.empty() || !item.have.empty() ? std::string() : "  v" + item.version);
+        draw->AddText(body, row_text, ImVec2(text_x, a.y + 14 * u + row_name + 8 * u), theme::muted, by.c_str());
+        draw->PopClipRect();
+        draw->AddText(bold, row_text, ImVec2(b.x - 24 * u - what_width, a.y + (row - row_text) * 0.5f),
+                      item.installed || item.have.empty() ? theme::paper : theme::blue, what.c_str());
+        y += row + row_gap;
+    }
+    if (shown < card.items.size()) {
+        const auto more = std::format("and {} more", card.items.size() - shown);
+        draw->AddText(body, row_text, ImVec2(left, y), theme::muted, more.c_str());
+        y += row_text + 12 * u;
+    }
+    if (!total.empty()) {
+        draw->AddText(body, row_text, ImVec2(left, y + 6 * u), theme::muted, total.c_str());
+        y += row_text + 18 * u;
+    }
+    y += inset - row_gap;
+    const float button_width = (inner - 24 * u) * 0.5f;
+    const auto button = [&](float at, bool yes, unsigned seed) {
+        const ImVec2 a(at, y), b(at + button_width, y + tall);
+        const bool picked = card.choice == yes;
+        const bool hovered = ImGui::IsMouseHoveringRect(a, b, false);
+        const bool lit = picked || hovered;
+        const ImU32 fill = yes ? (lit ? sticky : sticky_dim) : (lit ? theme::blue : skate_theme::tile_light);
+        skate_theme::rough_rect(draw, a, b, fill, seed, u * 2);
+        if (yes && picked) draw->AddRect(a, b, theme::blue, 0, 0, 6 * u);
+        const std::string label = yes ? (all_here ? "SWITCH ON" : card.items.size() == 1 ? "DOWNLOAD" : "GET ALL") : "CANCEL";
+        const float size = 40 * u;
+        draw->AddText(bold, size, ImVec2(a.x + (button_width - width_of(bold, size, label)) * 0.5f, a.y + (tall - size) * 0.5f),
+                      yes || lit ? skate_theme::black : theme::paper, label.c_str());
+        if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+            if (const auto reply = answer.load()) reply(yes);
+    };
+    button(left, true, 0x53);
+    button(left + button_width + 24 * u, false, 0x54);
+    float x = min.x + (width - hints_width) * 0.5f;
+    const float hint_y = max.y + 34 * u;
+    for (const auto& hint : hints) x += theme::keycap(draw, bold, key_scale, ImVec2(x, hint_y), hint.key.c_str(), hint.what) + hint_gap;
 }
 void draw_asked_map(State& s) {
     // Drawn as the pages of the game's pause menu are (hub_page.cpp): the same unit (one of
@@ -223,6 +362,8 @@ void draw_asked_map(State& s) {
     std::vector<Fact> facts{{"Author", card.author}};
     if (!card.version.empty()) facts.push_back({"Version", card.version});
     facts.push_back({"From", card.installed ? std::string("Your Mods folder, switched off") : std::string("Thunderstore")});
+    // A download or an update. A mod that is here and only switched off has nothing to fetch.
+    if (asking && !card.installed && card.bytes) facts.push_back({"Size", megabytes(card.bytes)});
 
     // The controls under the card: the pad's own names for its buttons when one is connected.
     dingosdk::ControllerInput pad;

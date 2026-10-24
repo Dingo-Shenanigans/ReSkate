@@ -18,14 +18,17 @@ struct PresetRule {
     bool multiply{true};
     double amount{1};
     bool curves{}; // the rule is for curve and graph multipliers instead of plain values
+    bool exact{};  // `pattern` is one whole id, and it may be a single graph point
 };
 struct BuiltinPreset {
     std::string_view name, note;
     std::vector<PresetRule> rules;
 };
-// The plain name of a value on the Tune tab's short lists, by its lower-case id; empty for the
-// rest. `modes`: which lists it is on (mode_realistic, mode_fun).
-std::string_view essential_name(std::string_view key, int *rank = nullptr, std::uint8_t *modes = nullptr);
+// The plain name of a value on one of the Tune tab's sections, by its lower-case id; empty for the
+// rest. `topic`: which section (topic_*); `trial`: named for players to try although the game was not seen reading it.
+std::string_view essential_name(std::string_view key, int *rank = nullptr, std::uint8_t *topic = nullptr, bool *trial = nullptr);
+// What a named value does, in a plain sentence with its unit; empty when there is none.
+std::string_view essential_help(std::string_view key);
 // Whether the game's code was found to read the tuning value at this offset of the asset.
 // False means "no use found": changing it will probably do nothing.
 bool value_used(std::uint16_t offset);
@@ -37,10 +40,10 @@ struct Link {
 };
 const std::vector<Link> &value_links();
 // How a built-in preset shows on the Tune tab: as a dial under `title` when its first rule is a
-// multiplier, and on which of the two short lists.
+// multiplier, and in which section.
 struct PresetDial {
     std::string_view title;
-    std::uint8_t modes{};
+    std::uint8_t topic{};
 };
 PresetDial preset_dial(std::string_view name);
 // Presets stack: each applies on top of what is already changed; Stock clears them.

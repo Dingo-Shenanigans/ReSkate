@@ -203,6 +203,13 @@ bool Package::in_category(std::string_view category) const {
     return std::find(categories.begin(), categories.end(), category) != categories.end();
 }
 
+bool shown_by(const Package& package, const CategoryFilter& filter) { return shown_by(package.categories, filter); }
+bool shown_by(const std::vector<std::string>& categories, const CategoryFilter& filter) {
+    const auto in = [&](const std::string& category) { return std::find(categories.begin(), categories.end(), category) != categories.end(); };
+    if (std::any_of(filter.hidden.begin(), filter.hidden.end(), in)) return false;
+    return filter.only.empty() || std::any_of(filter.only.begin(), filter.only.end(), in);
+}
+
 std::vector<Package> parse_listing(std::string_view json) {
     const auto root = Json::parse(json, listing_limits);
     if (!root.is_array()) fail("The Thunderstore listing is not a JSON array.");

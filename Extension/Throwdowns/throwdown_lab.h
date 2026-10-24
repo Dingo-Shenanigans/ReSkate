@@ -17,11 +17,28 @@ void initialize_throwdown_lab(std::uintptr_t base) noexcept;
 // Called after every authored expression (vm = the expression that just ran); sends
 // queued events from the client realm and reads results off server graphs.
 void pump_throwdown_lab(std::uintptr_t vm) noexcept;
+// Substitutes only the preview prefab in this invocation's constant page.
+// The shipped graph resource and official Throwdowns remain unchanged.
+void execute_throwdown_preview_expression(std::uintptr_t vm,std::uint32_t pc,std::uintptr_t profiler,
+    void (*runner)(std::uintptr_t,std::uint32_t,std::uintptr_t));
 // Before the game changes level state to `next`: forgets the event types found in a level that
 // is being left, which are freed with it.
 void throwdown_lab_before_level_transition(unsigned next) noexcept;
+// Native level generation, including offline play; never tied to Steam hosting.
+std::uint64_t native_throwdown_world() noexcept;
 // Called by the SendNetworkedEvent hook for every event the local client sends.
 void observe_throwdown_send(std::uint32_t hash, std::uintptr_t type, std::uintptr_t payload) noexcept;
+// A plugin mode's native flag registration (native_flag_session.h): its flag mesh, its held-open
+// queue, and the waiting card's Start (consumed: true) and Leave; a running plugin match's Quit.
+bool consume_flag_throwdown_send(std::uint32_t hash, std::uintptr_t type, std::uintptr_t payload) noexcept;
+// Ask the last solo host's native event to destroy itself, and then allow the
+// original Leave request/confirmation to perform normal client teardown.
+void prepare_native_solo_throwdown_leave(std::uint32_t hash) noexcept;
+// True only for the local host's native Throwdown configured for one player.
+// Its authored Start action can bypass the normal two-participant UI gate.
+bool native_solo_throwdown_waiting() noexcept;
+// A real native queue creation/join retires any hidden custom donor banner.
+std::uint64_t native_throwdown_queue_revision() noexcept;
 // True for ids the lab put into a throwdown; the UI player lookups answer them with
 // the local player's record so rows and host lookups resolve.
 bool throwdown_lab_player(std::uint32_t player_id) noexcept;
@@ -40,8 +57,19 @@ std::string challenge_lab_command(std::string_view arguments);
 bool prepare_throwdown_injection() noexcept;
 // DebugSpawnThrowdownWithParams hosted by `host`; the queue's MMID comes back through
 // throwdown_relay_spawned(token, ...).
+// `instance` names the drop's flag (InstanceId, a plugin mode's ReSkate.<flag>; empty: the
+// series' own), and `capacity` holds its queue at that size (0: as the settings say).
 bool queue_throwdown_spawn(std::uint64_t token, std::uint32_t host, const std::string &series,
-                           const std::vector<std::uint8_t> &placement, const std::vector<std::uint8_t> &settings) noexcept;
+                           const std::vector<std::uint8_t> &placement, const std::vector<std::uint8_t> &settings,
+                           const std::string &instance = {}, std::uint32_t capacity = 0) noexcept;
+// A plain `series` queue at `at`, hosted by the local player (a plugin's drop): its MMID comes back
+// through throwdown_relay_spawned(token, ...), its parameters through throwdown_relay_host_placement.
+bool queue_throwdown_host(std::uint64_t token, const std::string &series, const std::array<float, 3> &at, std::uint32_t most_players) noexcept;
+// The native registration/POI for another player's flag of plugin mode `key` ("<plugin>/<id>",
+// registered here), with that mode's flag mesh. Its donor queue remains open; membership and the
+// start stay with the mode's plugin. False for a mode no plugin here registered.
+bool queue_custom_throwdown_flag(std::uint64_t token,std::uint32_t host,const std::string& key,
+    const std::array<float,3>& at,float yaw) noexcept;
 bool queue_throwdown_add(std::uint32_t player, const std::string &series, std::uint32_t mmid) noexcept;
 bool queue_throwdown_remove(std::uint32_t player) noexcept; // RemoveParticipantFromCommunityEvent as `player`
 bool queue_throwdown_start(const std::string &series, std::uint32_t mmid) noexcept;

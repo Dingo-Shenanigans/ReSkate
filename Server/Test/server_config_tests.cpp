@@ -183,10 +183,10 @@ int run() {
     check(load_config(file).throwdown_locks == (lock_nobail | lock_tuning), "Throwdown locks lost");
     std::ofstream(file, std::ios::binary) << R"({"players": {"throwdown_locks": ["boosts", "jetpack", 3, "teleport"]}})";
     check(load_config(file).throwdown_locks == (lock_boosts | lock_noclip), "Bad throwdown locks not cleaned");
-    check(parse_lock_tools("all") == lock_all && parse_lock_tools(" NoBail , tuning") == (lock_nobail | lock_tuning) &&
+    check(parse_lock_tools("all") == lock_all && parse_lock_tools(" NoBail , tuning") == (lock_nobail | lock_tuning) && parse_lock_tools("ollies") == lock_ollies &&
               !parse_lock_tools("") && !parse_lock_tools("nobail,") && !parse_lock_tools("fly"),
           "Lock tool names not read");
-    check(lock_tools_text(lock_all) == "noclip, nobail, boosts, tuning" && lock_tools_text(0) == "none", "Lock tool names not written");
+    check(lock_tools_text(lock_all) == "noclip, nobail, boosts, tuning, ollies" && lock_tools_text(0) == "none", "Lock tool names not written");
 
     // A config from before the sections: every setting is read from where it was, under the name
     // it had, and the file is written back in sections, in reading order, with nothing called new
@@ -225,6 +225,23 @@ int run() {
                   back.distances.half_rate_start == 70 && !back.votes.map.enabled && text(file) == now,
               "A config in sections did not read back as it was written");
         std::filesystem::remove_all(folder / "data");
+    }
+    // Required plugins: none unless set, kept as written, and only Thunderstore package names.
+    {
+        ServerConfig plugins;
+        check(plugins.required_plugins.empty() && config_error(plugins).find("plugins.required") == std::string::npos,
+              "Required plugins are not off by default");
+        plugins.file = folder / "plugins.json";
+        plugins.required_plugins = {"neekgate-FPV_Drone", "Team-Filmer-1.2.0"};
+        save_config(plugins);
+        check(load_config(plugins.file).required_plugins == plugins.required_plugins &&
+                  text(plugins.file).find("\"required\"") != std::string::npos,
+              "Required plugins were not kept under plugins.required");
+        for (const auto &bad : std::vector<std::vector<std::string>>{{"FPV_Drone"}, {""}, {"neekgate-FPV_Drone", "NEEKGATE-fpv_drone-1.0.0"},
+                                                                     {"neekgate-FPV Drone"}, std::vector<std::string>(17, "Team-X")}) {
+            plugins.required_plugins = bad;
+            check(config_error(plugins).find("plugins.required") != std::string::npos, "A required plugin that is not a package was accepted");
+        }
     }
     // The away timer: off unless set, and no more than a day.
     {

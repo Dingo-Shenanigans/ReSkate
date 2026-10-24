@@ -4,6 +4,7 @@
 #include "content_catalogs.h"
 #include "mod_item_sources.h"
 #include "mod_merge_internal.h"
+#include "mod_conflicts.h"
 #include "mod_store_copies.h"
 #include "native_db.h"
 #include "Engine/Core/Platform/path_text.h"
@@ -88,6 +89,10 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
         };
         const auto output = catalog.root / generated_folder;
         std::error_code error;
+        // A merge that rebuilds deletes the generated folder: plugins' files from before they had
+        // a folder of their own go to it first.
+        for (auto& plugin : keep_plugin_data(catalog.root))
+            report.notes.push_back("Plugin data of " + plugin + " moved to Mods/" + plugin_data_folder);
 
         std::vector<const Mod*> mods;
         for (const auto& mod : catalog.mods) if (mod.provides_layout) mods.push_back(&mod);
@@ -131,7 +136,7 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
         if (options.conflicts_first && !options.live) {
             checking("Checking the mods for conflicts");
             const auto started = Clock::now();
-            report.conflicts = find_conflicts(mods, modFiles, catalog.data_root, output, readers - 1);
+            report.conflicts = ConflictChecker(catalog.data_root).check(mods, readers - 1);
             const auto tenths = (std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now() - started).count() + 50) / 100;
             report.notes.push_back("Conflict check: " + std::to_string(report.conflicts.size()) + " conflicting pair(s) in " +
                                    std::to_string(tenths / 10) + '.' + std::to_string(tenths % 10) + " s");
@@ -148,8 +153,9 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
             const auto before = options.live ? read_item_sources(output / item_sources_file) : std::vector<ItemSource>{};
             itemSources.emplace();
             for (const auto* mod : mods) {
-                std::error_code outside;
-                const auto folder = fs::relative(mod->directory, catalog.root, outside);
+                // As the Mods folder lays it out: fs::relative resolves a linked mod folder.
+                const auto folder = mod->directory.lexically_relative(catalog.root);
+                const bool outside = folder.empty() || *folder.begin() == L"..";
                 ItemSource source{mod->name, mod->title, mod->author, mod->version,
                                   outside ? std::string() : path_utf8(folder.generic_wstring()), {}};
                 const auto read = std::ranges::find(*itemsRead, mod->name, &StoreCopies::Added::mod);
@@ -291,7 +297,7 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
                     if (!number) throw std::runtime_error("Unexpected archive name: " + relative);
                     auto directory = lower(path.parent_path().generic_string());
                     if (directory.starts_with("win32/")) directory.erase(0, 6);
-                    const auto target = output / path.parent_path() / archive_file(manifestArchive);
+                    const auto target = inside(output, path.parent_path() / archive_file(manifestArchive));
                     if (!fs::exists(target, error))
                         throw std::runtime_error(mod->name + " needs a restart: the patch has no archive 1 in " + directory);
                     // Checked before anything is appended: past 4 GB the mod's
@@ -340,18 +346,18 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
                 if (number == manifestArchive) {
                     if (const auto free = claim(directory); free) {
                         spot.archive = *free;
-                        link_or_copy(mod->directory / path, output / path.parent_path() / archive_file(*free));
+                        link_or_copy(mod->directory / path, inside(output, path.parent_path() / archive_file(*free)));
                     } else {
-                        spot.offset = append_file(mod->directory / path, output / path);
+                        spot.offset = append_file(mod->directory / path, inside(output, path));
                     }
                 } else if (claimed.insert(number).second) {
-                    link_or_copy(mod->directory / path, output / path);
+                    link_or_copy(mod->directory / path, inside(output, path));
                 } else if (const auto free = claim(directory); free) {
                     spot.archive = *free;
                     link_or_copy(mod->directory / path,
-                                 output / path.parent_path() / archive_file(*free));
+                                 inside(output, path.parent_path() / archive_file(*free)));
                 } else {
-                    spot.offset = append_file(mod->directory / path, output / path);
+                    spot.offset = append_file(mod->directory / path, inside(output, path));
                 }
                 placements[mod].at.emplace(std::pair{directory, number}, spot);
                 // A disabled mod's archives are read by no TOC yet, so nothing
@@ -379,7 +385,7 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
         if (!options.live)
             for (const auto& [directory, declared] : declaredIn) {
                 if (!declared.contains(manifestArchive)) continue;
-                const auto path = output / L"Win32" / fs::path(directory) / archive_file(manifestArchive);
+                const auto path = inside(output, fs::path(L"Win32") / fs::path(directory) / archive_file(manifestArchive));
                 if (fs::exists(path, error)) continue;
                 fs::create_directories(path.parent_path(), error);
                 write_file(path, {});
@@ -444,6 +450,11 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
         // after another in the order they always were, which puts every byte where merging
         // them in turn would have. A merge while the game runs uses fewer threads, at a lower
         // priority: the game is using the others, and a player is waiting on this one.
+        // What reading each mod's bundles found before, while its files are as they were (ScanCache).
+        std::map<std::string, std::string, std::less<>> fingerprints;
+        for (const auto* mod : mods) fingerprints.emplace(mod->name, mod_fingerprint(mod->directory));
+        for (const auto& mod : catalog.inactive) fingerprints.emplace(mod.name, mod_fingerprint(mod.directory));
+        ScanCache scans(catalog.root / scan_cache_file, std::move(fingerprints));
         struct Job {
             std::string relative;
             std::optional<CasStore> store;   // waiting: what the merge wrote
@@ -483,7 +494,7 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
                     sources.push_back(std::move(source));
                 }
                 job.merged = combine(baseRoot / fs::path(relative), baseRoot, sources, job.report,
-                                     relative, job.used, *job.store, manifestArchive, gameRoot, grid, overrides);
+                                     relative, job.used, *job.store, manifestArchive, gameRoot, grid, overrides, scans);
                 if (job.store->holding())
                     for (std::size_t index = 0; index < job.merged.bundles.size(); ++index) {
                         auto region = fb::read_bundle_region(job.merged.bundles[index].region);
@@ -569,8 +580,13 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
             for (auto& row : job.report.conflicts) {
                 const auto same = std::ranges::find_if(report.conflicts, [&](const MergeReport::Conflict& held) {
                     return held.kept == row.kept && held.lost == row.lost; });
-                if (same != report.conflicts.end()) same->assets += row.assets;
-                else report.conflicts.push_back(std::move(row));
+                if (same == report.conflicts.end()) {
+                    report.conflicts.push_back(std::move(row));
+                    continue;
+                }
+                same->assets += row.assets;
+                for (auto& area : row.areas)
+                    if (std::ranges::find(same->areas, area) == same->areas.end()) same->areas.push_back(std::move(area));
             }
             auto bytes = fb::write_patch_toc(job.merged.bundles, job.merged.chunks, job.merged.flags);
             // Read the result back before publishing it: a TOC whose perfect
@@ -580,7 +596,7 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
             if (check.bundles.size() != job.merged.bundles.size() ||
                 check.chunks.size() != job.merged.chunks.size())
                 throw std::runtime_error("Merged TOC did not round-trip: " + relative);
-            write_file(output / fs::path(relative), bytes);
+            write_file(inside(output, fs::path(relative)), bytes);
             ++report.superbundles;
             // Done with: a big merge would otherwise hold every superbundle's until the end.
             job.merged = {};
@@ -595,12 +611,15 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
             for (const auto& relative : superbundles) written.insert(lower(relative));
             if (options.live)
                 for (const auto& previous : record.tocs)
-                    if (!written.contains(lower(previous)) && fs::remove(output / fs::path(previous), error))
+                    if (!written.contains(lower(previous)) && [&] {
+                            try { return fs::remove(inside(output, fs::path(previous)), error); } catch (const std::exception&) { return false; }
+                        }())
                         report.removed_tocs.push_back(previous);
             record.tocs = superbundles;
             write_placements(placementsPath, record);
             write_map_meshes(output / map_meshes_file, report.map_meshes);
         }
+        scans.save();
         lap("superbundles");
 
         // The layout lists every superbundle the merged layer now provides.

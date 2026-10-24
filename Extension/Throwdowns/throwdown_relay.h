@@ -6,6 +6,7 @@
 #include <span>
 #include <string_view>
 #include <string>
+#include <utility>
 #include <vector>
 
 // Links the players' own throwdowns in a ReSkate multiplayer session
@@ -25,6 +26,7 @@ struct ThrowdownPeer {
     // In the local player's party: only party members are invited into each other's coop
     // challenges.
     bool party{};
+    std::optional<std::array<float, 3>> position;
 };
 struct ThrowdownRelayInput {
     std::uint64_t local{};            // this player's Steam ID; 0 without a session
@@ -37,13 +39,54 @@ struct ThrowdownRelayInput {
     // their mods change scoring or physics: their linked throwdown or coop challenge ends for them (the
     // others already dropped them), and no new one links.
     bool barred{};
+    // Only a local-practice copy sets this. Never a network roster.
+    bool local_only{};
 };
 // Multiplayer session tick (game thread). Returns the encoded messages to send to
 // every other player.
 std::vector<std::vector<std::uint8_t>> tick_throwdown_relay(std::uintptr_t base, const ThrowdownRelayInput &input);
+// The world and barred the relay last ticked with (any thread): game modes match offers by it.
+std::uint64_t throwdown_relay_world() noexcept;
+bool throwdown_relay_barred() noexcept;
 // One message from another player, as relayed by the session (game thread).
 void receive_throwdown_relay(std::uint64_t sender, std::span<const std::uint8_t> message);
 std::string throwdown_relay_status();
+// A plugin's drop (reskate.throwdowns.host): a `series` queue ("JamSession", "SpotBattle",
+// "ThrowdownSkate") hosted by the local player where the skater stands, shown only to `players`
+// (Steam IDs, others in the session) and joined by them with the game's own Join; it starts once
+// they all have. "" when it is asked for (the spawn follows at the relay's next tick), otherwise why
+// not. Game thread.
+std::string throwdown_relay_host(const std::string &series, std::vector<std::uint64_t> players, std::uint32_t max_players);
+void throwdown_relay_cancel_host() noexcept;
+// What became of the plugin's drop: "", "spawning", "open", "started", or why it failed.
+std::string throwdown_relay_host_status();
+// The lab ran a plugin drop's spawn: its parameters as the stream the offer carries. Any thread.
+void throwdown_relay_host_placement(std::uint64_t token, std::vector<std::uint8_t> placement) noexcept;
+// Native queue notice lifetime. A queue's long host-controlled timer is not
+// proof that its waiting notice should survive an activity start/leave/end.
+struct NativeQueueHudState {
+    std::uint64_t generation{};
+    bool waiting{};
+};
+NativeQueueHudState native_queue_hud_state() noexcept;
+void retire_native_queue_hud() noexcept;
+
+// Other players' plugin mode flags (throwdown_kit.h Flag: their plugins' `flags` documents, here
+// or sent by the leader's relay) use the same native physical flag/POI as retail. The local MMID
+// identifies its mode for map/bubble branding before joining; the native Join adopts the flag
+// (kit::flag::adopt) and its plugin hears join {flag id, leader, game}.
+std::string custom_throwdown_flag_key(std::uint32_t mmid);
+bool has_custom_throwdown_flags();
+struct CustomThrowdownFlagInfo {
+    std::string key, id; // the mode ("<plugin>/<id>") and the plugin's own flag id
+    unsigned players{}, capacity{};
+    bool open = true;
+    std::vector<std::pair<std::string, std::string>> stats; // the card's {title, value}, at most 3
+    std::uint64_t leader{};
+    std::uint32_t game{};
+};
+std::optional<CustomThrowdownFlagInfo> custom_throwdown_flag_info(std::uint32_t mmid);
+bool custom_throwdown_flag_available(std::uint64_t leader,std::uint32_t game);
 // Lines for the local player's chat since the last call (a linked throwdown ended because
 // everyone else left it). Game thread.
 std::vector<std::string> take_throwdown_relay_notices();

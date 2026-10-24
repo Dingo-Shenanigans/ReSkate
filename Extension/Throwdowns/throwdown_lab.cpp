@@ -1,4 +1,8 @@
 #include "throwdown_lab.h"
+#include "native_flag_session.h"
+#include "native_flag_spawn.h"
+#include "throwdown_kit.h"
+#include "custom_modes.h"
 #include "native_type_scan.h"
 #include "Engine/Core/Hooks/hooks.h"
 #include "Engine/Core/Log/logging.h"
@@ -17,6 +21,8 @@
 #include "skate_trick_rule.h"
 #include "graph_throttle.h"
 #include "virtual_player_names.h"
+#include "native_flag_preview.h"
+#include "Extension/UI/NativeMenu/native_menu_data.h"
 #include <array>
 #include <atomic>
 #include <charconv>
@@ -35,14 +41,23 @@
 #include <vector>
 
 // Research tools for multiplayer throwdowns. See analysis/throwdowns-native-mp.md §8
-// for the experiments they serve; nothing here runs unless a console command asks,
-// except the participant-change log and the GetPlayerName null fix.
+// for the experiments they serve. Console commands opt into event injection;
+// participant/ending diagnostics and the GetPlayerName null fix run automatically.
 namespace dingosdk::multiplayer {
 namespace {
 using Address = std::uintptr_t;
 namespace engine = addr::engine;
 namespace throwdowns = addr::native_throwdowns;
+namespace kit = dingosdk::throwdowns::kit;
 constexpr std::uint32_t client_realm = 0xbf0f9789, server_realm = 0x98be5555;
+// A plugin mode's flag InstanceId and placement preview (custom_modes Mode::flag); nothing when
+// no plugin here registered the mode. custom_modes is thread-safe, the menu registry is not.
+std::optional<native_flag::FlagAssets> mode_flag_assets(std::string_view key) {
+    if(key.empty())return {};
+    const auto mode=custom_throwdowns::find(key);
+    if(!mode)return {};
+    return native_flag::flag_assets(mode->flag);
+}
 
 // Runtime event hashes (== EBX TypeNameHash for events) and field NameHashes. MMId
 // is hashed case-insensitively: MMID, MMid, MMId and Mmid all share one hash.
@@ -65,6 +80,10 @@ constexpr std::uint32_t event_slam_hit = 0x453fe31f, event_leave_in_progress = 0
 // CoopChallengeCelebrationRuleData.Activate (client): builds CoopChallengeCelebrationLocation in its
 // locals: +0 PlayerLocation, +0x90 PlayerCount, +0xa0/+0xd0/+0x100 Player2..4 (0x30 bytes each).
 constexpr std::uint32_t graph_celebration = 0x4234de87;
+// Compiled resource identities of the shipped controller and animation rules.
+// Capture their live argument contracts without invoking or changing them.
+constexpr std::array<std::uint32_t,4> native_ending_graphs{
+    0xb86f249d,0x84d7125e,0x32ca5df8U,0x3c26292fU};
 // Party beacons (analysis/party-re/beacons.md): PlayerSpawnedEntityManager's requests
 // {NetworkedEventPayload, +0x10 Location (LinearTransform), +0x50 EntityId} (Despawn: +8 EntityId),
 // client -> server, route 5. The beacon's EntityId is djb2("BEACON").
@@ -91,6 +110,8 @@ constexpr std::uint32_t field_params = 3750769597U, field_parameters = 188648851
 // while a handler graph of that event runs, the id natives answer the injected
 // sender if that event is the oldest one not yet handled.
 constexpr std::string_view sender_marker = "rsk:"; // still written, for traces
+std::atomic<std::uint32_t> native_solo_queue{};
+std::atomic<std::uint64_t> native_queue_revision{};
 struct Handled { std::uint32_t event; std::array<std::uint32_t, 3> graphs; };
 constexpr std::array handled_events{
     Handled{0xb2fc396c, {0x04e2faaf}},                 // RequestTurnEnd: TurnBasedServer.OnRequestTurnEnd
@@ -144,6 +165,7 @@ struct Job {
                       beacon_move, beacon_remove } kind;
     std::uint32_t uid{}, max_players{};
     std::string series;                            // spawn: mode when no placement is recorded
+    std::string instance;                          // spawn: its flag's InstanceId (empty: the series' own)
     float score{}; bool flag{true};                // score: value and the native's flag
     std::optional<std::array<float, 3>> position;  // spawn: fresh parameters at this spot
     std::string challenge;                          // challenge_start: its Id (series in `series`)
@@ -155,6 +177,7 @@ struct Job {
     std::uint64_t token{};
     std::vector<std::uint8_t> placement, settings;
     std::array<std::uint8_t, 28> trick{}; // attempt (flag = landed)
+    float spawn_yaw{};
 };
 struct Lab {
     Address base{};
@@ -219,6 +242,7 @@ struct Lab {
     std::uint32_t hosted_mmid{};          // MMID of the local player's own drop (Update/HostSet)
     std::atomic<bool> leaderboard_live{}; // leaderboards[0] belongs to the throwdown running now
     std::atomic<bool> local_entered{};    // the server just made an event of the local player's queue
+    std::atomic<Address> local_entered_activity{}; // candidate until QueueFilled confirms it
     std::atomic<std::uint32_t> server_active{}; // turn-based: whose turn the local server started last
     std::array<std::atomic<std::uint32_t>, 16> players{};
     // `throwdown trace`: every authored graph run in the window, per realm.
@@ -502,6 +526,7 @@ void participants_changed_hook(Address activity, const Address* added, const Add
             auto& l = lab();
             const auto current = realm();
             const auto joined = id_list(added);
+            const auto left = id_list(removed);
             if (l.participant_logs.fetch_add(1) < 400) {
                 const auto text = [](const std::vector<std::uint32_t>& ids) {
                     std::string out;
@@ -510,16 +535,18 @@ void participants_changed_hook(Address activity, const Address* added, const Add
                 };
                 logging::log(logging::Level::info, logging::Channel::progression,
                     "Throwdown lab: participants changed ({} realm, activity {:#x}): added [{}] removed [{}].",
-                    realm_name(current), activity, text(joined), text(id_list(removed)));
+                    realm_name(current), activity, text(joined), text(left));
             }
             // The server sets an event's participants when a queue the local player is
             // in becomes the event (ThrowdownRegistration.QueueFilled), host first.
             const auto local = local_native_player_id();
+            bool cooperative{};
             // The coop challenge that just started: its activity, and its end for the local player.
             if (current == server_realm && local) {
-                if (std::ranges::find(joined, local) != joined.end() && l.challenge_activity_pending.exchange(false))
+                if (std::ranges::find(joined, local) != joined.end() && l.challenge_activity_pending.exchange(false)) {
                     l.challenge_activity.store(activity, std::memory_order_release);
-                const auto left = id_list(removed);
+                    cooperative = true;
+                }
                 if (activity && activity == l.challenge_activity.load(std::memory_order_acquire) &&
                     std::ranges::find(left, local) != left.end()) {
                     l.challenge_activity.store(0, std::memory_order_release);
@@ -527,7 +554,7 @@ void participants_changed_hook(Address activity, const Address* added, const Add
                 }
             }
             if (current == server_realm && local) {
-                const auto left = id_list(removed);
+                for (const auto player : left) native_throwdown_participant_left(activity, player);
                 if (std::ranges::find(left, local) != left.end()) {
                     // Quit (LeaveInProgress), or the event let the player go: its boards are
                     // no longer the local player's and nothing is relayed for it any more.
@@ -542,6 +569,8 @@ void participants_changed_hook(Address activity, const Address* added, const Add
             }
             if (current == server_realm && local && std::ranges::find(joined, local) != joined.end()) {
                 l.local_entered.store(true, std::memory_order_release);
+                if (!cooperative && local_throwdown_active())
+                    l.local_entered_activity.store(activity, std::memory_order_release);
                 ThrowdownLocalAction action{ThrowdownLocalAction::Kind::entered};
                 action.participants = joined;
                 throwdown_relay_local(std::move(action));
@@ -1079,7 +1108,7 @@ std::string run_job(const Job& job) {
             const auto vector = [&](std::uint32_t hash, std::size_t count) {
                 const auto f = find_field(p->type, hash);
                 if (!f || f->size < count * 4) throw std::runtime_error(std::format("Throwdown lab: vector field {:#x} missing", hash));
-                std::array<float, 4> v{pos[0], pos[1], pos[2], 0};
+                std::array<float, 4> v{pos[0], pos[1], pos[2], job.spawn_yaw};
                 std::memcpy(reinterpret_cast<void*>(at + f->offset), v.data(), count * 4);
             };
             vector(field_spawn, 4);
@@ -1123,8 +1152,14 @@ std::string run_job(const Job& job) {
         // Party-only resolves the host's game group through its native player,
         // which a virtual host lacks, so the host would never enter the queue.
         if (const auto f = find_field(p->type, field_party_only); f && f->size == 1) *reinterpret_cast<std::uint8_t*>(at + f->offset) = 0;
-        if (const auto f = find_field(p->type, field_instance); f && f->kind == kind_string) assign_string(at + f->offset, "");
+        if (const auto f = find_field(p->type, field_instance); f && f->kind == kind_string) assign_string(at + f->offset, job.instance);
         e.set_u32(field_number_of_events, 1);
+        // A plugin's drop: its parameters, as the stream other players' copies are spawned from.
+        if (job.token && job.position) {
+            std::vector<std::uint8_t> stream;
+            capture_value(p->type, at, stream, 0);
+            throwdown_relay_host_placement(job.token, std::move(stream));
+        }
         const auto summary = describe_params(p->type, at);
         std::uint32_t player_limit{};
         if (const auto f = find_field(p->type, field_max_players); f && f->size == 4) player_limit = read<std::uint32_t>(at + f->offset);
@@ -1330,6 +1365,7 @@ std::string run_job(const Job& job) {
         Instance e(type_of(event_destroy));
         e.set_u32(field_mmid, mmid);
         e.send();
+        native_flag::observe_destroyed(mmid);
         return std::format("RequestThrowdownDestroyGlobal sent for MMID {:#x}", mmid);
     }
     }
@@ -1433,6 +1469,7 @@ void initialize_throwdown_lab(Address base) noexcept {
             throw std::runtime_error("Throwdown lab: cannot enable hooks");
         l.installed.store(true, std::memory_order_release);
     } catch (const std::exception& e) { logging::write(logging::Level::warning, logging::Channel::progression, e.what()); }
+#if !defined(DINGOSDK_LEAN_PLAYTEST)
     // The condition probe replaces the game's AND / OR / NOT, which every authored
     // condition runs through; opt in with RESKATE_THROWDOWN_PROBE=1.
     if (!GetEnvironmentVariableW(L"RESKATE_THROWDOWN_PROBE", nullptr, 0)) return;
@@ -1448,9 +1485,20 @@ void initialize_throwdown_lab(Address base) noexcept {
                 hook_enable(reinterpret_cast<void*>(base + op.rva)) == HookOk) ++count;
         logging::log(logging::Level::info, logging::Channel::progression, "Throwdown lab: condition probe on {} of 3 boolean ops.", count);
     } catch (...) {}
+#endif
 }
 
 void observe_throwdown_send(std::uint32_t hash, Address type, Address payload) noexcept {
+    if(!injecting && type && payload && (hash==event_create || hash==event_add_participant) &&
+       !native_flag::registration_owned()) {
+        try {
+            const auto field=find_field(type,field_mmid);
+            const auto mmid=field && field->size==4?read<std::uint32_t>(payload+field->offset):0;
+            // A late participant event for our retired native donor is not a
+            // fresh stock challenge. Keep its waiting card suppressed.
+            if(!native_flag::known_queue(mmid))native_queue_revision.fetch_add(1,std::memory_order_release);
+        } catch(...) { }
+    }
     auto& l = lab();
     if (!l.installed.load(std::memory_order_acquire) || injecting || !type || !payload) return;
     if (handled(hash)) { try { note_sent(hash, 0); } catch (...) {} }
@@ -1555,6 +1603,7 @@ void observe_throwdown_send(std::uint32_t hash, Address type, Address payload) n
             ThrowdownLocalAction action{ThrowdownLocalAction::Kind::exited};
             if (const auto f = find_field(type, field_is_cancelling); f && f->size == 1)
                 action.cancelling = read<std::uint8_t>(payload + f->offset) != 0;
+            if(native_flag::placement_active()) { native_flag::observe_exit(action.cancelling); return; }
             {
                 std::lock_guard lock(l.mutex);
                 action.series = l.series; action.mmid = l.hosted_mmid;
@@ -1636,15 +1685,31 @@ void observe_throwdown_send(std::uint32_t hash, Address type, Address payload) n
         std::string series; std::uint32_t mmid{};
         std::vector<std::uint8_t> params; std::string note;
         bool placed{};
+        std::uint32_t selected_players{};
+        std::optional<std::array<float,3>> selected_spawn;
+        std::optional<std::array<float,16>> selected_transform;
         if (const auto f = find_field(type, field_mmid); f && f->size == 4) mmid = read<std::uint32_t>(payload + f->offset);
         if (const auto f = find_field(type, field_series); f && f->kind == kind_string) series = read_string(payload + f->offset);
         if (const auto p = find_field(type, field_params); p && p->kind == kind_struct) {
+            if(const auto limit=find_field(p->type,field_max_players);limit && limit->size==4)
+                selected_players=read<std::uint32_t>(payload+p->offset+limit->offset);
             capture_value(p->type, payload + p->offset, params, 0);
             note = describe_params(p->type, payload + p->offset);
             if (const auto f = find_field(p->type, field_series); f && f->kind == kind_string)
                 series = read_string(payload + p->offset + f->offset);
             std::array<float, 3> spawn{};
-            if (const auto f = find_field(p->type, field_spawn); f && f->size >= 12) memory::read(payload + p->offset + f->offset, spawn);
+            if (const auto f = find_field(p->type, field_spawn); f && f->size >= 12 && memory::read(payload + p->offset + f->offset, spawn)) {
+                selected_spawn=spawn;
+                if(f->size==16) {
+                    std::array<float,4> pose{};
+                    if(memory::read(payload+p->offset+f->offset,pose))
+                        selected_transform=native_flag::native_spawn_transform(pose);
+                }
+            }
+            if(!selected_transform)if(const auto f=find_field(p->type,field_teleport);f && f->size==64) {
+                std::array<float,16> transform{};
+                if(memory::read(payload+p->offset+f->offset,transform))selected_transform=transform;
+            }
             placed = spawn[0] != 0 || spawn[1] != 0 || spawn[2] != 0;
         }
         {
@@ -1665,6 +1730,19 @@ void observe_throwdown_send(std::uint32_t hash, Address type, Address payload) n
                 "Throwdown lab: local client sent {:#x}; series {} MMID {:#x}{}{}.", hash, l.series, l.mmid,
                 note.empty() ? "" : "; ", note);
         }
+        if(native_flag::registration_owned()) {
+            // Keep native type caching, but never advertise a plugin mode's
+            // temporary Spot Battle registration as a separate multiplayer match.
+            native_flag::observe_queue(mmid);
+            if(hash==event_create) native_flag::observe_created();
+            if(hash==event_update && selected_spawn) native_flag::observe_position(mmid,*selected_spawn,selected_transform?&*selected_transform:nullptr);
+            return;
+        }
+        if(hash==event_create)native_solo_queue.store(0);
+        if(hash==event_host_set && selected_players) native_throwdown_player_limit(selected_players);
+        if((hash==event_update || hash==event_host_set) && mmid && selected_players)
+            native_solo_queue.store(selected_players==1?mmid:0);
+        if((hash==event_force_start || hash==event_destroy) && mmid==native_solo_queue.load())native_solo_queue.store(0);
         using Kind = ThrowdownLocalAction::Kind;
         const auto kind = hash == event_create ? Kind::created : hash == event_add_participant ? Kind::joined
                         : hash == event_force_start ? Kind::force_started : hash == event_destroy ? Kind::destroy_requested
@@ -1678,12 +1756,107 @@ void observe_throwdown_send(std::uint32_t hash, Address type, Address payload) n
     } catch (...) {}
 }
 
+void prepare_native_solo_throwdown_leave(std::uint32_t hash) noexcept {
+    if (hash != event_leave_in_progress || injecting || multiplayer_session_active() ||
+        native_flag::registration_owned() || kit::match().markers) return;
+    profile_runtime::PreserveError preserve;
+    try {
+        const auto player = local_native_player_id();
+        const auto activity = native_solo_throwdown_activity(player);
+        const auto type = activity ? type_of(event_force_destroy) : 0;
+        if (!type) return;
+        // Send while the player is still a participant. This native handler
+        // resolves the sender's current event; sending after RemoveParticipant
+        // has run cannot find it. Its normal destruction releases the client
+        // activity manager and emits the native lifecycle notifications.
+        // Keep the original leave! ForceDestroy schedules destruction, while
+        // LeaveInProgressRequested returns the participant confirmation that
+        // releases the client's manager immediately. Consuming Leave skipped
+        // that reset and stranded the native activity state.
+        Instance destroy(type);
+        destroy.send(5, player);
+        logging::log(logging::Level::info, logging::Channel::progression,
+            "Throwdown: solo host {:#x} quitting activity {:#x}; native event destruction requested.", player, activity);
+    } catch (...) {}
+}
+
+bool consume_flag_throwdown_send(std::uint32_t hash,Address type,Address payload) noexcept {
+    if(!injecting && (hash==event_leave_in_progress || hash==event_force_destroy) && kit::match().markers) {
+        // The native activity pause modal uses these same Quit Match requests. A plugin
+        // match's temporary flag is already gone: its plugin ends the match.
+        if(native_flag::quit_match())return true;
+    }
+    if(injecting || !native_flag::registration_owned() || !type || !payload)return false;
+    try {
+        if(hash==event_create || hash==event_update || hash==event_host_set) {
+            const auto mmid=find_field(type,field_mmid);
+            const bool owned=hash==event_create || (mmid && mmid->size==4 &&
+                native_flag::owns_registration(read<std::uint32_t>(payload+mmid->offset)));
+            const auto params=find_field(type,field_params);
+            if(owned && params && params->kind==kind_struct) {
+                const auto instance=find_field(params->type,field_instance);
+                const auto series=find_field(params->type,field_series);
+                if(instance && instance->kind==kind_string && series && series->kind==kind_string &&
+                   read_string(payload+params->offset+series->offset)=="SpotBattle") {
+                    // Native registry selects RegistrationPrefab by Series + InstanceId. Keep the
+                    // Spot Battle backend protocol while choosing the mode's own flag mesh; a mode
+                    // without one keeps the stock flag.
+                    const auto key=native_flag::mode();
+                    const auto assets=mode_flag_assets(key);
+                    if(assets && !assets->instance.empty()) {
+                        assign_string(payload+params->offset+instance->offset,assets->instance);
+                        if(hash==event_create)logging::log(logging::Level::info,logging::Channel::ui,
+                            "Custom Throwdown: {} uses the {} physical flag.",key,assets->instance);
+                    }
+                }
+            }
+            if(hash==event_create || hash==event_update)return false;
+        }
+        if(hash!=event_force_start && hash!=event_destroy && hash!=event_host_set)return false;
+        const auto f=find_field(type,field_mmid);
+        if(!f || f->size!=4 || !native_flag::owns_registration(read<std::uint32_t>(payload+f->offset)))return false;
+        if(hash==event_host_set) {
+            // This registration supplies only the native flag and waiting card. Its queue must
+            // not fill from Players 1 and start Spot Battle before the host presses the mode's
+            // Start. The plugin keeps the selected capacity; the picker uses the stock maximum.
+            const auto params=find_field(type,field_params);
+            if(params && params->kind==kind_struct) {
+                const auto limit=find_field(params->type,field_max_players);
+                if(limit && limit->size==4) {
+                    const auto at=payload+params->offset+limit->offset;
+                    const auto selected=read<std::uint32_t>(at);
+                    if(selected>=1 && selected<=10) {
+                        const std::uint32_t picker_capacity=10;
+                        SIZE_T written{};
+                        if(WriteProcessMemory(GetCurrentProcess(),reinterpret_cast<void*>(at),&picker_capacity,sizeof(picker_capacity),&written) && written==sizeof(picker_capacity))
+                            logging::log(logging::Level::info,logging::Channel::ui,"Native flag: held the queue open; the mode keeps Players {}.",selected);
+                    }
+                }
+            }
+            return false;
+        }
+        // The waiting card's Start is the mode's: the Spot Battle donor never starts.
+        if(hash==event_force_start) {
+            native_flag::start();
+            return true;
+        }
+        // Destroy is the waiting card's Leave: the native teardown still runs.
+        native_flag::leave();
+    } catch(...) {}
+    return false;
+}
+bool native_solo_throwdown_waiting() noexcept { return native_solo_queue.load()!=0; }
+std::uint64_t native_throwdown_queue_revision() noexcept {return native_queue_revision.load(std::memory_order_acquire);}
+
 namespace {
 std::uint64_t now_ms() {
     return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 void trace_expression(Address vm) {
+#if defined(DINGOSDK_LEAN_PLAYTEST)
+    (void)vm;
+#else
     auto& l = lab();
     const auto now = now_ms();
     if (now >= l.trace_end_ms) {
@@ -1717,6 +1890,7 @@ void trace_expression(Address vm) {
     auto& seen = l.trace[key];
     if (!seen.count++) seen.first_ms = now;
     seen.last_ms = now;
+#endif
 }
 
 // The pump runs after every expression the game executes, thousands a frame, and almost all
@@ -1729,6 +1903,7 @@ bool lab_graph(Address vm) noexcept {
         std::vector<std::uint32_t> v{graph_celebration, graph_criteria_attempt, graph_queue_filled, graph_round_end_update,
                                      graph_turn_start, graph_skate_timer, graph_turn_end_begin,
                                      0xc33322b2, 0xc4a37359, 0xcc6467cf, 0xf073dd02};
+        v.insert(v.end(),native_ending_graphs.begin(),native_ending_graphs.end());
         for (const auto& h : handled_events) v.insert(v.end(), h.graphs.begin(), h.graphs.end());
         std::ranges::sort(v);
         v.erase(std::unique(v.begin(), v.end()), v.end());
@@ -1740,6 +1915,56 @@ bool lab_graph(Address vm) noexcept {
 }
 } // namespace
 
+void execute_throwdown_preview_expression(Address vm,std::uint32_t pc,Address profiler,
+    void (*runner)(Address,std::uint32_t,Address)) {
+    FlagPreviewPage private_page;
+    try {
+        profile_runtime::PreserveError preserve;
+        const auto resource=read<Address>(vm+0x38);
+        const auto hash=read<std::uint32_t>(resource+0x10);
+        // Most expressions need no layout read, asset lookup or placement lock.
+        if(hash==0x73fd87ef || hash==0x08a3b8c5 || hash==0x05df4a18 || hash==0x7a9c4313 ||
+           hash==0xbb2b2cdd || hash==0x67122a51 || hash==0xdba685be) {
+            const auto layout=read<std::array<std::uint32_t,10>>(resource+0x20);
+            const auto instance=read<Address>(vm+0x30);
+            if(flag_preview_graph(hash,layout) && instance && read<Address>(instance)==resource &&
+               native_flag::placement_active() && !native_flag::registration_retiring()) {
+                const auto key=native_flag::mode();
+                const auto assets=mode_flag_assets(key);
+                if(!assets)throw std::runtime_error("custom preview owner expired");
+                const auto slot=instance+((layout[0]+15U)&~15U);
+                const auto constants=read<Address>(slot);
+                std::array<std::byte,1024> bytes;
+                if(!memory::peek_bytes(constants,bytes.data(),layout[1]))throw std::runtime_error("preview constants unavailable");
+                // All seven native placement entries import this one prefab.
+                // Match the loaded asset's exact name rather than guessing an
+                // ABI at a component-query native or editing shared imports.
+                constexpr std::string_view stock="ecs/activities/throwdowns/spotbattlethrowdownerinteractablevalidator_ecsprefab";
+                // A mode without its own flag keeps the stock preview.
+                for(std::size_t offset=0;!assets->preview.empty() && offset+8<=layout[1];offset+=8) {
+                    Address source{},name{};std::memcpy(&source,bytes.data()+offset,8);
+                    std::array<char,stock.size()+1> text{};
+                    if(!source || !memory::peek(source+0x18,name) || !name ||
+                       !memory::peek_bytes(name,text.data(),text.size()) || !flag_preview_asset_name(std::string_view(text.data(),stock.size())) || text.back())continue;
+                    const menu_data::Context context(lab().base,0);
+                    const auto custom=menu_data::named_asset(context,source,assets->preview.c_str());
+                    if(!custom || read<Address>(custom+8)!=read<Address>(source+8))throw std::runtime_error("custom preview prefab is not resident");
+                    private_page.prepare(std::span(bytes).first(layout[1]),offset,custom);
+                    private_page.publish(*reinterpret_cast<Address*>(slot));
+                    static std::atomic<unsigned> reports{};
+                    if(reports.fetch_add(1)<24)logging::log(logging::Level::info,logging::Channel::ui,
+                        "Custom Throwdown: {} placement preview bound in graph {:#x}, constant offset {}.",key,hash,offset);
+                    break;
+                }
+            }
+        }
+    } catch(const std::exception& e) {
+        static std::atomic<unsigned> reports{};
+        if(reports.fetch_add(1)<12)logging::log(logging::Level::warning,logging::Channel::ui,"Custom Throwdown preview: {}.",e.what());
+    }
+    execute_native_party_expression(vm,pc,profiler,runner);
+}
+
 void pump_throwdown_lab(Address vm) noexcept {
     auto& l = lab();
     if (vm && l.installed.load(std::memory_order_acquire) && lab_graph(vm)) {
@@ -1747,6 +1972,61 @@ void pump_throwdown_lab(Address vm) noexcept {
         try {
             const auto resource = *reinterpret_cast<const Address*>(vm + 0x38);
             const auto graph = resource ? *reinterpret_cast<const std::uint32_t*>(resource + 0x10) : 0U;
+            if(std::ranges::find(native_ending_graphs,graph)!=native_ending_graphs.end() && realm()==client_realm) {
+                static std::array<std::atomic<unsigned>,native_ending_graphs.size()> ending_captures{};
+                const auto index=static_cast<std::size_t>(std::ranges::find(native_ending_graphs,graph)-native_ending_graphs.begin());
+                const auto occurrence=ending_captures[index].fetch_add(1,std::memory_order_relaxed);
+                if(occurrence<4) {
+                    const auto layout=read<std::array<std::uint32_t,10>>(resource+0x20);
+                    const auto instance=read<Address>(vm+0x30);
+                    if(instance && layout[0]<0x10000) {
+                        const auto frame=(layout[0]+15U)&~15U;
+                        const auto arguments=read<Address>(instance+frame+8);
+                        const auto locals=read<Address>(instance+frame+16);
+                        std::string fields;
+                        for(unsigned i=0;i<12;++i) {
+                            Address value{};
+                            if(!arguments || !memory::peek(arguments+i*8,value))break;
+                            fields+=std::format(" {}:{:#x}",i*8,value);
+                        }
+                        logging::log(logging::Level::info,logging::Channel::progression,
+                            "Native ending capture: graph {:#x}, context {:#x}, VM {:#x}, instance {:#x}, resource {:#x}, layout {}, arguments {:#x}, locals {:#x}; registers{}.",
+                            graph,read<Address>(instance+frame),vm,instance,resource,
+                            std::format("{},{},{},{},{},{},{},{},{},{}",layout[0],layout[1],layout[2],layout[3],layout[4],layout[5],layout[6],layout[7],layout[8],layout[9]),
+                            arguments,locals,fields);
+                        // Snapshot Self while its VM frame still belongs to
+                        // this invocation. A separate process reading after
+                        // the log arrives can see an already recycled frame.
+                        // Reads only: bounded register pages and Self children,
+                        // no controller calls or changes to the native ending.
+                        for(unsigned page=0;page<4;++page) {
+                            Address at{};
+                            if(!memory::peek(instance+frame+page*8,at) || !at)continue;
+                            std::array<std::byte,256> bytes{};
+                            const auto length=page==3?bytes.size():std::size_t{96};
+                            if(!memory::peek_bytes(at,bytes.data(),length))continue;
+                            std::string hex;
+                            for(std::size_t i=0;i<length;++i)hex+=std::format("{:02x}",std::to_integer<unsigned>(bytes[i]));
+                            logging::log(logging::Level::info,logging::Channel::progression,
+                                "Native ending page: graph {:#x}, capture {}, page {}, address {:#x}, bytes {}.",
+                                graph,occurrence,page,at,hex);
+                            if(page!=3)continue;
+                            for(unsigned child=0;child<4;++child) {
+                                Address target{};
+                                std::memcpy(&target,bytes.data()+child*8,sizeof(target));
+                                if(target<0x10000 || (target>=l.base && target-l.base<supported_build::game_image_size))continue;
+                                std::array<std::byte,512> data{};
+                                if(!memory::peek_bytes(target,data.data(),data.size()))continue;
+                                std::string child_hex;
+                                for(const auto b:data)child_hex+=std::format("{:02x}",std::to_integer<unsigned>(b));
+                                logging::log(logging::Level::info,logging::Channel::progression,
+                                    "Native ending Self child: graph {:#x}, slot {}, address {:#x}, bytes {}.",
+                                    graph,child,target,child_hex);
+                            }
+                        }
+                    }
+                }
+            }
             if (graph == graph_celebration && realm() == client_realm) {
                 // CoopChallengeCelebrationLocation as the graph built it in its locals (page 2).
                 const auto frame = read<std::uint32_t>(resource + 0x20);
@@ -1786,6 +2066,9 @@ void pump_throwdown_lab(Address vm) noexcept {
                 const auto frame = read<std::uint32_t>(resource + 0x20);
                 const auto locals = read<Address>(read<Address>(vm + 0x30) + ((frame + 15U) & ~15U) + 16);
                 if (locals && graph == graph_queue_filled && l.local_entered.exchange(false, std::memory_order_acq_rel)) {
+                    const auto activity = l.local_entered_activity.exchange(0, std::memory_order_acq_rel);
+                    if (realm() == server_realm && activity)
+                        native_throwdown_activity_started(activity, local_native_player_id());
                     const auto handle = read<std::uint32_t>(locals + queue_filled_handle_local);
                     const auto seed = read<std::uint32_t>(locals + queue_filled_seed_local);
                     { std::lock_guard lock(l.mutex); l.event_handle = handle; }
@@ -1933,13 +2216,20 @@ void throwdown_lab_before_level_transition(unsigned next) noexcept {
     // 14, 22 and 3 leave a level or sublevel, 24 shuts down: the level's bundles are unloaded,
     // and the events' types with them.
     if (next != 14 && next != 22 && next != 3 && next != 24) return;
+    native_solo_queue.store(0);
+    native_throwdown_level_left();
+    native_flag::abandon();
     try {
         auto& l = lab();
+        l.local_entered.store(false, std::memory_order_release);
+        l.local_entered_activity.store(0, std::memory_order_release);
         std::lock_guard lock(l.mutex);
         l.world.fetch_add(1, std::memory_order_acq_rel);
         l.types.clear();
     } catch (...) {}
 }
+
+std::uint64_t native_throwdown_world() noexcept { return lab().world.load(std::memory_order_acquire)+1; }
 
 bool throwdown_lab_player(std::uint32_t player_id) noexcept {
     if (!player_id) return false;
@@ -2010,13 +2300,39 @@ bool prepare_throwdown_injection() noexcept {
     return false;
 }
 bool queue_throwdown_spawn(std::uint64_t token, std::uint32_t host, const std::string& series,
-                           const std::vector<std::uint8_t>& placement, const std::vector<std::uint8_t>& settings) noexcept {
+                           const std::vector<std::uint8_t>& placement, const std::vector<std::uint8_t>& settings,
+                           const std::string& instance, std::uint32_t capacity) noexcept {
     if (!token || !host || placement.empty()) return false;
     try {
         Job job{Job::Kind::spawn, host};
         job.token = token; job.series = series; job.placement = placement; job.settings = settings;
+        job.instance = instance; job.max_players = capacity;
         return queue_relay_job(std::move(job), event_debug_spawn);
     } catch (...) { return false; }
+}
+bool queue_throwdown_host(std::uint64_t token, const std::string& series, const std::array<float, 3>& at, std::uint32_t most_players) noexcept {
+    const auto host = local_native_player_id();
+    if (!token || !host) return false;
+    try {
+        Job job{Job::Kind::spawn, host, most_players};
+        job.token = token;
+        job.series = series;
+        job.position = at;
+        return queue_relay_job(std::move(job), event_debug_spawn);
+    } catch (...) { return false; }
+}
+bool queue_custom_throwdown_flag(std::uint64_t token,std::uint32_t host,const std::string& key,
+    const std::array<float,3>& at,float yaw) noexcept {
+    if(!token || !host || !std::isfinite(yaw) ||
+       !std::all_of(at.begin(),at.end(),[](float n){return std::isfinite(n) && std::abs(n)<100000.f;}))return false;
+    try {
+        const auto mode=custom_throwdowns::find(key);
+        if(!mode)return false; // only a mode some plugin here registered
+        Job job{Job::Kind::spawn,host};job.token=token;job.series="SpotBattle";
+        job.instance=native_flag::flag_assets(mode->flag).instance;job.position=at;job.spawn_yaw=yaw*3.14159265f/180.f;
+        job.max_players=10; // A flag must never auto-start the Spot Battle donor.
+        return queue_relay_job(std::move(job),event_debug_spawn);
+    } catch(...) {return false;}
 }
 bool queue_throwdown_add(std::uint32_t player, const std::string& series, std::uint32_t mmid) noexcept {
     if (!player || !mmid) return false;

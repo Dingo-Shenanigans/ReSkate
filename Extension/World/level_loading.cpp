@@ -11,11 +11,14 @@
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/engine.h"
 #include "Engine/Game/Build/20260929/level_loading.h"
+#include "Extension/Assets/map_download.h"
 #include "Extension/Boot/exit_watch.h"
+#include "Engine/Core/Debug/crash_report.h"
 #include <atomic>
 #include <format>
 #include <mutex>
 #include <string>
+#include <thread>
 
 namespace dingosdk {
 namespace {
@@ -129,6 +132,9 @@ void send_level_session(std::uint64_t at) {
 // sent now, and given a moment to go out. It used to be sent only when the next level began
 // loading, so a stay that ended with the game closing (the long ones, as often as not) was
 // never sent. A close the game turns down starts the stay afresh.
+// A load still running is sent too, as one that ended with the game closed, with the stage it
+// was in: a load timing went out only when the load finished, so the loads players gave up on
+// were never seen at all (2026-10-21).
 void send_level_session_on_close() noexcept {
     try {
         auto& o = observer();
@@ -136,13 +142,64 @@ void send_level_session_on_close() noexcept {
             std::unique_lock lock(o.mutex, std::defer_lock);
             for (int tries = 0; tries < 50 && !lock.try_lock(); ++tries) Sleep(10);
             if (!lock.owns_lock()) return;
-            if (!session_started) return;
             const auto now = GetTickCount64();
-            send_level_session(now);
-            session_started = now;
+            const auto& p = o.progress;
+            if (p.running && p.started && now >= p.started) {
+                trace::record("game.level_load", "app.load", std::chrono::milliseconds(now - p.started), false,
+                    {{"destination", p.destination}, {"first", p.sequence == 1 ? "true" : "false"}, {"ended", "closed"},
+                     {"stage", client_state_name(p.state)}},
+                    {{"stage_seconds", now >= p.entered ? static_cast<double>(now - p.entered) / 1000.0 : 0.0, "second"}});
+            } else if (session_started) {
+                send_level_session(now);
+                session_started = now;
+            } else {
+                return;
+            }
         }
         trace::flush(std::chrono::seconds(3));
     } catch (...) {}
+}
+// A load that has sat in one stage this long is reported while the game waits on: a stuck-load
+// report (crash_report::capture_stuck_load), every thread's stack with the log, once a load and a
+// few times a launch at most. 2.1.1's slowest loads that did finish took one to five minutes in
+// all, most of it in one stage on San Van; the ones that never finished sent nothing, as their
+// players closed the game (Sentry timings, 2026-10-21).
+constexpr std::uint64_t stuck_after_ms = 120000;
+constexpr unsigned most_stuck_reports = 3;
+void watch_for_stuck_loads() {
+    std::thread([] {
+        std::uint64_t reported{}; // the load already reported (Progress::sequence)
+        for (unsigned reports = 0; reports < most_stuck_reports;) {
+            Sleep(5000);
+            std::string stage, destination;
+            std::uint64_t seconds{}, load{};
+            try {
+                auto& o = observer();
+                std::unique_lock lock(o.mutex, std::try_to_lock);
+                if (!lock.owns_lock()) continue;
+                const auto& p = o.progress;
+                const auto now = GetTickCount64();
+                if (!p.running || !p.seen || !level_logging::busy(p.state) || p.sequence == reported ||
+                    now < p.entered || now - p.entered < stuck_after_ms) continue;
+                stage = client_state_name(p.state);
+                destination = p.destination;
+                seconds = (now - p.entered) / 1000;
+                load = p.sequence;
+            } catch (...) { continue; }
+            // (A map this PC is fetching for a multiplayer session holds its load back on purpose.)
+            if (map_download::view().stage != map_download::Stage::idle) continue;
+            reported = load;
+            ++reports;
+            const bool sent = crash_report::capture_stuck_load(std::wstring(stage.begin(), stage.end()), static_cast<DWORD>(seconds));
+            try {
+                logging::log(Level::warning, Channel::level,
+                    "Level load {} has been in {} for {} s{}; {}", load, stage, seconds,
+                    destination.empty() ? std::string() : " (" + destination + ")",
+                    sent ? "a stuck-load report with every thread's stack and this log was made, to find out why (the game goes on)."
+                         : "no stuck-load report was made (crash reporting is off, or busy).");
+            } catch (...) {}
+        }
+    }).detach();
 }
 // Timings for Sentry (Engine/Core/Debug/trace.h), from the same observations as the log:
 // each load, the launch up to the first playable level, and the frame pacing of the time
@@ -339,6 +396,7 @@ bool start_level_loading_logging(std::uintptr_t base, BeforeLevelTransition befo
         o.active.store(true);
         trace_disconnects();
         trace_state_requests();
+        watch_for_stuck_loads();
         emit(Level::info, "Native level-loading stage logging enabled.");
         return true;
     } catch (...) { return false; }

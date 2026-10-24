@@ -4,14 +4,15 @@
 #include "Engine/Vfs/builtin_packs.h"
 #include "Engine/Vfs/initfs.h"
 #include "Engine/Vfs/mod_catalog.h"
+#include "Engine/Vfs/mod_conflicts.h"
 #include "Extension/Assets/live_mods.h"
-#include "Extension/BoardBreak/board_break.h"
 #include "Extension/UI/skate_theme.h"
 #include "Engine/Core/Log/logging.h"
 
 #include <Windows.h>
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <filesystem>
 #include <memory>
 #include <mutex>
@@ -60,99 +61,6 @@ private:
     std::atomic<bool> reading_{};
     std::atomic<ULONGLONG> next_{};
 };
-struct DeckScan {
-    std::vector<std::string> installed, titles; // each installed deck's name for people
-    std::string chosen;
-};
-}
-namespace menu {
-// Board Break's decks (Extension/BoardBreak/board_break.h). The game has one deck model and each
-// deck is a mod's copy of it, so picking one applies the mods with that deck first and loads the
-// level again. A button for each deck the feature was made with, greyed out while it is not
-// installed, and for any other deck that is; the Mods folder is read again every 1.5 s while the
-// card shows. A deck goes by the name its deck.ini gives it (label), else by its folder's.
-void board_break_deck_card(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
-    static auto* scans = new FolderRead<DeckScan>; // process lifetime, as the threads that fill it
-    const auto scan = scans->get([] {
-        DeckScan read;
-        read.installed = mods::installed_board_break_decks();
-        read.chosen = mods::wanted_board_break_deck();
-        for (const auto& deck : read.installed) read.titles.push_back(board_break::deck_label(deck));
-        return read;
-    }, 1500);
-    if (!scan) return;
-    const auto& installed = scan->installed;
-    const auto& titles = scan->titles;
-    const auto& chosen = scan->chosen;
-    if (!model.board_break.available || installed.empty()) return;
-    const auto there = [&](const std::string& deck) { return std::find(installed.begin(), installed.end(), deck) != installed.end(); };
-    // The known decks in their own order, then the others that are installed: the numbers are the
-    // ones `boardbreak deck` prints.
-    std::vector<std::string> decks(mods::board_break_decks.begin(), mods::board_break_decks.end());
-    for (const auto& deck : installed)
-        if (std::find(decks.begin(), decks.end(), deck) == decks.end()) decks.push_back(deck);
-    const auto label = [&](const std::string& deck) {
-        std::string name;
-        if (const auto at = std::find(installed.begin(), installed.end(), deck);
-            at != installed.end() && static_cast<std::size_t>(at - installed.begin()) < titles.size())
-            name = titles[static_cast<std::size_t>(at - installed.begin())];
-        else {
-            name = deck;
-            bool start = true;
-            for (auto& c : name) {
-                if (c == '_') c = ' ';
-                else if (start && c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
-                start = c == ' ';
-            }
-        }
-        const auto place = std::find(decks.begin(), decks.end(), deck) - decks.begin() + 1;
-        return std::to_string(place) + " " + name;
-    };
-    const auto in_play = mods::board_break_in_play();
-    begin_card(menu, "board-break-decks", "BOARD BREAK DECK", in_play.empty() ? "none in the game" : label(in_play).c_str());
-    const bool busy = live_mods::busy();
-    if (menu::console_style()) {
-        // Full screen: one row, left / right to a deck and A to put it in the game.
-        static int staged = -1;
-        static std::string staged_from;
-        std::vector<std::string> names;
-        int playing = -1;
-        for (std::size_t i = 0; i < decks.size(); ++i) {
-            names.push_back(label(decks[i]) + (there(decks[i]) ? "" : " (not installed)"));
-            if (decks[i] == in_play) playing = static_cast<int>(i);
-        }
-        if (staged < 0 || staged >= static_cast<int>(decks.size()) || staged_from != in_play) staged = playing, staged_from = in_play;
-        bool load = false;
-        const bool waiting = staged >= 0 && decks[static_cast<std::size_t>(staged)] != in_play;
-        menu::option_row(menu, waiting ? "Deck   - A puts it in###deck" : "Deck###deck",
-                         waiting ? "Press A to put this deck in the game (the level loads again)." : "Left / right to pick a deck, then A to put it in the game.",
-                         staged, names, !busy && callbacks.queue_console_command, &load);
-        if (load && staged >= 0) {
-            const auto& deck = decks[static_cast<std::size_t>(staged)];
-            if (!there(deck)) menu::feedback(menu, "That deck is not installed.");
-            else if (deck != in_play) send_console(menu, callbacks, "boardbreak deck " + deck);
-        }
-    } else {
-    const float gap = ImGui::GetStyle().ItemSpacing.x;
-    const float width = (ImGui::GetContentRegionAvail().x - gap * 3) / 4;
-    for (std::size_t i = 0; i < decks.size(); ++i) {
-        if (i % 4) ImGui::SameLine();
-        const auto& deck = decks[i];
-        ImGui::PushID(static_cast<int>(i));
-        ImGui::BeginDisabled(!there(deck) || busy || deck == in_play || !callbacks.queue_console_command);
-        if (ImGui::Button((label(deck) + (deck == in_play ? " *" : "")).c_str(), ImVec2(width, 0)))
-            send_console(menu, callbacks, "boardbreak deck " + deck);
-        ImGui::EndDisabled();
-        ImGui::PopID();
-    }
-    }
-    if (busy) note("Applying mods...");
-    else if (!in_play.empty() && chosen != in_play && there(chosen))
-        note((label(chosen) + " is chosen and shows once the level has loaded again.").c_str());
-    note("The deck every board in the game has, and the one that breaks. Picking another loads the level again; "
-         "decks that are not installed are greyed out.");
-    end_card();
-}
 }
 namespace {
 std::filesystem::path game_directory() {
@@ -162,10 +70,12 @@ std::filesystem::path game_directory() {
     return std::filesystem::path(std::wstring(executable.data(), length)).parent_path();
 }
 // What a mod brings, as the native Mods page words it.
-std::string mod_contents(const mods::Mod& mod) {
-    std::string text = mod.provides_layout && mod.provides_levels ? "Maps + game data"
-                     : mod.provides_levels ? "Maps" : mod.provides_layout ? "Game data" : "";
-    if (!mod.park_maps.empty()) text += text.empty() ? "Parks" : " + parks";
+std::string contents_text(const mods::Mod& mod) {
+    std::string text;
+    for (auto part : mods::mod_contents(mod)) {
+        if (!text.empty()) part[0] = static_cast<char>(std::tolower(static_cast<unsigned char>(part[0])));
+        text += (text.empty() ? "" : " + ") + part;
+    }
     return text.empty() ? "Nothing to load" : text;
 }
 // Every mod folder and what mods.json says about it, re-read every 1.5 s while
@@ -175,7 +85,6 @@ std::string mod_contents(const mods::Mod& mod) {
 // mod folder added since launch.
 void draw_installed_mods(SkateMenu& menu) {
     static auto* scans = new FolderRead<mods::ModList>; // process lifetime, as the threads that fill it
-    static auto* officials = new FolderRead<std::vector<mods::BuiltinPack>>;
     static std::string action_error;
     const auto scanned = scans->get([] { return mods::scan_mods(mods::engine_data_root()); }, 1500);
     if (!scanned) {
@@ -185,29 +94,34 @@ void draw_installed_mods(SkateMenu& menu) {
     const auto& list = *scanned;
     const auto& launch = mods::catalog();
     const auto applied = live_mods::applied_mods();
-    // Official mods (builtin_packs.h) live outside the Mods folder's list: ReSkate keeps them,
-    // always on. Without them here, the ones in effect read as mods whose folder was deleted.
-    const auto official_read = officials->get([root = list.root] { return mods::official_packs(root); }, 1500);
-    const auto official = official_read ? *official_read : std::vector<mods::BuiltinPack>{};
+    // ReSkate's own packs (builtin_packs.h) live outside the Mods folder's list, always on. Without
+    // this, the ones in effect read as mods whose folder was deleted.
     const auto kept = [&](const std::string& name) {
-        const auto pack = mods::board_break_pack_of(name);
-        const auto& base = pack.empty() ? name : pack;
-        return base.starts_with("reskate-builtin-") || std::ranges::any_of(official, [&](const mods::BuiltinPack& other) {
-            return _stricmp(other.name.c_str(), base.c_str()) == 0;
-        });
+        const auto owner = mods::variant_owner(name);
+        return (owner.empty() ? name : owner).starts_with("reskate-builtin-");
     };
-    // A Board Break deck pack is in effect when one of the decks inside it is (mod_catalog.h).
+    // A mod with variants is in effect when one of its variants is (mod_catalog.h).
     const auto in_effect = [&](const std::string& name) {
         return std::ranges::any_of(applied, [&](const std::string& other) {
-            return _stricmp(other.c_str(), name.c_str()) == 0 || _stricmp(mods::board_break_pack_of(other).c_str(), name.c_str()) == 0;
+            return _stricmp(other.c_str(), name.c_str()) == 0 || _stricmp(mods::variant_owner(other).c_str(), name.c_str()) == 0;
         });
     };
     const auto excluded = [&](const std::string& name) {
         return std::ranges::any_of(launch.excluded, [&](const mods::Mod& mod) { return _stricmp(mod.name.c_str(), name.c_str()) == 0; });
     };
-    // Board Break's other decks and other mods that bring a deck model: enabled, not loaded, and
-    // nothing about them waits to be applied.
-    const auto aside = mods::set_aside_for_board_break();
+    // Left out for a conflict: the mod it lost to (mod_conflicts.h), else empty.
+    const auto lost_to = [&](const std::string& name) {
+        const auto found = std::ranges::find_if(launch.excluded, [&](const mods::Mod& mod) { return _stricmp(mod.name.c_str(), name.c_str()) == 0; });
+        return found == launch.excluded.end() ? std::string{} : mods::conflict_winner(*found);
+    };
+    const auto title_of = [&](const std::string& name) {
+        for (const auto& entry : list.entries)
+            if (_stricmp(entry.mod.name.c_str(), name.c_str()) == 0) return entry.mod.title.empty() ? name : entry.mod.title;
+        return name;
+    };
+    // Set aside for another mod's variant (mod_catalog.h): enabled, not loaded, and nothing about them
+    // waits to be applied.
+    const auto aside = mods::set_aside_for_variants();
     const auto set_aside = [&](const mods::ModEntry& entry) {
         return entry.enabled && !in_effect(entry.mod.name) &&
                std::ranges::any_of(aside, [&](const std::string& other) { return _stricmp(other.c_str(), entry.mod.name.c_str()) == 0; });
@@ -218,23 +132,19 @@ void draw_installed_mods(SkateMenu& menu) {
         if (effect) ++loaded;
         if (entry.enabled != effect && !excluded(entry.mod.name) && !set_aside(entry)) ++pending;
     }
-    const auto official_aside = [&](const std::string& name) {
-        return !in_effect(name) && std::ranges::any_of(aside, [&](const std::string& other) { return _stricmp(other.c_str(), name.c_str()) == 0; });
-    };
-    for (const auto& pack : official) {
-        if (in_effect(pack.name)) ++loaded;
-        else if (!official_aside(pack.name)) ++pending;   // put in place since the game started: applying loads it
-    }
     // Mods still in effect whose folder has been deleted: applying unloads them.
     std::vector<std::string> removed;
     for (const auto& name : applied)
-        if (mods::board_break_pack_of(name).empty() && !kept(name) &&
+        if (mods::variant_owner(name).empty() && !kept(name) &&
             std::ranges::none_of(list.entries, [&](const mods::ModEntry& entry) { return _stricmp(entry.mod.name.c_str(), name.c_str()) == 0; }))
             removed.push_back(name);
     pending += removed.size();
     loaded += removed.size();
     std::string count = std::to_string(loaded) + " loaded";
-    if (!launch.excluded.empty()) count += ", " + std::to_string(launch.excluded.size()) + " not loaded";
+    const auto conflicted = static_cast<std::size_t>(std::ranges::count_if(launch.excluded, [](const mods::Mod& mod) {
+        return !mods::conflict_winner(mod).empty(); }));
+    if (launch.excluded.size() > conflicted) count += ", " + std::to_string(launch.excluded.size() - conflicted) + " not loaded";
+    if (conflicted) count += ", " + std::to_string(conflicted) + " left out";
     menu::begin_card(menu, "installed-mods", "INSTALLED MODS", count.c_str());
 
     // Unapplied changes first, with the button that applies them.
@@ -320,15 +230,19 @@ void draw_installed_mods(SkateMenu& menu) {
         const char* status = "DISABLED";
         ImU32 colour = skate_theme::tile_light;
         std::string hover = mod.description;
-        if (excluded(mod.name)) {
+        if (const auto winner = lost_to(mod.name); !winner.empty()) {
+            status = "LEFT OUT";
+            hover = "Left out: it changes the same parts of the game as " + title_of(winner) + ", which is higher in "
+                    "the load order, so only that one loads.\n\nChoose which loads in the launcher's Mod Manager.";
+        } else if (excluded(mod.name)) {
             status = "NOT LOADED";
             colour = skate_theme::danger;
             hover = "Not loaded: it could not be merged cleanly, so none of it is used.\n\n"
                     "Reinstall the whole mod folder, or rebuild it with a current ReSkate Studio.";
         } else if (set_aside(entry)) {
             status = "SET ASIDE";
-            hover = "Set aside while a Board Break deck is the one in the game: the game has one deck model, so one "
-                    "mod's deck loads at a time. Pick another deck under BOARD BREAK DECK, or disable Board Break's decks.";
+            hover = "Set aside: it changes what another mod's chosen variant replaces (a deck pack's deck, say), and "
+                    "only one of them can be in the game. Pick another variant on that mod's own page, or disable that mod.";
         } else if (entry.enabled && effect) {
             status = "LOADED";
             colour = skate_theme::good;
@@ -339,26 +253,9 @@ void draw_installed_mods(SkateMenu& menu) {
             status = "APPLY TO UNLOAD";
             colour = skate_theme::danger;
         }
-        if (tile(index++, mod.title.empty() ? mod.name : mod.title, byline(mod), status, colour, mod_contents(mod), hover,
+        if (tile(index++, mod.title.empty() ? mod.name : mod.title, byline(mod), status, colour, contents_text(mod), hover,
                  entry.enabled ? "Disable" : "Enable"))
             toggle = i;
-    }
-    for (const auto& pack : official) {
-        const auto* known = [&]() -> const mods::Mod* {
-            for (const auto& mod : launch.mods)
-                if (_stricmp(mod.name.c_str(), pack.name.c_str()) == 0) return &mod;
-            return nullptr;
-        }();
-        auto title = known && !known->title.empty() ? known->title : pack.name.substr(pack.name.find('-') + 1);
-        if (!known) std::replace(title.begin(), title.end(), '_', ' ');
-        auto line = known ? byline(*known) : "by " + pack.name.substr(0, pack.name.find('-'));
-        line += "  -  always on";
-        const bool effect = in_effect(pack.name), set_by_deck = official_aside(pack.name);
-        tile(index++, title, line, effect ? "OFFICIAL" : set_by_deck ? "SET ASIDE" : "APPLY TO LOAD",
-             effect ? skate_theme::good : set_by_deck ? skate_theme::tile_light : skate_theme::danger,
-             known ? mod_contents(*known) : "",
-             "An official mod, made for one of ReSkate's own features. It is installed, updated and turned off "
-             "on the launcher's OFFICIAL tab, not here.", nullptr);
     }
     for (const auto& name : removed)
         tile(index++, name, "Folder deleted", "APPLY TO UNLOAD", skate_theme::danger, "",

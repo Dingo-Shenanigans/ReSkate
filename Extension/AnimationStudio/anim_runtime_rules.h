@@ -1,6 +1,7 @@
 #pragma once
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <optional>
 #include <span>
 #include <string>
@@ -8,6 +9,15 @@
 #include <vector>
 
 namespace dingosdk::anim_studio {
+// The game's pop grade (EnumGS.PopHeight) as the studio's pop name: "" when it did not grade it.
+inline std::string_view graded_pop_name(int grade) noexcept {
+    return grade == 1 ? "low" : grade == 2 ? "mid" : grade == 3 ? "high" : "";
+}
+// How far back to look for the grade of the pop `elapsed_seconds` ago (and a little more), never before 0.
+inline std::uint64_t pop_grade_since(std::uint64_t now, double elapsed_seconds) noexcept {
+    const double age = std::isfinite(elapsed_seconds) ? std::max(0.0, elapsed_seconds) * 1000.0 + 300.0 : static_cast<double>(now);
+    return age >= static_cast<double>(now) ? 0 : now - static_cast<std::uint64_t>(age);
+}
 // One name for a trick, however the game spelled it. The game names its tricks in more than one way: what it says in
 // the air (current_trick) is "n_kickflip", "fsimpossible"; its scoring data, where the studio's first trick list came
 // from, says "nolliekickflip", "nolliebsimpossible"; its flick list says "N_Kickflip", "FrontFoot_Impossible". A saved

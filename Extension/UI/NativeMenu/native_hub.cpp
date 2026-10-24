@@ -107,7 +107,7 @@ void remove_hub_tiles(const Context &c) {
     for (const auto &root : c.roots({tile_list_schema})) {
         const auto list = c.field(root.model, tile_items);
         unsigned count{}, stride{};
-        const auto bytes = c.array(list, 32, count, stride);
+        c.array(list, 32, count, stride);
         std::vector<bool> unwanted(count);
         unsigned last_kept = 0; // one past the last tile that stays
         for (unsigned i = 0; i < count; ++i) {
@@ -127,6 +127,12 @@ void remove_hub_tiles(const Context &c) {
             current_entry < static_cast<std::int32_t>(count) && unwanted[static_cast<unsigned>(current_entry)])
             c.set(entry, first_kept);
         if (last_kept < count && std::any_of(unwanted.begin() + last_kept, unwanted.end(), [](bool u) { return u; })) {
+            // Hiding an earlier tile clears its inline navigation CString,
+            // delegate, content and style refs. The earlier row snapshot would
+            // borrow released values and undo those edits when republished.
+            unsigned live_count{},live_stride{};
+            const auto bytes=c.array(list,32,live_count,live_stride);
+            require(live_count==count && live_stride==stride,"Native Hub rows changed while hiding tiles.");
             std::vector<std::byte> kept(bytes.begin(), bytes.begin() + std::size_t{last_kept} * stride);
             c.array(list, kept, last_kept);
         }

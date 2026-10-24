@@ -38,8 +38,12 @@ void update_party_position(const Pose *pose) noexcept;
 // Points the party Spectate camera at a session player's skater from code (the
 // throwdown turn camera). 0 stops a spectate this function started. Game thread.
 void spectate_party_member(std::uint64_t id) noexcept;
+// Whether Spectate holds the camera, or is giving it back: a plugin's camera waits. Game thread.
+bool party_spectating() noexcept;
 // Returns only a record owned by this adapter, validated against this manager.
 std::uint64_t native_party_player_info(std::uintptr_t manager, std::size_t slot) noexcept;
+// Lookup by session identity for native activity leaderboard rows.
+std::uint64_t native_party_player_info_by_id(std::uintptr_t manager, std::uint64_t id) noexcept;
 std::string native_party_status();
 // Whether players can form parties: in a session, a lobby or a dedicated server. Outside one
 // the game's party buttons are refused.
@@ -47,10 +51,11 @@ void set_native_party_changes(bool allowed) noexcept;
 // A party invite from `from` (a session player) as the game's own invite toast, whose Accept and
 // Decline come back through the request hooks. False when it could not be shown. Game thread.
 bool post_native_party_invite(std::uint64_t from) noexcept;
-// Game thread. The dispatcher copies the payload. False when the dispatcher does not accept events; throws when it
-// cannot be read.
+// Game thread. A native UI event of `type` (its type object) with `payload`, posted as the game's own
+// (the dispatcher copies the payload). False when the dispatcher does not accept events; throws when
+// it cannot be read.
 bool post_native_ui_event(std::uintptr_t base, std::uintptr_t type, const void *payload);
-// True when the three game functions that post_native_ui_event calls match this build's fingerprints.
+// True when the three game functions post_native_ui_event calls match this build's fingerprints.
 [[nodiscard]] bool native_ui_event_code_known(std::uintptr_t base) noexcept;
 // The game's group id for a ReSkate party number (stable across promotions; 0 = none).
 constexpr std::uint64_t native_party_group_id(std::uint32_t party) noexcept {

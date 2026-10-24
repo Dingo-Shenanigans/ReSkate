@@ -1,15 +1,36 @@
 #include "native_menu_data.h"
+#include "native_array_publication.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/engine.h"
 #include "Engine/Game/Build/20260929/native_menu.h"
 #include "Engine/Game/Build/20260929/native_party.h"
+#include "Engine/Core/Log/logging.h"
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <set>
 
 namespace dingosdk::multiplayer::menu_data {
 namespace engine = addr::engine;
 namespace menu = addr::native_menu;
+ModelRecordLoad model_record_load_original{};
+Handle model_record_load_hook(Address manager,Address record,bool flag) {
+    const auto base=reinterpret_cast<Address>(GetModuleHandleW(nullptr));
+    Address record_type{};
+    if(!record || !memory::peek(record+8,record_type) || record_type!=base+menu::asset_record_type) {
+        // Reject at the loader, before either of its TypeInfo reads. Returning
+        // from the constructor alone would still fault in the loader's tail.
+        static std::atomic<unsigned> reports{};
+        if(reports.fetch_add(1)<12) {
+            std::string name="unavailable";
+            try {name=string(read<Address>(record+0x18),192);}catch(...) {}
+            logging::log(logging::Level::error,logging::Channel::ui,
+                "Native model loader rejected non-record {:#x}, type {:#x}, asset '{}'.",record,record_type,name);
+        }
+        return 0;
+    }
+    return model_record_load_original(manager,record,flag);
+}
 void require(bool condition, const char* message) { if (!condition) throw std::runtime_error(message); }
 unsigned kind(Address type) { return (read<std::uint16_t>(read<Address>(type) + 4) >> 5) & 31; }
 unsigned size(Address type) { return kind(type) == 3 ? 8 : read<std::uint16_t>(read<Address>(type) + 6); }
@@ -41,7 +62,8 @@ Address Context::type(Schema schema) const {
         types_.emplace(schema.hash, candidate);
         return candidate;
     }
-    throw std::runtime_error("Native menu schema has not loaded yet.");
+    throw std::runtime_error("Native menu schema has not loaded yet (hash " +
+        std::to_string(schema.hash) + ", size " + std::to_string(schema.size) + ").");
 }
 Address Context::type_of(Handle handle) const {
     const auto record = reinterpret_cast<Address (*)(Address, Handle, std::uint8_t)>(base + addr::native_party::model_record)(manager, handle, 0);
@@ -115,7 +137,8 @@ Field Context::member(Address type, std::uint32_t hash) const {
         require(result.offset + size(result.type) <= size(type), "Native menu field exceeds its structure.");
         return result;
     }
-    throw std::runtime_error("Native menu field schema differs.");
+    throw std::runtime_error("Native menu field schema differs (field " + std::to_string(hash) +
+        ", model " + std::to_string(read<std::uint32_t>(meta)) + ").");
 }
 Value Context::field(Value value, std::uint32_t hash) const {
     address(value);
@@ -140,7 +163,23 @@ Value Context::element(Value array, unsigned index) const {
 Value Context::create(Schema schema, std::uint64_t id) const {
     const auto t = type(schema);
     const auto h = game::native_data().models.create(manager, t, id, game::native_name_hash("ReSkate.NativeMultiplayerMenu"), false, 2);
-    Value result{h, t}; address(result); return result;
+    Value result{h, t}; address(result); initialize_text(result); return result;
+}
+void Context::initialize_text(Value value) const {
+    if (kind(value.type) == 7) {
+        if (!read<Address>(address(value))) text(value, "");
+        return;
+    }
+    if (kind(value.type) != 2) return; // Asset/DataRef pointers and counted arrays are not inline structures.
+    const auto meta = read<Address>(value.type), fields = read<Address>(meta + 0x60);
+    const auto count = read<std::uint16_t>(meta + 0x2a);
+    require(count <= 128 && (!count || fields), "Native menu text field table differs.");
+    for (unsigned i = 0; i < count; ++i) {
+        const auto entry = fields + i * 24;
+        const auto child_type = read<Address>(entry + 16);
+        if (kind(child_type) != 2 && kind(child_type) != 7) continue;
+        initialize_text(field(value, read<std::uint32_t>(entry)));
+    }
 }
 void Context::destroy(Value value) const {
     // The engine may already have removed a previous pause-menu generation.
@@ -162,12 +201,16 @@ void Context::copy(Value target, Address source) const {
     std::vector<std::byte> bytes(size(target.type));
     require(memory::read_bytes(source, bytes.data(), bytes.size()), "Native menu template is unavailable.");
     publish(target, bytes.data());
+    // Some authored records carry null optional CString defaults. Give the
+    // copy engine-owned empty strings before it is attached to a widget.
+    initialize_text(target);
 }
 void Context::text(Value target, const std::string& text) const {
     require(kind(target.type) == 7 && text.size() <= 2048, "Native menu text schema differs.");
     Address native{};
     game::native_data().values.assign(&native, text.c_str(), static_cast<std::uint32_t>(text.size()));
     struct Release { Address base; Address& value; ~Release() { if (value) reinterpret_cast<void (*)(Address*)>(base + engine::native_text_release)(&value); } } release{base, native};
+    require(native!=0,"Native menu string construction returned null.");
     set(target, native);
 }
 std::string Context::text(Value value, std::size_t maximum) const {
@@ -185,17 +228,38 @@ std::vector<std::byte> Context::array(Value value, unsigned maximum, unsigned& c
     return result;
 }
 void Context::array(Value target, std::span<const std::byte> bytes, unsigned count) const {
-    require(kind(target.type) == 4 && count <= 1024, "Native menu list is invalid.");
+    require(kind(target.type) == 4 && count <= 4096, "Native menu list is invalid.");
     const auto stride = size(read<Address>(read<Address>(target.type) + 0x30));
     require(bytes.size() == static_cast<std::size_t>(count) * stride, "Native menu list element size differs.");
-    // The engine deep-copies strings, delegates, DataRefs and nested arrays
-    // synchronously. No pointer into this temporary storage survives publish.
+    address(target);
     std::vector<std::uint64_t> storage((bytes.size() + 15) / 8);
     const std::array<std::uint32_t, 2> header{count, count};
     std::memcpy(storage.data(), header.data(), 8);
     if (!bytes.empty()) std::memcpy(storage.data() + 1, bytes.data(), bytes.size());
     const auto pointer = storage.data() + 1;
-    set(target, pointer);
+    const auto& functions = game::native_data().models;
+    if (!functions.create || !functions.destroy) { set(target, pointer); return; }
+    // Native array publication (0x19289d0) resizes and destroys the
+    // destination rows (0x19158c0) before it copies the source rows. Raw row
+    // bytes alone cannot protect a later live row's text/asset arrays when it
+    // moves to an earlier slot. Stage them in an owned root of the array's own
+    // type while every source owner is live, then publish that retained copy.
+    static std::atomic<std::uint64_t> next_array{0x4e4d415252000000ULL};
+    Value retained;
+    publish_retained_array(
+        [&] {
+            retained = {functions.create(manager, target.type, next_array.fetch_add(1, std::memory_order_relaxed) + 1,
+                game::native_name_hash("ReSkate.NativeArrayPublication"), false, 2), target.type};
+            return retained;
+        },
+        [&](Value owned) { set(owned, pointer); },
+        [&](Value owned) { publish(target, reinterpret_cast<const void*>(address(owned))); },
+        [&](Value owned) noexcept {
+            if (!owned.handle || type_of(owned.handle) != owned.type) return;
+            std::array<Address, 2> iterator{};
+            functions.destroy(manager, iterator.data(), owned.handle, 0, false, false);
+        });
+    require(!retained.handle || type_of(retained.handle) != retained.type, "Native menu list source could not be released.");
 }
 Address named_asset(const Context& context, Address anchor, const char* name) {
     const auto find = game::native_data().find_asset;
@@ -454,6 +518,12 @@ bool publish_tab_icons(const Context& context, Value tab, std::string_view idle,
     return with_texture_assets(context, std::array{idle, focused}, [&](const auto& assets) {
         context.set(context.field(tab, 0xd4f0f044), assets[0]); // Icon.
         context.set(context.field(tab, 0xbc92d1fa), assets[1]); // FocusIcon.
+    });
+}
+bool publish_texture(const Context& context, std::span<const Value> targets, std::string_view name) {
+    return with_texture_assets(context, std::array{name}, [&](const auto& assets) {
+        for (const auto target : targets)
+            if (read<Address>(context.address(target)) != assets[0]) context.set(target, assets[0]);
     });
 }
 bool publish_texture(const Context& context, Value target, std::string_view name) {

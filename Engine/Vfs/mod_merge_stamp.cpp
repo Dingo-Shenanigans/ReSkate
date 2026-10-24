@@ -44,6 +44,15 @@ fs::path sdk_module() {
 
 } // namespace
 
+std::string sdk_stamp() {
+    std::error_code error;
+    const auto module = sdk_module();
+    const auto size = fs::file_size(module, error);
+    if (error) return "none";
+    const auto written = fs::last_write_time(module, error);
+    return std::to_string(size) + ' ' + std::to_string(error ? 0 : written.time_since_epoch().count());
+}
+
 std::string merge_fingerprint(const Catalog& catalog, const std::vector<const Mod*>& mods,
                               const std::map<const Mod*, RelativeFiles>& modFiles, bool storeKnown) {
     std::string inputs = stamp_header;
@@ -74,7 +83,7 @@ std::string merge_fingerprint(const Catalog& catalog, const std::vector<const Mo
         if (error) throw std::runtime_error("Cannot list " + path_utf8(mod->directory));
         std::ranges::sort(files);
         for (const auto& file : files)
-            describe(utf8(fs::relative(file, mod->directory, error)), file);
+            describe(utf8(file.lexically_relative(mod->directory)), file);
         for (const auto& toc : modFiles.at(mod).tocs) tocs.insert(lower(toc));
     }
     for (const auto& toc : tocs) {
@@ -154,7 +163,7 @@ void write_stamp(const fs::path& output, const std::string& fingerprint, const M
         if (!it->is_regular_file(error) || error) { error.clear(); continue; }
         const auto size = fs::file_size(it->path(), error);
         if (error) throw std::runtime_error("Cannot size " + path_utf8(it->path()));
-        text += "file " + std::to_string(size) + ' ' + utf8(fs::relative(it->path(), output, error)) + '\n';
+        text += "file " + std::to_string(size) + ' ' + utf8(it->path().lexically_relative(output)) + '\n';
     }
     if (error) throw std::runtime_error("Cannot list " + path_utf8(output));
     for (auto note : report.notes) {

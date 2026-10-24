@@ -77,7 +77,7 @@ revision is retained by the workflow's concurrency group.
 ```powershell
 cargo fetch --locked --manifest-path SpotifyHelper/Cargo.toml
 cmake --preset vs2022-x64 -DDINGOSDK_BUILD_ANIMATION_STUDIO_TESTS=ON -DDINGOSDK_LAUNCHER_AUTO_UPDATE=OFF
-cmake --build --preset release --target dingosdk_runtime dingosdk_launcher dingosdk_animation_studio_tests dingosdk_trick_gesture_tests dingosdk_anim_graph_probe --parallel 4
+cmake --build --preset release --target dingosdk_runtime dingosdk_launcher dingosdk_animation_studio_tests dingosdk_anim_graph_probe --parallel 4
 ctest --test-dir build/vs2022-x64 -C Release --output-on-failure
 python -m pip install -r contrib/animator-studio/requirements-test.txt
 python -m unittest discover -s contrib/animator-studio -p 'test_native*.py'
@@ -111,7 +111,6 @@ folder (with the game closed) when testing unmodified native kickflips.
 Use a separate test installation and preserve its personal data. Follow the
 included checklist: native 360 Flip/360 Hardflip body/board coherence, playback
 and scrubbing, search/folders/inspector, gizmo and bracket editing, undo/redo,
-save/reopen, normal/switch leg and timing parity, and optional solo batch recording
-with low/mid/high grading and cancellation. Report exact commit, preset, stance,
+save/reopen and normal/switch leg and timing parity. Report exact commit, preset, stance,
 F8 versus gameplay behavior and an exported diagnostic dump. Newly decoded phases
 remain preview-only until a live replacement binding is implemented and verified.

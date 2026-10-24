@@ -29,7 +29,7 @@ constexpr auto use_download_deadline = static_cast<std::uint64_t>(-1);
 std::atomic<std::uint64_t> active_deadline{use_download_deadline};
 std::atomic<bool> downloading{}, installing{}, release_download{}, release_install{}, merging{};
 std::atomic<bool> fetching{true}, held{}, observed_cancel{}, installed_cancel{};
-std::atomic<unsigned> downloads{}, installs{}, applies{}, stops{}, rejoins{};
+std::atomic<unsigned> downloads{}, installs{}, applies{}, stops{}, rejoins{}, removals{};
 std::atomic<std::uint64_t> queued_stop_deadline{};
 bool block_download{}, block_install{}, slow{}, transfer_error{}, fallback{};
 dingosdk::MultiplayerModel session;
@@ -78,11 +78,20 @@ DWORD test_get_temp_path(DWORD capacity, LPWSTR output) {
 #undef now_us
 
 namespace dingosdk::https {
-std::optional<std::string> get_text(std::wstring_view, std::uint64_t, std::uint32_t,
+std::optional<std::uint64_t> content_length(std::wstring_view, std::uint32_t, const wchar_t*, Watch*) {
+    return std::nullopt;
+}
+std::optional<std::string> get_text(std::wstring_view url, std::uint64_t, std::uint32_t,
     const wchar_t*, Download* result, Watch* watch) {
     fixture::require(watch && watch->deadline_us.load() == map_download::deadline.load(),
         "metadata shares the session deadline");
     if (result) *result = {true, 200, 0};
+    for (const auto* name : {"Plug", "Fake", "Cosmetic"})
+        if (url.find(L"/" + std::wstring(name, name + std::strlen(name)) + L"/") != std::wstring_view::npos) {
+            const std::string narrow(name);
+            return R"({"namespace":"Team","name":")" + narrow + R"(","community_listings":[{"community":"reskate","categories":[")" +
+                   (narrow == "Cosmetic" ? "Cosmetics" : "Plugins") + R"("]}],"latest":{"version_number":"1.2.0","description":"Test plugin"}})";
+        }
     return R"({"namespace":"Team","name":"Map","community_listings":[{"community":"reskate","categories":["Maps"]}],
         "latest":{"version_number":"2.0.0","description":"Test map"}})";
 }
@@ -122,6 +131,12 @@ Download get(std::wstring_view, const std::filesystem::path& destination,
 namespace dingosdk::mods {
 std::filesystem::path engine_data_root() noexcept { return fixture::root; }
 ModList scan_mods(const std::filesystem::path&) noexcept { return {}; }
+Mod describe_mod(const std::filesystem::path& directory, std::string name, std::vector<std::string>&) {
+    Mod mod;
+    mod.name = std::move(name);
+    mod.provides_plugin = std::filesystem::exists(directory / "reskate-plugin.json");
+    return mod;
+}
 void save_mod_order(const std::filesystem::path&, const std::vector<ModEntry>&) {}
 }
 namespace dingosdk::launcher_mods {
@@ -139,10 +154,14 @@ std::string install(const std::filesystem::path& root, const std::filesystem::pa
     installed_cancel.store(cancel.load());
     if (cancel.load()) throw std::runtime_error("cancelled");
     fs::create_directories(root / options.folder);
-    std::ofstream(root / options.folder / "reskate-levels.json") << "{}";
+    if (options.folder == "Team-Plug") std::ofstream(root / options.folder / "reskate-plugin.json") << R"({"entry":"main.lua"})";
+    else if (options.folder != "Team-Fake") std::ofstream(root / options.folder / "reskate-levels.json") << "{}";
     return options.folder;
 }
-void remove(const std::filesystem::path&, const std::string&) {}
+void remove(const std::filesystem::path& root, const std::string& folder) {
+    ++fixture::removals;
+    std::filesystem::remove_all(root / folder);
+}
 }
 namespace dingosdk::live_mods {
 bool only_maps(const std::filesystem::path&) { return true; }
@@ -166,7 +185,7 @@ std::uint64_t map_fetch_deadline() noexcept {
 }
 void hold_map_load(bool hold, std::string_view package) noexcept {
     fixture::held.store(hold);
-    if (hold && package != "Team-Map-1.0.0") std::abort();
+    if (hold && !package.empty() && package != "Team-Map-1.0.0") std::abort();
 }
 bool queue_command(std::string_view action, std::string_view argument, std::string_view password) {
     if (action == "stop") ++fixture::stops;
@@ -225,6 +244,7 @@ void reset() {
     downloads.store(0);
     installs.store(0);
     applies.store(0);
+    removals.store(0);
     stops.store(0);
     queued_stop_deadline.store(0);
     rejoins.store(0);
@@ -620,6 +640,56 @@ void tests() {
     require(download::view().stage == Stage::idle && !held.load() && stops.load() == 0 &&
             rejoins.load() == 0 && !noticed("timed out"),
         "join completed within session budget retires successfully even when next tick is after deadline");
+
+    // A dedicated server's required plugins alone: one card, fetched without a live merge (the
+    // plugin host takes them from Mods), and the session goes on.
+    reset();
+    download::offer({"", "Test map", true, false, "", 0, {"Team-Plug-1.0.0"}});
+    wait([] { return download::asking(); }, "plugin need did not reach confirmation");
+    drain();
+    {
+        const auto shown = download::view();
+        require(shown.items.size() == 1 && shown.items[0].plugin && shown.items[0].name == "Plug" && shown.items[0].version == "1.2.0" &&
+                shown.map.empty(), "the card lists the plugin, at Thunderstore's newest");
+    }
+    download::answer(true);
+    wait([] { return download::view().stage == Stage::joining; }, "plugin install did not reach joining");
+    drain();
+    require(downloads.load() == 1 && installs.load() == 1 && applies.load() == 0, "a plugin alone needs no live merge");
+    fetching.store(false);
+    session.connected = true;
+    clock.fetch_add(2500000);
+    download::tick();
+    require(download::view().stage == Stage::idle && stops.load() == 0, "the session goes on once the plugin is in");
+
+    // The map and a plugin: asked once, on one card, both fetched, the map applied.
+    reset();
+    download::offer({"Team-Map-1.0.0", "Test map", true, false, "", 0, {"Team-Plug"}});
+    wait([] { return download::asking(); }, "map and plugin need did not reach confirmation");
+    drain();
+    require(download::view().items.size() == 2 && !download::view().items[0].plugin && download::view().items[1].plugin,
+        "the card lists the map first, then the plugin");
+    applying();
+    require(downloads.load() == 2 && installs.load() == 2, "both are downloaded and installed");
+    joined();
+
+    // A package that is not a plugin on Thunderstore (a cosmetic) is never fetched for a server.
+    reset();
+    download::offer({"", "Test map", true, false, "", 0, {"Team-Cosmetic"}});
+    wait([] { return download::view().stage == Stage::idle; }, "a cosmetic was not refused");
+    drain();
+    require(downloads.load() == 0 && noticed("not listed as a plugin") && stops.load() == 1, "a cosmetic is refused before any download");
+
+    // Listed as a plugin, but what it installs is none: taken out again.
+    reset();
+    download::offer({"", "Test map", true, false, "", 0, {"Team-Fake"}});
+    wait([] { return download::asking(); }, "fake plugin did not reach confirmation");
+    drain();
+    download::answer(true);
+    wait([] { return download::view().stage == Stage::idle; }, "a package that is not a plugin was kept");
+    drain();
+    require(removals.load() == 1 && !fs::exists(root / "Mods" / "Team-Fake") && noticed("is not a plugin"),
+        "a package that installs as no plugin is removed");
 
     reset();
     download::tick();

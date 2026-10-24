@@ -63,6 +63,15 @@ struct Package {
     Package at_version(std::string_view number) const;
 };
 
+// The GET MODS list's categories: those shown only (a package needs one of them, when there are
+// any) and those hidden (a package in any of them is left out, whatever else it is in).
+struct CategoryFilter {
+    std::vector<std::string> only, hidden;
+    bool empty() const { return only.empty() && hidden.empty(); }
+};
+bool shown_by(const Package& package, const CategoryFilter& filter);
+bool shown_by(const std::vector<std::string>& categories, const CategoryFilter& filter);
+
 // "Team-Mod-1.2.3" as {"Team-Mod", "1.2.3"}: how a dependency is named. The version is
 // empty when the text does not end in one.
 std::pair<std::string, std::string> split_dependency(std::string_view text);

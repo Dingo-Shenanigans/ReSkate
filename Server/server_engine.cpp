@@ -406,6 +406,7 @@ void ServerEngine::worker_loop() {
     auto next_ban_check = std::chrono::steady_clock::now();
     std::future<BanListCheck> ban_check;
     MapUpdater map_updater; // "maps.latest_versions" and "maps update" (server_map_update.h)
+    RequiredPluginCheck plugin_check; // "plugins.required" (server_map_update.h)
     bool bans_unread = true;
     std::optional<bool> name_allowed;
     const auto target_tick_interval = std::chrono::microseconds(1000000 / std::max(10U, config_.tps));
@@ -432,6 +433,10 @@ void ServerEngine::worker_loop() {
             !maps.lines.empty() || maps.changed) {
             for (const auto &line : maps.lines) log(line);
             if (maps.changed) log(host_->reload_maps());
+        }
+        if (auto plugins = plugin_check.tick(config_.required_plugins); plugins.finished) {
+            for (const auto &line : plugins.lines) log(line);
+            host_->refuse_plugins(std::move(plugins.refused));
         }
         if (!ban_check.valid() && now_time >= next_ban_check) {
             ban_check = std::async(std::launch::async, read_global_bans);
