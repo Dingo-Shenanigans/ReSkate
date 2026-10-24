@@ -2276,14 +2276,28 @@ void prepare_native_throwdown_match_panel() noexcept {
             "Throwdowns: native Details presentation preparation deferred: {}",e.what());
     }
 }
-bool release_native_throwdown_menu(std::uintptr_t base) noexcept {
+bool release_native_throwdown_menu(std::uintptr_t base,bool before_unload) noexcept {
     overlay::capture_challenge_menu_input(false);
     sync_custom_activity_ui_presence(false);
-    auto& s=state(); if(s.owned.empty()) { s.owner.store(0); s.setup_open.store(false); return true; }
+    auto& s=state(); if(s.owned.empty() && (!before_unload || s.doomed.empty())) { s.owner.store(0); s.setup_open.store(false); return true; }
     try { const auto ui=read<Address>(base+build::engine::ui_manager); const auto manager=ui?read<Address>(ui+0x140):0;
         require(manager!=0,"Throwdowns UI manager unavailable during cleanup.");
         if(manager!=s.manager) { forget_manager(); return true; }
-        const Context c(base,manager); game::ModelWriteLock lock(manager); release(c); s.generations.clear(); return true;
+        const Context c(base,manager); game::ModelWriteLock lock(manager);
+        if(!s.owned.empty()) { release(c); s.generations.clear(); }
+        else { s.owner.store(0); s.setup_open.store(false); }
+        // Before a level unload the released models go now, not 3 s later: the tick does not run while
+        // the level loads, and the game's own flush of the unloaded level's types destroyed them after
+        // the assets they name were freed (Skate.exe+0x3dc5eaa, the most reported crash of 55a7342;
+        // 2026-10-24). The native menu's own models go the same way (native_menu.cpp).
+        if(before_unload && !s.doomed.empty()) {
+            logging::log(logging::Level::info,logging::Channel::ui,
+                "Throwdowns: {} released native model(s) destroyed before the level unload.",s.doomed.size());
+            for(const auto& entry:s.doomed)
+                if(c.type_of(entry.first.handle)==entry.first.type)c.destroy(entry.first);
+            s.doomed.clear();
+        }
+        return true;
     } catch(const std::exception& e) { logging::log(logging::Level::warning,logging::Channel::ui,"Throwdowns native menu cleanup: {}",e.what()); return false; }
 }
 // A document prompt's input pressed while its prompt shows: the plugin hears panel_command.
@@ -2410,7 +2424,7 @@ void tick_native_throwdown_menu(std::uintptr_t base,bool loading,bool in_menu) n
         gameplay_hud(c,now);
     } catch(const std::exception& e) {
         logging::log(logging::Level::warning,logging::Channel::ui,"Throwdowns native menu: {}",e.what());
-        s.next_tick=now+5000; release_native_throwdown_menu(base);
+        s.next_tick=now+5000; release_native_throwdown_menu(base,false);
     }
 }
 } // namespace dingosdk::multiplayer

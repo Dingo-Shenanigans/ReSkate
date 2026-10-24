@@ -18,6 +18,9 @@
 // later free crashes in the allocator (Skate.exe+0x3d99e2f, +0x3d9ee43, +0x3d9ee47; indices
 // 20199, 20203 and 20215 in three dumps, the next block's size off by exactly that bit;
 // 2026-10-21).
+// The owner count is past 20000 in every session because ReSkate raises the owner pool to 160000
+// (Extension/World/physics_world_size.cpp) and the generation list is sized to the pool; the setting
+// is written only by the system's init (0x3d2fe20) and read only by the wake pass (2026-10-24).
 namespace dingosdk::game::build::v20260929::physics_wake {
 inline constexpr Fingerprint wake{0x3d2f780, {
     0x48,0x89,0x5c,0x24,0x08,0x48,0x89,0x7c,0x24,0x10,0x55,0x48,0x8d,0x6c,0x24,0xa9,

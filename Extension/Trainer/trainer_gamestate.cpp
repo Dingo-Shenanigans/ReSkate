@@ -297,19 +297,26 @@ void find_state_objects(std::uintptr_t start, std::size_t size) noexcept {
     } __except (1) {}
 }
 int scale_underflip_bands(float low_factor, float high_factor) noexcept {
-    band_factor.store(low_factor, std::memory_order_relaxed);
-    band_high_factor.store(high_factor, std::memory_order_relaxed);
+    const float was_low = band_factor.exchange(low_factor, std::memory_order_relaxed),
+                was_high = band_high_factor.exchange(high_factor, std::memory_order_relaxed);
     int found = 0;
     for (auto &band : underflip_bands)
         for (auto &slot : band.at) {
             const auto at = slot.load(std::memory_order_relaxed);
             if (!at) continue;
+            // A band's memory goes back to the game's heap with its level and stays readable, so only a copy that still
+            // is that band and still holds the game's band, or the last one written, is written. Writing a freed copy
+            // put 1.0 and 0.6 into the upper half of whatever the game made there next (a third of the crash reports
+            // of 55a7342: Skate.exe+0x157f930, +0x12a1549, +0x10084de, +0x11ef49e, +0x3db81ea, +0x12c21ca; 2026-10-24).
             float low{}, high{};
-            if (!peek(at + rate_min_scale, low) || !peek(at + rate_max_scale, high)) {
-                slot.store(0, std::memory_order_relaxed); // freed with its level
+            const float want_low = band.stock_min * low_factor, want_high = band.stock_max * high_factor;
+            if (!is_named(band.id, band.name, at - object_after_id) || !peek(at + rate_min_scale, low) ||
+                !peek(at + rate_max_scale, high) ||
+                !((low == band.stock_min && high == band.stock_max) || (low == band.stock_min * was_low && high == band.stock_max * was_high) ||
+                  (low == want_low && high == want_high))) {
+                slot.store(0, std::memory_order_relaxed); // freed with its level, or reused
                 continue;
             }
-            const float want_low = band.stock_min * low_factor, want_high = band.stock_max * high_factor;
             if (low != want_low) (void)put(at + rate_min_scale, want_low);
             if (high != want_high) (void)put(at + rate_max_scale, want_high);
             ++found;

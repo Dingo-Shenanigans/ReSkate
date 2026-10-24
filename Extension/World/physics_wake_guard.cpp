@@ -6,7 +6,6 @@
 #include "Engine/Game/Build/20260929/physics_wake.h"
 #include <array>
 #include <atomic>
-#include <bit>
 
 namespace dingosdk::physics_wake_guard {
 namespace {
@@ -17,14 +16,15 @@ std::atomic<bool> installed{};
 std::atomic<std::uint32_t> most{};
 std::atomic<std::uint64_t> widened{};
 
-// Said the first few times, then each power of two: a session past the limit stays past it.
+// Said once: with the owner pool raised (Extension/World/physics_world_size.cpp) every pass of every
+// session is widened, so the line says how the pass is sized, not a crash each time (55a7342's logs
+// had it thousands of times per session; 2026-10-24).
 __declspec(noinline) void note(std::uint32_t owners, std::uint32_t limit) noexcept {
-    const auto count = widened.fetch_add(1, std::memory_order_relaxed) + 1;
-    if (count > 4 && !std::has_single_bit(count)) return;
+    if (widened.fetch_add(1, std::memory_order_relaxed) != 0) return;
     try {
         logging::log(logging::Level::info, logging::Channel::runtime,
-            "Physics: the world has {} physics owners, more than the {} the game's wake pass makes room for, where the game "
-            "would have crashed; the pass makes room for all of them ({} pass(es) since the game started).", owners, limit, count);
+            "Physics: the wake pass makes room for the world's {} physics owners (the game's own size is {}, below the "
+            "raised owner pool).", owners, limit);
     } catch (...) {}
 }
 
