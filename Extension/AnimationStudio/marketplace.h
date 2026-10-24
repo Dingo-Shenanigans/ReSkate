@@ -58,7 +58,8 @@ struct Builder {
 inline constexpr std::array builders{
     Builder{"22SH", "22sh", "", "Pulled all 4,004 animations out of the game, one clip at a time. Still lands every one bolts."},
     Builder{"Fourth", "fourth", "Fourth_Studio", "Well... do we need to explain this? Built it, slammed it, built it again until it rolled away clean.", 0.5f, 0.45f},
-    Builder{"Norms", "norms", "worthlessnorms", "The syntax script watcher. Spots a missing semicolon faster than you spot a pebble in your run-up.", 0.5f, 0.39f},
+    // Norms' Thunderstore team: none yet (worthlessnorms 404s, checked 2026-10-25); put "worthlessnorms" back here once it exists.
+    Builder{"Norms", "norms", "", "The syntax script watcher. Spots a missing semicolon faster than you spot a pebble in your run-up.", 0.5f, 0.39f},
     Builder{"Steez", "steez", "Worthless", "Animation King and back-up scripter. Keys a tre flip by hand, then fixes the script it runs on.", 0.48f, 0.4f},
 };
 // One of BUILT BY by their Thunderstore team (in any case), or none: their packs are stamped DEV.
