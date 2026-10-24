@@ -116,7 +116,15 @@ struct CustomTrick {
     float caught{-1};
 };
 // The skater's stance from the grind exit setting: goofy or regular (not set counts as regular).
-bool goofy_stance() noexcept { return dingosdk::grind_exit_control::stance() == 2; }
+// The rider's own stance: the Grind Exits setting when it is set (grindexit stance goofy|regular); else learned from how he
+// rides (learn_stance) and kept in studio-settings.json ("rider_stance"); regular until it is known. 0 not known, 1 regular,
+// 2 goofy. A goofy rider who never set Grind Exits counted as regular, and his every normal trick showed as switch.
+std::atomic<int> learned_stance{0};
+std::atomic<bool> learned_stance_changed{}; // to be saved (tick)
+bool goofy_stance() noexcept {
+    if (const int set = dingosdk::grind_exit_control::stance(); set != 0) return set == 2;
+    return learned_stance.load(std::memory_order_acquire) == 2;
+}
 // The stance a trick was authored in: which foot led on the body its keys were made against. That is what
 // decides whether it is played as it is or mirrored, and the studio's picture of it has to agree, or a
 // trick is shown one way round and played the other. A recording says so in its label, taken from the
@@ -442,6 +450,7 @@ struct Live {
     // of the game's found): 0..1, eased in and out. The keys then go on the pose they were made on, the feet on the deck.
     float off_clip{};
     bool off_clip_said{};
+    double ridden_left{}, ridden_right{}; // seconds on the board this session with the left foot leading, the right (learn the stance)
     // The catch latch (catch_latch): the time held at the catch (-1 not held), when it was let go towards the landing, the
     // time it was at on the touchdown, its last time, and the board's shape for where it touches.
     float latch_hold{-1};
@@ -719,6 +728,8 @@ void load_settings(State& s) {
         s.grab_board = root.value("grab_board", s.grab_board);
         s.your_name = utf8_prefix(root.value("made_by", s.your_name.c_str()), 48);
         s.hover_preview = root.value("hover_preview", s.hover_preview);
+        if (const auto rider = root.value("rider_stance", ""); rider == "goofy" || rider == "regular")
+            learned_stance.store(rider == "goofy" ? 2 : 1, std::memory_order_release);
         s.favorite_packs.clear();
         if (root.contains("favorite_packs") && root.at("favorite_packs").is_array())
             for (const auto& name : root.at("favorite_packs"))
@@ -743,6 +754,7 @@ void save_settings_locked(const State& s) {
         if (!s.import_folder.empty()) root["import_folder"] = s.import_folder;
         if (!s.your_name.empty()) root["made_by"] = s.your_name;
         root["hover_preview"] = s.hover_preview;
+        if (const int rider = learned_stance.load(std::memory_order_acquire); rider != 0) root["rider_stance"] = rider == 2 ? "goofy" : "regular";
         if (!s.favorite_packs.empty()) root["favorite_packs"] = Json(s.favorite_packs);
         write_preset_file(library_folder() / settings_file, root.dump(2));
     } catch (...) {}
@@ -3038,6 +3050,23 @@ void on_animation(std::uintptr_t component) noexcept {
         // Rolling fakie or not, kept from riding: in the air the game's own number swings about.
         if (motion == MotionState::riding)
             if (const auto speed = forward_speed(base, component)) l.riding_forward = *speed;
+        // The rider's stance, learned from riding: the game mirrors a regular rider (its clips are goofy, regular is their
+        // mirror: the left foot leads), and nobody rides switch most of the time. After 30 s on the board, 75% one way.
+        if (motion == MotionState::riding && !snap->open)
+            if (const auto left = left_foot_leads(base, component)) {
+                (*left ? l.ridden_left : l.ridden_right) += 1.0 / 60;
+                const double total = l.ridden_left + l.ridden_right;
+                if (total >= 30) {
+                    const double share = l.ridden_left / total;
+                    const int now = share >= 0.75 ? 1 : share <= 0.25 ? 2 : 0;
+                    if (now != 0 && learned_stance.exchange(now, std::memory_order_acq_rel) != now) {
+                        learned_stance_changed.store(true, std::memory_order_release);
+                        logging::log(Level::info, Channel::skater, "Animation Studio: you ride {} (the left foot led {:.0f}% of {:.0f} s on the board){}.",
+                                     now == 2 ? "goofy" : "regular", share * 100, total,
+                                     dingosdk::grind_exit_control::stance() != 0 ? "; the Grind Exits stance setting goes first" : "");
+                    }
+                }
+            }
         DiagnosticSample diagnostic;
         bool diagnostic_pose = false;
         if (diagnostics_capture) {
@@ -4514,6 +4543,10 @@ TickResult tick(std::uintptr_t base, std::uintptr_t component, bool open, float 
             publish_locked(s);
         }
         if (std::isfinite(camera_fov) && camera_fov > 1 && camera_fov < 175) s.fov = camera_fov;
+        if (learned_stance_changed.exchange(false, std::memory_order_acq_rel)) {
+            save_settings_locked(s);
+            publish_locked(s, false);
+        }
         capture_flag.store(s.recording != Recording::off, std::memory_order_release);
         needs_listener = diagnostics_capture || research_capture_flag.load(std::memory_order_acquire) || s.open || room_watch.load() || s.recording != Recording::off || (s.play_in_game && s.tricks && !s.tricks->empty());
         result.want_open = s.open_requested;

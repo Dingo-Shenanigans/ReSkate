@@ -3998,23 +3998,46 @@ void open_pack_page(const std::string& name) {
 float pack_tricks(ImDrawList* d, const Fonts& f, const studio::View& v, const studio::View::PackView& pack, ImVec2 a, float width) {
     const float k = f.k;
     float y = a.y;
+    // One block a trick, pop and stance: a trick's fakie, switch and switch fakie versions each play on their own takeoffs,
+    // so they are shown apart, not as choices of one another. FIXED / CYCLE is the pack slot's (its trick and pop), and goes
+    // for each stance on its own, as it plays.
     struct Slot {
         std::string slot, trick, pop;
-        std::vector<std::string> members;
+        std::vector<std::string> members, all; // this stance's, and the whole slot's (for its STANCES ticks)
+        int stance{};                          // 0 own, 1 fakie, 2 switch, 3 switch fakie
+        bool last{};                           // the slot's last block: its STANCES ticks go under it
     };
     std::vector<std::pair<std::string, std::vector<Slot>>> kinds; // in the order they turn up
     for (const auto& [slot, names] : pack.pack.slots) {
-        Slot s{slot, {}, {}, {}};
-        for (const auto& name : names) if (saved_trick(v, name)) s.members.push_back(name);
-        if (s.members.empty()) continue;
-        if (const auto* p = preset_named(v, s.members.front())) s.trick = p->trick, s.pop = p->pop;
-        const auto kind = kind_of(s.trick);
+        std::vector<std::string> all;
+        for (const auto& name : names) if (saved_trick(v, name)) all.push_back(name);
+        if (all.empty()) continue;
+        std::array<Slot, 4> by_stance{};
+        for (const auto& name : all) {
+            const auto* p = preset_named(v, name);
+            const int version = p ? studio::stance_version(*p, v.own_lead_right) : 0;
+            auto& s = by_stance[static_cast<std::size_t>(std::clamp(version, 0, 3))];
+            if (s.members.empty() && p) s.trick = p->trick, s.pop = p->pop;
+            s.members.push_back(name);
+        }
+        const auto kind = kind_of(by_stance[0].trick.empty() ? (by_stance[1].trick.empty() ? (by_stance[2].trick.empty() ? by_stance[3].trick : by_stance[2].trick)
+                                                                                           : by_stance[1].trick)
+                                                             : by_stance[0].trick);
         auto found = std::find_if(kinds.begin(), kinds.end(), [&](const auto& e) { return e.first == kind; });
         if (found == kinds.end()) {
             kinds.emplace_back(kind, std::vector<Slot>{});
             found = kinds.end() - 1;
         }
-        found->second.push_back(std::move(s));
+        const std::size_t before = found->second.size();
+        for (int version = 0; version < 4; ++version) {
+            auto& s = by_stance[static_cast<std::size_t>(version)];
+            if (s.members.empty()) continue;
+            s.slot = slot;
+            s.all = all;
+            s.stance = version;
+            found->second.push_back(std::move(s));
+        }
+        if (found->second.size() > before) found->second.back().last = true;
     }
     if (kinds.empty()) {
         y += paragraph(d, f.bold, 15 * k, ImVec2(a.x, y), width, soft, "No tricks in it yet. ADD TRICKS puts your saved tricks in it.");
@@ -4039,21 +4062,23 @@ float pack_tricks(ImDrawList* d, const Fonts& f, const studio::View& v, const st
             preview_trick(pack.name, member, true);
         ImGui::PopID();
     };
-    // Under each trick: its stance versions in this pack, ticked, and the missing ones to make.
+    // Under each trick (its last stance block): its stance versions in this pack, ticked, and the missing ones to make.
     const auto stances_line = [&](const Slot& s, float& row_y) {
-        if (s.trick.starts_with("native:")) return;
+        if (s.trick.starts_with("native:") || !s.last) return;
         ImGui::PushID("stances");
-        row_y += stance_versions(d, f, v, s.members.front(), ImVec2(a.x + 16 * k, row_y), width - 40 * k, s.members, pack.name) + 4 * k;
+        row_y += stance_versions(d, f, v, s.all.front(), ImVec2(a.x + 16 * k, row_y), width - 40 * k, s.all, pack.name) + 4 * k;
         ImGui::PopID();
     };
+    static constexpr std::array<const char*, 4> stance_words{"", " FAKIE", " SWITCH", " SWITCH FAKIE"};
     const std::string forced = pack.pack.pop_rule;
     for (const auto& [kind, slots] : kinds) {
         std::size_t tricks = 0;
-        for (const auto& s : slots) tricks += s.members.size();
+        for (const auto& s : slots) tricks += s.members.size(); // each trick once: a stance block has its own
         heading(d, f, ImVec2(a.x, y), width - 8 * k, upper(kind), std::to_string(tricks));
         y += 34 * k;
         for (const auto& s : slots) {
             ImGui::PushID(s.slot.c_str());
+            ImGui::PushID(s.stance);
             const std::string pop_label = forced.empty() ? pop_words(s.pop) : forced == "any" ? "ANY POP (RULE)" : upper(forced) + " (RULE)";
             if (s.members.size() == 1) {
                 const float row_h = 46 * k;
@@ -4073,6 +4098,7 @@ float pack_tricks(ImDrawList* d, const Fonts& f, const studio::View& v, const st
                 stances_line(s, y);
                 y += 4 * k;
                 ImGui::PopID();
+                ImGui::PopID();
                 continue;
             }
             // More than one of this trick and pop.
@@ -4080,7 +4106,8 @@ float pack_tricks(ImDrawList* d, const Fonts& f, const studio::View& v, const st
             const float head_h = 44 * k;
             flat_rect(d, ImVec2(a.x, y), ImVec2(a.x + width - 8 * k, y + head_h), IM_COL32(32, 34, 40, 246), seed_of(ImVec2(a.x, y)), k * 0.7f);
             text(d, f.bold, 16 * k, ImVec2(a.x + 16 * k, y + 12 * k), white,
-                 elide(f.bold, 16 * k, upper(trick_label(s.trick)) + "  /  " + pop_label + "  x" + std::to_string(s.members.size()), width - 260 * k));
+                 elide(f.bold, 16 * k, upper(trick_label(s.trick)) + stance_words[static_cast<std::size_t>(s.stance)] + "  /  " + pop_label + "  x" +
+                                         std::to_string(s.members.size()), width - 260 * k));
             const int mode = segmented(d, f, "##mode", ImVec2(a.x + width - 230 * k, y + 6 * k), 218 * k, 32 * k, {"FIXED", "CYCLE"}, cycle ? 1 : 0);
             if (mode >= 0 && (mode == 1) != cycle) {
                 std::string m;
@@ -4133,6 +4160,7 @@ float pack_tricks(ImDrawList* d, const Fonts& f, const studio::View& v, const st
             }
             stances_line(s, y);
             y += 6 * k;
+            ImGui::PopID();
             ImGui::PopID();
         }
         y += 8 * k;
