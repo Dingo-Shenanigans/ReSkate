@@ -301,6 +301,8 @@ struct State {
     // read or a picture changes, not on every frame's view().
     std::map<std::string, std::int64_t> pack_pictures;
     bool pack_pictures_read{};
+    std::map<std::string, std::int64_t> pack_times; // each pack's file: when it was last written (read with the packs)
+    std::set<std::string> ungrouped;                // MY TRICKS: shown on their own, not with the others of their trick
     std::vector<PresetPack> packs_on;              // the ones switched on
     std::map<std::string, PresetPack> pack_drafts; // packs changed in PACKS and not saved yet
     std::string open_pack;                         // the pack open in PACKS
@@ -728,6 +730,10 @@ void load_settings(State& s) {
         s.grab_board = root.value("grab_board", s.grab_board);
         s.your_name = utf8_prefix(root.value("made_by", s.your_name.c_str()), 48);
         s.hover_preview = root.value("hover_preview", s.hover_preview);
+        s.ungrouped.clear();
+        if (root.contains("ungrouped") && root.at("ungrouped").is_array())
+            for (const auto& name : root.at("ungrouped"))
+                if (name.is_string() && s.ungrouped.size() < 2000) s.ungrouped.insert(name.string());
         if (const auto rider = root.value("rider_stance", ""); rider == "goofy" || rider == "regular")
             learned_stance.store(rider == "goofy" ? 2 : 1, std::memory_order_release);
         s.favorite_packs.clear();
@@ -754,6 +760,7 @@ void save_settings_locked(const State& s) {
         if (!s.import_folder.empty()) root["import_folder"] = s.import_folder;
         if (!s.your_name.empty()) root["made_by"] = s.your_name;
         root["hover_preview"] = s.hover_preview;
+        if (!s.ungrouped.empty()) root["ungrouped"] = Json(std::vector<std::string>(s.ungrouped.begin(), s.ungrouped.end()));
         if (const int rider = learned_stance.load(std::memory_order_acquire); rider != 0) root["rider_stance"] = rider == 2 ? "goofy" : "regular";
         if (!s.favorite_packs.empty()) root["favorite_packs"] = Json(s.favorite_packs);
         write_preset_file(library_folder() / settings_file, root.dump(2));
@@ -1096,6 +1103,7 @@ void read_library_locked(State& s) {
     s.presets.clear();
     s.packs.clear();
     s.pack_pictures_read = false;
+    s.pack_times.clear();
     s.packs_on.clear();
     s.library_read = true;
     std::error_code error;
@@ -1134,7 +1142,10 @@ void read_library_locked(State& s) {
             for (const auto& entry : std::filesystem::directory_iterator(packs, error))
                 if (entry.is_regular_file(error) && entry.path().extension() == L".json" && entry.path().stem() != L"playlist" &&
                     entry.path().stem() != L"conflicts" && entry.path().stem() != L"locked") {
-                    try { s.packs.push_back(read_pack_file(entry.path().stem().string())); }
+                    try {
+                        s.packs.push_back(read_pack_file(entry.path().stem().string()));
+                        s.pack_times[s.packs.back().name] = saved_time(entry.path());
+                    }
                     catch (const std::exception& e) {
                         logging::log(Level::warning, Channel::skater, "Animation Studio: pack {} not read: {}", entry.path().filename().string(), e.what());
                     }
@@ -4870,12 +4881,14 @@ View view() {
         v.packs.push_back({saved.name, pack.made_by, on, pack.alternate, pack.members(), pack});
         v.packs.back().favorite = std::find(s.favorite_packs.begin(), s.favorite_packs.end(), saved.name) != s.favorite_packs.end();
         v.packs.back().installed = locked_key(pack.maker_key);
+        if (const auto at = s.pack_times.find(saved.name); at != s.pack_times.end()) v.packs.back().modified = at->second;
         if (const auto picture = s.pack_pictures.find(saved.name); picture != s.pack_pictures.end()) {
             v.packs.back().thumbnail = utf8_path(pack_thumbnail_file(saved.name));
             v.packs.back().thumbnail_stamp = picture->second;
         }
     }
     v.open_pack = s.open_pack;
+    v.ungrouped = s.ungrouped;
     v.conflicts = s.conflicts;
     v.playlist_on = s.playlist_on;
     v.playlist_mode = s.playlist_mode;
@@ -5703,6 +5716,15 @@ std::string saved_text(const std::string& safe) {
     return text;
 }
 } // namespace
+void set_grouped(const std::string& animation, bool grouped) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    const auto safe = file_safe(animation);
+    if (grouped) s.ungrouped.erase(safe);
+    else s.ungrouped.insert(safe);
+    save_settings_locked(s);
+    publish_locked(s, false);
+}
 bool set_saved_pop(const std::string& animation, const std::string& pop_in, std::string& message) {
     auto& s = state();
     std::lock_guard lock(s.mutex);

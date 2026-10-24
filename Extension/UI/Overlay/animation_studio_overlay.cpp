@@ -18,6 +18,9 @@
 #include <cmath>
 #include <cstdio>
 #include <cwctype>
+#include <set>
+#include <ctime>
+#include <chrono>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -218,6 +221,7 @@ struct Ui {
     // TRICKS: the kind shown ("*mine" MY TRICKS, "*assets" the game's animation tree, or a category) and the saved trick
     // whose card is open beside the grid.
     std::string trick_group{"*mine"};
+    std::string my_group; // MY TRICKS: the group open (its trick), "" the groups
     std::string trick_page;
     std::string piece_card; // a card of the game's pieces (a grind, a grab) open beside the grid, by its key
     float groups_scroll{}, cards_scroll{}, drawer_scroll{}, list_scroll{};
@@ -2320,6 +2324,10 @@ void menu_back(const studio::View& v) {
             u.piece_card.clear();
             return;
         }
+        if (!u.my_group.empty()) {
+            u.my_group.clear();
+            return;
+        }
         if (u.trick_group == "*assets" && go_back_in_assets()) return;
         if (u.asset_query[0]) {
             u.asset_query.fill(0);
@@ -3228,6 +3236,20 @@ void piece_drawer(ImDrawList* d, const Fonts& f, const studio::View& v, const Tr
     end_region(d, ImVec2(a.x, top), ImVec2(b.x, b.y - 10 * k), y + u.drawer_scroll - top, u.drawer_scroll, k);
 }
 // One of your saved tricks: the name you gave it, what it is, whether it plays, and EDIT / TEST.
+// When a file was last written (the file clock's count, as the studio gives it), as the day and time here: "24 OCT 06:12".
+std::string edited_words(std::int64_t ticks) {
+    if (ticks <= 0) return {};
+    try {
+        const std::filesystem::file_time_type at{std::filesystem::file_time_type::duration(ticks)};
+        const std::time_t t = std::chrono::system_clock::to_time_t(std::chrono::clock_cast<std::chrono::system_clock>(at));
+        std::tm local{};
+        if (localtime_s(&local, &t) != 0) return {};
+        static constexpr std::array<const char*, 12> months{"JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
+        return std::format("{} {} {:02}:{:02}", local.tm_mday, months[static_cast<std::size_t>(std::clamp(local.tm_mon, 0, 11))], local.tm_hour, local.tm_min);
+    } catch (...) {
+        return {};
+    }
+}
 void my_trick_card(ImDrawList* d, const Fonts& f, const studio::View& v, const std::string& name, ImVec2 a, ImVec2 size) {
     auto& u = ui();
     const float k = f.k, strip = 46 * k;
@@ -3266,6 +3288,8 @@ void my_trick_card(ImDrawList* d, const Fonts& f, const studio::View& v, const s
     std::string what = p ? upper(trick_label(p->trick)) : std::string("A PIECE OF THE GAME'S ANIMATION");
     if (p)
         for (const auto& [label, colour] : tags_of(*p)) what += "  /  " + label;
+    if (p)
+        if (const auto when = edited_words(p->saved_at); !when.empty()) what += "  /  EDITED " + when;
     text(d, f.bold, 12 * k, ImVec2(a.x + 18 * k, a.y + 42 * k), soft, elide(f.bold, 12 * k, what, size.x - 36 * k));
     if (lit && nav().keys) chosen_outline(d, a, ImVec2(b.x, b.y - strip), k);
     // EDIT, TEST IN GAME, and PLAY: on, it plays in game (on its own, or from a pack that is on); off, it does not.
@@ -3290,6 +3314,59 @@ void my_trick_card(ImDrawList* d, const Fonts& f, const studio::View& v, const s
             say(m);
         }
     }
+    ImGui::PopID();
+}
+// MY TRICKS: a group's card - every save of one trick, its pops and stances at a glance; pressed, it opens to show them.
+void group_card(ImDrawList* d, const Fonts& f, const studio::View& v, const std::string& trick, const std::vector<std::string>& names, ImVec2 a, ImVec2 size) {
+    auto& u = ui();
+    const float k = f.k;
+    const ImVec2 b(a.x + size.x, a.y + size.y);
+    ImGui::PushID(("group|" + trick).c_str());
+    bool lit = false;
+    if (hit("##group", a, b, &lit)) {
+        u.my_group = trick;
+        u.trick_page.clear();
+        u.cards_scroll = 0;
+    }
+    // A little stack behind it: more than one in here.
+    flat_rect(d, ImVec2(a.x + 10 * k, a.y - 6 * k), ImVec2(b.x - 10 * k, a.y + 10 * k), IM_COL32(40, 42, 48, 220), seed_of(a) + 3, k * 0.6f);
+    flat_rect(d, a, b, lit ? IM_COL32(48, 50, 56, 250) : IM_COL32(27, 28, 31, 248), seed_of(a), k);
+    d->AddRectFilled(ImVec2(a.x, a.y + 6 * k), ImVec2(a.x + 5 * k, b.y - 6 * k), blue_light);
+    // Its pops, its stances, how many play, and when it was last changed.
+    std::set<std::string> pops, stances;
+    std::size_t playing = 0;
+    std::int64_t newest = 0;
+    for (const auto& name : names)
+        if (const auto* p = preset_named(v, name)) {
+            pops.insert(p->pop.empty() ? std::string("ANY") : upper(p->pop));
+            static constexpr std::array<const char*, 4> words{"OWN STANCE", "FAKIE", "SWITCH", "SWITCH FAKIE"};
+            stances.insert(words[static_cast<std::size_t>(std::clamp(studio::stance_version(*p, v.own_lead_right), 0, 3))]);
+            playing += p->active;
+            newest = std::max(newest, p->saved_at);
+        }
+    float right_edge = b.x - 14 * k;
+    const auto count = std::to_string(names.size()) + " TRICKS";
+    right_edge -= tag_width(f, count);
+    tag(d, f, ImVec2(right_edge, a.y + 14 * k), count, IM_COL32(255, 255, 255, 36));
+    right_edge -= 6 * k;
+    if (playing) {
+        const auto plays = std::to_string(playing) + " PLAY";
+        right_edge -= tag_width(f, plays);
+        tag(d, f, ImVec2(right_edge, a.y + 14 * k), plays, IM_COL32(36, 150, 76, 255));
+    }
+    text(d, f.bold, 21 * k, ImVec2(a.x + 18 * k, a.y + 14 * k), white, elide(f.bold, 21 * k, upper(trick_label(trick)), right_edge - a.x - 26 * k));
+    std::string pop_line;
+    for (const char* pop : {"LOW", "MID", "HIGH", "ANY"})
+        if (pops.contains(pop)) pop_line += (pop_line.empty() ? "" : " / ") + std::string(pop) + " POP";
+    text(d, f.bold, 12 * k, ImVec2(a.x + 18 * k, a.y + 44 * k), soft, elide(f.bold, 12 * k, pop_line, size.x - 36 * k));
+    std::string stance_line;
+    for (const char* stance : {"OWN STANCE", "FAKIE", "SWITCH", "SWITCH FAKIE"})
+        if (stances.contains(stance)) stance_line += (stance_line.empty() ? "" : " / ") + std::string(stance);
+    text(d, f.bold, 12 * k, ImVec2(a.x + 18 * k, a.y + 62 * k), soft, elide(f.bold, 12 * k, stance_line, size.x - 36 * k));
+    const auto when = edited_words(newest);
+    text(d, f.bold, 12 * k, ImVec2(a.x + 18 * k, b.y - 30 * k), lit ? blue_light : faint,
+         std::string("OPEN THE GROUP") + (when.empty() ? "" : "   /   LAST EDITED " + when));
+    if (lit && nav().keys) chosen_outline(d, a, b, k);
     ImGui::PopID();
 }
 // Beside the grid: one saved trick's own card - its name, its pop, its packs, and what can be done with it.
@@ -3318,6 +3395,11 @@ void trick_drawer(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a
         text(d, f.bold, 13 * k, ImVec2(x, y), faint, "Made by " + p->made_by);
         y += 18 * k;
     }
+    if (p)
+        if (const auto when = edited_words(p->saved_at); !when.empty()) {
+            text(d, f.bold, 13 * k, ImVec2(x, y), faint, "Last edited " + when);
+            y += 18 * k;
+        }
     y += 12 * k;
     begin_region(31, ImVec2(a.x, y), ImVec2(b.x, b.y - 10 * k), u.drawer_scroll, k);
     const float top = y;
@@ -3421,6 +3503,19 @@ void trick_drawer(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a
         say(m);
     }
     y += 52 * k;
+    // In its group in MY TRICKS (with the others of its trick), or on its own.
+    if (p) {
+        std::size_t same = 0;
+        for (const auto& q : v.presets) same += q.trick == p->trick && saved_trick(v, q.name);
+        if (same > 1) {
+            const bool grouped = !v.ungrouped.contains(name);
+            if (action(d, f, "##drawgroup", ImVec2(x, y), ImVec2(w, 38 * k), grouped ? "OUT OF ITS GROUP" : "BACK IN ITS GROUP", Look::dark)) {
+                studio::set_grouped(name, !grouped);
+                say(grouped ? shown_name(v, name) + " is on its own in MY TRICKS now." : shown_name(v, name) + " is back with the other " + trick_label(p->trick) + " tricks.");
+            }
+            y += 48 * k;
+        }
+    }
     if (action(d, f, "##drawdelete", ImVec2(x, y), ImVec2(w, 38 * k), u.confirm_delete == name ? "PRESS AGAIN TO DELETE" : "DELETE THIS TRICK", Look::danger)) {
         if (u.confirm_delete != name) u.confirm_delete = name;
         else {
@@ -3802,17 +3897,45 @@ void tricks_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
         asset_list(d, f, v, area_a, rb);
         return;
     }
-    // My tricks that are shown (all of them, or those the search finds), then the game's.
+    // My tricks that are shown (all of them, or those the search finds), then the game's. Not searching, MY TRICKS shows a
+    // trick's saves together: one card a trick (its pops and its stances), opened to see them; a trick taken out of its
+    // group, or the only one of its trick, has a card of its own.
     std::vector<std::string> mine;
-    if (u.trick_group == "*mine" || searching)
+    std::vector<std::pair<std::string, std::vector<std::string>>> groups_shown; // trick, its saves (a card for the group)
+    const bool grouping = u.trick_group == "*mine" && !searching;
+    if (!grouping) u.my_group.clear();
+    if (u.trick_group == "*mine" || searching) {
+        std::map<std::string, std::vector<std::string>> by_trick;
         for (const auto& name : v.library) {
+            const auto* p = preset_named(v, name);
             if (searching) {
-                const auto* p = preset_named(v, name);
                 const auto key = studio::native_search_key(shown_name(v, name) + " " + name + " " + (p ? p->trick + " " + trick_label(p->trick) : std::string{}));
                 if (!studio::native_search_matches(key, terms)) continue;
             }
-            mine.push_back(name);
+            if (grouping && p && !v.ungrouped.contains(name)) by_trick[p->trick].push_back(name);
         }
+        for (const auto& name : v.library) {
+            const auto* p = preset_named(v, name);
+            if (searching) {
+                const auto key = studio::native_search_key(shown_name(v, name) + " " + name + " " + (p ? p->trick + " " + trick_label(p->trick) : std::string{}));
+                if (!studio::native_search_matches(key, terms)) continue;
+            }
+            if (!grouping) {
+                mine.push_back(name);
+                continue;
+            }
+            const bool in_group = p && !v.ungrouped.contains(name) && by_trick[p->trick].size() > 1;
+            if (!u.my_group.empty()) {
+                if (in_group && p->trick == u.my_group) mine.push_back(name);
+                continue;
+            }
+            if (!in_group) mine.push_back(name);
+            else if (std::none_of(groups_shown.begin(), groups_shown.end(), [&](const auto& g) { return g.first == p->trick; }))
+                groups_shown.emplace_back(p->trick, by_trick[p->trick]);
+        }
+        // The group open is gone (its tricks taken out, deleted): back to the groups.
+        if (grouping && !u.my_group.empty() && mine.empty()) u.my_group.clear();
+    }
     std::vector<const TrickCard*> game;
     if (u.trick_group != "*mine" || searching)
         for (const auto& c : cards) {
@@ -3843,16 +3966,27 @@ void tricks_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
         heading(d, f, ImVec2(grid_a.x, top), grid_w, "Yours", std::to_string(mine.size()));
         top += 34 * k;
     }
+    // A group open: its name, how many, and the way back to the groups.
+    if (grouping && !u.my_group.empty()) {
+        if (action(d, f, "##groupback", ImVec2(grid_a.x, top), ImVec2(110 * k, 34 * k), "BACK", Look::dark)) u.my_group.clear();
+        heading(d, f, ImVec2(grid_a.x + 124 * k, top), grid_w - 124 * k, upper(trick_label(u.my_group)), std::to_string(mine.size()));
+        top += 46 * k;
+    }
     u.grid_a = grid_a;
     u.grid_b = grid_b;
     u.grid_gap = gap;
+    for (const auto& [trick, names] : groups_shown) {
+        const auto at = place(i++);
+        if (under_peek(at, ImVec2(at.x + card_w, at.y + card_h))) continue;
+        group_card(d, f, v, trick, names, at, ImVec2(card_w, card_h));
+    }
     for (const auto& name : mine) {
         const auto at = place(i++);
         if (under_peek(at, ImVec2(at.x + card_w, at.y + card_h))) continue;
         my_trick_card(d, f, v, name, at, ImVec2(card_w, card_h));
         note_hover("mine|" + name, at, ImVec2(at.x + card_w, at.y + card_h), [name](bool play) { return studio::peek_saved(name, play); }, shown_name(v, name));
     }
-    if (!mine.empty()) {
+    if (!mine.empty() || !groups_shown.empty()) {
         top += static_cast<float>((i + columns - 1) / columns) * (card_h + gap) + 10 * k;
         i = 0;
     }
@@ -3890,7 +4024,7 @@ void tricks_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
         piece_card(d, f, v, *c, place(i++), ImVec2(card_w, card_h), saved);
     }
     top += static_cast<float>((i + columns - 1) / columns) * (card_h + gap);
-    if (mine.empty() && game.empty())
+    if (mine.empty() && game.empty() && groups_shown.empty())
         text(d, f.bold, 17 * k, ImVec2(grid_a.x, grid_a.y + 10 * k), soft,
              searching ? "Nothing of that name. Try fewer letters, or another word for it." : "Nothing here yet.");
     end_region(d, grid_a, grid_b, top + u.cards_scroll - grid_a.y, u.cards_scroll, k);
@@ -4300,7 +4434,8 @@ void pack_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
     const auto count = saved_count(v, pack);
     text(d, f.bold, 15 * k, ImVec2(x + 2 * k, y), soft,
          std::to_string(count) + (count == 1 ? " trick" : " tricks") + (pack.on ? ", on: they play in game" : ", off") +
-             (pack.made_by.empty() ? std::string{} : ".   Made by " + pack.made_by));
+             (pack.made_by.empty() ? std::string{} : ".   Made by " + pack.made_by) +
+             (edited_words(pack.modified).empty() ? std::string{} : ".   Last edited " + edited_words(pack.modified)));
     y += 40 * k;
     {
         text(d, f.heading, 15 * k, ImVec2(x, y + 10 * k), white, "EVERY TRICK PLAYS ON");
@@ -4507,8 +4642,11 @@ void packs_hub(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, I
         const auto tricks = saved_count(v, pack);
         const std::string rule = pack.pack.pop_rule.empty() ? "" : pack.pack.pop_rule == "any" ? "  /  ANY POP" : "  /  " + upper(pack.pack.pop_rule) + " POP";
         text(d, f.bold, 12 * k, ImVec2(ca.x + 14 * k, cover_b.y + 40 * k), ink_soft, std::to_string(tricks) + (tricks == 1 ? " TRICK" : " TRICKS") + rule);
-        if (!pack.made_by.empty())
-            text(d, f.bold, 12 * k, ImVec2(ca.x + 14 * k, cover_b.y + 60 * k), ink_soft, elide(f.bold, 12 * k, "BY " + upper(pack.made_by), card_w - 110 * k));
+        {
+            std::string by = pack.made_by.empty() ? std::string{} : "BY " + upper(pack.made_by);
+            if (const auto when = edited_words(pack.modified); !when.empty()) by += (by.empty() ? "EDITED " : "  /  EDITED ") + when;
+            if (!by.empty()) text(d, f.bold, 12 * k, ImVec2(ca.x + 14 * k, cover_b.y + 60 * k), ink_soft, elide(f.bold, 12 * k, by, card_w - 110 * k));
+        }
         if (toggle(d, f, "##packon", ImVec2(cb.x - 76 * k, cover_b.y + 30 * k), pack.on)) {
             std::string m;
             studio::set_pack_on(pack.name, !pack.on, m);

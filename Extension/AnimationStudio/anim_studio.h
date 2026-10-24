@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -99,7 +100,10 @@ struct View {
         std::int64_t thumbnail_stamp{}; // when that was last written: a new one is read again
         bool favorite{};                // starred: shown first in PACKS
         bool installed{};               // made on another PC (its maker's key is not this one's): its tricks play, not open
+        std::int64_t modified{};        // when its file was last written (the file clock's count), 0 not known
     };
+    // MY TRICKS shows a trick's saves together (one card a trick: its pops and stances); these are shown on their own.
+    std::set<std::string> ungrouped;
     std::vector<PackConflict> conflicts; // tricks more than one pack that is on has, and what plays them
     // Where packs are exported to and imported from: as set (SETTINGS > Packs), or "" for ReSkate.Tricks\exports and \import.
     std::string export_folder, import_folder;
@@ -284,6 +288,8 @@ void clear_test_returned();
 bool set_label(const std::string& animation, const std::string& label, std::string& message);
 // A saved trick's pop: "" any (it plays on every pop the game does that has no trick of its own for that pop),
 // or only "low", "mid" or "high". The packs it is in file it under its new pop.
+// MY TRICKS: a trick in its group (with the others of its trick) or on its own.
+void set_grouped(const std::string& animation, bool grouped);
 bool set_saved_pop(const std::string& animation, const std::string& pop, std::string& message);
 // A low, a mid and a high copy of a saved trick, put in every pack it is in.
 bool copy_saved_to_pops(const std::string& animation, std::string& message);
