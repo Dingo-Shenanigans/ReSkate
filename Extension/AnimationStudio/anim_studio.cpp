@@ -19,6 +19,7 @@
 #include "Engine/Game/Build/20260929/no_bail.h"
 #include "Engine/Game/Build/20260929/skater_state.h"
 #include "Extension/Multiplayer/Remote/native_pose_layout.h"
+#include "Extension/Profile/local_profile_runtime.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
 #include "Extension/Skater/ai_skaters.h"
 #include "Extension/Skater/grind_exit_control.h"
@@ -29,6 +30,7 @@
 #include <shellapi.h>
 #include <bcrypt.h>
 #include <algorithm>
+#include <limits>
 #include <chrono>
 #include <atomic>
 #include <cctype>
@@ -110,6 +112,8 @@ struct CustomTrick {
     // The clips the game may play for its trick (its own and the library's pops of it), for NativeClock.
     std::shared_ptr<const NativeModels> native;
     int order{-1}; // its place in the playlist, when the playlist plays (In turns goes by it)
+    // The timeline's catch (find_catch): the board caught, the feet back on the deck. -1 none. Held over a longer air.
+    float caught{-1};
 };
 // The skater's stance from the grind exit setting: goofy or regular (not set counts as regular).
 bool goofy_stance() noexcept { return dingosdk::grind_exit_control::stance() == 2; }
@@ -389,6 +393,12 @@ void hold_trucks_at_rest(std::array<NativeBone, board_bones>& b) noexcept {
 }
 
 // The animation thread's own, never touched elsewhere.
+// Where a board touches the ground, in its mount's frame (board_shape): the tips of its nose and tail and the bottoms of its
+// four wheels, and its up.
+struct BoardShape {
+    std::array<Vec3, 6> points{};
+    Vec3 up{0, 1, 0}; // the board's up, in its mount's frame
+};
 struct Live {
     std::mutex animation_mutex;
     std::atomic<std::uintptr_t> base{}, component{}, board_holder{};
@@ -432,6 +442,13 @@ struct Live {
     // of the game's found): 0..1, eased in and out. The keys then go on the pose they were made on, the feet on the deck.
     float off_clip{};
     bool off_clip_said{};
+    // The catch latch (catch_latch): the time held at the catch (-1 not held), when it was let go towards the landing, the
+    // time it was at on the touchdown, its last time, and the board's shape for where it touches.
+    float latch_hold{-1};
+    double latch_release_at{-1};
+    float latch_touch_from{-1}, latch_last{-1};
+    BoardShape latch_shape;
+    bool latch_shape_ok{};
     // Once the game's pose leaves the clip (its own landing, a recording drifting off it) the trick goes on at
     // its own pace, its landing on the game's touchdown, until the game starts something new.
     double clock_lost_at{-1}, clock_touch_at{-1};
@@ -603,6 +620,15 @@ void invalidate_outputs() noexcept {
     } catch (...) {}
 }
 std::atomic<bool> open_flag{};
+// The ground under the board in the air (ground_below), for the catch latch: where to look (the animation thread says, while a
+// trick with a catch is in the air) and what was found there (the client thread looks, tick), with when.
+struct GroundProbe {
+    std::atomic<bool> wanted{};
+    std::atomic<float> x{}, z{}, top{};
+    std::atomic<float> ground{std::numeric_limits<float>::quiet_NaN()};
+    std::atomic<double> found_at{-1};
+};
+GroundProbe& ground_probe() { static GroundProbe probe; return probe; }
 // While a recording waits or runs: the local skater's pose and its board as they are drawn (after the
 // body physics and the feet's placement on the board), taken at their render publication. A recording
 // keeps these, so the board and the feet are where the game put them.
@@ -1120,6 +1146,7 @@ void read_library_locked(State& s) {
 } // namespace
 std::shared_ptr<Clip> read_game_clip(const GameTrick& trick); // a clip of the trick library, below
 namespace {
+float find_catch(const Clip& clip, const Animation& edits); // below
 // Every saved animation with a trick, ready to play in game. Read from the files, outside the lock.
 std::shared_ptr<const CustomTricks> read_custom_tricks(const std::string& test_trick) {
     auto tricks = std::make_shared<CustomTricks>();
@@ -1268,6 +1295,7 @@ std::shared_ptr<const CustomTricks> read_custom_tricks(const std::string& test_t
             }
             auto native = build_native_models(references, 0);
             tricks->push_back({trick, entry.stem().string(), clip, std::move(animation), goofy, right, fakie, std::move(native)});
+            tricks->back().caught = find_catch(*clip, *tricks->back().edits);
             if (const auto p = std::find_if(requested.begin(), requested.end(), [&](const Preset& x) { return x.name == entry.stem().string(); });
                 p != requested.end())
                 tricks->back().order = p->order;
@@ -2231,7 +2259,6 @@ void close_hand(std::span<Joint> pose, std::uint16_t hand, const std::array<std:
 // ground the board goes that far under the lower foot; in the air it is the clip's own, with a short
 // blend at the pop and the landing. `pose` is the clip's pose at `seconds`, `board` its board, both
 // under the placement joint.
-struct BoardShape;
 BoardShape board_shape(const Clip& clip);
 Vec3 board_up(const Clip& clip);
 constexpr std::uint16_t left_foot_joint = 343, right_foot_joint = 10;
@@ -2295,10 +2322,6 @@ Joint start_frame(const Clip& clip, const Joint& placement, float floor_y, bool 
 // 0.087 m up (riding measured 0.085). Its long axis and its up are found per clip, from the board at the
 // trick's start: up is the axis nearest the placement joint's up, long the one nearest the line of
 // the feet.
-struct BoardShape {
-    std::array<Vec3, 6> points{};
-    Vec3 up{0, 1, 0}; // the board's up, in its mount's frame
-};
 BoardShape board_shape(const Clip& clip) {
     BoardShape shape;
     const auto pose = clip.frame(0);
@@ -2338,6 +2361,62 @@ BoardShape board_shape(const Clip& clip) {
     return shape;
 }
 Vec3 board_up(const Clip& clip) { return board_shape(clip).up; }
+// The timeline's catch, with its keys on: the first moment, at least 45% into the air, that the board is back the way it
+// lies under him at the landing (within 25 degrees) with a foot on it (ankle 20 cm or less over the deck, over its length),
+// two frames running, after it had turned away or both feet had left it. Measured on recorded kickflips, 360 flips and
+// ollies: caught 0.05 to 0.1 s before the landing. One whose board never leaves him is caught at 60% of its air; -1 for
+// one with no air or no board, or one never caught before its landing.
+namespace {
+float find_catch(const Clip& clip, const Animation& edits) {
+    try {
+        const float up_at = clip.takeoff, down = clip.landing;
+        if (up_at < 0 || down <= up_at + 0.15f || clip.board.empty() || clip.joints != skeleton_joints) return -1;
+        const auto shape = board_shape(clip);
+        const Vec3 up = unit(shape.up);
+        const Vec3 along = unit(Vec3{shape.points[0][0] - shape.points[1][0], shape.points[0][1] - shape.points[1][1], shape.points[0][2] - shape.points[1][2]});
+        const Vec3 across = unit(cross(up, along));
+        const auto dot = [](const Vec3& a, const Vec3& b) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; };
+        const auto apart = [](const Quat& a, const Quat& b) {
+            const float d = std::abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]);
+            return 2 * std::acos(std::clamp(d, 0.0f, 1.0f)) * 57.2957795f;
+        };
+        // The board as it is at the landing, under him: caught is the board back like that.
+        Joint landed;
+        if (!clip.sample_board(down, landed)) return -1;
+        std::vector<Joint> pose(clip.joints);
+        bool left = false; // the board turned away from it, or both feet off the deck, at least once
+        int on = 0, off = 0;
+        float first = -1;
+        const float earliest = up_at + (down - up_at) * 0.45f;
+        for (float t = up_at + 1.0f / 60; t < down - 1.0f / 60; t += 1.0f / 60) {
+            clip.sample(t, pose);
+            apply_edits(edits, t, pose);
+            Joint board;
+            if (!clip.sample_board(t, board)) return -1;
+            const auto placed = world(pose, placement_joint);
+            int feet_on = 0;
+            for (const std::uint16_t foot : {left_foot_joint, right_foot_joint}) {
+                const auto p = relative(board, relative(placed, world(pose, foot))).position;
+                const float h = dot(p, up);
+                if (std::abs(dot(p, along)) < 0.5f && std::abs(dot(p, across)) < 0.25f && h > -0.08f && h < 0.2f) ++feet_on;
+            }
+            const bool turned_back = apart(board.rotation, landed.rotation) < 25.0f;
+            if (!turned_back || feet_on == 0) {
+                on = 0;
+                if (++off >= 2) left = true;
+                continue;
+            }
+            off = 0;
+            if (!left || t < earliest) continue;
+            if (on++ == 0) first = t;
+            if (on >= 2) return first < down - 0.03f ? first : -1;
+        }
+        return left ? -1 : up_at + (down - up_at) * 0.6f;
+    } catch (...) {
+        return -1;
+    }
+}
+} // namespace
 // The lowest point of the board `board` (a mount in the world): what touches the ground first.
 float lowest_point(const Joint& board, const BoardShape& shape) noexcept {
     float low = board.position[1];
@@ -3343,6 +3422,12 @@ void on_animation(std::uintptr_t component) noexcept {
                     l.native_clock.reset();
                     if (found) l.native_clock.start(found->native);
                     l.clock_selected_at = at; l.clock_locked_at = -1; l.clock_weight = 0; l.off_clip = 0; l.off_clip_said = false;
+                    l.latch_hold = -1; l.latch_release_at = -1; l.latch_touch_from = l.latch_last = -1;
+                    l.latch_shape_ok = false;
+                    if (found && found->caught > 0) {
+                        l.latch_shape = board_shape(*found->clip);
+                        l.latch_shape_ok = true;
+                    }
                     l.clock_lost_at = l.clock_touch_at = -1; l.clock_touch_from = l.clock_last_time = -1;
                     l.drift_since = -1; l.drift_base = 0; l.drift_count = 0; l.clock_why.clear();
                     l.clock_fallback = !found || !found->native || found->native->models.empty();
@@ -3387,6 +3472,59 @@ void on_animation(std::uintptr_t component) noexcept {
                 // as the game moves into anything else. The brackets only mask the edits, as in the studio.
                 PlaybackSample sampled;
                 NativeClock::Reading reading;
+                // The catch latch. Off a drop, down stairs or over a kicker the game stays in the air longer than the
+                // timeline did: the trick holds its catch - board caught, knees up - for that extra air, plays from its
+                // catch to its landing as the ground comes (looked for under the board), and lands on the touchdown. On
+                // flat ground, in step with the game, the ground comes when the timeline expects it and nothing is held.
+                std::optional<double> touch_at;
+                if (l.episode.contact.since) touch_at = *l.episode.contact.since;
+                else if (l.episode.phase == PlaybackPhase::landing && l.episode.landing >= 0) touch_at = l.episode.landing;
+                const auto catch_latch = [&](float time) -> float {
+                    const float caught = trick->caught, land = clip.landing;
+                    if (!(caught > 0) || !(land > caught) || time < 0 || !l.latch_shape_ok) return time;
+                    if (touch_at) {
+                        if (l.latch_hold < 0) return time;
+                        if (l.latch_touch_from < 0) l.latch_touch_from = l.latch_last >= 0 ? l.latch_last : l.latch_hold;
+                        return landed_time(static_cast<float>(at - *touch_at), land, l.latch_touch_from);
+                    }
+                    // How long until the ground, from how high the board's lowest point is over it and how fast it falls.
+                    std::optional<float> to_ground;
+                    if (l.board_ok) {
+                        const auto mount = compose(board_parent(l.board), joint_of(l.board[board_mount]));
+                        const float lowest = lowest_point(mount, l.latch_shape);
+                        auto& probe = ground_probe();
+                        const float ground = probe.ground.load(std::memory_order_acquire);
+                        const double found = probe.found_at.load(std::memory_order_acquire);
+                        if (finite(mount) && std::isfinite(lowest)) {
+                            probe.x.store(mount.position[0], std::memory_order_release);
+                            probe.z.store(mount.position[2], std::memory_order_release);
+                            probe.top.store(lowest - 0.03f, std::memory_order_release);
+                            probe.wanted.store(true, std::memory_order_release);
+                        }
+                        const auto vy = board_up_speed(base, component);
+                        if (std::isfinite(ground) && found >= 0 && now_seconds() - found < 0.15 && vy && std::isfinite(lowest)) {
+                            const float h = std::max(0.0f, lowest - ground), g = 9.81f;
+                            to_ground = (*vy + std::sqrt(*vy * *vy + 2 * g * h)) / g;
+                        }
+                    }
+                    const float rest = land - caught; // the timeline from its catch to its landing
+                    if (l.latch_hold < 0 && time >= caught && to_ground && *to_ground > rest + 0.08f) {
+                        l.latch_hold = std::max(caught, l.latch_last >= 0 ? std::min(l.latch_last, time) : caught);
+                        logging::log(Level::info, Channel::skater, "Animation Studio: {} holds its catch at {:.2f} s: {:.2f} s to the ground, {:.2f} s in the timeline.",
+                                     trick->name, l.latch_hold, *to_ground, rest);
+                    }
+                    if (l.latch_hold >= 0) {
+                        if (l.latch_release_at < 0) {
+                            if (to_ground && *to_ground <= rest + 0.02f) {
+                                l.latch_release_at = at;
+                                logging::log(Level::info, Channel::skater, "Animation Studio: {} plays on from its catch: {:.2f} s to the ground.", trick->name, *to_ground);
+                            } else time = l.latch_hold;
+                        }
+                        if (l.latch_release_at >= 0) time = std::min({time, l.latch_hold + static_cast<float>(at - l.latch_release_at), land - 1.0f / 60});
+                    }
+                    l.latch_last = time;
+                    return time;
+                };
                 if (!l.clock_fallback) {
                     reading = l.native_clock.update(l.pose, 1.0f / 60); // the game's own pose, before any edit
                     if (!reading.locked && at - l.clock_selected_at > 0.25) {
@@ -3427,6 +3565,7 @@ void on_animation(std::uintptr_t component) noexcept {
                                 time = std::max(time, landed_time(static_cast<float>(at - *touch), down, l.clock_touch_from));
                         }
                     }
+                    time = catch_latch(time);
                     if (time >= 0 && l.clock_last_time >= 0) time = std::max(time, l.clock_last_time);
                     if (time >= 0) l.clock_last_time = time;
                     // Letting go when the game starts something new: the next pop (its crouch), a grind, the end of the
@@ -3469,6 +3608,7 @@ void on_animation(std::uintptr_t component) noexcept {
                     sampled.finished = reading.locked && !why.empty() && l.clock_weight <= 0;
                 } else {
                     sampled = l.episode.sample(at, clip.takeoff, clip.landing, clip.duration(), std::max(played.speed, 0.1f), l.predicted_air, true, fit_keys_to_air);
+                    if (sampled.time >= 0) sampled.time = std::min(clip.duration(), catch_latch(sampled.time));
                 }
                 // Off the game's clip in the air - the game holding a pose of its own through a kicker's or a drop's longer
                 // air, or no clip of the game's found at all: the keys rode on a pose made for something else (a foot
@@ -3476,13 +3616,13 @@ void on_animation(std::uintptr_t component) noexcept {
                 // the deck as the studio has them; by the touchdown it is the game's pose again, as on flat ground.
                 {
                     const bool touched_down = l.episode.contact.since.has_value() || (l.episode.phase == PlaybackPhase::landing && l.episode.landing >= 0);
-                    const bool off = !touched_down && (l.clock_fallback || (reading.locked && reading.lost));
+                    const bool off = !touched_down && (l.clock_fallback || (reading.locked && reading.lost) || l.latch_hold >= 0);
                     constexpr float off_step = (1.0f / 60) / 0.15f;
                     l.off_clip = off ? std::min(1.0f, l.off_clip + off_step) : std::max(0.0f, l.off_clip - off_step);
                     if (off && !l.off_clip_said) {
                         l.off_clip_said = true;
                         logging::log(Level::info, Channel::skater, "Animation Studio: {} is off the game's clip in the air ({}): keys as made, feet on the deck as in the studio.",
-                                     trick->name, l.clock_fallback ? "no clip of the game's found" : "the game holds a pose of its own");
+                                     trick->name, l.clock_fallback ? "no clip of the game's found" : l.latch_hold >= 0 ? "it holds its catch" : "the game holds a pose of its own");
                     }
                 }
                 diagnostic.clock_error = reading.error;
@@ -4379,6 +4519,13 @@ TickResult tick(std::uintptr_t base, std::uintptr_t component, bool open, float 
         result.want_open = s.open_requested;
         result.changed = s.open_request_pending;
         s.open_request_pending = false;
+    }
+    // The ground under the board, for the catch latch: one ray straight down from just under it, on this (the client) thread.
+    if (auto& probe = ground_probe(); probe.wanted.exchange(false, std::memory_order_acq_rel)) {
+        const float top = probe.top.load(std::memory_order_acquire);
+        const auto hit = local_ground_height(probe.x.load(std::memory_order_acquire), probe.z.load(std::memory_order_acquire), top, top - 60.0f);
+        probe.ground.store(hit ? *hit : std::numeric_limits<float>::quiet_NaN(), std::memory_order_release);
+        probe.found_at.store(now_seconds(), std::memory_order_release);
     }
     std::uintptr_t next_board_holder{};
     if (component && base) {
