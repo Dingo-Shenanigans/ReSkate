@@ -181,6 +181,8 @@ public:
     }
     std::optional<ObjectMotion> object_motion(std::string_view plugin, std::uint64_t id) override { return placement_physics::sample(plugin, id); }
     std::optional<MarkerEvents> marker_events(std::string_view plugin) override { return placement_physics::marker_events(base_, plugin); }
+    std::optional<ObjectContact> object_contact(std::string_view plugin, const Vec3& from, const Vec3& to) override { return placement_physics::contact(plugin, from, to); }
+    std::optional<PhysicsActor> physics_actor() override { return placement_physics::actor(); }
 
     // ---- the local skater ----------------------------------------------------------------------
     std::optional<std::uint32_t> physics_state() override {

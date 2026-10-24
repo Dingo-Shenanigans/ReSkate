@@ -16,6 +16,7 @@
 #include "Extension/Settings/replay_drafts.h"
 #include "Engine/Game/World/client_state.h"
 #include "Extension/Plugins/plugin_runtime.h"
+#include "Extension/Objects/placement_physics.h"
 #include "Extension/Plugins/plugin_game_runtime.h"
 #include "Engine/Game/World/load_completion.h"
 #include "Extension/ReplayKeyframes/replay_keyframes.h"
@@ -1139,6 +1140,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
     }
     {
         DINGO_PROFILE_ZONE("tick/plugins");
+        dingosdk::placement_physics::set_client(client);
         dingosdk::plugins::on_client_tick();
         dingosdk::plugins::tick_plugin_settings();
     }

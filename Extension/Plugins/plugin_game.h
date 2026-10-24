@@ -264,6 +264,8 @@ public:
     virtual std::string object_pose(std::string_view, std::uint64_t, const Vec3&, const std::array<float, 4>&) { return unavailable; }
     virtual std::optional<ObjectMotion> object_motion(std::string_view, std::uint64_t) { return std::nullopt; }
     virtual std::optional<MarkerEvents> marker_events(std::string_view) { return std::nullopt; }
+    virtual std::optional<ObjectContact> object_contact(std::string_view, const Vec3&, const Vec3&) { return std::nullopt; }
+    virtual std::optional<PhysicsActor> physics_actor() { return std::nullopt; }
     // ---- the local skater ----------------------------------------------------------------------
     // Its physics state (100s riding, 200s in the air, 300 a wipeout, 400s grinding, 504 off the
     // board), or empty without a skater; and how many wipeouts it has had this session.

@@ -95,6 +95,7 @@ void queue_placement_save() {
 }
 
 void placement_reset_session() {
+    placement_physics::reset();
     placement_table_changed();
     reset_network_object_world();
     reset_park_editor();

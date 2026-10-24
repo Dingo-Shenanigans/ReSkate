@@ -1,6 +1,7 @@
 add_library(dingosdk_runtime SHARED
     Runtime/runtime_init.cpp
     Extension/Objects/placement_physics.cpp
+    Extension/Objects/placement_adapters.cpp
     Runtime/runtime_state.cpp
     Runtime/client_tick.cpp
     Runtime/frame_timing.cpp

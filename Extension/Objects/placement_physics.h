@@ -12,4 +12,7 @@ void release(std::string_view plugin) noexcept;
 void client_tick() noexcept;
 void server_tick() noexcept;
 void reset() noexcept;
+std::optional<plugins::ObjectContact> contact(std::string_view plugin, const std::array<float,3>& from, const std::array<float,3>& to);
+std::optional<plugins::PhysicsActor> actor();
+void set_client(std::uintptr_t client) noexcept;
 }

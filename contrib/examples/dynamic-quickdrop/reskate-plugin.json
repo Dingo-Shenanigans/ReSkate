@@ -1,1 +1,1 @@
-{"api":1,"entry":"plugin/main.lua","side":"client","permissions":["objects.physics","marker.read","world.objects","skater.read","menu","files"]}
+{"api":1,"entry":"plugin/main.lua","side":"client","permissions":["objects.physics","marker.read","world.objects","skater.read","input","overlay","menu","files"]}
