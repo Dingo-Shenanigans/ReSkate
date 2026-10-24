@@ -3,6 +3,7 @@
 #include "pop_grades.h"
 #include "Engine/Game/Multiplayer/session_tools.h"
 #include "Engine/Core/Log/logging.h"
+#include "reskate_version.h"
 #include "anim_research.h"
 #include "anim_runtime_rules.h"
 #include "anim_playback.h"
@@ -7311,6 +7312,102 @@ bool export_diagnostics(std::string& message) {
         auto& s = state(); std::lock_guard lock(s.mutex); s.status = message;
         return true;
     } catch (const std::exception& e) { message = std::string("Diagnostic export failed: ") + e.what(); return false; }
+}
+namespace {
+// The last `limit` bytes of a file another process may still be writing (the game's log): read shared, never locked.
+std::optional<std::string> read_tail(const std::filesystem::path& path, std::uint64_t limit) {
+    const HANDLE file = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                                    FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) return std::nullopt;
+    struct Closer { HANDLE h; ~Closer() { CloseHandle(h); } } closer{file};
+    LARGE_INTEGER size{};
+    if (!GetFileSizeEx(file, &size) || size.QuadPart < 0) return std::nullopt;
+    const auto total = static_cast<std::uint64_t>(size.QuadPart);
+    const std::uint64_t start = total > limit ? total - limit : 0;
+    LARGE_INTEGER at{};
+    at.QuadPart = static_cast<LONGLONG>(start);
+    if (!SetFilePointerEx(file, at, nullptr, FILE_BEGIN)) return std::nullopt;
+    std::string out(static_cast<std::size_t>(total - start), '\0');
+    DWORD read = 0;
+    if (!out.empty() && !ReadFile(file, out.data(), static_cast<DWORD>(out.size()), &read, nullptr)) return std::nullopt;
+    out.resize(read);
+    return out;
+}
+} // namespace
+// REPORT A BUG (SETTINGS > STUDIO): everything the crew needs about a problem in one zip - the last 15 seconds
+// (export_diagnostics), the end of the game's log, the studio's settings and which build this is - saved in
+// ReSkate.Tricks\bug reports and shown in Explorer, to send with what happened. Nothing is sent from here.
+bool report_bug(std::string& message) {
+    try {
+        std::string diagnostics;
+        export_diagnostics(diagnostics);
+        const auto library = library_folder();
+        std::vector<std::pair<std::string, std::string>> files;
+        std::uint64_t total = 0;
+        constexpr std::uint64_t budget = 96ull * 1024 * 1024;
+        const auto add = [&](const std::filesystem::path& path, const std::string& name, std::uint64_t limit) {
+            if (total >= budget) return;
+            auto text = read_tail(path, std::min(limit, budget - total));
+            if (!text) return;
+            total += text->size();
+            files.emplace_back(name, std::move(*text));
+        };
+        // The newest diagnostics dump: the one export_diagnostics just made.
+        std::error_code error;
+        std::filesystem::path newest;
+        std::filesystem::file_time_type newest_time{};
+        for (const auto& entry : std::filesystem::directory_iterator(library / L"diagnostics", error)) {
+            if (!entry.is_directory(error) || !entry.path().filename().string().starts_with("dump-")) continue;
+            const auto when = entry.last_write_time(error);
+            if (newest.empty() || when > newest_time) newest = entry.path(), newest_time = when;
+        }
+        if (!newest.empty())
+            for (const auto& entry : std::filesystem::recursive_directory_iterator(newest, error))
+                if (entry.is_regular_file(error))
+                    add(entry.path(), "diagnostics/" + std::filesystem::relative(entry.path(), newest, error).generic_string(), 64ull * 1024 * 1024);
+        // The game's log (its end, where the problem is) and a note of a silent exit, if there was one.
+        if (const auto logs = logging::status().directory; !logs.empty()) {
+            add(logs / L"ReSkate.log", "ReSkate.log", 8ull * 1024 * 1024);
+            add(logs / L"crash_note.txt", "crash_note.txt", 256 * 1024);
+        }
+        add(library / settings_file, "studio-settings.json", 1024 * 1024);
+        // Which build, and the studio as it is now.
+        SYSTEMTIME now{};
+        GetLocalTime(&now);
+        const auto stamp = std::format("{:04}-{:02}-{:02} {:02}-{:02}-{:02}", now.wYear, now.wMonth, now.wDay, now.wHour, now.wMinute, now.wSecond);
+        std::string about = std::format("ReSkate Animator Studio bug report, {}\r\nReSkate {} ({} {})\r\n", stamp, reskate_version,
+                                        reskate_modified_build ? std::string(reskate_mod_id) : std::string("not a modified build"), reskate_mod_version);
+        {
+            auto& s = state();
+            std::lock_guard lock(s.mutex);
+            std::string on;
+            for (const auto& pack : s.packs_on) on += (on.empty() ? "" : ", ") + pack.name;
+            about += std::format("Your stance (the game's setting): {}\r\nCustom tricks in game: {}\r\nTrick matching: {}\r\nCrossfade: {:.2f} s\r\n"
+                                 "Packs on: {}\r\nOpen trick: {}\r\nLast message: {}\r\nLast failure: {}\r\n",
+                                 goofy_stance() ? "goofy" : "regular", s.play_in_game ? "on" : "off", s.front_foot ? "front foot" : "exact stance",
+                                 s.crossfade, on.empty() ? "none" : on, s.edits.name.empty() ? s.edits.trick : s.edits.name, s.status, s.failure);
+        }
+        about += "\r\nWhat happened (write it here, or in your message): the trick, your stance (normal / switch / fakie / nollie), "
+                 "and what you saw.\r\n";
+        files.emplace_back("report.txt", about);
+        const auto zip = library / L"bug reports" / std::filesystem::path("ReSkate bug report " + stamp + ".zip");
+        write_whole(zip, stored_zip(files));
+        message = "Bug report saved: " + utf8_path(zip.filename()) + ". Send it to us with what happened and which trick.";
+        logging::log(Level::info, Channel::skater, "Animation Studio: {}", message);
+        {
+            auto& s = state();
+            std::lock_guard lock(s.mutex);
+            s.status = message;
+            ++s.revision;
+        }
+        // There it is, chosen in Explorer.
+        const std::wstring select = L"/select,\"" + zip.wstring() + L"\"";
+        ShellExecuteW(nullptr, L"open", L"explorer.exe", select.c_str(), nullptr, SW_SHOWNORMAL);
+        return true;
+    } catch (const std::exception& e) {
+        message = std::string("The bug report was not saved: ") + e.what();
+        return false;
+    }
 }
 void rename(const std::string& name) {
     auto& s = state();

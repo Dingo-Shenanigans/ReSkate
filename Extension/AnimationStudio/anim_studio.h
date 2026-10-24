@@ -379,6 +379,9 @@ void stop_library_build();  // the build stops soon after; the library stays as 
 // that failed waits for TRY AGAIN.
 void build_library_when_needed(bool now);
 bool export_diagnostics(std::string& message);
+// REPORT A BUG: the last 15 seconds, the game's log, the studio's settings and the build in one zip in
+// ReSkate.Tricks\bug reports, shown in Explorer. Nothing is sent.
+bool report_bug(std::string& message);
 bool load_game_trick(const GameTrick& trick, std::string& message);
 // A trick done by the skater himself for a look (TRICKS' hover preview), over whatever is open, which stays as it is:
 // it plays once from the start and holds its end, until end_peek. It is read, decoded and turned into the studio's

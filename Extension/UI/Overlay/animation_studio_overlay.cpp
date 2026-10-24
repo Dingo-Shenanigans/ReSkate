@@ -6613,6 +6613,15 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
                               [](bool on) { ui().hide_joints = !on; }));
         rows.push_back(on_off("Shortcuts panel", u.controls_open, "The list of keys (or buttons) at the editor's lower right. Key: F1.",
                               [](bool on) { ui().controls_open = on; }));
+        rows.push_back(button_row("Report a bug",
+                                  "Something went wrong? Right after it happens, press this: the last 15 seconds, the game's log, your studio "
+                                  "settings and which build this is go into one zip, and Explorer shows it. Send that zip to us with what "
+                                  "happened, the trick and your stance. Nothing is sent by itself.",
+                                  [] {
+                                      std::string m;
+                                      studio::report_bug(m);
+                                      say(m);
+                                  }));
         rows.push_back(button_row("Export diagnostics",
                                   "Reproduce a problem, open the studio, then export: the last 15 seconds of poses, stances, timings, the board and "
                                   "the tricks in play, as text files to send.",
