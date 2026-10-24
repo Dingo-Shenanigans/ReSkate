@@ -6,6 +6,8 @@ on:
     branches: [main]
   workflow_dispatch:
     inputs:
+      # The complete tester ZIP (about 850 MB) is made only on a run started by hand: made on every push it
+      # filled the repository's artifact storage (23 of them, 19.5 GB, by 2026-10-25) and every upload failed.
       full_library:
         description: Package the complete tester ZIP after checks pass
         type: boolean
@@ -108,19 +110,19 @@ jobs:
           path: build/ci-windows/Release/ReSkate.dll
           archive: false
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 3
       - name: Fetch pinned complete native library
-        if: github.event_name != 'workflow_dispatch' || inputs.full_library
+        if: github.event_name == 'workflow_dispatch' && inputs.full_library
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: python contrib/fetch_studio_test_library.py --output work/native-library.zip
       - name: Stage complete tester package
-        if: github.event_name != 'workflow_dispatch' || inputs.full_library
+        if: github.event_name == 'workflow_dispatch' && inputs.full_library
         env:
           BUILD_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: python contrib/stage_studio_tester.py --build build/ci-windows --library work/native-library.zip --output work/tester-stage --run-url "$env:BUILD_RUN_URL"
       - name: Validate all packaged previews, names and inspector documents
-        if: github.event_name != 'workflow_dispatch' || inputs.full_library
+        if: github.event_name == 'workflow_dispatch' && inputs.full_library
         run: |
           $tool = './build/ci-windows/Release/dingosdk_animation_studio_tests.exe'
           $library = 'work/tester-stage/ReSkate.Tricks/library'
@@ -133,14 +135,14 @@ jobs:
           & $tool --native-labels "$library/native-catalog.json" work/native-readable-names.json
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Create one portable tester ZIP
-        if: github.event_name != 'workflow_dispatch' || inputs.full_library
+        if: github.event_name == 'workflow_dispatch' && inputs.full_library
         run: |
           New-Item -ItemType Directory -Force -Path artifacts | Out-Null
           $short = (git rev-parse --short=12 HEAD).Trim()
           python contrib/package_release_zip.py work/tester-stage "artifacts/ReSkateStudio-Test-$short.zip"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Upload complete tester ZIP
-        if: github.event_name != 'workflow_dispatch' || inputs.full_library
+        if: github.event_name == 'workflow_dispatch' && inputs.full_library
         id: tester
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
