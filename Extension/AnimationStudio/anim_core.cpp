@@ -239,10 +239,7 @@ float monotone_curve(std::optional<std::pair<float, float>> before, float pa, fl
     const float u2 = u * u, u3 = u2 * u;
     return (2 * u3 - 3 * u2 + 1) * pa + (u3 - 2 * u2 + u) * h * ma + (-2 * u3 + 3 * u2) * pb + (u3 - u2) * h * mb;
 }
-} // namespace
-
-Offset evaluate(const Track& track, float seconds) noexcept {
-    const auto& keys = track.keys;
+Offset evaluate_keys(std::span<const Key> keys, float seconds) noexcept {
     if (keys.empty()) return {};
     if (seconds <= keys.front().time) return {keys.front().rotation, keys.front().offset};
     if (seconds >= keys.back().time) return {keys.back().rotation, keys.back().offset};
@@ -291,6 +288,31 @@ Offset evaluate(const Track& track, float seconds) noexcept {
         return {normalised(multiply(a.rotation, quat_exp(turn))), offset};
     }
     }
+}
+
+// The keys with the game's own pose (no edit) put in where each blend in starts and each blend out ends (key_blends).
+std::vector<Key> with_blends(std::span<const Key> keys) {
+    std::vector<Key> out;
+    out.reserve(keys.size() * 3);
+    const auto game_pose = [](float at, Ease ease) {
+        Key k;
+        k.time = at;
+        k.ease = ease;
+        return k;
+    };
+    for (std::size_t i = 0; i < keys.size(); ++i) {
+        const auto blends = key_blends(keys, i);
+        if (blends.in) out.push_back(game_pose(*blends.in, keys[i].ease));
+        out.push_back(keys[i]);
+        if (blends.out) out.push_back(game_pose(*blends.out, keys[i].ease));
+    }
+    return out;
+}
+} // namespace
+
+Offset evaluate(const Track& track, float seconds) noexcept {
+    const bool blends = std::any_of(track.keys.begin(), track.keys.end(), [](const Key& k) { return k.blend_in > 0 || k.blend_out > 0; });
+    return blends ? evaluate_keys(with_blends(track.keys), seconds) : evaluate_keys(track.keys, seconds);
 }
 
 float channel_value(const Offset& edit, int channel) noexcept {
@@ -751,12 +773,13 @@ std::size_t smooth_track(Track& track, float keep_start, float keep_end) noexcep
             ++changed;
         }
     // A key that sits where the line between its neighbours already goes says nothing: it is dropped, so the
-    // curve through what is left is not pulled about by keys that were only ever noise.
+    // curve through what is left is not pulled about by keys that were only ever noise. A key with a blend in or
+    // out says when the pose takes hold or lets go, so it stays.
     for (std::size_t i = 1; i + 1 < keys.size();) {
         const Key &before = keys[i - 1], &here = keys[i], &after = keys[i + 1];
         const float span = after.time - before.time;
         const float u = span > 1e-6f ? (here.time - before.time) / span : 0.5f;
-        bool same = !pinned(here);
+        bool same = !pinned(here) && here.blend_in <= 0 && here.blend_out <= 0;
         if (same) {
             const auto guess = lerp(before.offset, after.offset, u);
             for (std::size_t c = 0; c < 3 && same; ++c) same = std::abs(guess[c] - here.offset[c]) < 0.002f;
@@ -899,6 +922,8 @@ std::string to_json(const Animation& animation) {
             k["p"] = Json::array({key.offset[0], key.offset[1], key.offset[2]});
             k["ease"] = std::string(ease_name(key.ease));
             if (key.smooth) k["smooth"] = true;
+            if (key.blend_in > 0) k["blend_in"] = key.blend_in;
+            if (key.blend_out > 0) k["blend_out"] = key.blend_out;
             keys.push_back(std::move(k));
         }
         t["keys"] = std::move(keys);
@@ -993,6 +1018,13 @@ Animation from_json(std::string_view text) {
                 const auto ease = key.value("ease", "smooth");
                 value.ease = ease == "linear" ? Ease::linear : ease == "step" ? Ease::step : Ease::smooth;
                 value.smooth = key.value("smooth", false);
+                const auto blend = [&](const char* name) {
+                    if (!key.contains(name) || !key.at(name).is_number()) return 0.0f;
+                    const float seconds = key.at(name).get<float>();
+                    return std::isfinite(seconds) && seconds > 0 ? std::clamp(seconds, min_blend, max_blend) : 0.0f;
+                };
+                value.blend_in = blend("blend_in");
+                value.blend_out = blend("blend_out");
                 track.keys.push_back(value);
             }
             std::stable_sort(track.keys.begin(), track.keys.end(), [](const Key& a, const Key& b) { return a.time < b.time; });

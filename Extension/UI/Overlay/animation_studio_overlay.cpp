@@ -102,6 +102,9 @@ struct Ui {
     std::optional<std::uint16_t> key_joint;
     float key_from{}, key_to{};
     bool key_moved{};
+    // A blend being dragged by the end of its tail (one key chosen): the key's joint and time, and which blend.
+    std::optional<std::pair<std::uint16_t, float>> blend_key;
+    bool blend_key_in{};
     // The right button over the timeline's rows: dragged, a box that chooses the keys inside it; clicked, the round
     // menu of what can be done with the chosen keys.
     bool band_held{}, band_moved{};
@@ -119,6 +122,7 @@ struct Ui {
         studio::Quat rotation{0, 0, 0, 1};
         studio::Vec3 offset{};
         studio::Ease ease{};
+        float blend_out{}, blend_in{};
     };
     std::vector<CopiedKey> copied_keys;
     bool copied_are_keys{}; // the last copy was keys, not the pose
@@ -2208,7 +2212,7 @@ void copy_keys(const studio::View& v) {
     for (const auto& [joint, time] : u.picked)
         if (const auto* t = track_view(v, joint))
             for (const auto& key : t->keys)
-                if (std::abs(key.time - time) < 1e-4f) u.copied_keys.push_back({joint, key.time, key.rotation, key.offset, key.ease});
+                if (std::abs(key.time - time) < 1e-4f) u.copied_keys.push_back({joint, key.time, key.rotation, key.offset, key.ease, key.blend_out, key.blend_in});
     u.copied_are_keys = !u.copied_keys.empty();
     say(u.copied_keys.empty() ? "No keys chosen to copy." : std::to_string(u.copied_keys.size()) + " keys copied: PASTE (Ctrl + V) puts them at the playhead.");
 }
@@ -2226,6 +2230,8 @@ void paste_keys(const studio::View& v) {
         studio::set_time(t);
         studio::set_offset(c.joint, {c.rotation, c.offset});
         studio::set_ease(c.joint, t, c.ease);
+        studio::set_blend(c.joint, t, true, c.blend_in);
+        studio::set_blend(c.joint, t, false, c.blend_out);
         u.picked.emplace_back(c.joint, t);
     }
     studio::set_time(at);
@@ -2237,6 +2243,110 @@ void ease_picked(studio::Ease ease) {
     studio::begin_change();
     for (const auto& [joint, time] : u.picked) studio::set_ease(joint, time, ease);
     say(std::to_string(u.picked.size()) + (ease == studio::Ease::linear ? " keys go straight to the next." : " keys hold until the next."));
+}
+// A key's blend tail on the timeline: from the key to where the blend reaches the game's pose (key_blends). A cut
+// tail runs to the key beside it: the pose goes straight there.
+struct BlendTail {
+    float to{};
+    bool cut{};
+};
+constexpr ImU32 blend_tail_fill = blue_dim, cut_blend_tail_fill = IM_COL32(112, 114, 120, 110); // cut: faint, as what does not apply
+std::optional<BlendTail> blend_tail(const studio::TrackView& track, std::size_t index, bool in, float duration) {
+    const auto& key = track.keys[index];
+    if ((in ? key.blend_in : key.blend_out) <= 0) return std::nullopt;
+    const auto blends = studio::key_blends(std::span<const studio::KeyView>(track.keys), index);
+    if (in) {
+        const float before = index > 0 ? track.keys[index - 1].time : 0.0f;
+        return BlendTail{std::max(blends.in.value_or(before), 0.0f), blends.cut_in};
+    }
+    const float after = index + 1 < track.keys.size() ? track.keys[index + 1].time : duration;
+    return BlendTail{std::min(blends.out.value_or(after), duration), blends.cut_out};
+}
+std::string blend_text(float seconds, bool in) {
+    return seconds > 0 ? std::format("{:.0f} MS", seconds * 1000) : in ? "PREV KEY" : "NEXT KEY";
+}
+// Whether a chosen key's blend in or out is cut short by the key beside it.
+bool picked_blend_cut(const studio::View& v, bool in) {
+    for (const auto& [joint, time] : ui().picked)
+        if (const auto* t = track_view(v, joint))
+            for (std::size_t i = 0; i < t->keys.size(); ++i)
+                if (std::abs(t->keys[i].time - time) < 1e-4f)
+                    if (const auto tail = blend_tail(*t, i, in, v.duration); tail && tail->cut) return true;
+    return false;
+}
+void say_blend_cut(bool in) {
+    say(in ? "The key before comes first, so the pose goes straight from it: the blend in is cut short."
+           : "The next key comes first, so the pose goes straight to it: the blend out is cut short.");
+}
+// The blend in or out of the chosen keys: one value when they all have it, else none.
+std::optional<float> picked_blend(const studio::View& v, bool in) {
+    std::optional<float> shared;
+    for (const auto& [joint, time] : ui().picked)
+        if (const auto* t = track_view(v, joint))
+            for (const auto& key : t->keys) {
+                if (std::abs(key.time - time) >= 1e-4f) continue;
+                const float blend = in ? key.blend_in : key.blend_out;
+                if (shared && std::abs(*shared - blend) > 1e-4f) return std::nullopt;
+                shared = blend;
+            }
+    return shared;
+}
+// In the selection bar: the chosen keys' blend in or out. At the left end none: each key comes from the key before,
+// or goes on to the next.
+void blend_slider(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, ImVec2 size, bool in) {
+    auto& u = ui();
+    const float k = f.k;
+    const ImVec2 b(a.x + size.x, a.y + size.y);
+    const auto shared = picked_blend(v, in);
+    bool lit = false;
+    // Sideways, as a setting's slider: the D-pad or the arrows step it 50 ms at a time.
+    hit(in ? "##selblendin" : "##selblendout", a, b, &lit, true, true);
+    if (ImGui::IsItemActivated()) studio::begin_change();
+    const float bar_a = a.x + 10 * k, bar_b = b.x - 10 * k, bar_y = b.y - 9 * k;
+    float seconds = shared.value_or(0);
+    const auto set_picked = [&](float to) {
+        if (!shared || std::abs(to - *shared) > 1e-4f)
+            for (const auto& [joint, time] : u.picked) studio::set_blend(joint, time, in, to);
+    };
+    if (ImGui::IsItemActive()) {
+        const float amount = std::clamp((ImGui::GetIO().MousePos.x - bar_a) / std::max(1.0f, bar_b - bar_a), 0.0f, 1.0f);
+        const float to_10_ms = std::round(amount * studio::max_blend * 100) / 100;
+        seconds = to_10_ms < studio::min_blend ? 0.0f : to_10_ms;
+        set_picked(seconds);
+    }
+    if (auto& n = nav(); lit && n.lr) {
+        seconds = std::clamp(std::round((seconds + 0.05f * static_cast<float>(n.lr)) * 100) / 100, 0.0f, studio::max_blend);
+        if (seconds < studio::min_blend) seconds = n.lr > 0 ? studio::min_blend : 0.0f;
+        studio::begin_change();
+        set_picked(seconds);
+        n.lr = 0;
+    }
+    if (ImGui::IsItemDeactivated() && seconds > 0 && picked_blend_cut(v, in)) say_blend_cut(in);
+    else if (ImGui::IsItemDeactivated()) {
+        const bool one = u.picked.size() == 1;
+        const std::string keys = one ? "The key" : std::to_string(u.picked.size()) + " keys";
+        if (seconds > 0)
+            say(std::format("{} blend{} {} the game's pose over {:.0f} ms.", keys, one ? "s" : "", in ? "in from" : "back to", seconds * 1000));
+        else if (in)
+            say(keys + (one ? " comes" : " come") + " in from the key before.");
+        else
+            say(keys + (one ? " goes" : " go") + " on to the next key.");
+    }
+    if (lit && !ImGui::IsItemActive())
+        ImGui::SetTooltip(in ? "Time from the game's own pose into the key. Left end: in from the key before."
+                             : "Time from the key back to the game's own pose. Left end: on to the next key.");
+    // Drawn as the dark buttons beside it.
+    d->AddRectFilled(a, b, lit ? IM_COL32(40, 42, 48, 250) : IM_COL32(14, 15, 18, 235));
+    d->AddRect(a, b, IM_COL32(255, 255, 255, lit ? 110 : 40), 0, 0, 1 * k);
+    if (lit && nav().keys) chosen_outline(d, a, b, k);
+    text(d, f.bold, 12 * k, ImVec2(a.x + 10 * k, a.y + 4 * k), soft, in ? "BLEND IN" : "BLEND OUT");
+    const std::string value = shared || ImGui::IsItemActive() ? blend_text(seconds, in) : "MIXED";
+    const auto vw = text_size(f.bold, 12 * k, value.c_str());
+    text(d, f.bold, 12 * k, ImVec2(b.x - 10 * k - vw.x, a.y + 4 * k), white, value);
+    const float amount = seconds / studio::max_blend;
+    d->AddRectFilled(ImVec2(bar_a, bar_y - 2 * k), ImVec2(bar_b, bar_y + 2 * k), IM_COL32(255, 255, 255, 50), 2 * k);
+    d->AddRectFilled(ImVec2(bar_a, bar_y - 2 * k), ImVec2(bar_a + (bar_b - bar_a) * amount, bar_y + 2 * k), blue, 2 * k);
+    d->AddCircleFilled(ImVec2(bar_a + (bar_b - bar_a) * amount, bar_y), 5 * k, white, 16);
 }
 // The chosen keys back to the game's own pose (each is kept, with nothing added).
 void reset_picked(const studio::View& v) {
@@ -8158,7 +8268,8 @@ void selection_bar(ImDrawList* d, const Fonts& f, const studio::View& v, float c
     const std::string count = std::to_string(u.picked.size()) + (u.picked.size() == 1 ? " KEY" : " KEYS");
     const float count_w = text_size(f.heading, 17 * k, count.c_str()).x + 20 * k;
     const float hint_w = text_size(f.bold, 12 * k, "RIGHT-CLICK: MORE").x + 20 * k;
-    const float w = count_w + 6 * (bw + gap) + hint_w + 20 * k;
+    const float slider_w = 150 * k;
+    const float w = count_w + 6 * (bw + gap) + 2 * (slider_w + gap) + hint_w + 20 * k;
     const ImVec2 a(centre_x - w * 0.5f, bottom - bh - 22 * k), b(a.x + w, bottom - 10 * k);
     skate_theme::rough_rect(d, a, b, IM_COL32(12, 12, 14, 230), seed_of(a), k * 0.7f);
     float x = a.x + 14 * k;
@@ -8173,6 +8284,10 @@ void selection_bar(ImDrawList* d, const Fonts& f, const studio::View& v, float c
     if (button("##selsmooth", "SMOOTH")) smooth_picked();
     if (button("##sellinear", "LINEAR")) ease_picked(studio::Ease::linear);
     if (button("##selhold", "HOLD")) ease_picked(studio::Ease::step);
+    for (const bool in : {true, false}) {
+        blend_slider(d, f, v, ImVec2(x, y), ImVec2(slider_w, bh), in);
+        x += slider_w + gap;
+    }
     if (button("##selcopy", "COPY")) copy_keys(v);
     if (button("##seldelete", "DELETE", Look::danger)) delete_picked();
     if (button("##selclear", "LET GO", Look::ghost)) u.picked.clear();
@@ -8606,7 +8721,7 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
             // The joint's keys as a curve of this one number.
             studio::Track curve;
             curve.joint = joint.index;
-            if (track) for (const auto& kv : track->keys) curve.keys.push_back({kv.time, kv.rotation, kv.offset, kv.ease});
+            if (track) for (const auto& kv : track->keys) curve.keys.push_back({kv.time, kv.rotation, kv.offset, kv.ease, false, kv.blend_out, kv.blend_in});
             // Its value on this frame, to drag or type (a double-click types).
             {
                 const float frame_time = std::round(v.time * fps) / fps; // the frame a change is keyed on
@@ -8803,8 +8918,26 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
         const bool lane_hovered = ImGui::IsItemHovered();
         const bool lane_clicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
         bool on_key = false;
+        // The ends of the one chosen key's blend tails, in and out: dragged, each sets how long its blend is.
+        std::array<std::optional<float>, 2> handle_x;
+        if (track && u.picked.size() == 1 && u.picked.front().first == joint.index && !track->locked)
+            for (std::size_t i = 0; i < track->keys.size(); ++i)
+                if (std::abs(track->keys[i].time - u.picked.front().second) < 1e-4f)
+                    for (const bool in : {true, false})
+                        if (const auto tail = blend_tail(*track, i, in, v.duration)) handle_x[in ? 0 : 1] = x_of(tail->to);
+        std::optional<bool> on_handle; // over a handle: true the blend in's
+        for (const bool in : {true, false})
+            if (const auto& hx = handle_x[in ? 0 : 1]; hx && lane_hovered && std::abs(ImGui::GetIO().MousePos.x - *hx) < 6 * k)
+                on_handle = in;
+        if (on_handle && lane_clicked) {
+            u.blend_key = u.picked.front();
+            u.blend_key_in = *on_handle;
+            studio::begin_change();
+            on_key = true;
+        }
+        if (on_handle && !u.blend_key) ImGui::SetTooltip(*on_handle ? "Drag to change the blend in" : "Drag to change the blend out");
         std::optional<float> nearest; // the key a click takes: the nearest in reach
-        if (lane_clicked && track) {
+        if (lane_clicked && track && !on_handle) {
             float reach = 9 * k;
             for (const auto& key : track->keys)
                 if (!bracket_key(key.time))
@@ -8815,6 +8948,20 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
         }
         if (track) {
             d->PushClipRect(ImVec2(ruler_left, rows_top), ImVec2(ruler_right, at.y + size.y), true);
+            for (std::size_t i = 0; i < track->keys.size(); ++i)
+                for (const bool in : {true, false}) {
+                    const auto tail = blend_tail(*track, i, in, v.duration);
+                    if (!tail || bracket_key(track->keys[i].time)) continue;
+                    const float mid = y + row_h * 0.5f, half = 6 * k, x = x_of(track->keys[i].time);
+                    d->AddTriangleFilled(ImVec2(x, mid - half), ImVec2(x_of(tail->to), mid), ImVec2(x, mid + half),
+                                         tail->cut ? cut_blend_tail_fill : blend_tail_fill);
+                }
+            for (const bool in : {true, false})
+                if (const auto& hx = handle_x[in ? 0 : 1]) {
+                    const bool lit = on_handle == in || (u.blend_key && u.blend_key_in == in);
+                    d->AddRectFilled(ImVec2(*hx - 2 * k, y + row_h * 0.5f - 7 * k), ImVec2(*hx + 2 * k, y + row_h * 0.5f + 7 * k),
+                                     lit ? white : blue_light);
+                }
             for (const auto& key : track->keys) {
                 if (bracket_key(key.time)) continue;
                 const bool dragged_with = u.key_joint && is_picked(joint.index, key.time) && is_picked(*u.key_joint, u.key_from);
@@ -8910,6 +9057,23 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
                 u.key_moved = false;
                 drag.on = false;
             }
+        }
+    }
+    if (u.blend_key) {
+        const auto [joint, time] = *u.blend_key;
+        const bool in = u.blend_key_in;
+        if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            u.blend_key.reset();
+            if (picked_blend_cut(v, in)) say_blend_cut(in);
+        }
+        else if (const auto* t = track_view(v, joint)) {
+            // Up to the key beside it at most: past it the pose goes straight to that key anyway.
+            float room = in ? std::min(studio::max_blend, time) : studio::max_blend;
+            for (const auto& key : t->keys)
+                if (in ? key.time < time - 1e-4f : key.time > time + 1e-4f) room = std::min(room, std::abs(key.time - time));
+            const float pointed = std::round((in ? time - t_of(ImGui::GetIO().MousePos.x) : t_of(ImGui::GetIO().MousePos.x) - time) * 100) / 100;
+            studio::set_blend(joint, time, in, std::clamp(pointed, studio::min_blend, std::max(studio::min_blend, room)));
+            ImGui::SetTooltip("Blend %s %s", in ? "in" : "out", blend_text(picked_blend(v, in).value_or(0), in).c_str());
         }
     }
     if (u.key_joint) {

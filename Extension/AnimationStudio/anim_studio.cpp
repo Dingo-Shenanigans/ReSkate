@@ -4542,7 +4542,7 @@ View view() {
     v.joints = s.joints;
     for (const auto& t : s.edits.tracks) {
         TrackView tv{t.joint, {}, t.hidden, t.locked};
-        for (const auto& k : t.keys) tv.keys.push_back({k.time, k.ease, k.smooth, k.rotation, k.offset});
+        for (const auto& k : t.keys) tv.keys.push_back({k.time, k.ease, k.smooth, k.rotation, k.offset, k.blend_out, k.blend_in});
         v.tracks.push_back(std::move(tv));
     }
     v.library = s.library;
@@ -5067,6 +5067,19 @@ void set_ease(std::uint16_t joint, float time, Ease ease) {
             if (k.ease == ease && k.smooth == round) continue;
             k.ease = ease;
             k.smooth = round;
+            changed_locked(s);
+        }
+}
+void set_blend(std::uint16_t joint, float time, bool in, float seconds) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    if (s.previewing) return; // a preview is to watch only
+    const float blend = std::isfinite(seconds) && seconds > 0 ? std::clamp(seconds, min_blend, max_blend) : 0.0f;
+    if (auto* t = s.edits.track(joint); t && !t->locked)
+        for (auto& k : t->keys) {
+            auto& value = in ? k.blend_in : k.blend_out;
+            if (std::abs(k.time - time) >= 1e-3f || value == blend) continue;
+            value = blend;
             changed_locked(s);
         }
 }
