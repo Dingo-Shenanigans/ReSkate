@@ -205,6 +205,12 @@ struct MultiplayerModel {
     float nametag_distance{120.f};
     bool nametag_dots{true};
     bool nametags_friends{};
+    // Local: shuffled outfits, what other players' items show as. 0: as worn (an item this PC
+    // lacks shows a stand-in), 1: every item random, 2: only the items this PC lacks random. These
+    // are the values of ShuffleMode (outfit_shuffle.h), which the profile saves too, so they never change.
+    std::uint8_t outfit_shuffle{};
+    // Local: shuffled outfits pick only items a mod installed, in whichever mode.
+    bool outfit_shuffle_mods_only{};
     // Local: chat bubbles above each skater's head. `chat_bubbles_distance` is how far away
     // a player may be and still show one, `chat_bubbles_duration` how many seconds a line
     // stays before it fades, `chat_bubbles_history` how many recent lines stack up.

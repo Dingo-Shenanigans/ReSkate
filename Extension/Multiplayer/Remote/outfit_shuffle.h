@@ -1,0 +1,224 @@
+#pragma once
+#include "cosmetics.h"
+#include <algorithm>
+#include <array>
+#include <cstdint>
+#include <map>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
+
+// Shuffled outfits: what the local player sees other players wearing, in place of either every
+// item or just the items this PC does not have installed (a player's cosmetics mod, which would
+// otherwise show a fixed stand-in), as the ShuffleMode setting says. A player's real outfit is
+// never touched, sent or saved; the shuffle is applied to a copy just before it is put on their
+// skater (native_cosmetics.cpp), so other people still see you as you really are. Nothing here
+// reads game memory, so the rules can be tested on their own (Test/outfit_shuffle_tests.cpp).
+namespace dingosdk::multiplayer {
+// What the setting shuffles. The values are the ones the menu's view carries
+// (SessionView::outfit_shuffle) and the profile saves, so they never change.
+enum class ShuffleMode : std::uint8_t {
+    off = 0,           // everything shows as worn (an item this PC lacks gets the usual stand-in)
+    everything = 1,    // every item a player wears or rides takes a random item that fits
+    not_installed = 2, // only the items this PC lacks do
+};
+inline constexpr std::uint8_t shuffle_modes = 3;
+inline constexpr ShuffleMode shuffle_mode_from(long long value) noexcept {
+    return value >= 0 && value < shuffle_modes ? static_cast<ShuffleMode>(value) : ShuffleMode::off;
+}
+// The next mode in the order the menu steps through them: nothing, everything, not installed.
+inline constexpr ShuffleMode next_shuffle_mode(ShuffleMode mode) noexcept {
+    return static_cast<ShuffleMode>((static_cast<std::uint8_t>(mode) + 1) % shuffle_modes);
+}
+// The words the console takes, or nothing for any other text.
+inline std::optional<ShuffleMode> parse_shuffle_mode(std::string_view word) noexcept {
+    if (word == "off" || word == "none" || word == "nothing") return ShuffleMode::off;
+    if (word == "all" || word == "everything") return ShuffleMode::everything;
+    if (word == "missing" || word == "not-installed" || word == "uninstalled") return ShuffleMode::not_installed;
+    return std::nullopt;
+}
+
+// What to shuffle for one player: the mode, and the player's seed (shuffle_seed). Both must
+// say so; a default one shuffles nothing. `mods_only` picks only from items a mod installed
+// (ShuffleCatalog::mods), whichever slots the mode covers.
+struct Shuffle {
+    ShuffleMode mode{};
+    std::uint64_t seed{};
+    bool mods_only{};
+    bool active() const noexcept { return mode != ShuffleMode::off && seed != 0; }
+    // The same for the player's board, with a seed of its own so its picks do not follow the
+    // clothes'. An inactive shuffle stays inactive (and compares equal to a default one).
+    Shuffle board() const noexcept {
+        if (!active()) return {};
+        const auto derived = seed ^ 0xb0a4d5eedULL;
+        return {mode, derived ? derived : 1, mods_only};
+    }
+    bool operator==(const Shuffle &) const = default;
+};
+
+struct ShuffleCandidate {
+    std::string name;
+    std::vector<std::uint32_t> categories;
+    bool modded{}; // a mod installed it: it is in no retail catalogue
+};
+
+// The installed cosmetics, indexed by the categories they fit. A slot takes an item whose
+// categories include the slot's own (the check CosmeticMemory::validate makes).
+class ShuffleCatalog {
+public:
+    ShuffleCatalog() = default;
+    explicit ShuffleCatalog(std::vector<ShuffleCandidate> items) {
+        // In name order, so a seed always picks the same item from the same install.
+        std::sort(items.begin(), items.end(),
+                  [](const ShuffleCandidate &a, const ShuffleCandidate &b) { return a.name < b.name; });
+        for (auto &item : items) {
+            if (item.name.empty() || (!names_.empty() && names_.back() == item.name)) continue;
+            const auto index = names_.size();
+            names_.push_back(std::move(item.name));
+            modded_.push_back(item.modded);
+            std::sort(item.categories.begin(), item.categories.end());
+            item.categories.erase(std::unique(item.categories.begin(), item.categories.end()), item.categories.end());
+            for (const auto category : item.categories) by_category_[category].push_back(index);
+        }
+    }
+    std::size_t size() const noexcept { return names_.size(); }
+    const std::string &name(std::size_t index) const { return names_[index]; }
+    bool modded(std::size_t index) const { return modded_[index]; }
+    // Indices of the items that fit `category`, or nothing.
+    const std::vector<std::size_t> *in_category(std::uint32_t category) const {
+        const auto found = by_category_.find(category);
+        return found == by_category_.end() ? nullptr : &found->second;
+    }
+    // The same catalog with only the items a mod installed. Empty when there are none, or when
+    // nothing could be judged modded (no content pack installed).
+    ShuffleCatalog mods() const {
+        return keep_if([&](std::size_t index) { return modded_[index]; });
+    }
+
+private:
+    template <class Keep> ShuffleCatalog keep_if(Keep keep) const {
+        std::map<std::size_t, ShuffleCandidate> kept;
+        for (const auto &[category, indices] : by_category_)
+            for (const auto index : indices)
+                if (keep(index)) {
+                    auto &item = kept[index];
+                    item.name = names_[index];
+                    item.modded = modded_[index];
+                    item.categories.push_back(category);
+                }
+        std::vector<ShuffleCandidate> items;
+        for (auto &[index, item] : kept) items.push_back(std::move(item));
+        return ShuffleCatalog(std::move(items));
+    }
+    std::vector<std::string> names_;
+    std::vector<bool> modded_;
+    std::map<std::uint32_t, std::vector<std::size_t>> by_category_;
+};
+
+// The slots the shuffle never touches (template slot ids, as `mp cosmetic-slots` prints them): the
+// skater's body, face and voice, which make them who they are. These always show what the player
+// wears, or the usual stand-in, as with the shuffle off. Every other slot, skater and board alike,
+// can be shuffled.
+inline constexpr std::array<std::uint32_t, 24> unshuffled_slot_ids{
+    0x7462c17f, // cust_skintypes
+    0xfbbab416, // cust_voicetypes
+    0x33e79eb0, // cust_heads
+    0x3455758f, // cust_noses
+    0xac4493c1, // cust_eyes
+    0xbc6996d3, // cust_mouths
+    0xc7bcb6fd, // cust_bodies
+    0x6a8c54b4, // cust_scalpHair
+    0x4e2cfe99, // cust_facialHair
+    0xede28ac4, // cust_hairColor
+    0xf18689e4, // cust_facialHairColor
+    0xa39b4cef, // cust_eyeColor
+    0xa0ef5ee9, // cust_eyebrows
+    0x3ac1d7f4, // locomotion
+    0x348e55c7, // cust_eyebrowColor
+    0x5034ae03, // cust_lipcolor
+    0xf958c570, // cust_maturity
+    0x17a31f28, // cust_freckles
+    0x00db8764, // cust_vitiligo
+    0x3440dad3, // cust_moles
+    0xac4227e2, // cust_acne
+    0xb5e61950, // cust_stubble
+    0xbc821c2c, // cust_makeup
+    0x4f1c0009, // cust_lipstyle
+};
+
+inline constexpr bool shuffles_slot(std::uint32_t slot) noexcept {
+    return std::find(unshuffled_slot_ids.begin(), unshuffled_slot_ids.end(), slot) == unshuffled_slot_ids.end();
+}
+
+// Which slots of a recipe `mode` shuffles, to hand to shuffle_recipe as `only`. `lacking[i]` says
+// item `i` is not installed on this PC; `recipe` is the outfit after the usual stand-ins went in
+// for those, so a slot with an item in it is one the player wears (or a stand-in for one).
+//   not_installed: just the lacking slots, whatever their stand-in is (or none).
+//   everything:    every slot that holds an item, and the lacking slots too, so an item this
+//                  PC lacks never ends up showing as nothing. A slot left empty stays empty.
+//   off:           nothing.
+// Either way never slots in unshuffled_slot_ids; those keep the item or its stand-in.
+// Always one entry per item, so shuffle_recipe takes it as written; a `lacking` of another size
+// shuffles nothing.
+inline std::vector<bool> shuffle_slots(ShuffleMode mode, const CosmeticRecipe &recipe, const std::vector<bool> &lacking) {
+    std::vector<bool> slots(recipe.items.size(), false);
+    if (mode == ShuffleMode::off || lacking.size() != slots.size()) return slots;
+    for (std::size_t i = 0; i < slots.size(); ++i)
+        slots[i] = shuffles_slot(recipe.items[i].slot) &&
+                   (lacking[i] || (mode == ShuffleMode::everything && !recipe.items[i].asset.empty()));
+    return slots;
+}
+
+// SplitMix64: small, and the same on every platform.
+inline std::uint64_t shuffle_next(std::uint64_t &state) noexcept {
+    std::uint64_t z = (state += 0x9e3779b97f4a7c15ULL);
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+    return z ^ (z >> 31);
+}
+
+// A player's shuffle for one `epoch` (a new epoch is a re-roll). Never 0: 0 means "not shuffled".
+inline std::uint64_t shuffle_seed(std::uint64_t player, std::uint64_t epoch) noexcept {
+    std::uint64_t state = player ^ (epoch * 0x9e3779b97f4a7c15ULL);
+    const auto seed = shuffle_next(state);
+    return seed ? seed : 1;
+}
+
+// Gives items of `recipe` another item that fits their slot, keeping the slot and the parameters
+// the sender chose (the slot, not the item, decides their layout). `slot_categories[i]` is the
+// category recipe item `i` must fit; a recipe of another shape is left alone. A slot's pick
+// depends on the seed and the slot only, so one slot changing does not move the others.
+//
+// `only` says which slots to shuffle: `only[i]` for recipe item `i`, and then a slot is shuffled
+// whatever it holds now (the stand-in for an item this PC lacks, or nothing). Without it, every
+// worn item is shuffled and empty slots stay empty, so nobody is handed a hat or a tattoo they
+// did not wear. Returns how many items changed.
+inline std::size_t shuffle_recipe(CosmeticRecipe &recipe, const std::vector<std::uint32_t> &slot_categories,
+                                  const ShuffleCatalog &catalog, std::uint64_t seed,
+                                  const std::vector<bool> &only = {}) {
+    if (!seed || slot_categories.size() != recipe.items.size() || (!only.empty() && only.size() != recipe.items.size()))
+        return 0;
+    std::size_t changed{};
+    for (std::size_t i = 0; i < recipe.items.size(); ++i) {
+        auto &item = recipe.items[i];
+        if (only.empty() ? item.asset.empty() : !only[i]) continue;
+        const auto *pool = catalog.in_category(slot_categories[i]);
+        if (!pool) continue;
+        // Anything that fits except what they already wear.
+        std::size_t choices{};
+        for (const auto index : *pool) choices += catalog.name(index) != item.asset;
+        if (!choices) continue;
+        std::uint64_t state = seed ^ (static_cast<std::uint64_t>(item.slot) * 0xd1b54a32d192ed03ULL);
+        auto pick = static_cast<std::size_t>(shuffle_next(state) % choices);
+        for (const auto index : *pool) {
+            if (catalog.name(index) == item.asset) continue;
+            if (pick--) continue;
+            item.asset = catalog.name(index);
+            ++changed;
+            break;
+        }
+    }
+    return changed;
+}
+} // namespace dingosdk::multiplayer

@@ -14,6 +14,7 @@
 #include "party_book.h"
 #include "Engine/Game/World/world_names.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
+#include "Extension/Multiplayer/Remote/outfit_shuffle.h"
 #include "Extension/Multiplayer/Hud/custom_nametags.h"
 #include "Extension/Multiplayer/Hud/follow_camera.h"
 #include "Extension/Throwdowns/native_throwdowns.h"
@@ -29,6 +30,7 @@
 #include "Extension/Skater/no_bail.h"
 #include "Extension/Skater/physics_tuning.h"
 #include "Extension/Multiplayer/Remote/remote_collision.h"
+#include "Extension/World/texture_handle_limit.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Text/word_filter.h"
 #include "Engine/Game/Multiplayer/session_tools.h"
@@ -324,6 +326,12 @@ void publish_party(Session &s) {
     if (!s.display_preferences_loaded) {
         s.display_preferences_loaded = true;
         s.nametags = profile_runtime::local_preference("Nametags").value_or(true);
+        if (const auto saved = profile_runtime::local_value("ShuffleMode"); saved && saved->is_number())
+            s.shuffle_mode = shuffle_mode_from(static_cast<long long>(saved->get<double>()));
+        s.shuffle_mods_only = profile_runtime::local_preference("ShuffleModsOnly").value_or(false);
+        s.shuffle_epoch = now_us();
+        logging::log(logging::Level::info, logging::Channel::runtime, "Multiplayer: shuffled outfits loaded from the profile ({}).",
+                     shuffle_state(s));
         if (const auto saved = profile_runtime::local_value("NametagDistance"); saved && saved->is_number())
             s.nametag_distance = std::clamp(saved->get<float>(), 10.f, 500.f);
         s.nametag_dots = profile_runtime::local_preference("NametagDots").value_or(true);
@@ -558,13 +566,50 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
     // changed outfit is one heavy native pass. When several players arrive together
     // (joining a busy server) run one pass per frame; the others wait for later frames.
     bool native_pass{};
+    const auto shuffle_for = [](std::uint64_t id, ShuffleMode mode, std::uint64_t epoch, bool mods_only) {
+        return mode == ShuffleMode::off ? Shuffle{} : Shuffle{mode, shuffle_seed(id, epoch), mods_only};
+    };
+    const auto worn_shuffle = [&](const Peer &p) {
+        return shuffle_for(p.member.id, p.shuffle_mode, p.shuffle_epoch, p.shuffle_mods_only);
+    };
+    const auto session_shuffle = [&](const Peer &p) {
+        return shuffle_for(p.member.id, s.shuffle_mode, s.shuffle_epoch, s.shuffle_mods_only);
+    };
+    // Shown players still wearing an earlier shuffle than the session's: those a re-dress has left.
+    const auto redress_waiting = [&] {
+        unsigned waiting{};
+        for (auto &p : active_peers(s))
+            if (p.visible && p.appearance.value() && worn_shuffle(p) != session_shuffle(p)) ++waiting;
+        return waiting;
+    };
     const auto apply_cosmetics = [&](Peer &p, bool spawned) {
         if (now - p.last_cosmetic_apply < 500000) return;
+        bool staged{};
+        // A spawn or a real outfit change takes the current shuffle with it. A new mode or reroll
+        // alone waits its turn (shuffle_redress_interval_us); until then the player keeps theirs.
+        bool adopt = spawned;
         if (p.applied_cosmetics != p.cosmetic_revision && !spawned) {
             if (native_pass) return;
             native_pass = true;
+            adopt = true;
+        } else if (!spawned && !native_pass && now >= s.next_shuffle_redress && worn_shuffle(p) != session_shuffle(p)) {
+            native_pass = true;
+            s.next_shuffle_redress = now + shuffle_redress_interval_us;
+            adopt = staged = true;
         }
-        update_remote_cosmetics(s.base, local, *p.appearance.value(), p.cosmetic_status);
+        if (adopt) {
+            p.shuffle_mode = s.shuffle_mode;
+            p.shuffle_epoch = s.shuffle_epoch;
+            p.shuffle_mods_only = s.shuffle_mods_only;
+        }
+        if (staged) {
+            ++s.shuffle_redressed;
+            const auto textures = texture_handle_limit::use();
+            logging::log(logging::Level::info, logging::Channel::runtime,
+                         "Multiplayer: shuffled outfits re-dressed {} ({} done, {} waiting; {}); {} of {} streamed textures in use.",
+                         p.member.name, s.shuffle_redressed, redress_waiting(), shuffle_state(s), textures.taken, textures.limit);
+        }
+        update_remote_cosmetics(s.base, local, *p.appearance.value(), p.cosmetic_status, worn_shuffle(p));
         // The effects their costume and board items come with follow the outfit.
         if (p.applied_cosmetics != p.cosmetic_revision && s.sync_effects) note_remote_outfit(now);
         p.last_cosmetic_apply = now;
@@ -739,6 +784,15 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
             }
         }
     });
+    // A re-dress is done once no shown player is left on an earlier shuffle.
+    if (s.shuffle_redress_started && !redress_waiting()) {
+        const auto textures = texture_handle_limit::use();
+        logging::log(logging::Level::info, logging::Channel::runtime,
+                     "Multiplayer: shuffled outfits: all players re-dressed ({} in {:.1f} s; {}); {} of {} streamed textures in use.",
+                     s.shuffle_redressed, static_cast<double>(now - s.shuffle_redress_started) / 1e6, shuffle_state(s),
+                     textures.taken, textures.limit);
+        s.shuffle_redress_started = 0;
+    }
     // The local player's own lines, above their own skater, when asked for. The typing
     // preview uses the same three-second window other players see, and shows even when
     // own chat lines are hidden.
@@ -1050,6 +1104,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, std::string_vi
         ~VoicePlaybackTick() { voice.process_native(base); }
     } voice_playback_tick{s.voice, base};
     s.base = base;
+    s.client = client;
     {
         // (Its hooks, and the throwdown lab's, go in together: one pause of the game's threads.)
         HookBatch batch;
