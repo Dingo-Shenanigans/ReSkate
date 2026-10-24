@@ -51,17 +51,34 @@ c = np.tile(conc, (H // T + 1, W // T + 1))[:H, :W]
 g = np.tile(grip, (H // T + 1, W // T + 1))[:H, :W]
 v = 0.125 + 0.32 * (c - 0.5) + 0.26 * np.clip(g - 0.12, 0, 1)
 yy, xx = np.mgrid[0:H, 0:W].astype(np.float32)
-light = np.exp(-(((xx - W * 0.5) / (W * 0.42)) ** 2 + ((yy - H * 0.42) / (H * 0.75)) ** 2))
-edge = np.clip(1.15 - 0.55 * np.sqrt(((xx - W / 2) / (SEEN * 0.62)) ** 2 + ((yy - H * 0.45) / (H * 0.65)) ** 2), 0.42, 1)
-v = v * (0.72 + 0.42 * light) * edge
+# Lit across the whole picture, edge to edge (a wide screen shows all of it): only a soft fall-off to the sides and
+# corners, no darker panel outside the middle.
+light = np.exp(-(((xx - W * 0.5) / (W * 0.60)) ** 2 + ((yy - H * 0.42) / (H * 0.80)) ** 2))
+edge = np.clip(1.08 - 0.30 * np.sqrt(((xx - W / 2) / (W * 0.55)) ** 2 + ((yy - H * 0.45) / (H * 0.70)) ** 2), 0.72, 1)
+v = v * (0.80 + 0.30 * light) * edge
 wall = Image.fromarray(np.clip(np.dstack([v * 255 * 0.84, v * 255 * 0.92, v * 255 * 1.12]), 0, 255).astype(np.uint8)).convert("RGBA")
 # The huge worn word low across it, barely there.
 ghost = art.grunge_word("reskate.", FONTS / "Montserrat-ExtraBold.ttf", 900, 7, 0.36)
 ghost.putalpha(ghost.getchannel("A").point(lambda p: int(p * 0.075)))
 wall.alpha_composite(ghost, (int(W * 0.5 - ghost.width / 2), int(H - ghost.height + 120)))
-# Halftone: blue in the low right, grey in the top left.
-wall.alpha_composite(art.halftone(1400, 1000, 22, (1400, 1000), 1150, BLUE, 105), (L0 + SEEN - 1400 + 120, H - 1000))
-wall.alpha_composite(art.halftone(900, 700, 20, (0, 0), 800, (170, 178, 196), 30), (L0 - 120, 0))
+# Halftone: blue from the picture's low right corner, grey from its top left, the dots gone before the edges of their
+# own tile (no straight cut through them), and still there in the corners of a 16:9 screen.
+
+
+def corner_halftone(corner, step, reach, colour, alpha):
+    side = int(reach * 0.86) + 2 * step  # the dots are gone by 83% of the reach
+    tw, th = min(side, W), min(side, H)
+    at = (0 if corner[0] == 0 else W - tw, 0 if corner[1] == 0 else H - th)
+    tile = art.halftone(tw, th, step, (corner[0] - at[0], corner[1] - at[1]), reach, colour, alpha)
+    edges = np.asarray(tile.getchannel("A"))
+    inner = edges[:, -2:] if corner[0] == 0 else edges[:, :2]
+    assert th == H or (edges[-2:, :] if corner[1] == 0 else edges[:2, :]).max() == 0, "halftone cut at its tile's edge"
+    assert inner.max() == 0, "halftone cut at its tile's edge"
+    wall.alpha_composite(tile, at)
+
+
+corner_halftone((W, H), 22, 1550, BLUE, 105)
+corner_halftone((0, 0), 20, 1050, (170, 178, 196), 30)
 # Spray: one on the left (high) and one on the right (low), each with a small one near it, all whole on a 16:9 screen.
 # The droplets thin out to nothing by REACH x its radius (the market's spray flings the odd one much further), and each
 # splatter sits at least that far in from the screen's edges, so none of it is cut off.
