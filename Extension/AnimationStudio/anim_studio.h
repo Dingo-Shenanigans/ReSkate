@@ -121,6 +121,11 @@ struct View {
     std::string your_name; // MADE BY, remembered for new recordings and packs
     Recording recording{};
     float bracket_start{}, bracket_end{-1}; // the timeline brackets (Animation::start, end)
+    // CATCH on the timeline: the moment the trick is caught, held in the air off a bigger drop or down stairs before it
+    // plays on to its landing. catch_air: it has air to hold one in; catch_at: -1 when none was found; catch_set: its
+    // maker put it there (else the studio found it).
+    bool catch_air{}, catch_set{};
+    float catch_at{-1};
     bool can_undo{}, can_redo{};
     Orbit orbit;
     bool confirm_close{}; // closing was asked with unsaved changes: the studio asks first
@@ -228,6 +233,9 @@ void drag_limb(std::uint16_t joint, const Vec3& target);
 // that bracket travel with it; the keys between the brackets are left exactly where they are, so nothing
 // is stretched. A key the bracket is pulled back past stops applying until it is taken out over it again.
 void move_bracket(int which, float seconds);
+// CATCH: where the trick is caught (on a frame, between a frame after the pop and a frame before the landing); below 0
+// gives it back to the studio. Call begin_change once when a drag starts.
+void set_catch(float seconds);
 // The joints that can be put somewhere rather than only turned, and how much of the limb above them bends
 // to reach: 3 for a hand or a foot (the elbow or knee and the limb above it bend), 2 for an elbow or a
 // knee (only the upper arm or the thigh turns, so placing a knee never swings the hips). 0 for the rest.

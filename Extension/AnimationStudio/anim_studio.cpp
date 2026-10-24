@@ -211,6 +211,7 @@ struct Snapshot {
 struct History {
     std::vector<Track> tracks;
     float start{}, end{-1};
+    std::optional<float> catch_at; // CATCH, as it was
 };
 struct State {
     std::mutex mutex;
@@ -248,6 +249,10 @@ struct State {
     bool playing{}, play_in_game{true}, room{true};
     bool solo{}; // a turn moves that joint alone: the joints below it are turned back by as much
     std::uint64_t clip_serial{}; // how many clips have been opened: the overlay starts clean on each
+    // CATCH: the studio's own catch for the open trick (guess_catch), and what it was worked out from.
+    float catch_guess{-1};
+    std::uint64_t catch_guess_from{};
+    std::chrono::steady_clock::time_point catch_guessed_at{};
     // The studio's stance (0 as the game has him, 1 regular, 2 goofy) and the clip turned the other way
     // round, kept so it is mirrored once rather than every frame.
     int stance_choice{};
@@ -2390,7 +2395,7 @@ Vec3 board_up(const Clip& clip) { return board_shape(clip).up; }
 // ollies: caught 0.05 to 0.1 s before the landing. One whose board never leaves him is caught at 60% of its air; -1 for
 // one with no air or no board, or one never caught before its landing.
 namespace {
-float find_catch(const Clip& clip, const Animation& edits) {
+float guess_catch(const Clip& clip, const Animation& edits) {
     try {
         const float up_at = clip.takeoff, down = clip.landing;
         if (up_at < 0 || down <= up_at + 0.15f || clip.board.empty() || clip.joints != skeleton_joints) return -1;
@@ -2438,6 +2443,16 @@ float find_catch(const Clip& clip, const Animation& edits) {
     } catch (...) {
         return -1;
     }
+}
+// The trick has air to hold a catch in, and `at` is in it: a frame or more after the pop, before the landing.
+bool has_air(const Clip& clip) noexcept { return clip.takeoff >= 0 && clip.landing > clip.takeoff + 0.15f; }
+bool catch_fits(const Clip& clip, float at) noexcept {
+    return has_air(clip) && std::isfinite(at) && at >= clip.takeoff + 0.5f / key_fps && at < clip.landing - 0.03f;
+}
+// The catch the latch holds: the one its maker set on the timeline (CATCH) when it is in the air, else the studio's.
+float find_catch(const Clip& clip, const Animation& edits) {
+    if (edits.catch_at && catch_fits(clip, *edits.catch_at)) return *edits.catch_at;
+    return guess_catch(clip, edits);
 }
 } // namespace
 // The lowest point of the board `board` (a mount in the world): what touches the ground first.
@@ -3550,8 +3565,8 @@ void on_animation(std::uintptr_t component) noexcept {
                     const float rest = land - caught; // the timeline from its catch to its landing
                     if (l.latch_hold < 0 && time >= caught && to_ground && *to_ground > rest + 0.08f) {
                         l.latch_hold = std::max(caught, l.latch_last >= 0 ? std::min(l.latch_last, time) : caught);
-                        logging::log(Level::info, Channel::skater, "Animation Studio: {} holds its catch at {:.2f} s: {:.2f} s to the ground, {:.2f} s in the timeline.",
-                                     trick->name, l.latch_hold, *to_ground, rest);
+                        logging::log(Level::info, Channel::skater, "Animation Studio: {} holds its catch at {:.2f} s ({}): {:.2f} s to the ground, {:.2f} s in the timeline.",
+                                     trick->name, l.latch_hold, trick->edits && trick->edits->catch_at && *trick->edits->catch_at == caught ? "its maker's" : "the studio's", *to_ground, rest);
                     }
                     if (l.latch_hold >= 0) {
                         if (l.latch_release_at < 0) {
@@ -4796,6 +4811,44 @@ LoadingView loading() noexcept {
     v.seconds = static_cast<float>(now - since);
     return v;
 }
+namespace {
+// What the studio's catch is worked out from: the clip and the keys (and the brackets, outside which they do nothing).
+std::uint64_t catch_inputs(const State& s) noexcept {
+    std::uint64_t h = 1469598103934665603ull;
+    const auto mix = [&](const void* data, std::size_t size) {
+        const auto* p = static_cast<const unsigned char*>(data);
+        for (std::size_t i = 0; i < size; ++i) h = (h ^ p[i]) * 1099511628211ull;
+    };
+    const void* clip = s.clip.get();
+    mix(&clip, sizeof clip);
+    mix(&s.clip_serial, sizeof s.clip_serial);
+    mix(&s.edits.start, sizeof s.edits.start);
+    mix(&s.edits.end, sizeof s.edits.end);
+    for (const auto& track : s.edits.tracks) {
+        mix(&track.joint, sizeof track.joint);
+        mix(&track.hidden, sizeof track.hidden);
+        for (const auto& key : track.keys) {
+            mix(&key.time, sizeof key.time);
+            mix(key.rotation.data(), sizeof key.rotation);
+            mix(key.offset.data(), sizeof key.offset);
+            mix(&key.ease, sizeof key.ease);
+            mix(&key.smooth, sizeof key.smooth);
+        }
+    }
+    return h;
+}
+float catch_guess_locked(State& s) {
+    if (!s.clip || s.clip->empty() || !has_air(*s.clip)) return -1;
+    const auto from = catch_inputs(s);
+    const auto now = std::chrono::steady_clock::now();
+    if (from != s.catch_guess_from && (s.catch_guess_from == 0 || now - s.catch_guessed_at > std::chrono::milliseconds(200))) {
+        s.catch_guess = guess_catch(*s.clip, s.edits);
+        s.catch_guess_from = from;
+        s.catch_guessed_at = now;
+    }
+    return s.catch_guess;
+}
+} // namespace
 View view() {
     auto& s = state();
     std::lock_guard lock(s.mutex);
@@ -4905,6 +4958,11 @@ View view() {
     v.recording = s.recording;
     v.bracket_start = s.edits.start;
     v.bracket_end = s.edits.end;
+    if (s.clip && !s.clip->empty() && has_air(*s.clip)) {
+        v.catch_air = true;
+        v.catch_set = s.edits.catch_at && catch_fits(*s.clip, *s.edits.catch_at);
+        v.catch_at = v.catch_set ? *s.edits.catch_at : catch_guess_locked(s);
+    }
     v.can_undo = !s.undo.empty();
     v.can_redo = !s.redo.empty();
     v.orbit = s.orbit;
@@ -5135,7 +5193,7 @@ void set_solo(bool on) {
 void begin_change() {
     auto& s = state();
     std::lock_guard lock(s.mutex);
-    s.undo.push_back({s.edits.tracks, s.edits.start, s.edits.end});
+    s.undo.push_back({s.edits.tracks, s.edits.start, s.edits.end, s.edits.catch_at});
     if (s.undo.size() > 200) s.undo.pop_front();
     s.redo.clear();
 }
@@ -5335,6 +5393,34 @@ void move_bracket(int which, float seconds) {
     changed_locked(s);
 }
 
+void set_catch(float seconds) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    if (s.previewing) return; // a preview is to watch only
+    if (!s.clip || s.clip->empty()) return;
+    if (!std::isfinite(seconds) || seconds < 0) {
+        if (!s.edits.catch_at) return;
+        s.edits.catch_at.reset();
+        s.status = "CATCH is the studio's own again: where the board is back under the feet.";
+        changed_locked(s);
+        return;
+    }
+    const auto& clip = *s.clip;
+    if (!has_air(clip)) {
+        s.status = "This trick has no air to hold a catch in.";
+        ++s.revision;
+        return;
+    }
+    // On a frame, a frame or more after the pop and before the landing (catch_fits).
+    const float low = std::ceil((clip.takeoff + 1 / key_fps) * key_fps - 1e-3f) / key_fps;
+    const float high = std::floor((clip.landing - 1 / key_fps) * key_fps + 1e-3f) / key_fps;
+    if (high < low) return;
+    const float at = std::clamp(on_a_frame(seconds), low, high);
+    if (s.edits.catch_at && std::abs(*s.edits.catch_at - at) < 0.5f / key_fps) return;
+    s.edits.catch_at = at;
+    changed_locked(s);
+}
+
 void drag_limb(std::uint16_t joint, const Vec3& target_view) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
@@ -5463,9 +5549,10 @@ void undo() {
     std::lock_guard lock(s.mutex);
     if (s.previewing) return; // a preview is to watch only
     if (s.undo.empty()) return;
-    s.redo.push_back({s.edits.tracks, s.edits.start, s.edits.end});
+    s.redo.push_back({s.edits.tracks, s.edits.start, s.edits.end, s.edits.catch_at});
     s.edits.start = s.undo.back().start;
     s.edits.end = s.undo.back().end;
+    s.edits.catch_at = s.undo.back().catch_at;
     s.edits.tracks = std::move(s.undo.back().tracks);
     s.undo.pop_back();
     changed_locked(s);
@@ -5475,9 +5562,10 @@ void redo() {
     std::lock_guard lock(s.mutex);
     if (s.previewing) return; // a preview is to watch only
     if (s.redo.empty()) return;
-    s.undo.push_back({s.edits.tracks, s.edits.start, s.edits.end});
+    s.undo.push_back({s.edits.tracks, s.edits.start, s.edits.end, s.edits.catch_at});
     s.edits.start = s.redo.back().start;
     s.edits.end = s.redo.back().end;
+    s.edits.catch_at = s.redo.back().catch_at;
     s.edits.tracks = std::move(s.redo.back().tracks);
     s.redo.pop_back();
     changed_locked(s);

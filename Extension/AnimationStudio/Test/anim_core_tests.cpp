@@ -135,6 +135,17 @@ void packs_and_playlist() {
     locked.keep_leads_right = true;
     const auto read = from_json(to_json(locked));
     check(read.maker_key == "k" && !read.editable && read.keep_leads_right == std::optional<bool>(true), "A trick keeps its maker, its lock and the foot it leads with");
+    check(!read.catch_at, "A trick with no catch set has none: the studio finds it");
+    auto caught = from_json(to_json(locked));
+    caught.catch_at = 0.0f; // not a time on a clip with no length
+    check(!from_json(to_json(caught)).catch_at, "A catch that is not on the clip is dropped, not kept");
+    std::string text = to_json(locked);
+    const auto at = text.find("\"duration\": 0.0");
+    check(at != std::string::npos, "The trick file says its length");
+    text.replace(at, 15, "\"duration\": 1.5, \"catch\": 0.8");
+    const auto with_catch = from_json(text);
+    check(with_catch.catch_at && std::abs(*with_catch.catch_at - 0.8f) < 1e-4f, "A trick keeps the catch its maker set");
+    check(to_json(with_catch).find("\"catch\"") != std::string::npos, "The catch is saved again with the trick");
 }
 
 // Every spelling the game has for a trick is one trick: what it says in the air, its scoring data, its flick list.

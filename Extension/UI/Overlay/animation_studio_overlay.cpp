@@ -100,6 +100,8 @@ struct Ui {
     View timeline_view{View::fit};
     int bracket_drag{};    // 1 the start bracket is held, 2 the end bracket
     float bracket_dragged_to{-1}; // the frame the held bracket was last moved to
+    bool catch_drag{}, catch_began{}; // CATCH is held; its undo step is taken
+    float catch_dragged_to{-1};       // the frame it was last moved to
     bool dragging_playhead{}, dragging_gizmo{}, orbiting{}, panning{};
     // A key being dragged along its row.
     std::optional<std::uint16_t> key_joint;
@@ -8570,6 +8572,7 @@ void on_new_clip(const studio::View& v) {
     u.gizmo_handle = -1;
     u.dragging_gizmo = u.dragging_playhead = false;
     u.bracket_drag = 0;
+    u.catch_drag = false;
     u.axis = -1;
     u.timeline_view = Ui::View::fit;
     u.timeline_zoom = 1;
@@ -9165,6 +9168,74 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
             }
         }
     }
+    // CATCH: where the trick is caught - the pose held in the air off a bigger drop or down stairs, before it plays on to
+    // its landing. The studio finds it (AUTO CATCH); drag the flag to the frame to hold, double-click it for the
+    // studio's again. Its flag hangs under the frame numbers, out of the brackets' way, pointing back into the air.
+    bool on_catch = false;
+    if (v.has_clip && v.catch_air) {
+        auto& io = ImGui::GetIO();
+        const bool none = v.catch_at < 0;
+        const float t = none ? std::round((v.takeoff + (v.landing - v.takeoff) * 0.6f) * fps) / fps : v.catch_at;
+        const float x = x_of(t);
+        const char* name = none ? "SET CATCH" : v.catch_set ? "CATCH" : "AUTO CATCH";
+        const float fs = 10 * k;
+        const auto tw = text_size(f.bold, fs, name);
+        const float flag_h = tw.y + 7 * k, flag_w = tw.x + 12 * k, tail = 5 * k;
+        const float top = at.y + 44 * k;
+        const bool visible = x >= ruler_left - 2 && x <= ruler_right + 2;
+        if (visible && !u.bracket_drag && !u.blocked) {
+            const bool by_line = std::abs(io.MousePos.x - x) < 12 * k && io.MousePos.y >= at.y && io.MousePos.y <= at.y + header_h + 10 * k;
+            const bool on_flag = io.MousePos.x >= x - flag_w - 4 * k && io.MousePos.x <= x + 4 * k && io.MousePos.y >= top - 4 * k &&
+                                 io.MousePos.y <= top + flag_h + 4 * k;
+            on_catch = by_line || on_flag;
+        }
+        const bool hot = u.catch_drag || on_catch;
+        if (visible) {
+            const ImU32 paper = IM_COL32(244, 241, 233, none ? 120 : v.catch_set ? 255 : 190);
+            const ImU32 colour = hot ? IM_COL32(255, 255, 255, 255) : paper;
+            d->PushClipRect(ImVec2(ruler_left, at.y), ImVec2(ruler_right, at.y + size.y), true);
+            // The pole, through the rows: dashed while it is the studio's, whole once it is yours.
+            const float y0 = top + flag_h, y1 = at.y + size.y - 4 * k, w = (hot ? 2.4f : 1.6f) * k;
+            if (v.catch_set || hot) d->AddLine(ImVec2(x, top), ImVec2(x, y1), colour, w);
+            else
+                for (float y = y0; y < y1; y += 9 * k) d->AddLine(ImVec2(x, y), ImVec2(x, std::min(y + 5 * k, y1)), colour, w);
+            const ImVec2 a(x, top), b(x - flag_w, top), c(x - flag_w + tail, top + flag_h * 0.5f), e(x - flag_w, top + flag_h), g(x, top + flag_h);
+            const ImVec2 points[5]{a, b, c, e, g};
+            d->AddConvexPolyFilled(points, 5, colour);
+            text(d, f.bold, fs, ImVec2(x - flag_w + tail + 4 * k, top + (flag_h - tw.y) * 0.5f), IM_COL32(16, 18, 24, 255), name);
+            d->PopClipRect();
+        }
+        if (on_catch && !u.catch_drag)
+            ImGui::SetTooltip(none ? "No catch found: drag to the frame the board is caught, to hold it off big drops and stairs."
+                              : v.catch_set ? "Your catch: held in the air off big drops and stairs. Drag it; double-click for the studio's."
+                                            : "The studio's catch: held in the air off big drops and stairs. Drag it to the frame you want held.");
+        if (on_catch && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+            if (v.catch_set) {
+                studio::begin_change();
+                studio::set_catch(-1);
+            }
+            u.catch_drag = false;
+        } else if (on_catch && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+            u.catch_drag = true;
+            u.catch_began = false;
+            u.catch_dragged_to = t;
+        }
+        if (u.catch_drag && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            u.catch_drag = false;
+            u.catch_dragged_to = -1;
+        }
+        if (u.catch_drag) {
+            const float to = std::round(t_of(io.MousePos.x) * fps) / fps;
+            if (std::abs(to - u.catch_dragged_to) > 0.5f / fps) {
+                if (!u.catch_began) {
+                    studio::begin_change();
+                    u.catch_began = true;
+                }
+                u.catch_dragged_to = to;
+                studio::set_catch(to);
+            }
+        }
+    } else u.catch_drag = false;
     // The brackets: the window the animation works in, drawn over the rows, with the window shaded. Either
     // one retimes the animation into the new window. Each is labelled and has a grab area wide enough to
     // catch: a 3 px line was a hard thing to hit.
@@ -9177,7 +9248,7 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
                               io.MousePos.x >= ruler_left - grab && io.MousePos.x <= ruler_right + grab;
         // The nearer bracket when both are in reach, so they stay separable when the window is short.
         int near_bracket = 0;
-        if (in_ruler) {
+        if (in_ruler && !on_catch && !u.catch_drag) {
             const float ds = std::abs(io.MousePos.x - xs), de = std::abs(io.MousePos.x - xe);
             if (std::min(ds, de) < grab) near_bracket = ds <= de ? 1 : 2;
         }
@@ -9264,7 +9335,7 @@ void viewport(ImDrawList* d, const Fonts& f, const studio::View& v, const Projec
     const bool inside = !u.blocked && mouse.x >= area_min.x && mouse.y >= area_min.y && mouse.x <= area_max.x && mouse.y <= area_max.y;
     // Out of the way while it plays or is scrubbed, so the motion can be watched, and on J whenever you
     // want the skater plain.
-    const bool joints_hidden = u.hide_ui || u.hide_joints || v.playing || u.scrubbing || u.dragging_playhead || u.bracket_drag != 0;
+    const bool joints_hidden = u.hide_ui || u.hide_joints || v.playing || u.scrubbing || u.dragging_playhead || u.bracket_drag != 0 || u.catch_drag;
     std::optional<std::uint16_t> hovered;
     float best = 22 * k;
     if (!u.pad_mode && !joints_hidden)

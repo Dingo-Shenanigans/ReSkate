@@ -878,6 +878,7 @@ std::string to_json(const Animation& animation) {
     if (animation.editable) root["editable"] = true;
     if (!animation.upgraded.empty()) root["upgraded"] = animation.upgraded;
     if (animation.board_nose_forward) root["board_keys"] = "nose-forward";
+    if (animation.catch_at) root["catch"] = *animation.catch_at;
     root["start"] = animation.start;
     root["end"] = animation.end;
     root["duration"] = animation.clip.duration();
@@ -950,6 +951,11 @@ Animation from_json(std::string_view text) {
     if (result.pop != "low" && result.pop != "mid" && result.pop != "high") result.pop.clear();
     const float duration = root.contains("duration") ? number(root.at("duration"), "bad duration") : 0.0f;
     require(duration >= 0 && duration < 120, "bad duration");
+    // The maker's catch, kept when it is a time on the clip; anything else is dropped (the studio then finds the catch).
+    if (root.contains("catch") && root.at("catch").is_number()) {
+        const float at = root.at("catch").get<float>();
+        if (std::isfinite(at) && at > 0 && at <= duration + 1.0f / key_fps) result.catch_at = at;
+    }
     // A window up to a frame past the clip's end (a bracket rounded onto a frame past it, by builds before 2026-10-23)
     // is put back on it rather than refusing the whole trick; anything else wrong is refused.
     constexpr float frame = 1.0f / key_fps + 0.01f;

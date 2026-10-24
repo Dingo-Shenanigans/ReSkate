@@ -172,6 +172,10 @@ struct Animation {
     // The board's keys are in the board's nose-forward frame (every save since 2026-10-22). Older files
     // made on a clip whose board points backwards had them the other way round; the upgrade turns them.
     bool board_nose_forward{};
+    // The catch its maker set on the timeline (CATCH): the moment between the pop and the landing that the board is
+    // caught, held in the air off a bigger drop than the clip's and then played on to its landing. Empty: the studio
+    // finds the catch itself. Older builds ignore it.
+    std::optional<float> catch_at;
     Track* track(std::uint16_t joint) noexcept;
     const Track* track(std::uint16_t joint) const noexcept;
     std::size_t key_count() const noexcept;
