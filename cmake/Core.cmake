@@ -103,6 +103,7 @@ if(WIN32)
         Engine/Vfs/mod_merge_combine.cpp
         Engine/Vfs/mod_merge_overrides.cpp
         Engine/Vfs/mod_merge_conflicts.cpp
+        Engine/Vfs/mod_merge_scan_cache.cpp
         Engine/Vfs/mod_merge_textures.cpp
         Engine/Vfs/mod_merge_grid.cpp
         Engine/Vfs/mod_merge_load_screens.cpp
@@ -133,3 +134,30 @@ endif()
 # World layers read from the installed level data, cached per game build.
 add_library(dingosdk_world_layer_scan STATIC Engine/Vfs/world_layer_scan.cpp)
 target_link_libraries(dingosdk_world_layer_scan PUBLIC dingosdk_json PRIVATE dingosdk_game_archives dingosdk_content_cache)
+
+# Plugins (Extension/Plugins): Luau scripts in mods, each in its own sandboxed VM. The host, its
+# VMs and the API; finding plugins among the mods needs the mod list, so it is Windows only for now.
+add_library(dingosdk_plugins STATIC
+    Extension/Plugins/plugin_manifest.cpp
+    Extension/Plugins/plugin_vm.cpp
+    Extension/Plugins/plugin_api.cpp
+    Extension/Plugins/plugin_api_ui.cpp
+    Extension/Plugins/plugin_api_more.cpp
+    Extension/Plugins/plugin_api_world.cpp
+    Extension/Plugins/plugin_api_services.cpp
+    Extension/Plugins/plugin_api_throwdowns.cpp
+    Extension/Plugins/plugin_api_capture.cpp
+    Extension/Plugins/plugin_content.cpp
+    # The throwdown kit's store and the plugins' modes, which the plugin host and the game's
+    # native UI share (kit::flag is the game's: Extension/Throwdowns/native_flag_session.cpp).
+    Extension/Throwdowns/throwdown_kit.cpp
+    Extension/Throwdowns/custom_modes.cpp
+    Extension/Throwdowns/challenge_registry.cpp
+    Extension/Plugins/plugin_host.cpp
+    Extension/AnimationStudio/anim_core.cpp
+    Extension/Plugins/plugin_wave.cpp)
+target_link_libraries(dingosdk_plugins PUBLIC dingosdk_json dingosdk_console_core PRIVATE dingosdk_luau)
+if(WIN32)
+    target_sources(dingosdk_plugins PRIVATE Extension/Plugins/plugin_discovery.cpp)
+    target_link_libraries(dingosdk_plugins PUBLIC dingosdk_mod_list)
+endif()

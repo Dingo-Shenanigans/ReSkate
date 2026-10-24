@@ -4,7 +4,9 @@
 #include <cstdint>
 #include <vector>
 
-// A scripted Xbox pad for player 0, read by the game through the XInput hook.
+// A scripted Xbox pad for player 0, read by the game through the XInput hook (PR 297, after PR 230 by
+// Norms): the character room's walk presses RB on it (Extension/World/character_room.cpp). Not for
+// plugins: they never press the game's buttons.
 namespace dingosdk::overlay {
 struct PadStep {
     std::uint32_t tick{}; // game ticks from the start of the script
@@ -15,12 +17,10 @@ struct PadStep {
 void play_pad(std::vector<PadStep> steps);
 // The game thread calls this once a game tick.
 void pad_tick() noexcept;
-// True when it wrote the script's pad to `state`. `caller` is the code that asked XInput.
-bool scripted_pad(DWORD user, XINPUT_STATE &state, const void *caller = nullptr) noexcept;
-// The pad reads the script has answered, ever: a script the game never read did nothing. Reads from Skate.exe's
-// own code are counted apart from all others (the Steam overlay's).
-struct PadReads {
-    std::uint32_t all{}, by_game_code{};
-};
-[[nodiscard]] PadReads pad_reads_answered() noexcept;
+// True when it wrote the script's pad to `state`.
+bool scripted_pad(DWORD user, XINPUT_STATE &state) noexcept;
+// One stick of the stand-in pad held at `value` (-1..1) for `milliseconds` more, the pad otherwise
+// neutral, for turning the game menu's preview (reskate.room.turn); 0 lets go. `stick`: 0 left x,
+// 1 left y, 2 right x, 3 right y. A script playing (play_pad) comes first. Any thread.
+void hold_stick(int stick, float value, unsigned milliseconds) noexcept;
 } // namespace dingosdk::overlay

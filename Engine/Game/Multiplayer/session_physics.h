@@ -9,6 +9,7 @@
 #include <mutex>
 #include <span>
 #include <vector>
+#include "session_competition.h"
 
 namespace dingosdk {
 // Physics a player changes outside Gameplay/SkatePhysicsTuning: the trainer's tuning-class
@@ -44,7 +45,7 @@ inline bool take(Box &box, std::uint64_t &seen, std::vector<std::uint8_t> &bytes
 // physics (the roster's enforce_tuning): their own physics edits stand down, and what the host
 // shares is theirs. False outside a session and for a host. Set by the session every tick.
 inline bool session_tuning_enforced() noexcept {
-    return session_physics_detail::enforced.load(std::memory_order_acquire);
+    return competition_stock_physics() || session_physics_detail::enforced.load(std::memory_order_acquire);
 }
 inline void set_session_tuning_enforced(bool enforced) noexcept {
     session_physics_detail::enforced.store(enforced, std::memory_order_release);

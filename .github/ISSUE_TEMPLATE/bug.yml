@@ -1,0 +1,70 @@
+name: Bug report
+description: Something in ReSkate doesn't work, or the game crashes.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Antivirus warnings, the menu not opening and crashes from mods are answered in the README's
+        [Troubleshooting](https://github.com/Dingo-Shenanigans/ReSkate#troubleshooting) section. Please check it first.
+  - type: input
+    id: version
+    attributes:
+      label: ReSkate version
+      description: Shown in the launcher, and in the release's file name (ReSkate-<version>.zip).
+      placeholder: "2.1.1"
+    validations:
+      required: true
+  - type: dropdown
+    id: system
+    attributes:
+      label: System
+      options:
+        - Windows 11
+        - Windows 10
+        - Linux (Proton)
+        - Steam Deck
+        - macOS (CrossOver or another Wine tool)
+    validations:
+      required: true
+  - type: input
+    id: system-detail
+    attributes:
+      label: Proton or Wine version
+      description: Only on Linux, Steam Deck or macOS.
+      placeholder: "Proton Experimental"
+  - type: dropdown
+    id: started
+    attributes:
+      label: How was the game started?
+      options:
+        - PLAY in the ReSkate launcher
+        - Play in Steam, with the launch option from the README
+        - Play in Steam, without a launch option
+        - Something else (say below)
+    validations:
+      required: true
+  - type: dropdown
+    id: mods
+    attributes:
+      label: Mods
+      description: Does it still happen with every mod turned off?
+      options:
+        - It happens with every mod off
+        - It only happens with mods on
+        - I haven't tried with mods off
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected and what happened instead. For a crash, say when it happened (the date and time, or as near as you know), so it can be found among the crash reports.
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log
+      description: |
+        Drag `logs\ReSkate.log` (beside `Skate.exe` in your ReSkate folder) into this box.
+        Its file paths can show your Windows user name.

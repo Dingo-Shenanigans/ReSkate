@@ -1,5 +1,6 @@
 #pragma once
 #include "overlay.h"
+#include "descriptor_slots.h"
 #include "Engine/Core/Console/command_registry.h"
 #include "Extension/Skater/free_flight.h"
 #include "gpu_diagnostics.h"
@@ -20,6 +21,7 @@
 
 #include <algorithm>
 #include <array>
+#include <optional>
 #include <atomic>
 #include <cctype>
 #include <chrono>
@@ -115,6 +117,9 @@ struct State {
     // buttons use it because Skate's controller mode stops the legacy cursor
     // and button state from updating until the game is paused.
     std::atomic<long> raw_mouse_x{0}, raw_mouse_y{0};
+    // The same movement for read_mouse_look, kept apart so the editor's and the flight look's reads
+    // do not take it; and the wheel, from raw packets and from WM_MOUSEWHEEL (in its 120 a notch).
+    std::atomic<long> look_mouse_x{0}, look_mouse_y{0}, look_wheel_raw{0}, look_wheel_message{0};
     std::atomic<unsigned> raw_mouse_buttons{0}; // physical: 1 left, 2 right, 4 middle
     std::atomic<ULONGLONG> raw_mouse_time{0};
     // The mouse registration in effect has RIDEV_NOLEGACY: Windows does not
@@ -138,7 +143,10 @@ struct State {
     std::atomic<bool> prompt_pointer{false};
     // The item grids' search box (item_browser_overlay.cpp): "-" opens it while a grid has the focus.
     std::atomic<bool> item_search_visible{false}, item_search_focus_requested{false};
+    std::atomic<bool> plugin_dialog_visible{false};
     std::atomic<bool> item_search_character_pending{false}, item_search_escape_pending{false};
+    // A plugin's full-screen screen is open (plugin_overlay.cpp): it has the input, as the menu.
+    std::atomic<bool> plugin_screen_visible{false};
     std::atomic<bool> input_attached{false};
     std::atomic<bool> stop{false};
     std::atomic<HWND> window{nullptr};
@@ -185,6 +193,8 @@ struct State {
     ComPtr<ID3D12Resource> menu_map_texture, menu_map_upload;
     // The icon of the mod the highlighted item is from (item_browser_overlay.cpp), in the fourth.
     ComPtr<ID3D12Resource> mod_icon_texture, mod_icon_upload;
+    // Plugins' pictures (plugin_images.cpp), from the fifth slot on.
+    std::array<ComPtr<ID3D12Resource>, 16> plugin_textures, plugin_uploads;
     // The Animator Studio's pack pictures (studio_pack_pictures.cpp), in the fifth: one texture made once, a square for
     // each picture, new pictures copied into their squares a few a frame, each lot from an upload buffer kept until the
     // frame that copied it is done.
@@ -298,6 +308,23 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wp, LPARAM lp);
 // Swapchain selection, device objects and the per-frame draw (overlay_render.cpp).
 bool completed(UINT64 value, DWORD timeout_ms);
 void destroy_graphics();
+// Screen captures (frame_grab.cpp): a frame is being asked for, so the overlay keeps working; the
+// presented frame's pixels handed over before the overlay draws on it; its GPU objects let go.
+bool frame_grab_pending();
+void grab_presented_frame(State& s, ID3D12Resource* buffer);
+void release_frame_grab();
+// The depth probe (depth_probe.cpp, `capture depth`): its hook, installed with the overlay's command
+// list; whether it needs this present; and its turn at it.
+void install_depth_probe(ID3D12GraphicsCommandList* list) noexcept;
+bool depth_probe_pending();
+void depth_probe_present(State& s, std::uint32_t width, std::uint32_t height);
+// The depth tap (depth_probe.cpp): while a frame grab runs, the game's main depth buffer is copied
+// every frame. depth_tap_present runs at each present (`wanted`: a grab is running); after the
+// frame's own work is known finished, depth_tap_latest maps the newest copy the GPU has made (or
+// gives null) until depth_tap_done.
+void depth_tap_present(State& s, std::uint32_t width, std::uint32_t height, bool wanted);
+const std::uint8_t* depth_tap_latest(std::uint32_t& width, std::uint32_t& height, std::uint32_t& pitch);
+void depth_tap_done();
 ComPtr<IUnknown> object_identity(IUnknown* object);
 Binding* find_binding(IUnknown* identity);
 void guarded_render(IDXGISwapChain* chain, UINT flags) noexcept;
@@ -341,6 +368,19 @@ void menu_map_pixels_uploaded(ImTextureID texture, unsigned serial);
 void menu_map_pixels_lost();
 // The item card's mod icon (item_browser_overlay.cpp), the same way, in the fourth slot.
 bool take_mod_icon_pixels(CardPixels& pixels);
+// Plugins' pictures (plugin_images.cpp): the SRV heap's slots from plugin_image_first_slot on. A
+// draw asks for a picture by its file (its id once on the GPU, 0 until then); the render thread
+// takes one decoded picture a frame to upload and says where it went.
+ImTextureID plugin_image(const std::string& path, ImVec2& size);
+struct PluginImageUpload {
+    std::string path;
+    int slot{};
+    CardPixels pixels;
+};
+std::optional<PluginImageUpload> take_plugin_image();
+// id 0: it failed; `later`: the slot was busy, so it waits for another frame.
+void plugin_image_uploaded(const std::string& path, int slot, ImTextureID id, bool later = false);
+void plugin_images_lost();
 void mod_icon_uploaded(ImTextureID texture, unsigned serial);
 void mod_icon_lost();
 // The Animator Studio's pack pictures (studio_pack_pictures.cpp), the same way, in the fifth slot. Asked for by key (the
@@ -380,9 +420,6 @@ ImTextureID studio_frame_texture() noexcept;
 // Game debug text (game_text_overlay.cpp): polled every presented frame.
 bool game_text_pending();
 void draw_game_text();
-// The FPV drone's goggle display and stick overlay (drone_hud_overlay.cpp): polled every presented frame.
-bool drone_hud_pending();
-void draw_drone_hud();
 // ReSkate's S.K.A.T.E. throwdown HUD (skate_hud_overlay.cpp): polled every presented frame.
 bool skate_hud_pending();
 void draw_skate_hud();
@@ -406,10 +443,6 @@ void draw_animation_studio();
 // The Animator Studio's loading screen, over the walk to its room and back (anim_studio::loading()).
 bool animation_studio_loading_pending();
 void draw_animation_studio_loading();
-// While a trick is recorded: the strip across the top (it takes no input from the game).
-bool animation_studio_recording_pending();
-void draw_animation_studio_recording();
-void draw_animation_studio_batch(); // Record all tricks' strip across the top
 bool animation_studio_open();
 // Every presented frame, the studio shut: L3 + R3 held on a controller opens it.
 void poll_animation_studio_controller();

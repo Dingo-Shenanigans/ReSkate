@@ -6,7 +6,7 @@
 
 // The skater's body as the physics simulates it (Engine/Game/Build/20260929/skater_body.h):
 // 24 rigid bodies, the ragdoll, and the contacts of each physics step. Plain data;
-// Extension/HallOfMeat/hall_of_meat_skater.h reads it.
+// Extension/Skater/skater_physics.h reads it.
 //
 // The bodies by the physics bone id the contact processing reports. The ids follow the
 // order of the game's physics bone name map (Engine/Game/Build/20260929/skater_body.h). The

@@ -84,6 +84,9 @@ struct Runtime {
     bool transition_seen{}, initialized{}, catalog_logged{},
         native_tick_ready{}, native_loading_logging{}, fixed_stop_entitlement_route_ready{}, menu_load_queued{}, startup_load_queued{};
     std::atomic<bool> menu_splash_ready{};
+    // The first level the game loads was the launcher's start map, the "load" at the front of the
+    // startup commands (queue_menu_bam): the startup commands drop it rather than load it again.
+    bool startup_map_taken{};
     std::atomic<bool> observer_failed{};
     // Refreshed with the 500 ms world model; the spectate camera reads it every tick.
     bool spectate_ready{};
@@ -104,8 +107,7 @@ struct Runtime {
     std::string last_readiness, last_client_content, last_gameplay_settings_override_observation,
         last_skater_slot_override_observation,
         last_main_mission_override_observation,
-        last_fixed_stop_entitlement_provider_observation,
-        last_neighborhood_unlock_override_observation;
+        last_fixed_stop_entitlement_provider_observation;
     std::uint64_t console_delivered_sequence{}; // Single, serialized overlay reader.
     dingosdk::ConsoleActivityFeed console_activity;
 };

@@ -92,6 +92,10 @@ struct Clip {
     // The board each frame, relative to the skater's placement joint (1); empty when not recorded.
     std::vector<Joint> board;
     float takeoff{-1}, landing{-1}; // seconds, -1 when not seen
+    // ReSkate 2.1.2 native clips may rotate a joint while keeping the live
+    // skater's position (body build). Empty retains legacy full-position clips.
+    std::vector<std::uint8_t> turned_only;
+    bool keeps_position(std::size_t joint) const noexcept { return joint < turned_only.size() && turned_only[joint]; }
     bool empty() const noexcept { return times.empty() || !joints; }
     float duration() const noexcept { return times.empty() ? 0.0f : times.back(); }
     std::span<const Joint> frame(std::size_t i) const noexcept { return {frames.data() + i * joints, joints}; }

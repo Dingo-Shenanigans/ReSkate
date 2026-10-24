@@ -5,7 +5,7 @@
 namespace dingosdk::multiplayer {
 class NativeVoicePlayback {
 public:
-    // Players' voices; other sounds played this way (remote drones) take their own tag, so their
+    // Players' voices; other sounds played this way (plugins') take their own tag, so their
     // streams never share an id with a voice's in the game's one sample provider.
     static constexpr std::uint64_t voice_source_tag = 0x52534b5600000000ULL; // "RSKV"
     explicit NativeVoicePlayback(std::uint64_t source_tag = voice_source_tag);

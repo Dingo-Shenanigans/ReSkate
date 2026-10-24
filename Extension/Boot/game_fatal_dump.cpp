@@ -4,6 +4,7 @@
 #include "Engine/Core/Platform/memory.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/game_fatal_dump.h"
+#include "Extension/UI/Overlay/gpu_diagnostics.h"
 
 #include <Windows.h>
 #include <DbgHelp.h>
@@ -25,8 +26,12 @@ std::mutex install_mutex;
 BOOL WINAPI write_dump(HANDLE process, DWORD process_id, HANDLE file, MINIDUMP_TYPE type,
     PMINIDUMP_EXCEPTION_INFORMATION exception, PMINIDUMP_USER_STREAM_INFORMATION streams,
     PMINIDUMP_CALLBACK_INFORMATION callback) {
-    if (exception && exception->ExceptionPointers && process_id == GetCurrentProcessId())
+    if (exception && exception->ExceptionPointers && process_id == GetCurrentProcessId()) {
+        // (A GPU that stopped: the next launches record what it was doing.)
+        if (const auto* record = exception->ExceptionPointers->ExceptionRecord)
+            overlay::note_gpu_stopped(record->ExceptionCode);
         crash_report::capture_game_fatal(exception->ThreadId, exception->ExceptionPointers);
+    }
     return original_write.load(std::memory_order_acquire)(process, process_id, file, type, exception, streams, callback);
 }
 

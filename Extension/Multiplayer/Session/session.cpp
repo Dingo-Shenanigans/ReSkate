@@ -1,6 +1,12 @@
 #include "session_internal.h"
+#include "Extension/Throwdowns/throwdown_kit.h"
+#include "Extension/Skater/skater_push.h"
+#include "Extension/Throwdowns/throwdown_lab.h"
 #include "Engine/Core/Hooks/hooks.h"
-#include "Extension/Skater/drone_beacon.h"
+#include "Extension/Plugins/plugin_runtime.h"
+#include "Extension/Plugins/plugin_wire.h"
+#include "Extension/Plugins/plugin_session_feed.h"
+#include "Extension/AnimationStudio/anim_core.h"
 #include "Engine/Core/Debug/trace.h"
 #include "Extension/Multiplayer/Hud/native_player_ui.h"
 #include "Extension/Multiplayer/Hud/native_indicators.h"
@@ -74,6 +80,7 @@ void reset_peer(Session &s, std::size_t slot) {
 }
 void stop(Session &s, std::string reason) {
     s.local_typing_until = 0;
+    s.next_presence = s.presence_for = 0;
     // A join that ends before the host's map was ready never got in.
     if (s.mode == Mode::join && s.awaiting_map && !s.travelling && s.join_started)
         trace::record("multiplayer.join", "app.join", std::chrono::milliseconds((now_us() - s.join_started) / 1000), false);
@@ -84,8 +91,6 @@ void stop(Session &s, std::string reason) {
     s.object_limit = 0;
     s.object_scaling = true;
     s.sync_effects = true;
-    s.sync_drones = true;
-    drone::beacon::server_allows().store(true);
     set_lobby_object_limit(0);
     s.server_admin = false;
     s.role.clear();
@@ -103,7 +108,7 @@ void stop(Session &s, std::string reason) {
     s.server_map_rotation = 0;
     set_lobby_object_placement_allowed(true);
     set_lobby_object_scaling_allowed(true);
-    s.guest_noclip = s.guest_no_bail = s.guest_boosts = true;
+    s.guest_noclip = s.guest_no_bail = s.guest_boosts = s.guest_ollies = true;
     s.enforce_tuning = true;
     s.score_check = true;
     s.scoring_sent.reset();
@@ -122,7 +127,7 @@ void stop(Session &s, std::string reason) {
     s.server_votes = 0;
     s.server_polls = 0;
     s.server_custom_votes.clear();
-    set_session_tools_allowed(true, true, true);
+    set_session_tools_allowed(true, true, true, true);
     s.object_clears.reset();
     s.clear_pending = false;
     s.force_world_layers = false;
@@ -159,6 +164,8 @@ void stop(Session &s, std::string reason) {
     s.join_destination.clear();
     s.map_label.clear();
     s.map_package.clear();
+    s.required_plugins.clear();
+    s.plugins_ready = s.fetching_with_map = false;
     s.fetching_since = 0;
     s.map_fetch_deadline = 0;
     map_fetch_deadline_flag.store(0);
@@ -358,7 +365,7 @@ void publish_party(Session &s) {
 // every tick, with no session too, so linked drops are removed when it ends. The input
 // persists: its player list is rebuilt when the admitted players change, and names
 // (Steam lookups) are refreshed once a second.
-void relay_throwdowns(Session &s, bool in_world) {
+void relay_throwdowns(Session &s, bool in_world, const NativeFrame* /*offline_skater*/ = nullptr) {
     auto &input = s.throwdown_input;
     const bool in_session = s.mode == Mode::host || s.mode == Mode::join;
     const auto local = in_session ? s.transport.status().local_id : 0;
@@ -406,14 +413,31 @@ void relay_throwdowns(Session &s, bool in_world) {
             d2 = (other->position[0] - me->position[0]) * (other->position[0] - me->position[0]) +
                  (other->position[1] - me->position[1]) * (other->position[1] - me->position[1]) +
                  (other->position[2] - me->position[2]) * (other->position[2] - me->position[2]);
+        peer.position = other ? std::optional(other->position) : std::nullopt;
         peer.nearby = d2 < 60.f * 60.f;
         peer.party = party_member(s, peer.id);
     }
-    if (names)
+    if (names) {
         input.local_name = in_session ? s.transport.name(local) : std::string(steam_social_snapshot()->local.name);
-    for (const auto &[sender, message] : s.throwdown_inbox) receive_throwdown_relay(sender, message);
+        if(!in_session) {
+            const auto card=local_profile_player_card();
+            if(!card.custom_name.empty())input.local_name=card.custom_name;
+        }
+    }
+    // Plugin messages ride in throwdown packets too, told apart by their first byte
+    // (Extension/Plugins/plugin_wire.h); they go to the plugins, never to the relay.
+    for (const auto &[sender, message] : s.throwdown_inbox) {
+        if (plugins::wire::is_plugin(message)) {
+            // The authority's words (a plugin's server copy) come from the lobby's host or the
+            // server only; a host hears none from its guests.
+            if (plugins::wire::from_authority(message) && (s.mode == Mode::host || sender != s.host_id)) continue;
+            plugins::receive_message(sender, message);
+        }
+        else receive_throwdown_relay(sender, message);
+    }
     s.throwdown_inbox.clear();
     for (auto &message : tick_throwdown_relay(s.base, input)) send_throwdown(s, std::move(message));
+    for (auto &message : plugins::take_outgoing()) send_throwdown(s, std::move(message));
     for (auto &text : take_throwdown_relay_notices()) add_chat(s, 0, "ReSkate", std::move(text));
 }
 // A player in the local coop celebration stands at their spot there: the whole pose moves,
@@ -464,7 +488,8 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
     // each frame.
     std::vector<NametagPlayer> nametags;
     const bool bubbles = s.chat_bubbles;
-    const bool labels = s.nametags || bubbles;
+    const bool names = s.nametags && !nametags_held_off.load(std::memory_order_relaxed);
+    const bool labels = s.nametags || bubbles; // (published even while names are held off, so none linger)
     if (labels) refresh_friends(s);
     // The newest chat lines from `sender` still inside the bubble duration, oldest first,
     // filtered the same way the chat panel filters them, each with the opacity it has left
@@ -520,7 +545,10 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
         // Friends only: everyone else keeps their chat bubbles and loses the name and dot.
         tag.nameless = s.nametags_friends && !std::binary_search(s.friend_ids.begin(), s.friend_ids.end(), p.member.id);
         tag.talking = std::any_of(voices.begin(), voices.end(), [&](const auto &v) { return v.id == p.member.id && v.speaking; });
-        tag.flying_drone = drone::beacon::flying(p.member.id);
+        if (const auto extra = plugin_feed::tag_of(p.member.id)) {
+            tag.extra = extra->text;
+            tag.extra_color = extra->colour;
+        }
         tag.bubbles = recent_bubbles(p.member.id);
         if (bubbles)
             if (auto hint = typing_bubble(p.typing_until); !hint.text.empty()) tag.bubbles.push_back(std::move(hint));
@@ -592,6 +620,8 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
                              nearest_distance(p, local, view) <= s.player_distance * (p.visible ? 1.15f : 1.f);
         }
     }
+    // Hidden on this screen: by the running throwdown's match, or by a plugin (reskate.session.hide).
+    const auto hidden_here = [](std::uint64_t id) { return throwdowns::kit::hidden(id) || plugin_feed::hidden(id); };
     each_active_peer(s, [&](Peer &p) {
         // A dedicated server has no skater to show.
         if (!p.member.id || (dedicated_host(s) && p.member.id == s.host_id))
@@ -605,8 +635,9 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
             update_developer_board(s.base, remote_board_entity(), developer_id(p), remote_skater_generation(), p.developer_board,
                                    mark_styles(p));
             present_audio(p);
-            update_party_position(&p.render_pose);
-            if (labels) label(p);
+            update_party_position(hidden_here(p.member.id)?nullptr:&p.render_pose);
+            if(hidden_here(p.member.id)) {update_player_ui(s.base,nullptr,{});p.ui_visible=false;}
+            if (labels && !hidden_here(p.member.id)) label(p);
             return;
         }
         p.visible = false;
@@ -631,7 +662,7 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
                     native_pass = true;
                     p.applied_cosmetics = 0; // the new actor wears no recipe yet
                 }
-                const bool hidden = throwdown_relay_hides(p.member.id);
+                const bool hidden = throwdown_relay_hides(p.member.id) || hidden_here(p.member.id);
                 const auto spot = hidden ? std::nullopt
                                          : throwdown_relay_celebration_offset(p.member.id, p.render_pose.root.position);
                 p.visible = show_remote(s.base, client, local,
@@ -666,9 +697,11 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
                     apply_cosmetics(p, spawning);
                     // The spectate camera follows this every frame; the map and
                     // indicators below only need network-rate updates.
-                    update_party_position(&p.render_pose);
-                    if (labels) label(p);
-                    if (!p.ui_visible || now >= p.next_ui_update) {
+                    update_party_position(hidden_here(p.member.id)?nullptr:&p.render_pose);
+                    if (labels && !hidden_here(p.member.id)) label(p);
+                    if(hidden_here(p.member.id)) {
+                        update_player_ui(s.base,nullptr,{});p.ui_visible=false;
+                    } else if (!p.ui_visible || now >= p.next_ui_update) {
                         update_player_ui(s.base, &p.render_pose, p.member.name);
                         p.ui_visible = true;
                         p.next_ui_update = now + network_tick_us;
@@ -687,8 +720,8 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
                                                   : "Waiting for player poses.";
                 // No skater for them, but still their name or dot where they are, and where the
                 // Social menu's teleport and spectate find them.
-                if (!p.shown_wanted && sampled) update_party_position(&p.render_pose);
-                if (!p.shown_wanted && sampled && labels) label(p);
+                if (!p.shown_wanted && sampled && !hidden_here(p.member.id)) update_party_position(&p.render_pose);
+                if (!p.shown_wanted && sampled && labels && !hidden_here(p.member.id)) label(p);
             }
         }
         update_developer_hoodie(s.base, p.visible ? remote_skater_entity() : 0, developer_id(p),
@@ -721,13 +754,82 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
             nametags.push_back(std::move(tag));
         }
     }
+    // Other players' skaters as last heard, for plugins (reskate.session.skaters).
+    {
+        std::vector<plugin_feed::Peer> peers;
+        for (const auto &p : active_peers(s))
+            if (p.member.id && p.latest_root)
+                peers.push_back({p.member.id, p.latest_root->position, p.latest_root->rotation,
+                                 now > p.pose_arrival ? static_cast<double>(now - p.pose_arrival) / 1000.0 : 0.0});
+        plugin_feed::publish_peers(std::move(peers));
+        // And the joints of theirs that plugins asked for (reskate.entities.set's attach).
+        std::map<std::pair<std::uint64_t, std::uint16_t>, plugin_feed::JointPlace> joints;
+        if (const auto wanted = plugin_feed::joints_wanted(); !wanted.empty()) {
+            std::vector<anim_studio::Joint> pose;
+            for (const auto &p : active_peers(s)) {
+                if (!p.member.id || p.render_pose.skater.empty()) continue;
+                pose.clear();
+                for (const auto &[player, joint] : wanted) {
+                    if (player != p.member.id || joint >= p.render_pose.skater.size()) continue;
+                    if (pose.empty())
+                        for (const auto &t : p.render_pose.skater) pose.push_back({t.scale, t.rotation, t.position});
+                    const auto w = anim_studio::world(pose, joint);
+                    if (anim_studio::finite(w)) joints[{player, joint}] = {w.position, w.rotation, w.scale[0]};
+                }
+            }
+        }
+        plugin_feed::publish_joints(std::move(joints));
+        // Everyone's body as drawn, while a plugin reads them (touching, reskate.session.raycast). The
+        // local skater's skeleton is read only when a pose is sent: between those, its body moves with
+        // its root.
+        static std::optional<plugin_feed::Body> local_body;
+        static std::array<float, 3> local_body_root{};
+        if (plugin_feed::bodies_wanted()) {
+            std::vector<plugin_feed::Body> bodies;
+            std::vector<anim_studio::Joint> pose;
+            const auto body = [&](std::uint64_t player, const Pose &from) {
+                pose.clear();
+                for (const auto &t : from.skater) pose.push_back({t.scale, t.rotation, t.position});
+                const auto place = [&](std::uint16_t joint) -> std::optional<std::array<float, 3>> {
+                    if (joint >= pose.size()) return std::nullopt;
+                    const auto w = anim_studio::world(pose, joint);
+                    if (!anim_studio::finite(w)) return std::nullopt;
+                    return w.position;
+                };
+                std::optional<std::pair<std::array<float, 3>, std::array<float, 4>>> board;
+                if (!from.board.empty()) board = std::pair{from.board.front().position, from.board.front().rotation};
+                return plugin_feed::body_of(player, place, board);
+            };
+            for (const auto &p : active_peers(s))
+                if (p.member.id && p.placed && !p.render_pose.skater.empty() &&
+                    !(dedicated_host(s) && p.member.id == s.host_id))
+                    bodies.push_back(body(p.member.id, p.render_pose));
+            if (!local.ready) local_body.reset();
+            else if (!local.pose.skater.empty()) {
+                local_body = body(0, local.pose);
+                local_body_root = local.pose.root.position;
+            }
+            if (local_body) {
+                auto moved = *local_body;
+                for (auto &c : moved.capsules)
+                    for (std::size_t i = 0; i < 3; ++i) {
+                        const float d = local.pose.root.position[i] - local_body_root[i];
+                        c.a[i] += d;
+                        c.b[i] += d;
+                    }
+                bodies.push_back(std::move(moved));
+            }
+            plugin_feed::publish_bodies(std::move(bodies));
+        } else local_body.reset();
+    }
     if (labels)
         publish_custom_nametags(s.base, std::move(nametags),
                                 local.ready ? std::optional(local.pose.root.position) : std::nullopt,
-                                s.nametags, bubbles, s.chat_bubbles_distance, s.nametag_distance,
+                                names, bubbles, s.chat_bubbles_distance, s.nametag_distance,
                                 s.nametag_dots);
 }
 } // namespace
+void note_player_input() noexcept { note_input(); }
 MultiplayerModel model() {
     auto &s = session();
     std::lock_guard lock(s.mutex);
@@ -737,6 +839,10 @@ std::string take_leave_notice() { return std::exchange(session().leave_notice, {
 std::string take_removed_notice() { return std::exchange(session().removed_notice, {}); }
 std::optional<MapNeed> take_map_need() { return std::exchange(session().map_need, std::nullopt); }
 void set_map_package_lookup(MapPackageLookup lookup) noexcept { map_package_lookup.store(lookup, std::memory_order_relaxed); }
+void set_plugin_check(PluginCheck plugins, LevelCheck levels) noexcept {
+    plugin_check.store(plugins, std::memory_order_relaxed);
+    level_check.store(levels, std::memory_order_relaxed);
+}
 bool fetching_map() noexcept { return fetching_map_flag.load(std::memory_order_relaxed); }
 std::uint64_t map_fetch_deadline() noexcept { return map_fetch_deadline_flag.load(); }
 void hold_map_load(bool hold, std::string_view package) noexcept {
@@ -746,6 +852,15 @@ MultiplayerChat chat() {
     auto &s = session();
     std::lock_guard lock(s.mutex);
     return s.chat_view;
+}
+std::string plugin_chat(std::string_view plugin, std::string_view text, std::uint32_t text_color) {
+    auto &s = session();
+    if (s.mode == Mode::off) return "not in a session";
+    s.chat.push_back({++s.chat_sequence, 0, now_us(), std::string(plugin), std::string(text), false, 0xffd9a441u, "Plugin", {}, false,
+                      text_color});
+    while (s.chat.size() > multiplayer_chat_history) s.chat.pop_front();
+    publish_chat(s);
+    return {};
 }
 void host_map_change(std::string_view destination) {
     auto &s = session();
@@ -848,6 +963,45 @@ bool prepare_join_map(Session &s, bool ready, std::string_view current, MapLoade
         // fetched at the host's version as a missing one is (the downloader puts it in the
         // installed one's place), and loads when the two agree.
         const auto have = std::string(other_map_version(s.map_package, host_map_package(s.join_destination)));
+        // A dedicated server's required plugins come before its map, which does not load until
+        // they are here. The ones missing are fetched as a missing map is, on one card with the
+        // map when that is missing too, so the player is asked once.
+        if (!s.plugins_ready && !s.required_plugins.empty()) {
+            std::vector<std::string> missing = s.required_plugins;
+            try {
+                if (const auto check = plugin_check.load(std::memory_order_relaxed)) missing = check(s.required_plugins);
+            } catch (...) {}
+            if (missing.empty()) {
+                s.plugins_ready = true;
+                // (A fetch of plugins alone is over: the map, which is here, loads as usual.)
+                if (s.fetching_since && !s.fetching_with_map) {
+                    s.fetching_since = 0;
+                    fetching_map_flag.store(false, std::memory_order_relaxed);
+                }
+            } else {
+                if (!s.fetching_since) {
+                    // The map goes on the card too when it is a package that no enabled mod here has.
+                    const auto levels = level_check.load(std::memory_order_relaxed);
+                    bool map_here = s.map_package.empty();
+                    try {
+                        map_here = map_here || (have.empty() && levels && levels(world_destination_asset(s.join_destination)));
+                    } catch (...) {}
+                    const auto name = s.map_label.empty() ? world_level_name(world_destination_asset(s.join_destination)) : s.map_label;
+                    s.fetching_since = now;
+                    s.fetching_with_map = !map_here;
+                    if (!s.map_fetch_deadline) s.map_fetch_deadline = now + map_fetch_limit_us;
+                    map_fetch_deadline_flag.store(s.map_fetch_deadline);
+                    fetching_map_flag.store(true, std::memory_order_relaxed);
+                    s.map_need = MapNeed{map_here ? std::string() : s.map_package, name, dedicated_host(s), s.travelling,
+                                         map_here ? std::string() : have, s.map_fetch_deadline, std::move(missing)};
+                    s.rejoin = Session::Rejoin{{s.host_id, s.secret}, s.password, s.map_fetch_deadline};
+                    s.last_map_request = s.last_world_ready = 0; // say so at once
+                }
+                s.join_started = now;
+                s.status = "Waiting for the server's plugins to download...";
+                return false;
+            }
+        }
         // (Nor while its files are being put in place and applied: hold_map_load.)
         const bool held = !s.map_package.empty() && map_load_held.load() == map_hash(s.map_package);
         const auto result = have.empty() && !held ? loader(s.join_destination, s.map_load_submitted, detail) : MapLoadResult::missing;
@@ -938,9 +1092,19 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, std::string_vi
             erase_password(s.lobby_password);
         expire_remote_collision(base, now_us());
         if (s.mode == Mode::off) {
-            physics_tuning::release(base); // the player's own tuning again after a session
+            if (!competition_stock_physics()) physics_tuning::release(base);
             set_session_tuning_enforced(false);
-            relay_throwdowns(s, ready);
+            NativeFrame solo;
+            if(ready && !map_name.empty()) {
+                try {solo=capture_local(base,client,false);if(solo.ready)note_local_skater(solo.pose.root);}
+                catch(...) {}
+            }
+            relay_throwdowns(s, ready, &solo);
+            if (competition_stock_physics() && solo.ready) {
+                physics_tuning::prepare();physics_tuning::enforce(base,solo.entity,{});
+            } else if (!competition_stock_physics()) physics_tuning::release(base);
+            if (solo.ready && (throwdowns::kit::match().input_lock || skater_push::holding()))
+                prepare_on_board_teleport(client, solo.entity);
             // Without a session the UI model follows at the same 10 Hz as in one;
             // commands still publish at once.
             if (const auto now = now_us(); now >= s.next_publish) {
@@ -1039,9 +1203,13 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, std::string_vi
             networking(s, local, receive_at);
         for (const auto &note : s.transport.take_direct_notes())
             logging::log(logging::Level::info, logging::Channel::runtime, "Multiplayer: {}", note);
-        relay_throwdowns(s, world_playing(s, local));
+        // A menu or respawn can suspend the pose capture while this world and
+        // its Throwdown queue remain loaded. Do not cancel their coordinators.
+        relay_throwdowns(s, s.gameplay_ready && !s.travelling && !s.awaiting_map && s.host_world_ready);
         // A S.K.A.T.E. player waiting for their turn stays off the board.
-        update_board_lock(client, local.entity, local.ready && throwdown_relay_waits_offboard());
+        update_board_lock(client, local.entity, local.ready && (throwdown_relay_waits_offboard() || throwdowns::kit::match().offboard));
+        if (local.ready && (throwdowns::kit::match().input_lock || skater_push::holding()))
+            prepare_on_board_teleport(client, local.entity);
         update_physics_tuning(s, local, now);
         const auto send_at = now_us();
         s.client_timing.record(ClientTiming::network, receive_at, send_at);

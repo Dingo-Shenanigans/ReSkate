@@ -126,6 +126,11 @@ int main() {
     check(rate.accept(2'600'000, "line 5") == V::accepted, "one more line is allowed after 1.5 s");
     check(rate.accept(2'700'000, "line 5") == V::repeated, "the same line straight after is refused");
     check(rate.accept(30'000'000, "line 5") == V::accepted, "the same line later is allowed");
+    // An answer to a vote may repeat the line before it (the same /2 in the next poll), at the same pace.
+    ChatRate answers;
+    for (int i = 0; i < 4; ++i) check(answers.accept(1'000'000, "/2", 0, true) == V::accepted, "an answer to a vote may repeat the line before it");
+    check(answers.accept(1'000'000, "/3", 0, true) == V::too_fast, "an answer is still held to the pace");
+    check(answers.accept(2'600'000, "/2") == V::repeated, "the same line, not an answer, is still refused");
     ChatRate relayed;
     for (int i = 0; i < 5; ++i)
         check(relayed.accept(1'000'000, std::to_string(i), 1) == V::accepted, "receivers allow one line of slack");

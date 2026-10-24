@@ -75,6 +75,7 @@ struct SkateMenu {
     // Selected tab on each page; see the Page list in skate_menu_internal.h.
     int map_tab = 0, build_tab = 0, skater_tab = 0, settings_tab = 0, mods_tab = 0;
     int addon = 0; // the ADDONS page's addon (menu::Addon)
+    std::string plugin_page; // the PLUGINS section's plugin, by its id
     // Window or full screen, as just chosen, until the saved setting comes back through the model.
     std::optional<bool> fullscreen_pending;
     double fullscreen_until = 0;
@@ -89,7 +90,6 @@ struct SkateMenu {
     int world_layer_category = 0;
     std::array<char, 128> world_layer_search{};
     int progression_tab = 0;
-    int drone_tab = 0; // the DRONE page (drone_page.cpp)
     int bus_stop_map = 0;
     int challenge_type = 0;
     std::array<char, 128> challenge_search{};
@@ -110,6 +110,7 @@ struct SkateMenu {
     ImFont* bold = nullptr;
     ImFont* title = nullptr;    // brushed page titles
     ImFont* heading = nullptr;  // tile and section headers
+    ImFont* countdown = nullptr; // full-resolution fallback countdown digits
     ImFont* mono = nullptr;
     // The same faces drawn larger (large_font_ratio times), swapped in while the menu is full
     // screen, where everything is scaled up: text stays sharp instead of stretched.

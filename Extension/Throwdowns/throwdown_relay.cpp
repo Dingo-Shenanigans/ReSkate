@@ -1,4 +1,7 @@
 #include "throwdown_relay.h"
+#include "custom_modes.h"
+#include "native_flag_session.h"
+#include "throwdown_kit.h"
 #include "throwdown_lab.h"
 #include "throwdown_wire.h"
 #include "native_throwdowns.h"
@@ -27,6 +30,7 @@ namespace {
 using Address = std::uintptr_t;
 using Kind = ThrowdownMessage::Kind;
 using Local = ThrowdownLocalAction::Kind;
+namespace kit = dingosdk::throwdowns::kit;
 // Remote players' ids on the local server: 0x300 + session slot. Participant, score
 // and queue lists replicate ids in 10 bits and turn-based rules require 1..1022, so
 // the range stays below 0x3ff and clear of the local player (2).
@@ -100,6 +104,16 @@ struct Hosted {
     std::vector<std::uint64_t> members, added; // remote joiners in join order; those in the queue here
     bool relayed{}, started{}, start_sent{};
     std::uint64_t next_offer{};
+    // A plugin's drop (throwdown_relay_host): only these may join, and it starts once all have.
+    std::vector<std::uint64_t> invited;
+    bool plugin{}, start_asked{};
+};
+// A plugin's drop on its way: spawned by the lab, its MMID not known yet.
+struct PluginSpawn {
+    std::uint64_t token{}, asked_at{};
+    std::string series;
+    std::vector<std::uint64_t> invited;
+    std::uint32_t max_players{};
 };
 // Another player's drop, spawned on the local server hosted by the leader's virtual id.
 struct Mirror {
@@ -112,6 +126,30 @@ struct Mirror {
     bool joined{}; // the local player is in it
     std::optional<std::vector<std::uint64_t>> start; // the leader started before the copy existed
 };
+// Another player's plugin mode flag (throwdown_kit.h Flag), mirrored as a native registration.
+struct CustomFlag {
+    kit::Flag offer;
+    std::uint64_t token{},spawning_since{},retry_at{};
+    std::uint32_t mmid{};
+    bool spawning{},claimed{};
+};
+// The same native registration: a changed card (players, stats) is updated in place, a moved
+// flag is spawned again.
+bool same_registration(const kit::Flag& a,const kit::Flag& b) {
+    return a.leader==b.leader && a.game==b.game && a.mode==b.mode && a.id==b.id && a.at==b.at && a.yaw==b.yaw;
+}
+// A flag another player's relay sent (Kind::flag), until withdrawn or no longer repeated.
+struct RemoteFlag {
+    kit::Flag flag;
+    std::uint64_t seen{};
+};
+// The local plugins' own flags, as last sent to the other players.
+struct OwnFlag {
+    kit::Flag flag;
+    std::vector<std::uint8_t> body;
+    std::uint64_t sent{};
+};
+constexpr std::uint64_t remote_flag_forget_ms = 3 * offer_interval_ms;
 const char *state_name(Mirror::State s) {
     switch (s) {
     case Mirror::State::waiting: return "waiting";
@@ -156,7 +194,18 @@ struct Relay {
     std::uint64_t next_prepare{}, next_info{};
     std::map<std::uint64_t, std::size_t> peers; // Steam ID -> slot
     std::optional<Hosted> hosted;
+    // A plugin's drop: asked for (under `mutex`), spawning, and its parameters by token (under `mutex`).
+    std::optional<PluginSpawn> host_request, plugin_spawn;
+    bool cancel_request{};
+    std::map<std::uint64_t, std::vector<std::uint8_t>> host_placements;
+    std::string host_status; // under `mutex`
+    // Drops shown only to chosen players: who may see each (an invite before its offer).
+    std::map<Key, std::vector<std::uint64_t>> invites;
     std::map<Key, Mirror> mirrors;
+    std::map<Key,CustomFlag> custom_flags; // game thread; separate from official match mirrors
+    std::map<Key,RemoteFlag> remote_flags; // game thread
+    std::map<std::uint32_t,OwnFlag> own_flags; // game thread, by the flag's game
+    std::map<std::uint32_t,CustomThrowdownFlagInfo> custom_flag_keys; // published under mutex for native UI
     std::optional<Key> running;
     std::string running_series;
     std::map<std::uint64_t, Score> scores;                          // remote totals in `running`
@@ -181,6 +230,7 @@ struct Relay {
     std::string timer, status_line; // status_line: under `mutex`
     std::uint64_t next_timer{}, next_status{};
     bool force_start_enabled{};
+    NativeQueueHudState queue_hud; // under mutex, including callbacks before the relay tick
     std::optional<Challenge> challenge;
     std::uint32_t next_challenge = 1;
     ChallengePlan plan;                 // under `mutex`
@@ -267,8 +317,14 @@ ThrowdownMessage message(Kind kind, std::uint64_t leader, std::uint32_t id) {
 // The local player's own drop.
 void send_offer(Relay &r, std::uint64_t now) {
     auto &h = *r.hosted;
+    if (!h.invited.empty()) {
+        auto invite = message(Kind::invite, r.local, h.id);
+        invite.order = h.invited;
+        send(r, invite);
+    }
     auto m = message(Kind::offer, r.local, h.id);
-    m.series = h.series; m.placement = h.placement; m.settings = h.settings; m.order = h.members;
+    m.series = h.series;
+    m.placement = h.placement; m.settings = h.settings; m.order = h.members;
     const auto before = r.outgoing.size();
     send(r, m);
     if (r.outgoing.size() == before) {
@@ -455,6 +511,7 @@ void on_local(Relay &r, ThrowdownLocalAction &a, std::uint64_t now) {
     case Local::exited: {
         if (a.cancelling) { close_hosted(r); break; }
         if (!a.mmid || a.placement.empty()) break;
+        if(native_flag::known_queue(a.mmid)){close_hosted(r);break;}
         if (!r.hosted || r.hosted->id != a.mmid) {
             close_hosted(r);
             Hosted h;
@@ -472,6 +529,29 @@ void on_local(Relay &r, ThrowdownLocalAction &a, std::uint64_t now) {
         break;
     }
     case Local::joined:
+        for(auto& [key,flag]:r.custom_flags)if(flag.mmid==a.mmid && !flag.claimed) {
+            // Native Join has already enrolled the local player in the flag's
+            // registration. Hand that registration to the custom lobby so its
+            // normal waiting/Leave flow and later teardown remain native.
+            bool joined{};
+            const auto mode=custom_throwdowns::find(flag.offer.mode);
+            if(mode && flag.offer.open &&
+               kit::flag::adopt(flag.offer.mode,flag.offer.game,flag.mmid,flag.offer.at,flag.offer.yaw,120,flag.offer.capacity)) {
+                kit::post_to(mode->plugin,"join",flag.offer.mode,
+                    {flag.offer.id,std::to_string(flag.offer.leader),std::to_string(flag.offer.game)});
+                joined=true;
+            }
+            if(joined) {
+                close_hosted(r);leave_mirrors(r,a.mmid);flag.claimed=true;
+                note("you joined another player's {} (MMID {:#x}); its plugin hears join.",flag.offer.mode,a.mmid);
+            }
+            else {
+                note("you joined another player's {} (MMID {:#x}), but {}; you were taken out of its queue.",flag.offer.mode,a.mmid,
+                     !mode?"no plugin here registers that mode":!flag.offer.open?"it is closed":"another throwdown of yours is still open");
+                if(const auto local=local_native_player_id())queue_throwdown_remove(local);
+            }
+            return;
+        }
         // Joining a queue removes the player from any other one and destroys a drop it hosts.
         if (r.hosted && a.mmid != r.hosted->id) close_hosted(r);
         leave_mirrors(r, a.mmid);
@@ -623,15 +703,41 @@ void on_local(Relay &r, ThrowdownLocalAction &a, std::uint64_t now) {
 
 void on_challenge_message(Relay &r, std::uint64_t sender, const ThrowdownMessage &m, std::uint64_t now);
 void on_beacon_message(Relay &r, std::uint64_t sender, const ThrowdownMessage &m);
+// Another player's plugin mode flag: shown only where a plugin registered that mode too.
+void on_flag_message(Relay& r,std::uint64_t sender,const ThrowdownMessage& m,std::uint64_t now) {
+    if(m.leader!=sender)return;
+    const auto body=decode_flag_body(m.placement);
+    if(!body)return;
+    const Key key{m.leader,m.id};
+    if(body->withdrawn || !custom_throwdowns::find(m.challenge)) {r.remote_flags.erase(key);return;}
+    if(!r.remote_flags.contains(key) && r.remote_flags.size()>=64)return;
+    kit::Flag flag;
+    flag.id=body->id;flag.mode=m.challenge;flag.leader=m.leader;flag.game=m.id;flag.at=body->at;flag.yaw=body->yaw;
+    flag.players=body->players;flag.capacity=body->capacity;flag.open=body->open;flag.stats=body->stats;
+    r.remote_flags[key]={std::move(flag),now};
+}
 void on_message(Relay &r, std::uint64_t sender, const ThrowdownMessage &m, std::uint64_t now) {
     if (!r.peers.contains(sender)) return;
     if (m.kind == Kind::beacon) { on_beacon_message(r, sender, m); return; }
-    if (m.kind >= Kind::challenge_start) { on_challenge_message(r, sender, m, now); return; }
+    if (m.kind == Kind::flag) { on_flag_message(r, sender, m, now); return; }
+    // A mode message tagged an older client's plugin mode flag; the kit's flags travel as flag messages.
+    if (m.kind == Kind::mode) return;
+    if (m.kind >= Kind::challenge_start && m.kind != Kind::invite) { on_challenge_message(r, sender, m, now); return; }
     const Key key{m.leader, m.id};
     const auto mirror = r.mirrors.find(key);
     switch (m.kind) {
+    case Kind::invite: {
+        if (m.leader != sender) return;
+        r.invites[key] = m.order;
+        // Not for this player: nothing shows it here.
+        if (!contains(m.order, r.local) && mirror != r.mirrors.end()) destroy_mirror(r, mirror->second, now);
+        return;
+    }
     case Kind::offer: {
-        if (m.leader != sender || !relayed_mode(m.series)) return;
+        if (m.leader != sender) return;
+        // An older client's plugin mode flag (mode_series) is not shown: the kit's flags are flag messages.
+        if (!relayed_mode(m.series)) return;
+        if (const auto invite = r.invites.find(key); invite != r.invites.end() && !contains(invite->second, r.local)) return;
         if (mirror != r.mirrors.end()) {
             // A copy removed here (full, or left) stays removed while the leader keeps offering it.
             if (mirror->second.state == Mirror::State::gone) mirror->second.gone_at = now;
@@ -644,7 +750,8 @@ void on_message(Relay &r, std::uint64_t sender, const ThrowdownMessage &m, std::
         for (auto &[other, copy] : r.mirrors)
             if (other.leader == m.leader) destroy_mirror(r, copy, now);
         Mirror copy;
-        copy.series = m.series; copy.placement = m.placement; copy.settings = m.settings;
+        copy.series = m.series;
+        copy.placement = m.placement; copy.settings = m.settings;
         for (const auto player : m.order)
             if (player != r.local && player != m.leader && !contains(copy.members, player)) copy.members.push_back(player);
         r.mirrors.emplace(key, std::move(copy));
@@ -658,7 +765,7 @@ void on_message(Relay &r, std::uint64_t sender, const ThrowdownMessage &m, std::
     case Kind::join:
         if (m.leader == r.local) {
             if (!r.hosted || r.hosted->id != m.id || r.hosted->started || !r.hosted->relayed ||
-                contains(r.hosted->members, sender))
+                contains(r.hosted->members, sender) || (!r.hosted->invited.empty() && !contains(r.hosted->invited, sender)))
                 return;
             r.hosted->members.push_back(sender);
             add_to_hosted(r);
@@ -722,7 +829,49 @@ void on_message(Relay &r, std::uint64_t sender, const ThrowdownMessage &m, std::
     }
 }
 
+void set_host_status(Relay &r, std::string text) {
+    std::lock_guard lock(r.mutex);
+    r.host_status = std::move(text);
+}
 void on_spawned(Relay &r, std::uint64_t token, std::uint32_t mmid, std::uint32_t capacity, std::uint64_t now) {
+    if (r.plugin_spawn && r.plugin_spawn->token == token) {
+        auto spawn = std::move(*r.plugin_spawn);
+        r.plugin_spawn.reset();
+        std::vector<std::uint8_t> placement;
+        {
+            std::lock_guard lock(r.mutex);
+            if (const auto found = r.host_placements.find(token); found != r.host_placements.end()) {
+                placement = std::move(found->second);
+                r.host_placements.erase(found);
+            }
+        }
+        if (!mmid) {
+            set_host_status(r, "the drop did not spawn");
+            return;
+        }
+        if (placement.empty() || !r.in_world) {
+            if (r.in_world) queue_throwdown_destroy(mmid);
+            set_host_status(r, "the drop could not be described to the other players");
+            return;
+        }
+        close_hosted(r);
+        Hosted h;
+        h.id = mmid;
+        h.series = spawn.series;
+        h.placement = std::move(placement);
+        h.relayed = true;
+        h.plugin = true;
+        h.invited = std::move(spawn.invited);
+        r.hosted = std::move(h);
+        send_offer(r, now);
+        note("a plugin's {} (MMID {:#x}) is offered to {} player(s).", spawn.series, mmid, r.hosted->invited.size());
+        set_host_status(r, "open");
+        return;
+    }
+    for(auto& [key,flag]:r.custom_flags)if(token && flag.token==token) {
+        flag.spawning=false;flag.mmid=mmid;flag.retry_at=mmid?0:now+1000;
+        return;
+    }
     for (auto &[key, m] : r.mirrors) {
         if (m.token != token) continue;
         if (!mmid) {
@@ -1051,6 +1200,14 @@ void reset(Relay &r, bool destroy_copies, std::uint64_t now) {
     if (destroy_copies && r.in_world && r.prepared)
         for (auto &[key, m] : r.mirrors) destroy_mirror(r, m, now);
     r.mirrors.clear();
+    r.invites.clear();
+    r.plugin_spawn.reset();
+    if(destroy_copies && r.in_world && r.prepared)
+        for(const auto& [key,flag]:r.custom_flags)if(flag.mmid && !flag.claimed)queue_throwdown_destroy(flag.mmid);
+    r.custom_flags.clear();
+    r.remote_flags.clear();
+    r.own_flags.clear();
+    {std::lock_guard lock(r.mutex);r.custom_flag_keys.clear();}
     r.spawn_refused.clear();
     r.declined.clear();
     r.running.reset();
@@ -1203,6 +1360,128 @@ void apply_queue_timer(Relay &r, bool linked, std::uint64_t now) {
     }
 }
 
+// A plugin's drop: spawned once the world, the event types and the players are there.
+void pump_plugin_host(Relay &r, const ThrowdownRelayInput &input, std::uint64_t now) {
+    std::optional<PluginSpawn> request;
+    bool cancel{};
+    {
+        std::lock_guard lock(r.mutex);
+        request = std::exchange(r.host_request, std::nullopt);
+        cancel = std::exchange(r.cancel_request, false);
+    }
+    if (cancel && r.hosted && r.hosted->plugin && !r.hosted->started) {
+        if (r.in_world) queue_throwdown_destroy(r.hosted->id);
+        close_hosted(r);
+        set_host_status(r, "cancelled");
+    }
+    if (r.plugin_spawn && now - r.plugin_spawn->asked_at > spawning_wait_ms) {
+        r.plugin_spawn.reset();
+        set_host_status(r, "the drop never spawned");
+    }
+    if (!request) return;
+    const auto refuse = [&](const char *why) { set_host_status(r, why); };
+    if (input.barred) return refuse("your game is out of linked throwdowns (its speed or mods)");
+    if (!r.in_world || !r.position) return refuse("the skater is not in the world");
+    if (!r.prepared) return refuse("the throwdown events are not found yet; try again in a moment");
+    if (r.running || r.challenge) return refuse("a throwdown or challenge is running");
+    if (r.plugin_spawn) return refuse("a plugin's drop is spawning already");
+    for (const auto player : request->invited)
+        if (!r.peers.contains(player)) return refuse("a chosen player is not in the session");
+    request->token = r.next_token++;
+    request->asked_at = now;
+    if (!queue_throwdown_host(request->token, request->series, *r.position, request->max_players)) return refuse("the drop could not be queued");
+    r.plugin_spawn = std::move(request);
+    set_host_status(r, "spawning");
+}
+// The local plugins' own flags (leader: the local player) go to the other players when they
+// change and every offer_interval_ms; one gone from the documents is withdrawn once.
+void send_own_flags(Relay& r,const std::vector<kit::Flag>& own,std::uint64_t now) {
+    const auto message_for=[&](const kit::Flag& flag,bool withdrawn) -> std::optional<ThrowdownMessage> {
+        try {
+            ThrowdownFlagBody body;
+            body.id=flag.id.substr(0,max_flag_id);body.at=flag.at;body.yaw=flag.yaw;
+            body.players=static_cast<std::uint8_t>(std::min(flag.players,32U));
+            body.capacity=static_cast<std::uint8_t>(std::clamp(flag.capacity,1U,32U));
+            body.open=flag.open;body.withdrawn=withdrawn;
+            for(const auto& [title,value]:flag.stats) {
+                if(body.stats.size()==max_flag_stats)break;
+                body.stats.emplace_back(title.substr(0,max_flag_stat),value.substr(0,max_flag_stat));
+            }
+            auto m=message(Kind::flag,r.local,flag.game);
+            m.challenge=flag.mode;m.placement=encode_flag_body(body);
+            if(!valid_throwdown(m))return {};
+            return m;
+        } catch(...) {return {};}
+    };
+    std::set<std::uint32_t> current;
+    for(const auto& flag:own) {
+        if(!flag.game || current.size()>=8)continue;
+        current.insert(flag.game);
+        const auto m=message_for(flag,false);
+        if(!m)continue;
+        auto& sent=r.own_flags[flag.game];
+        if(sent.body==m->placement && sent.flag.mode==flag.mode && now<sent.sent+offer_interval_ms)continue;
+        sent.flag=flag;sent.body=m->placement;sent.sent=now;
+        send(r,*m);
+    }
+    for(auto it=r.own_flags.begin();it!=r.own_flags.end();) {
+        if(current.contains(it->first)) {++it;continue;}
+        if(const auto m=message_for(it->second.flag,true))send(r,*m);
+        it=r.own_flags.erase(it);
+    }
+}
+// Other players' plugin mode flags as native flags here: one mirrored registration per flag a
+// plugin here publishes for another player (its `flags` document) or another player's relay sent,
+// joined with the game's own Join.
+void maintain_custom_flags(Relay& r,std::uint64_t now) {
+    std::map<Key,kit::Flag> wanted;
+    std::vector<kit::Flag> own;
+    std::vector<kit::Documents> documents;
+    try {documents=kit::documents();} catch(...) {}
+    for(const auto& d:documents)for(const auto& flag:d.flags) {
+        if(!flag.leader || flag.leader==r.local) {
+            auto mine=flag;mine.leader=r.local;
+            if(r.local && !mine.mode.empty())own.push_back(std::move(mine));
+            continue;
+        }
+        if(flag.open && flag.game && r.peers.contains(flag.leader) && custom_throwdowns::find(flag.mode))
+            wanted.try_emplace(Key{flag.leader,flag.game},flag);
+    }
+    std::erase_if(r.remote_flags,[&](const auto& row){
+        return !r.peers.contains(row.first.leader) || now<row.second.seen || now-row.second.seen>remote_flag_forget_ms;
+    });
+    for(const auto& [key,remote]:r.remote_flags)if(remote.flag.open)wanted.try_emplace(key,remote.flag);
+    if(!r.peers.empty())send_own_flags(r,own,now);
+    for(const auto& [key,offer]:wanted)
+        if(!r.custom_flags.contains(key) && r.custom_flags.size()<64)r.custom_flags[key].offer=offer;
+    for(auto it=r.custom_flags.begin();it!=r.custom_flags.end();) {
+        auto& flag=it->second;const auto desired=wanted.find(it->first);
+        const bool keep=desired!=wanted.end() && same_registration(desired->second,flag.offer);
+        if(keep)flag.offer=desired->second;
+        if(flag.claimed) {it=r.custom_flags.erase(it);continue;} // the flag registration now performs native teardown
+        if(flag.spawning && now-flag.spawning_since>spawning_wait_ms) {flag.spawning=false;flag.token=0;flag.retry_at=now+1000;}
+        if(!keep && !flag.spawning) {
+            if(flag.mmid && (!r.prepared || !queue_throwdown_destroy(flag.mmid))) {++it;continue;}
+            it=r.custom_flags.erase(it);continue;
+        }
+        ++it;
+    }
+    const bool spawning=std::any_of(r.custom_flags.begin(),r.custom_flags.end(),[](const auto& row){return row.second.spawning;}) ||
+        std::any_of(r.mirrors.begin(),r.mirrors.end(),[](const auto& row){return row.second.state==Mirror::State::spawning;});
+    if(r.prepared && !spawning)for(auto& [key,flag]:r.custom_flags) {
+        if(flag.mmid || flag.claimed || now<flag.retry_at || !wanted.contains(key) || !same_registration(wanted.at(key),flag.offer))continue;
+        const auto host=virtual_id(r,key.leader);if(!host)continue;
+        const auto token=r.next_token++;
+        if(queue_custom_throwdown_flag(token,host,flag.offer.mode,flag.offer.at,flag.offer.yaw)) {
+            flag.token=token;flag.spawning=true;flag.spawning_since=now;
+        } else flag.retry_at=now+250;
+        break;
+    }
+    std::map<std::uint32_t,CustomThrowdownFlagInfo> published;
+    for(const auto& [key,flag]:r.custom_flags)if(flag.mmid && !flag.claimed)
+        published[flag.mmid]={flag.offer.mode,flag.offer.id,flag.offer.players,flag.offer.capacity,flag.offer.open,flag.offer.stats,key.leader,key.id};
+    {std::lock_guard lock(r.mutex);r.custom_flag_keys=std::move(published);}
+}
 void maintain(Relay &r, std::uint64_t now) {
     if (!r.in_world) return;
     // The event types belong to the level: each one's are found by a background heap scan,
@@ -1215,6 +1494,7 @@ void maintain(Relay &r, std::uint64_t now) {
     }
     std::erase_if(r.spawn_refused, [&](const auto &entry) { return now >= entry.second; });
     std::erase_if(r.declined, [&](const auto &entry) { return now < entry.second || now - entry.second >= decline_interval_ms; });
+    maintain_custom_flags(r,now);
     if (r.prepared) {
         // A spawn nothing answered (the lab reports failures; this is the backstop) must not
         // hold every other copy back.
@@ -1226,14 +1506,15 @@ void maintain(Relay &r, std::uint64_t now) {
                 note("a linked {} never spawned here; giving up on it.", m.series);
             }
         // One spawn at a time: the server reports MMIDs in order.
-        if (std::none_of(r.mirrors.begin(), r.mirrors.end(),
+        if (std::none_of(r.custom_flags.begin(),r.custom_flags.end(),[](const auto& row){return row.second.spawning;}) &&
+            std::none_of(r.mirrors.begin(), r.mirrors.end(),
                          [](const auto &entry) { return entry.second.state == Mirror::State::spawning; }))
             for (auto &[key, m] : r.mirrors) {
                 if (m.state != Mirror::State::waiting) continue;
                 const auto host = virtual_id(r, key.leader);
                 if (!host) { m.state = Mirror::State::gone; m.gone_at = now; continue; }
                 m.token = r.next_token++;
-                if (queue_throwdown_spawn(m.token, host, m.series, m.placement, m.settings)) {
+                if (queue_throwdown_spawn(m.token, host, m.series, m.placement, m.settings, std::string{}, 0)) {
                     m.state = Mirror::State::spawning;
                     m.spawning_since = now;
                 }
@@ -1245,6 +1526,15 @@ void maintain(Relay &r, std::uint64_t now) {
             else add_to_mirror(r, m);
         }
         add_to_hosted(r);
+        // A plugin's drop starts once every invited player is in it here.
+        if (r.hosted && r.hosted->plugin && !r.hosted->started && !r.hosted->start_asked && !r.hosted->invited.empty() &&
+            std::all_of(r.hosted->invited.begin(), r.hosted->invited.end(), [&](std::uint64_t p) { return contains(r.hosted->added, p); })) {
+            if (queue_throwdown_start(r.hosted->series, r.hosted->id)) {
+                r.hosted->start_asked = true;
+                note("everyone invited joined the plugin's {}; starting it.", r.hosted->series);
+                set_host_status(r, "started");
+            }
+        }
         if (r.running) {
             for (auto &[player, score] : r.scores)
                 if (score.dirty)
@@ -1308,7 +1598,15 @@ void maintain(Relay &r, std::uint64_t now) {
 }
 } // namespace
 
+namespace {
+std::atomic<std::uint64_t> published_world{};
+std::atomic<bool> published_barred{};
+} // namespace
+std::uint64_t throwdown_relay_world() noexcept { return published_world.load(std::memory_order_acquire); }
+bool throwdown_relay_barred() noexcept { return published_barred.load(std::memory_order_acquire); }
 std::vector<std::vector<std::uint8_t>> tick_throwdown_relay(std::uintptr_t base, const ThrowdownRelayInput &input) {
+    published_world.store(input.world, std::memory_order_release);
+    published_barred.store(input.barred, std::memory_order_release);
     auto &r = relay();
     const auto now = now_ms();
     std::deque<ThrowdownLocalAction> actions;
@@ -1397,8 +1695,17 @@ std::vector<std::vector<std::uint8_t>> tick_throwdown_relay(std::uintptr_t base,
         }
         update_peers(r, input, now);
         refresh_player_info(r, now);
+        // Registration callbacks can arrive in the same tick as native Join.
+        // Resolve custom tokens first so that Join cannot miss its new MMID.
+        std::erase_if(spawned,[&](const auto& result) {
+            const auto token=std::get<0>(result);
+            if(!token)return false;
+            if(std::none_of(r.custom_flags.begin(),r.custom_flags.end(),[&](const auto& row){return row.second.token==token;}))return false;
+            on_spawned(r,token,std::get<1>(result),std::get<2>(result),now);return true;
+        });
         for (auto &action : actions) on_local(r, action, now);
         for (const auto &[token, mmid, max] : spawned) on_spawned(r, token, mmid, max, now);
+        pump_plugin_host(r, input, now);
         for (const auto &[sender, bytes] : inbox) {
             if (const auto m = decode_throwdown(bytes)) on_message(r, sender, *m, now);
             else logging::write(logging::Level::warning, logging::Channel::progression, "Throwdowns: unreadable message from another player dropped.");
@@ -1429,6 +1736,23 @@ std::vector<std::vector<std::uint8_t>> tick_throwdown_relay(std::uintptr_t base,
     return std::exchange(r.outgoing, {});
 }
 
+std::string custom_throwdown_flag_key(std::uint32_t mmid) {
+    const auto info=custom_throwdown_flag_info(mmid);return info?info->key:std::string{};
+}
+bool has_custom_throwdown_flags() {
+    auto& r=relay();std::lock_guard lock(r.mutex);return !r.custom_flag_keys.empty();
+}
+bool custom_throwdown_flag_available(std::uint64_t leader,std::uint32_t game) {
+    auto& r=relay();std::lock_guard lock(r.mutex);
+    return std::any_of(r.custom_flag_keys.begin(),r.custom_flag_keys.end(),[&](const auto& row){
+        return row.second.leader==leader && row.second.game==game;
+    });
+}
+std::optional<CustomThrowdownFlagInfo> custom_throwdown_flag_info(std::uint32_t mmid) {
+    auto& r=relay();std::lock_guard lock(r.mutex);
+    const auto found=r.custom_flag_keys.find(mmid);
+    return found==r.custom_flag_keys.end()?std::optional<CustomThrowdownFlagInfo>{}:found->second;
+}
 void receive_throwdown_relay(std::uint64_t sender, std::span<const std::uint8_t> message) {
     auto &r = relay();
     std::lock_guard lock(r.mutex);
@@ -1439,8 +1763,30 @@ void throwdown_relay_local(ThrowdownLocalAction action) noexcept {
     try {
         auto &r = relay();
         std::lock_guard lock(r.mutex);
+        // Only local Create/Enroll owns a waiting notice. Offers for someone
+        // else's unjoined flag do not. Custom donor queues have their own UI.
+        switch(action.kind) {
+        case Local::created: case Local::joined:
+            ++r.queue_hud.generation;r.queue_hud.waiting=true;
+            break;
+        case Local::left: case Local::entered: case Local::ended: case Local::quit:
+            r.queue_hud.waiting=false;break;
+        case Local::exited:
+            if(action.cancelling)r.queue_hud.waiting=false;
+            break;
+        default:break;
+        }
         if (r.actions.size() < 256) r.actions.push_back(std::move(action));
     } catch (...) {}
+}
+
+NativeQueueHudState native_queue_hud_state() noexcept {
+    try {auto& r=relay();std::lock_guard lock(r.mutex);return r.queue_hud;}
+    catch(...) {return {};}
+}
+
+void retire_native_queue_hud() noexcept {
+    try {auto& r=relay();std::lock_guard lock(r.mutex);r.queue_hud.waiting=false;}catch(...) {}
 }
 
 void throwdown_relay_spawned(std::uint64_t token, std::uint32_t mmid, std::uint32_t capacity) noexcept {
@@ -1550,6 +1896,41 @@ std::optional<std::array<float, 3>> throwdown_relay_celebration_offset(std::uint
 void set_challenge_invites(bool enabled) noexcept { challenge_invites_enabled.store(enabled, std::memory_order_relaxed); }
 bool challenge_invites() noexcept { return challenge_invites_enabled.load(std::memory_order_relaxed); }
 
+std::string throwdown_relay_host(const std::string &series, std::vector<std::uint64_t> players, std::uint32_t most_players) {
+    if (!relayed_mode(series)) return "a throwdown is \"JamSession\", \"SpotBattle\" or \"ThrowdownSkate\"";
+    if (players.empty() || players.size() > 7) return "a drop is for 1 to 7 other players";
+    auto &r = relay();
+    std::lock_guard lock(r.mutex);
+    if (!r.local) return "not in a session";
+    if (r.host_request) return "a drop is asked for already";
+    PluginSpawn spawn;
+    spawn.series = series;
+    spawn.invited = std::move(players);
+    spawn.max_players = std::max<std::uint32_t>(most_players, static_cast<std::uint32_t>(spawn.invited.size()) + 1);
+    r.host_request = std::move(spawn);
+    r.host_status = "asked";
+    return {};
+}
+void throwdown_relay_cancel_host() noexcept {
+    try {
+        auto &r = relay();
+        std::lock_guard lock(r.mutex);
+        r.cancel_request = true;
+        r.host_request.reset();
+    } catch (...) {}
+}
+std::string throwdown_relay_host_status() {
+    auto &r = relay();
+    std::lock_guard lock(r.mutex);
+    return r.host_status;
+}
+void throwdown_relay_host_placement(std::uint64_t token, std::vector<std::uint8_t> placement) noexcept {
+    try {
+        auto &r = relay();
+        std::lock_guard lock(r.mutex);
+        if (r.host_placements.size() < 8) r.host_placements[token] = std::move(placement);
+    } catch (...) {}
+}
 std::string throwdown_relay_status() {
     auto &r = relay();
     std::lock_guard lock(r.mutex);

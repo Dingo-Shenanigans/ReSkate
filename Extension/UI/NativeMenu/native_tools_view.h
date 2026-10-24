@@ -181,12 +181,13 @@ inline void activate(State& s, const overlay::Model& m, const overlay::Callbacks
         // This is a personal preference, including while following a host.
         console(m.parks.randomize_on_launch ? "park random-on-launch 0" : "park random-on-launch 1",
             m.parks.available);
-    } else if (command == "noclip" || command == "no-bail" || command == "freecam" || command == "speed") {
+    } else if (command == "noclip" || command == "no-bail" || command == "revert-boost" || command == "freecam" || command == "speed") {
         const auto& d = m.debug;
         overlay::DebugRequest request;
         bool enabled = false;
         if (command == "noclip") { request = {overlay::DebugAction::set_noclip, !d.noclip}; enabled = d.noclip_available || d.noclip; }
         if (command == "no-bail") { request = {overlay::DebugAction::set_no_bail, !d.no_bail}; enabled = d.no_bail_available || d.no_bail; }
+        if (command == "revert-boost") { request = {overlay::DebugAction::set_revert_boost_enabled, !d.revert_boost}; enabled = true; }
         if (command == "freecam") { request = {overlay::DebugAction::set_free_camera, !d.free_camera}; enabled = d.available && d.camera_available; }
         if (command == "speed") {
             constexpr std::array<float, 7> speeds{.6f, 3.f, 5.f, 15.f, 60.f, 300.f, 1500.f};
@@ -200,34 +201,6 @@ inline void activate(State& s, const overlay::Model& m, const overlay::Callbacks
         const overlay::OfflineFeatureRequest request{overlay::OfflineFeatureGroup::board_wear, !wear.effective};
         report(wear.available && cb.queue_offline_feature &&
                cb.queue_offline_feature(cb.user, request, result.data(), result.size()));
-    } else if (command == "hall-of-meat") {
-        console(m.hall_of_meat.enabled ? "hallofmeat 0" : "hallofmeat 1", m.hall_of_meat.available);
-    } else if (command == "road-rash") {
-        console(m.road_rash.enabled ? "roadrash 0" : "roadrash 1", m.road_rash.available);
-    } else if (command == "road-rash-blood") {
-        console(m.road_rash.blood ? "roadrashblood 0" : "roadrashblood 1", m.road_rash.available && m.road_rash.enabled);
-    } else if (command == "road-rash-heal") {
-        console("roadrash heal", m.road_rash.available && m.road_rash.enabled);
-    } else if (command == "board-break") {
-        console(m.board_break.enabled ? "boardbreak 0" : "boardbreak 1", m.board_break.available);
-    } else if (command == "board-break-deck") {
-        console("boardbreak deck next", m.board_break.available && m.board_break.has_deck);
-    } else if (command == "board-break-always") {
-        console(m.board_break.always ? "boardbreak always 0" : "boardbreak always 1", m.board_break.available);
-    } else if (command == "board-break-wear") {
-        console(m.board_break.wear ? "boardbreak wear 0" : "boardbreak wear 1", m.board_break.available);
-    } else if (command == "grind-exits") {
-        console(m.grind_exit.enabled ? "grindexit exits off" : "grindexit exits on", m.grind_exit.available);
-    } else if (command == "grind-exit-sides") {
-        console(m.grind_exit.toe_heel ? "grindexit sides travel" : "grindexit sides toeheel", m.grind_exit.available);
-    } else if (command == "grind-exit-stance") {
-        // Not set or regular -> goofy -> regular.
-        console(m.grind_exit.stance == 2 ? "grindexit stance regular" : "grindexit stance goofy", m.grind_exit.available);
-    } else if (command == "grind-exit-strength") {
-        // 100 -> 75 -> 50 -> 25 -> 100 (the ReSkate menu's slider sets any value from 10 to 100).
-        const int strength = m.grind_exit.strength;
-        const int next = strength > 75 ? 75 : strength > 50 ? 50 : strength > 25 ? 25 : 100;
-        console("grindexit strength " + std::to_string(next), m.grind_exit.available);
     } else if (command == "keyframe-smoothing") {
         console(m.keyframe_smoothing.enabled ? "keysmooth off" : "keysmooth on", m.keyframe_smoothing.available);
     } else if (command == "keyframe-smoothness") {
@@ -329,36 +302,8 @@ inline Page render(State& s, const overlay::Model& m, const overlay::CallbacksV3
         text(p.main, "player-title", "SKATE YOUR WAY");
         toggle(p.main, "noclip", "Noclip", m.debug.noclip, (m.debug.noclip_available || m.debug.noclip) && cb.queue_debug);
         toggle(p.main, "no-bail", "No bail", m.debug.no_bail, (m.debug.no_bail_available || m.debug.no_bail) && cb.queue_debug);
+        toggle(p.main, "revert-boost", "Revert Boost", m.debug.revert_boost, cb.queue_debug != nullptr);
         toggle(p.main, "freecam", "Freecam", m.debug.free_camera, m.debug.available && m.debug.camera_available && cb.queue_debug);
-        toggle(p.main, "hall-of-meat", "Hall of Meat", m.hall_of_meat.enabled, m.hall_of_meat.available && cb.queue_console_command);
-        // (Not listed when its official mod is turned off in the launcher.)
-        if (!m.road_rash.off) {
-            toggle(p.main, "road-rash", "Road Rash", m.road_rash.enabled, m.road_rash.available && cb.queue_console_command);
-            toggle(p.main, "road-rash-blood", "Road Rash blood", m.road_rash.blood,
-                m.road_rash.available && m.road_rash.enabled && cb.queue_console_command);
-            button(p.main, "road-rash-heal", "Heal Road Rash", "road-rash-heal",
-                m.road_rash.available && m.road_rash.enabled && cb.queue_console_command);
-        }
-        if (!m.board_break.off) {
-            toggle(p.main, "board-break", "Board Break", m.board_break.enabled, m.board_break.available && cb.queue_console_command);
-            button(p.main, "board-break-deck", "Board Break deck: " + m.board_break.deck, "board-break-deck",
-                m.board_break.available && m.board_break.has_deck && cb.queue_console_command);
-            toggle(p.main, "board-break-always", "Board Break: always break", m.board_break.always,
-                m.board_break.available && m.board_break.enabled && cb.queue_console_command);
-            toggle(p.main, "board-break-wear", "Board Break: wear and tear", m.board_break.wear,
-                m.board_break.available && m.board_break.enabled && cb.queue_console_command);
-        }
-        const auto& grind = m.grind_exit;
-        const bool grind_console = grind.available && cb.queue_console_command;
-        toggle(p.main, "grind-exits", "Grind exit triggers", grind.enabled, grind_console);
-        button(p.main, "grind-exit-sides", std::string("Input Mode: ") + (grind.toe_heel ? "Toe / Heel" : "Left / Right"),
-            "grind-exit-sides", grind_console);
-        if (grind.toe_heel)
-            button(p.main, "grind-exit-stance",
-                std::string("Your stance: ") + (grind.stance == 2 ? "Goofy" : grind.stance == 1 ? "Regular" : "Not set"),
-                "grind-exit-stance", grind_console);
-        button(p.main, "grind-exit-strength", "Pop-out strength: " + std::to_string(grind.strength) + "%", "grind-exit-strength",
-            grind_console);
         toggle(p.main, "board-wear", "Board wear", m.offline.board_wear.effective,
             m.offline.board_wear.available && cb.queue_offline_feature);
         button(p.main, "board-wear-reset", "Reset board wear", "board-wear-reset",

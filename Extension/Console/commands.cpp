@@ -1,6 +1,8 @@
 #include "commands.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/path_text.h"
+#include "Engine/Game/Input/controller_bindings.h"
+#include <algorithm>
 #include <memory>
 
 namespace dingosdk::console {
@@ -227,13 +229,26 @@ const Commands &game_commands() {
         register_multiplayer_commands(*result);
         register_perf_commands(*result);
         register_item_commands(*result);
+        register_capture_commands(*result);
         register_trainer_commands(*result);
-        register_hall_of_meat_commands(*result);
-        register_road_rash_commands(*result);
-        register_board_break_commands(*result);
-        register_grind_exit_commands(*result);
         register_animation_studio_commands(*result);
         register_replay_keyframes_commands(*result);
+        register_plugin_commands(*result);
+        // Each switch a player binds runs a command (controller_bindings.h action_binds): one whose
+        // command is gone reads "Unknown command" at every press, as "menu" once did.
+        for (const auto &bind : action_binds) {
+            bool found{};
+            std::string name;
+            for (std::size_t at = 0; !found && at <= bind.command.size();) {
+                const auto end = std::min(bind.command.find(' ', at), bind.command.size());
+                name = std::string(bind.command.substr(0, end));
+                found = result->find(name) != nullptr;
+                at = end + 1;
+            }
+            if (!found)
+                logging::log(logging::Level::warning, logging::Channel::command, "The {} bind runs \"{}\", which is not a command.",
+                             bind.name, bind.command);
+        }
         return result;
     }();
     return *registry;

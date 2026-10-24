@@ -25,8 +25,16 @@ std::string game_data_build(const launcher::SiblingPaths& paths);
 // Whether the game's data is missing or of another build than the supported one, whatever
 // Skate.exe is: Steam updated the game under it, a copy of an updated game was put here, or a
 // download stopped part-way. Such a game has to be verified against the supported build, file
-// by file, not only topped up. False when the data's build cannot be told.
+// by file, not only topped up. Also true when a file of the supported build's data is missing,
+// of another size, or kept online only by a cloud folder (game_data_damage). False when the
+// data's build cannot be told and every file is there.
 bool game_data_mismatched(const launcher::SiblingPaths& paths);
+// Advice for a PC whose RAM and page file are too small for the game with mods; empty when they
+// are enough.
+std::string memory_advice();
+// What is wrong with the game's data files against the supported build's list, for the log; empty
+// when every file is there, of its size, and on this PC.
+std::string game_data_damage(const launcher::SiblingPaths& paths);
 // The config's depot/manifest ships the build this launcher was compiled for.
 bool config_matches_build(const launcher_update::Config& config);
 void relaunch(const std::filesystem::path& self, const std::vector<std::wstring>& arguments);

@@ -217,6 +217,16 @@ void mod_icon_lost() {
 
 bool item_browser_open() { return panel().view.open; }
 
+namespace {
+std::array<std::atomic<float>, 4> prompts_end{}; // left, top, width, unit
+void set_prompts_end(float left, float top, float width, float unit) noexcept {
+    prompts_end[0].store(left, std::memory_order_relaxed);
+    prompts_end[1].store(top, std::memory_order_relaxed);
+    prompts_end[2].store(width, std::memory_order_relaxed);
+    prompts_end[3].store(unit, std::memory_order_relaxed);
+}
+} // namespace
+
 void item_browser_key(ItemBrowserKey key) {
     const auto* h = host();
     if (!h) return;
@@ -240,6 +250,7 @@ bool item_browser_pending() {
     if (!p.view.open) {
         s.item_search_visible.store(false);
         p.stick_down = false;
+        set_prompts_end(0, 0, 0, 0);
         return false;
     }
     // Left stick click: favorite. Read here, once a presented frame, only while a grid is open.
@@ -345,6 +356,15 @@ void draw_item_browser() {
     }
     if (view.focused_favorite && !typing)
         star(draw, ImVec2(at.x - 22 * scale, at.y + height * 0.5f), 13 * scale, skate_theme::bar);
+    set_prompts_end(at.x, y + 30 * scale, width, scale);
     draw_mod_card(draw, view, heading, body);
 }
 } // namespace dingosdk::overlay::detail
+
+namespace dingosdk::overlay {
+ItemPrompts item_browser_prompts() noexcept {
+    using detail::prompts_end;
+    return {prompts_end[0].load(std::memory_order_relaxed), prompts_end[1].load(std::memory_order_relaxed),
+            prompts_end[2].load(std::memory_order_relaxed), prompts_end[3].load(std::memory_order_relaxed)};
+}
+} // namespace dingosdk::overlay

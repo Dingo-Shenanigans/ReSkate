@@ -158,6 +158,7 @@ void publish(Session &s, const NativeFrame *local) {
     view.guest_noclip = s.guest_noclip;
     view.guest_no_bail = s.guest_no_bail;
     view.guest_boosts = s.guest_boosts;
+    view.guest_ollies = s.guest_ollies;
     view.enforce_tuning = s.enforce_tuning;
     view.tuning_status = s.mode == Mode::join && s.enforce_tuning ? physics_tuning::status() : std::string{};
     view.force_world_layers = s.force_world_layers;

@@ -5,8 +5,10 @@
 #include "launch.h"
 #include "text_encoding.h"
 #include "mod_profiles.h"
+#include "start_maps.h"
 #include "thunderstore.h"
 
+#include "Engine/Vfs/mod_conflicts.h"
 #include "Engine/Vfs/mod_list.h"
 #include "Extension/UI/skate_theme.h"
 
@@ -193,6 +195,8 @@ struct Settings {
     bool gpu_diagnostics{};
     bool discord_status{true};
     bool offline{};
+    // The map the game starts in, by its level asset (start_maps.h); empty: San Vansterdam.
+    std::string start_map;
     int menu_key{static_cast<int>(launcher::default_menu_key)};
     int console_key{static_cast<int>(launcher::default_console_key)};
     int log_level{2};
@@ -212,6 +216,16 @@ struct Settings {
     bool steam_prefer_code{};
     // The versions of the privacy policy and the terms of service the player agreed to (0: none).
     std::uint64_t accepted_privacy{}, accepted_terms{};
+    // The version of the home screen's announcement the player hid (0: none): one newer shows.
+    std::uint64_t announcement_hidden{};
+    // GET MODS: the Thunderstore categories shown only, and those hidden (thunderstore.h CategoryFilter).
+    std::vector<std::string> mod_categories_only, mod_categories_hidden;
+    // MY MODS: the same for the installed mods, by their Thunderstore categories ("No category" for a
+    // mod Thunderstore does not list, or lists in none).
+    std::vector<std::string> installed_categories_only, installed_categories_hidden;
+    // What the mods gave the game's data at the last launch (launcher_mods::game_data_signature): a
+    // launch with other mods empties the game's shader cache first.
+    std::string shader_cache_mods;
 };
 
 inline constexpr std::array<const char*, 7> log_levels{"trace", "debug", "info", "warning", "error", "critical", "off"};
@@ -227,7 +241,6 @@ struct ModProblem {
     std::string name;      // folder under Mods/, so it can be switched off
     std::string title;
     std::string reason;
-    bool conflict{};       // left out for another mod above it that changes the same game files
 };
 
 struct State {
@@ -401,13 +414,39 @@ struct GamePages {
 };
 
 // Panels the main screen can show; one at a time.
+// The announcement the ReSkate backend has for the home screen (GET
+// https://api.reskate.dev/api/v1/announcement), read as the launcher starts and every ten minutes,
+// so it is written in the admin panel and reaches players without a release.
+struct Announcement {
+    struct Message {
+        std::uint64_t version{};
+        bool important{};
+        std::string title, markdown, link, link_label;   // link: empty, or an https URL
+    };
+    std::thread worker;
+    std::atomic<bool> loading{};
+    std::mutex mutex;
+    bool arrived{};                         // worker -> UI, under the mutex
+    std::optional<Message> incoming;
+    std::optional<Message> shown;           // none: there is nothing to show
+    thunderstore::Readme text;
+    double next_read{};                     // ImGui time of the next read
+    ~Announcement() {
+        if (worker.joinable()) worker.join();
+    }
+};
+
 struct Ui {
     bool settings{};
+    Announcement announcement;
     GamePages game;
     bool changelog{};
     Changelog notes;
     Legal legal;
     int settings_tab{};         // GAME, DISPLAY, KEYS, ADVANCED, then the game's own pages
+    // The maps Settings offers to start in, read from the Mods folder when GAME is first drawn
+    // after Settings opens.
+    std::optional<std::vector<launcher_start_maps::StartMap>> start_maps;
     int binding{};              // 1 = menu key, 2 = console key, while waiting for a press
     std::string key_error;
     bool mods{};
@@ -464,7 +503,6 @@ struct Store {
 
     // The GET MODS page.
     std::array<char, 96> search{};
-    std::string category;                            // empty = all
     int sort{};
     std::string selected;                            // full_name, while its overview is open
     bool overview{};                                 // the overview popup is showing
@@ -539,8 +577,43 @@ struct ModsPanel {
     std::array<char, 96> search{};
     int filter{};
     int order{};
+    // Each Thunderstore package's categories by the folder it installs into, made again when a listing arrives.
+    std::map<std::string, std::vector<std::string>, std::less<>> categories_by_folder;
     std::set<std::string, std::less<>> marked;
     std::string anchor;                  // the last mod ticked: where a Shift-click range starts
+    int place{};                         // typed in a row's "move to position" popup
+    int shown_tab{-1};                   // the tab drawn last, so MY MODS reads the folder again when it is opened
+    // The conflicts the player settled (gui_mods.cpp): of each pair, (the mod that loads, the one left out).
+    std::set<std::pair<std::string, std::string>> conflict_choices;
+    bool resolving{};                    // the Resolve conflicts popup is to open
+    std::vector<std::string> resolve_order;   // the load order as the popup opened: its rows keep it
+    // MY MODS rows as drawn: each mod's height in the list, eased toward its place there, so a row
+    // slides to where it goes rather than jumping (gui_mods.cpp).
+    std::map<std::string, float, std::less<>> row_y;
+    std::string drag_name;               // the row being dragged by its handle
+    float drag_grab{};                   // how far below its top the pointer took hold of it
+    // MY MODS: conflicts between the enabled mods as the list stands (mods::ConflictChecker),
+    // checked off the UI thread a moment after each change. The worker hands its result over
+    // in `pending` (under `mutex`); the UI thread takes it from there, so `rows` and what points
+    // into them (`losses`) only change on the UI thread.
+    struct ConflictCheck {
+        std::unique_ptr<mods::ConflictChecker> checker;   // the worker's alone while it runs
+        std::thread worker;
+        std::atomic<bool> running{};
+        double due{-1};                     // ImGui time the next check starts; -1 when none is asked
+        std::uint64_t asked{}, checked{};   // which change the latest result is for
+        bool ready{};                       // a result is in
+        std::vector<mods::MergeReport::Conflict> rows;
+        std::vector<std::string> order;     // the mods checked, highest priority first
+        std::map<std::string, mods::ConflictLoss, std::less<>> losses;     // the mods that would be left out
+        std::map<std::string, std::vector<std::string>, std::less<>> beats;   // and whom each winner leaves out
+        struct Result {
+            bool ready{};
+            std::uint64_t asked{};
+            std::vector<mods::MergeReport::Conflict> rows;
+            std::vector<std::string> order;
+        } pending;                          // under mutex
+    } conflicts;
     std::string message;
     bool message_error{};
     std::vector<std::string> confirm_remove;   // folders awaiting "Uninstall" confirmation
@@ -585,12 +658,20 @@ struct ModsPanel {
         cancel = true;
         if (worker.joinable()) worker.join();
         if (profile_worker.joinable()) profile_worker.join();
+        if (conflicts.worker.joinable()) conflicts.worker.join();
     }
 };
 
 void scan(ModsPanel& panel, const launcher_app::Session& session);
 // Re-reads the Mods folder and the Thunderstore listing.
 void refresh_mods(Launcher& launcher, ModsPanel& panel);
+// Every frame, from the launcher's start: checks the enabled mods for conflicts in the background
+// before the Mod Manager is first opened, so its list has the answer ready, and takes in checks as
+// they finish. (Opening it reads the folder again; the check then reads only what changed.)
+void prepare_mods(ModsPanel& panel, const launcher_app::Session& session);
+// Waits (at most ten seconds) for a conflict check under way to finish: it may be reading the mod
+// files an install or uninstall is about to replace. Off the UI thread where it can be.
+void wait_for_conflict_check(const ModsPanel& panel);
 void start_install(ModsPanel& panel, const fs::path& source, bool replace);
 // The Windows file (or folder) picker; empty when cancelled. A file picker shows
 // `filter_pattern` ("*.zip") under `filter_name`.
@@ -628,10 +709,14 @@ ImTextureID package_icon(ModsPanel& panel, const thunderstore::Package& package)
 // when the mod never came from Thunderstore.
 void mod_icon(ModsPanel& panel, const thunderstore::Package* package, ImVec2 position, float size);
 void pump_icons(ModsPanel& panel);
+// A category menu for a list of mods (GET MODS, MY MODS): each category shown only, hidden, or either,
+// a click going round them, with how many mods are in each (category_count adds to that). One chosen
+// before that no mod has now stays in the menu. True when the player changed what is chosen.
+int& category_count(std::vector<std::pair<std::string, int>>& categories, const std::string& category);
+bool category_menu(const char* id, std::vector<std::string>& only, std::vector<std::string>& hidden,
+                   std::vector<std::pair<std::string, int>> categories, float width);
 // The GET MODS page body, under the page header.
 void browse_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, float height, bool installing);
-// The official mods (official_mods.h): each to install, update or turn off, and how it is doing.
-void official_page(const Fonts& fonts, ModsPanel& panel, float height);
 // Everything Thunderstore knows about one package, in a popup over the page.
 void package_overview(const Fonts& fonts, ModsPanel& panel, ImVec2 size, bool installing);
 // The README section of an overview: the installed mod's own README.md when it has one, else

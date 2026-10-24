@@ -4,6 +4,7 @@
 #include <Windows.h>
 #include <algorithm>
 #include <filesystem>
+#include <fstream>
 #include <mutex>
 #include <stdexcept>
 
@@ -23,6 +24,35 @@ std::string name(const char *value) {
     for (unsigned i = 0; i < 128 && value[i]; ++i)
         if (static_cast<unsigned char>(value[i]) >= 32 && value[i] != 127) result += value[i];
     return result;
+}
+// Offline still has a Steam account identity. Resolve that account's cached
+// persona, never a different account's login name or a hard-coded player name.
+std::string offline_persona_name() {
+    const auto incoming_error=GetLastError();
+    struct RestoreError { DWORD value; ~RestoreError(){SetLastError(value);} } restore{incoming_error};
+    try {
+        wchar_t path[32768]{}; DWORD bytes=sizeof(path);
+        if(RegGetValueW(HKEY_CURRENT_USER,L"Software\\Valve\\Steam",L"SteamPath",RRF_RT_REG_SZ,nullptr,path,&bytes)!=ERROR_SUCCESS)return {};
+        std::ifstream file(std::filesystem::path(path)/L"config"/L"loginusers.vdf");
+        const auto wanted=std::to_string(launcher::offline_steam_id());
+        bool account{};
+        for(std::string line;std::getline(file,line);) {
+            std::vector<std::string> tokens;
+            for(std::size_t i=0;i<line.size();++i) {
+                if(line[i]!='"')continue;
+                std::string token;
+                for(++i;i<line.size() && line[i]!='"';++i) {
+                    if(line[i]=='\\' && i+1<line.size())++i;
+                    token.push_back(line[i]);
+                }
+                tokens.push_back(std::move(token));
+            }
+            if(tokens.size()==1 && tokens.front().size()==17 && tokens.front().find_first_not_of("0123456789")==std::string::npos)
+                account=tokens.front()==wanted;
+            else if(account && tokens.size()==2 && tokens.front()=="PersonaName")return name(tokens.back().c_str());
+        }
+    } catch(...) {}
+    return {};
 }
 struct Api {
     HMODULE module{};
@@ -91,7 +121,10 @@ std::shared_ptr<const SteamSocialSnapshot> steam_social_snapshot() {
         next = now + 10000;
         SteamSocialSnapshot result;
         if (launcher::offline_mode()) {
-            result.local = {launcher::offline_steam_id(), launcher::offline_player_name, false, true};
+            auto persona=offline_persona_name();
+            if(persona.empty() && current->local.id==launcher::offline_steam_id() && current->local.name!=launcher::offline_player_name)
+                persona=current->local.name;
+            result.local = {launcher::offline_steam_id(), persona.empty()?launcher::offline_player_name:persona, false, true};
             if (result.local != current->local) {
                 result.revision = current->revision + 1;
                 current = std::make_shared<const SteamSocialSnapshot>(std::move(result));

@@ -20,6 +20,7 @@ namespace party = addr::native_party;
 constexpr std::uint32_t play_one_shot = 1415301872U, sound_field = 1903611779U, none = ~0U;
 
 std::atomic<std::uint32_t> wanted{none};
+std::atomic<bool> preparing{};
 // The event's type object. Its type is defined by data a level's bundles carry: it is made
 // again, somewhere else, by each level, so it is found on the heap (off this thread) and
 // checked before every use.
@@ -106,10 +107,12 @@ bool raise(std::uintptr_t base, std::uintptr_t type, std::uint16_t offset, std::
 } // namespace
 
 void queue_ui_sound(std::uint32_t sound) noexcept { wanted.store(sound, std::memory_order_relaxed); }
+void prepare_ui_sounds() noexcept {preparing.store(true,std::memory_order_relaxed);}
 
 void tick_ui_sounds(std::uintptr_t base, bool loading) noexcept {
     const auto sound = wanted.exchange(none, std::memory_order_relaxed);
-    if (sound == none || loading || !base || off.load(std::memory_order_relaxed)) return;
+    const bool warm=preparing.exchange(false,std::memory_order_relaxed);
+    if ((sound == none && !warm) || loading || !base || off.load(std::memory_order_relaxed)) return;
     try {
         if (!supported(base)) {
             off = true;
@@ -133,6 +136,7 @@ void tick_ui_sounds(std::uintptr_t base, bool loading) noexcept {
             }).detach();
             return;
         }
+        if(sound==none)return;
         const auto offset = sound_offset(type);
         if (!offset || !raise(base, type, *offset, sound)) {
             off = true;

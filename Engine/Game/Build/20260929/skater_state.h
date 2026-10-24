@@ -5,7 +5,7 @@
 
 namespace dingosdk::game::build::v20260929::skater_state {
 // Supported SHA-256 fbce74d5e28ef525dbba2cb4adbebc13405bdbd88f31bc940bca45e4ae88b8f9.
-// The skater's live state, read-only (Extension/HallOfMeat/hall_of_meat_skater.h).
+// The skater's live state, read-only (Extension/Skater/skater_physics.h).
 
 // The physics state the core's selector chose this step (no_bail.h: choose_physics_state; its
 // offboard_physics_state is the one on foot and through a whole bail).

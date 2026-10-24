@@ -6,7 +6,8 @@
 #include <vector>
 
 // The Object Browser's category tree, taken from the game's category service
-// records in the content cache. Objects the cache does not place fall back to
+// records in the content cache and the families mods declare for their own
+// objects (content_cache::add_mod_objects). Objects neither places fall back to
 // one tile each under their installed family.
 namespace dingosdk::objects {
 struct InstalledObject {

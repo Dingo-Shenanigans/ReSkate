@@ -422,13 +422,12 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
         throw std::invalid_argument("Invalid voice packet");
     if (p.kind == PacketKind::effects && (!p.map || !p.source || !valid_impacts(p.impacts)))
         throw std::invalid_argument("Invalid effects packet");
-    if (p.kind == PacketKind::drone && (!p.map || !p.source || !valid_drone_position(p.drone_position) ||
-                                         !valid_drone_rotation(p.drone_rotation)))
-        throw std::invalid_argument("Invalid drone packet");
     if (p.kind == PacketKind::chat && (!p.source || !valid_chat_text(p.text)))
         throw std::invalid_argument("Invalid chat message");
     if (p.kind == PacketKind::typing && !p.source)
         throw std::invalid_argument("Invalid typing notice");
+    if (p.kind == PacketKind::present && !p.source)
+        throw std::invalid_argument("Invalid presence notice");
     if (p.kind == PacketKind::admin && (!p.source || !valid_admin_text(p.text)))
         throw std::invalid_argument("Invalid admin message");
     if (p.kind == PacketKind::throwdown && (!p.source || p.throwdown.empty() || p.throwdown.size() > max_throwdown_message))
@@ -481,6 +480,8 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
         throw std::invalid_argument("Invalid map name");
     if ((p.kind == PacketKind::map_offer || p.kind == PacketKind::world_state) && !valid_map_package(p.map_package))
         throw std::invalid_argument("Invalid map package");
+    if (!p.required_plugins.empty() && (p.kind != PacketKind::map_offer || !valid_required_plugins(p.required_plugins)))
+        throw std::invalid_argument("Invalid required plugins");
     if (p.map_fetching && (p.world_ready || (p.kind != PacketKind::map_request && p.kind != PacketKind::world_ready)))
         throw std::invalid_argument("Invalid map fetch notice");
     if (p.kind == PacketKind::world_state &&
@@ -500,8 +501,7 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
         p.kind != PacketKind::throwdown && p.kind != PacketKind::teleport && p.kind != PacketKind::physics_tuning &&
         p.kind != PacketKind::party && p.kind != PacketKind::scoring && p.kind != PacketKind::physics_extras &&
         p.kind != PacketKind::effects && p.kind != PacketKind::permissions && p.kind != PacketKind::words &&
-        p.kind != PacketKind::next_maps && p.kind != PacketKind::typing &&
-        p.kind != PacketKind::drone)
+        p.kind != PacketKind::next_maps && p.kind != PacketKind::typing && p.kind != PacketKind::present)
         throw std::invalid_argument("Unknown packet kind");
     const auto payload = greeting ? 72
                          : p.kind == PacketKind::away
@@ -532,6 +532,11 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
             w.bytes.insert(w.bytes.end(), p.map_label.begin(), p.map_label.end());
             w.integer(p.map_package.size(), 1);
             w.bytes.insert(w.bytes.end(), p.map_package.begin(), p.map_package.end());
+            w.integer(p.required_plugins.size(), 1);
+            for (const auto &plugin : p.required_plugins) {
+                w.integer(plugin.size(), 1);
+                w.bytes.insert(w.bytes.end(), plugin.begin(), plugin.end());
+            }
         }
         if (p.kind == PacketKind::map_request) w.integer(p.map_fetching ? 1 : 0, 1);
         if (p.kind == PacketKind::hello) {
@@ -641,11 +646,6 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
                 w.integer(static_cast<std::uint8_t>(static_cast<std::int8_t>(std::lround(v * 127.f))), 1);
             w.integer(impact.material, 2);
         }
-    }
-    if (p.kind == PacketKind::drone) {
-        w.integer(p.drone_active ? 1 : 0, 1);
-        for (const auto v : p.drone_position) w.integer(std::bit_cast<std::uint32_t>(v), 4);
-        for (const auto v : p.drone_rotation) w.integer(std::bit_cast<std::uint32_t>(v), 4);
     }
     if (p.kind == PacketKind::physics_extras) {
         w.integer(p.extras.size(), 2);
@@ -758,7 +758,7 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
         w.integer(p.object_limit, 2);
         w.integer(p.object_scaling ? 1 : 0, 1);
         w.integer(p.sync_effects ? 1 : 0, 1);
-        w.integer(p.sync_drones ? 1 : 0, 1);
+        w.integer(1, 1); // was whether players saw each other's FPV drones; read and passed over
         w.integer(p.force_world_layers, 1);
         // One mode per world-layer catalog row; both peers read the same catalog
         // from the same game build.
@@ -775,7 +775,7 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
         w.integer(static_cast<std::uint16_t>(std::lround(p.voice_range)), 2);
         if (p.server_votes > 7) throw std::invalid_argument("Invalid server votes");
         w.integer((p.guest_noclip ? 1U : 0U) | (p.guest_no_bail ? 2U : 0U) | (p.guest_boosts ? 4U : 0U) |
-                      (static_cast<unsigned>(p.server_votes) << 3) | (p.enforce_tuning ? 64U : 0U), 1);
+                      (static_cast<unsigned>(p.server_votes) << 3) | (p.enforce_tuning ? 64U : 0U) | (p.guest_ollies ? 128U : 0U), 1);
         if (p.server_polls > static_cast<std::uint8_t>(ServerPolls::everyone) || p.server_custom_votes.size() > server_custom_vote_limit ||
             !std::all_of(p.server_custom_votes.begin(), p.server_custom_votes.end(), [](const auto &v) { return valid_server_custom_vote(v); }))
             throw std::invalid_argument("Invalid server votes");
@@ -881,6 +881,14 @@ std::optional<Packet> decode(std::span<const std::uint8_t> bytes) noexcept {
                 r.at += static_cast<std::size_t>(length);
                 if (!valid_map_destination(p.destination) || p.map != map_hash(p.destination) || !read_map_label(r, bytes, p))
                     return {};
+                const auto plugins = r.integer(1);
+                if (plugins > max_required_plugins) return {};
+                for (std::uint64_t i = 0; i < plugins; ++i) {
+                    auto plugin = read_text(r, bytes, 1, max_map_package);
+                    if (!plugin) return {};
+                    p.required_plugins.push_back(std::move(*plugin));
+                }
+                if (!valid_required_plugins(p.required_plugins)) return {};
             }
             if (p.kind == PacketKind::map_request) {
                 const auto fetching = r.integer(1);
@@ -1021,14 +1029,6 @@ std::optional<Packet> decode(std::span<const std::uint8_t> bytes) noexcept {
                 impact.material = static_cast<std::uint16_t>(r.integer(2));
             }
             if (!valid_impacts(p.impacts)) return {};
-        } else if (p.kind == PacketKind::drone) {
-            if (!p.map || !p.source || bytes.size() - r.at != drone_wire_size) return {};
-            const auto flag = r.integer(1);
-            if (flag > 1) return {};
-            p.drone_active = flag != 0;
-            for (auto &v : p.drone_position) v = r.number();
-            for (auto &v : p.drone_rotation) v = r.number();
-            if (!valid_drone_position(p.drone_position) || !valid_drone_rotation(p.drone_rotation)) return {};
         } else if (p.kind == PacketKind::physics_extras) {
             const auto length = r.integer(2);
             if (!p.source || length > max_physics_extras || length != bytes.size() - r.at)
@@ -1215,9 +1215,7 @@ std::optional<Packet> decode(std::span<const std::uint8_t> bytes) noexcept {
             const auto shared_effects = r.integer(1);
             if (shared_effects > 1) return {};
             p.sync_effects = shared_effects != 0;
-            const auto shared_drones = r.integer(1);
-            if (shared_drones > 1) return {};
-            p.sync_drones = shared_drones != 0;
+            if (r.integer(1) > 1) return {}; // the FPV drones' old switch
             const auto forced = r.integer(1);
             if (forced > 1) return {};
             p.force_world_layers = forced != 0;
@@ -1242,12 +1240,12 @@ std::optional<Packet> decode(std::span<const std::uint8_t> bytes) noexcept {
             p.voice_range = static_cast<float>(r.integer(2));
             if (!valid_voice_range(p.voice_range)) return {};
             const auto tools = r.integer(1);
-            if (tools > 127) return {};
             p.guest_noclip = (tools & 1) != 0;
             p.guest_no_bail = (tools & 2) != 0;
             p.guest_boosts = (tools & 4) != 0;
             p.server_votes = static_cast<std::uint8_t>((tools >> 3) & 7);
             p.enforce_tuning = (tools & 64) != 0;
+            p.guest_ollies = (tools & 128) != 0;
             const auto polls = r.integer(1), custom = r.integer(1);
             if (polls > static_cast<std::uint8_t>(ServerPolls::everyone) || custom > server_custom_vote_limit) return {};
             p.server_polls = static_cast<std::uint8_t>(polls);
@@ -1306,6 +1304,8 @@ std::optional<Packet> decode(std::span<const std::uint8_t> bytes) noexcept {
             }
             for (std::uint64_t i = 0; i < removed; ++i) chunk.removed.push_back(r.integer(8));
             if (!valid_object_chunk(chunk)) return {};
+        } else if (p.kind == PacketKind::present) {
+            if (!p.source) return {};
         } else if (p.kind != PacketKind::away)
             return {};
         if (r.at != bytes.size())
@@ -1436,6 +1436,22 @@ bool valid_map_package(std::string_view package) noexcept {
     const auto second = rest.find('-');
     if (!package_word(package.substr(0, first)) || !package_word(rest.substr(0, second))) return false;
     return second == std::string_view::npos || package_version(rest.substr(second + 1));
+}
+bool valid_required_plugins(const std::vector<std::string> &packages) noexcept {
+    if (packages.size() > max_required_plugins) return false;
+    for (std::size_t i = 0; i < packages.size(); ++i) {
+        if (packages[i].empty() || !valid_map_package(packages[i])) return false;
+        // (Twice is twice whatever the version or the case: "A-B" and "a-b-1.0.0" are one package.)
+        const auto name = packages[i].substr(0, packages[i].size() - map_package_version(packages[i]).size());
+        for (std::size_t k = 0; k < i; ++k) {
+            const auto other = packages[k].substr(0, packages[k].size() - map_package_version(packages[k]).size());
+            const auto bare = [](std::string_view text) { return text.ends_with('-') ? text.substr(0, text.size() - 1) : text; };
+            const auto a = bare(name), b = bare(other);
+            if (a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) { return (x | 0x20) == (y | 0x20); }))
+                return false;
+        }
+    }
+    return true;
 }
 std::string map_package_name(std::string_view folder, std::string_view version) {
     const auto dash = folder.find('-');

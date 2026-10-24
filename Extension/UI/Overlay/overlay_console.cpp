@@ -41,6 +41,33 @@ std::vector<std::string> console_completion_candidates(const std::vector<Console
     std::vector<std::string> words, result;
     for (const auto& token : tokens) words.push_back(token.text);
     s.console_suggestion_rows = dingosdk::console::game_commands().complete(words, s.model);
+    // Plugins' commands beside ReSkate's own, word by word as ReSkate's: after "prop " come the
+    // subcommands the plugin declared for "prop".
+    if (!words.empty()) {
+        const auto same = [](std::string_view a, std::string_view b) {
+            return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) {
+                       return std::tolower(static_cast<unsigned char>(x)) == std::tolower(static_cast<unsigned char>(y));
+                   });
+        };
+        const auto& prefix = words.back();
+        for (const auto& command : s.model.plugin_commands) {
+            const auto path = dingosdk::parse_console_command(command.name).arguments;
+            if (path.size() < words.size()) continue;
+            bool matches = true;
+            for (std::size_t i = 0; i + 1 < words.size() && matches; ++i) matches = same(words[i], path[i]);
+            const auto& next = path[words.size() - 1];
+            if (!matches || next.size() < prefix.size() || !same(std::string_view(next).substr(0, prefix.size()), prefix)) continue;
+            if (std::any_of(s.console_suggestion_rows.begin(), s.console_suggestion_rows.end(), [&](const auto& row) { return same(row.text, next); }))
+                continue;
+            const bool last = path.size() == words.size();
+            dingosdk::console::Suggestion row;
+            row.text = row.name = next;
+            if (last) row.name = command.name;
+            row.description = (last ? command.help : std::string("Plugin command")) + " (" + command.plugin + ")";
+            row.usage = last ? command.name + (command.args.empty() ? "" : " " + command.args) : next + " ...";
+            s.console_suggestion_rows.push_back(std::move(row));
+        }
+    }
     for (const auto& row : s.console_suggestion_rows) result.push_back(row.text);
     return result;
 }
@@ -220,7 +247,9 @@ void submit_console_command() {
     try {
         const auto& registry = dingosdk::console::game_commands();
         if (registry.echoes(parsed.arguments)) output("> " + command);
-        if (!parsed || registry.local(parsed.arguments, s.model)) {
+        // A command ReSkate does not know may be a plugin's, which run on the game thread
+        // (Extension/Plugins); one no plugin has either is answered there as unknown.
+        if (!parsed || (registry.knows(parsed.arguments) && registry.local(parsed.arguments, s.model))) {
             registry.execute(command, s.model, output);
             return;
         }

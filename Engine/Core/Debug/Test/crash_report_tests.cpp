@@ -338,6 +338,57 @@ void crash_check(const std::filesystem::path& root, Mode mode) {
     for (int i = 0; i < 100 && !std::filesystem::exists(queue / L"status.txt"); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
     check(std::filesystem::exists(dump), "Offline dump was lost");
 }
+// A stuck load: a dump of the running fixture, after which it goes on and crashes for real. Both
+// are captured, the first as a stuck-load report.
+void stuck_check(const std::filesystem::path& root) {
+    std::filesystem::create_directories(root);
+    std::array<wchar_t, 32768> executable{};
+    GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size()));
+    auto command = std::format(L"\"{}\" --stuck \"{}\"", executable.data(), root.wstring());
+    STARTUPINFOW startup{sizeof(startup)};
+    PROCESS_INFORMATION process{};
+    check(CreateProcessW(executable.data(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process) != FALSE, "Cannot start stuck fixture");
+    Handle child(process.hProcess), thread(process.hThread);
+    check(WaitForSingleObject(child.value, 60000) == WAIT_OBJECT_0, "Stuck fixture timed out");
+    DWORD code{}; GetExitCodeProcess(child.value, &code);
+    check(code != 44, "The stuck-load capture was not answered");
+    check(code == 42, "The fixture did not go on to its crash after the stuck-load capture");
+    const auto queue = queue_directory(root / L"crashes", L"https://127.0.0.1:1/test/minidump");
+    std::filesystem::path stuck, crash;
+    for (int attempt = 0; attempt < 100 && (stuck.empty() || crash.empty()); ++attempt) {
+        for (const auto& entry : std::filesystem::directory_iterator(queue)) {
+            if (entry.path().extension() != L".dmp") continue;
+            const auto source = Json::parse(read(entry.path().wstring() + L".json")).at("capture.source").string();
+            (source == "stuck-load" ? stuck : crash) = entry.path();
+        }
+        if (stuck.empty() || crash.empty()) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    check(!stuck.empty(), "No stuck-load dump captured");
+    check(!crash.empty(), "The crash after a stuck-load capture was not captured");
+    check(Json::parse(read(crash.wstring() + L".json")).at("capture.source").string() == "unhandled-exception", "Wrong capture source after a stuck load");
+    auto bytes = read(stuck);
+    MINIDUMP_DIRECTORY* stream{}; void* data{}; ULONG size{};
+    check(MiniDumpReadDumpStream(bytes.data(), ExceptionStream, &stream, &data, &size) != FALSE &&
+        static_cast<const MINIDUMP_EXCEPTION_STREAM*>(data)->ExceptionRecord.ExceptionCode == stuck_load_exception,
+        "Stuck-load dump lacks its exception");
+    check(MiniDumpReadDumpStream(bytes.data(), ThreadListStream, &stream, &data, &size) != FALSE &&
+        static_cast<const MINIDUMP_THREAD_LIST*>(data)->NumberOfThreads >= 2, "Stuck-load dump lacks the other threads");
+    const auto tags = Json::parse(read(stuck.wstring() + L".json"));
+    check(tags.at("error.type").string() == "stall" && tags.at("load.stage").string() == "Starting level load" &&
+        tags.at("load.seconds").string() == "130" && !tags.contains("crash.site") &&
+        tags.at("game.map").string() == "dingolevel_reskate_lsc_b2", "Stuck-load report not tagged as one");
+    const auto details = Json::parse(read(event_details_path(stuck)));
+    check(details.at("level").string() == "warning" && details.at("fingerprint").size() == 3 &&
+        details.at("fingerprint")[0].string() == "stuck-load" && details.at("fingerprint")[2].string() == "dingolevel_reskate_lsc_b2",
+        "Stuck-load report not grouped by its stage and map");
+    ReportEnvelope body(stuck, tags, "0123456789abcdef0123456789abcdef");
+    check(body.error() == 0, "Cannot prepare a stuck-load report");
+    std::string wire;
+    check(body.write([&](const void* chunk, DWORD count) { wire.append(static_cast<const char*>(chunk), count); return true; }), "Cannot stream a stuck-load report");
+    check(wire.find("\"level\":\"warning\"") != std::string::npos && wire.find("\"fingerprint\":[\"stuck-load\"") != std::string::npos,
+        "A stuck-load report would be sent as a fatal crash");
+    for (int i = 0; i < 100 && !std::filesystem::exists(queue / L"status.txt"); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+}
 }
 int wmain(int argc, wchar_t** argv) {
     SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX);
@@ -401,6 +452,22 @@ int wmain(int argc, wchar_t** argv) {
             RaiseException(test_exception, EXCEPTION_NONCONTINUABLE, 1, arguments);
             return 3;
         }
+        if (argc == 3 && std::wstring_view(argv[1]) == L"--stuck") {
+            SetEnvironmentVariableW(L"RESKATE_CRASH_REPORTING", L"1");
+            SetEnvironmentVariableW(L"RESKATE_CRASH_REPORT_URL", L"https://127.0.0.1:1/test/minidump");
+            SetUnhandledExceptionFilter(finish_child);
+            logging::Options options; options.directory = argv[2]; options.truncate_file = true;
+            check(logging::initialize(options), "Fixture logging failed");
+            set_destination(L"Levels/Game/DingoLevel_Root/DingoLevel_Root + levels/game/dingolevel_reskate_lsc_b2/dingolevel_reskate_lsc_b2 @ DefaultStartPoint");
+            // (Another thread, as a load's job workers would be: the dump holds it too.)
+            std::jthread worker([](std::stop_token stop) { while (!stop.stop_requested()) Sleep(10); });
+            if (!capture_stuck_load(L"Starting level load", 130)) ExitProcess(44);
+            // The game goes on: a second capture is refused only while one is in hand.
+            worker.request_stop();
+            worker.join();
+            RaiseException(test_exception, EXCEPTION_NONCONTINUABLE, 0, nullptr);
+            return 3;
+        }
         check(argc == 2, "Pass a fixture root");
         trace_checks();
         const auto root = std::filesystem::path(argv[1]) / std::format(L"run-{}-{}", GetCurrentProcessId(), GetTickCount64());
@@ -417,6 +484,7 @@ int wmain(int argc, wchar_t** argv) {
         crash_check(root / L"direct", Mode::direct);
         crash_check(root / L"native", Mode::native);
         crash_check(root / L"fatal", Mode::fatal);
-        std::cout << "Timing envelopes, endpoint, receipts, multipart attachments, log snapshots, retries, retention, opt-out, exception chaining, direct capture, native-handler fallback and game fatal-handler capture checks passed.\n";
+        stuck_check(root / L"stuck");
+        std::cout << "Timing envelopes, endpoint, receipts, multipart attachments, log snapshots, retries, retention, opt-out, exception chaining, direct capture, native-handler fallback, game fatal-handler and stuck-load capture checks passed.\n";
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

@@ -10,6 +10,8 @@
 #include <cstdint>
 #include <filesystem>
 #include <map>
+#include <mutex>
+#include <memory>
 #include <optional>
 #include <set>
 #include <span>
@@ -41,6 +43,10 @@ using vfs::archive_file;
 void unshare(const fs::path& path);
 std::uint64_t append_file(const fs::path& from, const fs::path& to);
 void link_or_copy(const fs::path& from, const fs::path& to);
+// `relative` (a mod's file, a superbundle a layout names) under the merge's output folder. One
+// that would land outside it (absolute, or climbing out with ..) throws: nothing the merge writes
+// may reach a mod's own folder or the game's.
+fs::path inside(const fs::path& output, const fs::path& relative);
 
 struct RelativeFiles {
     std::vector<std::string> tocs;     // Win32/... .toc, generic separators
@@ -216,9 +222,51 @@ struct StreamedTextures {
     std::uint64_t bytes{};   // what no longer stays loaded
     std::string example;
 };
+// `only`: just these of the region's files (a ScanCache's: the textures changed before).
 StreamedTextures stream_resident_textures(const CasStore& store, const fs::path& root, fb::BinaryBundle& manifest,
                                           std::vector<fb::BundleFileInfo>& files, std::size_t first,
-                                          const std::set<fb::Guid>& tocChunks, const fs::path& gameRoot);
+                                          const std::set<fb::Guid>& tocChunks, const fs::path& gameRoot,
+                                          const std::vector<std::uint32_t>* only = nullptr);
+
+// Which ReSkate.dll merges (its size and time): what it found reading a mod holds for it alone.
+std::string sdk_stamp();
+
+// What reading a mod's own bundles finds that its files alone decide: the EBX whose type references
+// are repaired, a map's mesh sizes, the textures made to stream. Kept between merges in
+// Mods/.reskate-scan.txt by each mod's fingerprint (mod_fingerprint) and the ReSkate that found it,
+// so a merge reads again only the mods whose files changed: checking a big map's every EBX and mesh
+// was most of a merge (a minute and more), on every merge, whichever mod had changed (2026-10-18).
+// The superbundle jobs share one (thread-safe).
+class ScanCache {
+public:
+    struct Mesh {
+        std::uint32_t chunk{};
+        std::uint16_t archive{};
+        std::uint32_t offset{};
+        std::uint64_t bytes{};
+    };
+    // One copy of a bundle, by the places of its files in the region.
+    struct Bundle {
+        std::vector<std::uint32_t> repair;     // EBX with type references to repair
+        std::vector<std::uint32_t> textures;   // textures whose header is changed so they stream
+        std::vector<Mesh> meshes;              // a map's meshes (where each lies in the mod, and its bytes)
+    };
+    // What `file` holds of the mods in `fingerprints` (folder name: mod_fingerprint) whose files are
+    // unchanged. Never throws: a missing or unreadable file holds nothing.
+    ScanCache(fs::path file, std::map<std::string, std::string, std::less<>> fingerprints) noexcept;
+    // By mod folder name and "superbundle|bundle" (lower case).
+    [[nodiscard]] std::optional<Bundle> find(const std::string& mod, const std::string& key) const;
+    void keep(const std::string& mod, const std::string& key, Bundle bundle);
+    // Writes it again, with the mods given only. Never throws.
+    void save() const noexcept;
+
+private:
+    fs::path file_;
+    std::map<std::string, std::string, std::less<>> fingerprints_;
+    mutable std::mutex mutex_;
+    std::map<std::string, std::map<std::string, Bundle, std::less<>>, std::less<>> known_;
+};
+inline constexpr wchar_t scan_cache_file[] = L".reskate-scan.txt";
 
 // The loading screens the mods add (the rows of the game's loading-screen
 // configuration each one appends). Never throws; an unreadable mod is noted.
@@ -291,8 +339,14 @@ struct AssetAddition {
     // guids of the documents it refers to in turn (a song names its wave).
     fb::Guid file;
     std::vector<fb::Guid> names;
+    // Bundled mesh/texture data follows the EBX/RES that references it.
+    std::vector<fb::Guid> chunk_names;
+    std::shared_ptr<const std::vector<std::byte>> chunk_metadata;
+    std::size_t chunk_index{};
 };
 struct AssetOverrides {
+    struct ChunkDefaults { std::vector<std::byte> metadata; std::vector<fb::Guid> chunks; };
+    std::map<std::string,ChunkDefaults,std::less<>> bundle_chunk_defaults;
     // By lower-case asset name, then the game's sha1 the change replaces.
     std::map<std::string, std::map<fb::Sha1, AssetOverride>, std::less<>> changed;
     // Separate from EBX: a script's EBX wrapper can have the same asset name.
@@ -320,17 +374,6 @@ AssetOverrides collect_asset_overrides(const std::vector<const Mod*>& mods,
                                        const fs::path& gameRoot, MergeReport& report,
                                        std::size_t threads = 0, bool background = false);
 
-// Of two mods that change one of the game's assets in ways that cannot both be in the game, the
-// one lower in the load order, found from the mods' asset lists before anything is merged: the
-// rule the merge applies as it combines (MergeReport::conflicts), read off the bundles two or
-// more mods ship, so the catalog can leave the losing mods out before the one merge that builds
-// the patch. `mods` highest priority first; `output` is only where the patch would go. Never
-// throws: what cannot be read is left to the merge, which still checks for itself.
-std::vector<MergeReport::Conflict> find_conflicts(const std::vector<const Mod*>& mods,
-                                                  const std::map<const Mod*, RelativeFiles>& modFiles,
-                                                  const fs::path& dataRoot, const fs::path& output,
-                                                  std::size_t threads = 0, bool background = false);
-
 // A bundle's chunk metadata is a list with one record for each of its chunks: the
 // hash of the name of the resource the chunk belongs to ("h64") and what the
 // engine needs before it streams the chunk (a texture's first mip). In the game's
@@ -345,7 +388,7 @@ struct ChunkRecord {
     static constexpr std::size_t none = static_cast<std::size_t>(-1);
     fb::Guid guid;
     std::size_t copy{none};     // the list of the copy this version of the chunk came in; none when that copy has no list
-    std::size_t index{};        // where that copy lists the chunk
+    std::size_t index{};        // where that copy's list has its record: where the copy lists it, unless the list was written again (merge_chunk_metadata's rows)
     std::size_t shipped{none};  // where the game's copy lists it; none for a chunk mods add
 };
 // The list for a merged bundle, written as the game writes one: a record for each
@@ -358,17 +401,21 @@ struct ChunkRecord {
 // does not ship, or ships without a list, every chunk is one a mod adds. When
 // every chunk is the game's own where the game lists it, the game's list comes
 // back as it is; so does one mod's, for a bundle without a list in the game that
-// is that mod's copy alone.
+// is that mod's copy alone. `rows`, when given, gets where each chunk's record is in
+// the list that comes back: its place by guid in a list in the game's form, else
+// where the chunk is listed. A copy given that list as its own reads its chunks'
+// records there (ChunkRecord::index).
 // Throws when a list that is needed cannot be read.
 [[nodiscard]] std::vector<std::byte> merge_chunk_metadata(std::span<const std::vector<std::byte>> lists,
                                                           std::span<const ChunkRecord> chunks,
                                                           std::size_t game = ChunkRecord::none,
-                                                          std::span<const fb::Guid> shipped = {});
+                                                          std::span<const fb::Guid> shipped = {},
+                                                          std::vector<std::size_t>* rows = nullptr);
 
 fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                         std::vector<Source>& sources, MergeReport& report,
                         const std::string& relative, ArchiveUse& used, CasStore& store,
                         std::uint16_t manifestArchive, const fs::path& gameRoot, const GridPlan& grid,
-                        const AssetOverrides& overrides);
+                        const AssetOverrides& overrides, ScanCache& scans);
 
 } // namespace dingosdk::mods::detail

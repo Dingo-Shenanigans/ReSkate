@@ -76,6 +76,24 @@ int main() {
     check(listed(catalog.outdated, "OffOld") && !listed(catalog.inactive, "OffOld"), "A disabled outdated mod stayed in the merge");
     check(std::ranges::any_of(catalog.warnings, [](const std::string &w) { return w.find("OtherBuild") != std::string::npos && w.find("outdated") != std::string::npos; }),
           "No warning names the outdated mod");
+    // Plugins' files from before their own folder survive the merge's generated folder: moved whole,
+    // or merged into a folder the plugin has already, its own files kept.
+    write(mods_root / ".reskate" / "data" / "racer" / "routes" / "bam" / "yes.json", "{\"name\":\"yes\"}");
+    write(mods_root / ".reskate" / "data" / "both" / "old.txt", "old");
+    write(mods_root / ".reskate" / "data" / "both" / "same.txt", "old");
+    write(mods_root / ".reskate_plugin_data" / "both" / "same.txt", "new");
+    const auto moved = mods::keep_plugin_data(mods_root);
+    check(moved.size() == 2, "Both plugins' folders were not moved");
+    check(fs::is_regular_file(mods_root / ".reskate_plugin_data" / "racer" / "routes" / "bam" / "yes.json") &&
+              !fs::exists(mods_root / ".reskate" / "data" / "racer"),
+          "A plugin's folder was not moved whole");
+    std::ifstream same(mods_root / ".reskate_plugin_data" / "both" / "same.txt");
+    std::string kept;
+    std::getline(same, kept);
+    same.close();
+    check(fs::is_regular_file(mods_root / ".reskate_plugin_data" / "both" / "old.txt") && kept == "new",
+          "A plugin with a folder already did not get the files it lacked, or lost its own");
+    check(mods::keep_plugin_data(mods_root).size() <= 1, "Moving again moved more than the leftover copy");
     fs::remove_all(root);
-    std::cout << "Mod build stamps: current, older Studio, other build, unstamped, park-only and disabled mods passed.\n";
+    std::cout << "Mod build stamps: current, older Studio, other build, unstamped, park-only and disabled mods passed; plugin data kept.\n";
 }

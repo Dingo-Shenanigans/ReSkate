@@ -244,3 +244,13 @@ void first_person_on_animation(std::uintptr_t component) noexcept {
     SetLastError(error);
 }
 }
+
+namespace dingosdk {
+std::uintptr_t local_skater_component(std::uintptr_t base, std::uintptr_t client) noexcept {
+    try {
+        return client_source::detail::first_person_component(base, client);
+    } catch (...) {
+        return 0;
+    }
+}
+} // namespace dingosdk

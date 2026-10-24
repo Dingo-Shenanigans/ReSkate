@@ -256,6 +256,47 @@ void move_existing(std::uint64_t entity, const profile::PlacedObject &object) {
     }
     e.transform_move(query.data(), pose.data(), source);
 }
+struct WorldRays {
+    struct Ray {
+        std::array<float, 3> origin{}, end{};
+    };
+    std::mutex mutex;
+    std::map<std::uint32_t, Ray> pending;
+    std::map<std::uint32_t, WorldRayHit> answers;
+};
+WorldRays &world_rays() {
+    static auto *value = new WorldRays;
+    return *value;
+}
+// Casts the queued outside rays on the client update, where the client physics context resolves.
+void cast_world_rays() {
+    auto &w = world_rays();
+    std::map<std::uint32_t, WorldRays::Ray> rays;
+    {
+        std::lock_guard lock(w.mutex);
+        rays.swap(w.pending);
+    }
+    if (rays.empty())
+        return;
+    auto &e = editor_state();
+    auto &r = placements_runtime();
+    std::array<std::uintptr_t, 2> context{};
+    if (r.context)
+        r.context(context.data());
+    const auto world = e.surface_api.ready && context[0] ? e.surface_api.world(context[0]) : 0;
+    const auto now = GetTickCount64();
+    for (const auto &[id, ray] : rays) {
+        WorldRayHit answer{true, false, {}, now};
+        answer.available = world != 0;
+        if (world)
+            if (const auto hit = editor::cast_surface(e.surface_api, world, ray.origin, ray.end)) {
+                answer.hit = true;
+                answer.at = *hit;
+            }
+        std::lock_guard lock(w.mutex);
+        w.answers[id] = answer;
+    }
+}
 } // namespace
 void initialize_park_editor(const std::filesystem::path &directory) {
     auto &e = editor_state();
@@ -289,6 +330,12 @@ void set_park_mods_root(const std::filesystem::path &data_root) {
 }
 void reset_park_editor() {
     auto &e = editor_state();
+    {
+        auto &w = world_rays();
+        std::lock_guard lock(w.mutex);
+        w.pending.clear();
+        w.answers.clear();
+    }
     ++e.generation;
     ++e.revision;
     e.transaction.reset();
@@ -634,12 +681,46 @@ void update_park_editor() {
 } // namespace dingosdk::profile_runtime
 namespace dingosdk {
 using namespace profile_runtime;
+void queue_world_ray(std::uint32_t id, const std::array<float, 3> &origin, const std::array<float, 3> &direction, float length) {
+    for (int i = 0; i < 3; ++i)
+        if (!std::isfinite(origin[i]) || !std::isfinite(direction[i]) || std::abs(origin[i]) > 100000)
+            return;
+    const float size = std::sqrt(direction[0] * direction[0] + direction[1] * direction[1] + direction[2] * direction[2]);
+    if (size < 0.5f || !(length > 0) || length > 2000)
+        return;
+    std::array<float, 3> end{};
+    for (int i = 0; i < 3; ++i)
+        end[i] = origin[i] + direction[i] / size * length;
+    auto &w = world_rays();
+    std::lock_guard lock(w.mutex);
+    w.pending[id] = {origin, end};
+}
+WorldRayHit world_ray(std::uint32_t id) {
+    auto &w = world_rays();
+    std::lock_guard lock(w.mutex);
+    const auto it = w.answers.find(id);
+    return it == w.answers.end() ? WorldRayHit{} : it->second;
+}
+void tick_local_world_rays() noexcept {
+    PreserveError preserve;
+    try {
+        std::lock_guard lock(local_runtime().native_mutex);
+        if (!local_runtime().active || cosmetic_runtime().update_thread != GetCurrentThreadId())
+            return;
+        cast_world_rays();
+    } catch (...) {
+        // A mode's optional aim query must not fail or disable park editing.
+    }
+}
 void tick_local_park_editor() noexcept {
     PreserveError preserve;
     try {
         std::lock_guard lock(local_runtime().native_mutex);
         if (!local_runtime().active || cosmetic_runtime().update_thread != GetCurrentThreadId())
             return;
+        // Mode placement uses the client physics world even before the park
+        // placement store/server manager becomes ready.
+        cast_world_rays();
         update_placement_restore();
     } catch (...) {
         std::lock_guard lock(local_runtime().native_mutex);

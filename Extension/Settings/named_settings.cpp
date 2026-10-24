@@ -728,6 +728,7 @@ std::optional<std::string> named_setting_value(std::string_view name) {
     return {};
 }
 std::string player_change_named_setting(std::string_view name, std::string_view value, bool restore) {
+    // Player changes remain subject to the existing session settings lock.
     auto &r = runtime();
     if (!r.thread || r.thread != GetCurrentThreadId())
         return "error: Native settings require the game update thread.";

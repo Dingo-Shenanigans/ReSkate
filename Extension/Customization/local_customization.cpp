@@ -115,11 +115,12 @@ void validate_player_card(const CosmeticLoadout& value) {
             "Invalid RIP Card slot");
 }
 dingosdk::Json item_display_metadata(const std::string& asset, const dingosdk::Json& overrides) {
-    // Titles, descriptions and rarities come from the installed content cache.
-    const auto& items = content_cache::catalogs().items;
+    // Titles, descriptions and rarities come from the installed content cache. A mod's own
+    // object takes the title its reskate-objects.json gives it (content_catalogs.h).
+    const auto& catalogs = content_cache::catalogs();
     std::string key = asset;
     for (auto& c : key) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
-    Json result = items.value(key, Json::object());
+    Json result = catalogs.items.contains(key) ? catalogs.items.at(key) : catalogs.mod_objects.value(key, Json::object());
     // User metadata takes precedence field by field, including explicit empty
     // descriptions. Do not copy unrelated saved inventory data into the catalog.
     for (const auto* field : {"title", "description", "rarity_id"})

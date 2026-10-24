@@ -32,6 +32,29 @@ std::vector<MapUpdate> update_maps(const std::filesystem::path &mods, const std:
 std::string map_version(const std::filesystem::path &mod);
 void set_map_version(const std::filesystem::path &mod, const std::string &version);
 
+// Whether a required plugin ("plugins.required") is one players can be asked for: listed as a
+// plugin in ReSkate's Thunderstore community, not deprecated, not rejected. Empty when it is,
+// else why not. `reached` is false when Thunderstore could not be asked (it is then kept: the
+// players' games check it again themselves). Asks Thunderstore; for a worker thread.
+std::string required_plugin_problem(const std::string &package, bool &reached);
+
+// The run loop's side of that: the list checked once it changes (and at start), on a worker,
+// and the packages to leave out of what players are told.
+class RequiredPluginCheck {
+  public:
+    struct Done {
+        std::vector<std::string> lines;   // for the log
+        std::set<std::string> refused;    // not plugins on Thunderstore: not asked of players
+        bool finished{};
+    };
+    Done tick(const std::vector<std::string> &required);
+
+  private:
+    std::future<Done> work_;
+    std::vector<std::string> checked_;
+    bool started_{};
+};
+
 // The run loop's side: a check when one is due or asked for, on a worker, and what it found.
 class MapUpdater {
   public:

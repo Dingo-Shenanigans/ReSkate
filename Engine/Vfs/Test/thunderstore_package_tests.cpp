@@ -78,6 +78,18 @@ int main() {
             refused(marked, "a package marked NSFW is refused");
         }
         refused("{\"namespace\":\"Sandos\",\"name\":\"Vancouver_Plaza\"}", "an answer with no listing is refused");
+        // A dedicated server's required plugin: taken only when it is listed as a plugin.
+        {
+            const auto plugin = answer("Sandos", "Vancouver_Plaza", "2.0.0", "reskate", "Plugins", "unreviewed");
+            check(package::choose(plugin, newest, "reskate", package::Kind::plugin).ok, "a plugin listed as one is refused");
+            check(!package::choose(plugin, newest, "reskate").ok, "a plugin is taken as a map");
+            const auto cosmetic = package::choose(answer("Sandos", "Vancouver_Plaza", "2.0.0", "reskate", "Cosmetics", "unreviewed"),
+                                                  newest, "reskate", package::Kind::plugin);
+            check(!cosmetic.ok && cosmetic.reason.find("plugin") != std::string::npos, "a cosmetic is taken as a plugin");
+            check(!package::choose(answer("Sandos", "Vancouver_Plaza", "2.0.0", "reskate", "Maps", "unreviewed"), newest, "reskate",
+                                   package::Kind::plugin).ok,
+                  "a map is taken as a plugin");
+        }
         refused("not json", "an answer that is not JSON is refused");
         refused("[]", "an answer that is not an object is refused");
     }

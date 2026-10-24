@@ -5,7 +5,8 @@
 #include <string_view>
 
 // One Thunderstore package looked up by name, for the game: the map a multiplayer host is on
-// and this player does not have (Extension/Assets/map_download.h). No network here; the caller
+// and this player does not have, and the plugins a dedicated server needs
+// (Extension/Assets/map_download.h). No network here; the caller
 // fetches details_url() and hands the answer to choose().
 namespace dingosdk::thunderstore_package {
 
@@ -35,9 +36,11 @@ struct Choice {
     std::string icon;
     std::string reason;    // why not, for the player
 };
+// What the package has to be listed as: a map (the "Maps" category) or a plugin ("Plugins").
+enum class Kind { map, plugin };
 // Reads that answer. The package is taken only when it is the one asked for, is listed in
-// `community` as a map (the "Maps" category), is not deprecated or marked NSFW there and was
-// not rejected by the community's moderators.
-Choice choose(std::string_view json, const Name& wanted, std::string_view community);
+// `community` as `kind`, is not deprecated or marked NSFW there and was not rejected by the
+// community's moderators.
+Choice choose(std::string_view json, const Name& wanted, std::string_view community, Kind kind = Kind::map);
 
 } // namespace dingosdk::thunderstore_package

@@ -85,6 +85,11 @@ bool teleport_to_local_placed_object(std::string_view map, std::uint64_t token);
 // Teleports the local skater to a world position (sent within 5 s, when the skater can be
 // moved). False when the game's teleport is unavailable.
 bool teleport_local_skater(const std::array<float, 3>& position);
+// The same, facing `heading` (radians about world up; 0 = +Z, the way the other teleports face).
+bool teleport_local_skater_heading(const std::array<float, 3>& position, float heading);
+bool teleport_local_skater_transform(const std::array<float,16>& transform);
+// Includes the queued request and the native streaming/ground-check transition.
+bool local_skater_teleport_pending();
 // The highest collision surface straight down at (x, z) between world heights `top` and
 // `bottom`, from the client physics world (the park editor's native ray). Empty when nothing
 // is there yet (collision still streaming) or the query is unavailable. Client update thread.
@@ -109,6 +114,11 @@ void set_local_values(const std::vector<std::pair<std::string, Json>>& values) n
 // read it every frame without touching the database.
 // The ReSkate menu's size: the window's, or (`fullscreen`) the full screen menu's.
 float local_menu_scale(bool fullscreen = false) noexcept;
+// One of the game's OWN gameplay options (the ones its Settings menu edits, by the game's key for it), as the local
+// profile holds it: the same value the game's scripts are answered with. Empty while the player never changed it (the
+// game's default applies). Setting it is the same as changing it in the game's menu.
+std::optional<double> local_game_option(std::string_view key) noexcept;
+bool set_local_game_option(std::string_view key, double value, bool boolean) noexcept;
 bool set_local_menu_scale(float value, bool fullscreen = false) noexcept;
 // Whether the ReSkate menu fills the screen (made for a controller) or is a window. Cached likewise.
 bool local_menu_fullscreen() noexcept;

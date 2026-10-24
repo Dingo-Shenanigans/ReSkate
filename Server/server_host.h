@@ -14,6 +14,7 @@
 #include "Extension/Multiplayer/Session/room.h"
 #include "Extension/Multiplayer/Steam/steam_transport.h"
 #include "Engine/Game/World/world_layers.h"
+#include <deque>
 #include <mutex>
 #include <unordered_map>
 #include <functional>
@@ -23,10 +24,12 @@
 #include <random>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 #include <array>
 
 namespace dingosdk::server {
+class ServerPlugins;
 using namespace multiplayer;
 
 // The host side of a ReSkate session without a game: admission, the roster,
@@ -46,12 +49,19 @@ class Host {
 
     std::string invite() const;
     std::string map_name() const;
+    // The level players load for the map, as their games name it: a destination's level, after
+    // its "|". What the server's plugins see as reskate.level.current().
+    std::string map_level() const;
     // "maps reload": reads Mods again and says what changed. Also after a map was updated.
     std::string reload_maps();
     // The mod folder of the map in play while anyone is on (an update leaves it alone), or
     // nothing; and whether "maps update" was typed since this was last asked.
     std::string map_folder_in_play() const;
     bool take_map_update_request() { return std::exchange(map_update_requested_, false); }
+    // The plugins players are told to have ("plugins.required"): the config's, less those a
+    // check on Thunderstore found are not plugins (refuse_plugins).
+    std::vector<std::string> required_plugins() const;
+    void refuse_plugins(std::set<std::string> refused) { refused_plugins_ = std::move(refused); }
     unsigned players() const;
     std::uint64_t secret() const { return secret_; }
     // The UDP port players may connect straight to, or 0 (config connection).
@@ -75,9 +85,84 @@ class Host {
     void send_player_chat(std::uint64_t steam_id, std::string_view text);
     void broadcast_player_chat(std::string_view text);
     bool teleport_player(std::uint64_t steam_id, float x, float y, float z);
+    bool is_banned(std::uint64_t id) const;
+    // A player's locks (lock_*, server_config.h), and making them exactly `locks` as an admin's
+    // lock and unlock would (logged, and the player told): the tools that changed.
+    std::uint8_t player_locks(std::uint64_t id) const { return locks_of(id); }
+    std::uint8_t set_locks(std::uint64_t id, std::uint8_t locks, const std::string &source);
     std::optional<std::array<float, 3>> player_position(std::uint64_t steam_id) const;
+    // The role a player has (data/roles.json: given them, or the default), here or not; or none.
+    const Role *player_role(std::uint64_t id) const { return role_of(id); }
+    // Where each player in the world last said their skater was (their latest pose's root), and
+    // how long ago that arrived: what the server's plugins see of the skaters.
+    struct SkaterPose {
+        std::uint64_t id{};
+        Transform root;
+        std::uint64_t age_us{};
+    };
+    std::vector<SkaterPose> skater_poses() const;
     void drop(std::uint64_t id, const std::string &reason, const std::string &detail = {});
     void change_map(std::string_view map); // a level name, level path or destination
+    std::uint64_t world_id() const { return world_; }
+    // A server plugin changes the map, or the time of day for everyone, with the checks of the
+    // console's map and tod (and saved as they save): "" when done, else why not.
+    std::string plugin_map(std::string_view map);
+    std::string plugin_time_of_day(std::string_view time);
+    // The last chat lines, for the server's plugins (chat.read): each player's line as it is passed
+    // on, the server's own lines to everyone (sender 0), and a player's /command the server does
+    // not know itself, while a plugin hears chat. Sequences count from 1.
+    struct ChatRecord {
+        std::uint64_t sequence{}, sender{};
+        std::string name, text;
+        bool server{};
+    };
+    std::vector<ChatRecord> chat_since(std::uint64_t sequence) const;
+    // The park mods set up (maps.park_mods), for the server's plugins: which fit the map running
+    // now, and which are spawned, with how many objects and minutes left (0: until removed).
+    struct ParkStatus {
+        std::string name, map;
+        bool here{}, spawned{};
+        std::size_t objects{};
+        unsigned minutes_left{};
+    };
+    std::vector<ParkStatus> park_status() const;
+    // One spawned (for `minutes`, 0 until removed) or removed for a server plugin, as "park-mod add"
+    // and "remove" do, with their checks and limits and their "[parks]" lines logged "by plugin
+    // <id>": "" when it is done, else why not.
+    std::string plugin_park(std::string_view plugin, bool spawn, std::string_view name, unsigned minutes);
+    // A plugin message from the server's plugins (server_plugins.h) to one player, or everyone (0).
+    void send_plugin_message(std::uint64_t to, const std::vector<std::uint8_t> &bytes);
+    // Cards and polls for the server's plugins (server_votes.cpp), on the players' screens: each
+    // player's own, shown over the server's announcement and vote until it ends, then those again.
+    // `players` empty is everyone on now. A card is up `seconds` (0: as long as an announcement);
+    // a poll runs `seconds` (0: votes.poll_seconds), one id for all its players, closed for each
+    // as they answer ("/2"); a player's newer poll replaces theirs. "" when shown, else why not.
+    std::string plugin_card(std::string_view plugin, const std::vector<std::uint64_t> &players, std::string_view text, unsigned seconds);
+    std::string plugin_poll(std::string_view plugin, const std::vector<std::uint64_t> &players, std::string_view question,
+                            const std::vector<std::string> &answers, unsigned seconds, std::uint32_t &id);
+    std::string plugin_poll_close(std::string_view plugin, std::uint32_t id);
+    void plugin_screens_release(std::string_view plugin); // a plugin that stopped: its cards and polls go
+    // A player's answer (from 1) to a plugin's poll, or (answer 0) the poll closed for them and why:
+    // "timeout", "left", "replaced" or "closed".
+    struct PollNews {
+        std::string plugin;
+        std::uint32_t id{};
+        std::uint64_t player{};
+        std::size_t answer{};
+        std::string text, why;
+    };
+    std::vector<PollNews> take_poll_news() { return std::exchange(poll_news_, {}); }
+    // One player hidden from others for the server's plugins (server_host.cpp). Wholly (`skater`):
+    // they leave those players' rosters, and nothing of them (poses, sound, voice, outfit, effects,
+    // objects) is sent to them, so their games take the skater away as for a player who left.
+    // Otherwise only their voice and/or sound is held back. `viewers` empty is everyone on now but
+    // the target. Refused while the target shares a party or a throwdown with one of them. Shown
+    // again (`viewers` empty: everyone this plugin hid them from), they are introduced anew.
+    // "" when done, else why not.
+    std::string plugin_hide(std::string_view plugin, std::uint64_t target, const std::vector<std::uint64_t> &viewers, bool skater, bool voice,
+                            bool sound);
+    std::string plugin_unhide(std::string_view plugin, std::uint64_t target, const std::vector<std::uint64_t> &viewers);
+    void plugin_hides_release(std::string_view plugin); // a plugin that stopped: everyone it hid is shown again
 
     enum class VoteKind { map, kick, time, custom, poll, extend };
 
@@ -171,6 +256,7 @@ class Host {
         // been told they are about to be removed for being away.
         std::uint64_t active_at{};
         bool away_warned{};
+        std::uint64_t present_at{}; // their game's last presence notice counted (PacketKind::present)
         std::uint64_t pose_arrival{};
         std::array<PoseDelivery, max_players> pose_delivery;
         CrowdLimits crowd; // how far the full and half rates reach for them in a crowd
@@ -183,7 +269,6 @@ class Host {
         OutfitBudget outfit_budget;
         SoundBudget sound_budget;
         EffectBudget effect_budget;
-        EffectBudget drone_budget; // FPV drone markers (drone_beacon.h): a few a second
         // Their poses read this pass, passed on once all of the pass's messages are read
         // (relay_poses), and how many of their effects packets were passed on in it.
         std::vector<Packet> relay_poses;
@@ -191,7 +276,7 @@ class Host {
         ChatRate chat_rate;
         std::uint64_t typing_notice{}; // last accepted "still typing", so a flood is not relayed
         bool typing{};                 // an "on" was passed along and no "off" since
-        ChatBudget admin_budget, throwdown_budget, party_budget;
+        ChatBudget admin_budget, throwdown_budget, party_budget, plugin_budget;
         SpeedCheck speed;           // how fast their game runs, from their pose timestamps
         bool speeding{};            // flagged: out of linked activities (config speed_check)
         std::uint64_t speed_normal_since{}; // flagged, but measuring normal again since then
@@ -234,6 +319,7 @@ class Host {
     SteamTransport &transport_;
     Log log_;
     bool map_update_requested_{};
+    std::set<std::string> refused_plugins_;
     ActivityLog activity_; // what players do, for the console (config_.activity_log)
     // The running player vote (server_votes.cpp), and when each player may start another.
     // A poll is one too: it has answers instead of yes and no, and runs nothing (but the console's poll-run).
@@ -262,6 +348,29 @@ class Host {
     std::uint64_t announcement_until_{};
     std::uint64_t announcement_for_{}; // the one player shown it, or 0: everyone
     std::uint32_t announcement_ids_{};
+    // The plugins' cards and polls, by the player they are shown to (plugin_card, plugin_poll).
+    struct PluginCard {
+        std::string plugin;
+        multiplayer::ServerAnnouncement card;
+        std::uint64_t until{};
+    };
+    struct PluginPoll {
+        std::string plugin;
+        std::uint32_t id{};
+        std::string question;
+        std::vector<std::string> answers;
+        std::uint64_t ends{};
+    };
+    std::map<std::uint64_t, PluginCard> plugin_cards_;
+    std::map<std::uint64_t, PluginPoll> plugin_polls_;
+    std::vector<PollNews> poll_news_;
+    // The players the server's plugins hide (plugin_hide), by who they are hidden from: each
+    // target's plugin, and what of them is held back.
+    struct Hidden {
+        std::string plugin;
+        bool skater{}, voice{}, sound{};
+    };
+    std::map<std::uint64_t, std::map<std::uint64_t, Hidden>> hidden_;
     std::uint64_t announced_at_{}; // the last timed announcement, or while nobody is on
     std::size_t next_announcement_{};
     void active(Guest &guest) {
@@ -304,6 +413,8 @@ class Host {
     JoinBackoff join_backoff_; // Steam IDs whose attempts to join keep failing
     std::optional<PasswordKey> password_;
     std::uint64_t id_{}, secret_{}, epoch_{}, map_{}, world_ = 1;
+    // Plugins' server copies (server_plugins.h), from start on.
+    std::shared_ptr<ServerPlugins> plugins_;
     std::uint32_t sequence_{};
     VoicePolicy voice_policy_;
     std::uint32_t object_clears_{};
@@ -430,7 +541,6 @@ class Host {
     void send_words(Guest &);          // the server's own filtered chat words (server_words.h)
     void send_next_maps(Guest &);      // the maps the vote for the next one will offer
     void roles_changed();              // after any change to the roles or who has them
-    bool is_banned(std::uint64_t id) const;
     void save();
 
     // `detail` is for the log alone: the player is told `reason`.
@@ -443,6 +553,13 @@ class Host {
     void send_roster();
     void send_world_state();
     void send_chat(std::string_view text, Guest *only = nullptr);
+    std::deque<ChatRecord> chat_log_;
+    std::uint64_t chat_sequence_{};
+    void record_chat(std::uint64_t sender, std::string name, std::string text, bool server);
+    // A /command the server does not know, for the plugins when one hears chat: true when taken.
+    bool chat_to_plugins(Guest &guest, std::string_view line);
+    // The time of day on every map (tod): "" when set, else why not.
+    std::string set_time_of_day(std::string_view time);
     void send_bans(Guest &admin);
     void send_maps(Guest &admin);
     std::string wire_map_label() const;
@@ -464,6 +581,8 @@ class Host {
     std::string start_poll(Guest *starter, std::string_view text, std::string run = {});
     void cast_vote(Guest &, bool yes);
     void answer_poll(Guest &, std::size_t answer);
+    // Whether a chat command (without its "/") answers the running vote or poll for this player.
+    bool answers_vote(const Guest &, std::string_view line) const;
     std::string end_poll(Guest *by);
     void check_vote(bool expired);
     void cancel_vote(const std::string &why);
@@ -483,6 +602,22 @@ class Host {
     // The announcement card on every player's screen, or only on player `to`'s (not in chat).
     void announce(std::string_view text, std::uint64_t to = 0);
     void tick_announcements(); // the owner's messages in turn, on their timer
+    // The plugins' cards and polls (plugin_card, plugin_poll): a poll closed for one player, with
+    // why; a number they typed, true when it was about their plugin poll (answered or refused);
+    // what ran out; a player who left; and the card and vote player `id`'s roster carries instead
+    // of `card` and `vote`.
+    // The players a plugin named who are on now (everyone for none); empty, and why, when none is.
+    std::vector<Guest *> plugin_screen_players(const std::vector<std::uint64_t> &players, std::string &why);
+    void close_plugin_poll(std::uint64_t player, std::string_view why);
+    bool answer_plugin_poll(Guest &, std::size_t answer);
+    void tick_plugin_screens();
+    void plugin_screens_left(std::uint64_t player);
+    void plugin_screens_roster(std::uint64_t id, multiplayer::ServerAnnouncement &card, multiplayer::ServerVote &vote) const;
+    // What of `target` a plugin holds back from `viewer`, or null; whether either of two players is
+    // wholly hidden from the other; and a player who left, taken out of every list.
+    const Hidden *hidden_from(std::uint64_t viewer, std::uint64_t target) const;
+    bool hidden_between(std::uint64_t a, std::uint64_t b) const;
+    void hidden_left(std::uint64_t player);
     void reply(Guest &, std::string_view text, unsigned max_lines = 12);
     Guest *match_player(std::string_view text);
     // Sends each mover to a ring of `radius` around `at`, 1 m up, so nobody lands inside anyone; how many were sent.
@@ -517,6 +652,7 @@ class Host {
     ObjectState park_objects_; // never reset: its revisions only grow, so no game holds a newer one
     std::uint64_t park_object_ids_{};
     bool by_vote_{}; // a passed custom vote's command is running (as the console)
+    std::string by_plugin_; // a server plugin's park-mod is running (plugin_park): "plugin <id>"
     std::string park_mod_command(std::string_view argument, std::uint64_t admin);
     void publish_parks();
     void remove_parks(std::string_view reason); // all of them, with the reason for the log

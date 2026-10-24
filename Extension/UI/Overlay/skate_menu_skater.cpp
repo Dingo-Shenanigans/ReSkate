@@ -166,61 +166,6 @@ void first_person_controls(SkateMenu& menu, const Model& model, const CallbacksV
     end_card();
 }
 
-// Board Break's settings (Extension/BoardBreak/board_break_feel.h): how a board breaks, wears and
-// sounds. Each is a console verb, kept with the profile.
-void board_break_settings_card(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
-    const auto& bb = model.board_break;
-    if (!bb.available) return;
-    const bool console = bb.enabled && callbacks.queue_console_command;
-    std::string subtitle = !bb.has_deck ? "No Board Break deck is in the game"
-                                        : "Your board: " + std::to_string(static_cast<int>(bb.worn * 100.0f + 0.5f)) + "% worn (" + bb.condition + ")";
-    begin_card(menu, "board-break-settings", "BOARD BREAK SETTINGS", subtitle.c_str());
-    if (!bb.enabled) note("Switch Board Break on to change these.");
-    const auto flag = [&](const char* label, const char* hint, bool on, const char* verb) {
-        bool value = on;
-        if (toggle_row(menu, label, hint, value, console)) send_console(menu, callbacks, std::string("boardbreak ") + verb + (value ? " 1" : " 0"));
-    };
-    flag("Always break", "Every slam breaks the board, and every slide that comes down onto a rail: for replay clips.", bb.always, "always");
-    flag("Rail snaps", "A boardslide or darkslide that comes down too hard onto a rail or ledge can snap the board, and you go down with it.",
-         bb.rails, "rails");
-    flag("Wear and tear", "Every hit wears your board. A worn board turns lazier, wobbles and breaks more easily; worn out, it can give way. "
-         "Turn on Board wear (Mod Options) to see the scratches.", bb.wear, "wear");
-    flag("Break sounds", "The crack of a break, and metal when it breaks on metal.", bb.crack_sounds, "cracks");
-    flag("Body hit sounds", "Each hit of your body in a bail, as hard as it hits.", bb.body_sounds, "bodysounds");
-    // Sent once a slider is let go; the dragged value shows until the setting comes back.
-    const auto percent = [&](const char* id, const char* label, const char* hint, int value, int low, int high, int step, const char* verb) {
-        static std::array<int, 3> edited{-1, -1, -1};
-        static std::array<double, 3> edited_at{};
-        const auto slot = std::string_view(id) == "bb-sensitivity" ? 0u : std::string_view(id) == "bb-joined" ? 1u : 2u;
-        int shown = edited[slot] >= 0 ? edited[slot] : value;
-        field(menu, label, hint);
-        ImGui::BeginDisabled(!console);
-        if (::dingosdk::overlay::menu::slider_int((std::string("##") + id).c_str(), &shown, low, high, "%d%%", ImGuiSliderFlags_AlwaysClamp)) {
-            edited[slot] = std::clamp((shown + step / 2) / step * step, low, high);
-            edited_at[slot] = ImGui::GetTime();
-        }
-        if (ImGui::IsItemDeactivatedAfterEdit() && edited[slot] >= 0) {
-            send_console(menu, callbacks, std::string("boardbreak ") + verb + " " + std::to_string(edited[slot]));
-            edited_at[slot] = ImGui::GetTime();
-        }
-        if (edited[slot] >= 0 && !ImGui::IsItemActive() && (value == edited[slot] || ImGui::GetTime() - edited_at[slot] > 2.0)) edited[slot] = -1;
-        ImGui::EndDisabled();
-    };
-    percent("bb-sensitivity", "Break sensitivity", "How easily a board breaks. 200% takes half the force, 50% twice as much.", bb.sensitivity, 10, 400, 10,
-            "sensitivity");
-    percent("bb-joined", "Grip tape holds", "How many breaks the grip tape holds together instead of a piece coming off.", bb.joined, 0, 100, 5, "joined");
-    percent("bb-wear-rate", "Wear speed", "How fast boards wear. 0% keeps a board as it is.", bb.wear_rate, 0, 500, 10, "wearrate");
-    if (console_style()) {
-        if (button_row(menu, "bb-new", {{"NEW BOARD", console && bb.has_deck, false, "Your board as good as new: no wear."}}) == 0)
-            send_console(menu, callbacks, "boardbreak worn 0");
-    } else {
-        ImGui::BeginDisabled(!console || !bb.has_deck);
-        if (ImGui::Button("New board", ImVec2(-FLT_MIN, 0))) send_console(menu, callbacks, "boardbreak worn 0");
-        ImGui::EndDisabled();
-    }
-    end_card();
-}
-
 // Skater > CHEATS: flying through things, never bailing, and the boosts.
 void cheats_tab(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
     const auto& debug = model.debug;
@@ -241,117 +186,65 @@ void cheats_tab(SkateMenu& menu, const Model& model, const CallbacksV3& callback
         debug_request(menu, callbacks, {DebugAction::set_no_bail, no_bail});
     end_card();
 
-    begin_card(menu, "boosts", "BOOSTS", "Buttons are set in Settings > Controls");
+    // The sliders cover the usual range; the number box beside each takes more (up to 10000, Revert Boost x100).
+    const auto boost_speed_ok = [](float speed) { return std::isfinite(speed) && speed >= 0.0f && speed <= 10000.0f; };
+    begin_card(menu, "boosts", "BOOSTS", "Buttons are set in Settings > Controls. 0 is off. Type a number past the slider's end for more.");
     ImGui::BeginDisabled(!callbacks.queue_debug);
     field(menu, "Forward boost");
     float forward_velocity = debug.forward_velocity_speed;
-    if (slider_float("##forward-velocity", &forward_velocity, 1.0f, 300.0f, "+%.1f", ImGuiSliderFlags_AlwaysClamp))
+    if (slider_float("##forward-velocity", &forward_velocity, 0.0f, 300.0f, "+%.1f") && boost_speed_ok(forward_velocity))
         debug_request(menu, callbacks, {DebugAction::set_forward_velocity_speed, false, forward_velocity});
     field(menu, "Up boost");
     float up_velocity = debug.up_velocity_speed;
-    if (slider_float("##up-velocity", &up_velocity, 1.0f, 25.0f, "+%.1f", ImGuiSliderFlags_AlwaysClamp))
+    if (slider_float("##up-velocity", &up_velocity, 0.0f, 25.0f, "+%.1f") && boost_speed_ok(up_velocity))
         debug_request(menu, callbacks, {DebugAction::set_up_velocity_speed, false, up_velocity});
     field(menu, "Off-board up boost");
     float offboard_up_velocity = debug.offboard_up_velocity_speed;
-    if (slider_float("##offboard-up-velocity", &offboard_up_velocity, 1.0f, 25.0f, "+%.1f", ImGuiSliderFlags_AlwaysClamp))
+    if (slider_float("##offboard-up-velocity", &offboard_up_velocity, 0.0f, 25.0f, "+%.1f") && boost_speed_ok(offboard_up_velocity))
         debug_request(menu, callbacks, {DebugAction::set_offboard_up_velocity_speed, false, offboard_up_velocity});
     ImGui::EndDisabled();
+    bool revert_boost = debug.revert_boost;
+    if (toggle_row(menu, "Revert Boost", "Speed boost when you land an auto revert or a board bend. Clean 180s get nothing.",
+            revert_boost, callbacks.queue_debug != nullptr))
+        debug_request(menu, callbacks, {DebugAction::set_revert_boost_enabled, revert_boost});
+    ImGui::BeginDisabled(!callbacks.queue_debug || !debug.revert_boost);
+    field(menu, "Revert Boost strength", "Auto reverts add 1.5 m/s and board bends 2 to 2.6 m/s, times this. Type up to x100 in the box.");
+    float revert_speed = debug.revert_boost_speed;
+    if (slider_float("##revert-boost-speed", &revert_speed, 0.5f, 5.0f, "x%.1f") && revert_speed >= 0.5f && revert_speed <= 100.0f)
+        debug_request(menu, callbacks, {DebugAction::set_revert_boost_speed, false, revert_speed});
+    ImGui::EndDisabled();
+    note("Dark Pop is on SANDBOX > TUNE > TRICKLINING.");
     note("Controller: left stick moves, right stick looks, RT / LT rise and fall, click the left stick to boost.");
     note("Keyboard: WASD / Q E, Shift to boost. Close the menu to fly.");
     end_card();
 }
 
-// Addons > ROAD RASH: bails leave marks.
-void road_rash_addon(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
-    begin_card(menu, "road-rash", "ROAD RASH");
-    bool road_rash = model.road_rash.enabled;
-    const bool rash_console = model.road_rash.available && callbacks.queue_console_command;
-    if (toggle_row(menu, "Road Rash", "Bails leave marks that build up: dust, scrapes, bruises, wounds. Needs the Road Rash item pack.",
-            road_rash, rash_console))
-        send_console(menu, callbacks, road_rash ? "roadrash 1" : "roadrash 0");
-    bool rash_blood = model.road_rash.blood;
-    if (toggle_row(menu, "Road Rash blood", "Fresh blood on the worst wounds. Off, they are dry and scabbed.", rash_blood,
-            rash_console && model.road_rash.enabled))
-        send_console(menu, callbacks, rash_blood ? "roadrashblood 1" : "roadrashblood 0");
-    end_card();
-}
-
-// Addons > HALL OF MEAT: bails show the bones they hurt and score a Meat card.
-void hall_of_meat_addon(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
+// Dark Pop (Extension/Skater/no_bail.cpp): shown with the tricklining tools on SANDBOX > TUNE > TRICKLINING.
+// Dark Pop 3.0 (Sivaes/darkpop): the pre-0.32.0 dark pop put back through the game's own sink-and-pop state. One switch;
+// everything that tested out is on by default. Not the auto-release version 0.5.0 shipped (which timed a D-pad Right
+// release through XInput and could not act when another XInput hook, such as Steam's overlay, answered first).
+void dark_pop_controls(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
     const auto& debug = model.debug;
-    begin_card(menu, "hall-of-meat", "HALL OF MEAT");
-    bool hall_of_meat = model.hall_of_meat.enabled;
-    // No Bail (and noclip, which includes it) stops the bails Hall of Meat scores.
-    const bool bails_off = debug.no_bail || debug.no_bail_active;
-    const char* meat_help = hall_of_meat && bails_off
-        ? "On, but No Bail is stopping your bails, so nothing shows. Turn No Bail (and noclip) off in Skater > Cheats."
-        : bails_off
-        ? "Your bails show the bones they hurt and score a Meat card. Needs No Bail (and noclip) off."
-        : "Your bails show the bones they hurt and score a Meat card. A break slows the game in single player.";
-    if (toggle_row(menu, "Hall of Meat", meat_help, hall_of_meat, model.hall_of_meat.available && callbacks.queue_console_command))
-        send_console(menu, callbacks, hall_of_meat ? "hallofmeat 1" : "hallofmeat 0");
-    end_card();
-}
-
-// Addons > BOARD BREAK: the switch, the deck in the game, and how boards break, wear and sound.
-void board_break_addon(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
-    begin_card(menu, "board-break", "BOARD BREAK");
-    bool board_break = model.board_break.enabled;
-    if (toggle_row(menu, "Board Break", model.board_break.has_deck
-                ? "A hard slam can snap your board: at the nose, in the middle or at the tail. Whole again once you pick it up."
-                : "A hard slam can snap your board. Needs one of the Board Break deck packs.",
-            board_break, model.board_break.available && callbacks.queue_console_command))
-        send_console(menu, callbacks, board_break ? "boardbreak 1" : "boardbreak 0");
-    end_card();
-    board_break_deck_card(menu, model, callbacks);
-    board_break_settings_card(menu, model, callbacks);
-}
-
-// Addons > GRIND EXITS: grind exit control (Extension/Skater/grind_exit_control.h).
-void grind_exits_addon(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
-    const auto& grind = model.grind_exit;
-    const bool grind_console = grind.available && callbacks.queue_console_command;
-    begin_card(menu, "grind-exits", "GRIND EXITS", "Choose the side you pop out of a grind using LT/RT");
-    bool grind_on = grind.enabled;
-    if (toggle_row(menu, "Grind exit triggers", "Press LT or RT while grinding to pick the side you pop out to.",
-            grind_on, grind_console))
-        send_console(menu, callbacks, grind_on ? "grindexit exits on" : "grindexit exits off");
-    field(menu, "Input Mode");
-    int grind_sides = grind.toe_heel ? 0 : 1;
-    if (choice(menu, "grind-sides", grind_sides, {"Toe / Heel", "Left / Right"}, grind_console, 0.0f,
-            {"Direction is based on your skater's toe/heel side", "Direction is based on left or right of your direction of travel"}))
-        send_console(menu, callbacks, grind_sides == 0 ? "grindexit sides toeheel" : "grindexit sides travel");
-    if (grind.toe_heel) {
-        field(menu, "Your stance");
-        int grind_stance = grind.stance == 2 ? 1 : grind.stance == 1 ? 0 : -1;
-        if (choice(menu, "grind-stance", grind_stance, {"Regular", "Goofy"}, grind_console))
-            send_console(menu, callbacks, grind_stance == 1 ? "grindexit stance goofy" : "grindexit stance regular");
-        if (grind.stance == 0) warn("Pick your stance. Until then LT / RT are left / right of travel.");
-    }
-    {
-        // Sent once the slider is let go (not every frame of a drag); the dragged value shows
-        // until the setting comes back, in steps of 5.
-        static int edited = -1;
-        static double edited_at = 0;
-        int strength = edited >= 0 ? edited : grind.strength;
-        field(menu, "Pop-out strength", "How far to the side a trigger exit pops. 100% is the full exit; lower it for rails next to a wall.");
-        ImGui::BeginDisabled(!grind_console);
-        if (slider_int("##grind-strength", &strength, 10, 100, "%d%%", ImGuiSliderFlags_AlwaysClamp)) {
-            edited = std::clamp((strength + 2) / 5 * 5, 10, 100);
-            edited_at = ImGui::GetTime();
-        }
-        if (ImGui::IsItemDeactivatedAfterEdit() && edited >= 0) {
-            send_console(menu, callbacks, "grindexit strength " + std::to_string(edited));
-            edited_at = ImGui::GetTime();
-        }
-        if (edited >= 0 && !ImGui::IsItemActive() && (grind.strength == edited || ImGui::GetTime() - edited_at > 2.0)) edited = -1;
-        ImGui::EndDisabled();
+    if (fold_card(menu, "dark-pop", "DARK POP", "Catch a flip dark, press a D-pad direction in the air, land it dark")) {
+    bool dark_pop = debug.dark_pop;
+    if (toggle_row(menu, "Dark Pop", "The pre-0.32.0 dark pop, back: catch a flip trick dark (board upside down), press D-pad Left, Down or Right in the air and land it still dark. The body sinks into the ground and is thrown back up, about 8 m/s, and the flight is a normal one: tricks, camera, landing. Any trick, any height, 180s included. Turn the board back over before landing and you land normally. Play with Dark Catch Assist off, Legacy Dark Catches on; No Bail can stay off. Known: a landing caught exactly flat (board up -1.00 in the log) sometimes stays dark in the air and bails.",
+            dark_pop, callbacks.queue_debug != nullptr))
+        debug_request(menu, callbacks, {DebugAction::set_dark_pop_enabled, dark_pop});
+    bool hide_dpad = debug.dark_pop_hide_dpad;
+    if (toggle_row(menu, "Hide the D-pad from the game in the air", "While you are in the air the game's own controller reads see D-pad Left, Down and Right let go (Dark Pop still sees them), and a press held through the landing stays hidden until you let go. So D-pad Right never opens the Quick Drop radial, and in keyboard/mouse mode the radial's release can't pick the object browser. On the ground the D-pad works as normal.",
+            hide_dpad, callbacks.queue_debug != nullptr))
+        debug_request(menu, callbacks, {DebugAction::set_dark_pop_hide_dpad, hide_dpad});
+    bool probe = debug.probe;
+    if (toggle_row(menu, "Dark pop probe", "Records what the game does to two files in the logs folder named dark-pop-probe-<time>.csv and dark-pop-fast-<time>.csv. A new pair is made each time you switch it on. Turn it on, do your attempts, turn it off, and send both files.",
+            probe, callbacks.queue_debug != nullptr))
+        debug_request(menu, callbacks, {DebugAction::set_probe_enabled, probe});
+    note("Each dark landing and each pop's landing are written to logs\\ReSkate.log (lines starting \"Dark Pop:\").");
+    note("Works with any controller the game reads (Xbox or PlayStation): nothing is sent through XInput.");
     }
     end_card();
 }
 
 void skater_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
-    // (Grind exits are an addon: Addons > Grind Exits.)
     category_tabs(menu, menu.skater_tab, {"FREECAM", "FIRST PERSON", "CHEATS"}, "skater-tabs");
     ImGui::PushID(menu.skater_tab);
     ImGui::BeginChild("skater-tab", ImVec2(0, page_body_height(menu)), ImGuiChildFlags_NavFlattened);

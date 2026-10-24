@@ -112,8 +112,6 @@ CHECK BEFORE CALLING THIS STABLE
    saved personal animation. Confirm the edit survives restart.
 4. Test an authored leg edit during the corresponding normal and switch tricks;
    compare the affected physical leg and source timing with its studio preview.
-5. Optional: Record all tricks in solo play without AI skaters; keep the game in
-   front. Check low/mid/high grading and cancel cleanly. This can take a while.
 
 REPORT A PROBLEM
 F8 > PLAYBACK > Export diagnostics. Include build-info.json, the exported diagnostic

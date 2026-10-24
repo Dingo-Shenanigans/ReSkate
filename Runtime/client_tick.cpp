@@ -16,19 +16,15 @@
 #include "Extension/Settings/job_spin.h"
 #include "Extension/Settings/replay_drafts.h"
 #include "Engine/Game/World/client_state.h"
-#include "Extension/HallOfMeat/hall_of_meat.h"
-#include "Extension/RoadRash/road_rash.h"
-#include "Extension/BoardBreak/board_break.h"
-#include "Extension/BoardBreak/board_break_audio.h"
+#include "Extension/Plugins/plugin_runtime.h"
+#include "Extension/Plugins/plugin_game_runtime.h"
+#include "Engine/Game/World/load_completion.h"
 #include "Extension/ReplayKeyframes/replay_keyframes.h"
-#include "Extension/Skater/grind_exit_control.h"
 #include "Extension/Skater/camera_observer.h"
 #include "Extension/UI/NativeMenu/native_menu.h"
 #include "Extension/UI/Overlay/scripted_pad.h"
 #include "Extension/Multiplayer/Hud/native_party.h"
 #include "Extension/Multiplayer/Session/session.h"
-#include "Extension/Multiplayer/Remote/native_prop.h"
-#include "Extension/Multiplayer/Remote/drone_sound.h"
 #include "Extension/Boot/discord_presence.h"
 #include "Engine/Game/World/world_names.h"
 #include "Extension/Multiplayer/Hud/custom_nametags.h"
@@ -47,11 +43,12 @@
 #include "Engine/Vfs/mod_list.h"
 #include "Engine/Vfs/mod_merge.h"
 #include "Extension/Skater/ai_skaters.h"
+#include "Extension/World/world_entities.h"
 #include "Extension/Skater/client_source_spawn.h"
 #include "Extension/Skater/skater_slot_override.h"
-#include "Extension/Skater/drone_flight.h"
-#include "Extension/Skater/drone_outfit.h"
 #include "Extension/Throwdowns/native_throwdowns.h"
+#include "Extension/Skater/bone_cam.h"
+#include "Extension/Skater/pad_flight.h"
 #include "Extension/Trainer/trainer.h"
 #include "Extension/World/level_loading.h"
 #include "Extension/World/loading_screen.h"
@@ -290,6 +287,16 @@ std::optional<Budget> budget_of(const Card& card) {
         adapter->Release();
     }
     factory->Release();
+    // An integrated GPU's own memory is the PC's RAM, so its budget is only what the PC has free,
+    // less room for the rest of the game. 2.1.1's out-of-memory exits (the game's E_OUTOFMEMORY,
+    // 3,300 reports) were mostly 8 to 16 GB PCs with RAM and page file nearly full, and integrated
+    // GPUs whose custom-map pool had been set to 1.3 to 2.2 GB from that budget (2026-10-21).
+    constexpr std::uint64_t integrated_below = 1ull << 30, reserve = 2ull << 30;
+    if (MEMORYSTATUSEX status{sizeof(status)}; result && card.memory < integrated_below && GlobalMemoryStatusEx(&status)) {
+        const auto spare = (std::min)(status.ullAvailPhys, status.ullAvailPageFile);
+        const auto room = spare > reserve ? spare - reserve : 0;
+        result->budget = (std::min)(result->budget, result->usage + room);
+    }
     return result;
 }
 // KiB for a custom map's pool from what is free now: half of it, the rest left for the map's
@@ -578,7 +585,9 @@ void update_model(std::uintptr_t client, TickState& frame) {
     // RESKATE_STARTUP_COMMANDS="load skate1map;noclip 1" (development, and the launcher's
     // -map <name>, which is a "load" at the front of it): console commands
     // queued in order once the world is up and can accept them, so a build can be exercised
-    // without anyone driving the overlay. A load waits for its destination to be listed.
+    // without anyone driving the overlay. A load waits for its destination to be listed, for 20
+    // seconds once the world can load (the launcher's start map, start_maps.h, falls back to the
+    // map the game opened in).
     {
         static std::optional<std::vector<std::string>> startup_commands;
         if (!startup_commands) {
@@ -600,6 +609,17 @@ void update_model(std::uintptr_t client, TickState& frame) {
                 }
             }
         }
+        {
+            // The start map was the first level the game loaded (queue_menu_bam): not again.
+            std::lock_guard lock(r.mutex);
+            if (std::exchange(r.startup_map_taken, false) && !startup_commands->empty() && startup_commands->front().size() > 5 &&
+                std::equal(startup_commands->front().begin(), startup_commands->front().begin() + 5, "load ",
+                           [](char a, char b) { return std::tolower(static_cast<unsigned char>(a)) == b; })) {
+                dingosdk::logging::log(dingosdk::logging::Level::info, dingosdk::logging::Channel::level,
+                    "Startup command done: the game started in {}.", startup_commands->front().substr(5));
+                startup_commands->erase(startup_commands->begin());
+            }
+        }
         if (!startup_commands->empty() && named_context_ready) {
             std::lock_guard lock(r.mutex);
             const auto& text = startup_commands->front();
@@ -619,12 +639,26 @@ void update_model(std::uintptr_t client, TickState& frame) {
                 }
             }
             bool ready = !wait && r.model.can_queue_load && !r.requests.loading();
+            // A destination still not listed this long after the world could load it is not
+            // installed (a map mod switched off or left out of the merge): the load is dropped and
+            // the game stays where it started, instead of the list waiting on it for ever.
+            static std::optional<std::chrono::steady_clock::time_point> missing_since;
             if (ready && lower(text).starts_with("load ")) {
                 const auto wanted = lower(text.substr(5, text.find(' ', 5) == std::string::npos ? std::string::npos : text.find(' ', 5) - 5));
                 ready = std::ranges::any_of(r.model.levels, [&](const dingosdk::overlay::Level& level) {
                     return level.can_load && (lower(level.asset).find(wanted) != std::string::npos ||
                                               lower(level.display_name) == wanted);
                 });
+                const auto now = std::chrono::steady_clock::now();
+                if (ready) missing_since.reset();
+                else if (!missing_since) missing_since = now;
+                else if (now - *missing_since >= std::chrono::seconds(20)) {
+                    dingosdk::logging::log(dingosdk::logging::Level::warning, dingosdk::logging::Channel::level,
+                        "Startup command dropped: {} is not an installed map (is its mod switched off?); staying in this map.",
+                        text.substr(5));
+                    missing_since.reset();
+                    startup_commands->erase(startup_commands->begin());
+                }
             }
             if (ready && r.requests.enqueue(ConsoleRequest{text}, request_context(r), GetCurrentThreadId())) {
                 dingosdk::logging::log(dingosdk::logging::Level::info, dingosdk::logging::Channel::level,
@@ -700,7 +734,8 @@ void update_model(std::uintptr_t client, TickState& frame) {
     }
     DingoSDKOverlaySetPromptInputCapture(map_prompt || map_vote || message_up || prompt_held);
     const unsigned poll_answers = dingosdk::multiplayer::server_poll_answers();
-    bool freecam_controller = dingosdk::local_freecam_controller();
+    const bool placement_flight = dingosdk::pad_flight::requested();
+    bool freecam_controller = dingosdk::local_freecam_controller() || placement_flight;
     {
         std::lock_guard lock(r.mutex);
         debug_busy = r.requests.loading();
@@ -721,9 +756,11 @@ void update_model(std::uintptr_t client, TickState& frame) {
             dingosdk::map_download::set_binds(r.model.bindings.vote_yes_combo, r.model.bindings.vote_no_combo);
         debug_request = r.requests.take<dingosdk::overlay::DebugRequest>(GetCurrentThreadId());
     }
+    controller_busy = controller_busy || placement_flight;
     // Capture belongs to the freecam state itself. Keep it active across brief
     // request/loading phases instead of opening a path back to player input.
-    DingoSDKOverlaySetFreecamInputCapture(dingosdk::client_free_camera_active() && (freecam_controller || dingosdk::drone::controller_capture()));
+    DingoSDKOverlaySetFreecamInputCapture((dingosdk::client_free_camera_active() && freecam_controller) ||
+        dingosdk::plugins::plugin_input_capture());
     dingosdk::ControllerInput controller;
     if (freecam_controller_combo || freecam_combo || tp_to_freecam_combo || noclip_combo || forward_velocity_combo || up_velocity_combo || offboard_up_velocity_combo ||
         vote_yes_combo || vote_no_combo || poll_answers || map_prompt || map_vote || message_up ||
@@ -731,7 +768,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
         // (The card that asks has the pointer, as a menu does: it is still read for.)
         DingoSDKOverlayReadControllerInput(&controller, map_prompt || map_vote || message_up);
     for (std::size_t i = 0; i < action_combos.size(); ++i)
-        if (r.action_bind_latches[i].update(action_combos[i], controller, r.observer_failed)) {
+        if (r.action_bind_latches[i].update(action_combos[i], controller, r.observer_failed || placement_flight)) {
             std::array<char, 256> result{};
             const std::string command(dingosdk::action_binds[i].command);
             if (queue_console_command(nullptr, command.c_str(), result.data(), result.size()))
@@ -809,7 +846,8 @@ void update_model(std::uintptr_t client, TickState& frame) {
     if (r.freecam_controller_bind_latch.update(freecam_controller_combo, controller, r.observer_failed || controller_busy || !r.debug_model.free_camera)) {
         if (dingosdk::set_local_freecam_controller(!freecam_controller))
             freecam_controller = !freecam_controller;
-        DingoSDKOverlaySetFreecamInputCapture(dingosdk::client_free_camera_active() && (freecam_controller || dingosdk::drone::controller_capture()));
+        DingoSDKOverlaySetFreecamInputCapture((dingosdk::client_free_camera_active() && freecam_controller) ||
+        dingosdk::plugins::plugin_input_capture());
         record("{\"event\":\"controller_binding_triggered\",\"action\":\"freecam_controller\"}");
     }
     
@@ -889,7 +927,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
             record("{\"event\":\"controller_binding_triggered\",\"action\":\"offboard_up_velocity\"}");
         }
     }
-    if (debug_request || r.debug_model.free_camera || r.debug_model.first_person || r.debug_model.drone_follow || r.debug_model.noclip ||
+    if (debug_request || r.debug_model.free_camera || r.debug_model.first_person || r.debug_model.noclip ||
         now >= r.next_debug) {
         ScheduledWorkScope work{r, debug_request.has_value()};
         r.next_debug = now + 100;
@@ -897,12 +935,24 @@ void update_model(std::uintptr_t client, TickState& frame) {
         dingosdk::overlay::FlightInput flight_input;
         DingoSDKOverlayReadFlightInput(&flight_input, (r.debug_model.free_camera || r.debug_model.noclip) && debug_ready,
             r.debug_model.noclip || (r.debug_model.free_camera && freecam_controller));
+        // A plugin holding the skater still (reskate.skater.freeze): noclip with no input hovers.
+        if (r.debug_model.noclip && dingosdk::plugins::plugin_freeze_active()) flight_input = {true};
+        // A plugin's pad flight reserves the triggers for it (selecting what it places).
+        // Bumpers (or keyboard Q/E) adjust height without cycling objects.
+        if (placement_flight) {
+            dingosdk::ControllerInput placement_pad;
+            DingoSDKOverlayReadControllerInput(&placement_pad);
+            const auto buttons=placement_pad.available?placement_pad.buttons:0u;
+            flight_input.up = ((buttons & 0x0200) || dingosdk::overlay::key_down('E') ? 1.f : 0.f) -
+                              ((buttons & 0x0100) || dingosdk::overlay::key_down('Q') ? 1.f : 0.f);
+        }
         const auto phase_issue = camera_phase_issue();
         auto debug = dingosdk::on_client_debug_tick(r.base, client, debug_ready,
             phase_issue == nullptr,
             debug_request ? &*debug_request : nullptr, &flight_input);
         // Input ownership must follow the live camera even with every overlay closed.
-        DingoSDKOverlaySetFreecamInputCapture(dingosdk::client_free_camera_active() && (freecam_controller || dingosdk::drone::controller_capture()));
+        DingoSDKOverlaySetFreecamInputCapture((dingosdk::client_free_camera_active() && freecam_controller) ||
+        dingosdk::plugins::plugin_input_capture());
         // A debug action, or a mode the tick ended by itself (host policy, lost
         // camera), can have replaced the native camera: validate it again.
         if (debug_request || debug.free_camera != r.debug_model.free_camera ||
@@ -1060,10 +1110,6 @@ void update_model(std::uintptr_t client, TickState& frame) {
             record(fixed_stops.json);
             r.last_fixed_stop_entitlement_provider_observation = fixed_stops.json;
         }
-        if (neighborhoods.json != r.last_neighborhood_unlock_override_observation) {
-            record(neighborhoods.json);
-            r.last_neighborhood_unlock_override_observation = neighborhoods.json;
-        }
         std::lock_guard lock(r.mutex);
         r.offline_model = std::move(offline.model);
         ++r.offline_revision;
@@ -1093,11 +1139,11 @@ void update_model(std::uintptr_t client, TickState& frame) {
         DINGO_PROFILE_ZONE("tick/item browser");
         dingosdk::update_local_item_browser();
     }
-    dingosdk::hall_of_meat::on_client_tick();
-    dingosdk::road_rash::on_client_tick(client);
-    dingosdk::drone::outfit::on_client_tick();
-    dingosdk::board_break::on_client_tick(client);
-    dingosdk::grind_exit_control::on_client_tick(client);
+    {
+        DINGO_PROFILE_ZONE("tick/plugins");
+        dingosdk::plugins::on_client_tick();
+        dingosdk::plugins::tick_plugin_settings();
+    }
     if (!has_request && now < r.next_model && state == r.previous_state) return;
     r.next_model = now + 500;
     DINGO_PROFILE_ZONE("tick/update_model/world model (500 ms)");
@@ -1105,7 +1151,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
     r.multiplayer_map = description.level.empty() ? std::string{} : description.level + "|" + description.lm_level;
     const auto& current_level = description.lm_level.empty() ? description.level : description.lm_level;
     dingosdk::live_mods::set_current_level(current_level);
-    dingosdk::hall_of_meat::set_level(current_level);
+    dingosdk::plugins::set_level(current_level);
     dingosdk::replay_drafts::on_client_tick(r.base, state);
     // A live mod apply hands over the destinations its mods declare. A map
     // being played that is no longer among them (its mod disabled or deleted)
@@ -1144,57 +1190,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
     // whenever this client is not in play; otherwise every 10 s and 2 s.
     bool requests_loading{};
     { std::lock_guard lock(r.mutex); requests_loading = r.requests.loading(); }
-    // A recording starts from a clean level (anim_studio): the level is loaded again behind the loading screen,
-    // and the recording waits until that load is in (or 15 s, when the load did not show as loading).
-    static bool clean_loading{}, clean_seen{};
-    static ULONGLONG clean_since{};
-    if (dingosdk::anim_studio::take_clean_start() && !current_level.empty()) {
-        std::lock_guard lock(r.mutex);
-        if (r.requests.enqueue(ConsoleRequest{"load " + current_level}, request_context(r), GetCurrentThreadId())) {
-            clean_loading = true;
-            clean_seen = false;
-            clean_since = GetTickCount64();
-        } else {
-            dingosdk::anim_studio::clean_start_done();
-        }
-    }
-    // The studio's loading screen stays up while the game loads. During a recording's clean start the level
-    // itself is loading, so the game counts as loading until this client is in play (13, 21) as well.
-    const bool in_play = state == 13 || state == 21;
-    if (clean_loading) {
-        // The load has begun once the request says so or this client has left play.
-        if (requests_loading || !in_play) clean_seen = true;
-        // and it is over only once the request is done AND this client is back in play. Letting go at the
-        // end of the request alone lifted our screen while the game was still bringing the level up, so the
-        // game's own loading screen came up after ours instead of behind it.
-        if ((clean_seen && !requests_loading && in_play) || GetTickCount64() - clean_since > 30000) {
-            clean_loading = false;
-            dingosdk::anim_studio::clean_start_done();
-        }
-    }
-    // RESKATE_RECORD_ALL=1: the batch starts by itself once the level is in and the skater can be driven, so a
-    // whole run can be started from a shortcut without touching the menus. It fires once per launch.
-    {
-        static const bool wanted = [] {
-            wchar_t value[2]{};
-            return GetEnvironmentVariableW(L"RESKATE_RECORD_ALL", value, 2) == 1 && value[0] == L'1';
-        }();
-        static bool fired = false;
-        static ULONGLONG ready_since = 0;
-        if (wanted && !fired) {
-            if (!in_play) ready_since = 0;
-            else {
-                if (!ready_since) ready_since = GetTickCount64();
-                else if (GetTickCount64() - ready_since > 6000) {
-                    fired = true;
-                    dingosdk::anim_studio::request_record_all();
-                    dingosdk::logging::log(dingosdk::logging::Level::info, dingosdk::logging::Channel::skater,
-                        "Animation Studio: Record all tricks started by RESKATE_RECORD_ALL.");
-                }
-            }
-        }
-    }
-    dingosdk::anim_studio::game_loading_state(requests_loading || (clean_loading && !in_play));
+    dingosdk::anim_studio::game_loading_state(requests_loading);
     const bool world_changed = manifests_applied || requests_loading || (state != 13 && state != 21) ||
         state != r.previous_state || description.level != r.last_level || description.lm_level != r.catalog_level;
     r.catalog_level = description.lm_level;
@@ -1286,30 +1282,6 @@ void update_model(std::uintptr_t client, TickState& frame) {
     const auto missions_model = dingosdk::local_profile_missions();
     model.progression = dingosdk::local_profile_progression();
     model.player_card = dingosdk::local_profile_player_card();
-    model.hall_of_meat = {dingosdk::hall_of_meat::available(), dingosdk::hall_of_meat::enabled()};
-    model.road_rash = {dingosdk::road_rash::available(), dingosdk::road_rash::enabled(), dingosdk::road_rash::blood(),
-                       dingosdk::road_rash::turned_off()};
-    const auto breakable_deck = dingosdk::board_break::deck();
-    model.board_break = {dingosdk::board_break::available(), dingosdk::board_break::enabled(), !breakable_deck.empty(),
-                         dingosdk::board_break::deck_label(breakable_deck)};
-    {
-        const auto feel = dingosdk::board_break::settings();
-        auto& bb = model.board_break;
-        bb.off = dingosdk::board_break::turned_off();
-        bb.always = feel.always;
-        bb.rails = feel.rails;
-        bb.wear = feel.wear;
-        bb.crack_sounds = feel.crack_sounds;
-        bb.body_sounds = feel.body_sounds;
-        bb.sensitivity = feel.sensitivity;
-        bb.joined = feel.joined;
-        bb.wear_rate = feel.wear_rate;
-        bb.worn = dingosdk::board_break::wear();
-        bb.condition = std::string(dingosdk::board_break::condition_name(bb.worn));
-    }
-    model.grind_exit = {dingosdk::grind_exit_control::available(), dingosdk::grind_exit_control::enabled(),
-                        dingosdk::grind_exit_control::toe_heel(), dingosdk::grind_exit_control::stance(),
-                        dingosdk::grind_exit_control::strength()};
     model.keyframe_smoothing = {dingosdk::replay_keyframes::available(), dingosdk::replay_keyframes::on(),
                                 dingosdk::replay_keyframes::smoothness()};
     model.bindings = dingosdk::local_profile_controller_bindings();
@@ -1364,6 +1336,9 @@ void update_model(std::uintptr_t client, TickState& frame) {
     dingosdk::update_local_graphics_controls();
     model.graphics = dingosdk::local_profile_graphics_controls();
     model.object_persistence = dingosdk::local_profile_object_persistence();
+    model.plugin_commands.clear();
+    for (auto& hint : dingosdk::plugins::command_hints())
+        model.plugin_commands.push_back({std::move(hint.name), std::move(hint.args), std::move(hint.help), std::move(hint.plugin)});
     // The park list is a disk walk of the Mods folder: only while the menu or the editor shows it.
     dingosdk::set_park_mod_list_visible(r.debug_model.park_editor ||
         GetTickCount64() < r.named_settings_wanted_until.load(std::memory_order_relaxed));
@@ -1395,8 +1370,13 @@ void update_model(std::uintptr_t client, TickState& frame) {
             const bool manifest_description_active = manifest_sublevel && description.available &&
                 equals(description.level, r.last_request) &&
                 equals(description.lm_level, r.last_lm_level);
-            const bool content_confirmed = manifest_sublevel ? manifest_description_active :
-                (sublevel_active && client_sublevel_present);
+            const bool playable_destination = dingosdk::playable_load_complete(r.transition_seen, state,
+                description.available && equals(description.level, r.last_request) &&
+                    (r.last_lm_level.empty() || equals(description.lm_level, r.last_lm_level)),
+                context_ready, client_content.players_available, client_content.local_player_count,
+                client_content.controllable_reference_count);
+            const bool content_confirmed = playable_destination || (manifest_sublevel ? manifest_description_active :
+                (sublevel_active && client_sublevel_present));
             const bool settled = r.transition_seen && (state == 13 || state == 21) && content_confirmed;
             const bool timed_out = now - r.request_started >= 90000 && (state == 13 || state == 21) && local;
             const bool cancelled = state == 2 || state == 24 || state == 25;
@@ -1420,6 +1400,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
                        ",\"timed_out\":" + (timed_out ? "true" : "false") +
                        ",\"manifest_sublevel\":" + (manifest_sublevel ? "true" : "false") +
                        ",\"manifest_description_active\":" + (manifest_description_active ? "true" : "false") +
+                       ",\"playable_destination\":" + (playable_destination ? "true" : "false") +
                        ",\"start_points_matched\":" + (start_points_matched ? "true" : "false") +
                        ",\"server_sublevel_active\":" + (sublevel_active ? "true" : "false") +
                        ",\"client_sublevel_present\":" + (client_sublevel_present ? "true" : "false") +
@@ -1570,18 +1551,13 @@ void tick(std::uintptr_t client, std::uintptr_t update) {
             context_ready();
         {
             DINGO_PROFILE_ZONE("tick/multiplayer");
-            dingosdk::multiplayer::tick(r.base,client,multiplayer_ready,r.multiplayer_map,load_multiplayer_map);
-            if (multiplayer_ready) {
-                dingosdk::multiplayer::tick_prop_test(r.base, client);
-                // Other players' drones as models in the world (DRONE page, LOBBY tab: show other players' drones).
-                dingosdk::multiplayer::tick_drone_models(r.base, client,
-                    dingosdk::drone::knobs().value[dingosdk::drone::kShowBeacons].load(std::memory_order_relaxed) >= 0.5f);
+            // The player at the controls, whatever the controls drive (the skater, or a plugin's drone).
+            static std::uint64_t controls_worked{};
+            if (const auto at = dingosdk::overlay::controls_touched_at(); at != controls_worked) {
+                controls_worked = at;
+                dingosdk::multiplayer::note_player_input();
             }
-            // And heard where they fly (every frame, so their sounds stop on leaving a level).
-            dingosdk::multiplayer::tick_drone_sounds(r.base, client, multiplayer_ready,
-                dingosdk::drone::knobs().value[dingosdk::drone::kShowBeacons].load(std::memory_order_relaxed) >= 0.5f);
-            // Board Break's cracks and hits, through the game's sound at the skater while in a level.
-            dingosdk::board_break::audio::tick_game_sound(r.base, client, multiplayer_ready);
+            dingosdk::multiplayer::tick(r.base,client,multiplayer_ready,r.multiplayer_map,load_multiplayer_map);
             if (auto notice = dingosdk::multiplayer::take_leave_notice(); !notice.empty())
                 dingosdk::overlay::notify(dingosdk::overlay::NoticeLevel::warning, "Map not installed", std::move(notice));
             // Kicked, banned or otherwise put out by the host or server: said in the middle of
@@ -1655,6 +1631,11 @@ void tick(std::uintptr_t client, std::uintptr_t update) {
                         "(player distance {:.0f} m); map {}. {} handle(s).",
                         gigabytes(counters.PrivateUsage), gigabytes(counters.WorkingSetSize), players, skaters, mp.player_distance,
                         session && !mp.map.empty() ? mp.map : r.multiplayer_map, handles);
+                    // What the whole PC has left: the game's out-of-memory exits come when its RAM and
+                    // page file are full, whatever the game itself holds.
+                    if (MEMORYSTATUSEX status{sizeof(status)}; GlobalMemoryStatusEx(&status))
+                        line += std::format(" The PC has {:.1f} of {:.1f} GB of RAM free and {:.1f} GB of its commit limit.",
+                                            gigabytes(status.ullAvailPhys), gigabytes(status.ullTotalPhys), gigabytes(status.ullAvailPageFile));
                     try {
                         std::thread([line = std::move(line)]() mutable {
                             try {
@@ -1717,6 +1698,12 @@ void tick(std::uintptr_t client, std::uintptr_t update) {
             DINGO_PROFILE_ZONE("tick/native party");
             dingosdk::multiplayer::tick_native_party_actions(r.base, client,
                 r.spectate_ready && r.spectate_client == client && (state == 13 || state == 21), camera_phase);
+            // A plugin's camera (reskate.camera) on the same lease, while Spectate leaves it be.
+            dingosdk::plugins::apply_plugin_camera(r.base, client,
+                r.spectate_ready && r.spectate_client == client && (state == 13 || state == 21), camera_phase);
+            // Plugins' clips on the skater's body (reskate.animation).
+            if (state == 13 || state == 21) dingosdk::plugins::tick_plugin_animation(r.base, client);
+            dingosdk::plugins::tick_plugin_sounds(r.base, client, state == 13 || state == 21);
         }
         if (state == 13 || state == 21) {
             DINGO_PROFILE_ZONE("tick/camera view");
@@ -1741,9 +1728,14 @@ void tick(std::uintptr_t client, std::uintptr_t update) {
             dingosdk::overlay::pad_tick();
         }
         {
+            DINGO_PROFILE_ZONE("tick/world objects");
+            dingosdk::world_entities::tick(r.base, client, multiplayer_ready);
+        }
+        {
             DINGO_PROFILE_ZONE("tick/trainer");
             // A custom map is a sublevel of the root level: that is the map the player means.
             dingosdk::trainer::tick(r.base, client, multiplayer_ready, r.catalog_level.empty() ? r.last_level : r.catalog_level);
+            dingosdk::bonecam::tick_bone_cam(r.base,client,multiplayer_ready);
         }
         {
             DINGO_PROFILE_ZONE("tick/Steam friend join");

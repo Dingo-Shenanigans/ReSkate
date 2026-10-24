@@ -114,6 +114,11 @@ Layout layout(const ServerConfig &c) {
     park_limits["objects"] = c.park_limits.objects;
     maps.set("park_limits", std::move(park_limits));
 
+    auto &plugins = root.section("plugins");
+    auto required = Json::array();
+    for (const auto &plugin : c.required_plugins) required.push_back(plugin);
+    plugins.set("required", std::move(required));
+
     auto &players = root.section("players");
     players.set("allow_boosts", c.boosts);
     players.set("allow_no_bail", c.no_bail);
@@ -130,10 +135,9 @@ Layout layout(const ServerConfig &c) {
     players.set("object_limit", c.object_limit);
     players.set("allow_object_scaling", c.object_scaling);
     players.set("sync_effects", c.sync_effects);
-    players.set("sync_drones", c.sync_drones);
     players.set("announce_throwdowns", c.announce_throwdowns);
     auto locks = Json::array();
-    for (const auto bit : {lock_noclip, lock_nobail, lock_boosts, lock_tuning})
+    for (const auto bit : {lock_noclip, lock_nobail, lock_boosts, lock_tuning, lock_ollies})
         if (c.throwdown_locks & bit) locks.push_back(lock_tools_text(bit));
     players.set("throwdown_locks", std::move(locks));
 
@@ -347,6 +351,9 @@ ServerConfig load_config(const std::filesystem::path &file, std::vector<std::str
     c.rotation_announce = get("maps", "rotation_announce", c.rotation_announce);
     c.latest_versions = get("maps", "latest_versions", c.latest_versions);
     c.latest_check_minutes = std::clamp(get("maps", "latest_check_minutes", c.latest_check_minutes), 5U, 1440U);
+    if (const auto *required = find("plugins", "required"); required && required->is_array())
+        for (const auto &plugin : *required)
+            if (plugin.is_string()) c.required_plugins.push_back(plugin.string());
     if (const auto *parks = find("maps", "parks"); parks && parks->is_object())
         for (unsigned lot = 0; lot < park_lots.size(); ++lot) c.parks[lot] = parks->value(park_lots[lot].key, c.parks[lot]);
     c.world_layer_sync = get("maps", "world_layer_sync", c.world_layer_sync);
@@ -384,7 +391,6 @@ ServerConfig load_config(const std::filesystem::path &file, std::vector<std::str
     c.object_limit = get("players", "object_limit", c.object_limit);
     c.object_scaling = get("players", "allow_object_scaling", c.object_scaling);
     c.sync_effects = get("players", "sync_effects", c.sync_effects);
-    c.sync_drones = get("players", "sync_drones", c.sync_drones);
     c.announce_throwdowns = get("players", "announce_throwdowns", c.announce_throwdowns);
     if (const auto *locks = find("players", "throwdown_locks", {}); locks && locks->is_array())
         for (const auto &value : *locks)
@@ -718,6 +724,8 @@ std::optional<std::uint8_t> parse_lock_tools(std::string_view text) {
         else if (lower == "nobail") tools |= lock_nobail;
         else if (lower == "boosts") tools |= lock_boosts;
         else if (lower == "tuning") tools |= lock_tuning;
+        else if (lower == "ollies") tools |= lock_ollies;
+        else if (lower == "objects") tools |= lock_objects;
         else if (lower == "all") tools |= lock_all;
         else return std::nullopt;
     }
@@ -727,7 +735,8 @@ std::optional<std::uint8_t> parse_lock_tools(std::string_view text) {
 std::string lock_tools_text(std::uint8_t tools) {
     std::string text;
     for (const auto &[bit, name] : {std::pair{lock_noclip, "noclip"}, std::pair{lock_nobail, "nobail"},
-                                    std::pair{lock_boosts, "boosts"}, std::pair{lock_tuning, "tuning"}})
+                                    std::pair{lock_boosts, "boosts"}, std::pair{lock_tuning, "tuning"},
+                                    std::pair{lock_ollies, "ollies"}, std::pair{lock_objects, "objects"}})
         if (tools & bit) text += (text.empty() ? "" : ", ") + std::string(name);
     return text.empty() ? "none" : text;
 }
@@ -800,12 +809,13 @@ bool custom_command_name_free(std::string_view name) noexcept {
          {"help", "party", "p", "w", "whisper", "tell", "poll", "vote", "yes", "y", "no", "n", "tp",
           "activity-log", "admin", "admins", "afk-kick", "kick-time", "role", "roles", "announce", "announce-throwdowns", "announce-to", "announcements",
           "ban", "bans", "board-check", "bone-scale", "boosts", "boosts-allow", "chat-color", "chat-colour", "clear-objects", "crowd",
-          "distances", "drones", "effects", "kick", "layer", "layer-sync", "layers", "listed", "map", "map-pool", "maps", "msg",
+          "distances", "effects", "kick", "layer", "layer-sync", "layers", "listed", "map", "map-pool", "maps", "msg",
           "msg-admins", "msg-party", "name", "net", "nobail", "nobail-allow", "noclip", "noclip-allow", "object-limit",
           "object-placement", "object-scaling", "objects", "park", "park-mod", "parties", "party-size", "password", "placement",
           "players", "rate", "reserved", "rotation", "say", "score-allow", "score-check", "speed-check", "status", "teleport",
           "tod", "tpall", "tphere", "tps", "tuning", "tuning-enforce", "unban", "voice", "voice-allow", "voice-range",
-          "vote-cancel", "votes", "welcome", "world-layer-sync", "quit", "exit", "stop", "update"})
+          "vote-cancel", "votes", "welcome", "world-layer-sync", "quit", "exit", "stop", "update",
+          "bone-reach", "lock", "locks", "unlock", "throwdown-locks", "words", "poll-run", "plugin"})
         if (name == taken) return false;
     // A number is an answer to a poll ("/2").
     return !std::all_of(name.begin(), name.end(), [](char c) { return c >= '0' && c <= '9'; });
@@ -871,6 +881,12 @@ std::string config_error(const ServerConfig &c) {
     if (c.kick_minutes > 1440) return "kick_minutes must be 0 (until the server restarts) to 1440.";
     if (c.votes.kick_minutes > 1440) return "votes.kick_minutes must be 0 (until the server restarts) to 1440.";
     if (c.word_warnings > 10) return "word_warnings must be 0 (words are not checked) to 10.";
+    if (c.required_plugins.size() > max_required_plugins)
+        return "plugins.required holds at most " + std::to_string(max_required_plugins) + " plugins.";
+    for (const auto &plugin : c.required_plugins)
+        if (plugin.empty() || !valid_map_package(plugin))
+            return "plugins.required: \"" + plugin + "\" is not a Thunderstore package. Write it as Owner-Name, or Owner-Name-1.2.3 for at least that version.";
+    if (!valid_required_plugins(c.required_plugins)) return "plugins.required names a plugin twice.";
     if (!parse_colour(c.chat_text_color)) return "chat_text_color must be a colour like #D9C8FF.";
     if (!valid_server_name(c.name)) return std::string("name must be ") + server_name_rule + ".";
     for (const auto id : c.reserved)

@@ -127,6 +127,7 @@ struct Hub {
     std::set<std::uint64_t> favorites;
     bool favorites_loaded{}, favorites_only{};
     view::Sort sort{view::Sort::players};
+    bool sort_reverse{}; // a second click on the active column
     std::uint64_t selected{};
     // Hosting.
     std::string host_name, host_password;
@@ -395,7 +396,7 @@ void rebuild(Hub &h) {
     h.rows.clear();
     const auto &mp = h.model;
     const std::span<const Level> levels = h.full.levels;
-    const auto found = view::browse(mp, {h.search, h.same_map, h.sort}, levels);
+    const auto found = view::browse(mp, {h.search, h.same_map, h.sort, h.sort_reverse}, levels);
     h.listed = mp.lobbies.size();
     h.skaters = 0;
     for (const auto &lobby : mp.lobbies) h.skaters += std::max(0, lobby.players);
@@ -472,7 +473,8 @@ void browser_page(Ui &ui, ImVec2 a, ImVec2 z) {
             queue_multiplayer_action("browse", "");
     }
     if (ui.input && !h.typing && (ui.pad.buttons & ~h.pad_before & 0x4000) && !wait) queue_multiplayer_action("browse", ""); // X / Square
-    if (ui.input && !h.typing && (ui.pad.buttons & ~h.pad_before & 0x8000)) h.sort = static_cast<view::Sort>((static_cast<int>(h.sort) + 1) % 3), changed = true; // Y / Triangle
+    if (ui.input && !h.typing && (ui.pad.buttons & ~h.pad_before & 0x8000))
+        h.sort = static_cast<view::Sort>((static_cast<int>(h.sort) + 1) % 3), h.sort_reverse = false, changed = true; // Y / Triangle
     // F marks the chosen server as a favorite, or takes the mark away.
     if (ui.input && !h.typing && !h.code_mode && ImGui::IsKeyPressed(ImGuiKey_F, false))
         if (const auto *row = selected_row(h); row && row->lobby->dedicated) toggle_favorite(h, *row->lobby), changed = true;
@@ -489,8 +491,17 @@ void browser_page(Ui &ui, ImVec2 a, ImVec2 z) {
             const bool on = h.sort == sort;
             const Hit hit = item(ui, hash(text, 9), c, d);
             draw->AddText(ui.bold, size, ImVec2(c.x, c.y + 8 * u), on || hit.focus || hit.hover ? theme::blue : theme::muted, text);
-            if (on) draw->AddTriangleFilled(ImVec2(c.x + w + 10 * u, c.y + 16 * u), ImVec2(c.x + w + 26 * u, c.y + 16 * u), ImVec2(c.x + w + 18 * u, c.y + 28 * u), theme::blue);
-            if (hit.press && !on) h.sort = sort, changed = true;
+            if (on) {
+                // Down is most-skaters-first, or Z to A. Up is the other way.
+                const bool down = (sort == view::Sort::players) != h.sort_reverse;
+                const float y0 = c.y + (down ? 16 * u : 28 * u), y1 = c.y + (down ? 28 * u : 16 * u);
+                draw->AddTriangleFilled(ImVec2(c.x + w + 10 * u, y0), ImVec2(c.x + w + 26 * u, y0), ImVec2(c.x + w + 18 * u, y1), theme::blue);
+            }
+            if (hit.press) {
+                if (on) h.sort_reverse = !h.sort_reverse;
+                else h.sort = sort, h.sort_reverse = false;
+                changed = true;
+            }
         };
         column("NAME", la.x + pad_x, view::Sort::name, false);
         column("MAP", map_x, view::Sort::map, false);
@@ -1211,25 +1222,6 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
         list.heading("SKATE YOUR WAY");
         if (list.setting("Noclip", on_off(d.noclip), (d.noclip_available || d.noclip) && debugging)) debug({DebugAction::set_noclip, !d.noclip});
         if (list.setting("No bail", on_off(d.no_bail), (d.no_bail_available || d.no_bail) && debugging)) debug({DebugAction::set_no_bail, !d.no_bail});
-        if (list.setting("Hall of Meat", on_off(m.hall_of_meat.enabled), m.hall_of_meat.available && console)) act("hall-of-meat");
-        // (Not listed when its official mod is turned off in the launcher.)
-        if (!m.road_rash.off) {
-            if (list.setting("Road Rash", on_off(m.road_rash.enabled), m.road_rash.available && console)) act("road-rash");
-            if (list.setting("Road Rash blood", on_off(m.road_rash.blood), m.road_rash.available && m.road_rash.enabled && console)) act("road-rash-blood");
-            if (list.setting("Heal Road Rash", {}, m.road_rash.available && m.road_rash.enabled && console)) act("road-rash-heal");
-        }
-        if (!m.board_break.off) {
-            if (list.setting("Board Break", on_off(m.board_break.enabled), m.board_break.available && console)) act("board-break");
-            if (list.setting("Board Break deck", m.board_break.deck, m.board_break.available && m.board_break.has_deck && console))
-                act("board-break-deck");
-        }
-        const auto &grind = m.grind_exit;
-        if (list.setting("Grind exit triggers", on_off(grind.enabled), grind.available && console)) act("grind-exits");
-        if (list.setting("Input Mode", grind.toe_heel ? "Toe / Heel" : "Left / Right", grind.available && console)) act("grind-exit-sides");
-        if (grind.toe_heel &&
-            list.setting("Your stance", grind.stance == 2 ? "Goofy" : grind.stance == 1 ? "Regular" : "Not set", grind.available && console))
-            act("grind-exit-stance");
-        if (list.setting("Pop-out strength", std::to_string(grind.strength) + "%", grind.available && console)) act("grind-exit-strength");
         const auto &wear = m.offline.board_wear;
         if (list.setting("Board wear", on_off(wear.effective), wear.available && cb.queue_offline_feature)) act("board-wear");
         if (list.setting("Reset board wear", {}, wear.available && wear.effective && console)) act("board-wear-reset");
@@ -1247,8 +1239,8 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
         }
         list.title("BOOSTS");
         {
-            constexpr std::array<float, 9> forward{1.f, 5.f, 10.f, 25.f, 50.f, 100.f, 150.f, 200.f, 300.f};
-            constexpr std::array<float, 8> up{1.f, 2.f, 3.f, 5.f, 8.f, 12.f, 18.f, 25.f};
+            constexpr std::array<float, 10> forward{0.f, 1.f, 5.f, 10.f, 25.f, 50.f, 100.f, 150.f, 200.f, 300.f};
+            constexpr std::array<float, 9> up{0.f, 1.f, 2.f, 3.f, 5.f, 8.f, 12.f, 18.f, 25.f};
             if (const int way = list.adjust("Forward boost", "+" + whole(d.forward_velocity_speed), debugging))
                 debug({DebugAction::set_forward_velocity_speed, false, stepped(d.forward_velocity_speed, forward, way)});
             if (const int way = list.adjust("Up boost", "+" + whole(d.up_velocity_speed), debugging))

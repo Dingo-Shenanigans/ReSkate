@@ -188,6 +188,8 @@ template <class Context> class Registry {
         const auto [entry, consumed] = resolve(words);
         return !entry || entry->echo_input || consumed != words.size();
     }
+    // Whether the words start with one of its commands.
+    bool knows(std::span<const std::string> words) const { return resolve(words).first != nullptr; }
     bool local(std::span<const std::string> words, const Context &context) const {
         const auto [entry, consumed] = resolve(words);
         return !entry || entry->execution == Execution::local ||

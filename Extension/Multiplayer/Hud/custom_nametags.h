@@ -2,6 +2,7 @@
 #include "Extension/UI/Overlay/overlay.h"
 #include "Extension/Multiplayer/developer_identity.h"
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -24,7 +25,9 @@ struct NametagPlayer {
     std::uint32_t color{0xffffffffU}; // IM_COL32 layout
     std::string tag;                  // role badge before the name, as in chat ("" for none)
     bool talking{};
-    bool flying_drone{}; // flying ReSkate's FPV drone (Skater/drone_beacon.h)
+    // A plugin's short tag for the player (reskate.session.tag), above the name; "" for none.
+    std::string extra;
+    std::uint32_t extra_color{0xffffffffU};
     // The player's recent chat lines to show as bubbles above the head, oldest first. Empty
     // draws no bubbles.
     std::vector<NametagBubble> bubbles;
@@ -62,6 +65,9 @@ void publish_custom_nametags(std::uintptr_t base, std::vector<NametagPlayer> pla
                              bool show_bubbles, float bubble_distance, float name_distance = 120.f,
                              bool dots = true) noexcept;
 void set_custom_nametags_enabled(bool enabled) noexcept;
+// Held off for now (a plugin's reskate.session.nametags(false), filming): no names drawn over the
+// players while it lasts, whatever the nametag setting is; chat bubbles still show.
+inline std::atomic<bool> nametags_held_off{false};
 bool custom_nametags_enabled() noexcept;
 // The overlay's feed (any thread): nothing while off, stale, or while the game hides nametags.
 overlay::Nametags custom_nametags();

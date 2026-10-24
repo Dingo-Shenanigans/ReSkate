@@ -1,5 +1,9 @@
 #pragma once
 #include <Windows.h>
+#include <array>
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
 #include <string>
 namespace dingosdk::overlay::detail {
 extern thread_local unsigned overlay_input_access;
@@ -12,6 +16,10 @@ struct OverlayInputAccess {
 // through GetRawInputData is then not noted a second time.
 extern thread_local HRAWINPUT noted_raw_input;
 bool block_polled_input();
+bool challenge_menu_key(int key) noexcept;
+// A key kept from the game now (hide_game_keys); never for ReSkate's own reads.
+bool key_hidden(unsigned key) noexcept;
+bool challenge_panel_owns_input() noexcept;
 // How the game read its controllers while a card held its input (prompt_input_active), for the
 // log when the hold ends: which of the ways the overlay can keep input from it the game used.
 struct PromptReads {
@@ -40,4 +48,10 @@ void note_raw_mouse_packet(const RAWMOUSE& mouse);
 void note_raw_mouse_packet(const RAWMOUSE& mouse, bool overlay_owns_pointer);
 // The game window's input messages (keys, mouse), for the input-mode log (input_capture.cpp).
 void note_input_message(UINT message, WPARAM wp) noexcept;
+// The player worked the controls just now (overlay.h controls_touched_at).
+void note_controls() noexcept;
+// A controller's state as it was read: `slot` 0 to 3 the XInput users, 4 ReSkate's own reads
+// (read_gamepad), 5 a joystick a plugin reads; `axes` the sticks (-1 to 1) and triggers (0 to 1).
+void note_pad(std::size_t slot, std::uint32_t buttons, const std::array<float, 6>& axes) noexcept;
+extern std::atomic<ULONGLONG> controls_at;
 }

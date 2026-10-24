@@ -1,0 +1,6 @@
+#pragma once
+// Generated from Extension/UI/Overlay/screen_look.hlsl (cmake/UI.cmake), in pieces short enough for MSVC.
+namespace dingosdk::screen_look {
+inline constexpr char screen_look_hlsl[] =
+@screen_look_chunks@;
+}

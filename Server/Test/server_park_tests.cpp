@@ -517,6 +517,41 @@ int run(const std::filesystem::path &fixtures) {
         run_for(1000000);
         check(said("passed (2 yes, 0 no, 2 needed of 2 votes)") == 1, "A vote nobody could change any more was not decided at once");
     }
+    // Poll answers: the same /2 in two polls back to back is an answer in each (chat turns
+    // repeats away, answers not), twice in one poll it is still one; a chat line said twice is
+    // still turned away. The card shows the question and the result, so chat names neither; the
+    // log has the result.
+    {
+        const auto said = [&](std::string_view text) {
+            return std::count_if(a.chat.begin(), a.chat.end(), [&](const std::string &line) { return line.find(text) != std::string::npos; });
+        };
+        const auto logged = [&](std::string_view text) {
+            return std::count_if(log.begin(), log.end(), [&](const std::string &line) { return line.find(text) != std::string::npos; });
+        };
+        auto &c = games.at(76561198000000003ULL);
+        command("poll First? | yes | no");
+        a.say("/2", now);
+        c.say("/2", now);
+        run_for(1000000);
+        a.say("/2", now);
+        run_for(1000000);
+        check(said("You already answered no.") == 1, "A second answer in the same poll was not answered as one");
+        command("poll end");
+        run_for(1000000);
+        check(logged("Poll \"First?\" ended: yes 0, no 2 (no wins).") == 1, "A poll counted an answer given twice twice");
+        check(!said("First?"), "A poll's question or result was repeated in chat");
+        command("poll Second? | yes | no");
+        a.say("/2", now);
+        run_for(1000000);
+        command("poll end");
+        run_for(1000000);
+        check(logged("Poll \"Second?\" ended: yes 0, no 1 (no wins).") == 1, "The same answer in the next poll was turned away");
+        c.say("hello again", now);
+        run_for(1000000);
+        c.say("hello again", now);
+        run_for(1000000);
+        check(said("hello again") == 1, "The same chat line twice in a row was not turned away");
+    }
     // The rotation: the minutes left are announced, the vote's maps are drawn a minute ahead,
     // and the vote decides: staying adds time, a map changes to it.
     {
@@ -570,6 +605,39 @@ int run(const std::filesystem::path &fixtures) {
         check(reply.find("in about 7 min") != std::string::npos || reply.find("in about 8 min") != std::string::npos, "rotation extend: " + reply);
         command("rotation off");
         command("rotation vote off");
+    }
+
+    // ---- Away --------------------------------------------------------------------------------
+    // A player whose skater stands still while their game says they are at it (flying a plugin's
+    // drone) stays; one whose game says nothing is removed when the away limit runs out.
+    {
+        command("afk-kick 2");
+        auto &pilot = add_game(76561198000000071ULL, "Pilot");
+        auto &asleep = add_game(76561198000000072ULL, "Asleep");
+        pilot.map = asleep.map = a.map; // the map and world the server is on now
+        pilot.world = asleep.world = a.world;
+        pilot.hello(now);
+        asleep.hello(now);
+        run_for(2000000);
+        check(pilot.joined && asleep.joined, "The away test's players did not join");
+        // Their games load the map, as a game does once let in, and are in: the time away starts.
+        for (auto *game : {&pilot, &asleep}) {
+            auto loading = game->header(PacketKind::world_ready, now);
+            loading.world_ready = false;
+            game->send(loading);
+        }
+        run_for(2000000);
+        for (int i = 0; i < 9; ++i) {
+            pilot.send(pilot.header(PacketKind::present, now));
+            // A flood of them counts no more than one.
+            pilot.send(pilot.header(PacketKind::present, now));
+            run_for(present_interval_us);
+        }
+        check(wire().closed.contains(asleep.id) && logged("[afk] Asleep was removed after 2 min away."),
+              "A player who did nothing was not removed for being away");
+        check(!wire().closed.contains(pilot.id), "A player whose game said they were at it was removed for being away: " +
+                                                      (wire().closed.contains(pilot.id) ? wire().closed[pilot.id] : std::string{}));
+        command("afk-kick off");
     }
     check(!wire().closed.contains(admin_id), "The player was disconnected: " + (wire().closed.contains(admin_id) ? wire().closed[admin_id] : std::string{}));
     return failures;

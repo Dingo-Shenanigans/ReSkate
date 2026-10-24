@@ -61,9 +61,16 @@ void GameArchives::forget(const fs::path& file) const {
         open_->files.erase(found);
     }
 }
+void GameArchives::close_all() const {
+    if (!open_) return;
+    std::lock_guard lock(open_->mutex);
+    for (const auto& [path, file] : open_->files) CloseHandle(file);
+    open_->files.clear();
+}
 #else
 struct GameArchives::Open {};
 void GameArchives::forget(const fs::path&) const {}
+void GameArchives::close_all() const {}
 #endif
 void GameArchives::keep_open() { if (!open_) open_ = std::make_shared<Open>(); }
 

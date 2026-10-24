@@ -6,7 +6,7 @@
 
 // A skinned mesh's draw packet as the renderer hands it out (Engine/Game/Build/20260929/
 // skater_render.h): its bones' skinning matrices, packed, and how to place them in the world.
-// Plain data and math; Extension/HallOfMeat/hall_of_meat_render.h reads it.
+// Plain data and math; Extension/Skater/xray_render.h reads it.
 namespace dingosdk::draw_packet {
 using game::LinearTransform;
 

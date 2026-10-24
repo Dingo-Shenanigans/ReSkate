@@ -167,6 +167,42 @@ void Host::tick_parks() {
     publish_parks();
 }
 
+std::vector<Host::ParkStatus> Host::park_status() const {
+    std::vector<ParkStatus> list;
+    for (const auto &park : config_.park_mods) {
+        ParkStatus status{park.name, park.map, same_map(park.map)};
+        const auto up = std::find_if(parks_spawned_.begin(), parks_spawned_.end(), [&](const auto &s) { return s.name == park.name; });
+        if (up != parks_spawned_.end()) {
+            status.spawned = true;
+            status.objects = up->objects.size();
+            if (up->expires) status.minutes_left = static_cast<unsigned>((up->expires - std::min(up->expires, now_) + 59999999) / 60000000);
+        }
+        list.push_back(std::move(status));
+    }
+    return list;
+}
+
+std::string Host::plugin_park(std::string_view plugin, bool spawn, std::string_view name, unsigned minutes) {
+    const auto up = [&] {
+        return std::any_of(parks_spawned_.begin(), parks_spawned_.end(), [&](const auto &park) { return park.name == name; });
+    };
+    const bool was = up();
+    by_plugin_ = "plugin " + std::string(plugin);
+    struct Reset { std::string &by; ~Reset() { by.clear(); } } reset{by_plugin_};
+    const auto answer = park_mod_command(std::string(spawn ? "add " : "remove ") + std::string(name) +
+                                         (spawn && minutes ? " " + std::to_string(minutes) : std::string{}), 0);
+    // The console logs what park-mod answers; for a plugin it is logged here.
+    for (std::size_t at = 0; at < answer.size();) {
+        const auto end = std::min(answer.find('\n', at), answer.size());
+        log_(answer.substr(at, end - at));
+        at = end + 1;
+    }
+    if (was != spawn && up() == spawn) return {};
+    // "[parks] <name> could not be spawned: why", or a usage line
+    const auto colon = answer.find(": ");
+    return answer.starts_with("[parks] ") && colon != std::string::npos ? answer.substr(colon + 2) : answer;
+}
+
 // "park-mod list | add <name> [<name>...] [minutes] | remove <name> [<name>...] | clear |
 // reload <name> [<name>...] | config add <name> | <folder> | <map> [| <key>] | config remove <name>".
 // What it did is a "[parks]" line: the console and a vote log the reply, so it is logged here only
@@ -175,7 +211,7 @@ std::string Host::park_mod_command(std::string_view argument, std::uint64_t admi
     const auto [action, rest] = split(argument);
     const auto verb = lower(action);
     const auto *by = admin ? find(admin) : nullptr;
-    const std::string who = by_vote_ ? "a vote" : by ? guest_name(*by) : admin ? std::to_string(admin) : "console";
+    const std::string who = !by_plugin_.empty() ? by_plugin_ : by_vote_ ? "a vote" : by ? guest_name(*by) : admin ? std::to_string(admin) : "console";
     const auto done = [&](const std::vector<std::string> &lines) {
         std::string text;
         for (const auto &line : lines) {
