@@ -1497,10 +1497,33 @@ void slow_catch_off_drops() {
         check(s.on() && time > takeoff + air + 0.03f, "A shorter air plays faster, on towards its landing");
     }
     {
+        // A flat ollie as the game played it (2026-10-25): 0.13 s after the pop the board rose at 2.5 m/s, its lowest point
+        // 0.38 m up, and it was down 0.36 s later; at the top (0.6 m up) 0.26 s later. 9.81 said 0.63 s: a drop.
+        check(near(time_to_ground(2.5f, 0.38f), 0.36f, 0.02f) && near(time_to_ground(0.57f, 0.602f), 0.26f, 0.02f),
+              "The time to the ground is the game's, at the board's own gravity");
+        AirStretch s;
+        const float takeoff = 0.18f, caught = 0.42f, land = 0.667f;
+        float clock = 0.35f;
+        bool stretched = false;
+        for (float since = 0.133f; since < 0.484f; since += step, clock += step) {
+            const float height = 0.38f + 2.5f * (since - 0.133f) - 0.5f * board_gravity * (since - 0.133f) * (since - 0.133f);
+            const float speed = 2.5f - board_gravity * (since - 0.133f);
+            s.update(clock, time_to_ground(speed, height), step, takeoff, caught, land, default_catch_hold);
+            stretched = stretched || s.on();
+        }
+        check(!stretched, "A flat ollie is not taken for one off a drop");
+    }
+    {
+        check(lowest_ankle(true, true, -0.15f) == ankle_on_deck, "Rolling, a foot keyed deep into the deck is lifted onto it");
+        check(lowest_ankle(true, false, -0.05f) == ankle_on_ground, "Rolling, a foot keyed out over the edge goes no lower than the ground");
+        check(lowest_ankle(false, true, -0.15f) < -1, "In the air, a foot well under the deck is past the board: left as it is");
+        check(lowest_ankle(false, false, 0.0f) < -1 && lowest_ankle(false, true, 0.05f) == ankle_on_deck, "In the air, only a foot on the deck is held on it");
+    }
+    {
         const DropPlay p{1.0f, 0.5f, 1.0f, 1.1f, 2.0f, default_catch_hold};
         check(near(drop_clip_time(p, 0.3f), 0.3f), "Before the pop the drop preview is the clip as it is");
         const float extra = drop_air(0.6f, 1.0f) - 0.6f;
-        check(extra > 0.2f && extra < 0.6f, "A metre's drop gives it a little more air");
+        check(extra > 0.1f && extra < 0.3f, "A metre's drop gives it a little more air (at the board's gravity)");
         float previous = -1;
         bool back = false;
         for (float r = 0; r < 3; r += 0.01f) {

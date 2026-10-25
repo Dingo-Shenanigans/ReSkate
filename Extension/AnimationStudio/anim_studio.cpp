@@ -3282,10 +3282,8 @@ void on_animation(std::uintptr_t component) noexcept {
                             probe.wanted.store(true, std::memory_order_release);
                         }
                         const auto vy = board_up_speed(base, component);
-                        if (std::isfinite(ground) && found >= 0 && now_seconds() - found < 0.15 && vy && std::isfinite(lowest)) {
-                            const float h = std::max(0.0f, lowest - ground), g = 9.81f;
-                            to_ground = (*vy + std::sqrt(*vy * *vy + 2 * g * h)) / g;
-                        }
+                        if (std::isfinite(ground) && found >= 0 && now_seconds() - found < 0.15 && vy && std::isfinite(lowest))
+                            if (const float t = time_to_ground(*vy, lowest - ground); t >= 0) to_ground = t;
                     }
                     const bool was_on = l.stretch.on();
                     const float hold = played.catch_hold.value_or(default_catch_hold);
@@ -4055,16 +4053,18 @@ void seat_feet_on_board(const GameplayPacket& packet, std::span<const Joint> nat
                 }
             }
         }
-        // 2. Never sunk into the deck: with the deck upright under him, an ankle less than 9.5 cm over it is lifted to there.
+        // 2. Never sunk into the deck, nor into the ground while it rolls on it (lowest_ankle).
         const auto placement = compose(edited[0], edited[1]);
         const Vec3 board_up = rotate(board.rotation, up), body_up = rotate(placement.rotation, Vec3{0, 1, 0});
         if (board_up[0] * body_up[0] + board_up[1] * body_up[1] + board_up[2] * body_up[2] < 0.5f) return;
-        constexpr float lowest = 0.095f;
+        const bool rolling = live().render_motion.load(std::memory_order_acquire) == MotionState::riding;
         for (const auto& [foot, thigh] : legs) {
             const auto now = world(edited, foot);
             const auto on_board = relative(board, now);
             float height = 0;
-            if (!finite(on_board) || !on_deck(on_board.position, height) || height >= lowest || height < -0.08f) continue;
+            if (!finite(on_board)) continue;
+            const float lowest = lowest_ankle(rolling, on_deck(on_board.position, height), height);
+            if (!(height < lowest)) continue;
             const float lift = lowest - height;
             const Vec3 to{now.position[0] + board_up[0] * lift, now.position[1] + board_up[1] * lift, now.position[2] + board_up[2] * lift};
             place_foot(edited, foot, to, nullptr, w * std::clamp(packet.limbs.of(thigh), 0.0f, 1.0f));

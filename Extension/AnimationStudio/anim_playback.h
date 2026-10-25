@@ -2,6 +2,7 @@
 #include "anim_runtime_rules.h"
 #include "anim_core.h"
 #include <cstdint>
+#include <limits>
 #include <memory>
 
 namespace dingosdk::anim_studio {
@@ -217,6 +218,30 @@ struct EditTransition {
         return current;
     }
 };
+// ---- the ground -------------------------------------------------------------------------------------------------------
+// The board falls at 20 m/s2 in the game, not the Earth's 9.81: measured 2026-10-25 from the board body's speed and height
+// through flat ollies (the speed falls 6 m/s in 0.28 s; from the top it drops 0.58 m in 0.23 s). With 9.81 the time to the
+// ground came out twice as long while the board rose, so every trick with a catch was taken for one off a drop on flat
+// ground too: its own clock, and the keyed joints and the feet as made in the studio rather than on the game's pose.
+inline constexpr float board_gravity = 20.0f;
+// Seconds until the board is down: from how fast it goes up now (metres a second, falling below 0) and how high its lowest
+// point is over the ground. Below 0: not known.
+inline float time_to_ground(float up_speed, float height) noexcept {
+    if (!std::isfinite(up_speed) || !std::isfinite(height)) return -1;
+    const float h = std::max(0.0f, height);
+    return (up_speed + std::sqrt(up_speed * up_speed + 2 * board_gravity * h)) / board_gravity;
+}
+// The lowest a foot's ankle is drawn: its height over the deck's mount, along the deck's up (on the deck the ankle stands
+// 10.4 cm over it; the ground is 8.7 cm under it). `over`: within the deck's outline. Below -infinity: no limit.
+// In the air, the deck upright under him: an ankle over the deck less than 9.5 cm over it is lifted to there, unless it is more
+// than 8 cm into it (that is a foot past the board, not on it). Rolling on the ground: over the deck, never into it however
+// deep the keys put it; off it, never under the ground (a leg keyed out over the edge took its foot into the ground, and a
+// hips key 20 cm down took both feet through the deck, while it rolled away from a landing).
+inline constexpr float ankle_on_deck = 0.095f, ankle_on_ground = 0.015f;
+inline float lowest_ankle(bool rolling, bool over, float height) noexcept {
+    if (rolling) return over ? ankle_on_deck : ankle_on_ground;
+    return over && height >= -0.08f ? ankle_on_deck : -std::numeric_limits<float>::infinity();
+}
 // ---- off a drop: the catch slowed, never held still ------------------------------------------------------------------
 // Off a drop, down stairs or onto a ledge the air is longer or shorter than the trick's own. From just before its catch the
 // trick's time is its own (the game's pose is off the clip by then): it runs slower - or faster - so its landing comes on
@@ -272,7 +297,7 @@ struct DropPlay {
 // The air off a drop `metres` lower: the clip's own takeoff (the speed that gives it `air`) falling that much further.
 inline float drop_air(float air, float metres) noexcept {
     if (!(air > 0) || !(metres > 0) || !std::isfinite(air) || !std::isfinite(metres)) return air;
-    const float g = 9.81f, up = g * air / 2;
+    const float g = board_gravity, up = g * air / 2;
     return (up + std::sqrt(up * up + 2 * g * metres)) / g;
 }
 // `real` seconds from the clip's start, off that drop -> the clip's time: its own up to its catch, slowed through it, its
