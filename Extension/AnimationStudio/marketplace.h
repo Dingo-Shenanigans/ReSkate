@@ -41,7 +41,7 @@ struct CrewMember {
 };
 inline constexpr std::array crew_members{
     CrewMember{"leafbro", "leaf.bro", "Bailed into every bug so you don't have to. Hall of Meat regular."},
-    CrewMember{"Myawsometeam", "Setsu", "Ran the same line a hundred times so the studio lands it a hundred and one."},
+    CrewMember{"Myawsometeam", "Setsu", "Ran the same line a hundred times so the studio lands it a hundred and one.", 0.56f, 0.32f},
     CrewMember{"FIENDSKATEBOARDS", "renzoh.", "Pop shuv-it specialist: sent the dump and the video before the board even landed.", 0.5f, 0.42f},
     CrewMember{"smonky", "smonk", "Rolls away from every crash, then sends the log. Smooth as fresh bearings.", 0.5f, 0.38f},
     CrewMember{"reskate_animation_editor", "philsteezy", "Steezy bug reports only. Even the crashes had style.", 0.5f, 0.4f},
