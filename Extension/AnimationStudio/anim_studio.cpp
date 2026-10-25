@@ -473,6 +473,7 @@ struct Live {
     // of the game's found): 0..1, eased in and out. The keys then go on the pose they were made on, the feet on the deck.
     float off_clip{};
     bool off_clip_said{};
+    float air_feet{}; // the feet on the deck as the studio has them, from the pop to the touchdown (eased in and out)
     // Off a drop (catch_latch): the trick's own clock from just before its catch (AirStretch), the time it was at on the
     // touchdown, its last time, and the board's shape for where it touches.
     AirStretch stretch;
@@ -3209,7 +3210,7 @@ void on_animation(std::uintptr_t component) noexcept {
                     l.mirrored_edits.clear();
                 }
                 l.game_tricks = snap->tricks;
-                l.native_clock.reset(); l.clock_weight = 0; l.off_clip = 0;
+                l.native_clock.reset(); l.clock_weight = 0; l.off_clip = 0; l.air_feet = 0;
                 l.attempt_variants.clear(); l.stance_fallback_trick.clear(); l.predicted_air = 0;
                 l.limbs = {}; l.gave_way_at = -1; l.gave_way_from.clear();
                 l.board_at_takeoff_ok = false;
@@ -3330,7 +3331,7 @@ void on_animation(std::uintptr_t component) noexcept {
                     // Its clock starts looking for the game's clip of it.
                     l.native_clock.reset();
                     if (found) l.native_clock.start(found->native);
-                    l.clock_selected_at = at; l.clock_locked_at = -1; l.clock_weight = 0; l.off_clip = 0; l.off_clip_said = false;
+                    l.clock_selected_at = at; l.clock_locked_at = -1; l.clock_weight = 0; l.off_clip = 0; l.off_clip_said = false; l.air_feet = 0;
                     l.stretch.reset(); l.latch_touch_from = l.latch_last = -1;
                     l.latch_shape_ok = false;
                     if (found && found->caught > 0) {
@@ -3523,15 +3524,27 @@ void on_animation(std::uintptr_t component) noexcept {
                 // air, or no clip of the game's found at all: the keys rode on a pose made for something else (a foot
                 // through the deck, a pose not the timeline's). Then they go on the pose they were made on, and the feet on
                 // the deck as the studio has them; by the touchdown it is the game's pose again, as on flat ground.
+                // From just before its catch to the touchdown the same: the catch as it was made, whatever pop the game is on. Its
+                // keys were made on its own clip's pose and the game plays another pop's often (a low trick on a high pop): laid
+                // on that, a foot went through the deck. (Until 2026-10-25 a wrong gravity took nearly every flat trick for one
+                // off a drop, which did this from the catch on; with that fixed the feet came through.)
                 {
                     const bool touched_down = l.episode.contact.since.has_value() || (l.episode.phase == PlaybackPhase::landing && l.episode.landing >= 0);
-                    const bool off = !touched_down && (l.clock_fallback || (reading.locked && reading.lost) || l.stretch.on());
+                    const bool catching = trick->caught > clip.takeoff && sampled.time >= AirStretch::slow_from(clip.takeoff, trick->caught);
+                    const bool off = !touched_down && (l.clock_fallback || (reading.locked && reading.lost) || l.stretch.on() || catching);
                     constexpr float off_step = (1.0f / 60) / 0.15f;
                     l.off_clip = off ? std::min(1.0f, l.off_clip + off_step) : std::max(0.0f, l.off_clip - off_step);
+                    // And from the pop on, a foot the studio has on the deck stays on the deck the game draws (one flicked off
+                    // it is left to its keys).
+                    const bool popped = !touched_down && sampled.time >= clip.takeoff && clip.takeoff >= 0;
+                    l.air_feet = popped ? std::min(1.0f, l.air_feet + off_step) : std::max(0.0f, l.air_feet - off_step);
                     if (off && !l.off_clip_said) {
                         l.off_clip_said = true;
-                        logging::log(Level::info, Channel::skater, "Animation Studio: {} is off the game's clip in the air ({}): keys as made, feet on the deck as in the studio.",
-                                     trick->name, l.clock_fallback ? "no clip of the game's found" : l.stretch.on() ? "it takes its own time off a drop" : "the game holds a pose of its own");
+                        logging::log(Level::info, Channel::skater, "Animation Studio: {} {}: keys as made, feet on the deck as in the studio.", trick->name,
+                                     l.clock_fallback ? "is off the game's clip in the air (no clip of the game's found)"
+                                     : l.stretch.on() ? "is off the game's clip in the air (it takes its own time off a drop)"
+                                     : catching       ? "comes to its catch"
+                                                      : "is off the game's clip in the air (the game holds a pose of its own)");
                     }
                 }
                 diagnostic.clock_error = reading.error;
@@ -3557,7 +3570,8 @@ void on_animation(std::uintptr_t component) noexcept {
                     // the studio's pose is forced over it - but off the game's clip in the air (off_clip), the keyed joints go
                     // to the pose they were made on and the feet onto the deck as the studio has them.
                     const float off = l.off_clip * l.off_clip * (3 - 2 * l.off_clip);
-                    packet->mirrored = l.played_mirrored; packet->match = off; packet->feet_match = off;
+                    const float seated = std::max(off, l.air_feet * l.air_feet * (3 - 2 * l.air_feet));
+                    packet->mirrored = l.played_mirrored; packet->match = off; packet->feet_match = seated;
                     packet->board_backwards = l.playback_backwards;
                     packet->fakie = l.playback_fakie;
                     packet->match_rest = 0;
@@ -4212,8 +4226,14 @@ void seat_feet_on_board(const GameplayPacket& packet, std::span<const Joint> nat
             float height = 0;
             if (!finite(on_board)) continue;
             const float lowest = lowest_ankle(rolling, on_deck(on_board.position, height), height);
-            if (!(height < lowest)) continue;
-            const float lift = lowest - height;
+            float lift = height < lowest ? lowest - height : 0.0f;
+            // The toes too (the joint after the foot): a foot pitched at a tilted deck had its ankle over it and its toes
+            // through it. Over the deck they stay on top of it.
+            const std::uint16_t toe_joint = foot == left_foot_joint ? 344 : 11; // Left toes, Right toes
+            const auto toes = relative(board, world(edited, toe_joint));
+            float toe_height = 0;
+            if (finite(toes) && on_deck(toes.position, toe_height) && toe_height < 0.01f && toe_height >= -0.08f) lift = std::max(lift, 0.01f - toe_height);
+            if (!(lift > 0)) continue;
             const Vec3 to{now.position[0] + board_up[0] * lift, now.position[1] + board_up[1] * lift, now.position[2] + board_up[2] * lift};
             place_foot(edited, foot, to, nullptr, w * std::clamp(packet.limbs.of(thigh), 0.0f, 1.0f));
         }
