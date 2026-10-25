@@ -150,6 +150,9 @@ inline std::string team_page(std::string_view team) { return std::string(site) +
 void open_team_page(std::string_view team); // in the browser; a team's name of letters, figures and _ only
 // Downloads the pack and puts it in the library (the studio's import), in the background.
 void install(const std::string& full_name);
+// A pack of the library is gone (deleted, or its last trick deleted): the package it came from no longer counts as
+// installed, so the MARKET offers GET again. Packs the ReSkate launcher installs (Mods) stay: its mod list holds those.
+void forget_installed(const std::string& library_pack);
 // Links a Thunderstore team for publishing: its name and a service account token of it.
 bool link_account(const std::string& team, const std::string& token, std::string& message);
 void unlink_account();

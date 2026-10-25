@@ -27,6 +27,9 @@ struct Preset {
     // Made on another PC (its maker's key is not this one's): it plays, tests and previews, but is not opened to edit,
     // copied or shared again.
     bool locked{};
+    // Made on another PC (its maker's key), editable or not: never put in your packs or shared again, so another maker's
+    // tricks are not reshared. Locked ones are foreign too.
+    bool foreign{};
     // Where it stands in the playlist when the playlist plays (select_playlist): the order it takes its turn in.
     int order{-1};
     // Switched to PLAY on its own (MY TRICKS): it plays in game whichever packs are on (where none of theirs has its

@@ -1088,6 +1088,14 @@ bool locked_locked(State& s, const std::string& name) {
     const auto found = std::find_if(s.presets.begin(), s.presets.end(), [&](const Preset& p) { return _stricmp(p.name.c_str(), name.c_str()) == 0; });
     return found != s.presets.end() && found->locked;
 }
+// Another maker's trick: made on another PC (editable or not), or in a pack made on another PC (got from the MARKET or
+// imported). Only your own tricks go in your packs and are shared, so nobody reshares tricks that are not theirs.
+bool someone_elses_locked(State& s, const std::string& name) {
+    if (!s.library_read) read_library_locked(s);
+    const auto found = std::find_if(s.presets.begin(), s.presets.end(), [&](const Preset& p) { return _stricmp(p.name.c_str(), name.c_str()) == 0; });
+    if (found != s.presets.end() && (found->foreign || found->locked)) return true;
+    return std::any_of(s.packs.begin(), s.packs.end(), [&](const PresetPack& pack) { return locked_key(pack.maker_key) && pack.has(name); });
+}
 void read_library_locked(State& s) {
     s.library.clear();
     s.presets.clear();
@@ -1123,6 +1131,7 @@ void read_library_locked(State& s) {
                     s.presets.back().locked = (locked_key(animation.maker_key) && !animation.editable) ||
                                               (!locked_clips.empty() && (animation.maker_key.empty() || locked_key(animation.maker_key)) &&
                                                locked_clips.contains(clip_hash(saved_clip(name))));
+                    s.presets.back().foreign = locked_key(animation.maker_key) || s.presets.back().locked;
                     s.presets.back().playing = playing.contains(name);
                 }
             } catch (...) {} // A broken animation stays listed for inspection, but is not a preset.
@@ -5479,6 +5488,12 @@ bool set_pack_member(const std::string& pack_name, const std::string& animation,
         publish_locked(s, false);
         return false;
     }
+    if (in && someone_elses_locked(s, animation)) {
+        message = shown_name(s, animation) + " is another maker's: it plays for you, but only your own tricks go in your packs.";
+        s.status = message;
+        publish_locked(s, false);
+        return false;
+    }
     const auto slot = found != s.presets.end() ? preset_slot(found->trick, found->pop) : std::string{};
     message = in ? "Put " + shown_name(s, animation) + " in " + pack_name + ": switch it to PLAY there to have it play in game."
                  : "Took " + shown_name(s, animation) + " out of " + pack_name + ".";
@@ -6125,8 +6140,9 @@ Shared shared_files_locked(State& s, const std::string& pack_name) {
             const auto json = saved_json(name), clip = saved_clip(name);
             std::error_code error;
             if (!std::filesystem::is_regular_file(json, error) || !std::filesystem::is_regular_file(clip, error)) continue;
-            // Another maker's trick is not shared again: a pack with one is not exported, EXPORT ALL leaves it out.
-            if (locked_locked(s, name)) {
+            // Another maker's trick is not shared again (editable or not, or one that came in a pack): a pack with one is not
+            // exported, EXPORT ALL leaves it out.
+            if (someone_elses_locked(s, name)) {
                 if (!pack_name.empty())
                     throw std::runtime_error(name + " in this pack was made by someone else: it plays for you, but it is theirs to share. "
                                              "Take it out of the pack to export it.");
@@ -7265,7 +7281,7 @@ bool load_saved(const std::string& name, std::string& message, bool preview) {
         return false;
     }
 }
-bool remove(const std::string& name, std::string& message) {
+bool remove(const std::string& name, std::string& message, std::vector<std::string>* packs_gone) {
     const auto safe = file_safe(name);
     if (safe.empty()) {
         message = "There is no trick called " + name + ".";
@@ -7277,8 +7293,48 @@ bool remove(const std::string& name, std::string& message) {
     std::lock_guard lock(s.mutex);
     s.tricks_read = false;
     read_library_locked(s);
-    message = "Deleted " + safe + ".";
+    // Out of every pack it was in. A pack made on another PC (got from the MARKET or imported) with no trick left is
+    // deleted too, so it can be got again; your own packs stay, empty or not.
+    std::vector<std::string> left, gone;
+    try {
+        const auto packs = s.packs;
+        for (const auto& saved : packs) {
+            if (!saved.has(safe)) continue;
+            auto& pack = pack_draft_locked(s, saved.name);
+            for (auto& [filed, names] : pack.slots) std::erase(names, safe);
+            pack.off.erase(safe);
+            pack.unlinked.erase(safe);
+            tidy_pack(pack);
+            const auto members = pack.members();
+            const bool empty = std::none_of(members.begin(), members.end(), [&](const std::string& member) {
+                return std::find(s.library.begin(), s.library.end(), member) != s.library.end();
+            });
+            (empty && locked_key(pack.maker_key) ? gone : left).push_back(saved.name);
+        }
+        for (const auto& pack : gone) s.pack_drafts.erase(pack);
+        write_pack_drafts_locked(s);
+        for (const auto& pack : gone) {
+            std::error_code error;
+            std::filesystem::remove(pack_file(pack), error);
+            std::filesystem::remove(pack_thumbnail_file(pack), error);
+            auto names = pack_names_on();
+            if (std::erase(names, pack)) write_pack_names_on(names);
+            if (s.open_pack == pack) s.open_pack.clear();
+        }
+    } catch (const std::exception& e) {
+        logging::log(Level::warning, Channel::skater, "Animation Studio: {} was deleted, but its packs were not all updated: {}", safe, e.what());
+    }
+    const auto list = [](const std::vector<std::string>& names) {
+        std::string out;
+        for (std::size_t i = 0; i < names.size(); ++i) out += (i == 0 ? "" : i + 1 == names.size() ? " and " : ", ") + names[i];
+        return out;
+    };
+    message = "Deleted " + safe + (left.empty() ? std::string{} : ", and took it out of " + list(left)) + "." +
+              (gone.empty() ? std::string{} : " " + list(gone) + (gone.size() == 1 ? " had" : " had") + " no trick left, so " +
+                                                   (gone.size() == 1 ? "it is gone too: get it again from the MARKET." : "they are gone too: get them again from the MARKET."));
+    if (!left.empty() || !gone.empty()) packs_changed_locked(s, message);
     s.status = message;
+    if (packs_gone) *packs_gone = gone;
     return true;
 }
 bool export_diagnostics(std::string& message) {

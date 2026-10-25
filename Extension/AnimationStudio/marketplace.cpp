@@ -720,6 +720,29 @@ void set_favorite(const std::string& full_name, bool on) {
     else m.favorites.erase(full_name);
     save_lists_locked(m);
 }
+void forget_installed(const std::string& library_pack) {
+    if (library_pack.empty()) return;
+    auto& m = market();
+    std::lock_guard lock(m.mutex);
+    read_settings_locked(m);
+    bool changed = false;
+    for (auto it = m.installed_as.begin(); it != m.installed_as.end();) {
+        if (it->second != library_pack || it->first.starts_with("mod:")) {
+            ++it;
+            continue;
+        }
+        m.installed.erase(it->first);
+        for (auto& p : m.packs)
+            if (p.full_name == it->first) {
+                p.installed.clear();
+                p.installed_as.clear();
+            }
+        logging::log(Level::info, Channel::skater, "Animation Studio: {} is gone, so {} is not installed any more.", library_pack, it->first);
+        it = m.installed_as.erase(it);
+        changed = true;
+    }
+    if (changed) save_lists_locked(m);
+}
 void set_like_prompt(bool on) {
     auto& m = market();
     std::lock_guard lock(m.mutex);

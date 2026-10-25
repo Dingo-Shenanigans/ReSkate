@@ -402,7 +402,9 @@ bool peek_saved(const std::string& animation, bool play = true);
 bool peek_playing();   // the trick asked to play is playing
 void end_peek();       // and one asked for that is not ready yet does not start
 float peek_duration(); // the trick being looked at, in seconds (0 none)
-bool remove(const std::string& name, std::string& message);
+// Deletes a saved trick and takes it out of every pack it is in. A pack got from someone else (the MARKET, an import)
+// left with no trick goes too: `packs_gone` says which (for the MARKET to forget).
+bool remove(const std::string& name, std::string& message, std::vector<std::string>* packs_gone = nullptr);
 void rename(const std::string& name);
 void set_your_name(const std::string& name); // MADE BY for new tricks and packs, without touching the one open
 // Camera.
