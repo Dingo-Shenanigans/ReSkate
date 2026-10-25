@@ -222,6 +222,21 @@ struct History {
     std::optional<float> catch_at; // CATCH, as it was
     std::optional<float> crossfade, catch_hold; // THIS TRICK, as they were
 };
+// The playlists (presets/playlists.json, read_playlists): any number, one on at a time.
+struct NamedPlaylist {
+    std::string name;
+    PlaylistMode mode{PlaylistMode::fixed};
+    std::vector<PlaylistEntry> entries;
+};
+struct Playlists {
+    std::string on; // the one on; "" none
+    std::vector<NamedPlaylist> lists;
+    const NamedPlaylist* named(const std::string& name) const {
+        const auto found = std::find_if(lists.begin(), lists.end(), [&](const NamedPlaylist& l) { return l.name == name; });
+        return found == lists.end() ? nullptr : &*found;
+    }
+    NamedPlaylist* named(const std::string& name) { return const_cast<NamedPlaylist*>(std::as_const(*this).named(name)); }
+};
 struct State {
     std::mutex mutex;
     // Document.
@@ -321,9 +336,11 @@ struct State {
     std::vector<std::string> favorite_packs;       // starred in PACKS
     bool hover_preview{true};                      // TRICKS: a hovered trick plays in a little window
     std::map<std::string, std::string> keys;       // the editor's rebound keys (View::keys)
-    bool playlist_on{};                            // the playlist (presets/playlist.json), as last read
+    bool playlist_on{};                            // the playlist that plays (Playlists::on), as last read
     PlaylistMode playlist_mode{PlaylistMode::fixed};
     std::vector<PlaylistEntry> playlist;
+    Playlists playlists;                           // every playlist (presets/playlists.json)
+    std::string playlist_open;                     // the one PACKS > PLAYLIST shows
     std::vector<PackConflict> conflicts;           // tricks more than one pack that is on has (pack_conflicts)
     std::string export_folder, import_folder;      // where packs go out to and come in from, "" the defaults
     std::string test_trick;                        // Test in game: played in game until the studio opens again
@@ -778,14 +795,15 @@ std::vector<std::string> pack_names_on() {
     return out;
 }
 std::filesystem::path pack_file(const std::string& name) { return library_folder() / L"presets" / (name + ".json"); }
-// The playlist: presets/playlist.json.
+// The playlist that plays: what the selection reads (read_playlist).
 struct Playlist {
     bool on{};
     PlaylistMode mode{PlaylistMode::fixed};
     std::vector<PlaylistEntry> entries;
 };
+// The playlist from before there were many: presets/playlist.json, read once into presets/playlists.json.
 std::filesystem::path playlist_file() { return library_folder() / L"presets" / L"playlist.json"; }
-Playlist read_playlist() {
+Playlist read_playlist_file() {
     Playlist out;
     try {
         std::ifstream in(playlist_file(), std::ios::binary);
@@ -803,11 +821,102 @@ Playlist read_playlist() {
     } catch (...) {}
     return out;
 }
-void write_playlist(const Playlist& playlist) {
-    Json entries = Json::array();
-    for (const auto& e : playlist.entries) entries.push_back({{"pack", e.pack}, {"animation", e.animation}});
-    write_preset_file(playlist_file(), Json{{"format", "animator-playlist"}, {"on", playlist.on}, {"mode", playlist_mode_name(playlist.mode)},
-                                            {"entries", std::move(entries)}}.dump(2));
+// ---- the playlists: presets/playlists.json ----
+// Any number, one on at a time (or none): the one on decides what plays in game, its whole packs and single tricks in
+// order; with none on the packs that are on do. Your own tricks play from a playlist: ACTIVE on one that is in nothing
+// asks which playlist it goes in.
+std::filesystem::path playlists_file() { return library_folder() / L"presets" / L"playlists.json"; }
+Json playlist_entries_json(const std::vector<PlaylistEntry>& entries) {
+    Json out = Json::array();
+    for (const auto& e : entries) out.push_back({{"pack", e.pack}, {"animation", e.animation}});
+    return out;
+}
+std::vector<PlaylistEntry> playlist_entries_of(const Json& root) {
+    std::vector<PlaylistEntry> out;
+    if (root.contains("entries") && root.at("entries").is_array())
+        for (const auto& e : root.at("entries"))
+            if (e.is_object() && out.size() < 2000) {
+                PlaylistEntry entry{e.value("pack", ""), e.value("animation", "")};
+                if (!entry.pack.empty() || !entry.animation.empty()) out.push_back(std::move(entry));
+            }
+    return out;
+}
+void write_playlists(const Playlists& playlists) {
+    Json lists = Json::array();
+    for (const auto& l : playlists.lists)
+        lists.push_back(Json{{"name", l.name}, {"mode", playlist_mode_name(l.mode)}, {"entries", playlist_entries_json(l.entries)}});
+    write_preset_file(playlists_file(), Json{{"format", "animator-playlists"}, {"on", playlists.on}, {"playlists", std::move(lists)}}.dump(2));
+}
+// Once, from before there were many: the old playlist is "Playlist 1" (on if it was), and when it was not on, the tricks
+// ticked to play on their own (presets/playing.txt), which played beside the packs that were on, are "My tricks" - those
+// packs first, then them - and that one is on: what played before plays on.
+Playlists migrate_playlists() {
+    Playlists out;
+    const auto old = read_playlist_file();
+    if (!old.entries.empty() || old.on) {
+        out.lists.push_back({"Playlist 1", old.mode, old.entries});
+        if (old.on) out.on = "Playlist 1";
+    }
+    std::error_code error;
+    if (const auto ticked = library_folder() / L"presets" / L"playing.txt"; out.on.empty() && std::filesystem::exists(ticked, error)) {
+        std::vector<std::string> loose;
+        std::ifstream in(ticked, std::ios::binary);
+        for (std::string line; in && std::getline(in, line);) {
+            while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+            if (!line.empty() && line == file_safe(line) && std::filesystem::is_regular_file(saved_json(line), error)) loose.push_back(line);
+        }
+        if (!loose.empty()) {
+            NamedPlaylist mine{"My tricks", PlaylistMode::fixed, {}};
+            for (const auto& pack : pack_names_on()) mine.entries.push_back({pack, ""});
+            for (const auto& name : loose) mine.entries.push_back({"", name});
+            out.lists.push_back(std::move(mine));
+            out.on = "My tricks";
+        }
+    }
+    try {
+        write_playlists(out);
+        if (std::filesystem::exists(playlist_file(), error)) {
+            auto kept = playlist_file();
+            kept += L".before-playlists";
+            std::filesystem::rename(playlist_file(), kept, error);
+        }
+        logging::log(Level::info, Channel::skater, "Animation Studio: {} playlists from the old playlist and the tricks ticked on their own; {} on.",
+                     out.lists.size(), out.on.empty() ? std::string("none") : out.on);
+    } catch (...) {}
+    return out;
+}
+Playlists read_playlists() {
+    // The game's side and the studio both read it: the first to find none makes it, once.
+    static std::mutex making;
+    std::lock_guard lock(making);
+    std::error_code error;
+    if (!std::filesystem::exists(playlists_file(), error)) return migrate_playlists();
+    Playlists out;
+    try {
+        std::ifstream in(playlists_file(), std::ios::binary);
+        const auto root = Json::parse(std::string((std::istreambuf_iterator<char>(in)), {}));
+        if (!root.is_object()) return out;
+        if (root.contains("playlists") && root.at("playlists").is_array())
+            for (const auto& l : root.at("playlists")) {
+                if (!l.is_object() || out.lists.size() >= 200) continue;
+                NamedPlaylist list{utf8_prefix(l.value("name", ""), 48), playlist_mode_named(l.value("mode", "fixed")), playlist_entries_of(l)};
+                if (list.name.empty() || out.named(list.name)) continue;
+                out.lists.push_back(std::move(list));
+            }
+        out.on = root.value("on", "");
+        if (!out.named(out.on)) out.on.clear();
+    } catch (...) {}
+    return out;
+}
+Playlist playing_of(const Playlists& playlists) {
+    if (const auto* on = playlists.named(playlists.on)) return {true, on->mode, on->entries};
+    return {};
+}
+Playlist read_playlist() { return playing_of(read_playlists()); }
+// A name no playlist has: "Playlist 2", "Playlist 3" ...
+std::string free_playlist_name(const Playlists& playlists) {
+    for (std::size_t n = playlists.lists.size() + 1;; ++n)
+        if (const auto name = "Playlist " + std::to_string(n); !playlists.named(name)) return name;
 }
 // How the playlist's tricks take turns, for the game's side (read_custom_tricks sets it).
 std::atomic<int> playlist_turns_mode{0};
@@ -831,7 +940,7 @@ std::filesystem::path conflicts_file() { return library_folder() / L"presets" / 
 // The studio's own lists in presets/ (playlist.json, locked.json, conflicts.json): a pack by one of these names would be
 // written over it, or it over the pack.
 bool reserved_pack_name(const std::string& name) {
-    for (const char* own : {"playlist", "locked", "conflicts"})
+    for (const char* own : {"playlist", "playlists", "locked", "conflicts"})
         if (_stricmp(name.c_str(), own) == 0) return true;
     return false;
 }
@@ -860,7 +969,7 @@ std::vector<PresetPack> all_packs() {
     std::error_code error;
     for (const auto& entry : std::filesystem::directory_iterator(library_folder() / L"presets", error))
         if (entry.is_regular_file(error) && entry.path().extension() == L".json" && entry.path().stem() != L"playlist" &&
-            entry.path().stem() != L"conflicts" && entry.path().stem() != L"locked")
+            entry.path().stem() != L"playlists" && entry.path().stem() != L"conflicts" && entry.path().stem() != L"locked")
             try { out.push_back(read_pack_file(entry.path().stem().string())); } catch (...) {}
     return out;
 }
@@ -1150,7 +1259,7 @@ void read_library_locked(State& s) {
         if (std::filesystem::is_directory(packs, error))
             for (const auto& entry : std::filesystem::directory_iterator(packs, error))
                 if (entry.is_regular_file(error) && entry.path().extension() == L".json" && entry.path().stem() != L"playlist" &&
-                    entry.path().stem() != L"conflicts" && entry.path().stem() != L"locked") {
+                    entry.path().stem() != L"playlists" && entry.path().stem() != L"conflicts" && entry.path().stem() != L"locked") {
                     try {
                         s.packs.push_back(read_pack_file(entry.path().stem().string()));
                         s.pack_times[s.packs.back().name] = saved_time(entry.path());
@@ -1161,15 +1270,20 @@ void read_library_locked(State& s) {
                 }
         std::sort(s.packs.begin(), s.packs.end(), [](const PresetPack& a, const PresetPack& b) { return a.name < b.name; });
         const auto choices = read_conflict_choices();
-        const auto playlist = read_playlist();
+        s.playlists = read_playlists();
+        const auto playlist = playing_of(s.playlists);
         s.playlist_on = playlist.on;
         s.playlist_mode = playlist.mode;
         s.playlist = playlist.entries;
+        if (!s.playlists.named(s.playlist_open))
+            s.playlist_open = !s.playlists.on.empty() ? s.playlists.on : s.playlists.lists.empty() ? std::string{} : s.playlists.lists.front().name;
         if (playlist.on) {
             select_playlist(s.presets, s.packs, playlist.entries, playlist.mode);
             s.conflicts.clear();
         } else {
-            select_presets(s.presets, s.packs_on, &choices, &playing);
+            // No playlist on: the packs that are on, and nothing of yours on its own (your tricks play from a playlist).
+            const std::set<std::string> none;
+            select_presets(s.presets, s.packs_on, &choices, &none);
             s.conflicts = pack_conflicts(s.presets, s.packs_on, choices);
         }
     } catch (const std::exception& e) { s.status = e.what(); }
@@ -1214,10 +1328,8 @@ std::shared_ptr<const CustomTricks> read_custom_tricks(const std::string& test_t
         } else {
             const auto choices = read_conflict_choices();
             const auto on = packs_on();
-            std::vector<std::string> names;
-            for (const auto& r : requested) names.push_back(r.name);
-            const auto playing = playing_names(names, !on.empty());
-            select_presets(requested, on, &choices, &playing);
+            const std::set<std::string> none; // your own tricks play from a playlist
+            select_presets(requested, on, &choices, &none);
             playlist_turns_mode.store(static_cast<int>(PlaylistMode::shuffle), std::memory_order_release);
         }
     } catch (const std::exception& e) {
@@ -4709,8 +4821,17 @@ View view() {
     v.ungrouped = s.ungrouped;
     v.conflicts = s.conflicts;
     v.playlist_on = s.playlist_on;
-    v.playlist_mode = s.playlist_mode;
-    v.playlist = s.playlist;
+    v.playlist_playing = s.playlists.on;
+    v.playlist_open = s.playlist_open;
+    v.playlists.clear();
+    for (const auto& l : s.playlists.lists) v.playlists.push_back({l.name, l.entries.size()});
+    if (const auto* open = s.playlists.named(s.playlist_open)) {
+        v.playlist_mode = open->mode;
+        v.playlist = open->entries;
+    } else {
+        v.playlist_mode = PlaylistMode::fixed;
+        v.playlist.clear();
+    }
     v.hover_preview = s.hover_preview;
     v.keys = s.keys;
     v.export_folder = s.export_folder;
@@ -5969,63 +6090,263 @@ void set_pack_favorite(const std::string& pack_name, bool favorite) {
     publish_locked(s, false);
 }
 namespace {
-void playlist_changed_locked(State& s, const Playlist& playlist, const std::string& message) {
-    write_playlist(playlist);
+void playlists_changed_locked(State& s, const Playlists& playlists, const std::string& message) {
+    write_playlists(playlists);
     s.tricks_read = false; // the game's side takes it up
     read_library_locked(s);
     s.status = message;
     publish_locked(s, false);
 }
-Playlist current_playlist(const State& s) { return {s.playlist_on, s.playlist_mode, s.playlist}; }
+void say_locked(State& s, std::string& message, std::string said) {
+    message = std::move(said);
+    s.status = message;
+    publish_locked(s, false);
+}
 } // namespace
 void set_playlist_on(bool on, std::string& message) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
-    auto playlist = current_playlist(s);
-    playlist.on = on;
-    message = on ? (playlist.entries.empty() ? "Playlist on - it is empty, so nothing of yours plays until you add to it." : "Playlist on: it decides what plays in game.")
-                 : "Playlist off: the packs that are on play again.";
-    playlist_changed_locked(s, playlist, message);
+    auto lists = s.playlists;
+    const auto* open = lists.named(s.playlist_open);
+    if (!open) return say_locked(s, message, "Make a playlist first: + NEW PLAYLIST.");
+    const auto before = lists.on;
+    lists.on = on ? open->name : std::string{};
+    message = on ? (open->entries.empty() ? open->name + " is on - it is empty, so nothing of yours plays until you add to it."
+                                          : open->name + " is on: it decides what plays in game.") +
+                       (before.empty() || before == open->name ? std::string{} : " " + before + " is off now: one playlist plays at a time.")
+                 : open->name + " is off: the packs that are on play again.";
+    playlists_changed_locked(s, lists, message);
 }
 void set_playlist_mode(PlaylistMode mode, std::string& message) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
-    auto playlist = current_playlist(s);
-    playlist.mode = mode;
+    auto lists = s.playlists;
+    auto* open = lists.named(s.playlist_open);
+    if (!open) return;
+    open->mode = mode;
     message = mode == PlaylistMode::fixed ? "Fixed: where two in the playlist are the same trick, the one higher up plays every time."
               : mode == PlaylistMode::turns ? "In turns: the same trick from the playlist plays one after another, top to bottom."
                                             : "Shuffle: the same trick from the playlist plays at random, never twice running.";
-    playlist_changed_locked(s, playlist, message);
+    playlists_changed_locked(s, lists, message);
 }
 bool playlist_add(const PlaylistEntry& entry, std::string& message) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
-    auto playlist = current_playlist(s);
-    if (std::find(playlist.entries.begin(), playlist.entries.end(), entry) != playlist.entries.end()) {
-        message = "That is in the playlist already.";
+    auto lists = s.playlists;
+    if (!lists.named(s.playlist_open)) { // none yet: Playlist 1, open
+        s.playlist_open = free_playlist_name(lists);
+        lists.lists.push_back({s.playlist_open, PlaylistMode::fixed, {}});
+    }
+    auto* open = lists.named(s.playlist_open);
+    if (std::find(open->entries.begin(), open->entries.end(), entry) != open->entries.end()) {
+        say_locked(s, message, "That is in " + open->name + " already.");
         return false;
     }
-    playlist.entries.push_back(entry);
-    message = (entry.animation.empty() ? "Added the pack " + entry.pack : "Added " + shown_name(s, entry.animation)) + " to the playlist.";
-    playlist_changed_locked(s, playlist, message);
+    open->entries.push_back(entry);
+    message = (entry.animation.empty() ? "Added the pack " + entry.pack : "Added " + shown_name(s, entry.animation)) + " to " + open->name + ".";
+    playlists_changed_locked(s, lists, message);
     return true;
 }
 void playlist_remove(std::size_t index) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
-    auto playlist = current_playlist(s);
-    if (index >= playlist.entries.size()) return;
-    playlist.entries.erase(playlist.entries.begin() + static_cast<std::ptrdiff_t>(index));
-    playlist_changed_locked(s, playlist, "Taken out of the playlist.");
+    auto lists = s.playlists;
+    auto* open = lists.named(s.playlist_open);
+    if (!open || index >= open->entries.size()) return;
+    open->entries.erase(open->entries.begin() + static_cast<std::ptrdiff_t>(index));
+    playlists_changed_locked(s, lists, "Taken out of " + open->name + ".");
 }
 void playlist_move(std::size_t index, int by) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
-    auto playlist = current_playlist(s);
+    auto lists = s.playlists;
+    auto* open = lists.named(s.playlist_open);
+    if (!open) return;
     const auto to = static_cast<std::ptrdiff_t>(index) + by;
-    if (index >= playlist.entries.size() || to < 0 || to >= static_cast<std::ptrdiff_t>(playlist.entries.size())) return;
-    std::swap(playlist.entries[index], playlist.entries[static_cast<std::size_t>(to)]);
-    playlist_changed_locked(s, playlist, "Playlist order changed.");
+    if (index >= open->entries.size() || to < 0 || to >= static_cast<std::ptrdiff_t>(open->entries.size())) return;
+    std::swap(open->entries[index], open->entries[static_cast<std::size_t>(to)]);
+    playlists_changed_locked(s, lists, open->name + ": order changed.");
+}
+void open_playlist(const std::string& name) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    if (!s.playlists.named(name)) return;
+    s.playlist_open = name;
+    publish_locked(s, false);
+}
+bool new_playlist(std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    auto lists = s.playlists;
+    const auto name = free_playlist_name(lists);
+    lists.lists.push_back({name, PlaylistMode::fixed, {}});
+    s.playlist_open = name;
+    playlists_changed_locked(s, lists, "Made " + name + ": add whole packs or single tricks to it, then switch it on.");
+    message = s.status;
+    return true;
+}
+bool rename_playlist(const std::string& wanted, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    auto lists = s.playlists;
+    auto* open = lists.named(s.playlist_open);
+    if (!open) return false;
+    auto to = utf8_prefix(wanted, 48);
+    while (!to.empty() && to.back() == ' ') to.pop_back();
+    while (!to.empty() && to.front() == ' ') to.erase(to.begin());
+    if (to.empty()) {
+        say_locked(s, message, "A playlist needs a name.");
+        return false;
+    }
+    if (to == open->name) return true;
+    if (lists.named(to)) {
+        say_locked(s, message, "There is a playlist called " + to + " already.");
+        return false;
+    }
+    if (lists.on == open->name) lists.on = to;
+    message = "Renamed " + open->name + " to " + to + ".";
+    open->name = to;
+    s.playlist_open = to;
+    playlists_changed_locked(s, lists, message);
+    return true;
+}
+bool delete_playlist(std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    auto lists = s.playlists;
+    const auto* open = lists.named(s.playlist_open);
+    if (!open) return false;
+    const auto name = open->name;
+    const bool was_on = lists.on == name;
+    std::erase_if(lists.lists, [&](const NamedPlaylist& l) { return l.name == name; });
+    if (was_on) lists.on.clear();
+    s.playlist_open = lists.lists.empty() ? std::string{} : lists.lists.front().name;
+    message = "Deleted " + name + (was_on ? ": no playlist is on, so the packs that are on play." : ".");
+    playlists_changed_locked(s, lists, message);
+    return true;
+}
+std::string add_to_playlist(const std::string& playlist, const PlaylistEntry& entry, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    auto lists = s.playlists;
+    std::string name = playlist;
+    if (name.empty()) {
+        name = free_playlist_name(lists);
+        lists.lists.push_back({name, PlaylistMode::fixed, {}});
+    }
+    auto* list = lists.named(name);
+    if (!list) {
+        say_locked(s, message, "There is no playlist called " + name + ".");
+        return {};
+    }
+    if (std::find(list->entries.begin(), list->entries.end(), entry) == list->entries.end()) list->entries.push_back(entry);
+    if (lists.on.empty()) lists.on = name;
+    const auto what = entry.animation.empty() ? "the pack " + entry.pack : shown_name(s, entry.animation);
+    message = "Added " + what + " to " + name +
+              (lists.on == name ? ": it plays in game now." : ". " + name + " is off, " + lists.on + " is on: switch " + name + " on to play it.");
+    s.playlist_open = name;
+    playlists_changed_locked(s, lists, message);
+    return name;
+}
+ActiveAnswer set_trick_active(const std::string& animation, bool on, std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    if (!s.library_read) read_library_locked(s);
+    const auto me = std::find_if(s.presets.begin(), s.presets.end(), [&](const Preset& p) { return p.name == animation; });
+    if (me == s.presets.end()) {
+        say_locked(s, message, animation + " is not saved.");
+        return ActiveAnswer::done;
+    }
+    const auto shown = shown_name(s, animation);
+    const auto pack_named = [&](const std::string& name) -> const PresetPack* {
+        const auto found = std::find_if(s.packs.begin(), s.packs.end(), [&](const PresetPack& p) { return p.name == name; });
+        return found == s.packs.end() ? nullptr : &*found;
+    };
+    auto lists = s.playlists;
+    auto* playing = lists.named(lists.on);
+    // Where it is in the playlist that is on: as itself, and in a whole pack there.
+    bool single = false;
+    std::vector<std::string> whole;
+    if (playing)
+        for (const auto& e : playing->entries) {
+            if (e.animation == animation) single = true;
+            else if (e.animation.empty())
+                if (const auto* pack = pack_named(e.pack); pack && pack->has(animation)) whole.push_back(pack->name);
+        }
+    const auto switch_in_pack = [&](const std::string& pack, bool to) {
+        std::string ignored;
+        change_pack_locked(s, pack, ignored, [&](PresetPack& p) {
+            if (to) p.off.erase(animation);
+            else p.off.insert(animation);
+        });
+    };
+    if (!on) {
+        if (playing) {
+            std::vector<std::string> said;
+            if (single) {
+                std::erase_if(playing->entries, [&](const PlaylistEntry& e) { return e.animation == animation; });
+                write_playlists(lists);
+                said.push_back("out of " + playing->name);
+            }
+            for (const auto& pack : whole) {
+                switch_in_pack(pack, false);
+                said.push_back("off in " + pack);
+            }
+            std::string words;
+            for (std::size_t i = 0; i < said.size(); ++i) words += (i == 0 ? "" : " and ") + said[i];
+            message = said.empty() ? shown + " is not in " + playing->name + "." : "Took " + shown + " " + words + ".";
+        } else {
+            std::vector<std::string> off;
+            const auto packs_on_now = s.packs_on; // switching one re-reads them
+            for (const auto& pack : packs_on_now)
+                if (pack.has(animation) && !pack.off.contains(animation)) {
+                    switch_in_pack(pack.name, false);
+                    off.push_back(pack.name);
+                }
+            std::string words;
+            for (std::size_t i = 0; i < off.size(); ++i) words += (i == 0 ? "" : i + 1 == off.size() ? " and " : ", ") + off[i];
+            message = off.empty() ? shown + " does not play now." : "Switched " + shown + " off in " + words + " (it stays in it).";
+        }
+        s.tricks_read = false;
+        read_library_locked(s);
+        s.status = message;
+        publish_locked(s, false);
+        return ActiveAnswer::done;
+    }
+    // On: back where it was switched off; in a playlist already, beaten to its pop; or into a playlist (the overlay asks).
+    if (playing) {
+        bool back = false;
+        for (const auto& pack : whole)
+            if (const auto* p = pack_named(pack); p && p->off.contains(animation)) {
+                switch_in_pack(pack, true);
+                back = true;
+            }
+        if (back) {
+            s.tricks_read = false;
+            read_library_locked(s);
+            say_locked(s, message, shown + " is on in " + whole.front() + " again, in " + playing->name + ".");
+            return ActiveAnswer::done;
+        }
+        if (single || !whole.empty()) {
+            say_locked(s, message, shown + " is in " + playing->name + ", but another of its pop and stance plays first: move it up there.");
+            return ActiveAnswer::show_playlist;
+        }
+        return ActiveAnswer::choose_playlist;
+    }
+    const auto packs_on_now = s.packs_on; // switching one re-reads them
+    for (const auto& pack : packs_on_now)
+        if (pack.has(animation)) {
+            if (pack.off.contains(animation)) {
+                switch_in_pack(pack.name, true);
+                s.tricks_read = false;
+                read_library_locked(s);
+                say_locked(s, message, shown + " plays from " + pack.name + " again.");
+                return ActiveAnswer::done;
+            }
+            say_locked(s, message, shown + " is on in " + pack.name + ", but another of its pop and stance plays first.");
+            return ActiveAnswer::done;
+        }
+    return ActiveAnswer::choose_playlist;
 }
 void set_hover_preview(bool on) {
     auto& s = state();
@@ -6114,15 +6435,16 @@ bool rename_pack(const std::string& from, const std::string& to_in, std::string&
             for (const auto& [slot, choice] : choices) root[slot] = choice;
             write_preset_file(conflicts_file(), root.dump(2));
         }
-        // The playlist and the stars go by the pack's name too: renamed with it, or it drops out of both.
-        auto playlist = read_playlist();
+        // The playlists and the stars go by the pack's name too: renamed with it, or it drops out of them.
+        auto lists = read_playlists();
         bool listed = false;
-        for (auto& entry : playlist.entries)
-            if (entry.pack == from) {
-                entry.pack = to;
-                listed = true;
-            }
-        if (listed) write_playlist(playlist);
+        for (auto& list : lists.lists)
+            for (auto& entry : list.entries)
+                if (entry.pack == from) {
+                    entry.pack = to;
+                    listed = true;
+                }
+        if (listed) write_playlists(lists);
         bool starred = false;
         for (auto& name : s.favorite_packs)
             if (name == from) {
@@ -6198,7 +6520,7 @@ bool test_in_game(const std::string& animation, std::string& message) {
     s.tricks_read = false;
     s.open_requested = false; // the studio closes: go and skate it
     s.open_request_pending = true;
-    message = "Testing " + name + " in game until you open the studio again (F8) or close the game: do the trick. Ticked ACTIVE in MY TRICKS, it stays on for good.";
+    message = "Testing " + name + " in game until you open the studio again (F8) or close the game: do the trick. ACTIVE puts it in a playlist, for good.";
     s.status = message;
     publish_locked(s, false);
     return true;
@@ -6753,24 +7075,8 @@ bool save(std::string& message) {
         s.tricks_read = false; // the next tick reads the custom tricks again
         read_library_locked(s);
         message = name == wanted ? "Saved " + name + "." : "Saved as " + name + ": " + wanted + " is another saved animation.";
-        // Its first save plays in game at once when none of yours plays on its pop and stance yet: a new player saved, went
-        // skating and saw nothing change, since it had to be switched to PLAY first. One that would stand in for another of
-        // yours stays off, and says which plays: PLAY makes this one play instead.
-        if (first_save && !s.playlist_on)
-            if (const auto me = std::find_if(s.presets.begin(), s.presets.end(), [&](const Preset& p) { return p.name == name; });
-                me != s.presets.end() && !me->playing) {
-                const auto slot = preset_slot(me->trick, me->pop) + stance_part(*me);
-                const auto other = std::find_if(s.presets.begin(), s.presets.end(), [&](const Preset& p) {
-                    return p.name != name && p.playing && preset_slot(p.trick, p.pop) + stance_part(p) == slot;
-                });
-                if (other == s.presets.end()) {
-                    auto playing = playing_names(s.library, !s.packs_on.empty());
-                    playing.insert(name);
-                    write_playing_names(playing);
-                    read_library_locked(s);
-                    message += " It is active: it plays in game now.";
-                } else message += " " + shown_name(s, other->name) + " plays on its pop for now: tick ACTIVE to play this one instead.";
-            }
+        // A first save says how it gets to play: ACTIVE puts it in a playlist (the card asks which).
+        if (first_save) message += " Tick ACTIVE to put it in a playlist and play it in game.";
         s.status = message;
         logging::log(Level::info, Channel::skater, "Animation Studio: saved {} ({} keys) to {}.", name, s.edits.key_count(), folder.string());
         publish_locked(s);

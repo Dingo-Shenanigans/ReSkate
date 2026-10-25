@@ -115,7 +115,15 @@ struct View {
     std::string test_returned; // back from testing it: the studio says something about it (clear_test_returned)
     std::vector<PackView> packs;
     std::string open_pack; // the pack open in PACKS
-    // The playlist (PACKS > SETTINGS): when on, what plays in game instead of the packs that are on.
+    // The playlists (PACKS > PLAYLIST): any number, one on at a time (playlist_playing, "" none). The one on decides what
+    // plays in game instead of the packs that are on. playlist_mode and playlist are the open one's (playlist_open, the one
+    // the page shows); playlist_on: one is on.
+    struct PlaylistView {
+        std::string name;
+        std::size_t size{};
+    };
+    std::vector<PlaylistView> playlists;
+    std::string playlist_open, playlist_playing;
     bool playlist_on{};
     PlaylistMode playlist_mode{PlaylistMode::fixed};
     std::vector<PlaylistEntry> playlist;
@@ -344,12 +352,25 @@ void set_pack_favorite(const std::string& pack, bool favorite); // starred packs
 // Whether others may open the pack's tricks to edit and copy them once it is shared (its maker's choice; locked unless
 // set). It goes with the pack when it is exported.
 bool set_pack_editable(const std::string& pack, bool editable, std::string& message);
-// The playlist: on (it decides what plays) or off (the packs that are on do), how its tricks take turns, and what is in it.
+// The open playlist (View::playlist_open): on (it decides what plays, and any other one goes off) or off (the packs that are
+// on play), how its tricks take turns, and what is in it.
 void set_playlist_on(bool on, std::string& message);
 void set_playlist_mode(PlaylistMode mode, std::string& message);
-bool playlist_add(const PlaylistEntry& entry, std::string& message);
+bool playlist_add(const PlaylistEntry& entry, std::string& message); // makes Playlist 1 when there is none
 void playlist_remove(std::size_t index);
 void playlist_move(std::size_t index, int by); // up (-1) or down (1)
+void open_playlist(const std::string& name);   // the one PACKS > PLAYLIST shows
+bool new_playlist(std::string& message);        // "Playlist N", empty and off, and opened
+bool rename_playlist(const std::string& to, std::string& message); // the open one
+bool delete_playlist(std::string& message);     // the open one
+// Puts a whole pack or one trick in a playlist ("" a new one) and opens it. The playlist goes on when none is (one that is
+// on stays on). Returns the playlist's name ("" when it failed).
+std::string add_to_playlist(const std::string& playlist, const PlaylistEntry& entry, std::string& message);
+// ACTIVE on a saved trick. On: put back where it was switched off (its pack, in the playlist that is on or a pack that is
+// on), or - when it is in nothing that plays - choose_playlist: the overlay asks which playlist it goes in. In a playlist
+// already but beaten to its pop by one above it: show_playlist. Off: out of the playlist that is on, or off in its pack.
+enum class ActiveAnswer { done, show_playlist, choose_playlist };
+ActiveAnswer set_trick_active(const std::string& animation, bool on, std::string& message);
 void set_hover_preview(bool on);
 // The editor's rebound keys (View::keys), kept in studio-settings.json; empty puts every key back.
 void set_key_bindings(const std::map<std::string, std::string>& keys);
