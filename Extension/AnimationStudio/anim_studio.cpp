@@ -2201,10 +2201,17 @@ bool has_air(const Clip& clip) noexcept { return clip.takeoff >= 0 && clip.landi
 bool catch_fits(const Clip& clip, float at) noexcept {
     return has_air(clip) && std::isfinite(at) && at >= clip.takeoff + 0.5f / key_fps && at < clip.landing - 0.03f;
 }
+// The studio's catch (AUTO CATCH), with the keys on. Keys holding both feet off the deck right to the landing (knees
+// tucked up high) leave nothing caught before it: the game's own clip's catch then, so off a drop the tuck is what is held
+// longer. (Such a trick had no catch at all: nothing slowed off a drop, and its flag said SET CATCH.)
+float auto_catch(const Clip& clip, const Animation& edits) {
+    const float keyed = guess_catch(clip, edits);
+    return keyed >= 0 || edits.tracks.empty() ? keyed : guess_catch(clip, Animation{});
+}
 // The catch the latch holds: the one its maker set on the timeline (CATCH) when it is in the air, else the studio's.
 float find_catch(const Clip& clip, const Animation& edits) {
     if (edits.catch_at && catch_fits(clip, *edits.catch_at)) return *edits.catch_at;
-    return guess_catch(clip, edits);
+    return auto_catch(clip, edits);
 }
 } // namespace
 // The lowest point of the board `board` (a mount in the world): what touches the ground first.
@@ -4548,7 +4555,7 @@ float catch_guess_locked(State& s) {
     const auto from = catch_inputs(s);
     const auto now = std::chrono::steady_clock::now();
     if (from != s.catch_guess_from && (s.catch_guess_from == 0 || now - s.catch_guessed_at > std::chrono::milliseconds(200))) {
-        s.catch_guess = guess_catch(*s.clip, s.edits);
+        s.catch_guess = auto_catch(*s.clip, s.edits);
         s.catch_guess_from = from;
         s.catch_guessed_at = now;
     }
