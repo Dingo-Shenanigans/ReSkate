@@ -5099,16 +5099,7 @@ void packs_hub(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, I
             x -= 10 * k;
             return pressed;
         };
-        if (button("##exportall", 220 * k, "EXPORT ALL TRICKS", Look::ghost)) {
-            std::string m;
-            studio::export_pack("", m);
-            say(m);
-        }
-        if (button("##import", 140 * k, "IMPORT", Look::dark)) {
-            std::string m;
-            studio::import_packs(m);
-            say(m);
-        }
+        // Packs come and go through Thunderstore (the MARKET, SHARE): no IMPORT or EXPORT ALL TRICKS here any more.
         if (button("##newpack", 170 * k, "+ NEW PACK", Look::blue)) {
             make_pack(v);
             u.pack_page = true;
