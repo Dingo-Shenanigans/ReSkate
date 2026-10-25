@@ -1499,6 +1499,7 @@ void key_all_at(Animation& animation, float seconds) {
 void reset_brackets_locked(State& s) {
     if (!s.clip || s.clip->empty()) return;
     ++s.clip_serial; // a clip has arrived: the overlay clears what it was holding
+    s.edits.speed = 1; // the editor always opens a trick at x1
     s.edits.start = 0;
     s.edits.end = -1;
     key_all_at(s.edits, 0);
@@ -3381,7 +3382,9 @@ void on_animation(std::uintptr_t component) noexcept {
                     sampled.weight = ease(l.clock_weight) * before_end;
                     sampled.finished = reading.locked && !why.empty() && l.clock_weight <= 0;
                 } else {
-                    sampled = l.episode.sample(at, clip.takeoff, clip.landing, clip.duration(), std::max(played.speed, 0.1f), l.predicted_air, true, fit_keys_to_air);
+                    // Always at x1 in game: the speed is the studio's, for watching a trick (it was the saved one, so a trick
+                    // saved while watched at x.5 played at half speed on its own clock).
+                    sampled = l.episode.sample(at, clip.takeoff, clip.landing, clip.duration(), 1.0f, l.predicted_air, true, fit_keys_to_air);
                     if (sampled.time >= 0) sampled.time = std::min(clip.duration(), catch_latch(sampled.time));
                 }
                 // Off the game's clip in the air - the game holding a pose of its own through a kicker's or a drop's longer
@@ -6549,6 +6552,7 @@ bool save(std::string& message) {
     try {
         std::filesystem::create_directories(folder);
         Animation full = s.edits;
+        full.speed = 1; // the studio's watching speed is not the trick's: it is saved at x1 and plays at x1
         full.name = name;
         // A stance version is saved on the foot it keeps (keep_leads_right), whichever way round it is open.
         std::shared_ptr<const Clip> written = s.clip;
@@ -7259,6 +7263,7 @@ bool load_saved(const std::string& name, std::string& message, bool preview) {
             s.kept = State::Kept{s.clip, s.edits, std::move(s.undo), std::move(s.redo), s.saved_as, s.time, s.dirty};
         else if (!preview) s.kept.reset();
         s.edits = std::move(animation);
+        s.edits.speed = 1; // the editor always opens a trick at x1, whatever it was saved at
         s.clip = std::move(clip);
         ++s.clip_serial;
         s.previewing = preview;

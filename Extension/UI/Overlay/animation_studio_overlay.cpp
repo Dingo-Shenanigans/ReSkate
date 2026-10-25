@@ -2258,7 +2258,6 @@ struct BlendTail {
     float to{};
     bool cut{};
 };
-constexpr ImU32 blend_tail_fill = blue_dim, cut_blend_tail_fill = IM_COL32(112, 114, 120, 110); // cut: faint, as what does not apply
 std::optional<BlendTail> blend_tail(const studio::TrackView& track, std::size_t index, bool in, float duration) {
     const auto& key = track.keys[index];
     if ((in ? key.blend_in : key.blend_out) <= 0) return std::nullopt;
@@ -2269,6 +2268,35 @@ std::optional<BlendTail> blend_tail(const studio::TrackView& track, std::size_t 
     }
     const float after = index + 1 < track.keys.size() ? track.keys[index + 1].time : duration;
     return BlendTail{std::min(blends.out.value_or(after), duration), blends.cut_out};
+}
+// A key's blend on its row, as a fade's envelope: the key's weight from full (at the key, the row's top) eased down to the
+// game's own pose (the tail's end, the row's floor) as evaluate eases it, filled beneath and fading out towards the end,
+// a crisp edge on top. A blend cut short by the key beside it is grey, its edge broken. `lit`: the key is chosen.
+void blend_envelope(ImDrawList* d, float key_x, float end_x, float top, float floor, studio::Ease ease, bool cut, bool lit, float k) {
+    if (std::abs(end_x - key_x) < 1) return;
+    constexpr int steps = 32;
+    std::array<ImVec2, steps + 1> edge{};
+    std::array<float, steps + 1> weight{};
+    for (int i = 0; i <= steps; ++i) {
+        const float u = static_cast<float>(i) / steps; // 0 at the key, 1 at the tail's end
+        float w = 1 - u;
+        if (ease == studio::Ease::step) w = i < steps ? 1.0f : 0.0f; // a held key holds for its blend, then lets go
+        else if (ease != studio::Ease::linear) w = w * w * (3 - 2 * w);
+        weight[static_cast<std::size_t>(i)] = w;
+        edge[static_cast<std::size_t>(i)] = ImVec2(key_x + (end_x - key_x) * u, floor - (floor - top) * w);
+    }
+    const int r = cut ? 150 : 1, g = cut ? 152 : 131, b = cut ? 160 : 255;
+    const float strong = cut ? 46.0f : lit ? 118.0f : 82.0f, weak = cut ? 6.0f : 10.0f;
+    for (int i = 0; i < steps; ++i) {
+        const auto s = static_cast<std::size_t>(i);
+        const float w = (weight[s] + weight[s + 1]) * 0.5f;
+        const auto alpha = static_cast<int>(weak + (strong - weak) * w);
+        d->AddQuadFilled(edge[s], edge[s + 1], ImVec2(edge[s + 1].x, floor), ImVec2(edge[s].x, floor), IM_COL32(r, g, b, alpha));
+    }
+    const ImU32 line = cut ? IM_COL32(170, 172, 180, 170) : lit ? IM_COL32(170, 215, 255, 255) : IM_COL32(90, 180, 255, 230);
+    if (cut)
+        for (int i = 0; i < steps; i += 2) d->AddLine(edge[static_cast<std::size_t>(i)], edge[static_cast<std::size_t>(i + 1)], line, 1.6f * k);
+    else d->AddPolyline(edge.data(), steps + 1, line, ImDrawFlags_None, (lit ? 2.0f : 1.6f) * k);
 }
 std::string blend_text(float seconds, bool in) {
     return seconds > 0 ? std::format("{:.0f} MS", seconds * 1000) : in ? "PREV KEY" : "NEXT KEY";
@@ -2344,7 +2372,17 @@ void blend_slider(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a
     d->AddRectFilled(a, b, lit ? IM_COL32(40, 42, 48, 250) : IM_COL32(14, 15, 18, 235));
     d->AddRect(a, b, IM_COL32(255, 255, 255, lit ? 110 : 40), 0, 0, 1 * k);
     if (lit && nav().keys) chosen_outline(d, a, b, k);
-    text(d, f.bold, 12 * k, ImVec2(a.x + 10 * k, a.y + 4 * k), soft, in ? "BLEND IN" : "BLEND OUT");
+    {
+        // The curve as a small sign: rising for in (from the game's pose up to the key), falling for out.
+        const float gx = a.x + 10 * k, gy = a.y + 5 * k, gw = 16 * k, gh = 10 * k;
+        std::array<ImVec2, 13> sign{};
+        for (int i = 0; i <= 12; ++i) {
+            const float s = static_cast<float>(i) / 12, w = in ? s * s * (3 - 2 * s) : 1 - s * s * (3 - 2 * s);
+            sign[static_cast<std::size_t>(i)] = ImVec2(gx + gw * s, gy + gh * (1 - w));
+        }
+        d->AddPolyline(sign.data(), 13, shared && *shared > 0 ? blue_light : soft, ImDrawFlags_None, 1.6f * k);
+    }
+    text(d, f.bold, 12 * k, ImVec2(a.x + 32 * k, a.y + 4 * k), soft, in ? "BLEND IN" : "BLEND OUT");
     const std::string value = shared || ImGui::IsItemActive() ? blend_text(seconds, in) : "MIXED";
     const auto vw = text_size(f.bold, 12 * k, value.c_str());
     text(d, f.bold, 12 * k, ImVec2(b.x - 10 * k - vw.x, a.y + 4 * k), white, value);
@@ -9026,7 +9064,7 @@ void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 co
 void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, ImVec2 size) {
     auto& u = ui();
     const float k = f.k;
-    const float label_w = 280 * k, header_h = 70 * k, summary_h = 30 * k, row_h = 40 * k, gap = 4 * k;
+    const float label_w = 326 * k, header_h = 70 * k, summary_h = 30 * k, row_h = 40 * k, gap = 4 * k;
     skate_theme::rough_rect(d, ImVec2(at.x - 10 * k, at.y), ImVec2(at.x + size.x + 10 * k, at.y + size.y + 10 * k), IM_COL32(14, 14, 16, 236), 81, k * 1.4f);
     // Header, left: KEY and DELETE KEY over the transport.
     {
@@ -9050,6 +9088,15 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
     if (button(d, f, "##end", ImVec2(bx, by), cap, ">|", false, v.has_clip)) studio::set_time(v.duration);
     bx += cap.x + 4 * k;
     if (button(d, f, "##loop", ImVec2(bx, by), ImVec2(40 * k, cap.y), "LOOP", v.loop)) studio::set_loop(!v.loop);
+    bx += 40 * k + 4 * k;
+    // Playback speed, between LOOP and the timeline: x1, x2, x.25, x.5 in turn. A trick always opens at x1.
+    {
+        static constexpr std::array<float, 4> speeds{1.0f, 2.0f, 0.25f, 0.5f};
+        const auto now = std::find_if(speeds.begin(), speeds.end(), [&](float s) { return std::abs(s - v.speed) < 0.01f; });
+        const std::string label = now == speeds.end() ? std::format("x{:.2g}", v.speed) : *now == 0.25f ? "x.25" : *now == 0.5f ? "x.5" : *now == 2.0f ? "x2" : "x1";
+        if (button(d, f, "##speed", ImVec2(bx, by), ImVec2(48 * k, cap.y), label, std::abs(v.speed - 1.0f) > 0.01f, v.has_clip))
+            studio::set_speed(now == speeds.end() || now + 1 == speeds.end() ? speeds.front() : *(now + 1));
+    }
 
     const ImVec2 lane(at.x + label_w, at.y);
     const float duration = std::max(v.duration, 0.5f);
@@ -9413,14 +9460,18 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
         bool on_key = false;
         // The ends of the one chosen key's blend tails, in and out: dragged, each sets how long its blend is.
         std::array<std::optional<float>, 2> handle_x;
+        std::array<float, 2> handle_blend{};
         if (track && u.picked.size() == 1 && u.picked.front().first == joint.index && !track->locked)
             for (std::size_t i = 0; i < track->keys.size(); ++i)
                 if (std::abs(track->keys[i].time - u.picked.front().second) < 1e-4f)
                     for (const bool in : {true, false})
-                        if (const auto tail = blend_tail(*track, i, in, v.duration)) handle_x[in ? 0 : 1] = x_of(tail->to);
+                        if (const auto tail = blend_tail(*track, i, in, v.duration)) {
+                            handle_x[in ? 0 : 1] = x_of(tail->to);
+                            handle_blend[in ? 0 : 1] = in ? track->keys[i].blend_in : track->keys[i].blend_out;
+                        }
         std::optional<bool> on_handle; // over a handle: true the blend in's
         for (const bool in : {true, false})
-            if (const auto& hx = handle_x[in ? 0 : 1]; hx && lane_hovered && std::abs(ImGui::GetIO().MousePos.x - *hx) < 6 * k)
+            if (const auto& hx = handle_x[in ? 0 : 1]; hx && lane_hovered && std::abs(ImGui::GetIO().MousePos.x - *hx) < 9 * k)
                 on_handle = in;
         if (on_handle && lane_clicked) {
             u.blend_key = u.picked.front();
@@ -9440,19 +9491,30 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
         }
         if (track) {
             d->PushClipRect(ImVec2(ruler_left, rows_top), ImVec2(ruler_right, at.y + size.y), true);
+            const float env_top = y + 5 * k, env_floor = y + row_h - 5 * k;
             for (std::size_t i = 0; i < track->keys.size(); ++i)
                 for (const bool in : {true, false}) {
                     const auto tail = blend_tail(*track, i, in, v.duration);
                     if (!tail || bracket_key(track->keys[i].time)) continue;
-                    const float mid = y + row_h * 0.5f, half = 6 * k, x = x_of(track->keys[i].time);
-                    d->AddTriangleFilled(ImVec2(x, mid - half), ImVec2(x_of(tail->to), mid), ImVec2(x, mid + half),
-                                         tail->cut ? cut_blend_tail_fill : blend_tail_fill);
+                    blend_envelope(d, x_of(track->keys[i].time), x_of(tail->to), env_top, env_floor, track->keys[i].ease, tail->cut,
+                                   is_picked(joint.index, track->keys[i].time), k);
                 }
+            // The chosen key's knobs, on the foot of each envelope: a guide up the row and its length while held or under the
+            // mouse, written beside it on the timeline.
             for (const bool in : {true, false})
                 if (const auto& hx = handle_x[in ? 0 : 1]) {
-                    const bool lit = on_handle == in || (u.blend_key && u.blend_key_in == in);
-                    d->AddRectFilled(ImVec2(*hx - 2 * k, y + row_h * 0.5f - 7 * k), ImVec2(*hx + 2 * k, y + row_h * 0.5f + 7 * k),
-                                     lit ? white : blue_light);
+                    const bool held = u.blend_key && u.blend_key_in == in, lit = on_handle == in || held;
+                    const ImVec2 c(*hx, env_floor);
+                    if (lit) d->AddLine(ImVec2(c.x, env_top), ImVec2(c.x, env_floor), IM_COL32(170, 215, 255, 110), 1.2f * k);
+                    d->AddCircleFilled(c, (lit ? 7.0f : 5.5f) * k, IM_COL32(10, 12, 16, 255), 20);
+                    d->AddCircleFilled(c, (lit ? 5.0f : 3.8f) * k, lit ? white : blue_light, 20);
+                    if (lit) {
+                        const auto value = blend_text(handle_blend[in ? 0 : 1], in);
+                        const auto tw = text_size(f.bold, 11 * k, value.c_str());
+                        const float tx = in ? c.x - 10 * k - tw.x : c.x + 10 * k;
+                        d->AddRectFilled(ImVec2(tx - 5 * k, env_floor - tw.y - 10 * k), ImVec2(tx + tw.x + 5 * k, env_floor - 2 * k), IM_COL32(10, 12, 16, 230), 3 * k);
+                        text(d, f.bold, 11 * k, ImVec2(tx, env_floor - tw.y - 6 * k), white, value);
+                    }
                 }
             for (const auto& key : track->keys) {
                 if (bracket_key(key.time)) continue;
