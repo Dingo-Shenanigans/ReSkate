@@ -117,6 +117,7 @@ struct Ui {
     std::array<char, 64> playlist_name{};    // PACKS > PLAYLIST: the open playlist's name, being typed
     std::string playlist_name_for, playlist_delete_armed;
     int binding_since{-1}, binding_shown{-1}, binding_done{-1}; // frames: asked, last drawn, answered
+    ImGuiKey binding_key{ImGuiKey_None};     // the new key pressed for it, not saved yet
     int cards_frame{-1};
     bool dragging_playhead{}, dragging_gizmo{}, orbiting{}, panning{};
     // A key being dragged along its row.
@@ -2468,7 +2469,7 @@ bool any_card_open(const studio::View& v) {
     const auto& u = ui();
     return u.browser.open || u.save_card || !v.test_returned.empty() || u.conflicts_open || u.pack_adding || !u.stance_pack.empty() || u.sign_in ||
            !u.share_pack.empty() || !u.like_pack.empty() || !u.cover_pack.empty() || !u.delete_card.empty() || u.account || !u.reshare_pack.empty() ||
-           !u.playlist_for.empty();
+           !u.playlist_for.empty() || !u.binding.empty();
 }
 void open_menu(int tab = -1) {
     auto& u = ui();
@@ -7610,29 +7611,6 @@ void settings_rows(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 
         return;
     }
     const int page = std::clamp(u.settings_page, 0, 3);
-    // EDITOR KEYS waiting for a key: the next one pressed is the action's (Esc keeps it as it was).
-    if (!u.binding.empty() && page == 0) {
-        u.binding_shown = ImGui::GetFrameCount();
-        if (ImGui::GetFrameCount() > u.binding_since) {
-            if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
-                u.binding.clear();
-                u.binding_done = ImGui::GetFrameCount();
-                say("Kept as it was.");
-            } else
-                for (int key = ImGuiKey_NamedKey_BEGIN; key <= ImGuiKey_Oem102; ++key) {
-                    const auto pressed_key = static_cast<ImGuiKey>(key);
-                    if (modifier(pressed_key) || !ImGui::IsKeyPressed(pressed_key, false)) continue;
-                    if (!bindable(pressed_key)) {
-                        say(key_label(pressed_key) + " stays as it is in the studio: press another key, or Esc.");
-                        break;
-                    }
-                    bind_key(u.binding, pressed_key);
-                    u.binding.clear();
-                    u.binding_done = ImGui::GetFrameCount();
-                    break;
-                }
-        }
-    }
     title_text(d, f, 46 * k, ImVec2(a.x, a.y + 44 * k), white, settings_pages[static_cast<std::size_t>(page)]);
     const auto rows = settings_of(page, v);
     const float rows_w = std::min(1000 * k, (b.x - a.x) * 0.62f);
@@ -7713,17 +7691,13 @@ void settings_rows(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 
             break;
         }
         case Setting::Kind::key: {
-            // Pressed, it waits for a key (EDITOR KEYS, above the rows); pressed again it stops waiting.
-            const bool waiting = u.binding == row.key_id;
+            // Pressed, the CHANGE KEY window comes up for it (key_card).
             if (pressed) {
-                u.binding = waiting ? std::string{} : row.key_id;
+                u.binding = row.key_id;
+                u.binding_key = ImGuiKey_None;
                 u.binding_since = ImGui::GetFrameCount();
             }
-            if (waiting) {
-                const char* ask = "PRESS A KEY  -  ESC KEEPS IT";
-                const auto at = text_size(f.bold, 15 * k, ask);
-                text(d, f.bold, 15 * k, ImVec2(b1.x - 24 * k - at.x, mid_y - at.y * 0.5f), IM_COL32(240, 168, 60, 255), ask);
-            } else {
+            {
                 const auto kt = text_size(f.bold, 15 * k, row.value.c_str());
                 const float cap_w = std::max(44 * k, kt.x + 22 * k), cap_h = 30 * k;
                 const ImVec2 ca(b1.x - 24 * k - cap_w, mid_y - cap_h * 0.5f), cb(b1.x - 24 * k, mid_y + cap_h * 0.5f);
@@ -8434,6 +8408,102 @@ void like_card(ImDrawList* d, const Fonts& f, const studio::View& /*v*/, ImVec2 
     }
     if (action(d, f, "##likelater", ImVec2(x + 272 * k, b.y - 70 * k), ImVec2(170 * k, 46 * k), "NOT NOW", Look::paper)) u.like_pack.clear();
 }
+// A key cap, big: what a key is (or `ask`, waiting for one).
+void big_cap(ImDrawList* d, const Fonts& f, ImVec2 centre, const std::string& label, bool waiting) {
+    const float k = f.k;
+    const auto t = text_size(f.bold, 24 * k, label.c_str());
+    const float w = std::max(120 * k, t.x + 48 * k), h = 64 * k;
+    const ImVec2 a(centre.x - w * 0.5f, centre.y - h * 0.5f), b(centre.x + w * 0.5f, centre.y + h * 0.5f);
+    if (waiting) {
+        const float pulse = 0.5f + 0.5f * std::sin(static_cast<float>(ImGui::GetTime()) * 5.0f);
+        d->AddRect(a, b, IM_COL32(240, 168, 60, static_cast<int>(140 + 115 * pulse)), 6 * k, 0, 2.5f * k);
+        text(d, f.bold, 24 * k, ImVec2(centre.x - t.x * 0.5f, centre.y - t.y * 0.5f), IM_COL32(240, 168, 60, 255), label);
+    } else {
+        d->AddRectFilled(a, b, white, 6 * k);
+        text(d, f.bold, 24 * k, ImVec2(centre.x - t.x * 0.5f, centre.y - t.y * 0.5f), skate_theme::black, label);
+    }
+}
+// EDITOR KEYS: one shortcut's key, changed in a small window - ORIGINAL BIND (its key now) and NEW BIND (the next key
+// pressed; press its cap to pick again), then SAVE (or Enter) or CANCEL (or Esc). A key another shortcut has swaps with it,
+// and the window says so before it is saved.
+void key_card(ImDrawList* d, const Fonts& f, const studio::View&, ImVec2 display) {
+    auto& u = ui();
+    const float k = f.k;
+    const auto me = std::find_if(key_actions.begin(), key_actions.end(), [&](const KeyAction& a) { return u.binding == a.id; });
+    if (me == key_actions.end()) {
+        u.binding.clear();
+        return;
+    }
+    const int frame = ImGui::GetFrameCount();
+    u.binding_shown = frame;
+    const ImGuiKey now = bound(me->id);
+    const auto close = [&] {
+        u.binding.clear();
+        u.binding_key = ImGuiKey_None;
+        u.binding_done = frame;
+    };
+    const auto save = [&] {
+        bind_key(me->id, u.binding_key);
+        close();
+    };
+    if (frame > u.binding_since) {
+        if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+            say(std::string(me->label) + " stays on " + key_label(now) + ".");
+            return close();
+        }
+        if ((ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false)) && u.binding_key != ImGuiKey_None &&
+            u.binding_key != now)
+            return save();
+        for (int key = ImGuiKey_NamedKey_BEGIN; key <= ImGuiKey_Oem102; ++key) {
+            const auto pressed_key = static_cast<ImGuiKey>(key);
+            if (modifier(pressed_key) || pressed_key == ImGuiKey_Enter || pressed_key == ImGuiKey_KeypadEnter || !ImGui::IsKeyPressed(pressed_key, false))
+                continue;
+            if (!bindable(pressed_key)) say(key_label(pressed_key) + " stays as it is in the studio: press another key.");
+            else u.binding_key = pressed_key;
+            break;
+        }
+    }
+    const auto [a, b] = card_box(d, f, display, 720 * k, 470 * k, "CHANGE KEY");
+    const float x = a.x + 30 * k, w = b.x - a.x - 60 * k;
+    float y = a.y + 92 * k;
+    text(d, f.title, 30 * k, ImVec2(x, y), white, elide(f.title, 30 * k, upper(me->label), w));
+    y += 54 * k;
+    const float left = x + w * 0.25f, right = x + w * 0.75f;
+    const auto label_at = [&](float cx, const char* words) {
+        const auto t = text_size(f.heading, 13 * k, words);
+        text(d, f.heading, 13 * k, ImVec2(cx - t.x * 0.5f, y), blue_light, words);
+    };
+    label_at(left, "ORIGINAL BIND");
+    label_at(right, "NEW BIND");
+    const float cap_y = y + 62 * k;
+    big_cap(d, f, ImVec2(left, cap_y), key_label(now), false);
+    const bool waiting = u.binding_key == ImGuiKey_None;
+    big_cap(d, f, ImVec2(right, cap_y), waiting ? std::string("PRESS A KEY") : key_label(u.binding_key), waiting);
+    if (!waiting && hit("##newbind", ImVec2(right - 90 * k, cap_y - 32 * k), ImVec2(right + 90 * k, cap_y + 32 * k))) u.binding_key = ImGuiKey_None;
+    {
+        const auto arrow = text_size(f.heading, 26 * k, ">");
+        text(d, f.heading, 26 * k, ImVec2((left + right) * 0.5f - arrow.x * 0.5f, cap_y - arrow.y * 0.5f), faint, ">");
+    }
+    y = cap_y + 52 * k;
+    // What saving it does: a swap with the shortcut that has that key, or nothing when it is its key already.
+    std::string note = "Its own key: " + key_label(me->key) + ".";
+    if (!waiting) {
+        if (u.binding_key == now) note = "That is its key already.";
+        else
+            for (const auto& other : key_actions)
+                if (other.id != std::string_view(me->id) && bound(other.id) == u.binding_key) {
+                    note = key_label(u.binding_key) + " is " + other.label + "'s now: SAVE swaps them, and " + other.label + " goes on " + key_label(now) + ".";
+                    break;
+                }
+    }
+    paragraph(d, f.bold, 14 * k, ImVec2(x, y), w, !waiting && u.binding_key != now && note.find("swaps") != std::string::npos ? IM_COL32(240, 168, 60, 255) : soft, note);
+    const float bw = (w - 12 * k) / 2, by = b.y - 70 * k;
+    if (action(d, f, "##keycancel", ImVec2(x, by), ImVec2(bw, 46 * k), "CANCEL", Look::dark)) {
+        say(std::string(me->label) + " stays on " + key_label(now) + ".");
+        return close();
+    }
+    if (action(d, f, "##keysave", ImVec2(x + bw + 12 * k, by), ImVec2(bw, 46 * k), "SAVE", Look::blue, !waiting && u.binding_key != now)) save();
+}
 // ACTIVE on a trick that is in nothing that plays: which playlist it goes in, or a new one. One playlist plays at a time; the
 // page (PACKS > PLAYLIST) opens on the one it went in.
 void playlist_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 display) {
@@ -9092,6 +9162,7 @@ void draw_cards(const Fonts& f, const studio::View& v, ImVec2 display) {
     else if (u.sign_in) sign_in_card(d, f, v, display);
     else if (u.account) account_card(d, f, v, display);
     else if (!u.playlist_for.empty()) playlist_card(d, f, v, display);
+    else if (!u.binding.empty()) key_card(d, f, v, display);
     else if (!u.like_pack.empty()) like_card(d, f, v, display);
     else if (!u.cover_pack.empty()) cover_card(d, f, v, display);
     else if (!u.share_pack.empty()) share_card(d, f, v, display);
