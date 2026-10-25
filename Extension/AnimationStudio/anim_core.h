@@ -1,4 +1,5 @@
 #pragma once
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -119,7 +120,38 @@ struct Key {
     Vec3 offset{};
     Ease ease{Ease::smooth};
     bool smooth{}; // smoothed (Smooth keys, Smooth chosen keys, a double-click): the timeline draws it round
+    // Seconds from this key back to the game's own pose (no edit), eased as the key eases. 0: on to the next key.
+    // A next key that comes first is gone straight to, as without one.
+    float blend_out{};
+    // The same before the key: seconds in from the game's own pose. 0: in from the key before.
+    float blend_in{};
 };
+inline constexpr float min_blend = 0.05f, max_blend = 2.0f;
+// Where a key's blends reach the game's own pose, as evaluate plays them: `in` before the key, `out` after it. A
+// blend is cut when the key beside it, or that key's own blend, comes first: the pose then goes straight between
+// the two keys. `K` is Key or anything with its time, blend_in and blend_out (the studio's KeyView).
+struct KeyBlends {
+    std::optional<float> in, out;
+    bool cut_in{}, cut_out{};
+};
+template <class K>
+KeyBlends key_blends(std::span<const K> keys, std::size_t index) noexcept {
+    KeyBlends blends;
+    const auto& key = keys[index];
+    if (key.blend_in > 0) {
+        const float starts = key.time - key.blend_in;
+        const auto* before = index > 0 ? &keys[index - 1] : nullptr;
+        if (!before || starts > before->time + (std::max)(before->blend_out, 0.0f) + 1e-6f) blends.in = starts;
+        else blends.cut_in = true;
+    }
+    if (key.blend_out > 0) {
+        const float ends = key.time + key.blend_out;
+        const auto* after = index + 1 < keys.size() ? &keys[index + 1] : nullptr;
+        if (!after || ends < after->time - (std::max)(after->blend_in, 0.0f) - 1e-6f) blends.out = ends;
+        else blends.cut_out = true;
+    }
+    return blends;
+}
 struct Track {
     std::uint16_t joint{};
     std::vector<Key> keys; // by time
@@ -129,7 +161,8 @@ struct Offset {
     Quat rotation{0, 0, 0, 1};
     Vec3 offset{};
 };
-// Before the first key and after the last the nearest key holds.
+// Before the first key and after the last the nearest key holds (beyond a first key's blend in or a last key's
+// blend out, the game's pose).
 Offset evaluate(const Track& track, float seconds) noexcept;
 // One number of an edit, as the timeline's channel rows show it: 0-2 its turn about X, Y and Z in degrees
 // (to_euler), 3-5 its move along X, Y and Z.

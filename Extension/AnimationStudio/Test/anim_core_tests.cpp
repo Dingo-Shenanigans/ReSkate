@@ -15,6 +15,7 @@
 #include "Extension/AnimationStudio/native_trick_parts.h"
 #include "Extension/AnimationStudio/marketplace.h"
 #include "Extension/AnimationStudio/marketplace_listing.h"
+#include <algorithm>
 #include <limits>
 #include <filesystem>
 #include <fstream>
@@ -350,6 +351,71 @@ void keys_hold_outside_and_blend_between() {
     check(same_turn(evaluate(*animation.track(343), 0.85f).rotation, from_euler({30, 0, 0})), "A stepped key holds until the next one");
 }
 
+// Blend out: a key eases back to the game's own pose (no edit) over its blend out, unless the next key comes first.
+void blend_out_eases_back_to_the_game() {
+    const auto key_at = [](float t, float y, float blend_out = 0, Ease e = Ease::smooth) {
+        Key k; k.time = t; k.offset = {0, y, 0}; k.ease = e; k.blend_out = blend_out; return k;
+    };
+    const Track none{343, {key_at(0.2f, 0), key_at(0.5f, 1), key_at(1.0f, 0.4f)}};
+    Track track{343, {key_at(0.2f, 0), key_at(0.5f, 1, 0.2f), key_at(1.0f, 0.4f)}};
+    check(near(evaluate(track, 0.5f).offset[1], 1.0f), "The key keeps its pose");
+    check(near(evaluate(track, 0.7f).offset[1], 0.0f), "and is back on the game's pose when its blend out ends");
+    const float on_the_way = evaluate(track, 0.6f).offset[1];
+    check(on_the_way > 0.0f && on_the_way < 1.0f, "easing there");
+    check(near(evaluate(track, 1.0f).offset[1], 0.4f), "The next key still keeps its pose");
+    const float to_next = evaluate(track, 0.85f).offset[1];
+    check(to_next > 0.0f && to_next < 0.4f, "and the pose eases from the game's into it");
+
+    Track cut{343, {key_at(0.2f, 0), key_at(0.5f, 1, 0.8f), key_at(1.0f, 0.4f)}};
+    for (float t = 0; t <= 1.2f; t += 0.01f)
+        check(evaluate(cut, t).offset[1] == evaluate(none, t).offset[1], "A next key before the blend out ends: straight to it");
+
+    Track last{343, {key_at(0.2f, 0), key_at(0.5f, 1, 0.3f)}};
+    check(near(evaluate(last, 0.8f).offset[1], 0.0f) && near(evaluate(last, 1.5f).offset[1], 0.0f),
+          "After the last key it stays on the game's pose");
+
+    Track held{343, {key_at(0.2f, 0), key_at(0.5f, 1, 0.2f, Ease::step), key_at(1.0f, 0.4f)}};
+    check(near(evaluate(held, 0.69f).offset[1], 1.0f) && near(evaluate(held, 0.71f).offset[1], 0.0f),
+          "A held key holds for its blend out, then lets go");
+
+    Track turned{343, {key_at(0.2f, 0), key_at(0.5f, 0, 0.2f)}};
+    turned.keys[1].rotation = from_euler({40, 0, 0});
+    check(same_turn(evaluate(turned, 0.8f).rotation, Quat{0, 0, 0, 1}), "A turn eases back too");
+}
+
+// Blend in: a key eases in from the game's own pose over its blend in, unless the key before it comes first.
+void blend_in_eases_in_from_the_game() {
+    const auto key_at = [](float t, float y, float blend_in = 0, float blend_out = 0) {
+        Key k; k.time = t; k.offset = {0, y, 0}; k.blend_in = blend_in; k.blend_out = blend_out; return k;
+    };
+    const Track none{343, {key_at(0.2f, 0.4f), key_at(0.8f, 1)}};
+    Track track{343, {key_at(0.2f, 0.4f), key_at(0.8f, 1, 0.2f)}};
+    check(near(evaluate(track, 0.8f).offset[1], 1.0f), "The key keeps its pose");
+    check(near(evaluate(track, 0.6f).offset[1], 0.0f), "and the pose is the game's when its blend in starts");
+    const float on_the_way = evaluate(track, 0.7f).offset[1];
+    check(on_the_way > 0.0f && on_the_way < 1.0f, "easing in from there");
+    check(near(evaluate(track, 0.2f).offset[1], 0.4f), "The key before still keeps its pose");
+
+    Track cut{343, {key_at(0.2f, 0.4f), key_at(0.8f, 1, 0.8f)}};
+    for (float t = 0; t <= 1.0f; t += 0.01f)
+        check(evaluate(cut, t).offset[1] == evaluate(none, t).offset[1], "A key before the blend in starts: straight from it");
+
+    Track first{343, {key_at(0.5f, 1, 0.3f)}};
+    check(near(evaluate(first, 0.2f).offset[1], 0.0f) && near(evaluate(first, 0.0f).offset[1], 0.0f),
+          "Before a first key's blend in, the game's pose");
+
+    Track both{343, {key_at(0.2f, 1, 0, 0.2f), key_at(1.0f, 1, 0.2f)}};
+    check(near(evaluate(both, 0.6f).offset[1], 0.0f), "A blend out, then the game's pose, then a blend in");
+    check(near(evaluate(both, 0.2f).offset[1], 1.0f) && near(evaluate(both, 1.0f).offset[1], 1.0f), "and both keys keep their pose");
+
+    const Track straight{343, {key_at(0.2f, 1), key_at(0.6f, 0.5f)}};
+    Track crossed{343, {key_at(0.2f, 1, 0, 0.3f), key_at(0.6f, 0.5f, 0.3f)}};
+    for (float t = 0; t <= 1.0f; t += 0.01f)
+        check(evaluate(crossed, t).offset[1] == evaluate(straight, t).offset[1], "A blend out and a blend in that cross: both cut");
+    const auto blends = key_blends(std::span<const Key>(crossed.keys), 0);
+    check(!blends.out && blends.cut_out && key_blends(std::span<const Key>(crossed.keys), 1).cut_in, "and both say so");
+}
+
 void keys_can_be_dragged_in_time() {
     Track track{7, {{0.1f}, {0.5f}, {0.9f}}};
     const auto index = move_key(track, 0, 0.7f, 1.0f);
@@ -399,6 +465,14 @@ void profiles_read_back_and_bad_ones_are_refused() {
     check(back.key_count() == 2 && back.track(278) && back.track(278)->keys[0].ease == Ease::linear, "Keys read back");
     check(same_turn(back.track(7)->keys[0].rotation, from_euler({0, 10, 0})) && near(back.track(7)->keys[0].offset[1], 0.1f),
           "with their values");
+    check(back.track(7)->keys[0].blend_out == 0, "A key without a blend out reads back without one");
+    animation.track(7)->keys[0].blend_out = 0.25f;
+    check(near(from_json(to_json(animation)).track(7)->keys[0].blend_out, 0.25f), "A blend out reads back");
+    animation.track(7)->keys[0].blend_in = 0.4f;
+    check(near(from_json(to_json(animation)).track(7)->keys[0].blend_in, 0.4f), "A blend in reads back");
+    check(to_json(from_json(R"({"format":"fourth-animation-studio","version":1,"duration":1,"tracks":[{"joint":7,"keys":[{"t":0.5,"r":[0,0,0,1],"p":[0,0,0]}]}]})"))
+                  .find("blend_") == std::string::npos,
+          "A file from before blend outs saves without one");
     bool refused = false;
     try { (void)from_json(R"({"format":"fourth-animation-studio","version":1,"duration":1,"tracks":[{"joint":200,"keys":[]}]})"); }
     catch (const std::runtime_error&) { refused = true; }
@@ -711,6 +785,19 @@ void smoothing_tidies_a_track() {
         check(k.ease == Ease::smooth, "Every key eases smoothly afterwards");
         check(k.smooth, "and is marked as smoothed");
     }
+
+    Track blended;
+    blended.joint = 343;
+    for (const float t : {0.0f, 0.5f, 1.0f, 1.5f, 2.0f}) {
+        Key k; k.time = t; k.offset = {0, t, 0}; blended.keys.push_back(k);
+    }
+    blended.keys[2].blend_out = 0.2f; // straight between its neighbours, but it has a blend out
+    blended.keys[1].blend_in = 0.1f;  // the same, with a blend in
+    smooth_track(blended, 0.0f, 2.0f);
+    check(std::ranges::any_of(blended.keys, [](const Key& k) { return near(k.time, 1.0f) && near(k.blend_out, 0.2f); }),
+          "A key with a blend out is kept, with its blend out");
+    check(std::ranges::any_of(blended.keys, [](const Key& k) { return near(k.time, 0.5f) && near(k.blend_in, 0.1f); }),
+          "and a key with a blend in, with its blend in");
 }
 
 // Solo: turning a joint on its own. The joints hanging off it are turned back by as much, so they keep
@@ -1998,6 +2085,8 @@ int main(int argc, char** argv) {
         animation_targets_keep_their_motion_and_hierarchy();
         slerp_meets_both_ends();
         keys_hold_outside_and_blend_between();
+        blend_out_eases_back_to_the_game();
+        blend_in_eases_in_from_the_game();
         keys_can_be_dragged_in_time();
         edits_are_on_top_of_the_pose_and_never_grow_it();
         joints_hang_from_their_parents();

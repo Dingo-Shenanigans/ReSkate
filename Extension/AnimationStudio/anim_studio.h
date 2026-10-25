@@ -32,6 +32,8 @@ struct KeyView {
     bool smooth{}; // smoothed: the timeline draws it round
     Quat rotation{0, 0, 0, 1}; // the key's edit, for the timeline's channel rows and curves
     Vec3 offset{};
+    float blend_out{}; // seconds back to the game's pose; 0: on to the next key (Key::blend_out)
+    float blend_in{};  // seconds in from the game's pose; 0: in from the key before (Key::blend_in)
 };
 struct TrackView {
     std::uint16_t joint{};
@@ -240,6 +242,9 @@ void set_limb_position(std::uint16_t joint, const Vec3& offset);
 void delete_key(std::uint16_t joint, float time);
 void move_key(std::uint16_t joint, float from, float to);
 void set_ease(std::uint16_t joint, float time, Ease ease);
+// The key's blend in (`in`) or out. 0 takes it off; anything else is kept between min_blend and max_blend. Call
+// begin_change first.
+void set_blend(std::uint16_t joint, float time, bool in, float seconds);
 // Smooths the given keys (joint, time): each eases into its neighbours and shows round. Call begin_change first.
 bool smooth_chosen_keys(std::span<const std::pair<std::uint16_t, float>> chosen, std::string& message);
 // Every joint at once (set_focus: the camera on the whole skater).
