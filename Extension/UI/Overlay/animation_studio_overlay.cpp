@@ -1891,7 +1891,8 @@ bool toggle(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, bool on, f
     if (lit && nav().keys) d->AddRect(ImVec2(at.x - 3 * k, at.y - 3 * k), ImVec2(b.x + 3 * k, b.y + 3 * k), white, h * 0.5f + 3 * k, 0, 2 * k);
     return clicked;
 }
-// PLAY: whether a trick plays in game. Blue with its play mark when it does; an outline when it does not.
+// ACTIVE: whether a trick is activated, so it plays in game, as a tick box: blue with a tick when it is, an empty box when
+// it is not. (It said PLAY with a play mark: read as "play it now".) The label shrinks to fit a narrow one (a pack's rows).
 bool play_toggle(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, ImVec2 size, bool on) {
     const float k = f.k;
     const ImVec2 b(at.x + size.x, at.y + size.y);
@@ -1902,13 +1903,24 @@ bool play_toggle(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, ImVec
     if (!on) d->AddRect(at, b, IM_COL32(255, 255, 255, lit ? 200 : 110), 0, 0, 1.4f * k);
     if (lit && nav().keys) chosen_outline(d, at, b, k);
     const ImU32 ink = on ? white : soft;
-    const float fs = std::min(12 * k, size.y * 0.4f), s = fs * 0.42f, cy = at.y + size.y * 0.5f;
+    constexpr const char* label = "ACTIVE";
+    float fs = std::min(12 * k, size.y * 0.4f), spacing = 1.2f * k, box = fs * 0.95f, gap = 6 * k;
+    float tw = spaced_width(mont(f, fs), fs, label, spacing);
+    if (const float room = size.x - 12 * k; box + gap + tw > room && room > 0) {
+        const float s = room / (box + gap + tw);
+        fs *= s, spacing *= s, box *= s, gap *= s;
+        tw = spaced_width(mont(f, fs), fs, label, spacing);
+    }
     ImFont* font = mont(f, fs);
     const auto [ct, cf] = caps_of(font, fs);
-    const float tw = spaced_width(font, fs, "PLAY", 1.2f * k), mark = s * 1.7f, gap = 7 * k;
-    const float x = at.x + (size.x - mark - gap - tw) * 0.5f;
-    d->AddTriangleFilled(ImVec2(x, cy - s), ImVec2(x + mark, cy), ImVec2(x, cy + s), ink);
-    text_spaced(d, font, fs, ImVec2(x + mark + gap, cy - (cf - ct) * 0.5f - ct), ink, "PLAY", 1.2f * k);
+    const float cy = at.y + size.y * 0.5f, x = at.x + (size.x - box - gap - tw) * 0.5f;
+    const ImVec2 ba(x, cy - box * 0.5f), bb(x + box, cy + box * 0.5f);
+    if (on) {
+        d->AddRectFilled(ba, bb, white, 2 * k);
+        d->AddLine(ImVec2(ba.x + box * 0.2f, cy), ImVec2(ba.x + box * 0.43f, bb.y - box * 0.22f), blue, 1.8f * k);
+        d->AddLine(ImVec2(ba.x + box * 0.43f, bb.y - box * 0.22f), ImVec2(bb.x - box * 0.18f, ba.y + box * 0.24f), blue, 1.8f * k);
+    } else d->AddRect(ba, bb, ink, 2 * k, 0, 1.4f * k);
+    text_spaced(d, font, fs, ImVec2(x + box + gap, cy - (cf - ct) * 0.5f - ct), ink, label, spacing);
     return pressed;
 }
 // A typed field, chosen like anything else; pressing it (A, Enter) puts the keyboard in it. Returns true on Enter.
@@ -3466,13 +3478,13 @@ float in_game_row(ImDrawList* d, const Fonts& f, const studio::View& v, const st
     const float k = f.k;
     const auto* p = preset_named(v, name);
     if (!p) return 0;
-    std::string words = "It does not play in game yet: PLAY switches it on.";
-    if (p->active) words = "It plays in game when you do the trick.";
+    std::string words = "It is not active yet: tick ACTIVE to play it in game.";
+    if (p->active) words = "It is active: it plays in game when you do the trick.";
     else {
         const auto slot = studio::preset_slot(p->trick, p->pop) + studio::stance_part(*p);
         for (const auto& o : v.presets)
             if (o.name != name && o.active && studio::preset_slot(o.trick, o.pop) + studio::stance_part(o) == slot) {
-                words = shown_name(v, o.name) + " plays on its pop now: PLAY makes this one play instead.";
+                words = shown_name(v, o.name) + " plays on its pop now: tick ACTIVE to play this one instead.";
                 break;
             }
     }
@@ -3506,8 +3518,8 @@ void my_trick_card(ImDrawList* d, const Fonts& f, const studio::View& v, const s
     if (name == v.name && v.has_clip) d->AddRectFilled(ImVec2(a.x, a.y + 6 * k), ImVec2(a.x + 5 * k, b.y - 6 * k), blue);
     float right_edge = b.x - 14 * k;
     if (p && p->active) {
-        right_edge -= tag_width(f, "PLAYS");
-        tag(d, f, ImVec2(right_edge, a.y + 14 * k), "PLAYS", IM_COL32(36, 150, 76, 255));
+        right_edge -= tag_width(f, "ACTIVE");
+        tag(d, f, ImVec2(right_edge, a.y + 14 * k), "ACTIVE", IM_COL32(36, 150, 76, 255));
         right_edge -= 6 * k;
     }
     if (p && p->locked) {
@@ -3530,7 +3542,7 @@ void my_trick_card(ImDrawList* d, const Fonts& f, const studio::View& v, const s
         if (const auto when = edited_words(p->saved_at); !when.empty()) what += "  /  EDITED " + when;
     text(d, f.bold, 12 * k, ImVec2(a.x + 18 * k, a.y + 42 * k), soft, elide(f.bold, 12 * k, what, size.x - 36 * k));
     if (lit && nav().keys) chosen_outline(d, a, ImVec2(b.x, b.y - strip), k);
-    // EDIT, TEST IN GAME, and PLAY: on, it plays in game (on its own, or from a pack that is on); off, it does not.
+    // EDIT, TEST IN GAME, and ACTIVE: ticked, it plays in game (on its own, or from a pack that is on); not, it does not.
     const float play_w = 80 * k, bw = (size.x - 28 * k - 16 * k - play_w) / 2;
     if (p && p->locked) {
         if (action(d, f, "##edit", ImVec2(a.x + 14 * k, b.y - strip + 6 * k), ImVec2(bw, 30 * k), "PREVIEW", Look::blue)) preview_trick({}, name, false);
@@ -3586,7 +3598,7 @@ void group_card(ImDrawList* d, const Fonts& f, const studio::View& v, const std:
     tag(d, f, ImVec2(right_edge, a.y + 14 * k), count, IM_COL32(255, 255, 255, 36));
     right_edge -= 6 * k;
     if (playing) {
-        const auto plays = std::to_string(playing) + " PLAY";
+        const auto plays = std::to_string(playing) + " ACTIVE";
         right_edge -= tag_width(f, plays);
         tag(d, f, ImVec2(right_edge, a.y + 14 * k), plays, IM_COL32(36, 150, 76, 255));
     }
@@ -4903,7 +4915,7 @@ void packs_hub(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, I
     page_heading(d, f, a, "MY PACKS",
                  v.packs.empty() ? std::string("Packs group your tricks to switch on together and share. Make one, then put your tricks in it.")
                  : on_count ? std::to_string(on_count) + " on (" + on + "): their tricks play in game. Open a pack to see and change what is in it."
-                            : std::string("None on: the tricks switched to PLAY in MY TRICKS play in game. Open a pack to see and change what is in it."));
+                            : std::string("None on: the tricks ticked ACTIVE in MY TRICKS play in game. Open a pack to see and change what is in it."));
     {
         float x = b.x;
         const auto button = [&](const char* id, float w, const char* label, Look look) {

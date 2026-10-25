@@ -5552,7 +5552,7 @@ bool set_pack_member(const std::string& pack_name, const std::string& animation,
         return false;
     }
     const auto slot = found != s.presets.end() ? preset_slot(found->trick, found->pop) : std::string{};
-    message = in ? "Put " + shown_name(s, animation) + " in " + pack_name + ": switch it to PLAY there to have it play in game."
+    message = in ? "Put " + shown_name(s, animation) + " in " + pack_name + ": tick ACTIVE there to have it play in game."
                  : "Took " + shown_name(s, animation) + " out of " + pack_name + ".";
     return change_pack_locked(s, pack_name, message, [&](PresetPack& pack) {
         for (auto& [filed, names] : pack.slots) std::erase(names, animation);
@@ -5918,12 +5918,12 @@ bool set_trick_play(const std::string& animation, bool on, std::string& message)
         }
         read_library_locked(s);
         s.tricks_read = false;
-        message = shown_name(s, animation) + (on ? " plays in game." : " does not play in game now.");
+        message = shown_name(s, animation) + (on ? " is active: it plays in game." : " is not active: it does not play in game now.");
         if (!stood_down.empty()) {
             std::string names;
             for (std::size_t i = 0; i < stood_down.size(); ++i) names += (i == 0 ? "" : i + 1 == stood_down.size() ? " and " : ", ") + stood_down[i];
-            message = shown_name(s, animation) + " plays in game; " + names + (stood_down.size() == 1 ? " is" : " are") +
-                      " off now (one trick plays on each pop and stance).";
+            message = shown_name(s, animation) + " is active; " + names + (stood_down.size() == 1 ? " is" : " are") +
+                      " not any more (one trick plays on each pop and stance).";
         }
         s.status = message;
         publish_locked(s, false);
@@ -6175,7 +6175,7 @@ bool test_in_game(const std::string& animation, std::string& message) {
     s.tricks_read = false;
     s.open_requested = false; // the studio closes: go and skate it
     s.open_request_pending = true;
-    message = "Testing " + name + " in game until you open the studio again (F8) or close the game: do the trick. PLAY keeps it on for good.";
+    message = "Testing " + name + " in game until you open the studio again (F8) or close the game: do the trick. Ticked ACTIVE in MY TRICKS, it stays on for good.";
     s.status = message;
     publish_locked(s, false);
     return true;
@@ -6745,8 +6745,8 @@ bool save(std::string& message) {
                     playing.insert(name);
                     write_playing_names(playing);
                     read_library_locked(s);
-                    message += " It plays in game now.";
-                } else message += " " + shown_name(s, other->name) + " plays on its pop for now: PLAY makes this one play instead.";
+                    message += " It is active: it plays in game now.";
+                } else message += " " + shown_name(s, other->name) + " plays on its pop for now: tick ACTIVE to play this one instead.";
             }
         s.status = message;
         logging::log(Level::info, Channel::skater, "Animation Studio: saved {} ({} keys) to {}.", name, s.edits.key_count(), folder.string());
