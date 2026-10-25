@@ -315,15 +315,15 @@ void multiplayer_display_settings(SkateMenu &menu, const Model &model) {
         send_private(menu, "shuffle-outfits", words[static_cast<std::size_t>(mode)], unused, false);
     }
     // Mod items only and the reroll mean nothing with the shuffle off.
-    ImGui::BeginDisabled(mode == 0);
     bool mods_only = mp.outfit_shuffle_mods_only;
     if (toggle_row(menu, "Shuffle from mod items only",
                    "Shuffled items are picked only from items a mod installed, not the game's own. Needs the content pack "
                    "installed to tell them apart; a slot no mod item fits keeps what it shows.",
-                   mods_only)) {
+                   mods_only, mode != 0)) {
         std::array<char, 65> unused{};
         send_private(menu, "shuffle-mods-only", mods_only ? "on" : "off", unused, false);
     }
+    ImGui::BeginDisabled(mode == 0);
     if (ImGui::Button("Reroll shuffle", ImVec2(-FLT_MIN, 0))) {
         std::array<char, 65> unused{};
         send_private(menu, "shuffle-outfits", "reroll", unused, false);
