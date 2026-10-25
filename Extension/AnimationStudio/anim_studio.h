@@ -4,6 +4,7 @@
 #include "anim_presets.h"
 #include <array>
 #include <cstdint>
+#include <map>
 #include <memory>
 #include <optional>
 #include <set>
@@ -119,6 +120,9 @@ struct View {
     PlaylistMode playlist_mode{PlaylistMode::fixed};
     std::vector<PlaylistEntry> playlist;
     bool hover_preview{true}; // TRICKS: a trick hovered plays in a little window
+    // The editor's keys rebound in SETTINGS > STUDIO > EDITOR KEYS: an action's name to its key's name (the overlay's
+    // names). Only those not on their own key.
+    std::map<std::string, std::string> keys;
     std::string your_name; // MADE BY, remembered for new tricks and packs
     float bracket_start{}, bracket_end{-1}; // the timeline brackets (Animation::start, end)
     // CATCH on the timeline: the moment the trick is caught, held in the air off a bigger drop or down stairs before it
@@ -347,6 +351,9 @@ bool playlist_add(const PlaylistEntry& entry, std::string& message);
 void playlist_remove(std::size_t index);
 void playlist_move(std::size_t index, int by); // up (-1) or down (1)
 void set_hover_preview(bool on);
+// The editor's rebound keys (View::keys), kept in studio-settings.json; empty puts every key back.
+void set_key_bindings(const std::map<std::string, std::string>& keys);
+std::map<std::string, std::string> key_bindings(); // the same, cheaply (the loading screen's tips name them)
 // A pack (saved first if it has changes), or every saved animation for "", as
 // ReSkate.Tricks/exports/<name>.zip, laid out like the tricks folder so it can be unzipped straight into it.
 bool export_pack(const std::string& pack_name, std::string& message);

@@ -109,6 +109,9 @@ struct Ui {
     std::string reshare_pack;         // SHARE pressed on someone else's pack (or one holding others' tricks): the card says no
     std::set<std::string> packs_open; // FROM PACKS: the packs unfolded (a pack's name; "*loose" the tricks with no pack)
     std::vector<std::pair<ImVec2, ImVec2>> cards_laid; // TRICKS: every card laid out this frame (card_under_peek)
+    std::map<std::string, std::string> keys; // the editor's rebound keys (View::keys), as of this frame
+    std::string binding;                     // EDITOR KEYS: the action waiting for its new key ("" none)
+    int binding_since{-1}, binding_shown{-1}, binding_done{-1}; // frames: asked, last drawn, answered
     int cards_frame{-1};
     bool dragging_playhead{}, dragging_gizmo{}, orbiting{}, panning{};
     // A key being dragged along its row.
@@ -2759,6 +2762,152 @@ void controller(const studio::View& v, const Projector& p) {
     }
 }
 
+// ---- the editor's keys (SETTINGS > STUDIO > EDITOR KEYS) -------------------------------------------
+// Every one-key shortcut of the editor, with the key it has unless rebound: a tester had to move sandbox and ReShade keys
+// off the editor's. The Ctrl ones (Ctrl + Z, Y, C, V, S, A), Esc, Enter, Q and E (the menu's tabs), the camera views 1 to
+// 5 and 0, and F8 stay as they are. Every key the studio names - its buttons, the tool strip, the shortcuts, its messages -
+// is the one bound.
+struct KeyAction {
+    const char* id;    // as kept in studio-settings.json
+    const char* label; // as SETTINGS lists it
+    ImGuiKey key;      // its own
+};
+constexpr std::array<KeyAction, 32> key_actions{{
+    {"key", "Key the pose", ImGuiKey_K},
+    {"delete", "Delete the key", ImGuiKey_Delete},
+    {"play", "Play / pause", ImGuiKey_Space},
+    {"frame_back", "One frame back", ImGuiKey_LeftArrow},
+    {"frame_on", "One frame on", ImGuiKey_RightArrow},
+    {"joint_up", "The joint before", ImGuiKey_UpArrow},
+    {"joint_down", "The joint after", ImGuiKey_DownArrow},
+    {"start", "To the start", ImGuiKey_Home},
+    {"end", "To the end", ImGuiKey_End},
+    {"turn", "Turn", ImGuiKey_R},
+    {"move", "Move", ImGuiKey_G},
+    {"axis_x", "Axis X", ImGuiKey_X},
+    {"axis_y", "Axis Y", ImGuiKey_Y},
+    {"axis_z", "Axis Z", ImGuiKey_Z},
+    {"gizmo", "Gizmo: object or world", ImGuiKey_L},
+    {"solo", "Solo", ImGuiKey_O},
+    {"snap", "Snapping", ImGuiKey_N},
+    {"limits", "Limits", ImGuiKey_M},
+    {"clear", "Keep clear", ImGuiKey_C},
+    {"joints", "Joints on the skater", ImGuiKey_J},
+    {"follow", "Follow the joint", ImGuiKey_F},
+    {"channels", "Channels", ImGuiKey_T},
+    {"camera", "Next camera", ImGuiKey_V},
+    {"hide", "Hide everything", ImGuiKey_H},
+    {"view_left", "Turn the view left", ImGuiKey_A},
+    {"view_right", "Turn the view right", ImGuiKey_D},
+    {"view_up", "Turn the view up", ImGuiKey_W},
+    {"view_down", "Turn the view down", ImGuiKey_S},
+    {"zoom_in", "Zoom the timeline in", ImGuiKey_Equal},
+    {"zoom_out", "Zoom the timeline out", ImGuiKey_Minus},
+    {"shortcuts", "Shortcuts panel", ImGuiKey_F1},
+    {"menu", "Menu", ImGuiKey_Tab},
+}};
+// A key that can take a shortcut: one of the keyboard's, but not a modifier, nor one that stays as it is.
+bool bindable(ImGuiKey key) {
+    if (key < ImGuiKey_NamedKey_BEGIN || key > ImGuiKey_Oem102) return false;
+    if (key >= ImGuiKey_LeftCtrl && key <= ImGuiKey_RightSuper) return false;
+    if (key >= ImGuiKey_0 && key <= ImGuiKey_5) return false; // the camera views
+    switch (key) {
+    case ImGuiKey_Escape: case ImGuiKey_Enter: case ImGuiKey_KeypadEnter: case ImGuiKey_F8: case ImGuiKey_Q: case ImGuiKey_E:
+    case ImGuiKey_AppBack: case ImGuiKey_AppForward:
+        return false;
+    default:
+        return true;
+    }
+}
+bool modifier(ImGuiKey key) { return key >= ImGuiKey_LeftCtrl && key <= ImGuiKey_RightSuper; }
+// A key by the name it is kept under (ImGui's); none for a name that is not a key that can be bound.
+ImGuiKey key_named(const std::string& name) {
+    static const auto names = [] {
+        std::map<std::string, ImGuiKey, std::less<>> out;
+        for (int k = ImGuiKey_NamedKey_BEGIN; k <= ImGuiKey_Oem102; ++k)
+            if (bindable(static_cast<ImGuiKey>(k))) out.emplace(ImGui::GetKeyName(static_cast<ImGuiKey>(k)), static_cast<ImGuiKey>(k));
+        return out;
+    }();
+    const auto found = names.find(name);
+    return found == names.end() ? ImGuiKey_None : found->second;
+}
+// The key an action is on now.
+ImGuiKey bound(std::string_view id) {
+    for (const auto& a : key_actions) {
+        if (id != a.id) continue;
+        const auto& keys = ui().keys;
+        if (const auto found = keys.find(a.id); found != keys.end())
+            if (const auto key = key_named(found->second); key != ImGuiKey_None) return key;
+        return a.key;
+    }
+    return ImGuiKey_None;
+}
+// No action is on this key (the keypad's + and - zoom the timeline too, while nothing else has them).
+bool unbound(ImGuiKey key) {
+    return std::none_of(key_actions.begin(), key_actions.end(), [&](const KeyAction& a) { return bound(a.id) == key; });
+}
+// A key as the studio writes it on its key caps.
+std::string key_label(ImGuiKey key) {
+    switch (key) {
+    case ImGuiKey_None: return "";
+    case ImGuiKey_Space: return "SPACE";
+    case ImGuiKey_Delete: return "DEL";
+    case ImGuiKey_Tab: return "TAB";
+    case ImGuiKey_LeftArrow: return "<";
+    case ImGuiKey_RightArrow: return ">";
+    case ImGuiKey_UpArrow: return "UP";
+    case ImGuiKey_DownArrow: return "DN";
+    case ImGuiKey_PageUp: return "PG UP";
+    case ImGuiKey_PageDown: return "PG DN";
+    case ImGuiKey_Insert: return "INS";
+    case ImGuiKey_Backspace: return "BKSP";
+    case ImGuiKey_Equal: return "=";
+    case ImGuiKey_Minus: return "-";
+    case ImGuiKey_Apostrophe: return "'";
+    case ImGuiKey_Comma: return ",";
+    case ImGuiKey_Period: return ".";
+    case ImGuiKey_Slash: return "/";
+    case ImGuiKey_Semicolon: return ";";
+    case ImGuiKey_LeftBracket: return "[";
+    case ImGuiKey_RightBracket: return "]";
+    case ImGuiKey_Backslash: return "\\";
+    case ImGuiKey_GraveAccent: return "`";
+    default: break;
+    }
+    std::string name = ImGui::GetKeyName(key);
+    if (name.starts_with("Keypad")) name = "NUM " + name.substr(6);
+    for (auto& c : name) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    return name;
+}
+std::string key_of(std::string_view id) { return key_label(bound(id)); }
+// Puts an action on a key. One that had that key takes the action's old one, so no key does two things; only keys off
+// their own are kept.
+void bind_key(std::string_view id, ImGuiKey key) {
+    const auto me = std::find_if(key_actions.begin(), key_actions.end(), [&](const KeyAction& a) { return id == a.id; });
+    if (me == key_actions.end()) return;
+    const ImGuiKey old = bound(id);
+    if (key == old) {
+        say(std::string(me->label) + " stays on " + key_label(key) + ".");
+        return;
+    }
+    std::map<std::string, ImGuiKey> now;
+    for (const auto& a : key_actions) now[a.id] = bound(a.id);
+    std::string moved;
+    for (const auto& a : key_actions)
+        if (id != a.id && now[a.id] == key) {
+            now[a.id] = old;
+            moved = a.label;
+        }
+    now[me->id] = key;
+    std::map<std::string, std::string> keys;
+    for (const auto& a : key_actions)
+        if (now[a.id] != a.key) keys[a.id] = ImGui::GetKeyName(now[a.id]);
+    ui().keys = keys;
+    studio::set_key_bindings(keys);
+    say(std::string(me->label) + " is on " + key_label(key) + " now." +
+        (moved.empty() ? std::string{} : " " + moved + " had " + key_label(key) + ": it is on " + key_label(old) + " now."));
+}
+
 // ---- the keyboard ---------------------------------------------------------------------------------
 // In the menu and its cards: the arrows choose, Enter presses, Esc goes back, Q and E change tab, Tab goes to the editor.
 void menu_keyboard(const studio::View& v) {
@@ -2768,6 +2917,12 @@ void menu_keyboard(const studio::View& v) {
     u.last_mouse = io.MousePos;
     if (moved || ImGui::IsMouseClicked(ImGuiMouseButton_Left)) u.pad_mode = false;
     if (io.WantTextInput) return;
+    // Waiting for a key to bind (EDITOR KEYS): that key is the binding's, not the menu's. Left waiting when the page went: let go.
+    if (!u.binding.empty()) {
+        if (u.binding_shown >= ImGui::GetFrameCount() - 2) return;
+        u.binding.clear();
+    }
+    if (u.binding_done == ImGui::GetFrameCount()) return;
     const bool card = any_card_open(v);
     const auto pressed = [&](ImGuiKey key, bool repeat = false) { return ImGui::IsKeyPressed(key, repeat); };
     if (pressed(ImGuiKey_UpArrow, true)) nav_step(0, -1);
@@ -2781,7 +2936,7 @@ void menu_keyboard(const studio::View& v) {
     if (pressed(ImGuiKey_Escape)) menu_back(v);
     if (!card && u.menu && pressed(ImGuiKey_Q)) switch_menu_tab(-1);
     if (!card && u.menu && pressed(ImGuiKey_E)) switch_menu_tab(1);
-    if (!card && pressed(ImGuiKey_Tab) && v.has_clip) u.menu = !u.menu;
+    if (!card && pressed(bound("menu")) && v.has_clip) u.menu = !u.menu;
     if (!card && io.KeyCtrl && pressed(ImGuiKey_S)) save_now(v);
 }
 // In the editor.
@@ -2806,15 +2961,15 @@ void keyboard(const studio::View& v) {
         return;
     }
     if (u.radial) return;
-    if (pressed(ImGuiKey_Tab)) {
+    if (pressed(bound("menu"))) {
         open_menu();
         return;
     }
-    if (pressed(ImGuiKey_Space)) studio::set_playing(!v.playing);
-    if (pressed(ImGuiKey_LeftArrow, true)) step_frame(v, -1);
-    if (pressed(ImGuiKey_RightArrow, true)) step_frame(v, 1);
-    if (pressed(ImGuiKey_UpArrow, true)) step_joint(-1);
-    if (pressed(ImGuiKey_DownArrow, true)) step_joint(1);
+    if (pressed(bound("play"))) studio::set_playing(!v.playing);
+    if (pressed(bound("frame_back"), true)) step_frame(v, -1);
+    if (pressed(bound("frame_on"), true)) step_frame(v, 1);
+    if (pressed(bound("joint_up"), true)) step_joint(-1);
+    if (pressed(bound("joint_down"), true)) step_joint(1);
     if ((pressed(ImGuiKey_Enter) || pressed(ImGuiKey_KeypadEnter)) && v.has_clip) key_joint();
     if constexpr (feet_lock_offered) {
         if (pressed(ImGuiKey_B) && v.has_clip) {
@@ -2822,8 +2977,8 @@ void keyboard(const studio::View& v) {
             else lock_feet_to_deck(v);
         }
     }
-    if (pressed(ImGuiKey_Home)) studio::set_time(0);
-    if (pressed(ImGuiKey_End)) studio::set_time(v.duration);
+    if (pressed(bound("start"))) studio::set_time(0);
+    if (pressed(bound("end"))) studio::set_time(v.duration);
     if (ctrl && pressed(ImGuiKey_Z, true)) studio::undo();
     if (ctrl && pressed(ImGuiKey_Y, true)) studio::redo();
     if (ctrl && pressed(ImGuiKey_C)) {
@@ -2843,54 +2998,54 @@ void keyboard(const studio::View& v) {
     }
     if (ctrl && pressed(ImGuiKey_S)) save_now(v);
     if (ctrl && pressed(ImGuiKey_A)) pick_all(v);
-    if (!ctrl && pressed(ImGuiKey_C)) {
+    if (!ctrl && pressed(bound("clear"))) {
         u.anti_clip = !u.anti_clip;
         say(u.anti_clip ? "Keep clear on: what you move stays out of the body and off the deck." : "Keep clear off.");
     }
-    if (!ctrl && pressed(ImGuiKey_V)) next_shot(v, io.KeyShift ? -1 : 1);
-    if (!ctrl && pressed(ImGuiKey_H)) {
+    if (!ctrl && pressed(bound("camera"))) next_shot(v, io.KeyShift ? -1 : 1);
+    if (!ctrl && pressed(bound("hide"))) {
         u.hide_ui = !u.hide_ui;
-        if (u.hide_ui) say("Hidden. H brings it back.");
+        if (u.hide_ui) say("Hidden. " + key_of("hide") + " brings it back.");
     }
-    if (!ctrl && pressed(ImGuiKey_J)) {
+    if (!ctrl && pressed(bound("joints"))) {
         u.hide_joints = !u.hide_joints;
-        say(u.hide_joints ? "Joints hidden. J shows them again." : "Joints shown.");
+        say(u.hide_joints ? "Joints hidden. " + key_of("joints") + " shows them again." : std::string("Joints shown."));
     }
-    if (pressed(ImGuiKey_Equal) || pressed(ImGuiKey_KeypadAdd)) zoom_timeline(1.5f);
-    if (pressed(ImGuiKey_Minus) || pressed(ImGuiKey_KeypadSubtract)) zoom_timeline(1 / 1.5f);
-    if (!ctrl && pressed(ImGuiKey_F)) studio::focus_joint(u.selected);
-    if (!ctrl && pressed(ImGuiKey_T) && v.has_clip) toggle_channels(u.selected, false);
-    if (!ctrl && pressed(ImGuiKey_K) && v.has_clip) key_joint();
-    if (pressed(ImGuiKey_Delete)) {
+    if (pressed(bound("zoom_in")) || (unbound(ImGuiKey_KeypadAdd) && pressed(ImGuiKey_KeypadAdd))) zoom_timeline(1.5f);
+    if (pressed(bound("zoom_out")) || (unbound(ImGuiKey_KeypadSubtract) && pressed(ImGuiKey_KeypadSubtract))) zoom_timeline(1 / 1.5f);
+    if (!ctrl && pressed(bound("follow"))) studio::focus_joint(u.selected);
+    if (!ctrl && pressed(bound("channels")) && v.has_clip) toggle_channels(u.selected, false);
+    if (!ctrl && pressed(bound("key")) && v.has_clip) key_joint();
+    if (pressed(bound("delete"))) {
         if (!u.picked.empty()) delete_picked();
         else delete_key(v);
     }
-    if (!ctrl && pressed(ImGuiKey_X)) u.axis = u.axis == 0 ? -1 : 0;
-    if (!ctrl && pressed(ImGuiKey_Y)) u.axis = u.axis == 1 ? -1 : 1;
-    if (!ctrl && pressed(ImGuiKey_Z)) u.axis = u.axis == 2 ? -1 : 2;
-    if (!ctrl && pressed(ImGuiKey_R)) u.move_mode = false;
-    if (!ctrl && pressed(ImGuiKey_G)) u.move_mode = true;
-    if (!ctrl && pressed(ImGuiKey_L)) u.local_axes = !u.local_axes;
-    if (!ctrl && pressed(ImGuiKey_O)) studio::set_solo(!v.solo);
-    if (!ctrl && pressed(ImGuiKey_M)) {
+    if (!ctrl && pressed(bound("axis_x"))) u.axis = u.axis == 0 ? -1 : 0;
+    if (!ctrl && pressed(bound("axis_y"))) u.axis = u.axis == 1 ? -1 : 1;
+    if (!ctrl && pressed(bound("axis_z"))) u.axis = u.axis == 2 ? -1 : 2;
+    if (!ctrl && pressed(bound("turn"))) u.move_mode = false;
+    if (!ctrl && pressed(bound("move"))) u.move_mode = true;
+    if (!ctrl && pressed(bound("gizmo"))) u.local_axes = !u.local_axes;
+    if (!ctrl && pressed(bound("solo"))) studio::set_solo(!v.solo);
+    if (!ctrl && pressed(bound("limits"))) {
         studio::set_joint_limits(!v.limits);
         say(v.limits ? "Limits off: joints turn freely." : "Limits on: joints stay in the game's own range.");
     }
-    if (!ctrl && pressed(ImGuiKey_N)) {
+    if (!ctrl && pressed(bound("snap"))) {
         u.snap = !u.snap;
         say(u.snap ? "Snapping on: a foot you move lands on the deck." : "Snapping off.");
     }
-    if (pressed(ImGuiKey_F1)) u.controls_open = !u.controls_open;
+    if (pressed(bound("shortcuts"))) u.controls_open = !u.controls_open;
     auto orbit = v.orbit;
     // WASD turns the view while held, as Blender's view keys do: A and D round him, W and S over and under; Shift
     // faster. (Ctrl+S and Ctrl+A are save and choose every key, as before.)
     if (!ctrl) {
         const float dt = std::min(io.DeltaTime, 0.1f), speed = io.KeyShift ? 2.4f : 1.2f;
         float round = 0, over = 0;
-        if (ImGui::IsKeyDown(ImGuiKey_A)) round -= 1;
-        if (ImGui::IsKeyDown(ImGuiKey_D)) round += 1;
-        if (ImGui::IsKeyDown(ImGuiKey_W)) over += 1;
-        if (ImGui::IsKeyDown(ImGuiKey_S)) over -= 1;
+        if (ImGui::IsKeyDown(bound("view_left"))) round -= 1;
+        if (ImGui::IsKeyDown(bound("view_right"))) round += 1;
+        if (ImGui::IsKeyDown(bound("view_up"))) over += 1;
+        if (ImGui::IsKeyDown(bound("view_down"))) over -= 1;
         if (round != 0 || over != 0) {
             any = true;
             orbit.yaw += round * speed * 1.6f * dt;
@@ -3038,7 +3193,8 @@ void menu_footer(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 di
     std::vector<P> list;
     if (u.pad_mode) list = {{Glyph::dpad_ud, "", "Choose"}, {Glyph::a, "", "Select"}, {Glyph::b, "", "Back"}, {Glyph::lb, "", "Tabs"}};
     else list = {{std::nullopt, "ARROWS", "Choose"}, {std::nullopt, "ENTER", "Select"}, {std::nullopt, "ESC", "Back"}, {std::nullopt, "Q / E", "Tabs"}};
-    if (v.has_clip) list.emplace_back(u.pad_mode ? std::optional<Glyph>(Glyph::view) : std::nullopt, "TAB", "Editor");
+    const std::string menu_key = key_of("menu"); // EDITOR KEYS may have moved it off Tab
+    if (v.has_clip) list.emplace_back(u.pad_mode ? std::optional<Glyph>(Glyph::view) : std::nullopt, menu_key.c_str(), "Editor");
     float w = 0;
     for (const auto& [g, key, what] : list) w += prompt_width(f, g, key, what);
     float x = right - 48 * k - w;
@@ -6962,7 +7118,7 @@ void packs_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, 
 // As the game's own: a tile for each part (a picture and what it holds), and in each the settings as rows, a value at
 // the right with arrows either side or a bar to slide, and what the chosen one does in a box beside them.
 struct Setting {
-    enum class Kind { choice, slider, action, folder, name, info };
+    enum class Kind { choice, slider, action, folder, name, info, key, heading };
     Kind kind{};
     std::string label, value, about;
     std::function<void(int)> step;    // choice: one along, -1 or 1
@@ -6971,6 +7127,7 @@ struct Setting {
     std::function<void()> act;        // action
     bool exporting{};                 // folder: which one
     bool enabled{true};
+    std::string key_id, own;          // key: the action (key_actions) and its own key, as written
 };
 constexpr std::array<const char*, 4> settings_pages{"STUDIO", "SKATER", "TRICKS", "PACKS"};
 constexpr std::array<const char*, 4> settings_blurbs{"The room, the camera, playback and the studio's own tools.",
@@ -7028,16 +7185,16 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
                               "A set view to work in. FRONT, SIDE, BACK and TOP look at him square on from his chest, his left, behind "
                               "him and above, as he stands when you pick it; BOARD is close on the deck, CINEMATIC wide and low, FILMER "
                               "the filmer's follow. It travels with him while you pose and while it plays. Moving the camera yourself "
-                              "goes back to free. Key: V.",
+                              "goes back to free. Key: " + key_of("camera") + ".",
                               [&v](int by) { next_shot(v, by); }));
         rows.push_back(on_off("Fisheye on FILMER", u.fisheye,
                               "FILMER looks through a fisheye, as a filmer's camera does: wide, bent at the edges, black in the corners.",
                               [](bool on) { ui().fisheye = on; }));
         rows.push_back(on_off("Loop", v.loop, "Plays the timeline round and round. A clip whose end differs from its start can visibly jump when it loops.",
                               [](bool on) { studio::set_loop(on); }));
-        rows.push_back(on_off("Joints on the skater", !u.hide_joints, "The dots on his joints and the gizmo on the chosen one. Off shows the pose clean. Key: J.",
+        rows.push_back(on_off("Joints on the skater", !u.hide_joints, "The dots on his joints and the gizmo on the chosen one. Off shows the pose clean. Key: " + key_of("joints") + ".",
                               [](bool on) { ui().hide_joints = !on; }));
-        rows.push_back(on_off("Shortcuts panel", u.controls_open, "The list of keys (or buttons) at the editor's lower right. Key: F1.",
+        rows.push_back(on_off("Shortcuts panel", u.controls_open, "The list of keys (or buttons) at the editor's lower right. Key: " + key_of("shortcuts") + ".",
                               [](bool on) { ui().controls_open = on; }));
         rows.push_back(button_row("Report a bug",
                                   "Something went wrong? Right after it happens, press this: the last 15 seconds, the game's log, your studio "
@@ -7069,6 +7226,29 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
             }
             rows.push_back(info_setting("Starts from", v.entry, "The ground or a rail. Ground and rail-exit tricks are kept apart."));
         }
+        // EDITOR KEYS: every one-key shortcut of the editor, on the key you want it on.
+        {
+            Setting head;
+            head.kind = Setting::Kind::heading;
+            head.label = "EDITOR KEYS";
+            rows.push_back(head);
+        }
+        for (const auto& a : key_actions) {
+            Setting s;
+            s.kind = Setting::Kind::key;
+            s.label = a.label;
+            s.key_id = a.id;
+            s.value = key_of(a.id);
+            s.own = key_label(a.key);
+            s.about = "Press it, then the key to put it on. Esc keeps the one it has; a key another shortcut has swaps with it. Its own key: " +
+                      s.own + ". The Ctrl keys, Esc, Enter, Q and E, 0 to 5 and F8 stay as they are.";
+            rows.push_back(std::move(s));
+        }
+        rows.push_back(button_row("Put every key back", "Every editor shortcut on its own key again.", [] {
+            ui().keys.clear();
+            studio::set_key_bindings({});
+            say("Every editor key is back on its own.");
+        }));
         break;
     }
     case 1: {
@@ -7088,7 +7268,7 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
         rows.push_back(slider("Keep clear", u.anti_clip ? u.clear_force : 0.0f,
                               !u.anti_clip || u.clear_force <= 0.005f ? "OFF" : std::format("{:.0f}%", u.clear_force * 100),
                               "What you move is kept out of his body and off the deck. How wide his body is taken to be: low keeps the limbs "
-                              "close and stops only the worst, high holds them well apart. The deck is never softened. Key: C.",
+                              "close and stops only the worst, high holds them well apart. The deck is never softened. Key: " + key_of("clear") + ".",
                               [](float amount) {
                                   ui().clear_force = amount;
                                   ui().anti_clip = amount > 0.005f;
@@ -7101,14 +7281,14 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
                               "Keeps what you move above the floor: a hand, a foot, a knee or the board stops on the ground. How far above: "
                               "how much of the joint's own thickness is kept clear. Off lets everything through.",
                               [](float amount) { ui().ground_force = amount; }));
-        rows.push_back(on_off("Snapping", u.snap, "A foot you move lands on the deck, at the height the feet ride at, and slides along the board. Key: N.",
+        rows.push_back(on_off("Snapping", u.snap, "A foot you move lands on the deck, at the height the feet ride at, and slides along the board. Key: " + key_of("snap") + ".",
                               [](bool on) { ui().snap = on; }));
         rows.push_back(on_off("Solo", v.solo,
                               "A turn moves that joint alone: the joints hanging off it are turned back by as much, so the limb below keeps "
-                              "the way it faces. Key: O.",
+                              "the way it faces. Key: " + key_of("solo") + ".",
                               [](bool on) { studio::set_solo(on); }));
         rows.push_back(choice("Gizmo", u.local_axes ? "OBJECT" : "WORLD",
-                              "Which way the gizmo's arrows and rings lie: along the joint's own axes, or the world's. Key: L.",
+                              "Which way the gizmo's arrows and rings lie: along the joint's own axes, or the world's. Key: " + key_of("gizmo") + ".",
                               [](int) { ui().local_axes = !ui().local_axes; }));
         break;
     }
@@ -7302,6 +7482,29 @@ void settings_rows(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 
         return;
     }
     const int page = std::clamp(u.settings_page, 0, 3);
+    // EDITOR KEYS waiting for a key: the next one pressed is the action's (Esc keeps it as it was).
+    if (!u.binding.empty() && page == 0) {
+        u.binding_shown = ImGui::GetFrameCount();
+        if (ImGui::GetFrameCount() > u.binding_since) {
+            if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+                u.binding.clear();
+                u.binding_done = ImGui::GetFrameCount();
+                say("Kept as it was.");
+            } else
+                for (int key = ImGuiKey_NamedKey_BEGIN; key <= ImGuiKey_Oem102; ++key) {
+                    const auto pressed_key = static_cast<ImGuiKey>(key);
+                    if (modifier(pressed_key) || !ImGui::IsKeyPressed(pressed_key, false)) continue;
+                    if (!bindable(pressed_key)) {
+                        say(key_label(pressed_key) + " stays as it is in the studio: press another key, or Esc.");
+                        break;
+                    }
+                    bind_key(u.binding, pressed_key);
+                    u.binding.clear();
+                    u.binding_done = ImGui::GetFrameCount();
+                    break;
+                }
+        }
+    }
     title_text(d, f, 46 * k, ImVec2(a.x, a.y + 44 * k), white, settings_pages[static_cast<std::size_t>(page)]);
     const auto rows = settings_of(page, v);
     const float rows_w = std::min(1000 * k, (b.x - a.x) * 0.62f);
@@ -7312,10 +7515,15 @@ void settings_rows(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 
     auto& n = nav();
     for (std::size_t i = 0; i < rows.size(); ++i) {
         const auto& row = rows[i];
-        const bool tall = row.kind == Setting::Kind::folder;
-        const float row_h = tall ? 104 * k : 58 * k;
+        const bool tall = row.kind == Setting::Kind::folder, header = row.kind == Setting::Kind::heading;
+        const float row_h = tall ? 104 * k : header ? 52 * k : 58 * k;
         const ImVec2 a1(ra.x, y), b1(rb.x - 14 * k, y + row_h);
         y += row_h + 8 * k;
+        if (header) { // a part of the page: its name in blue over the rows under it
+            text(d, f.heading, 20 * k, ImVec2(a1.x + 4 * k, b1.y - 30 * k), blue_light, row.label);
+            d->AddLine(ImVec2(a1.x, b1.y - 2 * k), ImVec2(b1.x, b1.y - 2 * k), IM_COL32(1, 131, 255, 120), 2 * k);
+            continue;
+        }
         ImGui::PushID(static_cast<int>(i));
         const bool sideways = row.kind == Setting::Kind::choice || row.kind == Setting::Kind::slider;
         bool lit = false;
@@ -7376,6 +7584,32 @@ void settings_rows(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 
             }
             break;
         }
+        case Setting::Kind::key: {
+            // Pressed, it waits for a key (EDITOR KEYS, above the rows); pressed again it stops waiting.
+            const bool waiting = u.binding == row.key_id;
+            if (pressed) {
+                u.binding = waiting ? std::string{} : row.key_id;
+                u.binding_since = ImGui::GetFrameCount();
+            }
+            if (waiting) {
+                const char* ask = "PRESS A KEY  -  ESC KEEPS IT";
+                const auto at = text_size(f.bold, 15 * k, ask);
+                text(d, f.bold, 15 * k, ImVec2(b1.x - 24 * k - at.x, mid_y - at.y * 0.5f), IM_COL32(240, 168, 60, 255), ask);
+            } else {
+                const auto kt = text_size(f.bold, 15 * k, row.value.c_str());
+                const float cap_w = std::max(44 * k, kt.x + 22 * k), cap_h = 30 * k;
+                const ImVec2 ca(b1.x - 24 * k - cap_w, mid_y - cap_h * 0.5f), cb(b1.x - 24 * k, mid_y + cap_h * 0.5f);
+                d->AddRectFilled(ca, cb, white, 4 * k);
+                text(d, f.bold, 15 * k, ImVec2(ca.x + (cap_w - kt.x) * 0.5f, mid_y - kt.y * 0.5f), skate_theme::black, row.value);
+                if (row.value != row.own) { // moved off its own: which that was, beside it
+                    const std::string was = "OWN: " + row.own;
+                    const auto wt = text_size(f.bold, 13 * k, was.c_str());
+                    text(d, f.bold, 13 * k, ImVec2(ca.x - 16 * k - wt.x, mid_y - wt.y * 0.5f), lit ? white : faint, was);
+                }
+            }
+            break;
+        }
+        case Setting::Kind::heading: break;
         case Setting::Kind::info: {
             const auto shown = elide(f.bold, 16 * k, row.value, 400 * k);
             const auto t = text_size(f.bold, 16 * k, shown.c_str());
@@ -8754,9 +8988,9 @@ void tool_strip(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at)
         return pressed;
     };
     group("POSE", true);
-    if (tool("##turn", "TURN", "R", !u.move_mode, "A drag (or the left stick) turns the chosen joint.")) u.move_mode = false;
+    if (tool("##turn", "TURN", key_of("turn").c_str(), !u.move_mode, "A drag (or the left stick) turns the chosen joint.")) u.move_mode = false;
     y += row;
-    if (tool("##move", "MOVE", "G", u.move_mode, "A drag moves the hips or the board, and pulls a hand or a foot to where you drag it, the limb bending to follow."))
+    if (tool("##move", "MOVE", key_of("move").c_str(), u.move_mode, "A drag moves the hips or the board, and pulls a hand or a foot to where you drag it, the limb bending to follow."))
         u.move_mode = true;
     y += row;
     {
@@ -8765,17 +8999,17 @@ void tool_strip(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at)
         static constexpr std::array<const char*, 3> ids{"##axisx", "##axisy", "##axisz"};
         for (int i = 0; i < 3; ++i)
             if (tool(ids[static_cast<std::size_t>(i)], names[static_cast<std::size_t>(i)], "", u.axis == i,
-                     "Locks a drag to one axis. Press it again for any axis. Keys: X, Y, Z.", third, static_cast<float>(i) * (third + 4 * k)))
+                     ("Locks a drag to one axis. Press it again for any axis. Keys: " + key_of("axis_x") + ", " + key_of("axis_y") + ", " + key_of("axis_z") + ".").c_str(), third, static_cast<float>(i) * (third + 4 * k)))
                 u.axis = u.axis == i ? -1 : i;
     }
     y += row;
-    if (tool("##axes", u.local_axes ? "OBJECT" : "WORLD", "L", false, "Which way the gizmo's arrows and rings lie: the joint's own axes, or the world's."))
+    if (tool("##axes", u.local_axes ? "OBJECT" : "WORLD", key_of("gizmo").c_str(), false, "Which way the gizmo's arrows and rings lie: the joint's own axes, or the world's."))
         u.local_axes = !u.local_axes;
     y += row;
     group("HELPERS");
-    if (tool("##solo", "SOLO", "O", v.solo, "A turn moves that joint alone: the limb below keeps the way it faces.")) studio::set_solo(!v.solo);
+    if (tool("##solo", "SOLO", key_of("solo").c_str(), v.solo, "A turn moves that joint alone: the limb below keeps the way it faces.")) studio::set_solo(!v.solo);
     y += row;
-    if (tool("##snap", "SNAP", "N", u.snap, "A foot you move lands on the deck and slides along it.")) u.snap = !u.snap;
+    if (tool("##snap", "SNAP", key_of("snap").c_str(), u.snap, "A foot you move lands on the deck and slides along it.")) u.snap = !u.snap;
     y += row;
     if constexpr (feet_lock_offered) {
         if (tool("##feetboard", "FEET+BOARD", "B", u.feet_lock,
@@ -8786,15 +9020,15 @@ void tool_strip(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at)
         }
         y += row;
     }
-    if (tool("##limits", "LIMITS", "M", v.limits, "Knees and elbows bend one way and joints stay in the range the game's own animation uses."))
+    if (tool("##limits", "LIMITS", key_of("limits").c_str(), v.limits, "Knees and elbows bend one way and joints stay in the range the game's own animation uses."))
         studio::set_joint_limits(!v.limits);
     y += row;
-    if (tool("##clear", "CLEAR", "C", u.anti_clip, "What you move is kept out of his body and off the deck. How much: SETTINGS > SKATER.")) u.anti_clip = !u.anti_clip;
+    if (tool("##clear", "CLEAR", key_of("clear").c_str(), u.anti_clip, "What you move is kept out of his body and off the deck. How much: SETTINGS > SKATER.")) u.anti_clip = !u.anti_clip;
     y += row;
     group("VIEW");
-    if (tool("##joints", "JOINTS", "J", !u.hide_joints, "The dots on his joints and the gizmo. Off shows the pose clean.")) u.hide_joints = !u.hide_joints;
+    if (tool("##joints", "JOINTS", key_of("joints").c_str(), !u.hide_joints, "The dots on his joints and the gizmo. Off shows the pose clean.")) u.hide_joints = !u.hide_joints;
     y += row;
-    if (tool("##follow", "FOLLOW", "F", false, "The camera keeps the chosen joint in the middle. Again: the whole skater.")) studio::focus_joint(u.selected);
+    if (tool("##follow", "FOLLOW", key_of("follow").c_str(), false, "The camera keeps the chosen joint in the middle. Again: the whole skater.")) studio::focus_joint(u.selected);
     if (!u.tool_tip.empty()) {
         const float tw = 300 * k;
         const auto measured = sharp(f.bold, 14 * k)->CalcTextSizeA(14 * k, FLT_MAX, tw - 28 * k, u.tool_tip_text.c_str());
@@ -8892,7 +9126,7 @@ void joint_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at,
     {
         const float key_w = 128 * k, step_w = 48 * k, del_w = w - key_w - 2 * step_w - 3 * gap;
         float bx = x;
-        if (action(d, f, "##key", ImVec2(bx, y), ImVec2(key_w, bh), "KEY  (K)", Look::key, v.has_clip && !locked)) key_joint();
+        if (action(d, f, "##key", ImVec2(bx, y), ImVec2(key_w, bh), "KEY  (" + key_of("key") + ")", Look::key, v.has_clip && !locked)) key_joint();
         bx += key_w + gap;
         if (action(d, f, "##deletekey", ImVec2(bx, y), ImVec2(del_w, bh), "DELETE KEY", Look::dark, key && !locked)) delete_key(v);
         bx += del_w + gap;
@@ -9048,7 +9282,7 @@ void radial_menu(const Fonts& f, const studio::View& v, ImVec2 display) {
 void shortcuts(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 corner, float clip_right) {
     auto& u = ui();
     const float k = f.k;
-    using Line = std::tuple<std::optional<Glyph>, const char*, const char*>;
+    using Line = std::tuple<std::optional<Glyph>, std::string, const char*>;
     std::vector<Line> list;
     const char* move = u.move_mode ? "Move (L3: turn)" : u.axis < 0 ? "Turn (L3: axis)" : u.axis == 0 ? "Turn X (L3)" : u.axis == 1 ? "Turn Y (L3)" : "Turn Z (L3)";
     if (u.pad_mode)
@@ -9071,21 +9305,21 @@ void shortcuts(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 corn
     else
         list = {{std::nullopt, "LMB", "Pick / turn"},
                 {std::nullopt, "RMB", "Orbit"},
-                {std::nullopt, "W A S D", "Turn the view"},
+                {std::nullopt, key_of("view_up") + " " + key_of("view_left") + " " + key_of("view_down") + " " + key_of("view_right"), "Turn the view"},
                 {std::nullopt, "MMB", "Pan"},
-                {std::nullopt, "G / R", u.move_mode ? "Move" : "Turn"},
-                {std::nullopt, "X Y Z", "Axis"},
-                {std::nullopt, "K", "Key"},
-                {std::nullopt, "DEL", "Delete key"},
-                {std::nullopt, "UP DN", "Joint"},
-                {std::nullopt, "< >", "One frame"},
-                {std::nullopt, "SPACE", v.playing ? "Pause" : "Play"},
+                {std::nullopt, key_of("move") + " / " + key_of("turn"), u.move_mode ? "Move" : "Turn"},
+                {std::nullopt, key_of("axis_x") + " " + key_of("axis_y") + " " + key_of("axis_z"), "Axis"},
+                {std::nullopt, key_of("key"), "Key"},
+                {std::nullopt, key_of("delete"), "Delete key"},
+                {std::nullopt, key_of("joint_up") + " " + key_of("joint_down"), "Joint"},
+                {std::nullopt, key_of("frame_back") + " " + key_of("frame_on"), "One frame"},
+                {std::nullopt, key_of("play"), v.playing ? "Pause" : "Play"},
                 {std::nullopt, "CTRL Z", "Undo"},
                 {std::nullopt, "SHIFT", "+ click: add keys"},
                 {std::nullopt, "CTRL", "+ click: drop keys"},
                 {std::nullopt, "RMB", "Keys: round menu"},
                 {std::nullopt, "CTRL C/V", "Copy / paste"},
-                {std::nullopt, "TAB", "Menu"},
+                {std::nullopt, key_of("menu"), "Menu"},
                 {std::nullopt, "F8", "Back to skating"}};
     const float col_w = 205 * k, row_h = 26 * k, pad = 12 * k;
     const int rows = static_cast<int>((list.size() + 1) / 2);
@@ -9115,7 +9349,7 @@ void shortcuts(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 corn
         const ImVec2 at(qa.x + pad + static_cast<float>(i % 2) * col_w, qa.y + pad + static_cast<float>(i / 2) * row_h);
         if (g) glyph(d, f, at, *g, u.playstation);
         else {
-            const auto t = text_size(f.bold, 11 * k, key);
+            const auto t = text_size(f.bold, 11 * k, key.c_str());
             d->AddRectFilled(ImVec2(at.x, at.y + 2 * k), ImVec2(at.x + t.x + 12 * k, at.y + 20 * k), white, 3 * k);
             text(d, f.bold, 11 * k, ImVec2(at.x + 6 * k, at.y + 11 * k - t.y * 0.5f), skate_theme::black, key);
         }
@@ -9323,7 +9557,7 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
         const auto* chosen_track = track_view(v, u.selected);
         const bool locked = chosen_track && chosen_track->locked;
         // As wide as the transport under them (|< to the speed): 294 across, in two halves.
-        if (action(d, f, "##tlkey", ImVec2(at.x + 20 * k, at.y + 8 * k), ImVec2(144 * k, 28 * k), "KEY  (K)", Look::key, v.has_clip && !locked)) key_joint();
+        if (action(d, f, "##tlkey", ImVec2(at.x + 20 * k, at.y + 8 * k), ImVec2(144 * k, 28 * k), "KEY  (" + key_of("key") + ")", Look::key, v.has_clip && !locked)) key_joint();
         if (action(d, f, "##tldelkey", ImVec2(at.x + 170 * k, at.y + 8 * k), ImVec2(144 * k, 28 * k), "DELETE KEY", Look::dark, here && !locked)) delete_key(v);
     }
     float bx = at.x + 20 * k;
@@ -10432,6 +10666,7 @@ bool animation_studio_loading_pending() { return studio::loading().alpha > 0; }
 void draw_animation_studio_loading() {
     const auto l = studio::loading();
     if (l.alpha <= 0) return;
+    ui().keys = studio::key_bindings(); // its tips name the keys
     auto& s = state();
     const auto display = ImGui::GetIO().DisplaySize;
     ImFont* logo = s.menu.logo ? s.menu.logo : s.menu.heading ? s.menu.heading : ImGui::GetFont();
@@ -10523,14 +10758,15 @@ void draw_animation_studio_loading() {
 
     // Bottom left: a tip, a new one every few seconds, and a bar that fills while it waits.
     {
-        static constexpr std::array<const char*, 11> tips{
+        const std::array<std::string, 11> tips{
             "Pick a trick in TRICKS, then its pop: low, mid or high.",
             "Click a dot on the skater, then drag it to turn the joint.",
             "The arrows on a joint move it along one axis, the rings turn it about one.",
-            "G moves, R turns, X Y Z lock an axis, F follows the joint.",
-            "S turns one joint alone. N keeps a foot on the deck. L swaps object and world.",
-            "K keys the pose on this frame. Keys always sit on whole frames.",
-            "G moves the hips or the board. X, Y and Z lock an axis.",
+            key_of("move") + " moves, " + key_of("turn") + " turns, " + key_of("axis_x") + " " + key_of("axis_y") + " " + key_of("axis_z") +
+                " lock an axis, " + key_of("follow") + " follows the joint.",
+            key_of("solo") + " turns one joint alone. " + key_of("snap") + " keeps a foot on the deck. " + key_of("gizmo") + " swaps object and world.",
+            key_of("key") + " keys the pose on this frame. Keys always sit on whole frames.",
+            key_of("move") + " moves the hips or the board. " + key_of("axis_x") + ", " + key_of("axis_y") + " and " + key_of("axis_z") + " lock an axis.",
             "Save your trick and do it in game: your version plays on that trick.",
             "Right-click chosen keys in the timeline for copy, paste, smooth and more.",
             "Packs group your tricks: switch any number on, and share them, in PACKS.",
@@ -10586,6 +10822,7 @@ void draw_animation_studio() {
     }
     const auto v = studio::view();
     u.own_lead_right = v.own_lead_right;
+    if (u.keys != v.keys) u.keys = v.keys;
     if (!u.was_open) {
         // Just opened: the menu when there is nothing to edit, the editor when there is.
         u.was_open = true;

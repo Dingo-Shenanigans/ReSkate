@@ -320,6 +320,7 @@ struct State {
     std::string your_name;                         // MADE BY, remembered for new recordings and packs
     std::vector<std::string> favorite_packs;       // starred in PACKS
     bool hover_preview{true};                      // TRICKS: a hovered trick plays in a little window
+    std::map<std::string, std::string> keys;       // the editor's rebound keys (View::keys)
     bool playlist_on{};                            // the playlist (presets/playlist.json), as last read
     PlaylistMode playlist_mode{PlaylistMode::fixed};
     std::vector<PlaylistEntry> playlist;
@@ -735,6 +736,10 @@ void load_settings(State& s) {
         s.import_folder = root.value("import_folder", "");
         if (root.contains("crossfade") && root.at("crossfade").is_number())
             s.crossfade = std::clamp(static_cast<float>(root.at("crossfade").get<double>()), 0.1f, 0.8f);
+        s.keys.clear();
+        if (root.contains("editor_keys") && root.at("editor_keys").is_object())
+            for (const auto& [action, key] : root.at("editor_keys").items())
+                if (key.is_string() && action.size() < 32 && key.string().size() < 32 && s.keys.size() < 64) s.keys[action] = key.string();
     } catch (...) {}
 }
 void write_preset_file(const std::filesystem::path& path, const std::string& text); // below
@@ -753,6 +758,11 @@ void save_settings_locked(const State& s) {
         root["hover_preview"] = s.hover_preview;
         if (!s.ungrouped.empty()) root["ungrouped"] = Json(std::vector<std::string>(s.ungrouped.begin(), s.ungrouped.end()));
         if (!s.favorite_packs.empty()) root["favorite_packs"] = Json(s.favorite_packs);
+        if (!s.keys.empty()) {
+            Json keys = Json::object();
+            for (const auto& [action, key] : s.keys) keys[action] = key;
+            root["editor_keys"] = keys;
+        }
         write_preset_file(library_folder() / settings_file, root.dump(2));
     } catch (...) {}
 }
@@ -4702,6 +4712,7 @@ View view() {
     v.playlist_mode = s.playlist_mode;
     v.playlist = s.playlist;
     v.hover_preview = s.hover_preview;
+    v.keys = s.keys;
     v.export_folder = s.export_folder;
     v.import_folder = s.import_folder;
     v.export_path = utf8_path(pack_export_folder(s));
@@ -6022,6 +6033,18 @@ void set_hover_preview(bool on) {
     s.hover_preview = on;
     save_settings_locked(s);
     publish_locked(s, false);
+}
+void set_key_bindings(const std::map<std::string, std::string>& keys) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    s.keys = keys;
+    save_settings_locked(s);
+    publish_locked(s, false);
+}
+std::map<std::string, std::string> key_bindings() {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    return s.keys;
 }
 bool delete_pack(const std::string& name, std::string& message) {
     auto& s = state();
