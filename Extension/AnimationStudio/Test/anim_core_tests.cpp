@@ -1538,6 +1538,30 @@ void slow_catch_off_drops() {
         check(near(drop_clip_time(none, 0.9f), 0.9f), "No drop: the clip as it is");
     }
 }
+// A knee tucked at the catch with nothing keyed after it runs on past the landing to END ANIM.; keyed back at the landing,
+// or brought back by its blend, it does not. Copies onto another pop's clip keep 0 and the end where they are.
+void landing_and_retiming() {
+    Animation a;
+    Track t;
+    t.joint = 341;
+    const float half = 35.0f * 3.14159265f / 360.0f;
+    t.keys = {Key{0.0f}, Key{0.42f, {0, 0, std::sin(half), std::cos(half)}}, Key{2.0f}};
+    a.tracks.push_back(t);
+    check(keys_past_landing(a, 0.18f, 0.67f, 2.03f) == std::vector<std::uint16_t>{341}, "A tuck held to END ANIM. runs past the landing");
+    auto landed = a;
+    landed.tracks[0].keys.insert(landed.tracks[0].keys.begin() + 2, Key{0.67f});
+    check(keys_past_landing(landed, 0.18f, 0.67f, 2.03f).empty(), "Keyed back at the landing, it does not");
+    auto blended = a;
+    blended.tracks[0].keys[1].blend_out = 0.2f;
+    check(keys_past_landing(blended, 0.18f, 0.67f, 2.03f).empty(), "Brought back by its blend before the landing, it does not");
+    auto ended = a;
+    ended.end = 0.75f;
+    check(keys_past_landing(ended, 0.18f, 0.67f, 2.03f).empty(), "An END ANIM. just after the landing ends it with the landing");
+    const auto moved = retimed(a, 0.18f, 0.67f, 2.03f, 0.2f, 0.75f, 2.08f);
+    check(near(moved.tracks[0].keys[0].time, 0.0f) && near(moved.tracks[0].keys[1].time, 14.0f / 30, 1e-3f) &&
+              moved.tracks[0].keys[2].time <= 2.08f && moved.tracks[0].keys[2].time > 2.0f,
+          "Moved onto another pop's clip, 0 stays 0, an air key stays in the air, the end at the end");
+}
 // A trick fitted to the game's air: the flip at its own pace, the landing on the game's touchdown.
 void fitting_the_air_keeps_the_flip() {
     const float recorded = 0.63f;
@@ -2089,6 +2113,7 @@ int main(int argc, char** argv) {
         native_playback_contracts();
         fitting_the_air_keeps_the_flip();
         slow_catch_off_drops();
+        landing_and_retiming();
         native_clips_pop_where_the_game_does();
         native_clock_follows_the_game();
         diagnostic_history_is_bounded();

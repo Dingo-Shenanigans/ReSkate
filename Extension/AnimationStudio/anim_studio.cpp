@@ -1369,7 +1369,8 @@ bool face_studio_stance(State& s) {
         for (auto& step : s.redo) step.tracks = mirror_tracks(std::move(step.tracks));
         s.clip = std::move(clip);
         s.edits = std::move(edits);
-        s.status = std::string("Shown in your ") + (want_right ? "goofy" : "regular") + " stance, the game's way. Left is left - edit as you see it.";
+        s.status = std::string("Shown in ") + (want_right ? "goofy" : "regular") +
+                   " stance (SETTINGS > SKATER > Editing stance), mirrored the way the game mirrors. Left is left: edit as you see it.";
         logging::log(Level::info, Channel::skater, "Animation Studio: {} mirrored into the studio's {} stance for editing.",
                      s.edits.name.empty() ? std::string("the trick") : s.edits.name, want_right ? "goofy" : "regular");
         return true;
@@ -2968,7 +2969,11 @@ void on_animation(std::uintptr_t component) noexcept {
                     const float u = (t - up) / (down - up);
                     // The clip's own rise in the air: a recording jumps by itself, the game's clips do not.
                     const float air_time = down - up;
-                    const float arc = l.preview_own_jump ? 0.0f : 9.81f * air_time * air_time / 8.0f * 4 * u * (1 - u);
+                    // As high as the game's board rises on it: 0.40 m on a flat mid ollie of 0.49 s (measured 2026-10-25),
+                    // where 9.81 showed 0.29 m. (The board falls at 20 m/s2, but it is not thrown up at once: the pop
+                    // pushes it for its first tenth of a second.)
+                    constexpr float rise = 13.3f;
+                    const float arc = l.preview_own_jump ? 0.0f : rise * air_time * air_time / 8.0f * 4 * u * (1 - u);
                     rise_y = s_up + (s_down - s_up) * u + arc;
                     // Nothing of the board goes under the floor.
                     rise_y = std::max(rise_y, l.floor - by_now);
@@ -3861,6 +3866,14 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
                 trick_blend.load(std::memory_order_relaxed));
             apply_pose_deltas(deltas, edited);
             applied_deltas.assign(deltas.begin(), deltas.end());
+            // Fading out after a trick handed back (no packet, so seat_feet_on_board does not run), rolling on the ground:
+            // no foot is drawn lower than the game has it, whatever the last keys leave in the fade.
+            if (!packet && motion == MotionState::riding)
+                for (const std::uint16_t foot : {left_foot_joint, right_foot_joint}) {
+                    const auto drawn = world(edited, foot), own = world(native, foot);
+                    if (finite(drawn) && finite(own) && drawn.position[1] < own.position[1] - 0.01f)
+                        place_foot(edited, foot, Vec3{drawn.position[0], own.position[1], drawn.position[2]}, nullptr, 1.0f);
+                }
         } else publication.transition.reset();
         if (generation != l.generation.load(std::memory_order_acquire) || update != l.animation_updates.load(std::memory_order_acquire) ||
             (packet && packet->epoch != gameplay_epoch.load(std::memory_order_acquire))) continue;
@@ -3962,7 +3975,13 @@ void on_render(std::uintptr_t animation_interface) noexcept {
     SetLastError(error);
 }
 
-struct BoardPublicationState { std::mutex mutex; EditPublicationCache edits; EditTransition transition; };
+struct BoardPublicationState {
+    std::mutex mutex;
+    EditPublicationCache edits;
+    EditTransition transition;
+    BoardShape shape{}; // the last trick's board, for the fade after it
+    bool shape_ok{};
+};
 BoardPublicationState& board_publication_state() { static auto* state = new BoardPublicationState; return *state; }
 
 // ---- the feet on the deck ------------------------------------------------------------------------------
@@ -4125,9 +4144,11 @@ void apply_gameplay_board(std::uintptr_t holder, const std::shared_ptr<const Gam
                 }
                 auto target = board_edited(base, *packet->edits, packet->time, ground_turn(frame));
                 // Rolling on the ground the game's board stands on it, so the edited one goes no lower than it does.
-                if (packet->clip && l.render_motion.load(std::memory_order_acquire) == MotionState::riding) {
-                    const auto shape = board_shape(*packet->clip);
-                    (void)keep_board_above(target, shape, lowest_point(native_mount, shape));
+                if (packet->clip) {
+                    publication.shape = board_shape(*packet->clip);
+                    publication.shape_ok = true;
+                    if (l.render_motion.load(std::memory_order_acquire) == MotionState::riding)
+                        (void)keep_board_above(target, publication.shape, lowest_point(native_mount, publication.shape));
                 }
                 studio_board = target;
                 studio_board_ok = packet->weight >= 0.98f;
@@ -4148,6 +4169,9 @@ void apply_gameplay_board(std::uintptr_t holder, const std::shared_ptr<const Gam
             if (delta.rotation != Quat{0, 0, 0, 1}) want.rotation = normalised(multiply(delta.rotation, native_mount.rotation));
             for (std::size_t k = 0; k < 3; ++k) want.position[k] += delta.offset[k];
         } else publication.transition.reset();
+        // The fade after a trick (or into the next one), rolling: no lower than the game's board either.
+        if (motion == MotionState::riding && publication.shape_ok && want != native_mount)
+            (void)keep_board_above(want, publication.shape, lowest_point(native_mount, publication.shape));
         if (want != native_mount) {
             edited[1] = relative(native[0], compose(want, relative(native[board_mount], Joint{})));
             edited[1].scale = native[1].scale;
@@ -4692,6 +4716,7 @@ View view() {
         v.catch_air = true;
         v.catch_set = s.edits.catch_at && catch_fits(*s.clip, *s.edits.catch_at);
         v.catch_at = v.catch_set ? *s.edits.catch_at : catch_guess_locked(s);
+        v.keys_past_landing = keys_past_landing(s.edits, s.clip->takeoff, s.clip->landing, s.clip->duration());
     }
     v.trick_crossfade = s.edits.crossfade;
     v.catch_hold = s.edits.catch_hold.value_or(default_catch_hold);
@@ -5313,6 +5338,28 @@ void copy_pose() {
         if (!t.keys.empty()) s.clipboard.emplace_back(t.joint, evaluate(t, s.time));
     s.status = std::format("Copied the pose of {} joints.", s.clipboard.size());
 }
+bool settle_at_landing(std::string& message) {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    if (s.previewing || !s.clip || s.clip->empty()) return false;
+    const auto joints = keys_past_landing(s.edits, s.clip->takeoff, s.clip->landing, s.clip->duration());
+    if (joints.empty()) {
+        message = "Nothing keyed in the air runs on past the landing.";
+        return false;
+    }
+    const float at = std::round(s.clip->landing * key_fps) / key_fps;
+    int done = 0;
+    for (const auto joint : joints) {
+        if (const auto* t = s.edits.track(joint); t && t->locked) continue;
+        set_key(s.edits, joint, at, Offset{});
+        ++done;
+    }
+    message = std::format("Keyed {} {} back to the game's own pose at LAND: what you keyed in the air lands with the game now.", done,
+                          done == 1 ? "joint" : "joints");
+    s.status = message;
+    changed_locked(s);
+    return true;
+}
 void paste_pose() {
     auto& s = state();
     std::lock_guard lock(s.mutex);
@@ -5656,6 +5703,39 @@ bool set_saved_pop(const std::string& animation, const std::string& pop_in, std:
         return true;
     } catch (const std::exception& e) { message = e.what(); s.status = message; publish_locked(s, false); return false; }
 }
+// The game's own clip of `pop` for a trick opened from the game's tricks, leading with the same foot as `clip`, and the
+// animation's keys, brackets and catch moved onto its marks (retimed). Empty for a recording, a piece of the game's
+// animation, or a pop the library does not have.
+std::optional<std::pair<Animation, Clip>> onto_game_pop(const Animation& a, const Clip& clip, const std::string& pop) {
+    if (a.source.kind != "native_asset") return std::nullopt;
+    const auto& from = a.source.asset;
+    const auto cut = from.rfind('_');
+    if (cut == std::string::npos || !from.starts_with("animation/dingo/c_proto_onb_trick_")) return std::nullopt;
+    const auto own = from.substr(cut + 1);
+    if (own != "low" && own != "mid" && own != "high") return std::nullopt;
+    const auto to = from.substr(0, cut + 1) + pop;
+    if (to == from) return std::nullopt;
+    try {
+        const auto library = game_tricks();
+        if (!library) return std::nullopt;
+        const auto g = std::find_if(library->begin(), library->end(), [&](const GameTrick& t) { return t.asset == to && !t.preview_only && !t.file.empty(); });
+        if (g == library->end()) return std::nullopt;
+        const auto target = read_game_clip(*g);
+        if (!target || target->empty()) return std::nullopt;
+        Clip base = *target;
+        const auto lead = clip_leads_right(clip), target_lead = clip_leads_right(base);
+        if (lead && target_lead && *lead != *target_lead) base = mirror_clip(base);
+        Animation out = retimed(a, clip.takeoff, clip.landing, clip.duration(), base.takeoff, base.landing, base.duration());
+        out.source.asset = to;
+        out.clip = {};
+        out.clip.times = {0, base.duration()};
+        out.clip.takeoff = base.takeoff;
+        out.clip.landing = base.landing;
+        return std::pair{std::move(out), std::move(base)};
+    } catch (...) {
+        return std::nullopt;
+    }
+}
 bool copy_saved_to_pops(const std::string& animation, std::string& message) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
@@ -5678,7 +5758,14 @@ bool copy_saved_to_pops(const std::string& animation, std::string& message) {
             if (base.size() > std::strlen(word) && base.ends_with(word)) { base.resize(base.size() - std::strlen(word)); break; }
         const std::string label = root.value("label", "");
         const auto folder = library_folder();
+        // A trick opened from the game's tricks is copied onto the game's own clip of each pop, its keys moved onto that
+        // clip's pop and landing: a Kickflip mid made from the low one played the low one's motion in the studio while the
+        // game played its mid. A recording keeps its own clip in every copy.
+        const auto anim = from_json(text);
+        Clip source_clip = clip_from_bytes(std::vector<std::uint8_t>(clip.begin(), clip.end()));
+        if (anim.source.kind == "native_asset") place_native_marks(source_clip);
         std::vector<std::string> copies;
+        int on_game_clips = 0;
         for (const char* pop : {"low", "mid", "high"}) {
             const std::string suffix = std::string(" ") + pop;
             const auto stem = utf8_prefix(base, 48 - suffix.size()) + suffix;
@@ -5686,20 +5773,31 @@ bool copy_saved_to_pops(const std::string& animation, std::string& message) {
             unsigned number = 2;
             while (std::filesystem::exists(folder / name) || std::filesystem::exists(folder / (name + ".json")))
                 name = variation_name(stem, number++);
-            auto copy = root;
-            copy["name"] = name;
-            copy["pop"] = pop;
-            if (!label.empty()) copy["label"] = (utf8_prefix(label, 48 - suffix.size()) + suffix);
             std::filesystem::create_directories(folder / name);
-            write_preset_file(folder / name / (name + ".clip"), clip);
-            write_preset_file(folder / name / (name + ".json"), copy.dump(2));
+            if (auto moved = onto_game_pop(anim, source_clip, pop)) {
+                auto& [copy, game_clip] = *moved;
+                copy.name = name;
+                copy.pop = pop;
+                if (!label.empty()) copy.label = utf8_prefix(label, 48 - suffix.size()) + suffix;
+                const auto bytes = clip_bytes(game_clip);
+                write_preset_file(folder / name / (name + ".clip"), std::string(bytes.begin(), bytes.end()));
+                write_preset_file(folder / name / (name + ".json"), to_json(copy));
+                ++on_game_clips;
+            } else {
+                auto copy = root;
+                copy["name"] = name;
+                copy["pop"] = pop;
+                if (!label.empty()) copy["label"] = (utf8_prefix(label, 48 - suffix.size()) + suffix);
+                write_preset_file(folder / name / (name + ".clip"), clip);
+                write_preset_file(folder / name / (name + ".json"), copy.dump(2));
+            }
             copies.push_back(name);
         }
         read_library_locked(s);
         const int packs = add_copies_to_packs_locked(s, safe, copies);
         s.tricks_read = false;
         message = "Made " + copies[0] + ", " + copies[1] + " and " + copies[2] + (packs ? ", in " + std::to_string(packs) + (packs == 1 ? " pack" : " packs") + " with it" : std::string{}) +
-                  ". Each plays on its own pop.";
+                  (on_game_clips ? ". Each is on the game's own clip of its pop and plays on that pop." : ". Each plays on its own pop.");
         s.status = message;
         publish_locked(s, false);
         return true;
@@ -6077,7 +6175,7 @@ bool test_in_game(const std::string& animation, std::string& message) {
     s.tricks_read = false;
     s.open_requested = false; // the studio closes: go and skate it
     s.open_request_pending = true;
-    message = "Testing " + name + " in game: do the trick. Open the studio again (F8) when you are done.";
+    message = "Testing " + name + " in game until you open the studio again (F8) or close the game: do the trick. PLAY keeps it on for good.";
     s.status = message;
     publish_locked(s, false);
     return true;
@@ -6578,6 +6676,7 @@ bool save(std::string& message) {
         while (in_library(variation_name(wanted, n))) ++n;
         name = variation_name(wanted, n);
     }
+    const bool first_save = !in_library(name);
     const auto folder = library_folder();
     try {
         std::filesystem::create_directories(folder);
@@ -6631,6 +6730,24 @@ bool save(std::string& message) {
         s.tricks_read = false; // the next tick reads the custom tricks again
         read_library_locked(s);
         message = name == wanted ? "Saved " + name + "." : "Saved as " + name + ": " + wanted + " is another saved animation.";
+        // Its first save plays in game at once when none of yours plays on its pop and stance yet: a new player saved, went
+        // skating and saw nothing change, since it had to be switched to PLAY first. One that would stand in for another of
+        // yours stays off, and says which plays: PLAY makes this one play instead.
+        if (first_save && !s.playlist_on)
+            if (const auto me = std::find_if(s.presets.begin(), s.presets.end(), [&](const Preset& p) { return p.name == name; });
+                me != s.presets.end() && !me->playing) {
+                const auto slot = preset_slot(me->trick, me->pop) + stance_part(*me);
+                const auto other = std::find_if(s.presets.begin(), s.presets.end(), [&](const Preset& p) {
+                    return p.name != name && p.playing && preset_slot(p.trick, p.pop) + stance_part(p) == slot;
+                });
+                if (other == s.presets.end()) {
+                    auto playing = playing_names(s.library, !s.packs_on.empty());
+                    playing.insert(name);
+                    write_playing_names(playing);
+                    read_library_locked(s);
+                    message += " It plays in game now.";
+                } else message += " " + shown_name(s, other->name) + " plays on its pop for now: PLAY makes this one play instead.";
+            }
         s.status = message;
         logging::log(Level::info, Channel::skater, "Animation Studio: saved {} ({} keys) to {}.", name, s.edits.key_count(), folder.string());
         publish_locked(s);
@@ -7004,7 +7121,7 @@ LibraryBuild library_build() {
     }
     return b.state;
 }
-void start_library_build() {
+void start_library_build(bool in_background) {
     auto& b = library_builder();
     {
         std::lock_guard lock(b.mutex);
@@ -7018,7 +7135,12 @@ void start_library_build() {
         b.stop.store(false, std::memory_order_release);
     }
     try {
-        std::thread(run_library_build).detach();
+        std::thread([in_background] {
+            // Started by itself while he skates (an old library rebuilt on the first start): below the game, for the processor
+            // and the disk alike, so the game's frames and its streaming come first. Asked for in the studio: at full speed.
+            if (in_background) SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN);
+            run_library_build();
+        }).detach();
     } catch (const std::exception& e) {
         finish_library_build(true, std::string("The trick library could not be built: ") + e.what() + ".");
     }
@@ -7034,7 +7156,7 @@ void build_library_when_needed(bool now) {
     if (build.running || (build.exists && !build.outdated)) return;
     if (build.exists) logging::log(Level::info, Channel::skater, "Animation Studio: the trick library is from an older studio or another version of the game: rebuilding it.");
     else logging::log(Level::info, Channel::skater, "Animation Studio: no trick library yet: building it from the game's files.");
-    start_library_build();
+    start_library_build(true);
 }
 // Where a trick opens: on its pop, where editing it begins - not on its start bracket, whose keys stay at 0 so
 // a change there was put straight back. A piece with no pop opens a quarter of the way in.

@@ -33,7 +33,8 @@ struct Preset {
     // Where it stands in the playlist when the playlist plays (select_playlist): the order it takes its turn in.
     int order{-1};
     // Switched to PLAY on its own (MY TRICKS): it plays in game whichever packs are on (where none of theirs has its
-    // trick, pop and stance). A trick saved or put in a pack starts switched off.
+    // trick, pop and stance). A trick's first save starts switched on when none of yours plays on its pop and stance yet;
+    // put in a pack, it starts switched off there.
     bool playing{};
     // The foot it leads with, as the studio reads its file (authored_goofy and its switch label, which a save and the
     // upgrade keep true to its clip). Empty: from its stance and switch labels.

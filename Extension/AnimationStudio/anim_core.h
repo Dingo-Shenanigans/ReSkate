@@ -246,6 +246,14 @@ struct Animation {
 };
 // Puts the animation's edits at `seconds` on `pose` (already holding the base pose).
 void apply_edits(const Animation& animation, float seconds, std::span<Joint> pose) noexcept;
+// Joints keyed in the air whose pose runs on past the landing: the last key before LAND holds a pose (more than 3 degrees
+// or 1 cm), nothing is keyed after it before END ANIM. (whose key is the game's own pose), and no blend out takes it back
+// by the landing. In game a knee tucked at the catch was then still half up a second after the touchdown.
+std::vector<std::uint16_t> keys_past_landing(const Animation& animation, float takeoff, float landing, float duration);
+// The animation moved onto a clip with other marks: before the pop, the air and after the landing each stretched onto the
+// other clip's (0 stays 0, the end stays the end), its brackets and catch with it, the keys on whole frames (two landing on
+// one frame: the first is kept). As it was when either clip has no pop and landing.
+Animation retimed(const Animation& animation, float from_up, float from_down, float from_end, float to_up, float to_down, float to_end);
 // Same anatomical joint and local edit axes as F8; stance never swaps authored limbs.
 // Which limb a joint belongs to: 1 left arm, 2 right arm, 3 left leg, 4 right leg, 0 the rest of him.
 // The authored layer can be let go of a limb at a time, so a grind can take the feet while the arms keep

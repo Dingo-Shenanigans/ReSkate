@@ -379,6 +379,57 @@ void apply_edits(const Animation& animation, float seconds, std::span<Joint> pos
         for (std::size_t i = 0; i < 3; ++i) joint.position[i] += edit.offset[i];
     }
 }
+std::vector<std::uint16_t> keys_past_landing(const Animation& animation, float takeoff, float landing, float duration) {
+    std::vector<std::uint16_t> out;
+    if (!(takeoff >= 0) || !(landing > takeoff)) return out;
+    const float end = animation.end >= 0 ? animation.end : duration;
+    if (!(end > landing + 0.15f)) return out; // it ends with the landing anyway
+    constexpr float frame = 0.5f / 60;
+    for (const auto& track : animation.tracks) {
+        if (track.hidden || track.keys.empty()) continue;
+        const Key* last = nullptr;
+        const Key* next = nullptr;
+        for (const auto& key : track.keys) {
+            if (key.time < landing - frame) last = &key;
+            else {
+                next = &key;
+                break;
+            }
+        }
+        const auto holds = [](const Key& key) { // only the game's own pose
+            const float turn = 2 * std::acos(std::clamp(std::abs(normalised(key.rotation)[3]), 0.0f, 1.0f)) * 57.2957795f;
+            return turn < 3 && key.offset[0] * key.offset[0] + key.offset[1] * key.offset[1] + key.offset[2] * key.offset[2] < 1e-4f;
+        };
+        if (!last || last->time <= takeoff + frame || holds(*last)) continue; // nothing keyed in the air
+        // The next key: at the landing, or a pose of its own after it, is meant. Only the game's pose again later on (END
+        // ANIM.'s, or one like it), or none at all, leaves the air pose easing out through the landing.
+        if (next && (next->time <= landing + 0.1f || !holds(*next))) continue;
+        if (last->blend_out > 0 && last->time + last->blend_out <= landing + 0.05f) continue; // its blend brings it back
+        out.push_back(track.joint);
+    }
+    return out;
+}
+Animation retimed(const Animation& animation, float from_up, float from_down, float from_end, float to_up, float to_down, float to_end) {
+    Animation out = animation;
+    if (!(from_up > 0 && from_down > from_up && from_end >= from_down && to_up > 0 && to_down > to_up && to_end >= to_down)) return out;
+    const auto map = [&](float t) {
+        float r;
+        if (t <= from_up) r = t * to_up / from_up;
+        else if (t <= from_down) r = to_up + (t - from_up) * (to_down - to_up) / (from_down - from_up);
+        else r = from_end > from_down ? to_down + (t - from_down) * (to_end - to_down) / (from_end - from_down) : to_down;
+        return std::clamp(std::round(r * key_fps) / key_fps, 0.0f, to_end);
+    };
+    for (auto& track : out.tracks) {
+        for (auto& key : track.keys) key.time = map(key.time);
+        std::stable_sort(track.keys.begin(), track.keys.end(), [](const Key& a, const Key& b) { return a.time < b.time; });
+        track.keys.erase(std::unique(track.keys.begin(), track.keys.end(), [](const Key& a, const Key& b) { return std::abs(a.time - b.time) < 1e-4f; }),
+                         track.keys.end());
+    }
+    if (animation.start > 0) out.start = map(animation.start);
+    if (animation.end >= 0) out.end = map(animation.end);
+    if (animation.catch_at) out.catch_at = map(*animation.catch_at);
+    return out;
+}
 void retarget_edits(const Animation& animation, float seconds, std::span<const Joint> source,
                     std::span<Joint> target, bool mirror, bool reverse_facing) {
     if (!std::isfinite(seconds) || seconds < animation.start || (animation.end >= 0 && seconds > animation.end) ||

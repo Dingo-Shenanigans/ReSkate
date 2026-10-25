@@ -108,6 +108,8 @@ struct Ui {
     std::set<std::string> playlist_open; // PACK SETTINGS: the packs unfolded in the playlist's list ("*loose" your tricks in no pack)
     std::string reshare_pack;         // SHARE pressed on someone else's pack (or one holding others' tricks): the card says no
     std::set<std::string> packs_open; // FROM PACKS: the packs unfolded (a pack's name; "*loose" the tricks with no pack)
+    std::vector<std::pair<ImVec2, ImVec2>> cards_laid; // TRICKS: every card laid out this frame (card_under_peek)
+    int cards_frame{-1};
     bool dragging_playhead{}, dragging_gizmo{}, orbiting{}, panning{};
     // A key being dragged along its row.
     std::optional<std::uint16_t> key_joint;
@@ -2539,14 +2541,17 @@ void menu_back(const studio::View& v) {
     }
     if (v.has_clip) u.menu = false;
 }
-// Saving. The first time a trick is saved a card comes up to name it, test it or put it in a pack.
+// Saving. The first time a trick is saved a card comes up to name it, test it or put it in a pack: whenever what it was
+// saved as was not saved before. (Opened from the game's tricks while one of that name was saved, it went in as "Ollie mid
+// 2" with no card, since the name it opened with was taken.)
 void save_now(const studio::View& v) {
     if (!v.has_clip) return;
     auto& u = ui();
-    const bool first = v.name.empty() || std::find(v.library.begin(), v.library.end(), v.name) == v.library.end();
     std::string m;
     const bool saved = studio::save(m);
     say(m);
+    const auto now = studio::view();
+    const bool first = std::find(v.library.begin(), v.library.end(), now.name) == v.library.end();
     if (saved && first) {
         u.save_card = true;
         u.label_for.clear();
@@ -3445,6 +3450,44 @@ std::string listed(const std::vector<std::string>& names) {
     for (std::size_t i = 0; i < names.size(); ++i) out += (i == 0 ? "" : i + 1 == names.size() ? " and " : ", ") + names[i];
     return out;
 }
+// A saved trick's PLAY: its own, or a pack that is on with it in (and it not switched off there). One left on from before,
+// with another of the same pop and stance playing instead, shows off, so pressing it makes this one the one that plays.
+bool play_lit(const studio::View& v, const studio::Preset& p) {
+    bool on = p.playing;
+    const bool any_pack_on = std::any_of(v.packs.begin(), v.packs.end(), [](const auto& pack) { return pack.on; });
+    if (on && !p.active && !any_pack_on && !v.playlist_on) on = false;
+    for (const auto& pack : v.packs)
+        if (pack.on && std::find(pack.members.begin(), pack.members.end(), p.name) != pack.members.end() && !pack.pack.off.contains(p.name)) on = true;
+    return on;
+}
+// The SAVED and BACK IN THE STUDIO cards: whether the trick plays in game now (or which of yours plays on its pop
+// instead), and its PLAY. Returns how tall it is.
+float in_game_row(ImDrawList* d, const Fonts& f, const studio::View& v, const std::string& name, ImVec2 at, float w) {
+    const float k = f.k;
+    const auto* p = preset_named(v, name);
+    if (!p) return 0;
+    std::string words = "It does not play in game yet: PLAY switches it on.";
+    if (p->active) words = "It plays in game when you do the trick.";
+    else {
+        const auto slot = studio::preset_slot(p->trick, p->pop) + studio::stance_part(*p);
+        for (const auto& o : v.presets)
+            if (o.name != name && o.active && studio::preset_slot(o.trick, o.pop) + studio::stance_part(o) == slot) {
+                words = shown_name(v, o.name) + " plays on its pop now: PLAY makes this one play instead.";
+                break;
+            }
+    }
+    const float play_w = 80 * k;
+    const float hgt = paragraph(d, f.bold, 16 * k, ImVec2(at.x, at.y + 5 * k), w - play_w - 20 * k, p->active ? white : soft, words);
+    ImGui::PushID(("ingame|" + name).c_str());
+    const bool on = play_lit(v, *p);
+    if (play_toggle(d, f, "##play", ImVec2(at.x + w - play_w, at.y), ImVec2(play_w, 30 * k), on)) {
+        std::string m;
+        studio::set_trick_play(name, !on, m);
+        say(m);
+    }
+    ImGui::PopID();
+    return std::max(hgt + 5 * k, 30 * k);
+}
 void my_trick_card(ImDrawList* d, const Fonts& f, const studio::View& v, const std::string& name, ImVec2 a, ImVec2 size) {
     auto& u = ui();
     const float k = f.k, strip = 46 * k;
@@ -3500,13 +3543,7 @@ void my_trick_card(ImDrawList* d, const Fonts& f, const studio::View& v, const s
         say(m);
     }
     if (p) {
-        bool play_on = p->playing;
-        // On, but another of the same pop and stance plays instead (two were switched on before one switched the other
-        // off): shown off, so pressing it makes this one the one that plays.
-        const bool any_pack_on = std::any_of(v.packs.begin(), v.packs.end(), [](const auto& pack) { return pack.on; });
-        if (play_on && !p->active && !any_pack_on && !v.playlist_on) play_on = false;
-        for (const auto& pack : v.packs)
-            if (pack.on && std::find(pack.members.begin(), pack.members.end(), name) != pack.members.end() && !pack.pack.off.contains(name)) play_on = true;
+        const bool play_on = play_lit(v, *p);
         if (play_toggle(d, f, "##play", ImVec2(b.x - 14 * k - play_w, b.y - strip + 6 * k), ImVec2(play_w, 30 * k), play_on)) {
             std::string m;
             studio::set_trick_play(name, !play_on, m);
@@ -3879,6 +3916,16 @@ bool under_peek(ImVec2 a, ImVec2 b) {
     const auto& u = ui();
     return u.peek_hole && a.x < u.peek_b.x && b.x > u.peek_a.x && a.y < u.peek_b.y && b.y > u.peek_a.y;
 }
+// The same for a card of the grid, which is noted as laid out this frame: the window goes where it covers none it can.
+bool card_under_peek(ImVec2 a, ImVec2 b) {
+    auto& u = ui();
+    if (u.cards_frame != ImGui::GetFrameCount()) {
+        u.cards_frame = ImGui::GetFrameCount();
+        u.cards_laid.clear();
+    }
+    u.cards_laid.emplace_back(a, b);
+    return under_peek(a, b);
+}
 // Something drawn across the cards (a heading, a pack's row) that the hover preview's window may be over: drawn round the
 // window, never through it. The window is a hole in the menu, so a line drawn there showed across the skater.
 template <class Draw>
@@ -4006,6 +4053,27 @@ void hover_preview(const Fonts& f, const studio::View& v) {
         if (a.y < u.grid_a.y - 1) a.y += row * std::ceil((u.grid_a.y - a.y) / row);
         while (a.y + hgt > u.grid_b.y + 1 && a.y - row >= u.grid_a.y - 1) a.y -= row;
         hgt = std::min(hgt, u.grid_b.y - a.y);
+        // Over no other card where it can: the nearest column, right first, with no card under it (in a trick's group the
+        // next column held its other save, which was hidden while the preview played and looked missing).
+        const auto covers = [&](float x) {
+            const ImVec2 pa(x, a.y), pb(x + w, a.y + hgt);
+            return std::any_of(u.cards_laid.begin(), u.cards_laid.end(), [&](const auto& card) {
+                const auto& [ca, cb] = card;
+                const bool hovered = std::abs(ca.x - h.a.x) < 1 && std::abs(ca.y - h.a.y) < 1;
+                return !hovered && ca.x < pb.x - 1 && cb.x > pa.x + 1 && ca.y < pb.y - 1 && cb.y > pa.y + 1;
+            });
+        };
+        if (covers(a.x)) {
+            const float step = w + gap;
+            bool placed = false;
+            for (int n = 1; n < 12 && !placed; ++n)
+                for (const float x : {h.a.x + static_cast<float>(n) * step, h.a.x - static_cast<float>(n) * step})
+                    if (x >= u.grid_a.x - 1 && x + w <= u.grid_b.x + 1 && !covers(x)) {
+                        a.x = x;
+                        placed = true;
+                        break;
+                    }
+        }
     }
     const ImVec2 b(a.x + w, a.y + hgt);
     u.peek_hole = true;
@@ -4217,12 +4285,12 @@ void tricks_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
     u.grid_gap = gap;
     for (const auto& [trick, names] : groups_shown) {
         const auto at = place(i++);
-        if (under_peek(at, ImVec2(at.x + card_w, at.y + card_h))) continue;
+        if (card_under_peek(at, ImVec2(at.x + card_w, at.y + card_h))) continue;
         group_card(d, f, v, trick, names, at, ImVec2(card_w, card_h));
     }
     for (const auto& name : mine) {
         const auto at = place(i++);
-        if (under_peek(at, ImVec2(at.x + card_w, at.y + card_h))) continue;
+        if (card_under_peek(at, ImVec2(at.x + card_w, at.y + card_h))) continue;
         my_trick_card(d, f, v, name, at, ImVec2(card_w, card_h));
         note_hover("mine|" + name, at, ImVec2(at.x + card_w, at.y + card_h), [name](bool play) { return studio::peek_saved(name, play); }, shown_name(v, name));
     }
@@ -4297,7 +4365,7 @@ void tricks_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
                 i = 0;
                 for (const auto& name : names) {
                     const auto at = place(i++);
-                    if (under_peek(at, ImVec2(at.x + card_w, at.y + card_h))) continue;
+                    if (card_under_peek(at, ImVec2(at.x + card_w, at.y + card_h))) continue;
                     my_trick_card(d, f, v, name, at, ImVec2(card_w, card_h));
                     note_hover("mine|" + name, at, ImVec2(at.x + card_w, at.y + card_h), [name](bool play) { return studio::peek_saved(name, play); }, shown_name(v, name));
                 }
@@ -4315,7 +4383,7 @@ void tricks_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
     for (const auto* c : game) {
         const auto at = place(i);
         const ImVec2 end(at.x + card_w, at.y + card_h);
-        if (under_peek(at, end)) {
+        if (card_under_peek(at, end)) {
             ++i;
             continue;
         }
@@ -4342,9 +4410,17 @@ void tricks_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
         piece_card(d, f, v, *c, place(i++), ImVec2(card_w, card_h), saved);
     }
     top += static_cast<float>((i + columns - 1) / columns) * (card_h + gap);
-    if (mine.empty() && game.empty() && groups_shown.empty() && !pack_sections)
-        text(d, f.bold, 17 * k, ImVec2(grid_a.x, grid_a.y + 10 * k), soft,
-             searching ? "Nothing of that name. Try fewer letters, or another word for it." : "Nothing here yet.");
+    if (mine.empty() && game.empty() && groups_shown.empty() && !pack_sections) {
+        // MY TRICKS with nothing saved says so in its line above: here only the way to the game's tricks.
+        if (u.trick_group == "*mine" && !searching && v.library.empty()) {
+            if (action(d, f, "##tofliptricks", ImVec2(grid_a.x, grid_a.y + 6 * k), ImVec2(280 * k, 46 * k), "OPEN FLIP TRICKS", Look::blue)) {
+                u.trick_group = "Flip tricks";
+                u.cards_scroll = 0;
+            }
+        } else
+            text(d, f.bold, 17 * k, ImVec2(grid_a.x, grid_a.y + 10 * k), soft,
+                 searching ? "Nothing of that name. Try fewer letters, or another word for it." : "Nothing here yet.");
+    }
     end_region(d, grid_a, grid_b, top + u.cards_scroll - grid_a.y, u.cards_scroll, k);
     if (pieces_open && (u.trick_page.empty() || !(mine_view || searching)))
         piece_drawer(d, f, v, *pieces_open, ImVec2(rb.x - drawer_w, area_a.y), rb);
@@ -4850,7 +4926,7 @@ void packs_hub(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, I
             make_pack(v);
             u.pack_page = true;
         }
-        if (button("##packsettings", 150 * k, "SETTINGS", Look::paper)) {
+        if (button("##packsettings", 150 * k, "PLAYLIST", Look::paper)) {
             u.pack_settings = true;
             u.pack_settings_scroll = 0;
         }
@@ -4993,7 +5069,7 @@ void pack_settings_page(ImDrawList* d, const Fonts& f, const studio::View& v, Im
         u.pack_settings = false;
         return;
     }
-    title_text(d, f, 46 * k, ImVec2(a.x, a.y + 44 * k), white, "PACK SETTINGS");
+    title_text(d, f, 46 * k, ImVec2(a.x, a.y + 44 * k), white, "PLAYLIST");
     const float col = std::min(760 * k, (b.x - a.x) * 0.52f);
     const float x = a.x, w = col;
     float y = a.y + 116 * k;
@@ -6984,10 +7060,10 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
         break;
     }
     case 1: {
-        rows.push_back(choice("Stance", v.stance_choice == 1 ? "REGULAR" : v.stance_choice == 2 ? "GOOFY" : v.showing_goofy ? "THE GAME'S (GOOFY)" : "THE GAME'S (REGULAR)",
-                              "Which foot leads while you edit. A trick made leading with the other foot is mirrored into this stance the way "
-                              "the game mirrors its own, so the leg you grab is the leg that moves. The game's: the stance set in the "
-                              "game's own options.",
+        rows.push_back(choice("Editing stance", v.stance_choice == 1 ? "REGULAR" : v.stance_choice == 2 ? "GOOFY" : v.showing_goofy ? "THE GAME'S (GOOFY)" : "THE GAME'S (REGULAR)",
+                              "Which foot leads while you edit, in the studio only: your stance in game is the game's own option. A trick "
+                              "made leading with the other foot is mirrored into this stance the way the game mirrors its own, so the leg "
+                              "you grab is the leg that moves. The game's: the stance set in the game's own options.",
                               [c = v.stance_choice](int by) { studio::set_stance((c + by + 3) % 3); }));
         rows.push_back(on_off("Hands grab the board", v.grab_board,
                               "A hand brought near the deck closes its fingers round it, more the nearer it gets. Shown only: the fingers are "
@@ -8231,11 +8307,12 @@ void delete_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 di
 void save_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 display) {
     auto& u = ui();
     const float k = f.k;
-    const auto [a, b] = card_box(d, f, display, 860 * k, 560 * k, "SAVED");
+    const auto [a, b] = card_box(d, f, display, 860 * k, 620 * k, "SAVED");
     const float x = a.x + 30 * k, w = b.x - a.x - 60 * k;
     float y = a.y + 92 * k;
     const auto name = v.name;
-    y += paragraph(d, f.bold, 16 * k, ImVec2(x, y), w, soft, "It is in MY TRICKS. Switch it to PLAY there (or in a pack) to have it play in game on its trick. Give it a name you will know it by.") + 18 * k;
+    y += paragraph(d, f.bold, 16 * k, ImVec2(x, y), w, soft, "It is in MY TRICKS. Give it a name you will know it by.") + 14 * k;
+    y += in_game_row(d, f, v, name, ImVec2(x, y), w) + 18 * k;
     heading(d, f, ImVec2(x, y), w, "Name it");
     y += 32 * k;
     if (u.label_for != name && !ImGui::IsAnyItemActive()) {
@@ -8406,7 +8483,7 @@ void test_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 disp
         u.test_line = test_line();
         u.test_line_for = name;
     }
-    const auto [a, b] = card_box(d, f, display, 920 * k, 560 * k, "BACK IN THE STUDIO");
+    const auto [a, b] = card_box(d, f, display, 920 * k, 620 * k, "BACK IN THE STUDIO");
     const float x = a.x + 30 * k, w = b.x - a.x - 60 * k;
     float y = a.y + 104 * k;
     // The line, big, on paper.
@@ -8419,7 +8496,9 @@ void test_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 disp
         y = pb.y + 18 * k;
     }
     y += paragraph(d, f.bold, 16 * k, ImVec2(x, y), w, soft,
-                   "You skated " + shown_name(v, name) + ". Keep it as it is, put it in a pack, or go back and tweak it.") + 18 * k;
+                   "You skated " + shown_name(v, name) + ". Keep it as it is, put it in a pack, or go back and tweak it. A test lasts until "
+                   "the studio opens again or the game closes.") + 14 * k;
+    if (saved_trick(v, name)) y += in_game_row(d, f, v, name, ImVec2(x, y), w) + 16 * k;
     if (saved_trick(v, name)) {
         heading(d, f, ImVec2(x, y), w, "Put it in a pack");
         y += 34 * k;
@@ -9336,6 +9415,30 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
         text(d, f.bold, 12 * k, ImVec2(x + 4 * k, at.y + 8 * k), blue_light, name);
     }
     d->PopClipRect();
+    // Keys from the air that run on past the landing (keys_past_landing): in game the pose eases out only by END ANIM., so
+    // a knee tucked at the catch is still half up a second after the touchdown. A chip by LAND says so, and keys those
+    // joints back to the game's own pose there. (Before the ruler's own button, so the click is the chip's.)
+    if (v.has_clip && !v.previewing && v.landing >= 0 && !v.keys_past_landing.empty()) {
+        const float lx = x_of(v.landing);
+        if (lx >= ruler_left && lx <= ruler_right) {
+            const auto n = v.keys_past_landing.size();
+            const std::string label = n == 1 ? "1 JOINT RUNS PAST LAND: SETTLE IT" : std::to_string(n) + " JOINTS RUN PAST LAND: SETTLE THEM";
+            const auto tw = text_size(f.bold, 11 * k, label.c_str());
+            const float cw = tw.x + 18 * k, ch = 19 * k;
+            const float cx = std::max(lx + 44 * k > ruler_right - cw ? lx - 8 * k - cw : lx + 44 * k, ruler_left);
+            const ImVec2 ca(cx, at.y + 5 * k), cb(cx + cw, at.y + 5 * k + ch);
+            bool lit = false;
+            if (hit("##settleland", ca, cb, &lit)) {
+                std::string m;
+                studio::begin_change();
+                studio::settle_at_landing(m);
+                say(m);
+            }
+            d->AddLine(ImVec2(lx, at.y + header_h), ImVec2(lx, at.y + size.y), IM_COL32(240, 168, 60, 110), 2 * k);
+            d->AddRectFilled(ca, cb, lit ? IM_COL32(255, 198, 96, 255) : IM_COL32(240, 168, 60, 235), 3 * k);
+            text(d, f.bold, 11 * k, ImVec2(ca.x + 9 * k, ca.y + (ch - tw.y) * 0.5f), IM_COL32(24, 16, 6, 255), label);
+        }
+    }
     ImGui::SetCursorScreenPos(ImVec2(ruler_left, at.y));
     ImGui::InvisibleButton("##ruler", ImVec2(ruler_w, header_h));
     if (ImGui::IsItemActivated()) u.dragging_playhead = true;

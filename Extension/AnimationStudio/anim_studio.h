@@ -126,6 +126,9 @@ struct View {
     // maker put it there (else the studio found it).
     bool catch_air{}, catch_set{};
     float catch_at{-1};
+    // Joints keyed in the air whose pose runs on past LAND to END ANIM. (keys_past_landing): the timeline offers to key them
+    // back to the game's pose at the landing.
+    std::vector<std::uint16_t> keys_past_landing;
     // THIS TRICK: its own Crossfade (empty: the main one), its CATCH HOLD (catch_hold_set: its maker set it), and the
     // studio's DROP PREVIEW (metres, 0 off) with the extra air that drop gives it (seconds; -1 off).
     std::optional<float> trick_crossfade;
@@ -250,6 +253,8 @@ bool smooth_chosen_keys(std::span<const std::pair<std::uint16_t, float>> chosen,
 // Every joint at once (set_focus: the camera on the whole skater).
 inline constexpr std::uint16_t all_joints = 0xffff;
 void reset_joint(std::uint16_t joint); // takes all its keys off
+// Keys the joints whose air pose runs past the landing (View::keys_past_landing) back to the game's own pose at LAND.
+bool settle_at_landing(std::string& message);
 void set_track_flags(std::uint16_t joint, bool hidden, bool locked);
 void copy_pose();  // every joint's edit at the current time
 void paste_pose(); // keys them all at the current time
@@ -381,7 +386,7 @@ struct LibraryBuild {
     float fraction{}; // the whole build, 0 to 1
 };
 LibraryBuild library_build();
-void start_library_build(); // nothing when one is running
+void start_library_build(bool in_background = false); // nothing when one is running; in_background: below the game
 void stop_library_build();  // the build stops soon after; the library stays as it was
 // Asked every frame: with no trick library yet (a fresh install) or one built from another version of the game, the build
 // starts by itself, once a session: `now` when the studio is open, else a little after the game has started. A build
