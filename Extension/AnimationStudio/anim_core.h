@@ -1,4 +1,5 @@
 #pragma once
+#include <functional>
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -254,6 +255,8 @@ std::vector<std::uint16_t> keys_past_landing(const Animation& animation, float t
 // other clip's (0 stays 0, the end stays the end), its brackets and catch with it, the keys on whole frames (two landing on
 // one frame: the first is kept). As it was when either clip has no pop and landing.
 Animation retimed(const Animation& animation, float from_up, float from_down, float from_end, float to_up, float to_down, float to_end);
+// The same, each time through `to` (a time in the animation -> its time on the other clip), up to `to_end`.
+Animation retimed_with(const Animation& animation, const std::function<float(float)>& to, float to_end);
 // Same anatomical joint and local edit axes as F8; stance never swaps authored limbs.
 // Which limb a joint belongs to: 1 left arm, 2 right arm, 3 left leg, 4 right leg, 0 the rest of him.
 // The authored layer can be let go of a limb at a time, so a grind can take the feet while the arms keep
@@ -511,6 +514,9 @@ struct NativeModels {
     // By clip (Model::clip): its time as the edit's, matched by the board (board_time_map); none: pop on pop, landing on
     // landing, evenly between.
     std::vector<std::shared_ptr<const TimeMap>> maps;
+    // By clip: a clip of the game's for another pop than the edit was made on (a low trick on the game's high pop: its pack
+    // says any pop). Its body tucks otherwise, so the keys are not laid on it: the trick plays whole, as made (other_pop).
+    std::vector<bool> other_pop;
     // A time in a model's clip as a time in the edit's own clip: the same before the pop, stretched between the
     // pop and the landing, the same again after the landing. model_time is the other way.
     float edit_time(const Model& model, float seconds) const noexcept;

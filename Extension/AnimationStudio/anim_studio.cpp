@@ -479,6 +479,10 @@ struct Live {
     // of the game's found): 0..1, eased in and out. The keys then go on the pose they were made on, the feet on the deck.
     float off_clip{};
     bool off_clip_said{};
+    // On the game's clip for another pop than the trick was made on: 0..1, eased in and out. The trick then plays whole, as
+    // made (its own body and board, its keys on them), on the game's height and air.
+    float other_pop{};
+    bool other_pop_said{};
     // Off a drop (catch_latch): the trick's own clock from just before its catch (AirStretch), the time it was at on the
     // touchdown, its last time, and the board's shape for where it touches.
     AirStretch stretch;
@@ -1425,6 +1429,7 @@ struct TrickCache {
     std::map<std::string, std::vector<NativeModels::Model>> models; // a clip's models (native_models_of), by the same key
     std::map<std::string, std::vector<std::string>> references; // a trick's clips in the library, by its trick
     std::map<std::string, BoardTrack> reference_boards;           // each of those clips' board ("library|<file>")
+    std::map<std::string, std::string> reference_pops;            // and its pop
     std::map<std::string, std::shared_ptr<const TimeMap>> time_maps; // an own clip on a library clip ("<own key>|<library key>")
 };
 TrickCache& trick_cache() {
@@ -1471,6 +1476,7 @@ const std::vector<std::string>& library_references(TrickCache& cache, const std:
     const auto add = [&](const GameTrick& g) {
         const auto key = "library|" + g.file;
         if (std::find(keys.begin(), keys.end(), key) != keys.end()) return;
+        cache.reference_pops[key] = g.pop;
         if (!cache.models.contains(key)) {
             try {
                 const auto clip = read_game_clip(g); // read for its poses and its board, not kept
@@ -1518,6 +1524,11 @@ std::optional<CustomTrick> load_custom_trick(TrickCache& cache, const std::files
     const std::string text((std::istreambuf_iterator<char>(json_in)), std::istreambuf_iterator<char>());
     auto animation = std::make_shared<Animation>(from_json(text));
     if (animation->trick.empty()) return std::nullopt;
+    // The pop it was made on, before its pack's rule: the game's clip it was edited from says (".._360flip_low").
+    std::string made_pop = animation->pop;
+    if (const auto& asset = animation->source.asset; animation->source.kind == "native_asset" && asset.starts_with("animation/dingo/c_proto_onb_trick_"))
+        if (const auto cut = asset.rfind('_'); cut != std::string::npos)
+            if (const auto end = asset.substr(cut + 1); end == "low" || end == "mid" || end == "high") made_pop = end;
     if (p.pack_pop) animation->pop = *p.pack_pop; // the pop its pack's rules (or a test) say it plays on
     std::string key;
     const auto clip = shared_clip(cache, clip_path, animation->source.kind == "native_asset", key);
@@ -1545,6 +1556,7 @@ std::optional<CustomTrick> load_custom_trick(TrickCache& cache, const std::files
         native->models.push_back(std::move(model));
     }
     native->maps.push_back(nullptr); // clip 0, its own: its own time
+    native->other_pop.push_back(false);
     std::optional<BoardTrack> made_track;
     std::size_t index = 1;
     for (const auto& reference : library_references(cache, trick)) {
@@ -1565,6 +1577,8 @@ std::optional<CustomTrick> load_custom_trick(TrickCache& cache, const std::files
                 if (!kept->empty()) map = kept;
             }
             native->maps.push_back(std::move(map));
+            const auto pop = cache.reference_pops.find(reference);
+            native->other_pop.push_back(!made_pop.empty() && pop != cache.reference_pops.end() && !pop->second.empty() && pop->second != made_pop);
             ++index;
         }
     }
@@ -3482,7 +3496,7 @@ void on_animation(std::uintptr_t component) noexcept {
                     l.mirrored_edits.clear();
                 }
                 l.game_tricks = snap->tricks;
-                l.native_clock.reset(); l.clock_weight = 0; l.off_clip = 0;
+                l.native_clock.reset(); l.clock_weight = 0; l.off_clip = 0; l.other_pop = 0;
                 l.attempt_variants.clear(); l.stance_fallback_trick.clear(); l.predicted_air = 0;
                 l.limbs = {}; l.gave_way_at = -1; l.gave_way_from.clear();
                 l.board_at_takeoff_ok = false;
@@ -3607,6 +3621,7 @@ void on_animation(std::uintptr_t component) noexcept {
                     l.native_clock.reset();
                     if (found) l.native_clock.start(found->native);
                     l.clock_selected_at = at; l.clock_locked_at = -1; l.clock_weight = 0; l.off_clip = 0; l.off_clip_said = false;
+                    l.other_pop = 0; l.other_pop_said = false;
                     l.stretch.reset(); l.latch_touch_from = l.latch_last = -1;
                     l.latch_shape_ok = false;
                     if (found && found->caught > 0) {
@@ -3817,6 +3832,23 @@ void on_animation(std::uintptr_t component) noexcept {
                                      trick->name, l.clock_fallback ? "no clip of the game's found" : l.stretch.on() ? "it takes its own time off a drop" : "the game holds a pose of its own");
                     }
                 }
+                // A trick made on one pop, on the game's clip of another (its pack says any pop): the keys laid on that clip's
+                // body - tucked otherwise on a higher pop - drew the legs through the board (renztre, low, on a high pop). It
+                // plays whole as made instead: its own body and board with its keys, timed by the board (board_time_map) so
+                // the flip keeps its pace and the extra air is held at the catch, as the game's own pops do; where he is in
+                // the air is the game's.
+                {
+                    const auto* pops = trick->native ? &trick->native->other_pop : nullptr;
+                    const bool other = pops && !l.clock_fallback && reading.locked && reading.clip > 0 &&
+                                       static_cast<std::size_t>(reading.clip) < pops->size() && (*pops)[static_cast<std::size_t>(reading.clip)];
+                    constexpr float other_step = (1.0f / 60) / 0.15f;
+                    l.other_pop = other ? std::min(1.0f, l.other_pop + other_step) : std::max(0.0f, l.other_pop - other_step);
+                    if (other && !l.other_pop_said) {
+                        l.other_pop_said = true;
+                        logging::log(Level::info, Channel::skater, "Animation Studio: {} is on the game's clip of another pop (clip {}): it plays whole, as made.",
+                                     trick->name, reading.clip);
+                    }
+                }
                 diagnostic.clock_error = reading.error;
                 diagnostic.clock_clip = l.clock_fallback ? -2 : reading.clip;
                 diagnostic.clock_state = l.clock_fallback ? "own clock" : !reading.locked ? "looking" : !l.clock_why.empty() ? "let go"
@@ -3840,10 +3872,11 @@ void on_animation(std::uintptr_t component) noexcept {
                     // the studio's pose is forced over it - but off the game's clip in the air (off_clip), the keyed joints go
                     // to the pose they were made on and the feet onto the deck as the studio has them.
                     const float off = l.off_clip * l.off_clip * (3 - 2 * l.off_clip);
-                    packet->mirrored = l.played_mirrored; packet->match = off; packet->feet_match = off;
+                    const float whole = l.other_pop * l.other_pop * (3 - 2 * l.other_pop);
+                    packet->mirrored = l.played_mirrored; packet->match = std::max(off, whole); packet->feet_match = off;
                     packet->board_backwards = l.playback_backwards;
                     packet->fakie = l.playback_fakie;
-                    packet->match_rest = 0;
+                    packet->match_rest = whole; // on another pop's clip: body and board as made (other_pop)
                     packet->limits = snap->limits;
                     // The board keys are authored in the board's own frame and played in it (nose-relative both
                     // times), so they need no turning for fakie. A deck turned round under him is the game's
@@ -6218,7 +6251,11 @@ std::optional<std::pair<Animation, Clip>> onto_game_pop(const Animation& a, cons
         Clip base = *target;
         const auto lead = clip_leads_right(clip), target_lead = clip_leads_right(base);
         if (lead && target_lead && *lead != *target_lead) base = mirror_clip(base);
-        Animation out = retimed(a, clip.takeoff, clip.landing, clip.duration(), base.takeoff, base.landing, base.duration());
+        // Its keys onto the other clip by where the board is (board_time_map): the game flips at the same pace on every
+        // pop and holds the catch longer on a higher one, so the even stretch put a copy's flip out of step with its board.
+        const auto map = board_time_map(board_track(base), board_track(clip));
+        Animation out = !map.empty() ? retimed_with(a, [&](float t) { return map.back(t); }, base.duration())
+                                     : retimed(a, clip.takeoff, clip.landing, clip.duration(), base.takeoff, base.landing, base.duration());
         out.source.asset = to;
         out.clip = {};
         out.clip.times = {0, base.duration()};
@@ -6238,7 +6275,9 @@ bool copy_saved_to_pops(const std::string& animation, std::string& message) {
         auto root = Json::parse(text);
         if (!root.is_object()) throw std::runtime_error(animation + " is not a saved animation.");
         if (root.value("trick", "").empty()) throw std::runtime_error(animation + " has no trick, so it has no pop to copy to.");
-        if (locked_locked(s, safe)) throw std::runtime_error(animation + " is locked to its maker: it can be played, not copied.");
+        // Locked to its maker: copied all the same, each copy on its own pop and still the maker's (its key and its lock go
+        // with it: not opened, not shared). It keeps its own clip, so in game it plays as made on each pop (other_pop).
+        const bool locked = locked_locked(s, safe);
         std::string clip;
         {
             std::ifstream in(saved_clip(safe), std::ios::binary);
@@ -6267,7 +6306,7 @@ bool copy_saved_to_pops(const std::string& animation, std::string& message) {
             while (std::filesystem::exists(folder / name) || std::filesystem::exists(folder / (name + ".json")))
                 name = variation_name(stem, number++);
             std::filesystem::create_directories(folder / name);
-            if (auto moved = onto_game_pop(anim, source_clip, pop)) {
+            if (auto moved = locked ? std::nullopt : onto_game_pop(anim, source_clip, pop)) {
                 auto& [copy, game_clip] = *moved;
                 copy.name = name;
                 copy.pop = pop;
@@ -6287,10 +6326,11 @@ bool copy_saved_to_pops(const std::string& animation, std::string& message) {
             copies.push_back(name);
         }
         read_library_locked(s);
-        const int packs = add_copies_to_packs_locked(s, safe, copies);
+        const int packs = locked ? 0 : add_copies_to_packs_locked(s, safe, copies); // not into its maker's pack
         s.tricks_read = false;
         message = "Made " + copies[0] + ", " + copies[1] + " and " + copies[2] + (packs ? ", in " + std::to_string(packs) + (packs == 1 ? " pack" : " packs") + " with it" : std::string{}) +
-                  (on_game_clips ? ". Each is on the game's own clip of its pop and plays on that pop." : ". Each plays on its own pop.");
+                  (locked ? ". Each plays as made on its own pop, and stays its maker's: locked, not shared."
+                   : on_game_clips ? ". Each is on the game's own clip of its pop and plays on that pop." : ". Each plays on its own pop.");
         s.status = message;
         publish_locked(s, false);
         return true;

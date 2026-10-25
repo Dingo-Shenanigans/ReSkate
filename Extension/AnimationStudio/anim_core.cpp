@@ -410,15 +410,16 @@ std::vector<std::uint16_t> keys_past_landing(const Animation& animation, float t
     return out;
 }
 Animation retimed(const Animation& animation, float from_up, float from_down, float from_end, float to_up, float to_down, float to_end) {
+    if (!(from_up > 0 && from_down > from_up && from_end >= from_down && to_up > 0 && to_down > to_up && to_end >= to_down)) return animation;
+    return retimed_with(animation, [&](float t) {
+        if (t <= from_up) return t * to_up / from_up;
+        if (t <= from_down) return to_up + (t - from_up) * (to_down - to_up) / (from_down - from_up);
+        return from_end > from_down ? to_down + (t - from_down) * (to_end - to_down) / (from_end - from_down) : to_down;
+    }, to_end);
+}
+Animation retimed_with(const Animation& animation, const std::function<float(float)>& to, float to_end) {
     Animation out = animation;
-    if (!(from_up > 0 && from_down > from_up && from_end >= from_down && to_up > 0 && to_down > to_up && to_end >= to_down)) return out;
-    const auto map = [&](float t) {
-        float r;
-        if (t <= from_up) r = t * to_up / from_up;
-        else if (t <= from_down) r = to_up + (t - from_up) * (to_down - to_up) / (from_down - from_up);
-        else r = from_end > from_down ? to_down + (t - from_down) * (to_end - to_down) / (from_end - from_down) : to_down;
-        return std::clamp(std::round(r * key_fps) / key_fps, 0.0f, to_end);
-    };
+    const auto map = [&](float t) { return std::clamp(std::round(to(t) * key_fps) / key_fps, 0.0f, to_end); };
     for (auto& track : out.tracks) {
         for (auto& key : track.keys) key.time = map(key.time);
         std::stable_sort(track.keys.begin(), track.keys.end(), [](const Key& a, const Key& b) { return a.time < b.time; });
