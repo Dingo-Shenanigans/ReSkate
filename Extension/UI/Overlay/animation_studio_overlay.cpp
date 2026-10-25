@@ -111,6 +111,7 @@ struct Ui {
     std::vector<std::pair<ImVec2, ImVec2>> cards_laid; // TRICKS: every card laid out this frame (card_under_peek)
     std::map<std::string, std::string> keys; // the editor's rebound keys (View::keys), as of this frame
     std::string binding;                     // EDITOR KEYS: the action waiting for its new key ("" none)
+    std::string packs_group;                 // FROM PACKS: the trick group open in a pack ("pack|trick"; "" none)
     std::string playlist_for;                // ACTIVE on a trick in nothing that plays: the card asks which playlist it goes in
     studio::PlaylistEntry playlist_for_entry;
     std::array<char, 64> playlist_name{};    // PACKS > PLAYLIST: the open playlist's name, being typed
@@ -2520,6 +2521,10 @@ void menu_back(const studio::View& v) {
             u.piece_card.clear();
             return;
         }
+        if (!u.packs_group.empty()) {
+            u.packs_group.clear();
+            return;
+        }
         if (!u.my_group.empty()) {
             u.my_group.clear();
             return;
@@ -3678,7 +3683,8 @@ float in_game_row(ImDrawList* d, const Fonts& f, const studio::View& v, const st
     ImGui::PopID();
     return std::max(hgt + 5 * k, 30 * k);
 }
-void my_trick_card(ImDrawList* d, const Fonts& f, const studio::View& v, const std::string& name, ImVec2 a, ImVec2 size) {
+// pack_tag: the pack it is in, by name (left off in the pack's own section, which names it).
+void my_trick_card(ImDrawList* d, const Fonts& f, const studio::View& v, const std::string& name, ImVec2 a, ImVec2 size, bool pack_tag = true) {
     auto& u = ui();
     const float k = f.k, strip = 46 * k;
     const ImVec2 b(a.x + size.x, a.y + size.y);
@@ -3706,7 +3712,7 @@ void my_trick_card(ImDrawList* d, const Fonts& f, const studio::View& v, const s
         right_edge -= 6 * k;
     }
     // The pack it is in, by name (and how many more): which pack a trick belongs to, at a glance.
-    if (const auto holding = packs_holding(v, name); !holding.empty()) {
+    if (const auto holding = packs_holding(v, name); pack_tag && !holding.empty()) {
         const std::string more = holding.size() > 1 ? " +" + std::to_string(holding.size() - 1) : std::string{};
         const auto label = elide(f.bold, 12 * k, upper(holding.front()->name), 150 * k) + more;
         right_edge -= tag_width(f, label);
@@ -3740,16 +3746,18 @@ void my_trick_card(ImDrawList* d, const Fonts& f, const studio::View& v, const s
     ImGui::PopID();
 }
 // MY TRICKS: a group's card - every save of one trick, its pops and stances at a glance; pressed, it opens to show them.
-void group_card(ImDrawList* d, const Fonts& f, const studio::View& v, const std::string& trick, const std::vector<std::string>& names, ImVec2 a, ImVec2 size) {
+// open_key: in a pack's section of FROM PACKS, what opens it there ("pack|trick"); else it opens in MY TRICKS.
+void group_card(ImDrawList* d, const Fonts& f, const studio::View& v, const std::string& trick, const std::vector<std::string>& names, ImVec2 a, ImVec2 size,
+                const std::string& open_key = {}) {
     auto& u = ui();
     const float k = f.k;
     const ImVec2 b(a.x + size.x, a.y + size.y);
     ImGui::PushID(("group|" + trick).c_str());
     bool lit = false;
     if (hit("##group", a, b, &lit)) {
-        u.my_group = trick;
+        if (open_key.empty()) u.my_group = trick;
+        else u.packs_group = open_key;
         u.trick_page.clear();
-        u.cards_scroll = 0;
     }
     // A little stack behind it: more than one in here.
     flat_rect(d, ImVec2(a.x + 10 * k, a.y - 6 * k), ImVec2(b.x - 10 * k, a.y + 10 * k), IM_COL32(40, 42, 48, 220), seed_of(a) + 3, k * 0.6f);
@@ -4549,13 +4557,50 @@ void tricks_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
             });
             top += bar_h + 8 * k;
             if (open) {
+                // Its tricks by trick, as MY TRICKS has yours: a trick with more than one save is one card that opens to them
+                // (BACK, or Esc, goes back), the rest each a card of their own. The pack's tag is left off: the row names it.
+                ImGui::PushID(("section|" + key).c_str());
+                const std::string group_key = key + "|";
+                std::map<std::string, std::vector<std::string>> by_trick;
+                for (const auto& name : names)
+                    if (const auto* p = preset_named(v, name)) by_trick[p->trick].push_back(name);
+                std::string open_trick = u.packs_group.starts_with(group_key) ? u.packs_group.substr(group_key.size()) : std::string{};
+                if (!open_trick.empty() && by_trick[open_trick].size() < 2) { // gone, or down to one: back to the groups
+                    u.packs_group.clear();
+                    open_trick.clear();
+                }
+                std::vector<std::pair<std::string, std::vector<std::string>>> trick_groups;
+                std::vector<std::string> singles;
+                if (!open_trick.empty()) {
+                    if (action(d, f, "##packgroupback", ImVec2(grid_a.x, top), ImVec2(110 * k, 34 * k), "BACK", Look::dark)) u.packs_group.clear();
+                    around_peek(d, ImVec2(grid_a.x + 124 * k, top), ImVec2(grid_a.x + grid_w, top + 26 * k), [&] {
+                        heading(d, f, ImVec2(grid_a.x + 124 * k, top), grid_w - 124 * k, upper(trick_label(open_trick)),
+                                std::to_string(by_trick[open_trick].size()));
+                    });
+                    top += 46 * k;
+                    singles = by_trick[open_trick];
+                } else {
+                    for (const auto& name : names) {
+                        const auto* p = preset_named(v, name);
+                        if (!p || by_trick[p->trick].size() < 2) singles.push_back(name);
+                        else if (std::none_of(trick_groups.begin(), trick_groups.end(), [&](const auto& g) { return g.first == p->trick; }))
+                            trick_groups.emplace_back(p->trick, by_trick[p->trick]);
+                    }
+                    std::sort(trick_groups.begin(), trick_groups.end(), [](const auto& x, const auto& y) { return trick_label(x.first) < trick_label(y.first); });
+                }
                 i = 0;
-                for (const auto& name : names) {
+                for (const auto& [trick, members] : trick_groups) {
                     const auto at = place(i++);
                     if (card_under_peek(at, ImVec2(at.x + card_w, at.y + card_h))) continue;
-                    my_trick_card(d, f, v, name, at, ImVec2(card_w, card_h));
+                    group_card(d, f, v, trick, members, at, ImVec2(card_w, card_h), group_key + trick);
+                }
+                for (const auto& name : singles) {
+                    const auto at = place(i++);
+                    if (card_under_peek(at, ImVec2(at.x + card_w, at.y + card_h))) continue;
+                    my_trick_card(d, f, v, name, at, ImVec2(card_w, card_h), false);
                     note_hover("mine|" + name, at, ImVec2(at.x + card_w, at.y + card_h), [name](bool play) { return studio::peek_saved(name, play); }, shown_name(v, name));
                 }
+                ImGui::PopID();
                 top += static_cast<float>((i + columns - 1) / columns) * (card_h + gap) + 10 * k;
                 i = 0;
             }
