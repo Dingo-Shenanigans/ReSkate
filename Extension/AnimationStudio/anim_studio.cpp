@@ -6122,6 +6122,10 @@ Shared shared_files_locked(State& s, const std::string& pack_name) {
                 saved_first = "Saved and exported ";
             }
             auto pack = read_pack_file(pack_name);
+            // Someone else's pack (made on another PC: got from the MARKET or imported) stays theirs to share: not as a zip,
+            // a Thunderstore package or a publish, whichever way it is asked for.
+            if (locked_key(pack.maker_key))
+                throw std::runtime_error("Woaahh, wait there: " + pack.name + " is someone else's pack. It plays for you, but it stays theirs to share.");
             out.pack = pack;
             title = pack.name;
             // The pack goes with its maker's key, and every trick in it on (what is switched off here is this PC's choice).

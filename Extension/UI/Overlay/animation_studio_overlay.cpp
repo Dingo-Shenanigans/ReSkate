@@ -105,6 +105,8 @@ struct Ui {
     std::string delete_card;          // a saved trick in a pack about to be deleted: the card asks first
     bool account{};                   // MARKET > ACCOUNT is open: the Thunderstore team signed in, and changing it
     bool menu_after_preview{};        // leaving a preview: the menu it goes back to stays open when the trick open before comes back
+    std::set<std::string> playlist_open; // PACK SETTINGS: the packs unfolded in the playlist's list ("*loose" your tricks in no pack)
+    std::string reshare_pack;         // SHARE pressed on someone else's pack (or one holding others' tricks): the card says no
     std::set<std::string> packs_open; // FROM PACKS: the packs unfolded (a pack's name; "*loose" the tricks with no pack)
     bool dragging_playhead{}, dragging_gizmo{}, orbiting{}, panning{};
     // A key being dragged along its row.
@@ -2443,7 +2445,7 @@ void step_joint(int by) {
 bool any_card_open(const studio::View& v) {
     const auto& u = ui();
     return u.browser.open || u.save_card || !v.test_returned.empty() || u.conflicts_open || u.pack_adding || !u.stance_pack.empty() || u.sign_in ||
-           !u.share_pack.empty() || !u.like_pack.empty() || !u.cover_pack.empty() || !u.delete_card.empty() || u.account;
+           !u.share_pack.empty() || !u.like_pack.empty() || !u.cover_pack.empty() || !u.delete_card.empty() || u.account || !u.reshare_pack.empty();
 }
 void open_menu(int tab = -1) {
     auto& u = ui();
@@ -4720,9 +4722,14 @@ void pack_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
         y += 46 * k;
         const bool published = pack_is_published(studio::market::view(), pack);
         if (action(d, f, "##export", ImVec2(x, y), ImVec2(half, 38 * k), published ? "UPDATE" : "SHARE", published ? Look::blue : Look::paper)) {
-            u.share_pack = pack.name;
-            u.share_description_for.clear();
-            u.share_version_for.clear();
+            // Someone else's pack, or one with another maker's tricks in it: not shared again (the card says why).
+            const bool others = std::any_of(pack.members.begin(), pack.members.end(), [&](const std::string& m) { return saved_trick(v, m) && from_a_pack(v, m); });
+            if (pack.installed || others) u.reshare_pack = pack.name;
+            else {
+                u.share_pack = pack.name;
+                u.share_description_for.clear();
+                u.share_version_for.clear();
+            }
         }
         const std::string confirm = "pack:" + pack.name;
         if (action(d, f, "##deletepack", ImVec2(x + half + 8 * k, y), ImVec2(half, 38 * k), u.confirm_delete == confirm ? "AGAIN TO DELETE" : "DELETE", Look::danger)) {
@@ -5059,22 +5066,42 @@ void pack_settings_page(ImDrawList* d, const Fonts& f, const studio::View& v, Im
         ImGui::PopID();
         qy = rb.y + 6 * k;
     };
+    // A pack's row folds its tricks away and out again (folded at first): the list stays short however many packs there
+    // are. Its arrow and the row fold it; + ADD adds the whole pack.
+    const auto fold = [&](const std::string& key, float row_top, float row_bottom, float button_left) {
+        const bool open = u.playlist_open.contains(key);
+        const ImVec2 fa(px, row_top), fb(button_left - 8 * k, row_bottom);
+        ImGui::PushID(("fold|" + key).c_str());
+        if (hit("##fold", fa, fb)) {
+            if (open) u.playlist_open.erase(key);
+            else u.playlist_open.insert(key);
+        }
+        ImGui::PopID();
+        const float cx = px + 18 * k, cy = (row_top + row_bottom) * 0.5f, s = 5.5f * k;
+        if (open) d->AddTriangleFilled(ImVec2(cx - s, cy - s * 0.55f), ImVec2(cx + s, cy - s * 0.55f), ImVec2(cx, cy + s * 0.75f), blue_light);
+        else d->AddTriangleFilled(ImVec2(cx - s * 0.55f, cy - s), ImVec2(cx + s * 0.75f, cy), ImVec2(cx - s * 0.55f, cy + s), white);
+        return open;
+    };
     for (const auto& pack : v.packs) {
-        add_row({pack.name, ""}, upper(pack.name) + "  (WHOLE PACK, " + std::to_string(pack.members.size()) + ")", true);
-        for (const auto& member : pack.members) add_row({pack.name, member}, shown_name(v, member), false);
+        const float row_top = qy;
+        add_row({pack.name, ""}, "      " + upper(pack.name) + "  (WHOLE PACK, " + std::to_string(pack.members.size()) + ")", true);
+        if (fold(pack.name, row_top, row_top + 44 * k, px + pw - 14 * k - 110 * k))
+            for (const auto& member : pack.members) add_row({pack.name, member}, shown_name(v, member), false);
         qy += 8 * k;
     }
     {
-        // Your own tricks that are in no pack.
-        bool any = false;
-        for (const auto& p : v.presets) {
-            if (std::any_of(v.packs.begin(), v.packs.end(), [&](const auto& pack) { return pack.pack.has(p.name); })) continue;
-            if (!any) {
-                heading(d, f, ImVec2(px, qy), pw - 14 * k, "Your tricks in no pack");
-                qy += 34 * k;
-                any = true;
-            }
-            add_row({"", p.name}, shown_name(v, p.name), false);
+        // Your own tricks that are in no pack: a row of their own, folding as a pack's does.
+        std::vector<std::string> loose;
+        for (const auto& p : v.presets)
+            if (std::none_of(v.packs.begin(), v.packs.end(), [&](const auto& pack) { return pack.pack.has(p.name); })) loose.push_back(p.name);
+        if (!loose.empty()) {
+            const ImVec2 ra(px, qy), rb(px + pw - 14 * k, qy + 44 * k);
+            flat_rect(d, ra, rb, IM_COL32(30, 32, 38, 244), seed_of(ra), k * 0.6f);
+            text(d, f.heading, 15 * k, ImVec2(ra.x + 14 * k, ra.y + 13 * k), white, "      YOUR TRICKS IN NO PACK  (" + std::to_string(loose.size()) + ")");
+            const bool open = fold("*loose", ra.y, rb.y, rb.x);
+            qy = rb.y + 6 * k;
+            if (open)
+                for (const auto& name : loose) add_row({"", name}, shown_name(v, name), false);
         }
     }
     end_region(d, pa, pb, qy + u.playlist_pick_scroll - pa.y, u.playlist_pick_scroll, k);
@@ -7962,11 +7989,53 @@ void like_card(ImDrawList* d, const Fonts& f, const studio::View& /*v*/, ImVec2 
     }
     if (action(d, f, "##likelater", ImVec2(x + 272 * k, b.y - 70 * k), ImVec2(170 * k, 46 * k), "NOT NOW", Look::paper)) u.like_pack.clear();
 }
+// SHARE on someone else's pack: a no, said kindly. Every pack and trick carries the key of the PC it was made on, and the
+// studio will not save, package or publish one made on another (shared_files_locked refuses it too). An own pack holding
+// another maker's tricks is told which, to take them out.
+void reshare_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 display) {
+    auto& u = ui();
+    const float k = f.k;
+    const auto* pack = pack_named(v, u.reshare_pack);
+    if (!pack) {
+        u.reshare_pack.clear();
+        return;
+    }
+    std::vector<std::string> others;
+    for (const auto& m : pack->members)
+        if (saved_trick(v, m) && from_a_pack(v, m)) others.push_back(shown_name(v, m));
+    const auto [a, b] = card_box(d, f, display, 860 * k, 440 * k, "WOAAHH, WAIT THERE...");
+    const float x = a.x + 30 * k, w = b.x - a.x - 60 * k;
+    float y = a.y + 96 * k;
+    if (pack->installed) {
+        y += paragraph(d, f.bold, 19 * k, ImVec2(x, y), w, white,
+                       "That's not very nice: trying to reshare someone else's pack!") + 14 * k;
+        y += paragraph(d, f.bold, 16 * k, ImVec2(x, y), w, soft,
+                       "The studio checks who made every pack, and " + pack->name + " is " + (pack->made_by.empty() ? std::string("someone else's") : pack->made_by + "'s") +
+                           ", not yours. You wouldn't want your own packs reshared either, right?!") + 14 * k;
+        paragraph(d, f.bold, 15 * k, ImVec2(x, y), w, faint,
+                  "It plays for you, but it stays theirs to share: it can't be saved as a zip, made into a Thunderstore package or published to the MARKET.");
+    } else {
+        std::vector<std::string> shown(others.begin(), others.begin() + static_cast<std::ptrdiff_t>(std::min<std::size_t>(others.size(), 3)));
+        std::string list = listed(shown);
+        if (others.size() > 3) list += " and " + std::to_string(others.size() - 3) + " more";
+        y += paragraph(d, f.bold, 19 * k, ImVec2(x, y), w, white, pack->name + " has tricks in it that other people made.") + 14 * k;
+        y += paragraph(d, f.bold, 16 * k, ImVec2(x, y), w, soft,
+                       list + (others.size() == 1 ? " is someone else's" : " are someone else's") +
+                           ". Those stay theirs to share, so the pack can't go out like this. You wouldn't want your own tricks reshared either, right?!") + 14 * k;
+        paragraph(d, f.bold, 15 * k, ImVec2(x, y), w, faint, "Take them out of the pack, and it's all yours to share.");
+    }
+    if (action(d, f, "##reshareok", ImVec2(b.x - 30 * k - 220 * k, b.y - 70 * k), ImVec2(220 * k, 46 * k), "FAIR ENOUGH", Look::paper)) u.reshare_pack.clear();
+}
 void share_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 display) {
     auto& u = ui();
     const float k = f.k;
     const auto* pack = pack_named(v, u.share_pack);
     if (!pack) {
+        u.share_pack.clear();
+        return;
+    }
+    if (pack->installed) { // however it was asked for, someone else's pack is not offered to share
+        u.reshare_pack = u.share_pack;
         u.share_pack.clear();
         return;
     }
@@ -8516,6 +8585,7 @@ void draw_cards(const Fonts& f, const studio::View& v, ImVec2 display) {
     else if (!u.cover_pack.empty()) cover_card(d, f, v, display);
     else if (!u.share_pack.empty()) share_card(d, f, v, display);
     else if (!u.delete_card.empty()) delete_card(d, f, v, display);
+    else if (!u.reshare_pack.empty()) reshare_card(d, f, v, display);
     else if (u.save_card) save_card(d, f, v, display);
     else if (!v.test_returned.empty()) test_card(d, f, v, display);
     end_card();
