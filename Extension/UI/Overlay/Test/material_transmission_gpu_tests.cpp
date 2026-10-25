@@ -1,5 +1,6 @@
 #include "../material_mask_formats.h"
 #include "../material_transmission.cpp"
+#include <d3d12sdklayers.h>
 #include <iostream>
 using namespace dingosdk::overlay;
 namespace
@@ -146,6 +147,11 @@ int main(int argc, char **argv)
         const bool wrong_view = scenario == "wrong-view", hdr = scenario == "hdr", stale = scenario == "stale";
         const bool refract = scenario == "refraction", straight = scenario == "straight",
                    foreground = scenario == "foreground";
+        ComPtr<ID3D12Debug> debug;
+        if (scenario == "packed-targets" && SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug))))
+            debug->EnableDebugLayer();
+        if (scenario == "packed-targets" && !debug)
+            std::cout << "D3D12 debug layer unavailable; GPU/readback checks still run\n";
         set_material_transmission_enabled(true);
         ComPtr<ID3D12Device> device;
         check(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
@@ -196,6 +202,11 @@ int main(int argc, char **argv)
         draw.formats.fill(DXGI_FORMAT_UNKNOWN);
         for (UINT i = 0; i < 4; ++i)
             draw.formats[i] = DXGI_FORMAT_R32G32B32A32_FLOAT;
+        if (scenario == "packed-targets")
+        {
+            draw.formats[1] = DXGI_FORMAT_R16G16B16A16_FLOAT;
+            draw.formats[2] = DXGI_FORMAT_R8G8B8A8_UNORM;
+        }
         draw.viewport = {0, 0, 64, 64, 0, 1};
         draw.depth = dh;
         if (refract || straight)
@@ -291,6 +302,29 @@ int main(int argc, char **argv)
         if (WaitForSingleObject(event, 15000) != WAIT_OBJECT_0)
             throw std::runtime_error("output timeout");
         CloseHandle(event);
+        if (debug)
+        {
+            ComPtr<ID3D12InfoQueue> info;
+            check(device->QueryInterface(IID_PPV_ARGS(&info)));
+            bool invalid{};
+            for (UINT64 i = 0; i < info->GetNumStoredMessagesAllowedByRetrievalFilter(); ++i)
+            {
+                SIZE_T message_size{};
+                check(info->GetMessage(i, nullptr, &message_size));
+                std::vector<std::byte> storage(message_size);
+                auto *message = reinterpret_cast<D3D12_MESSAGE *>(storage.data());
+                check(info->GetMessage(i, message, &message_size));
+                if (message->Severity == D3D12_MESSAGE_SEVERITY_ERROR ||
+                    message->Severity == D3D12_MESSAGE_SEVERITY_CORRUPTION)
+                {
+                    std::cerr << message->pDescription << '\n';
+                    invalid = true;
+                }
+            }
+            if (invalid)
+                throw std::runtime_error("D3D12 validation reported invalid packed-target commands");
+            std::cout << "D3D12 debug layer validated packed-target compositor\n";
+        }
         void *pixels{};
         check(readback->Map(0, nullptr, &pixels));
         const auto packed = *reinterpret_cast<const UINT *>(static_cast<const char *>(pixels) +

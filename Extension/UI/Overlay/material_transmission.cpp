@@ -800,7 +800,7 @@ void present_material_transmission(ID3D12Device *device_arg, ID3D12CommandQueue 
                     view.Format = i == 0   ? shape.Format
                                   : i == 1 ? DXGI_FORMAT_R32_FLOAT
                                   : i == 5 ? DXGI_FORMAT_R32G32B32A32_UINT
-                                           : DXGI_FORMAT_R32G32B32A32_FLOAT;
+                                           : f.formats[i - 2];
                     view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
                     view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
                     view.Texture2D.MipLevels = 1;
