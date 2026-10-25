@@ -103,6 +103,7 @@ struct Ui {
     float catch_dragged_to{-1};       // the frame it was last moved to
     bool trick_panel{};               // THIS TRICK is open
     std::string delete_card;          // a saved trick in a pack about to be deleted: the card asks first
+    bool account{};                   // MARKET > ACCOUNT is open: the Thunderstore team signed in, and changing it
     std::set<std::string> packs_open; // FROM PACKS: the packs unfolded (a pack's name; "*loose" the tricks with no pack)
     bool dragging_playhead{}, dragging_gizmo{}, orbiting{}, panning{};
     // A key being dragged along its row.
@@ -2441,7 +2442,7 @@ void step_joint(int by) {
 bool any_card_open(const studio::View& v) {
     const auto& u = ui();
     return u.browser.open || u.save_card || !v.test_returned.empty() || u.conflicts_open || u.pack_adding || !u.stance_pack.empty() || u.sign_in ||
-           !u.share_pack.empty() || !u.like_pack.empty() || !u.cover_pack.empty() || !u.delete_card.empty();
+           !u.share_pack.empty() || !u.like_pack.empty() || !u.cover_pack.empty() || !u.delete_card.empty() || u.account;
 }
 void open_menu(int tab = -1) {
     auto& u = ui();
@@ -6538,10 +6539,15 @@ void market_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
         const float rw = shop_button_width(f, m.loading ? "LOADING" : "REFRESH", h);
         rx -= rw;
         if (shop_button(d, f, "##marketrefresh", ImVec2(rx, ry), ImVec2(rw, h), m.loading ? "LOADING" : "REFRESH", ShopLook::line)) studio::market::refresh(true);
-        const std::string account = m.team.empty() ? "SIGN IN TO THUNDERSTORE" : "TEAM: " + upper(m.team);
+        // Signed in: the team, which opens ACCOUNT (a team Thunderstore does not know says so here). Not: SIGN IN.
+        const bool unknown = !m.team.empty() && m.team_state == 3;
+        const std::string account = m.team.empty() ? "SIGN IN TO THUNDERSTORE" : unknown ? "TEAM NOT FOUND: " + upper(m.team) : "TEAM: " + upper(m.team);
         const float aw = shop_button_width(f, account, h);
         rx -= 12 * k + aw;
-        if (shop_button(d, f, "##marketaccount", ImVec2(rx, ry), ImVec2(aw, h), account, m.team.empty() ? ShopLook::blue : ShopLook::line)) u.sign_in = true;
+        if (shop_button(d, f, "##marketaccount", ImVec2(rx, ry), ImVec2(aw, h), account, m.team.empty() || unknown ? ShopLook::blue : ShopLook::line)) {
+            if (m.team.empty()) u.sign_in = true;
+            else u.account = true;
+        }
         const float sw = std::clamp(rx - 12 * k - (x + 40 * k), 220 * k, 470 * k), sx = rx - 12 * k - sw;
         search_icon(d, ImVec2(sx - 18 * k, bar_y + bar_h * 0.5f), 20 * k, u.market_query[0] ? blue_light : soft);
         if (field(f, "##marketsearch", u.market_query, ImVec2(sx, bar_y + (bar_h - 34 * k) * 0.5f), sw, "Search a trick, a pack, a maker...")) u.market_open.clear();
@@ -7575,6 +7581,68 @@ bool secret_field(const Fonts& f, const char* id, std::array<char, 512>& buffer,
     ImGui::PopItemWidth();
     return entered;
 }
+// ACCOUNT: the Thunderstore team signed in - checked to be there - its page, Thunderstore's team settings (where its tokens
+// are made), CHANGE TEAM OR TOKEN (the sign-in again, the team filled in) and SIGN OUT.
+void account_card(ImDrawList* d, const Fonts& f, const studio::View& /*v*/, ImVec2 display) {
+    auto& u = ui();
+    const float k = f.k;
+    studio::market::check_team();
+    const auto market = studio::market::view();
+    if (market.team.empty()) {
+        u.account = false;
+        return;
+    }
+    const auto [a, b] = card_box(d, f, display, 860 * k, 520 * k, "YOUR THUNDERSTORE");
+    const float x = a.x + 30 * k, w = b.x - a.x - 60 * k;
+    float y = a.y + 96 * k;
+    text(d, f.heading, 13 * k, ImVec2(x, y), blue_light, "SIGNED IN AS THE TEAM");
+    y += 24 * k;
+    text(d, f.title, 34 * k, ImVec2(x, y), white, elide(f.title, 34 * k, market.team, w));
+    y += 50 * k;
+    struct Said { const char* words; ImU32 colour; };
+    const Said said = market.team_state == 2   ? Said{"Found on Thunderstore: your packs go up under this team.", IM_COL32(36, 190, 96, 255)}
+                      : market.team_state == 3 ? Said{"Thunderstore has no team of this name. A team's name is on thunderstore.io under Settings > Teams: "
+                                                      "change it to that (not a pack's name), with a token of that team.",
+                                                      skate_theme::warning}
+                      : market.team_state == 4 ? Said{"Thunderstore could not be reached to look the team up. Check your connection, then CHECK AGAIN.", soft}
+                                               : Said{"Looking the team up on Thunderstore...", soft};
+    y += paragraph(d, f.bold, 15 * k, ImVec2(x, y), w, said.colour, said.words) + 10 * k;
+    // Names are told apart by their capitals on Thunderstore: a team the MARKET knows that is this one but for them.
+    if (market.team_state == 3) {
+        const auto lower = [](std::string s) {
+            for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            return s;
+        };
+        for (const auto& p : market.packs)
+            if (p.owner != market.team && lower(p.owner) == lower(market.team)) {
+                y += paragraph(d, f.bold, 15 * k, ImVec2(x, y), w, white, "Thunderstore has it as " + p.owner + ": capitals count. CHANGE it to that.") + 10 * k;
+                break;
+            }
+    }
+    y += paragraph(d, f.bold, 13 * k, ImVec2(x, y), w, faint,
+                   "Its token is kept encrypted on this PC for your Windows user, and only sent to thunderstore.io with your uploads. If an upload "
+                   "says the token was not taken, make a new one under the team's Service accounts and CHANGE it here.") + 18 * k;
+    const float bw = (w - 2 * 12 * k) / 3;
+    if (action(d, f, "##acctpage", ImVec2(x, y), ImVec2(bw, 44 * k), "YOUR TEAM PAGE", Look::dark, market.team_state != 3))
+        studio::market::open_team_page(market.team);
+    if (action(d, f, "##acctsettings", ImVec2(x + bw + 12 * k, y), ImVec2(bw, 44 * k), "TEAM SETTINGS", Look::dark))
+        ShellExecuteW(nullptr, L"open", L"https://thunderstore.io/settings/teams/", nullptr, nullptr, SW_SHOWNORMAL);
+    if (action(d, f, "##acctcheck", ImVec2(x + 2 * (bw + 12 * k), y), ImVec2(bw, 44 * k), "CHECK AGAIN", Look::dark, market.team_state != 1))
+        studio::market::check_team(true);
+    const float by = b.y - 70 * k, fw = 230 * k;
+    if (action(d, f, "##acctclose", ImVec2(x, by), ImVec2(160 * k, 46 * k), "CLOSE", Look::ghost)) u.account = false;
+    if (action(d, f, "##acctsignout", ImVec2(b.x - 30 * k - fw, by), ImVec2(fw, 46 * k), "SIGN OUT", Look::danger)) {
+        studio::market::unlink_account();
+        u.account = false;
+        say("Signed out of Thunderstore: the token is gone from this PC.");
+    }
+    if (action(d, f, "##acctchange", ImVec2(b.x - 30 * k - 2 * fw - 12 * k, by), ImVec2(fw, 46 * k), "CHANGE TEAM OR TOKEN",
+               market.team_state == 3 ? Look::blue : Look::paper)) {
+        std::snprintf(u.ts_team.data(), u.ts_team.size(), "%s", market.team.c_str());
+        u.account = false;
+        u.sign_in = true;
+    }
+}
 // SIGN IN: Thunderstore has no sign-in for other apps, so a team links with a service account token of its own.
 void sign_in_card(ImDrawList* d, const Fonts& f, const studio::View& /*v*/, ImVec2 display) {
     auto& u = ui();
@@ -8439,6 +8507,7 @@ void draw_cards(const Fonts& f, const studio::View& v, ImVec2 display) {
     else if (u.conflicts_open) conflicts_card(d, f, v, display);
     else if (!u.stance_pack.empty()) stance_card(d, f, v, display);
     else if (u.sign_in) sign_in_card(d, f, v, display);
+    else if (u.account) account_card(d, f, v, display);
     else if (!u.like_pack.empty()) like_card(d, f, v, display);
     else if (!u.cover_pack.empty()) cover_card(d, f, v, display);
     else if (!u.share_pack.empty()) share_card(d, f, v, display);

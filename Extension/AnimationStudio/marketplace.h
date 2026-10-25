@@ -129,6 +129,9 @@ struct View {
     std::string error;
     std::vector<Pack> packs;
     std::string team; // the linked Thunderstore team, "" none
+    // That team on Thunderstore (check_team): 0 not looked at yet, 1 being looked up, 2 found, 3 no team of that name (a
+    // pack's name typed for it), 4 Thunderstore could not be reached.
+    int team_state{};
     bool like_prompt{true}; // a like asks to like it on Thunderstore too
     Job job;
     Detail detail;
@@ -157,6 +160,8 @@ void forget_installed(const std::string& library_pack);
 // Links a Thunderstore team for publishing: its name and a service account token of it.
 bool link_account(const std::string& team, const std::string& token, std::string& message);
 void unlink_account();
+// Looks the linked team up on Thunderstore in the background (View::team_state); `again` looks again though it was.
+void check_team(bool again = false);
 // Builds the pack as a Thunderstore package and publishes it, in the background. `pack` is a pack of the library;
 // `version` the version it goes up as ("" the next one). A pack published before goes to the same package (an update);
 // `package` (Team-Name) names the package to update when the pack does not know it (one uploaded by hand).

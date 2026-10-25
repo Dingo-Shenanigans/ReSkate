@@ -293,6 +293,8 @@ struct Market {
     std::map<std::string, std::string> installed_as; // full name -> the pack it became in the library
     bool like_prompt{true};
     std::string team;
+    int team_state{};          // View::team_state
+    std::string team_checked;  // the team that state is of
     Job job;
     Detail detail;
     std::deque<std::string> icon_queue;
@@ -581,6 +583,7 @@ View view() {
     v.loading = m.loading;
     v.error = m.error;
     v.team = m.team;
+    v.team_state = m.team_checked == m.team ? m.team_state : 0;
     v.like_prompt = m.like_prompt;
     v.job = m.job;
     v.detail = m.detail;
@@ -865,10 +868,15 @@ bool link_account(const std::string& team, const std::string& token, std::string
         message = e.what();
         return false;
     }
-    auto& m = market();
-    std::lock_guard lock(m.mutex);
-    m.team = team;
+    {
+        auto& m = market();
+        std::lock_guard lock(m.mutex);
+        m.team = team;
+        m.team_state = 0;
+        m.team_checked.clear();
+    }
     message = "Linked to the Thunderstore team " + team + ". Your packs can be published from PACKS.";
+    check_team(true); // a pack's name typed for the team is found out now, not when a publish fails
     return true;
 }
 void unlink_account() {
@@ -878,6 +886,31 @@ void unlink_account() {
     auto& m = market();
     std::lock_guard lock(m.mutex);
     m.team.clear();
+    m.team_state = 0;
+    m.team_checked.clear();
+}
+void check_team(bool again) {
+    std::string team;
+    {
+        auto& m = market();
+        std::lock_guard lock(m.mutex);
+        read_settings_locked(m);
+        if (m.team.empty() || (m.team_checked == m.team && m.team_state == 1)) return;
+        if (!again && m.team_checked == m.team && m.team_state != 0) return;
+        team = m.team;
+        m.team_checked = team;
+        m.team_state = 1;
+    }
+    std::thread([team] {
+        https::Download result{};
+        const auto text = https::get_text(widen(std::string(site) + "/api/cyberstorm/team/" + team + "/"), 64 * 1024, 20, agent, &result);
+        const int state = text ? 2 : result.http_status == 404 ? 3 : 4;
+        logging::log(Level::info, Channel::skater, "Animation Studio: the Thunderstore team {} {}.", team,
+                     state == 2 ? "is there" : state == 3 ? "does not exist" : "could not be looked up");
+        auto& m = market();
+        std::lock_guard lock(m.mutex);
+        if (m.team_checked == team) m.team_state = state;
+    }).detach();
 }
 std::string export_package(const std::string& pack_name, std::string& message, const std::string& version) {
     try {
@@ -933,8 +966,9 @@ void publish(const std::string& pack_name, const std::string& wanted_version, co
         start["file_size_bytes"] = static_cast<std::int64_t>(package.zip.size());
         const auto started = request(L"POST", api + "usermedia/initiate-upload/", {auth, L"Content-Type: application/json"}, start.dump(), 60000);
         if (started.status != 201 && started.status != 200)
-            throw std::runtime_error(started.status == 401 || started.status == 403 ? "Thunderstore did not take your token: link your team again with a new one."
-                                                                                      : said(started));
+            throw std::runtime_error(started.status == 401 || started.status == 403
+                                         ? "Thunderstore did not take your token. Make a new one for your team on thunderstore.io and put it in MARKET > ACCOUNT."
+                                         : said(started));
         const auto answer = Json::parse(started.body);
         const auto uuid = answer.at("user_media").value("uuid", "");
         if (uuid.empty() || !answer.contains("upload_urls") || !answer.at("upload_urls").is_array()) throw std::runtime_error("Thunderstore did not say where to upload");
@@ -983,7 +1017,20 @@ void publish(const std::string& pack_name, const std::string& wanted_version, co
         submit["has_nsfw_content"] = false;
         submit["upload_uuid"] = uuid;
         const auto submitted = request(L"POST", api + "submission/submit/", {auth, L"Content-Type: application/json"}, submit.dump(), 180000);
-        if (submitted.status != 200 && submitted.status != 201) throw std::runtime_error("Thunderstore did not take the pack: " + said(submitted));
+        if (submitted.status != 200 && submitted.status != 201) {
+            // A team Thunderstore does not know (a pack's name typed for it): said plainly, and ACCOUNT shows it.
+            if (submitted.status == 400 && submitted.body.find("author_name") != std::string::npos) {
+                {
+                    auto& m = market();
+                    std::lock_guard lock(m.mutex);
+                    m.team_checked = team;
+                    m.team_state = 3;
+                }
+                throw std::runtime_error("Thunderstore has no team called " + team + ". Sign in again in MARKET > ACCOUNT with your team's name "
+                                         "(thunderstore.io > Settings > Teams), not a pack's name.");
+            }
+            throw std::runtime_error("Thunderstore did not take the pack: " + said(submitted));
+        }
         pack_published(pack_name, version, team + "-" + package.name);
         result.url = std::string(site) + "/c/" + community + "/p/" + team + "/" + package.name + "/";
         result.message = (pack.published.empty() ? "Published " : "Updated ") + pack.name + " to " + version + " on Thunderstore as " + team + "-" +
