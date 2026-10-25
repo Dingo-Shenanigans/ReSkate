@@ -268,7 +268,8 @@ struct AirStretch {
         if (!on()) {
             if (!known || clock < slow_from(takeoff, caught)) return clock;
             const float left = land - clock; // its own air still to come
-            if (!(to_ground > left + 0.06f) && !(to_ground < left - 0.1f)) return clock; // in step with the game: its clock
+            // In step with the game: its clock. A flat pop's air is the clip's give or take 0.06 s (a metre's drop adds 0.14).
+            if (!(to_ground > left + 0.1f) && !(to_ground < left - 0.1f)) return clock;
             time = std::min(clock, land - 1.0f / 60);
             rate = 1;
         }
