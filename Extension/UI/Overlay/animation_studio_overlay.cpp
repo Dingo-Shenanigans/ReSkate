@@ -9671,7 +9671,11 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
                     u.key_joint.reset(); // not a drag
                 } else if (hit && !track->locked) {
                     on_key = true;
-                    if (!in_pick) u.picked.clear();
+                    // A click chooses the key (the bar over the timeline is for it); one already chosen keeps its group, to drag.
+                    if (!in_pick) {
+                        u.picked.clear();
+                        u.picked.emplace_back(joint.index, key.time);
+                    }
                     u.key_joint = joint.index;
                     u.key_from = key.time;
                     u.key_to = key.time;
@@ -9762,6 +9766,9 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
                 else {
                     studio::begin_change();
                     studio::move_key(*u.key_joint, u.key_from, u.key_to);
+                    // Still chosen where it went.
+                    for (auto& [joint, time] : u.picked)
+                        if (joint == *u.key_joint && std::abs(time - u.key_from) < 1e-4f) time = u.key_to;
                 }
                 studio::set_time(u.key_to);
             }
