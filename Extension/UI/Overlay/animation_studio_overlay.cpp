@@ -4551,11 +4551,6 @@ void tricks_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
                 const auto cw = text_size(f.bold, 13 * k, count.c_str());
                 text(d, f.bold, 13 * k, ImVec2(right - cw.x, cy - cw.y * 0.5f), soft, count);
                 right -= cw.x + 14 * k;
-                if (pack && pack->on) {
-                    right -= tag_width(f, "ON");
-                    tag(d, f, ImVec2(right, cy - 10 * k), "ON", IM_COL32(36, 150, 76, 255));
-                    right -= 10 * k;
-                }
                 // Left: its name, and who made it.
                 const float tx = ba.x + 48 * k;
                 const auto title = elide(f.bold, 19 * k, pack_name.empty() ? std::string("OTHER MAKERS' TRICKS") : upper(pack_name), right - tx - 140 * k);
@@ -4993,9 +4988,7 @@ void pack_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
     {
         float y = a.y + 54 * k;
         const ImVec2 ca(a.x, y), cb(a.x + col, y + col);
-        if (pack.on) d->AddRect(ImVec2(ca.x - 5 * k, ca.y - 5 * k), ImVec2(cb.x + 5 * k, cb.y + 5 * k), IM_COL32(1, 131, 255, 140), 4 * k, 0, 6 * k);
         pack_cover(d, f, pack, ca, cb);
-        if (pack.on) tag(d, f, ImVec2(ca.x + 12 * k, ca.y + 12 * k), "ON", blue);
         y = cb.y + 18 * k;
         const float x = a.x, w = col;
         if (u.pack_name_for != pack.name && !ImGui::IsAnyItemActive()) {
@@ -5011,13 +5004,6 @@ void pack_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
             say(m);
         }
         y += 48 * k;
-        text(d, f.bold, 16 * k, ImVec2(x, y + 6 * k), white, "PLAYS IN GAME");
-        if (toggle(d, f, "##detailon", ImVec2(x + w - 64 * k, y), pack.on)) {
-            std::string m;
-            studio::set_pack_on(pack.name, !pack.on, m);
-            say(m);
-        }
-        y += 44 * k;
         if (!pack.installed) {
             text(d, f.bold, 16 * k, ImVec2(x, y + 6 * k), white, "OTHERS CAN EDIT");
             if (toggle(d, f, "##editable", ImVec2(x + w - 64 * k, y), pack.pack.editable)) {
@@ -5259,11 +5245,9 @@ void packs_hub(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, I
         bool open = hit("##hubcover", ca, cover_b, &lit);
         open |= hit("##hubinfo", ImVec2(ca.x, cover_b.y), ImVec2(cb.x - 84 * k, cb.y), &info_lit);
         lit |= info_lit;
-        if (pack.on) d->AddRect(ImVec2(ca.x - 5 * k, ca.y - 5 * k), ImVec2(cover_b.x + 5 * k, cover_b.y + 5 * k), IM_COL32(1, 131, 255, 140), 4 * k, 0, 6 * k);
         pack_cover(d, f, pack, ca, cover_b);
         if (!lit) d->AddRectFilled(ca, cover_b, IM_COL32(0, 0, 0, 50));
-        if (pack.on) tag(d, f, ImVec2(ca.x + 12 * k, ca.y + 12 * k), "ON", blue);
-        if (pack.installed) tag(d, f, ImVec2(ca.x + 12 * k, ca.y + (pack.on ? 38 : 12) * k), "INSTALLED", IM_COL32(0, 0, 0, 170));
+        if (pack.installed) tag(d, f, ImVec2(ca.x + 12 * k, ca.y + 12 * k), "INSTALLED", IM_COL32(0, 0, 0, 170));
         {
             // A five-pointed star, filled when starred.
             const ImVec2 c((star_a.x + star_b.x) * 0.5f, (star_a.y + star_b.y) * 0.5f);
@@ -5286,11 +5270,6 @@ void packs_hub(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, I
             std::string by = pack.made_by.empty() ? std::string{} : "BY " + upper(pack.made_by);
             if (const auto when = edited_words(pack.modified); !when.empty()) by += (by.empty() ? "EDITED " : "  /  EDITED ") + when;
             if (!by.empty()) text(d, f.bold, 12 * k, ImVec2(ca.x + 14 * k, cover_b.y + 60 * k), ink_soft, elide(f.bold, 12 * k, by, card_w - 110 * k));
-        }
-        if (toggle(d, f, "##packon", ImVec2(cb.x - 76 * k, cover_b.y + 30 * k), pack.on)) {
-            std::string m;
-            studio::set_pack_on(pack.name, !pack.on, m);
-            say(m);
         }
         if (lit && n.keys) chosen_outline(d, ca, cb, k);
         if (open) open_pack_page(pack.name);
@@ -5353,7 +5332,7 @@ void pack_settings_page(ImDrawList* d, const Fonts& f, const studio::View& v, Im
     if (v.playlist_open.empty()) {
         y += paragraph(d, f.bold, 15 * k, ImVec2(x, y), w, soft,
                        "No playlist yet. + NEW PLAYLIST makes one, + ADD on the right puts something in a first one, and ACTIVE on a trick "
-                       "asks which playlist it goes in. With no playlist on, the packs that are on play.") + 14 * k;
+                       "asks which playlist it goes in. Packs and tricks play from the playlist that is on.") + 14 * k;
     } else {
         // The open one: its name, SET to rename it, DELETE (pressed twice), and its switch.
         if (u.playlist_name_for != v.playlist_open && !ImGui::IsAnyItemActive()) {
@@ -5388,9 +5367,9 @@ void pack_settings_page(ImDrawList* d, const Fonts& f, const studio::View& v, Im
         }
         y += 46 * k;
         y += paragraph(d, f.bold, 13 * k, ImVec2(x, y), w, soft,
-                       on ? "On: what is in it plays in game, from the top down, and nothing else of yours. The packs' own ON switches wait until it is off."
+                       on ? "On: what is in it plays in game, from the top down, and nothing else of yours."
                        : v.playlist_playing.empty()
-                           ? "Off: the packs that are on play. Switch it on to play what is in it."
+                           ? "Off: no playlist is on, so nothing of yours plays. Switch it on to play what is in it."
                            : "Off: " + v.playlist_playing + " is on. Switching this one on switches that one off: one playlist plays at a time.") + 14 * k;
     }
     if (!v.playlist_open.empty()) {
@@ -6901,7 +6880,7 @@ void pack_page_market(ImDrawList* d, const Fonts& f, const studio::View& v, cons
         ry += paragraph(d, body(f, 14 * k), 14 * k, ImVec2(x, ry), w, m.job.failed ? skate_theme::warning : soft, m.job.message) + 10 * k;
     if (!p.installed.empty() && !removed_here(v, p)) {
         const auto where = p.installed_as.empty() ? std::string("your library") : p.installed_as;
-        ry += paragraph(d, body(f, 14 * k), 14 * k, ImVec2(x, ry), w - 200 * k, blue_light, "In " + where + ": switch it on, or preview its tricks, in PACKS.") + 8 * k;
+        ry += paragraph(d, body(f, 14 * k), 14 * k, ImVec2(x, ry), w - 200 * k, blue_light, "In " + where + ": add it to a playlist, or preview its tricks, in PACKS.") + 8 * k;
         if (shop_button(d, f, "##packgopacks", ImVec2(x, ry), ImVec2(190 * k, 40 * k), "GO TO PACKS", ShopLook::line)) {
             u.menu_tab = 1;
             u.pack_page = false;

@@ -1576,6 +1576,25 @@ void slow_catch_off_drops() {
         check(!stretched, "A flat ollie is not taken for one off a drop");
     }
     {
+        // 22sh's flip over a gap (2026-10-25): straight down from the board is the gap's bottom, 3 m down, which took the
+        // trick for one off a drop; along its path it lands on the far side.
+        const auto gap_ground = [](float dx, float, float top) -> std::optional<float> {
+            const float x = 1.2f + dx; // the board is over the gap (1 to 1.8 m)
+            const float ground = x > 1.0f && x < 1.8f ? -3.0f : 0.0f;
+            return ground < top ? std::optional<float>(ground) : std::nullopt;
+        };
+        const float along = time_to_landing(0.5f, 5.0f, 1.0f, 0.0f, gap_ground);
+        const float straight = time_to_ground(1.0f, 3.5f);
+        check(along > 0.2f && along < 0.35f && straight > 0.6f, "Over a gap the board lands on the far side, not in the gap");
+        const auto flat = [](float, float, float top) -> std::optional<float> { return 0.0f < top ? std::optional<float>(0.0f) : std::nullopt; };
+        check(near(time_to_landing(0.38f, 2.0f, 2.5f, 0.0f, flat), time_to_ground(2.5f, 0.38f), 0.02f), "On flat ground, as straight down");
+        const auto off_a_ledge = [](float dx, float, float top) -> std::optional<float> {
+            const float ground = dx < 0.5f ? 0.0f : -1.0f;
+            return ground < top ? std::optional<float>(ground) : std::nullopt;
+        };
+        check(time_to_landing(0.3f, 4.0f, 2.0f, 0.0f, off_a_ledge) > time_to_ground(2.0f, 0.3f) + 0.1f, "Off a ledge, the drop is still a drop");
+    }
+    {
         // Heatz's Nollie 360 Flip (2026-10-25): rolling, the board lay at 90 degrees to the placement; the pop had turned it to
         // 35 by the takeoff, and the board's keys went on about that. They go on about the board as it lay before the pop.
         const auto heading = [](float degrees) {

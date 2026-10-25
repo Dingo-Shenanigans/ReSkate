@@ -231,6 +231,7 @@ struct NamedPlaylist {
 struct Playlists {
     std::string on; // the one on; "" none
     std::vector<NamedPlaylist> lists;
+    bool packs_moved{}; // the packs that were switched on are in a playlist (once: packs play only from playlists since 2026-10-25)
     const NamedPlaylist* named(const std::string& name) const {
         const auto found = std::find_if(lists.begin(), lists.end(), [&](const NamedPlaylist& l) { return l.name == name; });
         return found == lists.end() ? nullptr : &*found;
@@ -473,7 +474,6 @@ struct Live {
     // of the game's found): 0..1, eased in and out. The keys then go on the pose they were made on, the feet on the deck.
     float off_clip{};
     bool off_clip_said{};
-    float air_feet{}; // the feet on the deck as the studio has them, from the pop to the touchdown (eased in and out)
     // Off a drop (catch_latch): the trick's own clock from just before its catch (AirStretch), the time it was at on the
     // touchdown, its last time, and the board's shape for where it touches.
     AirStretch stretch;
@@ -657,8 +657,9 @@ std::atomic<bool> open_flag{};
 // trick with a catch is in the air) and what was found there (the client thread looks, tick), with when.
 struct GroundProbe {
     std::atomic<bool> wanted{};
-    std::atomic<float> x{}, z{}, top{};
-    std::atomic<float> ground{std::numeric_limits<float>::quiet_NaN()};
+    std::atomic<float> x{}, z{}, low{};       // the board's lowest point
+    std::atomic<float> vx{}, vy{}, vz{};      // and how fast it flies
+    std::atomic<float> to_ground{-1};         // seconds until it lands (time_to_landing), below 0 not known
     std::atomic<double> found_at{-1};
 };
 GroundProbe& ground_probe() { static GroundProbe probe; return probe; }
@@ -849,7 +850,9 @@ void write_playlists(const Playlists& playlists) {
     Json lists = Json::array();
     for (const auto& l : playlists.lists)
         lists.push_back(Json{{"name", l.name}, {"mode", playlist_mode_name(l.mode)}, {"entries", playlist_entries_json(l.entries)}});
-    write_preset_file(playlists_file(), Json{{"format", "animator-playlists"}, {"on", playlists.on}, {"playlists", std::move(lists)}}.dump(2));
+    Json root{{"format", "animator-playlists"}, {"on", playlists.on}, {"playlists", std::move(lists)}};
+    if (playlists.packs_moved) root["packs_moved"] = true;
+    write_preset_file(playlists_file(), root.dump(2));
 }
 // Once, from before there were many: the old playlist is "Playlist 1" (on if it was), and when it was not on, the tricks
 // ticked to play on their own (presets/playing.txt), which played beside the packs that were on, are "My tricks" - those
@@ -889,12 +892,38 @@ Playlists migrate_playlists() {
     } catch (...) {}
     return out;
 }
+// Once: packs play only from a playlist now (the PACKS cards have no ON of their own). With none on, the packs that were
+// switched on - which played then - go in "My packs", and that one is on: what played before plays on.
+void move_packs_into_playlist(Playlists& lists) {
+    if (lists.packs_moved) return;
+    lists.packs_moved = true;
+    if (lists.on.empty()) {
+        const auto on = pack_names_on();
+        if (!on.empty()) {
+            std::string name = "My packs";
+            for (unsigned n = 2; lists.named(name); ++n) name = "My packs " + std::to_string(n);
+            NamedPlaylist mine{name, PlaylistMode::shuffle, {}};
+            for (const auto& pack : on) mine.entries.push_back({pack, ""});
+            lists.lists.push_back(std::move(mine));
+            lists.on = name;
+        }
+    }
+    try {
+        write_playlists(lists);
+        logging::log(Level::info, Channel::skater, "Animation Studio: packs play from playlists only now; {}.",
+                     lists.on.empty() ? std::string("no pack was on") : lists.on + " is on");
+    } catch (...) {}
+}
 Playlists read_playlists() {
     // The game's side and the studio both read it: the first to find none makes it, once.
     static std::mutex making;
     std::lock_guard lock(making);
     std::error_code error;
-    if (!std::filesystem::exists(playlists_file(), error)) return migrate_playlists();
+    if (!std::filesystem::exists(playlists_file(), error)) {
+        auto made = migrate_playlists();
+        move_packs_into_playlist(made);
+        return made;
+    }
     Playlists out;
     try {
         std::ifstream in(playlists_file(), std::ios::binary);
@@ -909,7 +938,11 @@ Playlists read_playlists() {
             }
         out.on = root.value("on", "");
         if (!out.named(out.on)) out.on.clear();
-    } catch (...) {}
+        out.packs_moved = root.contains("packs_moved") && root.at("packs_moved").is_boolean() && root.at("packs_moved").get<bool>();
+    } catch (...) {
+        return out;
+    }
+    move_packs_into_playlist(out);
     return out;
 }
 Playlist playing_of(const Playlists& playlists) {
@@ -1285,10 +1318,10 @@ void read_library_locked(State& s) {
             select_playlist(s.presets, s.packs, playlist.entries, playlist.mode);
             s.conflicts.clear();
         } else {
-            // No playlist on: the packs that are on, and nothing of yours on its own (your tricks play from a playlist).
+            // No playlist on: nothing plays (packs and tricks play from playlists only, as on the game's side).
             const std::set<std::string> none;
-            select_presets(s.presets, s.packs_on, &choices, &none);
-            s.conflicts = pack_conflicts(s.presets, s.packs_on, choices);
+            select_presets(s.presets, std::span<const PresetPack>{}, nullptr, &none);
+            s.conflicts.clear();
         }
     } catch (const std::exception& e) { s.status = e.what(); }
 }
@@ -1528,16 +1561,15 @@ LoadedTricks read_custom_tricks(const std::string& test_trick) {
     }
     std::erase_if(cache.meta, [&](const auto& e) { return !seen.contains(e.first); });
     try {
-        // The playlist, when it is on, says what plays; else the packs that are on do.
+        // The playlist that is on says what plays; with none on, nothing does.
         const auto playlist = read_playlist();
         if (playlist.on) {
             select_playlist(requested, all_packs(), playlist.entries, playlist.mode);
             result.mode = playlist.mode;
         } else {
-            const auto choices = read_conflict_choices();
-            const auto on = packs_on();
-            const std::set<std::string> none; // your own tricks play from a playlist
-            select_presets(requested, on, &choices, &none);
+            // With no playlist on nothing of yours plays: packs and tricks play from playlists only.
+            const std::set<std::string> none;
+            select_presets(requested, std::span<const PresetPack>{}, nullptr, &none);
             result.mode = PlaylistMode::shuffle;
         }
     } catch (const std::exception& e) {
@@ -1853,7 +1885,14 @@ void publish_joints(std::span<const Joint> pose, const Joint& placement, const s
 
 // The board's upward speed (m/s): its physics' root body (skater_state.h: core +0x430 -> +0x18 ->
 // bodies at +0x20, body 0 the root, velocity at +0x70).
+std::optional<std::array<float, 3>> board_velocity(std::uintptr_t base, std::uintptr_t component) noexcept; // below
 std::optional<float> board_up_speed(std::uintptr_t base, std::uintptr_t component) noexcept {
+    const auto v = board_velocity(base, component);
+    if (!v) return std::nullopt;
+    return (*v)[1];
+}
+// The board's body's speed (metres a second, the world's axes), or none.
+std::optional<std::array<float, 3>> board_velocity(std::uintptr_t base, std::uintptr_t component) noexcept {
     namespace st = addr::skater_state;
     const auto core = read<std::uintptr_t>(component + 0x70).value_or(0);
     const auto holder = core ? read<std::uintptr_t>(core + st::board_holder_offset).value_or(0) : 0;
@@ -1863,8 +1902,8 @@ std::optional<float> board_up_speed(std::uintptr_t base, std::uintptr_t componen
     if (!bodies || read<std::uint32_t>(bodies).value_or(0) != st::board_body_count) return std::nullopt;
     if (read<std::uintptr_t>(bodies + st::body_owner_offset).value_or(0) != physics) return std::nullopt;
     const auto v = read<std::array<float, 3>>(bodies + st::body_velocity_offset);
-    if (!v || !std::isfinite((*v)[1])) return std::nullopt;
-    return (*v)[1];
+    if (!v || !std::isfinite((*v)[0]) || !std::isfinite((*v)[1]) || !std::isfinite((*v)[2])) return std::nullopt;
+    return v;
 }
 // The pop of an air, from how long it is going to last: low, mid or high. Only when the game's grade is not known.
 std::string pop_of(float air) {
@@ -3373,7 +3412,7 @@ void on_animation(std::uintptr_t component) noexcept {
                     l.mirrored_edits.clear();
                 }
                 l.game_tricks = snap->tricks;
-                l.native_clock.reset(); l.clock_weight = 0; l.off_clip = 0; l.air_feet = 0;
+                l.native_clock.reset(); l.clock_weight = 0; l.off_clip = 0;
                 l.attempt_variants.clear(); l.stance_fallback_trick.clear(); l.predicted_air = 0;
                 l.limbs = {}; l.gave_way_at = -1; l.gave_way_from.clear();
                 l.board_at_takeoff_ok = false;
@@ -3497,7 +3536,7 @@ void on_animation(std::uintptr_t component) noexcept {
                     // Its clock starts looking for the game's clip of it.
                     l.native_clock.reset();
                     if (found) l.native_clock.start(found->native);
-                    l.clock_selected_at = at; l.clock_locked_at = -1; l.clock_weight = 0; l.off_clip = 0; l.off_clip_said = false; l.air_feet = 0;
+                    l.clock_selected_at = at; l.clock_locked_at = -1; l.clock_weight = 0; l.off_clip = 0; l.off_clip_said = false;
                     l.stretch.reset(); l.latch_touch_from = l.latch_last = -1;
                     l.latch_shape_ok = false;
                     if (found && found->caught > 0) {
@@ -3574,17 +3613,21 @@ void on_animation(std::uintptr_t component) noexcept {
                         const auto mount = compose(board_parent(l.board), joint_of(l.board[board_mount]));
                         const float lowest = lowest_point(mount, l.latch_shape);
                         auto& probe = ground_probe();
-                        const float ground = probe.ground.load(std::memory_order_acquire);
+                        const float landing_in = probe.to_ground.load(std::memory_order_acquire);
                         const double found = probe.found_at.load(std::memory_order_acquire);
-                        if (finite(mount) && std::isfinite(lowest)) {
+                        const auto velocity = board_velocity(base, component);
+                        if (finite(mount) && std::isfinite(lowest) && velocity) {
                             probe.x.store(mount.position[0], std::memory_order_release);
                             probe.z.store(mount.position[2], std::memory_order_release);
-                            probe.top.store(lowest - 0.03f, std::memory_order_release);
+                            probe.low.store(lowest, std::memory_order_release);
+                            probe.vx.store((*velocity)[0], std::memory_order_release);
+                            probe.vy.store((*velocity)[1], std::memory_order_release);
+                            probe.vz.store((*velocity)[2], std::memory_order_release);
                             probe.wanted.store(true, std::memory_order_release);
                         }
-                        const auto vy = board_up_speed(base, component);
-                        if (std::isfinite(ground) && found >= 0 && now_seconds() - found < 0.15 && vy && std::isfinite(lowest))
-                            if (const float t = time_to_ground(*vy, lowest - ground); t >= 0) to_ground = t;
+                        // Worked out on the client thread a moment ago (along the board's path): less the time since.
+                        if (landing_in >= 0 && found >= 0 && now_seconds() - found < 0.15)
+                            to_ground = std::max(0.0f, landing_in - static_cast<float>(now_seconds() - found));
                     }
                     const bool was_on = l.stretch.on();
                     const float hold = played.catch_hold.value_or(default_catch_hold);
@@ -3690,27 +3733,18 @@ void on_animation(std::uintptr_t component) noexcept {
                 // air, or no clip of the game's found at all: the keys rode on a pose made for something else (a foot
                 // through the deck, a pose not the timeline's). Then they go on the pose they were made on, and the feet on
                 // the deck as the studio has them; by the touchdown it is the game's pose again, as on flat ground.
-                // From just before its catch to the touchdown the same: the catch as it was made, whatever pop the game is on. Its
-                // keys were made on its own clip's pose and the game plays another pop's often (a low trick on a high pop): laid
-                // on that, a foot went through the deck. (Until 2026-10-25 a wrong gravity took nearly every flat trick for one
-                // off a drop, which did this from the catch on; with that fixed the feet came through.)
+                // (From 2026-10-25 15:44 to 23:30 every trick also played its catch as made and held the feet on the deck from the
+                // pop on, for feet through the deck that were the board keys' frame - fixed on its own. It held the feet to the
+                // board after the catch like a magnet, on every pop: taken out again.)
                 {
                     const bool touched_down = l.episode.contact.since.has_value() || (l.episode.phase == PlaybackPhase::landing && l.episode.landing >= 0);
-                    const bool catching = trick->caught > clip.takeoff && sampled.time >= AirStretch::slow_from(clip.takeoff, trick->caught);
-                    const bool off = !touched_down && (l.clock_fallback || (reading.locked && reading.lost) || l.stretch.on() || catching);
+                    const bool off = !touched_down && (l.clock_fallback || (reading.locked && reading.lost) || l.stretch.on());
                     constexpr float off_step = (1.0f / 60) / 0.15f;
                     l.off_clip = off ? std::min(1.0f, l.off_clip + off_step) : std::max(0.0f, l.off_clip - off_step);
-                    // And from the pop on, a foot the studio has on the deck stays on the deck the game draws (one flicked off
-                    // it is left to its keys).
-                    const bool popped = !touched_down && sampled.time >= clip.takeoff && clip.takeoff >= 0;
-                    l.air_feet = popped ? std::min(1.0f, l.air_feet + off_step) : std::max(0.0f, l.air_feet - off_step);
                     if (off && !l.off_clip_said) {
                         l.off_clip_said = true;
-                        logging::log(Level::info, Channel::skater, "Animation Studio: {} {}: keys as made, feet on the deck as in the studio.", trick->name,
-                                     l.clock_fallback ? "is off the game's clip in the air (no clip of the game's found)"
-                                     : l.stretch.on() ? "is off the game's clip in the air (it takes its own time off a drop)"
-                                     : catching       ? "comes to its catch"
-                                                      : "is off the game's clip in the air (the game holds a pose of its own)");
+                        logging::log(Level::info, Channel::skater, "Animation Studio: {} is off the game's clip in the air ({}): keys as made, feet on the deck as in the studio.",
+                                     trick->name, l.clock_fallback ? "no clip of the game's found" : l.stretch.on() ? "it takes its own time off a drop" : "the game holds a pose of its own");
                     }
                 }
                 diagnostic.clock_error = reading.error;
@@ -3736,8 +3770,7 @@ void on_animation(std::uintptr_t component) noexcept {
                     // the studio's pose is forced over it - but off the game's clip in the air (off_clip), the keyed joints go
                     // to the pose they were made on and the feet onto the deck as the studio has them.
                     const float off = l.off_clip * l.off_clip * (3 - 2 * l.off_clip);
-                    const float seated = std::max(off, l.air_feet * l.air_feet * (3 - 2 * l.air_feet));
-                    packet->mirrored = l.played_mirrored; packet->match = off; packet->feet_match = seated;
+                    packet->mirrored = l.played_mirrored; packet->match = off; packet->feet_match = off;
                     packet->board_backwards = l.playback_backwards;
                     packet->fakie = l.playback_fakie;
                     packet->match_rest = 0;
@@ -4707,11 +4740,13 @@ TickResult tick(std::uintptr_t base, std::uintptr_t component, bool open, float 
         result.changed = s.open_request_pending;
         s.open_request_pending = false;
     }
-    // The ground under the board, for the catch latch: one ray straight down from just under it, on this (the client) thread.
+    // When the board lands, for the catch latch: the ground along its path (time_to_landing), on this (the client) thread.
     if (auto& probe = ground_probe(); probe.wanted.exchange(false, std::memory_order_acq_rel)) {
-        const float top = probe.top.load(std::memory_order_acquire);
-        const auto hit = local_ground_height(probe.x.load(std::memory_order_acquire), probe.z.load(std::memory_order_acquire), top, top - 60.0f);
-        probe.ground.store(hit ? *hit : std::numeric_limits<float>::quiet_NaN(), std::memory_order_release);
+        const float x = probe.x.load(std::memory_order_acquire), z = probe.z.load(std::memory_order_acquire);
+        const float t = time_to_landing(probe.low.load(std::memory_order_acquire), probe.vx.load(std::memory_order_acquire),
+                                        probe.vy.load(std::memory_order_acquire), probe.vz.load(std::memory_order_acquire),
+                                        [&](float dx, float dz, float top) { return local_ground_height(x + dx, z + dz, top, top - 60.0f); });
+        probe.to_ground.store(t, std::memory_order_release);
         probe.found_at.store(now_seconds(), std::memory_order_release);
     }
     std::uintptr_t next_board_holder{};
@@ -5889,7 +5924,7 @@ bool create_preset_pack(std::string& message, const std::string& name) {
         }
         write_preset_file(pack_file(pack.name), pack_json(pack).dump(2));
         s.open_pack = pack.name;
-        message = "Made the pack " + pack.name + ". Put your tricks in it, then switch it on.";
+        message = "Made the pack " + pack.name + ". Put your tricks in it, then add it to a playlist to play it.";
         packs_changed_locked(s, message);
         return true;
     } catch (const std::exception& e) { message = e.what(); s.status = message; publish_locked(s); return false; }
@@ -6363,7 +6398,7 @@ void set_playlist_on(bool on, std::string& message) {
     message = on ? (open->entries.empty() ? open->name + " is on - it is empty, so nothing of yours plays until you add to it."
                                           : open->name + " is on: it decides what plays in game.") +
                        (before.empty() || before == open->name ? std::string{} : " " + before + " is off now: one playlist plays at a time.")
-                 : open->name + " is off: the packs that are on play again.";
+                 : open->name + " is off: no playlist is on, so nothing of yours plays.";
     playlists_changed_locked(s, lists, message);
 }
 void set_playlist_mode(PlaylistMode mode, std::string& message) {
@@ -6470,7 +6505,7 @@ bool delete_playlist(std::string& message) {
     std::erase_if(lists.lists, [&](const NamedPlaylist& l) { return l.name == name; });
     if (was_on) lists.on.clear();
     s.playlist_open = lists.lists.empty() ? std::string{} : lists.lists.front().name;
-    message = "Deleted " + name + (was_on ? ": no playlist is on, so the packs that are on play." : ".");
+    message = "Deleted " + name + (was_on ? ": no playlist is on, so nothing of yours plays." : ".");
     playlists_changed_locked(s, lists, message);
     return true;
 }
@@ -7229,7 +7264,7 @@ bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips
     read_library_locked(s);
     message = std::format("Imported {} animation{} and {} pack{}{}.", animations, animations == 1 ? "" : "s", packs, packs == 1 ? "" : "s",
                           renamed ? std::format(" ({} renamed: the name was taken)", renamed) : std::string{});
-    if (packs) message += " Switch a pack on in PACKS to play it.";
+    if (packs) message += " Add a pack to a playlist in PACKS to play it.";
     if (!problems.empty()) message += " Not imported: " + problems.front() + (problems.size() > 1 ? std::format(" and {} more", problems.size() - 1) : "");
     s.status = message;
     logging::log(Level::info, Channel::skater, "Animation Studio: {}", message);

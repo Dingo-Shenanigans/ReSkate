@@ -248,6 +248,34 @@ inline float time_to_ground(float up_speed, float height) noexcept {
     const float h = std::max(0.0f, height);
     return (up_speed + std::sqrt(up_speed * up_speed + 2 * board_gravity * h)) / board_gravity;
 }
+// Seconds until the board comes down where it is flying to, not straight below it: over a gap the ground under the
+// board is the gap's bottom, and the trick was taken for one off a drop - its catch slowed and its feet held on the deck
+// the whole long way down - though the board lands on the far side moments later (22sh's flips over the gap, 2026-10-25).
+// The board's lowest point is `low` over where it is now, flying at (vx, vy, vz) and falling at board_gravity; `ground_at(dx,
+// dz, top)` is the ground's height under that point moved (dx, dz), the topmost below `top` (none: nothing there). Samples
+// along the path every `step` seconds; past the last, straight down from there. Below 0: not known.
+template <class GroundAt>
+float time_to_landing(float low, float vx, float vy, float vz, GroundAt&& ground_at, float step = 0.05f, int samples = 16) {
+    if (!std::isfinite(low) || !std::isfinite(vx) || !std::isfinite(vy) || !std::isfinite(vz)) return -1;
+    float last_t = -1, last_gap = 0;
+    for (int k = 0; k <= samples; ++k) {
+        const float t = static_cast<float>(k) * step;
+        const float y = low + vy * t - 0.5f * board_gravity * t * t;
+        // Now: from just under the board. Ahead: from a little over its path, so ground it would meet is found.
+        const std::optional<float> ground = ground_at(vx * t, vz * t, k == 0 ? low - 0.03f : y + 0.6f);
+        if (!ground || !std::isfinite(*ground)) continue;
+        const float gap = y - *ground;
+        if (gap <= 0) {
+            if (last_t < 0) return 0;
+            return last_t + (t - last_t) * last_gap / (last_gap - gap);
+        }
+        last_t = t;
+        last_gap = gap;
+    }
+    if (last_t < 0) return -1;
+    const float down = time_to_ground(vy - board_gravity * last_t, last_gap);
+    return down < 0 ? -1 : last_t + down;
+}
 // The lowest a foot's ankle is drawn: its height over the deck's mount, along the deck's up (on the deck the ankle stands
 // 10.4 cm over it; the ground is 8.7 cm under it). `over`: within the deck's outline. Below -infinity: no limit.
 // In the air, the deck upright under him: an ankle over the deck less than 9.5 cm over it is lifted to there, unless it is more
