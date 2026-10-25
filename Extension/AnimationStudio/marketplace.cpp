@@ -899,6 +899,12 @@ void check_team(bool again) {
         if (!again && m.team_checked == m.team && m.team_state != 0) return;
         team = m.team;
         m.team_checked = team;
+        // Not a Thunderstore team's name (letters, digits and _: account.json edited by hand): not looked up, it goes in the
+        // address.
+        if (!std::all_of(team.begin(), team.end(), [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; })) {
+            m.team_state = 3;
+            return;
+        }
         m.team_state = 1;
     }
     std::thread([team] {
