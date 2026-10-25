@@ -43,7 +43,7 @@ inline constexpr std::array crew_members{
     CrewMember{"leafbro", "leaf.bro", "Bailed into every bug so you don't have to. Hall of Meat regular."},
     CrewMember{"Myawsometeam", "Setsu", "Ran the same line a hundred times so the studio lands it a hundred and one."},
     CrewMember{"FIENDSKATEBOARDS", "renzoh.", "Pop shuv-it specialist: sent the dump and the video before the board even landed.", 0.5f, 0.42f},
-    CrewMember{"smonky", "smonk", "Rolls away from every crash, then sends the log. Smooth as fresh bearings."},
+    CrewMember{"smonky", "smonk", "Rolls away from every crash, then sends the log. Smooth as fresh bearings.", 0.5f, 0.38f},
     CrewMember{"reskate_animation_editor", "philsteezy", "Steezy bug reports only. Even the crashes had style.", 0.5f, 0.4f},
     CrewMember{"Heatz", "Heatz", "Brought the heat every session: if a build could break, Heatz broke it first."},
     CrewMember{"Bonksz", "Bonksz", "Bonked every rail, ledge and kicker until the bugs gave up.", 0.6f, 0.42f},
@@ -57,11 +57,11 @@ struct Builder {
     float focus_x{0.5f}, focus_y{0.5f}; // where their shot is cut round, as CrewMember's
 };
 inline constexpr std::array builders{
-    Builder{"22SH", "22sh", "", "Pulled all 4,004 animations out of the game, one clip at a time. Still lands every one bolts."},
-    Builder{"Fourth", "fourth", "Fourth_Studio", "Well... do we need to explain this? Built it, slammed it, built it again until it rolled away clean.", 0.5f, 0.45f},
+    Builder{"22SH", "22sh", "", "Got the game's animations into the studio. Every trick you open runs on his work."},
+    Builder{"Fourth", "fourth", "Fourth_Studio", "Lead studio developer. Brought the team together and built the studio around it.", 0.5f, 0.45f},
     // Norms' Thunderstore team: none yet (worthlessnorms 404s, checked 2026-10-25); put "worthlessnorms" back here once it exists.
-    Builder{"Norms", "norms", "", "The syntax script watcher. Spots a missing semicolon faster than you spot a pebble in your run-up.", 0.5f, 0.39f},
-    Builder{"Steez", "steez", "Worthless", "Animation King and back-up scripter. Keys a tre flip by hand, then fixes the script it runs on.", 0.48f, 0.4f},
+    Builder{"Norms", "norms", "", "Scripting and animation logic: the rules that decide what plays, and when.", 0.5f, 0.39f},
+    Builder{"Steez", "steez", "Worthless", "Made the animations run smooth, from the pop to the landing.", 0.48f, 0.4f},
 };
 // One of BUILT BY by their Thunderstore team (in any case), or none: their packs are stamped DEV.
 inline const Builder* builder_of(std::string_view team) {
