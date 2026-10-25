@@ -1270,7 +1270,7 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
             constexpr std::array<const char *, 3> shuffle_names{"Nothing", "Everything", "Not installed"}, shuffle_words{"off", "all", "missing"};
             const std::size_t shuffle = mp.outfit_shuffle < shuffle_names.size() ? static_cast<std::size_t>(mp.outfit_shuffle) : 0;
             if (list.setting("Shuffle outfits", shuffle_names[shuffle], true)) online("shuffle-outfits", shuffle_words[(shuffle + 1) % shuffle_words.size()]);
-            if (list.setting("Mod items only", on_off(mp.outfit_shuffle_mods_only), true))
+            if (list.setting("Mod items only", on_off(mp.outfit_shuffle_mods_only), shuffle != 0))
                 online("shuffle-mods-only", mp.outfit_shuffle_mods_only ? "off" : "on");
             if (list.setting("Reroll shuffle", "", shuffle != 0)) online("shuffle-outfits", "reroll");
             list.note("Randomise other players outfits and boards, Everything: every item. Not installed: only the items you don't have installed. "

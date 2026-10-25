@@ -23,7 +23,8 @@ One setting, **Shuffle outfits**, with three values:
 | **Not installed** | Only the items you do not have installed are random, in place of the stand-in. Items you have show as worn. |
 
 - A second setting, **Mod items only**, apart from the mode: the picks come only from items a mod
-  installed, in whichever mode. Either can change without the other.
+  installed, in whichever mode. Either can change without the other, but the menus grey it out,
+  like Reroll shuffle, while the mode is Nothing (the console still takes it).
 - It is in the ReSkate menu (Insert), **Online** tab, under OUTFITS: pressing the row steps Nothing,
   Everything, Not installed, and round. **Mod items only** and **Reroll shuffle** (new picks for
   everyone) are below it. It is also under Settings > Interface: a strip of three, the mod-items
