@@ -85,7 +85,7 @@ void test_ultrawide_descriptors(ID3D12Device *device)
     ComPtr<ID3D12DescriptorHeap> heap;
     D3D12_DESCRIPTOR_HEAP_DESC desc{};
     desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-    desc.NumDescriptors = 66;
+    desc.NumDescriptors = 96;
     check(device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&heap)));
     auto first = heap->GetCPUDescriptorHandleForHeapStart();
     auto stride = device->GetDescriptorHandleIncrementSize(desc.Type);
@@ -99,6 +99,31 @@ void test_ultrawide_descriptors(ID3D12Device *device)
     auto &s = state();
     if (s.descriptors.size() != 66 || !s.descriptors.contains(first.ptr))
         throw std::runtime_error("depth descriptor aliases evicted their shared source");
+    std::vector<ComPtr<ID3D12Resource>> resources;
+    UINT slot = 66;
+    for (UINT i = 0; i < 12; ++i)
+    {
+        const bool unsupported = i >= 9;
+        const UINT width = i < 3 || unsupported ? 3440 : 1720, height = i < 3 || unsupported ? 1440 : 720;
+        auto resource = make_resource(
+            device,
+            image_desc(width, height, unsupported ? DXGI_FORMAT_D24_UNORM_S8_UINT : DXGI_FORMAT_R32G8X24_TYPELESS,
+                       D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL),
+            D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+        auto handle = first;
+        handle.ptr += SIZE_T{slot++} * stride;
+        material_depth_descriptor(resource.Get(), nullptr, handle);
+        resources.push_back(std::move(resource));
+    }
+    if (!s.descriptors.contains(first.ptr) || s.descriptors.size() != 75)
+        throw std::runtime_error("unsupported depth views displaced the main depth resource");
+    material_depth_descriptor(resources.back().Get(), nullptr, first);
+    if (s.descriptors.contains(first.ptr))
+        throw std::runtime_error("unsupported replacement kept stale depth descriptor");
+    material_depth_descriptor(depth.Get(), nullptr, first);
+    material_depth_descriptor(nullptr, nullptr, first);
+    if (s.descriptors.contains(first.ptr))
+        throw std::runtime_error("null replacement kept stale depth descriptor");
     if (detail::material_mask_bytes(3440, 1440) > detail::material_mask_byte_limit)
         throw std::runtime_error("ultrawide mask exceeds budget");
     MaterialMaskDraw draw{};

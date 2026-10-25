@@ -188,6 +188,14 @@ void remember_descriptor(Transmission &s, SIZE_T key, DepthDescriptor descriptor
     };
     const auto bytes = estimate(descriptor);
     s.descriptors.erase(key);
+    static std::atomic<unsigned> registered{};
+    if (registered.fetch_add(1) < 8)
+    {
+        const auto shape = descriptor.resource->GetDesc();
+        logging::printf(logging::Level::info, logging::Channel::graphics,
+                        "Material transmission: registering DSV 0x%llx, %llux%u.", static_cast<unsigned long long>(key),
+                        static_cast<unsigned long long>(shape.Width), shape.Height);
+    }
     if (bytes > 256ull * 1024 * 1024)
         return;
     const auto retained = [&] {
@@ -391,7 +399,13 @@ void material_depth_descriptor(ID3D12Resource *resource, const D3D12_DEPTH_STENC
     try
     {
         auto &s = state();
-        if (!s.configured.load() || !resource)
+        if (!s.configured.load())
+            return;
+        std::lock_guard lock(s.mutex);
+        // A descriptor handle can be reused for a null/unsupported view. Drop its
+        // old association even when the replacement cannot supply transmission.
+        s.descriptors.erase(handle.ptr);
+        if (!resource)
             return;
         const auto shape = resource->GetDesc();
         if (shape.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D || shape.MipLevels != 1 ||
@@ -399,9 +413,13 @@ void material_depth_descriptor(ID3D12Resource *resource, const D3D12_DEPTH_STENC
             return;
         if (desc && desc->ViewDimension != D3D12_DSV_DIMENSION_TEXTURE2D)
             return;
+        // Match the formats material_depth_barriers can actually copy. Retaining
+        // D24/shadow views we cannot sample evicts the main depth before its draw.
+        if (shape.Format != DXGI_FORMAT_R32_TYPELESS && shape.Format != DXGI_FORMAT_D32_FLOAT &&
+            shape.Format != DXGI_FORMAT_R32G8X24_TYPELESS && shape.Format != DXGI_FORMAT_D32_FLOAT_S8X24_UINT)
+            return;
         if (shape.Width < 64 || shape.Width > 4096 || shape.Height < 64 || shape.Height > 2160)
             return;
-        std::lock_guard lock(s.mutex);
         remember_descriptor(s, handle.ptr, {plain(resource), desc ? desc->Flags : D3D12_DSV_FLAG_NONE});
     }
     catch (...)
@@ -472,7 +490,22 @@ void record_material_mask(const MaterialMaskDraw &draw) noexcept
             if (!said)
             {
                 said = true;
-                say("Material transmission: waiting for the native depth descriptor.");
+                logging::printf(logging::Level::warning, logging::Channel::graphics,
+                                "Material transmission: missing DSV 0x%llx for %.0fx%.0f; %zu descriptors retained.",
+                                static_cast<unsigned long long>(draw.depth.ptr), draw.viewport.Width,
+                                draw.viewport.Height, s.descriptors.size());
+                unsigned shown{};
+                for (const auto &[handle, value] : s.descriptors)
+                {
+                    const auto shape = value.resource->GetDesc();
+                    logging::printf(logging::Level::info, logging::Channel::graphics,
+                                    "Material transmission: retained DSV 0x%llx, %llux%u, format %u.",
+                                    static_cast<unsigned long long>(handle),
+                                    static_cast<unsigned long long>(shape.Width), shape.Height,
+                                    static_cast<unsigned>(shape.Format));
+                    if (++shown >= 12)
+                        break;
+                }
             }
             return;
         }
