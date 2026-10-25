@@ -103,6 +103,7 @@ struct Ui {
     float catch_dragged_to{-1};       // the frame it was last moved to
     bool trick_panel{};               // THIS TRICK is open
     std::string delete_card;          // a saved trick in a pack about to be deleted: the card asks first
+    std::set<std::string> packs_open; // FROM PACKS: the packs unfolded (a pack's name; "*loose" the tricks with no pack)
     bool dragging_playhead{}, dragging_gizmo{}, orbiting{}, panning{};
     // A key being dragged along its row.
     std::optional<std::uint16_t> key_joint;
@@ -3579,16 +3580,10 @@ void trick_drawer(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a
                        "Copy makes three copies, one for each pop height, to change each on its own.");
         y += 16 * k;
     }
-    heading(d, f, ImVec2(x, y), w, "In your packs");
-    y += 32 * k;
-    if (from_a_pack(v, name)) {
-        const auto holding = packs_holding(v, name);
-        std::vector<std::string> in;
-        for (const auto* pack : holding) in.push_back(pack->name);
-        y += paragraph(d, f.bold, 14 * k, ImVec2(x, y), w, soft,
-                       (in.empty() ? std::string("It is another maker's trick") : "It came in " + listed(in)) +
-                           ": it plays for you, but only your own tricks go in your packs.") + 16 * k;
-    } else {
+    // Another maker's trick never goes in your packs, so it has none to choose.
+    if (!from_a_pack(v, name)) {
+        heading(d, f, ImVec2(x, y), w, "In your packs");
+        y += 32 * k;
         float cx = x;
         if (v.packs.empty()) {
             y += paragraph(d, f.bold, 14 * k, ImVec2(x, y), w, soft, "No packs yet.") + 6 * k;
@@ -3816,6 +3811,29 @@ void note_hover(const std::string& key, ImVec2 a, ImVec2 b, std::function<bool(b
 bool under_peek(ImVec2 a, ImVec2 b) {
     const auto& u = ui();
     return u.peek_hole && a.x < u.peek_b.x && b.x > u.peek_a.x && a.y < u.peek_b.y && b.y > u.peek_a.y;
+}
+// Something drawn across the cards (a heading, a pack's row) that the hover preview's window may be over: drawn round the
+// window, never through it. The window is a hole in the menu, so a line drawn there showed across the skater.
+template <class Draw>
+void around_peek(ImDrawList* d, ImVec2 a, ImVec2 b, Draw&& draw) {
+    const auto& u = ui();
+    if (!under_peek(a, b)) {
+        draw();
+        return;
+    }
+    const ImVec2 pa = u.peek_a, pb = u.peek_b;
+    const std::array<std::pair<ImVec2, ImVec2>, 4> parts{{
+        {a, ImVec2(b.x, std::min(b.y, pa.y))},                                                                 // above it
+        {ImVec2(a.x, std::max(a.y, pb.y)), b},                                                                 // below it
+        {ImVec2(a.x, std::max(a.y, pa.y)), ImVec2(std::min(b.x, pa.x), std::min(b.y, pb.y))},                  // left of it
+        {ImVec2(std::max(a.x, pb.x), std::max(a.y, pa.y)), ImVec2(b.x, std::min(b.y, pb.y))},                  // right of it
+    }};
+    for (const auto& [ca, cb] : parts) {
+        if (cb.x - ca.x < 1 || cb.y - ca.y < 1) continue;
+        d->PushClipRect(ca, cb, true);
+        draw();
+        d->PopClipRect();
+    }
 }
 void stop_hover_peek() {
     auto& h = ui().hover;
@@ -4115,13 +4133,16 @@ void tricks_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
         return ImVec2(grid_a.x + static_cast<float>(index % columns) * (card_w + gap), top + static_cast<float>(index / columns) * (card_h + gap));
     };
     if (searching && !mine.empty()) {
-        heading(d, f, ImVec2(grid_a.x, top), grid_w, "Yours", std::to_string(mine.size()));
+        around_peek(d, ImVec2(grid_a.x, top), ImVec2(grid_a.x + grid_w, top + 26 * k),
+                    [&] { heading(d, f, ImVec2(grid_a.x, top), grid_w, "Yours", std::to_string(mine.size())); });
         top += 34 * k;
     }
     // A group open: its name, how many, and the way back to the groups.
     if (grouping && !u.my_group.empty()) {
         if (action(d, f, "##groupback", ImVec2(grid_a.x, top), ImVec2(110 * k, 34 * k), "BACK", Look::dark)) u.my_group.clear();
-        heading(d, f, ImVec2(grid_a.x + 124 * k, top), grid_w - 124 * k, upper(trick_label(u.my_group)), std::to_string(mine.size()));
+        around_peek(d, ImVec2(grid_a.x + 124 * k, top), ImVec2(grid_a.x + grid_w, top + 26 * k), [&] {
+            heading(d, f, ImVec2(grid_a.x + 124 * k, top), grid_w - 124 * k, upper(trick_label(u.my_group)), std::to_string(mine.size()));
+        });
         top += 46 * k;
     }
     u.grid_a = grid_a;
@@ -4142,8 +4163,9 @@ void tricks_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
         top += static_cast<float>((i + columns - 1) / columns) * (card_h + gap) + 10 * k;
         i = 0;
     }
-    // FROM PACKS: each pack's tricks under its name and maker; other makers' tricks with no pack (it was deleted, or they came
-    // without one) at the end.
+    // FROM PACKS: a row a pack - its name, maker and how many tricks - unfolded to show its tricks and folded away again, so
+    // the page stays a short list however many packs there are. Other makers' tricks with no pack (it was deleted, or they
+    // came without one) are the last row.
     bool pack_sections = false;
     if (u.trick_group == "*packs" && !searching) {
         std::set<std::string> shown;
@@ -4161,24 +4183,66 @@ void tricks_page(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a,
         if (!loose.empty()) sections.emplace_back(std::string{}, std::move(loose));
         for (const auto& [pack_name, names] : sections) {
             const auto* pack = pack_named(v, pack_name);
-            heading(d, f, ImVec2(grid_a.x, top), grid_w,
-                    pack_name.empty() ? std::string("Other makers' tricks without a pack") : pack_name + (pack && !pack->made_by.empty() ? "  by " + pack->made_by : std::string{}),
-                    std::to_string(names.size()) + (names.size() == 1 ? " trick" : " tricks"));
-            top += 34 * k;
-            i = 0;
-            for (const auto& name : names) {
-                const auto at = place(i++);
-                if (under_peek(at, ImVec2(at.x + card_w, at.y + card_h))) continue;
-                my_trick_card(d, f, v, name, at, ImVec2(card_w, card_h));
-                note_hover("mine|" + name, at, ImVec2(at.x + card_w, at.y + card_h), [name](bool play) { return studio::peek_saved(name, play); }, shown_name(v, name));
+            const std::string key = pack_name.empty() ? std::string("*loose") : pack_name;
+            const bool open = u.packs_open.contains(key);
+            const float bar_h = 54 * k;
+            const ImVec2 ba(grid_a.x, top), bb(grid_a.x + grid_w, top + bar_h);
+            ImGui::PushID(key.c_str());
+            bool lit = false;
+            if (hit("##packfold", ba, bb, &lit)) {
+                if (open) u.packs_open.erase(key);
+                else u.packs_open.insert(key);
             }
-            top += static_cast<float>((i + columns - 1) / columns) * (card_h + gap) + 18 * k;
-            i = 0;
+            ImGui::PopID();
+            around_peek(d, ba, bb, [&] {
+                flat_rect(d, ba, bb, lit ? IM_COL32(44, 46, 52, 250) : open ? IM_COL32(30, 34, 42, 250) : IM_COL32(24, 25, 28, 245), seed_of(ba), k);
+                if (open) d->AddRectFilled(ba, ImVec2(ba.x + 4 * k, bb.y), blue);
+                if (lit && nav().keys) chosen_outline(d, ba, bb, k);
+                // The fold: pointing right when folded, down when open.
+                const float cx = ba.x + 26 * k, cy = ba.y + bar_h * 0.5f, s = 6.5f * k;
+                if (open) d->AddTriangleFilled(ImVec2(cx - s, cy - s * 0.55f), ImVec2(cx + s, cy - s * 0.55f), ImVec2(cx, cy + s * 0.75f), blue_light);
+                else d->AddTriangleFilled(ImVec2(cx - s * 0.55f, cy - s), ImVec2(cx + s * 0.75f, cy), ImVec2(cx - s * 0.55f, cy + s), white);
+                // Right: whether it is on, and how many tricks.
+                float right = bb.x - 18 * k;
+                const std::string count = std::to_string(names.size()) + (names.size() == 1 ? " TRICK" : " TRICKS");
+                const auto cw = text_size(f.bold, 13 * k, count.c_str());
+                text(d, f.bold, 13 * k, ImVec2(right - cw.x, cy - cw.y * 0.5f), soft, count);
+                right -= cw.x + 14 * k;
+                if (pack && pack->on) {
+                    right -= tag_width(f, "ON");
+                    tag(d, f, ImVec2(right, cy - 10 * k), "ON", IM_COL32(36, 150, 76, 255));
+                    right -= 10 * k;
+                }
+                // Left: its name, and who made it.
+                const float tx = ba.x + 48 * k;
+                const auto title = elide(f.bold, 19 * k, pack_name.empty() ? std::string("OTHER MAKERS' TRICKS") : upper(pack_name), right - tx - 140 * k);
+                const auto tw = text_size(f.bold, 19 * k, title.c_str());
+                text(d, f.bold, 19 * k, ImVec2(tx, cy - tw.y * 0.5f), white, title);
+                const std::string by = pack_name.empty() ? std::string("without a pack") : pack && !pack->made_by.empty() ? "by " + pack->made_by : std::string{};
+                if (!by.empty()) {
+                    const auto shown = elide(f.bold, 14 * k, by, std::max(0.0f, right - tx - tw.x - 26 * k));
+                    const auto bw = text_size(f.bold, 14 * k, shown.c_str());
+                    text(d, f.bold, 14 * k, ImVec2(tx + tw.x + 14 * k, cy - bw.y * 0.5f), soft, shown);
+                }
+            });
+            top += bar_h + 8 * k;
+            if (open) {
+                i = 0;
+                for (const auto& name : names) {
+                    const auto at = place(i++);
+                    if (under_peek(at, ImVec2(at.x + card_w, at.y + card_h))) continue;
+                    my_trick_card(d, f, v, name, at, ImVec2(card_w, card_h));
+                    note_hover("mine|" + name, at, ImVec2(at.x + card_w, at.y + card_h), [name](bool play) { return studio::peek_saved(name, play); }, shown_name(v, name));
+                }
+                top += static_cast<float>((i + columns - 1) / columns) * (card_h + gap) + 10 * k;
+                i = 0;
+            }
             pack_sections = true;
         }
     }
     if (searching && !game.empty()) {
-        heading(d, f, ImVec2(grid_a.x, top), grid_w, "The game's", std::to_string(game.size()));
+        around_peek(d, ImVec2(grid_a.x, top), ImVec2(grid_a.x + grid_w, top + 26 * k),
+                    [&] { heading(d, f, ImVec2(grid_a.x, top), grid_w, "The game's", std::to_string(game.size())); });
         top += 34 * k;
     }
     for (const auto* c : game) {
