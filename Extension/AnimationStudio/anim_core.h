@@ -472,6 +472,28 @@ private:
 // game goes into another animation its pose stops matching and the trick lets go: the game leads, the edits
 // only ride on it. (Measured on testers' dumps: the clip playing is told apart from the others by 7 degrees or
 // more, and its time to about a frame.)
+// ---- a trick on another pop's clip: its timing ---------------------------------------------------------------------
+// The game plays a trick's flip at the same pace on every pop: its low, mid and high clips have the board turned the same
+// way at the same time from the pop, and a higher pop's extra air goes into holding the catch before the landing. A trick
+// made on one pop and played on another's clip follows that clip by where its board is (board_time_map), not by stretching
+// its whole air evenly: that put the flip up to 90 degrees out of step with the legs, the board through them (renztre,
+// made on a low pop, on the game's high pop, 2026-10-25).
+struct BoardTrack {
+    std::vector<float> times;
+    std::vector<Quat> turn; // the board relative to the placement joint, each frame
+    float up{-1}, down{-1}; // pop and landing
+};
+BoardTrack board_track(const Clip& clip);
+struct TimeMap {
+    std::vector<float> from, to; // a time in the clip the game plays and the edit's at it: `from` rising, `to` never falling
+    bool empty() const noexcept { return from.empty(); }
+    float forward(float seconds) const noexcept; // played clip -> edit; 1:1 beyond its ends
+    float back(float seconds) const noexcept;    // edit -> played clip
+};
+// Frame by frame (dynamic time warping) on how the board is turned, with a pull towards the even stretch for where the board
+// says little; the made clip's board as it lies, turned round, mirrored (made on the other foot) or both, whichever fits.
+// Empty when either has no board, pop or landing, or the boards never fit (another trick).
+TimeMap board_time_map(const BoardTrack& played, const BoardTrack& made);
 struct NativeModels {
     struct Model {
         std::size_t clip{};    // which clip given to build_native_models
@@ -486,6 +508,9 @@ struct NativeModels {
     };
     std::vector<Model> models;
     float edit_up{-1}, edit_down{-1}; // the edit's own clip's pop and landing
+    // By clip (Model::clip): its time as the edit's, matched by the board (board_time_map); none: pop on pop, landing on
+    // landing, evenly between.
+    std::vector<std::shared_ptr<const TimeMap>> maps;
     // A time in a model's clip as a time in the edit's own clip: the same before the pop, stretched between the
     // pop and the landing, the same again after the landing. model_time is the other way.
     float edit_time(const Model& model, float seconds) const noexcept;

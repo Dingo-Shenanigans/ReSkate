@@ -1169,6 +1169,43 @@ void merged_library_and_timing() {
     check(playback_pop_rank("low", "mid") < 0 && playback_pop_rank("low", "high") < 0 && playback_pop_rank("low", "") == 1 &&
               playback_pop_rank("", "mid") < 0,
           "A trick on its own pop plays only on that height; on any pop only by its pack's any rule");
+    {
+        // The game's way: the flip at the same pace on every pop, a higher pop's extra air held at the catch. A trick made
+        // on the low pop (flip 0.2 to 0.5 s, landing 0.6) played on the high one (the same flip, landing 0.75).
+        const auto track = [](float down, bool mirrored) {
+            BoardTrack t;
+            t.up = 0.2f; t.down = down;
+            for (int f = 0; f <= 60; ++f) {
+                const float s = static_cast<float>(f) / 60;
+                const float flip = std::clamp((s - 0.2f) / 0.3f, 0.0f, 1.0f) * 6.2831853f;
+                Quat q = normalised(multiply(axis_angle(Vec3{0, 1, 0}, flip * 0.5f), axis_angle(Vec3{1, 0, 0}, flip)));
+                if (mirrored) q = normalised(multiply(mirror_rotation(q), Quat{0, 1, 0, 0}));
+                t.times.push_back(s);
+                t.turn.push_back(q);
+            }
+            return t;
+        };
+        const auto map = board_time_map(track(0.75f, false), track(0.6f, false));
+        check(!map.empty() && std::abs(map.forward(0.35f) - 0.35f) < 0.02f && std::abs(map.forward(0.45f) - 0.45f) < 0.02f,
+              "On another pop's clip the flip keeps its pace from the pop (not stretched over the whole air)");
+        check(std::abs(map.forward(0.85f) - 0.70f) < 0.03f && std::abs(map.back(0.40f) - 0.40f) < 0.02f,
+              "After the landing the trick's time is the clip's, landing on landing; and back again");
+        const auto mirrored = board_time_map(track(0.75f, false), track(0.6f, true));
+        check(!mirrored.empty() && std::abs(mirrored.forward(0.35f) - 0.35f) < 0.02f,
+              "A trick made on the other foot finds the same timing (its board mirrored)");
+        BoardTrack still = track(0.6f, false);
+        for (auto& q : still.turn) q = normalised(multiply(q, axis_angle(Vec3{0, 0, 1}, 1.6f)));
+        check(board_time_map(track(0.75f, false), still).empty(), "A board that never fits gives no map (another trick)");
+        NativeModels models;
+        models.edit_up = 0.2f; models.edit_down = 0.6f;
+        NativeModels::Model on_high;
+        on_high.clip = 1; on_high.up = 0.2f; on_high.down = 0.75f;
+        models.maps = {nullptr, std::make_shared<const TimeMap>(map)};
+        check(std::abs(models.edit_time(on_high, 0.45f) - 0.45f) < 0.02f && std::abs(models.model_time(on_high, models.edit_time(on_high, 0.3f)) - 0.3f) < 0.02f,
+              "The clock reads another pop's clip through its board map");
+        models.maps.clear();
+        check(std::abs(models.edit_time(on_high, 0.475f) - 0.4f) < 0.001f, "Without a map it is the even stretch, as before");
+    }
     check(episode_selection_changed("360flip", "360flip", "low", "high") &&
           !episode_selection_changed("360flip", "360flip", "low", "low") &&
           !episode_selection_changed("360flip", "360flip", "", "high"),

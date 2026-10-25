@@ -1373,6 +1373,8 @@ struct TrickCache {
     std::map<std::string, std::shared_ptr<const Clip>> clips;   // the tricks' own clips, by what is in them
     std::map<std::string, std::vector<NativeModels::Model>> models; // a clip's models (native_models_of), by the same key
     std::map<std::string, std::vector<std::string>> references; // a trick's clips in the library, by its trick
+    std::map<std::string, BoardTrack> reference_boards;           // each of those clips' board ("library|<file>")
+    std::map<std::string, std::shared_ptr<const TimeMap>> time_maps; // an own clip on a library clip ("<own key>|<library key>")
 };
 TrickCache& trick_cache() {
     static auto* cache = new TrickCache; // the loader's own: only its thread uses it
@@ -1420,8 +1422,9 @@ const std::vector<std::string>& library_references(TrickCache& cache, const std:
         if (std::find(keys.begin(), keys.end(), key) != keys.end()) return;
         if (!cache.models.contains(key)) {
             try {
-                const auto clip = read_game_clip(g); // read for its poses, not kept
+                const auto clip = read_game_clip(g); // read for its poses and its board, not kept
                 cache.models.emplace(key, native_models_of(*clip, 0, false));
+                cache.reference_boards.emplace(key, board_track(*clip));
             } catch (...) {
                 return;
             }
@@ -1490,6 +1493,8 @@ std::optional<CustomTrick> load_custom_trick(TrickCache& cache, const std::files
         model.own = true;
         native->models.push_back(std::move(model));
     }
+    native->maps.push_back(nullptr); // clip 0, its own: its own time
+    std::optional<BoardTrack> made_track;
     std::size_t index = 1;
     for (const auto& reference : library_references(cache, trick)) {
         if (const auto found = cache.models.find(reference); found != cache.models.end() && !found->second.empty()) {
@@ -1498,6 +1503,17 @@ std::optional<CustomTrick> load_custom_trick(TrickCache& cache, const std::files
                 model.own = false;
                 native->models.push_back(std::move(model));
             }
+            // Its time as the trick's, by where the board is (board_time_map): once for each clip of its, kept.
+            std::shared_ptr<const TimeMap> map;
+            if (const auto board = cache.reference_boards.find(reference); board != cache.reference_boards.end()) {
+                auto& kept = cache.time_maps[key + "|" + reference];
+                if (!kept) {
+                    if (!made_track) made_track = board_track(*clip);
+                    kept = std::make_shared<const TimeMap>(board_time_map(board->second, *made_track));
+                }
+                if (!kept->empty()) map = kept;
+            }
+            native->maps.push_back(std::move(map));
             ++index;
         }
     }

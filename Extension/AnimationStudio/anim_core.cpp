@@ -1725,8 +1725,111 @@ float degrees_between(const Quat& a, const Quat& b) noexcept {
     return 2 * std::acos(std::clamp(d, 0.0f, 1.0f)) * 57.2957795f;
 }
 } // namespace
+BoardTrack board_track(const Clip& clip) {
+    BoardTrack out;
+    if (clip.board.size() != clip.times.size() || clip.times.empty()) return out;
+    out.times = clip.times;
+    out.turn.reserve(clip.board.size());
+    for (const auto& board : clip.board) out.turn.push_back(normalised(board.rotation));
+    out.up = clip.takeoff;
+    out.down = clip.landing;
+    return out;
+}
+float TimeMap::forward(float seconds) const noexcept {
+    if (from.empty() || !std::isfinite(seconds)) return seconds;
+    if (seconds <= from.front()) return to.front() - (from.front() - seconds);
+    if (seconds >= from.back()) return to.back() + (seconds - from.back());
+    const auto i = static_cast<std::size_t>(std::upper_bound(from.begin(), from.end(), seconds) - from.begin());
+    const float u = (seconds - from[i - 1]) / std::max(1e-6f, from[i] - from[i - 1]);
+    return to[i - 1] + (to[i] - to[i - 1]) * u;
+}
+float TimeMap::back(float seconds) const noexcept {
+    if (to.empty() || !std::isfinite(seconds)) return seconds;
+    if (seconds <= to.front()) return from.front() - (to.front() - seconds);
+    if (seconds >= to.back()) return from.back() + (seconds - to.back());
+    const auto i = static_cast<std::size_t>(std::lower_bound(to.begin(), to.end(), seconds) - to.begin()); // to[i-1] < s <= to[i]
+    const float u = (seconds - to[i - 1]) / std::max(1e-6f, to[i] - to[i - 1]);
+    return from[i - 1] + (from[i] - from[i - 1]) * u;
+}
+TimeMap board_time_map(const BoardTrack& played, const BoardTrack& made) {
+    TimeMap out;
+    const auto marked = [](const BoardTrack& t) {
+        return t.up >= 0 && t.down > t.up && !t.times.empty() && t.times.size() == t.turn.size();
+    };
+    if (!marked(played) || !marked(made)) return out;
+    // From just before the pop to a little after the landing.
+    const auto window = [](const BoardTrack& t) {
+        std::vector<std::size_t> frames;
+        for (std::size_t f = 0; f < t.times.size(); ++f)
+            if (t.times[f] >= t.up - 0.05f && t.times[f] <= t.down + 0.15f) frames.push_back(f);
+        return frames;
+    };
+    const auto fa = window(played), fb = window(made);
+    const std::size_t n = fa.size(), m = fb.size();
+    if (n < 4 || m < 4 || n * m > 250000) return out;
+    const auto even = [&](float t) {
+        if (t <= played.up) return made.up - (played.up - t);
+        if (t >= played.down) return made.down + (t - played.down); // landing on landing, then 1:1
+        return made.up + (t - played.up) * (made.down - made.up) / (played.down - played.up);
+    };
+    const auto degrees = [](const Quat& a, const Quat& b) {
+        const float d = std::abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]);
+        return 2 * std::acos(std::clamp(d, 0.0f, 1.0f)) * 57.2957795f;
+    };
+    constexpr float pull = 40.0f;      // degrees for each second off the even stretch
+    constexpr float never_fits = 45.0f; // mean degrees a step: not the same trick's board
+    constexpr float none = std::numeric_limits<float>::infinity();
+    std::vector<float> acc(n * m);
+    std::vector<Quat> turn(m);
+    float best = never_fits;
+    for (const bool mirrored : {false, true})
+        for (const bool round : {false, true}) {
+            for (std::size_t j = 0; j < m; ++j) {
+                Quat q = made.turn[fb[j]];
+                if (mirrored) q = mirror_rotation(q);
+                if (round) q = normalised(multiply(q, Quat{0, 1, 0, 0}));
+                turn[j] = q;
+            }
+            for (std::size_t i = 0; i < n; ++i) {
+                const float wanted = even(played.times[fa[i]]);
+                for (std::size_t j = 0; j < m; ++j) {
+                    const float cost = degrees(played.turn[fa[i]], turn[j]) + pull * std::abs(made.times[fb[j]] - wanted);
+                    float before = i == 0 && j == 0 ? 0.0f : none;
+                    if (i > 0) before = std::min(before, acc[(i - 1) * m + j]);
+                    if (j > 0) before = std::min(before, acc[i * m + j - 1]);
+                    if (i > 0 && j > 0) before = std::min(before, acc[(i - 1) * m + j - 1]);
+                    acc[i * m + j] = cost + before;
+                }
+            }
+            // Back along the cheapest path: each played frame and the made frames it meets.
+            std::vector<float> sum(n, 0.0f), count(n, 0.0f);
+            std::size_t i = n - 1, j = m - 1, steps = 1;
+            sum[i] += made.times[fb[j]]; count[i] += 1;
+            while (i > 0 || j > 0) {
+                std::size_t ni = i, nj = j;
+                float low = none;
+                if (i > 0 && j > 0 && acc[(i - 1) * m + j - 1] < low) { low = acc[(i - 1) * m + j - 1]; ni = i - 1; nj = j - 1; }
+                if (i > 0 && acc[(i - 1) * m + j] < low) { low = acc[(i - 1) * m + j]; ni = i - 1; nj = j; }
+                if (j > 0 && acc[i * m + j - 1] < low) { low = acc[i * m + j - 1]; ni = i; nj = j - 1; }
+                i = ni; j = nj; ++steps;
+                sum[i] += made.times[fb[j]]; count[i] += 1;
+            }
+            const float mean = acc[n * m - 1] / static_cast<float>(steps);
+            if (!(mean < best)) continue;
+            best = mean;
+            out.from.resize(n);
+            out.to.resize(n);
+            for (std::size_t k = 0; k < n; ++k) {
+                out.from[k] = played.times[fa[k]];
+                out.to[k] = sum[k] / std::max(1.0f, count[k]);
+                if (k > 0) out.to[k] = std::max(out.to[k], out.to[k - 1]);
+            }
+        }
+    return out;
+}
 float NativeModels::edit_time(const Model& model, float seconds) const noexcept {
     if (model.own || !std::isfinite(seconds)) return seconds;
+    if (model.clip < maps.size() && maps[model.clip] && !maps[model.clip]->empty()) return std::max(0.0f, maps[model.clip]->forward(seconds));
     if (!(model.up >= 0) || !(model.down > model.up) || !(edit_up >= 0) || !(edit_down > edit_up)) return seconds;
     if (seconds <= model.up) return std::max(0.0f, edit_up - (model.up - seconds));
     if (seconds >= model.down) return edit_down + (seconds - model.down);
@@ -1734,6 +1837,7 @@ float NativeModels::edit_time(const Model& model, float seconds) const noexcept 
 }
 float NativeModels::model_time(const Model& model, float seconds) const noexcept {
     if (model.own || !std::isfinite(seconds)) return seconds;
+    if (model.clip < maps.size() && maps[model.clip] && !maps[model.clip]->empty()) return std::max(0.0f, maps[model.clip]->back(seconds));
     if (!(model.up >= 0) || !(model.down > model.up) || !(edit_up >= 0) || !(edit_down > edit_up)) return seconds;
     if (seconds <= edit_up) return std::max(0.0f, model.up - (edit_up - seconds));
     if (seconds >= edit_down) return model.down + (seconds - edit_down);
