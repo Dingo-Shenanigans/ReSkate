@@ -130,6 +130,8 @@ struct View {
     float catch_hold{default_catch_hold};
     bool catch_hold_set{};
     float drop_preview{}, drop_extra{-1};
+    // The open trick's stance (THIS TRICK > STANCE): 0 your own, 1 fakie, 2 switch, 3 switch fakie; -1 none (a game piece).
+    int trick_stance{-1};
     bool can_undo{}, can_redo{};
     Orbit orbit;
     bool confirm_close{}; // closing was asked with unsaved changes: the studio asks first
@@ -221,6 +223,8 @@ void move_bracket(int which, float seconds);
 void set_catch(float seconds);
 // THIS TRICK: its own Crossfade in seconds (below 0: the main one again), its CATCH HOLD (0 to 1), and the studio's DROP
 // PREVIEW (metres, 0 off; nothing saved). Call begin_change once when a drag of the first two starts.
+// THIS TRICK > STANCE: the open trick as its normal (0), fakie (1), switch (2) or switch fakie (3) version, saved so.
+void set_trick_stance(int version);
 void set_trick_crossfade(float seconds);
 void set_catch_hold(float amount);
 void set_drop_preview(float metres);

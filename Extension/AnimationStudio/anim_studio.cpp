@@ -4603,6 +4603,10 @@ View view() {
     v.solo = s.solo;
     v.stance_choice = s.stance_choice;
     v.own_lead_right = studio_goofy(s.stance_choice);
+    // The open trick's stance, as it is saved: the foot it keeps (or its clip leads with) against the skater's own, and fakie.
+    if (s.clip && !s.clip->empty() && !s.edits.trick.starts_with("native:"))
+        if (const auto lead = s.edits.keep_leads_right ? s.edits.keep_leads_right : clip_leads_right(*s.clip))
+            v.trick_stance = (*lead != v.own_lead_right ? 2 : 0) + (s.edits.fakie.value_or(false) ? 1 : 0);
     v.showing_goofy = s.showing_goofy;
     v.grab_board = s.grab_board;
     v.front_foot = s.front_foot;
@@ -5096,6 +5100,36 @@ void set_catch(float seconds) {
     if (s.edits.catch_at && std::abs(*s.edits.catch_at - at) < 0.5f / key_fps) return;
     s.edits.catch_at = at;
     changed_locked(s);
+}
+// STANCE (THIS TRICK): the open trick becomes its normal, fakie, switch or switch fakie version, as make_stance_version
+// makes one but in place: it keeps that foot (keep_leads_right; publish_locked mirrors the open trick onto it at once) and
+// that fakie flag, and SAVE stores it so - its clip on that foot and its labels from it. In game it is then that stance's
+// trick: Exact stance plays it only when riding so; Front foot plays it first when riding so.
+void set_trick_stance(int version) {
+    if (version < 0 || version > 3) return;
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    if (s.previewing || !s.clip || s.clip->empty()) return;
+    if (s.edits.trick.starts_with("native:")) {
+        s.status = "A piece of the game's animation plays whichever way round the game plays it.";
+        ++s.revision;
+        return;
+    }
+    const bool own_right = studio_goofy(s.stance_choice);
+    const bool want_right = version >= 2 ? !own_right : own_right, want_fakie = version % 2 == 1;
+    const auto lead = s.edits.keep_leads_right ? s.edits.keep_leads_right : clip_leads_right(*s.clip);
+    if (s.edits.keep_leads_right && lead && *lead == want_right && s.edits.fakie.value_or(false) == want_fakie) return;
+    s.edits.keep_leads_right = want_right;
+    s.edits.fakie = want_fakie;
+    s.edits.switch_stance = authored_goofy(s.edits) != want_right; // its label (set again from the clip if it is mirrored)
+    static constexpr std::array<const char*, 4> said{"your own stance", "fakie", "switch", "switch fakie"};
+    static constexpr std::array<const char*, 4> ride{"normal", "fakie", "switch", "switch fakie"};
+    const auto i = static_cast<std::size_t>(version);
+    changed_locked(s); // turned onto its foot here, which says so in the status: this says what it means
+    s.status = std::format("{} is in {} now. Save it, and it plays when you ride {}.", s.edits.name.empty() ? std::string("The trick") : s.edits.name,
+                           said[i], ride[i]);
+    ++s.revision;
+    logging::log(Level::info, Channel::skater, "Animation Studio: {} set to {} in the editor.", s.edits.name, ride[i]);
 }
 void set_trick_crossfade(float seconds) {
     auto& s = state();

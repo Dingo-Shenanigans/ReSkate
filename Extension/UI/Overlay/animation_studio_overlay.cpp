@@ -8116,6 +8116,10 @@ void editor_top(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 dis
     float tx = title_x;
     if (!v.trick.empty()) tx += tag(d, f, ImVec2(tx, y + 32 * k), upper(trick_label(v.trick)), IM_COL32(255, 255, 255, 36)) + 6 * k;
     tx += tag(d, f, ImVec2(tx, y + 32 * k), pop_words(v.pop), IM_COL32(255, 255, 255, 36)) + 6 * k;
+    if (v.trick_stance >= 0) {
+        static constexpr std::array<const char*, 4> stances{"NORMAL", "FAKIE", "SWITCH", "SWITCH FAKIE"};
+        tx += tag(d, f, ImVec2(tx, y + 32 * k), stances[static_cast<std::size_t>(v.trick_stance)], v.trick_stance == 0 ? IM_COL32(255, 255, 255, 36) : blue) + 6 * k;
+    }
     if (v.dirty) tag(d, f, ImVec2(tx, y + 32 * k), "NOT SAVED", skate_theme::warning, IM_COL32(18, 18, 20, 255));
     shot_switch(d, f, v, ImVec2(display.x * 0.5f, y + 23 * k));
     float x = right - 20 * k;
@@ -8647,7 +8651,7 @@ void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 co
     }
     if (!u.trick_panel) return;
     const float w = 420 * k, row = 76 * k;
-    const ImVec2 a(corner.x - w, pa.y + psize.y + 8 * k), b(corner.x, a.y + 16 * k + 3 * row);
+    const ImVec2 a(corner.x - w, pa.y + psize.y + 8 * k), b(corner.x, a.y + 16 * k + 4 * row);
     skate_theme::rough_rect(d, ImVec2(a.x + 5 * k, a.y + 5 * k), ImVec2(b.x + 5 * k, b.y + 5 * k), IM_COL32(0, 0, 0, 120), 75, k);
     skate_theme::rough_rect(d, a, b, IM_COL32(16, 17, 20, 236), 77, k);
     const float x = a.x + 20 * k, bw = w - 40 * k;
@@ -8658,6 +8662,24 @@ void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 co
         text(d, f.bold, 14 * k, ImVec2(value_right - vw.x, y), enabled ? soft : faint, value);
     };
     const auto note = [&](const char* words) { text(d, f.bold, 11 * k, ImVec2(x, y + 44 * k), faint, elide(f.bold, 11 * k, words, bw)); };
+    // Its stance: which way round it is done, saved so, and played when riding so.
+    {
+        const bool can = v.trick_stance >= 0 && !v.previewing;
+        static constexpr std::array<const char*, 4> names{"NORMAL", "FAKIE", "SWITCH", "SW FAKIE"};
+        text(d, f.bold, 14 * k, ImVec2(x, y), can ? white : faint, "STANCE");
+        const float gap = 6 * k, sw = (bw - 3 * gap) / 4;
+        for (int i = 0; i < 4; ++i) {
+            const bool on = v.trick_stance == i;
+            ImGui::PushID(i);
+            if (action(d, f, "##trickstance", ImVec2(x + static_cast<float>(i) * (sw + gap), y + 22 * k), ImVec2(sw, 28 * k), names[static_cast<std::size_t>(i)],
+                       on ? Look::blue : Look::ghost, can, on) && !on)
+                studio::set_trick_stance(i);
+            ImGui::PopID();
+        }
+        text(d, f.bold, 11 * k, ImVec2(x, y + 56 * k), faint,
+             elide(f.bold, 11 * k, can ? "Saved this way, it plays when you ride this way." : "A piece of the game's animation: it has no stance of its own.", bw));
+        y += row;
+    }
     // Its own Crossfade, or the main one.
     {
         const bool own = v.trick_crossfade.has_value();
