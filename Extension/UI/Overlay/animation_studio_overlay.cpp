@@ -6945,15 +6945,6 @@ std::vector<Setting> settings_of(int page, const studio::View& v) {
         rows.push_back(on_off("Fisheye on FILMER", u.fisheye,
                               "FILMER looks through a fisheye, as a filmer's camera does: wide, bent at the edges, black in the corners.",
                               [](bool on) { ui().fisheye = on; }));
-        {
-            static constexpr std::array<float, 7> speeds{0.25f, 0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f};
-            std::size_t at = 3;
-            for (std::size_t i = 0; i < speeds.size(); ++i)
-                if (std::abs(speeds[i] - v.speed) < 0.01f) at = i;
-            rows.push_back(choice("Preview speed", std::format("{:.2f}x", v.speed),
-                                  "Slows the studio's playback down to look at a trick closely. In game the trick follows the game's own timing.",
-                                  [at](int by) { studio::set_speed(speeds[static_cast<std::size_t>(std::clamp(static_cast<int>(at) + by, 0, 6))]); }));
-        }
         rows.push_back(on_off("Loop", v.loop, "Plays the timeline round and round. A clip whose end differs from its start can visibly jump when it loops.",
                               [](bool on) { studio::set_loop(on); }));
         rows.push_back(on_off("Joints on the skater", !u.hide_joints, "The dots on his joints and the gizmo on the chosen one. Off shows the pose clean. Key: J.",
