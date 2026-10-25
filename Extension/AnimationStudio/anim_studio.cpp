@@ -198,6 +198,12 @@ using CustomTricks = std::vector<CustomTrick>;
 constexpr float match_bent_joints = 0; // a joint with a key: its key on the game's pose
 constexpr float match_whole_body = 0;  // every other joint, and the board: the game's own
 constexpr bool fit_keys_to_air = true; // the trick's own clock, when the game's clip for it is not found
+// In the air the keys ride on the game's own pose and clock, as the 1.0.8 studio (2026-10-23) played them, which played
+// tricks right: no catch latch (the trick slowed through its catch to fill a longer air), no keys held as made off the
+// game's clip, no feet put on the deck or lifted onto it. Those came after it (2026-10-23 night to 2026-10-25) and the feet
+// snapped and stuck to the board after the catch, the catch struggled: off until they are right. Rolling on the ground a
+// foot is still never drawn into the deck or the ground.
+bool air_corrections = false; // (not constexpr: the code it gates is kept compiled)
 struct Snapshot {
     std::shared_ptr<const Clip> clip;
     std::shared_ptr<const Clip> idle; // shown while no trick is open: its last frame, standing on the board
@@ -3601,7 +3607,7 @@ void on_animation(std::uintptr_t component) noexcept {
                 else if (l.episode.phase == PlaybackPhase::landing && l.episode.landing >= 0) touch_at = l.episode.landing;
                 const auto catch_latch = [&](float time) -> float {
                     const float caught = trick->caught, land = clip.landing;
-                    if (!(caught > 0) || !(land > caught) || time < 0 || !l.latch_shape_ok) return time;
+                    if (!air_corrections || !(caught > 0) || !(land > caught) || time < 0 || !l.latch_shape_ok) return time;
                     if (touch_at) {
                         if (!l.stretch.on()) return time;
                         if (l.latch_touch_from < 0) l.latch_touch_from = l.latch_last >= 0 ? l.latch_last : l.stretch.time;
@@ -3738,7 +3744,7 @@ void on_animation(std::uintptr_t component) noexcept {
                 // board after the catch like a magnet, on every pop: taken out again.)
                 {
                     const bool touched_down = l.episode.contact.since.has_value() || (l.episode.phase == PlaybackPhase::landing && l.episode.landing >= 0);
-                    const bool off = !touched_down && (l.clock_fallback || (reading.locked && reading.lost) || l.stretch.on());
+                    const bool off = air_corrections && !touched_down && (l.clock_fallback || (reading.locked && reading.lost) || l.stretch.on());
                     constexpr float off_step = (1.0f / 60) / 0.15f;
                     l.off_clip = off ? std::min(1.0f, l.off_clip + off_step) : std::max(0.0f, l.off_clip - off_step);
                     if (off && !l.off_clip_said) {
@@ -4428,6 +4434,7 @@ void seat_feet_on_board(const GameplayPacket& packet, std::span<const Joint> nat
         const Vec3 board_up = rotate(board.rotation, up), body_up = rotate(placement.rotation, Vec3{0, 1, 0});
         if (board_up[0] * body_up[0] + board_up[1] * body_up[1] + board_up[2] * body_up[2] < 0.5f) return;
         const bool rolling = live().render_motion.load(std::memory_order_acquire) == MotionState::riding;
+        if (!rolling && !air_corrections) return; // in the air the feet are the game's and the keys' (air_corrections)
         for (const auto& [foot, thigh] : legs) {
             const auto now = world(edited, foot);
             const auto on_board = relative(board, now);
