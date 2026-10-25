@@ -5794,10 +5794,11 @@ bool set_trick_play(const std::string& animation, bool on, std::string& message)
         auto playing = playing_names(s.library, !s.packs_on.empty());
         if (on) playing.insert(animation);
         else playing.erase(animation);
-        // One trick plays on each pop and stance (the newest saved of those on): the others on for the same go off, so the
-        // one switched on is the one that plays. (An older one switched on was said to play and never did, its PLAY lit.)
+        // One trick of your own plays on each pop and stance (the newest saved of those on, beside the packs that are on): the
+        // others on for the same go off, so the one switched on is the one that plays. (An older one switched on was said to
+        // play and never did, its PLAY lit.) The playlist, when it is on, says what plays instead.
         std::vector<std::string> stood_down;
-        if (on && s.packs_on.empty() && !s.playlist_on)
+        if (on && !s.playlist_on)
             if (const auto me = std::find_if(s.presets.begin(), s.presets.end(), [&](const Preset& p) { return p.name == animation; }); me != s.presets.end()) {
                 const auto slot = preset_slot(me->trick, me->pop) + stance_part(*me);
                 for (const auto& p : s.presets)
