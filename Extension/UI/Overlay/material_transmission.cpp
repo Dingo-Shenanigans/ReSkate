@@ -170,6 +170,11 @@ struct Transmission
     std::array<DepthFrame, 3> depths;
     std::map<SIZE_T, DepthDescriptor> descriptors;
     UINT64 descriptor_clock{};
+    struct FrameStats
+    {
+        UINT presents{}, masks{}, no_mask{}, no_depth{}, composites{}, mask_busy{}, depth_busy{}, wrong_size{};
+    } stats;
+
     ComPtr<ID3D12Device> device;
     ComPtr<ID3D12RootSignature> root;
     ComPtr<ID3D12PipelineState> pipeline;
@@ -508,7 +513,10 @@ void record_material_mask(const MaterialMaskDraw &draw) noexcept
         std::lock_guard lock(s.mutex);
         if (draw.target_count != 4 || draw.viewport.TopLeftX != 0 || draw.viewport.TopLeftY != 0 ||
             draw.viewport.Width != static_cast<float>(s.width) || draw.viewport.Height != static_cast<float>(s.height))
+        {
+            ++s.stats.wrong_size;
             return;
+        }
         const auto descriptor = s.descriptors.find(draw.depth.ptr);
         if (descriptor == s.descriptors.end())
         {
@@ -557,7 +565,10 @@ void record_material_mask(const MaterialMaskDraw &draw) noexcept
                     break;
                 }
             if (!selected)
+            {
+                ++s.stats.mask_busy;
                 return;
+            }
             auto &f = *selected;
             ensure_mask(f, draw);
             ++f.generation;
@@ -588,6 +599,7 @@ void record_material_mask(const MaterialMaskDraw &draw) noexcept
             }
         }
         draw.replay(f.rtvs->GetCPUDescriptorHandleForHeapStart());
+        ++s.stats.masks;
         s.recent_mask_epoch = s.epoch;
         static bool said{};
         if (!said)
@@ -640,18 +652,31 @@ void material_depth_barriers(ID3D12GraphicsCommandList *list, UINT count, const 
                 continue;
             DepthFrame *selected{};
             for (auto &f : s.depths)
-                if (depth_free(f))
+                if (f.recording && !f.submitted && !f.released && f.list == list &&
+                    f.source_id.Get() == source_id.Get())
                 {
                     selected = &f;
                     break;
                 }
+            const bool continuing = selected != nullptr;
             if (!selected)
+                for (auto &f : s.depths)
+                    if (depth_free(f))
+                    {
+                        selected = &f;
+                        break;
+                    }
+            if (!selected)
+            {
+                ++s.stats.depth_busy;
                 continue;
+            }
             auto &f = *selected;
             ComPtr<ID3D12Device> device;
             check(list->GetDevice(IID_PPV_ARGS(&device)));
             ensure_depth(f, device.Get(), static_cast<UINT>(desc.Width), desc.Height);
-            ++f.generation;
+            if (!continuing)
+                ++f.generation;
             f.source = b.Transition.pResource;
             f.source_id = identity(plain(f.source.Get()).Get());
             f.list = list;
@@ -664,8 +689,13 @@ void material_depth_barriers(ID3D12GraphicsCommandList *list, UINT count, const 
             source.Transition = b.Transition;
             source.Transition.StateAfter = D3D12_RESOURCE_STATE_COPY_SOURCE;
             original(list, 1, &source);
-            transition(list, f.buffer.Get(), f.buffer_state, D3D12_RESOURCE_STATE_COPY_DEST);
-            transition(list, f.texture.Get(), f.texture_state, D3D12_RESOURCE_STATE_COPY_DEST);
+            // Earlier copies on this unsubmitted list already transitioned these
+            // targets. Keep committed state unchanged until submission, so a reset
+            // that discards the list still leaves the right state for its next use.
+            transition(list, f.buffer.Get(), continuing ? D3D12_RESOURCE_STATE_COPY_SOURCE : f.buffer_state,
+                       D3D12_RESOURCE_STATE_COPY_DEST);
+            transition(list, f.texture.Get(), continuing ? D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE : f.texture_state,
+                       D3D12_RESOURCE_STATE_COPY_DEST);
             D3D12_TEXTURE_COPY_LOCATION target{}, from{};
             target.pResource = f.buffer.Get();
             target.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
@@ -763,6 +793,15 @@ void present_material_transmission(ID3D12Device *device_arg, ID3D12CommandQueue 
                 if (f.submitted && f.epoch == s.epoch)
                     f.released = true;
             ++s.epoch;
+            if (++s.stats.presents >= 1200)
+            {
+                logging::printf(logging::Level::info, logging::Channel::graphics,
+                                "Material transmission frames: presents=%u mask_draws=%u no_mask=%u no_depth=%u "
+                                "composites=%u mask_busy=%u depth_busy=%u wrong_size=%u.",
+                                s.stats.presents, s.stats.masks, s.stats.no_mask, s.stats.no_depth, s.stats.composites,
+                                s.stats.mask_busy, s.stats.depth_busy, s.stats.wrong_size);
+                s.stats = {};
+            }
         };
         if (!s.configured.load() || s.failed)
         {
@@ -787,6 +826,8 @@ void present_material_transmission(ID3D12Device *device_arg, ID3D12CommandQueue 
             if (f.recording && f.submitted && !f.released && f.epoch == s.epoch && f.width == s.width &&
                 f.height == s.height && same_device(f.device.Get(), device.Get()))
                 masks.push_back(&f);
+        if (masks.empty())
+            ++s.stats.no_mask;
         std::sort(masks.begin(), masks.end(), [](const auto *a, const auto *b) { return a->serial < b->serial; });
         for (auto *pointer : masks)
         {
@@ -798,6 +839,7 @@ void present_material_transmission(ID3D12Device *device_arg, ID3D12CommandQueue 
                     selected = &d;
             if (!selected)
             {
+                ++s.stats.no_depth;
                 static bool said{};
                 if (!said)
                 {
@@ -869,6 +911,7 @@ void present_material_transmission(ID3D12Device *device_arg, ID3D12CommandQueue 
             ID3D12CommandList *lists[]{list};
             queue->ExecuteCommandLists(1, lists);
             check(queue->Signal(f.use_fence.Get(), f.generation));
+            ++s.stats.composites;
             f.used = true;
             f.state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
             f.colour_state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;

@@ -280,6 +280,20 @@ int main(int argc, char **argv)
 
         material_depth_barriers(commands.Get(), 1, &barrier, original);
         commands->ResourceBarrier(1, &barrier);
+        if (scenario == "repeated-depth")
+        {
+            for (unsigned i = 0; i < 5; ++i)
+            {
+                transition(commands.Get(), depth.Get(), D3D12_RESOURCE_STATE_DEPTH_READ,
+                           D3D12_RESOURCE_STATE_DEPTH_WRITE);
+                material_depth_barriers(commands.Get(), 1, &barrier, original);
+                commands->ResourceBarrier(1, &barrier);
+            }
+            const auto copies = std::count_if(state().depths.begin(), state().depths.end(),
+                                              [](const auto &frame) { return frame.recording && !frame.released; });
+            if (copies != 1 || state().stats.depth_busy)
+                throw std::runtime_error("repeated same-list depth transitions exhausted slots");
+        }
         if (scenario == "previous-view-depth")
             record_material_mask(draw);
         ComPtr<ID3D12DescriptorHeap> rtv;
