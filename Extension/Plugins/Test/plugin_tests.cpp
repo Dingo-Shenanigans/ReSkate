@@ -30,6 +30,13 @@ std::filesystem::path scratch;
 
 // The wider set's game, faked: it records what plugins asked of it and answers as told.
 struct FakeGame final : Game {
+    std::map<std::string, ui_values::Values> ui_models;
+    std::string ui_error;
+    std::string publish_ui_values(std::string_view plugin, const ui_values::Values& values) override {
+        if (!ui_error.empty()) return ui_error;
+        ui_models[std::string(plugin)] = values;
+        return {};
+    }
     std::optional<std::uint32_t> state;
     std::uint64_t wipe{};
     std::vector<std::string> calls;
@@ -622,7 +629,12 @@ struct FakeGame final : Game {
         return {};
     }
     std::vector<std::pair<std::string, std::string>> take_presses() override { return std::exchange(presses, {}); }
-    void release(std::string_view plugin) override { released.emplace_back(plugin); entity_clear(plugin); }
+    void release(std::string_view plugin) override {
+        released.emplace_back(plugin);
+        entity_clear(plugin);
+        if (auto it = ui_models.find(std::string(plugin)); it != ui_models.end())
+            for (auto& [name, value] : it->second) { (void)name; value = 0; }
+    }
     // The game menu, its item grid, what is worn, and a screen capture of something turning once
     // every `turning` frames (reskate.capture, room.turn, menu.game/grid, outfit.board).
     GameMenu menu_now;
@@ -860,6 +872,86 @@ void a_manifest_says_what_a_plugin_is() {
     check(safe_relative_path("a/b.lua") == "a/b.lua", "A path inside the package is kept");
     for (const auto* bad : {"", "/a", "a//b", "./a", "a/../b", "..", "a\\b", "c:a", "a.", "a /b", "a\nb"})
         check(safe_relative_path(bad).empty(), std::string("A path that could leave the package is refused: ") + bad);
+}
+
+void plugins_publish_only_their_own_ui_values() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({script("layout", R"(
+        assert(type(reskate.ui.symbol("left")) == "number")
+        assert(reskate.ui.symbol("left") ~= reskate.ui.symbol("top"))
+        assert(reskate.ui.values({left = 100, top = 165, width = 620}))
+        assert(not pcall(reskate.ui.values, {width = 0/0}))
+        assert(not pcall(reskate.ui.values, {width = math.huge}))
+        assert(not pcall(reskate.ui.values, {width = 100001}))
+        assert(not pcall(reskate.ui.values, {width = "620"}))
+        assert(not pcall(reskate.ui.values, {[1] = 2}))
+        assert(not pcall(reskate.ui.values, {["other.left"] = 2}))
+        assert(not pcall(reskate.ui.values, {["left\0tail"] = 2}))
+        assert(not pcall(reskate.ui.symbol, ""))
+        assert(not pcall(reskate.ui.symbol, "../stock"))
+        local many = {}
+        for i = 1, 33 do many["v" .. i] = i end
+        assert(not pcall(reskate.ui.values, many))
+        local ok, why = reskate.ui.values({sHaG9mdHCM = 1, yX391OQUvL = 2})
+        assert(not ok and why == "UI symbol collision or reserved symbol")
+    )", R"("ui.models")")});
+    running(host, "layout", environment);
+    check(environment.fake.ui_models.at("layout").at("width") == 620, "UI values reach the game as numbers");
+    check(ui_values::symbol("layout", "left") != ui_values::symbol("other", "left"), "UI values are namespaced by plugin");
+    environment.fake.ui_error = "unavailable here";
+    host.apply({script("notready", R"(
+        local ok, why = reskate.ui.values({width = 620})
+        assert(not ok and why == "unavailable here")
+    )", R"("ui.models")")});
+    running(host, "notready", environment);
+    host.apply({script("sneaky", R"(
+        assert(not pcall(reskate.ui.values, {left = 1}))
+        assert(not pcall(reskate.ui.symbol, "left"))
+    )")});
+    running(host, "sneaky", environment);
+    check(!environment.fake.ui_models.contains("sneaky"), "No permission means no UI model write");
+    Game absent;
+    check(absent.publish_ui_values("layout", {{"left", 1.f}}) == unavailable, "Servers do not publish native UI values");
+}
+
+void live_controller_edits_geometry_not_recorded_input() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    game.focus_now.focused = true;
+    game.pad = PadInput{};
+    Host host(environment, Side::client);
+    const std::string id = "Live_Controller_Layout";
+    const auto source = std::filesystem::path(RESKATE_SOURCE_DIR) / "contrib/examples/live-controller-layout";
+    host.apply({{id, source, "1", {}}});
+    host.set_level("sanvan");
+    ticks(host, environment, 1);
+    running(host, id, environment);
+    const auto left = [&] { return game.ui_models.at(id).at("left"); };
+    check(left() == 100, "Default layout is published");
+    game.presses = {{id, "edit_layout"}};
+    ticks(host, environment, 2); // enter and release the save/cancel buttons
+    game.pad->left_x = 1;
+    ticks(host, environment, 2);
+    check(left() > 100, "The stick moves the live geometry");
+    game.focus_now.focused = false;
+    ticks(host, environment, 1);
+    check(left() == 100, "Focus loss restores the saved layout");
+    game.focus_now.focused = true;
+    game.pad->left_x = 0;
+    game.presses = {{id, "edit_layout"}};
+    ticks(host, environment, 2);
+    game.pad->left_x = 1;
+    ticks(host, environment, 1);
+    const auto moved = left();
+    game.pad->buttons = 0x1000;
+    ticks(host, environment, 1);
+    check(left() == moved && game.files.contains(id + "/layout.json"), "Save persists the live geometry");
+    host.reload(id);
+    ticks(host, environment, 1);
+    check(left() == moved, "Reload restores saved geometry");
+    host.switch_off(id);
+    check(left() == 0, "The host releases a stopped plugin's UI values");
 }
 
 void a_plugin_loads_ticks_runs_its_commands_and_unloads() {
@@ -4083,6 +4175,8 @@ int main() {
         scratch = std::filesystem::temp_directory_path() / "reskate-plugin-tests";
         std::filesystem::remove_all(scratch);
         run(a_manifest_says_what_a_plugin_is);
+        run(plugins_publish_only_their_own_ui_values);
+        run(live_controller_edits_geometry_not_recorded_input);
         run(a_plugin_loads_ticks_runs_its_commands_and_unloads);
         run(a_permission_must_be_declared);
         run(command_names_are_checked);

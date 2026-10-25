@@ -1,5 +1,6 @@
 add_library(dingosdk_runtime SHARED
     Runtime/runtime_init.cpp
+    Extension/Plugins/plugin_ui_values.cpp
     Runtime/runtime_state.cpp
     Runtime/client_tick.cpp
     Runtime/frame_timing.cpp
