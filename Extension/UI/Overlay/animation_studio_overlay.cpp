@@ -3501,6 +3501,10 @@ void my_trick_card(ImDrawList* d, const Fonts& f, const studio::View& v, const s
     }
     if (p) {
         bool play_on = p->playing;
+        // On, but another of the same pop and stance plays instead (two were switched on before one switched the other
+        // off): shown off, so pressing it makes this one the one that plays.
+        const bool any_pack_on = std::any_of(v.packs.begin(), v.packs.end(), [](const auto& pack) { return pack.on; });
+        if (play_on && !p->active && !any_pack_on && !v.playlist_on) play_on = false;
         for (const auto& pack : v.packs)
             if (pack.on && std::find(pack.members.begin(), pack.members.end(), name) != pack.members.end() && !pack.pack.off.contains(name)) play_on = true;
         if (play_toggle(d, f, "##play", ImVec2(b.x - 14 * k - play_w, b.y - strip + 6 * k), ImVec2(play_w, 30 * k), play_on)) {

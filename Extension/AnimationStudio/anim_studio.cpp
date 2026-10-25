@@ -5787,6 +5787,18 @@ bool set_trick_play(const std::string& animation, bool on, std::string& message)
         auto playing = playing_names(s.library, !s.packs_on.empty());
         if (on) playing.insert(animation);
         else playing.erase(animation);
+        // One trick plays on each pop and stance (the newest saved of those on): the others on for the same go off, so the
+        // one switched on is the one that plays. (An older one switched on was said to play and never did, its PLAY lit.)
+        std::vector<std::string> stood_down;
+        if (on && s.packs_on.empty() && !s.playlist_on)
+            if (const auto me = std::find_if(s.presets.begin(), s.presets.end(), [&](const Preset& p) { return p.name == animation; }); me != s.presets.end()) {
+                const auto slot = preset_slot(me->trick, me->pop) + stance_part(*me);
+                for (const auto& p : s.presets)
+                    if (p.name != animation && playing.contains(p.name) && preset_slot(p.trick, p.pop) + stance_part(p) == slot) {
+                        playing.erase(p.name);
+                        stood_down.push_back(shown_name(s, p.name));
+                    }
+            }
         write_playing_names(playing);
         if (!on) {
             // Off is off: it does not play from its packs either.
@@ -5801,6 +5813,12 @@ bool set_trick_play(const std::string& animation, bool on, std::string& message)
         read_library_locked(s);
         s.tricks_read = false;
         message = shown_name(s, animation) + (on ? " plays in game." : " does not play in game now.");
+        if (!stood_down.empty()) {
+            std::string names;
+            for (std::size_t i = 0; i < stood_down.size(); ++i) names += (i == 0 ? "" : i + 1 == stood_down.size() ? " and " : ", ") + stood_down[i];
+            message = shown_name(s, animation) + " plays in game; " + names + (stood_down.size() == 1 ? " is" : " are") +
+                      " off now (one trick plays on each pop and stance).";
+        }
         s.status = message;
         publish_locked(s, false);
         return true;
