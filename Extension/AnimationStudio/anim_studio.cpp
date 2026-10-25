@@ -203,6 +203,8 @@ constexpr bool fit_keys_to_air = true; // the trick's own clock, when the game's
 // snapped and stuck to the board after the catch, the catch struggled: off until they are right. Rolling on the ground a
 // foot is still never drawn into the deck or the ground.
 bool air_corrections = false; // (not constexpr: the code it gates is kept compiled)
+// Why a trick lets go at its catch on a higher pop than it was made on (and over at least 0.3 s, whatever the crossfade).
+constexpr const char* higher_pop_hand_back = "its catch, on a higher pop than it was made on: the game's own pose from here";
 struct Snapshot {
     std::shared_ptr<const Clip> clip;
     std::shared_ptr<const Clip> idle; // shown while no trick is open: its last frame, standing on the board
@@ -1557,6 +1559,8 @@ std::optional<CustomTrick> load_custom_trick(TrickCache& cache, const std::files
     }
     native->maps.push_back(nullptr); // clip 0, its own: its own time
     native->other_pop.push_back(false);
+    native->higher_pop.push_back(false);
+    const auto pop_place = [](const std::string& pop) { return pop == "low" ? 0 : pop == "mid" ? 1 : pop == "high" ? 2 : -1; };
     std::optional<BoardTrack> made_track;
     std::size_t index = 1;
     for (const auto& reference : library_references(cache, trick)) {
@@ -1576,9 +1580,20 @@ std::optional<CustomTrick> load_custom_trick(TrickCache& cache, const std::files
                 }
                 if (!kept->empty()) map = kept;
             }
-            native->maps.push_back(std::move(map));
             const auto pop = cache.reference_pops.find(reference);
-            native->other_pop.push_back(!made_pop.empty() && pop != cache.reference_pops.end() && !pop->second.empty() && pop->second != made_pop);
+            const bool other = !made_pop.empty() && pop != cache.reference_pops.end() && !pop->second.empty() && pop->second != made_pop;
+            const bool higher = other && pop_place(pop->second) > pop_place(made_pop) && pop_place(made_pop) >= 0;
+            // A higher pop: the trick's own pace from the pop (1:1), not matched by the board - that held it still at its
+            // catch through all the extra air, as if he floated (it is handed back to the game's pose from there instead).
+            if (higher && found->second.front().up >= 0 && clip->takeoff >= 0) {
+                auto pace = std::make_shared<TimeMap>();
+                pace->from = {found->second.front().up};
+                pace->to = {clip->takeoff};
+                map = std::move(pace);
+            }
+            native->maps.push_back(std::move(map));
+            native->other_pop.push_back(other);
+            native->higher_pop.push_back(higher);
             ++index;
         }
     }
@@ -3750,6 +3765,16 @@ void on_animation(std::uintptr_t component) noexcept {
                     else if (l.episode.phase == PlaybackPhase::landing && l.episode.landing >= 0) touch = l.episode.landing;
                     float time = reading.locked ? reading.time : -1.0f;
                     const float up = clip.takeoff, down = clip.landing;
+                    // On the game's clip of a higher pop than the trick was made on: from its catch (its own; else four fifths
+                    // into its air, where a flip is done) the trick hands back to the game's own pose, crossfaded, and the game
+                    // holds its catch and lands as it does. Played to its landing it stood still in the air until the game's
+                    // touchdown, then let go in one frame.
+                    float hand_back = -1;
+                    if (reading.locked && reading.clip > 0 && trick->native) {
+                        const auto c = static_cast<std::size_t>(reading.clip);
+                        if (c < trick->native->higher_pop.size() && trick->native->higher_pop[c] && up >= 0 && down > up)
+                            hand_back = trick->caught > up && trick->caught < down ? trick->caught : up + 0.8f * (down - up);
+                    }
                     if (reading.locked && touch && l.clock_touch_at < 0) { l.clock_touch_at = *touch; l.clock_touch_from = time; }
                     if (reading.locked && reading.lost) {
                         // Off the game's clip: the game's own landing animation, or a recording drifting off it near the
@@ -3760,7 +3785,7 @@ void on_animation(std::uintptr_t component) noexcept {
                             logging::log(Level::info, Channel::skater, "Animation Studio: {} goes on at its own pace from {:.2f} s{} ({:.1f} degrees off the game's clip).",
                                          trick->name, time, touch ? ", after the touchdown" : ", in the air", reading.error);
                         }
-                        if (up >= 0 && down > up) {
+                        if (up >= 0 && down > up && hand_back < 0) { // (on a higher pop it keeps its own pace to its catch)
                             if (!touch) time = up + fitted_air_time(time - up, down - up, 0); // eases in to just before its landing
                             else if (l.clock_touch_from >= 0 && l.clock_touch_from < down)
                                 time = std::max(time, landed_time(static_cast<float>(at - *touch), down, l.clock_touch_from));
@@ -3777,6 +3802,7 @@ void on_animation(std::uintptr_t component) noexcept {
                     if (l.episode.phase == PlaybackPhase::rail_release || motion == MotionState::rail) why = "a grind";
                     else if (touch && current_state && *current_state == 103) why = "the next pop";
                     else if (time >= 0 && time >= edit_end - 0.5f / 60) why = "its end";
+                    else if (hand_back >= 0 && time >= hand_back) why = higher_pop_hand_back;
                     // Followed through the landing and lost well after it: that is the game going into its next
                     // animation (a push), not its landing.
                     else if (reading.locked && reading.lost && touch && l.clock_lost_at - *touch > 0.3) why = "the game's next animation";
@@ -3800,7 +3826,7 @@ void on_animation(std::uintptr_t component) noexcept {
                     const float target = reading.locked && why.empty() ? 1.0f : 0.0f;
                     constexpr float step = 1.0f / 60, fade_in = 0.1f;
                     // SETTINGS > Tricks: Crossfade, or the trick's own (THIS TRICK: OWN), which skips the main one for it.
-                    const float fade_out = l.crossfade_now;
+                    const float fade_out = l.clock_why == higher_pop_hand_back ? std::max(l.crossfade_now, 0.3f) : l.crossfade_now;
                     l.clock_weight = target > l.clock_weight ? std::min(target, l.clock_weight + step / fade_in)
                                                              : std::max(target, l.clock_weight - step / fade_out);
                     const auto ease = [](float x) { x = std::clamp(x, 0.0f, 1.0f); return x * x * (3 - 2 * x); };

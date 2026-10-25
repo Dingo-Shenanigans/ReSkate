@@ -517,6 +517,9 @@ struct NativeModels {
     // By clip: a clip of the game's for another pop than the edit was made on (a low trick on the game's high pop: its pack
     // says any pop). Its body tucks otherwise, so the keys are not laid on it: the trick plays whole, as made (other_pop).
     std::vector<bool> other_pop;
+    // By clip: the game's clip of a HIGHER pop than the edit was made on (a low trick on a high pop). The trick runs at its
+    // own pace from the pop, as the game's flips do on every pop, and is handed back to the game's own pose from its catch.
+    std::vector<bool> higher_pop;
     // A time in a model's clip as a time in the edit's own clip: the same before the pop, stretched between the
     // pop and the landing, the same again after the landing. model_time is the other way.
     float edit_time(const Model& model, float seconds) const noexcept;

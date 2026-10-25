@@ -1820,9 +1820,19 @@ TimeMap board_time_map(const BoardTrack& played, const BoardTrack& made) {
             best = mean;
             out.from.resize(n);
             out.to.resize(n);
+            std::vector<float> raw(n);
             for (std::size_t k = 0; k < n; ++k) {
                 out.from[k] = played.times[fa[k]];
-                out.to[k] = sum[k] / std::max(1.0f, count[k]);
+                raw[k] = sum[k] / std::max(1.0f, count[k]);
+            }
+            // Smoothed over a tenth of a second each way: frame by frame the path holds a frame, then jumps one (it steps
+            // through the grid), and the trick played skip, freeze, skip, freeze.
+            constexpr std::size_t reach = 6;
+            for (std::size_t k = 0; k < n; ++k) {
+                const std::size_t lo = k > reach ? k - reach : 0, hi = std::min(n - 1, k + reach);
+                float total = 0;
+                for (std::size_t q = lo; q <= hi; ++q) total += raw[q];
+                out.to[k] = total / static_cast<float>(hi - lo + 1);
                 if (k > 0) out.to[k] = std::max(out.to[k], out.to[k - 1]);
             }
         }
