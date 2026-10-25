@@ -480,7 +480,9 @@ struct NativeModels {
         float up{-1}, down{-1}, duration{};
         std::vector<std::uint16_t> joints; // the live joints compared, in order
         std::vector<float> times;
-        std::vector<Quat> frames; // times.size() * joints.size()
+        // times.size() * joints.size(): shared by every trick that may play the same clip (native_models_of, kept by the
+        // trick loader), so a thousand tricks edited from the game's clips do not each keep their own copy of them.
+        std::shared_ptr<const std::vector<Quat>> frames;
     };
     std::vector<Model> models;
     float edit_up{-1}, edit_down{-1}; // the edit's own clip's pop and landing
@@ -489,6 +491,9 @@ struct NativeModels {
     float edit_time(const Model& model, float seconds) const noexcept;
     float model_time(const Model& model, float edit_seconds) const noexcept;
 };
+// One clip's models, as it is and mirrored (none for a clip too short to follow): `index` is the clip's place among the
+// clips given for a trick, `own` whether it is the edit's own clip. Copies share the poses (Model::frames).
+std::vector<NativeModels::Model> native_models_of(const Clip& clip, std::size_t index, bool own);
 // `clips[own]` is the edit's own clip; the others are the clips the game may play for its trick instead.
 std::shared_ptr<const NativeModels> build_native_models(const std::vector<std::shared_ptr<const Clip>>& clips, std::size_t own);
 class NativeClock {

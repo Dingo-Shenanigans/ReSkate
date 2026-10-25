@@ -1,6 +1,7 @@
 #pragma once
 #include <algorithm>
 #include <cmath>
+#include <random>
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -148,6 +149,18 @@ inline std::vector<std::size_t> choose_stance_variants(std::span<const StanceCan
         if (c.pop_rank == best_pop && tier == best_tier) out.push_back(i);
     }
     return out;
+}
+// Which of `count` equally good recordings of a trick plays this attempt (choose_stance_variants' best group). `previous`:
+// the one that played last, plus one (0: none yet). In turns: the one after it, round and round, for as long as he skates;
+// else any of them at random but the one before (never the same twice running). Any number of them: a thousand too.
+template <class Random>
+std::size_t next_variant(std::size_t previous, std::size_t count, bool in_turns, Random& random) {
+    if (count <= 1) return 0;
+    if (in_turns) return previous % count;
+    const bool avoid = previous > 0 && previous <= count;
+    auto pick = std::uniform_int_distribution<std::size_t>(0, count - (avoid ? 2 : 1))(random);
+    if (avoid && pick >= previous - 1) ++pick;
+    return pick;
 }
 // A recording made on the other foot is played mirrored, the game's way.
 inline bool plays_mirrored(const StanceCandidate& c, LiveStance live) noexcept { return c.leads_right != live.leads_right; }

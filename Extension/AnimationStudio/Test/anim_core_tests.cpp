@@ -20,6 +20,8 @@
 #include <filesystem>
 #include <fstream>
 #include <cmath>
+#include <set>
+#include <random>
 #include <iostream>
 #include <vector>
 #include <stdexcept>
@@ -130,6 +132,45 @@ void packs_and_playlist() {
           "Fixed: the first in the playlist plays; whole packs, single tricks and what is off as set");
     select_playlist(presets, packs, playlist, PlaylistMode::turns);
     check(presets[4].active && presets[1].active && presets[4].order < presets[1].order, "In turns: all of them play, in the playlist's order");
+    {
+        // A tester with a lot of tricks (2026-10-25): past a few hundred, shuffle and In turns stuck to the first one. 1200
+        // kickflips in one pack: every one of them plays, in turns round and round, shuffled never twice running.
+        PresetPack big;
+        big.name = "Big";
+        std::vector<Preset> many;
+        for (int i = 0; i < 1200; ++i) {
+            const auto name = "Kickflip " + std::to_string(i);
+            big.slots["kickflip|mid"].push_back(name);
+            many.push_back({name, "kickflip", "mid"});
+        }
+        const std::vector<PlaylistEntry> whole{{"Big", ""}};
+        for (const auto mode : {PlaylistMode::turns, PlaylistMode::shuffle}) {
+            select_playlist(many, std::span<const PresetPack>(&big, 1), whole, mode);
+            bool all = true;
+            for (int i = 0; i < 1200; ++i) all = all && many[static_cast<std::size_t>(i)].active && many[static_cast<std::size_t>(i)].order == i;
+            check(all, "1200 of a trick in a playlist: all of them play, in the playlist's order");
+        }
+        std::mt19937 random{7};
+        std::size_t previous = 0;
+        bool in_order = true;
+        for (std::size_t attempt = 0; attempt < 3600; ++attempt) {
+            const auto pick = next_variant(previous, 1200, true, random);
+            in_order = in_order && pick == attempt % 1200;
+            previous = pick + 1;
+        }
+        check(in_order, "In turns: 1200 of a trick play one after another, round and round");
+        previous = 0;
+        bool never_twice = true;
+        std::set<std::size_t> played;
+        for (int attempt = 0; attempt < 6000; ++attempt) {
+            const auto pick = next_variant(previous, 1200, false, random);
+            never_twice = never_twice && pick + 1 != previous && pick < 1200;
+            played.insert(pick);
+            previous = pick + 1;
+        }
+        check(never_twice && played.size() > 1150, "Shuffle: 1200 of a trick all come up, never the same twice running");
+        check(next_variant(0, 1, false, random) == 0 && next_variant(5, 1, true, random) == 0, "One of a trick: that one");
+    }
     check(stance_version("regular", false, false, false) == 0 && stance_version("regular", false, true, false) == 1 &&
               stance_version("regular", true, false, false) == 2 && stance_version("goofy", false, true, false) == 3,
           "A trick's stance version, against the skater's own stance");

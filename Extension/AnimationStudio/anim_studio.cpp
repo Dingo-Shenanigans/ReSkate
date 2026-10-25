@@ -922,7 +922,7 @@ std::string free_playlist_name(const Playlists& playlists) {
     for (std::size_t n = playlists.lists.size() + 1;; ++n)
         if (const auto name = "Playlist " + std::to_string(n); !playlists.named(name)) return name;
 }
-// How the playlist's tricks take turns, for the game's side (read_custom_tricks sets it).
+// How the playlist's tricks take turns, for the game's side (the trick loader sets it with the set of tricks it is for).
 std::atomic<int> playlist_turns_mode{0};
 std::filesystem::path pack_thumbnail_file(const std::string& name) { return library_folder() / L"presets" / (name + ".png"); }
 // A path as UTF-8 (path::string() is the ANSI code page, which throws on a name it cannot spell).
@@ -1297,48 +1297,252 @@ void read_library_locked(State& s) {
 std::shared_ptr<Clip> read_game_clip(const GameTrick& trick); // a clip of the trick library, below
 namespace {
 float find_catch(const Clip& clip, const Animation& edits); // below
-// Every saved animation with a trick, ready to play in game. Read from the files, outside the lock.
-std::shared_ptr<const CustomTricks> read_custom_tricks(const std::string& test_trick) {
-    auto tricks = std::make_shared<CustomTricks>();
+// ---- the saved tricks the game plays ------------------------------------------------------------------
+// Read on a thread of their own (trick_loader, below): first as soon as ReSkate starts, then whenever what plays changes,
+// so neither the game nor the studio waits on them, and what played before goes on playing until the new set is ready.
+// What was read before is kept (TrickCache) and only what changed on disk is read again, so a change of playlist, of its
+// mode or of a pack takes moments, with a thousand tricks too. A clip that is the same as another - a pack's tricks edited
+// from the same clip of the game's - is one clip in memory, and the poses NativeClock follows are worked out once for each
+// clip and shared (each trick kept its own 2 MB clip and its own copies before: a thousand tricks took gigabytes, were
+// read again on the game's own thread at every change, and what played was the set from before the change meanwhile).
+namespace {
+struct FileStamp {
+    std::int64_t written{};
+    std::uintmax_t size{};
+    bool operator==(const FileStamp&) const = default;
+};
+FileStamp stamp_of(const std::filesystem::path& path) {
     std::error_code error;
-    const auto folder = library_folder();
-    if (folder.empty() || !std::filesystem::is_directory(folder, error)) return tricks;
-    // Select from small JSON metadata before expanding clips.
-    // An inactive pack variant must not consume full animation memory or block a pack switch.
-    std::vector<Preset> requested;
-    for (const auto& entry : saved_jsons(folder)) upgrade_saved(entry);
-    for (const auto& entry : saved_jsons(folder)) {
-        try {
-            std::ifstream in(entry, std::ios::binary);
-            const auto animation = from_json(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()));
-            auto clip_path = entry;
-            clip_path.replace_extension(L".clip");
-            if (!animation.trick.empty() && std::filesystem::is_regular_file(clip_path, error)) {
-                requested.push_back({entry.stem().string(), trick_key(animation.trick), animation.pop, false, false, animation.stance, animation.switch_stance, animation.entry});
-                requested.back().fakie = animation.fakie;
-                requested.back().leads_right = leads_right(authored_goofy(animation), animation.switch_stance.value_or(false));
-                requested.back().saved_at = saved_time(entry);
+    FileStamp out;
+    if (const auto at = std::filesystem::last_write_time(path, error); !error) out.written = static_cast<std::int64_t>(at.time_since_epoch().count());
+    if (const auto size = std::filesystem::file_size(path, error); !error) out.size = size;
+    return out;
+}
+struct TrickCache {
+    // Each saved trick's metadata, by its file: what is chosen from (select_playlist, select_presets).
+    struct Meta {
+        FileStamp json, clip;
+        std::optional<Preset> preset; // none: not a trick that can play (no trick, no clip, not readable)
+    };
+    std::map<std::filesystem::path, Meta> meta;
+    // The tricks read whole, by file, and the pop each was read for (its own, or its pack's).
+    struct Loaded {
+        FileStamp json, clip;
+        std::string pop;
+        CustomTrick trick;
+    };
+    std::map<std::filesystem::path, Loaded> loaded;
+    std::shared_ptr<const std::vector<GameTrick>> catalog;      // the trick library they were read with
+    std::map<std::string, std::shared_ptr<const Clip>> clips;   // the tricks' own clips, by what is in them
+    std::map<std::string, std::vector<NativeModels::Model>> models; // a clip's models (native_models_of), by the same key
+    std::map<std::string, std::vector<std::string>> references; // a trick's clips in the library, by its trick
+};
+TrickCache& trick_cache() {
+    static auto* cache = new TrickCache; // the loader's own: only its thread uses it
+    return *cache;
+}
+std::vector<std::uint8_t> file_bytes(const std::filesystem::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) throw std::runtime_error("its file is missing");
+    return {std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+}
+// What is in a clip's file, as a key (`file` when it cannot be worked out: then it is shared with nothing).
+std::string content_key(const std::vector<std::uint8_t>& bytes, bool native, const std::filesystem::path& file) {
+    auto key = sha256_hex(std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()));
+    if (key.empty()) key = "file|" + utf8_path(file);
+    return key + (native ? "|native" : "|own");
+}
+// A trick's own clip from its file's bytes: the one in memory already when another trick's file has the same (`native`:
+// its pop and landing placed where the game has them, as a trick edited from the game's clip has).
+std::shared_ptr<const Clip> shared_clip(TrickCache& cache, const std::filesystem::path& file, bool native, std::string& key) {
+    const auto bytes = file_bytes(file);
+    key = content_key(bytes, native, file);
+    auto& kept = cache.clips[key];
+    if (!kept) {
+        auto clip = std::make_shared<Clip>(clip_from_bytes(bytes));
+        if (native && place_native_marks(*clip))
+            logging::log(Level::info, Channel::skater, "Animation Studio: a trick's clip pops at {:.2f} s, where the game has it.", clip->takeoff);
+        kept = std::move(clip);
+    }
+    return kept;
+}
+// A clip's models for NativeClock, worked out once for every trick that may play that clip.
+const std::vector<NativeModels::Model>& models_of(TrickCache& cache, const std::string& key, const Clip& clip) {
+    auto found = cache.models.find(key);
+    if (found == cache.models.end()) found = cache.models.emplace(key, native_models_of(clip, 0, false)).first;
+    return found->second;
+}
+// The game's clips a trick may play instead of its own: the library's low, mid and high pop of it, and - under the same
+// trick name - its dark and light catches, underflips, held and late flips (followed too, or a trick caught dark played on
+// its own clock, out of step). Their keys in `cache.models` ("library|<file>"), read once for every trick of the kind.
+const std::vector<std::string>& library_references(TrickCache& cache, const std::string& trick) {
+    if (const auto found = cache.references.find(trick); found != cache.references.end()) return found->second;
+    std::vector<std::string> keys;
+    const auto add = [&](const GameTrick& g) {
+        const auto key = "library|" + g.file;
+        if (std::find(keys.begin(), keys.end(), key) != keys.end()) return;
+        if (!cache.models.contains(key)) {
+            try {
+                const auto clip = read_game_clip(g); // read for its poses, not kept
+                cache.models.emplace(key, native_models_of(*clip, 0, false));
+            } catch (...) {
+                return;
             }
-        } catch (const std::exception& e) {
-            logging::log(Level::warning, Channel::skater, "Animation preset metadata not loaded: {}: {}", entry.filename().string(), e.what());
+        }
+        keys.push_back(key);
+    };
+    try {
+        if (const auto& library = cache.catalog) {
+            std::vector<std::string> families; // "animation/dingo/c_proto_onb_trick_o_kickflip_"
+            for (const auto& g : *library) {
+                if (g.preview_only || g.file.empty() || trick_key(g.trick) != trick) continue;
+                add(g);
+                const auto cut = g.asset.rfind('_');
+                if (g.asset.starts_with("animation/dingo/c_proto_onb_trick_") && cut != std::string::npos) families.push_back(g.asset.substr(0, cut + 1));
+            }
+            for (const auto& g : *library) {
+                if (!g.preview_only || g.file.empty()) continue;
+                for (const auto& family : families) {
+                    if (!g.asset.starts_with(family)) continue;
+                    const std::string_view style(g.asset.c_str() + family.size());
+                    if (style.find("dark") != std::string_view::npos || style.find("light") != std::string_view::npos ||
+                        style.find("uflip") != std::string_view::npos || style.find("held") != std::string_view::npos ||
+                        style.find("lateflip") != std::string_view::npos)
+                        add(g);
+                    break;
+                }
+            }
+        }
+    } catch (const std::exception& e) {
+        logging::log(Level::warning, Channel::skater, "Animation Studio: the library's pops of {} are not looked for: {}", trick, e.what());
+    }
+    return cache.references.emplace(trick, std::move(keys)).first->second;
+}
+// One saved trick read whole, to play: its keys (on its pack's pop when its pack says), its clip, its stance and the
+// clips the game may play for it.
+std::optional<CustomTrick> load_custom_trick(TrickCache& cache, const std::filesystem::path& entry, const Preset& p) {
+    auto clip_path = entry;
+    clip_path.replace_extension(L".clip");
+    std::ifstream json_in(entry, std::ios::binary);
+    const std::string text((std::istreambuf_iterator<char>(json_in)), std::istreambuf_iterator<char>());
+    auto animation = std::make_shared<Animation>(from_json(text));
+    if (animation->trick.empty()) return std::nullopt;
+    if (p.pack_pop) animation->pop = *p.pack_pop; // the pop its pack's rules (or a test) say it plays on
+    std::string key;
+    const auto clip = shared_clip(cache, clip_path, animation->source.kind == "native_asset", key);
+    // A piece of the game's animation (a setup, a loop, the clip a trick is blended from) has no pop of its own: it is
+    // found by its pose while it plays, not by a takeoff.
+    const bool piece = animation->trick.starts_with("native:");
+    if (clip->joints != skeleton_joints || (clip->takeoff < 0 && !piece)) return std::nullopt;
+    const auto trick = trick_key(animation->trick); // a trick saved under an older spelling still plays
+    const bool goofy = authored_goofy(*animation);
+    // Its lead foot from the clip, its label only when the clip cannot tell: labels have been wrong (one made with the
+    // right foot leading was labelled regular normal and played on the wrong leg).
+    const bool label_right = leads_right(goofy, animation->switch_stance.value_or(false));
+    const bool right = clip_leads_right(*clip).value_or(label_right);
+    if (right != label_right)
+        logging::log(Level::info, Channel::skater, "Animation Studio: {} is labelled as leading with the {} foot but leads with the {}; going by the clip.",
+                     p.name, label_right ? "right" : "left", right ? "right" : "left");
+    // What the game may play for this trick: the trick's own clip, and the library's pops of it (a saved trick plays on
+    // whichever the game picks, following that clip's time). Clip 0 is its own.
+    auto native = std::make_shared<NativeModels>();
+    native->edit_up = clip->takeoff;
+    native->edit_down = clip->landing;
+    for (auto model : models_of(cache, key, *clip)) {
+        model.clip = 0;
+        model.own = true;
+        native->models.push_back(std::move(model));
+    }
+    std::size_t index = 1;
+    for (const auto& reference : library_references(cache, trick)) {
+        if (const auto found = cache.models.find(reference); found != cache.models.end() && !found->second.empty()) {
+            for (auto model : found->second) {
+                model.clip = index;
+                model.own = false;
+                native->models.push_back(std::move(model));
+            }
+            ++index;
         }
     }
+    CustomTrick out{trick, p.name, clip, animation, goofy, right, animation->fakie, std::move(native)};
+    out.caught = find_catch(*clip, *animation);
+    return out;
+}
+} // namespace
+// Every saved animation with a trick, ready to play in game, and how the playlist's tricks take turns. Read from the
+// files, outside the lock, on the loader's thread.
+struct LoadedTricks {
+    std::shared_ptr<const CustomTricks> tricks;
+    PlaylistMode mode{PlaylistMode::shuffle};
+};
+LoadedTricks read_custom_tricks(const std::string& test_trick) {
+    LoadedTricks result;
+    auto tricks = std::make_shared<CustomTricks>();
+    result.tricks = tricks;
+    std::error_code error;
+    const auto folder = library_folder();
+    if (folder.empty() || !std::filesystem::is_directory(folder, error)) return result;
+    auto& cache = trick_cache();
+    // The trick library rebuilt or refreshed: the game's clips are read again.
+    std::shared_ptr<const std::vector<GameTrick>> catalog;
+    try { catalog = game_tricks(); } catch (...) {}
+    if (catalog != cache.catalog) {
+        cache.catalog = catalog;
+        cache.loaded.clear();
+        cache.references.clear();
+        std::erase_if(cache.models, [](const auto& e) { return e.first.starts_with("library|"); });
+    }
+    // Select from small JSON metadata before expanding clips: an inactive pack variant must not take a whole animation's
+    // memory or hold up a pack switch. Each file is brought up to date (upgrade_saved) and read only when it changed.
+    std::vector<Preset> requested;
+    std::map<std::string, std::filesystem::path> file_of;
+    std::set<std::filesystem::path> seen;
+    for (const auto& entry : saved_jsons(folder)) {
+        seen.insert(entry);
+        auto clip_path = entry;
+        clip_path.replace_extension(L".clip");
+        auto json_stamp = stamp_of(entry);
+        const auto clip_stamp = stamp_of(clip_path);
+        auto& meta = cache.meta[entry];
+        if (!(meta.json == json_stamp && meta.clip == clip_stamp && meta.json.written)) {
+            if (upgrade_saved(entry)) json_stamp = stamp_of(entry);
+            meta = {json_stamp, clip_stamp, std::nullopt};
+            try {
+                std::ifstream in(entry, std::ios::binary);
+                const auto animation = from_json(std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>()));
+                if (!animation.trick.empty() && std::filesystem::is_regular_file(clip_path, error)) {
+                    Preset p{entry.stem().string(), trick_key(animation.trick), animation.pop, false, false, animation.stance, animation.switch_stance, animation.entry};
+                    p.fakie = animation.fakie;
+                    p.leads_right = leads_right(authored_goofy(animation), animation.switch_stance.value_or(false));
+                    p.saved_at = saved_time(entry);
+                    meta.preset = std::move(p);
+                }
+            } catch (const std::exception& e) {
+                logging::log(Level::warning, Channel::skater, "Animation preset metadata not loaded: {}: {}", entry.filename().string(), e.what());
+            }
+        }
+        if (meta.preset) {
+            requested.push_back(*meta.preset);
+            file_of[meta.preset->name] = entry;
+        }
+    }
+    std::erase_if(cache.meta, [&](const auto& e) { return !seen.contains(e.first); });
     try {
         // The playlist, when it is on, says what plays; else the packs that are on do.
         const auto playlist = read_playlist();
         if (playlist.on) {
             select_playlist(requested, all_packs(), playlist.entries, playlist.mode);
-            playlist_turns_mode.store(static_cast<int>(playlist.mode), std::memory_order_release);
+            result.mode = playlist.mode;
         } else {
             const auto choices = read_conflict_choices();
             const auto on = packs_on();
             const std::set<std::string> none; // your own tricks play from a playlist
             select_presets(requested, on, &choices, &none);
-            playlist_turns_mode.store(static_cast<int>(PlaylistMode::shuffle), std::memory_order_release);
+            result.mode = PlaylistMode::shuffle;
         }
     } catch (const std::exception& e) {
         logging::log(Level::warning, Channel::skater, "Animation pack not loaded: {}", e.what());
-        return tricks;
+        return result;
     }
     // Test in game: that trick plays, on any pop, over whatever else there is of it in its own stance. Its other stance
     // versions (the same trick and pop made fakie, switch or switch fakie: make_stance_version) play in theirs, the newest
@@ -1364,102 +1568,49 @@ std::shared_ptr<const CustomTricks> read_custom_tricks(const std::string& test_t
             logging::log(Level::info, Channel::skater, "Animation Studio: testing {} in game{}.", t->name,
                          others.empty() ? std::string{} : " (and its " + std::to_string(others.size()) + " other stance versions, each in its stance)");
         }
-    std::map<std::string, std::shared_ptr<const Clip>> library_clips; // read once for every saved trick of a kind
-    for (const auto& entry : saved_jsons(folder)) {
-        if (std::none_of(requested.begin(), requested.end(), [&](const Preset& p) {
-            return p.active && p.name == entry.stem().string();
-        })) continue;
-        try {
-            std::ifstream json_in(entry, std::ios::binary);
-            const std::string text((std::istreambuf_iterator<char>(json_in)), std::istreambuf_iterator<char>());
-            auto animation = std::make_shared<Animation>(from_json(text));
-            if (animation->trick.empty()) continue;
-            // The pop its pack's rules (or a test) say it plays on.
-            bool own_pop = true;
-            if (const auto p = std::find_if(requested.begin(), requested.end(), [&](const Preset& x) { return x.name == entry.stem().string(); });
-                p != requested.end() && p->pack_pop) {
-                animation->pop = *p->pack_pop;
-                own_pop = false;
-            }
-            auto clip_path = entry;
-            clip_path.replace_extension(L".clip");
-            std::ifstream clip_in(clip_path, std::ios::binary);
-            const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(clip_in)), std::istreambuf_iterator<char>());
-            auto clip = std::make_shared<Clip>(clip_from_bytes(bytes));
-            if (animation->source.kind == "native_asset" && place_native_marks(*clip))
-                logging::log(Level::info, Channel::skater, "Animation Studio: {} pops at {:.2f} s in its clip, where the game has it.", entry.stem().string(), clip->takeoff);
-            // A piece of the game's animation (a setup, a loop, the clip a trick is blended from) has no
-            // pop of its own: it is found by its pose while it plays, not by a takeoff.
-            const bool piece = animation->trick.starts_with("native:");
-            if (clip->joints != skeleton_joints || (clip->takeoff < 0 && !piece)) continue;
-            const auto trick = trick_key(animation->trick); // a trick saved under an older spelling still plays
-            const bool goofy = authored_goofy(*animation);
-            // Its lead foot from the clip, its label only when the clip cannot tell: labels have been wrong
-            // (one made with the right foot leading was labelled regular normal and played on the wrong leg).
-            const bool label_right = leads_right(goofy, animation->switch_stance.value_or(false));
-            const bool right = clip_leads_right(*clip).value_or(label_right);
-            if (right != label_right)
-                logging::log(Level::info, Channel::skater, "Animation Studio: {} is labelled as leading with the {} foot but leads with the {}; going by the clip.",
-                             entry.stem().string(), label_right ? "right" : "left", right ? "right" : "left");
-            const auto fakie = animation->fakie;
-            // What the game may play for this trick: the trick's own clip, and the library's low, mid and high
-            // pop of it (a saved trick plays on whichever the game picks, following that clip's time).
-            std::vector<std::shared_ptr<const Clip>> references{clip};
+    // The ones that play, read whole: from memory when neither its files nor the pop it plays on changed.
+    std::set<std::filesystem::path> used;
+    std::size_t read_now = 0;
+    for (const auto& p : requested) {
+        if (!p.active) continue;
+        const auto file = file_of.find(p.name);
+        if (file == file_of.end()) continue;
+        const auto& entry = file->second;
+        const auto& meta = cache.meta[entry];
+        const std::string pop = p.pack_pop ? "pack:" + *p.pack_pop : std::string("own");
+        auto& loaded = cache.loaded[entry];
+        used.insert(entry);
+        if (!loaded.trick.clip || !(loaded.json == meta.json) || !(loaded.clip == meta.clip) || loaded.pop != pop) {
+            loaded = {};
             try {
-                if (const auto library = game_tricks()) {
-                    const auto add = [&](const GameTrick& g) {
-                        auto found = library_clips.find(g.file);
-                        if (found == library_clips.end()) {
-                            std::shared_ptr<const Clip> loaded;
-                            try { loaded = read_game_clip(g); } catch (...) {}
-                            found = library_clips.emplace(g.file, std::move(loaded)).first;
-                        }
-                        if (found->second) references.push_back(found->second);
-                    };
-                    // The game's clips of the trick's family ("animation/dingo/c_proto_onb_trick_o_kickflip_").
-                    std::vector<std::string> families;
-                    for (const auto& g : *library) {
-                        if (g.preview_only || g.file.empty()) continue;
-                        if (trick_key(g.trick) != trick) continue;
-                        add(g);
-                        const auto cut = g.asset.rfind('_');
-                        if (g.asset.starts_with("animation/dingo/c_proto_onb_trick_") && cut != std::string::npos)
-                            families.push_back(g.asset.substr(0, cut + 1));
-                    }
-                    // Under the same trick name the game also plays its dark and light catches, underflips, held and late
-                    // flips: they are followed too, or a trick caught dark played on its own clock, out of step.
-                    for (const auto& g : *library) {
-                        if (!g.preview_only || g.file.empty()) continue;
-                        for (const auto& family : families) {
-                            if (!g.asset.starts_with(family)) continue;
-                            const std::string_view style(g.asset.c_str() + family.size());
-                            if (style.find("dark") != std::string_view::npos || style.find("light") != std::string_view::npos ||
-                                style.find("uflip") != std::string_view::npos || style.find("held") != std::string_view::npos ||
-                                style.find("lateflip") != std::string_view::npos)
-                                add(g);
-                            break;
-                        }
-                    }
-                }
+                auto trick = load_custom_trick(cache, entry, p);
+                if (!trick) continue;
+                loaded = {meta.json, meta.clip, pop, std::move(*trick)};
+                ++read_now;
             } catch (const std::exception& e) {
-                logging::log(Level::warning, Channel::skater, "Animation Studio: the library's pops of {} are not looked for: {}", trick, e.what());
+                logging::log(Level::warning, Channel::skater, "Animation Studio: {} was not loaded: {}", entry.filename().string(), e.what());
+                continue;
             }
-            auto native = build_native_models(references, 0);
-            tricks->push_back({trick, entry.stem().string(), clip, std::move(animation), goofy, right, fakie, std::move(native)});
-            tricks->back().caught = find_catch(*clip, *tricks->back().edits);
-            tricks->back().own_pop = own_pop;
-            if (const auto p = std::find_if(requested.begin(), requested.end(), [&](const Preset& x) { return x.name == entry.stem().string(); });
-                p != requested.end())
-                tricks->back().order = p->order;
-        } catch (const std::exception& e) {
-            logging::log(Level::warning, Channel::skater, "Animation Studio: {} was not loaded: {}", entry.filename().string(), e.what());
         }
+        auto trick = loaded.trick;
+        trick.own_pop = !p.pack_pop;
+        trick.order = p.order;
+        tricks->push_back(std::move(trick));
     }
+    // What plays no more lets go of its memory: its trick, its clip when no other trick has it, its models.
+    std::erase_if(cache.loaded, [&](const auto& e) { return !used.contains(e.first); });
+    std::erase_if(cache.clips, [](const auto& e) { return e.second.use_count() == 1; });
+    std::erase_if(cache.models, [](const auto& e) {
+        return !e.first.starts_with("library|") && (e.second.empty() || e.second.front().frames.use_count() == 1);
+    });
     std::sort(tricks->begin(), tricks->end(), [](const CustomTrick& a, const CustomTrick& b) { return a.name < b.name; });
+    std::map<std::string, std::size_t> kinds;
+    for (const auto& t : *tricks) ++kinds[t.trick];
     std::string names;
-    for (const auto& t : *tricks) names += (names.empty() ? "" : ", ") + t.trick;
-    logging::log(Level::info, Channel::skater, "Animation Studio: {} custom tricks ready{}{}.", tricks->size(), names.empty() ? "" : ": ", names);
-    return tricks;
+    for (const auto& [trick, count] : kinds) names += (names.empty() ? "" : ", ") + trick + (count > 1 ? " x" + std::to_string(count) : std::string{});
+    logging::log(Level::info, Channel::skater, "Animation Studio: {} custom tricks ready ({} read from disk, {} clips in memory){}{}.", tricks->size(),
+                 read_now, cache.clips.size(), names.empty() ? "" : ": ", utf8_prefix(names, 2000));
+    return result;
 }
 
 // Publishes what the animation thread works from. Caller holds the mutex.
@@ -3318,15 +3469,8 @@ void on_animation(std::uintptr_t component) noexcept {
                         // Which plays this attempt: any of them at random, but not the one that played last.
                         // (previous is the one that played last, plus one: 0 when none has yet.)
                         auto& previous = l.variant_counts[name + "|" + entry_name(l.episode.entry)];
-                        std::size_t pick = 0;
-                        if (variants.size() > 1 && in_turns) {
-                            pick = previous % variants.size(); // one after another
-                        } else if (variants.size() > 1) {
-                            static thread_local std::mt19937 random{static_cast<std::uint32_t>(GetTickCount64())};
-                            const bool avoid = previous > 0 && previous <= variants.size();
-                            pick = std::uniform_int_distribution<std::size_t>(0, variants.size() - (avoid ? 2 : 1))(random);
-                            if (avoid && pick >= previous - 1) ++pick;
-                        }
+                        static thread_local std::mt19937 random{static_cast<std::uint32_t>(GetTickCount64())};
+                        const std::size_t pick = next_variant(previous, variants.size(), in_turns, random);
                         previous = pick + 1;
                         choice = l.attempt_variants.emplace(name, pick).first;
                     }
@@ -4454,6 +4598,67 @@ void on_board_render(std::uintptr_t animation_interface, std::uintptr_t /*render
     SetLastError(error);
 }
 
+// ---- the trick loader ----------------------------------------------------------------------------
+// Reads the saved tricks (read_custom_tricks) on a thread of its own, below the game's: one read at a time, and once more
+// when asked again while it read. What it read goes in when it is done; until then what played before plays on.
+namespace {
+struct TrickLoader {
+    std::mutex mutex;
+    bool running{}, again{};
+};
+TrickLoader& trick_loader() {
+    static auto* loader = new TrickLoader; // process lifetime
+    return *loader;
+}
+void run_trick_loader() {
+    for (;;) {
+        auto& s = state();
+        std::string test;
+        {
+            std::lock_guard lock(s.mutex);
+            test = s.test_trick;
+        }
+        LoadedTricks loaded;
+        try {
+            loaded = read_custom_tricks(test);
+        } catch (const std::exception& e) {
+            logging::log(Level::warning, Channel::skater, "Animation Studio: the saved tricks could not be read: {}", e.what());
+        } catch (...) {}
+        if (loaded.tricks) {
+            std::lock_guard lock(s.mutex);
+            playlist_turns_mode.store(static_cast<int>(loaded.mode), std::memory_order_release); // with the set it is for
+            s.tricks = std::move(loaded.tricks);
+            publish_locked(s);
+        }
+        auto& l = trick_loader();
+        std::lock_guard lock(l.mutex);
+        if (!l.again) {
+            l.running = false;
+            return;
+        }
+        l.again = false;
+    }
+}
+} // namespace
+void load_custom_tricks() {
+    auto& l = trick_loader();
+    std::lock_guard lock(l.mutex);
+    if (l.running) {
+        l.again = true;
+        return;
+    }
+    l.running = true;
+    l.again = false;
+    try {
+        std::thread([] {
+            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+            run_trick_loader();
+        }).detach();
+    } catch (...) {
+        l.running = false;
+    }
+}
+
 // ---- the engine thread ---------------------------------------------------------------------------
 std::shared_ptr<Clip> read_game_clip(const GameTrick& trick); // a clip of the trick library, below
 TickResult tick(std::uintptr_t base, std::uintptr_t component, bool open, float camera_fov) {
@@ -4515,23 +4720,15 @@ TickResult tick(std::uintptr_t base, std::uintptr_t component, bool open, float 
         l.board_holder.store(next_board_holder, std::memory_order_release);
     }
     {
+        // The saved tricks, read again when what plays changed: on the loader's thread (the first time as ReSkate starts),
+        // never on the game's.
         bool read{};
         {
             std::lock_guard lock(s.mutex);
             read = !s.tricks_read;
             s.tricks_read = true;
         }
-        if (read) {
-            std::string test;
-            {
-                std::lock_guard lock(s.mutex);
-                test = s.test_trick;
-            }
-            auto tricks = read_custom_tricks(test);
-            std::lock_guard lock(s.mutex);
-            s.tricks = std::move(tricks);
-            publish_locked(s);
-        }
+        if (read) load_custom_tricks();
     }
     // The casual stance, read once the studio opens.
     if (open) {
@@ -7585,7 +7782,9 @@ void build_library_when_needed(bool now) {
     static std::atomic<bool> looked{false};
     static const auto since = std::chrono::steady_clock::now();
     if (looked.load(std::memory_order_acquire)) return;
-    if (!now && std::chrono::steady_clock::now() - since < std::chrono::seconds(20)) return; // the game's own loading first
+    // As soon as ReSkate runs (the first frame drawn), below the game's priority, so a library from before an update is
+    // built again while the game loads and the player gets in, never when the studio is opened. It waited 20 s.
+    if (!now && std::chrono::steady_clock::now() - since < std::chrono::seconds(1)) return;
     looked.store(true, std::memory_order_release);
     const auto build = library_build();
     if (build.running || (build.exists && !build.outdated)) return;

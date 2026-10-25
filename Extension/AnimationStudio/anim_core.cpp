@@ -1739,41 +1739,50 @@ float NativeModels::model_time(const Model& model, float seconds) const noexcept
     if (seconds >= edit_down) return model.down + (seconds - edit_down);
     return model.up + (seconds - edit_up) * (model.down - model.up) / (edit_down - edit_up);
 }
+std::vector<NativeModels::Model> native_models_of(const Clip& clip, std::size_t index, bool own) {
+    std::vector<NativeModels::Model> out;
+    // The body joints a trick is edited by: the ones that say most about the pose, the same for every clip.
+    static const auto body = [] {
+        std::vector<std::uint16_t> picked;
+        for (const auto& e : editable_joints())
+            if (e.index < native_body_joints && e.index < skeleton_joints && gameplay_body_joint(e.index) &&
+                mirror_joint[e.index] < native_body_joints)
+                picked.push_back(e.index);
+        return picked;
+    }();
+    if (clip.empty() || clip.joints < native_body_joints || clip.times.size() < 4 || body.size() < 6) return out;
+    for (const bool mirrored : {false, true}) {
+        NativeModels::Model model;
+        model.clip = index;
+        model.own = own;
+        model.mirrored = mirrored;
+        model.up = clip.takeoff;
+        model.down = clip.landing;
+        model.duration = clip.duration();
+        model.times = clip.times;
+        // Mirrored, the live joint on the other side is compared with this one reflected (as PieceTracker).
+        for (const auto j : body) model.joints.push_back(mirrored ? mirror_joint[j] : j);
+        auto frames = std::make_shared<std::vector<Quat>>();
+        frames->reserve(clip.times.size() * body.size());
+        for (std::size_t f = 0; f < clip.times.size(); ++f)
+            for (const auto j : body) {
+                const auto& q = clip.frame(f)[j].rotation;
+                frames->push_back(mirrored ? mirror_rotation(q) : q);
+            }
+        model.frames = std::move(frames);
+        out.push_back(std::move(model));
+    }
+    return out;
+}
 std::shared_ptr<const NativeModels> build_native_models(const std::vector<std::shared_ptr<const Clip>>& clips, std::size_t own) {
     auto out = std::make_shared<NativeModels>();
     if (own < clips.size() && clips[own]) {
         out->edit_up = clips[own]->takeoff;
         out->edit_down = clips[own]->landing;
     }
-    // The body joints a trick is edited by: the ones that say most about the pose, the same for every clip.
-    std::vector<std::uint16_t> body;
-    for (const auto& e : editable_joints())
-        if (e.index < native_body_joints && e.index < skeleton_joints && gameplay_body_joint(e.index) &&
-            mirror_joint[e.index] < native_body_joints)
-            body.push_back(e.index);
-    for (std::size_t c = 0; c < clips.size(); ++c) {
-        const auto& clip = clips[c];
-        if (!clip || clip->empty() || clip->joints < native_body_joints || clip->times.size() < 4 || body.size() < 6) continue;
-        for (const bool mirrored : {false, true}) {
-            NativeModels::Model model;
-            model.clip = c;
-            model.own = c == own;
-            model.mirrored = mirrored;
-            model.up = clip->takeoff;
-            model.down = clip->landing;
-            model.duration = clip->duration();
-            model.times = clip->times;
-            // Mirrored, the live joint on the other side is compared with this one reflected (as PieceTracker).
-            for (const auto j : body) model.joints.push_back(mirrored ? mirror_joint[j] : j);
-            model.frames.reserve(clip->times.size() * body.size());
-            for (std::size_t f = 0; f < clip->times.size(); ++f)
-                for (const auto j : body) {
-                    const auto& q = clip->frame(f)[j].rotation;
-                    model.frames.push_back(mirrored ? mirror_rotation(q) : q);
-                }
-            out->models.push_back(std::move(model));
-        }
-    }
+    for (std::size_t c = 0; c < clips.size(); ++c)
+        if (clips[c])
+            for (auto& model : native_models_of(*clips[c], c, c == own)) out->models.push_back(std::move(model));
     return out;
 }
 void NativeClock::start(std::shared_ptr<const NativeModels> models) noexcept {
@@ -1792,9 +1801,10 @@ void NativeClock::reset() noexcept {
 }
 float NativeClock::error_at(const NativeModels::Model& model, std::size_t frame, std::span<const Joint> pose) const noexcept {
     const auto n = model.joints.size();
-    if (!n || frame >= model.times.size()) return 180;
+    if (!n || frame >= model.times.size() || !model.frames || model.frames->size() < (frame + 1) * n) return 180;
+    const auto& frames = *model.frames;
     float sum = 0;
-    for (std::size_t k = 0; k < n; ++k) sum += degrees_between(pose[model.joints[k]].rotation, model.frames[frame * n + k]);
+    for (std::size_t k = 0; k < n; ++k) sum += degrees_between(pose[model.joints[k]].rotation, frames[frame * n + k]);
     return sum / static_cast<float>(n);
 }
 NativeClock::Reading NativeClock::update(std::span<const Joint> pose, float step) noexcept {
