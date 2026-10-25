@@ -1,5 +1,6 @@
 #include "material_transmission.h"
 #include "Engine/Core/Log/logging.h"
+#include "material_mask_formats.h"
 #include "material_transmission_hlsl.h"
 #include <algorithm>
 #include <array>
@@ -10,6 +11,7 @@
 #include <fstream>
 #include <map>
 #include <mutex>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -186,18 +188,20 @@ void remember_descriptor(Transmission &s, SIZE_T key, DepthDescriptor descriptor
     };
     const auto bytes = estimate(descriptor);
     s.descriptors.erase(key);
-    if (bytes > 64ull * 1024 * 1024)
+    if (bytes > 256ull * 1024 * 1024)
         return;
     const auto retained = [&] {
         UINT64 total = bytes;
+        std::set<ID3D12Resource *> counted{descriptor.resource.Get()};
         for (const auto &[unused, value] : s.descriptors)
         {
             (void)unused;
-            total += estimate(value);
+            if (counted.insert(value.resource.Get()).second)
+                total += estimate(value);
         }
         return total;
     };
-    while (!s.descriptors.empty() && (s.descriptors.size() >= 8 || retained() > 64ull * 1024 * 1024))
+    while (!s.descriptors.empty() && (s.descriptors.size() >= 512 || retained() > 256ull * 1024 * 1024))
         s.descriptors.erase(s.descriptors.begin());
     s.descriptors.emplace(key, std::move(descriptor));
 }
@@ -228,8 +232,8 @@ void ensure_mask(MaskFrame &f, const MaterialMaskDraw &draw)
                    f.formats != draw.formats || !f.device || !same_device(f.device.Get(), draw.device);
     if (!rebuild)
         return;
-    if (UINT64{static_cast<UINT>(draw.viewport.Width)} * static_cast<UINT>(draw.viewport.Height) * 64 >
-        160ull * 1024 * 1024)
+    if (detail::material_mask_bytes(static_cast<UINT>(draw.viewport.Width), static_cast<UINT>(draw.viewport.Height)) >
+        detail::material_mask_byte_limit)
         throw std::runtime_error("material surface exceeds the per-frame memory budget");
     f.images = {};
     f.rtvs.Reset();
@@ -398,7 +402,7 @@ void material_depth_descriptor(ID3D12Resource *resource, const D3D12_DEPTH_STENC
         if (shape.Width < 64 || shape.Width > 4096 || shape.Height < 64 || shape.Height > 2160)
             return;
         std::lock_guard lock(s.mutex);
-        remember_descriptor(s, handle.ptr, {resource, desc ? desc->Flags : D3D12_DSV_FLAG_NONE});
+        remember_descriptor(s, handle.ptr, {plain(resource), desc ? desc->Flags : D3D12_DSV_FLAG_NONE});
     }
     catch (...)
     {

@@ -77,6 +77,42 @@ Mask ps(){Mask o;o.a=0;o.b=0;o.c=0;o.d=0;return o;}
     check(device2->CreatePipelineState(&stream_desc, IID_PPV_ARGS(&pipeline)));
 }
 } // namespace
+void test_ultrawide_descriptors(ID3D12Device *device)
+{
+    auto depth = make_resource(
+        device, image_desc(3440, 1440, DXGI_FORMAT_R32G8X24_TYPELESS, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL),
+        D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    ComPtr<ID3D12DescriptorHeap> heap;
+    D3D12_DESCRIPTOR_HEAP_DESC desc{};
+    desc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+    desc.NumDescriptors = 66;
+    check(device->CreateDescriptorHeap(&desc, IID_PPV_ARGS(&heap)));
+    auto first = heap->GetCPUDescriptorHandleForHeapStart();
+    auto stride = device->GetDescriptorHandleIncrementSize(desc.Type);
+    material_depth_descriptor(depth.Get(), nullptr, first);
+    for (UINT i = 1; i < 66; ++i)
+    {
+        auto alias = first;
+        alias.ptr += SIZE_T{i} * stride;
+        material_copy_depth_descriptors(device, 1, alias, first);
+    }
+    auto &s = state();
+    if (s.descriptors.size() != 66 || !s.descriptors.contains(first.ptr))
+        throw std::runtime_error("depth descriptor aliases evicted their shared source");
+    if (detail::material_mask_bytes(3440, 1440) > detail::material_mask_byte_limit)
+        throw std::runtime_error("ultrawide mask exceeds budget");
+    MaterialMaskDraw draw{};
+    draw.device = device;
+    draw.target_count = 4;
+    draw.viewport = {0, 0, 3440, 1440, 0, 1};
+    auto formats = detail::material_mask_formats();
+    std::copy_n(formats.RTFormats, 8, draw.formats.begin());
+    MaskFrame frame;
+    ensure_mask(frame, draw);
+    if (!frame.images[3])
+        throw std::runtime_error("ultrawide mask allocation failed");
+}
+
 int main(int argc, char **argv)
 {
     try
@@ -91,6 +127,11 @@ int main(int argc, char **argv)
         if (scenario == "pipeline-formats")
         {
             test_mask_pipeline_formats(device.Get());
+            return 0;
+        }
+        if (scenario == "ultrawide-descriptors")
+        {
+            test_ultrawide_descriptors(device.Get());
             return 0;
         }
         ComPtr<ID3D12CommandQueue> queue;

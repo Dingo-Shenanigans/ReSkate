@@ -58,7 +58,7 @@ The mask should reproduce the source surface's coverage, including any opaque bo
 - Mask paths must use forward slashes, stay inside the declaring mod after canonical resolution, and contain no absolute paths, traversal or alternate data streams.
 - Presentation is SDR only, with single-sample R10G10B10A2, RGBA8 or BGRA8 output. HDR retains native rendering. The SDR transfer is a 2.2 gamma approximation.
 - Screen-sized compatible depth and a matching viewport/device/submission are required. Stale masks, mismatched cameras, unavailable depth or rejected private pipelines leave native rendering in place.
-- The implementation has two mask slots and three depth slots. Private mask targets are limited to 160 MiB per slot, so the effective supported resolution can be lower than the 4096×2160 dimension ceiling. The common four 16-byte targets exceed that budget at 4K.
+- The implementation has two mask slots and three depth slots. Private mask targets are limited to 256 MiB per slot, so the effective supported resolution can be lower than the 4096×2160 dimension ceiling. Position and calibration retain 32-bit channels; normal/thickness use half precision and print coverage uses RGBA8 (44 bytes/pixel total). 3440�1440 fits; 4K exceeds that budget.
 - Reflections and refraction only use the current screen image; off-screen or hidden radiance is unavailable. Displacement is bounded and avoids sampling foreground objects and print. This is not ray tracing or a complete physical glass volume simulation.
 - One optical parameter set is retained per mask frame; different simultaneous surfaces requiring different optical settings are not yet a supported composition contract.
 
