@@ -29,6 +29,7 @@ CREW = {
     "smonky": ("smonk_portrait.png", (412, 175, 210), "smonk_shot.png"),  # smonk
     "myawsometeam": ("setsu_portrait.png", (100, 100, 200), "setsu_shot.webp"),  # Setsu: the avatar whole
     "heatz": ("heatz_portrait.webp", (1060, 440, 660), "heatz_shot.webp"),
+    "leafbro": ("leaf_portrait.webp", (1005, 930, 2060), "leaf_shot.webp"),  # leaf.bro: the eyes, whole
     # BUILT BY (studio::market::builders), by the name their pictures go under.
     "22sh": ("22sh_portrait.png", (368, 330, 640), "GRIP"),
     "fourth": ("fourth_logo.webp", (570, 430, 740), "fourth_shot.webp"),  # his red tag, round
