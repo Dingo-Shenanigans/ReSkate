@@ -14,6 +14,7 @@
 #include "party_book.h"
 #include "Engine/Game/World/world_names.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
+#include "Extension/Multiplayer/Remote/native_cosmetics.h"
 #include "Extension/Multiplayer/Remote/outfit_shuffle.h"
 #include "Extension/Multiplayer/Hud/custom_nametags.h"
 #include "Extension/Multiplayer/Hud/follow_camera.h"
@@ -1114,6 +1115,9 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, std::string_vi
     profile_runtime::install_board_wear_hold(base);
     s.gameplay_ready = ready;
     s.available_map = map_name;
+    // The shuffle's catalog is built as soon as the game has its cosmetics, not on the first
+    // shuffled apply (the first player to arrive would otherwise pay for it).
+    prepare_shuffle_catalog(base);
     set_multiplayer_session_active(s.mode == Mode::host || s.mode == Mode::join);
     struct PartyPublication {
         Session &value;

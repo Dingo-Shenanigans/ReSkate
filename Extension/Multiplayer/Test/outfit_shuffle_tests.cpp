@@ -183,26 +183,42 @@ int main() {
     const std::vector<std::uint32_t> unlisted{9, 9, 9};
     check(shuffle_recipe(stray, unlisted, cat, seed) == 0 && stray == worn(), "A slot with no category in the catalog is left alone");
 
-    // Mod items only: the shuffle picks from the items a mod installed, and a slot no mod item
-    // fits keeps what it shows.
+    // Two pools, the game's items and the mod items. Mod items only picks from the mod pool, and a
+    // slot no mod item fits keeps what it shows; otherwise a pick is one draw over both.
     {
-        const ShuffleCatalog mixed({{"Own_TopShirt_A", {tops}},
-                                    {"Own_TopShirt_B", {tops}},
-                                    {"Mod_Top", {tops}, true},
-                                    {"Mod_Overalls", {tops, bottoms}, true},
-                                    {"Own_BottomPants_B", {bottoms}},
-                                    {"Own_Hat_A", {hats}}});
-        const auto mods = mixed.mods();
-        check(mods.size() == 2 && mods.modded(0) && mods.modded(1), "Only the mod items stay");
-        check(mods.in_category(tops) && mods.in_category(tops)->size() == 2 && mods.in_category(bottoms) &&
-                  mods.in_category(bottoms)->size() == 1 && !mods.in_category(hats),
+        const std::vector<ShuffleCandidate> items{{"Own_TopShirt_A", {tops}},
+                                                  {"Own_TopShirt_B", {tops}},
+                                                  {"Mod_Top", {tops}, true},
+                                                  {"Mod_Overalls", {tops, bottoms}, true},
+                                                  {"Own_BottomPants_B", {bottoms}},
+                                                  {"Own_Hat_A", {hats}},
+                                                  {"Mod_Top", {tops}}}; // listed again: one pool only
+        const ShufflePools pools(items);
+        check(pools.game.size() == 4 && pools.mods.size() == 2 && pools.size() == 6, "The game's items and mod items split");
+        check(pools.mods.in_category(tops) && pools.mods.in_category(tops)->size() == 2 && pools.mods.in_category(bottoms) &&
+                  pools.mods.in_category(bottoms)->size() == 1 && !pools.mods.in_category(hats),
               "A mod item keeps every category it fits");
-        check(ShuffleCatalog({{"Own_TopShirt_A", {tops}}}).mods().size() == 0, "No mod items: nothing to pick");
+        check(pools.game.in_category(tops)->size() == 2 && !pools.game.in_category(12345), "The game pool has no mod item");
+        check(pools.game.fitting(tops) == 2 && pools.mods.fitting(tops) == 2 && pools.game.fitting(hats) == 1 &&
+                  pools.mods.fitting(hats) == 0,
+              "Each pool counts what fits a category");
+        check(ShufflePools({{"Own_TopShirt_A", {tops}}}).mods.size() == 0, "No mod items: an empty mod pool");
         auto r = worn();
         r.items[2].asset = "Own_Hat_A";
-        shuffle_recipe(r, categories, mods, seed);
+        shuffle_recipe(r, categories, pools, true, seed);
         check(r.items[0].asset.starts_with("Mod_") && r.items[1].asset == "Mod_Overalls", "Worn items became mod items");
         check(r.items[2].asset == "Own_Hat_A", "A slot no mod item fits kept what it shows");
+        // Both pools: the same picks as one catalog of every item, and both kinds come up.
+        std::set<std::string> seen;
+        for (std::uint64_t epoch = 0; epoch < 64; ++epoch) {
+            auto both = worn(), whole = worn();
+            shuffle_recipe(both, categories, pools, false, shuffle_seed(42, epoch));
+            shuffle_recipe(whole, categories, ShuffleCatalog(items), shuffle_seed(42, epoch));
+            check(both == whole, "Both pools drew differently from one catalog");
+            seen.insert(both.items[0].asset);
+        }
+        check(seen == std::set<std::string>({"Own_TopShirt_B", "Mod_Top", "Mod_Overalls"}),
+              "Both pools reach every other top, the game's and the mods'");
         const Shuffle mods_clothes{ShuffleMode::everything, seed, true};
         check(mods_clothes.board().mods_only && mods_clothes != Shuffle{ShuffleMode::everything, seed},
               "The board keeps mods only, and turning it on is a new shuffle");

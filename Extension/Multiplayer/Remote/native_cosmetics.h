@@ -2,6 +2,10 @@
 #include "native_skater.h"
 namespace dingosdk::multiplayer {
 std::optional<Appearance> capture_cosmetics(std::uintptr_t base, const NativeFrame &, std::string &detail);
+// Builds the catalog the outfit shuffle draws from once the game's cosmetics manager is ready, and
+// again when the number of installed items changes, so no apply pays for it. Cheap otherwise; call
+// every client tick, in a session or not. Client thread.
+void prepare_shuffle_catalog(std::uintptr_t base);
 // Debug (mp cosmetic-slots): the local skater's and board's template slots, one line each, with the
 // category each takes (what the shuffle matches on), the item worn there, the mod it is from (if
 // any) and how many installed items fit it. Client thread.

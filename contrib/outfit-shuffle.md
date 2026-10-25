@@ -56,13 +56,17 @@ One setting, **Shuffle outfits**, with three values:
 - The parameters the sender chose are kept: the slot, not the item, decides their layout.
 - **The catalog** is every installed cosmetic, read from the game's cosmetics manager
   (`CosmeticMemory::catalog`). It is names and categories only, kept until the number of installed
-  items changes (a mod applied live), so mod items you have are included.
+  items changes (a mod applied live), so mod items you have are included. It is built as soon as
+  the game's cosmetics manager is ready (`prepare_shuffle_catalog`, from the session tick, in a
+  session or not), so the first shuffled player does not wait for it.
 - **Mod items** are the catalog's items that are in no retail catalogue of the installed content
   cache (`content_cache::catalogs().items`, by lower-cased name), the same test as the item
-  browser's Mods filter. `ShuffleCatalog::mods` cuts the catalog to them, and `shuffle_catalog`
-  keeps that cut alongside the whole one. With no content pack installed nothing can be judged
-  modded, so the mod-only pool is empty and every slot keeps what it shows. A mod that replaces a
-  retail item under its own name counts as the game's.
+  browser's Mods filter. The catalog is two pools that share no item (`ShufflePools`): `game`,
+  the items in a retail catalogue, and `mods`, the rest. **Mod items only** draws from `mods`
+  alone; otherwise a pick is one draw over both, so every item that fits has the same chance.
+  With no content pack installed nothing can be judged modded, so the mod pool is empty and with
+  **Mod items only** every slot keeps what it shows. A mod that replaces a retail item under its
+  own name counts as the game's.
 - **The pick** is seeded by the player's Steam ID and the session's shuffle epoch, and per slot, so
   one slot changing does not move the others. Only a reroll changes the epoch.
 - `update_remote_cosmetics` compares the `Shuffle` (mode, seed and `mods_only`) it last used as well
@@ -95,7 +99,7 @@ Skater (recipe key 1234): 24 slots, 18 worn items
 Then one row per slot:
 
 ```
-  [ 3] slot 0xac4c6e13  category 0x1a2b3c4d  wearing "Mod_Hoodie_A"  fits 212  shuffled  from Cool Hoodies by someone
+  [ 3] slot 0xac4c6e13  category 0x1a2b3c4d  wearing "Mod_Hoodie_A"  fits 198 game, 14 mod  shuffled  from Cool Hoodies by someone
 ```
 
 | Part | Meaning |
@@ -104,14 +108,15 @@ Then one row per slot:
 | `slot 0x…` | The slot's id, the same in every game. Outfits sent between players name their slots by it, and `unshuffled_slot_ids` lists slots by it. |
 | `category 0x…` | The kind of item the slot takes. An item goes in the slot only if this is one of its categories; the shuffle uses the same check to choose what can replace an item. |
 | `wearing "…"` / `wearing nothing` | The item in the slot now, by its asset name, or nothing. |
-| `fits N` | How many installed items fit the slot's category: the pool a shuffle draws from. Items reserved for their owners are not counted. The count ignores **Mod items only**, so with that on the real pool is smaller. |
+| `fits N game, M mod` | How many installed items fit the slot's category, in each pool: the game's items and the mod items. A shuffle draws from both, or with **Mod items only** from the mod items alone. Items reserved for their owners are not counted. |
 | `shuffled` | The shuffle can change this slot. A slot without it always shows what the player wears. |
 | `from <mod>` / `changed by <mod>` | The mod the worn item comes from, or the mod that changes one of the game's own items (`item_origins::find`, the same lookup as the item cards). Nothing for an untouched game item, and nothing until ReSkate has merged mods at least once. |
 
 What it helps with:
 
 - **Why a slot never shuffles:** it lacks the `shuffled` mark (it is in `unshuffled_slot_ids`), or
-  `fits` is 0 or 1. With only one item that fits there is nothing else to pick.
+  the two `fits` counts add up to 0 or 1 (with **Mod items only**, the mod count alone). With only
+  one item that fits there is nothing else to pick.
 - **Whether a mod's item fits a slot:** compare the slot's `category` with the item's categories.
 - **Keeping a slot from shuffling:** add its id, from the `slot 0x…` column, to `unshuffled_slot_ids`.
 
