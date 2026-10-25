@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cmath>
 #include <optional>
 
 namespace dingosdk {
@@ -78,5 +79,64 @@ inline std::optional<PlayStationGamepad> parse_playstation_report(PlayStationPad
     if (kind == PlayStationPad::dualshock4 && id == 0x11 && size >= 12)
         return detail::playstation_common(report + 3, report + 7, report[10], report[11]);
     return {};
+}
+
+// Replace only controls in a validated report. System, sequence, sensors and touch data stay
+// untouched; the caller refreshes the transport checksum when this returns true.
+inline bool replace_playstation_report(PlayStationPad kind, bool bluetooth, std::uint8_t* bytes,
+    std::size_t size, const PlayStationGamepad& pad) noexcept {
+    const auto parsed = parse_playstation_report(kind, bluetooth, bytes, size);
+    if (!parsed) return false;
+    const auto& before = *parsed;
+    if (pad.left_trigger == before.left_trigger && pad.right_trigger == before.right_trigger &&
+        pad.left_x == before.left_x && pad.left_y == before.left_y && pad.right_x == before.right_x &&
+        pad.right_y == before.right_y && pad.buttons == before.buttons) return false;
+    // Where parse_playstation_report found them: sticks (left X first), the shoulder byte (L2 0x04,
+    // R2 0x08 digital bits) and the two analog triggers.
+    std::uint8_t *sticks{}, *shoulder{}, *left{}, *right{};
+    const auto id = bytes[0];
+    if (kind == PlayStationPad::dualsense && ((id == 0x01 && !bluetooth) || id == 0x31)) {
+        auto* data = bytes + (id == 0x31 ? 2 : 1);
+        sticks = data; left = data + 4; right = data + 5; shoulder = data + 8;
+    } else if (id == 0x01) {
+        sticks = bytes + 1; shoulder = bytes + 6; left = bytes + 8; right = bytes + 9;
+    } else if (kind == PlayStationPad::dualshock4 && id == 0x11) {
+        sticks = bytes + 3; shoulder = bytes + 8; left = bytes + 10; right = bytes + 11;
+    } else {
+        return false;
+    }
+    if (pad.left_trigger != before.left_trigger) {
+        *left = pad.left_trigger;
+        if (pad.left_trigger <= 8) *shoulder = static_cast<std::uint8_t>(*shoulder & ~0x04u);
+    }
+    if (pad.right_trigger != before.right_trigger) {
+        *right = pad.right_trigger;
+        if (pad.right_trigger <= 8) *shoulder = static_cast<std::uint8_t>(*shoulder & ~0x08u);
+    }
+    const auto axis = [](std::int16_t v, bool invert) {
+        const int step = v == -32768 ? -128 : static_cast<int>(std::lround(static_cast<float>(v) / 258.0f));
+        return static_cast<std::uint8_t>(std::clamp(invert ? 127 - step : 128 + step, 0, 255));
+    };
+    if (pad.left_x != before.left_x) sticks[0] = axis(pad.left_x, false);
+    if (pad.left_y != before.left_y) sticks[1] = axis(pad.left_y, true);
+    if (pad.right_x != before.right_x) sticks[2] = axis(pad.right_x, false);
+    if (pad.right_y != before.right_y) sticks[3] = axis(pad.right_y, true);
+    if (pad.left_trigger != before.left_trigger && pad.left_trigger > 8) *shoulder |= 0x04;
+    if (pad.right_trigger != before.right_trigger && pad.right_trigger > 8) *shoulder |= 0x08;
+    if (pad.buttons != before.buttons) {
+        const auto buttons = pad.buttons;
+        std::uint8_t hat = 8;
+        if (buttons & 1) hat = (buttons & 8) ? 1 : (buttons & 4) ? 7 : 0;
+        else if (buttons & 2) hat = (buttons & 8) ? 3 : (buttons & 4) ? 5 : 4;
+        else if (buttons & 8) hat = 2;
+        else if (buttons & 4) hat = 6;
+        auto& face = shoulder[-1];
+        face = static_cast<std::uint8_t>(hat | ((buttons & 0x4000) ? 0x10 : 0) | ((buttons & 0x1000) ? 0x20 : 0) |
+            ((buttons & 0x2000) ? 0x40 : 0) | ((buttons & 0x8000) ? 0x80 : 0));
+        *shoulder = static_cast<std::uint8_t>((*shoulder & 0x0c) | ((buttons & 0x100) ? 1 : 0) | ((buttons & 0x200) ? 2 : 0) |
+            ((buttons & 0x20) ? 0x10 : 0) | ((buttons & 0x10) ? 0x20 : 0) |
+            ((buttons & 0x40) ? 0x40 : 0) | ((buttons & 0x80) ? 0x80 : 0));
+    }
+    return true;
 }
 }

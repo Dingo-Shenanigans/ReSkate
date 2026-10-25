@@ -2,6 +2,7 @@
 #include "Extension/Profile/runtime_internal.h"
 #include "Extension/Progression/local_entitlement_trigger_runtime.h"
 #include "local_gameplay_settings.h"
+#include "Engine/Game/Input/gameplay_options.h"
 #include "local_user_settings.h"
 #include "Extension/Trainer/trainer_gamestate.h"
 #include <optional>
@@ -140,18 +141,21 @@ std::optional<bool> game_stance_goofy() noexcept {
 }
 
 bool gameplay_get_bool(std::uintptr_t m, const void* a) {
-    // The trainer's grind settings ("Grinds feel like Skate 3"): forced for as long as the trainer holds them.
-    // Never to the game's own Settings screen: it shows, and would save, the player's own value.
-    if (const auto forced = dingosdk::trainer::forced_gameplay_bool(a); forced && !gameplay_user_edit()) {
+    const bool editing = gameplay_user_edit();
+    // Trainer overrides retain their priority. Plugins only replace boolean preferences the
+    // game actually reads here; no profile data or native addresses are exposed to scripts.
+    if (const auto forced = dingosdk::trainer::forced_gameplay_bool(a); forced && !editing) {
         note_stance(a, *forced);
         return *forced;
     }
-    if (const auto value = saved_gameplay_setting<bool>(a)) {
-        note_stance(a, *value);
-        return *value;
-    }
-    const bool value = gameplay_settings().get_bool(m, a);
+    const auto saved = saved_gameplay_setting<bool>(a);
+    const bool value = saved ? *saved : gameplay_settings().get_bool(m, a);
     note_stance(a, value);
+    PreserveError preserve;
+    try {
+        std::string key;
+        if (gameplay_setting_key(a, key)) return input::gameplay_options().observe(key, value, GetTickCount64(), editing);
+    } catch (...) { }
     return value;
 }
 

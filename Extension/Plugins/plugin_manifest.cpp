@@ -16,8 +16,8 @@ namespace {
 // (reskate.server.parks, park_spawn, park_remove); "variants" choosing which of its own mod's
 // variants is in the game (reskate.package.choose). A manifest's "resident" list and "variants" are
 // the merge's (Engine/Vfs/mod_list.h ResidentAssets, Variants), not the plugin host's.
-constexpr std::array<std::string_view, 49> permissions{
-    "console", "storage", "overlay", "menu", "ui.screen", "input", "hud", "events.tricks", "events.skater",
+constexpr std::array<std::string_view, 50> permissions{
+    "console", "storage", "overlay", "menu", "ui.screen", "input", "input.write", "hud", "events.tricks", "events.skater",
     "skater.read", "skater.teleport", "skater.control", "skater.animation", "trainer", "camera",
     "world.raycast", "world.objects", "world.entities", "world.environment", "world.ai", "travel", "session.read",
     "session.skaters", "session.nametags", "net.session", "net.http", "voice.control", "chat.read",

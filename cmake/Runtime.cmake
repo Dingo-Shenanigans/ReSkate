@@ -150,6 +150,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Skater/xray_render.cpp
     Extension/Skater/xray_skeleton.cpp
     Extension/Skater/game_speed.cpp
+    Extension/Skater/grind_target.cpp
     Extension/Skater/launches.cpp
     Extension/Skater/pad_hide.cpp
     Extension/Skater/trick_rewrite.cpp

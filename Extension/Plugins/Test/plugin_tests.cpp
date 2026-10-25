@@ -10,6 +10,10 @@
 #include "Extension/Throwdowns/custom_modes.h"
 #include "Extension/Throwdowns/throwdown_kit.h"
 #include "Engine/Vfs/mod_list.h"
+#include "Engine/Game/Input/pad_output.h"
+#include "Engine/Game/Input/playstation_report.h"
+#include "Engine/Game/Input/gameplay_options.h"
+#include "Engine/Game/Skater/animation_values.h"
 #include <algorithm>
 #include <chrono>
 #include <format>
@@ -430,7 +434,17 @@ struct FakeGame final : Game {
     std::string current_trick() override { return "kickflip"; }
     std::optional<FlightInput> flight_input(std::string_view) override { return FlightInput{1, 0, 0.5f, 3, 4, true}; }
     std::optional<PadInput> pad = PadInput{0.25f, 0, 0, 0, 0, 1, 0x1000, false};
-    std::optional<PadInput> gamepad() override { return pad; }
+    std::optional<PadInput> gamepad(int controller) override { read_controller = controller; return pad; }
+    std::optional<bool> gameplay_option(std::string_view name) override { return name == "example" ? std::optional<bool>{true} : std::nullopt; }
+    std::string hold_gameplay_option(std::string_view, std::string_view name, std::optional<bool>) override { return name == "example" ? "" : "unknown option"; }
+    std::optional<RailTarget> rail_target() override { return RailTarget{true, true, {0, 0, 1}}; }
+    std::string select_rail_target(std::string_view, std::optional<int>, bool) override { return {}; }
+    std::optional<SkaterFrame> skater_frame() override { return SkaterFrame{{1, 2, 3}, {0, 0, 1}, false, true, false, false, 42}; }
+    std::vector<AnimationValue> animation_values() override { return {{"Animation/Dingo/Bool.Anim.DoingTrick", 1, true, false}, {"Animation/Dingo/Float.Physics.Example", 0.5, false, true}}; }
+    std::string set_animation_value(std::string_view name, double) override { return name == "Animation/Dingo/Float.Physics.Example" ? "" : "not a live numeric physics output"; }
+    int read_controller = -1;
+    std::optional<PadInput> written_pad; unsigned written_controller{};
+    std::string write_pad(std::string_view, unsigned controller, std::optional<PadInput> value) override { written_controller = controller; written_pad = value; return {}; }
     std::optional<StickInput> joystick() override {
         StickInput stick;
         stick.axes = {0, -1, 0.5f, 0, 0, 0};
@@ -1383,6 +1397,176 @@ void plugins_have_what_a_prop_hunt_needs() {
 
 // What a camera mode needs (the Filmer): an arm that reaches, where the hand is, cruise control, the
 // mouse, and the right stick and stick clicks kept from the game.
+
+void plugins_write_normalized_controllers() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({script("writer", R"(
+        local p = {left_x = -1, left_y = 0.25, right_x = 1, right_y = -0.5,
+            left_trigger = 0.3, right_trigger = 1, buttons = {a = true, rb = true, b = false}}
+        assert(reskate.input.write(p, "playstation"))
+        assert(not pcall(reskate.input.write, {left_x = 1.1}))
+        assert(not pcall(reskate.input.write, {right_trigger = -0.1}))
+        assert(not pcall(reskate.input.write, {left_y = 0/0}))
+        assert(not pcall(reskate.input.write, {right_x = math.huge}))
+        assert(not pcall(reskate.input.write, {left_x = "1"}))
+        assert(not pcall(reskate.input.write, {buttons = {a = 1}}))
+        assert(not pcall(reskate.input.write, p, 0.5))
+        assert(not pcall(reskate.input.write, p, 4))
+        assert(not pcall(reskate.input.write, p, "all"))
+    )", R"("input.write")")});
+    running(host, "writer", environment);
+    const auto pad = environment.fake.written_pad;
+    check(pad && pad->left_x == -1 && pad->right_y == -0.5f && pad->buttons == 0x1200 &&
+        environment.fake.written_controller == 4, "normalized pad reaches the selected controller");
+    host.apply({script("reader", R"(
+        local ok, why = pcall(reskate.input.write, {})
+        assert(not ok and why:find('input.write'), "reading input does not grant writing")
+    )", R"("input")")});
+    running(host, "reader", environment);
+    host.apply({script("release", "assert(reskate.input.write(nil, 2))", R"("input.write")")});
+    running(host, "release", environment);
+    check(!environment.fake.written_pad && environment.fake.written_controller == 2, "nil releases the caller's output");
+
+    using namespace dingosdk::input;
+    PadOutputs outputs;
+    PadOutput value{}; value.right_y = -20000; value.buttons = 0x1000;
+    check(outputs.write("one", 0, value, 1000).empty(), "first writer owns slot");
+    check(!outputs.write("two", 0, value, 1001).empty(), "another writer cannot steal a live slot");
+    check(outputs.write("two", 1, value, 1001).empty(), "slots are independent");
+    outputs.write("two", 0, std::nullopt, 1002);
+    check(outputs.read(0, 1099, true)->right_y == -20000, "another writer cannot release it");
+    check(!outputs.read(0, 1100, true), "expires exactly at 100 ms");
+    check(outputs.write("two", 0, value, 1101).empty(), "an expired slot can be claimed");
+    check(!outputs.read(0, 1102, false), "UI ownership discards output");
+    check(!outputs.read(0, 1103, true) && !outputs.read(1, 1103, true), "no stale output after UI closes");
+    outputs.write("one", 4, value, 1200); outputs.release("one");
+    check(!outputs.read(4, 1201, true), "stop releases native pads too");
+}
+
+void controller_reports_preserve_non_controls() {
+    using namespace dingosdk;
+    for (int variant = 0; variant < 5; ++variant) {
+        const auto kind = variant < 2 ? PlayStationPad::dualsense : PlayStationPad::dualshock4;
+        const bool bluetooth = variant == 1 || variant == 3 || variant == 4;
+        std::array<std::uint8_t,78> bytes{}; bytes.fill(0x5a);
+        bytes[0] = variant == 1 ? 0x31 : variant == 3 ? 0x11 : 0x01;
+        const auto before = bytes;
+        PlayStationGamepad pad{0xf3f9, 200, 10, -32768, 32767, 16000, -12000};
+        check(replace_playstation_report(kind, bluetooth, bytes.data(), bytes.size(), pad), "a valid report is replaced");
+        const auto after = parse_playstation_report(kind, bluetooth, bytes.data(), bytes.size());
+        check(after && after->buttons == pad.buttons && after->left_trigger == 200 && after->right_trigger == 10 &&
+            after->left_x == -32768 && std::abs(static_cast<int>(after->left_y) - 32767) <= 1 &&
+            std::abs(static_cast<int>(after->right_x) - 16000) <= 129 &&
+            std::abs(static_cast<int>(after->right_y) + 12000) <= 129, "all controls round trip within HID precision");
+        const unsigned sticks = variant == 1 ? 2 : variant == 3 ? 3 : 1;
+        const bool sense = variant < 2;
+        const unsigned face = sense ? sticks + 7 : sticks + 4;
+        const unsigned triggers = sense ? sticks + 4 : sticks + 7;
+        for (unsigned i = 0; i < bytes.size(); ++i) {
+            const bool control = (i >= sticks && i < sticks + 4) || i == face || i == face + 1 || i == triggers || i == triggers + 1;
+            if (!control) check(bytes[i] == before[i], "system, sequence, touch and sensor bytes stay untouched");
+        }
+        check(!replace_playstation_report(kind, bluetooth, bytes.data(), bytes.size(), *after), "unchanged controls do not rewrite a report");
+        pad.left_trigger = 1; pad.right_trigger = 0;
+        replace_playstation_report(kind, bluetooth, bytes.data(), bytes.size(), pad);
+        check((bytes[face + 1] & 0x0c) == 0, "low triggers clear their digital bits");
+    }
+    std::array<std::uint8_t,2> short_report{0x31, 0}; const auto before = short_report;
+    check(!replace_playstation_report(PlayStationPad::dualsense, true, short_report.data(), short_report.size(), {}) && short_report == before,
+        "truncated reports stay untouched");
+}
+
+void animation_values_require_occupied_typed_local_pages() {
+    namespace av = dingosdk::animation_values;
+    namespace layout = av::layout;
+    alignas(8) std::array<std::uint8_t, 0x700> core{};
+    alignas(8) std::array<std::uint8_t, 0x80> provider{}, model{};
+    alignas(8) std::array<std::uint8_t, 0x500> graph{};
+    alignas(8) std::array<std::uint8_t, 0x120> node{};
+    alignas(8) std::array<std::uint8_t, 0x740> page{};
+    const auto address = [](const auto& v) { return reinterpret_cast<std::uintptr_t>(v.data()); };
+    const auto put = [](auto& bytes, std::size_t offset, auto value) { std::memcpy(bytes.data() + offset, &value, sizeof(value)); };
+    const std::uintptr_t base = 0x140000000;
+    put(core, layout::provider, address(provider)); put(core, layout::model, address(model));
+    put(provider, layout::output, address(graph)); put(graph, 0, address(node));
+    put(node, layout::type, base + layout::float_type); put(node, layout::key, std::uint32_t{0x04004000});
+    const std::string name = "Animation/Dingo/Float.Physics.Example";
+    std::memcpy(node.data() + layout::float_name, name.c_str(), name.size() + 1);
+    put(model, layout::pages, address(page)); put(page, 4, 0.5f);
+    check(av::read(base, address(core)).empty(), "descriptor defaults are never read");
+    put(page, layout::occupied, std::uint32_t{1 << 4});
+    auto values = av::read(base, address(core));
+    check(values.size() == 1 && values.at(name).number == 0.5 && av::writable(name, values.at(name)), "occupied typed physics output is available");
+    put(provider, layout::output, std::uintptr_t{}); put(provider, layout::input, address(graph));
+    values = av::read(base, address(core));
+    check(values.size() == 1 && !av::writable(name, values.at(name)), "animation inputs are read-only");
+    put(page, 4, std::numeric_limits<float>::infinity());
+    check(av::read(base, address(core)).empty(), "non-finite native values are refused");
+    put(page, 4, 0.5f); put(node, layout::type, std::uintptr_t{});
+    check(av::read(base, address(core)).empty(), "wrong descriptor types are refused");
+}
+
+void plugins_read_frames_and_hold_gameplay_options() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({script("observations", R"(
+        assert(reskate.settings.gameplay("example") == true)
+        assert(reskate.settings.gameplay("absent") == nil)
+        assert(reskate.settings.hold_gameplay("example", false))
+        assert(reskate.settings.hold_gameplay("example", nil))
+        assert(not reskate.settings.hold_gameplay("absent", true))
+        assert(not pcall(reskate.settings.hold_gameplay, "example", 1))
+        assert(not pcall(reskate.settings.gameplay, ""))
+        assert(reskate.skater.rail_target().targeting)
+        assert(reskate.skater.select_rail_target(2, true))
+        assert(reskate.skater.select_rail_target(nil))
+        assert(not pcall(reskate.skater.select_rail_target, -1))
+        assert(not pcall(reskate.skater.select_rail_target, 7))
+        assert(not pcall(reskate.skater.select_rail_target, 1.5))
+        assert(not pcall(reskate.skater.select_rail_target, 0/0))
+        assert(not pcall(reskate.skater.select_rail_target, 2, 1))
+        local f = reskate.skater.frame()
+        assert(f.serial == 42 and f.mirrored and not f.fakie and f.forward.z == 1)
+        local a = reskate.skater.animation_values()
+        assert(a["Animation/Dingo/Bool.Anim.DoingTrick"].value == true)
+        assert(a["Animation/Dingo/Float.Physics.Example"].output)
+        assert(reskate.skater.set_animation_value("Animation/Dingo/Float.Physics.Example", 1.6))
+        assert(not reskate.skater.set_animation_value("unknown", 1))
+        assert(not pcall(reskate.skater.set_animation_value, "example", 0/0))
+        assert(not pcall(reskate.skater.set_animation_value, "example", math.huge))
+        assert(not pcall(reskate.skater.set_animation_value, "example", "1"))
+        reskate.input.gamepad(2)
+        assert(not pcall(reskate.input.gamepad, 4))
+        assert(not pcall(reskate.input.gamepad, 0.5))
+    )", R"("settings.read", "settings.write", "skater.read", "skater.animation", "skater.control", "input")")});
+    running(host, "observations", environment);
+    check(environment.fake.read_controller == 2, "physical pad selection reaches the game");
+    host.apply({script("denied", R"(
+        assert(not pcall(reskate.settings.gameplay, "example"))
+        assert(not pcall(reskate.settings.hold_gameplay, "example", false))
+        assert(not pcall(reskate.skater.rail_target))
+        assert(not pcall(reskate.skater.select_rail_target, 2))
+        assert(not pcall(reskate.skater.frame))
+        assert(not pcall(reskate.skater.animation_values))
+        assert(not pcall(reskate.skater.set_animation_value, "example", 1))
+    )")});
+    running(host, "denied", environment);
+    dingosdk::input::GameplayOptions options;
+    check(options.observe("example", true, 1000, false), "observe the player's preference");
+    check(options.hold("one", "example", false, 1001).empty(), "hold an observed option");
+    check(!options.observe("example", true, 1002, false), "hold affects gameplay");
+    check(options.observe("example", true, 1002, true), "settings UI keeps the player's preference");
+    check(options.get("example") == true, "reading returns the saved preference");
+    check(!options.hold("two", "example", false, 1003).empty(), "another owner cannot steal the option");
+    options.hold("two", "example", std::nullopt, 1004);
+    check(!options.observe("example", true, 1005, false), "another owner cannot release it");
+    check(options.observe("example", true, 1301, false), "holds expire at 300 ms");
+    check(!options.hold("one", "unknown", true, 1400).empty(), "unknown options cannot be created");
+    options.hold("one", "example", false, 1400); options.release("one");
+    check(options.observe("example", true, 1401, false), "stop releases preferences");
+}
+
 void plugins_reach_cruise_and_read_the_mouse() {
     TestEnvironment environment;
     auto& game = environment.fake;
@@ -4098,6 +4282,7 @@ int main() {
         run(plugins_draw_pictures);
         run(plugins_place_world_entities);
         run(plugins_have_what_a_prop_hunt_needs);
+        run(plugins_write_normalized_controllers);
         run(plugins_reach_cruise_and_read_the_mouse);
         run(plugins_carry_and_take_a_step_in_the_camera_cycle);
         run(plugins_read_joints_and_tune_physics);

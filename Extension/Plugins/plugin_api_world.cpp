@@ -2618,7 +2618,16 @@ struct WorldApi {
     static int input_gamepad(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "input", "reskate.input.gamepad");
-        const auto pad = game(plugin).gamepad();
+        int controller = -1;
+        if (lua_type(L, 1) == LUA_TSTRING) {
+            if (std::string_view(lua_tostring(L, 1)) != "playstation") luaL_error(L, "controller is 0 to 3, or playstation");
+            controller = 4;
+        } else if (!lua_isnoneornil(L, 1)) {
+            const double n = luaL_checknumber(L, 1);
+            if (!std::isfinite(n) || n < 0 || n > 3 || n != std::floor(n)) luaL_error(L, "controller is 0 to 3, or playstation");
+            controller = static_cast<int>(n);
+        }
+        const auto pad = game(plugin).gamepad(controller);
         if (!pad) {
             lua_pushnil(L);
             return 1;
@@ -2639,6 +2648,53 @@ struct WorldApi {
         lua_pushboolean(L, pad->playstation);
         lua_setfield(L, -2, "playstation");
         return 1;
+    }
+    // A whole replacement for a real controller, in the same units as input.gamepad().
+    static int input_write(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "input.write", "reskate.input.write");
+        unsigned controller = 0;
+        if (lua_type(L, 2) == LUA_TSTRING) {
+            if (std::string_view(lua_tostring(L, 2)) != "playstation") luaL_error(L, "controller is 0 to 3, or playstation");
+            controller = 4;
+        } else if (!lua_isnoneornil(L, 2)) {
+            const double n = luaL_checknumber(L, 2);
+            if (!std::isfinite(n) || n < 0 || n > 3 || n != std::floor(n)) luaL_error(L, "controller is 0 to 3, or playstation");
+            controller = static_cast<unsigned>(n);
+        }
+        if (lua_isnoneornil(L, 1)) return result(L, game(plugin).write_pad(plugin.id(), controller, std::nullopt));
+        luaL_checktype(L, 1, LUA_TTABLE);
+        const auto axis = [&](const char* name, double low) {
+            lua_getfield(L, 1, name);
+            double value = 0;
+            if (!lua_isnil(L, -1)) {
+                if (lua_type(L, -1) != LUA_TNUMBER) luaL_error(L, "%s must be a number", name);
+                value = lua_tonumber(L, -1);
+                if (!std::isfinite(value) || value < low || value > 1) luaL_error(L, "%s is outside its range", name);
+            }
+            lua_pop(L, 1);
+            return static_cast<float>(value);
+        };
+        PadInput pad;
+        pad.left_x = axis("left_x", -1); pad.left_y = axis("left_y", -1);
+        pad.right_x = axis("right_x", -1); pad.right_y = axis("right_y", -1);
+        pad.left_trigger = axis("left_trigger", 0); pad.right_trigger = axis("right_trigger", 0);
+        lua_getfield(L, 1, "buttons");
+        if (!lua_isnil(L, -1)) {
+            luaL_checktype(L, -1, LUA_TTABLE);
+            static constexpr std::pair<const char*, std::uint32_t> names[] = {
+                {"up", 1}, {"down", 2}, {"left", 4}, {"right", 8}, {"start", 16}, {"back", 32},
+                {"left_stick", 64}, {"right_stick", 128}, {"lb", 256}, {"rb", 512},
+                {"a", 4096}, {"b", 8192}, {"x", 16384}, {"y", 32768}};
+            for (const auto& [name, bit] : names) {
+                lua_getfield(L, -1, name);
+                if (!lua_isnil(L, -1) && lua_type(L, -1) != LUA_TBOOLEAN) luaL_error(L, "buttons.%s must be boolean", name);
+                if (lua_toboolean(L, -1)) pad.buttons |= bit;
+                lua_pop(L, 1);
+            }
+        }
+        lua_pop(L, 1);
+        return result(L, game(plugin).write_pad(plugin.id(), controller, pad));
     }
     static int input_joystick(lua_State* L) {
         auto& plugin = plugin_of(L);
@@ -2940,7 +2996,7 @@ void WorldApi::install(Plugin& plugin, lua_State* L) {
     add_functions(L, "progression", {{"get", progress}});
     add_functions(L, "settings", {{"game", setting}, {"names", setting_names}, {"set", setting_set}});
     add_functions(L, "input", {{"bind", bind}, {"flight", input_flight}, {"gamepad", input_gamepad}, {"joystick", input_joystick}, {"capture", input_capture},
-                               {"hide", input_hide}, {"cursor", input_cursor}, {"text", input_text}});
+                               {"write", input_write}, {"hide", input_hide}, {"cursor", input_cursor}, {"text", input_text}});
     add_functions(L, "room", {{"open", room_open}, {"leave", room_leave}, {"state", room_state}});
     add_functions(L, "ui", {{"screen", screen}, {"open", open}, {"close", close}});
     add_functions(L, "screen", {{"look", screen_look}, {"slap", screen_slap}});
