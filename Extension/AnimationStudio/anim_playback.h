@@ -2,8 +2,11 @@
 #include "anim_runtime_rules.h"
 #include "anim_core.h"
 #include <cstdint>
+#include <deque>
 #include <limits>
 #include <memory>
+#include <optional>
+#include <utility>
 
 namespace dingosdk::anim_studio {
 // These are observed physics states, not decoded native animation-graph phases.
@@ -218,6 +221,20 @@ struct EditTransition {
         return current;
     }
 };
+// ---- the board's keys ---------------------------------------------------------------------------------------------------
+// A trick's board keys turn the board about its own axes as it lay on the ground before the pop (the studio: start_frame).
+// In game that is the heading the board had under him while he rolled, kept for a second (seconds, heading relative to
+// the placement): the newest from at least 0.15 s before the takeoff - the pop turns the board from about 0.1 s before it,
+// a 360 flip's by 55 degrees by the takeoff - and no older than 0.6 s. None when he was not rolling then.
+inline std::optional<Quat> rest_heading_before(const std::deque<std::pair<double, Quat>>& headings, double takeoff) noexcept {
+    for (auto it = headings.rbegin(); it != headings.rend(); ++it) {
+        const double before = takeoff - it->first;
+        if (before < 0.15) continue;
+        if (before > 0.6) break;
+        return it->second;
+    }
+    return std::nullopt;
+}
 // ---- the ground -------------------------------------------------------------------------------------------------------
 // The board falls at 20 m/s2 in the game, not the Earth's 9.81: measured 2026-10-25 from the board body's speed and height
 // through flat ollies (the speed falls 6 m/s in 0.28 s; from the top it drops 0.58 m in 0.23 s). With 9.81 the time to the

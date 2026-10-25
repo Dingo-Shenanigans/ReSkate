@@ -1514,6 +1514,24 @@ void slow_catch_off_drops() {
         check(!stretched, "A flat ollie is not taken for one off a drop");
     }
     {
+        // Heatz's Nollie 360 Flip (2026-10-25): rolling, the board lay at 90 degrees to the placement; the pop had turned it to
+        // 35 by the takeoff, and the board's keys went on about that. They go on about the board as it lay before the pop.
+        const auto heading = [](float degrees) {
+            const float r = degrees * 3.14159265f / 360;
+            return Quat{0, std::sin(r), 0, std::cos(r)};
+        };
+        std::deque<std::pair<double, Quat>> rolled;
+        for (int i = 0; i <= 60; ++i) {
+            const double at = 9.0 + i / 60.0;               // a second rolling up to the takeoff at 10.0
+            const float spun = at > 9.88 ? static_cast<float>((at - 9.88) / 0.12 * 55) : 0.0f; // the pop turns it
+            rolled.emplace_back(at, heading(90 - spun));
+        }
+        const auto rest = rest_heading_before(rolled, 10.0);
+        check(rest && std::abs((*rest)[1] - heading(90)[1]) < 1e-4f, "A trick's board keys turn about the board as it lay before the pop");
+        check(!rest_heading_before(rolled, 11.0), "Not rolling just before the takeoff (off a rail, out of the air): none");
+        check(!rest_heading_before({}, 10.0), "Never rolled: none");
+    }
+    {
         check(lowest_ankle(true, true, -0.15f) == ankle_on_deck, "Rolling, a foot keyed deep into the deck is lifted onto it");
         check(lowest_ankle(true, false, -0.05f) == ankle_on_ground, "Rolling, a foot keyed out over the edge goes no lower than the ground");
         check(lowest_ankle(false, true, -0.15f) < -1, "In the air, a foot well under the deck is past the board: left as it is");

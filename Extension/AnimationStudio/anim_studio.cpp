@@ -494,6 +494,9 @@ struct Live {
     // Board edit axes at takeoff, relative to actor placement. No recorded board pose is replayed.
     Quat board_frame_local{0, 0, 0, 1};
     bool board_at_takeoff_ok{};
+    // The board's heading as it lies on the ground, relative to the placement, over the last second he rolled: the
+    // board's keys turn about the board as it lay before the pop (rest_heading_before), as the studio's do (start_frame).
+    std::deque<std::pair<double, Quat>> rest_headings;
 
     std::shared_ptr<const CustomTricks> game_tricks;
     std::map<std::string, std::size_t> variant_counts;
@@ -3181,6 +3184,14 @@ void on_animation(std::uintptr_t component) noexcept {
             last = layout.count;
         } else if (snap->play_in_game && !bailing && snap->tricks && !snap->tricks->empty()) {
             const bool began = l.episode.observe(at, motion);
+            // Rolling: the board's heading under him, kept a second (for the board's keys of the next trick).
+            if (motion == MotionState::riding && l.board_ok && !began) {
+                const auto mount = compose(board_parent(l.board), joint_of(l.board[board_mount]));
+                if (finite(mount)) {
+                    l.rest_headings.emplace_back(at, normalised(multiply(conjugate(live_placement.rotation), ground_turn(mount))));
+                    while (l.rest_headings.size() > 2 && at - l.rest_headings.front().first > 1.0) l.rest_headings.pop_front();
+                }
+            }
             // The probe, while armed: once riding, once on the first frame of the air (the pop's setup is
             // still blending out then), and once well into the air, where the trick's own pieces play.
             if (live_probe::armed.load(std::memory_order_acquire)) {
@@ -3217,7 +3228,12 @@ void on_animation(std::uintptr_t component) noexcept {
                 if (l.board_ok) {
                     const auto mount = compose(board_parent(l.board), joint_of(l.board[board_mount]));
                     if (finite(mount)) {
-                        l.board_frame_local = normalised(multiply(conjugate(live_placement.rotation), ground_turn(mount)));
+                        // The board as it lay on the ground before the pop, as the studio turns the keys about the board at
+                        // the trick's start: by the takeoff the pop has turned it already - a 360 flip's by 55 degrees - and
+                        // the keys tilted the deck that much the wrong way round (Heatz's Nollie 360 Flip, 2026-10-25). The
+                        // board at the takeoff only when he was not rolling just before it (off a rail, out of the air).
+                        const auto rest = rest_heading_before(l.rest_headings, at);
+                        l.board_frame_local = rest ? *rest : normalised(multiply(conjugate(live_placement.rotation), ground_turn(mount)));
                         l.board_at_takeoff_ok = true;
                         // The game's board-backwards flag: the deck is turned round under him, and the game turns its
                         // animated board to match. The keys follow the animation's board, so they are turned too -
