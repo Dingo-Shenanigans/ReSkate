@@ -45,7 +45,7 @@ inline constexpr std::array crew_members{
     CrewMember{"FIENDSKATEBOARDS", "renzoh.", "Pop shuv-it specialist: sent the dump and the video before the board even landed.", 0.5f, 0.42f},
     CrewMember{"smonky", "smonk", "Rolls away from every crash, then sends the log. Smooth as fresh bearings.", 0.5f, 0.38f},
     CrewMember{"reskate_animation_editor", "philsteezy", "Steezy bug reports only. Even the crashes had style.", 0.5f, 0.4f},
-    CrewMember{"Heatz", "Heatz", "Brought the heat every session: if a build could break, Heatz broke it first."},
+    CrewMember{"Heatz", "Heatz", "Brought the heat every session: if a build could break, Heatz broke it first.", 0.5f, 0.36f},
     CrewMember{"Bonksz", "Bonksz", "Bonked every rail, ledge and kicker until the bugs gave up.", 0.6f, 0.42f},
     CrewMember{"kanga", "Kanga", "Hops every gap first: if a trick bounces off a bug, the log is already in your DMs."},
 };
@@ -58,7 +58,7 @@ struct Builder {
 };
 inline constexpr std::array builders{
     Builder{"22SH", "22sh", "", "Animation pipeline wizard. Built the internal tools that extract and bring every trick into the game."},
-    Builder{"Fourth", "fourth", "Fourth_Studio", "Lead studio developer. Brought the team together and built the studio around it.", 0.5f, 0.45f},
+    Builder{"Fourth", "fourth", "Fourth_Studio", "Lead studio developer. Brought the team together and built the studio around it.", 0.5f, 0.48f},
     // Norms' Thunderstore team: none yet (worthlessnorms 404s, checked 2026-10-25); put "worthlessnorms" back here once it exists.
     Builder{"Norms", "norms", "", "Scripting and animation logic: the rules that decide what plays, and when.", 0.5f, 0.39f},
     Builder{"Steez", "steez", "Worthless", "Made the animations run smooth, from the pop to the landing.", 0.48f, 0.4f},

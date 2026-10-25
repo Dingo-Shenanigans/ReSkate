@@ -28,6 +28,7 @@ CREW = {
     "reskate_animation_editor": ("phil_portrait.webp", (915, 425, 440), "phil_shot.webp"),  # philsteezy
     "smonky": ("smonk_portrait.png", (412, 175, 210), "smonk_shot.png"),  # smonk
     "myawsometeam": ("setsu_portrait.png", (100, 100, 200), "setsu_shot.webp"),  # Setsu: the avatar whole
+    "heatz": ("heatz_portrait.webp", (1060, 440, 660), "heatz_shot.webp"),
     # BUILT BY (studio::market::builders), by the name their pictures go under.
     "22sh": ("22sh_portrait.png", (368, 330, 640), "GRIP"),
     "fourth": ("fourth_portrait.webp", (995, 520, 940), "fourth_shot.webp"),
