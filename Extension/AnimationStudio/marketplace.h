@@ -47,6 +47,7 @@ inline constexpr std::array crew_members{
     CrewMember{"reskate_animation_editor", "philsteezy", "Steezy bug reports only. Even the crashes had style.", 0.5f, 0.4f},
     CrewMember{"Heatz", "Heatz", "Brought the heat every session: if a build could break, Heatz broke it first."},
     CrewMember{"Bonksz", "Bonksz", "Bonked every rail, ledge and kicker until the bugs gave up.", 0.6f, 0.42f},
+    CrewMember{"kanga", "Kanga", "Hops every gap first: if a trick bounces off a bug, the log is already in your DMs."},
 };
 // BUILT BY, on ABOUT: who made the Animator Studio. Their pictures are found by `pictures` (assets/animator_studio/crew/
 // <pictures>_profile.jpg and _thumbnail.jpg, as THE CREW's); `team` is their Thunderstore team where there is one to link to;
