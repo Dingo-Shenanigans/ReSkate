@@ -1,3 +1,4 @@
+#include "material_capture.h"
 #include "Engine/Core/Platform/launcher_support.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Profiling/profiler.h"
@@ -372,6 +373,7 @@ bool setup_graphics() {
     dingosdk::overlay::watch_draws(s.commands.Get());
     dingosdk::overlay::watch_addresses(s.commands.Get());
     install_depth_probe(s.commands.Get());
+    install_material_capture(s.device.Get(),s.commands.Get(),s.queue.Get());
     s.fence->SetName(L"ReSkate overlay fence");
     s.fence_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     if (!s.fence_event) return false;
@@ -774,6 +776,16 @@ void render(IDXGISwapChain* presented, UINT flags) {
             destroy_graphics();
             s.next_setup_attempt = now + std::chrono::milliseconds(250);
             return;
+        }
+    }
+    // Core material transmission precedes frame grabs and ReSkate UI. The helper
+    // owns its fenced command list and restores the backbuffer to PRESENT.
+    {
+        const auto index=s.swapchain->GetCurrentBackBufferIndex();
+        if(index<s.frames.size()){
+            Microsoft::WRL::ComPtr<ID3D12Resource> current;
+            if(SUCCEEDED(s.swapchain->GetBuffer(index,IID_PPV_ARGS(&current)))&&object_identity(current.Get()).Get()==object_identity(s.frames[index].buffer.Get()).Get())
+                present_material_transmission_guarded(s.device.Get(),s.queue.Get(),current.Get(),output_transfer);
         }
     }
     // Keep swapchain/window selection, initialization, stop and resize/fence

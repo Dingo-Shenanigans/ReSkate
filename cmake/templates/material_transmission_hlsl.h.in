@@ -1,0 +1,6 @@
+#pragma once
+namespace dingosdk::overlay::detail {
+inline constexpr char material_transmission_hlsl[] = R"transmit_hlsl(
+@material_transmission_source@
+)transmit_hlsl";
+}

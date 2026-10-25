@@ -1,4 +1,6 @@
 #include "overlay_internal.h"
+#include "material_capture.h"
+#include "material_method_hooks.h"
 #include "Engine/Core/Log/logging.h"
 #include <algorithm>
 #include <atomic>
@@ -18,13 +20,13 @@
 // later the copies are read back and written to Captures\depth as 16-bit PGM pictures (near
 // and far stretched to black and white), with a log of what each was.
 //
-// ID3D12GraphicsCommandList::ResourceBarrier (slot 26) is hooked once, when the overlay starts
-// (through its own command list: every list of the runtime shares it). Unarmed, the hook only
-// passes the call on.
+// Each observed ResourceBarrier implementation (slot 26) has one shared detour.
+// Material transmission and Fit Check both consume it; wrapper/native relays
+// remain distinct. Unarmed consumers leave the native call unchanged.
 namespace dingosdk::overlay {
 namespace {
 using ResourceBarrierFn = void(STDMETHODCALLTYPE*)(ID3D12GraphicsCommandList*, UINT, const D3D12_RESOURCE_BARRIER*);
-std::atomic<ResourceBarrierFn> original_barrier{};
+detail::material_method_hooks<ResourceBarrierFn,26> original_barrier;
 
 struct Snapshot {
     Microsoft::WRL::ComPtr<ID3D12Resource> readback;
@@ -138,6 +140,7 @@ void tap_barrier(ID3D12GraphicsCommandList* list, const D3D12_RESOURCE_BARRIER& 
 
 void STDMETHODCALLTYPE hooked_barrier(ID3D12GraphicsCommandList* list, UINT count, const D3D12_RESOURCE_BARRIER* barriers) {
     const auto original = original_barrier.load();
+    observe_material_depth_barriers(list,count,barriers,original);
     if (tap().on.load(std::memory_order_relaxed) && list && barriers) {
         try {
             for (UINT i = 0; i < count; ++i) tap_barrier(list, barriers[i], original);
@@ -358,14 +361,26 @@ void request_depth_probe(const wchar_t* folder) noexcept {
 
 namespace detail {
 void install_depth_probe(ID3D12GraphicsCommandList* list) noexcept {
-    static std::atomic<bool> installed{};
-    if (!list || installed.exchange(true)) return;
-    auto* const table = *reinterpret_cast<void***>(list);
-    void* original{};
-    if (hook_prepare(table[26], reinterpret_cast<void*>(&hooked_barrier), &original) != HookOk) return;
-    original_barrier.store(reinterpret_cast<ResourceBarrierFn>(original));
-    if (hook_enable(table[26]) != HookOk)
-        logging::printf(logging::Level::warning, logging::Channel::graphics, "Fit Check depth probe: the barrier hook could not start.");
+    if(!list)return;
+    HookBatch batch;
+    const bool installed=original_barrier.install(list,&hooked_barrier,[](void* target,void* replacement,auto publish){
+        void* relay{};
+        const auto prepared=hook_prepare(target,replacement,&relay);
+        if(prepared!=HookOk){
+            logging::printf(logging::Level::warning,logging::Channel::graphics,
+                "Shared depth barrier hook: hook_prepare failed at %p: %s (%ld).",target,hook_status_string(prepared),static_cast<long>(prepared));
+            return false;
+        }
+        publish(relay);
+        const auto enabled=hook_enable(target);
+        if(enabled!=HookOk){
+            logging::printf(logging::Level::warning,logging::Channel::graphics,
+                "Shared depth barrier hook: hook_enable failed at %p: %s (%ld).",target,hook_status_string(enabled),static_cast<long>(enabled));
+            return false;
+        }
+        return true;
+    });
+    if(!installed)logging::write(logging::Level::warning,logging::Channel::graphics,"Depth observation could not attach to a command-list implementation.");
 }
 
 bool depth_probe_pending() {
@@ -378,7 +393,7 @@ bool depth_probe_pending() {
 
 void depth_tap_present(State& s, std::uint32_t width, std::uint32_t height, bool wanted) {
     auto& t = tap();
-    if (!original_barrier.load()) return;
+    if (!original_barrier.installed()) return;
     std::lock_guard lock(t.mutex);
     ++t.epoch;
     if (!wanted) {
@@ -467,7 +482,7 @@ void depth_tap_done() {
 
 void depth_probe_present(State& s, std::uint32_t width, std::uint32_t height) {
     auto& p = probe();
-    if (!original_barrier.load()) {
+    if (!original_barrier.installed()) {
         if (p.requested.exchange(false))
             logging::printf(logging::Level::warning, logging::Channel::graphics, "Fit Check depth probe: no barrier hook, nothing to probe.");
         return;

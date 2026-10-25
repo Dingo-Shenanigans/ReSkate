@@ -1,3 +1,4 @@
+#include "material_capture.h"
 #include "Engine/Core/Log/logging.h"
 #include "overlay_internal.h"
 #include "input_capture.h"
@@ -392,6 +393,7 @@ bool start_overlay(const dingosdk::overlay::CallbacksV3* callbacks) {
     const auto status = dingosdk::hook_initialize();
     if (status != dingosdk::HookOk && status != dingosdk::HookAlreadyInitialized) return false;
     dingosdk::overlay::watch_gpu_memory();
+    dingosdk::overlay::start_material_capture();
     const auto user32 = GetModuleHandleW(L"user32.dll");
     if (!user32 || !install(s.clip_cursor, reinterpret_cast<void*>(GetProcAddress(user32, "ClipCursor")),
             reinterpret_cast<void*>(clip_cursor)) ||
