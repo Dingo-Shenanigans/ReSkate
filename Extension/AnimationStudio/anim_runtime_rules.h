@@ -1,5 +1,6 @@
 #pragma once
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <random>
 #include <cstdint>
@@ -19,6 +20,69 @@ inline std::uint64_t pop_grade_since(std::uint64_t now, double elapsed_seconds) 
     const double age = std::isfinite(elapsed_seconds) ? std::max(0.0, elapsed_seconds) * 1000.0 + 300.0 : static_cast<double>(now);
     return age >= static_cast<double>(now) ? 0 : now - static_cast<std::uint64_t>(age);
 }
+// The game's pop grades as it wrote them, any skater's, each with the skater's graph that wrote it (its own instance:
+// one per skater), and which of them are the local skater's. Alone in the game every grade is his, and his graph is
+// learned from them. With others about (a session, AI skaters) only his graph's grade is his; until his graph is known,
+// it is learned from his own pops: the one graph that graded around his takeoff, two takeoffs running (a skater joining
+// a session can be given a new graph). Until then, none (the studio goes by the air time). Not thread-safe on its own.
+struct PopGradeLog {
+    struct Grade {
+        std::uint64_t ms{}; // when (GetTickCount64)
+        std::uintptr_t graph{};
+        int value{};
+    };
+    std::array<Grade, 32> grades{};
+    std::size_t next{};
+    std::uintptr_t ours{}, candidate{};
+    int candidate_seen{};
+    std::uint64_t learned_attempt{~std::uint64_t{0}};
+    void add(std::uint64_t ms, std::uintptr_t graph, int value) noexcept {
+        grades[next] = {ms, graph, value};
+        next = (next + 1) % grades.size();
+    }
+    // The grade of the local skater's pop at `takeoff_ms` (0 none), asked at `now_ms`. `solo`: no other skater in the
+    // game. `attempt`: the air it is for (his graph is looked for once an air).
+    int local(std::uint64_t takeoff_ms, std::uint64_t now_ms, bool solo, std::uint64_t attempt) noexcept {
+        const std::uint64_t from = takeoff_ms > 300 ? takeoff_ms - 300 : 0; // the grade comes as he pops, a little before
+        const auto latest = [&](std::uintptr_t graph) -> const Grade* {
+            const Grade* found = nullptr;
+            for (const auto& g : grades)
+                if (g.value > 0 && g.ms >= from && g.ms <= now_ms && (!graph || g.graph == graph) && (!found || g.ms >= found->ms)) found = &g;
+            return found;
+        };
+        if (solo) {
+            const auto* g = latest(0);
+            if (g) ours = g->graph; // every grade is his: his graph, for when others come
+            return g ? g->value : 0;
+        }
+        // Once an air, when his grade is surely written: the graph that graded around his takeoff, alone.
+        if (attempt != learned_attempt && now_ms >= takeoff_ms + 150) {
+            learned_attempt = attempt;
+            std::uintptr_t only = 0;
+            bool many = false;
+            for (const auto& g : grades)
+                if (g.value > 0 && g.ms >= from && g.ms <= takeoff_ms + 150) {
+                    if (!only) only = g.graph;
+                    else if (g.graph != only) many = true;
+                }
+            if (only && !many) {
+                if (only == ours) candidate_seen = 0;
+                else if (only == candidate) {
+                    if (++candidate_seen >= 2) {
+                        ours = candidate;
+                        candidate_seen = 0;
+                    }
+                } else {
+                    candidate = only;
+                    candidate_seen = 1;
+                }
+            }
+        }
+        if (!ours) return 0;
+        const auto* g = latest(ours);
+        return g ? g->value : 0;
+    }
+};
 // One name for a trick, however the game spelled it. The game names its tricks in more than one way: what it says in
 // the air (current_trick) is "n_kickflip", "fsimpossible"; its scoring data, where the studio's first trick list came
 // from, says "nolliekickflip", "nolliebsimpossible"; its flick list says "N_Kickflip", "FrontFoot_Impossible". A saved

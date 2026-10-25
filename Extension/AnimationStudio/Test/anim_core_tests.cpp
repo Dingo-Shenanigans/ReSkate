@@ -276,6 +276,27 @@ void pop_grades_read_back() {
     check(graded_pop_name(1) == "low" && graded_pop_name(3) == "high" && graded_pop_name(4).empty(), "Only the game's three pop grades have a name");
     check(pop_grade_since(100, 0.5) == 0 && pop_grade_since(5000, 0.5) == 4200,
           "Grade lookup uses a bounded recent time window without unsigned wraparound");
+    {
+        // Online every skater's pop is graded: his are told apart by his skater's graph (2026-10-25: online the studio went
+        // by the air time, which takes a low pop for a mid one).
+        PopGradeLog log;
+        const std::uintptr_t mine = 0x1000, theirs = 0x2000, mine_after_joining = 0x3000;
+        log.add(10'000, mine, 1);
+        check(log.local(10'050, 10'200, true, 1) == 1 && log.ours == mine, "Alone, the grade is his, and so is the graph that wrote it");
+        log.add(20'000, theirs, 3);
+        log.add(20'010, mine, 2);
+        check(log.local(20'050, 20'200, false, 2) == 2, "Online, his graph's grade, not another skater's popping with him");
+        log.add(30'000, theirs, 3);
+        check(log.local(30'100, 30'300, false, 3) == 0, "Another skater's pop alone is not his: the air time says");
+        // Joined a session: a new graph. Learned from two takeoffs of his where it alone graded.
+        log.add(40'000, mine_after_joining, 1);
+        check(log.local(40'050, 40'300, false, 4) == 0, "A graph not known yet: not taken at once");
+        log.add(50'000, mine_after_joining, 3);
+        check(log.local(50'050, 50'300, false, 5) == 3 && log.ours == mine_after_joining, "Grading alone at two of his takeoffs: his graph from then on");
+        log.add(60'000, theirs, 1);
+        log.add(60'020, mine_after_joining, 2);
+        check(log.local(60'060, 60'300, false, 6) == 2, "and his grade beside another skater's");
+    }
 }
 
 void euler_numbers_read_back() {

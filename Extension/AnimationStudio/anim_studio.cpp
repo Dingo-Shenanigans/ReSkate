@@ -1756,8 +1756,9 @@ std::array<float, 16> orbit_matrix(const Vec3& centre, const Orbit& orbit, float
 // ---- the game's tricks ---------------------------------------------------------------------------
 // Goes up when the trick lists change, so their caches are read again.
 std::atomic<std::uint64_t> tricks_revision{1};
-// Published on the client thread: animation callbacks must not lock AI/session state.
-std::atomic<bool> grade_is_ours{};
+// Published on the client thread: animation callbacks must not lock AI/session state. Whether the game's pop grades are
+// heard (the hook is on), and whether he is alone in the game (no session, no AI skaters: every grade is his).
+std::atomic<bool> grades_heard{}, grades_solo{};
 
 // A bracket is a key on every body joint at its time, with no turn or move of its own: the start and the end
 // of the animation, keyed on all limbs at once.
@@ -3422,9 +3423,14 @@ void on_animation(std::uintptr_t component) noexcept {
             }
             // PopHeight can arrive after the trick name. A refined grade must
             // invalidate a mismatched explicit binding without rewinding time.
+            // The game's grade of his pop: alone in the game any grade is his; with others about (online, AI skaters), his
+            // skater's own (pop_grades). Until that is known, the air time says.
             const auto since_takeoff_ms = static_cast<std::uint64_t>(std::max(0.0, at - l.episode.takeoff) * 1000);
-            const auto graded = grade_is_ours.load(std::memory_order_acquire)
-                                    ? pop_grades::pop_height_since(pop_grade_since(GetTickCount64(), since_takeoff_ms / 1000.0)) : 0;
+            const auto now_ms = GetTickCount64();
+            const auto graded = grades_heard.load(std::memory_order_acquire)
+                                    ? pop_grades::local_pop_height(now_ms > since_takeoff_ms ? now_ms - since_takeoff_ms : 0, now_ms,
+                                                                   grades_solo.load(std::memory_order_acquire), l.episode.id)
+                                    : 0;
             const auto graded_name = graded_pop_name(graded);
             const auto pop = !graded_name.empty() ? std::string(graded_name) : pop_of(l.predicted_air);
             // Not while standing back: the change that started it would otherwise be taken up in this same
@@ -4779,7 +4785,8 @@ TickResult tick(std::uintptr_t base, std::uintptr_t component, bool open, float 
         grading = pop_grades::install(base, why);
         if (!grading) logging::log(Level::warning, Channel::skater, "Animation Studio: pops are chosen by their air time, not the game's grade: {}.", why);
     }
-    grade_is_ours.store(grading && !multiplayer_session_active() && ai_skaters::active_count() == 0, std::memory_order_release);
+    grades_heard.store(grading, std::memory_order_release);
+    grades_solo.store(!multiplayer_session_active() && ai_skaters::active_count() == 0, std::memory_order_release);
     return result;
 }
 void report(std::string message) {

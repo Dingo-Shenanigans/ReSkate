@@ -1,11 +1,14 @@
 #include "pop_grades.h"
+#include "anim_runtime_rules.h"
 #include "Engine/Core/Hooks/hooks.h"
 #include "Engine/Core/Platform/memory.h"
+#include "Engine/Core/Log/logging.h"
 #include "Engine/Game/Build/20260929/game_state_values.h"
 #include "Engine/Game/Build/addresses.h"
 #include <windows.h>
 #include <array>
 #include <atomic>
+#include <mutex>
 #include <string>
 
 namespace dingosdk::anim_studio::pop_grades {
@@ -15,8 +18,9 @@ namespace values = addr::game_state_values;
 using SetInt = std::uintptr_t (*)(std::uintptr_t setter, std::uintptr_t instance, std::int32_t value);
 
 std::atomic<SetInt> original_set_int{};
-std::atomic<PopHeight> latest_grade{};
-std::atomic<std::uint64_t> latest_grade_ms{};
+// The grades written lately, each with its skater's graph. Written by the game's job threads, read by the animation's.
+std::mutex log_mutex;
+PopGradeLog grade_log;
 
 // PopHeight's descriptor is known by its address and its name pointer together, so an address the game frees and gives
 // to another value does not answer for it, and a descriptor that moves is found again by its name.
@@ -43,9 +47,8 @@ bool is_pop_height(std::uintptr_t descriptor) noexcept {
 }
 std::uintptr_t set_int_hook(std::uintptr_t setter, std::uintptr_t instance, std::int32_t value) {
     if (value > 0 && is_pop_height(setter - values::descriptor_to_setter)) {
-        const auto now = GetTickCount64();
-        latest_grade.store(value, std::memory_order_relaxed);
-        latest_grade_ms.store(now, std::memory_order_release);
+        std::lock_guard lock(log_mutex);
+        grade_log.add(GetTickCount64(), instance, value);
     }
     return original_set_int.load(std::memory_order_acquire)(setter, instance, value);
 }
@@ -72,8 +75,12 @@ bool install(std::uintptr_t base, std::string& why) {
     why = failure;
     return failure.empty();
 }
-PopHeight pop_height_since(std::uint64_t since_ms) noexcept {
-    if (latest_grade_ms.load(std::memory_order_acquire) < since_ms) return 0;
-    return latest_grade.load(std::memory_order_relaxed);
+PopHeight local_pop_height(std::uint64_t takeoff_ms, std::uint64_t now_ms, bool solo, std::uint64_t attempt) noexcept {
+    std::lock_guard lock(log_mutex);
+    const auto known = grade_log.ours;
+    const auto grade = grade_log.local(takeoff_ms, now_ms, solo, attempt);
+    if (!solo && grade_log.ours && grade_log.ours != known)
+        logging::log(logging::Level::info, logging::Channel::skater, "Animation Studio: with other skaters about, the game's grade of your pops is read again (your skater's own).");
+    return grade;
 }
 } // namespace dingosdk::anim_studio::pop_grades
