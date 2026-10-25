@@ -9291,7 +9291,8 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
         const auto t = text_size(f.bold, 13 * k, time.c_str());
         text(d, f.bold, 13 * k, ImVec2(at.x + size.x - 16 * k - t.x, at.y + 36 * k), soft, time);
     }
-    const float ruler_left = lane.x, ruler_right = at.x + size.x - 130 * k;
+    // The ruler stops short of REGION and the zoom (the END ANIM. flag of a trick shown whole sat on REGION).
+    const float ruler_left = lane.x, ruler_right = at.x + size.x - 226 * k;
     const float ruler_w = ruler_right - ruler_left;
     const float region_start = v.bracket_start, region_end = v.bracket_end < 0 ? duration : v.bracket_end;
     // Held still while a bracket is being carried: the window is worked out from the brackets, so letting it
