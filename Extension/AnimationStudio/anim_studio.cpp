@@ -4374,9 +4374,18 @@ void seat_feet_on_board(const GameplayPacket& packet, std::span<const Joint> nat
                     if (!finite(on_board) || !on_deck(on_board.position, height) || height < 0.02f) continue;
                     // On the deck up to 13 cm (the ankle stands 10.4 cm over the mount), let go by 20.
                     const float x = std::clamp((0.20f - height) / 0.07f, 0.0f, 1.0f);
-                    const float share = packet.feet_match * x * x * (3 - 2 * x) * w * std::clamp(packet.limbs.of(thigh), 0.0f, 1.0f);
-                    if (share <= 0) continue;
                     const auto want = compose(board, on_board);
+                    // Only a foot already near it is put on the deck: a foot the trick has far from the drawn board (an
+                    // overgap's longer air, the board still falling or turning) was pulled the whole way there and stuck to
+                    // it after the catch, as if magnetic (22sh, 2026-10-25). Full up to 12 cm away, none from 30.
+                    const auto now_at = world(edited, foot).position;
+                    const float gap = std::sqrt((want.position[0] - now_at[0]) * (want.position[0] - now_at[0]) +
+                                                (want.position[1] - now_at[1]) * (want.position[1] - now_at[1]) +
+                                                (want.position[2] - now_at[2]) * (want.position[2] - now_at[2]));
+                    const float near_x = std::clamp((0.30f - gap) / 0.18f, 0.0f, 1.0f);
+                    const float share = packet.feet_match * x * x * (3 - 2 * x) * near_x * near_x * (3 - 2 * near_x) * w *
+                                        std::clamp(packet.limbs.of(thigh), 0.0f, 1.0f);
+                    if (share <= 0) continue;
                     place_foot(edited, foot, want.position, &want.rotation, share);
                 }
             }
