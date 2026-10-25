@@ -112,8 +112,6 @@ struct CustomTrick {
     int order{-1}; // its place in the playlist, when the playlist plays (In turns goes by it)
     // The timeline's catch (find_catch): the board caught, the feet back on the deck. -1 none. Slowed over a longer air.
     float caught{-1};
-    // Its pop is its own (no pack rule fixed one): it also plays on the pops there is no version of it for.
-    bool own_pop{true};
 };
 // The game's own stance setting (Options, DefaultStanceIsGoofy), kept for the animation thread.
 std::atomic<bool> game_goofy{};
@@ -1631,7 +1629,6 @@ LoadedTricks read_custom_tricks(const std::string& test_trick) {
             }
         }
         auto trick = loaded.trick;
-        trick.own_pop = !p.pack_pop;
         trick.order = p.order;
         tricks->push_back(std::move(trick));
     }
@@ -3505,7 +3502,7 @@ void on_animation(std::uintptr_t component) noexcept {
                         for (const auto& t : *l.game_tricks) {
                             if (t.trick != name || (exact && t.edits->entry != entry_name(l.episode.entry))) continue;
                             candidates.push_back(&t);
-                            described.push_back({t.leads_right, t.fakie, playback_pop_rank(pop, t.edits->pop, t.own_pop)});
+                            described.push_back({t.leads_right, t.fakie, playback_pop_rank(pop, t.edits->pop)});
                         }
                         if (!candidates.empty()) break;
                     }

@@ -1166,9 +1166,9 @@ void merged_library_and_timing() {
     check(playback_pop_rank("high", "high") == 0 && playback_pop_rank("high", "") == 1 &&
           playback_pop_rank("high", "low") < 0 && playback_pop_rank("mid", "low") < 0,
           "Playback accepts exact or explicitly generic pops, never a different source height");
-    check(playback_pop_rank("low", "mid", true) == 2 && playback_pop_rank("low", "high", true) == 3 && playback_pop_rank("high", "high", true) == 0 &&
-              playback_pop_rank("low", "", true) == 1 && playback_pop_rank("", "mid", true) < 0,
-          "A trick on its own pop plays on the pops it has no version for, the nearest first");
+    check(playback_pop_rank("low", "mid") < 0 && playback_pop_rank("low", "high") < 0 && playback_pop_rank("low", "") == 1 &&
+              playback_pop_rank("", "mid") < 0,
+          "A trick on its own pop plays only on that height; on any pop only by its pack's any rule");
     check(episode_selection_changed("360flip", "360flip", "low", "high") &&
           !episode_selection_changed("360flip", "360flip", "low", "low") &&
           !episode_selection_changed("360flip", "360flip", "", "high"),

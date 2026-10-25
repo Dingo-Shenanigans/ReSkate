@@ -156,13 +156,12 @@ struct GameplayClipClock {
 // grades a pop by how it is popped (TEST IN GAME plays on any pop, so there it did play). The game's clock follows the
 // clip of whichever pop it plays and stretches it onto the trick's own air (NativeModels). A pop a pack's LOW, MID or HIGH
 // fixed plays on that pop alone. Below 0: never.
-inline int playback_pop_rank(const std::string& wanted, const std::string& saved, bool nearest = false) noexcept {
+inline int playback_pop_rank(const std::string& wanted, const std::string& saved) noexcept {
+    // A trick on its own pop plays only on that height; on every pop only when its pack's rule says any (saved empty).
+    // (From 2026-10-24 it also played on the pops it had no version for: a low trick on the game's high pop laid its keys
+    // on a body tucked otherwise, not the editor's pose, a foot through the deck - renztre, 2026-10-25.)
     if (saved == wanted) return 0;
-    if (saved.empty()) return 1;
-    if (!nearest || wanted.empty()) return -1;
-    const auto place = [](const std::string& p) { return p == "low" ? 0 : p == "mid" ? 1 : p == "high" ? 2 : -9; };
-    const int a = place(wanted), b = place(saved);
-    return a < 0 || b < 0 ? -1 : 1 + (a > b ? a - b : b - a);
+    return saved.empty() ? 1 : -1;
 }
 inline bool episode_selection_changed(std::string_view selected, std::string_view reported,
                                       std::string_view selected_pop = {}, std::string_view wanted_pop = {}) noexcept {
