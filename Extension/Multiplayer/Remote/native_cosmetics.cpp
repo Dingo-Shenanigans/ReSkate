@@ -198,6 +198,21 @@ void apply_cosmetic_recipe(std::uintptr_t base, std::uintptr_t entity, std::uint
             shuffle_recipe(usable, memory.slot_categories(resource), shuffle_catalog(memory, shuffle.mods_only),
                            shuffle.seed, shuffled);
             memory.validate(resource, usable);
+            // What each player was dressed in, every time: a crash while their skater is built
+            // then names the items in the log the report carries.
+            std::string picks;
+            for (std::size_t i = 0; i < usable.items.size(); ++i) {
+                const auto &asset = usable.items[i].asset;
+                if (asset == as_sent.items[i].asset) continue;
+                const auto origin = asset.empty() ? nullptr : item_origins::find(asset);
+                picks += std::format("{}0x{:08x} {}{}", picks.empty() ? "" : "; ", usable.items[i].slot,
+                                     asset.empty() ? std::string("nothing") : asset,
+                                     origin ? " (" + origin->name + ")" : std::string{});
+            }
+            if (!picks.empty())
+                logging::log(logging::Level::info, logging::Channel::runtime,
+                             "Multiplayer: shuffled a player's {} (entity {:#x}): {}.",
+                             recipe.key == board_recipe_key ? "board" : "outfit", entity, picks);
         } catch (const std::exception &e) {
             usable = std::move(as_sent);
             static std::atomic<unsigned> reported{};
