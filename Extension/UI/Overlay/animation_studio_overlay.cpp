@@ -221,6 +221,11 @@ struct Ui {
     std::string market_open;
     std::string market_crew;
     float market_scroll{}, market_detail_scroll{};
+    // PREVIEW on a pack's page: the pack asked for (Team-Name, "" none), and the trick to open first once it is downloaded
+    // (by its name, else its place in the list); the frame its page was last drawn on (gone from it, the ask is dropped).
+    std::string market_preview, market_preview_pick;
+    std::size_t market_preview_index{};
+    int market_page_frame{-1};
     int spotlight{};
     double spotlight_since{};
     float market_fade{};
@@ -316,6 +321,12 @@ struct Ui {
     // Watching a saved trick (preview mode): the pack it is from, and where to go back to.
     std::string preview_pack, preview_name;
     bool preview_from_pack{};
+    // Watching a MARKET pack's trick before it is got: the pack (Team-Name, "" not one), its tricks in the order the card
+    // lists them (grouped by trick: the list's version it is of), and how far the list is scrolled.
+    std::string preview_market;
+    std::vector<std::size_t> preview_order;
+    std::string preview_order_of;
+    float preview_list_scroll{};
     // A trick just put in a pack: the card asking for its other stances in that pack.
     std::string stance_pack, stance_name;
     // TRICKS' hover preview: the card under the mouse, since when, and the skater doing its trick (studio::peek_...).
@@ -3369,6 +3380,7 @@ void preview_trick(const std::string& pack, const std::string& name, bool from_p
     u.preview_pack = pack;
     u.preview_name = name;
     u.preview_from_pack = from_pack;
+    u.preview_market.clear();
     u.menu = false;
 }
 // Opens a saved trick to edit, or - one locked to its maker - to watch.
@@ -6709,10 +6721,65 @@ void crew_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
 }
 
 // ---- a pack's page ----
+// One of a MARKET pack's tricks (its preview, downloaded) open to watch: the preview screen, with the pack's other tricks.
+void open_market_preview(const studio::market::Preview& preview, std::size_t index) {
+    auto& u = ui();
+    if (index >= preview.tricks.size()) return;
+    const auto& pick = preview.tricks[index];
+    studio::UnpackedTrick trick;
+    trick.name = pick.name;
+    trick.label = pick.label;
+    trick.json = pick.json;
+    trick.clip = pick.clip;
+    std::string m;
+    if (!studio::preview_unpacked(trick, m)) {
+        say(m);
+        return;
+    }
+    u.preview_market = preview.full_name;
+    u.preview_pack.clear();
+    u.preview_name = pick.name;
+    u.preview_from_pack = false;
+    u.menu = false;
+}
+// PREVIEW, or one of its tricks pressed: the pack downloaded to watch (it opens once it is), `pick` the trick to open
+// first ("" the first).
+void ask_market_preview(const MarketPack& p, const std::string& pick = {}, std::size_t index = 0) {
+    auto& u = ui();
+    u.market_preview = p.full_name;
+    u.market_preview_pick = pick;
+    u.market_preview_index = index;
+    studio::market::want_preview(p.full_name);
+}
 void pack_page_market(ImDrawList* d, const Fonts& f, const studio::View& v, const studio::market::View& m, const MarketPack& p, ImVec2 display, float top,
                       float bottom, Covers& covers) {
     auto& u = ui();
     const float k = f.k;
+    // PREVIEW asked for on this page: opened once it is downloaded (and dropped once the page is left).
+    {
+        const int frame = ImGui::GetFrameCount();
+        if (!u.market_preview.empty() && (u.market_preview != p.full_name || u.market_page_frame + 1 < frame)) u.market_preview.clear();
+        u.market_page_frame = frame;
+        if (u.market_preview == p.full_name && m.preview.full_name == p.full_name) {
+            if (m.preview.state == 2) {
+                std::size_t pick = u.market_preview_index < m.preview.tricks.size() ? u.market_preview_index : 0;
+                if (!u.market_preview_pick.empty())
+                    for (std::size_t i = 0; i < m.preview.tricks.size(); ++i)
+                        if (_stricmp(m.preview.tricks[i].label.c_str(), u.market_preview_pick.c_str()) == 0 ||
+                            _stricmp(m.preview.tricks[i].name.c_str(), u.market_preview_pick.c_str()) == 0) {
+                            pick = i;
+                            break;
+                        }
+                u.market_preview.clear();
+                open_market_preview(m.preview, pick);
+                return;
+            }
+            if (m.preview.state == 3) {
+                say("Could not preview " + p.title + ": " + m.preview.error);
+                u.market_preview.clear();
+            }
+        }
+    }
     const ShopColumn col{std::max(0.0f, display.x / k * 0.5f - 960), std::min(1920.0f, display.x / k)};
     const float ix = col.inner() * k, iw = (col.width - 96) * k;
     covers.add(p);
@@ -6814,14 +6881,22 @@ void pack_page_market(ImDrawList* d, const Fonts& f, const studio::View& v, cons
         const float bh = 56 * k;
         const auto g = get_button(v, m, p);
         if (shop_button(d, f, "##packget", ImVec2(x, ry), ImVec2(240 * k, bh), g.label, ShopLook::blue, g.enabled)) studio::market::install(p.full_name);
+        // PREVIEW: its tricks watched before it is got (downloaded first: how far, while it is).
+        const bool fetching = m.preview.full_name == p.full_name && m.preview.state == 1;
+        const auto pl = fetching ? "LOADING " + std::to_string(static_cast<int>(m.preview.fraction * 100)) + "%" : std::string("PREVIEW");
+        const float pw = std::max(shop_button_width(f, "LOADING 100%", bh), shop_button_width(f, "PREVIEW", bh, 3));
+        if (shop_button(d, f, "##packpreview", ImVec2(x + 252 * k, ry), ImVec2(pw, bh), pl, ShopLook::paper, !fetching, fetching ? 0 : 3)) ask_market_preview(p);
+        const float lx = x + 264 * k + pw;
         const float lw = shop_button_width(f, p.favorite ? "LIKED" : "LIKE", bh, 1);
-        if (shop_button(d, f, "##packlike", ImVec2(x + 252 * k, ry), ImVec2(lw, bh), p.favorite ? "LIKED" : "LIKE", ShopLook::line, true, p.favorite ? 2 : 1))
+        if (shop_button(d, f, "##packlike", ImVec2(lx, ry), ImVec2(lw, bh), p.favorite ? "LIKED" : "LIKE", ShopLook::line, true, p.favorite ? 2 : 1))
             like_pack(m, p);
         const float tw = shop_button_width(f, "ON THUNDERSTORE", bh);
-        if (shop_button(d, f, "##packts", ImVec2(x + 264 * k + lw, ry), ImVec2(tw, bh), "ON THUNDERSTORE", ShopLook::line))
+        if (shop_button(d, f, "##packts", ImVec2(lx + lw + 12 * k, ry), ImVec2(tw, bh), "ON THUNDERSTORE", ShopLook::line))
             studio::market::open_page(p.full_name);
         ry += bh + 18 * k;
     }
+    if (m.preview.full_name == p.full_name && m.preview.state == 3)
+        ry += paragraph(d, body(f, 14 * k), 14 * k, ImVec2(x, ry), w, skate_theme::warning, "Its preview could not be downloaded: " + m.preview.error) + 10 * k;
     if (!m.job.message.empty() && m.job.what.find(p.title) != std::string::npos)
         ry += paragraph(d, body(f, 14 * k), 14 * k, ImVec2(x, ry), w, m.job.failed ? skate_theme::warning : soft, m.job.message) + 10 * k;
     if (!p.installed.empty() && !removed_here(v, p)) {
@@ -6846,12 +6921,16 @@ void pack_page_market(ImDrawList* d, const Fonts& f, const studio::View& v, cons
         d->AddRectFilled(ImVec2(x + hw + 14 * k, ry + (hb - ht) * 0.5f), ImVec2(x + w, ry + (hb - ht) * 0.5f + 2 * k), IM_COL32(255, 255, 255, 36));
         ry += (hb - ht) + 22 * k;
     }
+    if (p.readme == 2 && !p.tricks.empty())
+        ry += paragraph(d, body(f, 14 * k), 14 * k, ImVec2(x, ry), w, soft,
+                        p.installed.empty() ? "Press a trick to watch it before you get it." : "Press a trick to watch it.") + 12 * k;
     if (p.readme <= 1) ry += paragraph(d, body(f, 14 * k), 14 * k, ImVec2(x, ry), w, faint, "Reading what is in it...") + 8 * k;
     else if (p.readme == 3) ry += paragraph(d, body(f, 14 * k), 14 * k, ImVec2(x, ry), w, faint, "Its list could not be read.") + 8 * k;
     else {
-        // Each trick a tag: its name, and in blue what goes with it ("mid pop").
+        // Each trick a tag: its name, and in blue what goes with it ("mid pop"). Pressed, it plays (PREVIEW).
         float tx = x;
         const float th = 36 * k;
+        std::size_t index = 0;
         for (const auto& trick : p.tricks) {
             const auto open = trick.find(" (");
             const auto name = trick.substr(0, open);
@@ -6862,8 +6941,14 @@ void pack_page_market(ImDrawList* d, const Fonts& f, const studio::View& v, cons
                 tx = x;
                 ry += th + 10 * k;
             }
-            d->AddRectFilled(ImVec2(tx, ry), ImVec2(tx + tw, ry + th), IM_COL32(18, 19, 24, 255));
-            d->AddRect(ImVec2(tx, ry), ImVec2(tx + tw, ry + th), IM_COL32(1, 131, 255, 140), 0, 0, 1 * k);
+            bool lit = false;
+            ImGui::PushID(static_cast<int>(index));
+            if (hit("##whatsin", ImVec2(tx, ry), ImVec2(tx + tw, ry + th), &lit)) ask_market_preview(p, name, index);
+            ImGui::PopID();
+            ++index;
+            d->AddRectFilled(ImVec2(tx, ry), ImVec2(tx + tw, ry + th), lit ? IM_COL32(28, 34, 48, 255) : IM_COL32(18, 19, 24, 255));
+            d->AddRect(ImVec2(tx, ry), ImVec2(tx + tw, ry + th), lit ? IM_COL32(120, 190, 255, 255) : IM_COL32(1, 131, 255, 140), 0, 0, (lit ? 2 : 1) * k);
+            if (lit && nav().keys) chosen_outline(d, ImVec2(tx, ry), ImVec2(tx + tw, ry + th), k);
             d->AddText(sharp(mont(f, 13 * k), 13 * k), 13 * k, ImVec2(tx + 14 * k, ry + 11 * k), IM_COL32_WHITE, name.c_str());
             if (!rest.empty()) d->AddText(sharp(mont(f, 13 * k), 13 * k), 13 * k, ImVec2(tx + 14 * k + nw + 6 * k, ry + 11 * k), blue_light, rest.c_str());
             tx += tw + 10 * k;
@@ -8857,20 +8942,141 @@ void leave_preview() {
     // that was open before, and a clip arriving closes the menu (below), which threw BACK and Esc into the editor.
     u.menu_after_preview = true;
     studio::end_preview();
-    if (u.preview_from_pack && !u.preview_pack.empty()) {
+    if (!u.preview_market.empty()) {
+        open_menu(2); // the pack's page in the MARKET, as it was
+        u.market_open = u.preview_market;
+    } else if (u.preview_from_pack && !u.preview_pack.empty()) {
         open_menu(1);
         open_pack_page(u.preview_pack);
     } else open_menu(0);
+    u.preview_market.clear();
     u.preview_pack.clear();
     u.preview_name.clear();
+}
+// A MARKET pack's trick being watched before the pack is got: a card with the pack (GET IT on it), the trick, and every
+// trick in the pack, grouped by trick, to switch to (Up and Down go through them).
+void market_preview_card(ImDrawList* d, const Fonts& f, const studio::View& v, float bottom) {
+    auto& u = ui();
+    const float k = f.k;
+    const auto m = studio::market::view();
+    const auto found = std::find_if(m.packs.begin(), m.packs.end(), [&](const MarketPack& p) { return p.full_name == u.preview_market; });
+    const MarketPack* pack = found == m.packs.end() ? nullptr : &*found;
+    const bool listed = m.preview.full_name == u.preview_market && m.preview.state == 2;
+    const auto& tricks = m.preview.tricks;
+    // The list's order: by trick (the game's name for it), the pack's own order within each.
+    const auto order_key = m.preview.full_name + "|" + m.preview.version + "|" + std::to_string(tricks.size());
+    if (listed && u.preview_order_of != order_key) {
+        std::vector<std::pair<std::string, std::size_t>> by;
+        for (std::size_t i = 0; i < tricks.size(); ++i) by.emplace_back(upper(trick_label(tricks[i].trick)), i);
+        std::stable_sort(by.begin(), by.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+        u.preview_order.clear();
+        for (const auto& [label, i] : by) u.preview_order.push_back(i);
+        u.preview_order_of = order_key;
+        u.preview_list_scroll = 0;
+    }
+    std::size_t at = tricks.size(); // the one open, in the list's order
+    if (listed)
+        for (std::size_t i = 0; i < u.preview_order.size(); ++i)
+            if (u.preview_order[i] < tricks.size() && tricks[u.preview_order[i]].name == u.preview_name) at = i;
+    const auto words = [&](const studio::market::PreviewTrick& t) {
+        std::string out = t.pop.empty() ? std::string("any pop") : t.pop + " pop";
+        if (t.switch_stance && t.fakie) out += ", switch fakie";
+        else if (t.switch_stance) out += ", switch";
+        else if (t.fakie) out += ", fakie";
+        return out;
+    };
+    const ImVec2 a(28 * k, 110 * k);
+    const float w = 400 * k, x = a.x + 20 * k, iw = w - 40 * k;
+    const ImVec2 b(a.x + w, bottom);
+    skate_theme::rough_rect(d, a, b, IM_COL32(16, 17, 20, 236), seed_of(a), k);
+    d->AddRectFilled(a, ImVec2(a.x + 6 * k, b.y), blue);
+    float y = a.y + 18 * k;
+    // The pack, and GET IT.
+    {
+        const float cover = 104 * k;
+        if (pack) {
+            Covers covers;
+            covers.add(*pack);
+            covers.ask();
+            market_icon(d, f, *pack, ImVec2(x, y), ImVec2(x + cover, y + cover));
+        }
+        const float px = x + cover + 16 * k, pw = iw - cover - 16 * k;
+        const bool installed = pack && !pack->installed.empty() && !removed_here(v, *pack);
+        text(d, f.heading, 12 * k, ImVec2(px, y + 2 * k), blue_light, installed ? "PACK  -  INSTALLED" : "PACK  -  NOT INSTALLED");
+        const auto title = pack ? pack->title : u.preview_market;
+        paragraph(d, f.title, 22 * k, ImVec2(px, y + 20 * k), pw, white, upper(elide(f.title, 22 * k, title, pw * 2)));
+        if (pack) text(d, f.bold, 12 * k, ImVec2(px, y + cover - 16 * k), soft, elide(f.bold, 12 * k, "BY " + upper(maker_of(*pack)), pw));
+        y += cover + 14 * k;
+        if (pack) {
+            const auto g = get_button(v, m, *pack);
+            if (action(d, f, "##previewget", ImVec2(x, y), ImVec2(iw, 46 * k), g.label, Look::blue, g.enabled)) studio::market::install(pack->full_name);
+            y += 46 * k + 8 * k;
+            if (!m.job.message.empty() && m.job.what.find(pack->title) != std::string::npos && !m.job.running)
+                y += paragraph(d, f.bold, 12 * k, ImVec2(x, y), iw, m.job.failed ? skate_theme::warning : soft, m.job.message) + 6 * k;
+        }
+        y += 10 * k;
+    }
+    // The trick open.
+    if (listed && at < u.preview_order.size()) {
+        const auto& t = tricks[u.preview_order[at]];
+        text(d, f.heading, 12 * k, ImVec2(x, y), blue_light, "TRICK");
+        y += 20 * k;
+        y += paragraph(d, f.title, 28 * k, ImVec2(x, y), iw, white, upper(t.label)) + 4 * k;
+        text(d, f.bold, 14 * k, ImVec2(x, y), soft, elide(f.bold, 14 * k, trick_label(t.trick) + "   " + words(t), iw));
+        y += 30 * k;
+    }
+    // Every trick in it.
+    if (!listed) return;
+    text(d, f.heading, 12 * k, ImVec2(x, y), blue_light, "IN THIS PACK  (" + std::to_string(tricks.size()) + ")");
+    y += 22 * k;
+    const ImVec2 la(a.x + 8 * k, y), lb(b.x - 6 * k, b.y - 12 * k);
+    if (lb.y - la.y < 60 * k) return;
+    begin_region(76, la, lb, u.preview_list_scroll, k);
+    float ly = la.y - u.preview_list_scroll;
+    const float row_h = 40 * k;
+    std::string group;
+    for (std::size_t i = 0; i < u.preview_order.size(); ++i) {
+        const auto index = u.preview_order[i];
+        if (index >= tricks.size()) continue;
+        const auto& t = tricks[index];
+        const auto kind = upper(trick_label(t.trick));
+        if (kind != group) {
+            group = kind;
+            ly += i ? 8 * k : 0;
+            text(d, f.heading, 11 * k, ImVec2(x, ly + 4 * k), faint, elide(f.heading, 11 * k, group, iw));
+            ly += 22 * k;
+        }
+        const bool open = i == at;
+        bool lit = false;
+        ImGui::PushID(static_cast<int>(index));
+        const bool pressed = hit("##previewrow", ImVec2(la.x + 6 * k, ly), ImVec2(lb.x - 10 * k, ly + row_h), &lit);
+        ImGui::PopID();
+        if (open || lit) d->AddRectFilled(ImVec2(la.x + 6 * k, ly), ImVec2(lb.x - 10 * k, ly + row_h), open ? IM_COL32(1, 131, 255, 60) : IM_COL32(255, 255, 255, 18));
+        if (open) d->AddRectFilled(ImVec2(la.x + 6 * k, ly), ImVec2(la.x + 10 * k, ly + row_h), blue);
+        if (lit && nav().keys) chosen_outline(d, ImVec2(la.x + 6 * k, ly), ImVec2(lb.x - 10 * k, ly + row_h), k);
+        const auto rest = words(t);
+        const float rw = text_size(f.bold, 12 * k, rest.c_str()).x;
+        text(d, f.bold, 14 * k, ImVec2(x, ly + 11 * k), open ? white : IM_COL32(230, 230, 234, 255), elide(f.bold, 14 * k, t.label, iw - rw - 16 * k));
+        text(d, f.bold, 12 * k, ImVec2(x + iw - rw, ly + 13 * k), open ? blue_light : faint, rest);
+        if (pressed && !open) open_market_preview(m.preview, index);
+        ly += row_h + 4 * k;
+    }
+    end_region(d, la, lb, ly + u.preview_list_scroll - la.y + 8 * k, u.preview_list_scroll, k);
+    // Up and Down: the trick before or after it.
+    if (!ImGui::GetIO().WantTextInput && at < u.preview_order.size()) {
+        if (ImGui::IsKeyPressed(ImGuiKey_DownArrow, false) && at + 1 < u.preview_order.size()) open_market_preview(m.preview, u.preview_order[at + 1]);
+        else if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, false) && at > 0) open_market_preview(m.preview, u.preview_order[at - 1]);
+    }
 }
 void preview_screen(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 display) {
     auto& u = ui();
     const float k = f.k;
-    const auto* p = preset_named(v, u.preview_name.empty() ? v.name : u.preview_name);
-    const auto* pack = u.preview_pack.empty() ? nullptr : pack_named(v, u.preview_pack);
+    const bool market = !u.preview_market.empty();
+    const auto* p = market ? nullptr : preset_named(v, u.preview_name.empty() ? v.name : u.preview_name);
+    const auto* pack = market || u.preview_pack.empty() ? nullptr : pack_named(v, u.preview_pack);
     // ---- the card: the pack and the trick ----
-    {
+    if (market) market_preview_card(d, f, v, display.y - 128 * k - 26 * k - 20 * k);
+    else {
         const ImVec2 a(28 * k, 110 * k);
         const float w = 380 * k;
         float y = a.y + 18 * k;
@@ -8951,8 +9157,8 @@ void preview_screen(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2
         if (button("##previewview", 90 * k, label, Look::ghost, u.camera_shot == shot)) take_shot(v, shot);
         ImGui::PopID();
     }
-    if (action(d, f, "##previewexit", ImVec2(b.x - 24 * k - 230 * k, by), ImVec2(230 * k, bh), u.preview_from_pack ? "< BACK TO PACK" : "< BACK",
-               Look::paper))
+    if (action(d, f, "##previewexit", ImVec2(b.x - 24 * k - 230 * k, by), ImVec2(230 * k, bh),
+               market ? "< BACK TO MARKET" : u.preview_from_pack ? "< BACK TO PACK" : "< BACK", Look::paper))
         leave_preview();
     // The keys.
     if (!ImGui::GetIO().WantTextInput) {

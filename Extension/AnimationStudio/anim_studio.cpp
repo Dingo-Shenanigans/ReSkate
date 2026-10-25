@@ -6799,6 +6799,62 @@ void remove_saved_files(const std::string& safe) {
         std::filesystem::remove(path, error);
     std::filesystem::remove(folder / safe, error);
 }
+// Names compared as Windows compares file names: "Kickflip" and "kickflip" are one folder.
+struct NoCase {
+    bool operator()(const std::string& a, const std::string& b) const { return _stricmp(a.c_str(), b.c_str()) < 0; }
+};
+// What the studio takes out of a pack's zip: its animations (a .json and a .clip each, by name), its packs
+// (presets/<pack>.json) and their pictures (presets/<pack>.png). Only the names the studio itself makes, nothing over its
+// size, and a Thunderstore package's own files passed over. Nothing is checked beyond that here: the caller checks it all
+// before it writes any of it.
+struct ZipContents {
+    std::map<std::string, std::pair<std::string, std::string>, NoCase> found; // animation -> json, clip
+    std::vector<std::pair<std::string, std::string>> pack_files;              // pack name -> json
+    std::map<std::string, std::string> pack_pictures;                         // pack name -> png
+};
+ZipContents read_pack_zip(const std::filesystem::path& path) {
+    std::error_code error;
+    // Read whole: a pack is a few MB, so anything far bigger is not one.
+    if (const auto size = std::filesystem::file_size(path, error); !error && size > 512ull * 1024 * 1024) throw std::runtime_error("it is too big to be a pack");
+    const auto data = read_whole(path);
+    mz_zip_archive zip{};
+    if (!mz_zip_reader_init_mem(&zip, data.data(), data.size(), 0)) throw std::runtime_error("not a zip file");
+    struct Closer { mz_zip_archive* z; ~Closer() { mz_zip_reader_end(z); } } closer{&zip};
+    ZipContents out;
+    const auto count = mz_zip_reader_get_num_files(&zip);
+    std::uint64_t unpacked = 0;
+    for (mz_uint i = 0; i < count; ++i) {
+        mz_zip_archive_file_stat stat{};
+        if (!mz_zip_reader_file_stat(&zip, i, &stat) || stat.m_is_directory) continue;
+        std::string name = stat.m_filename;
+        std::replace(name.begin(), name.end(), '\\', '/');
+        const auto slash = name.rfind('/');
+        const std::string file = slash == std::string::npos ? name : name.substr(slash + 1);
+        const std::string dir = slash == std::string::npos ? "" : name.substr(0, slash);
+        const auto dot = file.rfind('.');
+        if (dot == std::string::npos || stat.m_uncomp_size > 64ull * 1024 * 1024) continue;
+        const std::string stem = file.substr(0, dot), ext = file.substr(dot);
+        if (ext != ".json" && ext != ".clip" && ext != ".png") continue;
+        if (dir.empty() && (stem == "manifest" || stem == "reskate-animations")) continue; // a Thunderstore package's own
+        if (ext == ".png" && stat.m_uncomp_size > 4ull * 1024 * 1024) continue;
+        if (stem != file_safe(stem)) continue; // only the names the studio itself makes
+        if ((unpacked += stat.m_uncomp_size) > 1024ull * 1024 * 1024) throw std::runtime_error("it unpacks to more than 1 GB");
+        size_t size = 0;
+        void* bytes = mz_zip_reader_extract_to_heap(&zip, i, &size, 0);
+        if (!bytes) throw std::runtime_error("could not unpack " + name);
+        std::string content(static_cast<const char*>(bytes), size);
+        mz_free(bytes);
+        const auto last_dir = dir.substr(dir.rfind('/') == std::string::npos ? 0 : dir.rfind('/') + 1);
+        if (ext == ".png") {
+            if (last_dir == "presets" && content.compare(0, 8, "\x89PNG\r\n\x1a\n") == 0) out.pack_pictures[stem] = std::move(content);
+            continue;
+        }
+        if (last_dir == "presets" && ext == ".json") out.pack_files.emplace_back(stem, std::move(content));
+        else if (ext == ".json") out.found[stem].first = std::move(content);
+        else out.found[stem].second = std::move(content);
+    }
+    return out;
+}
 } // namespace
 bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips, bool move_done, std::string& message,
                         std::vector<std::string>* made_packs, const std::string& replace) {
@@ -6810,53 +6866,11 @@ bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips
     std::vector<std::string> problems;
     for (const auto& path : zips) {
         try {
-            // Read whole, under the studio's lock: a pack is a few MB, so anything far bigger is not one.
-            if (const auto size = std::filesystem::file_size(path, error); !error && size > 512ull * 1024 * 1024)
-                throw std::runtime_error("it is too big to be a pack");
-            const auto data = read_whole(path);
-            mz_zip_archive zip{};
-            if (!mz_zip_reader_init_mem(&zip, data.data(), data.size(), 0)) throw std::runtime_error("not a zip file");
-            struct Closer { mz_zip_archive* z; ~Closer() { mz_zip_reader_end(z); } } closer{&zip};
-            // Read it all first; nothing is written unless every file in it checks out.
-            // Names compared as Windows compares file names: "Kickflip" and "kickflip" are one folder.
-            struct NoCase {
-                bool operator()(const std::string& a, const std::string& b) const { return _stricmp(a.c_str(), b.c_str()) < 0; }
-            };
-            std::map<std::string, std::pair<std::string, std::string>, NoCase> found; // animation -> json, clip
-            std::vector<std::pair<std::string, std::string>> pack_files;     // pack name -> json
-            std::map<std::string, std::string> pack_pictures;                  // pack name -> png
-            const auto count = mz_zip_reader_get_num_files(&zip);
-            std::uint64_t unpacked = 0;
-            for (mz_uint i = 0; i < count; ++i) {
-                mz_zip_archive_file_stat stat{};
-                if (!mz_zip_reader_file_stat(&zip, i, &stat) || stat.m_is_directory) continue;
-                std::string name = stat.m_filename;
-                std::replace(name.begin(), name.end(), '\\', '/');
-                const auto slash = name.rfind('/');
-                const std::string file = slash == std::string::npos ? name : name.substr(slash + 1);
-                const std::string dir = slash == std::string::npos ? "" : name.substr(0, slash);
-                const auto dot = file.rfind('.');
-                if (dot == std::string::npos || stat.m_uncomp_size > 64ull * 1024 * 1024) continue;
-                const std::string stem = file.substr(0, dot), ext = file.substr(dot);
-                if (ext != ".json" && ext != ".clip" && ext != ".png") continue;
-                if (dir.empty() && (stem == "manifest" || stem == "reskate-animations")) continue; // a Thunderstore package's own
-                if (ext == ".png" && stat.m_uncomp_size > 4ull * 1024 * 1024) continue;
-                if (stem != file_safe(stem)) continue; // only the names the studio itself makes
-                if ((unpacked += stat.m_uncomp_size) > 1024ull * 1024 * 1024) throw std::runtime_error("it unpacks to more than 1 GB");
-                size_t size = 0;
-                void* bytes = mz_zip_reader_extract_to_heap(&zip, i, &size, 0);
-                if (!bytes) throw std::runtime_error("could not unpack " + name);
-                std::string content(static_cast<const char*>(bytes), size);
-                mz_free(bytes);
-                const auto last_dir = dir.substr(dir.rfind('/') == std::string::npos ? 0 : dir.rfind('/') + 1);
-                if (ext == ".png") {
-                    if (last_dir == "presets" && content.compare(0, 8, "\x89PNG\r\n\x1a\n") == 0) pack_pictures[stem] = std::move(content);
-                    continue;
-                }
-                if (last_dir == "presets" && ext == ".json") pack_files.emplace_back(stem, std::move(content));
-                else if (ext == ".json") found[stem].first = std::move(content);
-                else found[stem].second = std::move(content);
-            }
+            // Read it all first (under the studio's lock); nothing is written unless every file in it checks out.
+            auto zipped = read_pack_zip(path);
+            auto& found = zipped.found;
+            auto& pack_files = zipped.pack_files;
+            auto& pack_pictures = zipped.pack_pictures;
             // Check every animation, and every pack, before writing any: a zip that fails leaves nothing of itself behind.
             for (const auto& [pack_name, text] : pack_files) (void)read_pack_json(Json::parse(text));
             for (const auto& [name, pair] : found) {
@@ -6992,6 +7006,62 @@ bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips
     logging::log(Level::info, Channel::skater, "Animation Studio: {}", message);
     publish_locked(s);
     return problems.empty();
+}
+bool unpack_preview(const std::filesystem::path& zip, const std::filesystem::path& into, std::vector<UnpackedTrick>& tricks, std::string& message) {
+    tricks.clear();
+    try {
+        const auto zipped = read_pack_zip(zip);
+        // Checked as the import checks them. The pack's own file says the order and the pops; one that does not read is
+        // passed over (its tricks still play here).
+        std::optional<PresetPack> pack;
+        for (const auto& [pack_name, text] : zipped.pack_files)
+            try {
+                pack = read_pack_json(Json::parse(text));
+                break;
+            } catch (...) {}
+        std::vector<std::pair<std::string, Animation>> checked;
+        for (const auto& [name, pair] : zipped.found) {
+            if (pair.first.empty() || pair.second.empty()) throw std::runtime_error(name + " is missing its .json or .clip");
+            auto animation = from_json(pair.first);
+            const std::vector<std::uint8_t> clip(pair.second.begin(), pair.second.end());
+            if (clip_from_bytes(clip).joints != skeleton_joints) throw std::runtime_error(name + " is for another skeleton");
+            checked.emplace_back(name, std::move(animation));
+        }
+        if (checked.empty()) throw std::runtime_error("there are no tricks in it");
+        // In the pack's own order (the order its README lists them in), then any it does not name.
+        if (pack) {
+            const auto order = pack->members();
+            const auto rank = [&](const std::string& name) {
+                for (std::size_t i = 0; i < order.size(); ++i)
+                    if (_stricmp(order[i].c_str(), name.c_str()) == 0) return i;
+                return order.size();
+            };
+            std::stable_sort(checked.begin(), checked.end(), [&](const auto& a, const auto& b) { return rank(a.first) < rank(b.first); });
+        }
+        std::error_code error;
+        std::filesystem::remove_all(into, error);
+        std::filesystem::create_directories(into);
+        for (const auto& [name, animation] : checked) {
+            const auto& pair = zipped.found.at(name);
+            UnpackedTrick out;
+            out.name = name;
+            out.label = animation.label.empty() ? name : animation.label;
+            out.trick = animation.trick;
+            out.pop = pack ? effective_pop(*pack, animation.pop) : animation.pop;
+            out.switch_stance = animation.switch_stance.value_or(false);
+            out.fakie = animation.fakie.value_or(false);
+            out.json = into / (name + ".json");
+            out.clip = into / (name + ".clip");
+            write_whole(out.json, pair.first);
+            write_whole(out.clip, pair.second);
+            tricks.push_back(std::move(out));
+        }
+        return true;
+    } catch (const std::exception& e) {
+        tricks.clear();
+        message = e.what();
+        return false;
+    }
 }
 bool save(std::string& message) {
     auto& s = state();
@@ -7738,15 +7808,17 @@ void end_preview() {
     std::lock_guard lock(s.mutex);
     end_preview_locked(s);
 }
-bool load_saved(const std::string& name, std::string& message, bool preview) {
-    const auto folder = library_folder();
+namespace {
+// A trick opened from its two files: one of the library's (`library`, by its name) to edit or watch, or one of a pack's
+// that is not installed (preview_unpacked), to watch only.
+bool open_trick_files(const std::string& safe, const std::filesystem::path& json_path, const std::filesystem::path& clip_path, bool library,
+                      std::string& message, bool preview) {
     try {
-        const auto safe = file_safe(name);
-        std::ifstream json_in(saved_json(safe), std::ios::binary);
-        if (!json_in) throw std::runtime_error("it is not in the library");
+        std::ifstream json_in(json_path, std::ios::binary);
+        if (!json_in) throw std::runtime_error(library ? "it is not in the library" : "its files are gone: preview it again");
         const std::string text((std::istreambuf_iterator<char>(json_in)), std::istreambuf_iterator<char>());
         auto animation = from_json(text);
-        std::ifstream clip_in(saved_clip(safe), std::ios::binary);
+        std::ifstream clip_in(clip_path, std::ios::binary);
         if (!clip_in) throw std::runtime_error("its recorded trick is missing");
         const std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(clip_in)), std::istreambuf_iterator<char>());
         auto clip = std::make_shared<Clip>(clip_from_bytes(bytes));
@@ -7761,7 +7833,7 @@ bool load_saved(const std::string& name, std::string& message, bool preview) {
         auto& s = state();
         std::lock_guard lock(s.mutex);
         if (!s.library_read) read_library_locked(s);
-        if (!preview && locked_locked(s, safe))
+        if (library && !preview && locked_locked(s, safe))
             throw std::runtime_error("it is locked to its maker" + (animation.author.empty() ? std::string{} : " (" + animation.author + ")") +
                                      ": you can play it, test it and preview it, not open it to edit or copy it");
         animation.name = safe;
@@ -7773,24 +7845,42 @@ bool load_saved(const std::string& name, std::string& message, bool preview) {
         s.clip = std::move(clip);
         ++s.clip_serial;
         s.previewing = preview;
-        s.saved_as = safe;
+        s.saved_as = library ? safe : std::string{}; // one not installed is no file of the library's
         s.undo.clear();
         s.redo.clear();
         s.time = opening_time(*s.clip);
         s.playing = false;
         s.dirty = false;
-        message = preview ? "Previewing " + safe + "." : "Opened " + safe + ".";
+        const auto shown = s.edits.label.empty() ? safe : s.edits.label;
+        message = !library ? "Previewing " + shown + ". It is not installed: GET puts it in your library." : preview ? "Previewing " + safe + "." : "Opened " + safe + ".";
         if (preview) s.playing = true;
         s.status = message;
         publish_locked(s);
         return true;
     } catch (const std::exception& e) {
-        message = "Could not open " + name + ": " + e.what();
+        message = "Could not open " + safe + ": " + e.what();
         auto& s = state();
         std::lock_guard lock(s.mutex);
         s.status = message;
         return false;
     }
+}
+} // namespace
+bool load_saved(const std::string& name, std::string& message, bool preview) {
+    const auto safe = file_safe(name);
+    if (safe.empty()) {
+        message = "Could not open " + name + ": it is not in the library";
+        return false;
+    }
+    return open_trick_files(safe, saved_json(safe), saved_clip(safe), true, message, preview);
+}
+bool preview_unpacked(const UnpackedTrick& trick, std::string& message) {
+    const auto safe = file_safe(trick.name);
+    if (safe.empty() || safe != trick.name) {
+        message = "Could not open " + trick.name + ".";
+        return false;
+    }
+    return open_trick_files(safe, trick.json, trick.clip, false, message, true);
 }
 bool remove(const std::string& name, std::string& message, std::vector<std::string>* packs_gone) {
     const auto safe = file_safe(name);

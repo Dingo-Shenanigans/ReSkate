@@ -341,6 +341,18 @@ void pack_published(const std::string& pack, const std::string& version, const s
 // on or off as it was, and its tricks made elsewhere that no other pack has go first, so none is left as a copy.
 bool import_pack_zip(const std::filesystem::path& zip, std::string& message, std::vector<std::string>* made = nullptr,
                      const std::string& replace = {});
+// A pack's tricks watched before it is installed (the MARKET's PREVIEW): taken out of its zip into a folder of their own,
+// never into the library.
+struct UnpackedTrick {
+    std::string name;        // its name in the pack (its files' names)
+    std::string label;       // the name it is shown by
+    std::string trick, pop;  // the game's trick it plays for, and its pop as the pack has it ("" any)
+    bool switch_stance{}, fakie{};
+    std::filesystem::path json, clip;
+};
+// The tricks in a pack's zip, checked as an import checks them, written in `into` (emptied first) and listed in the
+// pack's own order. False, with why, when there is none to watch.
+bool unpack_preview(const std::filesystem::path& zip, const std::filesystem::path& into, std::vector<UnpackedTrick>& tricks, std::string& message);
 std::filesystem::path studio_folder();       // ReSkate.Tricks
 std::filesystem::path pack_export_folder();  // where exports go
 // A trick in a pack switched off (it stays in the pack, but does not play) or on again.
@@ -385,6 +397,8 @@ bool load(const std::string& name, std::string& message);
 // A saved trick open to watch only, a pack's or anyone's (one locked to its maker too): it plays, the camera moves, but
 // nothing is keyed or saved. end_preview closes it.
 bool preview_saved(const std::string& name, std::string& message);
+// One of a pack's tricks not installed (unpack_preview) open to watch only, the same way. end_preview closes it.
+bool preview_unpacked(const UnpackedTrick& trick, std::string& message);
 void end_preview();
 // The game's own tricks as studio clips, <folder>/library/catalog.json and its .clip files: built in game from the
 // player's own copy (library_build below), or by contrib/animator-studio/make_trick_library.py.

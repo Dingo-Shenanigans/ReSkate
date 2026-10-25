@@ -116,6 +116,21 @@ struct Detail {
     std::vector<std::string> tricks; // what is in it, a line each (README)
     std::string error;
 };
+// A pack's tricks to watch before it is got (want_preview): its zip downloaded in the background and its tricks taken
+// out of it into a folder of their own, never into the library.
+struct PreviewTrick {
+    std::string name, label;     // its name in the pack, and the name it is shown by
+    std::string trick, pop;      // the game's trick it plays for, and its pop ("" any)
+    bool switch_stance{}, fakie{};
+    std::filesystem::path json, clip;
+};
+struct Preview {
+    std::string full_name, version; // the pack (Team-Name) and its version, "" none asked for
+    int state{};                    // 0 none, 1 being downloaded, 2 ready, 3 could not be had (`error` says why)
+    float fraction{};               // how far the download is
+    std::string error;
+    std::vector<PreviewTrick> tricks;
+};
 // A download or an upload in the background, and how far it has got.
 struct Job {
     bool running{}, failed{};
@@ -135,6 +150,7 @@ struct View {
     bool like_prompt{true}; // a like asks to like it on Thunderstore too
     Job job;
     Detail detail;
+    Preview preview;
 };
 View view();
 // The listing, fetched in the background: on opening the MARKET (when it is older than a few minutes) or when asked.
@@ -154,6 +170,9 @@ inline std::string team_page(std::string_view team) { return std::string(site) +
 void open_team_page(std::string_view team); // in the browser; a team's name of letters, figures and _ only
 // Downloads the pack and puts it in the library (the studio's import), in the background.
 void install(const std::string& full_name);
+// Downloads the pack to watch its tricks first (View::preview), in the background: one pack at a time, the last asked
+// for. The last few downloaded are kept, so watching again is at once, and GET after it downloads nothing again.
+void want_preview(const std::string& full_name);
 // A pack of the library is gone (deleted, or its last trick deleted): the package it came from no longer counts as
 // installed, so the MARKET offers GET again. Packs the ReSkate launcher installs (Mods) stay: its mod list holds those.
 void forget_installed(const std::string& library_pack);

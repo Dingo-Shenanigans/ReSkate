@@ -309,6 +309,8 @@ struct Market {
     std::deque<std::string> readme_queue;
     bool readme_worker{};
     bool settings_read{};
+    Preview preview;
+    bool preview_worker{};
 };
 Market& market() {
     static auto* m = new Market;
@@ -540,6 +542,130 @@ void readme_worker() {
         m.readmes[full_name] = std::move(readme);
     }
 }
+// PREVIEW: a pack's zip, kept in market/previews by version (the last few), and its tricks unpacked beside it.
+constexpr std::size_t previews_kept = 5;
+std::filesystem::path previews_folder() { return folder() / L"previews"; }
+std::wstring preview_stem(const Pack& pack) { return widen(pack.owner + "-" + pack.name + "-" + pack.version); }
+// Whether a downloaded file is one of the studio's packs: a zip with its marker at the top.
+bool studio_zip(const std::filesystem::path& zip) {
+    const auto bytes = read_file(zip);
+    mz_zip_archive archive{};
+    if (!mz_zip_reader_init_mem(&archive, bytes.data(), bytes.size(), 0)) return false;
+    const bool ours = mz_zip_reader_locate_file(&archive, "reskate-animations.json", nullptr, 0) >= 0;
+    mz_zip_reader_end(&archive);
+    return ours;
+}
+// The ones looked at longest ago go, with their tricks, past the last few.
+void prune_previews(const std::filesystem::path& keep) {
+    std::error_code error;
+    std::vector<std::pair<std::filesystem::file_time_type, std::filesystem::path>> zips;
+    for (const auto& entry : std::filesystem::directory_iterator(previews_folder(), error))
+        if (entry.is_regular_file(error) && entry.path().extension() == L".zip" && entry.path() != keep)
+            zips.emplace_back(entry.last_write_time(error), entry.path());
+    std::sort(zips.begin(), zips.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    for (std::size_t i = previews_kept - 1; i < zips.size(); ++i) {
+        auto unpacked = zips[i].second;
+        unpacked.replace_extension();
+        std::filesystem::remove_all(unpacked, error);
+        std::filesystem::remove(zips[i].second, error);
+    }
+}
+std::vector<PreviewTrick> fetch_preview(const Pack& pack) {
+    if (!plain_name(pack.owner) || !plain_name(pack.name) || !plain_version(pack.version) || pack.download_url.empty())
+        throw std::runtime_error("it cannot be downloaded");
+    const auto stem = preview_stem(pack);
+    const auto zip = previews_folder() / (stem + L".zip");
+    std::error_code error;
+    std::filesystem::create_directories(zip.parent_path(), error);
+    if (!std::filesystem::is_regular_file(zip, error)) {
+        auto part = zip;
+        part += L".part";
+        std::filesystem::remove(part, error);
+        https::Watch watch;
+        std::atomic<bool> done{};
+        // How far it is, while it runs (waited for before going on: it reads `watch` and `done`).
+        std::thread watcher([&] {
+            while (!done.load()) {
+                if (const auto total = watch.total.load()) {
+                    auto& m = market();
+                    std::lock_guard lock(m.mutex);
+                    if (m.preview.full_name == pack.full_name)
+                        m.preview.fraction = static_cast<float>(watch.received.load()) / static_cast<float>(total);
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+        });
+        struct Join {
+            std::atomic<bool>& done;
+            std::thread& thread;
+            ~Join() {
+                done.store(true);
+                if (thread.joinable()) thread.join();
+            }
+        } join_watcher{done, watcher};
+        const auto got = https::get(widen(pack.download_url), part, 256ull * 1024 * 1024, 300, agent, &watch);
+        done.store(true);
+        watcher.join();
+        if (!got.ok) {
+            std::filesystem::remove(part, error);
+            throw std::runtime_error("the download failed (" + std::to_string(got.http_status ? got.http_status : got.error) + ")");
+        }
+        if (!studio_zip(part)) {
+            std::filesystem::remove(part, error);
+            throw std::runtime_error(pack.title + " is not an Animator Studio pack");
+        }
+        std::filesystem::rename(part, zip, error);
+        if (error) throw std::runtime_error("it could not be kept");
+    }
+    // Looked at now: kept the longest.
+    std::filesystem::last_write_time(zip, std::filesystem::file_time_type::clock::now(), error);
+    std::vector<UnpackedTrick> unpacked;
+    std::string message;
+    if (!unpack_preview(zip, previews_folder() / stem, unpacked, message)) {
+        std::filesystem::remove(zip, error); // downloaded again next time
+        throw std::runtime_error(message);
+    }
+    prune_previews(zip);
+    std::vector<PreviewTrick> tricks;
+    for (auto& t : unpacked)
+        tricks.push_back({std::move(t.name), std::move(t.label), std::move(t.trick), std::move(t.pop), t.switch_stance, t.fakie, std::move(t.json), std::move(t.clip)});
+    return tricks;
+}
+// The pack asked for last, until it is ready: one asked for while another downloads comes next.
+void preview_worker() {
+    auto& m = market();
+    for (;;) {
+        Pack pack;
+        {
+            std::lock_guard lock(m.mutex);
+            const auto found = std::find_if(m.packs.begin(), m.packs.end(), [&](const Pack& p) { return p.full_name == m.preview.full_name; });
+            if (m.preview.state != 1 || found == m.packs.end()) {
+                if (m.preview.state == 1) m.preview.state = 3, m.preview.error = "It is not in the MARKET any more.";
+                m.preview_worker = false;
+                return;
+            }
+            pack = *found;
+        }
+        Preview done;
+        done.full_name = pack.full_name;
+        done.version = pack.version;
+        try {
+            done.tricks = fetch_preview(pack);
+            done.state = 2;
+        } catch (const std::exception& e) {
+            done.state = 3;
+            done.error = e.what();
+            logging::log(Level::warning, Channel::skater, "Animator Studio market: {} could not be previewed: {}", pack.full_name, e.what());
+        }
+        std::lock_guard lock(m.mutex);
+        if (m.preview.full_name == done.full_name && m.preview.state == 1) {
+            done.fraction = 1;
+            m.preview = std::move(done);
+            m.preview_worker = false;
+            return;
+        }
+    }
+}
 void start_job(const std::string& what, std::function<void(Job&)> work) {
     auto& m = market();
     {
@@ -587,6 +713,7 @@ View view() {
     v.like_prompt = m.like_prompt;
     v.job = m.job;
     v.detail = m.detail;
+    v.preview = m.preview;
     v.packs = m.packs;
     std::error_code error;
     for (auto& p : v.packs) {
@@ -809,10 +936,18 @@ void install(const std::string& full_name) {
                 if (thread.joinable()) thread.join();
             }
         } join_watcher{done, watcher};
-        const auto got = https::get(widen(pack.download_url), zip, 256ull * 1024 * 1024, 300, agent, &watch);
+        // Previewed first: that download, the same version's, is the one put in.
+        bool previewed = false;
+        if (plain_name(pack.owner) && plain_name(pack.name) && plain_version(pack.version)) {
+            const auto kept = previews_folder() / (preview_stem(pack) + L".zip");
+            previewed = std::filesystem::is_regular_file(kept, error) && std::filesystem::copy_file(kept, zip, error) && !error;
+            if (!previewed) std::filesystem::remove(zip, error);
+        }
+        const auto got = previewed ? https::Download{} : https::get(widen(pack.download_url), zip, 256ull * 1024 * 1024, 300, agent, &watch);
         done.store(true);
         watcher.join();
-        if (!got.ok) throw std::runtime_error("the download failed (" + std::to_string(got.http_status ? got.http_status : got.error) + ")");
+        if (!previewed && !got.ok)
+            throw std::runtime_error("the download failed (" + std::to_string(got.http_status ? got.http_status : got.error) + ")");
         // It has to be one of the studio's: its marker at the top.
         {
             const auto bytes = read_file(zip);
@@ -844,6 +979,29 @@ void install(const std::string& full_name) {
         }
         result.message = "Installed " + pack.title + " " + pack.version + ". " + message;
     });
+}
+void want_preview(const std::string& full_name) {
+    auto& m = market();
+    std::lock_guard lock(m.mutex);
+    const auto found = std::find_if(m.packs.begin(), m.packs.end(), [&](const Pack& p) { return p.full_name == full_name; });
+    if (found == m.packs.end()) return;
+    // Asked for again: as it is, unless its tricks' files have gone since (then downloaded or unpacked again).
+    std::error_code error;
+    const bool still_there = m.preview.tricks.empty() || std::filesystem::is_regular_file(m.preview.tricks.front().json, error);
+    if (m.preview.full_name == full_name && m.preview.version == found->version && (m.preview.state == 1 || (m.preview.state == 2 && still_there))) return;
+    m.preview = {};
+    m.preview.full_name = full_name;
+    m.preview.version = found->version;
+    m.preview.state = 1;
+    if (m.preview_worker) return; // it takes this one next
+    m.preview_worker = true;
+    try {
+        std::thread(preview_worker).detach();
+    } catch (...) {
+        m.preview_worker = false;
+        m.preview.state = 3;
+        m.preview.error = "It could not be started.";
+    }
 }
 bool link_account(const std::string& team, const std::string& token, std::string& message) {
     const bool team_ok = !team.empty() && team.size() <= 64 &&
