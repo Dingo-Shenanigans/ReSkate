@@ -2,6 +2,7 @@
 #include "Engine/Core/Hooks/hooks.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Vfs/mod_catalog.h"
+#include "material_mask_formats.h"
 #include "material_method_hooks.h"
 #include "material_shader_identity.h"
 #include "material_transmission.h"
@@ -207,7 +208,9 @@ HRESULT STDMETHODCALLTYPE make(ID3D12Device *d, const D3D12_GRAPHICS_PIPELINE_ST
             if (shader_key != recipe.shader)
                 continue;
             auto edited = *desc;
-            edited.NumRenderTargets = 4;
+            const auto formats = detail::material_mask_formats();
+            edited.NumRenderTargets = formats.NumRenderTargets;
+            std::copy_n(formats.RTFormats, 8, edited.RTVFormats);
             edited.PS = {recipe.mask.data(), recipe.mask.size()};
             edited.CachedPSO = {};
             edited.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
@@ -219,12 +222,6 @@ HRESULT STDMETHODCALLTYPE make(ID3D12Device *d, const D3D12_GRAPHICS_PIPELINE_ST
                 edited.BlendState.RenderTarget[i].BlendEnable = FALSE;
                 edited.BlendState.RenderTarget[i].LogicOpEnable = FALSE;
                 edited.BlendState.RenderTarget[i].RenderTargetWriteMask = 15;
-                if (i < 3)
-                    edited.RTVFormats[i] = DXGI_FORMAT_R32G32B32A32_FLOAT;
-                else if (i == 3)
-                    edited.RTVFormats[i] = detail::shader_output_component(recipe.mask, 3) == 1
-                                               ? DXGI_FORMAT_R32G32B32A32_UINT
-                                               : DXGI_FORMAT_R32G32B32A32_FLOAT;
             }
             Pipeline p;
             p.parameters = recipe.parameters;
@@ -385,11 +382,7 @@ HRESULT observe_stream(ID3D12Device2 *d, const D3D12_PIPELINE_STATE_STREAM_DESC 
             if (formats.NumRenderTargets < 1 || formats.NumRenderTargets > 8)
                 return hr;
             const auto native_targets = formats.NumRenderTargets;
-            formats.NumRenderTargets = 4;
-            for (UINT i = 0; i < (std::min)(4u, formats.NumRenderTargets); ++i)
-                formats.RTFormats[i] = i == 3 && detail::shader_output_component(recipe.mask, 3) == 1
-                                           ? DXGI_FORMAT_R32G32B32A32_UINT
-                                           : DXGI_FORMAT_R32G32B32A32_FLOAT;
+            formats = detail::material_mask_formats();
             std::memcpy(copy.data() + rt->second, &formats, sizeof(formats));
             for (const auto &[type, offset] : fields)
             {
@@ -464,8 +457,9 @@ HRESULT observe_stream(ID3D12Device2 *d, const D3D12_PIPELINE_STATE_STREAM_DESC 
                     "ready.");
             }
             else
-                say("Material capture: mask stream rejected; native pipeline "
-                    "preserved.");
+                logging::printf(logging::Level::warning, logging::Channel::graphics,
+                                "Material capture: mask stream rejected (HRESULT 0x%08lx); native pipeline preserved.",
+                                static_cast<unsigned long>(built));
             break;
         }
     }

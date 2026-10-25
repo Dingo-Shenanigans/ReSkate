@@ -1,6 +1,82 @@
+#include "../material_mask_formats.h"
 #include "../material_transmission.cpp"
 #include <iostream>
 using namespace dingosdk::overlay;
+namespace
+{
+// Pipeline stream subobjects require pointer alignment, including tail padding.
+#pragma warning(push)
+#pragma warning(disable : 4324)
+template <D3D12_PIPELINE_STATE_SUBOBJECT_TYPE Type, class T> struct alignas(void *) StreamPart
+{
+    D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type{Type};
+    T value{};
+};
+
+#pragma warning(pop)
+void test_mask_pipeline_formats(ID3D12Device *device)
+{
+    constexpr char source[] = R"(
+float4 vs(uint id:SV_VertexID):SV_Position { return float4(id==1?3:-1,id==2?3:-1,0,1); }
+struct Mask {float4 a:SV_Target0;float4 b:SV_Target1;float4 c:SV_Target2;uint4 d:SV_Target3;};
+Mask ps(){Mask o;o.a=0;o.b=0;o.c=0;o.d=0;return o;}
+)";
+    ComPtr<ID3DBlob> vs, ps, error, bytes;
+    check(D3DCompile(source, sizeof(source) - 1, nullptr, nullptr, nullptr, "vs", "vs_5_0",
+                     D3DCOMPILE_WARNINGS_ARE_ERRORS, 0, &vs, &error));
+    check(D3DCompile(source, sizeof(source) - 1, nullptr, nullptr, nullptr, "ps", "ps_5_0",
+                     D3DCOMPILE_WARNINGS_ARE_ERRORS, 0, &ps, &error));
+    D3D12_ROOT_SIGNATURE_DESC desc{};
+    check(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &bytes, &error));
+    ComPtr<ID3D12RootSignature> root;
+    check(device->CreateRootSignature(0, bytes->GetBufferPointer(), bytes->GetBufferSize(), IID_PPV_ARGS(&root)));
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC p{};
+    p.pRootSignature = root.Get();
+    p.VS = {vs->GetBufferPointer(), vs->GetBufferSize()};
+    p.PS = {ps->GetBufferPointer(), ps->GetBufferSize()};
+    p.SampleMask = UINT_MAX;
+    p.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+    p.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+    p.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    p.SampleDesc.Count = 1;
+    const auto formats = detail::material_mask_formats();
+    p.NumRenderTargets = formats.NumRenderTargets;
+    std::copy_n(formats.RTFormats, 8, p.RTVFormats);
+    for (auto &target : p.BlendState.RenderTarget)
+        target.RenderTargetWriteMask = 15;
+    // Reproduce the native five-to-four reduction: an unused fifth format is invalid.
+    p.RTVFormats[4] = DXGI_FORMAT_R8_UINT;
+    ComPtr<ID3D12PipelineState> pipeline;
+    if (SUCCEEDED(device->CreateGraphicsPipelineState(&p, IID_PPV_ARGS(&pipeline))))
+        throw std::runtime_error("stale format unexpectedly accepted");
+    std::copy_n(formats.RTFormats, 8, p.RTVFormats);
+    check(device->CreateGraphicsPipelineState(&p, IID_PPV_ARGS(&pipeline)));
+    struct Stream
+    {
+        StreamPart<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE, ID3D12RootSignature *> root;
+        StreamPart<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VS, D3D12_SHADER_BYTECODE> vs;
+        StreamPart<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS, D3D12_SHADER_BYTECODE> ps;
+        StreamPart<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER, D3D12_RASTERIZER_DESC> raster;
+        StreamPart<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL, D3D12_DEPTH_STENCIL_DESC> depth;
+        StreamPart<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PRIMITIVE_TOPOLOGY, D3D12_PRIMITIVE_TOPOLOGY_TYPE> topology;
+        StreamPart<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS, D3D12_RT_FORMAT_ARRAY> formats;
+        StreamPart<D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_DESC, DXGI_SAMPLE_DESC> samples;
+    } stream;
+    stream.root.value = p.pRootSignature;
+    stream.vs.value = p.VS;
+    stream.ps.value = p.PS;
+    stream.raster.value = p.RasterizerState;
+    stream.depth.value = p.DepthStencilState;
+    stream.topology.value = p.PrimitiveTopologyType;
+    stream.formats.value = formats;
+    stream.samples.value = p.SampleDesc;
+    ComPtr<ID3D12Device2> device2;
+    check(device->QueryInterface(IID_PPV_ARGS(&device2)));
+    D3D12_PIPELINE_STATE_STREAM_DESC stream_desc{sizeof(stream), &stream};
+    pipeline.Reset();
+    check(device2->CreatePipelineState(&stream_desc, IID_PPV_ARGS(&pipeline)));
+}
+} // namespace
 int main(int argc, char **argv)
 {
     try
@@ -12,6 +88,11 @@ int main(int argc, char **argv)
         set_material_transmission_enabled(true);
         ComPtr<ID3D12Device> device;
         check(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)));
+        if (scenario == "pipeline-formats")
+        {
+            test_mask_pipeline_formats(device.Get());
+            return 0;
+        }
         ComPtr<ID3D12CommandQueue> queue;
         D3D12_COMMAND_QUEUE_DESC q{};
         check(device->CreateCommandQueue(&q, IID_PPV_ARGS(&queue)));
