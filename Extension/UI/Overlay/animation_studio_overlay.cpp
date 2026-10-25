@@ -120,6 +120,7 @@ struct Ui {
     ImGuiKey binding_key{ImGuiKey_None};     // the new key pressed for it, not saved yet
     int cards_frame{-1};
     bool dragging_playhead{}, dragging_gizmo{}, orbiting{}, panning{};
+    bool orbit_left{}; // turning round him with the left button (the preview), not the right
     // A key being dragged along its row.
     std::optional<std::uint16_t> key_joint;
     float key_from{}, key_to{};
@@ -4261,27 +4262,8 @@ void hover_preview(const Fonts& f, const studio::View& v) {
         if (a.y < u.grid_a.y - 1) a.y += row * std::ceil((u.grid_a.y - a.y) / row);
         while (a.y + hgt > u.grid_b.y + 1 && a.y - row >= u.grid_a.y - 1) a.y -= row;
         hgt = std::min(hgt, u.grid_b.y - a.y);
-        // Over no other card where it can: the nearest column, right first, with no card under it (in a trick's group the
-        // next column held its other save, which was hidden while the preview played and looked missing).
-        const auto covers = [&](float x) {
-            const ImVec2 pa(x, a.y), pb(x + w, a.y + hgt);
-            return std::any_of(u.cards_laid.begin(), u.cards_laid.end(), [&](const auto& card) {
-                const auto& [ca, cb] = card;
-                const bool hovered = std::abs(ca.x - h.a.x) < 1 && std::abs(ca.y - h.a.y) < 1;
-                return !hovered && ca.x < pb.x - 1 && cb.x > pa.x + 1 && ca.y < pb.y - 1 && cb.y > pa.y + 1;
-            });
-        };
-        if (covers(a.x)) {
-            const float step = w + gap;
-            bool placed = false;
-            for (int n = 1; n < 12 && !placed; ++n)
-                for (const float x : {h.a.x + static_cast<float>(n) * step, h.a.x - static_cast<float>(n) * step})
-                    if (x >= u.grid_a.x - 1 && x + w <= u.grid_b.x + 1 && !covers(x)) {
-                        a.x = x;
-                        placed = true;
-                        break;
-                    }
-        }
+        // Always the column right beside the card (left of it at the right edge), over the cards there: it was moved on to
+        // the nearest column with no card under it, which was often the far right of the page, away from the card watched.
     }
     const ImVec2 b(a.x + w, a.y + hgt);
     u.peek_hole = true;
@@ -9057,7 +9039,8 @@ void market_preview_card(ImDrawList* d, const Fonts& f, const studio::View& v, f
         else if (ImGui::IsKeyPressed(ImGuiKey_UpArrow, false) && at > 0) open_market_preview(m.preview, u.preview_order[at - 1]);
     }
 }
-void preview_screen(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 display) {
+void mouse_camera(const studio::View& v, const Projector& project, bool inside, bool left_turns, float k); // below
+void preview_screen(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 display, const Projector& project) {
     auto& u = ui();
     const float k = f.k;
     const bool market = !u.preview_market.empty();
@@ -9137,10 +9120,12 @@ void preview_screen(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2
         studio::set_time(0);
         studio::set_playing(true);
     }
-    if (button("##previewloop", 110 * k, "LOOP", Look::dark, v.loop)) studio::set_loop(!v.loop);
-    if (button("##previewslow", 110 * k, v.speed < 0.99f ? "0.5X" : "1X", Look::dark, v.speed < 0.99f)) studio::set_speed(v.speed < 0.99f ? 1.0f : 0.5f);
+    if (button("##previewloop", 100 * k, "LOOP", Look::dark, v.loop)) studio::set_loop(!v.loop);
+    if (button("##previewslow", 100 * k, v.speed < 0.99f ? "0.5X" : "1X", Look::dark, v.speed < 0.99f)) studio::set_speed(v.speed < 0.99f ? 1.0f : 0.5f);
     x += 14 * k;
-    static constexpr std::array<std::pair<const char*, int>, 4> views{{{"FRONT", 1}, {"SIDE", 2}, {"BACK", 3}, {"TOP", 4}}};
+    // FREE: the camera where you put it - drag on him (left or right button) to turn round him, the middle button to move
+    // it, the wheel nearer or further; doing any of it is FREE. The others follow him from that side.
+    static constexpr std::array<std::pair<const char*, int>, 5> views{{{"FREE", 0}, {"FRONT", 1}, {"SIDE", 2}, {"BACK", 3}, {"TOP", 4}}};
     for (const auto& [label, shot] : views) {
         ImGui::PushID(shot);
         if (button("##previewview", 90 * k, label, Look::ghost, u.camera_shot == shot)) take_shot(v, shot);
@@ -9157,6 +9142,10 @@ void preview_screen(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2
             if (ImGui::IsKeyPressed(static_cast<ImGuiKey>(ImGuiKey_0 + shot), false)) take_shot(v, shot);
         if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) leave_preview();
     }
+    // The mouse on the open floor (not on the card at the left, the bar, a button or a card over it) takes the camera.
+    const auto mouse = ImGui::GetIO().MousePos;
+    const bool floor = !any_card_open(v) && !ImGui::IsAnyItemHovered() && mouse.x > 440 * k && mouse.y < a.y - 10 * k && mouse.y > 0;
+    mouse_camera(v, project, floor, true, k);
 }
 // Something said when you are back from testing a trick: picked at random, one each time.
 const char* test_line() {
@@ -10864,6 +10853,7 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
 
 
 // The skater: dots on the joints that can be chosen, the glowing box on the chosen one, and the drag.
+void mouse_camera(const studio::View& v, const Projector& project, bool inside, bool left_turns, float k); // below
 void viewport(ImDrawList* d, const Fonts& f, const studio::View& v, const Projector& project, ImVec2 area_min, ImVec2 area_max) {
     auto& u = ui();
     const float k = f.k;
@@ -10965,12 +10955,20 @@ void viewport(ImDrawList* d, const Fonts& f, const studio::View& v, const Projec
             else apply_turn(v, project, (mouse.x - u.drag_start.x) / k, (mouse.y - u.drag_start.y) / k, u.move_mode);
         }
     }
+    mouse_camera(v, project, inside, false, k);
+}
+// The camera by the mouse: the right button (and the left too where nothing else takes it, as in the preview) turns round
+// him, the middle one moves it, the wheel goes nearer or further. Taking it is the FREE camera.
+void mouse_camera(const studio::View& v, const Projector& project, bool inside, bool left_turns, float k) {
+    auto& u = ui();
+    auto& io = ImGui::GetIO();
     auto orbit = v.orbit;
     bool camera_changed = false;
-    if (inside && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) u.orbiting = true;
+    if (inside && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) u.orbiting = true, u.orbit_left = false;
+    if (left_turns && inside && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !ImGui::IsAnyItemHovered()) u.orbiting = true, u.orbit_left = true;
     if (inside && ImGui::IsMouseClicked(ImGuiMouseButton_Middle)) u.panning = true;
     if (u.orbiting) {
-        if (!ImGui::IsMouseDown(ImGuiMouseButton_Right)) u.orbiting = false;
+        if (!ImGui::IsMouseDown(u.orbit_left ? ImGuiMouseButton_Left : ImGuiMouseButton_Right)) u.orbiting = false;
         else {
             orbit.yaw -= io.MouseDelta.x * 0.006f;
             orbit.pitch += io.MouseDelta.y * 0.005f;
@@ -11381,7 +11379,7 @@ void draw_animation_studio() {
         u.menu_fade = 0;
         if (lens().on) draw_fisheye(d, display);
         if (v.previewing) {
-            preview_screen(d, f, v, display);
+            preview_screen(d, f, v, display, project);
             ImGui::End();
             ImGui::PopStyleVar(2);
             draw_cards(f, v, display);
