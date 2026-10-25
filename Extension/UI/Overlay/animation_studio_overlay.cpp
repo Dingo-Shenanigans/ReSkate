@@ -104,6 +104,7 @@ struct Ui {
     bool trick_panel{};               // THIS TRICK is open
     std::string delete_card;          // a saved trick in a pack about to be deleted: the card asks first
     bool account{};                   // MARKET > ACCOUNT is open: the Thunderstore team signed in, and changing it
+    bool menu_after_preview{};        // leaving a preview: the menu it goes back to stays open when the trick open before comes back
     std::set<std::string> packs_open; // FROM PACKS: the packs unfolded (a pack's name; "*loose" the tricks with no pack)
     bool dragging_playhead{}, dragging_gizmo{}, orbiting{}, panning{};
     // A key being dragged along its row.
@@ -8205,6 +8206,9 @@ void save_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 disp
 // and the buttons to watch it by along the bottom. Space plays and pauses, R starts it again, 1-4 the views, Esc goes back.
 void leave_preview() {
     auto& u = ui();
+    // Back where it was opened from - the pack, or TRICKS - not into the editor: ending the preview brings back the trick
+    // that was open before, and a clip arriving closes the menu (below), which threw BACK and Esc into the editor.
+    u.menu_after_preview = true;
     studio::end_preview();
     if (u.preview_from_pack && !u.preview_pack.empty()) {
         open_menu(1);
@@ -9022,7 +9026,8 @@ void on_new_clip(const studio::View& v) {
     u.channel = -1;
     u.rows_followed = 0xffff;
     u.radial = false;
-    if (v.has_clip) u.menu = false;
+    if (v.has_clip && !u.menu_after_preview) u.menu = false;
+    u.menu_after_preview = false;
     // The camera keeps whichever shot you chose, but is told again whether to travel with him, since the studio starts
     // out carrying him along and nothing has said otherwise yet.
     studio::set_camera_follow(u.camera_shot != 0);
