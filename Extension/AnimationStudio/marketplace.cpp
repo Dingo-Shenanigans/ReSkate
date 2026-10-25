@@ -295,6 +295,8 @@ struct Market {
     std::string team;
     int team_state{};          // View::team_state
     std::string team_checked;  // the team that state is of
+    int account_state{};       // View::account_state
+    std::string account_checked; // the team that state is of
     Job job;
     Detail detail;
     std::deque<std::string> icon_queue;
@@ -710,6 +712,7 @@ View view() {
     v.error = m.error;
     v.team = m.team;
     v.team_state = m.team_checked == m.team ? m.team_state : 0;
+    v.account_state = m.account_checked == m.team ? m.account_state : 0;
     v.like_prompt = m.like_prompt;
     v.job = m.job;
     v.detail = m.detail;
@@ -1032,11 +1035,15 @@ bool link_account(const std::string& team, const std::string& token, std::string
         m.team = team;
         m.team_state = 0;
         m.team_checked.clear();
+        m.account_state = 0;
+        m.account_checked.clear();
     }
     message = "Linked to the Thunderstore team " + team + ". Your packs can be published from PACKS.";
-    check_team(true); // a pack's name typed for the team is found out now, not when a publish fails
+    check_team(true); // a pack's name typed for the team is found out now, not when a publish fails (and its token checked)
     return true;
 }
+std::atomic<unsigned> account_changes{};
+void account_changed() { account_changes.fetch_add(1, std::memory_order_acq_rel); }
 void unlink_account() {
     std::error_code error;
     std::filesystem::remove(token_file(), error);
@@ -1046,8 +1053,12 @@ void unlink_account() {
     m.team.clear();
     m.team_state = 0;
     m.team_checked.clear();
+    m.account_state = 0;
+    m.account_checked.clear();
+    account_changed();
 }
 void check_team(bool again) {
+    verify_account(again);
     std::string team;
     {
         auto& m = market();
@@ -1075,6 +1086,84 @@ void check_team(bool again) {
         std::lock_guard lock(m.mutex);
         if (m.team_checked == team) m.team_state = state;
     }).detach();
+}
+void verify_account(bool again) {
+    std::string team;
+    {
+        auto& m = market();
+        std::lock_guard lock(m.mutex);
+        read_settings_locked(m);
+        if (m.team.empty() || (m.account_checked == m.team && m.account_state == 1)) return;
+        if (!again && m.account_checked == m.team && m.account_state != 0) return;
+        team = m.team;
+        m.account_checked = team;
+        if (!std::all_of(team.begin(), team.end(), [](char c) { return std::isalnum(static_cast<unsigned char>(c)) || c == '_'; })) {
+            m.account_state = 3;
+            return;
+        }
+        m.account_state = 1;
+    }
+    std::thread([team] {
+        int state = 3;
+        if (const auto token = read_token(); !token.empty()) {
+            // Thunderstore's own check of a package before an upload: first of all whether the token may upload under the
+            // team ("Missing privileges to upload under author ..."). A made-up package, so nothing else stands in its way;
+            // nothing is uploaded.
+            Json manifest = Json::object();
+            manifest["name"] = "AnimatorStudioAccountCheck";
+            manifest["version_number"] = "0.0.1";
+            manifest["website_url"] = "";
+            manifest["description"] = "Animator Studio account check";
+            manifest["dependencies"] = Json::array();
+            Json body = Json::object();
+            body["namespace"] = team;
+            body["manifest_data"] = base64(manifest.dump());
+            const auto answer = request(L"POST", std::string(site) + "/api/experimental/submission/validate/manifest-v1/",
+                                        {L"Authorization: Bearer " + widen(token), L"Content-Type: application/json"}, body.dump(), 30000);
+            if (answer.status == 200) state = 2;
+            else if (answer.status == 400)
+                // Turned down for the team (not its token, or no such team): not yours. Anything else is checked after it.
+                state = answer.body.find("privileges") != std::string::npos || answer.body.find("\"namespace\"") != std::string::npos ? 3 : 2;
+            else if (answer.status == 401 || answer.status == 403) state = 3;
+            else state = 4;
+            logging::log(Level::info, Channel::skater, "Animation Studio: the linked token {} for the Thunderstore team {} ({}).",
+                         state == 2 ? "publishes" : state == 3 ? "does not publish" : "could not be checked", team, answer.status);
+        }
+        auto& m = market();
+        {
+            std::lock_guard lock(m.mutex);
+            if (m.account_checked != team) return;
+            m.account_state = state;
+        }
+        account_changed();
+    }).detach();
+}
+std::string verified_team() {
+    bool ask = false;
+    std::string out;
+    {
+        auto& m = market();
+        std::lock_guard lock(m.mutex);
+        read_settings_locked(m);
+        if (m.team.empty()) return {};
+        if (m.account_checked != m.team || m.account_state == 0) ask = true;
+        else if (m.account_state == 2) out = m.team;
+    }
+    if (ask) verify_account();
+    return out;
+}
+unsigned account_generation() { return account_changes.load(std::memory_order_acquire); }
+std::string installed_from(const std::string& pack_name) {
+    auto& m = market();
+    std::lock_guard lock(m.mutex);
+    read_settings_locked(m);
+    for (const auto& [full_name, pack] : m.installed_as) {
+        if (pack != pack_name) continue;
+        std::string name = full_name.starts_with("mod:") ? full_name.substr(4) : full_name; // the launcher's Mods/<Team-Pack>
+        const auto dash = name.find('-');
+        return dash == std::string::npos ? std::string{} : name.substr(0, dash);
+    }
+    return {};
 }
 std::string export_package(const std::string& pack_name, std::string& message, const std::string& version) {
     try {

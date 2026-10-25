@@ -147,6 +147,9 @@ struct View {
     // That team on Thunderstore (check_team): 0 not looked at yet, 1 being looked up, 2 found, 3 no team of that name (a
     // pack's name typed for it), 4 Thunderstore could not be reached.
     int team_state{};
+    // Its token, checked with Thunderstore to publish under that team (verify_account): 0 not checked yet, 1 being checked,
+    // 2 it does (the team is yours), 3 it does not (another team's token, or not a token), 4 Thunderstore not reached.
+    int account_state{};
     bool like_prompt{true}; // a like asks to like it on Thunderstore too
     Job job;
     Detail detail;
@@ -181,6 +184,15 @@ bool link_account(const std::string& team, const std::string& token, std::string
 void unlink_account();
 // Looks the linked team up on Thunderstore in the background (View::team_state); `again` looks again though it was.
 void check_team(bool again = false);
+// Asks Thunderstore, in the background, whether the linked token can publish under the linked team (View::account_state):
+// its upload check of a package's manifest, with nothing uploaded. Only then is a pack of that team's yours on any PC.
+void verify_account(bool again = false);
+// The linked team once its token is checked to be that team's, else "" (and the check is started when it has not been).
+std::string verified_team();
+// Goes up whenever verified_team() changes: who owns which pack is worked out again.
+unsigned account_generation();
+// The Thunderstore team a pack in the library came from (got in the MARKET or from the launcher's Mods), "" none.
+std::string installed_from(const std::string& pack_name);
 // Builds the pack as a Thunderstore package and publishes it, in the background. `pack` is a pack of the library;
 // `version` the version it goes up as ("" the next one). A pack published before goes to the same package (an update);
 // `package` (Team-Name) names the package to update when the pack does not know it (one uploaded by hand).

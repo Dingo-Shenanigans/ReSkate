@@ -5032,7 +5032,11 @@ void pack_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
         }
         y += 46 * k;
         const bool published = pack_is_published(studio::market::view(), pack);
-        if (action(d, f, "##export", ImVec2(x, y), ImVec2(half, 38 * k), published ? "UPDATE" : "SHARE", published ? Look::blue : Look::paper)) {
+        // A pack you got (from the MARKET or imported) is not yours to share: no SHARE on it at all. Your own, made on another
+        // PC, is yours once your Thunderstore team that put it out is signed in (MARKET > ACCOUNT). If SHARE is asked for
+        // some other way, the card still says no, and the studio still refuses to export it.
+        const bool can_share = !pack.installed;
+        if (can_share && action(d, f, "##export", ImVec2(x, y), ImVec2(half, 38 * k), published ? "UPDATE" : "SHARE", published ? Look::blue : Look::paper)) {
             // Someone else's pack, or one with another maker's tricks in it: not shared again (the card says why).
             const bool others = std::any_of(pack.members.begin(), pack.members.end(), [&](const std::string& m) { return saved_trick(v, m) && from_a_pack(v, m); });
             if (pack.installed || others) u.reshare_pack = pack.name;
@@ -5043,7 +5047,8 @@ void pack_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
             }
         }
         const std::string confirm = "pack:" + pack.name;
-        if (action(d, f, "##deletepack", ImVec2(x + half + 8 * k, y), ImVec2(half, 38 * k), u.confirm_delete == confirm ? "AGAIN TO DELETE" : "DELETE", Look::danger)) {
+        if (action(d, f, "##deletepack", ImVec2(can_share ? x + half + 8 * k : x, y), ImVec2(can_share ? half : w, 38 * k),
+                   u.confirm_delete == confirm ? "AGAIN TO DELETE" : "DELETE", Look::danger)) {
             if (u.confirm_delete != confirm) u.confirm_delete = confirm;
             else {
                 std::string m;
@@ -8653,8 +8658,11 @@ void reshare_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 d
         y += paragraph(d, f.bold, 16 * k, ImVec2(x, y), w, soft,
                        "The studio checks who made every pack, and " + pack->name + " is " + (pack->made_by.empty() ? std::string("someone else's") : pack->made_by + "'s") +
                            ", not yours. You wouldn't want your own packs reshared either, right?!") + 14 * k;
+        y += paragraph(d, f.bold, 15 * k, ImVec2(x, y), w, faint,
+                       "It plays for you, but it stays theirs to share: it can't be saved as a zip, made into a Thunderstore package or published to the MARKET.") +
+             10 * k;
         paragraph(d, f.bold, 15 * k, ImVec2(x, y), w, faint,
-                  "It plays for you, but it stays theirs to share: it can't be saved as a zip, made into a Thunderstore package or published to the MARKET.");
+                  "Made it yourself on another PC? Sign in with the Thunderstore team that published it (MARKET > ACCOUNT), and it's yours to share here too.");
     } else {
         std::vector<std::string> shown(others.begin(), others.begin() + static_cast<std::ptrdiff_t>(std::min<std::size_t>(others.size(), 3)));
         std::string list = listed(shown);
@@ -8663,7 +8671,9 @@ void reshare_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 d
         y += paragraph(d, f.bold, 16 * k, ImVec2(x, y), w, soft,
                        list + (others.size() == 1 ? " is someone else's" : " are someone else's") +
                            ". Those stay theirs to share, so the pack can't go out like this. You wouldn't want your own tricks reshared either, right?!") + 14 * k;
-        paragraph(d, f.bold, 15 * k, ImVec2(x, y), w, faint, "Take them out of the pack, and it's all yours to share.");
+        y += paragraph(d, f.bold, 15 * k, ImVec2(x, y), w, faint, "Take them out of the pack, and it's all yours to share.") + 10 * k;
+        paragraph(d, f.bold, 15 * k, ImVec2(x, y), w, faint,
+                  "Made them yourself on another PC? Sign in with the Thunderstore team that published them (MARKET > ACCOUNT), and they're yours here too.");
     }
     if (action(d, f, "##reshareok", ImVec2(b.x - 30 * k - 220 * k, b.y - 70 * k), ImVec2(220 * k, 46 * k), "FAIR ENOUGH", Look::paper)) u.reshare_pack.clear();
 }

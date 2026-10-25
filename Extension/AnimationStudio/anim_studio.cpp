@@ -24,6 +24,7 @@
 #include "Extension/Skater/xray_skeleton.h"
 #include "Extension/Profile/runtime_internal.h"
 #include "native_library.h"
+#include "marketplace.h"
 #include <Windows.h>
 #include <shellapi.h>
 #include <bcrypt.h>
@@ -1240,7 +1241,44 @@ std::string clip_hash(const std::filesystem::path& path) {
     known[path] = {size, when, hash};
     return hash;
 }
-bool locked_key(const std::string& maker_key) { return !maker_key.empty() && maker_key != device_key(); }
+// Makers' keys that are yours though made on another PC: the keys of the packs your Thunderstore team put out, once its
+// token is checked to be the team's (market::verified_team). A creator on a new PC, after a reinstall or with a pack got
+// back from the MARKET could not share his own pack again. Worked out with the library (claim_account_keys).
+std::mutex account_keys_mutex;
+std::set<std::string> account_keys;
+bool locked_key(const std::string& maker_key) {
+    if (maker_key.empty() || maker_key == device_key()) return false;
+    std::lock_guard lock(account_keys_mutex);
+    return !account_keys.contains(maker_key);
+}
+// The team a pack went out under: as it was published from here ("Team-Name"), or where it was got from.
+std::string pack_team(const PresetPack& pack) {
+    if (!pack.published_as.empty()) {
+        const auto dash = pack.published_as.find('-');
+        return dash == std::string::npos ? std::string{} : pack.published_as.substr(0, dash);
+    }
+    return market::installed_from(pack.name);
+}
+// The keys of the packs the checked team put out. True when they changed (the library is read again with them).
+bool claim_account_keys(const std::vector<PresetPack>& packs) {
+    std::set<std::string> keys;
+    std::vector<std::string> names;
+    const auto team = market::verified_team();
+    if (!team.empty())
+        for (const auto& pack : packs)
+            if (!pack.maker_key.empty() && pack.maker_key != device_key() && _stricmp(pack_team(pack).c_str(), team.c_str()) == 0) {
+                keys.insert(pack.maker_key);
+                names.push_back(pack.name);
+            }
+    {
+        std::lock_guard lock(account_keys_mutex);
+        if (keys == account_keys) return false;
+        account_keys = std::move(keys);
+    }
+    for (const auto& name : names)
+        logging::log(Level::info, Channel::skater, "Animation Studio: {} is your team {}'s pack: yours to share on this PC too.", name, team);
+    return true;
+}
 // Whether the saved animation `name` is locked to another PC's maker (read with the library).
 void read_library_locked(State& s);
 bool locked_locked(State& s, const std::string& name) {
@@ -1288,9 +1326,17 @@ void read_library_locked(State& s) {
                     s.presets.back().saved_at = saved_time(saved_json(name));
                     // By its clip as well, for one whose key was taken out; never one with this PC's key (made or saved
                     // here: a trick of yours from the same game clip as an installed one stays yours).
-                    s.presets.back().locked = (locked_key(animation.maker_key) && !animation.editable) ||
-                                              (!locked_clips.empty() && (animation.maker_key.empty() || locked_key(animation.maker_key)) &&
-                                               locked_clips.contains(clip_hash(saved_clip(name))));
+                    // By its clip only for a clip that is its maker's own work: a clip of the game's (native_asset) is the same file
+                    // for everyone who made a trick from it, so a trick of yours from the same game clip as one in a pack you
+                    // got was taken for that pack's (your own tricks, said to be someone else's when you shared your pack).
+                    const auto by_clip = [&] {
+                        if (locked_clips.empty() || animation.source.kind == "native_asset" ||
+                            !(animation.maker_key.empty() || locked_key(animation.maker_key)))
+                            return false;
+                        const auto whose = locked_clips.find(clip_hash(saved_clip(name)));
+                        return whose != locked_clips.end() && locked_key(whose->second);
+                    };
+                    s.presets.back().locked = (locked_key(animation.maker_key) && !animation.editable) || by_clip();
                     s.presets.back().foreign = locked_key(animation.maker_key) || s.presets.back().locked;
                     s.presets.back().playing = playing.contains(name);
                 }
@@ -1310,6 +1356,11 @@ void read_library_locked(State& s) {
                     }
                 }
         std::sort(s.packs.begin(), s.packs.end(), [](const PresetPack& a, const PresetPack& b) { return a.name < b.name; });
+        // Your team's packs made on another PC are yours (claim_account_keys): read again with that known, once.
+        if (claim_account_keys(s.packs)) {
+            read_library_locked(s);
+            return;
+        }
         const auto choices = read_conflict_choices();
         s.playlists = read_playlists();
         const auto playlist = playing_of(s.playlists);
@@ -5029,6 +5080,12 @@ DropPlay drop_play_locked(State& s) {
 View view() {
     auto& s = state();
     std::lock_guard lock(s.mutex);
+    // The Thunderstore team checked (or unlinked): whose each pack is is worked out again.
+    static unsigned account_seen = 0;
+    if (const auto now = market::account_generation(); now != account_seen) {
+        account_seen = now;
+        s.library_read = false;
+    }
     if (!s.library_read) read_library_locked(s);
     if (!s.pack_pictures_read) {
         s.pack_pictures_read = true;
