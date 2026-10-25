@@ -6794,11 +6794,47 @@ std::map<std::string, std::string> key_bindings() {
     std::lock_guard lock(s.mutex);
     return s.keys;
 }
+namespace {
+void remove_saved_files(const std::string& safe); // below
+}
+// Into the Recycle Bin, each path whole (a trick's folder, a loose file), so a pack deleted by mistake can be got back
+// from there. False when the shell did not take them all.
+bool to_recycle_bin(const std::vector<std::filesystem::path>& paths) {
+    std::wstring list;
+    for (const auto& path : paths) {
+        std::error_code error;
+        if (!std::filesystem::exists(path, error)) continue;
+        list += path.wstring();
+        list.push_back(L'\0');
+    }
+    if (list.empty()) return true;
+    list.push_back(L'\0');
+    SHFILEOPSTRUCTW operation{};
+    operation.wFunc = FO_DELETE;
+    operation.pFrom = list.c_str();
+    operation.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI;
+    return SHFileOperationW(&operation) == 0 && !operation.fAnyOperationsAborted;
+}
 bool delete_pack(const std::string& name, std::string& message) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     try {
         if (name != file_safe(name)) throw std::runtime_error("There is no pack called " + name + ".");
+        if (!s.library_read) read_library_locked(s);
+        // Its tricks go with it - as saved and as changed here - but not one that is in another pack too (deleting a pack
+        // left its tricks behind, loose under OTHER MAKERS' TRICKS or MY TRICKS).
+        std::set<std::string> members;
+        if (const auto saved = std::find_if(s.packs.begin(), s.packs.end(), [&](const PresetPack& p) { return p.name == name; }); saved != s.packs.end())
+            for (const auto& m : saved->members()) members.insert(m);
+        if (const auto draft = s.pack_drafts.find(name); draft != s.pack_drafts.end())
+            for (const auto& m : draft->second.members()) members.insert(m);
+        std::vector<std::string> tricks, kept;
+        for (const auto& member : members) {
+            if (std::find(s.library.begin(), s.library.end(), member) == s.library.end()) continue;
+            const bool elsewhere = std::any_of(s.packs.begin(), s.packs.end(), [&](const PresetPack& p) { return p.name != name && p.has(member); }) ||
+                                   std::any_of(s.pack_drafts.begin(), s.pack_drafts.end(), [&](const auto& d) { return d.first != name && d.second.has(member); });
+            (elsewhere ? kept : tricks).push_back(member);
+        }
         std::filesystem::remove(pack_file(name));
         std::error_code gone;
         std::filesystem::remove(pack_thumbnail_file(name), gone);
@@ -6806,7 +6842,32 @@ bool delete_pack(const std::string& name, std::string& message) {
         if (std::erase(names, name)) write_pack_names_on(names);
         s.pack_drafts.erase(name);
         if (s.open_pack == name) s.open_pack.clear();
-        message = "Deleted the pack " + name + ". The tricks in it are still saved.";
+        std::vector<std::filesystem::path> paths;
+        const auto folder = library_folder();
+        for (const auto& trick : tricks) {
+            const auto safe = file_safe(trick);
+            if (safe.empty()) continue;
+            paths.push_back(folder / safe);
+            paths.push_back(folder / (safe + ".json"));
+            paths.push_back(folder / (safe + ".clip"));
+        }
+        const bool binned = to_recycle_bin(paths);
+        if (!binned)
+            for (const auto& trick : tricks) remove_saved_files(file_safe(trick)); // the shell would not: deleted for good
+        // Out of every playlist: the pack, and its tricks that are gone.
+        auto lists = read_playlists();
+        bool listed = false;
+        for (auto& list : lists.lists)
+            listed |= std::erase_if(list.entries, [&](const PlaylistEntry& e) {
+                return e.pack == name || (!e.animation.empty() && std::find(tricks.begin(), tricks.end(), e.animation) != tricks.end());
+            }) > 0;
+        if (listed) write_playlists(lists);
+        const auto count = [](std::size_t n, const char* one, const char* many) { return std::to_string(n) + " " + (n == 1 ? one : many); };
+        message = "Deleted the pack " + name +
+                  (tricks.empty() ? std::string(".")
+                                  : " and its " + count(tricks.size(), "trick", "tricks") +
+                                        (binned ? " (in the Recycle Bin, to get back from there)." : ".")) +
+                  (kept.empty() ? std::string{} : " " + count(kept.size(), "trick stays", "tricks stay") + ": in another pack too.");
         packs_changed_locked(s, message);
         return true;
     } catch (const std::exception& e) { message = e.what(); s.status = message; publish_locked(s); return false; }

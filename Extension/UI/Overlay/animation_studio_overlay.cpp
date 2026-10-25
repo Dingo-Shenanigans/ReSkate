@@ -5042,7 +5042,8 @@ void pack_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
             }
         }
         y += 46 * k;
-        paragraph(d, f.bold, 12 * k, ImVec2(x, y), w, faint, "Deleting a pack keeps its tricks: they stay in MY TRICKS.");
+        paragraph(d, f.bold, 12 * k, ImVec2(x, y), w, faint,
+                  "Deleting a pack deletes its tricks too (they go to the Recycle Bin). A trick that is in another pack as well stays.");
     }
     // ---- its name, rules and tricks ----
     const float x = a.x + col + 48 * k, w = b.x - x;
