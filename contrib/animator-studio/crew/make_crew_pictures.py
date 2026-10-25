@@ -31,7 +31,7 @@ CREW = {
     "heatz": ("heatz_portrait.webp", (1060, 440, 660), "heatz_shot.webp"),
     # BUILT BY (studio::market::builders), by the name their pictures go under.
     "22sh": ("22sh_portrait.png", (368, 330, 640), "GRIP"),
-    "fourth": ("fourth_portrait.webp", (995, 520, 940), "fourth_shot.webp"),
+    "fourth": ("fourth_logo.webp", (570, 430, 740), "fourth_shot.webp"),  # his red tag, round
     "steez": ("steez_portrait.png", (110, 124, 220), "steez_shot.webp"),
     "norms": ("norms_portrait.webp", (560, 470, 270), "norms_portrait.webp"),  # one photo for both
 }

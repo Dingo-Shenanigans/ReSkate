@@ -58,7 +58,7 @@ struct Builder {
 };
 inline constexpr std::array builders{
     Builder{"22SH", "22sh", "", "Animation pipeline wizard. Built the internal tools that extract and bring every trick into the game."},
-    Builder{"Fourth", "fourth", "Fourth_Studio", "Lead studio developer. Brought the team together and built the studio around it.", 0.5f, 0.48f},
+    Builder{"Fourth", "fourth", "Fourth_Studio", "Lead studio developer. Brought the team together and built the studio around it.", 0.5f, 0.45f},
     // Norms' Thunderstore team: none yet (worthlessnorms 404s, checked 2026-10-25); put "worthlessnorms" back here once it exists.
     Builder{"Norms", "norms", "", "Scripting and animation logic: the rules that decide what plays, and when.", 0.5f, 0.39f},
     Builder{"Steez", "steez", "Worthless", "Made the animations run smooth, from the pop to the landing.", 0.48f, 0.4f},
