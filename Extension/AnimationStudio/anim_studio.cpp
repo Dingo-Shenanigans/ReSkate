@@ -6816,13 +6816,18 @@ void look_at_library_locked(LibraryBuilder& b) {
     b.state.exists = std::filesystem::is_regular_file(folder / L"catalog.json", error);
     b.state.built.clear();
     b.state.outdated = false;
+    // Built again when it is from another version of the game, or from an older builder than this one (one with no
+    // build-info.json at all is from before the in-game builder: it has no Kickflip MID, so a trick copied to MID
+    // could not follow the game's clip and played on its own clock, out of step).
+    if (b.state.exists) b.state.outdated = true;
     try {
         std::ifstream in(folder / L"build-info.json", std::ios::binary);
         if (in) {
             const auto info = Json::parse(std::string((std::istreambuf_iterator<char>(in)), {}));
             b.state.built = info.value("built", "");
             const auto stamp = info.value("stamp", "");
-            b.state.outdated = !stamp.empty() && stamp != supported_build::game_sha256;
+            const int builder = info.value("builder", 0);
+            b.state.outdated = (!stamp.empty() && stamp != supported_build::game_sha256) || builder < native_library::builder_version;
         }
     } catch (...) {}
     // Its files were being replaced one by one and that did not finish (replace_library_files): built again.
@@ -7001,7 +7006,7 @@ void build_library_when_needed(bool now) {
     looked.store(true, std::memory_order_release);
     const auto build = library_build();
     if (build.running || (build.exists && !build.outdated)) return;
-    if (build.exists) logging::log(Level::info, Channel::skater, "Animation Studio: the trick library is from another version of the game: rebuilding it.");
+    if (build.exists) logging::log(Level::info, Channel::skater, "Animation Studio: the trick library is from an older studio or another version of the game: rebuilding it.");
     else logging::log(Level::info, Channel::skater, "Animation Studio: no trick library yet: building it from the game's files.");
     start_library_build();
 }

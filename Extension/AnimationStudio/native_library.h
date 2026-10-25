@@ -62,6 +62,10 @@ std::pair<float, float> trick_marks(const Decoded& clip);
 std::string category(const std::string& asset, const std::string& root_type);
 
 // ---- building ----
+// Which builder made a library (build-info.json's "builder"). Raised whenever a build would come out with tricks or
+// pops an older one lacked, so a library made by an older studio is built again on the next start: the libraries made
+// before the in-game builder (2026-10-23) had no Kickflip MID, and the nollie flips under names the game never says.
+inline constexpr int builder_version = 2;
 struct Report {
     std::size_t assets{}, clips{}, tricks{}, unsupported{}, errors{};
     std::string first_error;

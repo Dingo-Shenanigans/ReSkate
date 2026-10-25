@@ -981,7 +981,7 @@ Report build(const std::filesystem::path& game_root, const std::filesystem::path
     char date[32]{};
     std::strftime(date, sizeof(date), "%Y-%m-%d %H:%M", &local);
     write_text(output / L"build-info.json",
-               Json{{"builder", 1}, {"built", date}, {"stamp", stamp}, {"assets", report.assets}, {"clips", report.clips}, {"tricks", report.tricks},
+               Json{{"builder", builder_version}, {"built", date}, {"stamp", stamp}, {"assets", report.assets}, {"clips", report.clips}, {"tricks", report.tricks},
                     {"unsupported", report.unsupported}, {"errors", report.errors}}
                    .dump(2));
     return report;

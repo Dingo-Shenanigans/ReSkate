@@ -372,7 +372,7 @@ void refresh_game_tricks(std::string& message);
 // A build goes into a folder of its own and only takes the old library's place once it is whole.
 struct LibraryBuild {
     bool exists{};   // there is a library
-    bool outdated{}; // it was built from another version of the game
+    bool outdated{}; // it was built from another version of the game, or by an older studio (native_library::builder_version)
     bool running{}, failed{};
     std::string built;   // when the library there was built ("" for one built before the studio could)
     std::string step;    // what the build is doing

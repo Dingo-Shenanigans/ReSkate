@@ -3842,9 +3842,9 @@ float library_panel(ImDrawList* d, const Fonts& f, ImVec2 a, ImVec2 b) {
         if (action(d, f, "##stop_library", ImVec2(pb.x - 140 * k, pa.y + 11 * k), ImVec2(120 * k, 40 * k), "STOP", Look::ghost))
             studio::stop_library_build();
     } else {
-        text(d, f.heading, 14 * k, ImVec2(x, pa.y + 10 * k), skate_theme::warning, "YOUR GAME WAS UPDATED");
+        text(d, f.heading, 14 * k, ImVec2(x, pa.y + 10 * k), skate_theme::warning, "THE TRICK LIBRARY IS OUT OF DATE");
         text(d, f.bold, 13 * k, ImVec2(x, pa.y + 34 * k), soft,
-             elide(f.bold, 13 * k, "The trick library was built from an older version: rebuild it so the tricks match the game.", pb.x - x - 200 * k));
+             elide(f.bold, 13 * k, "It was built by an older studio: rebuild it so every trick and pop is in it (Kickflip MID was missing).", pb.x - x - 200 * k));
         if (action(d, f, "##rebuild_library", ImVec2(pb.x - 170 * k, pa.y + 11 * k), ImVec2(150 * k, 40 * k), "REBUILD", Look::blue))
             studio::start_library_build();
     }
