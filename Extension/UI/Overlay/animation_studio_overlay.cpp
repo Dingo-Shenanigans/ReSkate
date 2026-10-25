@@ -2291,7 +2291,10 @@ void blend_envelope(ImDrawList* d, float key_x, float end_x, float top, float fl
         const auto s = static_cast<std::size_t>(i);
         const float w = (weight[s] + weight[s + 1]) * 0.5f;
         const auto alpha = static_cast<int>(weak + (strong - weak) * w);
-        d->AddQuadFilled(edge[s], edge[s + 1], ImVec2(edge[s + 1].x, floor), ImVec2(edge[s].x, floor), IM_COL32(r, g, b, alpha));
+        // Wound one way whichever side of the key it is on: a blend in's ran right to left, and its strips' smoothed edges
+        // showed as stripes.
+        const ImVec2 left = edge[s].x <= edge[s + 1].x ? edge[s] : edge[s + 1], right = edge[s].x <= edge[s + 1].x ? edge[s + 1] : edge[s];
+        d->AddQuadFilled(left, right, ImVec2(right.x, floor), ImVec2(left.x, floor), IM_COL32(r, g, b, alpha));
     }
     const ImU32 line = cut ? IM_COL32(170, 172, 180, 170) : lit ? IM_COL32(170, 215, 255, 255) : IM_COL32(90, 180, 255, 230);
     if (cut)
@@ -2383,9 +2386,12 @@ void blend_slider(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a
         d->AddPolyline(sign.data(), 13, shared && *shared > 0 ? blue_light : soft, ImDrawFlags_None, 1.6f * k);
     }
     text(d, f.bold, 12 * k, ImVec2(a.x + 32 * k, a.y + 4 * k), soft, in ? "BLEND IN" : "BLEND OUT");
-    const std::string value = shared || ImGui::IsItemActive() ? blend_text(seconds, in) : "MIXED";
-    const auto vw = text_size(f.bold, 12 * k, value.c_str());
-    text(d, f.bold, 12 * k, ImVec2(b.x - 10 * k - vw.x, a.y + 4 * k), white, value);
+    // Its length only while it is dragged (the knob on the timeline says it too); at rest it is BLEND IN or BLEND OUT.
+    if (ImGui::IsItemActive()) {
+        const std::string value = seconds > 0 ? std::format("{:.0f} MS", seconds * 1000) : "OFF";
+        const auto vw = text_size(f.bold, 12 * k, value.c_str());
+        text(d, f.bold, 12 * k, ImVec2(b.x - 10 * k - vw.x, a.y + 4 * k), white, value);
+    }
     const float amount = seconds / studio::max_blend;
     d->AddRectFilled(ImVec2(bar_a, bar_y - 2 * k), ImVec2(bar_b, bar_y + 2 * k), IM_COL32(255, 255, 255, 50), 2 * k);
     d->AddRectFilled(ImVec2(bar_a, bar_y - 2 * k), ImVec2(bar_a + (bar_b - bar_a) * amount, bar_y + 2 * k), blue, 2 * k);
@@ -8687,7 +8693,7 @@ void joint_card(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at,
 // Over the timeline while keys are chosen: what can be done with them, in one place.
 void selection_bar(ImDrawList* d, const Fonts& f, const studio::View& v, float centre_x, float bottom) {
     auto& u = ui();
-    if (u.picked.empty()) return;
+    if (u.picked.empty() || u.radial) return; // right-click's round menu is up: it has the bar's actions, one at a time
     const float k = f.k, bh = 34 * k, bw = 96 * k, gap = 6 * k;
     const std::string count = std::to_string(u.picked.size()) + (u.picked.size() == 1 ? " KEY" : " KEYS");
     const float count_w = text_size(f.heading, 17 * k, count.c_str()).x + 20 * k;
@@ -9071,8 +9077,9 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
         const auto* here = key_here(v, u.selected);
         const auto* chosen_track = track_view(v, u.selected);
         const bool locked = chosen_track && chosen_track->locked;
-        if (action(d, f, "##tlkey", ImVec2(at.x + 20 * k, at.y + 8 * k), ImVec2(120 * k, 28 * k), "KEY  (K)", Look::key, v.has_clip && !locked)) key_joint();
-        if (action(d, f, "##tldelkey", ImVec2(at.x + 146 * k, at.y + 8 * k), ImVec2(116 * k, 28 * k), "DELETE KEY", Look::dark, here && !locked)) delete_key(v);
+        // As wide as the transport under them (|< to the speed): 294 across, in two halves.
+        if (action(d, f, "##tlkey", ImVec2(at.x + 20 * k, at.y + 8 * k), ImVec2(144 * k, 28 * k), "KEY  (K)", Look::key, v.has_clip && !locked)) key_joint();
+        if (action(d, f, "##tldelkey", ImVec2(at.x + 170 * k, at.y + 8 * k), ImVec2(144 * k, 28 * k), "DELETE KEY", Look::dark, here && !locked)) delete_key(v);
     }
     float bx = at.x + 20 * k;
     const float by = at.y + 42 * k;
