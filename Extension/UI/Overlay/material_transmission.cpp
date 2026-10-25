@@ -118,6 +118,7 @@ struct DepthDescriptor
 {
     ComPtr<ID3D12Resource> resource;
     D3D12_DSV_FLAGS flags{};
+    UINT64 touched{};
 };
 struct DepthFrame
 {
@@ -168,6 +169,7 @@ struct Transmission
     std::array<MaskFrame, 2> masks;
     std::array<DepthFrame, 3> depths;
     std::map<SIZE_T, DepthDescriptor> descriptors;
+    UINT64 descriptor_clock{};
     ComPtr<ID3D12Device> device;
     ComPtr<ID3D12RootSignature> root;
     ComPtr<ID3D12PipelineState> pipeline;
@@ -209,8 +211,32 @@ void remember_descriptor(Transmission &s, SIZE_T key, DepthDescriptor descriptor
         }
         return total;
     };
-    while (!s.descriptors.empty() && (s.descriptors.size() >= 512 || retained() > 256ull * 1024 * 1024))
-        s.descriptors.erase(s.descriptors.begin());
+    while (!s.descriptors.empty() && retained() > 256ull * 1024 * 1024)
+    {
+        // Evict whole old resources, not the numerically smallest handle. Heap
+        // handles are reused on map changes, so the smallest may be brand new.
+        std::map<ID3D12Resource *, UINT64> recent;
+        for (const auto &[unused, value] : s.descriptors)
+        {
+            (void)unused;
+            if (value.resource.Get() != descriptor.resource.Get())
+                recent[value.resource.Get()] = (std::max)(recent[value.resource.Get()], value.touched);
+        }
+        if (recent.empty())
+            break;
+        auto oldest = std::min_element(recent.begin(), recent.end(),
+                                       [](const auto &a, const auto &b) { return a.second < b.second; });
+        auto *resource = oldest->first;
+        std::erase_if(s.descriptors, [&](const auto &entry) { return entry.second.resource.Get() == resource; });
+    }
+    while (s.descriptors.size() >= 512)
+    {
+        auto oldest = std::min_element(s.descriptors.begin(), s.descriptors.end(), [](const auto &a, const auto &b) {
+            return a.second.touched < b.second.touched;
+        });
+        s.descriptors.erase(oldest);
+    }
+    descriptor.touched = ++s.descriptor_clock;
     s.descriptors.emplace(key, std::move(descriptor));
 }
 bool mask_free(const MaskFrame &f)
@@ -509,6 +535,7 @@ void record_material_mask(const MaterialMaskDraw &draw) noexcept
             }
             return;
         }
+        descriptor->second.touched = ++s.descriptor_clock;
         auto depth = plain(descriptor->second.resource.Get());
         const auto depth_id = identity(depth.Get());
         MaskFrame *selected{};
@@ -604,6 +631,12 @@ void material_depth_barriers(ID3D12GraphicsCommandList *list, UINT count, const 
                 continue;
             if (desc.Format != DXGI_FORMAT_R32_TYPELESS && desc.Format != DXGI_FORMAT_D32_FLOAT &&
                 desc.Format != DXGI_FORMAT_R32G8X24_TYPELESS && desc.Format != DXGI_FORMAT_D32_FLOAT_S8X24_UINT)
+                continue;
+            const auto source_id = identity(plain(b.Transition.pResource).Get());
+            if (std::none_of(s.masks.begin(), s.masks.end(), [&](const auto &mask) {
+                    return mask.recording && (!mask.released || mask.epoch + 2 >= s.epoch) &&
+                           mask.depth_id.Get() == source_id.Get();
+                }))
                 continue;
             DepthFrame *selected{};
             for (auto &f : s.depths)

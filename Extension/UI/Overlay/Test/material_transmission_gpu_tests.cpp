@@ -118,7 +118,22 @@ void test_ultrawide_descriptors(ID3D12Device *device)
     }
     if (!s.descriptors.contains(first.ptr) || s.descriptors.size() != 75)
         throw std::runtime_error("unsupported depth views displaced the main depth resource");
-    material_depth_descriptor(resources.back().Get(), nullptr, first);
+    for (UINT i = 0; i < 2; ++i)
+    {
+        auto incoming = make_resource(
+            device, image_desc(3440, 1440, DXGI_FORMAT_R32G8X24_TYPELESS, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL),
+            D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+        material_depth_descriptor(incoming.Get(), nullptr, {SIZE_T{1 + i}});
+        resources.push_back(std::move(incoming));
+    }
+    if (!s.descriptors.contains(1) || !s.descriptors.contains(2))
+        throw std::runtime_error("new map's low-address depth handle evicted by handle order");
+    // An unsupported reuse must invalidate its previous association.
+    auto unsupported = make_resource(
+        device, image_desc(64, 64, DXGI_FORMAT_D24_UNORM_S8_UINT, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL),
+        D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+    material_depth_descriptor(depth.Get(), nullptr, first);
+    material_depth_descriptor(unsupported.Get(), nullptr, first);
     if (s.descriptors.contains(first.ptr))
         throw std::runtime_error("unsupported replacement kept stale depth descriptor");
     material_depth_descriptor(depth.Get(), nullptr, first);
@@ -227,18 +242,46 @@ int main(int argc, char **argv)
                 commands->ClearRenderTargetView(handle, values[i].data(), 0, nullptr);
             }
         };
-        record_material_mask(draw);
+        if (scenario == "previous-view-depth")
+        {
+            auto &previous = state().masks[1];
+            previous.recording = previous.released = true;
+            previous.epoch = state().epoch - 1;
+            previous.depth_id = identity(plain(depth.Get()).Get());
+            state().recent_mask_epoch = previous.epoch;
+        }
+        else
+            record_material_mask(draw);
         D3D12_RESOURCE_BARRIER barrier{};
         barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         barrier.Transition = {depth.Get(), D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_STATE_DEPTH_WRITE,
                               D3D12_RESOURCE_STATE_DEPTH_READ};
-        if (wrong_view)
-            barrier.Transition.pResource = other_depth.Get();
         auto original = +[](ID3D12GraphicsCommandList *list, UINT count, const D3D12_RESOURCE_BARRIER *barriers) {
             list->ResourceBarrier(count, barriers);
         };
+        std::vector<ComPtr<ID3D12Resource>> unrelated;
+        if (scenario == "unrelated-depth")
+        {
+            for (unsigned i = 0; i < 3; ++i)
+            {
+                auto resource = make_resource(
+                    device.Get(),
+                    image_desc(64, 64, DXGI_FORMAT_R32G8X24_TYPELESS, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL),
+                    D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_STATE_DEPTH_WRITE);
+                auto foreign = barrier;
+                foreign.Transition.pResource = resource.Get();
+                material_depth_barriers(commands.Get(), 1, &foreign, original);
+                commands->ResourceBarrier(1, &foreign);
+                unrelated.push_back(std::move(resource));
+            }
+        }
+        if (wrong_view)
+            barrier.Transition.pResource = other_depth.Get();
+
         material_depth_barriers(commands.Get(), 1, &barrier, original);
         commands->ResourceBarrier(1, &barrier);
+        if (scenario == "previous-view-depth")
+            record_material_mask(draw);
         ComPtr<ID3D12DescriptorHeap> rtv;
         h.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
         check(device->CreateDescriptorHeap(&h, IID_PPV_ARGS(&rtv)));
