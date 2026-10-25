@@ -9845,13 +9845,12 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
         const float flag_h = tw.y + 7 * k, flag_w = tw.x + 12 * k, tail = 5 * k;
         const float top = at.y + 44 * k;
         const bool visible = x >= ruler_left - 2 && x <= ruler_right + 2;
-        if (visible && !u.bracket_drag && !u.blocked) {
-            const bool by_line = std::abs(io.MousePos.x - x) < 12 * k && io.MousePos.y >= at.y && io.MousePos.y <= at.y + header_h + 10 * k;
-            const bool on_flag = io.MousePos.x >= x - flag_w - 4 * k && io.MousePos.x <= x + 4 * k && io.MousePos.y >= top - 4 * k &&
-                                 io.MousePos.y <= top + flag_h + 4 * k;
-            on_catch = by_line || on_flag;
-        }
+        // Taken by its line only, as the brackets are, in the ruler: a narrow strip, not its flag (the label is to read).
+        const float grab = 6 * k;
+        if (visible && !u.bracket_drag && !u.blocked)
+            on_catch = std::abs(io.MousePos.x - x) < grab && io.MousePos.y >= at.y && io.MousePos.y <= at.y + header_h + 4 * k;
         const bool hot = u.catch_drag || on_catch;
+        if (visible && hot) d->AddRectFilled(ImVec2(x - grab, at.y), ImVec2(x + grab, at.y + size.y), IM_COL32(255, 255, 255, 18));
         if (visible) {
             const ImU32 paper = IM_COL32(244, 241, 233, none ? 120 : v.catch_set ? 255 : 190);
             const ImU32 colour = hot ? IM_COL32(255, 255, 255, 255) : paper;
