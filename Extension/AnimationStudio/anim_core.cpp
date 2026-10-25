@@ -310,9 +310,37 @@ std::vector<Key> with_blends(std::span<const Key> keys) {
 }
 } // namespace
 
+namespace {
+// Between two keys whose blends cross (key_blends: cross_out, cross_in): each on its own curve - the first easing out to
+// where its side ends, the second easing in from where its side starts - added on the game's own pose (no edit), and
+// shared out between the two where together they would be more than whole.
+Offset crossfade(const Key& a, const Key& b, float fade_out, float fade_in, float seconds) noexcept {
+    float wa = seconds >= fade_out ? 0.0f : blend_weight((seconds - a.time) / (std::max)(fade_out - a.time, 1e-4f), a.ease);
+    float wb = seconds <= fade_in ? 0.0f : blend_weight((b.time - seconds) / (std::max)(b.time - fade_in, 1e-4f), b.ease);
+    if (const float sum = wa + wb; sum > 1) wa /= sum, wb /= sum;
+    const Quat none{0, 0, 0, 1};
+    const Quat la = quat_log(nearest(a.rotation, none)), lb = quat_log(nearest(b.rotation, none));
+    Offset out;
+    out.rotation = normalised(quat_exp({la[0] * wa + lb[0] * wb, la[1] * wa + lb[1] * wb, la[2] * wa + lb[2] * wb, 0}));
+    for (std::size_t c = 0; c < 3; ++c) out.offset[c] = a.offset[c] * wa + b.offset[c] * wb;
+    return out;
+}
+} // namespace
+
 Offset evaluate(const Track& track, float seconds) noexcept {
     const bool blends = std::any_of(track.keys.begin(), track.keys.end(), [](const Key& k) { return k.blend_in > 0 || k.blend_out > 0; });
-    return blends ? evaluate_keys(with_blends(track.keys), seconds) : evaluate_keys(track.keys, seconds);
+    if (!blends) return evaluate_keys(track.keys, seconds);
+    // Between a key and the next that crossfade, the crossfade; everywhere else the keys with the game's pose put in
+    // where each blend starts and ends.
+    const std::span<const Key> keys(track.keys);
+    const auto next = std::upper_bound(keys.begin(), keys.end(), seconds, [](float t, const Key& k) { return t < k.time; });
+    if (next != keys.begin() && next != keys.end()) {
+        const auto i = static_cast<std::size_t>(next - keys.begin()) - 1;
+        if (seconds > keys[i].time && seconds < keys[i + 1].time)
+            if (const auto out = key_blends(keys, i); out.cross_out)
+                return crossfade(keys[i], keys[i + 1], out.fade_out, key_blends(keys, i + 1).fade_in, seconds);
+    }
+    return evaluate_keys(with_blends(track.keys), seconds);
 }
 
 float channel_value(const Offset& edit, int channel) noexcept {

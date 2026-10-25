@@ -128,11 +128,17 @@ struct Key {
 };
 inline constexpr float min_blend = 0.05f, max_blend = 2.0f;
 // Where a key's blends reach the game's own pose, as evaluate plays them: `in` before the key, `out` after it. A
-// blend is cut when the key beside it, or that key's own blend, comes first: the pose then goes straight between
-// the two keys. `K` is Key or anything with its time, blend_in and blend_out (the studio's KeyView).
+// blend the key beside it comes first in, that key having no blend of its own that way, is cut: the pose goes straight
+// between the two keys. A blend out and the next key's blend in that cross make a crossfade instead (`cross_out` on the
+// one, `cross_in` on the other): the one eases out on its own curve while the other eases in on its own, the game's own
+// pose filling where they leave room, each key still hit on its frame. `fade_out` / `fade_in`: where its side of the
+// crossfade ends / starts, kept between the two keys. `K` is Key or anything with its time, blend_in and blend_out (the
+// studio's KeyView).
 struct KeyBlends {
     std::optional<float> in, out;
     bool cut_in{}, cut_out{};
+    bool cross_in{}, cross_out{};
+    float fade_in{}, fade_out{};
 };
 template <class K>
 KeyBlends key_blends(std::span<const K> keys, std::size_t index) noexcept {
@@ -142,15 +148,29 @@ KeyBlends key_blends(std::span<const K> keys, std::size_t index) noexcept {
         const float starts = key.time - key.blend_in;
         const auto* before = index > 0 ? &keys[index - 1] : nullptr;
         if (!before || starts > before->time + (std::max)(before->blend_out, 0.0f) + 1e-6f) blends.in = starts;
-        else blends.cut_in = true;
+        else if (before->blend_out > 0) {
+            blends.cross_in = true;
+            blends.fade_in = (std::max)(starts, before->time);
+        } else blends.cut_in = true;
     }
     if (key.blend_out > 0) {
         const float ends = key.time + key.blend_out;
         const auto* after = index + 1 < keys.size() ? &keys[index + 1] : nullptr;
         if (!after || ends < after->time - (std::max)(after->blend_in, 0.0f) - 1e-6f) blends.out = ends;
-        else blends.cut_out = true;
+        else if (after->blend_in > 0) {
+            blends.cross_out = true;
+            blends.fade_out = (std::min)(ends, after->time);
+        } else blends.cut_out = true;
     }
     return blends;
+}
+// A key's own weight on its blend's curve, `u` of the way from the key (0) to the blend's end (1), eased as the key
+// eases: smooth, straight, or held (full until the end, then let go).
+inline float blend_weight(float u, Ease ease) noexcept {
+    u = (std::clamp)(u, 0.0f, 1.0f);
+    if (ease == Ease::step) return u < 1 ? 1.0f : 0.0f;
+    const float w = 1 - u;
+    return ease == Ease::linear ? w : w * w * (3 - 2 * w);
 }
 struct Track {
     std::uint16_t joint{};

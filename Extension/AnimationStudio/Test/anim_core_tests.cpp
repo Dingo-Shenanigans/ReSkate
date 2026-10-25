@@ -409,12 +409,30 @@ void blend_in_eases_in_from_the_game() {
     check(near(evaluate(both, 0.6f).offset[1], 0.0f), "A blend out, then the game's pose, then a blend in");
     check(near(evaluate(both, 0.2f).offset[1], 1.0f) && near(evaluate(both, 1.0f).offset[1], 1.0f), "and both keys keep their pose");
 
-    const Track straight{343, {key_at(0.2f, 1), key_at(0.6f, 0.5f)}};
+    // A blend out and the next key's blend in that cross: a crossfade. The first eases out on its own curve (0.2 to 0.5),
+    // the second in on its own (0.3 to 0.6), the game's pose filling between where they leave room.
     Track crossed{343, {key_at(0.2f, 1, 0, 0.3f), key_at(0.6f, 0.5f, 0.3f)}};
-    for (float t = 0; t <= 1.0f; t += 0.01f)
-        check(evaluate(crossed, t).offset[1] == evaluate(straight, t).offset[1], "A blend out and a blend in that cross: both cut");
-    const auto blends = key_blends(std::span<const Key>(crossed.keys), 0);
-    check(!blends.out && blends.cut_out && key_blends(std::span<const Key>(crossed.keys), 1).cut_in, "and both say so");
+    const auto smooth = [](float w) { return w * w * (3 - 2 * w); };
+    check(near(evaluate(crossed, 0.2f).offset[1], 1.0f) && near(evaluate(crossed, 0.6f).offset[1], 0.5f), "A crossfade keeps both keys' poses on their frames");
+    check(near(evaluate(crossed, 0.25f).offset[1], smooth(1 - 0.05f / 0.3f)), "Before the second's blend in starts, the first eases out alone");
+    check(near(evaluate(crossed, 0.4f).offset[1], smooth(1 - 0.2f / 0.3f) * 1.0f + smooth(1 - 0.2f / 0.3f) * 0.5f),
+          "Where they cross, each on its own curve, the game's pose between");
+    check(near(evaluate(crossed, 0.55f).offset[1], smooth(1 - 0.05f / 0.3f) * 0.5f), "After the first's blend out ends, the second eases in alone");
+    {
+        float previous = evaluate(crossed, 0.2f).offset[1], jump = 0;
+        for (float t = 0.2f; t <= 0.6f; t += 0.005f) {
+            const float now = evaluate(crossed, t).offset[1];
+            jump = std::max(jump, std::abs(now - previous));
+            previous = now;
+        }
+        check(jump < 0.05f, "and it never jumps");
+    }
+    const auto blends = key_blends(std::span<const Key>(crossed.keys), 0), after = key_blends(std::span<const Key>(crossed.keys), 1);
+    check(blends.cross_out && !blends.cut_out && after.cross_in && !after.cut_in && near(blends.fade_out, 0.5f) && near(after.fade_in, 0.3f),
+          "and both say so, with where each side ends");
+    // Long blends that overlap more than whole share the pose between the two keys, never more than both.
+    Track deep{343, {key_at(0.2f, 1, 0, 2.0f), key_at(0.6f, 1, 2.0f)}};
+    for (float t = 0.2f; t <= 0.6f; t += 0.01f) check(evaluate(deep, t).offset[1] <= 1.0f + 1e-4f, "Overlapping blends never add up past their keys");
 }
 
 void keys_can_be_dragged_in_time() {

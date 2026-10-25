@@ -2257,6 +2257,7 @@ void ease_picked(studio::Ease ease) {
 struct BlendTail {
     float to{};
     bool cut{};
+    bool cross{}; // one side of a crossfade with the key beside it
 };
 std::optional<BlendTail> blend_tail(const studio::TrackView& track, std::size_t index, bool in, float duration) {
     const auto& key = track.keys[index];
@@ -2264,9 +2265,11 @@ std::optional<BlendTail> blend_tail(const studio::TrackView& track, std::size_t 
     const auto blends = studio::key_blends(std::span<const studio::KeyView>(track.keys), index);
     if (in) {
         const float before = index > 0 ? track.keys[index - 1].time : 0.0f;
+        if (blends.cross_in) return BlendTail{blends.fade_in, false, true};
         return BlendTail{std::max(blends.in.value_or(before), 0.0f), blends.cut_in};
     }
     const float after = index + 1 < track.keys.size() ? track.keys[index + 1].time : duration;
+    if (blends.cross_out) return BlendTail{std::min(blends.fade_out, duration), false, true};
     return BlendTail{std::min(blends.out.value_or(after), duration), blends.cut_out};
 }
 // A key's blend on its row, as a fade's envelope: the key's weight from full (at the key, the row's top) eased down to the
@@ -2311,6 +2314,15 @@ bool picked_blend_cut(const studio::View& v, bool in) {
             for (std::size_t i = 0; i < t->keys.size(); ++i)
                 if (std::abs(t->keys[i].time - time) < 1e-4f)
                     if (const auto tail = blend_tail(*t, i, in, v.duration); tail && tail->cut) return true;
+    return false;
+}
+// Whether a chosen key's blend in or out crossfades with the key beside it.
+bool picked_blend_cross(const studio::View& v, bool in) {
+    for (const auto& [joint, time] : ui().picked)
+        if (const auto* t = track_view(v, joint))
+            for (std::size_t i = 0; i < t->keys.size(); ++i)
+                if (std::abs(t->keys[i].time - time) < 1e-4f)
+                    if (const auto tail = blend_tail(*t, i, in, v.duration); tail && tail->cross) return true;
     return false;
 }
 void say_blend_cut(bool in) {
@@ -2361,6 +2373,9 @@ void blend_slider(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a
         n.lr = 0;
     }
     if (ImGui::IsItemDeactivated() && seconds > 0 && picked_blend_cut(v, in)) say_blend_cut(in);
+    else if (ImGui::IsItemDeactivated() && seconds > 0 && picked_blend_cross(v, in))
+        say(in ? "It crossfades with the key before: that one eases out as this one eases in."
+               : "It crossfades with the next key: this one eases out as that one eases in.");
     else if (ImGui::IsItemDeactivated()) {
         const bool one = u.picked.size() == 1;
         const std::string keys = one ? "The key" : std::to_string(u.picked.size()) + " keys";
@@ -9499,6 +9514,32 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
         if (track) {
             d->PushClipRect(ImVec2(ruler_left, rows_top), ImVec2(ruler_right, at.y + size.y), true);
             const float env_top = y + 5 * k, env_floor = y + row_h - 5 * k;
+            // Crossfades first, under the curves: where a key's blend out and the next one's blend in overlap, a soft band,
+            // and a dot where the two curves cross.
+            for (std::size_t i = 0; i + 1 < track->keys.size(); ++i) {
+                const auto out = blend_tail(*track, i, false, v.duration), in = blend_tail(*track, i + 1, true, v.duration);
+                if (!out || !in || !out->cross || !in->cross) continue;
+                const auto& ka = track->keys[i];
+                const auto& kb = track->keys[i + 1];
+                const float from = in->to, to = out->to; // the overlap: the second's start to the first's end
+                if (to > from) {
+                    const float xa = x_of(from), xb = x_of(to);
+                    d->AddRectFilledMultiColor(ImVec2(xa, env_top), ImVec2(xb, env_floor), IM_COL32(170, 215, 255, 10), IM_COL32(170, 215, 255, 10),
+                                               IM_COL32(170, 215, 255, 34), IM_COL32(170, 215, 255, 34));
+                    // Where the first's curve meets the second's.
+                    float best = 2, meet = from;
+                    for (int s = 0; s <= 40; ++s) {
+                        const float t = from + (to - from) * static_cast<float>(s) / 40;
+                        const float wa = studio::blend_weight((t - ka.time) / std::max(out->to - ka.time, 1e-4f), ka.ease);
+                        const float wb = studio::blend_weight((kb.time - t) / std::max(kb.time - in->to, 1e-4f), kb.ease);
+                        if (std::abs(wa - wb) < best) best = std::abs(wa - wb), meet = t;
+                    }
+                    const float wa = studio::blend_weight((meet - ka.time) / std::max(out->to - ka.time, 1e-4f), ka.ease);
+                    const ImVec2 c(x_of(meet), env_floor - (env_floor - env_top) * wa);
+                    d->AddCircleFilled(c, 4.5f * k, IM_COL32(10, 12, 16, 255), 16);
+                    d->AddCircleFilled(c, 3.0f * k, white, 16);
+                }
+            }
             for (std::size_t i = 0; i < track->keys.size(); ++i)
                 for (const bool in : {true, false}) {
                     const auto tail = blend_tail(*track, i, in, v.duration);
