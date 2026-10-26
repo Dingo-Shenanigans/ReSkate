@@ -16,6 +16,10 @@ void check(bool condition, const char* message) {
 bool throws(const std::function<void()>& operation) {
     try { operation(); return false; } catch (const std::exception&) { return true; }
 }
+// Why an operation was refused, or empty when it was not: for a case another rule could also refuse.
+std::string refusal(const std::function<void()>& operation) {
+    try { operation(); return {}; } catch (const std::exception& error) { return error.what(); }
+}
 // Puts a variable back as it was when the test started.
 struct Environment {
     const wchar_t* name;
@@ -65,6 +69,15 @@ int main(int argc, char** argv) {
         check(throws([&] { data::validate_override((fake_local / L"ReSkate" / L"nested").wstring()); }), "nested production profile is not isolation");
         check(throws([&] { data::validate_override(fake_local.wstring()); }), "ancestor of production profile is rejected");
         check(throws([&] { data::validate_override((scratch / std::wstring(200, L'x')).wstring()); }), "a root too long for the game's folder API is rejected");
+        // The test's own folder stands in for the game's, where the launcher keeps its settings and logs.
+        std::array<wchar_t, 32768> module{};
+        const auto length = GetModuleFileNameW(nullptr, module.data(), static_cast<DWORD>(module.size()));
+        if (!length || length >= module.size()) throw std::runtime_error("Cannot resolve path-test executable");
+        const auto program = fs::path(std::wstring(module.data(), length)).parent_path();
+        check(refusal([&] { data::validate_override(program.wstring()); }).find("game's folder") != std::string::npos,
+            "the game's folder, which holds the launcher's settings and logs, is rejected");
+        check(!throws([&] { data::validate_override((program / L"test-profile").wstring()); }),
+            "a folder inside the game's folder is still accepted");
         const auto isolated = scratch / L"isolated-\u03b2";
         std::vector<std::wstring> flags{L"--offline", L"--dev-data-root=" + isolated.wstring(), L"--no-update"};
         data::consume_development_root_option(flags);
@@ -92,9 +105,6 @@ int main(int argc, char** argv) {
             check(fs::is_regular_file(file), "representative profile/game/feature writes stay below the isolated root");
         }
         check(!fs::exists(fake_local), "normal profile tree was never created or written");
-        std::array<wchar_t, 32768> module{};
-        const auto length = GetModuleFileNameW(nullptr, module.data(), static_cast<DWORD>(module.size()));
-        if (!length || length >= module.size()) throw std::runtime_error("Cannot resolve path-test executable");
         std::wstring command = L"\"" + std::wstring(module.data(), length) + L"\" --child-check";
         STARTUPINFOW startup{sizeof(startup)};
         PROCESS_INFORMATION process{};

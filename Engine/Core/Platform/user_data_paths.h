@@ -56,6 +56,15 @@ inline std::filesystem::path canonical(const std::filesystem::path& path) {
     if (error || value.empty()) throw std::runtime_error("Cannot resolve RESKATE_DATA_ROOT");
     return value;
 }
+// The running program's folder. The launcher sits beside Skate.exe, so in the launcher, its crash
+// helper and the game alike this is the game's folder.
+inline std::filesystem::path program_folder() {
+    std::wstring file(32768, L'\0');
+    const auto length = GetModuleFileNameW(nullptr, file.data(), static_cast<DWORD>(file.size()));
+    if (!length || length >= file.size()) throw std::runtime_error("Cannot find the program's folder");
+    file.resize(length);
+    return std::filesystem::path(file).parent_path();
+}
 inline void set_environment(const wchar_t* name, const std::filesystem::path& value) {
     if (!SetEnvironmentVariableW(name, value.c_str())) throw std::runtime_error("Cannot configure isolated user-data environment");
 }
@@ -91,6 +100,12 @@ inline std::filesystem::path validate_override(std::wstring_view value) {
     const auto local = detail::environment(L"LOCALAPPDATA");
     if (local && !local->empty()) reject_overlap(std::filesystem::path(*local) / L"ReSkate");
     reject_overlap(detail::normal_known_root());
+    // Part of the normal profile is kept in the game's folder: the launcher's settings, the item
+    // browser's favourites and logs\ReSkate.log, which the launcher empties. A root there would use
+    // those same files under the same names.
+    const auto program = detail::canonical(detail::program_folder());
+    if (detail::within(path, program) && detail::within(program, path))
+        throw std::runtime_error("RESKATE_DATA_ROOT cannot be the game's folder, which holds the launcher's settings and logs");
     return path;
 }
 // The requested root, checked again on every call: nothing is cached that could go stale.

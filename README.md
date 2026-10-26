@@ -302,7 +302,7 @@ Useful launcher flags:
 | `-map <name>` | load that map as soon as the game is up, e.g. `-map "San Vansterdam"`; the name is a map's name, short name or asset path, or the start of one. Over the start map chosen in Settings > GAME |
 | `--no-loose-files` | ignore loose Lua and config files beside the game |
 | `--gpu-diagnostics` | record extra detail when the graphics driver crashes (DRED) |
-| `--dev-data-root=<folder>`, `--dev-data-root <folder>` | keep everything ReSkate stores for you (profile, the game's settings and saves, logs, caches, launcher settings) in that folder, to test with a profile apart from your own. It must be an absolute path outside `%LOCALAPPDATA%\ReSkate`; one that cannot be used stops the launch instead of falling back to your profile. Setting `RESKATE_DATA_ROOT` does the same |
+| `--dev-data-root=<folder>`, `--dev-data-root <folder>` | keep everything ReSkate stores for you (profile, the game's settings and saves, logs, caches, launcher settings) in that folder, to test with a profile apart from your own. It must be an absolute path outside `%LOCALAPPDATA%\ReSkate`, and not the game's folder itself; one that cannot be used stops the launch instead of falling back to your profile. Setting `RESKATE_DATA_ROOT` does the same |
 
 ### CMake options
 
