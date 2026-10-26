@@ -3776,7 +3776,7 @@ void on_animation(std::uintptr_t component) noexcept {
                                      pop.empty() ? "unknown" : pop, graded ? "the game's grade" : "air time", l.predicted_air,
                                      found->height.empty() ? found->name
                                                            : found->name + " as made for the " + found->height + " pop" +
-                                                                 (found->fallback ? " (nothing of yours is for that pop)" : " (it is on ANY pop)"),
+                                                                 (found->fallback ? " (nothing of yours is for that pop)" : found->any_pop || found->edits->pop.empty() ? " (it is on ANY pop)" : ""),
                                      "authored edits over fresh native pose");
                     if (found && !found->edits->pop.empty() && found->edits->pop != pop)
                         logging::log(Level::info, Channel::skater, "Animation Studio: {} is made for a {} pop; with none of yours for a {} pop it plays on this one too.",
@@ -3921,6 +3921,12 @@ void on_animation(std::uintptr_t component) noexcept {
                     if (l.episode.phase == PlaybackPhase::rail_release || motion == MotionState::rail) why = "a grind";
                     else if (touch && current_state && *current_state == 103) why = "the next pop";
                     else if (time >= 0 && time >= edit_end - 0.5f / 60) why = "its end";
+                    // Rolling after the touchdown looks like the end of every trick, so the clock holds its time there (a held
+                    // pose): a trick with keys after its landing then held its last pose until the pose drifted away, seconds
+                    // later. From the touchdown it has its own remaining time, and 0.4 s more.
+                    else if (touch && l.clock_touch_from >= 0 && edit_end > l.clock_touch_from &&
+                             at - *touch > (edit_end - l.clock_touch_from) + 0.4)
+                        why = "its end (its own time after the touchdown)";
                     else if (hand_back >= 0 && time >= hand_back) why = higher_pop_hand_back;
                     // Followed through the landing and lost well after it: that is the game going into its next
                     // animation (a push), not its landing.
