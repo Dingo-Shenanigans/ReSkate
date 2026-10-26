@@ -288,7 +288,7 @@ inline float lowest_ankle(bool rolling, bool over, float height) noexcept {
     return over && height >= -0.08f ? ankle_on_deck : -std::numeric_limits<float>::infinity();
 }
 // ---- off a drop: the catch slowed, never held still ------------------------------------------------------------------
-// Off a drop, down stairs or onto a ledge the air is longer or shorter than the trick's own. From just before its catch the
+// Off a drop, down stairs or onto a ledge the air is longer or shorter than the trick's own. From its catch the
 // trick's time is its own (the game's pose is off the clip by then): it runs slower - or faster - so its landing comes on
 // the game's touchdown, easing into the new pace and out of it again, never standing still and never jumping. `hold` (the
 // trick's CATCH HOLD) says where the extra time goes: 1 around the catch (the knees up long, the legs reaching for the
@@ -296,12 +296,17 @@ inline float lowest_ankle(bool rolling, bool over, float height) noexcept {
 // set the skater stood still in the air for two seconds.)
 struct AirStretch {
     static constexpr float slowest = 0.05f, fastest = 2.2f, ease = 0.1f; // trick seconds a second; seconds to change pace
+    // Seconds to slow down: from the catch little of the trick may be left (a tre's 0.1 s to its landing), and slowed over
+    // `ease` it ran into its landing and stood there for most of the drop.
+    static constexpr float ease_down = 0.03f;
     float time{-1}; // the trick's time while it is its own (-1: still the game's clock)
     float rate{1};
     bool on() const noexcept { return time >= 0; }
     void reset() noexcept { *this = {}; }
-    // Its slow part: from a little before the catch to a share of the way on to the landing; after it, its own pace.
-    static float slow_from(float takeoff, float caught) noexcept { return caught - std::min(0.1f, 0.4f * (caught - takeoff)); }
+    // Its slow part: from the catch to a share of the way on to the landing; after it, its own pace. (It began up to 0.1 s
+    // before the catch: a flip still turning there turned slowly beside him, the board off his feet, for a third of a
+    // second - a tre down the Tri-Towers gap, 2026-10-26.)
+    static float slow_from(float, float caught) noexcept { return caught; }
     static float slow_until(float caught, float land, float hold) noexcept {
         return std::min(land, caught + std::max(1.0f / 30, (land - caught) * (1 - std::clamp(hold, 0.0f, 1.0f))));
     }
@@ -329,7 +334,7 @@ struct AirStretch {
             want = time < until ? (until - time) / std::max(to_ground - tail - ramp, 0.02f) : (end - time) / std::max(to_ground, 0.02f);
         }
         want = std::clamp(want, slowest, fastest);
-        rate += (want - rate) * (1 - std::exp(-step / ease));
+        rate += (want - rate) * (1 - std::exp(-step / (want < rate ? ease_down : ease)));
         time = std::min(time + rate * step, land - 1.0f / 60);
         return time;
     }

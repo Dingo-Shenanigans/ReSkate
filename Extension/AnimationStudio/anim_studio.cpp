@@ -211,6 +211,12 @@ constexpr bool fit_keys_to_air = true; // the trick's own clock, when the game's
 // snapped and stuck to the board after the catch, the catch struggled: off until they are right. Rolling on the ground a
 // foot is still never drawn into the deck or the ground.
 bool air_corrections = false; // (not constexpr: the code it gates is kept compiled)
+// Down a drop - the air longer than the trick's own by more than a flat pop's give - the trick still takes its own time
+// from its catch to its landing on the touchdown (AirStretch, the catch latch), with the keys as made off the
+// game's clip (off_clip), whatever air_corrections says: on the game's clock it played its landing in the air and stood
+// still to the touchdown, or handed back to the game's pose at its catch. The pose as made goes back to the game's from
+// this long before the touchdown, over this long (seconds), so he comes down in the game's landing with the keys on it.
+constexpr float drop_pose_back_by = 0.05f, drop_pose_back_over = 0.4f;
 // Why a trick lets go at its catch on a higher pop than it was made on (and over at least 0.3 s, whatever the crossfade).
 constexpr const char* higher_pop_hand_back = "its catch, on a higher pop than it was made on: the game's own pose from here";
 struct Snapshot {
@@ -493,10 +499,12 @@ struct Live {
     // made (its own body and board, its keys on them), on the game's height and air.
     float other_pop{};
     bool other_pop_said{};
-    // Off a drop (catch_latch): the trick's own clock from just before its catch (AirStretch), the time it was at on the
+    // Off a drop (catch_latch): the trick's own clock from its catch (AirStretch), the time it was at on the
     // touchdown, its last time, and the board's shape for where it touches.
     AirStretch stretch;
     float latch_touch_from{-1}, latch_last{-1};
+    float to_ground_now{-1}; // its last look at the ground under the board (seconds; -1 none)
+    float to_ground_smooth{-1}; // that look followed smoothly while the trick takes its own time (-1 none)
     float crossfade_now{-1}; // the playing trick's Crossfade (its own, or the main one)
     BoardShape latch_shape;
     bool latch_shape_ok{};
@@ -3815,7 +3823,7 @@ void on_animation(std::uintptr_t component) noexcept {
                 PlaybackSample sampled;
                 NativeClock::Reading reading;
                 // Off a drop, down stairs or over a kicker the game stays in the air longer than the timeline did (or
-                // shorter, onto a ledge): from just before its catch the trick takes its own time (AirStretch), slowed
+                // shorter, onto a ledge): from its catch the trick takes its own time (AirStretch), slowed
                 // through the catch - board caught, knees up - and on to its landing on the touchdown, the ground looked for
                 // under the board. Never held still. On flat ground, in step with the game, it is the game's clock.
                 std::optional<double> touch_at;
@@ -3823,7 +3831,10 @@ void on_animation(std::uintptr_t component) noexcept {
                 else if (l.episode.phase == PlaybackPhase::landing && l.episode.landing >= 0) touch_at = l.episode.landing;
                 const auto catch_latch = [&](float time) -> float {
                     const float caught = trick->caught, land = clip.landing;
-                    if (!air_corrections || !(caught > 0) || !(land > caught) || time < 0 || !l.latch_shape_ok) return time;
+                    if (!(caught > 0) || !(land > caught) || time < 0 || !l.latch_shape_ok) return time;
+                    // A trick that let go before it was slowed (on a higher pop, its hand-back at the catch) fades out
+                    // on the game's clock. Slowed from here, it stood still while it faded.
+                    if (!l.stretch.on() && !l.clock_why.empty()) return time;
                     if (touch_at) {
                         if (!l.stretch.on()) return time;
                         if (l.latch_touch_from < 0) l.latch_touch_from = l.latch_last >= 0 ? l.latch_last : l.stretch.time;
@@ -3853,6 +3864,7 @@ void on_animation(std::uintptr_t component) noexcept {
                     }
                     const bool was_on = l.stretch.on();
                     const float hold = played.catch_hold.value_or(default_catch_hold);
+                    l.to_ground_now = to_ground ? *to_ground : -1.0f;
                     time = l.stretch.update(time, to_ground ? *to_ground : -1.0f, 1.0f / 60, clip.takeoff, caught, land, hold);
                     if (l.stretch.on() && !was_on)
                         logging::log(Level::info, Channel::skater,
@@ -3890,9 +3902,9 @@ void on_animation(std::uintptr_t component) noexcept {
                     // On the game's clip of a higher pop than the trick was made on: from its catch (its own; else four fifths
                     // into its air, where a flip is done) the trick hands back to the game's own pose, crossfaded, and the game
                     // holds its catch and lands as it does. Played to its landing it stood still in the air until the game's
-                    // touchdown, then let go in one frame.
+                    // touchdown, then let go in one frame. Down a drop it takes its own time to the touchdown instead (AirStretch).
                     float hand_back = -1;
-                    if (reading.locked && reading.clip > 0 && trick->native) {
+                    if (reading.locked && reading.clip > 0 && trick->native && !l.stretch.on()) {
                         const auto c = static_cast<std::size_t>(reading.clip);
                         if (c < trick->native->higher_pop.size() && trick->native->higher_pop[c] && up >= 0 && down > up)
                             // The later of its catch and 85% of its air: an ollie's catch comes just after the pop, and it was
@@ -3925,6 +3937,10 @@ void on_animation(std::uintptr_t component) noexcept {
                     std::string why;
                     if (l.episode.phase == PlaybackPhase::rail_release || motion == MotionState::rail) why = "a grind";
                     else if (touch && current_state && *current_state == 103) why = "the next pop";
+                    // Off a drop nothing follows the game's clip after the touchdown to see it move on: riding on, any state
+                    // but plain riding (100) is the game's next move (a manual, a powerslide).
+                    else if (touch && l.stretch.on() && current_state && *current_state != 100 && motion == MotionState::riding)
+                        why = "the game's next move";
                     else if (time >= 0 && time >= edit_end - 0.5f / 60) why = "its end";
                     // Rolling after the touchdown looks like the end of every trick, so the clock holds its time there (a held
                     // pose): a trick with keys after its landing then held its last pose until the pose drifted away, seconds
@@ -3977,11 +3993,28 @@ void on_animation(std::uintptr_t component) noexcept {
                 // (From 2026-10-25 15:44 to 23:30 every trick also played its catch as made and held the feet on the deck from the
                 // pop on, for feet through the deck that were the board keys' frame - fixed on its own. It held the feet to the
                 // board after the catch like a magnet, on every pop: taken out again.)
+                // Down a drop the pose as made (off_clip, and other_pop's whole body and board) goes back to the game's over
+                // the end of the fall. Let go at the touchdown, the upright catch turned into the landing's crouch and the
+                // board as made, 32 cm under the game's, came up onto it in one frame (a tre down the Tri-Towers gap, 2026-10-26).
+                // The look at the ground jumps by up to 0.06 s from one update to the next (the board's path is looked along
+                // again each time), and the board blended with it jerked 6 cm to and fro: it is followed smoothly, counting
+                // down as the time goes, and once the pose goes back it only counts down (one look of 0.83 s among 0.36s
+                // moved the board 4 cm back).
+                if (!(l.stretch.on())) l.to_ground_smooth = -1;
+                else if (l.to_ground_smooth < 0) l.to_ground_smooth = l.to_ground_now;
+                else {
+                    const float expected = std::max(0.0f, l.to_ground_smooth - 1.0f / 60);
+                    const float next = l.to_ground_now >= 0 ? expected + (l.to_ground_now - expected) * 0.15f : expected;
+                    l.to_ground_smooth = l.to_ground_smooth < drop_pose_back_by + drop_pose_back_over ? std::min(next, expected) : next;
+                }
+                const float as_made_till_ground = l.to_ground_smooth >= 0
+                    ? std::clamp((l.to_ground_smooth - drop_pose_back_by) / drop_pose_back_over, 0.0f, 1.0f) : 1.0f;
                 {
                     const bool touched_down = l.episode.contact.since.has_value() || (l.episode.phase == PlaybackPhase::landing && l.episode.landing >= 0);
-                    const bool off = air_corrections && !touched_down && (l.clock_fallback || (reading.locked && reading.lost) || l.stretch.on());
+                    const bool off = !touched_down && ((air_corrections && (l.clock_fallback || (reading.locked && reading.lost))) || (l.stretch.on() && l.clock_why.empty()));
                     constexpr float off_step = (1.0f / 60) / 0.15f;
                     l.off_clip = off ? std::min(1.0f, l.off_clip + off_step) : std::max(0.0f, l.off_clip - off_step);
+                    l.off_clip = std::min(l.off_clip, as_made_till_ground);
                     if (off && !l.off_clip_said) {
                         l.off_clip_said = true;
                         logging::log(Level::info, Channel::skater, "Animation Studio: {} is off the game's clip in the air ({}): keys as made, feet on the deck as in the studio.",
@@ -3999,6 +4032,7 @@ void on_animation(std::uintptr_t component) noexcept {
                                        static_cast<std::size_t>(reading.clip) < pops->size() && (*pops)[static_cast<std::size_t>(reading.clip)];
                     constexpr float other_step = (1.0f / 60) / 0.15f;
                     l.other_pop = other ? std::min(1.0f, l.other_pop + other_step) : std::max(0.0f, l.other_pop - other_step);
+                    l.other_pop = std::min(l.other_pop, as_made_till_ground);
                     if (other && !l.other_pop_said) {
                         l.other_pop_said = true;
                         logging::log(Level::info, Channel::skater, "Animation Studio: {} is on the game's clip of another pop (clip {}): it plays whole, as made.",

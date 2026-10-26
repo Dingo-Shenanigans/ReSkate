@@ -1604,15 +1604,17 @@ void slow_catch_off_drops() {
         const float takeoff = 0.5f, caught = 1.0f, land = 1.1f, air = (land - takeoff) + 1.5f; // a drop 1.5 s longer
         AirStretch s;
         float last = -1, slowest = 10;
-        bool still = false;
+        bool still = false, flip_slowed = false;
         for (float t = step; t < air - 1e-4f; t += step) {
             const float time = s.update(takeoff + t, air - t, step, takeoff, caught, land, default_catch_hold);
+            if (takeoff + t < caught - 1e-4f && !near(time, takeoff + t, 1e-4f)) flip_slowed = true;
             if (last >= 0 && time <= last && time < land - 1.0f / 60 - 1e-4f) still = true;
             if (s.on()) slowest = std::min(slowest, s.rate);
             last = time;
         }
         check(s.on(), "A longer air than its own gives the trick its own time");
         check(!still, "It never stands still or goes back in the air");
+        check(!flip_slowed, "Before its catch it keeps the game's pace (a flip still turning is not slowed)");
         check(slowest >= AirStretch::slowest && slowest < 0.3f, "It slows down through the catch");
         check(land - last < 0.1f, "and comes to its landing by the touchdown");
         AirStretch flat;
@@ -1620,6 +1622,18 @@ void slow_catch_off_drops() {
         float shown = -1;
         for (float t = step; t < own - 1e-4f; t += step) shown = flat.update(takeoff + t, own - t, step, takeoff, caught, land, default_catch_hold);
         check(!flat.on() && near(shown, takeoff + own - step, 1e-3f), "In step with the game (flat ground) it is the game's clock");
+    }
+    {
+        // A Nollie 360 Flip down the Tri-Towers gap (2026-10-26): 0.1 s from its catch to its landing, 0.75 s more air than
+        // its own. It came to its landing 0.7 s before the touchdown and stood still there.
+        const float takeoff = 0.18f, caught = 0.52f, land = 0.617f, air = 1.17f;
+        AirStretch s;
+        float landed_at = air;
+        for (float t = step; t < air - 1e-4f; t += step) {
+            const float time = s.update(takeoff + t, air - t, step, takeoff, caught, land, default_catch_hold);
+            if (time >= land - 1.0f / 60 - 1e-5f && landed_at == air) landed_at = t;
+        }
+        check(s.on() && air - landed_at < 0.05f, "A trick with little left after its catch comes to its landing by the touchdown");
     }
     {
         const float takeoff = 0.5f, caught = 0.8f, land = 1.1f, air = 0.4f; // onto a ledge, 0.2 s sooner
