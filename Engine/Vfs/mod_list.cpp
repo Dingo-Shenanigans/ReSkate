@@ -232,6 +232,43 @@ void read_variants(Mod& mod, std::vector<std::string>& notes) {
     }
 }
 
+// Invalid cooperation never removes an existing displacement rule. Read this
+// independently of variants, and publish neither side of a partial declaration.
+void read_variant_additions(Mod& mod, std::vector<std::string>& notes) {
+    const auto path = mod.directory / plugin_manifest_file;
+    std::error_code error;
+    if (!fs::is_regular_file(path, error) || error) return;
+    try {
+        const auto root = parse(path, maximum_plugin_bytes);
+        if (!root.is_object() || !root.contains("variant_additions")) return;
+        const auto& policy = root.at("variant_additions");
+        if (!policy.is_object()) throw std::runtime_error("variant_additions is an object");
+        const auto list = [&](const char* field) {
+            std::vector<std::string> result;
+            if (!policy.contains(field)) return result;
+            const auto& values = policy.at(field);
+            if (!values.is_array() || values.size() > 16) throw std::runtime_error("at most 16 exact bundle names per side");
+            for (const auto& value : values) {
+                if (!value.is_string() || value.string().size() > 260) throw std::runtime_error("bundle name must be a string of at most 260 characters");
+                auto name = lower(value.string());
+                if (!name.starts_with("win32/") || name.find("..") != std::string::npos ||
+                    name.find("//") != std::string::npos || name.back() == '/' ||
+                    std::ranges::any_of(name, [](unsigned char c) { return c <= 0x20 || c >= 0x7f || c == '\\' || c == '*' || c == '?'; }))
+                    throw std::runtime_error("an exact win32 bundle name is required");
+                if (std::ranges::find(result, name) != result.end()) throw std::runtime_error("repeated bundle permission");
+                result.push_back(std::move(name));
+            }
+            return result;
+        };
+        VariantAdditions parsed;
+        parsed.accept = list("accept");
+        parsed.contribute = list("contribute");
+        mod.variant_additions = std::move(parsed);
+    } catch (const std::exception& failure) {
+        notes.push_back("Mod " + mod.name + ": private variant additions refused (" + failure.what() + ")");
+    }
+}
+
 // Whether reskate-plugin.json names code to run. A file with only "resident" or "variants" serves
 // the mod's game data and is no plugin. The plugin host reports what else is wrong with it.
 void read_plugin_entry(Mod& mod) {
@@ -498,6 +535,7 @@ Mod describe_mod(const std::filesystem::path& directory, std::string name, std::
     read_levels(mod);
     read_resident(mod, notes);
     read_variants(mod, notes);
+    read_variant_additions(mod, notes);
     read_plugin_entry(mod);
     read_studio_marker(mod);
     return mod;

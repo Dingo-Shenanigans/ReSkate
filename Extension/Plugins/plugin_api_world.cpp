@@ -1437,8 +1437,39 @@ struct WorldApi {
         lua_setfield(L, -2, "scale");
         return 1;
     }
-    // skater.pose({[joint] = {rotation = {x, y, z, w} | angles = vector (degrees), scale = n}, ...}, weight):
-    // joints turned in their own frame and scaled on top of the animation for 0.3 s; nil ends it.
+    // A joint's place in a pose: {position = vector, rotation = {x, y, z, w} | angles = vector (degrees),
+    // relative_to = joint | "skater" | "world"}, any part left out as the animation has it; relative to
+    // its own parent when no relative_to is given.
+    static pose_place::Place place_of(lua_State* L, int index) {
+        luaL_checktype(L, index, LUA_TTABLE);
+        pose_place::Place place;
+        lua_getfield(L, index, "position");
+        if (!lua_isnil(L, -1)) place.position = position_of(L, lua_gettop(L), "a joint's place");
+        lua_pop(L, 1);
+        lua_getfield(L, index, "rotation");
+        if (!lua_isnil(L, -1)) place.rotation = quaternion_at(L, lua_gettop(L));
+        lua_pop(L, 1);
+        lua_getfield(L, index, "angles");
+        if (!lua_isnil(L, -1)) {
+            const auto a = position_of(L, lua_gettop(L), "a joint's place's angles");
+            place.rotation = anim_studio::from_euler({a[0], a[1], a[2]});
+        }
+        lua_pop(L, 1);
+        lua_getfield(L, index, "relative_to");
+        if (lua_type(L, -1) == LUA_TSTRING && std::string_view(lua_tostring(L, -1)) == "skater") place.frame = pose_place::Frame::skater;
+        else if (lua_type(L, -1) == LUA_TSTRING && std::string_view(lua_tostring(L, -1)) == "world") place.frame = pose_place::Frame::world;
+        else if (!lua_isnil(L, -1)) {
+            place.frame = pose_place::Frame::joint;
+            place.joint = joint_of(L, lua_gettop(L));
+        }
+        lua_pop(L, 1);
+        if (!place.position && !place.rotation) luaL_error(L, "a joint's place has a position, a rotation or both");
+        return place;
+    }
+    // skater.pose({[joint] = {rotation = {x, y, z, w} | angles = vector (degrees), scale = n, offset = vector,
+    // place = {...}, keep_children = true}, ...}, weight): joints turned in their own frame, scaled and
+    // moved on top of the animation, or set to a place (place_of), for 0.3 s; nil ends it. keep_children:
+    // the joint's children stay where they were in the world.
     static int skater_pose(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "skater.animation", "reskate.skater.pose");
@@ -1475,12 +1506,34 @@ struct WorldApi {
                         if (std::abs(v) > 2) luaL_error(L, "a joint's offset is at most 2 m on each axis");
                 }
                 lua_pop(L, 1);
+                lua_getfield(L, at, "place");
+                if (!lua_isnil(L, -1)) o.place = place_of(L, lua_gettop(L));
+                lua_pop(L, 1);
+                lua_getfield(L, at, "keep_children");
+                if (!lua_isnil(L, -1)) {
+                    luaL_checktype(L, -1, LUA_TBOOLEAN);
+                    o.keep_children = lua_toboolean(L, -1) != 0;
+                }
+                lua_pop(L, 1);
                 if (std::any_of(offsets.begin(), offsets.end(), [&](const auto& e) { return e.joint == o.joint; }))
                     luaL_error(L, "joint %d is posed twice", static_cast<int>(o.joint));
-                if (offsets.size() >= 64) luaL_error(L, "at most 64 joints are posed at once");
+                // An avatar with its proportions and its own physics bones (tail, ears) needs about 70.
+                if (offsets.size() >= 128) luaL_error(L, "at most 128 joints are posed at once");
                 offsets.push_back(o);
                 lua_pop(L, 1);
             }
+            // Each joint after the joints it hangs from and the joint it is placed relative to.
+            std::vector<std::uint16_t> joints;
+            std::vector<int> relative_to;
+            for (const auto& o : offsets) {
+                joints.push_back(o.joint);
+                relative_to.push_back(o.place && o.place->frame == pose_place::Frame::joint ? o.place->joint : -1);
+            }
+            std::vector<std::size_t> order;
+            if (const auto why = pose_place::order(joints, relative_to, order); !why.empty()) luaL_error(L, "%s", why.c_str());
+            std::vector<Game::JointOffset> ordered;
+            for (const auto i : order) ordered.push_back(offsets[i]);
+            offsets = std::move(ordered);
         }
         const double weight = luaL_optnumber(L, 2, 1);
         if (!(weight >= 0 && weight <= 1)) luaL_argerror(L, 2, "a weight is 0 to 1");
@@ -1777,7 +1830,9 @@ struct WorldApi {
     }
     // parameters(part): {{key = "873f48af36e50d59", name = "graphic", type = "colour", value = {r, g, b}}, ...}
     // as the part's material holds them now, or nil without a board. A number's value is a number, an
-    // integer's an integer, a switch's true or false.
+    // integer's an integer, a switch's true or false. A colour or a number the equipped item's mod
+    // declares (reskate-materials.json) that the material does not hold yet comes with inherited =
+    // true and its shader's default as its value; set_parameter adds a declared colour.
     static int board_parameters(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "board", "reskate.board.parameters");
@@ -1818,12 +1873,18 @@ struct WorldApi {
                 lua_pushboolean(L, p.integer != 0);
                 lua_setfield(L, -2, "value");
             }
+            if (p.inherited) {
+                lua_pushboolean(L, 1);
+                lua_setfield(L, -2, "inherited");
+            }
             lua_rawseti(L, -2, ++at);
         }
         return 1;
     }
     // set_parameter(part, key, value): a colour {r, g, b} (0 to 1) or a number held on the part until
-    // cleared, on this screen; an integer or a switch is only read.
+    // cleared, on this screen; an integer or a switch is only read. A colour the equipped item's mod
+    // declares is added to the material and goes back to its declared default when let go, or when
+    // that item is no longer on the board.
     static int board_set_parameter(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "board", "reskate.board.set_parameter");

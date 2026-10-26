@@ -2,6 +2,7 @@
 #include "Extension/AnimationStudio/anim_core.h"
 #include "Extension/Skater/arm_reach.h"
 #include "Extension/Skater/carry.h"
+#include "Extension/Skater/pose_place.h"
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -66,14 +67,17 @@ void reach(std::optional<arm_reach::Goal> goal, Shown shown = Shown::everyone);
 // holds for 0.3 s: set it every tick. `push_straightens`: riding, the knees straighten (most of the
 // crouch let go) while a foot is down pushing.
 void carry(std::optional<carry::Goal> goal, bool push_straightens = false, Shown shown = Shown::everyone);
-// Joints turned (in their own frame) and scaled on top of the animation and any clip, before any
-// carry and reach; `weight` 0..1 of the way. Joints 0 and 1 (the skater's world placement) are left
-// alone. It holds for 0.3 s: set it every tick; empty ends it.
+// Joints turned (in their own frame), scaled and moved on top of the animation and any clip, or set to
+// a place (pose_place.h), before any carry and reach; `weight` 0..1 of the way. Posed in the order
+// given (pose_place::order). Joints 0 and 1 (the skater's world placement) are left alone. It holds
+// for 0.3 s: set it every tick; empty ends it.
 struct PoseOffset {
     std::uint16_t joint{};
     anim_studio::Quat rotation{0, 0, 0, 1};
     float scale{1};
     anim_studio::Vec3 offset{}; // added to its position, in its parent's frame
+    std::optional<pose_place::Place> place; // set instead of added, after the above
+    bool keep_children{};                   // its children stay where they were in the world
 };
 void pose(std::vector<PoseOffset> offsets, float weight, Shown shown = Shown::everyone);
 // Where a joint (of the 395) was in the world in the last pose evaluated, after any clip and reach;

@@ -412,6 +412,12 @@ if(DINGOSDK_BUILD_ANIMATION_STUDIO_TESTS)
     target_include_directories(dingosdk_carry_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     target_link_libraries(dingosdk_carry_tests PRIVATE dingosdk_json)
     add_test(NAME carry COMMAND dingosdk_carry_tests)
+    # A joint set to a place (reskate.skater.pose's place): in a frame, its children kept, the order.
+    add_executable(dingosdk_pose_place_tests Extension/Skater/Test/pose_place_tests.cpp Extension/Skater/pose_place.cpp
+        Extension/AnimationStudio/anim_core.cpp)
+    target_include_directories(dingosdk_pose_place_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_link_libraries(dingosdk_pose_place_tests PRIVATE dingosdk_json)
+    add_test(NAME pose_place COMMAND dingosdk_pose_place_tests)
 endif()
 option(DINGOSDK_BUILD_REPLAY_KEYFRAMES_TESTS "Build replay keyframe smoothing regression tests" OFF)
 if(DINGOSDK_BUILD_REPLAY_KEYFRAMES_TESTS)

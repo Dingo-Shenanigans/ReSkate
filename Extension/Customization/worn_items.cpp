@@ -47,7 +47,7 @@ std::int32_t selected_preset(std::uintptr_t base, std::uintptr_t manager) {
 // The board the skater rides now: the board recipe of the selected preset (the first when none is
 // selected), its parts in the card's order, empty slots left out. Game thread.
 } // namespace
-std::vector<Worn> worn_board() {
+std::vector<Worn> worn_board(bool titles) {
     std::vector<Worn> parts;
     const auto base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
     std::uintptr_t manager{}, begin{}, end{};
@@ -66,7 +66,7 @@ std::vector<Worn> worn_board() {
         for (const auto& wanted : board_slots)
             for (const auto& item : recipe.items) {
                 if (item.slot != wanted.slot || item.asset.empty()) continue;
-                parts.push_back({wanted.label, item.asset, item_title(item.asset)});
+                parts.push_back({wanted.label, item.asset, titles ? item_title(item.asset) : std::string{}});
             }
         break;
     }

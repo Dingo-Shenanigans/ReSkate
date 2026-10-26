@@ -96,6 +96,7 @@ target_link_libraries(dingosdk_game_archives PUBLIC dingosdk_native_db dingosdk_
 if(WIN32)
     add_library(dingosdk_mods STATIC
         Engine/Vfs/mod_catalog.cpp
+        Engine/Vfs/variant_additions_native.cpp
         Engine/Vfs/mod_merge.cpp
         Engine/Vfs/mod_merge_files.cpp
         Engine/Vfs/mod_merge_stamp.cpp
@@ -108,6 +109,7 @@ if(WIN32)
         Engine/Vfs/mod_merge_grid.cpp
         Engine/Vfs/mod_merge_load_screens.cpp
         Engine/Vfs/mod_music.cpp
+        Engine/Vfs/mod_materials.cpp
         Engine/Vfs/mod_scoring.cpp
         Engine/Vfs/mod_store_copies.cpp
         Engine/Vfs/mod_item_sources.cpp
@@ -155,6 +157,7 @@ add_library(dingosdk_plugins STATIC
     Extension/Throwdowns/challenge_registry.cpp
     Extension/Plugins/plugin_host.cpp
     Extension/AnimationStudio/anim_core.cpp
+    Extension/Skater/pose_place.cpp
     Extension/Plugins/plugin_wave.cpp)
 target_link_libraries(dingosdk_plugins PUBLIC dingosdk_json dingosdk_console_core PRIVATE dingosdk_luau)
 if(WIN32)

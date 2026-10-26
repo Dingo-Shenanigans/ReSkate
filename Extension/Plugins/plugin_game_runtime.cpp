@@ -532,7 +532,7 @@ public:
             using board_material::Kind;
             const char* type = p.kind == Kind::colour ? "colour" : p.kind == Kind::number ? "number" : p.kind == Kind::integer ? "integer"
                              : p.kind == Kind::toggle ? "switch" : "other";
-            out.push_back({p.key, type, p.value, p.integer});
+            out.push_back({p.key, type, p.value, p.integer, p.inherited});
         }
         return out;
     }
@@ -1107,7 +1107,7 @@ public:
         poser_ = plugin;
         pose_at_ = now;
         std::vector<skater_animation::PoseOffset> out;
-        for (const auto& o : offsets) out.push_back({o.joint, o.rotation, o.scale, o.offset});
+        for (const auto& o : offsets) out.push_back({o.joint, o.rotation, o.scale, o.offset, o.place, o.keep_children});
         skater_animation::pose(std::move(out), weight, shown_of(shown));
         return {};
     }

@@ -47,3 +47,7 @@ No preference is saved to disk. The native Settings screen receives the player's
 Native tests cover permission denial, selectors/ranges, leases, expiry/release, original preference/UI behavior, occupied typed animation pages, and PlayStation report layout preservation. Runtime and plugin tests compile with MSVC /W4 /WX. This checkout lacks maintainer assets/emotes, producing CMake missing-dependency warnings; 15 optional contrib plugin fixtures are skipped.
 
 In-game validation is still required for XInput and native DS4/DualSense USB/Bluetooth, menu/replay handoff, slow frames, graph availability, rail acceptance and other control plugins. These APIs do not provide per-poll script execution or sub-tick input sampling.
+
+## Consumer integration
+
+The standalone Dual Stick 6.6 Lua port is maintained in the separate [Dual Stick repository](https://github.com/GoalTrains/reskatedualstick/tree/codex/lua-controls-6.6/lua). Its foot mapping, grind-state handling, pop-to-air handoff and rail-circle logic stay in Luau. This SDK branch contains only reusable controller and local-rider primitives; no Dual Stick mode or native companion is required by the plugin once the APIs are available.

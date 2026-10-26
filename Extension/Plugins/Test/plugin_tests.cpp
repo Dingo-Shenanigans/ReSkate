@@ -14,6 +14,7 @@
 #include "Engine/Game/Input/playstation_report.h"
 #include "Engine/Game/Input/gameplay_options.h"
 #include "Engine/Game/Skater/animation_values.h"
+#include "Extension/Customization/board_material.h"
 #include <algorithm>
 #include <chrono>
 #include <format>
@@ -26,6 +27,8 @@
 
 using namespace dingosdk::plugins;
 namespace plugin_ui = dingosdk::plugin_ui;
+namespace board_material = dingosdk::board_material;
+namespace mods = dingosdk::mods;
 namespace {
 void check(bool value, const std::string& message) { if (!value) throw std::runtime_error(message); }
 
@@ -77,7 +80,41 @@ struct FakeGame final : Game {
         return {};
     }
     void board_park(std::string_view plugin, std::vector<int> bones) override { calls.push_back(std::format("board park {} {}", plugin, bones.size())); }
+    // The Example declared-input deck as the game holds it: seven live selectors, and the eight colours (and a
+    // number) its mod declares for its shader. What plugins hold of it is kept by the same rules as
+    // the game's (board_material.h: take, listed, release). Off: no deck declares anything.
+    bool declared_rules{}; // the deck answers as the Example deck (else as before: everything is taken)
+    bool declared_deck{};  // with declared_rules: the Example deck is equipped (else a deck that declares nothing)
+    std::vector<board_material::detail::Hold> declared_holds;
+    static constexpr std::array<std::uint64_t, 8> declared_keys{
+        0x5b2d035c7746f31aULL, 0x51745c0fd2d117d3ULL, 0x5c1058b72fe158edULL, 0x5a4e08ac201c369fULL,
+        0x57fc15cf6583c0c7ULL, 0x5a2f52ddbd12f283ULL, 0x55fda1e1521b9097ULL, 0x580bde15aa576f12ULL};
+    static constexpr std::uint64_t declared_number = 0x7777777777777777ULL;
+    board_material::detail::Found declared_board() const {
+        using namespace board_material;
+        detail::Found found;
+        detail::Material deck{0x100, 0x200, Part::deck, {}};
+        for (std::uint64_t k = 1; k <= 7; ++k)
+            deck.nodes.push_back({0x300 + k, {0x5000 + k, k % 2 ? Kind::integer : Kind::toggle, {}, static_cast<std::int32_t>(k)}, 0x1234});
+        found.materials.push_back(deck);
+        mods::MaterialDeclaration declaration{"Example", "deck", {"Example_Deck"}, {}};
+        for (const auto key : declared_keys) declaration.parameters.push_back({key, static_cast<std::uint16_t>(key), true, {.5f, .5f, .5f}});
+        declaration.parameters.push_back({declared_number, 0x4242, false, {.25f, 0, 0}});
+        auto never_sold = [](std::string_view) { return false; };
+        found.declared = detail::declared_for({declaration}, Part::deck, declared_deck ? "Example_Deck" : "Plain_Deck", never_sold, "Example");
+        return found;
+    }
+    bool declared_holds_deck(int part) const { return declared_rules && part == 0; }
     std::optional<std::vector<BoardParameter>> board_parameters(int part) override {
+        if (declared_holds_deck(part)) {
+            std::vector<BoardParameter> out;
+            for (const auto& p : board_material::detail::listed(declared_board(), board_material::Part::deck)) {
+                using board_material::Kind;
+                out.push_back({p.key, p.kind == Kind::colour ? "colour" : p.kind == Kind::number ? "number" : p.kind == Kind::integer ? "integer" : "switch",
+                               p.value, p.integer, p.inherited});
+            }
+            return out;
+        }
         if (part != 1) return std::vector<BoardParameter>{};
         return std::vector<BoardParameter>{{0x873f48af36e50d59ULL, "colour", {.2f, .3f, .4f}, 0},
                                            {0x841c7d74837f1d39ULL, "number", {1, 0, 0}, 0},
@@ -85,11 +122,20 @@ struct FakeGame final : Game {
                                            {0xa5f9a6b8098279adULL, "switch", {}, 1}};
     }
     std::string board_set_parameter(std::string_view plugin, int part, std::uint64_t key, std::array<float, 3> value, bool colour) override {
+        if (declared_holds_deck(part)) {
+            auto why = board_material::detail::take(declared_holds, declared_board(), plugin, board_material::Part::deck, key, value, colour);
+            if (why.empty()) calls.push_back(std::format("board parameter {} {} {:016x} {} {:.1f}", plugin, part, key, colour ? "colour" : "number", value[0]));
+            return why;
+        }
         calls.push_back(std::format("board parameter {} {} {:016x} {} {:.1f}", plugin, part, key, colour ? "colour" : "number", value[0]));
         return {};
     }
     void board_clear_parameter(std::string_view plugin, int part, std::optional<std::uint64_t> key) override {
         calls.push_back(std::format("board parameter clear {} {} {}", plugin, part, key ? std::format("{:016x}", *key) : "all"));
+        board_material::detail::release(declared_holds, plugin, part < 0 ? std::nullopt : std::optional(static_cast<board_material::Part>(part)), key);
+    }
+    std::size_t declared_held(std::string_view plugin) const {
+        return static_cast<std::size_t>(std::count_if(declared_holds.begin(), declared_holds.end(), [&](const auto& h) { return h.owner == plugin; }));
     }
     // The general services a game layer in Lua reads and drives (plugin_api_services.cpp).
     std::optional<SkaterTelemetry> telemetry;
@@ -193,8 +239,26 @@ struct FakeGame final : Game {
         if (shown != Shown::everyone) text += std::format(" {}", shown_name(shown));
         auto sorted = offsets;
         std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.joint < b.joint; });
-        for (const auto& o : sorted) text += std::format(" {}:{:.2f},{:.2f},{:.2f},{:.2f}x{:.2f}", o.joint, o.rotation[0], o.rotation[1], o.rotation[2], o.rotation[3], o.scale);
+        for (const auto& o : sorted) {
+            text += std::format(" {}:{:.2f},{:.2f},{:.2f},{:.2f}x{:.2f}", o.joint, o.rotation[0], o.rotation[1], o.rotation[2], o.rotation[3], o.scale);
+            if (o.place) {
+                const auto& pl = *o.place;
+                text += pl.frame == dingosdk::pose_place::Frame::joint ? std::format(" place@{}", pl.joint)
+                        : pl.frame == dingosdk::pose_place::Frame::skater ? std::string(" place@skater")
+                        : pl.frame == dingosdk::pose_place::Frame::world  ? std::string(" place@world")
+                                                                : std::string(" place@parent");
+                if (pl.position) text += std::format(" p{:.2f},{:.2f},{:.2f}", (*pl.position)[0], (*pl.position)[1], (*pl.position)[2]);
+                if (pl.rotation) text += std::format(" r{:.2f},{:.2f},{:.2f},{:.2f}", (*pl.rotation)[0], (*pl.rotation)[1], (*pl.rotation)[2], (*pl.rotation)[3]);
+            }
+            if (o.keep_children) text += " keep";
+        }
         calls.push_back(text);
+        // The order the joints are posed in, when any is set to a place or keeps its children.
+        if (std::any_of(offsets.begin(), offsets.end(), [](const auto& o) { return o.place || o.keep_children; })) {
+            std::string order = std::format("pose order {}", plugin);
+            for (const auto& o : offsets) order += std::format(" {}", o.joint);
+            calls.push_back(order);
+        }
         return {};
     }
     std::string typed = "";
@@ -636,7 +700,11 @@ struct FakeGame final : Game {
         return {};
     }
     std::vector<std::pair<std::string, std::string>> take_presses() override { return std::exchange(presses, {}); }
-    void release(std::string_view plugin) override { released.emplace_back(plugin); entity_clear(plugin); }
+    void release(std::string_view plugin) override {
+        released.emplace_back(plugin);
+        entity_clear(plugin);
+        board_material::detail::release(declared_holds, plugin, std::nullopt, std::nullopt);
+    }
     // The game menu, its item grid, what is worn, and a screen capture of something turning once
     // every `turning` frames (reskate.capture, room.turn, menu.game/grid, outfit.board).
     GameMenu menu_now;
@@ -1207,7 +1275,7 @@ void the_skater_can_be_read_moved_and_the_world_probed() {
     check(environment.logged("teleport false teleporting is unavailable"), "nor to move");
     environment.local_skater = SkaterState{{1, 0, 2}, 1.5f, 4, 0.5f, true, 0.25f};
     host.run_console("probe");
-    check(environment.logged("at 1.0 0.0 2.0 facing 1.50 speed 4.0 up 0.5 air true 0.2"), "The skater is read\n" + environment.all());
+    check(environment.logged("at 1.0 0.0 2.0 facing 1.50 speed 4.0 up 0.5 air true 0."), "The skater is read\n" + environment.all());
     running(host, "mover", environment);
     host.run_console("move 0.5");
     check(environment.teleports.size() == 1 && environment.teleports[0].first == Vec3{10, 0, 20} &&
@@ -1712,6 +1780,26 @@ void plugins_read_joints_and_tune_physics() {
         assert(not pcall(reskate.skater.pose, {head = {scale = 11}}), "scale 0 to 10")
         assert(not pcall(reskate.skater.pose, {head = {}}, 2), "weight 0 to 1")
         assert(not pcall(reskate.skater.pose, {head = {}, [103] = {}}), "a joint once")
+        local many = {}
+        for j = 2, 129 do many[j] = {scale = 1} end
+        assert(reskate.skater.pose(many), "128 joints")
+        many[130] = {scale = 1}
+        assert(not pcall(reskate.skater.pose, many), "at most 128 joints")
+        -- Set to a place: a link of a chain relative to another joint, one in the skater's frame keeping
+        -- its children where they were, one in the world.
+        assert(reskate.skater.pose({[49] = {place = {position = vector.create(0, 0, -0.1), relative_to = 278}},
+            [278] = {place = {angles = vector.create(0, 0, 90), relative_to = "skater"}, keep_children = true},
+            head = {place = {position = vector.create(1, 2, 3), relative_to = "world"}}, [42] = {place = {position = vector.create(0, 0.2, 0)}}}))
+        assert(not pcall(reskate.skater.pose, {[49] = {place = {relative_to = 278}}}), "a place has a position or a rotation")
+        assert(not pcall(reskate.skater.pose, {[49] = {place = {position = vector.create(0, 0, 0), relative_to = "moon"}}}), "relative to a joint, the skater or the world")
+        assert(not pcall(reskate.skater.pose, {head = {keep_children = 1}}), "keep_children is true or false")
+        local _, itself = pcall(reskate.skater.pose, {[49] = {place = {position = vector.create(0, 0, 0), relative_to = 49}}})
+        assert(itself:find("relative to itself"), itself)
+        local _, below = pcall(reskate.skater.pose, {hips = {place = {position = vector.create(0, 0, 0), relative_to = "spine"}}})
+        assert(below:find("hangs from it"), below)
+        local _, circle = pcall(reskate.skater.pose, {[49] = {place = {position = vector.create(0, 0, 0), relative_to = 278}},
+            [278] = {place = {position = vector.create(0, 0, 0), relative_to = 49}}})
+        assert(circle:find("in a circle"), circle)
         assert(reskate.settings.set("Camera.Height", 1.5) and reskate.settings.set("Chat.Show", true) and
             reskate.settings.set("Render.Mode", "fast") and reskate.settings.set("Camera.Height", nil))
         reskate.log("tuned")
@@ -1726,6 +1814,11 @@ void plugins_read_joints_and_tune_physics() {
     check(game.called("pose tuner 0.50 8:0.00,0.00,0.00,1.00x1.00 44:0.00,0.00,0.71,0.71x1.00 103:0.00,0.00,0.00,1.00x0.00") &&
               game.called("pose tuner 1.00"),
           "Joints posed: a head shrunk, one turned 90 degrees about Z, and off\n" + environment.all());
+    check(game.called("pose tuner 1.00 42:0.00,0.00,0.00,1.00x1.00 place@parent p0.00,0.20,0.00 49:0.00,0.00,0.00,1.00x1.00 place@278 p0.00,0.00,-0.10 "
+                      "103:0.00,0.00,0.00,1.00x1.00 place@world p1.00,2.00,3.00 278:0.00,0.00,0.00,1.00x1.00 place@skater r0.00,0.00,0.71,0.71 keep") &&
+              game.called("pose order tuner 42 103 278 49"),
+          "Joints set to places: in their parent's frame, another joint's, the world and the skater's, the children kept; "
+          "each posed after the joint it is placed relative to\n" + environment.all());
     check(game.called("setting tuner Camera.Height 1.5") && game.called("setting tuner Chat.Show true") &&
               game.called("setting tuner Render.Mode fast") && game.called("setting tuner Camera.Height none"),
           "Game settings held and let go\n" + environment.all());
@@ -2608,6 +2701,76 @@ void web_requests_go_only_to_listed_domains() {
     check(environment.logged("[web] answer 200 hello nil"), "and the answer comes back\n" + environment.all());
     host.run_console("many");
     check(environment.logged("many more than 4 web requests waiting"), "4 waiting at most\n" + environment.all());
+}
+
+
+void declared_board_colours_through_the_api() {
+    TestEnvironment environment;
+    environment.fake.declared_rules = true;
+    environment.fake.declared_deck = true;
+    Host host(environment, Side::client);
+    host.apply({script("materialapi", R"(
+        reskate.console.command("materialapi", "x", function(args)
+            local deck = reskate.board.parameters("deck")
+            assert(#deck == 7 + 9, "seven selectors and nine declared inputs, not " .. #deck)
+            local inherited = 0
+            for i, p in deck do
+                if i <= 7 then
+                    assert(not p.inherited and (p.type == "integer" or p.type == "switch"), "a live selector")
+                else
+                    assert(p.inherited == true, "a declared input is inherited")
+                    if p.type == "colour" then
+                        inherited += 1
+                        assert(p.value.r == 0.5 and p.value.g == 0.5 and p.value.b == 0.5, "at its declared default")
+                    end
+                end
+            end
+            assert(inherited == 8, "eight declared colours")
+            for _, key in {"5b2d035c7746f31a", "51745c0fd2d117d3", "5c1058b72fe158ed", "5a4e08ac201c369f",
+                           "57fc15cf6583c0c7", "5a2f52ddbd12f283", "55fda1e1521b9097", "580bde15aa576f12"} do
+                assert(reskate.board.set_parameter("deck", key, {r = 0.25, g = 0.75, b = 0.375}), key)
+            end
+            local ok, why = reskate.board.set_parameter("deck", "0000000000005001", 3)
+            assert(not ok and why:find("only read"), "a selector stays read-only: " .. tostring(why))
+            ok, why = reskate.board.set_parameter("deck", "5b2d035c7746f31a", 0.5)
+            assert(not ok and why:find("colour"), "a declared colour is not a number: " .. tostring(why))
+            ok, why = reskate.board.set_parameter("deck", "5b2d035c7746f31a", {r = 2, g = 0, b = 0})
+            assert(not ok and why:find("0 to 1"), "its channels are 0 to 1")
+            ok, why = reskate.board.set_parameter("deck", "7777777777777777", 0.5)
+            assert(not ok and why:find("only a declared colour"), "a declared number with no live value is not added: " .. tostring(why))
+            ok, why = reskate.board.set_parameter("deck", "1234567812345678", {r = 0, g = 0, b = 0})
+            assert(not ok and why:find("no parameter"), "nor anything undeclared")
+            reskate.log("materialapi fine")
+        end)
+        reskate.console.command("materialapi_one", "x", function() reskate.board.clear_parameter("deck", "5b2d035c7746f31a") end)
+    )", R"("board", "console")"),
+                script("thief", R"(
+        reskate.console.command("thief", "x", function()
+            local ok, why = reskate.board.set_parameter("deck", "5b2d035c7746f31a", {r = 1, g = 1, b = 1})
+            assert(not ok and why:find("materialapi holds"), "another plugin's colour is not taken: " .. tostring(why))
+            reskate.log("thief refused")
+        end)
+    )", R"("board", "console")"),
+                script("nopermission", R"(
+        local ok, err = pcall(reskate.board.parameters, "deck")
+        assert(not ok and err:find("needs the \"board\" permission"), err)
+        ok, err = pcall(reskate.board.set_parameter, "deck", "5b2d035c7746f31a", {r = 1, g = 1, b = 1})
+        assert(not ok and err:find("needs the \"board\" permission"), err)
+        ok, err = pcall(reskate.board.clear_parameter, "deck")
+        assert(not ok and err:find("needs the \"board\" permission"), err)
+        reskate.log("nopermission refused")
+    )")});
+    running(host, "materialapi", environment);
+    running(host, "nopermission", environment);
+    check(environment.logged("nopermission refused"), "A plugin without the board permission reaches no board parameter\n" + environment.all());
+    check(environment.fake.declared_holds.empty(), "Nothing is held before a plugin asks");
+    check(host.run_console("materialapi") && environment.logged("materialapi fine"), "Declared colours list and set\n" + environment.all());
+    check(environment.fake.declared_held("materialapi") == 8, "The plugin holds the eight declared colours");
+    check(host.run_console("thief") && environment.logged("thief refused"), "Another plugin cannot take them\n" + environment.all());
+    check(environment.fake.declared_held("thief") == 0, "and holds none");
+    check(host.run_console("materialapi_one") && environment.fake.declared_held("materialapi") == 7, "Clearing one key lets go of that one");
+    host.apply({});
+    check(environment.fake.declared_holds.empty(), "Unloading lets go of every one (the game puts them back to their defaults)");
 }
 
 void the_wider_set_reaches_the_game() {
@@ -4305,6 +4468,7 @@ int main() {
         run(plugins_call_and_hear_each_other);
         run(web_requests_go_only_to_listed_domains);
         run(the_wider_set_reaches_the_game);
+        run(declared_board_colours_through_the_api);
         run(key_names_become_binds);
         run(level_events_reach_plugins);
         run(timers_run_when_due);

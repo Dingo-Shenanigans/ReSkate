@@ -349,6 +349,7 @@ void apply_now() {
     mods::MergeReport report;
     std::string left_out;
     for (int round = 0;; ++round) {
+        mods::reconcile_variant_additions(catalog);
         // The mods in the game now were checked against the store when they went in.
         report = mods::merge_mods(catalog, [](const mods::MergeProgress &now) {
             std::lock_guard lock(state_mutex);
