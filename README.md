@@ -2,7 +2,7 @@
 
 Edit skate animations in game, build your own trick packs, and choose how they play.
 
-Animator Studio is a modified **ReSkate runtime**, developed by Fourth Studio, 22sh and Norms with the project contributors. Open it with **F8** to browse native animations, edit body and board keys, make stance variants, and share packs through the market.
+Animator Studio is a modified **ReSkate runtime**, built by 22sh, Fourth Studio, Norms and Steez, and tested by THE CREW. Open it with **F8** to browse native animations, edit body and board keys, make stance variants, and share packs through the market.
 
 > **Current candidate:** Animator Studio 1.0.9 on ReSkate 2.1.2. Automated checks cover animation logic and pack files; final in-game release acceptance is tracked in the [release checklist](contrib/studio-release-checklist.md).
 >
@@ -10,17 +10,22 @@ Animator Studio is a modified **ReSkate runtime**, developed by Fourth Studio, 2
 
 ## Install
 
-Use Windows and a separate ReSkate installation. The supported game is Steam build **25414733** (internal build 20260929); follow the ReSkate launcher's pinned installation rather than copying the latest Steam executable over it.
+**For now, the Animator Studio is one file: a `ReSkate.dll` that takes the place of ReSkate's own.** You swap the DLL and turn ReSkate's updates off. Once the ReSkate team brings the studio into ReSkate itself, none of this is needed: you will just update ReSkate.
 
-1. Set up **ReSkate 2.1.2** using the [upstream release](https://github.com/Dingo-Shenanigans/ReSkate/releases/tag/v2.1.2). Keep its installation outside Steam's skate folder.
-2. Get the Animator Studio **ReSkate.dll** from a [published Studio release](https://github.com/FourthStudio/ReSkate-Animator-Studio/releases), or directly from a maintainer for a tester candidate. Use a DLL built from this repository.
-3. In the launcher settings, turn **Install ReSkate updates** off. Otherwise the official updater can replace the Studio DLL with the upstream runtime.
-4. Close the game. Back up your current **ReSkate.dll** and **ReSkate.Tricks** folder, then replace the DLL beside **Skate.exe**. Keep your launcher and saved data.
-5. Start through **ReSkateLauncher.exe**, then press **F8**.
+You need Windows, your own copy of skate. on Steam, and a working **ReSkate 2.1.2** install (the game build ReSkate pins is Steam build **25414733**, internal build 20260929; let the ReSkate launcher set it up rather than copying the latest Steam executable over it).
 
-The first use may build or refresh the native animation library from the installed game. Let that finish before browsing all the tricks. A DLL-only update keeps your animations, packs and settings.
+1. Install **ReSkate 2.1.2** from its [release](https://github.com/Dingo-Shenanigans/ReSkate/releases/tag/v2.1.2) and start it once the normal way, so it is set up and up to date.
+2. In the launcher, open **Settings > LAUNCHER** and turn **Install ReSkate updates** off. While it is on, the launcher puts the official `ReSkate.dll` back.
+3. Close the launcher and the game.
+4. Open your ReSkate folder (the one with `Skate.exe` and `ReSkateLauncher.exe`). Back up `ReSkate.dll`, and your `ReSkate.Tricks` folder if you already have one.
+5. Download `ReSkate.dll` from the [latest Studio release](https://github.com/FourthStudio/ReSkate-Animator-Studio/releases) and put it in that folder, replacing the old one.
+6. Start the game from `ReSkateLauncher.exe` as usual. Once it has loaded it says **Modified build: AnimatorStudio**. Press **F8** (or hold **L3 + R3**) to open the studio.
 
-If no Studio release is published yet, use the maintainer-provided candidate. GitHub Actions artifacts require access to this repository and are temporary; they are not permanent public download links. A complete tester ZIP, when supplied, has its own installation instructions and includes no game installation.
+On the first start the studio builds its trick library from your own game: about a minute and 1.6 GB, and the game's files are only read, never changed. **TRICKS** shows how far it has got.
+
+**Updating the studio:** close the game and replace `ReSkate.dll` with the new one. Your tricks, packs and settings in `ReSkate.Tricks` stay.
+
+**Going back to the official ReSkate:** turn **Install ReSkate updates** back on and start the launcher: it puts the official files back by itself (or copy your backed-up `ReSkate.dll` back). Your `ReSkate.Tricks` folder is kept.
 
 ## Make your first custom trick
 
@@ -41,13 +46,13 @@ If no Studio release is published yet, use the maintainer-provided candidate. Gi
 - **Exact stance** uses the authored leading-foot and fakie combination. **Front foot** can mirror variants when the other foot leads. Make separate normal, fakie, switch and switch-fakie versions when each should have its own style.
 - **ANY pop** can generate low/mid/high versions in memory. A single-pop trick can supply fallback versions where no selected trick covers another height. Use **COPY TO LOW, MID AND HIGH** to edit those versions separately.
 
-Editor shortcuts can be changed under **SETTINGS Ã¢â€ â€™ STUDIO Ã¢â€ â€™ EDITOR KEYS**. A trick can override the global crossfade through its own settings.
+Editor shortcuts can be changed under **SETTINGS > STUDIO > EDITOR KEYS**. A trick can override the global crossfade through its own settings.
 
 ## Market and sharing
 
 Browse and preview animation packs in **MARKET**. Install a pack, then add it to an enabled playlist to use it in game.
 
-To publish your own pack, open **MARKET Ã¢â€ â€™ ACCOUNT / SIGN IN**, enter your Thunderstore team name and its service account token, and link the team. Publish from the pack's sharing controls. No token is needed to browse or install packs.
+To publish your own pack, open **MARKET > ACCOUNT / SIGN IN**, enter your Thunderstore team name and its service account token, and link the team. Publish from the pack's sharing controls. No token is needed to browse or install packs.
 
 The token is stored in `ReSkate.Tricks/market/account.key`, encrypted with Windows DPAPI for that Windows user. `account.json` stores the team name. If the token was deleted or cannot be read after moving PCs, sign out and link the team again. Never include account files when distributing a DLL or pack.
 
@@ -81,7 +86,7 @@ Deleting your own pack keeps its tricks. Deleting an imported pack recycles unsh
 
 ## Report a problem
 
-Use **SETTINGS Ã¢â€ â€™ STUDIO Ã¢â€ â€™ REPORT A BUG** and attach the resulting ZIP, with the trick name, pop, stance, and whether the problem occurs in the preview, gameplay, or both. Include whether you were offline or online.
+Use **SETTINGS > STUDIO > REPORT A BUG** and attach the resulting ZIP, with the trick name, pop, stance, and whether the problem occurs in the preview, gameplay, or both. Include whether you were offline or online.
 
 The ZIP is created locally; sending it is your choice. It contains recent diagnostics, relevant animation data, settings, build details and the end of the game log. Standard export does not collect the market's `account.key`. ReSkate's automatic crash reporting is separate: control **Send crash reports** in launcher settings, or use `RESKATE_CRASH_REPORTING=0`.
 
@@ -102,4 +107,8 @@ See the [Studio implementation notes](contrib/animator-studio.md), [repository s
 
 Built on [ReSkate](https://github.com/Dingo-Shenanigans/ReSkate) and its contributors' work. Third-party dependencies and fonts retain their licenses; see [External/README.md](External/README.md).
 
-Project source is licensed under [GPL-3.0](LICENSE). The license does not grant rights to skate. or EA content. Parts of the code and documentation were developed with AI coding assistance and reviewed by the project maintainers.
+**Built by** 22sh, Fourth Studio, Norms and Steez.
+
+**THE CREW** (testing): leaf.bro, Setsu, renzoh., smonk, philsteezy, Heatz, Bonksz and Kanga.
+
+Project source is licensed under [GPL-3.0](LICENSE). The license does not grant rights to skate. or EA content.
