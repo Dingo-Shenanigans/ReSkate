@@ -1,6 +1,7 @@
 #include "item_browser.h"
 #include "item_origins.h"
 #include "Engine/Core/Platform/path_text.h"
+#include "Engine/Core/Platform/user_data_paths.h"
 #include "local_customization_runtime.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Core/Log/logging.h"
@@ -92,7 +93,10 @@ struct Favorites {
         if (loaded) return;
         loaded = true;
         std::array<wchar_t, 32768> buffer{};
-        if (const auto length = GetEnvironmentVariableW(L"RESKATE_FAVORITES_FILE", buffer.data(), static_cast<DWORD>(buffer.size()));
+        // A separate user-data root keeps its own favourites, whatever RESKATE_FAVORITES_FILE says.
+        if (const auto isolated = user_data::override_root()) {
+            file = *isolated / L"ReSkate.favorites.json";
+        } else if (const auto length = GetEnvironmentVariableW(L"RESKATE_FAVORITES_FILE", buffer.data(), static_cast<DWORD>(buffer.size()));
             length && length < buffer.size()) {
             file = std::wstring(buffer.data(), length);
         } else {

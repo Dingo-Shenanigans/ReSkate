@@ -1,4 +1,5 @@
 #include "replay_keyframes.h"
+#include "Engine/Core/Platform/user_data_paths.h"
 #include "replay_curve.h"
 #include "replay_settings.h"
 #include "Engine/Core/Hooks/hooks.h"
@@ -237,12 +238,8 @@ std::string behaviour_name(std::size_t index) { return index < behaviours - 1 ? 
 std::string subject_name(std::size_t index) { return index < subjects - 1 ? std::to_string(index) : "other"; }
 
 std::filesystem::path settings_path() {
-    PWSTR raw{};
-    std::filesystem::path result;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &raw)) && raw)
-        result = std::filesystem::path(raw) / L"ReSkate" / L"KeySmooth.settings";
-    if (raw) CoTaskMemFree(raw);
-    return result;
+    // Empty, as when the folder lookup failed, if the user-data folder cannot be used.
+    try { return user_data::known_folder_root() / L"KeySmooth.settings"; } catch (...) { return {}; }
 }
 void load_settings() {
     try {
