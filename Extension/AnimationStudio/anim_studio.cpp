@@ -25,6 +25,7 @@
 #include "Extension/Profile/runtime_internal.h"
 #include "native_library.h"
 #include "marketplace.h"
+#include "pack_file_transaction.h"
 #include <Windows.h>
 #include <shellapi.h>
 #include <bcrypt.h>
@@ -1230,13 +1231,15 @@ std::map<std::string, std::string> read_locked_clips() {
     } catch (...) {}
     return out;
 }
-void remember_locked_clips(const std::map<std::string, std::string>& more) {
+void remember_locked_clips(const std::map<std::string, std::string>& more, PackFileTransaction* transaction = nullptr) {
     if (more.empty()) return;
     auto all = read_locked_clips();
     for (const auto& [hash, key] : more) all[hash] = key;
     Json clips = Json::object();
     for (const auto& [hash, key] : all) clips[hash] = key;
-    write_preset_file(locked_clips_file(), Json{{"format", "animator-locked-clips"}, {"clips", std::move(clips)}}.dump(1));
+    const auto text = Json{{"format", "animator-locked-clips"}, {"clips", std::move(clips)}}.dump(1);
+    if (transaction) transaction->write(locked_clips_file(), text);
+    else write_preset_file(locked_clips_file(), text);
 }
 // A saved clip's hash, kept while the file is the same.
 std::string clip_hash(const std::filesystem::path& path) {
@@ -6980,13 +6983,6 @@ bool delete_pack(const std::string& name, std::string& message) {
                                    std::any_of(s.pack_drafts.begin(), s.pack_drafts.end(), [&](const auto& d) { return d.first != name && d.second.has(member); });
             (elsewhere ? kept : tricks).push_back(member);
         }
-        std::filesystem::remove(pack_file(name));
-        std::error_code gone;
-        std::filesystem::remove(pack_thumbnail_file(name), gone);
-        auto names = pack_names_on();
-        if (std::erase(names, name)) write_pack_names_on(names);
-        s.pack_drafts.erase(name);
-        if (s.open_pack == name) s.open_pack.clear();
         std::vector<std::filesystem::path> paths;
         const auto folder = library_folder();
         for (const auto& trick : tricks) {
@@ -6996,9 +6992,14 @@ bool delete_pack(const std::string& name, std::string& message) {
             paths.push_back(folder / (safe + ".json"));
             paths.push_back(folder / (safe + ".clip"));
         }
-        const bool binned = to_recycle_bin(paths);
-        if (!binned)
-            for (const auto& trick : tricks) remove_saved_files(file_safe(trick)); // the shell would not: deleted for good
+        recycle_pack_files(paths, to_recycle_bin);
+        std::filesystem::remove(pack_file(name));
+        std::error_code gone;
+        std::filesystem::remove(pack_thumbnail_file(name), gone);
+        auto names = pack_names_on();
+        if (std::erase(names, name)) write_pack_names_on(names);
+        s.pack_drafts.erase(name);
+        if (s.open_pack == name) s.open_pack.clear();
         // Out of every playlist: the pack, and its tricks that are gone.
         auto lists = read_playlists();
         bool listed = false;
@@ -7011,7 +7012,7 @@ bool delete_pack(const std::string& name, std::string& message) {
         message = "Deleted the pack " + name +
                   (tricks.empty() ? std::string(".")
                                   : " and its " + count(tricks.size(), "trick", "tricks") +
-                                        (binned ? " (in the Recycle Bin, to get back from there)." : ".")) +
+                                        " (in the Recycle Bin, to get back from there).") +
                   (kept.empty() ? std::string{} : " " + count(kept.size(), "trick stays", "tricks stay") + ": in another pack too.");
         packs_changed_locked(s, message);
         return true;
@@ -7492,8 +7493,12 @@ bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips
                 const std::vector<std::uint8_t> clip(pair.second.begin(), pair.second.end());
                 if (clip_from_bytes(clip).joints != skeleton_joints) throw std::runtime_error(name + " is for another skeleton");
             }
-            // An update of a pack installed before: the old version's tricks go first (those made elsewhere that no other
-            // pack has), so the new ones take their names instead of being added beside them as copies.
+            PackFileTransaction transaction(folder);
+            std::set<std::string> removed_members;
+            std::vector<std::string> new_packs;
+            std::size_t imported = 0, renamed_now = 0;
+            // Queue obsolete imported members for removal. Their names are reusable, but their files stay installed
+            // until the complete replacement and its ownership metadata are ready to commit.
             std::optional<PresetPack> replaced;
             if (!replace.empty() && replace == file_safe(replace) && pack_files.size() == 1 && std::filesystem::exists(pack_file(replace), error)) {
                 replaced = s.pack_drafts.contains(replace) ? s.pack_drafts.at(replace) : read_pack_file(replace);
@@ -7506,7 +7511,10 @@ bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips
                     try {
                         if (!locked_key(from_json(read_whole(saved_json(name))).maker_key)) continue; // made here: yours
                     } catch (...) { continue; }
-                    remove_saved_files(file_safe(name));
+                    const auto safe = file_safe(name);
+                    for (const auto& file : {folder / safe / (safe + ".json"), folder / safe / (safe + ".clip"),
+                                             folder / (safe + ".json"), folder / (safe + ".clip")}) transaction.remove(file);
+                    removed_members.insert(name);
                 }
             }
             // A name already taken by a different animation gets the next free variation, and the pack
@@ -7521,7 +7529,7 @@ bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips
                     const bool zip_own = target != name && found.contains(target);
                     if (!claimed.contains(target) && !zip_own && !reserved_name(target)) {
                         const auto json = saved_json(target), clip = saved_clip(target);
-                        if (!std::filesystem::exists(json, error)) break;
+                        if (transaction.removing(json) || !std::filesystem::exists(json, error)) break;
                         if (read_whole(json) == pair.first && std::filesystem::exists(clip, error) && read_whole(clip) == pair.second) break; // already here
                     }
                     target = variation_name(name, n);
@@ -7538,7 +7546,7 @@ bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips
             std::map<std::string, std::string> made_elsewhere;
             for (const auto& [name, pair] : found) {
                 const auto& target = rename[name];
-                if (target != name) ++renamed;
+                if (target != name) ++renamed_now;
                 auto json = pair.first;
                 auto animation = from_json(json);
                 const bool keyless = animation.maker_key.empty() && !zip_key.empty();
@@ -7549,12 +7557,11 @@ bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips
                     json = to_json(animation);
                 }
                 if (locked_key(animation.maker_key) && !animation.editable) made_elsewhere[sha256_hex(pair.second)] = animation.maker_key;
-                write_whole(folder / target / (target + ".json"), json);
-                write_whole(folder / target / (target + ".clip"), pair.second);
-                upgrade_saved(folder / target / (target + ".json"));
-                ++animations;
+                transaction.write(folder / target / (target + ".json"), json);
+                transaction.write(folder / target / (target + ".clip"), pair.second);
+                ++imported;
             }
-            remember_locked_clips(made_elsewhere);
+            remember_locked_clips(made_elsewhere, &transaction);
             for (auto& [pack_name, text] : pack_files) {
                 auto pack = read_pack_json(Json::parse(text));
                 pack.published.clear(); // its maker's, not this PC's
@@ -7582,9 +7589,8 @@ bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips
                     for (const auto& [slot, names] : replaced->slots)
                         for (const auto& name : names) {
                             std::error_code missing;
-                            if (!pack.has(name) && std::filesystem::exists(saved_json(name), missing)) pack.slots[slot].push_back(name);
+                            if (!pack.has(name) && !removed_members.contains(name) && std::filesystem::exists(saved_json(name), missing)) pack.slots[slot].push_back(name);
                         }
-                    s.pack_drafts.erase(replace);
                 } else {
                     if (reserved_pack_name(target)) target = variation_name(target, 2);
                     for (unsigned n = 2; std::filesystem::exists(folder / L"presets" / (target + ".json"), error); ++n) {
@@ -7593,12 +7599,19 @@ bool import_zips_locked(State& s, const std::vector<std::filesystem::path>& zips
                     }
                 }
                 pack.name = target;
-                if (made_packs) made_packs->push_back(target);
-                write_preset_file(folder / L"presets" / (target + ".json"), pack_json(pack).dump(2));
+                new_packs.push_back(target);
+                transaction.write(folder / L"presets" / (target + ".json"), pack_json(pack).dump(2));
                 if (const auto picture = pack_pictures.find(pack_name); picture != pack_pictures.end())
-                    write_preset_file(pack_thumbnail_file(target), picture->second);
-                ++packs;
+                    transaction.write(pack_thumbnail_file(target), picture->second);
             }
+            transaction.commit();
+            if (replaced) s.pack_drafts.erase(replace);
+            if (made_packs) made_packs->insert(made_packs->end(), new_packs.begin(), new_packs.end());
+            animations += imported;
+            packs += new_packs.size();
+            renamed += renamed_now;
+            // Upgrade only committed files; a failed update never edits the installed version.
+            for (const auto& [original, target] : rename) upgrade_saved(folder / target / (target + ".json"));
             // Out of the way, so the next Import does not take it in again.
             if (move_done) {
                 std::filesystem::create_directories(inbox / L"imported", error);

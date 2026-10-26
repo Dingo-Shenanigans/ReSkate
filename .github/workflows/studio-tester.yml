@@ -11,7 +11,7 @@ on:
       full_library:
         description: Package the complete tester ZIP after checks pass
         type: boolean
-        default: true
+        default: false
 
 permissions:
   contents: read
@@ -90,7 +90,7 @@ jobs:
       - name: Build runtime, launcher and animation checks
         run: |
           . ./contrib/enter-msvc.ps1
-          cmake --build build/ci-windows --config Release --target dingosdk_runtime dingosdk_launcher dingosdk_animation_studio_tests dingosdk_arm_reach_tests dingosdk_carry_tests dingosdk_anim_graph_probe dingosdk_plugin_tests dingosdk_trick_watch_tests dingosdk_board_material_tests --parallel 2
+          cmake --build build/ci-windows --config Release --target dingosdk_runtime dingosdk_launcher dingosdk_animation_studio_tests dingosdk_studio_pack_file_tests dingosdk_arm_reach_tests dingosdk_carry_tests dingosdk_anim_graph_probe dingosdk_plugin_tests dingosdk_trick_watch_tests dingosdk_board_material_tests --parallel 2
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Show C++ cache statistics
         if: always()
@@ -110,7 +110,7 @@ jobs:
           path: build/ci-windows/Release/ReSkate.dll
           archive: false
           if-no-files-found: error
-          retention-days: 3
+          retention-days: 1
       - name: Fetch pinned complete native library
         if: github.event_name == 'workflow_dispatch' && inputs.full_library
         env:
@@ -149,7 +149,7 @@ jobs:
           path: artifacts/ReSkateStudio-Test-*.zip
           archive: false
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 1
       - name: Tester download summary
         if: success() && steps.tester.outputs.artifact-url != ''
         env:
@@ -167,4 +167,4 @@ jobs:
             build/ci-windows/Testing/Temporary/
             build/ci-windows/CMakeFiles/CMakeConfigureLog.yaml
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: 1

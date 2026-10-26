@@ -304,6 +304,8 @@ inline void select_playlist(std::span<Preset> presets, std::span<const PresetPac
     // A pack's slot on Alternate takes turns in a Fixed playlist too (a pack set to cycle played one trick since packs play
     // from playlists only, which start out Fixed).
     std::set<std::string> taking_turns;
+    std::map<std::string, std::size_t> source_of;
+    std::size_t source = 0;
     const auto alternates = [](const PresetPack& pack, const std::string& name) {
         for (const auto& [slot, names] : pack.slots)
             if (std::find(names.begin(), names.end(), name) != names.end()) {
@@ -317,11 +319,13 @@ inline void select_playlist(std::span<Preset> presets, std::span<const PresetPac
             if (p.name != name || p.included) continue;
             p.included = true;
             p.order = order++;
+            source_of[p.name] = source;
             if (pack && !pack->pop_rule.empty()) p.pack_pop = effective_pop(*pack, p.pop);
             if (pack && alternates(*pack, name)) taking_turns.insert(name);
         }
     };
     for (const auto& entry : playlist) {
+        ++source;
         const auto* pack = entry.pack.empty() ? nullptr : find_pack(entry.pack);
         if (!entry.animation.empty()) {
             if (pack && pack->off.contains(entry.animation)) continue;
@@ -339,14 +343,21 @@ inline void select_playlist(std::span<Preset> presets, std::span<const PresetPac
         if (!p.included) continue;
         const auto pop = p.pack_pop ? *p.pack_pop : p.pop;
         const auto key = preset_slot(p.trick, pop) + stance_part(p);
-        if (mode != PlaylistMode::fixed || taking_turns.contains(p.name)) {
+        if (mode != PlaylistMode::fixed) {
             p.active = true;
             continue;
         }
         auto& picked = first[key];
         if (!picked || p.order < picked->order) picked = &p;
     }
-    for (auto& [key, p] : first) p->active = true;
+    // Pick the highest playlist entry first. Alternate expands only that entry's slot, not lower packs.
+    for (auto& p : presets) {
+        if (!p.included || mode != PlaylistMode::fixed) continue;
+        const auto pop = p.pack_pop ? *p.pack_pop : p.pop;
+        const auto* winner = first.at(preset_slot(p.trick, pop) + stance_part(p));
+        p.active = &p == winner || (taking_turns.contains(winner->name) && taking_turns.contains(p.name) &&
+                                   source_of.at(p.name) == source_of.at(winner->name));
+    }
 }
 inline void select_presets(std::span<Preset> presets, const std::optional<PresetPack>& pack) {
     if (pack) select_presets(presets, std::span<const PresetPack>(&*pack, 1));

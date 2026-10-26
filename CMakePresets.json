@@ -22,7 +22,7 @@
         "CMAKE_CXX_COMPILER": "cl",
         "DINGOSDK_VERSION": "2.1.2",
         "DINGOSDK_MOD_ID": "AnimatorStudio",
-        "DINGOSDK_MOD_VERSION": "1.0.8+reskate.2.1.2",
+        "DINGOSDK_MOD_VERSION": "1.0.9+reskate.2.1.2",
         "DINGOSDK_BUILD_ANIMATION_STUDIO_TESTS": "ON",
         "DINGOSDK_BUILD_PLUGIN_TESTS": "ON",
         "DINGOSDK_LAUNCHER_AUTO_UPDATE": "OFF",
