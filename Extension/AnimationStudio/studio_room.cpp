@@ -42,13 +42,17 @@ constexpr std::uint32_t navigation_changed_event = 0xcb03d3ec;
 // UI manager -> model manager.
 constexpr std::uintptr_t ui_model_manager = 0x140;
 
-// The menu's tab bar has up to seven tabs; RB goes to the next one.
-constexpr int max_tab_presses = 7;
+// The menu's tab bar has up to seven tabs; RB goes to the next one. (Ten presses, for a menu with a page or two more.)
+constexpr int max_tab_presses = 10;
 constexpr std::uint64_t tab_press_ms = 400, tap_ms = 150, tap_end_ms = 400;
 constexpr std::uint64_t post_retry_ms = 250, step_deadline_ms = 4000;
 constexpr std::uint64_t page_settle_ms = 300, queue_settle_ms = 1500;
 constexpr std::uint64_t tab_wait_ms = 1500, skater_wait_ms = 10000;
 constexpr std::uint64_t open_wait_ms = 30000, leave_wait_ms = 2000;
+// The walk back ends by then whatever happens: without a skater ready (a bail's respawn, a load) it cannot step, and the
+// room is left behind rather than waited on. (It waited for good, the loading screen up, and the room did not open
+// again: as ReSkate's own character room since 2.1.2.)
+constexpr std::uint64_t leave_give_up_ms = 8000;
 constexpr int max_scans = 3;
 constexpr std::uint64_t scan_gap_ms = 15000;
 // The way back to the world: the Skaters page's Back closes the menu. ToggleMenu is for a menu that is still open.
@@ -75,7 +79,9 @@ struct State {
     std::uint64_t page_shown_at{};
     int leave_steps_left{};
     bool leave_pressed{};
-    std::uint64_t leave_step_deadline{};
+    std::uint64_t leave_step_deadline{}, leave_deadline{};
+    // Once there: when the room was last seen on screen (the menu on its Skaters page), and checked.
+    std::uint64_t room_seen_at{}, next_room_check{};
     std::string failure;
 };
 State& state() { static auto* value = new State; return *value; }
@@ -248,6 +254,7 @@ void step_way(std::uintptr_t base, State& s, std::uint64_t now) {
     const auto settled = [&] { return !navigation_pending(base) || now > s.way_started + queue_settle_ms; };
     if (skaters && room_skater_seen()) {
         s.way = Way::none;
+        s.room_seen_at = now;
         s.phase.store(Phase::arrived, std::memory_order_release);
         logging::log(Level::info, Channel::skater, "Animation Studio: the room is open (the menu's Skaters page).");
     } else if (now > s.open_deadline) fail(s, "it took too long");
@@ -337,6 +344,7 @@ void leave() noexcept {
     watch_room(false);
     s.leave_steps_left = static_cast<int>(way_back.size());
     s.leave_pressed = false;
+    s.leave_deadline = GetTickCount64() + leave_give_up_ms;
     s.phase.store(Phase::leaving, std::memory_order_release);
 }
 Phase phase() noexcept { return state().phase.load(std::memory_order_acquire); }
@@ -363,6 +371,12 @@ void tick(std::uintptr_t base, std::uintptr_t skater, bool ready, bool prepare) 
             s.skater = skater;
             s.skater_since = GetTickCount64();
         }
+        if (s.phase.load(std::memory_order_acquire) == Phase::leaving && now >= s.leave_deadline) {
+            s.leave_steps_left = 0;
+            s.leave_pressed = false;
+            s.phase.store(Phase::idle, std::memory_order_release);
+            return;
+        }
         if (!ready || !base) return;
         const auto p = s.phase.load(std::memory_order_acquire);
         // The scan is not cheap: for a walk, or once a map ahead of one, a few times at most.
@@ -377,6 +391,19 @@ void tick(std::uintptr_t base, std::uintptr_t skater, bool ready, bool prepare) 
         if (p == Phase::leaving) {
             s.phase.store(Phase::idle, std::memory_order_release);
             return;
+        }
+        // There, the player can still close the game's menu (Esc) or go to another of its pages: the room is gone then, and
+        // the skater must not be drawn where it was.
+        if (p == Phase::arrived && now >= s.next_room_check) {
+            s.next_room_check = now + 250;
+            if (multiplayer::sample_game_ui_state(base).in_menu && skaters_page(menu_page(base))) s.room_seen_at = now;
+            else if (now > s.room_seen_at + 750) {
+                watch_room(false);
+                s.failure = "The studio's room closed: the game's menu left the Skaters page.";
+                s.phase.store(Phase::failed, std::memory_order_release);
+                logging::log(Level::info, Channel::skater, "Animation Studio: {}", s.failure);
+                return;
+            }
         }
         if (s.way != Way::none) step_way(base, s, now);
     } catch (...) {
