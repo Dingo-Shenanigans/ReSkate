@@ -2215,14 +2215,18 @@ void every_stance_finds_its_recording() {
     const auto pick = [](std::vector<StanceCandidate> c, LiveStance live, bool front_foot) { return choose_stance_variants(c, live, front_foot); };
     const StanceCandidate normal_left{false, false, 0}, normal_right{true, false, 0}, fakie_left{false, true, 0}, fakie_right{true, true, 0};
     const std::vector<StanceCandidate> all{normal_left, normal_right, fakie_left, fakie_right};
-    // With a recording for every case, each live stance gets its own one, unmirrored, in both modes.
+    // With a recording for every case, exact stance gives each live stance its own one, unmirrored. Front foot takes
+    // both of the same fakie state, its own and the other foot's (mirrored), so shuffle goes round them.
     struct Case { LiveStance live; std::size_t expected; const char* what; };
     for (const auto& c : {Case{{false, false}, 0, "regular normal"}, Case{{true, false}, 1, "regular switch / goofy normal"},
-                          Case{{false, true}, 2, "regular fakie"}, Case{{true, true}, 3, "switch fakie / goofy fakie"}})
-        for (const bool front : {true, false}) {
-            const auto got = pick(all, c.live, front);
-            check(got.size() == 1 && got[0] == c.expected && !plays_mirrored(all[got[0]], c.live), c.what);
-        }
+                          Case{{false, true}, 2, "regular fakie"}, Case{{true, true}, 3, "switch fakie / goofy fakie"}}) {
+        const auto exact = pick(all, c.live, false);
+        check(exact.size() == 1 && exact[0] == c.expected && !plays_mirrored(all[exact[0]], c.live), c.what);
+        const auto front = pick(all, c.live, true);
+        check(front.size() == 2 && std::find(front.begin(), front.end(), c.expected) != front.end() &&
+                  all[front[0]].fakie == all[front[1]].fakie,
+              "Front foot: both of its fakie state, mirrored or not, shuffle together");
+    }
     // Only a regular normal recording: front foot plays it everywhere (mirrored when the right foot leads),
     // exact stance only riding the way it was made.
     const std::vector<StanceCandidate> one{normal_left};
@@ -2243,7 +2247,9 @@ void every_stance_finds_its_recording() {
     const std::vector<StanceCandidate> old{{false, std::nullopt, 0}};
     check(pick(old, {false, false}, false).size() == 1 && pick(old, {false, true}, false).empty(), "Old recordings count as rolling forward");
     // Equally good recordings all come back, so variants cycle between them.
-    check(pick({normal_left, normal_left, normal_right}, {false, false}, true).size() == 2, "Equally good recordings cycle");
+    check(pick({normal_left, normal_left, normal_right}, {false, false}, true).size() == 3,
+          "Front foot: all of them cycle, the other foot's too (mirrored)");
+    check(pick({normal_left, normal_left, normal_right}, {false, false}, false).size() == 2, "Exact stance: those on the leading foot cycle");
 }
 // A fixed pack keeps one recording per trick, pop and stance - and a fakie one is its own, so both play.
 void fakie_recordings_have_their_own_slot() {

@@ -192,9 +192,11 @@ struct LiveStance {
 };
 // The recordings that may play now, best first: exact stance only takes one made on the foot that leads now
 // and in the same fakie state, and never mirrors it. Front foot takes any, the closest first: the pop the game
-// graded, then the same fakie state (a fakie recording carries the game's fakie upper body), then the same
-// lead foot (one made on the other foot is mirrored, which is exact). Only the best group is returned, so
-// cycling variants alternates between equally good recordings.
+// graded, then the same fakie state (a fakie recording carries the game's fakie upper body). The foot it was made
+// leading with does not part them: one made on the other foot plays mirrored, which is exact, and shuffle and In
+// turns go round all of them. (The same lead foot came first too until 2026-10-26: a playlist of tricks made in
+// different stances shuffled only those made on the foot that led, often one - "shuffle does not shuffle".)
+// Only the best group is returned, so cycling variants alternates between equally good recordings.
 inline std::vector<std::size_t> choose_stance_variants(std::span<const StanceCandidate> candidates, LiveStance live, bool front_foot) {
     std::vector<std::size_t> out;
     int best_pop = 1 << 20, best_tier = 1 << 20;
@@ -203,7 +205,7 @@ inline std::vector<std::size_t> choose_stance_variants(std::span<const StanceCan
         if (c.pop_rank < 0) continue;
         const bool same_lead = c.leads_right == live.leads_right, same_fakie = c.fakie.value_or(false) == live.fakie;
         if (!front_foot && (!same_lead || !same_fakie)) continue;
-        const int tier = (same_fakie ? 0 : 2) + (same_lead ? 0 : 1);
+        const int tier = same_fakie ? 0 : 1;
         if (c.pop_rank < best_pop || (c.pop_rank == best_pop && tier < best_tier)) {
             out.clear();
             best_pop = c.pop_rank;
