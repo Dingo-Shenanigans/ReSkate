@@ -25,10 +25,10 @@ void open_sign_in(Launcher& launcher, Ui& ui, bool validate) {
 void sign_in_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui) {
     const auto panel = begin_panel("##sign_in_panel", size, ImVec2(S(480), S(520)));
     auto& settings = launcher.settings();
-    panel_title(fonts, "SIGN IN TO STEAM");
+    panel_title(fonts, tr("SIGN IN TO STEAM"));
     ImGui::PushTextWrapPos(0);
-    ImGui::TextDisabled("skate. is downloaded from Steam with DepotDownloader, so the account must own it. "
-                        "Your password is passed straight to Steam and never saved.");
+    ImGui::TextDisabled("%s", tr("skate. is downloaded from Steam with DepotDownloader, so the account must own it. "
+                                 "Your password is passed straight to Steam and never saved."));
     ImGui::PopTextWrapPos();
     ImGui::Spacing();
     const auto start = [&](bool qr) {
@@ -39,31 +39,31 @@ void sign_in_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui)
         ui.sign_in = false;
     };
     push_primary_button();
-    const bool qr = ImGui::Button("SCAN A QR CODE WITH THE STEAM APP", ImVec2(-1, S(46)));
+    const bool qr = ImGui::Button(tr("SCAN A QR CODE WITH THE STEAM APP"), ImVec2(-1, S(46)));
     pop_primary_button();
     if (qr) start(true);
     ImGui::Spacing();
     ImGui::PushFont(fonts.caption);
-    ImGui::TextDisabled("OR SIGN IN WITH YOUR ACCOUNT");
+    ImGui::TextDisabled("%s", tr("OR SIGN IN WITH YOUR ACCOUNT"));
     ImGui::PopFont();
     if (ui.focus) { ImGui::SetKeyboardFocusHere(); ui.focus = false; }
     ImGui::SetNextItemWidth(-1);
-    ImGui::InputTextWithHint("##username", "Steam account name", ui.username.data(), ui.username.size(),
+    ImGui::InputTextWithHint("##username", tr("Steam account name"), ui.username.data(), ui.username.size(),
         ImGuiInputTextFlags_CharsNoBlank);
     ImGui::SetNextItemWidth(-1);
-    const bool entered = ImGui::InputTextWithHint("##password", "Password (empty if remembered)", ui.password.data(),
+    const bool entered = ImGui::InputTextWithHint("##password", tr("Password (empty if remembered)"), ui.password.data(),
         ui.password.size(), ImGuiInputTextFlags_Password | ImGuiInputTextFlags_EnterReturnsTrue);
-    ImGui::Checkbox("Remember me on this PC", &settings.steam_remember);
-    ImGui::Checkbox("Type a Steam Guard code instead of approving in the app", &settings.steam_prefer_code);
+    ImGui::Checkbox(tr("Remember me on this PC"), &settings.steam_remember);
+    ImGui::Checkbox(tr("Type a Steam Guard code instead of approving in the app"), &settings.steam_prefer_code);
     const std::string_view username(ui.username.data());
     const bool valid = !username.empty() && username.find_first_not_of(
         "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_") == std::string_view::npos;
     ImGui::SetCursorPosY(panel.y - S(24) - ImGui::GetFrameHeight());
-    if (ImGui::Button("CANCEL", ImVec2(S(110), 0))) { wipe(ui.password); ui.sign_in = false; }
+    if (ImGui::Button(tr("CANCEL"), ImVec2(S(110), 0))) { wipe(ui.password); ui.sign_in = false; }
     ImGui::SameLine(panel.x - S(28) - S(130));
     ImGui::BeginDisabled(!valid);
     push_primary_button();
-    const bool sign_in = ImGui::Button("SIGN IN", ImVec2(S(130), 0));
+    const bool sign_in = ImGui::Button(tr("SIGN IN"), ImVec2(S(130), 0));
     pop_primary_button();
     if (sign_in || (entered && valid)) start(false);
     ImGui::EndDisabled();
@@ -73,20 +73,20 @@ void sign_in_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui)
 void prompt_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, const update::Prompt& prompt, Ui& ui) {
     const auto panel = begin_panel("##prompt_panel", size, ImVec2(S(440), S(300)));
     const bool password = prompt.kind == update::PromptKind::password;
-    panel_title(fonts, password ? "STEAM PASSWORD" : "STEAM GUARD");
+    panel_title(fonts, password ? tr("STEAM PASSWORD") : "STEAM GUARD");
     ImGui::PushTextWrapPos(0);
-    if (prompt.retry) ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::danger), "That code was incorrect. Try again.");
+    if (prompt.retry) ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::danger), "%s", tr("That code was incorrect. Try again."));
     switch (prompt.kind) {
     case update::PromptKind::password:
-        ImGui::TextDisabled("Enter the password for %s.", launcher.settings().steam_username.c_str());
+        ImGui::TextDisabled("%s", trf("Enter the password for {}.", launcher.settings().steam_username).c_str());
         break;
     case update::PromptKind::authenticator_code:
-        ImGui::TextDisabled("Enter the code shown in the Steam app on your phone (Steam Guard).");
+        ImGui::TextDisabled("%s", tr("Enter the code shown in the Steam app on your phone (Steam Guard)."));
         break;
     case update::PromptKind::email_code: {
         const auto at = prompt.text.find("email at ");
-        ImGui::TextDisabled("Enter the code Steam emailed to %s.",
-            at == std::string::npos ? "you" : prompt.text.c_str() + at + 9);
+        ImGui::TextDisabled("%s", at == std::string::npos ? tr("Enter the code Steam emailed to you.")
+                                  : trf("Enter the code Steam emailed to {}.", prompt.text.c_str() + at + 9).c_str());
         break;
     }
     }
@@ -106,7 +106,7 @@ void prompt_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, const up
     }
     const char* value = password ? ui.password.data() : ui.code.data();
     ImGui::SetCursorPosY(panel.y - S(24) - ImGui::GetFrameHeight());
-    if (ImGui::Button("CANCEL", ImVec2(S(110), 0))) {
+    if (ImGui::Button(tr("CANCEL"), ImVec2(S(110), 0))) {
         wipe(ui.password);
         ui.code.fill(0);
         launcher.answer(std::nullopt);
@@ -114,7 +114,7 @@ void prompt_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, const up
     ImGui::SameLine(panel.x - S(28) - S(130));
     ImGui::BeginDisabled(!*value);
     push_primary_button();
-    const bool proceed = ImGui::Button("CONTINUE", ImVec2(S(130), 0));
+    const bool proceed = ImGui::Button(tr("CONTINUE"), ImVec2(S(130), 0));
     pop_primary_button();
     if ((proceed || submit) && *value) {
         launcher.answer(std::string(value));
@@ -137,10 +137,10 @@ void qr_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, const std::v
     const float code = module * columns;
     const float quiet = module * 3;
     const auto panel = begin_panel("##qr_panel", size, ImVec2(S(440), code + quiet * 2 + S(200)));
-    panel_title(fonts, "SCAN WITH STEAM");
+    panel_title(fonts, tr("SCAN WITH STEAM"));
     ImGui::PushTextWrapPos(0);
-    ImGui::TextDisabled("Open the Steam app on your phone, tap the shield (Steam Guard) and scan this code. "
-                        "The account must own skate.");
+    ImGui::TextDisabled("%s", tr("Open the Steam app on your phone, tap the shield (Steam Guard) and scan this code. "
+                                 "The account must own skate."));
     ImGui::PopTextWrapPos();
     auto* draw = ImGui::GetWindowDrawList();
     const auto window = ImGui::GetWindowPos();
@@ -156,7 +156,7 @@ void qr_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, const std::v
             }
     ImGui::SetCursorPosY(panel.y - S(24) - ImGui::GetFrameHeight());
     ImGui::SetCursorPosX(panel.x - S(28) - S(110));
-    if (ImGui::Button("CANCEL", ImVec2(S(110), 0))) launcher.cancel();
+    if (ImGui::Button(tr("CANCEL"), ImVec2(S(110), 0))) launcher.cancel();
     ImGui::End();
 }
 
@@ -164,21 +164,21 @@ void qr_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, const std::v
 // menu as Unknown Player wondering why multiplayer is missing.
 void steam_offline_window(const Fonts& fonts, ImVec2 size, Ui& ui) {
     const auto panel = begin_panel("##steam_offline_panel", size, ImVec2(S(440), S(300)));
-    panel_title(fonts, "STEAM IS NOT RUNNING");
+    panel_title(fonts, tr("STEAM IS NOT RUNNING"));
     ImGui::PushTextWrapPos(0);
-    ImGui::TextDisabled("Steam is not running, or no account is signed in. PLAY still works, but Skate starts in "
-                        "offline mode: you play as Unknown Player and multiplayer is hidden.");
+    ImGui::TextDisabled("%s", tr("Steam is not running, or no account is signed in. PLAY still works, but Skate starts in "
+                                 "offline mode: you play as Unknown Player and multiplayer is hidden."));
     ImGui::Spacing();
-    ImGui::TextDisabled("To play as your own account, start Steam, sign in, and open ReSkate again.");
+    ImGui::TextDisabled("%s", tr("To play as your own account, start Steam, sign in, and open ReSkate again."));
     if (launcher_app::under_wine()) {
         ImGui::Spacing();
-        ImGui::TextDisabled("On Linux or macOS, start skate. from your Steam library with ReSkate's launch option "
-                            "(see the README), so the launcher can find Steam's account.");
+        ImGui::TextDisabled("%s", tr("On Linux or macOS, start skate. from your Steam library with ReSkate's launch option "
+                                     "(see the README), so the launcher can find Steam's account."));
     }
     ImGui::PopTextWrapPos();
     ImGui::SetCursorPosY(panel.y - S(24) - ImGui::GetFrameHeight());
     ImGui::SetCursorPosX(panel.x - S(28) - S(110));
-    if (ImGui::Button("OK", ImVec2(S(110), 0))) ui.steam_offline = false;
+    if (ImGui::Button(tr("OK"), ImVec2(S(110), 0))) ui.steam_offline = false;
     ImGui::End();
 }
 

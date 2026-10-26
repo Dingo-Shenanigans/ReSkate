@@ -30,8 +30,8 @@ std::string game_data_build(const launcher::SiblingPaths& paths);
 // data's build cannot be told and every file is there.
 bool game_data_mismatched(const launcher::SiblingPaths& paths);
 // Advice for a PC whose RAM and page file are too small for the game with mods; empty when they
-// are enough.
-std::string memory_advice();
+// are enough. In English for the log, or in the player's language (language.h) to show.
+std::string memory_advice(bool translated = false);
 // What is wrong with the game's data files against the supported build's list, for the log; empty
 // when every file is there, of its size, and on this PC.
 std::string game_data_damage(const launcher::SiblingPaths& paths);
