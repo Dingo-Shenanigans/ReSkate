@@ -9903,9 +9903,13 @@ float panel_slider(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, flo
     d->AddCircleFilled(ImVec2(at.x + width * shown, at.y), (hot ? 8.5f : 7.0f) * k, enabled ? white : IM_COL32(255, 255, 255, 50), 20);
     return out;
 }
-// The pill at the top right of the view opens it: the trick's own Crossfade (OWN on: the main one in SETTINGS is skipped
-// for it), CATCH HOLD (off big drops, where the extra air goes) and DROP PREVIEW (the trick played here as off a drop that
-// high, its catch slowed as the game would). Closed, nothing of it covers the skater.
+// The catch's tools - CATCH on the timeline, CATCH HOLD and DROP PREVIEW in THIS TRICK - are hidden while the game does
+// not slow a trick through its catch off a drop (anim_studio.cpp air_corrections, off since 2026-10-25): they showed a
+// slow-down the game did not do. Their logic and the saved values stay; they come back with the slow-down.
+bool show_catch_tools = false; // (not constexpr: the code it gates is kept compiled)
+// The pill at the top right of the view opens it: the trick's stance, its own Crossfade (OWN on: the main one in SETTINGS
+// is skipped for it), CATCH HOLD (off big drops, where the extra air goes) and DROP PREVIEW (the trick played here as off a
+// drop that high, its catch slowed as the game would). Closed, nothing of it covers the skater.
 void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 corner) {
     auto& u = ui();
     const float k = f.k;
@@ -9919,7 +9923,7 @@ void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 co
     }
     if (!u.trick_panel) return;
     const float w = 420 * k, row = 76 * k;
-    const ImVec2 a(corner.x - w, pa.y + psize.y + 8 * k), b(corner.x, a.y + 16 * k + 4 * row);
+    const ImVec2 a(corner.x - w, pa.y + psize.y + 8 * k), b(corner.x, a.y + 16 * k + (show_catch_tools ? 4 : 2) * row);
     skate_theme::rough_rect(d, ImVec2(a.x + 5 * k, a.y + 5 * k), ImVec2(b.x + 5 * k, b.y + 5 * k), IM_COL32(0, 0, 0, 120), 75, k);
     skate_theme::rough_rect(d, a, b, IM_COL32(16, 17, 20, 236), 77, k);
     const float x = a.x + 20 * k, bw = w - 40 * k;
@@ -9966,7 +9970,7 @@ void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 co
         y += row;
     }
     // CATCH HOLD.
-    {
+    if (show_catch_tools) {
         const bool can = v.catch_air && v.catch_at >= 0;
         head("CATCH HOLD", !v.catch_air ? "NO AIR" : v.catch_at < 0 ? "NO CATCH" : std::format("{:.0f}%", v.catch_hold * 100), can, x + bw);
         bool began = false;
@@ -9977,7 +9981,7 @@ void trick_panel(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 co
         y += row;
     }
     // DROP PREVIEW.
-    {
+    if (show_catch_tools) {
         const bool can = v.catch_air && v.catch_at >= 0;
         const std::string value = !can ? "NEEDS A CATCH" : v.drop_preview < 0.05f ? "OFF"
                                                                                    : std::format("{:.1f} m   +{:.2f} s AIR", v.drop_preview, std::max(0.0f, v.drop_extra));
@@ -10701,7 +10705,7 @@ void timeline(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 at, I
     // its landing. The studio finds it (AUTO CATCH); drag the flag to the frame to hold, double-click it for the
     // studio's again. Its flag hangs under the frame numbers, out of the brackets' way, pointing back into the air.
     bool on_catch = false;
-    if (v.has_clip && v.catch_air) {
+    if (show_catch_tools && v.has_clip && v.catch_air) {
         auto& io = ImGui::GetIO();
         const bool none = v.catch_at < 0;
         const float t = none ? std::round((v.takeoff + (v.landing - v.takeoff) * 0.6f) * fps) / fps : v.catch_at;
