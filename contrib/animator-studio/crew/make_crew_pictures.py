@@ -30,7 +30,7 @@ CREW = {
     "myawsometeam": ("setsu_portrait.png", (100, 100, 200), "setsu_shot.webp"),  # Setsu: the avatar whole
     "heatz": ("heatz_portrait.webp", (775, 560, 960), "heatz_shot.webp"),
     "leafbro": ("leaf_portrait.webp", (1005, 930, 2060), "leaf_shot.webp"),  # leaf.bro: the eyes, whole
-    "kanga": ("kanga_portrait.png", (455, 400, 560), "kanga_portrait.png"),  # his name behind him; shot to come
+    "kanga": ("kanga_portrait.png", (455, 400, 560), "kanga_portrait.png"),  # his name behind him, one picture for both
     # BUILT BY (studio::market::builders), by the name their pictures go under.
     "22sh": ("22sh_portrait.png", (368, 330, 640), "GRIP"),
     "fourth": ("fourth_logo.webp", (570, 430, 740), "fourth_shot.webp"),  # his red tag, round
