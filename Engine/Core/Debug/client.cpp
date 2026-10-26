@@ -66,10 +66,16 @@ StartResult start(const std::filesystem::path& log_directory) noexcept {
         // before exiting, so those faults never reach our last-chance filter. The
         // game's LocalAppData is redirected to the Game folder of ReSkate's user data
         // (Extension/Boot/user_data_redirect.cpp), which a launch with --dev-data-root moves.
+        // Without LocalAppData a normal launch goes without those dumps, as it always did; in a
+        // launch with a separate root, a root that cannot be used stops crash reporting instead.
         if (_wcsicmp(shared->application.data(), L"Skate.exe") == 0) {
-            if (!copy(shared->native_directory,
-                    (user_data::root() / L"Game" / L"Skate" / L"CrashDumps").wstring()))
-                return StartResult::failed;
+            std::wstring native;
+            try {
+                native = (user_data::root() / L"Game" / L"Skate" / L"CrashDumps").wstring();
+            } catch (...) {
+                if (user_data::development_requested()) return StartResult::failed;
+            }
+            if (!native.empty() && !copy(shared->native_directory, native)) return StartResult::failed;
         }
 
         SIZE_T size{};
