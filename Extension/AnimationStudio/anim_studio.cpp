@@ -3892,7 +3892,9 @@ void on_animation(std::uintptr_t component) noexcept {
                     if (reading.locked && reading.clip > 0 && trick->native) {
                         const auto c = static_cast<std::size_t>(reading.clip);
                         if (c < trick->native->higher_pop.size() && trick->native->higher_pop[c] && up >= 0 && down > up)
-                            hand_back = trick->caught > up && trick->caught < down ? trick->caught : up + 0.8f * (down - up);
+                            // The later of its catch and 85% of its air: an ollie's catch comes just after the pop, and it was
+                            // handed back 0.2 s into the air with its style hardly seen (test game, 2026-10-26).
+                            hand_back = std::max(trick->caught > up && trick->caught < down ? trick->caught : up, up + 0.85f * (down - up));
                     }
                     if (reading.locked && touch && l.clock_touch_at < 0) { l.clock_touch_at = *touch; l.clock_touch_from = time; }
                     if (reading.locked && reading.lost) {
