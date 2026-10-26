@@ -133,9 +133,9 @@ int main() {
     // in), a hat it lacks with no stand-in (empty), and a slot the player left empty.
     constexpr std::uint32_t top_slot = 0xac4c6e13, bottoms_slot = 0xc06aa817, hat_slot = 0xac3d4305, shoes_slot = 0x35c5f429;
     constexpr std::uint32_t hair_slot = 0x6a8c54b4, eyes_slot = 0xac4493c1; // cust_scalpHair, cust_eyes: never shuffled
-    check(shuffles_slot(top_slot) && shuffles_slot(0x0add98be) && shuffles_slot(11) && !shuffles_slot(hair_slot) &&
+    check(shuffles_slot(top_slot) && shuffles_slot(0x0add98be) && !shuffles_slot(11) && !shuffles_slot(hair_slot) &&
               !shuffles_slot(eyes_slot) && !shuffles_slot(0x3ac1d7f4),
-          "Every slot is shuffled but the listed ones");
+          "Only the listed slots are shuffled");
     {
         CosmeticRecipe r;
         r.items = {{top_slot, "Own_TopShirt_A", {}}, {bottoms_slot, "Default_Pants", {}}, {hat_slot, "", {}}, {shoes_slot, "", {}}};

@@ -38,8 +38,9 @@ One setting, **Shuffle outfits**, with three values:
   An item you lack that has no stand-in is never left empty, in either mode.
 - A player keeps the same picks until you reroll. Changing the mode keeps them too, so going from
   Everything to Not installed and back gives the same items.
-- The slots listed in `unshuffled_slot_ids` (the skater's body, face and voice) are never shuffled
-  and always show as worn; every other slot can be. `mp cosmetic-slots` lists every slot and marks the shuffled ones.
+- Only the slots listed in `shuffled_slot_ids` (the skater's clothes, eyewear and tattoos, and the
+  whole board) can be shuffled. Every other slot, including the skater's body, face and voice and
+  any slot a mod adds, always shows as worn. `mp cosmetic-slots` lists every slot and marks the shuffled ones.
 
 ## How it works
 
@@ -48,9 +49,9 @@ One setting, **Shuffle outfits**, with three values:
   are not installed here (`CosmeticMemory::item_installed`: the asset is in the catalog and fits the
   slot's category). Then the existing step swaps each of them for a stand-in.
 - `shuffle_slots` says which slots the mode shuffles: with Not installed the lacking ones; with
-  Everything those and every slot that holds an item. Either way, never slots listed in
-  `unshuffled_slot_ids` (outfit_shuffle.h, by the template slot ids `mp cosmetic-slots` prints); those
-  show the item worn, or its stand-in, as with the shuffle off. `shuffle_recipe` gives each of them an installed
+  Everything those and every slot that holds an item. Either way, only slots listed in
+  `shuffled_slot_ids` (outfit_shuffle.h, by the template slot ids `mp cosmetic-slots` prints); the
+  rest show the item worn, or its stand-in, as with the shuffle off. `shuffle_recipe` gives each of them an installed
   item that fits and is not the one already there. The recipe the peer sent is never edited.
 - Items reserved for their owners (`profile_runtime::reserved_cosmetic`) are still swapped for
   stand-ins as before, and are never picked. Under Everything their stand-in is shuffled too.
@@ -106,7 +107,7 @@ Then one row per slot:
 | Part | Meaning |
 | --- | --- |
 | `[ 3]` | The slot's position in the template. |
-| `slot 0x…` | The slot's id, the same in every game. Outfits sent between players name their slots by it, and `unshuffled_slot_ids` lists slots by it. |
+| `slot 0x…` | The slot's id, the same in every game. Outfits sent between players name their slots by it, and `shuffled_slot_ids` lists slots by it. |
 | `category 0x…` | The kind of item the slot takes. An item goes in the slot only if this is one of its categories; the shuffle uses the same check to choose what can replace an item. |
 | `wearing "…"` / `wearing nothing` | The item in the slot now, by its asset name, or nothing. |
 | `fits N game, M mod` | How many installed items fit the slot's category, in each pool: the game's items and the mod items. A shuffle draws from both, or with **Mod items only** from the mod items alone. Items reserved for their owners are not counted. |
@@ -115,11 +116,12 @@ Then one row per slot:
 
 What it helps with:
 
-- **Why a slot never shuffles:** it lacks the `shuffled` mark (it is in `unshuffled_slot_ids`), or
+- **Why a slot never shuffles:** it lacks the `shuffled` mark (it is not in `shuffled_slot_ids`), or
   the two `fits` counts add up to 0 or 1 (with **Mod items only**, the mod count alone). With only
   one item that fits there is nothing else to pick.
 - **Whether a mod's item fits a slot:** compare the slot's `category` with the item's categories.
-- **Keeping a slot from shuffling:** add its id, from the `slot 0x…` column, to `unshuffled_slot_ids`.
+- **Letting a slot shuffle:** add its id, from the `slot 0x…` column, to `shuffled_slot_ids`.
+  Take one out to keep it from shuffling.
 
 ### Slot names
 

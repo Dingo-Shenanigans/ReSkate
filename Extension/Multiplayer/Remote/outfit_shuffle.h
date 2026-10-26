@@ -126,39 +126,36 @@ struct ShufflePools {
     std::size_t size() const noexcept { return game.size() + mods.size(); }
 };
 
-// The slots the shuffle never touches (template slot ids, as `mp cosmetic-slots` prints them): the
-// skater's body, face and voice, which make them who they are. These always show what the player
-// wears, or the usual stand-in, as with the shuffle off. Every other slot, skater and board alike,
-// can be shuffled.
-inline constexpr std::array<std::uint32_t, 24> unshuffled_slot_ids{
-    0x7462c17f, // cust_skintypes
-    0xfbbab416, // cust_voicetypes
-    0x33e79eb0, // cust_heads
-    0x3455758f, // cust_noses
-    0xac4493c1, // cust_eyes
-    0xbc6996d3, // cust_mouths
-    0xc7bcb6fd, // cust_bodies
-    0x6a8c54b4, // cust_scalpHair
-    0x4e2cfe99, // cust_facialHair
-    0xede28ac4, // cust_hairColor
-    0xf18689e4, // cust_facialHairColor
-    0xa39b4cef, // cust_eyeColor
-    0xa0ef5ee9, // cust_eyebrows
-    0x3ac1d7f4, // locomotion
-    0x348e55c7, // cust_eyebrowColor
-    0x5034ae03, // cust_lipcolor
-    0xf958c570, // cust_maturity
-    0x17a31f28, // cust_freckles
-    0x00db8764, // cust_vitiligo
-    0x3440dad3, // cust_moles
-    0xac4227e2, // cust_acne
-    0xb5e61950, // cust_stubble
-    0xbc821c2c, // cust_makeup
-    0x4f1c0009, // cust_lipstyle
+// The slots the shuffle may touch (template slot ids, as `mp cosmetic-slots` prints them): the
+// skater's clothes, eyewear and tattoos, and the whole board. Every other slot, including the
+// skater's body, face and voice and any slot a mod adds, always shows what the player wears, or the
+// usual stand-in, as with the shuffle off.
+inline constexpr std::array<std::uint32_t, 21> shuffled_slot_ids{
+    0x9b15af3e, // cust_fullBodyCostume
+    0xac3d4305, // cust_hats
+    0xac4c6e13, // cust_tops
+    0xc06aa817, // cust_bottoms
+    0x35c5f429, // cust_shoes
+    0xc6ca18f3, // cust_eyewear
+    0x35caa14c, // cust_socks
+    0xf8984dad, // cust_outfits
+    0xb4ec0b53, // tattoo_armL_1
+    0xb4ebb3cd, // tattoo_armR_1
+    0xa70e1f88, // tattoo_chest_1
+    0xa7ecb563, // tattoo_legL_1
+    0xa7ecddfd, // tattoo_legR_1
+    0x755d5ee0, // board_gripcolor1
+    0xc83bb94e, // board_wheelcolor
+    0x66071628, // board_bottomart
+    0x976f18c4, // board_grippattern
+    0x0add98be, // truck
+    0x355284de, // boardsticker0
+    0x355284df, // boardsticker1
+    0x355284dc, // boardsticker2
 };
 
 inline constexpr bool shuffles_slot(std::uint32_t slot) noexcept {
-    return std::find(unshuffled_slot_ids.begin(), unshuffled_slot_ids.end(), slot) == unshuffled_slot_ids.end();
+    return std::find(shuffled_slot_ids.begin(), shuffled_slot_ids.end(), slot) != shuffled_slot_ids.end();
 }
 
 // Which slots of a recipe `mode` shuffles, to hand to shuffle_recipe as `only`. `lacking[i]` says
@@ -168,7 +165,7 @@ inline constexpr bool shuffles_slot(std::uint32_t slot) noexcept {
 //   everything:    every slot that holds an item, and the lacking slots too, so an item this
 //                  PC lacks never ends up showing as nothing. A slot left empty stays empty.
 //   off:           nothing.
-// Either way never slots in unshuffled_slot_ids; those keep the item or its stand-in.
+// Either way only slots in shuffled_slot_ids; the rest keep the item or its stand-in.
 // Always one entry per item, so shuffle_recipe takes it as written; a `lacking` of another size
 // shuffles nothing.
 inline std::vector<bool> shuffle_slots(ShuffleMode mode, const CosmeticRecipe &recipe, const std::vector<bool> &lacking) {
