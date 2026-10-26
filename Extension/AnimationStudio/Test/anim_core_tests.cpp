@@ -133,6 +133,16 @@ void packs_and_playlist() {
     select_playlist(presets, packs, playlist, PlaylistMode::turns);
     check(presets[4].active && presets[1].active && presets[4].order < presets[1].order, "In turns: all of them play, in the playlist's order");
     {
+        // A pack whose slot is on Alternate takes turns in a Fixed playlist too (testers: cycled tricks played one version).
+        auto cycling = other;
+        cycling.slots["kickflip|mid"] = {"Kickflip c", "Kickflip b"};
+        cycling.slot_alternate["kickflip|mid"] = true;
+        const std::array<PresetPack, 1> one{cycling};
+        const std::vector<PlaylistEntry> list{{"Park", ""}};
+        select_playlist(presets, one, list, PlaylistMode::fixed);
+        check(presets[4].active && presets[1].active, "Fixed: a pack's slot on Alternate still takes turns");
+    }
+    {
         // A tester with a lot of tricks (2026-10-25): past a few hundred, shuffle and In turns stuck to the first one. 1200
         // kickflips in one pack: every one of them plays, in turns round and round, shuffled never twice running.
         PresetPack big;
@@ -1196,6 +1206,10 @@ void merged_library_and_timing() {
         BoardTrack still = track(0.6f, false);
         for (auto& q : still.turn) q = normalised(multiply(q, axis_angle(Vec3{0, 0, 1}, 1.6f)));
         check(board_time_map(track(0.75f, false), still).empty(), "A board that never fits gives no map (another trick)");
+        const auto same = board_time_map(track(0.6f, false), track(0.6f, false));
+        check(!same.empty() && std::abs(same.forward(0.16f) - 0.16f) < 1.0f / 120 && std::abs(same.forward(0.74f) - 0.74f) < 1.0f / 120 &&
+                  std::abs(same.forward(0.4f) - 0.4f) < 1.0f / 120,
+              "The same timing maps onto itself, its ends too (the smoothing leant them)");
         NativeModels models;
         models.edit_up = 0.2f; models.edit_down = 0.6f;
         NativeModels::Model on_high;

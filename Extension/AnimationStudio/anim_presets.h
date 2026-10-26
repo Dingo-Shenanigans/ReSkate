@@ -301,12 +301,24 @@ inline void select_playlist(std::span<Preset> presets, std::span<const PresetPac
         return nullptr;
     };
     int order = 0;
+    // A pack's slot on Alternate takes turns in a Fixed playlist too (a pack set to cycle played one trick since packs play
+    // from playlists only, which start out Fixed).
+    std::set<std::string> taking_turns;
+    const auto alternates = [](const PresetPack& pack, const std::string& name) {
+        for (const auto& [slot, names] : pack.slots)
+            if (std::find(names.begin(), names.end(), name) != names.end()) {
+                const auto mode = pack.slot_alternate.find(slot);
+                return mode != pack.slot_alternate.end() ? mode->second : pack.alternate;
+            }
+        return false;
+    };
     const auto take = [&](const std::string& name, const PresetPack* pack) {
         for (auto& p : presets) {
             if (p.name != name || p.included) continue;
             p.included = true;
             p.order = order++;
             if (pack && !pack->pop_rule.empty()) p.pack_pop = effective_pop(*pack, p.pop);
+            if (pack && alternates(*pack, name)) taking_turns.insert(name);
         }
     };
     for (const auto& entry : playlist) {
@@ -327,7 +339,7 @@ inline void select_playlist(std::span<Preset> presets, std::span<const PresetPac
         if (!p.included) continue;
         const auto pop = p.pack_pop ? *p.pack_pop : p.pop;
         const auto key = preset_slot(p.trick, pop) + stance_part(p);
-        if (mode != PlaylistMode::fixed) {
+        if (mode != PlaylistMode::fixed || taking_turns.contains(p.name)) {
             p.active = true;
             continue;
         }

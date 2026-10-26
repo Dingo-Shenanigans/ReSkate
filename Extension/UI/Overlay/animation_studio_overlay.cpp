@@ -3890,8 +3890,8 @@ void trick_drawer(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a
         y += 44 * k;
         y += paragraph(d, f.bold, 13 * k, ImVec2(x, y), w, faint,
                        "Any pop: it plays on every pop height, each the way COPY TO LOW, MID AND HIGH makes it - done for you in game, "
-                       "and it follows every change you make. A trick of yours saved for that exact pop plays there instead. "
-                       "Copy makes the three as tricks of their own, to change each on its own.");
+                       "and it follows every change you make. Set to one pop, it plays on that pop, and on the other heights the same way "
+                       "only when nothing of yours is saved for that pop. Copy makes the three as tricks of their own, to change each on its own.");
         y += 16 * k;
     }
     // Another maker's trick never goes in your packs, so it has none to choose.

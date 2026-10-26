@@ -1827,9 +1827,11 @@ TimeMap board_time_map(const BoardTrack& played, const BoardTrack& made) {
             }
             // Smoothed over a tenth of a second each way: frame by frame the path holds a frame, then jumps one (it steps
             // through the grid), and the trick played skip, freeze, skip, freeze.
+            // The window shrinks evenly towards the ends (cut on one side only, it leant the first and last tenth).
             constexpr std::size_t reach = 6;
             for (std::size_t k = 0; k < n; ++k) {
-                const std::size_t lo = k > reach ? k - reach : 0, hi = std::min(n - 1, k + reach);
+                const std::size_t r = std::min({reach, k, n - 1 - k});
+                const std::size_t lo = k - r, hi = k + r;
                 float total = 0;
                 for (std::size_t q = lo; q <= hi; ++q) total += raw[q];
                 out.to[k] = total / static_cast<float>(hi - lo + 1);

@@ -111,9 +111,13 @@ struct CustomTrick {
     // The clips the game may play for its trick (its own and the library's pops of it), for NativeClock.
     std::shared_ptr<const NativeModels> native;
     int order{-1}; // its place in the playlist, when the playlist plays (In turns goes by it)
-    // A trick on ANY pop, as made for one other height (low, mid, high): what COPY TO LOW, MID AND HIGH would make of it,
-    // kept in memory only. "" the trick itself.
+    // A trick as made for one height (low, mid, high): what COPY TO LOW, MID AND HIGH would make of it, kept in memory
+    // only. "" the trick itself.
     std::string height;
+    bool any_pop{};  // the trick itself on ANY pop: it plays when the pop is not known yet too
+    // A version for a pop the trick is not set to (it is set to one pop): it plays there only when nothing of yours is
+    // for that pop - as tricks played on the pops they had no version for until 2026-10-25, but as the copy would.
+    bool fallback{};
     // The timeline's catch (find_catch): the board caught, the feet back on the deck. -1 none. Slowed over a longer air.
     float caught{-1};
 };
@@ -1438,6 +1442,7 @@ struct TrickCache {
     std::map<std::string, BoardTrack> reference_boards;           // each of those clips' board ("library|<file>")
     std::map<std::string, std::string> reference_pops;            // and its pop
     std::map<std::string, std::shared_ptr<const TimeMap>> time_maps; // an own clip on a library clip ("<own key>|<library key>")
+    std::map<std::string, std::shared_ptr<const NativeModels>> natives; // a game clip's, for the versions moved onto it
 };
 TrickCache& trick_cache() {
     static auto* cache = new TrickCache; // the loader's own: only its thread uses it
@@ -1525,7 +1530,7 @@ const std::vector<std::string>& library_references(TrickCache& cache, const std:
 // What the game may play for a trick: its own clip (clip 0) and the library's clips of it (its pops, its catches), each
 // with its time as the trick's and whether it is another or a higher pop than `made_pop`, the pop the clip is of.
 std::shared_ptr<const NativeModels> natives_for(TrickCache& cache, const std::string& key, const Clip& clip, const std::string& trick,
-                                                const std::string& made_pop);
+                                                const std::string& clip_pop, bool whole_body);
 // One saved trick read whole, to play: its keys (on its pack's pop when its pack says), its clip, its stance and the
 // clips the game may play for it. On ANY pop, `heights` gets its versions for the other heights.
 std::optional<CustomTrick> load_custom_trick(TrickCache& cache, const std::filesystem::path& entry, const Preset& p,
@@ -1557,56 +1562,87 @@ std::optional<CustomTrick> load_custom_trick(TrickCache& cache, const std::files
     if (right != label_right)
         logging::log(Level::info, Channel::skater, "Animation Studio: {} is labelled as leading with the {} foot but leads with the {}; going by the clip.",
                      p.name, label_right ? "right" : "left", right ? "right" : "left");
-    CustomTrick out{trick, p.name, clip, animation, goofy, right, animation->fakie, natives_for(cache, key, *clip, trick, made_pop)};
-    out.caught = find_catch(*clip, *animation);
-    // On ANY pop (its own setting, or its pack's): on each other height it plays what COPY TO LOW, MID AND HIGH makes of
-    // it - one of yours moved onto the game's own clip of that height, its keys timed by the board; one locked to its
-    // maker (or a recording) on its own clip, as made - made here, in memory, so it follows every change to the trick.
-    // On its own height it plays itself.
     const auto place = [](const std::string& pop) { return pop == "low" || pop == "mid" || pop == "high"; };
-    if (heights && animation->pop.empty() && !piece && place(made_pop)) {
-        const bool locked = locked_key(animation->maker_key) && !animation->editable;
-        for (const char* height : {"low", "mid", "high"}) {
-            if (made_pop == height) continue;
-            try {
-                std::optional<std::pair<Animation, Clip>> moved;
-                if (!locked) moved = onto_game_pop(*animation, *clip, height);
-                CustomTrick version = out;
-                version.height = height;
-                if (moved) {
-                    auto& [copy, game_clip] = *moved;
-                    copy.pop = height;
-                    // The game's clip of that height, once in memory for every trick moved onto it (the same way round).
-                    const auto clip_key = "height|" + copy.source.asset + (clip_leads_right(game_clip).value_or(false) ? "|right" : "|left");
-                    auto& kept = cache.clips[clip_key];
-                    if (!kept) kept = std::make_shared<Clip>(std::move(game_clip));
-                    version.clip = kept;
-                    version.edits = std::make_shared<Animation>(std::move(copy));
-                    version.native = natives_for(cache, clip_key, *kept, trick, height);
-                    version.caught = find_catch(*kept, *version.edits);
-                } else {
-                    auto copy = std::make_shared<Animation>(*animation);
-                    copy->pop = height;
-                    version.edits = std::move(copy);
-                }
-                heights->push_back(std::move(version));
-            } catch (const std::exception& e) {
-                logging::log(Level::warning, Channel::skater, "Animation Studio: {} has no {} pop version: {}", p.name, height, e.what());
+    const std::string clip_pop = place(made_pop) ? made_pop : std::string{};
+    const bool locked = locked_key(animation->maker_key) && !animation->editable;
+    CustomTrick out{trick, p.name, clip, animation, goofy, right, animation->fakie, natives_for(cache, key, *clip, trick, clip_pop, locked)};
+    out.caught = find_catch(*clip, *animation);
+    out.any_pop = animation->pop.empty();
+    if (!heights || piece || clip_pop.empty()) return out;
+    // The trick as made for another height: what COPY TO LOW, MID AND HIGH makes of it - one of yours moved onto the game's
+    // own clip of that height, its keys timed by the board; one locked to its maker (or a recording) on its own clip, as
+    // made - made here, in memory, so it follows every change to the trick.
+    const CustomTrick original = out;
+    const auto version_for = [&](const std::string& height) -> std::optional<CustomTrick> {
+        try {
+            CustomTrick version = original;
+            version.height = height;
+            version.any_pop = false;
+            std::optional<std::pair<Animation, Clip>> moved;
+            if (!locked && height != clip_pop) moved = onto_game_pop(*animation, *clip, height);
+            if (moved) {
+                auto& [copy, game_clip] = *moved;
+                copy.pop = height;
+                // The game's clip of that height, once in memory for every trick moved onto it (the same way round).
+                const auto clip_key = "height|" + copy.source.asset + (clip_leads_right(game_clip).value_or(false) ? "|right" : "|left");
+                auto& kept = cache.clips[clip_key];
+                if (!kept) kept = std::make_shared<Clip>(std::move(game_clip));
+                version.clip = kept;
+                version.edits = std::make_shared<Animation>(std::move(copy));
+                auto& natives = cache.natives[clip_key + "|" + trick];
+                if (!natives) natives = natives_for(cache, clip_key, *kept, trick, height, false);
+                version.native = natives;
+                version.caught = find_catch(*kept, *version.edits);
+            } else {
+                auto copy = std::make_shared<Animation>(*animation);
+                copy->pop = height;
+                version.edits = std::move(copy);
             }
+            return version;
+        } catch (const std::exception& e) {
+            logging::log(Level::warning, Channel::skater, "Animation Studio: {} has no {} pop version: {}", p.name, height, e.what());
+            return std::nullopt;
         }
-        // With a version for each other height, the trick itself is the one for its own height - exactly that pop, as its
-        // versions are for theirs. Left on ANY it ranked below other tricks' height versions there, and of a pack on ANY
-        // only those played on each height: cycling (shuffle, In turns) went round fewer tricks, or played only one.
-        if (heights->size() >= 2) {
+    };
+    if (animation->pop.empty()) {
+        // On ANY pop (its own setting, or its pack's): a version for each other height, and the trick itself is the one for
+        // its own height - exactly that pop, as its versions are for theirs (left on ANY, other tricks' versions outranked it
+        // there, and cycling went round fewer tricks).
+        std::size_t made = 0;
+        for (const char* height : {"low", "mid", "high"})
+            if (height != clip_pop)
+                if (auto version = version_for(height)) {
+                    heights->push_back(std::move(*version));
+                    ++made;
+                }
+        if (made >= 2) {
             auto own = std::make_shared<Animation>(*animation);
-            own->pop = made_pop;
+            own->pop = clip_pop;
             out.edits = std::move(own);
         }
+    } else if (place(animation->pop)) {
+        // Set to one pop: on it, itself - or, when its clip is of another pop (set by hand, by its pack's rule, a copy made
+        // before copies went onto the game's clip), its version for that pop, as TEST IN GAME plays it. On the other heights a
+        // fallback version, played only when nothing of yours is for that pop: until 2026-10-25 a trick played on the pops it
+        // had no version for, and testers' tricks then stopped playing on every pop the game graded otherwise.
+        const std::string set_pop = animation->pop;
+        if (set_pop != clip_pop)
+            if (auto version = version_for(set_pop)) out = std::move(*version);
+        for (const char* height : {"low", "mid", "high"})
+            if (height != set_pop)
+                if (auto version = version_for(height)) {
+                    version->fallback = true;
+                    heights->push_back(std::move(*version));
+                }
     }
     return out;
 }
+// `clip_pop` is the pop the clip is of ("" not known). `whole_body`: on another pop's clip the trick plays whole, as made
+// (other_pop, and higher_pop's own pace and hand-back) - only for a trick locked to its maker, which has no version moved
+// onto that clip. One of yours played its keys on the game's clip there until 2026-10-25, and does again.
 std::shared_ptr<const NativeModels> natives_for(TrickCache& cache, const std::string& key, const Clip& clip_ref, const std::string& trick,
-                                                const std::string& made_pop) {
+                                                const std::string& clip_pop, bool whole_body) {
+    const std::string& made_pop = clip_pop;
     const auto* clip = &clip_ref;
     auto native = std::make_shared<NativeModels>();
     native->edit_up = clip->takeoff;
@@ -1629,9 +1665,12 @@ std::shared_ptr<const NativeModels> natives_for(TrickCache& cache, const std::st
                 model.own = false;
                 native->models.push_back(std::move(model));
             }
-            // Its time as the trick's, by where the board is (board_time_map): once for each clip of its, kept.
+            // Its time as the trick's, by where the board is (board_time_map): once for each clip of its, kept. Not for the
+            // game's clip of the same pop: that is the trick's own timing, and the match only bent it.
             std::shared_ptr<const TimeMap> map;
-            if (const auto board = cache.reference_boards.find(reference); board != cache.reference_boards.end()) {
+            const auto pop = cache.reference_pops.find(reference);
+            const bool same_pop = !made_pop.empty() && pop != cache.reference_pops.end() && pop->second == made_pop;
+            if (const auto board = cache.reference_boards.find(reference); !same_pop && board != cache.reference_boards.end()) {
                 auto& kept = cache.time_maps[key + "|" + reference];
                 if (!kept) {
                     if (!made_track) made_track = board_track(*clip);
@@ -1639,8 +1678,7 @@ std::shared_ptr<const NativeModels> natives_for(TrickCache& cache, const std::st
                 }
                 if (!kept->empty()) map = kept;
             }
-            const auto pop = cache.reference_pops.find(reference);
-            const bool other = !made_pop.empty() && pop != cache.reference_pops.end() && !pop->second.empty() && pop->second != made_pop;
+            const bool other = whole_body && !made_pop.empty() && pop != cache.reference_pops.end() && !pop->second.empty() && pop->second != made_pop;
             const bool higher = other && pop_place(pop->second) > pop_place(made_pop) && pop_place(made_pop) >= 0;
             // A higher pop: the trick's own pace from the pop (1:1), not matched by the board - that held it still at its
             // catch through all the extra air, as if he floated (it is handed back to the game's pose from there instead).
@@ -1680,6 +1718,11 @@ LoadedTricks read_custom_tricks(const std::string& test_trick) {
         cache.catalog = catalog;
         cache.loaded.clear();
         cache.references.clear();
+        // (These were kept across a rebuilt library: the boards, pops and maps of clips that were read again.)
+        cache.reference_boards.clear();
+        cache.reference_pops.clear();
+        cache.time_maps.clear();
+        cache.natives.clear();
         std::erase_if(cache.models, [](const auto& e) { return e.first.starts_with("library|"); });
     }
     // Select from small JSON metadata before expanding clips: an inactive pack variant must not take a whole animation's
@@ -3637,7 +3680,10 @@ void on_animation(std::uintptr_t component) noexcept {
             // frame and the old trick dropped at once, so the stand-back was never seen. It is taken up when
             // the stand-back is over (gave_way_at goes back to -1 and the old trick is let go).
             const bool let_go = l.finished_episode == l.episode.id && !name.empty() && name == l.finished_trick;
-            if (!let_go && l.gave_way_at < 0 && l.game_tricks &&
+            // Once the trick plays on the game's clip, a refined grade of the same trick keeps it: choosing again dropped it in
+            // one frame (nothing for the new pop) or faded it out and in again (a new clock).
+            const bool settled = l.game_trick && l.game_trick->trick == name && l.clock_locked_at >= 0;
+            if (!let_go && !settled && l.gave_way_at < 0 && l.game_tricks &&
                 episode_selection_changed(l.game_trick ? l.game_trick->trick : std::string_view{}, name,
                                           l.game_trick ? l.game_trick->edits->pop : std::string_view{}, pop)) {
                 const CustomTrick* found = nullptr;
@@ -3660,7 +3706,11 @@ void on_animation(std::uintptr_t component) noexcept {
                         for (const auto& t : *l.game_tricks) {
                             if (t.trick != name || (exact && t.edits->entry != entry_name(l.episode.entry))) continue;
                             candidates.push_back(&t);
-                            described.push_back({t.leads_right, t.fakie, playback_pop_rank(pop, t.edits->pop)});
+                            // A fallback version only where nothing better is; a trick on ANY pop while the pop is not known.
+                            int rank = playback_pop_rank(pop, t.edits->pop);
+                            if (rank == 0 && t.fallback) rank = 3;
+                            if (pop.empty() && t.any_pop) rank = 1;
+                            described.push_back({t.leads_right, t.fakie, rank});
                         }
                         if (!candidates.empty()) break;
                     }
@@ -3670,15 +3720,19 @@ void on_animation(std::uintptr_t component) noexcept {
                     // The playlist's In turns: in the playlist's order, on every pass of the attempt (the pick is a place in it).
                     if (in_turns && variants.size() > 1)
                         std::stable_sort(variants.begin(), variants.end(), [](const CustomTrick* a, const CustomTrick* b) { return a->order < b->order; });
-                    auto choice = l.attempt_variants.find(name);
+                    // By pop too: the first choice of an air is often made on the air time's guess, before the game's grade.
+                    // Keyed by the trick alone, a guess with one trick fixed the pick, and the real group then always
+                    // played its first (cycling played one version).
+                    const std::string pick_key = name + "|" + pop;
+                    auto choice = l.attempt_variants.find(pick_key);
                     if (choice == l.attempt_variants.end()) {
                         // Which plays this attempt: any of them at random, but not the one that played last.
                         // (previous is the one that played last, plus one: 0 when none has yet.)
-                        auto& previous = l.variant_counts[name + "|" + entry_name(l.episode.entry)];
+                        auto& previous = l.variant_counts[name + "|" + entry_name(l.episode.entry) + "|" + pop];
                         static thread_local std::mt19937 random{static_cast<std::uint32_t>(GetTickCount64())};
                         const std::size_t pick = next_variant(previous, variants.size(), in_turns, random);
                         previous = pick + 1;
-                        choice = l.attempt_variants.emplace(name, pick).first;
+                        choice = l.attempt_variants.emplace(pick_key, pick).first;
                     }
                     found = variants[choice->second % variants.size()];
                 } else if (!name.empty() && l.stance_fallback_trick != name &&
@@ -3720,7 +3774,9 @@ void on_animation(std::uintptr_t component) noexcept {
                     if (found)
                         logging::log(Level::info, Channel::skater, "Animation Studio: the game does a {} ({} pop by {}, {:.2f} s in the air), playing your {} ({}).", name,
                                      pop.empty() ? "unknown" : pop, graded ? "the game's grade" : "air time", l.predicted_air,
-                                     found->height.empty() ? found->name : found->name + " as made for the " + found->height + " pop (it is on ANY pop)",
+                                     found->height.empty() ? found->name
+                                                           : found->name + " as made for the " + found->height + " pop" +
+                                                                 (found->fallback ? " (nothing of yours is for that pop)" : " (it is on ANY pop)"),
                                      "authored edits over fresh native pose");
                     if (found && !found->edits->pop.empty() && found->edits->pop != pop)
                         logging::log(Level::info, Channel::skater, "Animation Studio: {} is made for a {} pop; with none of yours for a {} pop it plays on this one too.",
@@ -6321,6 +6377,21 @@ bool set_saved_pop(const std::string& animation, const std::string& pop_in, std:
 // The game's own clip of `pop` for a trick opened from the game's tricks, leading with the same foot as `clip`, and the
 // animation's keys, brackets and catch moved onto its marks (retimed). Empty for a recording, a piece of the game's
 // animation, or a pop the library does not have.
+// A clip of the trick library, read once while its file stays the same (every trick moved onto it shares the read).
+std::shared_ptr<const Clip> game_clip_once(const GameTrick& g) {
+    static std::mutex mutex;
+    static std::map<std::string, std::pair<FileStamp, std::shared_ptr<const Clip>>> kept;
+    const auto stamp = stamp_of(library_folder() / L"library" / std::filesystem::path(g.file));
+    {
+        std::lock_guard lock(mutex);
+        if (const auto found = kept.find(g.file); found != kept.end() && found->second.first == stamp) return found->second.second;
+    }
+    std::shared_ptr<const Clip> clip = read_game_clip(g);
+    std::lock_guard lock(mutex);
+    if (kept.size() >= 96) kept.clear();
+    kept[g.file] = {stamp, clip};
+    return clip;
+}
 std::optional<std::pair<Animation, Clip>> onto_game_pop(const Animation& a, const Clip& clip, const std::string& pop) {
     if (a.source.kind != "native_asset") return std::nullopt;
     const auto& from = a.source.asset;
@@ -6335,7 +6406,7 @@ std::optional<std::pair<Animation, Clip>> onto_game_pop(const Animation& a, cons
         if (!library) return std::nullopt;
         const auto g = std::find_if(library->begin(), library->end(), [&](const GameTrick& t) { return t.asset == to && !t.preview_only && !t.file.empty(); });
         if (g == library->end()) return std::nullopt;
-        const auto target = read_game_clip(*g);
+        const auto target = game_clip_once(*g);
         if (!target || target->empty()) return std::nullopt;
         Clip base = *target;
         const auto lead = clip_leads_right(clip), target_lead = clip_leads_right(base);
