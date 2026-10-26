@@ -141,6 +141,25 @@ void packs_and_playlist() {
         const std::vector<PlaylistEntry> list{{"Park", ""}};
         select_playlist(presets, one, list, PlaylistMode::fixed);
         check(presets[4].active && presets[1].active, "Fixed: a pack's slot on Alternate still takes turns");
+        const std::array<PresetPack, 2> mixed{pack, cycling};
+        const std::vector<PlaylistEntry> fixed_first{{"Street", ""}, {"Park", ""}};
+        select_playlist(presets, mixed, fixed_first, PlaylistMode::fixed);
+        check(presets[1].active && !presets[4].active, "A lower Alternate pack cannot override a higher Fixed slot");
+        const std::vector<PlaylistEntry> alternate_first{{"Park", ""}, {"Street", ""}};
+        select_playlist(presets, mixed, alternate_first, PlaylistMode::fixed);
+        check(presets[4].active && presets[1].active && presets[2].active,
+              "The highest Alternate slot keeps all its variants and unrelated trick slots still play");
+        auto second = cycling;
+        second.name = "Second";
+        second.slots["kickflip|mid"] = {"Kickflip a"};
+        const std::array<PresetPack, 2> alternating{cycling, second};
+        const std::vector<PlaylistEntry> two_cycles{{"Park", ""}, {"Second", ""}};
+        select_playlist(presets, alternating, two_cycles, PlaylistMode::fixed);
+        check(presets[4].active && presets[1].active && !presets[0].active,
+              "Two Alternate packs for one slot: only the higher pack participates");
+        select_playlist(presets, alternating, two_cycles, PlaylistMode::shuffle);
+        check(presets[4].active && presets[1].active && presets[0].active,
+              "Shuffle still includes both packs; priority applies only to Fixed");
     }
     {
         // A tester with a lot of tricks (2026-10-25): past a few hundred, shuffle and In turns stuck to the first one. 1200
