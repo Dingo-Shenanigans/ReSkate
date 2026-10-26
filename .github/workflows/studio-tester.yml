@@ -1,9 +1,8 @@
 name: Studio tester build
 
+# Runs only when started by hand (Actions > Studio tester build > Run workflow). Pushes and pull
+# requests start nothing: release DLLs are built locally and uploaded to the release by hand.
 on:
-  pull_request:
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       # The complete tester ZIP (about 850 MB) is made only on a run started by hand: made on every push it
