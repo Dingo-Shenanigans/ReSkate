@@ -1594,6 +1594,14 @@ std::optional<CustomTrick> load_custom_trick(TrickCache& cache, const std::files
                 logging::log(Level::warning, Channel::skater, "Animation Studio: {} has no {} pop version: {}", p.name, height, e.what());
             }
         }
+        // With a version for each other height, the trick itself is the one for its own height - exactly that pop, as its
+        // versions are for theirs. Left on ANY it ranked below other tricks' height versions there, and of a pack on ANY
+        // only those played on each height: cycling (shuffle, In turns) went round fewer tricks, or played only one.
+        if (heights->size() >= 2) {
+            auto own = std::make_shared<Animation>(*animation);
+            own->pop = made_pop;
+            out.edits = std::move(own);
+        }
     }
     return out;
 }
@@ -6876,12 +6884,15 @@ bool delete_pack(const std::string& name, std::string& message) {
     try {
         if (name != file_safe(name)) throw std::runtime_error("There is no pack called " + name + ".");
         if (!s.library_read) read_library_locked(s);
-        // Its tricks go with it - as saved and as changed here - but not one that is in another pack too (deleting a pack
-        // left its tricks behind, loose under OTHER MAKERS' TRICKS or MY TRICKS).
+        // A pack you got (someone else's: from the MARKET or imported) takes its tricks with it - as saved and as changed
+        // here - but not one that is in another pack too (they were left behind, loose under OTHER MAKERS' TRICKS). Your own
+        // pack's tricks stay yours, in MY TRICKS: a tester deleted his own pack and lost every trick in it (2026-10-26).
         std::set<std::string> members;
-        if (const auto saved = std::find_if(s.packs.begin(), s.packs.end(), [&](const PresetPack& p) { return p.name == name; }); saved != s.packs.end())
+        const auto saved = std::find_if(s.packs.begin(), s.packs.end(), [&](const PresetPack& p) { return p.name == name; });
+        const bool someone_elses = saved != s.packs.end() && locked_key(saved->maker_key);
+        if (someone_elses)
             for (const auto& m : saved->members()) members.insert(m);
-        if (const auto draft = s.pack_drafts.find(name); draft != s.pack_drafts.end())
+        if (const auto draft = s.pack_drafts.find(name); someone_elses && draft != s.pack_drafts.end())
             for (const auto& m : draft->second.members()) members.insert(m);
         std::vector<std::string> tricks, kept;
         for (const auto& member : members) {
