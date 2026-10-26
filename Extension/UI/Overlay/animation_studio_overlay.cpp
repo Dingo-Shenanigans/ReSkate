@@ -5054,7 +5054,7 @@ void pack_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
     y += 60 * k;
     const auto count = saved_count(v, pack);
     text(d, f.bold, 15 * k, ImVec2(x + 2 * k, y), soft,
-         std::to_string(count) + (count == 1 ? " trick" : " tricks") + (pack.on ? ", on: they play in game" : ", off") +
+         std::to_string(count) + (count == 1 ? " trick" : " tricks") +
              (pack.made_by.empty() ? std::string{} : ".   Made by " + pack.made_by) +
              (edited_words(pack.modified).empty() ? std::string{} : ".   Last edited " + edited_words(pack.modified)));
     y += 40 * k;
@@ -5084,7 +5084,7 @@ void pack_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
             {"LOW", "a quick, short flick: a little hop, about a third of a second in the air. Tricks look tight and fast."},
             {"MID", "an ordinary flick: the height most tricks are done at, and what most tricks are made on."},
             {"HIGH", "a long, hard flick: a big pop that floats, more air time, so the trick has time to stretch out."},
-            {"ANY", "plays on every pop the game does that has no trick of its own for that height in your packs."},
+            {"ANY", "plays on every pop height, each the way COPY TO LOW, MID AND HIGH makes it."},
         }};
         float py = ha.y + 8 * k;
         text(d, f.heading, 12 * k, ImVec2(ha.x + 18 * k, py), blue_light, "POP HEIGHT: HOW HARD YOU POP IN GAME (THE GAME GRADES EVERY POP)");
@@ -5117,14 +5117,10 @@ void pack_page(ImDrawList* d, const Fonts& f, const studio::View& v, const studi
 void packs_hub(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a, ImVec2 b) {
     auto& u = ui();
     const float k = f.k;
-    std::string on;
-    std::size_t on_count = 0;
-    for (const auto& pack : v.packs)
-        if (pack.on) on += (on.empty() ? "" : ", ") + pack.name, ++on_count;
     page_heading(d, f, a, "MY PACKS",
-                 v.packs.empty() ? std::string("Packs group your tricks to switch on together and share. Make one, then put your tricks in it.")
-                 : on_count ? std::to_string(on_count) + " on (" + on + "): their tricks play in game. Open a pack to see and change what is in it."
-                            : std::string("None on. Switch a pack on and its tricks play; your own tricks play from a playlist (PLAYLIST)."));
+                 // Packs play from the playlist that is on (since 2026-10-25), not by a switch of their own.
+                 v.packs.empty() ? std::string("Packs group your tricks to play and share together. Make one, then put your tricks in it.")
+                                 : std::string("A pack plays once it is in the playlist that is on (PLAYLIST). Open a pack to see and change what is in it."));
     {
         float x = b.x;
         const auto button = [&](const char* id, float w, const char* label, Look look) {
@@ -5373,7 +5369,7 @@ void pack_settings_page(ImDrawList* d, const Fonts& f, const studio::View& v, Im
         }
         y += 44 * k;
         y += paragraph(d, f.bold, 12 * k, ImVec2(x, y), w, faint,
-                       chosen == 0 ? "Fixed: the one highest in the playlist plays every time."
+                       chosen == 0 ? "Fixed: the one highest in the playlist plays every time (a pack's slot on Alternate still takes turns)."
                        : chosen == 1 ? "In turns: one after another, top to bottom, attempt by attempt."
                                      : "Shuffle: any of them at random, never the same one twice running.") + 14 * k;
     }
