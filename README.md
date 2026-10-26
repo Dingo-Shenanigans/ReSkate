@@ -139,8 +139,9 @@ accepts `park random` from its console or an admin.
 | The game's own settings and saves | `%LOCALAPPDATA%\ReSkate\Game\` (kept apart from the normal game) |
 | Launcher settings | `ReSkateLauncher.settings.json` beside the launcher |
 
-A launch with `--dev-data-root` (see [Running your build](#running-your-build)) keeps all of these except
-the mods in its own folder instead.
+A launch with `--dev-data-root` (see [Running your build](#running-your-build)) keeps all of these in its
+own folder instead, except the mods and the two choices kept with them beside `Skate.exe`: whether loose
+files load (`ReSkate.settings.json`) and which custom Lua scripts are on (`ReSkate.custom.json`).
 
 ### Troubleshooting
 
