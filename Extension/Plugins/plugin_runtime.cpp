@@ -276,9 +276,12 @@ void watch() {
     }
 }
 
-// Plugins' own storage, under a separate user-data root in a launch with --dev-data-root. Empty, as
-// when the folder lookup failed, if that cannot be used: storage then goes beside the game.
+// Plugins' own storage, under a separate user-data root in a launch with --dev-data-root, where a
+// root that cannot be used stops plugins with its reason: the folder beside the game is not
+// separate. Otherwise empty, as before, when LocalAppData cannot be found, and storage then goes
+// beside the game.
 std::filesystem::path local_storage() {
+    if (user_data::development_requested()) return user_data::known_folder_root() / L"Plugins";
     try { return user_data::known_folder_root() / L"Plugins"; } catch (...) { return {}; }
 }
 }

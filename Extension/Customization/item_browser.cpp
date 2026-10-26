@@ -93,12 +93,15 @@ struct Favorites {
         if (loaded) return;
         loaded = true;
         std::array<wchar_t, 32768> buffer{};
-        // A separate user-data root keeps its own favourites, whatever RESKATE_FAVORITES_FILE says.
-        if (const auto isolated = user_data::override_root()) {
-            file = *isolated / L"ReSkate.favorites.json";
-        } else if (const auto length = GetEnvironmentVariableW(L"RESKATE_FAVORITES_FILE", buffer.data(), static_cast<DWORD>(buffer.size()));
+        // A launch with a separate user-data root has pointed RESKATE_FAVORITES_FILE into it
+        // (user_data::initialize_development_root, in the launcher and again before the game's
+        // folder lookups are redirected). Without that variable such a launch keeps no favourites,
+        // rather than the player's beside the game.
+        if (const auto length = GetEnvironmentVariableW(L"RESKATE_FAVORITES_FILE", buffer.data(), static_cast<DWORD>(buffer.size()));
             length && length < buffer.size()) {
             file = std::wstring(buffer.data(), length);
+        } else if (user_data::development_requested()) {
+            return;
         } else {
             const auto count = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
             if (!count || count >= buffer.size()) return;
