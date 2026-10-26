@@ -11,6 +11,9 @@ add_library(dingosdk_overlay STATIC
     Extension/UI/Overlay/item_browser_overlay.cpp
     Extension/UI/Overlay/frame_grab.cpp
     Extension/UI/Overlay/depth_probe.cpp
+    Extension/UI/Overlay/material_capture.cpp
+    Extension/UI/Overlay/material_transmission.cpp
+    Extension/UI/Overlay/transmission_config.cpp
     Extension/UI/Overlay/overlay_notices.cpp
     Extension/UI/Overlay/chat_overlay.cpp
     Extension/UI/Overlay/map_download_card.cpp
@@ -76,6 +79,10 @@ while(screen_look_at LESS screen_look_length)
 endwhile()
 configure_file(cmake/templates/screen_look_hlsl.h.in "${CMAKE_CURRENT_BINARY_DIR}/generated/screen_look_hlsl.h" @ONLY)
 target_include_directories(dingosdk_overlay PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+set(material_transmission_path "${PROJECT_SOURCE_DIR}/Extension/UI/Overlay/material_transmission.hlsl")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${material_transmission_path}")
+file(READ "${material_transmission_path}" material_transmission_source)
+configure_file(cmake/templates/material_transmission_hlsl.h.in "${CMAKE_CURRENT_BINARY_DIR}/generated/material_transmission_hlsl.h" @ONLY)
 if(WIN32)
     file(GLOB screen_look_fxc_candidates "C:/Program Files (x86)/Windows Kits/10/bin/10.*/x64/fxc.exe")
     if(screen_look_fxc_candidates)
@@ -98,6 +105,13 @@ if(WIN32)
             VERBATIM)
         add_custom_target(dingosdk_screen_look_check DEPENDS "${screen_look_checked}")
         add_dependencies(dingosdk_overlay dingosdk_screen_look_check)
+        add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/generated/material_transmission.checked"
+            COMMAND "${DINGOSDK_FXC}" /nologo /WX /T vs_5_0 /E vs_main /Fo "${CMAKE_CURRENT_BINARY_DIR}/generated/material_transmission_vs.cso" "${material_transmission_path}"
+            COMMAND "${DINGOSDK_FXC}" /nologo /WX /T ps_5_0 /E ps_main /Fo "${CMAKE_CURRENT_BINARY_DIR}/generated/material_transmission_ps.cso" "${material_transmission_path}"
+            COMMAND "${CMAKE_COMMAND}" -E touch "${CMAKE_CURRENT_BINARY_DIR}/generated/material_transmission.checked"
+            DEPENDS "${material_transmission_path}" VERBATIM)
+        add_custom_target(dingosdk_material_transmission_check DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/generated/material_transmission.checked")
+        add_dependencies(dingosdk_overlay dingosdk_material_transmission_check)
     endif()
 endif()
 
