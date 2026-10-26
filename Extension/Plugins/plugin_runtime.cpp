@@ -6,6 +6,7 @@
 #include "plugin_game_runtime.h"
 #include "plugin_wire.h"
 #include "Engine/Core/Log/logging.h"
+#include "Engine/Core/Platform/user_data_paths.h"
 #include "Engine/Game/Multiplayer/session_tools.h"
 #include "Extension/Multiplayer/Session/session.h"
 #include "Extension/UI/NativeMenu/ui_sound.h"
@@ -275,13 +276,10 @@ void watch() {
     }
 }
 
+// Plugins' own storage, under a separate user-data root in a launch with --dev-data-root. Empty, as
+// when the folder lookup failed, if that cannot be used: storage then goes beside the game.
 std::filesystem::path local_storage() {
-    PWSTR raw{};
-    std::filesystem::path result;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &raw)) && raw)
-        result = std::filesystem::path(raw) / L"ReSkate" / L"Plugins";
-    CoTaskMemFree(raw);
-    return result;
+    try { return user_data::known_folder_root() / L"Plugins"; } catch (...) { return {}; }
 }
 }
 
