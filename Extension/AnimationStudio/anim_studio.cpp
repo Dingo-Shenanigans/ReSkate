@@ -111,6 +111,9 @@ struct CustomTrick {
     // The clips the game may play for its trick (its own and the library's pops of it), for NativeClock.
     std::shared_ptr<const NativeModels> native;
     int order{-1}; // its place in the playlist, when the playlist plays (In turns goes by it)
+    // A trick on ANY pop, as made for one other height (low, mid, high): what COPY TO LOW, MID AND HIGH would make of it,
+    // kept in memory only. "" the trick itself.
+    std::string height;
     // The timeline's catch (find_catch): the board caught, the feet back on the deck. -1 none. Slowed over a longer air.
     float caught{-1};
 };
@@ -1389,6 +1392,7 @@ void read_library_locked(State& s) {
 
 } // namespace
 std::shared_ptr<Clip> read_game_clip(const GameTrick& trick); // a clip of the trick library, below
+std::optional<std::pair<Animation, Clip>> onto_game_pop(const Animation& a, const Clip& clip, const std::string& pop); // below
 namespace {
 float find_catch(const Clip& clip, const Animation& edits); // below
 // ---- the saved tricks the game plays ------------------------------------------------------------------
@@ -1424,6 +1428,7 @@ struct TrickCache {
         FileStamp json, clip;
         std::string pop;
         CustomTrick trick;
+        std::vector<CustomTrick> heights; // on ANY pop: its versions for the other heights (load_custom_trick)
     };
     std::map<std::filesystem::path, Loaded> loaded;
     std::shared_ptr<const std::vector<GameTrick>> catalog;      // the trick library they were read with
@@ -1517,9 +1522,14 @@ const std::vector<std::string>& library_references(TrickCache& cache, const std:
     }
     return cache.references.emplace(trick, std::move(keys)).first->second;
 }
+// What the game may play for a trick: its own clip (clip 0) and the library's clips of it (its pops, its catches), each
+// with its time as the trick's and whether it is another or a higher pop than `made_pop`, the pop the clip is of.
+std::shared_ptr<const NativeModels> natives_for(TrickCache& cache, const std::string& key, const Clip& clip, const std::string& trick,
+                                                const std::string& made_pop);
 // One saved trick read whole, to play: its keys (on its pack's pop when its pack says), its clip, its stance and the
-// clips the game may play for it.
-std::optional<CustomTrick> load_custom_trick(TrickCache& cache, const std::filesystem::path& entry, const Preset& p) {
+// clips the game may play for it. On ANY pop, `heights` gets its versions for the other heights.
+std::optional<CustomTrick> load_custom_trick(TrickCache& cache, const std::filesystem::path& entry, const Preset& p,
+                                             std::vector<CustomTrick>* heights = nullptr) {
     auto clip_path = entry;
     clip_path.replace_extension(L".clip");
     std::ifstream json_in(entry, std::ios::binary);
@@ -1547,8 +1557,49 @@ std::optional<CustomTrick> load_custom_trick(TrickCache& cache, const std::files
     if (right != label_right)
         logging::log(Level::info, Channel::skater, "Animation Studio: {} is labelled as leading with the {} foot but leads with the {}; going by the clip.",
                      p.name, label_right ? "right" : "left", right ? "right" : "left");
-    // What the game may play for this trick: the trick's own clip, and the library's pops of it (a saved trick plays on
-    // whichever the game picks, following that clip's time). Clip 0 is its own.
+    CustomTrick out{trick, p.name, clip, animation, goofy, right, animation->fakie, natives_for(cache, key, *clip, trick, made_pop)};
+    out.caught = find_catch(*clip, *animation);
+    // On ANY pop (its own setting, or its pack's): on each other height it plays what COPY TO LOW, MID AND HIGH makes of
+    // it - one of yours moved onto the game's own clip of that height, its keys timed by the board; one locked to its
+    // maker (or a recording) on its own clip, as made - made here, in memory, so it follows every change to the trick.
+    // On its own height it plays itself.
+    const auto place = [](const std::string& pop) { return pop == "low" || pop == "mid" || pop == "high"; };
+    if (heights && animation->pop.empty() && !piece && place(made_pop)) {
+        const bool locked = locked_key(animation->maker_key) && !animation->editable;
+        for (const char* height : {"low", "mid", "high"}) {
+            if (made_pop == height) continue;
+            try {
+                std::optional<std::pair<Animation, Clip>> moved;
+                if (!locked) moved = onto_game_pop(*animation, *clip, height);
+                CustomTrick version = out;
+                version.height = height;
+                if (moved) {
+                    auto& [copy, game_clip] = *moved;
+                    copy.pop = height;
+                    // The game's clip of that height, once in memory for every trick moved onto it (the same way round).
+                    const auto clip_key = "height|" + copy.source.asset + (clip_leads_right(game_clip).value_or(false) ? "|right" : "|left");
+                    auto& kept = cache.clips[clip_key];
+                    if (!kept) kept = std::make_shared<Clip>(std::move(game_clip));
+                    version.clip = kept;
+                    version.edits = std::make_shared<Animation>(std::move(copy));
+                    version.native = natives_for(cache, clip_key, *kept, trick, height);
+                    version.caught = find_catch(*kept, *version.edits);
+                } else {
+                    auto copy = std::make_shared<Animation>(*animation);
+                    copy->pop = height;
+                    version.edits = std::move(copy);
+                }
+                heights->push_back(std::move(version));
+            } catch (const std::exception& e) {
+                logging::log(Level::warning, Channel::skater, "Animation Studio: {} has no {} pop version: {}", p.name, height, e.what());
+            }
+        }
+    }
+    return out;
+}
+std::shared_ptr<const NativeModels> natives_for(TrickCache& cache, const std::string& key, const Clip& clip_ref, const std::string& trick,
+                                                const std::string& made_pop) {
+    const auto* clip = &clip_ref;
     auto native = std::make_shared<NativeModels>();
     native->edit_up = clip->takeoff;
     native->edit_down = clip->landing;
@@ -1597,9 +1648,7 @@ std::optional<CustomTrick> load_custom_trick(TrickCache& cache, const std::files
             ++index;
         }
     }
-    CustomTrick out{trick, p.name, clip, animation, goofy, right, animation->fakie, std::move(native)};
-    out.caught = find_catch(*clip, *animation);
-    return out;
+    return native;
 }
 } // namespace
 // Every saved animation with a trick, ready to play in game, and how the playlist's tricks take turns. Read from the
@@ -1715,9 +1764,10 @@ LoadedTricks read_custom_tricks(const std::string& test_trick) {
         if (!loaded.trick.clip || !(loaded.json == meta.json) || !(loaded.clip == meta.clip) || loaded.pop != pop) {
             loaded = {};
             try {
-                auto trick = load_custom_trick(cache, entry, p);
+                std::vector<CustomTrick> heights;
+                auto trick = load_custom_trick(cache, entry, p, &heights);
                 if (!trick) continue;
-                loaded = {meta.json, meta.clip, pop, std::move(*trick)};
+                loaded = {meta.json, meta.clip, pop, std::move(*trick), std::move(heights)};
                 ++read_now;
             } catch (const std::exception& e) {
                 logging::log(Level::warning, Channel::skater, "Animation Studio: {} was not loaded: {}", entry.filename().string(), e.what());
@@ -1727,6 +1777,10 @@ LoadedTricks read_custom_tricks(const std::string& test_trick) {
         auto trick = loaded.trick;
         trick.order = p.order;
         tricks->push_back(std::move(trick));
+        for (auto version : loaded.heights) {
+            version.order = p.order;
+            tricks->push_back(std::move(version));
+        }
     }
     // What plays no more lets go of its memory: its trick, its clip when no other trick has it, its models.
     std::erase_if(cache.loaded, [&](const auto& e) { return !used.contains(e.first); });
@@ -3657,7 +3711,8 @@ void on_animation(std::uintptr_t component) noexcept {
                     }
                     if (found)
                         logging::log(Level::info, Channel::skater, "Animation Studio: the game does a {} ({} pop by {}, {:.2f} s in the air), playing your {} ({}).", name,
-                                     pop.empty() ? "unknown" : pop, graded ? "the game's grade" : "air time", l.predicted_air, found->name,
+                                     pop.empty() ? "unknown" : pop, graded ? "the game's grade" : "air time", l.predicted_air,
+                                     found->height.empty() ? found->name : found->name + " as made for the " + found->height + " pop (it is on ANY pop)",
                                      "authored edits over fresh native pose");
                     if (found && !found->edits->pop.empty() && found->edits->pop != pop)
                         logging::log(Level::info, Channel::skater, "Animation Studio: {} is made for a {} pop; with none of yours for a {} pop it plays on this one too.",

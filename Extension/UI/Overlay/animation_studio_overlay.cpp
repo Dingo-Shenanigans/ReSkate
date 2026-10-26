@@ -3125,7 +3125,7 @@ std::string pop_words(const std::string& pop) { return pop.empty() ? "ANY POP" :
 std::vector<std::pair<std::string, ImU32>> tags_of(const studio::Preset& p, const std::string& pop_rule = {}) {
     std::vector<std::pair<std::string, ImU32>> tags;
     const std::string pop = pop_rule.empty() ? p.pop : pop_rule == "any" ? std::string{} : pop_rule;
-    tags.emplace_back(pop.empty() ? "ANY POP" : upper(pop) + " POP", blue);
+    tags.emplace_back(pop.empty() ? "ANY POP: LOW / MID / HIGH" : upper(pop) + " POP", blue);
     // Its stance as you ride: nothing for your own, else fakie, switch or switch fakie.
     static constexpr std::array<const char*, 4> stances{"", "FAKIE", "SWITCH", "SWITCH FAKIE"};
     if (const auto version = studio::stance_version(p, ui().own_lead_right); version > 0)
@@ -3889,8 +3889,9 @@ void trick_drawer(ImDrawList* d, const Fonts& f, const studio::View& v, ImVec2 a
         }
         y += 44 * k;
         y += paragraph(d, f.bold, 13 * k, ImVec2(x, y), w, faint,
-                       "Any pop: it plays on every pop the game does, unless you have one of this trick saved for that exact pop. "
-                       "Copy makes three copies, one for each pop height, to change each on its own.");
+                       "Any pop: it plays on every pop height, each the way COPY TO LOW, MID AND HIGH makes it - done for you in game, "
+                       "and it follows every change you make. A trick of yours saved for that exact pop plays there instead. "
+                       "Copy makes the three as tricks of their own, to change each on its own.");
         y += 16 * k;
     }
     // Another maker's trick never goes in your packs, so it has none to choose.
