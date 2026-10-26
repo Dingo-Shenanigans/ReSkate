@@ -110,12 +110,22 @@ CHECK BEFORE CALLING THIS STABLE
    native document/resource reference. Confirm no missing/outdated library error.
 3. Move/rotate a joint with a gizmo, undo/redo, change time brackets and reopen a
    saved personal animation. Confirm the edit survives restart.
-4. Test an authored leg edit during the corresponding normal and switch tricks;
-   compare the affected physical leg and source timing with its studio preview.
+4. Save an obvious edit, tick ACTIVE and choose a playlist. Switch that playlist
+   on; with none on, custom tricks do not play. TEST IN GAME is temporary.
+5. Test normal, switch, fakie and switch fakie on low/mid/high, with Exact stance
+   and Front foot separately. Check limb ownership, board heading and timing.
+6. Check Fixed priority with an Alternate pack below it, In turns and Shuffle.
+   Repeat pop/selection tests online with other skaters present.
+Airborne catch slowing and forced foot contact are disabled in this candidate;
+catch/drop-preview tools are hidden. Indexed grinds/transitions are not all live
+replacement bindings.
 
 REPORT A PROBLEM
-F8 > PLAYBACK > Export diagnostics. Include build-info.json, the exported diagnostic
-folder, trick/preset name, stance and whether the issue is in F8 or live gameplay.
+SETTINGS > STUDIO > REPORT A BUG creates a local ZIP. Include build-info.json,
+the report, trick/preset name, pop, stance, online/offline and whether the issue
+is in F8 or live gameplay. Do not include ReSkate.Tricks/market/account files.
+Failed pack updates keep or restore old files when possible. If recovery failed,
+keep ReSkate.Tricks/.pack-transactions and the reported recovery location.
 This is a candidate with automated checks, not a claim that visual testing passed.
 ''', encoding='utf-8')
     print(f'Staged complete tester candidate: {output}', flush=True)

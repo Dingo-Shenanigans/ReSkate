@@ -1,126 +1,49 @@
-# Animator Studio
+# Animator Studio implementation
 
-An in-game animation editor (F8, or L3 + R3 held on a controller). The current runtime applies
-saved authored keys over native gameplay motion; saving an edited clip does not replace the
-complete native animation. Source clips remain inspectable in the studio, where raw native
-clips can lack the final board/IK constraints. See `animation-native-playback-v2.md` for that
-backend, and `animation-native-clip-pipeline.md` for the new offline full native-source replacement
-experiment. Native compilation is not yet connected to the F8 Save action.
+This describes the 1.0.9 candidate. User installation and operation are in [README](../README.md); release acceptance is in the [checklist](studio-release-checklist.md).
 
-## How to use it
+## Runtime contract
 
-1. F8 (L3 + R3): a loading screen, then the studio in the game's own lit studio room, the skater
-   standing on his board.
-2. TRICKS: open one of the game's own tricks at its pop (low, mid or high).
-3. JOINTS: pick a joint or the Board and turn it (drag, or the left stick); G moves the hips or the board,
-   X / Y / Z lock an axis. Keys sit on whole frames.
-4. KEYS: key this frame, Select all keys (Ctrl+A; Shift+click adds one), drag one to move all, Del takes them off.
-5. Save (Ctrl+S / Menu). Do the trick in game to test the authored keys over native motion.
+Studio is compiled into ReSkate.dll. ReSkate 2.1.2 and game build 20260929 / Steam 25414733 are the supported integration. Do not infer support for another executable from a successful source build.
 
-## How it works
+Gameplay edits are applied to fresh native body/board poses. The selected trick, pop, stance and takeoff context decide which saved edits are eligible. The native clip matching clock supplies source timing; marked fallback paths are not proof of a decoded native animation-graph state.
 
-The implementation notes below describe the historical capture/render replacement prototype;
-the current gameplay edit backend and native compilation experiment are documented above.
+Studio and plugin pose/render/board callbacks have separate registrations. Studio's outgoing pose filter uses `set_animation_studio_pose_filter`; it does not replace the plugin's filter. Graphics descriptors are allocated in disjoint ranges through `descriptor_slots.h`.
 
-- **Which trick**: the game keeps the name of the trick in the air ("ollie", "kickflip", "heelflip") at
-  the skater's animation holder (component +0xa0) +0x20 -> +0x250 -> +0x98. It is there from about
-  0.05 s after takeoff. A saved animation carries that name.
-- **Pose**: the skater's evaluated pose (395 joints, `read_native_pose_layout`) is written when it is
-  handed to the renderer (the render pose hook in `native_skater.cpp`); written right after the
-  animation update it does not survive the body physics. Only Hips and the joints below it are replaced.
-- **Board**: the board rig's place in the world (bone 1) is set at the board's render publication, so
-  the deck, trucks, wheels and a pack deck's pieces all move together. The board's keys and its fields
-  work from where the board starts: 0, 0, 0 is the board at the trick's first frame, on the ground, as it
-  lies there (Y up).
-- **Pop**: at takeoff the board's upward speed (its root physics body) gives the length of the air; the
-  saved animation's air is stretched to it, and an animation saved for that pop (low, mid, high) is chosen
-  over one for any pop.
-- **The room**: the studio shows the skater in the character room of the game menu's Skaters page (lit
-  only while that page is open). On open it walks the game's menu there with the menu's own navigation
-  events and RB on a scripted pad (after PR #230 by Norms: `studio_room.*`, `Extension/UI/Overlay/scripted_pad.*`),
-  hides the menu's own skater and board, and draws ours on the room's floor; on close it walks back. If
-  the walk fails the studio opens where the skater is (PLAYBACK > Studio room turns the room off).
-- **On the floor**: the studio pins the board's lowest point (its wheels, or a tip when it tilts) to the
-  floor before the pop and after the landing, follows the clip's own rise in the air, and never lets the
-  board under the floor. Until a trick is picked the skater stands on his board in a casual stance.
-- **Studio**: Freecam with an orbit camera around the skater, the game's HUD hidden, the skater slowed to
-  a stop (horizontal body velocity, every physics step), the hands' attach joints made tiny (the props the
-  game hangs there while he idles). Everything is given back on close.
-- **Other players**: a saved trick playing in game goes into the pose ReSkate sends of the local skater
-  (`multiplayer::set_local_pose_filter`, after PR #230).
-- **Loading screen**: skate.'s look, with its own pictures read from the game's data into the overlay's
-  atlas (`animation_studio_images.*`): the grain, the brush bar, the rough tile and the kickflipping board
-  of skate.'s loading screen (`flip_Skateboard_Kickflip_256`, 27 frames, 9 x 3).
+Base stance comes from the profile's `DefaultStanceIsGoofy`. Runtime leading-foot flags live in `Engine/Game/Build/20260929/skater_lead_foot.h`. Exact stance and Front foot are different authoring/playback choices; check both physical limb ownership and fakie state when changing selection.
 
-## Files
+Airborne catch slowing, off-clip pose correction and forced foot contact are disabled by `air_corrections` in this candidate. Their code remains compiled, but the UI hides catch tools/drop preview. Ground contact protection and other-pop handling remain separate code paths. Do not advertise disabled behavior as an active feature.
 
-- `Extension/AnimationStudio/anim_core.*`: keys, blending, the profile (JSON) and clip (`FAS3`) files.
-  Tests: `DINGOSDK_BUILD_ANIMATION_STUDIO_TESTS`.
-- `Extension/AnimationStudio/anim_studio.*`: the game side. `studio_room.*`: the walk to the room.
-- `Extension/UI/Overlay/animation_studio_overlay.cpp`: the screen (the game's Trick List look) and the
-  loading screen. `animation_studio_images.*`: the game's pictures for them.
-- `contrib/animator-studio/make_trick_library.py`: makes a list from the game's own clips with
-  `reskate_cli animation-export` (98 clips; read from `ReSkate.Tricks/library/`). The list is hidden for
-  now: in flips the game places the board with its physics, which the clips do not hold.
+The native library is built from the supported game's data, with versioned build metadata. Inventory includes unsupported controllers and graph/document entries. A converted preview or saved native piece is not automatically a verified live grind/transition override.
 
-Saved animations go to `ReSkate.Tricks/` beside Skate.exe.
+## Saved data and workers
 
-## Local prototype: animation packs and transition research
+Animations use JSON metadata and FAS clip payloads. The reader retains FAS1/FAS2 compatibility and supports FAS3 compressed joint data plus rotation-only ownership masks. Malformed payloads are rejected. Mirror operations carry masks and keyed anatomy to the matching joints.
 
-ANIMATIONS > Create a new pack copies the current pack's choices, or starts with all saved
-animations. Active pack cycles the available packs. Variant playback chooses Fixed (one chosen
-variation per trick/pop) or Alternate (one of the linked variations at random on each attempt, never the same one
-twice running).
-PLAYBACK > Save as new variation preserves the original file. Include saved variation in pack
-changes membership; Choose this fixed variation changes that slot's preferred choice. These
-actions use the saved animation, so save edits first. A new variation is not automatically added
-to an existing pack. Each base stance/switch combination has its own fixed choice. Gameplay
-plays only saved tricks with the same base stance and switch state at takeoff. In another stance the
-trick keeps its native animation, because the mirroring between stances is in development.
-Native bone positions/scales are retained except for explicitly authored
-offsets; board keys are added over the native board in the placement frame (and stay native
-on rails). This transfers edits, not all of
-the base motion. Unknown live switch state keeps native animation. Saved tricks from before
-switch was kept are treated as normal stance.
+Saved tricks load on a background worker. Immutable snapshots keep the animation/render workers from reading mutable editor state. Clip/model caches share common native data. A stale snapshot must not be described as evidence that the newest saved file played.
 
-To know if the skater is riding switch, the studio compares two things:
+Packs reference saved tricks. Named playlists select packs/tricks; one playlist is on at a time. Fixed selection resolves the winning entry per slot before expanding an Alternate slot. Shuffle and In turns retain their broader candidate groups.
 
-- which foot leads right now, read from the game (`left_foot_leads_mask` in `grind_exit.h`)
-- the skater's own stance, from the game's own stance option (`DefaultStanceIsGoofy` in the profile)
+Pack imports validate files before preparing a `PackFileTransaction`. All replacement files are staged and originals backed up before the commit. Reported replacement errors restore old files; failed recovery retains backups. This is rollback for reported file errors, not automatic crash recovery or a claim that concurrent observers see a single atomic multi-file rename.
 
-When the two differ, the skater is riding switch.
+Recycle Bin failure/cancellation aborts deletion before pack metadata is removed. Remaining files are never permanently deleted as a fallback. A partially completed shell operation can still leave some files in the Recycle Bin.
 
-SAVED > NEW PACK NAME accepts a pack name such as Steezy; Create a new pack creates and selects
-it without replacing an existing pack. These are local packs, not an online marketplace.
+## Market and diagnostics
 
-TRICKS now exposes decoded native clips and a Native asset tree. The tree reads
-`library/native-catalog.json`, generated by `index_native_assets.py` from a CLI find-name dump.
-It is paged (50 leaves) and includes graph states/transitions/parameters as well as candidate
-clips. Categories and kinds are name-based hints, not verified engine types. Editable means
-there is a converted clip; Indexed means decoding/binding is still needed. Native clips may
-lack physics-driven board placement and graph/IK constraints. Grind preview clips can be edited
-and saved, but are not automatically installed as live grind phase overrides.
+`marketplace.*` handles Thunderstore listing, downloads, account checks and publishing. Tokens are DPAPI-protected for the Windows user; authenticated requests do not forward tokens through redirects. Linking an account is not itself evidence that a real pack publish succeeded.
 
-Packs live in `ReSkate.Tricks/presets/`, with the selected pack name in `current.txt`. They reference
-the existing `.json`/`.clip` animation pairs by name; sharing a pack also requires those pairs.
-Fixed choices follow the pack's order, skipping unavailable files. Alternation follows stable
-filename order and advances once per named trick per attempt; it resets when the game restarts.
-An exact-pop variant takes precedence over an any-pop fallback. With no pack, one alphabetical
-variant per trick/pop is used. Switching packs does not change a trick already in flight.
+Standard bug reports collect bounded diagnostics, relevant preset files, log tail, settings and version information. They are saved locally and exclude account.key. Automatic runtime crash reporting is a separate ReSkate facility.
 
-`animstudio trace start` records a local, bounded 60-second observation window;
-`animstudio trace stop` exports early and `animstudio trace status` reports progress. CSVs go under
-`ReSkate.Tricks/research/`. State/name/mode changes are kept every engine tick, with periodic
-samples at up to 20 Hz. Export happens on stop, not on animation/render workers. No new game
-memory is written by the recorder. A failed export retains samples for a retry.
+## Relevant files
 
-The trace observes the already guarded physics selector, trick-name string and board vertical
-velocity. It does not yet read current graph node/phase, grind enum, rail constraints, IK weights
-or blend weights. `rail_range` means only a physics-state value in 400..499. `other` must not be
-interpreted as ground. `custom_playback_enabled` is an option, not proof an override was applied.
-The goofy flag is the configured stance, not a newly measured runtime stance. Physics changes
-between engine ticks can be missed. See `animation-research.md` for the next measurements.
+| Area | Source |
+|---|---|
+| Serialization, animation math, native clock | `Extension/AnimationStudio/anim_core.*` |
+| Selection and playback rules | `anim_presets.h`, `anim_runtime_rules.h`, `anim_playback.h` |
+| Game/editor integration and workers | `anim_studio.*`, `studio_room.*`, `pop_grades.*` |
+| File rollback and cancellation | `pack_file_transaction.h`, `Test/pack_file_tests.cpp` |
+| Native inventory/build | `native_library.*`, `native_asset_names.h` |
+| UI and key bindings | `Extension/UI/Overlay/animation_studio_overlay.cpp` |
+| Market | `marketplace.*`, `marketplace_listing.h` |
 
-## Later
-
-- Grabs, grinds and manuals: the game names them too.
+See the [build guide](studio-tester-build.md) for regression and library checks. Legacy recording tools and early prototype notes are historical, not current user workflows.
