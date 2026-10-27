@@ -67,3 +67,5 @@ Standard bug reports collect bounded diagnostics, relevant preset files, log tai
 | Market | `marketplace.*`, `marketplace_listing.h` |
 
 See the [build guide](studio-tester-build.md) for regression and library checks. Legacy recording tools and early prototype notes are historical, not current user workflows.
+
+Studio work by 22sh, Fourth Studio, Norms and Steez, with testing by THE CREW, built on ReSkate and its contributors. The integration retains the original authors' commit history.

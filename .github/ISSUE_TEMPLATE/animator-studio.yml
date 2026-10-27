@@ -11,9 +11,9 @@ body:
   - type: input
     id: studio-build
     attributes:
-      label: Studio version and source commit
+      label: ReSkate build and source commit
       description: Include the supplied build-info.json or release identifier when available.
-      placeholder: "1.0.9, commit / DLL SHA256"
+      placeholder: "ReSkate release, commit / DLL SHA256"
     validations:
       required: true
   - type: input

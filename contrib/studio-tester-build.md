@@ -14,7 +14,7 @@ python -m pip install -r contrib/animator-studio/requirements-test.txt
 # Optional, when building the Spotify helper:
 # cargo fetch --locked --manifest-path SpotifyHelper/Cargo.toml
 cmake --preset ci-windows
-cmake --build build/ci-windows --config Release --target dingosdk_runtime dingosdk_launcher dingosdk_animation_studio_tests dingosdk_studio_pack_file_tests dingosdk_native_tools_view_tests dingosdk_arm_reach_tests dingosdk_carry_tests dingosdk_pose_place_tests dingosdk_anim_graph_probe dingosdk_plugin_tests dingosdk_trick_watch_tests dingosdk_board_material_tests --parallel 4
+cmake --build build/ci-windows --config Release --target dingosdk_runtime dingosdk_launcher dingosdk_animation_studio_tests dingosdk_studio_pack_file_tests dingosdk_native_tools_view_tests dingosdk_arm_reach_tests dingosdk_carry_tests dingosdk_pose_place_tests dingosdk_effect_geometry_tests dingosdk_effect_lifetime_tests dingosdk_outfit_kind_tests dingosdk_anim_graph_probe dingosdk_plugin_tests dingosdk_trick_watch_tests dingosdk_board_material_tests --parallel 4
 ctest --test-dir build/ci-windows -C Release --output-on-failure
 python -m unittest discover -s contrib/animator-studio -p 'test_native*.py'
 python -m unittest discover -s contrib/Test -p '*tests.py'

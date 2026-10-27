@@ -392,5 +392,22 @@
       "VM/src/lvmutils.cpp": "8758be8c575f1773d429d5236c6fc125c358659910fdf8a521bca59a830420e3",
       "lua_LICENSE.txt": "1d913b8bad19567e42303dfbc18e9c1e937c3c3f9ad64ae994f1bd18704dd020"
     }
+  },
+  "studio_fonts": {
+    "repository": "https://github.com/google/fonts",
+    "provenance": "Existing Animator Studio font imports; the upstream commit was not recorded. Exact vendored bytes are pinned by the file hashes.",
+    "license": "SIL Open Font License 1.1; each font has its adjacent OFL notice",
+    "files": {
+      "fonts/Anton-Regular.ttf": "a4ba3a92350ebb031da0cb47630ac49eb265082ca1bc0450442f4a83ab947cab",
+      "fonts/Anton-OFL.txt": "ee67e6ee22790b7929f1a3769ca2801d565c64b5a9096942c1adf5596de9c9e4",
+      "fonts/BebasNeue-Regular.ttf": "08e4623805102d819f58601e46e345648846075e363b2ceb23313c2d1c83ec73",
+      "fonts/BebasNeue-OFL.txt": "a6b230055933f80e5199eb909a67ebb04937a5b4172116d4bfb13a41f30ded38",
+      "fonts/Knewave-Regular.ttf": "ed3bac761d755b89ab3082c844d4a623d63c7d6eef85d22ba1fb6c680e6a4436",
+      "fonts/Knewave-OFL.txt": "cd0024dfad27a4fc3747307bb258d5ca8a9928d3ab143854c6490d912bdeb874",
+      "fonts/RubikDirt-Regular.ttf": "9de3d928e434a47ec85d759012c8a0ebfeab0860076eea4e3989a47c5e213123",
+      "fonts/RubikDirt-OFL.txt": "391b628704c6ea2248384725a036424ec24e5af88ab42854e0333629d28d2378",
+      "fonts/SedgwickAveDisplay-Regular.ttf": "3b9c295a146bafb93c8a12c1dde38a2fe47512777daf1458825e291752469a38",
+      "fonts/SedgwickAveDisplay-OFL.txt": "7727a792e40376a1a6ef139e2b94a8199692de5a2ea48a3d72e7161bf672753d"
+    }
   }
 }
