@@ -1500,6 +1500,7 @@ void menu_sounds(bool page_makes_its_own) {
 void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks,
                      bool& visible) {
     menu::tab_switched = false;
+    if (std::exchange(menu.close_requested, false)) visible = false;
     const bool on_controls = menu.page == page_settings && menu.settings_tab == 0;
     const bool on_voice = menu.page == page_online && menu.multiplayer_tab == multiplayer_voice_tab;
     const bool was_drawn = menu.last_menu_frame + 1 == ImGui::GetFrameCount();

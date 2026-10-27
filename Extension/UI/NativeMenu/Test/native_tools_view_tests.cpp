@@ -261,6 +261,22 @@ int main() {
             activate(split, maps, cb, "select-level", maps.levels[2].asset);
             check(split.destination.empty(), "Splash cannot be selected");
         }
+        {
+            // Mod Options > PLAYER and the ReSkate menu's SKATER page open the Animation Studio on this rule.
+            overlay::Model m;
+            check(overlay::animator_studio_blocked_reason(m) == "The studio opens once your skater is in the game." &&
+                      !overlay::animator_studio_openable(m),
+                  "The studio waits for the skater");
+            m.debug.available = true;
+            check(!overlay::animator_studio_openable(m), "A debug lease (No bail, noclip, freecam) without local controls is not the skater");
+            m.debug.ui_available = true;
+            check(overlay::animator_studio_openable(m) && overlay::animator_studio_blocked_reason(m).empty(),
+                  "The studio opens with the skater in the game, with no reason");
+            m.debug.park_editor = true;
+            check(overlay::animator_studio_blocked_reason(m) == "Close Park Editor to open the studio." &&
+                      !overlay::animator_studio_openable(m),
+                  "but not while Park Editor is open");
+        }
         std::puts("Native ReSkate control checks passed.");
         return 0;
     } catch (const std::exception& e) { std::fprintf(stderr, "%s\n", e.what()); return 1; }

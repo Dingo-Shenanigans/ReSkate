@@ -1,4 +1,5 @@
 #include "skate_menu_internal.h"
+#include "Extension/AnimationStudio/anim_studio.h"
 
 #include <algorithm>
 #include <array>
@@ -245,6 +246,11 @@ void dark_pop_controls(SkateMenu& menu, const Model& model, const CallbacksV3& c
 }
 
 void skater_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
+    if (primary_button(menu, "OPEN ANIMATION STUDIO", animator_studio_openable(model))) {
+        anim_studio::request_open(true);
+        menu.close_requested = true;
+    }
+    if (const auto blocked = animator_studio_blocked_reason(model); !blocked.empty()) warn(blocked.c_str());
     category_tabs(menu, menu.skater_tab, {"FREECAM", "FIRST PERSON", "CHEATS"}, "skater-tabs");
     ImGui::PushID(menu.skater_tab);
     ImGui::BeginChild("skater-tab", ImVec2(0, page_body_height(menu)), ImGuiChildFlags_NavFlattened);
