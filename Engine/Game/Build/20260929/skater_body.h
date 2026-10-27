@@ -80,6 +80,12 @@ inline constexpr std::uintptr_t bone_record_size = 0x70;
 inline constexpr std::size_t body_bone_count = 0x18;
 inline constexpr std::uintptr_t bone_peak_offset = 0x50;      // float, ordinary contacts
 inline constexpr std::uintptr_t bone_tracked_peak_offset = 0x54; // float, near a tracked point
+inline constexpr std::uintptr_t bone_normal_offset = 0x00, bone_point_offset = 0x40;
+// The physics getter copies body n's world matrix from +0x20, 64 bytes (47c8590).
+inline constexpr Fingerprint body_transform_contract{0x47c8590, {
+    0x49,0x63,0xc0,0x4c,0x69,0xc0,0x30,0x01,0x00,0x00,0x48,0x8b,0x41,0x20,0xc4,0xc1,
+    0x7c,0x10,0x44,0x00,0x20,0xc4,0xc1,0x7c,0x10,0x4c,0x00,0x40,0xc5,0xfc,0x11,0x02}};
+inline constexpr std::uintptr_t body_transform_offset = 0x20;
 inline constexpr std::uintptr_t bone_slide_offset = 0x20;        // float[4], and its tracked one at +0x30
 inline constexpr std::uintptr_t bone_tracked_offset = 0x10;      // from an ordinary field to its tracked one
 inline constexpr std::uintptr_t bone_hit_vehicle_offset = 0x60;  // bytes

@@ -1,5 +1,7 @@
 #pragma once
 #include "developer_board_material.h"
+#include "Engine/Vfs/mod_materials.h"
+#include "Engine/Vfs/mod_item_sources.h"
 #include <cstring>
 #include <format>
 #include <optional>
@@ -14,6 +16,13 @@
 // integer or a switch picks how the board is drawn (the foil looks the store sells among them), so
 // those are only read. Nothing of the board's items changes and nobody else sees it: other players
 // draw this board from its cosmetics, as they are.
+//
+// A mod's own board item may also declare, in its reskate-materials.json (Engine/Vfs/mod_materials.h),
+// colours and numbers its compiled shader reads. Their defaults live in that shader, so the material
+// has no live value of them until one is set: while that item is equipped (and is not one the game
+// sells), a plugin may hold a declared colour too. The engine's typed setter adds it to the material
+// at native preset priority, as the developer board adds its colours, and when it is let go the
+// declared default is written back (a value once added is never taken out: the renderer copies it).
 namespace dingosdk::board_material {
 enum class Part : std::uint8_t { deck, grip, trucks, wheels };
 inline constexpr std::array<std::string_view, 4> part_names{"deck", "grip", "trucks", "wheels"};
@@ -24,6 +33,7 @@ struct Parameter {
     Kind kind{Kind::other};
     Colour value{};         // a colour, or a number in [0]
     std::int32_t integer{}; // an integer, or a switch's 0 or 1
+    bool inherited{};       // declared by the item's mod, with no live value yet: `value` is its default
 };
 // The two colours known by what they colour (the developer board animates them): the graphic's and
 // the base's.
@@ -47,6 +57,16 @@ namespace detail {
 struct Node {
     std::uintptr_t address{};
     Parameter parameter;
+    std::uint16_t identity{}; // its ParamDbKey identity
+};
+// A colour or a number the equipped item's mod declares for the part's material
+// (mods::MaterialDeclaration), as the board's walk is given it: only while that item is equipped.
+struct Declared {
+    Part part{};
+    std::uint64_t key{};
+    std::uint16_t identity{};
+    Kind kind{}; // colour or number
+    Colour fallback{}; // the shader's default, as the mod declares it
 };
 struct Material {
     std::uintptr_t item{}, address{};
@@ -56,6 +76,8 @@ struct Material {
 struct Found {
     std::vector<Material> materials;
     bool pending{}; // a recipe on its way: nothing is written
+    std::vector<Declared> declared; // what the equipped items' mods declare (declarations below)
+    std::array<bool,4> declarations_pending{};
 };
 // Each part's named material on the board's slot controllers; the deck slot holds two.
 struct Target {
@@ -98,6 +120,7 @@ template <class Memory> std::vector<Node> parameters(Memory& m, std::uintptr_t m
             const auto type = m.ptr(node, n::parameter_type);
             Parameter p;
             p.key = key.hash;
+            const auto identity = key.identity;
             if (type) {
                 const auto info = m.ptr(type);
                 // A type's information is in the game's image, as the board's colour descriptor is.
@@ -113,7 +136,7 @@ template <class Memory> std::vector<Node> parameters(Memory& m, std::uintptr_t m
             } else if (p.kind == Kind::toggle) {
                 p.integer = raw[0] != 0;
             }
-            out.push_back({node, p});
+            out.push_back({node, p, identity});
         }
     }
     return out;
@@ -176,14 +199,32 @@ inline const char* kind_name(Kind kind) noexcept {
     default: return "of a kind plugins do not set";
     }
 }
+inline const Declared* declared(const Found& found, Part part, std::uint64_t key) noexcept {
+    for (const auto& d : found.declared)
+        if (d.part == part && d.key == key) return &d;
+    return nullptr;
+}
 // Whether `value` may be held on that key of the part: empty, and its kind in `kind`, else why not.
+// A key the part's material holds live is checked as it is held; one it does not hold may be a colour
+// the equipped item's mod declares. Integers and switches are never set, whatever a mod declares.
 inline std::string refusal(const Found& found, Part part, std::uint64_t key, const Colour& value, bool colour, Kind& kind) {
     const auto name = part_names[static_cast<std::size_t>(part)];
     std::optional<Kind> has;
+    std::optional<std::uint16_t> identity;
     for (const auto& material : found.materials)
         if (material.part == part)
             for (const auto& node : material.nodes)
-                if (node.parameter.key == key) has = node.parameter.kind;
+                if (node.parameter.key == key) has = node.parameter.kind, identity = node.identity;
+    const auto* mod = declared(found, part, key);
+    if (has && mod && (*has != mod->kind || *identity != mod->identity))
+        return std::format("the {}'s material holds {:016x} as {}, not as its mod declares it", name, key, kind_name(*has));
+    if (!has && mod) {
+        // Added through the engine's typed setter, which takes a colour's type (a number's is not
+        // known to this build's addresses): a number has to have a live value first.
+        if (mod->kind != Kind::colour)
+            return std::format("{:016x} is a number the {}'s shader declares; only a declared colour can be added", key, name);
+        has = mod->kind;
+    }
     if (!has) return std::format("the {} has no parameter {:016x}", name, key);
     if (*has != Kind::colour && *has != Kind::number)
         return std::format("{:016x} is {}, which picks how the board is drawn; plugins only read it", key, kind_name(*has));
@@ -201,22 +242,32 @@ struct Hold {
     std::uint64_t key{};
     Kind kind{};
     Colour value{};
+    bool declared{}; // held through the equipped item's declaration: only while that declares it
 };
 struct Saved {
-    std::uintptr_t material{}, node{};
+    std::uintptr_t material{}, node{}; // node 0: added this tick, not yet walked
     Kind kind{};
     Colour original{}, last{};
     std::uint8_t settling{}; // publishes still owed for `last`
+    std::uint64_t key{};
 };
 inline bool same(Kind kind, const Colour& a, const Colour& b) noexcept {
     return kind == Kind::colour ? a == b : a[0] == b[0];
 }
+// A held key still holds: a declared one only while the equipped item declares it, as it was.
+inline bool holds_now(const Hold& hold, const Found& live, const Material& material, const Node* node) noexcept {
+    if (!hold.declared) return true;
+    const auto* d = declared(live, material.part, hold.key);
+    return d && d->kind == hold.kind && (!node || node->identity == d->identity);
+}
 // One tick, as the developer board's colours go (developer_hoodie_detail::animate): what is held
 // written where it is not yet, and published until it shows (the renderer shows a value one publish
 // late); what is no longer held put back while it is still ours, a value changed by the game since
-// left as the game has it. write(material, node, kind, value) -> written; publish(item).
-template <class Write, class Publish>
-void apply(std::vector<Saved>& saved, const std::vector<Hold>& holds, const Found& live, Write& write, Publish& publish) {
+// left as the game has it. A declared colour the material does not hold yet is added
+// (insert(material, declared, value) -> added), and is put back to its declared default when let go.
+// write(material, node, kind, value) -> written; publish(item).
+template <class Write, class Publish, class Insert>
+void apply(std::vector<Saved>& saved, const std::vector<Hold>& holds, const Found& live, Write& write, Publish& publish, Insert& insert) {
     if (live.pending) return;
     using developer_hoodie_detail::settle_publishes;
     std::vector<Saved> next;
@@ -227,10 +278,10 @@ void apply(std::vector<Saved>& saved, const std::vector<Hold>& holds, const Foun
             const auto& p = node.parameter;
             if (p.kind != Kind::colour && p.kind != Kind::number) continue;
             const auto hold = std::find_if(holds.begin(), holds.end(), [&](const Hold& h) {
-                return h.part == material.part && h.key == p.key && h.kind == p.kind;
+                return h.part == material.part && h.key == p.key && h.kind == p.kind && holds_now(h, live, material, &node);
             });
             const auto at = std::find_if(saved.begin(), saved.end(), [&](const Saved& s) {
-                return s.material == material.address && s.node == node.address && s.kind == p.kind;
+                return s.material == material.address && s.key == p.key && s.kind == p.kind;
             });
             const Saved* was = at == saved.end() ? nullptr : &*at;
             const bool ours = was && same(p.kind, p.value, was->last);
@@ -238,28 +289,149 @@ void apply(std::vector<Saved>& saved, const std::vector<Hold>& holds, const Foun
             if (hold != holds.end()) {
                 if (same(p.kind, p.value, hold->value)) {
                     const std::uint8_t left = ours ? was->settling : 0;
-                    next.push_back({material.address, node.address, p.kind, original, hold->value, static_cast<std::uint8_t>(left ? left - 1 : 0)});
+                    next.push_back({material.address, node.address, p.kind, original, hold->value, static_cast<std::uint8_t>(left ? left - 1 : 0), p.key});
                     show = show || left != 0;
                 } else if (write(material.address, node.address, p.kind, hold->value)) {
-                    next.push_back({material.address, node.address, p.kind, original, hold->value, settle_publishes});
+                    next.push_back({material.address, node.address, p.kind, original, hold->value, settle_publishes, p.key});
                     show = true;
                 } else if (was) {
                     next.push_back(*was);
                 }
             } else if (was && (ours || same(p.kind, p.value, was->original))) {
-                // Back to the board's own value, and published until it shows.
+                // Back to the board's own value (a declared colour's default, for one added), and
+                // published until it shows.
                 const bool first = !same(p.kind, was->last, was->original);
                 const bool back = same(p.kind, p.value, was->original) || write(material.address, node.address, p.kind, was->original);
                 const std::uint8_t left = first ? settle_publishes : was->settling ? was->settling - 1 : 0;
                 if (!back) next.push_back(*was);
-                else if (left) next.push_back({material.address, node.address, p.kind, was->original, was->original, left});
+                else if (left) next.push_back({material.address, node.address, p.kind, was->original, was->original, left, p.key});
                 show = show || back;
+            }
+        }
+        // A declared colour this material does not hold yet: added, with its declared default as
+        // what it goes back to.
+        for (const auto& hold : holds) {
+            if (!hold.declared || hold.part != material.part || hold.kind != Kind::colour) continue;
+            if (std::any_of(material.nodes.begin(), material.nodes.end(), [&](const Node& n) { return n.parameter.key == hold.key; })) continue;
+            const auto* d = declared(live, material.part, hold.key);
+            if (!d || d->kind != Kind::colour || !holds_now(hold, live, material, nullptr)) continue;
+            if (insert(material.address, *d, hold.value)) {
+                next.push_back({material.address, 0, Kind::colour, d->fallback, hold.value, settle_publishes, hold.key});
+                show = true;
             }
         }
         if (show && std::find(shown.begin(), shown.end(), material.item) == shown.end()) shown.push_back(material.item);
     }
     saved = std::move(next);
     for (const auto item : shown) publish(item);
+}
+template <class Write, class Publish>
+void apply(std::vector<Saved>& saved, const std::vector<Hold>& holds, const Found& live, Write& write, Publish& publish) {
+    auto none = [](std::uintptr_t, const Declared&, const Colour&) { return false; };
+    apply(saved, holds, live, write, publish, none);
+}
+
+// ---- declarations ---------------------------------------------------------------------------------
+template<class Items, class Reserved>
+bool declared_item_restricted(std::string_view item, bool available, const Items& items, Reserved&& reserved) {
+    const auto key = mods::item_key(item);
+    return !available || items.contains(key) || key.starts_with("dev_") || key.starts_with("own_dev_") || reserved(item);
+}
+// The declarations of the item equipped on `part` (its key, as the game names it; any case), from
+// the owning enabled mod's reskate-materials.json. Other mods cannot grant or suppress keys.
+// A key two declarations from the owner give differently is left out:
+// which shader is right cannot be told. `sold` says whether the game sells an item (or cannot tell
+// yet): its declarations never apply.
+template <class Sold>
+std::vector<Declared> declared_for(const std::vector<mods::MaterialDeclaration>& declarations, Part part, std::string_view item, Sold& sold, std::string_view owner) {
+    std::vector<Declared> out;
+    if (item.empty() || owner.empty() || sold(item)) return out;
+    const auto wanted = mods::item_key(item);
+    std::vector<std::uint64_t> conflicting;
+    for (const auto& d : declarations) {
+        if (d.mod != owner || d.part != part_names[static_cast<std::size_t>(part)]) continue;
+        if (std::none_of(d.items.begin(), d.items.end(), [&](const std::string& i) { return mods::item_key(i) == wanted; })) continue;
+        for (const auto& p : d.parameters) {
+            const Declared next{part, p.key, p.identity, p.colour ? Kind::colour : Kind::number, p.fallback};
+            const auto at = std::find_if(out.begin(), out.end(), [&](const Declared& o) { return o.key == p.key; });
+            if (at == out.end()) out.push_back(next);
+            else if (at->identity != next.identity || at->kind != next.kind || at->fallback != next.fallback) conflicting.push_back(p.key);
+        }
+    }
+    std::erase_if(out, [&](const Declared& d) { return std::find(conflicting.begin(), conflicting.end(), d.key) != conflicting.end(); });
+    return out;
+}
+// When an item's declarations apply: the same item has been equipped, on the same material, for
+// `settle_ms`. A change of cosmetics replaces the board over a few ticks, during which the item read
+// and the board walked can disagree; nothing declared is added to a board until they have settled.
+inline constexpr std::uint64_t settle_ms = 1000;
+struct Gate {
+    std::string item;
+    std::uintptr_t material{};
+    std::uint64_t since{};
+};
+inline bool settled(Gate& gate, std::string_view item, std::uintptr_t material, std::uint64_t now) {
+    if (gate.item != item || gate.material != material || !material) {
+        gate = {std::string(item), material, now};
+        return false;
+    }
+    return now - gate.since >= settle_ms;
+}
+// Holds through a declaration the equipped item no longer makes (another deck, or one being put
+// on) are let go: what they added goes back to its default, and the plugin has to set it again.
+// Returns how many were let go.
+inline std::size_t drop_undeclared(std::vector<Hold>& holds, const Found& live) {
+    if (live.pending) return 0;
+    return std::erase_if(holds, [&](const Hold& h) {
+        if (!h.declared || live.declarations_pending[static_cast<std::size_t>(h.part)]) return false;
+        const auto* d = declared(live, h.part, h.key);
+        return !d || d->kind != h.kind;
+    });
+}
+
+// ---- what plugins see and hold, apart from the game (read, set and clear) ------------------------------
+inline bool live(const Found& found, Part part, std::uint64_t key) noexcept {
+    for (const auto& material : found.materials)
+        if (material.part == part)
+            for (const auto& node : material.nodes)
+                if (node.parameter.key == key) return true;
+    return false;
+}
+// The part's parameters: its first material's (another, a variant, holds the same keys), then what
+// the equipped item's mod declares that the material does not hold yet, at its default.
+inline std::vector<Parameter> listed(const Found& found, Part part) {
+    std::vector<Parameter> out;
+    for (const auto& material : found.materials)
+        if (material.part == part) {
+            for (const auto& node : material.nodes) out.push_back(node.parameter);
+            break;
+        }
+    for (const auto& d : found.declared)
+        if (d.part == part && std::none_of(out.begin(), out.end(), [&](const Parameter& p) { return p.key == d.key; }))
+            out.push_back({d.key, d.kind, d.fallback, 0, true});
+    return out;
+}
+// `owner` holds `value` on that key from now on: empty, else why not. A key is one plugin's at a
+// time, and a plugin holds at most `most_held`.
+inline std::string take(std::vector<Hold>& holds, const Found& found, std::string_view owner, Part part, std::uint64_t key,
+                        const Colour& value, bool colour) {
+    const auto name = part_names[static_cast<std::size_t>(part)];
+    Kind kind{};
+    if (auto why = refusal(found, part, key, value, colour, kind); !why.empty()) return why;
+    const bool by_declaration = declared(found, part, key) != nullptr;
+    const auto held = std::find_if(holds.begin(), holds.end(), [&](const Hold& h) { return h.part == part && h.key == key; });
+    if (held != holds.end() && held->owner != owner) return std::format("{} holds the {}'s {:016x}", held->owner, name, key);
+    if (held == holds.end() &&
+        static_cast<std::size_t>(std::count_if(holds.begin(), holds.end(), [&](const Hold& h) { return h.owner == owner; })) >= most_held)
+        return std::format("a plugin holds at most {} board parameters", most_held);
+    const Colour kept = colour ? value : Colour{value[0], 0, 0};
+    if (held != holds.end()) held->value = kept, held->declared = by_declaration;
+    else holds.push_back({std::string(owner), part, key, kind, kept, by_declaration});
+    return {};
+}
+// What `owner` holds of that part and key (all its parts, all its keys) let go: apply() puts it back.
+inline void release(std::vector<Hold>& holds, std::string_view owner, std::optional<Part> part, std::optional<std::uint64_t> key) {
+    std::erase_if(holds, [&](const Hold& h) { return h.owner == owner && (!part || h.part == *part) && (!key || h.key == *key); });
 }
 } // namespace detail
 } // namespace dingosdk::board_material

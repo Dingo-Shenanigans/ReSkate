@@ -53,6 +53,17 @@ std::size_t scan_region(std::uintptr_t begin, std::size_t size, NativeTypeQuery*
     } __except (EXCEPTION_EXECUTE_HANDLER) {}
     return found;
 }
+// Whether QueryWorkingSetEx reports resident pages at all. Under Wine on macOS
+// (CrossOver), NtQueryVirtualMemory(MemoryWorkingSetExInformation) has no
+// /proc/self/pagemap to read and succeeds with Valid = 0 for every page, even
+// for the stack page just written here.
+bool working_set_supported() noexcept {
+    static const bool supported = []() noexcept {
+        PSAPI_WORKING_SET_EX_INFORMATION page{&page};
+        return QueryWorkingSetEx(GetCurrentProcess(), &page, sizeof(page)) && page.VirtualAttributes.Valid;
+    }();
+    return supported;
+}
 // Scans only the pages of a region that are in the working set. Reading any other
 // committed page makes the kernel fault it in: a zero page never touched, or one
 // paged out to disk. Type records are written when registered, so they are
@@ -89,14 +100,15 @@ std::size_t find_native_types(std::span<NativeTypeQuery> wanted, bool background
     // CPU, I/O and memory priority, yielding between regions, it competes as
     // little as possible with the game's threads for cores and memory bandwidth.
     const bool lowered = background && SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN);
+    const bool resident_only = background && working_set_supported();
     std::uintptr_t at = 0x10000;
     MEMORY_BASIC_INFORMATION info{};
     while (missing && at < 0x00007fffffff0000ULL && VirtualQuery(reinterpret_cast<void*>(at), &info, sizeof(info))) {
         const auto base = reinterpret_cast<std::uintptr_t>(info.BaseAddress);
         // Type records are heap data: private, writable, and never in huge blocks.
         if (readable(info) && info.Type == MEM_PRIVATE && (info.Protect & PAGE_READWRITE) && info.RegionSize <= (1ULL << 30)) {
-            missing -= background ? scan_resident(base, info.RegionSize, wanted.data(), wanted.size())
-                                  : scan_region(base, info.RegionSize, wanted.data(), wanted.size());
+            missing -= resident_only ? scan_resident(base, info.RegionSize, wanted.data(), wanted.size())
+                                     : scan_region(base, info.RegionSize, wanted.data(), wanted.size());
             if (background) SwitchToThread();
         }
         at = base + info.RegionSize;

@@ -116,8 +116,8 @@ CHECK BEFORE CALLING THIS STABLE
    and Front foot separately. Check limb ownership, board heading and timing.
 6. Check Fixed priority with an Alternate pack below it, In turns and Shuffle.
    Repeat pop/selection tests online with other skaters present.
-Airborne catch slowing and forced foot contact are disabled in this candidate;
-catch/drop-preview tools are hidden. Indexed grinds/transitions are not all live
+Drop timing starts at the catch; catch/drop-preview tools are available. General
+airborne foot correction remains disabled. Indexed grinds/transitions are not all live
 replacement bindings.
 
 REPORT A PROBLEM

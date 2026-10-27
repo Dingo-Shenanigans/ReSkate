@@ -27,6 +27,7 @@
 #include "Engine/Resource/cas_codec.h"
 #include "Engine/Resource/ebx_document.h"
 #include "Engine/Resource/toc.h"
+#include "Engine/Resource/shader_lookup.h"
 #include "Engine/Vfs/mod_catalog.h"
 #include "Engine/Vfs/mod_merge_internal.h"
 
@@ -408,6 +409,15 @@ struct Audit {
         catalog = mods::load_catalog(root);
         std::cout << catalog.mods.size() << " mod(s) merged, " << catalog.excluded.size() << " left out, "
                   << catalog.disabled.size() << " disabled; " << catalog.notes.size() << " note(s)\n";
+        for (const auto& name : catalog.set_aside) std::cout << "set aside by variant: " << name << '\n';
+        for (const auto& [owner, variant] : catalog.variants_in_play)
+            std::cout << "variant: " << owner << " -> " << variant << '\n';
+        for (const auto& note : catalog.notes)
+            if (note.find("material row") != std::string::npos) {
+                std::cout << "shader merge: " << note << '\n';
+                if (note.find("material row(s) left out") != std::string::npos)
+                    fail("shader rows", note);
+            }
         if (!catalog.issue.empty()) fail("merge", catalog.issue);
         for (const auto& warning : catalog.warnings) fail("left out", warning);
         if (!catalog.merged) fail("merge", "no merged patch was produced");
@@ -626,9 +636,38 @@ struct Audit {
                   << " MB stored, " << bytesOut / (1024 * 1024) << " MB decoded; " << unparsed << " EBX do not parse\n";
     }
 
+    // A graph is opaque: ownership is checked using its complete program and
+    // relocation bytes, not a guessed native record layout.
+    std::map<Place, fb::Sha1> shaderGraphs;
+    fb::Sha1 shader_graph(int from, const Entry& entry) {
+        const auto location = place(from, entry.file);
+        if (const auto at = shaderGraphs.find(location); at != shaderGraphs.end()) return at->second;
+        const auto bytes = payload(location);
+        const auto& meta = entry.asset->resourceMeta;
+        if (meta.size() != 16) throw std::runtime_error("shader metadata size");
+        std::uint32_t program{}, relocations{}, lookup{};
+        std::memcpy(&program, meta.data(), 4);
+        std::memcpy(&relocations, meta.data() + 4, 4);
+        std::memcpy(&lookup, meta.data() + 8, 4);
+        const auto end = static_cast<std::uint64_t>(program) + relocations;
+        if (end > bytes.size() || bytes.size() - end != lookup)
+            throw std::runtime_error("shader graph boundary");
+        // Exercise the opaque merge path on the installed table as well.
+        const auto roundtrip = fb::shader::merge_program_lookup({bytes, meta}, {});
+        if (!std::equal(bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(end),
+                        roundtrip.resource.begin()))
+            throw std::runtime_error("shader graph changed during lookup merge");
+        Bytes signature(bytes.begin(), bytes.begin() + static_cast<std::ptrdiff_t>(end));
+        signature.insert(signature.end(), meta.begin(), meta.begin() + 8);
+        signature.insert(signature.end(), meta.begin() + 12, meta.end());
+        return shaderGraphs.emplace(location, sha1_of(signature)).first->second;
+    }
+
     // ---------------------------------------------------------------- every mod against the patch
     void mods_against_patch() {
         section("Every mod against the patch");
+        std::map<std::string, bool> shaderOwners;
+        std::size_t shaderCopies{}, differentGraphs{};
         std::map<std::string, Contested> found;   // by bundle name, asset and what the patch has
         std::size_t bundles{}, assets{}, chunks{}, byName{};
         for (std::size_t index = 0; index < catalog.mods.size(); ++index) {
@@ -672,6 +711,21 @@ struct Audit {
                         const auto& kept = patched.assets[there->second];
                         const Entry* shipped{};
                         if (game) if (const auto it = game->at.find(key); it != game->at.end()) shipped = &game->assets[it->second];
+                        if (entry.asset->kind == fb::AssetKind::resource &&
+                            entry.asset->resourceType == fb::shader::programLookupType) {
+                            const auto identity = relative + '|' + bundle.name + '|' + key;
+                            auto& owned = shaderOwners[identity];
+                            try {
+                                const auto retained = shader_graph(1, kept);
+                                const auto contributor = shader_graph(static_cast<int>(index + 2), entry);
+                                ++shaderCopies;
+                                if (retained == contributor) owned = true;
+                                else ++differentGraphs;
+                                if (shipped && retained == shader_graph(0, *shipped)) owned = true;
+                            } catch (const std::exception& error) {
+                                fail("shader graph", identity + ": " + error.what());
+                            }
+                        }
                         // The game's copy carried along is not this mod's content.
                         if (shipped && shipped->asset->sha1 == entry.asset->sha1) continue;
                         auto& record = found[lower(bundle.name) + '|' + key + '|' + hex(kept.asset->sha1)];
@@ -692,6 +746,11 @@ struct Audit {
         }
         std::cout << bundles << " mod bundle(s), " << assets << " listed asset(s) and " << chunks << " TOC chunk(s) looked up in the patch; "
                   << byName << " bundle(s) could only be checked by name\n";
+        for (const auto& [identity, owned] : shaderOwners)
+            if (!owned) fail("shader ownership", identity + ": graph matches no contributor to this bundle");
+        std::cout << shaderOwners.size() << " shader table(s), " << shaderCopies
+                  << " contributor copies checked; " << differentGraphs
+                  << " copies use a different graph (not imported)\n";
         for (auto& [key, record] : found) contested.push_back(std::move(record));
     }
 

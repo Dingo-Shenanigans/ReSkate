@@ -22,6 +22,7 @@ struct Manifest {
     std::set<std::string, std::less<>> permissions;
     // net.http: the exact host names its web requests may go to ("api.example.com"), lowercase.
     std::vector<std::string> domains;
+    std::set<std::string, std::less<>> effects; // exact private particle/material asset names
     // mods.read: the folders it reads in every enabled mod ("parks": <mod>/parks/...), lowercase
     // (reskate.mods.content and read_content). Other mods ship data for it there, with no code.
     std::vector<std::string> content;

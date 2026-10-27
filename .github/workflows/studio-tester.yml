@@ -1,7 +1,7 @@
 name: Studio tester build
 
 # Runs only when started by hand (Actions > Studio tester build > Run workflow). Pushes and pull
-# requests start nothing: release DLLs are built locally and uploaded to the release by hand.
+# requests start nothing. This optional check does not replace ReSkate's release workflow.
 on:
   workflow_dispatch:
     inputs:
@@ -81,7 +81,7 @@ jobs:
             ~/.cargo/git
             SpotifyHelper/target
           key: ${{ steps.rust-cache.outputs.cache-primary-key }}
-      - name: Configure candidate with binary auto-update disabled
+      - name: Configure integrated Studio checks
         run: |
           . ./contrib/enter-msvc.ps1
           cmake --preset ci-windows -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
@@ -89,7 +89,7 @@ jobs:
       - name: Build runtime, launcher and animation checks
         run: |
           . ./contrib/enter-msvc.ps1
-          cmake --build build/ci-windows --config Release --target dingosdk_runtime dingosdk_launcher dingosdk_animation_studio_tests dingosdk_studio_pack_file_tests dingosdk_native_tools_view_tests dingosdk_arm_reach_tests dingosdk_carry_tests dingosdk_anim_graph_probe dingosdk_plugin_tests dingosdk_trick_watch_tests dingosdk_board_material_tests --parallel 2
+          cmake --build build/ci-windows --config Release --target dingosdk_runtime dingosdk_launcher dingosdk_animation_studio_tests dingosdk_studio_pack_file_tests dingosdk_native_tools_view_tests dingosdk_arm_reach_tests dingosdk_carry_tests dingosdk_pose_place_tests dingosdk_anim_graph_probe dingosdk_plugin_tests dingosdk_trick_watch_tests dingosdk_board_material_tests --parallel 2
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Show C++ cache statistics
         if: always()
@@ -102,7 +102,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           python -m unittest discover -s contrib/Test -p '*tests.py'
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - name: Upload standalone studio DLL for ReSkate 2.1.2
+      - name: Upload integrated runtime candidate
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: AnimatorStudio-ReSkate-2.1.2-${{ github.sha }}

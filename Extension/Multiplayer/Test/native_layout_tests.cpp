@@ -10,6 +10,7 @@
 #include "Engine/Game/Build/20260929/engine.h"
 #include "Engine/Game/Build/20260929/native_indicators.h"
 #include <Windows.h>
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <iostream>
@@ -710,8 +711,9 @@ void sound_layout_regression() {
     AudioState s;
     for (std::size_t i = 0; i < s.values.size(); ++i)
         s.values[i] = static_cast<float>(i) * .125f;
+    // Material words whose slots the root level's grid has (base_material_slots), so they cross unchanged.
     for (std::size_t i = 0; i < s.selectors.size(); ++i)
-        s.selectors[i] = 0xf0000000U + static_cast<std::uint32_t>(i);
+        s.selectors[i] = 0x20U | static_cast<std::uint32_t>(i) << 6 | static_cast<std::uint32_t>(i + 1) << 19;
     for (std::size_t i = 1; i < s.flags.size(); ++i)
         s.flags[i] = i % 2;
     Pose p;
@@ -742,6 +744,25 @@ void sound_layout_regression() {
         mark(off, 4);
     mark(0, 0xb0);
     mark(0x1ec, 43);
+    for (const auto off : audio_material_offsets)
+        check(std::find(audio_selector_offsets.begin(), audio_selector_offsets.end(), off) != audio_selector_offsets.end(),
+              "A sound material word is not one of the selectors");
+    // A Studio map's surface (slot 116 on) is numbered by each install's own map mods: it reaches the
+    // other side as the default surface, whichever side sent or received it, and other selectors as they are.
+    const auto material_at = static_cast<std::size_t>(
+        std::find(audio_selector_offsets.begin(), audio_selector_offsets.end(), audio_material_offsets[0]) - audio_selector_offsets.begin());
+    const auto other_at = static_cast<std::size_t>(
+        std::find(audio_selector_offsets.begin(), audio_selector_offsets.end(), std::uint16_t{0xbc}) - audio_selector_offsets.begin());
+    auto custom = s;
+    custom.selectors[material_at] = 0x20U | 341U << 6 | 342U << 19;
+    custom.selectors[other_at] = 0xf0000000U;
+    const auto received = audio_frame(custom, p);
+    check(audio_value<std::uint32_t>(received, audio_material_offsets[0]) == 0 &&
+              audio_value<std::uint32_t>(received, 0xbc) == 0xf0000000U,
+          "A map's own surface slot reached the native sound frame");
+    auto sent_frame = f;
+    audio_put(sent_frame, audio_material_offsets[0], 0x20U | 115U << 6 | 116U << 19);
+    check(audio_state(sent_frame).selectors[material_at] == 0, "A map's own surface slot was sent to the other players");
     auto invalid = s;
     invalid.values[0] = std::numeric_limits<float>::infinity();
     bool rejected = false;

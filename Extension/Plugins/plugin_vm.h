@@ -274,6 +274,7 @@ private:
     friend struct ServicesApi;
     friend struct KitApi;
     friend struct CaptureApi;
+    friend struct EffectsApi;
     struct Subcommand { std::string name, args, help; };
     struct Command { std::string help; int function{}; std::vector<Subcommand> subcommands; };
     struct Timer { double due{}, every{}; int function{}; };
@@ -325,6 +326,9 @@ private:
     std::vector<double> errors_;
     double log_second_{};
     int log_lines_{};
+    std::map<std::uint64_t, bool> effect_handles_; // bool: decal
+    void prune_effects();
+    int effect_calls_{};
     int raycasts_{};                    // since the last tick
     std::optional<float> touch_reach_;
     std::map<std::uint64_t, Contact> contacts_;

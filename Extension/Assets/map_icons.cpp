@@ -1,4 +1,5 @@
 #include "map_icons.h"
+#include "live_mods.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/ui_textures.h"
@@ -161,25 +162,15 @@ void fetch_menu(std::vector<std::pair<overlay::MenuMapWanted, fs::path>> maps) {
     } catch (...) {}
     menu_fetching.store(false);
 }
-bool same_asset(std::string_view a, std::string_view b) {
-    return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](char x, char y) {
-        return std::tolower(static_cast<unsigned char>(x)) == std::tolower(static_cast<unsigned char>(y));
-    });
-}
 void menu_tick() {
     if (menu_fetching.load()) return;
     auto wanted = overlay::take_menu_map_request();
     if (wanted.empty()) return;
     std::vector<std::pair<overlay::MenuMapWanted, fs::path>> maps;
-    const auto& catalog = mods::catalog();
     for (auto& map : wanted) {
-        fs::path icon;
-        for (const auto& mod : catalog.mods)
-            if (std::ranges::any_of(mod.levels, [&](const std::string& level) { return same_asset(level, map.asset); })) {
-                icon = mod.directory / L"icon.png";
-                break;
-            }
-        maps.emplace_back(std::move(map), std::move(icon));
+        // The mods in effect now: a map a live apply added is in no list the launch made.
+        const auto directory = live_mods::level_mod_directory(map.asset);
+        maps.emplace_back(std::move(map), directory.empty() ? fs::path() : directory / L"icon.png");
     }
     menu_fetching.store(true);
     std::thread(fetch_menu, std::move(maps)).detach();

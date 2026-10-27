@@ -4,6 +4,7 @@
 
 #include "mod_merge.h"
 #include "mod_conflicts.h"
+#include "variant_additions_native.h"
 #include "native_db.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Game/Build/supported_build.h"
@@ -11,8 +12,10 @@
 #include <Windows.h>
 #include <shellapi.h>
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <cstdint>
+#include <chrono>
 #include <cstring>
 #include <fstream>
 #include <map>
@@ -141,10 +144,12 @@ using VariantMap = std::map<std::string, std::string, std::less<>>;
 struct VariantsApplied {
     VariantMap in_play;
     std::vector<std::string> set_aside;
+    std::vector<ModSource> sources;
 };
 std::mutex variants_mutex;
 std::optional<VariantMap> chosen_variants;
 std::optional<VariantsApplied> applied_variants;
+std::atomic<std::uint64_t> applied_revision{};
 VariantMap read_choices() {
     VariantMap out;
     const auto path = variants_file();
@@ -251,9 +256,23 @@ std::vector<std::string> set_aside_for_variants() {
 void variants_applied(const Catalog& catalog) noexcept {
     try {
         std::lock_guard lock(variants_mutex);
-        applied_variants = VariantsApplied{catalog.variants_in_play, catalog.set_aside};
+        std::vector<ModSource> sources;
+        for (const auto& mod : catalog.mods) sources.push_back({mod.name, mod.directory});
+        applied_variants = VariantsApplied{catalog.variants_in_play, catalog.set_aside, std::move(sources)};
+        applied_revision.fetch_add(1, std::memory_order_release);
     } catch (...) {}
 }
+
+std::vector<ModSource> active_mod_sources() {
+    {
+        std::lock_guard lock(variants_mutex);
+        if (applied_variants) return applied_variants->sources;
+    }
+    std::vector<ModSource> result;
+    for (const auto& mod : catalog().mods) result.push_back({mod.name, mod.directory});
+    return result;
+}
+std::uint64_t active_sources_revision() noexcept { return applied_revision.load(std::memory_order_acquire); }
 
 std::filesystem::path engine_data_root() noexcept {
     try {
@@ -283,6 +302,33 @@ std::filesystem::path engine_data_root() noexcept {
         return error ? game / value : root;
     } catch (...) {
         return {};
+    }
+}
+
+void reconcile_variant_additions(Catalog& catalog) {
+    for (bool changed = true; changed;) {
+        changed = false;
+        std::set<std::string> present;
+        for (const auto& mod : catalog.mods) present.insert(mod.name);
+        for (std::size_t i = catalog.mods.size(); i-- > 0;) {
+            const auto& mod = catalog.mods[i];
+            const bool orphan = std::ranges::any_of(mod.variant_projection, [&](const auto& projection) {
+                const auto target = mod.variant_targets.find(projection.first);
+                return target == mod.variant_targets.end() || !present.contains(target->second);
+            });
+            if (!orphan) continue;
+            catalog.notes.push_back("Variants: " + mod.name + " is set aside because its verified variant no longer loads");
+            catalog.set_aside.push_back(mod.name);
+            catalog.inactive.push_back(std::move(catalog.mods[i]));
+            catalog.mods.erase(catalog.mods.begin() + static_cast<std::ptrdiff_t>(i));
+            changed = true;
+        }
+    }
+    for (auto& mod : catalog.mods) mod.variant_authority.clear();
+    for (const auto& donor : catalog.mods) for (const auto& [bundle, keys] : donor.variant_projection) {
+        (void)keys;
+        const auto& name = donor.variant_targets.at(bundle);
+        for (auto& selected : catalog.mods) if (selected.name == name) selected.variant_authority.insert(bundle);
     }
 }
 
@@ -353,10 +399,17 @@ Catalog load_catalog(const std::filesystem::path& data_root, const MergeObserver
         // their archives are placed like a disabled mod's, so another variant can be chosen while the
         // game runs. A choice that is not installed falls back to the first of the "order", then to
         // any variant there is.
+        std::optional<std::vector<ModEntry>> compatibility_candidates;
+        if (std::ranges::any_of(list.entries, [](const auto& e) { return !e.mod.variant_additions.accept.empty(); }) &&
+            std::ranges::any_of(list.entries, [](const auto& e) { return !e.mod.variant_additions.contribute.empty(); }))
+            compatibility_candidates = list.entries;
+        std::map<std::string, std::string, std::less<>> addition_targets;
         for (const auto& owner : owners) {
             const auto held = std::find_if(list.entries.begin(), list.entries.end(), [&](const auto& entry) { return entry.mod.name == owner; });
             if (held == list.entries.end() || !held->enabled) continue;
             const auto declared = *held->mod.variants;
+            std::optional<Mod> owner_mod;
+            if (!held->mod.variant_additions.accept.empty()) owner_mod = held->mod;
             const auto of_owner = [&](const ModEntry& entry) { return variant_owner(entry.mod.name) == owner; };
             const auto enabled_variant = [&](const std::string& name) {
                 return std::find_if(list.entries.begin(), list.entries.end(), [&](const auto& entry) {
@@ -371,10 +424,42 @@ Catalog load_catalog(const std::filesystem::path& data_root, const MergeObserver
             result.notes.push_back("Variants: " + list.entries.front().mod.name + " loads first, so it is the one of " + owner + "'s in the game");
             for (auto entry = list.entries.begin() + 1; entry != list.entries.end(); ++entry) {
                 if (!entry->enabled || (!of_owner(*entry) && !lists_bundle(entry->mod.directory, declared.displaces))) continue;
+                if (!of_owner(*entry) && owner_mod &&
+                    !entry->mod.variant_additions.contribute.empty()) {
+                    try {
+                        if (addition_targets.contains(entry->mod.name))
+                            throw std::runtime_error("cooperation with multiple variant owners is not supported");
+                        const auto began = std::chrono::steady_clock::now();
+                        const auto projection = detail::admit_variant_additions(data_root, *owner_mod, list.entries.front().mod,
+                                                                               entry->mod, *compatibility_candidates);
+                        for (const auto& [bundle, keys] : projection) {
+                            entry->mod.variant_projection.emplace(bundle, keys);
+                            entry->mod.variant_targets.emplace(bundle, list.entries.front().mod.name);
+                            list.entries.front().mod.variant_authority.insert(bundle);
+                        }
+                        addition_targets.emplace(entry->mod.name, list.entries.front().mod.name);
+                        result.notes.push_back("Variants: " + entry->mod.name + " contributes verified private additions beside " +
+                                               list.entries.front().mod.name + " (admission " +
+                                               std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                   std::chrono::steady_clock::now() - began).count()) + " ms)");
+                        continue;
+                    } catch (const std::exception& failure) {
+                        result.notes.push_back("Variants: private additions from " + entry->mod.name + " refused: " + failure.what());
+                    }
+                }
                 entry->enabled = false;
                 result.set_aside.push_back(entry->mod.name);
                 result.notes.push_back("Variants: " + entry->mod.name + (of_owner(*entry) ? " is another of " + owner + "'s" : " brings what they replace") +
                                        " and is set aside for this run");
+            }
+        }
+        for (auto& entry : list.entries) {
+            const auto target = addition_targets.find(entry.mod.name);
+            if (!entry.enabled || target == addition_targets.end()) continue;
+            if (std::ranges::none_of(list.entries, [&](const auto& choice) { return choice.enabled && choice.mod.name == target->second; })) {
+                entry.enabled = false;
+                result.set_aside.push_back(entry.mod.name);
+                result.notes.push_back("Variants: " + entry.mod.name + " is set aside because its verified variant no longer loads");
             }
         }
         for (auto& entry : list.entries) {
@@ -386,8 +471,8 @@ Catalog load_catalog(const std::filesystem::path& data_root, const MergeObserver
                 if (entry.mod.provides_layout) result.inactive.push_back(std::move(entry.mod));
                 continue;
             }
-            if (!entry.mod.provides_layout && !entry.mod.provides_levels && entry.mod.park_maps.empty())
-                result.notes.push_back("Mod " + entry.mod.name + " has no layout.toc or reskate-levels.json");
+            if (!has_content(entry.mod))
+                result.notes.push_back("Mod " + entry.mod.name + " has nothing to load");
             result.mods.push_back(std::move(entry.mod));
         }
         std::sort(result.disabled.begin(), result.disabled.end(),
@@ -487,12 +572,14 @@ Catalog load_catalog(const std::filesystem::path& data_root, const MergeObserver
         // Any Mods folder gets a patch, even an empty one or one of disabled
         // mods only: a mod enabled or dropped in while the game runs needs it
         // mounted from launch.
+        reconcile_variant_additions(result);
         if (run_merge) {
             MergeReport merge;
             // Merge, and whenever a mod could not be merged cleanly, merge again
             // without it. Removing one mod cannot break another, but a few rounds
             // are allowed in case two damaged mods hid each other's problems.
             for (int round = 0;; ++round) {
+                reconcile_variant_additions(result);
                 // The first looks for conflicts before building anything (ConflictChecker).
                 merge = merge_mods(result, observe, {.conflicts_first = round == 0});
                 if (!merge.issue.empty() || round == 4) break; // a fifth merge only rebuilds without round four's removals

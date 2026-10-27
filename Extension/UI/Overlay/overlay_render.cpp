@@ -104,6 +104,9 @@ void destroy_graphics() {
     for (auto& texture : s.plugin_textures) texture.Reset();
     for (auto& upload : s.plugin_uploads) upload.Reset();
     plugin_images_lost();
+    for (auto& texture : s.store_textures) texture.Reset();
+    for (auto& upload : s.store_uploads) upload.Reset();
+    store_icons_lost();
     screen_look::release();
     s.commands.Reset(); s.rtvs.Reset(); s.srvs.Reset(); s.fence.Reset(); s.device.Reset();
     if (s.fence_event) CloseHandle(s.fence_event);
@@ -955,6 +958,20 @@ void upload_plugin_image(State& s) {
     plugin_image_uploaded(next->path, next->slot, id);
 }
 
+// A Thunderstore icon for the Mod Manager page (store_icons.cpp), one a frame, into the slot it was given.
+void upload_store_icon(State& s) {
+    if (!s.device || !s.srvs) return;
+    auto next = take_store_icon();
+    if (!next) return;
+    const auto slot = static_cast<std::size_t>(next->slot);
+    if (s.store_textures[slot] && s.next_fence && !completed(s.next_fence, render_fence_timeout_ms)) {
+        store_icon_uploaded(next->url, next->slot, {}, true);
+        return;
+    }
+    const auto id = upload_image(s, next->pixels, store_icon_first_slot + static_cast<UINT>(slot), s.store_textures[slot], s.store_uploads[slot]);
+    store_icon_uploaded(next->url, next->slot, id);
+}
+
 void render(IDXGISwapChain* presented, UINT flags) {
     auto& s = state();
     if (flags & DXGI_PRESENT_TEST) return;
@@ -997,6 +1014,7 @@ void render(IDXGISwapChain* presented, UINT flags) {
     // Refreshes the chat feed every frame, which also decides whether T opens it.
     const bool chat_frame = chat_pending();
     const bool map_download_frame = map_download_pending();
+    const bool mod_apply_frame = mod_apply_card_pending();
     const bool game_text_frame = game_text_pending();
     const bool skate_hud_frame = skate_hud_pending();
     const bool nametag_frame = nametags_pending();
@@ -1027,7 +1045,7 @@ void render(IDXGISwapChain* presented, UINT flags) {
         }
         // Hidden, the overlay still draws while a notice or chat line is on screen.
         if (s.loaded_notice_posted && !notices_pending() && !chat_frame && !game_text_frame && !skate_hud_frame &&
-            !nametag_frame && !plugins_frame && !item_browser_frame && !perf_frame && !hub_frame && !map_download_frame && !look_frame &&
+            !nametag_frame && !plugins_frame && !item_browser_frame && !perf_frame && !hub_frame && !map_download_frame && !mod_apply_frame && !look_frame &&
             !grab_frame && !animation_studio_loading_pending()) return;
     } else if (!s.ui_was_interactive) {
         s.ui_was_interactive = true;
@@ -1102,6 +1120,7 @@ void render(IDXGISwapChain* presented, UINT flags) {
     draw_animation_studio_loading();
     draw_plugin_dialog();
     draw_chat();
+    if (mod_apply_frame) draw_mod_apply_card();
     draw_map_download();
     sync_menu_cursor(); // close buttons also change visibility, without a key message
     ImGui::Render();
@@ -1128,6 +1147,7 @@ void render(IDXGISwapChain* presented, UINT flags) {
     upload_market_art(s);
     if (studio_frame_asked.exchange(false)) copy_studio_frame(s, frame);
     upload_plugin_image(s);
+    upload_store_icon(s);
     if (look_frame) {
         // Drawn first, so ImGui draws over it. It leaves the back buffer in PRESENT, as it found it.
         ID3D12DescriptorHeap* look_heaps[] = {s.srvs.Get()};

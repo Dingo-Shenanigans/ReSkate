@@ -1,5 +1,6 @@
 #include "worn_items.h"
 #include "item_browser.h"
+#include "outfit_kind.h"
 #include "local_customization.h"
 #include "local_customization_runtime.h"
 #include "Engine/Core/Platform/memory.h"
@@ -9,8 +10,6 @@
 #include <Windows.h>
 #include <algorithm>
 #include <array>
-#include <cctype>
-#include <string_view>
 
 // What the skater wears, read from the game's own presets: ported from Fit Check (pull request 326,
 // turnaround.cpp), for plugins (reskate.outfit.worn, board, title).
@@ -48,7 +47,7 @@ std::int32_t selected_preset(std::uintptr_t base, std::uintptr_t manager) {
 // The board the skater rides now: the board recipe of the selected preset (the first when none is
 // selected), its parts in the card's order, empty slots left out. Game thread.
 } // namespace
-std::vector<Worn> worn_board() {
+std::vector<Worn> worn_board(bool titles) {
     std::vector<Worn> parts;
     const auto base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
     std::uintptr_t manager{}, begin{}, end{};
@@ -67,7 +66,7 @@ std::vector<Worn> worn_board() {
         for (const auto& wanted : board_slots)
             for (const auto& item : recipe.items) {
                 if (item.slot != wanted.slot || item.asset.empty()) continue;
-                parts.push_back({wanted.label, item.asset, item_title(item.asset)});
+                parts.push_back({wanted.label, item.asset, titles ? item_title(item.asset) : std::string{}});
             }
         break;
     }
@@ -76,28 +75,8 @@ std::vector<Worn> worn_board() {
 
 // What the skater wears now: every item of the selected preset
 // but the board's, labelled by its catalog category (the game's names for its grids: "tops",
-// "headgear"...), clothes and accessories only (not the body, hair, tattoos or gestures), in the
-// order they are worn from head to foot. Game thread.
-namespace {
-struct OutfitKind { const char* word; const char* label; int order; };
-constexpr OutfitKind outfit_kinds[] = {
-    {"head", "Headwear", 0}, {"hat", "Headwear", 0}, {"cap", "Headwear", 0}, {"beanie", "Headwear", 0}, {"helmet", "Headwear", 0},
-    {"eye", "Eyewear", 1}, {"glass", "Eyewear", 1}, {"mask", "Face", 1},
-    {"neck", "Neckwear", 2}, {"jewel", "Jewellery", 2}, {"earring", "Earrings", 2},
-    {"costume", "Costume", 3}, {"outfit", "Outfit", 3},
-    {"outer", "Outerwear", 4}, {"jacket", "Outerwear", 4}, {"top", "Top", 5}, {"shirt", "Top", 5}, {"hood", "Top", 5},
-    {"glove", "Gloves", 6}, {"wrist", "Wrist", 6}, {"watch", "Wrist", 6}, {"bag", "Bag", 7}, {"backpack", "Bag", 7},
-    {"bottom", "Bottoms", 8}, {"pant", "Bottoms", 8}, {"short", "Bottoms", 8}, {"leg", "Bottoms", 8},
-    {"sock", "Socks", 9}, {"foot", "Shoes", 10}, {"shoe", "Shoes", 10}};
-constexpr const char* not_outfit[] = {"skin", "face_", "body", "hair", "beard", "brow", "makeup", "eyecolo", "eye_colo",
-                                      "tattoo", "gesture", "emote", "voice", "bkobject", "board", "deck", "truck", "wheel", "grip",
-                                      "locomotion", "lipcolo", "mole", "stubble", "freckle", "scar", "nose", "mouth", "teeth"};
-std::string folded(std::string_view text) {
-    std::string out(text);
-    for (auto& c : out) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return out;
-}
-} // namespace
+// "headgear"...), clothes, accessories and full-body costumes only (not the body, hair, tattoos or
+// gestures; outfit_kind.h), in the order they are worn from head to foot. Game thread.
 std::vector<Worn> worn_outfit() {
     std::vector<Worn> parts;
     const auto base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
@@ -119,22 +98,9 @@ std::vector<Worn> worn_outfit() {
         for (const auto& item : recipe.items) {
             if (item.asset.empty()) continue;
             const auto entry = known.find(item.asset);
-            const auto category = folded(entry != known.end() ? entry->second.category : std::string());
-            const auto has = [&](const char* word) { return category.find(word) != std::string::npos; };
-            // The body's own parts are "cust..." (custhead, custeye, custnoses, custbodies, custmoles...).
-            if (category.empty() || category.starts_with("cust") || std::any_of(std::begin(not_outfit), std::end(not_outfit), has))
-                continue;
-            const auto kind = std::find_if(std::begin(outfit_kinds), std::end(outfit_kinds), [&](const OutfitKind& k) { return has(k.word); });
-            std::string label;
-            int order = 20;
-            if (kind != std::end(outfit_kinds)) label = kind->label, order = kind->order;
-            else {
-                // A category this does not know: its name made readable.
-                label = entry->second.category;
-                std::replace(label.begin(), label.end(), '_', ' ');
-                if (!label.empty()) label[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(label[0])));
-            }
-            found.push_back({order, {label, item.asset, item_title(item.asset)}});
+            const auto kind = outfit_kind::of(entry != known.end() ? entry->second.category : std::string());
+            if (!kind) continue;
+            found.push_back({kind->order, {kind->label, item.asset, item_title(item.asset)}});
         }
     }
     std::stable_sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return a.first < b.first; });

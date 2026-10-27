@@ -10,8 +10,10 @@ inline constexpr unsigned studio_frame_slot = studio_pack_slot + 1;
 inline constexpr unsigned studio_wall_slot = studio_frame_slot + 1;
 inline constexpr unsigned studio_sheet_slot = studio_wall_slot + 1;
 inline constexpr unsigned studio_cover_slot = studio_sheet_slot + 1;
-inline constexpr unsigned overlay_descriptor_count = studio_cover_slot + 1;
+inline constexpr unsigned store_icon_first_slot = studio_cover_slot + 1, store_icon_slots = 64;
+inline constexpr unsigned overlay_descriptor_count = store_icon_first_slot + store_icon_slots;
 static_assert(studio_pack_slot >= plugin_image_first_slot + plugin_image_slots);
 static_assert(studio_pack_slot >= screen_look_slot + screen_look_slots);
-static_assert(overlay_descriptor_count == 28);
+static_assert(store_icon_first_slot > studio_cover_slot);
+static_assert(overlay_descriptor_count == 92);
 } // namespace dingosdk::overlay::detail

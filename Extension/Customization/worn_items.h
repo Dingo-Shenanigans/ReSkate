@@ -12,7 +12,9 @@ struct Worn {
     std::string title; // as the game shows it
 };
 std::vector<Worn> worn_outfit();
-std::vector<Worn> worn_board();
+// `titles` off leaves each title empty: what the board's material declarations need is only the
+// items' keys, read every quarter second (board_material.cpp).
+std::vector<Worn> worn_board(bool titles = true);
 // Its catalog title, the title an item grid showed this session (a mod's item has no catalog
 // entry), or its key made readable the way the game does for a mod's item.
 std::string item_title(const std::string& asset);

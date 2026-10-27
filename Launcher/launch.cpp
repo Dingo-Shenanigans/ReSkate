@@ -1,6 +1,7 @@
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Debug/trace.h"
 #include "Engine/Core/Platform/launcher_support.h"
+#include "Engine/Core/Platform/startup_failure.h"
 #include "Engine/Vfs/initfs.h"
 #include "Engine/Vfs/content_cache_install.h"
 #include "Engine/Vfs/world_layer_scan.h"
@@ -17,6 +18,7 @@
 #include <shellapi.h>
 #include <winternl.h>
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -461,30 +463,63 @@ RemoteModule inject_dll(HANDLE process, const fs::path& dll) {
     return module;
 }
 
+std::uint64_t file_size_or_zero(const fs::path& path) {
+    std::error_code error;
+    const auto size = fs::file_size(path, error);
+    return error ? 0 : size;
+}
+
+// Older runtimes have no reason to read out of the game, but they logged one.
+// Only what the child wrote after log_start counts, from the last few MiB.
+std::string logged_startup_failure(const fs::path& log, std::uint64_t log_start, DWORD process_id) {
+    namespace failure = dingosdk::startup_failure;
+    constexpr std::uint64_t window = 4 * 1024 * 1024;
+    const auto end = file_size_or_zero(log);
+    if (end <= log_start) return {};
+    const auto from = std::max(log_start, end > window ? end - window : 0);
+    std::ifstream input(log, std::ios::binary);
+    input.seekg(static_cast<std::streamoff>(from));
+    std::string text(static_cast<std::size_t>(end - from), '\0');
+    input.read(text.data(), static_cast<std::streamsize>(text.size()));
+    text.resize(static_cast<std::size_t>(input.gcount()));
+    std::string logged;
+    for (const auto& line : failure::logged_errors(text, process_id, 3)) {
+        if (!logged.empty()) logged += " | ";
+        logged += failure::printable(std::string_view(line).substr(0, failure::utf8_prefix(line, 300)));
+    }
+    return logged;
+}
+
+// DingoSDKDebugInitialize answered FALSE: the attach worked and the runtime
+// stopped on purpose. Say why in its own words, read before the child is
+// closed. problem.h keys on the opening words.
+std::string startup_failure_message(HANDLE process, std::uintptr_t reason_address, DWORD process_id,
+                                    const fs::path& log, std::uint64_t log_start) {
+    namespace failure = dingosdk::startup_failure;
+    if (reason_address) {
+        std::array<char, failure::capacity> reason{};
+        SIZE_T read{};
+        if (ReadProcessMemory(process, reinterpret_cast<const void*>(reason_address), reason.data(),
+                reason.size(), &read) && read == reason.size()) {
+            reason.back() = '\0';
+            if (auto text = failure::printable(reason.data()); !text.empty())
+                return "ReSkate stopped while starting: " + text;
+        }
+    }
+    if (auto logged = logged_startup_failure(log, log_start, process_id); !logged.empty())
+        return "ReSkate stopped while starting; ReSkate.log says: " + logged;
+    return "ReSkate stopped while starting without saying why (DingoSDKDebugInitialize returned FALSE)";
+}
+
 } // namespace
 
 namespace dingosdk::launcher_app {
-
-namespace {
-fs::path dev_game_directory() {
-    std::array<wchar_t, 32768> value{};
-    const auto length = GetEnvironmentVariableW(L"RESKATE_DEV_GAME_DIR", value.data(), static_cast<DWORD>(value.size()));
-    return length && length < value.size() ? fs::path(std::wstring(value.data(), length)) : fs::path{};
-}
-} // namespace
 
 Session open_session(const std::string& log_level) {
     Session session;
     session.self = canonical_file(module_path(), L"ReSkateLauncher.exe");
     session.paths = launcher::sibling_paths(session.self);
     session.paths.logs = logging::log_directory(session.paths.directory);
-    // Development only (RESKATE_DEV_GAME_DIR): run a ReSkate.dll built beside this launcher against a
-    // game installed elsewhere, with its own logs, so the installed ReSkate is left as it is.
-    if (const auto game = dev_game_directory(); !game.empty()) {
-        const auto own = session.self.parent_path();
-        session.paths = {game, game / L"Skate.exe", own / L"ReSkate.dll", game / L"steam_api64.dll",
-                         logging::log_directory(own)};
-    }
     logging::Options logging_options;
     logging_options.directory = session.paths.logs;
     logging_options.truncate_file = true;
@@ -771,7 +806,7 @@ DWORD start_game(const Session& session, const launcher::LaunchOptions& options,
 
     std::error_code path_error;
     if (!fs::equivalent(paths.game.parent_path(), paths.directory, path_error) || path_error ||
-        (dev_game_directory().empty() && (!fs::equivalent(paths.dll.parent_path(), paths.directory, path_error) || path_error)) ||
+        !fs::equivalent(paths.dll.parent_path(), paths.directory, path_error) || path_error ||
         !fs::equivalent(paths.steam_api.parent_path(), paths.directory, path_error) || path_error)
         throw std::runtime_error(
             "Skate.exe, ReSkate.dll, and the original steam_api64.dll must be beside ReSkateLauncher.exe");
@@ -794,6 +829,11 @@ DWORD start_game(const Session& session, const launcher::LaunchOptions& options,
         paths.dll, "DingoSDKDebugInitialize");
     if (initialize_rva >= dll_info.image_size)
         throw std::runtime_error("DingoSDKDebugInitialize is outside the DLL image");
+    // Runtimes before this export only answer FALSE; a misplaced one is ignored.
+    auto failure_rva = launcher::exported_rva(paths.dll, startup_failure::export_name);
+    if (failure_rva && (*failure_rva >= dll_info.image_size ||
+                        dll_info.image_size - *failure_rva < startup_failure::capacity))
+        failure_rva.reset();
 
     // Park thumbnails are read from the game's own data now; the pack older
     // launchers downloaded is no longer used.
@@ -939,9 +979,13 @@ DWORD start_game(const Session& session, const launcher::LaunchOptions& options,
     std::wostringstream initializing;
     initializing << L"Calling DingoSDKDebugInitialize at 0x" << std::hex << initialize_address;
     logging::write(logging::Level::info, logging::Channel::launcher, initializing.str());
+    const auto log = paths.logs / L"ReSkate.log";
+    const auto log_start = file_size_or_zero(log);
     const auto initialized = run_remote_thread(child.process(), initialize_address, nullptr,
         L"DingoSDKDebugInitialize", initialize_wait_ms);
-    if (!initialized) throw std::runtime_error("DingoSDKDebugInitialize returned FALSE");
+    if (!initialized)
+        throw std::runtime_error(startup_failure_message(child.process(),
+            failure_rva ? remote_dll.base + *failure_rva : 0, child.id(), log, log_start));
     logging::write(logging::Level::info, logging::Channel::launcher, L"ReSkate.dll initialization confirmed");
 
     loader_gate.resume();

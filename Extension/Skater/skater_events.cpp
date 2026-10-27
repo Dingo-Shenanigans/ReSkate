@@ -21,7 +21,7 @@ constexpr std::size_t cause_count = 35;
 constexpr float heard_hit = 3.0f; // m/s: lighter touches are not news (Board Break's body_hit)
 constexpr float fall_at_least = 0.4f, fall_at_most = 3.0f;
 constexpr std::size_t most_steps = 512;
-std::atomic<bool> steps_wanted{};
+std::atomic<bool> steps_wanted{}, steps_allowed{true};
 
 struct Shared {
     std::mutex mutex;
@@ -135,11 +135,13 @@ void on_step(const NoBailSkater& skater, float seconds, bool wipeout) noexcept {
         }
         if (skater_physics::available()) {
             const auto step = skater_physics::read_step(skater, seconds, wipeout);
-            if (steps_wanted.load(std::memory_order_acquire)) {
+            if (steps_wanted.load(std::memory_order_acquire) && steps_allowed.load(std::memory_order_acquire)) {
                 const double at = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
                 std::lock_guard lock(s.mutex);
-                if (s.steps.size() >= most_steps) s.steps.pop_front();
-                s.steps.push_back({at, step});
+                if (steps_allowed.load(std::memory_order_acquire)) {
+                    if (s.steps.size() >= most_steps) s.steps.pop_front();
+                    s.steps.push_back({at, step, skater.entity, skater.rig});
+                }
             }
             const bool ragdoll = step.ragdoll.value_or(false);
             if (ragdoll) {
@@ -193,6 +195,12 @@ void want() noexcept {
 void want_steps() noexcept {
     want();
     steps_wanted.store(true, std::memory_order_release);
+}
+void before_level_transition(unsigned next) noexcept {
+    if (next == 3 || next == 14 || next == 22 || next == 24 || next == 25) {
+        steps_allowed.store(false, std::memory_order_release);
+        auto& s = shared(); std::lock_guard lock(s.mutex); s.steps.clear();
+    } else if (next == 13 || next == 21) steps_allowed.store(true, std::memory_order_release);
 }
 std::vector<StepNews> take_steps() {
     auto& s = shared();

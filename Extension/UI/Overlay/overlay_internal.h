@@ -218,6 +218,8 @@ struct State {
     UINT studio_frame_height{};
     DXGI_FORMAT studio_frame_format{};
     bool studio_frame_waiting_copy{}; // in COPY_DEST (made and not copied into yet), else PIXEL_SHADER_RESOURCE
+    // Thunderstore icons for the Mod Manager page (store_icons.cpp), after the screen look's slots.
+    std::array<ComPtr<ID3D12Resource>, 64> store_textures, store_uploads; // store_icon_slots
     ComPtr<ID3D12GraphicsCommandList> commands;
     ComPtr<ID3D12Fence> fence;
     HANDLE fence_event = nullptr;
@@ -381,6 +383,21 @@ std::optional<PluginImageUpload> take_plugin_image();
 // id 0: it failed; `later`: the slot was busy, so it waits for another frame.
 void plugin_image_uploaded(const std::string& path, int slot, ImTextureID id, bool later = false);
 void plugin_images_lost();
+// Thunderstore packages' icons for the pause menu's Mod Manager page (store_icons.cpp), the same way,
+// by their URL, in the SRV heap's slots from store_icon_first_slot on.
+ImTextureID store_icon(const std::string& url);
+struct StoreIconUpload {
+    std::string url;
+    int slot{};
+    CardPixels pixels;
+};
+std::optional<StoreIconUpload> take_store_icon();
+void store_icon_uploaded(const std::string& url, int slot, ImTextureID id, bool later = false);
+void store_icons_lost();
+// Mods being applied with the pause menu closed (hub_page.cpp): whether its card is up, and drawing it.
+bool mod_apply_card_pending();
+void draw_mod_apply_card();
+static_assert(std::tuple_size_v<decltype(State::store_textures)> == store_icon_slots);
 void mod_icon_uploaded(ImTextureID texture, unsigned serial);
 void mod_icon_lost();
 // The Animator Studio's pack pictures (studio_pack_pictures.cpp), the same way, in the fifth slot. Asked for by key (the

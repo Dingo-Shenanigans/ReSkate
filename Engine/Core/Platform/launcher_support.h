@@ -8,6 +8,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -103,6 +104,9 @@ SiblingPaths sibling_paths(const std::filesystem::path& launcher);
 PeFileInfo inspect_pe_file(const std::filesystem::path& path);
 std::uint32_t exported_function_rva(const std::filesystem::path& path,
                                     std::string_view export_name);
+// An optional export, such as data: nullopt when the DLL does not export the name.
+std::optional<std::uint32_t> exported_rva(const std::filesystem::path& path,
+                                          std::string_view export_name);
 void validate_game_file(const std::filesystem::path& path);
 #else
 // Linux dedicated server: no PE image checks. Validation is a size/hash check

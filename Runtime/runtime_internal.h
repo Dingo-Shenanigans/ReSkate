@@ -166,6 +166,10 @@ dingosdk::multiplayer::MapLoadResult load_multiplayer_map(std::string_view desti
                                                         std::string& detail);
 bool queue_load(void*, const char* asset, const char* start, const char* lm_level, const char* lm_start,
                 char* result, std::size_t size);
+// queue_load's local half, with no multiplayer rule: only for reloading the map already being
+// played (the session is told first: multiplayer::begin_local_reload). Takes runtime().mutex.
+bool queue_local_load(const char* asset, const char* start, const char* lm_level, const char* lm_start,
+                      char* result, std::size_t size);
 bool queue_location_travel(const char* map);
 bool queue_menu_bam();
 

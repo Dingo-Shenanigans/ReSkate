@@ -117,6 +117,9 @@ bool queue_load(void*, const char* asset, const char* start, const char* lm_leve
         if (size) std::snprintf(result, size, "Only the lobby host can change levels.");
         return false;
     }
+    return queue_local_load(asset, start, lm_level, lm_start, result, size);
+}
+bool queue_local_load(const char* asset, const char* start, const char* lm_level, const char* lm_start, char* result, std::size_t size) {
     auto& r = runtime();
     std::lock_guard lock(r.mutex);
     if (!asset || !start || !lm_level || !lm_start || !r.requests.can_load(request_context(r), GetCurrentThreadId())) {

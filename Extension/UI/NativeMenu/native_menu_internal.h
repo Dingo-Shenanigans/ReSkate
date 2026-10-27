@@ -82,6 +82,7 @@ struct State {
     std::uint64_t voice_pending_until{};
     bool public_lobby{true}, was_active{}, host_seeded{};
     bool browsing{};  // the lobby browser was on screen at the last render
+    bool back_held{}; // its Back is held by the overlay (hold_native_menu_back)
     std::uint64_t next_id = 1, next_scan{}, next_retry{}, next_update{}, next_render{}, owner{}, feedback_until{};
     std::string feedback, feedback_status;
 };

@@ -418,7 +418,100 @@ void test_recording(const std::filesystem::path& fonts, Format format, bool skat
     expect(recorder.status().state == State::idle && recorder.kept().empty(), "discarded, nothing is held");
 }
 
+// The cut by the game's depth: a skater standing on a floor that curves away at the sides. Shoes only
+// 3% nearer than the floor under them are kept (they went missing, 2026-10-24); the curved floor is
+// not taken for the skater.
+void test_depth_cut() {
+    constexpr std::uint32_t w = 200, h = 150;
+    std::vector<float> depth(std::size_t{w} * h);
+    std::vector<std::uint8_t> pixels(std::size_t{w} * h * 4, 90);
+    const auto floor_at = [&](std::uint32_t x) {
+        const float t = (2.0f * x + 1) / w - 1;
+        return 100.0f - 30.0f * t * t; // nearer at the sides, as a curved backdrop is
+    };
+    for (std::uint32_t y = 0; y < h; ++y)
+        for (std::uint32_t x = 0; x < w; ++x) {
+            float distance = floor_at(x);
+            if (x >= 80 && x < 120 && y >= 20 && y < 130) distance *= 0.6f;             // the skater
+            else if (x >= 85 && x < 115 && y >= 130 && y < 140) distance *= 0.97f;     // their shoes
+            depth[std::size_t{y} * w + x] = 1.0f / distance;
+        }
+    const PixelView frame{pixels.data(), w, h, w * 4, true, reinterpret_cast<const std::uint8_t*>(depth.data()), w * 4};
+    Image picture(w, h);
+    expect(depth_mask(frame, {0, 0, w, h}, picture), "the depth shows something in front");
+    std::size_t shoes = 0, floor = 0;
+    for (std::uint32_t y = 130; y < 140; ++y)
+        for (std::uint32_t x = 87; x < 113; ++x) shoes += picture.at(x, y)[3] == 255;
+    for (std::uint32_t y = 0; y < h; ++y)
+        for (std::uint32_t x = 0; x < w; ++x)
+            if ((x < 70 || x >= 130) && picture.at(x, y)[3]) ++floor;
+    expect(shoes == 26 * 10, "shoes just in front of the floor are kept");
+    expect(floor == 0, "a backdrop curving away is not taken for the subject");
+}
+
+// The cut by the game's depth: a skater standing on a floor that curves away at the sides. Shoes only
+// 0.5% nearer than the floor under them are kept (they went missing, 2026-10-24); the curved floor is
+// not taken for the skater.
+void test_depth_cut_contact() {
+    constexpr std::uint32_t w = 200, h = 150;
+    std::vector<float> depth(std::size_t{w} * h);
+    std::vector<std::uint8_t> pixels(std::size_t{w} * h * 4, 90);
+    const auto floor_at = [&](std::uint32_t x) {
+        const float t = (2.0f * x + 1) / w - 1;
+        return 100.0f - 30.0f * t * t; // nearer at the sides, as a curved backdrop is
+    };
+    for (std::uint32_t y = 0; y < h; ++y)
+        for (std::uint32_t x = 0; x < w; ++x) {
+            float distance = floor_at(x);
+            if (x >= 80 && x < 120 && y >= 20 && y < 130) distance *= 0.6f;             // the skater
+            else if (x >= 85 && x < 115 && y >= 130 && y < 134) distance *= 0.995f;     // their shoes
+            depth[std::size_t{y} * w + x] = 1.0f / distance;
+        }
+    const PixelView frame{pixels.data(), w, h, w * 4, true, reinterpret_cast<const std::uint8_t*>(depth.data()), w * 4};
+    Image picture(w, h);
+    expect(depth_mask(frame, {0, 0, w, h}, picture), "the depth shows something in front");
+    std::size_t shoes = 0, floor = 0;
+    for (std::uint32_t y = 130; y < 134; ++y)
+        for (std::uint32_t x = 87; x < 113; ++x) shoes += picture.at(x, y)[3] == 255;
+    for (std::uint32_t y = 0; y < h; ++y)
+        for (std::uint32_t x = 0; x < w; ++x)
+            if ((x < 70 || x >= 130) && picture.at(x, y)[3]) ++floor;
+    expect(shoes == 26 * 4, "near-contact soles extend the depth silhouette without colour contrast");
+    expect(floor == 0, "a backdrop curving away is not taken for the subject");
+}
+
+
+// A wide shallow foreground and far depth outliers must not bias the floor fit,
+// including the floor directly under the subject where sole recovery can grow.
+void test_depth_cut_wide_and_far() {
+    constexpr std::uint32_t w=800,h=200;
+    for (bool far : {false,true}) {
+        std::vector<float> depth(std::size_t{w}*h);
+        std::vector<std::uint8_t> pixels(std::size_t{w}*h*4,90);
+        for (std::uint32_t y=0;y<h;++y) for (std::uint32_t x=0;x<w;++x) {
+            const double t=(2.0*x+1)/w-1;
+            double d=100-25*t*t;
+            if (x>=300 && x<500 && y>=20 && y<130) d*=.6;
+            if (x>=200 && x<600 && y>=130 && y<140) d*=.97;
+            if (far && x>=650 && x<660) d=9000000;
+            depth[std::size_t{y}*w+x]=static_cast<float>(1/d);
+        }
+        Image picture(w,h);
+        const PixelView frame{pixels.data(),w,h,w*4,true,reinterpret_cast<const std::uint8_t*>(depth.data()),w*4};
+        expect(depth_mask(frame,{0,0,w,h},picture),"wide subject has a depth cut-out");
+        for (std::uint32_t y=130;y<140;++y) for (std::uint32_t x=205;x<595;++x)
+            expect(picture.at(x,y)[3]==255,"wide 3%-nearer shoes survive a curved floor fit");
+        for (std::uint32_t y=140;y<h;++y) for (std::uint32_t x=0;x<w;++x)
+            expect(picture.at(x,y)[3]==0,"floor directly beneath subject stays transparent");
+        for (std::uint32_t y=0;y<h;++y) for (std::uint32_t x=650;x<660;++x)
+            expect(picture.at(x,y)[3]==0,"far depth outliers never become foreground");
+    }
+}
+
 int main(int argc, char** argv) {
+    test_depth_cut_wide_and_far();
+    test_depth_cut_contact();
+    test_depth_cut();
     test_matte();
     test_backdrop_key(false);
     test_backdrop_key(true);

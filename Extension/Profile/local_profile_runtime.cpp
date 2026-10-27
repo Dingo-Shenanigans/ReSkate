@@ -402,18 +402,23 @@ void observe_local_customization_selection(std::int32_t index) noexcept {
 }
 
 bool initialize_local_profile(std::uintptr_t base, bool authored_offline,
-    const std::filesystem::path& path) {
+    const std::filesystem::path& path, std::string& failure) {
+    const auto refuse = [&failure](std::string_view why) {
+        failure = "Profile initialization failed: " + std::string(why);
+        dingosdk::logging::write(dingosdk::logging::Level::error, dingosdk::logging::Channel::profile, failure);
+        return false;
+    };
     auto& s = local_runtime();
-    if (!authored_offline) return false;
-    if (s.attempted) return s.active.load() && s.base == base;
+    if (!authored_offline) return refuse("the offline runtime is not active");
+    if (s.attempted) return s.active.load() && s.base == base ? true : refuse("an earlier attempt in this game did not finish");
     s.attempted = true;
     std::vector<void*> created;
     bool enable_attempted{};
     try {
-        if (reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)) != base) return false;
+        if (reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)) != base) return refuse("the game image moved");
         std::array<wchar_t, 32768> exe{};
         const auto n = GetModuleFileNameW(nullptr, exe.data(), static_cast<DWORD>(exe.size()));
-        if (!n || n >= exe.size()) return false;
+        if (!n || n >= exe.size()) return refuse("cannot locate Skate.exe");
         launcher::validate_game_file(exe.data());
         for (const auto& f : {load_contract, ready_contract, send_contract, get_bool_contract,
             user_get_bool_contract, user_get_number_contract, user_get_integer_contract, user_get_string_contract,
@@ -451,11 +456,11 @@ bool initialize_local_profile(std::uintptr_t base, bool authored_offline,
             object_register_contract, object_parse_contract, object_release_contract,
             challenge_begin_contract, challenge_end_contract, challenge_available_contract, challenge_select_contract, challenge_lookup_contract, challenge_end_invoke_contract, challenge_error_contract, challenge_counts_contract, challenge_index_insert_contract, challenge_index_append_contract, challenge_insert_contract, challenge_dispatch_contract, challenge_request_create_contract,
             rip_score_context_contract, multiplayer::menu_data::model_record_load_contract})
-            if (!matches(base, f)) return false;
+            if (!matches(base, f)) return refuse(std::format("the game code at {:#x} is not what this build expects", f.rva));
         if (!neighborhood_type_contract(base) || !rip_score_type_contract(base) ||
-            !challenge_map_type_contract(base)) return false;
-        if (!prepare_main_mission_override(base)) return false;
-        if (!game::initialize_native_data(base)) return false;
+            !challenge_map_type_contract(base)) return refuse("the game's profile data types are not what this build expects");
+        if (!prepare_main_mission_override(base)) return refuse("the main mission override could not be prepared");
+        if (!game::initialize_native_data(base)) return refuse("the game's data model could not be reached");
         s.base = base;
         s.store = std::make_unique<profile::Store>(path);
         dingosdk::logging::write(dingosdk::logging::Level::info, dingosdk::logging::Channel::profile,
@@ -638,8 +643,7 @@ bool initialize_local_profile(std::uintptr_t base, bool authored_offline,
         // Retain attempted trampolines/store for any already-entered detours.
         if (!enable_attempted) s.store.reset();
         dingosdk::logging::event(dingosdk::logging::Channel::profile, "{\"event\":\"local_profile_initialized\",\"active\":false}");
-        dingosdk::logging::log(dingosdk::logging::Level::error, dingosdk::logging::Channel::profile, "Profile initialization failed: {}", e.what());
-        return false;
+        return refuse(e.what());
     }
 }
 

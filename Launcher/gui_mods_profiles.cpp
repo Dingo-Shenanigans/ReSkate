@@ -68,7 +68,7 @@ std::vector<std::string> unobtainable(const ModsPanel& panel, const std::vector<
 
 // Writes mods.json as the profile has it. False, with the reason shown, when that failed.
 bool write_order(ModsPanel& panel, const profiles::Profile& profile, std::vector<profiles::ProfileMod>& missing) {
-    auto applied = profiles::apply(profile, panel.list);
+    auto applied = profiles::apply(profile, panel.list, panel.profiles.keep_others);
     try {
         mods::save_mod_order(panel.root, applied.entries);
     } catch (const std::exception& failure) {
@@ -122,7 +122,7 @@ void add_profile(ModsPanel& panel, profiles::Profile profile, std::string_view v
     profile.name = panel.profiles.free_name(profiles::clean_profile_name(profile.name));
     const auto name = profile.name;
     const auto count = profile.mods.size();
-    const auto missing = profiles::apply(profile, panel.list).missing.size();
+    const auto missing = profiles::apply(profile, panel.list, panel.profiles.keep_others).missing.size();
     panel.profiles.list.push_back(std::move(profile));
     if (!store(panel)) {
         panel.profiles.list.pop_back();
@@ -319,10 +319,14 @@ void profiles_page(const Fonts& fonts, ModsPanel& panel, HWND window, float heig
 
     const profiles::Profile* using_now = nullptr;
     for (const auto& profile : panel.profiles.list)
-        if (!using_now && profiles::in_use(profile, panel.list)) using_now = &profile;
+        if (!using_now && profiles::in_use(profile, panel.list, panel.profiles.keep_others)) using_now = &profile;
     page_banner(fonts, "PROFILES", nullptr,
-        "A profile remembers which of your mods are on and in what order. Every mod stays installed once; loading a "
-        "profile switches the rest off. Share one as a code or a file, with ReSkate or r2modman.",
+        panel.profiles.keep_others
+            ? "A profile remembers which of your mods are on and in what order. Every mod stays installed once; loading a "
+              "profile switches its mods on and leaves your other mods as they are. Share one as a code or a file, with "
+              "ReSkate or r2modman."
+            : "A profile remembers which of your mods are on and in what order. Every mod stays installed once; loading a "
+              "profile switches the rest off. Share one as a code or a file, with ReSkate or r2modman.",
         using_now ? "IN USE: " + using_now->name : "NO PROFILE IN USE", using_now ? color::good : color::tile_grey,
         std::format("{} of {} saved", panel.profiles.list.size(), profiles::max_profiles));
 
@@ -390,7 +394,16 @@ void profiles_page(const Fonts& fonts, ModsPanel& panel, HWND window, float heig
         ImGui::EndDisabled();
 
         ImGui::SetCursorScreenPos(ImVec2(start.x, start.y + tall + S(12)));
-        ImGui::Dummy(ImVec2(0, 0));
+        ImGui::BeginDisabled(busy);
+        // The label as far from the box as the settings page has it (an item's spacing, not the inner one).
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemInnerSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, ImGui::GetStyle().ItemInnerSpacing.y));
+        if (ImGui::Checkbox("Keep my other mods on when loading a profile", &panel.profiles.keep_others)) store(panel);
+        ImGui::PopStyleVar();
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("On: a profile switches its own mods on and leaves the rest as they are.\n"
+                              "Off: a profile switches every mod it does not list off.");
+        ImGui::Dummy(ImVec2(0, S(4)));
     }
 
     // ------------------------------------------------ the profiles, a card each
@@ -408,8 +421,8 @@ void profiles_page(const Fonts& fonts, ModsPanel& panel, HWND window, float heig
         const auto& profile = panel.profiles.list[index];
         ImGui::PushID(static_cast<int>(index));
         const auto on = std::count_if(profile.mods.begin(), profile.mods.end(), [](const auto& mod) { return mod.enabled; });
-        const auto missing = profiles::apply(profile, panel.list).missing.size();
-        const bool current = profiles::in_use(profile, panel.list);
+        const auto missing = profiles::apply(profile, panel.list, panel.profiles.keep_others).missing.size();
+        const bool current = profiles::in_use(profile, panel.list, panel.profiles.keep_others);
         const bool last = !current && profile.name == panel.profiles.active;
         std::vector<std::string> names;
         for (const auto& mod : profile.mods)

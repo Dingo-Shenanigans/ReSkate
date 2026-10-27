@@ -28,6 +28,22 @@ bool code(std::uintptr_t base, std::uintptr_t address) {
 // one less than the parent's address while the actor lived (the same parent is at bus + 0x48),
 // so the game read a vtable out of the middle of one and faulted; what writes it is not known
 // (2026-10-21).
+// An actor left alive for that only crashed later: when the level went, the game released the
+// parent through the same pointer, took one off the byte below the parent's vtable pointer, and
+// called through it (Skate.exe+0x2b8092f, +0x2b7fcfb, every one after the warning below with the
+// same bus; 2026-10-25). One less than the parent at bus + 0x48 is put right instead, and the actor
+// destroyed as the game would.
+void note_repaired_link(std::uintptr_t bus, std::uintptr_t parent) {
+    static std::atomic<unsigned> said{};
+    if (said.fetch_add(1, std::memory_order_relaxed) >= 8) return;
+    try {
+        logging::log(logging::Level::warning, logging::Channel::network,
+                     "Multiplayer: a remote actor's link to its parent in the game's entity tree was one byte short (bus {:#x}, "
+                     "parent {:#x}); it is put right before the actor is destroyed.",
+                     bus, parent);
+    } catch (...) {
+    }
+}
 bool destroy_reaches_code(std::uintptr_t base, std::uintptr_t entity, std::uintptr_t owner, std::string &damage) {
     try {
         const auto bus = ptr(owner, 8);
@@ -37,6 +53,11 @@ bool destroy_reaches_code(std::uintptr_t base, std::uintptr_t entity, std::uintp
         }
         if (ptr(bus, 0x28) != entity) return true;
         const auto up = ptr(bus, 0x20);
+        if (const auto parent = ptr(bus, 0x48); up % 8 == 7 && up + 1 == parent && code(base, ptr(ptr(parent), 0x18))) {
+            *reinterpret_cast<std::uintptr_t *>(bus + 0x20) = parent;
+            note_repaired_link(bus, parent);
+            return true;
+        }
         if (up % 8 || !code(base, ptr(ptr(up), 0x18))) {
             damage = std::format("bus {:#x}, parent {:#x}, root bus {:#x}", bus, up, ptr(bus, 0x48));
             return false;

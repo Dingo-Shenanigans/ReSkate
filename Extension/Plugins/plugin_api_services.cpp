@@ -146,11 +146,7 @@ int key_code(lua_State* L, int index) {
         return vk;
     }
     const std::string name = luaL_checkstring(L, index);
-    static const std::pair<const char*, int> names[] = {
-        {"Enter", 13}, {"Backspace", 8}, {"Escape", 27}, {"End", 35}, {"Home", 36}, {"PageUp", 33}, {"PageDown", 34}, {"Space", 32},
-        {"Shift", 16}, {"Ctrl", 17}, {"Alt", 18}, {"Tab", 9}, {"Left", 37}, {"Up", 38}, {"Right", 39}, {"Down", 40},
-        {"[", 0xDB}, {"]", 0xDD}, {"Delete", 46}, {"LeftMouse", 1}, {"RightMouse", 2}, {"MiddleMouse", 4}};
-    for (const auto& [n, vk] : names)
+    for (const auto& [n, vk] : key_names)
         if (name == n) return vk;
     if (name.size() == 1 && ((name[0] >= 'A' && name[0] <= 'Z') || (name[0] >= '0' && name[0] <= '9'))) return name[0];
     luaL_argerror(L, index, "a key name (A-Z, 0-9, Enter, Backspace, Escape, End, PageUp, PageDown, [, ], ...) or a virtual key");

@@ -1,7 +1,9 @@
 #pragma once
+#include "plugin_effects.h"
 #include "plugin_wave.h"
 #include "Engine/Core/Json/json.h"
 #include "Extension/AnimationStudio/anim_core.h"
+#include "Extension/Skater/pose_place.h"
 #include "Extension/Throwdowns/throwdown_kit.h"
 #include <array>
 #include <cstdint>
@@ -112,7 +114,7 @@ struct SkaterNews {
     std::vector<Fall> falls;
 };
 // One physics step of the local skater (events.physics): when (the steady clock, ms, as
-// reskate.time.now), how long it simulated, and what the body did; only the bodies touching something.
+// reskate.time.now), how long it simulated, contacts, and available body poses even in the air.
 struct PhysicsStep {
     double at{};
     float seconds{};
@@ -124,8 +126,12 @@ struct PhysicsStep {
         std::string name; // as body_hit names it
         float impact{}, slide{};
         bool board{}, vehicle{}, world{}; // world: anything but the board and vehicles
+        std::optional<Vec3> point, normal;
     };
     std::vector<Body> bodies;
+    struct Pose { EffectMatrix transform{}; Vec3 velocity{}; };
+    std::map<std::string, Pose, std::less<>> poses; // all available local bodies, including airborne ones
+    std::optional<std::uint32_t> state;
 };
 // What a plugin sets of a launch into the air, m/s, each if given: across the direction of travel
 // (+ its left), along it, and up. And a launch as it went (Extension/Skater/launches.h).
@@ -258,6 +264,16 @@ struct Progress {
 class Game {
 public:
     virtual ~Game() = default;
+    // Client-only particles and projected materials. Handles are owned by their plugin.
+    virtual std::uint64_t effect_create(std::string_view, const EffectRequest&) { return 0; }
+    virtual void effect_move(std::string_view, std::uint64_t, const EffectMatrix&) {}
+    virtual void effect_stop(std::string_view, std::uint64_t) {}
+    virtual void effect_opacity(std::string_view, std::uint64_t, float) {}
+    virtual void effect_release(std::string_view, std::uint64_t) {}
+    virtual std::vector<std::uint64_t> effects_live(std::string_view) { return {}; }
+    virtual void effects_clear(std::string_view) {}
+    virtual std::pair<bool, std::uint64_t> effects_state() { return {false, 0}; }
+
     // ---- the local skater ----------------------------------------------------------------------
     // Its physics state (100s riding, 200s in the air, 300 a wipeout, 400s grinding, 504 off the
     // board), or empty without a skater; and how many wipeouts it has had this session.
@@ -729,7 +745,10 @@ public:
         std::array<float, 4> rotation{0, 0, 0, 1};
         float scale{1};
         Vec3 offset{}; // added to its position, in its parent's frame
+        std::optional<pose_place::Place> place; // set instead of added, after the above
+        bool keep_children{};                   // its children stay where they were in the world
     };
+    // The joints come in the order they are posed in (pose_place::order).
     virtual std::string skater_pose(std::string_view /*plugin*/, const std::vector<JointOffset>&, float /*weight*/, Shown /*shown*/) {
         return unavailable;
     }
@@ -828,6 +847,9 @@ public:
         std::string type;
         std::array<float, 3> value{};
         std::int32_t integer{};
+        // Declared by the equipped item's mod (reskate-materials.json) and not held by the material
+        // yet: `value` is the default its shader has; set_parameter adds it.
+        bool inherited{};
     };
     virtual std::optional<std::vector<BoardParameter>> board_parameters(int /*part*/) { return std::nullopt; }
     // A colour (`colour`, all three) or a number (value[0]) held there until cleared; empty when held.

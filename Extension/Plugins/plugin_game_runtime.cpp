@@ -1,4 +1,5 @@
 #include "plugin_game_runtime.h"
+#include "Extension/Rendering/plugin_effects.h"
 #include "plugin_session_feed.h"
 #include "plugin_content.h"
 #include "Runtime/runtime_internal.h"
@@ -528,7 +529,7 @@ public:
             using board_material::Kind;
             const char* type = p.kind == Kind::colour ? "colour" : p.kind == Kind::number ? "number" : p.kind == Kind::integer ? "integer"
                              : p.kind == Kind::toggle ? "switch" : "other";
-            out.push_back({p.key, type, p.value, p.integer});
+            out.push_back({p.key, type, p.value, p.integer, p.inherited});
         }
         return out;
     }
@@ -583,6 +584,14 @@ public:
         auto layers = outfit_overlay::layers(plugin);
         return {std::move(layers.items), std::move(layers.worn), std::move(layers.note)};
     }
+    std::uint64_t effect_create(std::string_view plugin, const EffectRequest& request) override { return effects::create(plugin, request); }
+    void effect_move(std::string_view plugin, std::uint64_t id, const EffectMatrix& transform) override { effects::move(plugin, id, transform); }
+    void effect_stop(std::string_view plugin, std::uint64_t id) override { effects::stop(plugin, id); }
+    void effect_opacity(std::string_view plugin, std::uint64_t id, float value) override { effects::opacity(plugin, id, value); }
+    void effect_release(std::string_view plugin, std::uint64_t id) override { effects::release(plugin, id); }
+    std::vector<std::uint64_t> effects_live(std::string_view plugin) override { return effects::live(plugin); }
+    void effects_clear(std::string_view plugin) override { effects::clear(plugin); }
+    std::pair<bool, std::uint64_t> effects_state() override { return effects::status(); }
     // ---- the skater's physics ------------------------------------------------------------------------
     SkaterNews take_skater_news() override {
         skater_events::want();
@@ -601,16 +610,20 @@ public:
     std::vector<PhysicsStep> take_physics_steps() override {
         skater_events::want_steps();
         std::vector<PhysicsStep> out;
+        NoBailSkater owner;
+        const bool owned = no_bail_skater(owner);
         for (const auto& news : skater_events::take_steps()) {
+            if (!owned || news.entity != owner.entity || news.rig != owner.rig) continue;
             const auto& s = news.step;
-            PhysicsStep step{news.at, s.seconds, s.wipeout, s.airborne, s.ragdoll, std::nullopt, s.spin, {}};
+            PhysicsStep step{news.at, s.seconds, s.wipeout, s.airborne, s.ragdoll, std::nullopt, s.spin, {}, {}, s.state};
             if (s.velocity) step.velocity = Vec3{(*s.velocity)[0], (*s.velocity)[1], (*s.velocity)[2]};
             for (std::size_t i = 1; i < skater_body::count; ++i) {
                 const auto& c = s.body.bodies[i];
+                if (const auto& pose = s.poses[i]) step.poses.emplace(skater_body::names[i], PhysicsStep::Pose{pose->transform, pose->velocity});
                 if (!c.touching) continue;
                 const float slide = std::sqrt(c.slide[0] * c.slide[0] + c.slide[1] * c.slide[1] + c.slide[2] * c.slide[2]);
                 step.bodies.push_back({skater_body::names[i], c.impact, std::isfinite(slide) ? slide : 0.0f, c.hit.board, c.hit.vehicle,
-                                      c.hit.world || c.hit.kind_5 || c.hit.kind_11});
+                                      c.hit.world || c.hit.kind_5 || c.hit.kind_11, c.point, c.normal});
             }
             out.push_back(std::move(step));
         }
@@ -1023,7 +1036,7 @@ public:
         poser_ = plugin;
         pose_at_ = now;
         std::vector<skater_animation::PoseOffset> out;
-        for (const auto& o : offsets) out.push_back({o.joint, o.rotation, o.scale, o.offset});
+        for (const auto& o : offsets) out.push_back({o.joint, o.rotation, o.scale, o.offset, o.place, o.keep_children});
         skater_animation::pose(std::move(out), weight, shown_of(shown));
         return {};
     }
@@ -1619,6 +1632,7 @@ public:
         if (competition_owner_ == plugin) competition(plugin, false);
         stop_clip(plugin);
         plugin_sound::stop_all(plugin);
+        effects::clear(plugin);
         outfit_overlay::clear(plugin);
         item_browser::release_owner(plugin);
         (void)outfit_overlay::set_layers(std::string(plugin), {});

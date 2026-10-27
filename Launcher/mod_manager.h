@@ -54,6 +54,47 @@ std::string install(const std::filesystem::path& mods_root, const std::filesyste
 // Moves Mods/<name> to the Recycle Bin. Throws a user-facing message.
 void remove(const std::filesystem::path& mods_root, const std::string& name);
 
+// Which mods a mod pack brought in: the dependencies a Thunderstore install of it downloaded that
+// were not installed before (theirs too), kept by the launcher in Mods/brought-in.json, pack folder
+// to dependency folders. A mod the player had already is never in it.
+inline constexpr char brought_in_file[] = "brought-in.json";
+std::vector<std::string> brought_in(const std::filesystem::path& mods_root, const std::string& pack);
+// Adds to `pack`'s list. Throws a user-facing message when the file cannot be written.
+void record_brought_in(const std::filesystem::path& mods_root, const std::string& pack,
+    const std::vector<std::string>& dependencies);
+// Drops the lists of mods that are gone; nothing when there were none.
+void forget_brought_in(const std::filesystem::path& mods_root, const std::vector<std::string>& removed);
+
+// The installed mods a pack brought in that nothing else needs, to offer with its uninstall: what
+// the mods in `removing` brought in (brought_in), without the ones `removing` already has and without
+// any that a mod staying installed (the rest of `installed`) lists as a dependency in its
+// manifest.json ("Namespace-Name-1.2.3" is the folder Namespace-Name), or that one's dependencies in
+// turn. In `installed`'s order. A pack installed before this was kept brought nothing in.
+std::vector<std::string> orphaned_dependencies(const std::filesystem::path& mods_root,
+    const std::vector<std::string>& removing, const std::vector<std::string>& installed);
+
+// Changes the game cannot make while it runs, because it holds the mod's files open (an update or
+// uninstall of a mod it has loaded), wait in Mods/.reskate-pending until the next start: the new
+// copy of a mod as a folder there, and the mods to uninstall in its remove.txt, a folder name a
+// line. apply_pending makes them; the launcher calls it before each launch's merge.
+inline constexpr char pending_folder[] = ".reskate-pending";
+// Installs `source` as install() does, into the pending folder, and returns the mod's name. A
+// removal waiting for the same mod is dropped: the update is what was asked for last.
+std::string install_later(const std::filesystem::path& mods_root, const std::filesystem::path& source,
+                          const Progress& progress, const std::atomic<bool>& cancel, const InstallOptions& options = {});
+// Marks Mods/<name> to be uninstalled at the next start, dropping an update waiting for it.
+// Throws a user-facing message.
+void remove_later(const std::filesystem::path& mods_root, const std::string& name);
+struct Pending {
+    std::vector<std::string> updates, removals;
+};
+// What waits. A missing or unreadable folder is nothing; never throws.
+Pending pending(const std::filesystem::path& mods_root) noexcept;
+// Moves each waiting copy into place (the old copy deleted for good, as an update's is) and moves
+// each mod to remove to the Recycle Bin. What could not be done stays for the next try. Never
+// throws; returns what happened, a line each, for the log.
+std::vector<std::string> apply_pending(const std::filesystem::path& mods_root) noexcept;
+
 // What the mods give the game's data, as one line: each mod that ships a layout, in load order, with
 // its folder name and its files' fingerprint (Engine/Vfs/mod_list.h mod_fingerprint), then the
 // variants in play. A mod that only holds a plugin, or loose files the game does not draw with, is not

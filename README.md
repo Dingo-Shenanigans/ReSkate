@@ -1,115 +1,410 @@
-# ReSkate Animator Studio
+# ReSkate
 
-Edit skate animations in game, build your own trick packs, and choose how they play.
+play it offline, host your own lobbies and dedicated servers, and mod it.
+the launcher, the runtime that loads into the game, and the dedicated server.
 
-Animator Studio is a modified **ReSkate runtime**, built by 22sh, Fourth Studio, Norms and Steez, and tested by THE CREW. Open it with **F8** to browse native animations, edit body and board keys, make stance variants, and share packs through the market.
+> ReSkate is a fan project. It is not affiliated with or endorsed by Electronic Arts or Full Circle.
+> You need your own copy of skate. on Steam.
 
-> **Current candidate:** Animator Studio 1.0.10 on ReSkate 2.1.2. Automated checks cover animation logic and pack files; final in-game release acceptance is tracked in the [release checklist](contrib/studio-release-checklist.md).
->
-> This is a fan project, unaffiliated with Electronic Arts or Full Circle. You need your own copy of skate. on Steam. The game is not included.
+## Features
 
-## Install
+- **Offline play.** No EA servers needed. Your skater, outfits, unlocks and progress are saved on your PC,
+  and the game runs even with Steam closed.
+- **Multiplayer.**
+  - Host a Steam lobby for up to 32 players: public, or joined with a code, with an optional password.
+  - Join dedicated servers from the in-game server browser.
+  - Proximity voice chat, and text chat with emotes and an optional bad-word filter.
+  - Parties in lobbies and on dedicated servers: invite, join, leave, promote.
+  - Throwdowns with other players (Jam, Spot Battle and S.K.A.T.E.), and co-op challenges. Plugins add
+    throwdown modes of their own to the Throwdowns page ([contrib/throwdown-kit.md](contrib/throwdown-kit.md)).
+- **In-game menu and console.**
+  - Map and fast travel.
+  - World: time of day, population, district levels, rotating parks.
+  - The **Park Editor**: place, move and save objects with freecam, snapping and undo. Save a selection as a
+    set and place it again anywhere, on any map.
+  - Skater options: first person, movement, boosts, noclip.
+  - Hall of Meat, grind exit triggers, Board Break, Road Rash and the FPV drone are plugin mods now,
+    installed like any other mod. Board Break and Road Rash ship inside their asset mods.
+  - Progression, controls, graphics and multiplayer settings.
+- **Mods.**
+  - Drop a mod in `Mods/` and it is merged into the game at launch. Mods can add custom maps, loading
+    screens, cosmetics and scripts.
+  - Browse and install mods from the [Thunderstore community](https://thunderstore.io/c/reskate/) in the
+    launcher. A mod that needs others (a mod pack) brings them with it.
+  - Save sets of mods as profiles, switch between them, and share one as a code or a file.
+  - Most mod changes apply in game without a restart.
+- **Animator Studio.** Browse and search the game's animation library, edit body and board keys,
+  build trick packs and playlists, and share packs through the animation market. Open it with **F8**,
+  hold **L3 + R3**, or use **Open Animation Studio** on the player/skater menu pages.
+  See the [Studio guide](contrib/animator-studio.md) for activation, stances, sharing and current limits.
+- **Launcher.**
+  - Checks that you have the supported game build, and can download exactly that build with your Steam
+    account.
+  - Keeps ReSkate itself up to date.
 
-**For now, the Animator Studio is one file: a `ReSkate.dll` that takes the place of ReSkate's own.** You swap the DLL and turn ReSkate's updates off. Once the ReSkate team brings the studio into ReSkate itself, none of this is needed: you will just update ReSkate.
+## Getting started
 
-You need Windows, your own copy of skate. on Steam, and a working **ReSkate 2.1.2** install (the game build ReSkate pins is Steam build **25414733**, internal build 20260929; let the ReSkate launcher set it up rather than copying the latest Steam executable over it).
+1. Download the latest `ReSkate-<version>.zip` from
+   [Releases](https://github.com/Dingo-Shenanigans/ReSkate/releases).
+2. Extract `ReSkateLauncher.exe` and `ReSkate.dll` into **a new, empty folder of their own**, for
+   example `C:\Games\ReSkate`. Do **not** put them in Steam's skate. folder: ReSkate keeps its own
+   copy of the game there, so Steam updating skate. cannot break it.
+3. Run `ReSkateLauncher.exe`.
+   - It checks for ReSkate updates, then installs the supported build of the game into that folder
+     (about 14 GB of free space).
+   - Sign in to Steam when asked, with the account that owns skate. You can scan a QR code with the
+     Steam app, or use your username and password with Steam Guard.
+   - On later runs it checks the game files and downloads only what is missing.
+4. Press **PLAY**.
 
-1. Install **ReSkate 2.1.2** from its [release](https://github.com/Dingo-Shenanigans/ReSkate/releases/tag/v2.1.2) and start it once the normal way, so it is set up and up to date.
-2. In the launcher, open **Settings > LAUNCHER** and turn **Install ReSkate updates** off. While it is on, the launcher puts the official `ReSkate.dll` back.
-3. Close the launcher and the game.
-4. Open your ReSkate folder (the one with `Skate.exe` and `ReSkateLauncher.exe`). Back up `ReSkate.dll`, and your `ReSkate.Tricks` folder if you already have one.
-5. Download `ReSkate.dll` from the [latest Studio release](https://github.com/FourthStudio/ReSkate-Animator-Studio/releases) and put it in that folder, replacing the old one.
-6. Start the game from `ReSkateLauncher.exe` as usual. Once it has loaded it says **Modified build: AnimatorStudio**. Press **F8** (or hold **L3 + R3**) to open the studio. You can also use **Open Animation Studio** under **Mod Options > PLAYER**, or on the ReSkate menu's **SKATER** page, once your skater is in game and Park Editor is closed.
+ReSkate supports one game build at a time (Steam build `25414733`).
 
-On the first start the studio builds its trick library from your own game: about a minute and 1.6 GB, and the game's files are only read, never changed. **TRICKS** shows how far it has got.
+### Linux (Proton)
 
-**Updating the studio:** close the game and replace `ReSkate.dll` with the new one. Your tricks, packs and settings in `ReSkate.Tricks` stay.
+1. Install skate. with Steam, and put `ReSkateLauncher.exe` and `ReSkate.dll` in a new, empty folder
+   of their own, for example `~/Games/ReSkate` (not Steam's skate. folder: the launcher refuses to
+   run from there).
+2. In Steam → skate. → Properties → Launch Options, enter this with your own folder's path:
 
-**Going back to the official ReSkate:** turn **Install ReSkate updates** back on and start the launcher: it puts the official files back by itself (or copy your backed-up `ReSkate.dll` back). Your `ReSkate.Tricks` folder is kept.
+   ```
+   bash -c 'exec "${@/*EAAntiCheat.GameServiceLauncher.exe//home/you/Games/ReSkate/ReSkateLauncher.exe}"' -- %command%
+   ```
 
-## Make your first custom trick
+3. Press **Play** on skate. in your Steam library. The launcher installs its own copy of the game
+   into that folder the first time.
 
-1. Open **TRICKS**, search for an animation, and choose a native trick/pop to edit.
-2. Scrub or play the timeline, move or rotate body/board joints, and add keys. Use key blend-in/out to ease edits into the game's pose. Undo/redo and save are available in the editor.
-3. Save with a name of your own. Preview speed affects watching the timeline; gameplay uses normal timing.
-4. In **MY TRICKS**, tick **ACTIVE**. Choose a playlist if asked, and make sure that playlist is switched on.
-5. Close the studio and perform the trick in game.
+Steam starts EA's anti-cheat launcher (`EAAntiCheat.GameServiceLauncher.exe`), not `Skate.exe`, and the
+anti-cheat refuses to run under Proton (*E111000B … Wine, Proton, and Steam Deck are not supported*).
+The launch option swaps it for ReSkate's launcher, which starts the game itself. Launching from the game's
+own Steam entry, rather than adding the launcher as a non-Steam game, keeps skate.'s app ID and its
+Proton prefix.
 
-**Saving alone does not activate a trick.** Only one playlist is on at a time; with none on, custom tricks do not play. Also check **Custom tricks in game** in settings. **TEST IN GAME** is a temporary override until you reopen the studio or restart; ACTIVE/playlists keep the selection for later sessions.
+The launcher in a folder of its own is new and has not been tested on Proton yet. With the launcher
+beside `Skate.exe`, as it was set up before, ReSkate 1.1.3 was tested with Proton Experimental on
+CachyOS: the launcher, the server browser, joining a public server and hosting a lobby. Steam Deck should work the same way but is untested. If you load a
+custom map and then join a server on another map, the screen can stay black
+([#31](https://github.com/Dingo-Shenanigans/ReSkate/issues/31)): load the server's map first.
 
-### Playlists, packs and stances
+### macOS (NotProton / CrossOver)
 
-- **Fixed:** the highest playlist entry for a trick/pop/stance/takeoff slot wins. If that winning pack's slot uses Alternate, its variants can alternate; lower-priority packs stay out of that slot.
-- **In turns:** variants play in playlist order, one attempt at a time.
-- **Shuffle:** variants are chosen randomly, avoiding the previous choice when alternatives exist.
-- Packs group animations for distribution; playlists choose which packs and tricks play.
-- **Exact stance** uses the authored leading-foot and fakie combination. **Front foot** can mirror variants when the other foot leads. Make separate normal, fakie, switch and switch-fakie versions when each should have its own style.
-- **ANY pop** can generate low/mid/high versions in memory. A single-pop trick can supply fallback versions where no selected trick covers another height. Use **COPY TO LOW, MID AND HIGH** to edit those versions separately.
+Steam for Mac with a Wine-based compatibility tool works much the same way; see
+[macOS](https://docs.reskate.dev/macos) in the docs for its launch option.
 
-Editor shortcuts can be changed under **SETTINGS > STUDIO > EDITOR KEYS**. A trick can override the global crossfade through its own settings.
+### Multiplayer map downloads
 
-## Market and sharing
+Missing multiplayer custom maps can be downloaded from Thunderstore after confirmation.
+The confirmation expires after two minutes. A session waits 30 minutes in all for the map to be
+checked, downloaded, installed, applied and joined; dedicated servers and player-hosted lobbies
+enforce the same limit on their own monotonic clocks. Ordinary map loading still gets 180
+seconds; loading after a live installation still gets 30 seconds.
 
-Browse and preview animation packs in **MARKET**. Install a pack, then add it to an enabled playlist to use it in game.
+A download that has begun is not cut short when the session stops waiting: a large map on a slow
+connection goes on downloading (up to four hours), installs and is applied, and you are told to
+join the server again. Declining, or cancelling the download, stops it and removes the
+incomplete file. Installation stops before replacing an existing mod when cancellation is
+observed; a filesystem commit or live merge already in progress finishes safely rather than
+being forcibly interrupted. Retry after that work has finished, without restarting ReSkate.
 
-To publish your own pack, open **MARKET > ACCOUNT / SIGN IN**, enter your Thunderstore team name and its service account token, and link the team. Publish from the pack's sharing controls. No token is needed to browse or install packs.
+### Controls
 
-The token is stored in `ReSkate.Tricks/market/account.key`, encrypted with Windows DPAPI for that Windows user. `account.json` stores the team name. If the token was deleted or cannot be read after moving PCs, sign out and link the team again. Never include account files when distributing a DLL or pack.
-
-Imported packs retain their maker's ownership settings. A verified publishing team can reclaim its own packs made on another PC. Use the studio's export/share controls rather than zipping your whole `ReSkate.Tricks` folder.
-
-## Scope and current limits
-
-- Native inventory includes clips, graph states, transitions and parameters. An indexed item is not necessarily editable or bound to live gameplay.
-- Editing or saving a grind, setup, loop or transition preview does not automatically replace that phase in game. Live phase replacement remains incomplete.
-- On drops, supported tricks can slow from their catch toward touchdown; **CATCH**, **CATCH HOLD** and **DROP PREVIEW** are available again. The authored pose blends back toward the game's landing near the ground. General airborne foot corrections remain disabled.
-- When a trick fades out into a grind, its feet follow the game's board toward the native grind stance. This contact correction does not implement custom grind-loop replacement.
-- Older goofy saves with incorrect stance metadata are not automatically repaired in every case; recreate an affected version if its tags or limb behavior are wrong.
-- Windows is the tested build target. Studio operation on Proton, Steam Deck and macOS is not release-validated.
-
-## Your files and recovery
-
-Everything below is relative to the folder containing `Skate.exe` unless `RESKATE_ANIMATION_STUDIO_DIR` overrides the Studio library location.
-
-| Data | Location |
+| Key | Opens |
 |---|---|
-| Saved tricks | `ReSkate.Tricks/<name>/<name>.json` and `.clip`; older loose pairs remain readable |
-| Packs and playlists | `ReSkate.Tricks/presets/` |
-| Studio settings | `ReSkate.Tricks/studio-settings.json` |
-| Native library | `ReSkate.Tricks/library/` |
-| Market settings and account | `ReSkate.Tricks/market/` |
-| Bug report ZIPs | `ReSkate.Tricks/bug reports/` |
-| Interrupted update recovery files | `ReSkate.Tricks/.pack-transactions/` |
+| **Insert** | the ReSkate menu |
+| **~** (grave/tilde) | the command console (`help` lists the commands) |
+| **T** | chat, in multiplayer |
 
-Failed pack updates restore the old files when possible; failed recovery keeps backups and reports their location. Do not discard recovery files after an interrupted update. Automatic crash recovery during a multi-file commit is not implemented. Back up the library before testing a new build.
+The menu and console keys can be changed in the launcher's Settings.
 
-Deleting your own pack keeps its tricks. Deleting an imported pack recycles unshared member tricks; failed or cancelled recycling stops the operation and keeps remaining files. Some files may already be in the Recycle Bin after a partial shell operation.
+The music player can play Spotify, YouTube Music, your own music files, internet radio and any app
+on your PC: type `music setup` in the console, and see
+[Music sources](https://docs.reskate.dev/music-sources) in the docs.
 
-## Report a problem
+In **MAP → ROTATING PARKS** and the controller-friendly **MOD OPTIONS → PARKS** screen,
+**Load Random Parks** chooses and loads one random layout for each of
+San Vansterdam's three slots. Each supported layout has an equal chance; empty lots are excluded and
+a roll can pick a layout already loaded. Choices save with your profile and are shared when you host.
+**Randomize on Launch** is off by default. Turn it on to pick fresh layouts once on each subsequent
+game launch, when the park controller is ready. Changing maps does not roll again. Guests follow the
+host's layouts; a dedicated server admin can use the button to randomize the server's parks for everyone.
+Both menus share the same launch preference. It only affects your own parks, including when you host
+a lobby. Joining a host cancels any pending startup roll, so leaving the lobby restores your saved
+layouts without unexpectedly randomizing them.
 
-Use **SETTINGS > STUDIO > REPORT A BUG** and attach the resulting ZIP, with the trick name, pop, stance, and whether the problem occurs in the preview, gameplay, or both. Include whether you were offline or online.
+The console equivalents are `park random` and `park random-on-launch 0|1`. A dedicated server also
+accepts `park random` from its console or an admin.
 
-The ZIP is created locally; sending it is your choice. It contains recent diagnostics, relevant animation data, settings, build details and the end of the game log. Standard export does not collect the market's `account.key`. ReSkate's automatic crash reporting is separate: control **Send crash reports** in launcher settings, or use `RESKATE_CRASH_REPORTING=0`.
+### Where things are
 
-## Build and contribute
+| What | Where |
+|---|---|
+| Mods | `Mods\<mod name>\` beside `Skate.exe`, ordered by `Mods\mods.json` |
+| Logs | `logs\ReSkate.log` beside `Skate.exe` |
+| Profile (skater, progress, parks) | `%LOCALAPPDATA%\ReSkate\profiles\offline\` |
+| The game's own settings and saves | `%LOCALAPPDATA%\ReSkate\Game\` (kept apart from the normal game) |
+| Launcher settings | `ReSkateLauncher.settings.json` beside the launcher |
 
-Use Visual Studio 2022 with the C++ desktop workload, CMake and Ninja. Python 3.11+ is used for tests/packaging; an installed Cargo toolchain enables the optional Spotify helper. From a Developer PowerShell:
+### Troubleshooting
 
-```powershell
-cmake --preset ci-windows
-cmake --build build/ci-windows --config Release --target dingosdk_runtime dingosdk_launcher --parallel 4
+**My antivirus says ReSkate is a virus.** It is a false alarm. ReSkate has to load itself into the game as
+it starts, and antivirus programs distrust anything that does that, most of all new programs they have not
+seen much of yet. Only download ReSkate from this page's
+[Releases](https://github.com/Dingo-Shenanigans/ReSkate/releases). If your antivirus removed a file, you can
+bring it back: Windows Security → Protection history → find ReSkate → Restore. An error about SHA-256 right
+after an update usually means the antivirus took the new file.
+
+**The launcher says it cannot run from Steam's skate. folder.** Move `ReSkateLauncher.exe` and `ReSkate.dll`
+into a new, empty folder of their own and run the launcher from there (see [Getting started](#getting-started)).
+
+**The ReSkate menu (Insert) doesn't open.** ReSkate isn't running. On Windows, always start the game with
+**PLAY** in the ReSkate launcher: pressing Play on skate. in Steam starts the normal game, without ReSkate.
+On Linux and macOS, use the launch option in [Linux (Proton)](#linux-proton) or
+[macOS](https://docs.reskate.dev/macos) in the docs.
+
+**The game crashes.** Turn your mods off and try again first: many crashes come from mods. If it still
+crashes, [open an issue](https://github.com/Dingo-Shenanigans/ReSkate/issues/new/choose) with your ReSkate
+version, when it happened and what you were doing, and attach `logs\ReSkate.log`. With **Send crash reports**
+on (it is by default), the crash details have already been sent; see
+[Crash reports and privacy](#crash-reports-and-privacy) for what is sent and how to turn it off.
+
+## Mods
+
+- Install mods from the launcher's **MODS** page: browse Thunderstore, or drag a `.zip` or folder onto the
+  window.
+- **PROFILES** on that page saves which mods are on, and in what order, under a name. Loading a profile
+  switches to it and downloads any of its mods you do not have; every mod stays installed once. **COPY CODE**
+  and **SAVE FILE** share a profile, and **IMPORT CODE** and **IMPORT FILE** take one in. The codes and
+  `.r2z` files are r2modman's, so the two managers read each other's.
+- In game, the **MODS** tab of the ReSkate menu (**Insert**) turns mods on and off and applies the changes.
+- Mods are checked against the game build they were made for. Outdated mods, or mods that can't be merged
+  cleanly, are left out with a message naming them, and the rest still load.
+- A mod that adds songs can give them their own playlist in the game's music screen with a
+  `reskate-music.json` in its folder:
+
+  ```json
+  {"schema": 1, "playlists": [{"name": "My Playlist", "songs": ["Artist - Title", "Artist - Other Title"]}]}
+  ```
+
+  Each entry is the song's artist and title exactly as the mod registers them, joined by ` - `. Entries that
+  match no song are ignored, and a playlist with no matching songs is not shown. A file that does not follow
+  this shape is skipped and logged. The songs themselves still have to be added by the mod.
+
+  Optional playlist and track covers are PNG files packaged inside the mod:
+
+  ```json
+  {
+    "schema": 1,
+    "playlists": [{"name": "My Playlist", "artwork": "artwork/playlist.png", "songs": ["Artist - Title"]}],
+    "song_artwork": {"Artist - Title": "artwork/track.png"}
+  }
+  ```
+
+  Artwork paths are relative to the mod folder and use forward slashes. Images must be PNGs, at most
+  2048x2048 and 4 MiB each. Missing or invalid covers are ignored without removing the playlist or song.
+  ReSkate serves registered image bytes through a process-local HTTP endpoint bound only to `127.0.0.1`
+  on an automatically selected port; no internet hosting is needed. The endpoint exposes no filesystem
+  routes and retains at most 64 MiB of artwork. Existing content-cache covers keep their priority.
+- A mod that adds Quick Drop objects can name them and group them into families with a
+  `reskate-objects.json` in its folder. A family is one tile in the Object Browser, and X / Square on it
+  picks between its objects, the way the game's own sizes and colours work:
+
+  ```json
+  {
+    "schema": 1,
+    "categories": [{"id": "category_shoebox", "title": "Shoebox Pads"}],
+    "families": [{"id": "qdparent_shoebox_dc", "title": "DC Shoebox", "category": "category_shoebox"}],
+    "objects": [
+      {"key": "own_bkrails_shoebox_dc_12m", "title": "DC Shoebox 12m", "family": "qdparent_shoebox_dc"},
+      {"key": "own_bkrails_shoebox_dc_6m_red", "title": "DC Shoebox 6m, Red", "family": "qdparent_shoebox_dc"}
+    ]
+  }
+  ```
+
+  `key` is the object's owned asset key. A family can also go in one of the game's categories
+  (`category_ramp`, `category_rail`, ...), and an object in one of the game's families. Titles, a
+  `description` and `priority` (lower first) are optional. The file only adds: ids that are already taken
+  and the game's own items are left out and logged, so a mod cannot rename or regroup the game's objects.
+  The file is read when the game starts.
+
+Only install mods you trust. Mods change game data. Custom Lua scripts (`scripts/Custom`) are
+switched off in this version: nothing in that folder is read or run.
+
+## Dedicated servers
+
+`ReSkateServer.exe` is a headless lobby that needs neither the game nor Steam installed. It is in the
+`ReSkateServer-<version>.zip` of each release. See [Server/README.txt](Server/README.txt) for setup,
+`ReSkateServer.json`, admin commands, votes and the anti-cheat checks.
+
+### Linux servers
+
+Each release also ships `ReSkateServer-Linux-<version>.zip`: the same headless lobby as a native
+x86_64 Linux binary (no Wine, no game install). Setup in short:
+
+```sh
+unzip ReSkateServer-Linux-<version>.zip -d reskate-server && cd reskate-server
+./setup-linux-server-libs.sh
+./ReSkateServer            # writes ReSkateServer.json on first run; edit name/admins, restart
 ```
 
-Outputs are in `build/ci-windows/Release/`. The preset stamps Studio 1.0.9 / ReSkate 2.1.2 and disables binary auto-update. Dependencies are vendored; optional helper/test setup is described in the [build and validation guide](contrib/studio-tester-build.md).
+Details (Steam `.so` files, `world-layers.json`, `systemd`, ports, building from source with
+`cmake --preset linux-x64`) are in [Server/README-linux.md](Server/README-linux.md).
 
-See the [Studio implementation notes](contrib/animator-studio.md), [repository structure](STRUCTURE.md), and [release checklist](contrib/studio-release-checklist.md). Keep gameplay changes, tests and UI descriptions together; use focused PRs and wait for review before merging.
+## Building from source
 
-## Credits and license
+### Requirements
 
-Built on [ReSkate](https://github.com/Dingo-Shenanigans/ReSkate) and its contributors' work. Third-party dependencies and fonts retain their licenses; see [External/README.md](External/README.md).
+- Windows 10 or 11, x64.
+- Visual Studio 2022 with the **Desktop development with C++** workload (MSVC v143 and a Windows SDK).
+- CMake **3.24** or newer. Visual Studio's *C++ CMake tools for Windows* component provides one.
 
-**Built by** 22sh, Fourth Studio, Norms and Steez.
+All third-party libraries are in the repository, so the build needs no package manager or network
+access.
 
-**THE CREW** (testing): leaf.bro, Setsu, renzoh., smonk, philsteezy, Heatz, Bonksz and Kanga.
+### Build
 
-Project source is licensed under [GPL-3.0](LICENSE). The license does not grant rights to skate. or EA content.
+From a *Developer PowerShell for VS 2022* in the repository folder:
+
+```powershell
+cmake --preset vs2022-x64
+cmake --build --preset release --parallel 4
+```
+
+The files are written to `build/vs2022-x64/Release/`:
+
+| File | What it is |
+|---|---|
+| `ReSkateLauncher.exe` | the launcher (also hosts crash reporting) |
+| `ReSkate.dll` | the runtime the launcher loads into the game |
+| `ReSkateServer.exe` | the dedicated server |
+| `ReSkateEmotePacker.exe` | builds the chat emote pack in `assets/emotes` |
+
+To work in Visual Studio, open `build/vs2022-x64/DingoSDK.sln` after configuring and select
+**Release | x64**.
+
+### Running your build
+
+Close the game. Copy `ReSkateLauncher.exe` and `ReSkate.dll` into your ReSkate folder (the one the
+launcher installed the game into, beside `Skate.exe`), then run the launcher.
+
+Local builds never replace themselves. They only report that an update exists, so a release can't
+overwrite the DLL you are testing.
+
+Useful launcher flags:
+
+| Flag | Effect |
+|---|---|
+| `--no-gui` | start the game straight away, without the launcher window; with no other launch flags it uses the launcher's saved settings |
+| `--no-update` | skip the update check |
+| `--offline`, `-offline` | play offline, without Steam running |
+| `--windowed`, `--width=N`, `--height=N` | windowed mode and its size |
+| `--log-level=<trace\|debug\|info\|warning\|error\|critical\|off>` | how much `ReSkate.log` records (`warn` works too) |
+| `--log-trace` | the same as `--log-level=trace`; an explicit `--log-level` wins |
+| `-wconsole` | also show the log live in a console window while the game runs |
+| `--menu-key=0x2D`, `--console-key=0xC0` | menu and console keys (virtual-key codes) |
+| `-map <name>` | load that map as soon as the game is up, e.g. `-map "San Vansterdam"`; the name is a map's name, short name or asset path, or the start of one. Over the start map chosen in Settings > GAME |
+| `--no-loose-files` | ignore loose Lua and config files beside the game |
+| `--gpu-diagnostics` | record extra detail when the graphics driver crashes (DRED) |
+
+### CMake options
+
+| Option | Default | Effect |
+|---|---|---|
+| `DINGOSDK_VERSION` | `0.0.0` | version stamped into the binaries |
+| `DINGOSDK_LAUNCHER_AUTO_UPDATE` | `OFF` | let the launcher replace itself and `ReSkate.dll`, and the server replace itself (release builds) |
+| `DINGOSDK_RELEASE_REPO` | `Dingo-Shenanigans/ReSkate` | public GitHub repository whose latest release carries `launcher.json` and the files it pins |
+| `DINGOSDK_CRASH_REPORT_URL` | the project's endpoint | Sentry minidump endpoint URL; empty turns crash uploads off |
+| `DINGOSDK_TEST_GAME_ROOT` | empty | a Skate folder, for the tests that read real game data |
+
+### Tests
+
+Each module keeps its regression tests in a `Test/` folder. Turn them on with any of
+`DINGOSDK_BUILD_MULTIPLAYER_TESTS`, `DINGOSDK_BUILD_LAUNCHER_TESTS`, `DINGOSDK_BUILD_PARK_EDITOR_TESTS`
+and `DINGOSDK_BUILD_CRASH_REPORT_TESTS`, then run CTest:
+
+```powershell
+cmake --preset vs2022-x64 -DDINGOSDK_BUILD_MULTIPLAYER_TESTS=ON -DDINGOSDK_BUILD_LAUNCHER_TESTS=ON
+cmake --build --preset release --parallel 4
+ctest --test-dir build/vs2022-x64 -C Release
+```
+
+The project builds with `/W4 /WX`: warnings are errors.
+
+## Project layout
+
+The source tree loosely follows Frostbite's own layout.
+
+| Folder | Contents |
+|---|---|
+| `Engine/Core/` | logging, console, JSON, storage, platform helpers, Detours hooks, crash reporting (`Debug/`) |
+| `Engine/Resource/` | Frostbite data formats: EBX, TOC, CAS, bundles, shader lookup |
+| `Engine/Vfs/` | InitFS, the Mods folder, mod merging, the content cache |
+| `Engine/Scripting/` | custom Lua scripts |
+| `Engine/Game/` | the game's native ABI and data models |
+| `Engine/Game/Build/<build>/` | every address, fingerprint and patch tied to one `Skate.exe` build, as `addr::<area>::<name>` |
+| `Extension/` | ReSkate's features, the in-game UI and diagnostics |
+| `Runtime/` | `ReSkate.dll`: entry point, startup and exports |
+| `Launcher/` | `ReSkateLauncher.exe` |
+| `Server/` | `ReSkateServer.exe` |
+| `EmotePacker/` | `ReSkateEmotePacker.exe` |
+| `External/` | third-party libraries, pinned and hashed (see [External/README.md](External/README.md)) |
+| `assets/`, `config/` | files built into the binaries: launcher art, emotes, default profile settings |
+| `cmake/` | the build, split by area |
+
+### The supported game build
+
+ReSkate supports one `Skate.exe`, build 20260929, and stays on it: it does not follow newer Steam
+builds. The launcher downloads that build, pinned in
+[supported_build.h](Engine/Game/Build/supported_build.h) by file hashes, the Steam depot and manifest, and
+the content cache.
+
+Feature code never contains addresses. Everything tied to the game's code lives in
+`Engine/Game/Build/20260929/`. Most hooks and patches check the bytes they expect before touching them,
+so a different `Skate.exe` is refused rather than patched.
+
+## Crash reports and privacy
+
+When the launcher or the game crashes, ReSkate uploads a minidump and that session's log to the
+project's self-hosted Sentry server, so crashes can be fixed. The log never contains your Steam password or
+login name.
+
+With **Send performance timings** ticked in the launcher's Settings (ADVANCED; off unless you turn it on),
+ReSkate also sends how long a few steps took: the update check, the Steam download, mod
+installs (with the package name), the mod merge, starting the game, each level load, joining a multiplayer
+session and fetching the ReSkate lists. Time spent in a level adds its name, average frame rate and count of
+long frames. Nothing about your account is included. Turning crash reports off turns this off too.
+
+To turn crash reports off, untick **Send crash reports** in the launcher's Settings (ADVANCED), or set the
+environment variable `RESKATE_CRASH_REPORTING=0`.
+
+ReSkate also keeps the game off EA's online services: the game's own crash reports, telemetry and
+remote configuration requests are turned off and blocked. Fast-travel artwork still comes from EA's
+image CDN (`dingo-dev-assets.akamaized.net`), which only downloads images.
+
+## Third-party code
+
+ReSkate uses Dear ImGui, Microsoft Detours, RapidJSON, spdlog, SQLite, LZ4, Zstandard, miniz, bcdec and
+Valve's networking headers, and the Montserrat and Permanent Marker fonts. Versions, licenses and local
+patches are in [External/README.md](External/README.md). Every release ships their license files in
+`licenses/`.
+
+## License
+
+Copyright © 2026 the ReSkate contributors.
+
+ReSkate's source code is free software: you can redistribute it and modify it under the terms of the
+[GNU General Public License, version 3](LICENSE). If you share a modified ReSkate, share its source
+code under the same license.
+
+The license covers ReSkate's own code. It does not cover:
+
+- **Third-party libraries and fonts** in `External/`, which keep their own licenses (see
+  [External/README.md](External/README.md)).
+- **The chat emotes** in `assets/emotes/`, which were made by other people.
+- **Images of the game** (`assets/launcher/background.jpg`, `assets/startup_splash.jpg`) and anything
+  else from skate. The game and its content belong to Electronic Arts, and nothing here grants any
+  rights to them.
+
+## AI disclosure
+
+Parts of ReSkate, including code, reverse-engineering notes and documentation, were written with the
+help of AI coding assistants. The maintainers direct and test that work, but AI-written code can contain
+mistakes like any other. If something looks wrong, please open an issue.

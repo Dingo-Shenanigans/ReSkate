@@ -292,6 +292,10 @@ struct Session {
     std::uint64_t world = 1, travel_started{}, last_world_state{}, last_world_ready{};
     std::uint32_t world_state_sequence{};
     bool travelling{}, host_world_ready = true;
+    // Reloading the map being played for the local player's own reasons (begin_local_reload): kept as
+    // travelling, in the same world. Whether its load has begun, and a guest's ready report to send
+    // once it is back.
+    bool local_reload{}, local_reload_started{}, reload_ready_due{};
     unsigned capacity = max_players;
     // Local display preferences, loaded once from the profile. Never sent to peers.
     bool nametags = true, chat_visible = true, display_preferences_loaded{};

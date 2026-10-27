@@ -72,9 +72,8 @@ void Host::load(Entry& entry) {
     } catch (const std::exception&) {}
     entry.plugin->set_channel(channel);
     if (!entry.plugin->load()) {
-        entry.failure = entry.plugin->reason();
-        entry.plugin.reset();
-        release_commands(id); // its own log says why it stopped
+        // Startup can own native resources already, even though no tick ran.
+        collect(entry);
         return;
     }
     environment_.log(LogLevel::info, std::format("Plugin {} loaded ({}).", id, permissions.empty() ? "no permissions" : permissions));
@@ -291,6 +290,7 @@ void Host::follow_game() {
             each([&](Plugin& plugin, const std::string&) { plugin.game_event("bail_end", "events.skater", data); });
         }
     }
+    const bool geometry = wants("events.physics.geometry");
     if (wants("events.physics"))
         for (const auto& step : game.take_physics_steps()) {
             auto data = Json::object();
@@ -312,7 +312,28 @@ void Host::follow_game() {
                 bodies[b.name] = std::move(body);
             }
             data["bodies"] = std::move(bodies);
-            each([&](Plugin& plugin, const std::string&) { plugin.game_event("physics_step", "events.physics", data); });
+            auto detailed = Json::object();
+            if (geometry) {
+                detailed = data;
+                if (step.state) detailed["state"] = *step.state;
+                for (const auto& b : step.bodies) {
+                    auto& body = detailed["bodies"][b.name];
+                    if (b.point) body["point"] = Json::array({(*b.point)[0], (*b.point)[1], (*b.point)[2]});
+                    if (b.normal) body["normal"] = Json::array({(*b.normal)[0], (*b.normal)[1], (*b.normal)[2]});
+                }
+                auto poses = Json::object();
+                for (const auto& [name, p] : step.poses) {
+                    auto pose = Json::object(), matrix = Json::array();
+                    for (const float v : p.transform) matrix.push_back(v);
+                    pose["transform"] = std::move(matrix);
+                    pose["velocity"] = Json::array({p.velocity[0], p.velocity[1], p.velocity[2]});
+                    poses[name] = std::move(pose);
+                }
+                detailed["poses"] = std::move(poses);
+            }
+            each([&](Plugin& plugin, const std::string&) {
+                plugin.game_event("physics_step", "events.physics", plugin.has("events.physics.geometry") ? detailed : data);
+            });
         }
     if (wants("events.skater"))
         for (const auto& launch : game.take_launches()) each([&](Plugin& plugin, const std::string&) { plugin.launched(launch); });

@@ -100,6 +100,7 @@ fixup repair), mesh sets, skeletons, textures, material grids, shader lookup.
 The virtual file system and modding pipeline:
 - `initfs`, `game_archives`, `game_bundles`, `game_textures`, `native_db` — reading the game's data.
 - `mod_list`, `mod_catalog`, `mod_item_sources`, `mod_conflicts`, `mod_scoring` — the `Mods/` folder and `mods.json`.
+- `variant_additions_*` — explicit variant cooperation, native admission and private-asset projection planning.
 - `mod_merge*` — merging mods into the game's data (overrides, combine, grid, textures, loading screens, CAS store, scan cache, build stamp).
 - `content_cache*`, `content_catalogs` — the merged-content cache and its install.
 - `thunderstore_package`, `https_download` — Thunderstore packages.
@@ -143,7 +144,7 @@ commands and a `Test/` folder.
 | `Plugins/` | the Luau plugin host and its `reskate.*` API (see below) |
 | `Profile/` | offline profile storage: skater, progress, missions, objects, preferences |
 | `Progression/` | challenges, entitlements, neighborhood unlocks, fast travel unlock, rip score, board wear |
-| `Rendering/` | graphics controls and labels, display startup, replay export |
+| `Rendering/` | graphics controls and labels, display startup, replay export, plugin particles and surface decals |
 | `ReplayKeyframes/` | replay keyframe curves and settings |
 | `Scripting/` | Lua startup, custom script loader, native blocking |
 | `Settings/` | gameplay/native/user settings, input bindings, engine tweaks, replay drafts |
@@ -153,7 +154,7 @@ commands and a `Test/` folder.
 | `Travel/` | location travel |
 | `UI/` | the in-game UI (see below) |
 | `World/` | level loading, loading screens, time/atmosphere, population, park rotation, world layers, engine guards |
-| `AnimationStudio/` | animation core |
+| `AnimationStudio/` | animation editor/playback core, native library decoding, packs/playlists, market and studio room; UI in `Extension/UI/Overlay/animation_studio_*` |
 
 ### `Extension/Multiplayer/`
 | Folder | Contents |
@@ -179,6 +180,9 @@ The Luau plugin host. A plugin is a folder in `Mods/` with a `reskate-plugin.jso
 - `plugin_api*.cpp` — the `reskate.*` API (game, world, UI, more); `plugin_game*`, `plugin_camera`, `plugin_joystick`.
 - `plugin_ui`, `plugin_sound`, `plugin_wave`, `plugin_http`, `plugin_session_feed`, `plugin_wire` — pages, audio, HTTP, multiplayer messages.
 - `plugin_commands` — the `plugin` console command.
+- `plugin_effects`, `plugin_api_effects` — the permission, asset declarations and Lua calls for
+  [plugin particles and decals](contrib/plugin-effects.md). `Extension/Rendering/plugin_effects`
+  owns their native references, surface attachments and world lifetime.
 
 ## `Runtime/`
 

@@ -39,11 +39,14 @@ struct Slam {
 struct StepNews {
     double at{};
     skater_physics::Step step;
+    std::uintptr_t entity{}, rig{}; // ownership checked again before delivery
 };
 // Client thread: starts reading the steps (once).
 void want() noexcept;
 // Client thread: from now on every step is kept for take_steps too (at most the last 512).
 void want_steps() noexcept;
+// Invalidate queued geometry before scene teardown, including reloads of the same map.
+void before_level_transition(unsigned next) noexcept;
 std::vector<StepNews> take_steps();
 std::vector<Landing> take_landings();
 std::vector<BodyHit> take_hits();

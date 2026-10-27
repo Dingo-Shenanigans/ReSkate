@@ -1,4 +1,5 @@
 #include "Extension/AnimationStudio/anim_studio.h"
+#include "Extension/Rendering/plugin_effects.h"
 #include "runtime_internal.h"
 #include "Extension/Customization/developer_hoodie.h"
 #include "Extension/Customization/developer_board.h"
@@ -287,12 +288,15 @@ std::optional<Budget> budget_of(const Card& card) {
         adapter->Release();
     }
     factory->Release();
-    // An integrated GPU's own memory is the PC's RAM, so its budget is only what the PC has free,
-    // less room for the rest of the game. 2.1.1's out-of-memory exits (the game's E_OUTOFMEMORY,
-    // 3,300 reports) were mostly 8 to 16 GB PCs with RAM and page file nearly full, and integrated
-    // GPUs whose custom-map pool had been set to 1.3 to 2.2 GB from that budget (2026-10-21).
+    // An integrated or unified-memory GPU's own memory is the PC's RAM, so its budget is only what
+    // the PC has free, less room for the rest of the game (under D3DMetal on macOS, DedicatedVideoMemory
+    // is reported as 11.8 GB of a 16 GB Mac and QueryVideoMemoryInfo reports a 24 GB local budget).
+    // 2.1.1's out-of-memory exits (the game's E_OUTOFMEMORY, 3,300 reports) were mostly 8 to 16 GB PCs
+    // with RAM and page file nearly full, and integrated GPUs whose custom-map pool had been set to
+    // 1.3 to 2.2 GB from that budget (2026-10-21).
     constexpr std::uint64_t integrated_below = 1ull << 30, reserve = 2ull << 30;
-    if (MEMORYSTATUSEX status{sizeof(status)}; result && card.memory < integrated_below && GlobalMemoryStatusEx(&status)) {
+    if (MEMORYSTATUSEX status{sizeof(status)};
+        result && (card.memory < integrated_below || result->budget > card.memory) && GlobalMemoryStatusEx(&status)) {
         const auto spare = (std::min)(status.ullAvailPhys, status.ullAvailPageFile);
         const auto room = spare > reserve ? spare - reserve : 0;
         result->budget = (std::min)(result->budget, result->usage + room);
@@ -714,14 +718,16 @@ void update_model(std::uintptr_t client, TickState& frame) {
     const bool map_prompt = dingosdk::map_download::asking();
     // The vote for the next map comes up the same way (overlay.h: map_vote_asking), when no map is being asked about.
     const bool map_vote = !map_prompt && dingosdk::overlay::map_vote_asking();
-    // And a message to say OK to (overlay.h: message_asking), over either.
+    // And a message to say OK to (overlay.h: message_asking), over either; and a question with two
+    // answers (overlay.h: ask_question), under the message.
     const bool message_up = dingosdk::overlay::message_asking();
+    const bool question_up = !message_up && dingosdk::overlay::question_asking();
     // The hold on the game's input outlasts the card's question until everything pressed is let
     // go (or a moment has passed): the button that answered must not also be a press in the
     // game, or in the pause menu behind the card.
     static bool prompt_held{};
     static ULONGLONG prompt_release_by{};
-    if (map_prompt || map_vote || message_up) {
+    if (map_prompt || map_vote || message_up || question_up) {
         prompt_held = true;
         prompt_release_by = 0;
     } else if (prompt_held) {
@@ -732,7 +738,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
                              std::ranges::any_of(held.keys, [](std::uint64_t word) { return word != 0; });
         if (!pressed || GetTickCount64() >= prompt_release_by) prompt_held = false;
     }
-    DingoSDKOverlaySetPromptInputCapture(map_prompt || map_vote || message_up || prompt_held);
+    DingoSDKOverlaySetPromptInputCapture(map_prompt || map_vote || message_up || question_up || prompt_held);
     const unsigned poll_answers = dingosdk::multiplayer::server_poll_answers();
     const bool placement_flight = dingosdk::pad_flight::requested();
     bool freecam_controller = dingosdk::local_freecam_controller() || placement_flight;
@@ -763,10 +769,10 @@ void update_model(std::uintptr_t client, TickState& frame) {
         dingosdk::plugins::plugin_input_capture());
     dingosdk::ControllerInput controller;
     if (freecam_controller_combo || freecam_combo || tp_to_freecam_combo || noclip_combo || forward_velocity_combo || up_velocity_combo || offboard_up_velocity_combo ||
-        vote_yes_combo || vote_no_combo || poll_answers || map_prompt || map_vote || message_up ||
+        vote_yes_combo || vote_no_combo || poll_answers || map_prompt || map_vote || message_up || question_up ||
         std::ranges::any_of(action_combos, [](auto combo) { return combo != 0; }))
         // (The card that asks has the pointer, as a menu does: it is still read for.)
-        DingoSDKOverlayReadControllerInput(&controller, map_prompt || map_vote || message_up);
+        DingoSDKOverlayReadControllerInput(&controller, map_prompt || map_vote || message_up || question_up);
     for (std::size_t i = 0; i < action_combos.size(); ++i)
         if (r.action_bind_latches[i].update(action_combos[i], controller, r.observer_failed || placement_flight)) {
             std::array<char, 256> result{};
@@ -792,7 +798,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
         static bool prompt_before{};
         static std::uint32_t buttons_before{};
         // The keyboard's arrows, Enter and Esc do the same, above the pad's bits.
-        const bool prompt = map_prompt || map_vote || message_up;
+        const bool prompt = map_prompt || map_vote || message_up || question_up;
         const std::uint32_t buttons = !prompt ? 0
             : (controller.available ? controller.buttons : 0) | (DingoSDKOverlayReadPromptKeys() << 20);
         // The message is over the others and is answered first: A or B, Enter or Esc, is its OK.
@@ -806,6 +812,16 @@ void update_model(std::uintptr_t client, TickState& frame) {
             if (pressed & (0x1000 | 1u << 22)) dingosdk::map_download::answer(dingosdk::map_download::picked());
             else if (pressed & (0x2000 | 1u << 23)) dingosdk::map_download::answer(false);
         }
+        // The question: left and right pick, A takes the pick, B is its second answer.
+        static bool question_before{};
+        if (question_up && question_before) {
+            const auto pressed = buttons & ~buttons_before;
+            if (pressed & (0x0004 | 1u << 20)) dingosdk::overlay::question_pick(true);
+            if (pressed & (0x0008 | 1u << 21)) dingosdk::overlay::question_pick(false);
+            if (pressed & (0x1000 | 1u << 22)) dingosdk::overlay::question_answer(dingosdk::overlay::question_picked());
+            else if (pressed & (0x2000 | 1u << 23)) dingosdk::overlay::question_answer(false);
+        }
+        question_before = question_up;
         // The vote's popup: left and right move the pick, A votes for it, B closes it.
         static bool vote_before{};
         if (!message_up && map_vote && vote_before) {
@@ -1133,6 +1149,13 @@ void update_model(std::uintptr_t client, TickState& frame) {
         DINGO_PROFILE_ZONE("tick/update_model/network objects");
         dingosdk::tick_network_objects();
     }
+    {
+        bool loading{};
+        { std::lock_guard lock(r.mutex); loading = r.requests.loading(); }
+        // Invalidate old-world handles before any plugin callback can use them.
+        dingosdk::effects::tick(r.base, client, !r.observer_failed && !loading && named_context_ready,
+            r.debug_model.noclip, r.debug_model.park_editor);
+    }
     if (r.observer_failed) return; // Keep the bounded restore/telemetry path available after catalog failure.
     {
         // Every tick, not at the 500 ms customization pace: the item grids follow the highlight.
@@ -1171,7 +1194,29 @@ void update_model(std::uintptr_t client, TickState& frame) {
     // Handed out with the manifests: once the merge is in, load the level being
     // played again ("Apply and reload level"), or San Van when that map is gone.
     const bool reload = dingosdk::live_mods::take_reload();
-    if (left_map || reload) {
+    // In a session the map is reloaded where the player is, as their own business: the session is
+    // told first, so it neither ends (a guest) nor moves everyone (a host, or a server's admin, whose
+    // "load" would change the server's map).
+    if (reload && !left_map && dingosdk::multiplayer::model().active && !current_level.empty()) {
+        std::string start, lm_start;
+        {
+            std::lock_guard lock(r.mutex);
+            for (const auto& level : r.model.levels)
+                if (equals(level.asset, description.lm_level))
+                    if (const auto* automatic = level.automatic_start_point()) lm_start = *automatic;
+        }
+        std::array<char, 256> said{};
+        if (!dingosdk::multiplayer::begin_local_reload())
+            dingosdk::logging::log(dingosdk::logging::Level::info, dingosdk::logging::Channel::level,
+                "Mods applied; the session is changing maps, so they show at the next level load.");
+        else if (!queue_local_load(description.level.c_str(), start.c_str(), description.lm_level.c_str(), lm_start.c_str(), said.data(), said.size())) {
+            dingosdk::multiplayer::cancel_local_reload();
+            dingosdk::logging::log(dingosdk::logging::Level::warning, dingosdk::logging::Channel::level,
+                "Mods applied, but the map could not be reloaded in the session ({}); they show at the next level load.", said.data());
+        } else
+            dingosdk::logging::log(dingosdk::logging::Level::info, dingosdk::logging::Channel::level,
+                "Reloading {} in the session to use the applied mods.", current_level);
+    } else if (left_map || reload) {
         constexpr std::string_view san_van = "levels/game/BAM_LevelRoot/BAM_LevelRoot";
         const std::string target = left_map ? std::string(san_van) : current_level;
         std::lock_guard lock(r.mutex);

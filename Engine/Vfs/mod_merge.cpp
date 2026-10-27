@@ -74,9 +74,19 @@ bool store_copy_problems(const Catalog& all, MergeReport& report, const std::vec
 }
 } // namespace
 
-MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, const MergeOptions& options) noexcept {
+MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, const MergeOptions& options) noexcept {
     MergeReport report;
     try {
+        std::optional<Catalog> reconciled;
+        if (std::ranges::any_of(supplied.mods, [](const auto& mod) {
+                return !mod.variant_projection.empty() || !mod.variant_authority.empty();
+            })) {
+            reconciled = supplied;
+            const auto notes = reconciled->notes.size();
+            reconcile_variant_additions(*reconciled);
+            for (std::size_t at = notes; at < reconciled->notes.size(); ++at) report.notes.push_back(reconciled->notes[at]);
+        }
+        const auto& catalog = reconciled ? *reconciled : supplied;
         // How long each step took, for the log: a merge that takes many minutes
         // can then be traced to the step that takes them.
         using Clock = std::chrono::steady_clock;
@@ -484,6 +494,7 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
                 for (const auto* mod : providers.at(lower(relative))) {
                     Source source;
                     source.root = mod->directory;
+                    source.mod = mod;
                     source.placement = &placements.at(mod);
                     try {
                         source.toc = fb::read_toc(read_file(mod->directory / fs::path(relative)));
@@ -807,11 +818,11 @@ MergeReport merge_mods(const Catalog& catalog, const MergeObserver& observe, con
         report.issue = failure.what();
         // A live merge leaves the running patch alone: the game is reading it.
         std::error_code error;
-        if (!options.live) fs::remove_all(catalog.root / generated_folder, error);
+        if (!options.live) fs::remove_all(supplied.root / generated_folder, error);
     } catch (...) {
         report.issue = "The mod merge failed";
         std::error_code error;
-        if (!options.live) fs::remove_all(catalog.root / generated_folder, error);
+        if (!options.live) fs::remove_all(supplied.root / generated_folder, error);
     }
     return report;
 }
