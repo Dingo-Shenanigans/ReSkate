@@ -4220,6 +4220,13 @@ struct BodyPublicationState {
     std::vector<Offset> network_deltas;
     std::uint64_t network_generation{}, network_epoch{};
     double network_at{-1};
+    // The feet as drawn on the last frame in the air, in the skater's placement frame; at a rail's lock, each foot on
+    // the board as drawn then, and how much of the fade was left (slide_feet_on_the_games_board).
+    std::array<Joint, 2> feet_in_the_air{};
+    double feet_in_the_air_at{-1};
+    std::array<Joint, 2> feet_on_board_at_lock{};
+    float fade_left_at_lock{};
+    bool on_rail{}, feet_at_lock_ok{};
 };
 BodyPublicationState& body_publication_state() { static auto* state = new BodyPublicationState; return *state; }
 // While the studio is open, the lobby does not see it. The skater stands in the studio's room - the game's menu room,
@@ -4457,6 +4464,8 @@ void idle(double now) {
 } // namespace playback_verify
 
 void seat_feet_on_board(const GameplayPacket& packet, std::span<const Joint> native, std::vector<Joint>& edited) noexcept; // below
+bool slide_feet_on_the_games_board(BodyPublicationState& body, MotionState motion, bool playing, std::span<const Joint> native,
+                                   std::vector<Joint>& edited) noexcept; // below
 void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const GameplayPacket>& packet, std::uint64_t presentation) {
     auto& l = live();
     auto& publication = body_publication_state(); std::lock_guard lock(publication.mutex);
@@ -4494,6 +4503,9 @@ void apply_gameplay_body(std::uintptr_t holder, const std::shared_ptr<const Game
                 trick_blend.load(std::memory_order_relaxed));
             apply_pose_deltas(deltas, edited);
             applied_deltas.assign(deltas.begin(), deltas.end());
+            // Other players get the feet on the board too.
+            if (slide_feet_on_the_games_board(publication, motion, packet != nullptr, native, edited))
+                applied_deltas = pose_edit_deltas(native, edited);
             // Fading out after a trick handed back (no packet, so seat_feet_on_board does not run), rolling on the ground:
             // no foot is drawn lower than the game has it, whatever the last keys leave in the fade.
             if (!packet && motion == MotionState::riding)
@@ -4609,29 +4621,56 @@ struct BoardPublicationState {
     EditTransition transition;
     BoardShape shape{}; // the last trick's board, for the fade after it
     bool shape_ok{};
+    // The board as drawn on the last frame in the air, in the skater's placement frame: where the feet stood on it at a
+    // rail's lock (slide_feet_on_the_games_board).
+    Joint drawn_in_the_air{};
+    double drawn_in_the_air_at{-1};
 };
 BoardPublicationState& board_publication_state() { static auto* state = new BoardPublicationState; return *state; }
+// Each frame in the air, the board as drawn, in the skater's placement frame (his pose holds the placement unedited).
+void remember_board_in_the_air(BoardPublicationState& board, const Joint& drawn) noexcept {
+    auto& l = live();
+    const auto component = l.component.load(std::memory_order_acquire);
+    const auto body_holder = component ? read<std::uintptr_t>(component + 0xa0).value_or(0) : 0;
+    if (!body_holder) return;
+    const auto layout = multiplayer::read_native_pose_layout(peek, l.base.load(), body_holder, 512);
+    std::array<NativeBone, 2> placement_bones{};
+    if (!layout.buffer || layout.count != skeleton_joints || !peek(layout.buffer, placement_bones.data(), sizeof(placement_bones))) return;
+    board.drawn_in_the_air = relative(compose(joint_of(placement_bones[0]), joint_of(placement_bones[1])), drawn);
+    board.drawn_in_the_air_at = now_seconds();
+}
 
 // ---- the feet on the deck ------------------------------------------------------------------------------
-// The board as its own pass will draw it this frame (apply_gameplay_board), worked out before the body is handed over:
-// the game's board this update, with the trick's board keys on it, as far as the trick is in.
-bool drawn_board_now(const GameplayPacket& packet, std::span<const Joint> skater, Joint& out) noexcept {
+// The game's board this update (its mount), with our own write of the last frame taken back off, as the board's pass does.
+bool games_board_now(std::uintptr_t board_holder, Joint& out) noexcept {
     try {
         auto& l = live();
-        if (!packet.board_holder || !packet.board_owned || !packet.board_frame_valid || !packet.clip || !packet.edits || skater.size() < 2) return false;
-        const auto layout = multiplayer::read_native_pose_layout(peek, l.base.load(), packet.board_holder, 64);
+        if (!board_holder) return false;
+        const auto layout = multiplayer::read_native_pose_layout(peek, l.base.load(), board_holder, 64);
         if (!layout.buffer || layout.count != board_bones) return false;
         std::array<NativeBone, board_bones> bones{};
         if (!peek(layout.buffer, bones.data(), sizeof(bones))) return false;
         std::vector<Joint> native;
         for (const auto& bone : bones) native.push_back(joint_of(bone));
         {
-            // Our own write of the last frame taken back off, as the board's pass does.
             auto& publication = board_publication_state();
             std::lock_guard lock(publication.mutex);
             publication.edits.restore(l.generation.load(std::memory_order_acquire), l.animation_updates.load(std::memory_order_acquire), layout.buffer, native);
         }
-        const auto native_mount = compose(compose(native[0], native[1]), native[board_mount]);
+        out = compose(compose(native[0], native[1]), native[board_mount]);
+        return finite(out);
+    } catch (...) {
+        return false;
+    }
+}
+// The board as its own pass will draw it this frame (apply_gameplay_board), worked out before the body is handed over:
+// the game's board this update, with the trick's board keys on it, as far as the trick is in.
+bool drawn_board_now(const GameplayPacket& packet, std::span<const Joint> skater, Joint& out) noexcept {
+    try {
+        auto& l = live();
+        if (!packet.board_holder || !packet.board_owned || !packet.board_frame_valid || !packet.clip || !packet.edits || skater.size() < 2) return false;
+        Joint native_mount;
+        if (!games_board_now(packet.board_holder, native_mount)) return false;
         // On a rail (and off the board) its pass leaves the game's board as it is.
         const auto motion = l.render_motion.load(std::memory_order_acquire);
         if (!overrides_allowed.load() || motion == MotionState::rail || motion == MotionState::unknown || motion == MotionState::offboard) {
@@ -4651,6 +4690,58 @@ bool drawn_board_now(const GameplayPacket& packet, std::span<const Joint> skater
         out.rotation = slerp(native_mount.rotation, target.rotation, w);
         for (std::size_t i = 0; i < 3; ++i) out.position[i] += (target.position[i] - native_mount.position[i]) * w;
         return finite(out);
+    } catch (...) {
+        return false;
+    }
+}
+// The body pass, after the fade (feet_stay_on_the_games_board): on a rail, while a trick cut short fades out, each foot
+// stays on the game's board, sliding from where it stood on the board drawn on the last frame in the air (rails are
+// reached from the air) to where the game has it. True when a foot was moved.
+bool slide_feet_on_the_games_board(BodyPublicationState& body, MotionState motion, bool playing, std::span<const Joint> native,
+                                   std::vector<Joint>& edited) noexcept {
+    try {
+        constexpr std::array<std::uint16_t, 2> feet{left_foot_joint, right_foot_joint};
+        if (edited.size() < skeleton_joints || native.size() < skeleton_joints) return false;
+        const double now = now_seconds();
+        if (motion != MotionState::rail) {
+            body.on_rail = false;
+            if (motion != MotionState::air) return false;
+            const auto placement = compose(edited[0], edited[1]);
+            for (std::size_t i = 0; i < feet.size(); ++i) body.feet_in_the_air[i] = relative(placement, world(edited, feet[i]));
+            body.feet_in_the_air_at = now;
+            return false;
+        }
+        if (!body.on_rail) {
+            body.on_rail = true;
+            Joint board_in_the_air;
+            double board_at = -1;
+            {
+                auto& board = board_publication_state();
+                std::lock_guard lock(board.mutex);
+                board_in_the_air = board.drawn_in_the_air; board_at = board.drawn_in_the_air_at;
+            }
+            // Both from the frame before the lock (a frame is 1/60 s), not from an earlier air.
+            body.feet_at_lock_ok = now - body.feet_in_the_air_at < 0.1 && now - board_at < 0.1;
+            for (std::size_t i = 0; i < feet.size(); ++i) {
+                body.feet_on_board_at_lock[i] = relative(board_in_the_air, body.feet_in_the_air[i]);
+                body.feet_at_lock_ok = body.feet_at_lock_ok && finite(body.feet_on_board_at_lock[i]);
+            }
+            body.fade_left_at_lock = body.transition.from_left;
+        }
+        // A fade begun in the air (the trick let go before the lock) is ended by the same share from the lock on.
+        const float fade_left = body.fade_left_at_lock > 0 ? body.transition.from_left / body.fade_left_at_lock : 0.0f;
+        if (!feet_stay_on_the_games_board(motion, playing) || !body.feet_at_lock_ok || !(fade_left > 0)) return false;
+        Joint board;
+        if (!games_board_now(live().board_holder.load(std::memory_order_acquire), board)) return false;
+        bool moved = false;
+        for (std::size_t i = 0; i < feet.size(); ++i) {
+            const auto games = relative(board, world(native, feet[i]));
+            if (!finite(games)) continue;
+            const auto want = compose(board, foot_sliding_to_the_games(body.feet_on_board_at_lock[i], games, fade_left));
+            place_foot(edited, feet[i], want.position, &want.rotation, 1.0f);
+            moved = true;
+        }
+        return moved;
     } catch (...) {
         return false;
     }
@@ -4816,6 +4907,7 @@ void apply_gameplay_board(std::uintptr_t holder, const std::shared_ptr<const Gam
         // The fade after a trick (or into the next one), rolling: no lower than the game's board either.
         if (motion == MotionState::riding && publication.shape_ok && want != native_mount)
             (void)keep_board_above(want, publication.shape, lowest_point(native_mount, publication.shape));
+        if (motion == MotionState::air) remember_board_in_the_air(publication, want);
         if (want != native_mount) {
             edited[1] = relative(native[0], compose(want, relative(native[board_mount], Joint{})));
             edited[1].scale = native[1].scale;

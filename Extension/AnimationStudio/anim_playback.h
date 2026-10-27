@@ -198,6 +198,7 @@ struct EditTransition {
     std::uintptr_t source{};
     double started{-1}, observed{-1};
     std::vector<Offset> from, current;
+    float from_left{}; // how much of `from` is still in `current`: 1 as a fade starts, 0 when it is done
     void reset() { *this = {}; }
     std::span<const Offset> evaluate(double now, std::uint64_t gen, std::uint64_t attempt,
                                      std::uintptr_t selected, std::span<const Offset> desired, float seconds = 0.15f) {
@@ -213,6 +214,7 @@ struct EditTransition {
         // cut short (a new air, a bail), without a snap.
         float u = std::clamp(static_cast<float>(now - started) / std::max(seconds, 0.02f), 0.0f, 1.0f);
         u = u*u*(3 - 2*u);
+        from_left = 1 - u;
         for (std::size_t i = 0; i < desired.size(); ++i) {
             current[i].rotation = u >= 1 ? desired[i].rotation : slerp(from[i].rotation, desired[i].rotation, u);
             for (std::size_t k = 0; k < 3; ++k)
@@ -221,6 +223,22 @@ struct EditTransition {
         return current;
     }
 };
+// On a rail the board's pass gives the board back to the game at once, but the body fades the trick out over the
+// crossfade. The game drops the board into the grind, and the fade kept the legs as they were for the landing: the feet
+// stood up to 35 cm off the board for 0.18 s (kickflip to BS crooked and BS noseslide, 2026-10-26). Cutting the fade
+// snapped the whole body into the grind, and putting the feet on the game's feet at once made them jump 7-10 cm on the
+// deck. So the body still fades, and each foot stays on the game's board: where it stood on the trick's board on the
+// last frame before the lock, sliding to where the game has it as the fade goes. A saved grind loop that plays
+// (`playing`) poses the feet itself.
+inline bool feet_stay_on_the_games_board(MotionState motion, bool playing) noexcept { return motion == MotionState::rail && !playing; }
+// A foot on the game's board (in the board's frame), `fade_left` of the way back to where it stood at the lock.
+inline Joint foot_sliding_to_the_games(const Joint& at_the_lock, const Joint& games, float fade_left) noexcept {
+    const float k = std::clamp(fade_left, 0.0f, 1.0f);
+    Joint foot = games;
+    foot.rotation = slerp(games.rotation, at_the_lock.rotation, k);
+    for (std::size_t i = 0; i < 3; ++i) foot.position[i] = games.position[i] + (at_the_lock.position[i] - games.position[i]) * k;
+    return foot;
+}
 // ---- the board's keys ---------------------------------------------------------------------------------------------------
 // A trick's board keys turn the board about its own axes as it lay on the ground before the pop (the studio: start_frame).
 // In game that is the heading the board had under him while he rolled, kept for a second (seconds, heading relative to
