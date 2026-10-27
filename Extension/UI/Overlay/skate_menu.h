@@ -75,6 +75,7 @@ struct SkateMenu {
     // Selected tab on each page; see the Page list in skate_menu_internal.h.
     int map_tab = 0, build_tab = 0, skater_tab = 0, settings_tab = 0, mods_tab = 0;
     int addon = 0; // the ADDONS page's addon (menu::Addon)
+    bool close_requested{}; // a page closes the menu: SKATER's OPEN ANIMATION STUDIO, as F8 does nothing while the menu is open
     std::string plugin_page; // the PLUGINS section's plugin, by its id
     // Window or full screen, as just chosen, until the saved setting comes back through the model.
     std::optional<bool> fullscreen_pending;
