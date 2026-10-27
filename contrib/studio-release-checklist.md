@@ -1,4 +1,16 @@
-# Studio 1.0.9 release acceptance
+# Studio release acceptance
+
+## 1.0.10 review (2026-10-27)
+
+Candidate integrates #14 (`2912763`, grind entry and drop timing) and #15 (`6d5aea8`, menu entry buttons), plus rail capture lifetime fixes. A rail lock capture belongs to one fade and one skater generation: starting a saved grind or another fade invalidates it, even if both fades start at full weight. Ground prediction smoothing resets when the selected trick changes.
+
+Release validation must use the combined candidate. Build runtime/launcher, run the Studio/plugin CTest suites and `native_menu_tools`, then native Python and packaging tests. The manual workflow includes the menu tests; automatic push/PR builds remain disabled.
+
+The user reports the original changes work in game. That is not a recorded visual test of the follow-up capture fixes. Before uploading the new DLL, retest flip-to-crooked/noseslide, another trick/fade on the same rail, respawn, normal/switch, flat pops, a long drop with a short catch-to-landing interval, and both new menu buttons. Check remote feet with another player. No live game or market publishing test was performed during this code review.
+
+The evidence below records the earlier 1.0.9 audit; its old CI/upload status and checkboxes are historical, not the status of 1.0.10.
+
+## 1.0.9 baseline
 
 Audit baseline: `studio/ux-round-2` at `d9a3fc5` (PR #12 merged), on ReSkate 2.1.2. At the audit snapshot, main was still `c2b4551` / Studio 1.0.8 and PR #11 was open. Merge status must be checked again when choosing the final public source commit.
 
