@@ -1,6 +1,6 @@
 # Animator Studio implementation
 
-This describes the 1.0.9 candidate. User installation and operation are in [README](../README.md); release acceptance is in the [checklist](studio-release-checklist.md).
+This describes the 1.0.10 candidate. User installation and operation are in [README](../README.md); release acceptance is in the [checklist](studio-release-checklist.md).
 
 ## Runtime contract
 
@@ -12,7 +12,7 @@ Studio and plugin pose/render/board callbacks have separate registrations. Studi
 
 Base stance comes from the profile's `DefaultStanceIsGoofy`. Runtime leading-foot flags live in `Engine/Game/Build/20260929/skater_lead_foot.h`. Exact stance and Front foot are different authoring/playback choices; check both physical limb ownership and fakie state when changing selection.
 
-Airborne catch slowing, off-clip pose correction and forced foot contact are disabled by `air_corrections` in this candidate. Their code remains compiled, but the UI hides catch tools/drop preview. Ground contact protection and other-pop handling remain separate code paths. Do not advertise disabled behavior as an active feature.
+`AirStretch` can slow a trick from its catch on a drop independently of `air_corrections`. Its authored pose returns toward the native landing as the predicted touchdown approaches; catch tools/drop preview are visible again. General airborne foot corrections remain disabled. At a rail lock, feet captured relative to the last airborne board slide toward the native grind stance only for that lock's fade. A later fade, a playing saved grind, or a different skater generation invalidates that capture. Ground contact protection and other-pop handling remain separate code paths.
 
 The native library is built from the supported game's data, with versioned build metadata. Inventory includes unsupported controllers and graph/document entries. A converted preview or saved native piece is not automatically a verified live grind/transition override.
 

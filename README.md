@@ -4,7 +4,7 @@ Edit skate animations in game, build your own trick packs, and choose how they p
 
 Animator Studio is a modified **ReSkate runtime**, built by 22sh, Fourth Studio, Norms and Steez, and tested by THE CREW. Open it with **F8** to browse native animations, edit body and board keys, make stance variants, and share packs through the market.
 
-> **Current candidate:** Animator Studio 1.0.9 on ReSkate 2.1.2. Automated checks cover animation logic and pack files; final in-game release acceptance is tracked in the [release checklist](contrib/studio-release-checklist.md).
+> **Current candidate:** Animator Studio 1.0.10 on ReSkate 2.1.2. Automated checks cover animation logic and pack files; final in-game release acceptance is tracked in the [release checklist](contrib/studio-release-checklist.md).
 >
 > This is a fan project, unaffiliated with Electronic Arts or Full Circle. You need your own copy of skate. on Steam. The game is not included.
 
@@ -19,7 +19,7 @@ You need Windows, your own copy of skate. on Steam, and a working **ReSkate 2.1.
 3. Close the launcher and the game.
 4. Open your ReSkate folder (the one with `Skate.exe` and `ReSkateLauncher.exe`). Back up `ReSkate.dll`, and your `ReSkate.Tricks` folder if you already have one.
 5. Download `ReSkate.dll` from the [latest Studio release](https://github.com/FourthStudio/ReSkate-Animator-Studio/releases) and put it in that folder, replacing the old one.
-6. Start the game from `ReSkateLauncher.exe` as usual. Once it has loaded it says **Modified build: AnimatorStudio**. Press **F8** (or hold **L3 + R3**) to open the studio.
+6. Start the game from `ReSkateLauncher.exe` as usual. Once it has loaded it says **Modified build: AnimatorStudio**. Press **F8** (or hold **L3 + R3**) to open the studio. You can also use **Open Animation Studio** under **Mod Options > PLAYER**, or on the ReSkate menu's **SKATER** page, once your skater is in game and Park Editor is closed.
 
 On the first start the studio builds its trick library from your own game: about a minute and 1.6 GB, and the game's files are only read, never changed. **TRICKS** shows how far it has got.
 
@@ -62,7 +62,8 @@ Imported packs retain their maker's ownership settings. A verified publishing te
 
 - Native inventory includes clips, graph states, transitions and parameters. An indexed item is not necessarily editable or bound to live gameplay.
 - Editing or saving a grind, setup, loop or transition preview does not automatically replace that phase in game. Live phase replacement remains incomplete.
-- Airborne catch slowing and forced foot-to-board corrections are **disabled** in this candidate. Their catch/drop-preview tools are hidden while that behavior is disabled.
+- On drops, supported tricks can slow from their catch toward touchdown; **CATCH**, **CATCH HOLD** and **DROP PREVIEW** are available again. The authored pose blends back toward the game's landing near the ground. General airborne foot corrections remain disabled.
+- When a trick fades out into a grind, its feet follow the game's board toward the native grind stance. This contact correction does not implement custom grind-loop replacement.
 - Older goofy saves with incorrect stance metadata are not automatically repaired in every case; recreate an affected version if its tags or limb behavior are wrong.
 - Windows is the tested build target. Studio operation on Proton, Steam Deck and macOS is not release-validated.
 

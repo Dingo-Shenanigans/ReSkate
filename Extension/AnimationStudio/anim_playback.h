@@ -231,6 +231,10 @@ struct EditTransition {
 // last frame before the lock, sliding to where the game has it as the fade goes. A saved grind loop that plays
 // (`playing`) poses the feet itself.
 inline bool feet_stay_on_the_games_board(MotionState motion, bool playing) noexcept { return motion == MotionState::rail && !playing; }
+// A later fade can start at the same share (usually 1) as the lock's fade. Its start, not its share, identifies it.
+inline bool rail_lock_fade_continues(bool playing, double started, double at_lock) noexcept {
+    return !playing && started == at_lock;
+}
 // A foot on the game's board (in the board's frame), `fade_left` of the way back to where it stood at the lock.
 inline Joint foot_sliding_to_the_games(const Joint& at_the_lock, const Joint& games, float fade_left) noexcept {
     const float k = std::clamp(fade_left, 0.0f, 1.0f);

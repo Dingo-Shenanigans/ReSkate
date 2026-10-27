@@ -3765,6 +3765,7 @@ void on_animation(std::uintptr_t component) noexcept {
                     l.clock_selected_at = at; l.clock_locked_at = -1; l.clock_weight = 0; l.off_clip = 0; l.off_clip_said = false;
                     l.other_pop = 0; l.other_pop_said = false;
                     l.stretch.reset(); l.latch_touch_from = l.latch_last = -1;
+                    l.to_ground_now = l.to_ground_smooth = -1;
                     l.latch_shape_ok = false;
                     if (found && found->caught > 0) {
                         l.latch_shape = board_shape(*found->clip);
@@ -4226,6 +4227,8 @@ struct BodyPublicationState {
     double feet_in_the_air_at{-1};
     std::array<Joint, 2> feet_on_board_at_lock{};
     float fade_left_at_lock{};
+    double fade_started_at_lock{-1};
+    std::uint64_t feet_generation{~std::uint64_t{0}};
     double on_rail_at{-1};
     bool feet_at_lock_ok{};
 };
@@ -4626,10 +4629,11 @@ struct BoardPublicationState {
     // rail's lock (slide_feet_on_the_games_board).
     Joint drawn_in_the_air{};
     double drawn_in_the_air_at{-1};
+    std::uint64_t drawn_generation{~std::uint64_t{0}};
 };
 BoardPublicationState& board_publication_state() { static auto* state = new BoardPublicationState; return *state; }
 // Each frame in the air, the board as drawn, in the skater's placement frame (his pose holds the placement unedited).
-void remember_board_in_the_air(BoardPublicationState& board, const Joint& drawn) noexcept {
+void remember_board_in_the_air(BoardPublicationState& board, const Joint& drawn, std::uint64_t generation) noexcept {
     auto& l = live();
     const auto component = l.component.load(std::memory_order_acquire);
     const auto body_holder = component ? read<std::uintptr_t>(component + 0xa0).value_or(0) : 0;
@@ -4639,6 +4643,7 @@ void remember_board_in_the_air(BoardPublicationState& board, const Joint& drawn)
     if (!layout.buffer || layout.count != skeleton_joints || !peek(layout.buffer, placement_bones.data(), sizeof(placement_bones))) return;
     board.drawn_in_the_air = relative(compose(joint_of(placement_bones[0]), joint_of(placement_bones[1])), drawn);
     board.drawn_in_the_air_at = now_seconds();
+    board.drawn_generation = generation;
 }
 
 // ---- the feet on the deck ------------------------------------------------------------------------------
@@ -4704,6 +4709,12 @@ bool slide_feet_on_the_games_board(BodyPublicationState& body, MotionState motio
         constexpr std::array<std::uint16_t, 2> feet{left_foot_joint, right_foot_joint};
         if (edited.size() < skeleton_joints || native.size() < skeleton_joints) return false;
         const double now = now_seconds();
+        const auto generation = live().generation.load(std::memory_order_acquire);
+        if (body.feet_generation != generation) {
+            body.feet_generation = generation;
+            body.feet_in_the_air_at = body.on_rail_at = -1;
+            body.feet_at_lock_ok = false;
+        }
         if (motion != MotionState::rail) {
             body.on_rail_at = -1;
             if (motion != MotionState::air) return false;
@@ -4721,7 +4732,8 @@ bool slide_feet_on_the_games_board(BodyPublicationState& body, MotionState motio
             {
                 auto& board = board_publication_state();
                 std::lock_guard lock(board.mutex);
-                board_in_the_air = board.drawn_in_the_air; board_at = board.drawn_in_the_air_at;
+                board_in_the_air = board.drawn_in_the_air;
+                if (board.drawn_generation == generation) board_at = board.drawn_in_the_air_at;
             }
             // Both from the frame before the lock (a frame is 1/60 s), not from an earlier air.
             body.feet_at_lock_ok = now - body.feet_in_the_air_at < 0.1 && now - board_at < 0.1;
@@ -4730,11 +4742,12 @@ bool slide_feet_on_the_games_board(BodyPublicationState& body, MotionState motio
                 body.feet_at_lock_ok = body.feet_at_lock_ok && finite(body.feet_on_board_at_lock[i]);
             }
             body.fade_left_at_lock = body.transition.from_left;
+            body.fade_started_at_lock = body.transition.started;
             // A studio trick still playing at the lock poses the feet itself, and the fade after it is not this one.
             body.feet_at_lock_ok = body.feet_at_lock_ok && !playing;
         }
         // A fade begun later on the rail (a grind loop cut short) is not the lock's: its feet would go back to the lock.
-        if (body.transition.from_left > body.fade_left_at_lock) body.feet_at_lock_ok = false;
+        if (!rail_lock_fade_continues(playing, body.transition.started, body.fade_started_at_lock)) body.feet_at_lock_ok = false;
         // A fade begun in the air (the trick let go before the lock) is ended by the same share from the lock on.
         const float fade_left = body.fade_left_at_lock > 0 ? body.transition.from_left / body.fade_left_at_lock : 0.0f;
         if (!feet_stay_on_the_games_board(motion, playing) || !body.feet_at_lock_ok || !(fade_left > 0)) return false;
@@ -4914,7 +4927,7 @@ void apply_gameplay_board(std::uintptr_t holder, const std::shared_ptr<const Gam
         // The fade after a trick (or into the next one), rolling: no lower than the game's board either.
         if (motion == MotionState::riding && publication.shape_ok && want != native_mount)
             (void)keep_board_above(want, publication.shape, lowest_point(native_mount, publication.shape));
-        if (motion == MotionState::air) remember_board_in_the_air(publication, want);
+        if (motion == MotionState::air) remember_board_in_the_air(publication, want, generation);
         if (want != native_mount) {
             edited[1] = relative(native[0], compose(want, relative(native[board_mount], Joint{})));
             edited[1].scale = native[1].scale;

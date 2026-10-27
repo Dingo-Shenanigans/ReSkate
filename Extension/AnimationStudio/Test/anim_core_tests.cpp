@@ -1959,6 +1959,10 @@ void native_playback_contracts() {
     }
     check(feet_stay_on_the_games_board(MotionState::rail, false),
           "On a rail, while a trick cut short fades out, the feet stay on the game's board");
+    check(rail_lock_fade_continues(false, 2.4, 2.4), "The lock's fade keeps its feet on the board");
+    check(!rail_lock_fade_continues(false, 3.0, 2.4),
+          "A later fade on the same rail cannot reuse the lock's feet, even when both start at full share");
+    check(!rail_lock_fade_continues(true, 2.4, 2.4), "A saved grind takes ownership of its feet during the lock's fade");
     check(!feet_stay_on_the_games_board(MotionState::riding, false) && !feet_stay_on_the_games_board(MotionState::air, false) &&
               !feet_stay_on_the_games_board(MotionState::rail, true),
           "Off a rail the feet are not moved, and a saved grind loop on a rail poses its own feet");
