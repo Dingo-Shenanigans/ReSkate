@@ -154,7 +154,7 @@ commands and a `Test/` folder.
 | `Travel/` | location travel |
 | `UI/` | the in-game UI (see below) |
 | `World/` | level loading, loading screens, time/atmosphere, population, park rotation, world layers, engine guards |
-| `AnimationStudio/` | animation core |
+| `AnimationStudio/` | animation editor/playback core, native library decoding, packs/playlists, market and studio room; UI in `Extension/UI/Overlay/animation_studio_*` |
 
 ### `Extension/Multiplayer/`
 | Folder | Contents |

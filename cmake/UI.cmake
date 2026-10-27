@@ -9,6 +9,7 @@ add_library(dingosdk_overlay STATIC
     Extension/UI/Overlay/overlay_console.cpp
     Extension/UI/Overlay/overlay_input.cpp
     Extension/UI/Overlay/item_browser_overlay.cpp
+    Extension/UI/Overlay/animation_studio_overlay.cpp
     Extension/UI/Overlay/frame_grab.cpp
     Extension/UI/Overlay/depth_probe.cpp
     Extension/UI/Overlay/overlay_notices.cpp
@@ -34,6 +35,9 @@ add_library(dingosdk_overlay STATIC
     Extension/UI/Overlay/plugin_images.cpp
     Extension/UI/Overlay/store_icons.cpp
     Extension/UI/Overlay/menu_map_pictures.cpp
+    Extension/UI/Overlay/studio_pack_pictures.cpp
+    Extension/UI/Overlay/studio_market_art.cpp
+    Extension/UI/Overlay/studio_cover_maker.cpp
     Extension/UI/Overlay/skate_menu_skater.cpp
     Extension/UI/Overlay/skate_menu_settings.cpp
     Extension/UI/Overlay/park_editor.cpp
@@ -54,6 +58,7 @@ add_library(dingosdk_overlay STATIC
     Extension/Trainer/trainer_page.cpp
     Extension/Music/music_page.cpp
     Extension/Trainer/trainer_view.cpp
+    Extension/UI/Overlay/animation_studio_images.cpp
     Extension/UI/Overlay/screen_look.cpp
 )
 target_link_libraries(dingosdk_overlay PUBLIC dingosdk_logging dingosdk_profiler dingosdk_imgui dingosdk_hooks dingosdk_console_core dxguid PRIVATE dingosdk_playstation_input shell32 dingosdk_initfs dingosdk_custom_scripts dingosdk_game_archives dingosdk_mods dingosdk_json windowscodecs ole32)
@@ -104,3 +109,11 @@ endif()
 # The window shown from the moment ReSkate loads until the game's own window appears.
 add_library(dingosdk_startup_window STATIC Extension/UI/Startup/startup_window.cpp)
 target_link_libraries(dingosdk_startup_window PRIVATE gdi32 user32 msimg32 shell32 ole32 windowscodecs)
+
+# TEST ONLY: lists every control the overlay draws, by its ID, with its box on the screen, for game tests to click
+# (Extension/UI/Overlay/Test/ui_control_list.cpp). Off, ImGui is built exactly as without it.
+option(DINGOSDK_UI_TEST_HOOKS "Test builds: list the overlay's controls by ID for game tests" OFF)
+if(DINGOSDK_UI_TEST_HOOKS)
+    target_compile_definitions(dingosdk_imgui PUBLIC IMGUI_ENABLE_TEST_ENGINE)
+    target_sources(dingosdk_imgui PRIVATE "${PROJECT_SOURCE_DIR}/Extension/UI/Overlay/Test/ui_control_list.cpp")
+endif()

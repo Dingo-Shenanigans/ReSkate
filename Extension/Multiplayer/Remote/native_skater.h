@@ -38,11 +38,17 @@ void set_entity_destroyed_listener(EntityDestroyed listener) noexcept;
 // not a remote peer, once its output pose for this update is written. Requires
 // install_entity_hooks. Runs on the thread that evaluates animation.
 using AnimationEvaluated = void (*)(std::uintptr_t component) noexcept;
-void set_animation_evaluated_listener(AnimationEvaluated listener) noexcept;
-// Runs on the client thread with the pose capture_local is about to return: a feature may change
-// what other players receive of the local skater.
+// Runs on the client thread with the pose capture_local is about to return; a feature may change what other
+// players receive (PR #230).
 using LocalPoseFilter = void (*)(std::uintptr_t component, std::vector<Transform> &skater) noexcept;
 void set_local_pose_filter(LocalPoseFilter filter) noexcept;
+// The same for the local skateboard: its root, then its bones, as capture_local is about to return them.
+using LocalBoardFilter = void (*)(std::vector<Transform> &board) noexcept;
+void set_local_board_filter(LocalBoardFilter filter) noexcept;
+void set_animation_evaluated_listener(AnimationEvaluated listener) noexcept;
+// Separate registration from the plugin pose filter: opening the studio must
+// not replace the filter that publishes plugin animations to other players.
+void set_animation_studio_pose_filter(LocalPoseFilter filter) noexcept;
 // Then, with the whole pose capture_local returns (the skater and the board), so a change to what is
 // drawn of the board (Extension/Skater/board_pose.h, a bone hidden from everyone) is in what the
 // others see too. One listener; nullptr for none. Client thread.
@@ -51,6 +57,9 @@ void set_local_sent_pose_filter(LocalSentPoseFilter filter) noexcept;
 // A pose override of the local skater (Extension/Skater/skater_animation.cpp): called after the
 // listener above, so it sees (and may change) the pose first person left.
 void set_pose_override_listener(AnimationEvaluated listener) noexcept;
+// The same, for Animation Studio: called after the listener above, so it sees (and may change) the
+// pose first person left.
+void set_animation_studio_listener(AnimationEvaluated listener) noexcept;
 // Called after a skeleton's pose is handed to the renderer, with
 // its animation interface (animation holder + 0xc0), on the calling thread.
 using RenderPosePublished = void (*)(std::uintptr_t animation_interface) noexcept;
@@ -65,6 +74,13 @@ void set_pose_override_render_listener(RenderPosePublished listener) noexcept;
 void set_pose_override_drawn_listener(RenderPosePublished listener) noexcept;
 using BoardPosePublished = void (*)(std::uintptr_t animation_interface, std::uintptr_t render_data) noexcept;
 void set_pose_override_board_listener(BoardPosePublished listener) noexcept;
+// Animation Studio again, when the local skater's pose is handed to the renderer (after the
+// listener above): what it writes then is what is drawn.
+void set_animation_studio_render_listener(RenderPosePublished listener) noexcept;
+// The same, for the board: with the render data the pose was handed over in (its +0x10 holds the
+// pose buffer the renderer reads).
+using StudioBoardPublished = void (*)(std::uintptr_t animation_interface, std::uintptr_t render_data) noexcept;
+void set_animation_studio_board_listener(StudioBoardPublished listener) noexcept;
 // Far-player savings (puppet_cost.cpp): native work a remote player's skater and skateboard
 // skip while far away. Within 200 m of the local skater or the camera nothing changes.
 // Each is on by default; the setter is thread-safe and applies at each player's next

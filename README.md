@@ -33,6 +33,10 @@ the launcher, the runtime that loads into the game, and the dedicated server.
     launcher. A mod that needs others (a mod pack) brings them with it.
   - Save sets of mods as profiles, switch between them, and share one as a code or a file.
   - Most mod changes apply in game without a restart.
+- **Animator Studio.** Browse and search the game's animation library, edit body and board keys,
+  build trick packs and playlists, and share packs through the animation market. Open it with **F8**,
+  hold **L3 + R3**, or use **Open Animation Studio** on the player/skater menu pages.
+  See the [Studio guide](contrib/animator-studio.md) for activation, stances, sharing and current limits.
 - **Launcher.**
   - Checks that you have the supported game build, and can download exactly that build with your Steam
     account.

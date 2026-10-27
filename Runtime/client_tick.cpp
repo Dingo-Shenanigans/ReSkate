@@ -1,3 +1,4 @@
+#include "Extension/AnimationStudio/anim_studio.h"
 #include "Extension/Rendering/plugin_effects.h"
 #include "runtime_internal.h"
 #include "Extension/Customization/developer_hoodie.h"
@@ -22,6 +23,7 @@
 #include "Extension/ReplayKeyframes/replay_keyframes.h"
 #include "Extension/Skater/camera_observer.h"
 #include "Extension/UI/NativeMenu/native_menu.h"
+#include "Extension/UI/Overlay/scripted_pad.h"
 #include "Extension/Multiplayer/Hud/native_party.h"
 #include "Extension/Multiplayer/Session/session.h"
 #include "Extension/Boot/discord_presence.h"
@@ -1233,6 +1235,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
     // whenever this client is not in play; otherwise every 10 s and 2 s.
     bool requests_loading{};
     { std::lock_guard lock(r.mutex); requests_loading = r.requests.loading(); }
+    dingosdk::anim_studio::game_loading_state(requests_loading);
     const bool world_changed = manifests_applied || requests_loading || (state != 13 && state != 21) ||
         state != r.previous_state || description.level != r.last_level || description.lm_level != r.catalog_level;
     r.catalog_level = description.lm_level;
@@ -1759,6 +1762,15 @@ void tick(std::uintptr_t client, std::uintptr_t update) {
         {
             DINGO_PROFILE_ZONE("tick/AI skaters");
             dingosdk::ai_skaters::tick(r.base,client,multiplayer_ready);
+        }
+        {
+            DINGO_PROFILE_ZONE("tick/scripted pad");
+            // The scripted pad (the studio room's walk, Record all tricks) moves on once a game tick, as PR #230's trick
+            // pad did: this update runs once a simulation tick, not once a drawn frame (60.0 a second while the game drew
+            // 106, 30.0 at SimulationTime.ForceSimRate 30; ReSkate research, 2026-10-10). From the debug tick, which runs
+            // every 100 ms, each step of a gesture lasted 100 ms and the gestures with 75 ms arcs (the pop shuvits) were
+            // never recognised (2026-10-19).
+            dingosdk::overlay::pad_tick();
         }
         {
             DINGO_PROFILE_ZONE("tick/world objects");

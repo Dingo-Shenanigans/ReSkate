@@ -1,6 +1,7 @@
 #include "Extension/Rendering/plugin_effects.h"
 #include "Extension/Skater/skater_events.h"
 #include "runtime_internal.h"
+#include "Extension/UI/Overlay/animation_studio_images.h"
 #include "Extension/Customization/item_browser.h"
 #include "Extension/Rendering/Capture/capture_runtime.h"
 #include "bootstrap.h"
@@ -197,7 +198,10 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
         }
 #pragma warning(pop)
         wchar_t self_path[32768]{};
-        const auto self_length = GetModuleFileNameW(self, self_path, 32768);
+        // Development only (RESKATE_DEV_GAME_DIR): a DLL built outside the game folder takes the game's
+        // own folder for its sibling files.
+        const auto self_length = GetModuleFileNameW(
+            GetEnvironmentVariableW(L"RESKATE_DEV_GAME_DIR", nullptr, 0) ? nullptr : self, self_path, 32768);
         if (!self_length || self_length >= 32768) {
             const auto error = GetLastError();
             return stop_startup(dingosdk::logging::Level::error, dingosdk::logging::Channel::runtime,
@@ -520,6 +524,7 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
         record("{\"event\":\"launches_initialized\",\"active\":" + std::string(launch_hooks ? "true" : "false") + "}");
         const bool trick_rewrites = dingosdk::trick_rewrite::start(r.base);
         record("{\"event\":\"trick_rewrite_initialized\",\"active\":" + std::string(trick_rewrites ? "true" : "false") + "}");
+        dingosdk::overlay::prepare_animation_studio_images();
         const bool noclip_velocity = dingosdk::start_client_noclip_velocity(r.base);
         record("{\"event\":\"noclip_velocity_initialized\",\"active\":" + std::string(noclip_velocity ? "true" : "false") + "}");
         const bool loading_screens = dingosdk::loading_screen::start(r.base);

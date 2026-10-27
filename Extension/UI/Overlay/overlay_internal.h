@@ -1,5 +1,6 @@
 #pragma once
 #include "overlay.h"
+#include "descriptor_slots.h"
 #include "Engine/Core/Console/command_registry.h"
 #include "Extension/Skater/free_flight.h"
 #include "gpu_diagnostics.h"
@@ -109,6 +110,8 @@ struct State {
     unsigned game_mouse_buttons = 0;
     std::atomic<bool> visible{false};
     std::atomic<bool> editor_visible{false}, editor_exit_requested{false}, editor_flight{false};
+    // FOURTH Animation Studio has the screen (animation_studio_overlay.cpp).
+    std::atomic<bool> studio_visible{false};
     std::atomic<ULONGLONG> editor_input_time{0};
     // Raw mouse seen on the game window (WM_INPUT). The park editor's look and
     // buttons use it because Skate's controller mode stops the legacy cursor
@@ -192,6 +195,29 @@ struct State {
     ComPtr<ID3D12Resource> mod_icon_texture, mod_icon_upload;
     // Plugins' pictures (plugin_images.cpp), from the fifth slot on.
     std::array<ComPtr<ID3D12Resource>, 16> plugin_textures, plugin_uploads;
+    // The Animator Studio's pack pictures (studio_pack_pictures.cpp), in the fifth: one texture made once, a square for
+    // each picture, new pictures copied into their squares a few a frame, each lot from an upload buffer kept until the
+    // frame that copied it is done.
+    struct StudioPackUpload {
+        ComPtr<ID3D12Resource> buffer;
+        UINT64 fence{};
+    };
+    ComPtr<ID3D12Resource> studio_pack_texture;
+    std::array<StudioPackUpload, 3> studio_pack_uploads;
+    ImTextureID studio_pack_id{};
+    // The game's finished frame, copied for the Animator Studio's fisheye (copy_studio_frame), in the sixth.
+    ComPtr<ID3D12Resource> studio_frame;
+    // The Animator Studio MARKET's art (studio_market_art.cpp): its wall in the seventh slot, the sheet of the rest in the
+    // eighth, the cover designer's preview in the ninth. The art's upload buffers go once the frame that copied them is
+    // done (market_upload_fence).
+    ComPtr<ID3D12Resource> market_wall_texture, market_wall_upload, market_sheet_texture, market_sheet_upload, cover_preview_texture,
+        cover_preview_upload;
+    UINT64 market_upload_fence{};
+    bool market_uploaded{};
+    UINT64 studio_frame_width{};
+    UINT studio_frame_height{};
+    DXGI_FORMAT studio_frame_format{};
+    bool studio_frame_waiting_copy{}; // in COPY_DEST (made and not copied into yet), else PIXEL_SHADER_RESOURCE
     // Thunderstore icons for the Mod Manager page (store_icons.cpp), after the screen look's slots.
     std::array<ComPtr<ID3D12Resource>, 64> store_textures, store_uploads; // store_icon_slots
     ComPtr<ID3D12GraphicsCommandList> commands;
@@ -347,9 +373,6 @@ bool take_mod_icon_pixels(CardPixels& pixels);
 // Plugins' pictures (plugin_images.cpp): the SRV heap's slots from plugin_image_first_slot on. A
 // draw asks for a picture by its file (its id once on the GPU, 0 until then); the render thread
 // takes one decoded picture a frame to upload and says where it went.
-inline constexpr UINT plugin_image_first_slot = 4, plugin_image_slots = 16;
-// Then the screen look's three (screen_look.h): its copy of the frame and the auto-iris's two targets.
-inline constexpr UINT screen_look_slot = plugin_image_first_slot + plugin_image_slots, screen_look_slots = 3;
 ImTextureID plugin_image(const std::string& path, ImVec2& size);
 struct PluginImageUpload {
     std::string path;
@@ -362,7 +385,6 @@ void plugin_image_uploaded(const std::string& path, int slot, ImTextureID id, bo
 void plugin_images_lost();
 // Thunderstore packages' icons for the pause menu's Mod Manager page (store_icons.cpp), the same way,
 // by their URL, in the SRV heap's slots from store_icon_first_slot on.
-inline constexpr UINT store_icon_first_slot = screen_look_slot + screen_look_slots, store_icon_slots = 64;
 ImTextureID store_icon(const std::string& url);
 struct StoreIconUpload {
     std::string url;
@@ -378,6 +400,40 @@ void draw_mod_apply_card();
 static_assert(std::tuple_size_v<decltype(State::store_textures)> == store_icon_slots);
 void mod_icon_uploaded(ImTextureID texture, unsigned serial);
 void mod_icon_lost();
+// The Animator Studio's pack pictures (studio_pack_pictures.cpp), the same way, in the fifth slot. Asked for by key (the
+// pack's name and when its picture was written) and file (UTF-8); the picture of one key, when it is on the GPU.
+void want_studio_pack_pictures(const std::vector<std::pair<std::string, std::string>>& pictures);
+bool studio_pack_picture(const std::string& key, ImTextureID& texture, ImVec2& uv0, ImVec2& uv1);
+// A picture file (UTF-8 path) made into the pack's picture, off the render thread: cut square from its middle, scaled.
+void make_studio_pack_picture(const std::string& pack, const std::string& file);
+bool studio_pack_picture_making();
+// The pictures' texture: squares 512 pixels a side, 8 across and 3 down. A picture keeps its square while it is on it;
+// a new one goes into an empty square, or one whose picture is not asked for, and only two frames after nothing draws
+// what the square held, so no frame ever shows one pack's cover on another.
+constexpr UINT studio_pack_cell = 512, studio_pack_columns = 8, studio_pack_rows = 3;
+struct PackCell {
+    UINT cell{};                     // which square
+    std::string key, id;             // the picture's key, and its key and file together
+    std::vector<unsigned char> rgba; // studio_pack_cell x studio_pack_cell, RGBA
+    std::uint64_t after{};           // copied in from this render frame on
+};
+// Asked by the render thread every frame: up to `most` pictures to copy into their squares now.
+bool take_studio_pack_cells(std::vector<PackCell>& cells, std::size_t most);
+// Those copies are recorded ahead of this frame's draws: drawable from the next frame on.
+void studio_pack_cells_uploaded(ImTextureID texture, const std::vector<PackCell>& cells);
+void studio_pack_pixels_lost();
+// The MARKET's art and the cover designer's preview (studio_market_art.cpp), the same way, in the seventh to ninth slots.
+bool take_market_wall_pixels(CardPixels& pixels);
+void market_wall_uploaded(ImTextureID texture, unsigned serial);
+bool take_market_sheet_pixels(CardPixels& pixels);
+void market_sheet_uploaded(ImTextureID texture, unsigned serial);
+bool take_cover_preview_pixels(CardPixels& pixels);
+void cover_preview_uploaded(ImTextureID texture, unsigned serial);
+void market_art_lost();
+// The game's finished frame as a texture, for the Animator Studio's fisheye (overlay_render.cpp): asked for every frame
+// it is wanted, copied before the overlay draws, and drawable the frame after it was first asked for (0 until then).
+void want_studio_frame() noexcept;
+ImTextureID studio_frame_texture() noexcept;
 // Game debug text (game_text_overlay.cpp): polled every presented frame.
 bool game_text_pending();
 void draw_game_text();
@@ -399,6 +455,14 @@ bool item_browser_open();
 void item_browser_key(ItemBrowserKey key);
 void item_browser_search_cleared(); // Esc in the search box
 void draw_item_browser();
+// FOURTH Animation Studio (Extension/AnimationStudio): its whole screen while open.
+void draw_animation_studio();
+// The Animator Studio's loading screen, over the walk to its room and back (anim_studio::loading()).
+bool animation_studio_loading_pending();
+void draw_animation_studio_loading();
+bool animation_studio_open();
+// Every presented frame, the studio shut: L3 + R3 held on a controller opens it.
+void poll_animation_studio_controller();
 // Queues a private multiplayer action from outside the menu (multiplayer_menu.cpp).
 bool queue_multiplayer_action(const char* action, const std::string& argument);
 bool queue_multiplayer_action(const char* action, const std::string& argument, const std::string& password);

@@ -338,9 +338,13 @@ void observe_destruction(std::uintptr_t entity) {
 // The render data the pose override last wrote a pose for, on this thread, until it is submitted.
 thread_local std::uintptr_t override_drawn_interface{}, override_drawn_data{};
 bool render_pose_hook(std::uintptr_t animation_interface, std::uintptr_t render_data) {
+    // Animation Studio's board, before the pose is handed on: what the renderer takes is ours.
     const bool result = shared().original_render_pose(animation_interface, render_data);
     // A pose override's board (skater_animation.cpp), with the renderer's own pointer to the pose.
     if (const auto listener = shared().override_board_listener.load(std::memory_order_acquire); result && listener)
+        listener(animation_interface, render_data);
+    // Animation Studio's board, with the renderer's own pointer to the pose (render_data +0x10).
+    if (const auto listener = shared().studio_board_listener.load(std::memory_order_acquire); result && listener)
         listener(animation_interface, render_data);
     if (const auto listener = shared().render_listener.load(std::memory_order_acquire); result && listener)
         listener(animation_interface);
@@ -358,6 +362,9 @@ bool render_pose_hook(std::uintptr_t animation_interface, std::uintptr_t render_
         override_drawn_interface = animation_interface;
         override_drawn_data = render_data;
     }
+    // Animation Studio's pose of the local skater, after everything that ran since its animation update.
+    if (const auto listener = shared().studio_render_listener.load(std::memory_order_acquire); result && listener)
+        listener(animation_interface);
     // Last, so that what it does to a board's pose (another player's included) is what is drawn:
     // the breakable deck's parts, and plugins' board (reskate.board).
     if (result) board_pose::on_render_pose(animation_interface);
@@ -407,6 +414,8 @@ void animation_hook(std::uintptr_t component, std::uintptr_t update) {
     if (const auto listener = shared().evaluated_listener.load(std::memory_order_acquire))
         listener(component);
     if (const auto listener = shared().override_listener.load(std::memory_order_acquire))
+        listener(component);
+    if (const auto listener = shared().studio_listener.load(std::memory_order_acquire))
         listener(component);
 }
 void destroy_hook(std::uintptr_t entity, std::uintptr_t owner) {
@@ -559,6 +568,8 @@ NativeFrame capture_local(std::uintptr_t base, std::uintptr_t client, bool captu
                     frame.pose.skater[hidden.joint].scale = hidden.scale;
                 if (const auto filter = shared().pose_filter.load(std::memory_order_acquire))
                     filter(component, frame.pose.skater);
+                if (const auto filter = shared().studio_pose_filter.load(std::memory_order_acquire))
+                    filter(component, frame.pose.skater);
                 frame.detail =
                     frame.pose.skater.empty() ? "Waiting for skater animation buffers." : "Local pose ready.";
             } catch (const std::exception &e) {
@@ -573,6 +584,8 @@ NativeFrame capture_local(std::uintptr_t base, std::uintptr_t client, bool captu
                 frame.pose.board.push_back(from_matrix(root_matrix(board.entity)));
                 const auto bones = capture_skeleton(base, board.holder, max_board_bones - 1);
                 frame.pose.board.insert(frame.pose.board.end(), bones.begin(), bones.end());
+                if (const auto filter = shared().board_filter.load(std::memory_order_acquire))
+                    filter(frame.pose.board);
             }
         } catch (const std::exception &e) {
             frame.board_entity = 0;
@@ -646,6 +659,21 @@ void set_local_sent_pose_filter(LocalSentPoseFilter filter) noexcept {
 }
 void set_local_pose_filter(LocalPoseFilter filter) noexcept {
     shared().pose_filter.store(filter, std::memory_order_release);
+}
+void set_animation_studio_pose_filter(LocalPoseFilter filter) noexcept {
+    shared().studio_pose_filter.store(filter, std::memory_order_release);
+}
+void set_local_board_filter(LocalBoardFilter filter) noexcept {
+    shared().board_filter.store(filter, std::memory_order_release);
+}
+void set_animation_studio_listener(AnimationEvaluated listener) noexcept {
+    shared().studio_listener.store(listener, std::memory_order_release);
+}
+void set_animation_studio_board_listener(StudioBoardPublished listener) noexcept {
+    shared().studio_board_listener.store(listener, std::memory_order_release);
+}
+void set_animation_studio_render_listener(RenderPosePublished listener) noexcept {
+    shared().studio_render_listener.store(listener, std::memory_order_release);
 }
 void set_pose_override_listener(AnimationEvaluated listener) noexcept {
     shared().override_listener.store(listener, std::memory_order_release);

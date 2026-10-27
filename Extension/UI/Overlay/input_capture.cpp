@@ -71,6 +71,8 @@ bool block_polled_input() {
     SetLastError(error);
     return capture;
 }
+// Also while the Animator Studio's loading screen shows, so the player cannot change what goes on behind it.
+bool block_input_reads() { return block_polled_input() || (!overlay_input_access && animation_studio_loading_pending()); }
 
 void note_input_record(const RAWINPUT& record) noexcept;
 HeldInput& held_input() { static auto* value = new HeldInput; return *value; }
@@ -83,7 +85,7 @@ struct InputCaptureHooks {
     std::map<OVERLAPPED*, HidRead> hid_reads;
     Hook register_raw;
     Hook async_key, key, keyboard, raw_data, raw_buffer, capture, release_capture, cursor, show_cursor, physical_cursor, cursor_position;
-    std::array<Hook, 5> xinput_state, xinput_extended, xinput_keystroke;
+    std::array<Hook, 5> xinput_state, xinput_extended, xinput_keystroke, xinput_capabilities;
     // Hooks other programs put in front of those, hooked in turn (keep_xinput_capture_first).
     static constexpr std::size_t front_slots = 8;
     std::array<Hook, front_slots> xinput_front;
@@ -605,7 +607,7 @@ UINT WINAPI captured_raw_buffer(PRAWINPUT data, PUINT size, UINT header_size) {
     // replays when it closes and nothing pressed before it stays stuck.
     const auto result = original<UINT(WINAPI*)(PRAWINPUT, PUINT, UINT)>(
         input_hooks().raw_buffer)(data, size, header_size);
-    const bool capture = result != UINT(-1) && data && block_polled_input();
+    const bool capture = result != UINT(-1) && data && block_input_reads();
     note_prompt_read(prompt_raw);
     if (result != UINT(-1) && data && header_size == sizeof(RAWINPUTHEADER)) {
         // Skate drains its mouse here; read the packets on the way past.
@@ -751,6 +753,7 @@ BOOL WINAPI captured_cursor_position(LPPOINT output) {
     if (result && output && !overlay_input_access) { last = *output; sampled = true; }
     return result;
 }
+bool test_pad_connected() noexcept;
 // ---- Dark Pop: the D-pad hidden from the game in the air -----------------------------------------------------
 // skate. opens the Quick Drop radial on D-pad Right (and Down, held), and in keyboard/mouse mode letting the radial
 // go selects what the cursor sits on: the object browser. Dark Pop arms on a D-pad press in the air, so while the
@@ -875,6 +878,10 @@ DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
     if (result == ERROR_SUCCESS && output) note_xinput(user, *output);
     // Only the game gets a scripted pad (the character room's walk): ReSkate's own reads get the real one.
     if (game_poll && output && scripted_pad(user, *output)) return ERROR_SUCCESS;
+    if (game_poll && result != ERROR_SUCCESS && user == 0 && output && test_pad_connected()) {
+        *output = {};
+        return ERROR_SUCCESS;
+    }
     if (result == ERROR_SUCCESS && output && capture) {
         output->Gamepad = {};
         // The game must notice a neutral state even if the physical packet did
@@ -886,6 +893,30 @@ DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
             output->Gamepad.wButtons &= static_cast<WORD>(~hidden);
             output->dwPacketNumber ^= 0x40000000u;
         }
+    }
+    return result;
+}
+// TEST ONLY: with RESKATE_TEST_PAD=1 the virtual pad is a connected controller in slot 0, whether a real one
+// is plugged in or not - a game that only reads the controllers it has seen connected reads it too.
+bool test_pad_connected() noexcept {
+    static const bool on = [] {
+        wchar_t flag[4]{};
+        return GetEnvironmentVariableW(L"RESKATE_TEST_PAD", flag, 4) == 1 && flag[0] == L'1';
+    }();
+    return on;
+}
+template<std::size_t I>
+DWORD WINAPI captured_capabilities(DWORD user, DWORD flags, XINPUT_CAPABILITIES* output) {
+    const auto result = original<DWORD(WINAPI*)(DWORD, DWORD, XINPUT_CAPABILITIES*)>(input_hooks().xinput_capabilities[I])(user, flags, output);
+    if (result != ERROR_SUCCESS && user == 0 && output && test_pad_connected()) {
+        *output = {};
+        output->Type = XINPUT_DEVTYPE_GAMEPAD;
+        output->SubType = XINPUT_DEVSUBTYPE_GAMEPAD;
+        output->Gamepad.wButtons = 0xF3FF;
+        output->Gamepad.bLeftTrigger = output->Gamepad.bRightTrigger = 0xFF;
+        output->Gamepad.sThumbLX = output->Gamepad.sThumbLY = output->Gamepad.sThumbRX = output->Gamepad.sThumbRY = static_cast<SHORT>(0xFFC0);
+        output->Vibration.wLeftMotorSpeed = output->Vibration.wRightMotorSpeed = 0xFF;
+        return ERROR_SUCCESS;
     }
     return result;
 }
@@ -923,7 +954,7 @@ HRESULT STDMETHODCALLTYPE captured_device_state(void* device, DWORD size, LPVOID
     const auto result = original<HRESULT(STDMETHODCALLTYPE*)(void*, DWORD, LPVOID)>(
         input_hooks().device_state[I])(device, size, data);
     note_prompt_read(prompt_direct);
-    if (SUCCEEDED(result) && data && block_polled_input()) {
+    if (SUCCEEDED(result) && data && block_input_reads()) {
         std::memset(data, 0, size);
         std::lock_guard lock(input_hooks().formats_mutex);
         const auto found = input_hooks().formats.find(device);
@@ -964,7 +995,7 @@ HRESULT STDMETHODCALLTYPE captured_device_state(void* device, DWORD size, LPVOID
 }
 template<std::size_t I>
 HRESULT STDMETHODCALLTYPE captured_device_data(void* device, DWORD size, LPDIDEVICEOBJECTDATA data, LPDWORD count, DWORD flags) {
-    const bool capture = block_polled_input();
+    const bool capture = block_input_reads();
     const auto result = original<HRESULT(STDMETHODCALLTYPE*)(void*, DWORD, LPDIDEVICEOBJECTDATA, LPDWORD, DWORD)>(
         input_hooks().device_data[I])(device, size, data, count, capture ? flags & ~DIGDD_PEEK : flags);
     if (SUCCEEDED(result) && capture && count) *count = 0;
@@ -1173,6 +1204,8 @@ bool install_input_capture() {
         reinterpret_cast<void*>(captured_xinput<2, true>), reinterpret_cast<void*>(captured_xinput<3, true>), reinterpret_cast<void*>(captured_xinput<4, true>)};
     const std::array<void*, 5> strokes{reinterpret_cast<void*>(captured_keystroke<0>), reinterpret_cast<void*>(captured_keystroke<1>),
         reinterpret_cast<void*>(captured_keystroke<2>), reinterpret_cast<void*>(captured_keystroke<3>), reinterpret_cast<void*>(captured_keystroke<4>)};
+    const std::array<void*, 5> capabilities{reinterpret_cast<void*>(captured_capabilities<0>), reinterpret_cast<void*>(captured_capabilities<1>),
+        reinterpret_cast<void*>(captured_capabilities<2>), reinterpret_cast<void*>(captured_capabilities<3>), reinterpret_cast<void*>(captured_capabilities<4>)};
     const std::array names{L"xinput1_4.dll", L"xinput1_3.dll", L"xinput9_1_0.dll", L"xinput1_2.dll", L"xinput1_1.dll"};
     std::vector<void*> seen;
     for (std::size_t i = 0; i < names.size(); ++i) {
@@ -1186,7 +1219,8 @@ bool install_input_capture() {
         };
         if (!hook_export(h.xinput_state[i], "XInputGetState", states[i]) ||
             !hook_export(h.xinput_extended[i], MAKEINTRESOURCEA(100), extended[i]) ||
-            !hook_export(h.xinput_keystroke[i], "XInputGetKeystroke", strokes[i])) return false;
+            !hook_export(h.xinput_keystroke[i], "XInputGetKeystroke", strokes[i]) ||
+            (test_pad_connected() && !hook_export(h.xinput_capabilities[i], "XInputGetCapabilities", capabilities[i]))) return false;
     }
     const auto direct = LoadLibraryExW(L"dinput8.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
     if (direct) {

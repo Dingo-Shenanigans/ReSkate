@@ -24,6 +24,9 @@ class GameData {
 public:
     // `gameRoot` is the folder with Skate.exe; its Data folder is read.
     explicit GameData(std::filesystem::path gameRoot);
+    // Offline inspection of an explicit merged patch over Data. CAS patch/base identities
+    // remain separate; a patch's TOC can still name manifests in the original Data archives.
+    GameData(std::filesystem::path gameRoot, std::filesystem::path patchRoot);
 
     [[nodiscard]] frostbite::TocDocument read_toc(std::string_view relative) const;
     // The bundle named `name` (lower case) in a superbundle TOC, or nothing.
@@ -34,5 +37,6 @@ public:
 private:
     std::filesystem::path gameRoot_;
     GameArchives archives_;
+    std::optional<GameArchives> patchArchives_;
 };
 }

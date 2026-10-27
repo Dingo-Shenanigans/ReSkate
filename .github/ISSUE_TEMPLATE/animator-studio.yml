@@ -1,0 +1,71 @@
+name: Animator Studio bug report
+description: Report an editor, playback, pack, market or crash problem.
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please follow the README's **Report a problem** instructions. In the studio,
+        SETTINGS > STUDIO > REPORT A BUG creates a local ZIP to attach below.
+        Review the report before sharing it; logs may contain local paths or player names.
+        Do not attach market account files or a service account token.
+  - type: input
+    id: studio-build
+    attributes:
+      label: ReSkate build and source commit
+      description: Include the supplied build-info.json or release identifier when available.
+      placeholder: "ReSkate release, commit / DLL SHA256"
+    validations:
+      required: true
+  - type: input
+    id: runtime
+    attributes:
+      label: ReSkate version and system
+      placeholder: "ReSkate 2.1.2, Windows 11"
+    validations:
+      required: true
+  - type: dropdown
+    id: context
+    attributes:
+      label: Where does it happen?
+      options:
+        - Studio preview/editor
+        - Gameplay only
+        - Preview and gameplay
+        - Packs, playlists or market
+        - Startup, room navigation or crash
+    validations:
+      required: true
+  - type: input
+    id: trick
+    attributes:
+      label: Trick or preset, pop and stance
+      description: Include low/mid/high, normal/switch/fakie/switch fakie, and Exact stance or Front foot. Use N/A for unrelated issues.
+      placeholder: "360 flip high, switch, Exact stance"
+    validations:
+      required: true
+  - type: dropdown
+    id: session
+    attributes:
+      label: Session context
+      options:
+        - Offline, alone
+        - Offline with AI skaters
+        - Online lobby
+        - Dedicated server
+        - Not applicable or unknown
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps, expected behavior and actual result
+      description: Include the active playlist, relevant settings/mods and whether it happens repeatedly. For a crash, include its date/time and timezone.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Bug report and build details
+      description: Attach the report ZIP and build-info.json here. If the studio cannot open, attach logs/ReSkate.log. Never paste a Thunderstore token or account.key.
+    validations:
+      required: false

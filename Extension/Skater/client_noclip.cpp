@@ -184,6 +184,38 @@ void noclip_apply_velocity(std::uintptr_t core) noexcept {
     apply_boost(debug.forward_velocity, debug.forward_velocity_updates, false);
     apply_boost(debug.up_velocity, debug.up_velocity_updates, true);
     apply_boost(debug.offboard_up_velocity, debug.offboard_up_velocity_updates, true, true);
+    // Animator Studio open: the skater (and his board) stop where they are, as noclip's writers do it:
+    // velocity at +0x70 with dirty bit 8 at +0x60, every step until the studio closes.
+    if (auto& brake = debug.studio_brake; brake.valid && brake.core == core) {
+        try {
+            if (GetTickCount64() >= brake.expires) brake.valid = false;
+            else {
+                const auto bodies = debug_noclip_bodies(state.trial.base, brake.client, brake.entity);
+                if (bodies.core == core && !bodies.wipeout) {
+                    // Off the board, the carried board's bodies (0-8) are the game's alone, as noclip leaves them.
+                    const std::size_t first = bodies.offboard ? 9 : 0;
+                    SourceReader reader;
+                    std::array<std::uint32_t, 32> flags{};
+                    std::array<std::array<float, 3>, 32> velocities{};
+                    for (std::size_t i = first; i < bodies.parts.size(); ++i) {
+                        flags[i] = reader.value<std::uint32_t>(bodies.parts[i], 0x60);
+                        velocities[i] = reader.value<std::array<float, 3>>(bodies.parts[i], 0x70);
+                    }
+                    reader.verify();
+                    // Only the rolling stops; up and down stay the game's (gravity, the ground), the way the
+                    // velocity boosts change a body's speed. A hard stop on every axis tore the board apart.
+                    for (std::size_t i = first; i < bodies.parts.size(); ++i) {
+                        auto v = velocities[i];
+                        if (!std::isfinite(v[0]) || !std::isfinite(v[1]) || !std::isfinite(v[2])) continue;
+                        v[0] *= 0.6f;
+                        v[2] *= 0.6f;
+                        body_write(bodies.parts[i] + 0x70, v);
+                        body_write(bodies.parts[i] + 0x60, flags[i] | 8u);
+                    }
+                }
+            }
+        } catch (...) { brake.valid = false; }
+    }
     const auto& request = debug.noclip_velocity;
     if (!debug.noclip || !request.valid || request.core != core) return;
     try {

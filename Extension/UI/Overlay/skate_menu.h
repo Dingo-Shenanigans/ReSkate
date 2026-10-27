@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 
 #include "overlay.h"
 #include "park_editor.h"
@@ -74,6 +75,7 @@ struct SkateMenu {
     // Selected tab on each page; see the Page list in skate_menu_internal.h.
     int map_tab = 0, build_tab = 0, skater_tab = 0, settings_tab = 0, mods_tab = 0;
     int addon = 0; // the ADDONS page's addon (menu::Addon)
+    bool close_requested{}; // a page closes the menu: SKATER's OPEN ANIMATION STUDIO, as F8 does nothing while the menu is open
     std::string plugin_page; // the PLUGINS section's plugin, by its id
     // Window or full screen, as just chosen, until the saved setting comes back through the model.
     std::optional<bool> fullscreen_pending;
@@ -117,12 +119,26 @@ struct SkateMenu {
     ImFont* bold_large = nullptr;
     ImFont* heading_large = nullptr;
     ImFont* title_large = nullptr;
+    ImFont* logo = nullptr;     // the Animator Studio's loading screen: big lowercase, as the reskate. wordmark
+    // The Animator Studio's MARKET and ABOUT: their faces made at the screen's own scale (studio_scale, the studio's page
+    // scale when the overlay was set up), each at a few sizes (on the 1080p page), so words are drawn at the size they were
+    // made at or a little under - sharp - rather than stretched. Anton for the headlines, Montserrat, the brush face for
+    // stamps; and the cover designer's fonts for their buttons (Bebas Neue, Rubik Dirt, Sedgwick Ave Display, Knewave).
+    struct StudioFace {
+        std::array<float, 6> sizes{};
+        std::array<ImFont*, 6> fonts{};
+        int count = 0;
+    };
+    float studio_scale = 1;
+    StudioFace studio_anton, studio_heading, studio_body, studio_marker;
+    std::array<ImFont*, 4> studio_covers{};
     // Full screen: the page's section rail (its first row of tabs, drawn down the left), indenting
     // what follows it until the page is done.
     float rail_indent = 0;
 };
 inline constexpr float large_font_ratio = 30.0f / 17.0f;
-void load_skate_fonts(SkateMenu& menu);
+// `studio_scale`: the Animator Studio's page scale on this screen (its 1080p page to the screen), which its faces are made at.
+void load_skate_fonts(SkateMenu& menu, float studio_scale = 1);
 void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks,
                      bool& visible);
 }

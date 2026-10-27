@@ -401,12 +401,40 @@ if(DINGOSDK_BUILD_ANIMATION_STUDIO_TESTS)
     target_include_directories(dingosdk_animation_studio_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     target_link_libraries(dingosdk_animation_studio_tests PRIVATE dingosdk_json)
     add_test(NAME animation_studio COMMAND dingosdk_animation_studio_tests)
-    # An arm reaching (reskate.skater.reach) on a made-up pose.
-    add_executable(dingosdk_arm_reach_tests Extension/Skater/Test/arm_reach_tests.cpp Extension/Skater/arm_reach.cpp
-        Extension/AnimationStudio/anim_core.cpp)
-    target_include_directories(dingosdk_arm_reach_tests PRIVATE "${PROJECT_SOURCE_DIR}")
-    target_link_libraries(dingosdk_arm_reach_tests PRIVATE dingosdk_json)
-    add_test(NAME arm_reach COMMAND dingosdk_arm_reach_tests)
+    add_executable(dingosdk_studio_pack_file_tests Extension/AnimationStudio/Test/pack_file_tests.cpp)
+    target_include_directories(dingosdk_studio_pack_file_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME studio_pack_files COMMAND dingosdk_studio_pack_file_tests)
+    if(WIN32 AND NOT TARGET dingosdk_native_tools_view_tests)
+        add_executable(dingosdk_native_tools_view_tests Extension/UI/NativeMenu/Test/native_tools_view_tests.cpp)
+        target_include_directories(dingosdk_native_tools_view_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+        add_test(NAME native_menu_tools COMMAND dingosdk_native_tools_view_tests)
+    endif()
+    if(WIN32 AND EXISTS "${CMAKE_CURRENT_BINARY_DIR}/generated/animator_studio.rc")
+        add_executable(dingosdk_arm_reach_tests Extension/Skater/Test/arm_reach_tests.cpp Extension/Skater/arm_reach.cpp
+            Extension/AnimationStudio/anim_core.cpp)
+        target_include_directories(dingosdk_arm_reach_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+        target_link_libraries(dingosdk_arm_reach_tests PRIVATE dingosdk_json)
+        add_test(NAME arm_reach COMMAND dingosdk_arm_reach_tests)
+        # The MARKET's cover maker on its own: writes covers to look at, from the same art and fonts as ReSkate.dll.
+        add_executable(dingosdk_cover_maker_preview Extension/UI/Overlay/Test/cover_maker_preview.cpp Extension/UI/Overlay/studio_cover_maker.cpp
+            Extension/UI/Overlay/studio_market_art.cpp "${CMAKE_CURRENT_BINARY_DIR}/generated/animator_studio.rc"
+            "${CMAKE_CURRENT_BINARY_DIR}/generated/menu_fonts.rc")
+        target_include_directories(dingosdk_cover_maker_preview PRIVATE "${PROJECT_SOURCE_DIR}" "${PROJECT_SOURCE_DIR}/Extension/UI/Overlay")
+        target_link_libraries(dingosdk_cover_maker_preview PRIVATE dingosdk_imgui dingosdk_json dingosdk_logging windowscodecs ole32)
+    endif()
+    if(WIN32)
+        add_executable(dingosdk_anim_graph_probe Extension/AnimationStudio/Tools/anim_graph_probe.cpp)
+        target_include_directories(dingosdk_anim_graph_probe PRIVATE "${PROJECT_SOURCE_DIR}")
+        target_link_libraries(dingosdk_anim_graph_probe PRIVATE dingosdk_game_archives dingosdk_json)
+        add_test(NAME animation_graph_probe COMMAND dingosdk_anim_graph_probe --self-test)
+        add_executable(dingosdk_anim_clip_channels Extension/AnimationStudio/Tools/anim_clip_channels.cpp Extension/AnimationStudio/anim_core.cpp)
+        target_include_directories(dingosdk_anim_clip_channels PRIVATE "${PROJECT_SOURCE_DIR}")
+        target_link_libraries(dingosdk_anim_clip_channels PRIVATE dingosdk_game_archives dingosdk_json)
+        # The trick library built offline the way the studio builds it in game (native_library.h), to check it.
+        add_executable(dingosdk_anim_library_build Extension/AnimationStudio/Tools/anim_library_build.cpp Extension/AnimationStudio/native_library.cpp)
+        target_include_directories(dingosdk_anim_library_build PRIVATE "${PROJECT_SOURCE_DIR}")
+        target_link_libraries(dingosdk_anim_library_build PRIVATE dingosdk_game_archives dingosdk_json bcrypt)
+    endif()
     # Something carried (reskate.skater.carry): held out, aimed, both hands, crouched with the feet kept.
     add_executable(dingosdk_carry_tests Extension/Skater/Test/carry_tests.cpp Extension/Skater/carry.cpp Extension/Skater/arm_reach.cpp
         Extension/AnimationStudio/anim_core.cpp)

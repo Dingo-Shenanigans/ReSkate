@@ -1,0 +1,791 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ReSkate Market Mockup</title>
+<style>
+@font-face { font-family: "Anton"; src: url("../../../External/fonts/Anton-Regular.ttf"); }
+@font-face { font-family: "Montserrat"; font-weight: 800; src: url("../../../External/fonts/Montserrat-ExtraBold.ttf"); }
+@font-face { font-family: "Montserrat"; font-weight: 600; src: url("../../../External/fonts/Montserrat-SemiBold.ttf"); }
+@font-face { font-family: "Marker"; src: url("../../../External/fonts/PermanentMarker-Regular.ttf"); }
+@font-face { font-family: "Bebas"; src: url("../../../External/fonts/BebasNeue-Regular.ttf"); }
+@font-face { font-family: "Dirt"; src: url("../../../External/fonts/RubikDirt-Regular.ttf"); }
+@font-face { font-family: "Sedgwick"; src: url("../../../External/fonts/SedgwickAveDisplay-Regular.ttf"); }
+@font-face { font-family: "Knewave"; src: url("../../../External/fonts/Knewave-Regular.ttf"); }
+
+:root {
+  --blue: #0183ff; --blue-light: #5ab4ff; --blue-deep: #0a4f9c;
+  --ink: #0b0c0f; --white: #f3f3ef; --paper: #e9e6dd; --soft: #a9abb2; --faint: #6f727b;
+  --A: "../../../assets/animator_studio/market/";
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; background: #050506; overflow: hidden; color: var(--white); font-family: "Montserrat", sans-serif; font-weight: 600; }
+/* The game's screen, scaled to the window. */
+#frame { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+#stage { position: relative; width: 1920px; height: 1080px; overflow: hidden; transform-origin: center center; background: #0d0f13; flex: none; }
+#stage.wide { width: 2560px; }
+.wall { position: absolute; inset: 0; background: url("../../../assets/animator_studio/market/wallpaper.jpg") center / cover no-repeat; }
+.wall::after { content: ""; position: absolute; inset: 0;
+  background: linear-gradient(to bottom, rgba(5,6,8,.78) 0px, rgba(5,6,8,.35) 260px, rgba(5,6,8,.35) 80%, rgba(5,6,8,.7) 100%); }
+
+/* ---- the studio's tabs, in the market's dress ---- */
+.top { position: absolute; left: 0; right: 0; top: 0; height: 96px; z-index: 5; }
+.top svg.band { position: absolute; left: 0; top: 0; }
+.tabs { position: absolute; top: 20px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 6px; }
+.tab { position: relative; font-family: "Anton"; font-size: 34px; letter-spacing: 1.5px; padding: 6px 28px; color: rgba(243,243,239,.62); cursor: pointer; }
+.tab:hover { color: var(--white); }
+.tab.on { color: #fff; }
+.tab .label-back { position: absolute; z-index: -1; }
+.cap { width: 34px; height: 34px; position: relative; display: grid; place-items: center; font-family: "Anton"; font-size: 18px; color: #fff; margin: 0 14px;
+  border: 2px solid rgba(255,255,255,.8); background: rgba(5,6,8,.5); }
+.close { position: absolute; right: 40px; top: 24px; height: 44px; padding: 0 18px 0 14px; display: flex; align-items: center; gap: 10px;
+  border: 2px solid rgba(255,255,255,.75); font-family: "Montserrat"; font-weight: 800; font-size: 14px; letter-spacing: .5px; cursor: pointer; }
+.close:hover { background: rgba(255,255,255,.1); }
+.close i { width: 16px; height: 16px; position: relative; }
+.close i::before, .close i::after { content: ""; position: absolute; left: 7px; top: -1px; width: 2px; height: 18px; background: #fff; transform: rotate(45deg); }
+.close i::after { transform: rotate(-45deg); }
+
+/* ---- the shop's own bar ---- */
+.subnav { position: absolute; top: 104px; left: 48px; right: 48px; height: 52px; display: flex; align-items: center; z-index: 4; }
+.part { position: relative; font-family: "Montserrat"; font-weight: 800; font-size: 15px; letter-spacing: .6px; padding: 12px 18px; color: rgba(243,243,239,.7); cursor: pointer; display: flex; align-items: center; gap: 8px; }
+.part:hover { color: #fff; }
+.part.on { color: #fff; }
+.part .n { font-size: 11px; background: rgba(255,255,255,.14); border-radius: 9px; padding: 2px 7px; color: #fff; }
+.part.on .n { background: rgba(0,0,0,.25); }
+.part .label-back { position: absolute; z-index: -1; }
+.search { margin-left: auto; position: relative; width: 470px; height: 40px; }
+.search input { width: 100%; height: 100%; background: rgba(10,11,14,.88); border: 2px solid rgba(255,255,255,.18); color: #fff; padding: 0 14px 0 42px;
+  font-family: "Montserrat"; font-weight: 600; font-size: 14px; outline: none; }
+.search input:focus { border-color: var(--blue); }
+.search svg { position: absolute; left: 13px; top: 10px; }
+.btn { height: 40px; padding: 0 18px; display: inline-flex; align-items: center; gap: 10px; font-family: "Montserrat"; font-weight: 800; font-size: 13px; letter-spacing: .5px;
+  cursor: pointer; border: 2px solid transparent; white-space: nowrap; user-select: none; }
+.btn.blue { background: var(--blue); color: #fff; }
+.btn.blue:hover { background: #2898ff; }
+.btn.line { border-color: rgba(255,255,255,.75); color: #fff; }
+.btn.line:hover { background: rgba(255,255,255,.1); }
+.btn.big { height: 56px; padding: 0 26px; font-size: 16px; }
+.btn.paper { background: var(--paper); color: var(--ink); }
+.subnav .btn { margin-left: 12px; }
+
+/* ---- the page ---- */
+.scroll { position: absolute; top: 164px; bottom: 44px; left: 0; right: 0; overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; scrollbar-color: rgba(255,255,255,.4) transparent; }
+.scroll::-webkit-scrollbar { width: 6px; }
+.scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,.4); }
+.view { display: none; padding-bottom: 60px; }
+.view.on { display: block; }
+.pad { padding: 0 48px; }
+section { position: relative; }
+.view > .head, .view > .row, .view > .foot, .view > .gridhead, .view > .grid, .view > .pack, .view > .back { max-width: 1920px; margin-left: auto; margin-right: auto; }
+.view > .head { margin-top: 44px; margin-bottom: 22px; }
+.view > .back { margin-top: 18px; display: flex; width: max-content; margin-left: max(48px, calc(50% - 912px)); }
+.view > .foot { margin-top: 60px; }
+.mid { position: absolute; top: 0; bottom: 0; left: 50%; width: 1920px; margin-left: -960px; }
+.hints { position: absolute; bottom: 0; left: 0; right: 0; height: 44px; display: flex; justify-content: flex-end; align-items: center; gap: 22px; padding: 0 48px;
+  background: linear-gradient(to bottom, rgba(5,6,8,0), rgba(5,6,8,.9)); font-family: "Montserrat"; font-weight: 800; font-size: 12px; z-index: 5; }
+.hints b { background: #f0f0ec; color: #0b0c0f; padding: 3px 6px; margin-right: 7px; font-size: 10px; }
+
+/* torn paper, drawn by script */
+.torn { position: absolute; pointer-events: none; overflow: visible; }
+.label { position: relative; display: inline-flex; align-items: center; white-space: nowrap; }
+.label > span { position: relative; z-index: 1; }
+.label > svg { position: absolute; z-index: 0; }
+
+/* ---- welcome ---- */
+.welcome { height: 430px; margin-top: 6px; }
+.welcome .photo { position: absolute; right: 170px; top: 26px; transform: rotate(3deg); }
+.welcome .photo img { width: 600px; height: 330px; object-fit: cover; object-position: 30% 40%; display: block; }
+.welcome .splat { position: absolute; right: 40px; top: -60px; width: 560px; opacity: .95; pointer-events: none; }
+.welcome .copy { position: absolute; left: 64px; top: 22px; width: 1060px; }
+.welcome .kicker { font-family: "Anton"; font-size: 30px; letter-spacing: 3px; color: var(--ink); padding: 8px 22px; transform: rotate(-2deg); }
+.welcome .word { position: relative; margin-top: -6px; height: 156px; }
+.welcome .word .strip { position: absolute; left: -24px; top: 40px; }
+.welcome .word .clean { position: absolute; left: 4px; top: 8px; font-family: "Anton"; font-size: 168px; line-height: 1; letter-spacing: 2px; color: #fff; white-space: nowrap; }
+.welcome p { margin-top: 18px; width: 640px; font-size: 16px; line-height: 1.55; color: rgba(243,243,239,.86); }
+.welcome .stats { display: flex; gap: 30px; margin-top: 18px; font-family: "Anton"; font-size: 28px; letter-spacing: 1px; }
+.welcome .stats small { display: block; font-family: "Montserrat"; font-weight: 800; font-size: 11px; letter-spacing: 1.2px; color: var(--soft); }
+.welcome .ctas { display: flex; gap: 12px; margin-top: 24px; }
+.print { position: absolute; background: #f1efe8; padding: 14px 14px 46px; box-shadow: 10px 14px 0 rgba(0,0,0,.45); }
+.print img, .print canvas { display: block; }
+.print .caption { position: absolute; left: 16px; bottom: 10px; font-family: "Marker"; font-size: 22px; color: var(--ink); }
+.tape { position: absolute; width: 130px; height: 34px; background: rgba(236,232,214,.78); }
+
+/* ---- the spotlight ---- */
+.spot { height: 650px; margin-top: 10px; }
+.spot .inner { position: absolute; top: 34px; bottom: 34px; left: 50%; width: 1920px; margin-left: -960px; }
+.spot .copy { position: absolute; left: 112px; top: 44px; width: 860px; z-index: 2; }
+.spot .rank { font-family: "Anton"; font-size: 15px; letter-spacing: 3px; color: var(--blue-light); margin: 18px 0 2px; }
+.spot h1 { font-family: "Anton"; font-weight: 400; font-size: 104px; line-height: .95; letter-spacing: 1px; text-transform: uppercase; margin: 10px 0 8px; }
+.spot .by { font-family: "Montserrat"; font-weight: 800; font-size: 20px; display: flex; align-items: center; gap: 14px; }
+.spot .by em { font-style: normal; color: var(--blue-light); }
+.spot .meta { margin-top: 12px; font-family: "Montserrat"; font-weight: 800; font-size: 13px; letter-spacing: 4px; color: rgba(243,243,239,.8); }
+.spot .desc { margin-top: 14px; width: 620px; font-size: 15px; line-height: 1.5; color: rgba(243,243,239,.8); }
+.spot .ctas { margin-top: 24px; display: flex; gap: 12px; align-items: center; }
+.spot .posters { position: absolute; right: 170px; top: 40px; width: 560px; height: 470px; z-index: 1; }
+.spot .arrow { position: absolute; top: 50%; margin-top: -30px; width: 60px; height: 60px; border-radius: 50%; border: 2px solid rgba(255,255,255,.7); display: grid; place-items: center;
+  cursor: pointer; z-index: 3; background: rgba(5,6,8,.4); }
+.spot .arrow:hover { background: rgba(255,255,255,.12); }
+.spot .arrow.l { left: 30px; } .spot .arrow.r { right: 30px; }
+.spot .pager { position: absolute; right: 120px; bottom: 34px; display: flex; align-items: center; gap: 8px; z-index: 3; font-family: "Anton"; font-size: 22px; }
+.spot .pager i { width: 36px; height: 5px; background: rgba(255,255,255,.35); display: block; cursor: pointer; }
+.spot .pager i.on { background: var(--blue); }
+.spot .pager span { margin-left: 16px; } .spot .pager span em { font-style: normal; color: var(--soft); }
+
+/* ---- shelf headings ---- */
+.head { display: flex; align-items: center; gap: 22px; padding: 0 48px; }
+.head .label { font-family: "Anton"; font-size: 40px; letter-spacing: 1px; padding: 6px 26px 8px; transform: rotate(-1.2deg); }
+.head .sub { font-family: "Montserrat"; font-weight: 800; font-size: 13px; letter-spacing: 2.5px; color: var(--soft); }
+.head .sub b { color: #fff; }
+.head .more { margin-left: auto; }
+.row { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 26px; padding: 0 48px; }
+.row.ranked { grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 20px; }
+.ranked .slot { position: relative; padding-left: 74px; }
+.ranked .num { position: absolute; left: -6px; bottom: 84px; font-family: "Anton"; font-size: 190px; line-height: .8; color: #f3f3ef; text-shadow: 7px 7px 0 var(--blue); z-index: 0; letter-spacing: -6px; }
+.ranked .card { z-index: 1; }
+
+/* ---- a pack card ---- */
+.card { position: relative; width: 100%; min-width: 0; cursor: pointer; transition: transform .12s; }
+.card:hover { transform: translateY(-5px); }
+.card .cover { position: relative; width: 100%; aspect-ratio: 1; background: #111; }
+.card .cover canvas { width: 100%; height: 100%; display: block; }
+.card .sheet { position: absolute; inset: 0; z-index: -1; }
+.card:hover .cover { outline: 3px solid var(--blue); outline-offset: 0; }
+.card .rk { position: absolute; left: 12px; top: 6px; font-family: "Anton"; font-size: 48px; color: #fff; text-shadow: 3px 3px 0 rgba(0,0,0,.75); }
+.card .heart { position: absolute; right: 12px; top: 12px; width: 38px; height: 38px; border-radius: 50%; background: rgba(0,0,0,.6); display: grid; place-items: center; }
+.card .heart:hover { background: rgba(0,0,0,.85); }
+.card .info { background: #101115; padding: 12px 14px 12px; border-top: 3px solid var(--blue); }
+.card .t { font-family: "Anton"; font-size: 24px; letter-spacing: .5px; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card .b { font-family: "Montserrat"; font-weight: 800; font-size: 12px; color: var(--soft); margin-top: 2px; }
+.card .b.crew { color: var(--blue-light); }
+.card .m { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-family: "Montserrat"; font-weight: 800; font-size: 11px; letter-spacing: .4px; color: rgba(243,243,239,.75); white-space: nowrap; }
+.card .m i { width: 1px; height: 12px; background: rgba(255,255,255,.25); }
+.card .m .dl { margin-left: auto; color: var(--soft); }
+.stamp { position: absolute; font-family: "Marker"; font-size: 15px; padding: 4px 12px 5px; z-index: 2; white-space: nowrap; }
+
+/* ---- the crew band ---- */
+.crewband { margin-top: 80px; height: 700px; }
+.crewband .copy { position: absolute; left: 64px; top: 92px; width: 600px; color: var(--ink); z-index: 2; }
+.crewband h2 { font-family: "Anton"; font-weight: 400; font-size: 112px; line-height: .9; letter-spacing: 1px; }
+.crewband p { margin-top: 22px; font-size: 16px; line-height: 1.55; color: #2a2b30; width: 520px; }
+.crewband .members { position: absolute; left: 700px; right: 48px; top: 110px; display: flex; gap: 22px; z-index: 2; }
+.member { position: relative; flex: 1; background: #0e0f12; color: #fff; min-width: 0; cursor: pointer; box-shadow: 8px 10px 0 rgba(0,0,0,.35); }
+.member:hover { transform: translateY(-4px); }
+.member .ph { position: relative; height: 230px; overflow: hidden; }
+.member .ph canvas { width: 100%; height: 100%; display: block; object-fit: cover; }
+.member .nm { font-family: "Anton"; font-size: 38px; letter-spacing: 1px; padding: 14px 18px 0; }
+.member .rl { font-family: "Montserrat"; font-weight: 800; font-size: 12px; letter-spacing: 1.8px; color: var(--blue-light); padding: 2px 18px; }
+.member .ab { font-size: 13px; line-height: 1.5; color: rgba(243,243,239,.75); padding: 10px 18px 0; height: 66px; overflow: hidden; }
+.member .st { display: flex; gap: 18px; padding: 12px 18px 18px; font-family: "Anton"; font-size: 22px; }
+.member .st small { display: block; font-family: "Montserrat"; font-weight: 800; font-size: 10px; letter-spacing: 1.2px; color: var(--soft); }
+.crewband .row { position: absolute; left: 0; right: 0; bottom: 70px; z-index: 2; }
+
+/* ---- call to share ---- */
+.cta { height: 300px; margin-top: 70px; }
+.cta .copy { position: absolute; left: 64px; top: 70px; z-index: 2; }
+.cta h2 { font-family: "Anton"; font-weight: 400; font-size: 78px; line-height: .95; letter-spacing: 1px; }
+.cta .steps { position: absolute; left: 900px; top: 74px; display: flex; gap: 40px; z-index: 2; }
+.cta .step { width: 220px; }
+.cta .step b { font-family: "Anton"; font-size: 54px; color: var(--ink); display: block; line-height: 1; }
+.cta .step span { font-family: "Anton"; font-size: 26px; letter-spacing: 1px; display: block; margin-top: 6px; }
+.cta .step p { font-size: 13px; line-height: 1.45; margin-top: 6px; color: rgba(255,255,255,.9); }
+.cta .btn { position: absolute; right: 64px; top: 120px; z-index: 2; }
+.foot { padding: 24px 48px 0; display: flex; align-items: center; gap: 30px; font-family: "Montserrat"; font-weight: 800; font-size: 12px; letter-spacing: 1.5px; color: var(--faint); }
+.foot .mark { font-family: "Montserrat"; font-weight: 800; font-size: 22px; color: #fff; letter-spacing: 0; }
+.foot .mark em { font-style: normal; color: var(--blue); }
+
+/* ---- grid pages ---- */
+.gridhead { display: flex; align-items: center; gap: 22px; padding: 30px 48px 26px; }
+.gridhead h2 { font-family: "Anton"; font-weight: 400; font-size: 64px; letter-spacing: 1px; }
+.gridhead .count { font-family: "Montserrat"; font-weight: 800; font-size: 13px; letter-spacing: 2px; color: var(--soft); }
+.sorts { margin-left: auto; display: flex; gap: 6px; }
+.sorts span { font-family: "Montserrat"; font-weight: 800; font-size: 12px; letter-spacing: .6px; padding: 10px 14px; border: 2px solid rgba(255,255,255,.18); cursor: pointer; }
+.sorts span.on { background: var(--blue); border-color: var(--blue); }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 34px 26px; padding: 0 48px; }
+
+/* ---- a pack's page ---- */
+.pack { padding: 22px 48px 0; display: grid; grid-template-columns: 520px 1fr; gap: 70px; }
+.pack .left { position: relative; height: 640px; }
+.pack h1 { font-family: "Anton"; font-weight: 400; font-size: 112px; line-height: .92; letter-spacing: 1px; text-transform: uppercase; margin: 16px 0 10px; }
+.pack .by { font-family: "Montserrat"; font-weight: 800; font-size: 20px; }
+.pack .by em { font-style: normal; color: var(--blue-light); }
+.pack .nums { display: flex; gap: 40px; margin: 26px 0; font-family: "Anton"; font-size: 40px; }
+.pack .nums small { display: block; font-family: "Montserrat"; font-weight: 800; font-size: 11px; letter-spacing: 1.6px; color: var(--soft); }
+.pack .about { width: 820px; font-size: 16px; line-height: 1.6; color: rgba(243,243,239,.85); margin-top: 26px; }
+.pack .chips { display: flex; flex-wrap: wrap; gap: 10px; width: 900px; margin-top: 18px; }
+.pack .chip { font-family: "Montserrat"; font-weight: 800; font-size: 13px; padding: 9px 14px; background: #121318; border: 1px solid rgba(1,131,255,.55); }
+.pack .chip b { color: var(--blue-light); font-weight: 800; }
+.minihead { font-family: "Anton"; font-size: 26px; letter-spacing: 1.5px; margin-top: 34px; display: flex; align-items: center; gap: 14px; }
+.minihead::after { content: ""; flex: 1; height: 2px; background: rgba(255,255,255,.14); }
+.back { margin-left: 48px; }
+
+/* ---- the cover designer ---- */
+.dim { position: absolute; inset: 0; background: rgba(4,5,7,.78); z-index: 20; display: none; }
+.dim.on { display: block; }
+.card-box { position: absolute; left: 50%; top: 50%; width: 1500px; height: 860px; margin: -430px 0 0 -750px; background: #121317; box-shadow: 14px 16px 0 rgba(0,0,0,.5); }
+.card-box .title { position: absolute; left: 34px; top: 28px; font-family: "Anton"; font-size: 40px; letter-spacing: 1px; padding: 4px 22px 6px; }
+.card-box .x { position: absolute; right: 30px; top: 30px; }
+.designer { position: absolute; left: 34px; right: 34px; top: 120px; bottom: 34px; display: grid; grid-template-columns: 600px 1fr; gap: 44px; }
+.designer .preview { position: relative; }
+.designer .preview canvas { width: 600px; height: 600px; display: block; box-shadow: 10px 12px 0 rgba(0,0,0,.5); }
+.designer .preview .note { margin-top: 18px; font-size: 13px; line-height: 1.5; color: var(--soft); width: 600px; }
+.opts { overflow-y: auto; padding-right: 10px; }
+.opt { margin-bottom: 22px; }
+.opt h4 { font-family: "Anton"; font-weight: 400; font-size: 22px; letter-spacing: 1.5px; margin-bottom: 10px; display: flex; align-items: baseline; gap: 12px; }
+.opt h4 small { font-family: "Montserrat"; font-weight: 600; font-size: 12px; letter-spacing: 0; color: var(--faint); }
+.choices { display: flex; flex-wrap: wrap; gap: 10px; }
+.choice { cursor: pointer; border: 2px solid rgba(255,255,255,.16); background: #0c0d10; padding: 8px 12px; font-family: "Montserrat"; font-weight: 800; font-size: 12px; letter-spacing: .5px; }
+.choice:hover { border-color: rgba(255,255,255,.5); }
+.choice.on { border-color: var(--blue); background: rgba(1,131,255,.16); }
+.choice.sw { width: 92px; padding: 0; overflow: hidden; }
+.choice.sw canvas { width: 88px; height: 64px; display: block; }
+.choice.sw div { padding: 6px 8px; font-size: 11px; }
+.choice.font { font-size: 24px; padding: 6px 16px; font-weight: 400; letter-spacing: 1px; }
+.opts input[type=text] { width: 100%; height: 46px; background: #0c0d10; border: 2px solid rgba(255,255,255,.18); color: #fff; padding: 0 14px; font-family: "Montserrat"; font-weight: 800; font-size: 16px; outline: none; }
+.opts input[type=text]:focus { border-color: var(--blue); }
+.designer .actions { display: flex; gap: 12px; margin-top: 8px; }
+.toggle { display: flex; align-items: center; gap: 12px; cursor: pointer; font-size: 13px; color: var(--soft); }
+.toggle i { width: 54px; height: 28px; border-radius: 14px; background: #2e3036; position: relative; }
+.toggle i::after { content: ""; position: absolute; left: 4px; top: 4px; width: 20px; height: 20px; border-radius: 50%; background: #fff; }
+.toggle.on i { background: var(--blue); } .toggle.on i::after { left: 30px; }
+
+/* mockup controls, outside the game's screen */
+#mock { position: fixed; left: 12px; bottom: 12px; z-index: 50; display: flex; gap: 6px; font: 600 12px Montserrat, sans-serif; }
+#mock span { background: #1c1d22; color: #ccc; padding: 6px 10px; cursor: pointer; border: 1px solid #333; }
+#mock span.on { background: var(--blue); color: #fff; }
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <pattern id="tex-blue" patternUnits="userSpaceOnUse" width="1024" height="1024"><image href="../../../assets/animator_studio/market/paper_blue.jpg" width="1024" height="1024"/></pattern>
+    <pattern id="tex-white" patternUnits="userSpaceOnUse" width="1024" height="1024"><image href="../../../assets/animator_studio/market/paper_white.jpg" width="1024" height="1024"/></pattern>
+    <pattern id="tex-grip" patternUnits="userSpaceOnUse" width="1024" height="1024"><image href="../../../assets/animator_studio/market/grip.jpg" width="1024" height="1024"/></pattern>
+    <pattern id="tex-concrete" patternUnits="userSpaceOnUse" width="1024" height="1024"><image href="../../../assets/animator_studio/market/concrete.jpg" width="1024" height="1024"/></pattern>
+  </defs>
+</svg>
+<div id="frame"><div id="stage">
+  <div class="wall"></div>
+
+  <!-- the studio's tabs -->
+  <div class="top">
+    <div class="tabs">
+      <div class="cap" data-cap="Q">Q</div>
+      <div class="tab">TRICKS</div>
+      <div class="tab">PACKS</div>
+      <div class="tab on" id="tab-market">MARKET</div>
+      <div class="tab">SETTINGS</div>
+      <div class="cap" data-cap="E">E</div>
+    </div>
+    <div class="close"><i></i>CLOSE (F8)</div>
+  </div>
+
+  <!-- the shop's bar -->
+  <div class="subnav">
+    <div class="part on" data-view="home">FEATURED</div>
+    <div class="part" data-view="browse">BROWSE <span class="n" id="n-all">14</span></div>
+    <div class="part" data-view="crew">THE CREW <span class="n">4</span></div>
+    <div class="part" data-view="liked">LIKED <span class="n" id="n-liked">3</span></div>
+    <div class="part" data-view="installed">INSTALLED <span class="n">2</span></div>
+    <div class="part" data-view="mine">MY UPLOADS <span class="n">2</span></div>
+    <div class="search">
+      <svg width="18" height="18" viewBox="0 0 18 18"><circle cx="7.5" cy="7.5" r="5.5" fill="none" stroke="#a9abb2" stroke-width="2.2"/><line x1="11.6" y1="11.6" x2="16.5" y2="16.5" stroke="#a9abb2" stroke-width="2.6"/></svg>
+      <input id="q" type="text" placeholder="Search a trick, a pack, a maker...">
+    </div>
+    <div class="btn blue">SIGN IN TO THUNDERSTORE</div>
+    <div class="btn line">REFRESH</div>
+  </div>
+
+  <div class="scroll" id="scroll">
+    <!-- ================= FEATURED: the shop's landing page ================= -->
+    <div class="view on" id="v-home">
+      <section class="welcome" id="welcome"><div class="mid">
+        <div class="copy">
+          <div class="label kicker" data-kind="white" data-seed="11"><span>WELCOME TO THE</span></div>
+          <div class="word"><div class="clean">MARKETPLACE</div></div>
+          <p>Animation packs made in the Animator Studio, by skaters, for skaters. Find a trick, hit GET, and it is in your game. Made one yourself? Put it on the shelf.</p>
+          <div class="stats" id="stats"></div>
+          <div class="ctas"><div class="btn blue big" data-go="browse">BROWSE ALL PACKS</div><div class="btn line big" data-open="designer">SHARE YOUR PACK</div></div>
+        </div>
+        <img class="splat" src="../../../assets/animator_studio/market/splatter_a.png" alt="">
+        <div class="print photo"><img src="../../../assets/animator_studio/market/skater_duotone.jpg" alt=""><div class="caption">the studio, 2026</div><div class="tape" style="left:240px;top:-16px;transform:rotate(-4deg)"></div></div>
+      </div></section>
+
+      <section class="spot" id="spot">
+        <div class="inner mid" id="spot-inner" style="top:34px;bottom:34px">
+          <div class="arrow l" id="prev"><svg width="22" height="22"><path d="M14 3 L6 11 L14 19" stroke="#fff" stroke-width="3" fill="none"/></svg></div>
+          <div class="arrow r" id="next"><svg width="22" height="22"><path d="M8 3 L16 11 L8 19" stroke="#fff" stroke-width="3" fill="none"/></svg></div>
+          <div class="copy" id="spot-copy"></div>
+          <div class="posters" id="posters"></div>
+          <div class="pager" id="pager"></div>
+        </div>
+      </section>
+
+      <div class="head"><div class="label" data-kind="blue" data-seed="21"><span>TOP OF THE MONTH</span></div><div class="sub"><b>OCTOBER 2026</b> &nbsp;/&nbsp; MOST DOWNLOADED AND LIKED</div><div class="btn line more" data-go="browse">SEE ALL &nbsp;&rarr;</div></div>
+      <div class="row" id="row-month"></div>
+
+      <section class="crewband" id="crewband"><div class="mid">
+        <div class="copy">
+          <h2>FROM<br>THE CREW</h2>
+          <div class="label stamp-label" data-kind="blue" data-seed="31" style="margin-top:14px;transform:rotate(-4deg)"><span style="font-family:Marker;font-size:30px;color:#0b0c0f;padding:4px 22px 6px">crew certified</span></div>
+          <p>The testers who broke the studio so you would not have to. Every pack of theirs carries the CREW CERTIFIED stamp, all over the shop.</p>
+          <div class="btn" style="margin-top:22px;background:#0b0c0f;color:#fff" data-go="crew">MEET THE CREW &nbsp;&rarr;</div>
+        </div>
+        <div class="members" id="members"></div>
+      </div></section>
+
+      <div class="head"><div class="label" data-kind="white" data-seed="33"><span style="color:#0b0c0f">FROM THE CREW</span></div><div class="sub">CREW CERTIFIED PACKS</div><div class="btn line more" data-go="crew">SEE ALL &nbsp;&rarr;</div></div>
+      <div class="row" id="row-crew"></div>
+
+      <div class="head"><div class="label" data-kind="grip" data-seed="41"><span>NEW RELEASES</span></div><div class="sub">JUST DROPPED</div><div class="btn line more" data-go="browse">SEE ALL &nbsp;&rarr;</div></div>
+      <div class="row" id="row-new"></div>
+
+      <section class="cta" id="cta"><div class="mid">
+        <div class="copy"><h2>GOT A TRICK?<br>PUT IT ON THE SHELF.</h2></div>
+        <div class="steps">
+          <div class="step"><b>01</b><span>MAKE IT</span><p>Pose it, key it, test it in game, in the studio.</p></div>
+          <div class="step"><b>02</b><span>PACK IT</span><p>Put your tricks in a pack, and give it a cover.</p></div>
+          <div class="step"><b>03</b><span>SHARE IT</span><p>Publish it from here. It is in everyone's shop in a minute.</p></div>
+        </div>
+        <div class="btn paper big" data-open="designer">SHARE A PACK &nbsp;&rarr;</div>
+      </div></section>
+
+      <div class="head"><div class="label" data-kind="white" data-seed="51"><span style="color:#0b0c0f">ALL-TIME FAVORITES</span></div><div class="sub">THE MOST LIKED, EVER</div><div class="btn line more" data-go="browse">SEE ALL &nbsp;&rarr;</div></div>
+      <div class="row" id="row-fav"></div>
+
+      <div class="foot"><span class="mark">reskate<em>.</em></span><span>PACKS LIVE ON THUNDERSTORE</span><span>BUILT BY 22SH, FOURTH, NORMS, STEEZ</span><span style="margin-left:auto">SAMPLE PACKS SHOWN</span></div>
+    </div>
+
+    <!-- ================= BROWSE ================= -->
+    <div class="view" id="v-browse">
+      <div class="gridhead"><h2 id="grid-title">ALL PACKS</h2><span class="count" id="grid-count"></span>
+        <div class="sorts" id="sorts"><span class="on" data-sort="top">TOP</span><span data-sort="downloads">MOST DOWNLOADED</span><span data-sort="new">NEWEST</span><span data-sort="likes">MOST LIKED</span><span data-sort="az">A-Z</span><span data-sort="crew">CREW ONLY</span></div>
+      </div>
+      <div class="grid" id="grid"></div>
+    </div>
+
+    <!-- ================= THE CREW ================= -->
+    <div class="view" id="v-crew">
+      <div class="gridhead"><h2>THE CREW</h2><span class="count">THE TESTERS WHO SHAPED THE STUDIO</span></div>
+      <div class="row" id="crew-cards" style="flex-wrap:wrap;row-gap:30px"></div>
+      <div class="head"><div class="label" data-kind="blue" data-seed="61"><span>CREW CERTIFIED PACKS</span></div></div>
+      <div class="grid" id="crew-grid"></div>
+    </div>
+
+    <!-- ================= A PACK'S PAGE ================= -->
+    <div class="view" id="v-pack">
+      <div class="btn line back" id="back">&larr; &nbsp;BACK</div>
+      <div class="pack" id="pack"></div>
+    </div>
+  </div>
+
+  <div class="hints"><span><b>ARROWS</b>Browse</span><span><b>ENTER</b>Select</span><span><b>ESC</b>Back</span><span><b>Q / E</b>Tabs</span></div>
+
+  <!-- ================= the cover designer (SHARE / UPDATE) ================= -->
+  <div class="dim" id="designer">
+    <div class="card-box">
+      <div class="label title" data-kind="blue" data-seed="71"><span>PACK COVER</span></div>
+      <div class="btn line x" data-close="designer">DONE</div>
+      <div class="designer">
+        <div class="preview"><canvas id="cv" width="1024" height="1024"></canvas>
+          <div class="note">This is the picture people see on your pack: in the MARKET, on Thunderstore, and in PACKS. Pick what is behind it, put its name on a banner in one of the shop's fonts, and stick a tag on it. Or use a picture of your own, as it is.</div></div>
+        <div class="opts" id="opts"></div>
+      </div>
+    </div>
+  </div>
+</div></div>
+
+<div id="mock"><span class="on" data-aspect="16">16:9</span><span data-aspect="21">21:9</span><span data-open="designer">COVER DESIGNER</span></div>
+
+<script>
+const A = "../../../assets/animator_studio/market/";
+// ------------------------------------------------------------------ a seeded random, for torn edges that stay put
+function rng(seed) { let s = (seed * 2654435761) >>> 0 || 1; return () => { s ^= s << 13; s >>>= 0; s ^= s >>> 17; s ^= s << 5; s >>>= 0; return s / 4294967296; }; }
+// A torn piece of paper w x h: its outline, clockwise. The long edges wander and nick; the ends are ragged.
+// (The studio draws the same outline: a strip of quads between its top and bottom, textured.)
+function tornOutline(w, h, seed, o = {}) {
+  const r = rng(seed), edge = o.edge ?? 3.2, ends = o.ends ?? 9, step = o.step ?? 7;
+  const wander = (amp, period) => { const a = r() * 6.28, b = r() * 6.28; return (x) => amp * (Math.sin(x / period + a) * .6 + Math.sin(x / (period * .37) + b) * .4); };
+  const wt = wander(edge * 1.2, 70), wb = wander(edge * 1.2, 64), wl = wander(ends * .5, 22), wr = wander(ends * .5, 20);
+  const pts = [];
+  for (let x = 0; x < w; x += step * (.55 + r() * .9)) pts.push([x, wt(x) + (r() - .5) * edge * (r() < .08 ? 4 : 1.2)]);
+  for (let y = 0; y < h; y += step * (.45 + r() * .7)) pts.push([w + wr(y) + (r() - .5) * ends * (r() < .15 ? 1.6 : .8), y]);
+  for (let x = w; x > 0; x -= step * (.55 + r() * .9)) pts.push([x, h + wb(x) + (r() - .5) * edge * (r() < .08 ? 4 : 1.2)]);
+  for (let y = h; y > 0; y -= step * (.45 + r() * .7)) pts.push([wl(y) + (r() - .5) * ends * (r() < .15 ? 1.6 : .8), y]);
+  return pts;
+}
+// A band across the screen torn along its top and its foot.
+function tornBand(w, h, seed, edge = 14) {
+  const r = rng(seed), pts = [];
+  const wav = (amp, period) => { const a = r() * 6.28, b = r() * 6.28, c = r() * 6.28; return (x) => amp * (Math.sin(x / period + a) * .55 + Math.sin(x / (period * .43) + b) * .3 + Math.sin(x / (period * .13) + c) * .15); };
+  const top = wav(edge, 140), foot = wav(edge, 120);
+  for (let x = -20; x <= w + 20; x += 5 + r() * 9) pts.push([x, top(x) + (r() - .5) * 7 + (r() < .05 ? -r() * 14 : 0)]);
+  for (let x = w + 20; x >= -20; x -= 5 + r() * 9) pts.push([x, h + foot(x) + (r() - .5) * 7 + (r() < .05 ? r() * 14 : 0)]);
+  return pts;
+}
+// The white core of torn paper showing along its edge: the outline pushed out a little, more in places.
+function rimOf(pts, seed, most = 3.4) {
+  const r = rng(seed + 99), n = pts.length, out = [];
+  let cx = 0, cy = 0; pts.forEach(p => { cx += p[0]; cy += p[1]; }); cx /= n; cy /= n;
+  for (let i = 0; i < n; i++) {
+    const a = pts[(i - 1 + n) % n], b = pts[(i + 1) % n];
+    let nx = b[1] - a[1], ny = a[0] - b[0]; const l = Math.hypot(nx, ny) || 1; nx /= l; ny /= l;
+    const d = .6 + r() * most * (r() < .2 ? 1.8 : 1);
+    out.push([pts[i][0] + nx * d, pts[i][1] + ny * d]);
+  }
+  return out;
+}
+const pathOf = (pts) => "M" + pts.map(p => p[0].toFixed(1) + " " + p[1].toFixed(1)).join(" L") + " Z";
+const KIND = { blue: { fill: "url(#tex-blue)", rim: "#e7eefb", ink: "#fff" }, white: { fill: "url(#tex-white)", rim: "#fbfaf6", ink: "#0b0c0f" },
+               grip: { fill: "url(#tex-grip)", rim: "#8e9097", ink: "#fff" }, concrete: { fill: "url(#tex-concrete)", rim: "#d9d9d9", ink: "#fff" } };
+// Torn paper behind an element: its shadow, its white core, the paper.
+function tornSvg(w, h, kind, seed, o = {}) {
+  const k = KIND[kind], pad = 30, pts = o.band ? tornBand(w, h, seed, o.edge) : tornOutline(w, h, seed, o);
+  const shadow = pts.map(p => [p[0] + (o.sx ?? 7), p[1] + (o.sy ?? 9)]);
+  const svgNS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(svgNS, "svg");
+  svg.setAttribute("width", w + pad * 2); svg.setAttribute("height", h + pad * 2);
+  svg.setAttribute("viewBox", `${-pad} ${-pad} ${w + pad * 2} ${h + pad * 2}`);
+  svg.style.left = -pad + "px"; svg.style.top = -pad + "px";
+  svg.innerHTML = `<path d="${pathOf(shadow)}" fill="rgba(0,0,0,${o.shadow ?? .42})"/><path d="${pathOf(rimOf(pts, seed, o.rim ?? 3.2))}" fill="${k.rim}"/><path d="${pathOf(pts)}" fill="${k.fill}"/>`;
+  return svg;
+}
+// Labels: every .label gets its torn paper, sized to it.
+function dressLabels(root = document) {
+  root.querySelectorAll(".label").forEach(el => {
+    if (el.dataset.done || !el.offsetWidth) return;
+    const kind = el.dataset.kind || "blue", seed = +(el.dataset.seed || 1);
+    const svg = tornSvg(el.offsetWidth, el.offsetHeight, kind, seed, { edge: 2.6, ends: 10 });
+    svg.classList.add("torn"); el.prepend(svg); el.dataset.done = 1;
+    if (!el.style.color) el.style.color = KIND[kind].ink;
+  });
+}
+
+// ------------------------------------------------------------------ pictures
+const IMG = {};
+function load(name) { return IMG[name] || (IMG[name] = new Promise(res => { const i = new Image(); i.onload = () => res(i); i.src = A + name; })); }
+const BASES = {
+  skater: { name: "SKATER", file: "skater_duotone.jpg", photo: true },
+  print: { name: "PRINT", file: "skater_halftone.jpg", photo: true },
+  grip: { name: "GRIP TAPE", file: "grip.jpg" },
+  concrete: { name: "CONCRETE", file: "concrete.jpg" },
+  paper: { name: "WORN PAPER", file: "paper_white.jpg" },
+  blue: { name: "BLUE PAPER", file: "paper_blue.jpg" },
+};
+const FONTS = { Anton: "ANTON", Bebas: "BEBAS", Dirt: "DIRT", Sedgwick: "SEDGWICK", Knewave: "KNEWAVE" };
+const BANNERS = { blue: "BLUE TORN", white: "WORN PAPER", grip: "GRIP STRIP", tape: "TAPE", none: "NONE" };
+const TAGS = ["NONE", "ALL STANCES", "REGULAR", "GOOFY", "SWITCH", "FAKIE", "NOLLIE", "FLIPS", "GRINDS", "GRABS"];
+
+// ------------------------------------------------------------------ a pack's cover, drawn as the studio will draw it
+async function drawCover(cv, c) {
+  const ctx = cv.getContext("2d"), S = cv.width, k = S / 512;
+  ctx.save(); ctx.clearRect(0, 0, S, S);
+  if (c.custom) { ctx.fillStyle = "#222"; ctx.fillRect(0, 0, S, S); const i = await load("skater_bw.jpg"); coverFit(ctx, i, S); ctx.restore(); return; }
+  const base = BASES[c.base] || BASES.grip, img = await load(base.file);
+  if (base.photo) coverFit(ctx, img, S, c.focus ?? .62);
+  else { ctx.fillStyle = ctx.createPattern(img, "repeat"); ctx.save(); ctx.scale(k * .62, k * .62); ctx.fillRect(0, 0, S / (k * .62), S / (k * .62)); ctx.restore(); }
+  // A dark base gets the shop's blue splash in a corner, a light one a few grey flecks: no two covers the same.
+  const r = rng(c.seed || 3);
+  if (!base.photo) {
+    if (c.base === "grip" || c.base === "concrete") {
+      if (c.base === "concrete") { ctx.fillStyle = "rgba(10,12,18,.55)"; ctx.fillRect(0, 0, S, S); }
+      const sp = await load(r() < .5 ? "splatter_a.png" : "splatter_b.png"); const sz = S * (1 + r() * .5);
+      ctx.globalAlpha = .9; ctx.drawImage(sp, S - sz * (.55 + r() * .25), -sz * (.2 + r() * .3), sz, sz * sp.height / sp.width); ctx.globalAlpha = 1;
+    }
+    const ht = await load("halftone_blue.png"); ctx.globalAlpha = c.base === "blue" ? .35 : .7; ctx.drawImage(ht, -S * .2, S * .35, S * 1.1, S * .82); ctx.globalAlpha = 1;
+  } else {
+    const g = ctx.createLinearGradient(0, S * .45, 0, S); g.addColorStop(0, "rgba(0,0,0,0)"); g.addColorStop(1, "rgba(0,0,0,.55)"); ctx.fillStyle = g; ctx.fillRect(0, 0, S, S);
+  }
+  // The title on its banner.
+  if (c.title) {
+    const font = c.font || "Anton";
+    const lines = wrapTitle(ctx, c.title.toUpperCase(), font, S * .82, S * .2);
+    const size = lines.size, lh = size * (font === "Knewave" || font === "Sedgwick" ? 1.02 : .95);
+    const bw = Math.max(...lines.lines.map(l => { ctx.font = `${size}px ${font}`; return ctx.measureText(l).width; })) + 46 * k;
+    const bh = lh * lines.lines.length + 26 * k;
+    const y0 = c.pos === "top" ? S * .1 : c.pos === "middle" ? (S - bh) / 2 : S - bh - S * .12;
+    const x0 = (S - bw) / 2, tilt = ((c.seed || 3) % 2 ? -1 : 1) * (1.5 + r() * 1.5) * Math.PI / 180;
+    ctx.save(); ctx.translate(S / 2, y0 + bh / 2); ctx.rotate(tilt); ctx.translate(-S / 2, -(y0 + bh / 2));
+    if (c.banner && c.banner !== "none") await bannerOn(ctx, c.banner, x0, y0, bw, bh, c.seed || 3, k);
+    ctx.fillStyle = c.banner === "white" || c.banner === "tape" ? "#0b0c0f" : "#fff";
+    ctx.textBaseline = "alphabetic"; ctx.textAlign = "center"; ctx.font = `${size}px ${font}`;
+    if (c.banner === "none") { ctx.fillStyle = "rgba(0,0,0,.6)"; lines.lines.forEach((l, i) => ctx.fillText(l, S / 2 + 4 * k, y0 + 13 * k + lh * (i + .82) + 4 * k)); ctx.fillStyle = "#fff"; }
+    lines.lines.forEach((l, i) => ctx.fillText(l, S / 2, y0 + 13 * k + lh * (i + .82)));
+    ctx.restore();
+  }
+  // The tag, stuck in a corner.
+  if (c.tag && c.tag !== "NONE") {
+    ctx.save(); ctx.font = `${30 * k}px Marker`; const tw = ctx.measureText(c.tag).width + 34 * k, th = 50 * k;
+    const tx = 26 * k, ty = c.pos === "top" ? S - th - 30 * k : 30 * k;
+    ctx.translate(tx + tw / 2, ty + th / 2); ctx.rotate(-4 * Math.PI / 180); ctx.translate(-tw / 2, -th / 2);
+    await bannerOn(ctx, c.tag === "ALL STANCES" ? "white" : "grip", 0, 0, tw, th, (c.seed || 3) + 7, k * .6);
+    ctx.fillStyle = c.tag === "ALL STANCES" ? "#0b0c0f" : "#fff"; ctx.textAlign = "center"; ctx.fillText(c.tag, tw / 2, th * .72); ctx.restore();
+  }
+  ctx.restore();
+}
+function coverFit(ctx, img, S, focus = .5) { const s = Math.max(S / img.width, S / img.height), w = img.width * s, h = img.height * s; ctx.drawImage(img, (S - w) * focus, (S - h) / 2, w, h); }
+function wrapTitle(ctx, text, font, maxW, startSize) {
+  let size = startSize; const words = text.split(" ");
+  for (; size > 20; size -= 4) {
+    ctx.font = `${size}px ${font}`; const lines = []; let line = "";
+    for (const w of words) { const t = line ? line + " " + w : w; if (ctx.measureText(t).width > maxW && line) { lines.push(line); line = w; } else line = t; }
+    lines.push(line);
+    if (lines.length <= 2 && lines.every(l => ctx.measureText(l).width <= maxW)) return { lines, size };
+  }
+  return { lines: [text], size };
+}
+async function bannerOn(ctx, kind, x, y, w, h, seed, k) {
+  if (kind === "tape") {
+    ctx.save(); ctx.fillStyle = "rgba(236,232,214,.92)"; ctx.beginPath();
+    const r = rng(seed); ctx.moveTo(x, y); for (let i = 0; i <= 10; i++) ctx.lineTo(x + w * i / 10, y + (r() - .5) * 3 * k);
+    for (let j = 0; j <= 6; j++) ctx.lineTo(x + w + (j % 2 ? 5 : -2) * k, y + h * j / 6);
+    for (let i = 10; i >= 0; i--) ctx.lineTo(x + w * i / 10, y + h + (r() - .5) * 3 * k);
+    for (let j = 6; j >= 0; j--) ctx.lineTo(x + (j % 2 ? -5 : 2) * k, y + h * j / 6);
+    ctx.fill(); ctx.restore(); return;
+  }
+  const tex = await load(kind === "blue" ? "paper_blue.jpg" : kind === "white" ? "paper_white.jpg" : "grip.jpg");
+  const pts = tornOutline(w, h, seed, { edge: 2.4 * k, ends: 9 * k, step: 7 * k }).map(p => [p[0] + x, p[1] + y]);
+  const path = (ps) => { const p = new Path2D(); ps.forEach((q, i) => i ? p.lineTo(q[0], q[1]) : p.moveTo(q[0], q[1])); p.closePath(); return p; };
+  ctx.fillStyle = "rgba(0,0,0,.45)"; ctx.save(); ctx.translate(6 * k, 8 * k); ctx.fill(path(pts)); ctx.restore();
+  ctx.fillStyle = KIND[kind].rim; ctx.fill(path(rimOf(pts, seed, 3 * k)));
+  ctx.save(); ctx.clip(path(pts)); ctx.fillStyle = ctx.createPattern(tex, "repeat"); ctx.fillRect(x - 20, y - 20, w + 40, h + 40); ctx.restore();
+}
+
+// ------------------------------------------------------------------ the sample shop (swapped for the real listing at release)
+const CREW = [
+  { team: "Fourth_Studio", name: "FOURTH", role: "STUDIO LEAD", about: "Made the Animator Studio, Board Break and Road Rash. Keys every flip by hand, twice." },
+  { team: "22SH", name: "22SH", role: "ANIMATOR", about: "Lives in the graph editor. If a catch looks floaty, 22SH has already fixed it." },
+  { team: "Norms", name: "NORMS", role: "STANCE & RIGS", about: "Worked out how the game mirrors a skater. Regular, goofy, switch: Norms checked them all." },
+  { team: "Steez", name: "STEEZ", role: "TESTER", about: "Broke the studio more times than anyone, on purpose, so you never have to." },
+];
+const P = [
+  ["STREET ESSENTIALS", "Fourth_Studio", 24, "ALL STANCES", 2410, 312, 3, { base: "skater", banner: "blue", font: "Anton", pos: "bottom" }],
+  ["HEAVY HITTERS", "22SH", 28, "ALL STANCES", 1480, 204, 6, { base: "grip", banner: "white", font: "Dirt", pos: "middle" }],
+  ["SMOOTH OPERATOR", "Norms", 20, "REGULAR", 1120, 160, 19, { base: "concrete", banner: "grip", font: "Knewave", pos: "bottom" }],
+  ["TECH DECK", "Steez", 32, "GOOFY", 940, 131, 44, { base: "blue", banner: "white", font: "Sedgwick", pos: "middle" }],
+  ["AFTER HOURS", "Fourth_Studio", 26, "ALL STANCES", 1390, 188, 2, { base: "print", banner: "blue", font: "Bebas", pos: "top" }],
+  ["LEDGE LORDS", "kurt_ollie", 18, "REGULAR", 2010, 266, 5, { base: "grip", banner: "blue", font: "Anton", pos: "middle" }],
+  ["NIGHT SESSION", "dannyb", 14, "SWITCH", 1660, 221, 1, { base: "print", banner: "none", font: "Knewave", pos: "bottom" }],
+  ["MANUAL LABOR", "pushmob", 22, "FAKIE", 860, 97, 12, { base: "paper", banner: "grip", font: "Anton", pos: "middle" }],
+  ["FLIP THEORY", "tre_flip_tom", 30, "ALL STANCES", 4890, 640, 71, { base: "concrete", banner: "tape", font: "Bebas", pos: "top" }],
+  ["GAP SEASON", "saltwater_sk8", 12, "NOLLIE", 610, 64, 9, { base: "blue", banner: "grip", font: "Dirt", pos: "bottom" }],
+  ["CURB APPEAL", "mrs_grind", 16, "GOOFY", 3720, 512, 103, { base: "skater", banner: "white", font: "Sedgwick", pos: "top" }],
+  ["STAIR MASTERS", "bigspin_bee", 20, "ALL STANCES", 3180, 455, 58, { base: "grip", banner: "tape", font: "Knewave", pos: "middle" }],
+  ["BACKYARD BOWL", "pool_boy", 9, "REGULAR", 230, 31, 0, { base: "paper", banner: "blue", font: "Sedgwick", pos: "middle" }],
+  ["LATE FLIPS ONLY", "lateflip_lou", 11, "SWITCH", 150, 22, 0, { base: "concrete", banner: "white", font: "Anton", pos: "top" }],
+].map((p, i) => ({ id: i, title: p[0], owner: p[1], tricks: p[2], stance: p[3], downloads: p[4], likes: p[5], days: p[6],
+  crew: CREW.some(c => c.team === p[1]), cover: { ...p[7], title: p[0], tag: p[3], seed: i * 7 + 3 }, liked: [0, 3, 8].includes(i) }));
+const short = (n) => n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "K" : "" + n;
+const score = (p) => p.downloads + 25 * p.likes;
+const by = (f) => [...P].sort(f);
+
+function heart(filled, size = 20, colour = "#fff") {
+  return `<svg width="${size}" height="${size}" viewBox="0 0 24 24"><path d="M12 21 C 5 15.5 2 12.5 2 8.4 C 2 5.3 4.4 3 7.3 3 C 9.2 3 10.9 4 12 5.6 C 13.1 4 14.8 3 16.7 3 C 19.6 3 22 5.3 22 8.4 C 22 12.5 19 15.5 12 21 Z" fill="${filled ? colour : "none"}" stroke="${colour}" stroke-width="2.2"/></svg>`;
+}
+const ICON = {
+  layers: `<svg width="14" height="14" viewBox="0 0 16 16"><path d="M8 1 L15 5 L8 9 L1 5 Z M1 8 L8 12 L15 8 M1 11 L8 15 L15 11" fill="none" stroke="#a9abb2" stroke-width="1.6"/></svg>`,
+  stance: `<svg width="14" height="14" viewBox="0 0 16 16"><circle cx="8" cy="4" r="2.4" fill="none" stroke="#a9abb2" stroke-width="1.6"/><path d="M3 15 L5 8 L11 8 L13 15 M2 10 L14 10" fill="none" stroke="#a9abb2" stroke-width="1.6"/></svg>`,
+  down: `<svg width="13" height="13" viewBox="0 0 16 16"><path d="M8 1 V10 M4 6.5 L8 10.5 L12 6.5 M2 14.5 H14" fill="none" stroke="#a9abb2" stroke-width="2"/></svg>`,
+};
+function cardOf(p, rank) {
+  const el = document.createElement("div"); el.className = "card";
+  el.innerHTML = `<div class="cover"><canvas width="600" height="600"></canvas><div class="heart">${heart(p.liked, 18, p.liked ? "#5ab4ff" : "#fff")}</div></div>
+    <div class="info"><div class="t">${p.title}</div><div class="b ${p.crew ? "crew" : ""}">by ${p.owner.replace("_Studio", "")}</div>
+    <div class="m">${ICON.layers}<span>${p.tricks} TRICKS</span><i></i>${ICON.stance}<span>${p.stance}</span><span class="dl">${ICON.down} ${short(p.downloads)}</span></div></div>`;
+  drawCover(el.querySelector("canvas"), p.cover);
+  if (p.crew) { const s = document.createElement("span"); s.className = "label"; s.dataset.kind = "white"; s.dataset.seed = p.id + 300;
+    s.innerHTML = `<span style="color:#0b0c0f">crew certified</span>`; s.style.cssText = "margin-left:10px;transform:rotate(-3deg);padding:2px 9px 3px;font-family:Marker;font-size:12px;vertical-align:middle"; el.querySelector(".b").appendChild(s); }
+  el.querySelector(".heart").onclick = (e) => { e.stopPropagation(); p.liked = !p.liked; el.querySelector(".heart").innerHTML = heart(p.liked, 18, p.liked ? "#5ab4ff" : "#fff"); };
+  el.onclick = () => openPack(p);
+  return el;
+}
+function fillRow(id, list, ranked) {
+  const row = document.getElementById(id); row.innerHTML = ""; row.classList.toggle("ranked", !!ranked);
+  list.forEach((p, i) => {
+    if (!ranked) { row.appendChild(cardOf(p, 0)); return; }
+    const slot = document.createElement("div"); slot.className = "slot";
+    slot.innerHTML = `<div class="num">${i + 1}</div>`; slot.appendChild(cardOf(p, 0)); row.appendChild(slot);
+  });
+  setTimeout(() => dressLabels(row), 30);
+}
+
+// ------------------------------------------------------------------ the spotlight
+let spotAt = 0;
+const spotPicks = () => by((a, b) => score(b) - score(a)).filter(p => p.days <= 31).slice(0, 5);
+function showSpot() {
+  const picks = spotPicks(), p = picks[spotAt];
+  document.getElementById("spot-copy").innerHTML = `
+    <div class="label" data-kind="blue" data-seed="${81 + spotAt}" style="font-family:Anton;font-size:26px;letter-spacing:1px;padding:5px 20px 6px;transform:rotate(-1.5deg)"><span>TOP OF THE MONTH</span></div>
+    <div class="rank">#${String(spotAt + 1).padStart(2, "0")} THIS MONTH</div>
+    <h1>${p.title.replace(" ", "<br>")}</h1>
+    <div class="by">by <em>${p.owner.replace("_Studio", "").toUpperCase()}</em>${p.crew ? `<span class="label" data-kind="white" data-seed="${91 + spotAt}" style="font-family:Marker;font-size:17px;padding:3px 12px 4px;transform:rotate(-3deg)"><span style="color:#0b0c0f">crew certified</span></span>` : ""}</div>
+    <div class="meta">${p.tricks} TRICKS &nbsp;/&nbsp; ${p.stance} &nbsp;/&nbsp; ${short(p.downloads)} DOWNLOADS &nbsp;/&nbsp; ${p.likes} LIKES</div>
+    <div class="desc">${p.tricks} tricks keyed in the Animator Studio, every pop and catch done by hand. Install it and switch it on in PACKS: it plays in game the next time you skate.</div>
+    <div class="ctas"><div class="btn blue big" id="spot-view">VIEW PACK &nbsp;&rarr;</div><div class="btn line big">GET IT</div><div class="btn line big" style="padding:0 18px">${heart(p.liked, 20)}&nbsp;LIKE</div></div>`;
+  document.getElementById("spot-view").onclick = () => openPack(p);
+  const posters = document.getElementById("posters"); posters.innerHTML = "";
+  // The pick taped up big, the next two pinned behind it.
+  [2, 1, 0].forEach((off) => {
+    const q = picks[(spotAt + off) % picks.length], d = document.createElement("div"); d.className = "print";
+    const size = off ? 270 : 340, rot = [-4, 5, -2][off];
+    d.style.cssText = `left:${[150, 320, 0][off]}px;top:${[30, 60, 0][off]}px;transform:rotate(${rot}deg);filter:brightness(${off ? .42 : 1});z-index:${3 - off}`;
+    d.innerHTML = `<canvas width="760" height="760" style="width:${size}px;height:${size}px"></canvas><div class="caption">${off ? "" : "#" + String(spotAt + 1).padStart(2, "0") + " of the month"}</div>`;
+    if (!off) d.innerHTML += `<div class="tape" style="left:${size / 2 - 50}px;top:-16px;transform:rotate(3deg)"></div>`;
+    drawCover(d.querySelector("canvas"), q.cover); posters.appendChild(d);
+  });
+  document.getElementById("pager").innerHTML = picks.map((_, i) => `<i class="${i === spotAt ? "on" : ""}" data-i="${i}"></i>`).join("") + `<span>${String(spotAt + 1).padStart(2, "0")} <em>/ ${String(picks.length).padStart(2, "0")}</em></span>`;
+  document.querySelectorAll("#pager i").forEach(i => i.onclick = () => { spotAt = +i.dataset.i; showSpot(); });
+  setTimeout(() => dressLabels(document.getElementById("spot-copy")), 30);
+}
+
+// ------------------------------------------------------------------ full-bleed bands, sized to the screen
+function band(sectionId, kind, seed, top, height, o = {}) {
+  const s = document.getElementById(sectionId), w = document.getElementById("stage").offsetWidth;
+  s.querySelectorAll(":scope > svg.torn").forEach(x => x.remove());
+  s.style.zIndex = 0;
+  const svg = tornSvg(w, height, kind, seed, { band: true, edge: o.edge ?? 14, shadow: .5, sy: 10, sx: 0 }); svg.classList.add("torn");
+  svg.style.top = (top - 30) + "px"; svg.style.left = "-30px"; s.prepend(svg);
+  if (o.under) { const u = tornSvg(w, height + 34, o.under, seed + 5, { band: true, edge: 16, shadow: .3 }); u.classList.add("torn"); u.style.top = (top - 30 + 4) + "px"; u.style.left = "-30px"; s.prepend(u); }
+}
+function layout() {
+  band("spot", "grip", 7, 34, 582);
+  band("crewband", "white", 9, 40, 620, { under: "blue" });
+  band("cta", "blue", 13, 30, 240);
+}
+
+// ------------------------------------------------------------------ the crew
+function memberCard(c, wide) {
+  const packs = P.filter(p => p.owner === c.team), el = document.createElement("div"); el.className = "member"; if (wide) el.style.flex = "0 0 420px";
+  el.innerHTML = `<div class="ph"><canvas width="640" height="460"></canvas></div><div class="nm">${c.name}</div><div class="rl">${c.role}</div><div class="ab">${c.about}</div>
+    <div class="st"><div>${packs.length}<small>PACKS</small></div><div>${short(packs.reduce((a, p) => a + p.likes, 0))}<small>LIKES</small></div><div>${short(packs.reduce((a, p) => a + p.downloads, 0))}<small>DOWNLOADS</small></div></div>`;
+  // Their newest pack's cover, cropped wide, and their stamp on it.
+  const cv = el.querySelector("canvas"), tmp = document.createElement("canvas"); tmp.width = tmp.height = 640;
+  drawCover(tmp, packs[0] ? packs[0].cover : { base: "grip", title: c.name, font: "Anton", banner: "blue", pos: "middle", seed: 5 }).then(() => cv.getContext("2d").drawImage(tmp, 0, 90, 640, 460, 0, 0, 640, 460));
+  el.onclick = () => go("crew");
+  return el;
+}
+
+// ------------------------------------------------------------------ pages
+function go(view) {
+  document.querySelectorAll(".view").forEach(v => v.classList.toggle("on", v.id === "v-" + (view === "liked" || view === "installed" || view === "mine" ? "browse" : view)));
+  document.querySelectorAll(".part").forEach(p => p.classList.toggle("on", p.dataset.view === view));
+  document.querySelectorAll(".part .label-back").forEach(x => x.remove());
+  const on = document.querySelector(`.part[data-view="${view}"]`);
+  if (on) { const svg = tornSvg(on.offsetWidth, on.offsetHeight - 6, "blue", 17 + view.length, { edge: 2, ends: 7 }); svg.classList.add("torn", "label-back"); svg.style.top = (-30 + 3) + "px"; on.prepend(svg); }
+  document.getElementById("scroll").scrollTop = 0;
+  if (view === "browse" || view === "liked" || view === "installed" || view === "mine") showGrid(view);
+  if (view === "crew") showCrew();
+}
+let sortBy = "top";
+function showGrid(view) {
+  let list = P;
+  const q = document.getElementById("q").value.trim().toLowerCase();
+  if (view === "liked") list = P.filter(p => p.liked);
+  if (view === "installed") list = P.filter(p => [0, 5].includes(p.id));
+  if (view === "mine") list = P.filter(p => p.owner === "Fourth_Studio");
+  if (q) list = list.filter(p => (p.title + " " + p.owner + " " + p.stance + " kickflip heelflip tre flip nollie").toLowerCase().includes(q));
+  if (sortBy === "crew") list = list.filter(p => p.crew);
+  const f = { top: (a, b) => score(b) - score(a), downloads: (a, b) => b.downloads - a.downloads, new: (a, b) => a.days - b.days, likes: (a, b) => b.likes - a.likes, az: (a, b) => a.title.localeCompare(b.title), crew: (a, b) => score(b) - score(a) }[sortBy];
+  list = [...list].sort(f);
+  document.getElementById("grid-title").textContent = q ? `RESULTS FOR "${q.toUpperCase()}"` : { browse: "ALL PACKS", liked: "LIKED", installed: "INSTALLED", mine: "MY UPLOADS" }[view] || "ALL PACKS";
+  document.getElementById("grid-count").textContent = list.length + " PACKS";
+  const g = document.getElementById("grid"); g.innerHTML = ""; list.forEach(p => g.appendChild(cardOf(p, 0))); setTimeout(() => dressLabels(g), 30);
+}
+function showCrew() {
+  const row = document.getElementById("crew-cards"); row.innerHTML = ""; CREW.forEach(c => row.appendChild(memberCard(c, true)));
+  const g = document.getElementById("crew-grid"); g.innerHTML = ""; P.filter(p => p.crew).forEach(p => g.appendChild(cardOf(p, 0)));
+  setTimeout(() => dressLabels(document.getElementById("v-crew")), 30);
+}
+function openPack(p) {
+  document.querySelectorAll(".view").forEach(v => v.classList.toggle("on", v.id === "v-pack"));
+  const tricks = ["Kickflip", "Heelflip", "Tre Flip", "Hardflip", "Varial Flip", "Inward Heel", "Laser Flip", "Impossible", "Nollie Flip", "Nollie Heel", "Late Flip", "Dark Catch", "Pop Shove-it", "Bigspin", "Ollie North", "Casper Flip", "Underflip", "Double Flip"].slice(0, Math.min(18, p.tricks));
+  const pops = ["low", "mid", "high", "any"];
+  document.getElementById("pack").innerHTML = `
+    <div class="left"><div class="print" style="left:10px;top:20px;transform:rotate(-2.5deg)"><canvas width="1000" height="1000" style="width:470px;height:470px"></canvas><div class="caption">${p.owner.replace("_Studio", "").toLowerCase()} / v1.2.0</div><div class="tape" style="left:170px;top:-16px;transform:rotate(-3deg)"></div></div></div>
+    <div class="right">
+      <div style="display:flex;gap:18px;align-items:center">${p.crew ? `<span class="label" data-kind="white" data-seed="${p.id + 600}" style="font-family:Marker;font-size:18px;padding:3px 14px 4px;transform:rotate(-2deg)"><span style="color:#0b0c0f">crew certified</span></span>` : ""}${p.days <= 7 ? `<span class="label" data-kind="blue" data-seed="${p.id + 610}" style="font-family:Marker;font-size:18px;padding:3px 14px 4px;transform:rotate(2deg)"><span style="color:#0b0c0f">new drop</span></span>` : ""}<span class="label" data-kind="grip" data-seed="${p.id + 620}" style="font-family:Marker;font-size:18px;padding:3px 14px 4px;transform:rotate(-1deg)"><span>${p.stance.toLowerCase()}</span></span></div>
+      <h1>${p.title}</h1>
+      <div class="by">by <em>${p.owner.replace("_Studio", "").toUpperCase()}</em></div>
+      <div class="nums"><div>${p.tricks}<small>TRICKS</small></div><div>${short(p.likes)}<small>LIKES</small></div><div>${short(p.downloads)}<small>DOWNLOADS</small></div><div>${p.days}D<small>OUT SINCE</small></div></div>
+      <div style="display:flex;gap:12px"><div class="btn blue big" style="width:240px;justify-content:center">GET IT</div><div class="btn line big">${heart(p.liked, 20)}&nbsp;LIKE</div><div class="btn line big">ON THUNDERSTORE</div></div>
+      <div class="about">${p.title.charAt(0) + p.title.slice(1).toLowerCase()}: ${p.tricks} tricks keyed in the Animator Studio. Every catch is done by hand and checked in game, in ${p.stance === "ALL STANCES" ? "every stance" : p.stance.toLowerCase()}. Switch it on in PACKS after installing, and pick which tricks play.</div>
+      <div class="minihead">WHAT'S IN IT</div>
+      <div class="chips">${tricks.map((t, i) => `<span class="chip">${t} <b>${pops[i % 4]} pop</b></span>`).join("")}</div>
+    </div>`;
+  drawCover(document.querySelector("#pack canvas"), p.cover);
+  setTimeout(() => dressLabels(document.getElementById("pack")), 30);
+  document.getElementById("scroll").scrollTop = 0;
+}
+
+// ------------------------------------------------------------------ the cover designer
+const design = { base: "skater", title: "STREET ESSENTIALS", font: "Anton", banner: "blue", pos: "bottom", tag: "ALL STANCES", seed: 3, custom: false };
+function buildDesigner() {
+  const o = document.getElementById("opts");
+  const group = (title, note, html) => `<div class="opt"><h4>${title}<small>${note}</small></h4>${html}</div>`;
+  o.innerHTML =
+    group("YOUR OWN PICTURE", "as it is, nothing put on it", `<div class="toggle ${design.custom ? "on" : ""}" id="tg-custom"><i></i>Use my picture as the cover</div>`) +
+    group("BEHIND IT", "a texture, the skater, or your picture with the banner on it", `<div class="choices" id="c-base">${Object.entries(BASES).map(([k, b]) => `<div class="choice sw ${design.base === k ? "on" : ""}" data-v="${k}"><canvas width="176" height="128"></canvas><div>${b.name}</div></div>`).join("")}<div class="choice sw" data-v="own"><div style="height:64px;display:grid;place-items:center;font-size:22px">+</div><div>MY PICTURE</div></div></div>`) +
+    group("PACK TITLE", "", `<input type="text" id="t-title" value="${design.title}" maxlength="40">`) +
+    group("FONT", "five, all in the shop's style", `<div class="choices" id="c-font">${Object.entries(FONTS).map(([k, n]) => `<div class="choice font ${design.font === k ? "on" : ""}" data-v="${k}" style="font-family:${k}">${n}</div>`).join("")}</div>`) +
+    group("BANNER", "what the title sits on", `<div class="choices" id="c-banner">${Object.entries(BANNERS).map(([k, n]) => `<div class="choice ${design.banner === k ? "on" : ""}" data-v="${k}">${n}</div>`).join("")}</div>`) +
+    group("WHERE", "", `<div class="choices" id="c-pos">${["top", "middle", "bottom"].map(k => `<div class="choice ${design.pos === k ? "on" : ""}" data-v="${k}">${k.toUpperCase()}</div>`).join("")}</div>`) +
+    group("TAG", "a sticker in the corner", `<div class="choices" id="c-tag">${TAGS.map(k => `<div class="choice ${design.tag === k ? "on" : ""}" data-v="${k}">${k}</div>`).join("")}</div>`) +
+    `<div class="actions"><div class="btn blue big">USE THIS COVER</div><div class="btn line big" id="shuffle">SHUFFLE THE TEAR</div></div>`;
+  o.querySelectorAll("#c-base .choice canvas").forEach((cv, i) => { const k = Object.keys(BASES)[i]; drawCover(cv, { base: k, seed: 2 }); });
+  const pick = (id, key) => o.querySelectorAll(`#${id} .choice`).forEach(c => c.onclick = () => { if (c.dataset.v === "own") return; design[key] = c.dataset.v; design.custom = false; buildDesigner(); render(); });
+  pick("c-base", "base"); pick("c-font", "font"); pick("c-banner", "banner"); pick("c-pos", "pos"); pick("c-tag", "tag");
+  document.getElementById("t-title").oninput = (e) => { design.title = e.target.value; render(); };
+  document.getElementById("tg-custom").onclick = () => { design.custom = !design.custom; buildDesigner(); render(); };
+  document.getElementById("shuffle").onclick = () => { design.seed = (design.seed * 31 + 7) % 997; render(); };
+}
+function render() { drawCover(document.getElementById("cv"), design); }
+
+// ------------------------------------------------------------------ wiring
+const OPT = new URLSearchParams(location.search);
+function fit() {
+  const st = document.getElementById("stage"), w = st.offsetWidth, h = 1080;
+  st.style.transform = OPT.has("shot") ? "none" : `scale(${Math.min(innerWidth / w, innerHeight / h)})`;
+  if (OPT.has("shot")) { document.getElementById("frame").style.alignItems = "flex-start"; document.getElementById("frame").style.justifyContent = "flex-start"; document.getElementById("mock").style.display = "none"; }
+}
+document.querySelectorAll(".part").forEach(p => p.onclick = () => go(p.dataset.view));
+document.querySelectorAll("[data-go]").forEach(b => b.onclick = () => go(b.dataset.go));
+document.querySelectorAll("[data-open]").forEach(b => b.onclick = () => { document.getElementById(b.dataset.open).classList.add("on"); buildDesigner(); render(); dressLabels(document.getElementById("designer")); });
+document.querySelectorAll("[data-close]").forEach(b => b.onclick = () => document.getElementById(b.dataset.close).classList.remove("on"));
+document.getElementById("back").onclick = () => go("home");
+document.getElementById("prev").onclick = () => { spotAt = (spotAt + spotPicks().length - 1) % spotPicks().length; showSpot(); };
+document.getElementById("next").onclick = () => { spotAt = (spotAt + 1) % spotPicks().length; showSpot(); };
+document.getElementById("q").oninput = () => { go("browse"); };
+document.querySelectorAll("#sorts span").forEach(s => s.onclick = () => { sortBy = s.dataset.sort; document.querySelectorAll("#sorts span").forEach(x => x.classList.toggle("on", x === s)); showGrid("browse"); });
+document.querySelectorAll("#mock [data-aspect]").forEach(m => m.onclick = () => {
+  document.querySelectorAll("#mock [data-aspect]").forEach(x => x.classList.toggle("on", x === m));
+  document.getElementById("stage").classList.toggle("wide", m.dataset.aspect === "21"); fit(); layout();
+});
+addEventListener("resize", fit);
+addEventListener("keydown", (e) => { if (e.key === "Escape") { document.querySelectorAll(".dim.on").forEach(d => d.classList.remove("on")); } });
+
+document.fonts.ready.then(async () => {
+  await Promise.all(["Anton", "Bebas", "Dirt", "Sedgwick", "Knewave", "Marker"].map(f => document.fonts.load(`40px ${f}`)));
+  fit();
+  // the selected tab, the caps: torn paper too
+  const tab = document.getElementById("tab-market");
+  const ts = tornSvg(tab.offsetWidth, tab.offsetHeight - 4, "blue", 5, { edge: 2.4, ends: 9 }); ts.classList.add("torn", "label-back"); ts.style.transform = "rotate(-2deg)"; tab.prepend(ts);
+  document.getElementById("stats").innerHTML = `<div>${P.length}<small>PACKS</small></div><div>${P.reduce((a, p) => a + p.tricks, 0)}<small>TRICKS</small></div><div>${CREW.length}<small>CREW</small></div><div>${short(P.reduce((a, p) => a + p.downloads, 0))}<small>DOWNLOADS</small></div>`;
+  layout();
+  showSpot();
+  fillRow("row-month", spotPicks(), true);
+  fillRow("row-crew", P.filter(p => p.crew).slice(0, 5), false);
+  fillRow("row-new", by((a, b) => a.days - b.days).slice(0, 5), false);
+  fillRow("row-fav", by((a, b) => b.likes - a.likes).slice(0, 5), false);
+  const m = document.getElementById("members"); CREW.forEach(c => m.appendChild(memberCard(c)));
+  dressLabels();
+  if (OPT.has("wide")) { document.getElementById("stage").classList.add("wide"); fit(); layout(); }
+  go("home");
+  const v = OPT.get("view");
+  if (v === "pack") openPack(P[+(OPT.get("pack") || 0)]);
+  else if (v) go(v);
+  if (OPT.has("designer")) { document.getElementById("designer").classList.add("on"); buildDesigner(); render(); dressLabels(document.getElementById("designer")); }
+  setTimeout(() => { document.getElementById("scroll").scrollTop = +(OPT.get("scroll") || 0); document.title = "ready"; }, 900);
+});
+</script>
+</body>
+</html>

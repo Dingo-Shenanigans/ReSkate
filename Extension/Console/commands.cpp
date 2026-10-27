@@ -231,6 +231,7 @@ const Commands &game_commands() {
         register_item_commands(*result);
         register_capture_commands(*result);
         register_trainer_commands(*result);
+        register_animation_studio_commands(*result);
         register_replay_keyframes_commands(*result);
         register_plugin_commands(*result);
         // Each switch a player binds runs a command (controller_bindings.h action_binds): one whose

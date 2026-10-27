@@ -366,6 +366,15 @@ struct Model {
     } revisions;
 };
 
+// Why the Animation Studio cannot open now, as a sentence; empty when it can. ui_available is the local controls
+// (can_control), which animation_studio_tick needs too; the tick also checks the camera phase and the skater's component, so it can still refuse.
+[[nodiscard]] inline std::string animator_studio_blocked_reason(const Model &m) {
+    if (m.debug.park_editor) return "Close Park Editor to open the studio.";
+    if (!m.debug.ui_available) return "The studio opens once your skater is in the game.";
+    return {};
+}
+[[nodiscard]] inline bool animator_studio_openable(const Model &m) { return animator_studio_blocked_reason(m).empty(); }
+
 // Callbacks run on the presentation thread. They must be bounded and thread
 // safe; queue callbacks must enqueue requests, never call engine code here.
 struct Callbacks {

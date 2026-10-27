@@ -3,6 +3,7 @@
 #include "skate_menu_internal.h"
 #include "cursor.h"
 #include "input_capture.h"
+#include "Extension/AnimationStudio/anim_studio.h"
 #include "scripted_pad.h"
 #include "Extension/UI/NativeMenu/native_menu.h"
 #include "Extension/UI/NativeMenu/native_menu_view.h"
@@ -1225,6 +1226,8 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
         Column list(ui, hash("player"), a, ImVec2(a.x + column_width, z.y));
         const auto &d = m.debug;
         list.heading("SKATE YOUR WAY");
+        if (list.setting("Open Animation Studio", {}, animator_studio_openable(m))) anim_studio::request_open(true);
+        list.note(animator_studio_blocked_reason(m));
         if (list.setting("Noclip", on_off(d.noclip), (d.noclip_available || d.noclip) && debugging)) debug({DebugAction::set_noclip, !d.noclip});
         if (list.setting("No bail", on_off(d.no_bail), (d.no_bail_available || d.no_bail) && debugging)) debug({DebugAction::set_no_bail, !d.no_bail});
         const auto &wear = m.offline.board_wear;

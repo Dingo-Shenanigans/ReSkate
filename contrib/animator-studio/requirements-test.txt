@@ -1,0 +1,2 @@
+# Matches the environment used for native decoder conformance validation.
+numpy==2.3.5

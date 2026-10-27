@@ -174,6 +174,7 @@ add_library(dingosdk_runtime SHARED
     Extension/World/loading_screen.cpp
     Extension/Customization/preset_lookup_guard.cpp
     Extension/Boot/exit_watch.cpp
+    Extension/Boot/local_crash_note.cpp
     Extension/Boot/discord_presence.cpp
     Extension/Customization/developer_hoodie.cpp
     Extension/Customization/developer_board.cpp
@@ -221,6 +222,12 @@ add_library(dingosdk_runtime SHARED
     Extension/Customization/item_origins.cpp
     Extension/Customization/local_customization_runtime.cpp
     Extension/Customization/item_browser.cpp
+    Extension/AnimationStudio/anim_studio.cpp
+    Extension/AnimationStudio/native_library.cpp
+    Extension/AnimationStudio/marketplace.cpp
+    Extension/AnimationStudio/anim_commands.cpp
+    Extension/AnimationStudio/pop_grades.cpp
+    Extension/AnimationStudio/studio_room.cpp
     Extension/Customization/worn_items.cpp
     Extension/Rendering/Capture/capture_runtime.cpp
     Extension/Rendering/Capture/capture_commands.cpp
@@ -273,7 +280,7 @@ add_library(dingosdk_runtime SHARED
 
 target_link_libraries(dingosdk_runtime PRIVATE dingosdk_logging dingosdk_profiler dingosdk_supported_build dingosdk_overlay dingosdk_console_core dingosdk_steam_restart_guard
     dingosdk_startup_interventions dingosdk_fast_travel_unlock dingosdk_local_profile dingosdk_initfs dingosdk_mods dingosdk_mod_list dingosdk_launcher_support dingosdk_miniz shell32 dingosdk_startup_window dingosdk_custom_scripts dingosdk_world_layer_scan bcrypt
-    dingosdk_https winhttp ws2_32 xaudio2 ole32 dingosdk_game_archives dingosdk_word_filter dingosdk_plugins)
+    dingosdk_https winhttp ws2_32 xaudio2 ole32 crypt32 windowscodecs dingosdk_game_archives dingosdk_word_filter dingosdk_plugins)
 
 add_library(dingosdk_custom_level_manifest STATIC
     Engine/Game/World/custom_level_manifest.cpp)
@@ -324,7 +331,13 @@ set(dingosdk_menu_fonts "${PROJECT_SOURCE_DIR}/External/fonts")
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/menu_fonts.rc"
     "FONT_HEADING RCDATA \"${dingosdk_menu_fonts}/Montserrat-ExtraBold.ttf\"\n"
     "FONT_BODY RCDATA \"${dingosdk_menu_fonts}/Montserrat-SemiBold.ttf\"\n"
-    "FONT_BRUSH RCDATA \"${dingosdk_menu_fonts}/PermanentMarker-Regular.ttf\"\n")
+    "FONT_BRUSH RCDATA \"${dingosdk_menu_fonts}/PermanentMarker-Regular.ttf\"\n"
+    # The Animator Studio MARKET's headlines (Anton) and the cover designer's fonts, all SIL OFL.
+    "FONT_ANTON RCDATA \"${dingosdk_menu_fonts}/Anton-Regular.ttf\"\n"
+    "FONT_BEBAS RCDATA \"${dingosdk_menu_fonts}/BebasNeue-Regular.ttf\"\n"
+    "FONT_DIRT RCDATA \"${dingosdk_menu_fonts}/RubikDirt-Regular.ttf\"\n"
+    "FONT_SEDGWICK RCDATA \"${dingosdk_menu_fonts}/SedgwickAveDisplay-Regular.ttf\"\n"
+    "FONT_KNEWAVE RCDATA \"${dingosdk_menu_fonts}/Knewave-Regular.ttf\"\n")
 target_sources(dingosdk_runtime PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/menu_fonts.rc")
 
 # The startup window's picture (PNG or JPEG), built into ReSkate.dll when the
@@ -351,6 +364,56 @@ if(EXISTS "${dingosdk_emotes}/emotes.json" AND EXISTS "${dingosdk_emotes}/emotes
         "EMOTES_JSON RCDATA \"${dingosdk_emotes_native}\\\\emotes.json\"\n"
         "EMOTES_PNG RCDATA \"${dingosdk_emotes_native}\\\\emotes.png\"\n")
     target_sources(dingosdk_runtime PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/emotes.rc")
+endif()
+# The Animator Studio's loading screen, built into ReSkate.dll so everyone who installs the mod has it
+# (Extension/UI/Overlay/animation_studio_images.h). A picture beside the studio's tricks still wins.
+set(dingosdk_studio_loading "${PROJECT_SOURCE_DIR}/assets/animator_studio/loading.jpg")
+if(EXISTS "${dingosdk_studio_loading}")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${dingosdk_studio_loading}")
+    file(TO_NATIVE_PATH "${dingosdk_studio_loading}" dingosdk_studio_loading_native)
+    string(REPLACE "\\" "\\\\" dingosdk_studio_loading_native "${dingosdk_studio_loading_native}")
+    set(dingosdk_studio_resources "STUDIO_LOADING RCDATA \"${dingosdk_studio_loading_native}\"\n")
+    # The MARKET's art (contrib/animator-studio/market_art/make_market_art.py): its wall, the tiling grip tape, concrete and
+    # papers, the skater's two prints, the splatters and the halftone (studio_market_art.h, studio_cover_maker.h).
+    foreach(dingosdk_art wallpaper:wallpaper.jpg grip:grip.jpg concrete:concrete.jpg paper_white:paper_white.jpg paper_blue:paper_blue.jpg
+            skater:skater_duotone.jpg print:skater_halftone.jpg splatter_a:splatter_a.png splatter_b:splatter_b.png halftone:halftone_blue.png)
+        string(REPLACE ":" ";" dingosdk_art_pair "${dingosdk_art}")
+        list(GET dingosdk_art_pair 0 dingosdk_art_name)
+        list(GET dingosdk_art_pair 1 dingosdk_art_file)
+        set(dingosdk_art_path "${PROJECT_SOURCE_DIR}/assets/animator_studio/market/${dingosdk_art_file}")
+        if(EXISTS "${dingosdk_art_path}")
+            set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${dingosdk_art_path}")
+            file(TO_NATIVE_PATH "${dingosdk_art_path}" dingosdk_art_native)
+            string(REPLACE "\\" "\\\\" dingosdk_art_native "${dingosdk_art_native}")
+            string(TOUPPER "${dingosdk_art_name}" dingosdk_art_upper)
+            string(APPEND dingosdk_studio_resources "STUDIO_ART_${dingosdk_art_upper} RCDATA \"${dingosdk_art_native}\"\n")
+        endif()
+    endforeach()
+    # THE CREW's pictures (contrib/animator-studio/crew/make_crew_pictures.py): <team>_profile.jpg and <team>_thumbnail.jpg,
+    # as STUDIO_CREW_<TEAM>_PROFILE and _THUMBNAIL (studio_market_art.h, crew_art).
+    file(GLOB dingosdk_crew_pictures "${PROJECT_SOURCE_DIR}/assets/animator_studio/crew/*.jpg")
+    list(SORT dingosdk_crew_pictures)
+    foreach(dingosdk_crew_picture ${dingosdk_crew_pictures})
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${dingosdk_crew_picture}")
+        get_filename_component(dingosdk_crew_stem "${dingosdk_crew_picture}" NAME_WE)
+        string(TOUPPER "${dingosdk_crew_stem}" dingosdk_crew_upper)
+        file(TO_NATIVE_PATH "${dingosdk_crew_picture}" dingosdk_crew_native)
+        string(REPLACE "\\" "\\\\" dingosdk_crew_native "${dingosdk_crew_native}")
+        string(APPEND dingosdk_studio_resources "STUDIO_CREW_${dingosdk_crew_upper} RCDATA \"${dingosdk_crew_native}\"\n")
+    endforeach()
+    # The settings tiles' icons (contrib/animator-studio/make_studio_icons.py), in skate.'s own grungy white style.
+    foreach(dingosdk_studio_icon studio skater tricks packs)
+        set(dingosdk_studio_icon_path "${PROJECT_SOURCE_DIR}/assets/animator_studio/icon_${dingosdk_studio_icon}.png")
+        if(EXISTS "${dingosdk_studio_icon_path}")
+            set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${dingosdk_studio_icon_path}")
+            file(TO_NATIVE_PATH "${dingosdk_studio_icon_path}" dingosdk_studio_icon_native)
+            string(REPLACE "\\" "\\\\" dingosdk_studio_icon_native "${dingosdk_studio_icon_native}")
+            string(TOUPPER "${dingosdk_studio_icon}" dingosdk_studio_icon_upper)
+            string(APPEND dingosdk_studio_resources "STUDIO_ICON_${dingosdk_studio_icon_upper} RCDATA \"${dingosdk_studio_icon_native}\"\n")
+        endif()
+    endforeach()
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/generated/animator_studio.rc" "${dingosdk_studio_resources}")
+    target_sources(dingosdk_runtime PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated/animator_studio.rc")
 endif()
 # Game content ReSkate carries itself (Engine/Vfs/builtin_packs.h), one zip each in assets/builtin:
 # the Throwdowns page's logo grid (tools/builtin/build_throwdown_menu_pack.py). A missing zip is

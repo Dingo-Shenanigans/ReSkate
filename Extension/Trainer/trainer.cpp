@@ -478,6 +478,16 @@ void load_store() {
                 s.foot_setting[i] = static_cast<std::int8_t>(std::clamp(o.value("foot.set." + std::string(foot_settings[i].key), -1), -1, 1));
             s.offboard_height = std::clamp(o.value("offboard_height", 1.0f), height_low, height_high);
             s.flip_speed = std::clamp(o.value("flip_speed", 1.0f), flip_low, flip_high);
+            // A flip speed saved by the 2.1.1 trainer (0.3.0, which never saved "flip_advanced") meant something much
+            // weaker: it only scaled four flip curves. Read with today's meaning it slowed or sped every flip and shuv
+            // many times over, stretched their catch times and switched the game's own flip landing off, so tricks
+            // bailed and shuvs never came round (testers, 2026-10-26). It cannot be converted: it goes back to 1, once.
+            if (!o.contains("flip_advanced") && s.flip_speed != 1.0f) {
+                say(logging::Level::info, std::format("Trainer: the flip speed x{:.2f} saved by an older ReSkate is back to x1: flip speed works differently "
+                                                      "since 2.1.2 (set it again in SANDBOX if you want it).", s.flip_speed));
+                s.flip_speed = 1.0f;
+                s.save_due = true;
+            }
             s.underflip_speed = std::clamp(o.value("underflip_speed", 1.0f), flip_low, flip_high);
             s.underflip_split = o.value("underflip_split", false);
             s.flip_advanced = o.value("flip_advanced", false);

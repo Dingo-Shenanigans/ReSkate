@@ -14,6 +14,7 @@
 | Zstandard | `1.5.7` | BSD-3-Clause (dual-licensed with GPLv2; used under BSD) | [facebook/zstd](https://github.com/facebook/zstd/releases/tag/v1.5.7) |
 | Montserrat font | `fonts/Montserrat-*.ttf` | SIL Open Font License 1.1 | [JulietaUla/Montserrat](https://github.com/JulietaUla/Montserrat) |
 | Permanent Marker font | `fonts/PermanentMarker-Regular.ttf` | Apache 2.0 | [Google Fonts](https://fonts.google.com/specimen/Permanent+Marker) |
+| Studio cover fonts: Anton, Bebas Neue, Knewave, Rubik Dirt, Sedgwick Ave Display | Per-file SHA-256 in `manifest.json` (`studio_fonts`); original import revision not recorded | SIL Open Font License 1.1, adjacent `*-OFL.txt` files | [Google Fonts repository](https://github.com/google/fonts) |
 
 `manifest.json` records the upstream SHA-256 for every vendored file, with declared
 local patch hashes where applicable. Detours and RapidJSON came from pinned GitHub
