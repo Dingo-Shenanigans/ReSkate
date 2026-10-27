@@ -9903,10 +9903,10 @@ float panel_slider(ImDrawList* d, const Fonts& f, const char* id, ImVec2 at, flo
     d->AddCircleFilled(ImVec2(at.x + width * shown, at.y), (hot ? 8.5f : 7.0f) * k, enabled ? white : IM_COL32(255, 255, 255, 50), 20);
     return out;
 }
-// The catch's tools - CATCH on the timeline, CATCH HOLD and DROP PREVIEW in THIS TRICK - are hidden while the game does
-// not slow a trick through its catch off a drop (anim_studio.cpp air_corrections, off since 2026-10-25): they showed a
-// slow-down the game did not do. Their logic and the saved values stay; they come back with the slow-down.
-bool show_catch_tools = false; // (not constexpr: the code it gates is kept compiled)
+// The catch's tools - CATCH on the timeline, CATCH HOLD and DROP PREVIEW in THIS TRICK. Down a drop the game slows a
+// trick from its catch to the touchdown again (anim_studio.cpp, catch_latch), so they show. They were hidden while it
+// did not (2026-10-25 to 2026-10-26, after air_corrections went off): they showed a slow-down the game did not do.
+bool show_catch_tools = true; // (not constexpr: the code it gates is kept compiled)
 // The pill at the top right of the view opens it: the trick's stance, its own Crossfade (OWN on: the main one in SETTINGS
 // is skipped for it), CATCH HOLD (off big drops, where the extra air goes) and DROP PREVIEW (the trick played here as off a
 // drop that high, its catch slowed as the game would). Closed, nothing of it covers the skater.

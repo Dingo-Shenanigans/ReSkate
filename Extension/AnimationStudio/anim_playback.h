@@ -198,6 +198,7 @@ struct EditTransition {
     std::uintptr_t source{};
     double started{-1}, observed{-1};
     std::vector<Offset> from, current;
+    float from_left{}; // how much of `from` is still in `current`: 1 as a fade starts, 0 when it is done
     void reset() { *this = {}; }
     std::span<const Offset> evaluate(double now, std::uint64_t gen, std::uint64_t attempt,
                                      std::uintptr_t selected, std::span<const Offset> desired, float seconds = 0.15f) {
@@ -213,6 +214,7 @@ struct EditTransition {
         // cut short (a new air, a bail), without a snap.
         float u = std::clamp(static_cast<float>(now - started) / std::max(seconds, 0.02f), 0.0f, 1.0f);
         u = u*u*(3 - 2*u);
+        from_left = 1 - u;
         for (std::size_t i = 0; i < desired.size(); ++i) {
             current[i].rotation = u >= 1 ? desired[i].rotation : slerp(from[i].rotation, desired[i].rotation, u);
             for (std::size_t k = 0; k < 3; ++k)
@@ -221,6 +223,22 @@ struct EditTransition {
         return current;
     }
 };
+// On a rail the board's pass gives the board back to the game at once, but the body fades the trick out over the
+// crossfade. The game drops the board into the grind, and the fade kept the legs as they were for the landing: the feet
+// stood up to 35 cm off the board for 0.18 s (kickflip to BS crooked and BS noseslide, 2026-10-26). Cutting the fade
+// snapped the whole body into the grind, and putting the feet on the game's feet at once made them jump 7-10 cm on the
+// deck. So the body still fades, and each foot stays on the game's board: where it stood on the trick's board on the
+// last frame before the lock, sliding to where the game has it as the fade goes. A saved grind loop that plays
+// (`playing`) poses the feet itself.
+inline bool feet_stay_on_the_games_board(MotionState motion, bool playing) noexcept { return motion == MotionState::rail && !playing; }
+// A foot on the game's board (in the board's frame), `fade_left` of the way back to where it stood at the lock.
+inline Joint foot_sliding_to_the_games(const Joint& at_the_lock, const Joint& games, float fade_left) noexcept {
+    const float k = std::clamp(fade_left, 0.0f, 1.0f);
+    Joint foot = games;
+    foot.rotation = slerp(games.rotation, at_the_lock.rotation, k);
+    for (std::size_t i = 0; i < 3; ++i) foot.position[i] = games.position[i] + (at_the_lock.position[i] - games.position[i]) * k;
+    return foot;
+}
 // ---- the board's keys ---------------------------------------------------------------------------------------------------
 // A trick's board keys turn the board about its own axes as it lay on the ground before the pop (the studio: start_frame).
 // In game that is the heading the board had under him while he rolled, kept for a second (seconds, heading relative to
@@ -288,7 +306,7 @@ inline float lowest_ankle(bool rolling, bool over, float height) noexcept {
     return over && height >= -0.08f ? ankle_on_deck : -std::numeric_limits<float>::infinity();
 }
 // ---- off a drop: the catch slowed, never held still ------------------------------------------------------------------
-// Off a drop, down stairs or onto a ledge the air is longer or shorter than the trick's own. From just before its catch the
+// Off a drop, down stairs or onto a ledge the air is longer or shorter than the trick's own. From its catch the
 // trick's time is its own (the game's pose is off the clip by then): it runs slower - or faster - so its landing comes on
 // the game's touchdown, easing into the new pace and out of it again, never standing still and never jumping. `hold` (the
 // trick's CATCH HOLD) says where the extra time goes: 1 around the catch (the knees up long, the legs reaching for the
@@ -296,12 +314,17 @@ inline float lowest_ankle(bool rolling, bool over, float height) noexcept {
 // set the skater stood still in the air for two seconds.)
 struct AirStretch {
     static constexpr float slowest = 0.05f, fastest = 2.2f, ease = 0.1f; // trick seconds a second; seconds to change pace
+    // Seconds to slow down: from the catch little of the trick may be left (a tre's 0.1 s to its landing), and slowed over
+    // `ease` it ran into its landing and stood there for most of the drop.
+    static constexpr float ease_down = 0.03f;
     float time{-1}; // the trick's time while it is its own (-1: still the game's clock)
     float rate{1};
     bool on() const noexcept { return time >= 0; }
     void reset() noexcept { *this = {}; }
-    // Its slow part: from a little before the catch to a share of the way on to the landing; after it, its own pace.
-    static float slow_from(float takeoff, float caught) noexcept { return caught - std::min(0.1f, 0.4f * (caught - takeoff)); }
+    // Its slow part: from the catch to a share of the way on to the landing; after it, its own pace. (It began up to 0.1 s
+    // before the catch: a flip still turning there turned slowly beside him, the board off his feet, for a third of a
+    // second - a tre down the Tri-Towers gap, 2026-10-26.)
+    static float slow_from(float, float caught) noexcept { return caught; }
     static float slow_until(float caught, float land, float hold) noexcept {
         return std::min(land, caught + std::max(1.0f / 30, (land - caught) * (1 - std::clamp(hold, 0.0f, 1.0f))));
     }
@@ -329,7 +352,7 @@ struct AirStretch {
             want = time < until ? (until - time) / std::max(to_ground - tail - ramp, 0.02f) : (end - time) / std::max(to_ground, 0.02f);
         }
         want = std::clamp(want, slowest, fastest);
-        rate += (want - rate) * (1 - std::exp(-step / ease));
+        rate += (want - rate) * (1 - std::exp(-step / (want < rate ? ease_down : ease)));
         time = std::min(time + rate * step, land - 1.0f / 60);
         return time;
     }

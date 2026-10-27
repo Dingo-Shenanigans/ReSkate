@@ -1604,15 +1604,17 @@ void slow_catch_off_drops() {
         const float takeoff = 0.5f, caught = 1.0f, land = 1.1f, air = (land - takeoff) + 1.5f; // a drop 1.5 s longer
         AirStretch s;
         float last = -1, slowest = 10;
-        bool still = false;
+        bool still = false, flip_slowed = false;
         for (float t = step; t < air - 1e-4f; t += step) {
             const float time = s.update(takeoff + t, air - t, step, takeoff, caught, land, default_catch_hold);
+            if (takeoff + t < caught - 1e-4f && !near(time, takeoff + t, 1e-4f)) flip_slowed = true;
             if (last >= 0 && time <= last && time < land - 1.0f / 60 - 1e-4f) still = true;
             if (s.on()) slowest = std::min(slowest, s.rate);
             last = time;
         }
         check(s.on(), "A longer air than its own gives the trick its own time");
         check(!still, "It never stands still or goes back in the air");
+        check(!flip_slowed, "Before its catch it keeps the game's pace (a flip still turning is not slowed)");
         check(slowest >= AirStretch::slowest && slowest < 0.3f, "It slows down through the catch");
         check(land - last < 0.1f, "and comes to its landing by the touchdown");
         AirStretch flat;
@@ -1620,6 +1622,18 @@ void slow_catch_off_drops() {
         float shown = -1;
         for (float t = step; t < own - 1e-4f; t += step) shown = flat.update(takeoff + t, own - t, step, takeoff, caught, land, default_catch_hold);
         check(!flat.on() && near(shown, takeoff + own - step, 1e-3f), "In step with the game (flat ground) it is the game's clock");
+    }
+    {
+        // A Nollie 360 Flip down the Tri-Towers gap (2026-10-26): 0.1 s from its catch to its landing, 0.75 s more air than
+        // its own. It came to its landing 0.7 s before the touchdown and stood still there.
+        const float takeoff = 0.18f, caught = 0.52f, land = 0.617f, air = 1.17f;
+        AirStretch s;
+        float landed_at = air;
+        for (float t = step; t < air - 1e-4f; t += step) {
+            const float time = s.update(takeoff + t, air - t, step, takeoff, caught, land, default_catch_hold);
+            if (time >= land - 1.0f / 60 - 1e-5f && landed_at == air) landed_at = t;
+        }
+        check(s.on() && air - landed_at < 0.05f, "A trick with little left after its catch comes to its landing by the touchdown");
     }
     {
         const float takeoff = 0.5f, caught = 0.8f, land = 1.1f, air = 0.4f; // onto a ledge, 0.2 s sooner
@@ -1931,6 +1945,43 @@ void native_playback_contracts() {
           "Ollie-to-flip selection starts from the previous edit delta instead of resetting the visible pose");
     check(near(transition.evaluate(1.245, 1, 1, 11, b)[0].offset[0], 0, 0.001f), "A changed preset blends smoothly between deltas");
     check(near(transition.evaluate(1.25, 2, 1, 11, b)[0].offset[0], 0), "Respawn cannot carry a previous entity's edit layer");
+    {
+        EditTransition out;
+        std::array<Offset, 1> none{};
+        out.evaluate(2, 1, 1, 10, a);
+        out.evaluate(2.4, 1, 1, 10, a, 0.4f);
+        out.evaluate(2.4, 1, 1, 0, none, 0.4f); // the trick cut short at a rail's lock
+        check(near(out.from_left, 1), "As a trick is cut short, all of it is still in the pose");
+        out.evaluate(2.6, 1, 1, 0, none, 0.4f);
+        check(near(out.from_left, 0.5f) && near(out.current[0].offset[0], 0.2f), "Halfway through the fade, half of it is");
+        out.evaluate(2.8, 1, 1, 0, none, 0.4f);
+        check(near(out.from_left, 0), "and none when the fade is done");
+    }
+    check(feet_stay_on_the_games_board(MotionState::rail, false),
+          "On a rail, while a trick cut short fades out, the feet stay on the game's board");
+    check(!feet_stay_on_the_games_board(MotionState::riding, false) && !feet_stay_on_the_games_board(MotionState::air, false) &&
+              !feet_stay_on_the_games_board(MotionState::rail, true),
+          "Off a rail the feet are not moved, and a saved grind loop on a rail poses its own feet");
+    {
+        // A foot on the trick's board at the lock (the catch: 12 cm up, 20 cm to the nose), and the game's foot in its
+        // grind stance on its board.
+        Joint at_the_lock, games;
+        at_the_lock.position = {0, 0.12f, 0.20f};
+        games.position = {0.04f, 0.11f, 0.10f};
+        games.rotation = normalised(Quat{0, 0.2588f, 0, 0.9659f}); // turned 30 degrees on the deck
+        const auto start = foot_sliding_to_the_games(at_the_lock, games, 1);
+        check(near(start.position[1], 0.12f) && near(start.position[2], 0.20f) && near(start.rotation[3], 1),
+              "At the lock the foot stays where it stood on the trick's board, now on the game's: no jump");
+        const auto half = foot_sliding_to_the_games(at_the_lock, games, 0.5f);
+        check(near(half.position[1], 0.115f) && near(half.position[2], 0.15f) && near(half.rotation[1], slerp(games.rotation, at_the_lock.rotation, 0.5f)[1]),
+              "It slides on the deck to the game's stance, turning, as the body fades");
+        const auto done = foot_sliding_to_the_games(at_the_lock, games, 0);
+        check(near(done.position[0], 0.04f) && near(done.position[2], 0.10f) && near(done.rotation[1], games.rotation[1]),
+              "and stands where the game has it when the fade is done");
+        check(near(foot_sliding_to_the_games(at_the_lock, games, 3).position[2], 0.20f) &&
+                  near(foot_sliding_to_the_games(at_the_lock, games, -1).position[2], 0.10f),
+              "A share out of range goes no further than either end");
+    }
     PlaybackEpisode episode;
     // Real failed hardflip trace: riding -> five crouch samples -> pop -> air.
     // Production classification must retain ground entry through state 103.
