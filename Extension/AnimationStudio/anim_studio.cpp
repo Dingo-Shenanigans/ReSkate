@@ -4226,7 +4226,8 @@ struct BodyPublicationState {
     double feet_in_the_air_at{-1};
     std::array<Joint, 2> feet_on_board_at_lock{};
     float fade_left_at_lock{};
-    bool on_rail{}, feet_at_lock_ok{};
+    double on_rail_at{-1};
+    bool feet_at_lock_ok{};
 };
 BodyPublicationState& body_publication_state() { static auto* state = new BodyPublicationState; return *state; }
 // While the studio is open, the lobby does not see it. The skater stands in the studio's room - the game's menu room,
@@ -4704,15 +4705,17 @@ bool slide_feet_on_the_games_board(BodyPublicationState& body, MotionState motio
         if (edited.size() < skeleton_joints || native.size() < skeleton_joints) return false;
         const double now = now_seconds();
         if (motion != MotionState::rail) {
-            body.on_rail = false;
+            body.on_rail_at = -1;
             if (motion != MotionState::air) return false;
             const auto placement = compose(edited[0], edited[1]);
             for (std::size_t i = 0; i < feet.size(); ++i) body.feet_in_the_air[i] = relative(placement, world(edited, feet[i]));
             body.feet_in_the_air_at = now;
             return false;
         }
-        if (!body.on_rail) {
-            body.on_rail = true;
+        // A new rail also after frames this pass did not see (a bail, an unknown state), not only after the air.
+        const bool locked_now = now - body.on_rail_at > 0.1;
+        body.on_rail_at = now;
+        if (locked_now) {
             Joint board_in_the_air;
             double board_at = -1;
             {
@@ -4727,7 +4730,11 @@ bool slide_feet_on_the_games_board(BodyPublicationState& body, MotionState motio
                 body.feet_at_lock_ok = body.feet_at_lock_ok && finite(body.feet_on_board_at_lock[i]);
             }
             body.fade_left_at_lock = body.transition.from_left;
+            // A studio trick still playing at the lock poses the feet itself, and the fade after it is not this one.
+            body.feet_at_lock_ok = body.feet_at_lock_ok && !playing;
         }
+        // A fade begun later on the rail (a grind loop cut short) is not the lock's: its feet would go back to the lock.
+        if (body.transition.from_left > body.fade_left_at_lock) body.feet_at_lock_ok = false;
         // A fade begun in the air (the trick let go before the lock) is ended by the same share from the lock on.
         const float fade_left = body.fade_left_at_lock > 0 ? body.transition.from_left / body.fade_left_at_lock : 0.0f;
         if (!feet_stay_on_the_games_board(motion, playing) || !body.feet_at_lock_ok || !(fade_left > 0)) return false;
