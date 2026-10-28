@@ -230,6 +230,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Progression/local_entitlement_trigger_runtime.cpp
     Extension/Progression/local_neighborhood_runtime.cpp
     Extension/Customization/local_player_card_runtime.cpp
+    Extension/Customization/steam_avatar_cards.cpp
     Extension/News/local_news_runtime.cpp
     Extension/News/live_news.cpp
     Extension/Objects/local_object_runtime.cpp
