@@ -731,6 +731,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
             // Its textures that never stream (mod_merge_textures.cpp): the changed headers go into
             // the merged patch; the chunk is still the mod's, its bundle file narrowed to the tail.
             // A map's own level bundles only (Studio names them after the level).
+            bool offsetsRepaired{};
             if (tocChunks && key.starts_with("win32/levels/game/dingolevel_reskate_")) {
                 auto streamed = stream_resident_textures(store, root, manifest, region.files, casBacked ? 1 : 0, *tocChunks, gameRoot,
                                                          known ? &known->textures : nullptr);
@@ -738,13 +739,20 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                     repaired[at] = store.write(region.files[at].location.installChunk, manifestArchive, encoded);
                     found.textures.push_back(static_cast<std::uint32_t>(at));
                 }
+                for (const auto at : streamed.offsets)
+                    found.textures.push_back(static_cast<std::uint32_t>(at));
+                offsetsRepaired = !streamed.offsets.empty();
                 if (!streamed.headers.empty())
                     report.notes.push_back(modName + ": " + bundle.name + ": " + std::to_string(streamed.headers.size()) +
                         " texture(s) kept every mip loaded; they stream now, " + std::to_string(streamed.bytes >> 20) +
                         " MB less in video memory, e.g. " + streamed.example);
+                if (offsetsRepaired)
+                    report.notes.push_back(modName + ": " + bundle.name + ": " + std::to_string(streamed.offsets.size()) +
+                        " streamed texture(s) listed logicalOffset 0 for their mip tail; repaired, e.g. " +
+                        streamed.offset_example);
             }
             if (casBacked) casManifest = std::move(manifest);
-            else if (!repaired.empty()) region.inlineManifest = fb::write_binary_bundle(manifest);
+            else if (!repaired.empty() || offsetsRepaired) region.inlineManifest = fb::write_binary_bundle(manifest);
             if (!known && whole) scans.keep(modName, scanKey, std::move(found));
             if (ebxRepaired)
                 report.notes.push_back(modName + ": " + bundle.name + ": " + std::to_string(ebxRepaired) +
@@ -824,7 +832,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
         }
         // Nothing moved in this bundle: it passes through whole, as before.
         if (casBacked && !shared && !gridBundle && !cooperative && renumbered.empty() && overridden.empty() && repaired.empty() &&
-            additions.empty())
+            !offsetsRepaired && additions.empty())
             casBacked = false;
 
         for (auto& file : region.files) {
