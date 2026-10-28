@@ -15,6 +15,7 @@
 #include "Engine/Resource/ebx_document.h"
 #include "Engine/Resource/toc.h"
 #include "Engine/Resource/shader_lookup.h"
+#include "Engine/Resource/texture.h"
 #include "Engine/Vfs/game_archives.h"
 #include "Engine/Vfs/mod_catalog.h"
 #include "Engine/Vfs/mod_merge_internal.h"
@@ -1159,37 +1160,73 @@ void shader_selection_checks_the_winner(bool delivered, bool changed_heap, bool 
 }
 
 void streamed_world_texture_chunk_gets_its_logical_offset() {
-  const auto id = chunk_id(0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
-                           0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20);
-  // Early ReSkateStudio 1.0.0 world textures already have firstMip = 2 and the
-  // 87,408-byte resident tail (aligned to 131,072 bytes in the bundle), while
-  // leaving the bundle chunk's logicalOffset at 0 instead of 2,796,208.
-  auto header = streamed_dxt1_2048_header(id);
-  header[12] = 2u;
-  const auto bundle = bundle_with_chunks(
-      {{id, 0u, 131072u}},
-      {"win32/content/worlds_test/worlds_test_0_0_static_sky_c"});
-  std::vector<std::uint8_t> cas(28u + 87408u, 0x5Au);
+    Fixture fixture("streamed-world-texture-offset");
+    const auto chunk_guid = guid(0x11); // low bit of byte 15 is 1 (compressed blocks)
+    Bytes header(180, std::byte{0});
+    const auto set_u32 = [&](std::size_t at, std::uint32_t v) { std::memcpy(header.data() + at, &v, 4); };
+    set_u32(8, 0);                      // type = 0 (2D)
+    set_u32(12, 54);                    // format = BC1
+    header[20] = std::byte{1};          // flags = texture_streams (0x1)
+    header[22] = std::byte{0}; header[23] = std::byte{8}; // width = 2048
+    header[24] = std::byte{0}; header[25] = std::byte{8}; // height = 2048
+    header[26] = std::byte{1};          // depth = 1
+    header[28] = std::byte{1};          // slices = 1
+    header[30] = std::byte{3};          // mip_count = 3
+    header[31] = std::byte{2};          // first_mip = 2 (already streamed by early Studio)
+    header[32] = std::byte{2};
+    std::memcpy(header.data() + 40, chunk_guid.bytes.data(), 16);
+    set_u32(56, 0x200000);              // mip 0: 2,097,152 bytes
+    set_u32(60, 0x80000);               // mip 1: 524,288 bytes (streamedBytes = 2,621,440)
+    set_u32(64, 0x20000);               // mip 2: 131,072 bytes (resident tail)
+    set_u32(116, 0x2a0000);             // chunk_size = 2,752,512
+    constexpr std::string_view group = "Worlds_Test";
+    std::memcpy(header.data() + 0x80, group.data(), group.size());
 
-  ScopedTempDir temp;
-  const auto mods = temp.path / "Mods";
-  const auto data = temp.path / "Data";
-  write_base_layout(data);
-  write_mod_with_texture(mods / "Park", bundle, cas, header);
+    constexpr char level_toc[] = "levels/game/dingolevel_reskate_park/dingolevel_reskate_park.toc";
+    constexpr char level_sb[] = "Win32/levels/game/dingolevel_reskate_park/dingolevel_reskate_park";
+    const Bytes tail(0x20000, std::byte{0x5a});
+    fixture.add("park", true, level_toc, {level_sb}, game_copy(),
+                {{"content/worlds_test/worlds_test_0_0_static_sky_c", header}}, level_sb,
+                {{chunk_guid, tail, {1, 2}}});
 
-  merge_mods(mods, data, "Patch");
+    // Mark the resource as a version-12 TextureAsset and list the streamed chunk in the level TOC,
+    // while leaving the bundle chunk entry at logicalOffset = 0, logicalSize = 131,072.
+    {
+        const auto mod_dir = fixture.catalog.root / "park";
+        const auto toc_path = mod_dir / "Win32" / fs::path(level_toc);
+        const auto cas_path = mod_dir / "Win32" / "pkg" / "cas_01.cas";
+        auto toc = fb::read_toc(read(toc_path));
+        auto region = fb::read_bundle_region(toc.bundles.front().region);
+        auto archive = read(cas_path);
+        auto manifest = fb::read_binary_bundle(
+            std::span<const std::byte>(archive.data() + region.files[0].offset, region.files[0].size));
+        manifest.resources[0].resourceType = fb::texture_resource_type;
+        manifest.resources[0].resourceMeta.assign(16, std::byte{0});
+        manifest.resources[0].resourceMeta[0] = std::byte{12};
+        manifest.chunks[0].logicalOffset = 0;
+        manifest.chunks[0].logicalSize = 0x20000;
+        const auto rewritten = fb::write_binary_bundle(manifest);
+        region.files[0].offset = static_cast<std::uint32_t>(archive.size());
+        region.files[0].size = static_cast<std::uint32_t>(rewritten.size());
+        archive.insert(archive.end(), rewritten.begin(), rewritten.end());
+        toc.bundles.front().region = fb::write_bundle_region(region.files);
+        toc.chunks.push_back({chunk_guid, {true, package, 1}, region.files.back().offset, region.files.back().size});
+        write(cas_path, archive);
+        write(toc_path, fb::write_patch_toc(toc.bundles, toc.chunks, toc.flags));
+    }
 
-  const auto merged_cas =
-      read_bytes(mods / ".reskate" / "Win32" / "configurations" / "layout" /
-                 "defaultinstallpackage" / "cas_01.cas");
-  assert(merged_cas.size() > 28u);
-  const std::span<const std::uint8_t> rewritten_bundle(
-      merged_cas.data() + 28u, merged_cas.size() - 28u);
-  const auto parsed = BinaryBundle::parse(rewritten_bundle);
-  assert(parsed.has_value());
-  assert(parsed->chunks.size() == 1u);
-  assert(parsed->chunks[0].logicalOffset == 2796208u);
-  assert(parsed->chunks[0].logicalSize == 131072u);
+    const auto report = mods::merge_mods(fixture.catalog);
+    expect(report.issue.empty() && report.built, "streamed world texture offset: merge builds\n" + describe(report));
+    Patch patch(fixture);
+    const auto merged_toc = fb::read_toc(read(patch.root / "Win32" / fs::path(level_toc)));
+    const auto listing = mods::detail::list_bundle(patch.store, patch.root, patch.base, merged_toc.bundles.front(), patch.game);
+    expect(listing && listing->manifest.chunks.size() == 1, "streamed world texture offset: merged bundle has its chunk");
+    if (listing && !listing->manifest.chunks.empty()) {
+        expect(listing->manifest.chunks[0].logicalOffset == 0x280000 &&
+                   listing->manifest.chunks[0].logicalSize == 0x20000,
+               "streamed world texture offset: bundle chunk gets logicalOffset 2,621,440 (got " +
+                   std::to_string(listing->manifest.chunks[0].logicalOffset) + ")");
+    }
 }
 
 } // namespace
@@ -1232,6 +1269,7 @@ int main(int argc, char** argv) try {
     a_mod_archive_numbered_like_a_placeholder();
     two_merges_write_the_same_bytes();
     carried_chunk_keeps_the_records_in_step();
+    streamed_world_texture_chunk_gets_its_logical_offset();
     if (failures) {
         std::cerr << failures << " failure(s)\n";
         return 1;

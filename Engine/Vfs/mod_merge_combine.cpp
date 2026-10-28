@@ -652,6 +652,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
         // still what a combine reads and compares.
         std::map<std::size_t, fb::BundleFileInfo> repaired;
         std::map<std::size_t, std::pair<fb::BundleFileInfo, fb::Sha1>> repairedFrom;
+        bool offsetsRepaired{};
         if (!isBase && (casBacked || !region.inlineManifest.empty())) {
             auto manifest = casBacked ? std::move(casManifest) : fb::read_binary_bundle(region.inlineManifest);
             std::size_t removed{};
@@ -731,7 +732,6 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
             // Its textures that never stream (mod_merge_textures.cpp): the changed headers go into
             // the merged patch; the chunk is still the mod's, its bundle file narrowed to the tail.
             // A map's own level bundles only (Studio names them after the level).
-            bool offsetsRepaired{};
             if (tocChunks && key.starts_with("win32/levels/game/dingolevel_reskate_")) {
                 auto streamed = stream_resident_textures(store, root, manifest, region.files, casBacked ? 1 : 0, *tocChunks, gameRoot,
                                                          known ? &known->textures : nullptr);
