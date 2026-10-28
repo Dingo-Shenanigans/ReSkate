@@ -250,6 +250,8 @@ void publish(Session &s, const NativeFrame *local) {
     view.nametag_distance = s.nametag_distance;
     view.nametag_dots = s.nametag_dots;
     view.nametags_friends = s.nametags_friends;
+    view.outfit_shuffle = static_cast<std::uint8_t>(s.shuffle_mode);
+    view.outfit_shuffle_mods_only = s.shuffle_mods_only;
     view.chat_visible = s.chat_visible;
     view.chat_filter = s.chat_filter;
     view.chat_bubbles = s.chat_bubbles;

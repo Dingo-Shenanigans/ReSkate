@@ -59,6 +59,9 @@ inline constexpr unsigned plugin_burst = 200;
 // The party the echo test shows its mirrored player in (a real lobby has none until its
 // players form one).
 inline constexpr std::uint32_t lobby_party = 1;
+// How often a new shuffle mode or reroll re-dresses the next player: four a second, so a full
+// server takes about a minute
+inline constexpr std::uint64_t shuffle_redress_interval_us = 250000;
 struct Peer {
     // Guests: this owner's layout as relayed by the host. Host: the owner's own
     // upload, which is never forwarded directly. The host publishes `shared`
@@ -116,6 +119,11 @@ struct Peer {
     // Bumped per accepted outfit; render compares it with the one its actor wears
     // (0 after a spawn) to spread native recipe applies over frames.
     std::uint64_t cosmetic_revision{}, applied_cosmetics{};
+    // The shuffle (mode, epoch and pool) their skater wears. A new mode, pool or reroll reaches
+    // them in turn, one player per shuffle_redress_interval_us (session.cpp).
+    ShuffleMode shuffle_mode{};
+    std::uint64_t shuffle_epoch{};
+    bool shuffle_mods_only{};
     DeveloperHoodieState developer_hoodie;
     DeveloperBoardState developer_board;
     AudioBuffer audio;
@@ -299,6 +307,18 @@ struct Session {
     unsigned capacity = max_players;
     // Local display preferences, loaded once from the profile. Never sent to peers.
     bool nametags = true, chat_visible = true, display_preferences_loaded{};
+    // Shuffled outfits (outfit_shuffle.h) A new epoch is a re-roll. `shuffle_mods_only` picks only
+    // from items a mod installed, in whichever mode. Never sent to peers.
+    ShuffleMode shuffle_mode{};
+    std::uint64_t shuffle_epoch{1};
+    bool shuffle_mods_only{};
+    // A new mode or reroll re-dresses one player at a time, no sooner than this: every
+    // re-dressed player can bring textures of their own. Spawns and real outfit changes are not held.
+    std::uint64_t next_shuffle_redress{};
+    // The re-dress under way (0: none), when it began and how many players it has re-dressed,
+    // for the log (session.cpp).
+    std::uint64_t shuffle_redress_started{};
+    unsigned shuffle_redressed{};
     float nametag_distance = 120.f; // names within this many metres, dots past it
     // Only players within this many metres have a skater (session.cpp); checked a few times a second.
     float player_distance = 120.f;
@@ -351,7 +371,7 @@ struct Session {
     float voice_range = default_voice_range;
     DirectUploadBudget direct_upload;
     Mode mode = Mode::off;
-    std::uintptr_t base{}, context{}, parent{};
+    std::uintptr_t base{}, client{}, context{}, parent{};
     std::uint64_t secret{}, epoch{}, map{}, host_id{}, next_send{}, last_hello{}, last_roster{},
         last_cosmetic_capture{}, last_routes{}, last_network_log{}, network_now{};
     std::uint32_t sequence{}, roster_sequence{};
@@ -472,6 +492,8 @@ void refresh_friends(Session &s);
 bool identity_link(Session &s, std::uint64_t other);
 // `marks`: whether the line may show the badge the backend gives its sender (player_role).
 void add_chat(Session &s, std::uint64_t sender, std::string name, std::string text, bool local = false, bool marks = true);
+// The shuffle as the log shows it: "mode all, mod items only, epoch 123".
+std::string shuffle_state(const Session &s);
 // The colour and badge of one of the backend's categories.
 std::pair<std::uint32_t, std::string> mark_role(IdentityList list);
 // A player's role colour and badge ("Dev", "ReSkate Admin", "Content Creator", "Centrix", "Homie", "Admin", "Host", "Friend" or none), shown in chat

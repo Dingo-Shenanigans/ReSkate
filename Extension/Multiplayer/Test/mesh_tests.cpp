@@ -11,6 +11,10 @@
 #include <map>
 #include <set>
 
+namespace dingosdk::texture_handle_limit {
+Use use() noexcept { return {}; }
+}
+
 namespace dingosdk {
 bool read_local_camera_transform(std::uintptr_t, std::uintptr_t, std::array<float, 16>&) noexcept { return false; }
 ParksModel simulated_parks;
@@ -287,7 +291,7 @@ bool show_remote(std::uintptr_t, std::uintptr_t, const NativeFrame &, const Pose
     return true;
 }
 void remove_remote(std::uintptr_t) noexcept {}
-void update_remote_cosmetics(std::uintptr_t, const NativeFrame &, const Appearance &, std::string &) {}
+void update_remote_cosmetics(std::uintptr_t, const NativeFrame &, const Appearance &, std::string &, const Shuffle &) {}
 std::uint64_t remote_pose_updates() noexcept { return 0; }
 std::uint64_t remote_board_pose_updates() noexcept { return 0; }
 NativeAnimationStats remote_animation_stats() noexcept { return {}; }
@@ -328,6 +332,8 @@ std::shared_ptr<const SteamSocialSnapshot> steam_social_snapshot() {
     return snapshot;
 }
 std::optional<Appearance> capture_cosmetics(std::uintptr_t, const NativeFrame &, std::string &) { return {}; }
+std::string describe_cosmetic_slots(std::uintptr_t, const NativeFrame &) { return {}; }
+void prepare_shuffle_catalog(std::uintptr_t) {}
 void prepare_audio_capture(std::uintptr_t, const NativeFrame &) noexcept {}
 std::vector<AudioSample> drain_audio_capture(std::uint64_t) { return {}; }
 void update_remote_audio(std::uintptr_t, const NativeFrame &, const Pose &, const AudioState &) noexcept {}
@@ -611,6 +617,40 @@ struct Simulation {
                 }
     }
 };
+// Modes, rerolls and mod items only change the session's shuffle; render re-dresses players in
+// turn, so nobody's outfit revision moves.
+void shuffle_setting_checks() {
+    auto storage = std::make_unique<Session>();
+    auto &s = *storage;
+    s.used_slots = 1;
+    s.epoch = 1;
+    auto outfit = packet(s, PacketKind::cosmetics, now_us());
+    outfit.appearance = {{skater_recipe_key, 2, {}, {{1, "Outfit", {}}}}, {board_recipe_key, 1, {}, {{2, "Deck", {}}}}};
+    check(s.peers[0].appearance.push(outfit), "Shuffle fixture appearance rejected");
+    auto &revision = s.peers[0].cosmetic_revision;
+
+    (void)edit_shuffle_outfits(s, "all");
+    const auto before = revision;
+    check(s.shuffle_mode == ShuffleMode::everything && revision == before, "A mode re-dressed at once");
+
+    const auto epoch = s.shuffle_epoch;
+    // A reroll is a new epoch; render re-dresses players in turn (shuffle_redress_interval_us),
+    // so their outfit revision is left alone.
+    check(edit_shuffle_outfits(s, "reroll") == "Everyone's items were shuffled again." && s.shuffle_epoch != epoch &&
+              revision == before,
+          "A reroll was refused, or re-dressed at once");
+    (void)edit_shuffle_outfits(s, "missing");
+    check(s.shuffle_mode == ShuffleMode::not_installed, "A mode was refused");
+    // Mod items only is apart from the mode: either changes without the other.
+    check(edit_shuffle_mods_only(s, "on") == "Shuffled outfits pick only items a mod installed." && s.shuffle_mods_only &&
+              s.shuffle_mode == ShuffleMode::not_installed && revision == before,
+          "Mod items only changed the mode, or re-dressed at once");
+    (void)edit_shuffle_outfits(s, "all");
+    check(s.shuffle_mods_only && s.shuffle_mode == ShuffleMode::everything, "A new mode turned mod items only off");
+    check(edit_shuffle_mods_only(s, "maybe").starts_with("Use on, off") && s.shuffle_mods_only, "A bad word changed mod items only");
+    (void)edit_shuffle_mods_only(s, "toggle");
+    check(!s.shuffle_mods_only, "Mod items only did not toggle");
+}
 // Linked throwdowns travel through the host like chat: each message reaches every
 // other player exactly once, never its sender, and never another world.
 void throwdown_routing_checks() {
@@ -2451,6 +2491,7 @@ int main(int argc, char **argv) {
         dingosdk::multiplayer::mesh_checks();
         dingosdk::multiplayer::throwdown_routing_checks();
         dingosdk::multiplayer::typing_checks();
+        dingosdk::multiplayer::shuffle_setting_checks();
         dingosdk::multiplayer::party_checks();
         dingosdk::multiplayer::role_checks();
         dingosdk::multiplayer::global_ban_checks();
