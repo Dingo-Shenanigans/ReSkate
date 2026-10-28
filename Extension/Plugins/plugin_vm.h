@@ -282,6 +282,7 @@ private:
     friend struct PhysicsApi;
     friend struct EffectsApi;
     friend struct ViewmodelApi;
+    friend struct InputLeaseApi;
     std::uint64_t instance_{};
     struct Subcommand { std::string name, args, help; };
     struct Command { std::string help; int function{}; std::vector<Subcommand> subcommands; };
@@ -341,6 +342,8 @@ private:
     int raycasts_{};                    // since the last tick
     body_query::Budget native_casts_{}; // world.probe's and probe_batch's native casts, failed ones included
     unsigned body_prepares_{};          // explicit native body preparation calls since the last tick
+    unsigned input_lease_requests_{}, input_lease_calls_{};
+    bool input_lease_used_{}; // release a touched passive source before other VM cleanup
     std::optional<float> touch_reach_;
     std::map<std::uint64_t, Contact> contacts_;
     double teleport_second_{};

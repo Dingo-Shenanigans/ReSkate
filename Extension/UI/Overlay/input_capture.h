@@ -16,6 +16,8 @@ struct OverlayInputAccess {
 // through GetRawInputData is then not noted a second time.
 extern thread_local HRAWINPUT noted_raw_input;
 bool block_polled_input();
+// Current upstream report writers/lifecycle permit passive raw publication.
+bool passive_source_available() noexcept;
 bool challenge_menu_key(int key) noexcept;
 // A key kept from the game now (hide_game_keys); never for ReSkate's own reads.
 bool key_hidden(unsigned key) noexcept;

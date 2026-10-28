@@ -1,6 +1,7 @@
 #pragma once
 #include "plugin_effects.h"
 #include "plugin_wave.h"
+#include "Engine/Game/Input/input_lease.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Game/World/body_query.h"
 #include "Extension/AnimationStudio/anim_core.h"
@@ -272,6 +273,15 @@ struct Progress {
 class Game {
 public:
     virtual ~Game() = default;
+    // One VM's passive reservation of an observed XInput stream. No report is
+    // suppressed or changed, and none of these observations controls an actor.
+    virtual bool input_lease_request(std::uint64_t, std::uint32_t, input_lease::Handle&, input_lease::Reason& reason) noexcept { reason = input_lease::Reason::unavailable; return false; }
+    virtual bool input_lease_read(std::uint64_t, input_lease::Handle, input_lease::Snapshot&, input_lease::Reason& reason) noexcept { reason = input_lease::Reason::unavailable; return false; }
+    virtual bool input_lease_renew(std::uint64_t, input_lease::Handle, const input_lease::Snapshot&, input_lease::Reason& reason) noexcept { reason = input_lease::Reason::unavailable; return false; }
+    virtual bool input_lease_release(std::uint64_t, input_lease::Handle, input_lease::Reason& reason) noexcept { reason = input_lease::Reason::unavailable; return false; }
+    virtual bool input_lease_state(std::uint64_t, input_lease::Handle, input_lease::Receipt&, input_lease::Reason& reason) noexcept { reason = input_lease::Reason::unavailable; return false; }
+    virtual bool input_lease_acknowledge(std::uint64_t, input_lease::Handle, input_lease::Reason& reason) noexcept { reason = input_lease::Reason::unavailable; return false; }
+    virtual void input_lease_release_all(std::uint64_t) noexcept {}
     // ---- native bodies a plugin owns (reskate.world.physics; Extension/World/owned_bodies.h) ------
     // Owned by one VM instance, not by a reloadable plugin name. Client phase only; the typed
     // handles and epochs reach Lua only inside opaque userdata.

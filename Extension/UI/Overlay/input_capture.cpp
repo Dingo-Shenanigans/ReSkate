@@ -1,3 +1,5 @@
+#include "Extension/Input/native_input_source.h"
+#include "Extension/Input/input_publication.h"
 #include "Engine/Core/Log/logging.h"
 #include "overlay_internal.h"
 #include "input_capture.h"
@@ -22,12 +24,12 @@ namespace dingosdk::overlay::detail {
 // Window messages do not cover the game's independently polled input devices.
 // Only the overlay's own Win32 backend and binding reader may bypass these gates.
 thread_local HRAWINPUT noted_raw_input = nullptr;
-std::atomic<ULONGLONG> mode_input_paused_until{};
-std::atomic<std::uint16_t> mode_hidden_buttons{}, mode_held_buttons{};
+native_input_source::PublishedAtomic<ULONGLONG> mode_input_paused_until{};
+native_input_source::PublishedAtomic<std::uint16_t> mode_hidden_buttons{}, mode_held_buttons{};
 std::atomic<int> mode_mouse_wheel{};
-std::atomic<bool> challenge_menu_capture{};
-std::atomic<bool> challenge_native_panel{};
-std::atomic<bool> challenge_menu_release{};
+native_input_source::PublishedAtomic<bool> challenge_menu_capture{};
+native_input_source::PublishedAtomic<bool> challenge_native_panel{};
+native_input_source::PublishedAtomic<bool> challenge_menu_release{};
 bool suppress_challenge_menu() noexcept {
     return !overlay_input_access && (challenge_menu_capture.load(std::memory_order_relaxed) || challenge_menu_release.load(std::memory_order_relaxed));
 }
@@ -113,8 +115,8 @@ BOOLEAN __stdcall captured_hid_attributes(HANDLE file, PHIDD_ATTRIBUTES attribut
     SetLastError(error);
     return result;
 }
-std::atomic<dingosdk::overlay::GamepadFilter>& gamepad_filter() {
-    static std::atomic<dingosdk::overlay::GamepadFilter> value{};
+native_input_source::PublishedAtomic<dingosdk::overlay::GamepadFilter>& gamepad_filter() {
+    static native_input_source::PublishedAtomic<dingosdk::overlay::GamepadFilter> value{};
     return value;
 }
 void neutral_hid(const InputCaptureHooks::HidRead& read, DWORD size) {
@@ -405,17 +407,36 @@ void filter_pad(bool outer, DWORD user, XINPUT_STATE* output) noexcept {
 // then, so the capture is in front of it again.
 void game_pad_read(DWORD user, XINPUT_STATE* output) noexcept;
 void note_xinput(DWORD user, const XINPUT_STATE& state) noexcept;
+namespace {
+input_lease::Pad passive_pad(const XINPUT_GAMEPAD& pad) noexcept {
+    return {pad.wButtons, pad.bLeftTrigger, pad.bRightTrigger,
+        pad.sThumbLX, pad.sThumbLY, pad.sThumbRX, pad.sThumbRY};
+}
+bool passive_copy(const XINPUT_STATE* source, XINPUT_STATE& target) noexcept {
+    if (!source) return false;
+    __try { target = *source; return true; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+}
 template<std::size_t I>
 DWORD WINAPI captured_front(DWORD user, XINPUT_STATE* output) {
     const bool capture = block_polled_input();
     const bool menu=suppress_challenge_menu();
     const bool outer = overlay_input_access == 0;
+    const auto entry_error = GetLastError();
+    native_input_source::Poll passive_poll;
+    native_input_source::begin(outer, user, passive_poll);
     note_prompt_read(prompt_xinput);
     DWORD result;
     { // It may go on to XInput's own entry point, which is hooked as well.
         OverlayInputAccess access;
+        SetLastError(entry_error);
         result = original<DWORD(WINAPI*)(DWORD, XINPUT_STATE*)>(input_hooks().xinput_front[I])(user, output);
     }
+    const auto original_error = GetLastError();
+    XINPUT_STATE raw{};
+    const bool raw_known = result == ERROR_SUCCESS && passive_copy(output, raw);
+    const auto returned_result = [&]() -> DWORD {
     if (result == ERROR_SUCCESS && output) note_xinput(user, *output);
     // Only the game gets a scripted pad (the character room's walk): ReSkate's own reads get the real one.
     if (outer && output && scripted_pad(user, *output)) return ERROR_SUCCESS;
@@ -430,6 +451,13 @@ DWORD WINAPI captured_front(DWORD user, XINPUT_STATE* output) {
         }
     }
     return result;
+    }();
+    XINPUT_STATE returned{};
+    const bool returned_known = returned_result == ERROR_SUCCESS && passive_copy(output, returned);
+    native_input_source::finish(passive_poll, result, raw_known, raw.dwPacketNumber, passive_pad(raw.Gamepad),
+        returned_result, returned_known, returned.dwPacketNumber, passive_pad(returned.Gamepad));
+    SetLastError(original_error);
+    return returned_result;
 }
 void keep_xinput_capture_first() {
     auto& h = input_hooks();
@@ -771,8 +799,8 @@ BOOL WINAPI captured_cursor_position(LPPOINT output) {
 // the landing stays hidden until it is really let go, so its release is never a tap. On the ground the D-pad is the
 // game's. ReSkate's own readers (overlay_input_access), which Dark Pop reads through, always get the real pad.
 struct DarkPopHide {
-    std::atomic<std::uint64_t> until{};   // GetTickCount64 the air lease runs to; 0 = no lease
-    std::atomic<bool> latched{};          // a hidden press is still held past the lease
+    native_input_source::PublishedAtomic<std::uint64_t> until{};   // GetTickCount64 the air lease runs to; 0 = no lease
+    native_input_source::PublishedAtomic<bool> latched{};          // a hidden press is still held past the lease
     std::atomic<std::uint64_t> hidden{};  // game polls changed so far (for the log)
 };
 DarkPopHide& dark_pop_hide() { static auto* value = new DarkPopHide; return *value; }
@@ -808,8 +836,8 @@ std::atomic<std::uint64_t>& grind_stick_mirrored() { static std::atomic<std::uin
 // from the left stick) and whose up and down is the player's own, times `y_scale`, plus `y_add`. For 150 ms after the
 // player's right stick jumps (the flick of a pop) the game sees the stick as it is. `sent_*` is what the game last saw.
 struct GrindStickTurn {
-    std::atomic<bool> on{};
-    std::atomic<std::uint64_t> until{};
+    native_input_source::PublishedAtomic<bool> on{};
+    native_input_source::PublishedAtomic<std::uint64_t> until{};
     std::atomic<float> x{}, y_add{}, y_scale{1.0f};
     std::atomic<float> sent_x{}, sent_y{}, raw_y{};
     std::atomic<int> last_ry{0};
@@ -841,8 +869,8 @@ bool turn_grind_stick(XINPUT_GAMEPAD& pad) noexcept {
 // as the player's own left stick is at rest (a stick the player moves is theirs). `raw_*` is the player's own stick as
 // the last poll had it, for the trainer's own reads of the left stick.
 struct GrindStickLean {
-    std::atomic<bool> on{};
-    std::atomic<std::uint64_t> until{};
+    native_input_source::PublishedAtomic<bool> on{};
+    native_input_source::PublishedAtomic<std::uint64_t> until{};
     std::atomic<float> x{}, y{}, raw_x{}, raw_y{};
     std::atomic<std::uint64_t> given{0};
 };
@@ -870,11 +898,27 @@ void game_pad_read(DWORD user, XINPUT_STATE* output) noexcept {
     (void)turn_grind_stick(output->Gamepad);
     lean_grind_stick(output->Gamepad);
 }
+bool passive_source_available() noexcept {
+    const auto& s = state();
+    const auto now = GetTickCount64();
+    return s.started.load() && s.input_attached.load() && !s.stop.load() && !s.failed.load() &&
+        s.window.load() && !s.selected_window_destroyed.load() && !overlay_input_access &&
+        !mode_hidden_buttons.load() && !mode_held_buttons.load() &&
+        now >= mode_input_paused_until.load() && !suppress_challenge_menu() &&
+        !block_polled_input() && !overlay::interface_open() && !gamepad_filter().load() &&
+        now >= dark_pop_hide().until.load() && !dark_pop_hide().latched.load() &&
+        !(grind_stick_turn().on.load() && now < grind_stick_turn().until.load()) &&
+        !(grind_stick_lean().on.load() && now < grind_stick_lean().until.load()) &&
+        !scripted_pad_active();
+}
 template<std::size_t I, bool Extended = false>
 DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
     const auto& hook = Extended ? input_hooks().xinput_extended[I] : input_hooks().xinput_state[I];
     const bool game_poll = !overlay_input_access;
     const bool capture = block_polled_input();
+    const auto entry_error = GetLastError();
+    native_input_source::Poll passive_poll;
+    native_input_source::begin(game_poll, user, passive_poll);
     note_prompt_read(prompt_xinput);
     const auto hidden = overlay_input_access ? std::uint16_t{} : static_cast<std::uint16_t>(
         mode_hidden_buttons.load(std::memory_order_relaxed) |
@@ -882,8 +926,13 @@ DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
     DWORD result;
     { // XInput exports can forward through another hooked XInput export.
         OverlayInputAccess access;
+        SetLastError(entry_error);
         result = original<DWORD(WINAPI*)(DWORD, XINPUT_STATE*)>(hook)(user, output);
     }
+    const auto original_error = GetLastError();
+    XINPUT_STATE raw{};
+    const bool raw_known = result == ERROR_SUCCESS && passive_copy(output, raw);
+    const auto returned_result = [&]() -> DWORD {
     if (result == ERROR_SUCCESS && output) note_xinput(user, *output);
     // Only the game gets a scripted pad (the character room's walk): ReSkate's own reads get the real one.
     if (game_poll && output && scripted_pad(user, *output)) return ERROR_SUCCESS;
@@ -900,6 +949,13 @@ DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
         }
     }
     return result;
+    }();
+    XINPUT_STATE returned{};
+    const bool returned_known = returned_result == ERROR_SUCCESS && passive_copy(output, returned);
+    native_input_source::finish(passive_poll, result, raw_known, raw.dwPacketNumber, passive_pad(raw.Gamepad),
+        returned_result, returned_known, returned.dwPacketNumber, passive_pad(returned.Gamepad));
+    SetLastError(original_error);
+    return returned_result;
 }
 template<std::size_t I>
 DWORD WINAPI captured_keystroke(DWORD user, DWORD reserved, PXINPUT_KEYSTROKE output) {

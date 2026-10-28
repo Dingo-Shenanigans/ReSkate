@@ -1,3 +1,4 @@
+#include "Extension/Input/input_publication.h"
 #include "scripted_pad.h"
 #include <algorithm>
 #include <atomic>
@@ -34,8 +35,10 @@ void advance(State &s, std::chrono::steady_clock::time_point now) {
 } // namespace
 
 void play_pad(std::vector<PadStep> steps) {
+    native_input_source::PublicationScope publication;
     auto &s = state();
     std::lock_guard lock(s.mutex);
+    native_input_source::publication_changed();
     s.steps = std::move(steps);
     s.current = 0;
     s.ticks = 0;
@@ -43,30 +46,35 @@ void play_pad(std::vector<PadStep> steps) {
     s.active = !s.steps.empty();
 }
 void pad_tick() noexcept {
+    native_input_source::PublicationScope publication;
     auto &s = state();
     std::lock_guard lock(s.mutex);
-    if (s.active) advance(s, std::chrono::steady_clock::now());
+    if (s.active) { native_input_source::publication_changed(); advance(s, std::chrono::steady_clock::now()); }
 }
 void hold_stick(int stick, float value, unsigned milliseconds) noexcept {
+    native_input_source::PublicationScope publication;
     auto &s = state();
     std::lock_guard lock(s.mutex);
+    native_input_source::publication_changed();
     s.stick = stick < 0 || stick > 3 ? 2 : stick;
     s.value = static_cast<SHORT>(std::lround(std::clamp(value, -1.0f, 1.0f) * 32767.0f));
     s.held_until = value == 0 ? std::chrono::steady_clock::time_point{}
                               : std::chrono::steady_clock::now() + std::chrono::milliseconds(milliseconds);
 }
 bool held_stick(int& stick, SHORT& value) noexcept {
+    native_input_source::PublicationScope publication;
     auto& s = state();
     std::lock_guard lock(s.mutex);
     const auto now = std::chrono::steady_clock::now();
     // Native-only readers may never poll XInput to retire a completed script.
-    if (s.active && s.current + 1 == s.steps.size() && now - s.done_at > linger) s.active = false;
+    if (s.active && s.current + 1 == s.steps.size() && now - s.done_at > linger) { native_input_source::publication_changed(); s.active = false; }
     if (s.active || now >= s.held_until) return false;
     stick = s.stick;
     value = s.value;
     return true;
 }
 bool scripted_pad(DWORD user, XINPUT_STATE &output) noexcept {
+    native_input_source::PublicationScope publication;
     auto &s = state();
     if (user != 0) return false;
     std::lock_guard lock(s.mutex);
@@ -83,11 +91,17 @@ bool scripted_pad(DWORD user, XINPUT_STATE &output) noexcept {
     while (s.current + 1 < s.steps.size() && now - s.last_tick > no_ticks) advance(s, s.last_tick + tick_length);
     const bool done = s.current + 1 == s.steps.size();
     if (done && now - s.done_at > linger) {
+        native_input_source::publication_changed();
         s.active = false;
         return false;
     }
     output.Gamepad = done ? XINPUT_GAMEPAD{} : s.steps[s.current].pad;
     output.dwPacketNumber = ++s.packet;
     return true;
+}
+bool scripted_pad_active() noexcept {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    return s.active || std::chrono::steady_clock::now() < s.held_until;
 }
 } // namespace dingosdk::overlay

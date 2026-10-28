@@ -35,6 +35,8 @@ void install_capture_api(Plugin& plugin, lua_State* L);
 void install_effects_api(Plugin& plugin, lua_State* L);
 // A rigged, animated model in front of the camera (plugin_api_viewmodel.cpp).
 void install_viewmodel_api(Plugin& plugin, lua_State* L);
+// Passive selected-stream observation only (plugin_api_input_lease.cpp).
+void install_input_lease_api(Plugin& plugin, lua_State* L);
 
 // ---- adding to the reskate table ---------------------------------------------------------------
 // A new part of the API is a file of `static int name(lua_State*)` functions and an install_*_api

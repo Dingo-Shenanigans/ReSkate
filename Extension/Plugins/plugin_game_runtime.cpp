@@ -1,4 +1,5 @@
 #include "plugin_game_runtime.h"
+#include "Extension/Input/native_input_source.h"
 #include "Extension/Rendering/plugin_effects.h"
 #include "plugin_session_feed.h"
 #include "plugin_content.h"
@@ -173,6 +174,13 @@ std::filesystem::path game_folder() {
 class RealGame final : public Game {
 public:
     explicit RealGame(std::uintptr_t base) : base_(base) {}
+    bool input_lease_request(std::uint64_t owner, std::uint32_t user, input_lease::Handle& h, input_lease::Reason& why) noexcept override { return native_input_source::lease_request(owner, user, h, why); }
+    bool input_lease_read(std::uint64_t owner, input_lease::Handle h, input_lease::Snapshot& s, input_lease::Reason& why) noexcept override { return native_input_source::lease_read(owner, h, s, why); }
+    bool input_lease_renew(std::uint64_t owner, input_lease::Handle h, const input_lease::Snapshot& s, input_lease::Reason& why) noexcept override { return native_input_source::lease_renew(owner, h, s, why); }
+    bool input_lease_release(std::uint64_t owner, input_lease::Handle h, input_lease::Reason& why) noexcept override { return native_input_source::lease_release(owner, h, why); }
+    bool input_lease_state(std::uint64_t owner, input_lease::Handle h, input_lease::Receipt& s, input_lease::Reason& why) noexcept override { return native_input_source::lease_state(owner, h, s, why); }
+    bool input_lease_acknowledge(std::uint64_t owner, input_lease::Handle h, input_lease::Reason& why) noexcept override { return native_input_source::lease_acknowledge(owner, h, why); }
+    void input_lease_release_all(std::uint64_t owner) noexcept override { native_input_source::lease_release_all(owner); }
     std::string body_prepare() override { return owned_bodies::prepare(); }
     std::string body_create(std::uint64_t owner, const owned_body::Definition& d, owned_body::Handle& h) override { return owned_bodies::create(owner, d, h); }
     std::string body_read(std::uint64_t owner, const owned_body::Handle& h, owned_body::Sample& s) override { return owned_bodies::read(owner, h, s); }

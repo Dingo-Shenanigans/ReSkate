@@ -17,6 +17,8 @@ struct PadStep {
 void play_pad(std::vector<PadStep> steps);
 // The game thread calls this once a game tick.
 void pad_tick() noexcept;
+// Read-only current authorship; no native input consumption claim.
+bool scripted_pad_active() noexcept;
 // True when it wrote the script's pad to `state`.
 bool scripted_pad(DWORD user, XINPUT_STATE &state) noexcept;
 // One stick of the stand-in pad held at `value` (-1..1) for `milliseconds` more, the pad otherwise

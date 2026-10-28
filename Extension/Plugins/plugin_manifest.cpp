@@ -30,8 +30,10 @@ namespace {
 // require_named_actor_categories_absent shows no category and needs only "world.physics" and
 // "world.raycast". A manifest's "resident" list and "variants" are the merge's
 // (Engine/Vfs/mod_list.h ResidentAssets, Variants), not the plugin host's.
-constexpr std::array<std::string_view, 55> permissions{
-    "console", "storage", "overlay", "menu", "ui.screen", "input", "hud", "events.tricks", "events.skater",
+// "input.lease" reserves one observed XInput source for bounded passive reads
+// and renewal. It neither captures/changes reports nor controls a native actor.
+constexpr std::array<std::string_view, 56> permissions{
+    "console", "storage", "overlay", "menu", "ui.screen", "input", "input.lease", "hud", "events.tricks", "events.skater",
     "skater.read", "skater.teleport", "skater.control", "skater.animation", "trainer", "camera",
     "world.raycast", "world.physics", "world.physics.observe", "world.objects", "world.entities", "world.environment", "world.ai", "travel", "session.read",
     "session.skaters", "session.nametags", "net.session", "net.http", "voice.control", "chat.read",
