@@ -1,5 +1,6 @@
 #pragma once
 
+#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -10,6 +11,8 @@
 #ifdef small
 #undef small
 #endif
+#endif
+#include <cstdint>
 #include <imgui.h>
 #include <string>
 #include <vector>
@@ -85,7 +88,12 @@ struct GuiState {
     double copied_until{0.0};
 };
 
+#ifdef _WIN32
 int run_gui(HINSTANCE instance, int cmd_show);
+#else
+// Linux: an SDL3 window drawn with OpenGL 3 (ReSkateServerGUI; ReSkateServer stays console only).
+int run_gui();
+#endif
 
 } // namespace dingosdk::server_gui
 

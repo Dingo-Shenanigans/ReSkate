@@ -1,22 +1,34 @@
 // ReSkate Dedicated Server GUI
 // Built for DingoSDK ReSkate Dedicated Server — Made with love by wxndr
 
+#ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#endif
 #include "server_gui.h"
+#ifdef _WIN32
 #include "server_gui_renderer.h"
+#endif
 #include "../server_engine.h"
 #include "../server_words.h"
 #include "Extension/UI/skate_theme.h"
 #include "Extension/UI/Overlay/skate_style.h"
 #include "Extension/Multiplayer/Net/protocol.h"
 #include "Extension/Multiplayer/developer_identity.h"
+#ifndef _WIN32
+// overlay.h (through role_badge.h) declares the game DLL's exports; only their shape is read here.
+#define __declspec(attribute)
+#endif
 #include "Extension/UI/Overlay/role_badge.h"
+#ifndef _WIN32
+#undef __declspec
+#endif
 
+#ifdef _WIN32
 #include <dwmapi.h>
 #include <uxtheme.h>
 #include <shellapi.h>
@@ -25,6 +37,16 @@
 #endif
 #include <backends/imgui_impl_win32.h>
 #include <backends/imgui_impl_dx12.h>
+#else
+#include <SDL3/SDL.h>
+#include <backends/imgui_impl_sdl3.h>
+#include <backends/imgui_impl_opengl3.h>
+#include "server_gui_fonts.h"
+#include <spawn.h>
+#include <sys/wait.h>
+#include <unistd.h>
+extern char **environ;
+#endif
 
 #include <algorithm>
 #include <array>
@@ -35,7 +57,23 @@
 #include <format>
 #include <string>
 
+#ifdef _WIN32
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND, UINT, WPARAM, LPARAM);
+#else
+// The MSVC secure-CRT calls the panels make, with their Windows meaning.
+#include <cstring>
+#include <ctime>
+constexpr std::size_t _TRUNCATE = static_cast<std::size_t>(-1);
+inline int strncpy_s(char* dest, std::size_t size, const char* src, std::size_t count) {
+    if (!dest || !size) return 1;
+    const std::size_t length = std::min(std::strlen(src ? src : ""), std::min(count, size - 1));
+    if (length) std::memcpy(dest, src, length);
+    dest[length] = '\0';
+    return 0;
+}
+template<std::size_t N> int strncpy_s(char (&dest)[N], const char* src, std::size_t count) { return strncpy_s(dest, N, src, count); }
+inline int localtime_s(std::tm* out, const std::time_t* time) { return localtime_r(time, out) ? 0 : 1; }
+#endif
 
 namespace dingosdk::server_gui {
 
@@ -45,8 +83,32 @@ using namespace dingosdk::server;
 
 namespace {
 
+#ifdef _WIN32
 HWND g_window = nullptr;
 Renderer g_renderer;
+#else
+SDL_Window* g_window = nullptr;
+
+// What ShellExecute "open" does on Windows: the desktop's handler for a file, folder or link,
+// started without a shell and not waited for.
+void open_externally(const std::string& target) {
+    if (target.empty()) return;
+    const bool link = target.starts_with("http://") || target.starts_with("https://");
+    std::string argument = target;
+    if (!link) {
+        std::error_code ec;
+        argument = fs::absolute(fs::path(target), ec).string();
+        if (ec) argument = target;
+    }
+    char program[] = "xdg-open";
+    char* const argv[] = {program, argument.data(), nullptr};
+    pid_t child{};
+    if (posix_spawnp(&child, program, nullptr, nullptr, argv, environ) == 0) {
+        // xdg-open hands the target to the desktop and returns quickly; reap it off the UI thread.
+        std::thread([child] { int status{}; waitpid(child, &status, 0); }).detach();
+    }
+}
+#endif
 GuiState g_state;
 GuiFonts g_fonts;
 float g_scale = 1.0f;
@@ -574,6 +636,17 @@ void draw_server_control_block(const ServerStatusSnapshot& stats) {
 // --- Fonts Loader ---
 ImFont* embedded_font(const wchar_t* name, float size) {
     static const ImWchar ranges[]{0x0020, 0x024F, 0x0400, 0x052F, 0x2000, 0x206F, 0x20A0, 0x20CF, 0x2190, 0x21FF, 0};
+#ifndef _WIN32
+    // The same fonts as the Windows resources, built into the binary (server_gui_fonts.h).
+    const auto font = std::wstring_view(name) == L"FONT_HEADING" ? embedded_fonts::heading
+                    : std::wstring_view(name) == L"FONT_BRUSH"   ? embedded_fonts::brush
+                                                                 : embedded_fonts::body;
+    ImFontConfig config;
+    config.FontDataOwnedByAtlas = false;
+    config.OversampleH = size >= 32 ? 1 : 2;
+    return ImGui::GetIO().Fonts->AddFontFromMemoryTTF(const_cast<unsigned char*>(font.data()), static_cast<int>(font.size()),
+                                                      S(size), &config, ranges);
+#else
     const auto instance = GetModuleHandleW(nullptr);
     const auto resource = FindResourceW(instance, name, MAKEINTRESOURCEW(10));
     if (!resource) return nullptr;
@@ -585,6 +658,7 @@ ImFont* embedded_font(const wchar_t* name, float size) {
     config.OversampleH = size >= 32 ? 1 : 2;
     return ImGui::GetIO().Fonts->AddFontFromMemoryTTF(data, static_cast<int>(SizeofResource(instance, resource)),
                                                       S(size), &config, ranges);
+#endif
 }
 
 ImFont* file_font(const fs::path& path, float size) {
@@ -604,11 +678,15 @@ void load_fonts(const fs::path& root_folder) {
         if (auto* f = embedded_font(res_name, size)) return f;
         if (auto* f = file_font(font_dir / file_name, size)) return f;
         if (auto* f = file_font(ext_dir / file_name, size)) return f;
+#ifdef _WIN32
         std::array<char, MAX_PATH> win_dir{};
         if (GetWindowsDirectoryA(win_dir.data(), static_cast<UINT>(win_dir.size()))) {
             const auto win_font = fs::path(win_dir.data()) / "Fonts" / fallback_sys;
             if (auto* f = file_font(win_font, size)) return f;
         }
+#else
+        (void)fallback_sys;
+#endif
         ImFontConfig cfg;
         cfg.SizePixels = S(size);
         return io.Fonts->AddFontDefault(&cfg);
@@ -621,10 +699,18 @@ void load_fonts(const fs::path& root_folder) {
     g_fonts.heading = load(L"FONT_HEADING", "Montserrat-ExtraBold.ttf", "segoeuib.ttf", 22.0f);
     g_fonts.title = load(L"FONT_BRUSH", "PermanentMarker-Regular.ttf", "arialbi.ttf", 42.0f);
 
+#ifdef _WIN32
     std::array<char, MAX_PATH> win_dir{};
     if (GetWindowsDirectoryA(win_dir.data(), static_cast<UINT>(win_dir.size()))) {
         g_fonts.mono = file_font(fs::path(win_dir.data()) / "Fonts" / "consola.ttf", 14.0f);
     }
+#else
+    // Consolas' place: the usual monospace fonts where distributions put them.
+    for (const char* path : {"/usr/share/fonts/TTF/DejaVuSansMono.ttf", "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+                             "/usr/share/fonts/dejavu/DejaVuSansMono.ttf", "/usr/share/fonts/liberation/LiberationMono-Regular.ttf",
+                             "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf", "/usr/share/fonts/noto/NotoSansMono-Regular.ttf"})
+        if (!g_fonts.mono) g_fonts.mono = file_font(path, 14.0f);
+#endif
     if (!g_fonts.mono) g_fonts.mono = g_fonts.body;
 
     io.FontDefault = g_fonts.body;
@@ -677,6 +763,7 @@ void apply_style() {
     c[ImGuiCol_TextSelectedBg] = rgb(IM_COL32(1, 131, 255, 115));
 }
 
+#ifdef _WIN32
 LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
     if (ImGui_ImplWin32_WndProcHandler(window, message, wparam, lparam)) return 1;
 
@@ -748,6 +835,29 @@ LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPAR
     }
     return DefWindowProcW(window, message, wparam, lparam);
 }
+#else
+// WM_NCHITTEST's counterpart: the window has no frame of its own, so its edges resize it and the
+// top bar (but its buttons) moves it, as on Windows.
+SDL_HitTestResult hit_test(SDL_Window* window, const SDL_Point* pt, void*) {
+    int width{}, height{};
+    SDL_GetWindowSize(window, &width, &height);
+    // In window coordinates, as ImGui draws (run_gui sets g_scale for them).
+    const auto px = [](float v) { return static_cast<int>(S(v)); };
+    if (!(SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED)) {
+        const int border = px(8.0f);
+        if (pt->y < border && pt->x < border) return SDL_HITTEST_RESIZE_TOPLEFT;
+        if (pt->y < border && pt->x >= width - border) return SDL_HITTEST_RESIZE_TOPRIGHT;
+        if (pt->y >= height - border && pt->x < border) return SDL_HITTEST_RESIZE_BOTTOMLEFT;
+        if (pt->y >= height - border && pt->x >= width - border) return SDL_HITTEST_RESIZE_BOTTOMRIGHT;
+        if (pt->y < border) return SDL_HITTEST_RESIZE_TOP;
+        if (pt->y >= height - border) return SDL_HITTEST_RESIZE_BOTTOM;
+        if (pt->x < border) return SDL_HITTEST_RESIZE_LEFT;
+        if (pt->x >= width - border) return SDL_HITTEST_RESIZE_RIGHT;
+    }
+    if (g_drag_allowed && pt->y >= 0 && pt->y < px(48) && pt->x < width - px(112.0f)) return SDL_HITTEST_DRAGGABLE;
+    return SDL_HITTEST_NORMAL;
+}
+#endif
 
 // ============================================================================
 // TAB RENDERERS
@@ -776,7 +886,7 @@ void draw_overview_tab(const ServerStatusSnapshot& stats) {
         const auto hours = stats.uptime_seconds / 3600;
         const auto mins = (stats.uptime_seconds % 3600) / 60;
         const auto secs = stats.uptime_seconds % 60;
-        std::snprintf(buf, sizeof(buf), "%02llu:%02llu:%02llu", hours, mins, secs);
+        std::snprintf(buf, sizeof(buf), "%02llu:%02llu:%02llu", static_cast<unsigned long long>(hours), static_cast<unsigned long long>(mins), static_cast<unsigned long long>(secs));
         stat_row("Server Uptime", buf);
 
         ImGui::Spacing();
@@ -1329,7 +1439,11 @@ static void draw_roles_editor() {
     ImGui::SameLine(0, S(10));
     if (rough_button("OPEN ROLES FILE", ImVec2(S(170), S(32)))) {
         const auto path = roles_file(cfg).string();
+#ifdef _WIN32
         ShellExecuteA(nullptr, "open", path.c_str(), nullptr, nullptr, SW_SHOW);
+#else
+        open_externally(path);
+#endif
     }
     ImGui::Dummy(ImVec2(0, S(6)));
 
@@ -1498,7 +1612,7 @@ void draw_moderation_tab() {
                     // SteamID
                     ImGui::TableSetColumnIndex(1);
                     ImGui::PushFont(g_fonts.mono);
-                    ImGui::Text("%llu", ban.id);
+                    ImGui::Text("%llu", static_cast<unsigned long long>(ban.id));
                     ImGui::PopFont();
 
                     // Date
@@ -1559,7 +1673,7 @@ void draw_moderation_tab() {
             for (const auto& [admin_id, role_name] : admins) {
                 ImGui::AlignTextToFramePadding();
                 ImGui::PushFont(g_fonts.mono);
-                ImGui::Text("%llu", admin_id);
+                ImGui::Text("%llu", static_cast<unsigned long long>(admin_id));
                 ImGui::PopFont();
                 ImGui::SameLine(0, S(16));
                 ImGui::TextUnformatted(role_name.c_str());
@@ -1992,11 +2106,19 @@ void draw_telemetry_tab() {
 
         // Card 3: Process Threads & Memory
         begin_card("card_process_mem", "SERVER PROCESS & MEMORY", "Host execution environment metrics");
+#ifdef _WIN32
         std::snprintf(buf, sizeof(buf), "%.1f MB Working Set", mem_mb);
+#else
+        std::snprintf(buf, sizeof(buf), "%.1f MB Resident", mem_mb);
+#endif
         stat_row("Physical Memory (RAM)", buf);
         stat_row("Worker Thread Dispatch", "Multi-Threaded (Up to 8 cores)", good);
         stat_row("Monotonic Clock", "High-Resolution Monotonic Epoch", good);
+#ifdef _WIN32
         stat_row("Release Build Platform", "Windows x64 (MSVC Release)", good);
+#else
+        stat_row("Release Build Platform", "Linux x64", good);
+#endif
         end_card();
 
         // Card 4: Traffic & Relay Protocol
@@ -2031,7 +2153,7 @@ void draw_telemetry_tab() {
 
                     ImGui::TableSetColumnIndex(0);
                     ImGui::PushFont(g_fonts.mono);
-                    ImGui::Text("%llu", p.id);
+                    ImGui::Text("%llu", static_cast<unsigned long long>(p.id));
                     ImGui::PopFont();
 
                     ImGui::TableSetColumnIndex(1);
@@ -2708,7 +2830,11 @@ void draw_settings_tab(ServerStatusSnapshot& stats) {
     ImGui::SameLine(0, S(10));
     if (rough_button("OPEN CONFIG FILE", ImVec2(S(170), S(34)))) {
         auto cfg_path = (ServerEngine::instance().folder() / "ReSkateServer.json").string();
+#ifdef _WIN32
         ShellExecuteA(nullptr, "open", cfg_path.c_str(), nullptr, nullptr, SW_SHOW);
+#else
+        open_externally(cfg_path);
+#endif
     }
 
     ImGui::Dummy(ImVec2(0, S(8)));
@@ -2752,12 +2878,20 @@ void draw_settings_tab(ServerStatusSnapshot& stats) {
     ImGui::PopStyleColor();
     if (rough_button("FILTERED WORDS", ImVec2(S(160), S(28)))) {
         const auto path = filtered_words_file(ServerEngine::instance().config()).string();
+#ifdef _WIN32
         ShellExecuteA(nullptr, "open", path.c_str(), nullptr, nullptr, SW_SHOW);
+#else
+        open_externally(path);
+#endif
     }
     ImGui::SameLine(0, S(8));
     if (rough_button("BLOCKED WORDS", ImVec2(S(160), S(28)))) {
         const auto path = blocked_words_file(ServerEngine::instance().config()).string();
+#ifdef _WIN32
         ShellExecuteA(nullptr, "open", path.c_str(), nullptr, nullptr, SW_SHOW);
+#else
+        open_externally(path);
+#endif
     }
     ImGui::SameLine(0, S(8));
     if (rough_button("RELOAD WORDS", ImVec2(S(150), S(28)))) {
@@ -2839,7 +2973,11 @@ void draw_settings_tab(ServerStatusSnapshot& stats) {
     // About & Credits Card
     begin_card("card_cfg_about", "ABOUT DEDICATED SERVER GUI", "System credits and build info");
     stat_row("Dedicated Server GUI", "Made with love by wxndr", good);
+#ifdef _WIN32
     stat_row("UI Framework", "Dear ImGui (DirectX 12 / Win32)", good);
+#else
+    stat_row("UI Framework", "Dear ImGui (OpenGL 3 / SDL3)", good);
+#endif
     end_card();
 
     ImGui::Columns(1);
@@ -2993,7 +3131,11 @@ void render_frame() {
         ImGui::SetCursorScreenPos(name_pos);
         ImGui::PushID("sidebar_author_link");
         if (ImGui::InvisibleButton("##wxndr_link", name_sz)) {
+#ifdef _WIN32
             ShellExecuteW(nullptr, L"open", L"https://steamcommunity.com/id/1wxndr/", nullptr, nullptr, SW_SHOWNORMAL);
+#else
+            open_externally("https://steamcommunity.com/id/1wxndr/");
+#endif
         }
         const bool link_hovered = ImGui::IsItemHovered();
         if (link_hovered) {
@@ -3032,18 +3174,37 @@ void render_frame() {
     }
 
     // Top Right Window Controls (Minimize, Maximize / Restore, Close)
+#ifdef _WIN32
     const bool is_maximized = IsZoomed(g_window);
+#else
+    const bool is_maximized = (SDL_GetWindowFlags(g_window) & SDL_WINDOW_MAXIMIZED) != 0;
+#endif
     ImGui::SetCursorPos(ImVec2(size.x - S(112), S(12)));
     if (ImGui::Button("_", ImVec2(S(28), S(28)))) {
+#ifdef _WIN32
         ShowWindow(g_window, SW_MINIMIZE);
+#else
+        SDL_MinimizeWindow(g_window);
+#endif
     }
     ImGui::SameLine();
     if (ImGui::Button(is_maximized ? "=" : "[ ]", ImVec2(S(28), S(28)))) {
+#ifdef _WIN32
         ShowWindow(g_window, is_maximized ? SW_RESTORE : SW_MAXIMIZE);
+#else
+        if (is_maximized) SDL_RestoreWindow(g_window);
+        else SDL_MaximizeWindow(g_window);
+#endif
     }
     ImGui::SameLine();
     if (ImGui::Button("X", ImVec2(S(28), S(28)))) {
+#ifdef _WIN32
         PostMessageW(g_window, WM_CLOSE, 0, 0);
+#else
+        SDL_Event quit{};
+        quit.type = SDL_EVENT_QUIT;
+        SDL_PushEvent(&quit);
+#endif
     }
 
     // Main Content Area (Lighter grey background with internal safe padding so "Network" is never on the border)
@@ -3141,7 +3302,7 @@ void render_frame() {
         ImGui::PopFont();
         ImGui::Spacing();
 
-        ImGui::Text("Target: %s (SteamID64: %llu)", g_state.target_player_name.c_str(), g_state.target_player_id);
+        ImGui::Text("Target: %s (SteamID64: %llu)", g_state.target_player_name.c_str(), static_cast<unsigned long long>(g_state.target_player_id));
         ImGui::Spacing();
 
         ImGui::PushItemWidth(S(340.0f));
@@ -3194,6 +3355,7 @@ void render_frame() {
 
 } // namespace
 
+#ifdef _WIN32
 int run_gui(HINSTANCE instance, int cmd_show) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
@@ -3300,5 +3462,136 @@ int run_gui(HINSTANCE instance, int cmd_show) {
     DestroyWindow(window);
     return 0;
 }
+#else
+int run_gui() {
+    if (!SDL_Init(SDL_INIT_VIDEO)) {
+        std::fprintf(stderr, "The server window needs a desktop (SDL: %s). Run ReSkateServer, or ReSkateServerGUI --headless, "
+                             "for the console server.\n", SDL_GetError());
+        return 1;
+    }
+    // The work area and the display's scale, as Windows' work area and DPI.
+    const SDL_DisplayID display = SDL_GetPrimaryDisplay();
+    SDL_Rect work{0, 0, 1920, 1080};
+    SDL_GetDisplayUsableBounds(display, &work);
+    const float content_scale = SDL_GetDisplayContentScale(display);
+    g_scale = std::max(1.0f, content_scale > 0 ? content_scale : 1.0f);
+
+    constexpr float design_w = 1260.0f;
+    constexpr float design_h = 860.0f;
+    const int width = std::min(static_cast<int>(design_w), static_cast<int>(work.w * 0.95f));
+    const int height = std::min(static_cast<int>(design_h), static_cast<int>(work.h * 0.95f));
+
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, 0);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
+    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+    SDL_Window* window = SDL_CreateWindow("ReSkate Dedicated Server", width, height,
+        SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_BORDERLESS | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_HIDDEN);
+    if (!window) {
+        std::fprintf(stderr, "The server window could not be created (SDL: %s).\n", SDL_GetError());
+        SDL_Quit();
+        return 1;
+    }
+    g_window = window;
+    // ImGui draws in window coordinates. Where the compositor scales the window itself (Wayland),
+    // those are already scaled and S() must not scale again; where it does not (X11), S() does.
+    const float density = SDL_GetWindowPixelDensity(window);
+    g_scale = std::max(1.0f, (content_scale > 0 ? content_scale : 1.0f) / (density > 0 ? density : 1.0f));
+    SDL_SetWindowSize(window, std::min(static_cast<int>(S(design_w)), static_cast<int>(work.w * 0.95f)),
+                      std::min(static_cast<int>(S(design_h)), static_cast<int>(work.h * 0.95f)));
+    SDL_SetWindowMinimumSize(window, static_cast<int>(S(850.0f)), static_cast<int>(S(550.0f)));
+    SDL_SetWindowHitTest(window, hit_test, nullptr);
+    SDL_SetWindowPosition(window, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+
+    SDL_GLContext context = SDL_GL_CreateContext(window);
+    if (!context) {
+        std::fprintf(stderr, "OpenGL 3.2 could not be started for the server window (SDL: %s).\n", SDL_GetError());
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
+    SDL_GL_MakeCurrent(window, context);
+    SDL_GL_SetSwapInterval(1);
+    // The three GL calls the frame needs besides ImGui's own (its loader covers only those).
+    using Viewport = void (*)(int, int, int, int);
+    using ClearColor = void (*)(float, float, float, float);
+    using Clear = void (*)(unsigned);
+    const auto gl_viewport = reinterpret_cast<Viewport>(SDL_GL_GetProcAddress("glViewport"));
+    const auto gl_clear_color = reinterpret_cast<ClearColor>(SDL_GL_GetProcAddress("glClearColor"));
+    const auto gl_clear = reinterpret_cast<Clear>(SDL_GL_GetProcAddress("glClear"));
+    constexpr unsigned color_buffer_bit = 0x00004000; // GL_COLOR_BUFFER_BIT
+
+    IMGUI_CHECKVERSION();
+    ImGui::CreateContext();
+    ImGui::GetIO().IniFilename = nullptr;
+    ImGui::GetIO().LogFilename = nullptr;
+
+    // The server's folder: the one this program is in.
+    std::error_code ec;
+    const fs::path root_folder = fs::read_symlink("/proc/self/exe", ec).parent_path();
+
+    load_fonts(root_folder);
+    apply_style();
+
+    ImGui_ImplSDL3_InitForOpenGL(window, context);
+    if (!ImGui_ImplOpenGL3_Init("#version 150")) {
+        std::fprintf(stderr, "OpenGL 3 could not be initialized for the server window.\n");
+        ImGui_ImplSDL3_Shutdown();
+        ImGui::DestroyContext();
+        SDL_GL_DestroyContext(context);
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+        return 1;
+    }
+    SDL_ShowWindow(window);
+
+    const bool env_ok = ServerEngine::instance().load_environment(root_folder, root_folder / "ReSkateServer.json", true);
+    if (env_ok && ServerEngine::instance().config().autostart) {
+        ServerEngine::instance().start_server_async();
+    }
+
+    // Closing the window, Ctrl+C and SIGTERM all come as SDL_EVENT_QUIT.
+    bool running = true;
+    while (running) {
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            ImGui_ImplSDL3_ProcessEvent(&event);
+            if (event.type == SDL_EVENT_QUIT) running = false;
+            if (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && event.window.windowID == SDL_GetWindowID(window)) running = false;
+        }
+        if (!running) break;
+
+        if (SDL_GetWindowFlags(window) & SDL_WINDOW_MINIMIZED) {
+            SDL_Delay(50);
+            continue;
+        }
+
+        ImGui_ImplOpenGL3_NewFrame();
+        ImGui_ImplSDL3_NewFrame();
+        ImGui::NewFrame();
+
+        render_frame();
+
+        ImGui::Render();
+        int fb_w{}, fb_h{};
+        SDL_GetWindowSizeInPixels(window, &fb_w, &fb_h);
+        if (gl_viewport) gl_viewport(0, 0, fb_w, fb_h);
+        if (gl_clear_color) gl_clear_color(0.04f, 0.04f, 0.05f, 1.0f);
+        if (gl_clear) gl_clear(color_buffer_bit);
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+        SDL_GL_SwapWindow(window);
+    }
+
+    ServerEngine::instance().stop();
+    ImGui_ImplOpenGL3_Shutdown();
+    ImGui_ImplSDL3_Shutdown();
+    ImGui::DestroyContext();
+    SDL_GL_DestroyContext(context);
+    SDL_DestroyWindow(window);
+    SDL_Quit();
+    return 0;
+}
+#endif
 
 } // namespace dingosdk::server_gui

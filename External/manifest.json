@@ -17,7 +17,12 @@
       "backends/imgui_impl_dx12.cpp": "77322d90b0beb70dff530f5f22cb2f2ffdd5773c5c13332e0c19c97d0f295bf0",
       "backends/imgui_impl_dx12.h": "d6adad2afd59fe1160e581fa09bb4c597b8e7970e2d693b2919c3fc05f83bbfa",
       "backends/imgui_impl_win32.cpp": "e572de10045298bbf833aa7a15e28d2777df57603b4e50b9c8aa4c878f1e4cfa",
-      "backends/imgui_impl_win32.h": "606df46db972371ac6b5f5ad94bba75a09657da47b259105c4845c1f8638fa0c"
+      "backends/imgui_impl_win32.h": "606df46db972371ac6b5f5ad94bba75a09657da47b259105c4845c1f8638fa0c",
+      "backends/imgui_impl_opengl3.cpp": "cf3c535e3a673e19ef893da4b7d370197547cc1350acd5051e842606aef951d7",
+      "backends/imgui_impl_opengl3.h": "8239b72a4325f370c275d34b655b3fcaf2660ce9d7acfdea494a303dd51f9e5c",
+      "backends/imgui_impl_opengl3_loader.h": "9d17b1679dc876e0ca693631030e70656c372c808c6767644c3b545834483e24",
+      "backends/imgui_impl_sdl3.cpp": "f6973eebab67a6e2c6cad4a495c20d453c714b43ff90d8e444dd88a98c73c7e5",
+      "backends/imgui_impl_sdl3.h": "a6866cb9f9d9eb69ad64d49075fbcc247cadb9c872fcdfb0569f4b93ccb802a6"
     },
     "local_patches": {
       "backends/imgui_impl_dx12.cpp": {
