@@ -71,7 +71,7 @@ StreamedTextures stream_resident_textures(const CasStore& store, const fs::path&
             constexpr std::size_t group = 0x80;
             constexpr std::string_view worlds = "Worlds_";
             if (std::memcmp(header.data() + group, worlds.data(), worlds.size()) != 0) continue;
-            if (texture.type != texture_2d || !(texture.flags & texture_streams) || texture.first_mip != 0 || texture.mip_count < 2)
+            if (texture.type != texture_2d || !(texture.flags & texture_streams) || texture.mip_count < 2)
                 continue;
             // The streamer reads a chunk as compressed blocks only when its guid says so (the low
             // bit of its last byte), and as raw pixels otherwise. Kept whole, nothing ever streams
@@ -82,6 +82,23 @@ StreamedTextures stream_resident_textures(const CasStore& store, const fs::path&
             // while what stays is over 64 KB, and only where the tail starts on a 64 KB block.
             std::uint64_t total{};
             for (std::size_t mip = 0; mip < texture.mip_count; ++mip) total += texture.mip_sizes[mip];
+            if (texture.first_mip != 0) {
+                // Early Studio builds wrote streamed world textures with the bundle chunk already
+                // sliced to the resident tail, leaving logicalOffset at 0 instead of the streamed
+                // mips' byte count (864 textures of ZennyAU-LES_Skatepark, 646 of Mw3_Resistance).
+                if (texture.first_mip >= texture.mip_count) continue;
+                std::uint64_t streamedBytes{};
+                for (std::size_t mip = 0; mip < texture.first_mip; ++mip) streamedBytes += texture.mip_sizes[mip];
+                if (!streamedBytes || (streamedBytes & 0xffffu)) continue;
+                const auto chunk = std::ranges::find_if(manifest.chunks, [&](const fb::BundleAsset& c) { return c.guid == texture.chunk; });
+                if (chunk == manifest.chunks.end() || !tocChunks.contains(texture.chunk)) continue;
+                if (chunk->logicalOffset != 0 || chunk->logicalSize != total - streamedBytes) continue;
+                chunk->logicalOffset = static_cast<std::uint32_t>(streamedBytes);
+                chunk->originalSize = (chunk->logicalOffset & 0xFFFFU) | chunk->logicalSize;
+                result.offsets.push_back(resourcesAt + index);
+                if (result.offset_example.empty()) result.offset_example = asset.name;
+                continue;
+            }
             std::size_t firstMip{};
             std::uint64_t resident = total, start{};
             while (resident > 0x10000 && firstMip < 3 && firstMip + 1 < texture.mip_count) {
