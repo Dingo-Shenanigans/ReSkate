@@ -724,6 +724,54 @@ int button_row(SkateMenu& menu, const char* id, std::initializer_list<RowButton>
     return pressed;
 }
 
+int button_grid(SkateMenu& menu, const char* id, const std::vector<std::string>& names, int lit) {
+    int pressed = -1;
+    ImGui::PushID(id);
+    const int count = static_cast<int>(names.size());
+    if (!console_mode) {
+        const float right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+        for (int i = 0; i < count; ++i) {
+            const auto& name = names[static_cast<std::size_t>(i)];
+            const float width = ImGui::CalcTextSize(name.c_str()).x + ImGui::GetStyle().FramePadding.x * 2 + px(8);
+            if (i) {
+                ImGui::SameLine();
+                if (ImGui::GetCursorScreenPos().x + width > right) ImGui::NewLine();
+            }
+            ImGui::PushID(i);
+            if (i == lit) ImGui::PushStyleColor(ImGuiCol_Button, blue);
+            if (ImGui::Button(name.c_str(), ImVec2(width, px(30)))) pressed = i;
+            if (i == lit) ImGui::PopStyleColor();
+            ImGui::PopID();
+        }
+        ImGui::PopID();
+        return pressed;
+    }
+    // Full screen: tiles as button_row's, at least 150 px wide, as many to a row as fit.
+    const float gap = px(10), height = px(46), room = ImGui::GetContentRegionAvail().x;
+    const int across = std::max(1, std::min(count, static_cast<int>((room + gap) / (px(150) + gap))));
+    const float width = (room - gap * static_cast<float>(across - 1)) / static_cast<float>(across);
+    auto* draw = ImGui::GetWindowDrawList();
+    for (int i = 0; i < count; ++i) {
+        if (i % across) ImGui::SameLine(0, gap);
+        ImGui::PushID(i);
+        const auto at = ImGui::GetCursorScreenPos();
+        if (ImGui::InvisibleButton("##tile", ImVec2(width, height), ImGuiButtonFlags_EnableNav)) pressed = i;
+        const bool hot = (ImGui::IsItemFocused() && ImGui::GetIO().NavVisible) || ImGui::IsItemHovered();
+        const ImVec2 end(at.x + width, at.y + height);
+        skate_theme::rough_rect(draw, at, end, hot ? blue : i == lit ? paper : IM_COL32(26, 26, 26, 235), static_cast<unsigned>(ImGui::GetItemID()) & 0xfff,
+                                ui_scale);
+        const auto& name = names[static_cast<std::size_t>(i)];
+        const auto size = menu.bold->CalcTextSizeA(px(16), FLT_MAX, 0, name.c_str());
+        draw->PushClipRect(at, end, true);
+        draw->AddText(menu.bold, px(16), ImVec2(at.x + std::max(px(10), (width - size.x) * .5f), at.y + (height - size.y) * .5f),
+                      i == lit && !hot ? skate_theme::black : paper, name.c_str());
+        draw->PopClipRect();
+        ImGui::PopID();
+    }
+    ImGui::PopID();
+    return pressed;
+}
+
 bool option_row(SkateMenu& menu, const char* label, const char* hint, int& selected, const std::vector<std::string>& options, bool enabled,
                 bool* pressed) {
     const int count = static_cast<int>(options.size());

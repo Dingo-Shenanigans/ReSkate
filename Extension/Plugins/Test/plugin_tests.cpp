@@ -3730,6 +3730,7 @@ void plugins_have_pages() {
     Host host(environment, Side::client);
     host.apply({script("pages", R"(
         local tab, on, strength = 1, false, 50
+        local size, name, tint, count, open, pick = 2, "Board", {r = 1, g = 0, b = 0}, 3, true, 0
         reskate.menu.page("Tools", function(ui)
             tab = ui:tabs("tabs", {"MAIN", "MORE"}, tab)
             ui:card("SWITCHES", "What it does")
@@ -3739,13 +3740,27 @@ void plugins_have_pages() {
             ui:note("A note")
             ui:warn("A warning")
             ui:button("go", "GO", true)
+            size = ui:buttons("sizes", {"50 MM", "54 MM", "58 MM"}, size) or size
+            name = ui:text("name", "Name", name, "Type a name")
+            tint = ui:colour("tint", "Tint", tint)
+            count = ui:stepper("count", "Count", count, 0, 10, 0.5, "%.1f")
+            open = ui:section("more", "MORE", "Folds away", open)
+            pick = ui:list("pick", "Pick", {"a", "b", "c", "d"}, pick)
+            assert(not pcall(ui.buttons, ui, "bad3", {}), "buttons are 1 to 32 names")
+            assert(not pcall(ui.stepper, ui, "bad4", "Bad", 1, 0, 2, 0), "a step is above 0")
+            assert(not pcall(ui.list, ui, "bad5", "Bad", {}), "a list has items")
+            assert(not pcall(ui.colour, ui, "bad6", "Bad", {r = "x"}), "a colour is three numbers")
+            assert(not pcall(ui.text, ui, "bad7", "Bad", string.rep("x", 201)), "a text field holds at most 200 characters")
             assert(not pcall(ui.slider, ui, "bad", "Bad", 1, 0, 2, "%s"), "a slider's format is one number")
             assert(not pcall(ui.slider, ui, "bad2", "Bad", 1, 0, 2, "%f %f"), "and only one")
         end)
         assert(not pcall(reskate.menu.page, "Again", function() end), "one page")
         assert(not pcall(reskate.menu.panel, "Tools", function() end), "a panel cannot share the page's title")
         reskate.menu.panel("Extra", function(ui) ui:label("more") end)
-        reskate.console.command("state", "x", function() reskate.log(string.format("state %d %s %.0f", tab, tostring(on), strength)) end)
+        reskate.console.command("state", "x", function()
+            reskate.log(string.format("state %d %s %.0f %d %s %.1f %.1f %s %d", tab, tostring(on), strength, size, name, tint.g, count,
+                tostring(open), pick))
+        end)
     )", R"("console", "menu")"), script("others", R"(
         reskate.menu.panel("Theirs", function(ui) ui:label("theirs") end)
     )", R"("menu")")});
@@ -3764,15 +3779,24 @@ void plugins_have_pages() {
           "The shown plugin's page is built, then its panels, and no other plugin's\n" + environment.all());
     using K = plugin_ui::Widget::Kind;
     const auto& w = environment.panels[0].widgets;
-    check(w.size() == 8 && w[0].kind == K::tabs && w[0].choices.size() == 2 && w[1].kind == K::card && w[1].help == "What it does" &&
+    check(w.size() == 14 && w[0].kind == K::tabs && w[0].choices.size() == 2 && w[1].kind == K::card && w[1].help == "What it does" &&
               w[2].help == "Turns it on" && w[3].format == "%.0f%%" && w[4].kind == K::info && w[4].help == "fine" && w[5].kind == K::note &&
               w[6].kind == K::warn && w[7].on,
           "with its tabs, cards, help, the slider's format, info lines, notes and a main button");
+    check(w[8].kind == K::buttons && w[8].choices.size() == 3 && w[8].chosen == 2 && w[9].kind == K::text && w[9].input == "Board" &&
+              w[9].help == "Type a name" && w[10].kind == K::colour && w[10].colour[0] == 1 && w[10].colour[1] == 0 && w[11].kind == K::stepper &&
+              w[11].step == 0.5f && w[11].value == 3 && w[11].format == "%.1f" && w[12].kind == K::section && w[12].on &&
+              w[12].help == "Folds away" && w[13].kind == K::list && w[13].choices.size() == 4 && w[13].chosen == 0 && w[13].rows == 6,
+          "and a row of buttons with one lit, a text field, a colour, a stepper, a section and a list");
     using A = plugin_ui::Action;
-    environment.actions = {A{"pages", "Tools", "tabs", false, 0, 2}, A{"pages", "Tools", "on", true}, A{"pages", "Tools", "strength", false, 75}};
+    environment.actions = {A{"pages", "Tools", "tabs", false, 0, 2}, A{"pages", "Tools", "on", true}, A{"pages", "Tools", "strength", false, 75},
+                           A{"pages", "Tools", "sizes", false, 0, 3}, A{"pages", "Tools", "name", false, 0, 0, "Deck"},
+                           A{"pages", "Tools", "tint", false, 0, 0, "", {0, 0.5f, 1}}, A{"pages", "Tools", "count", false, 7.3f},
+                           A{"pages", "Tools", "more", false}, A{"pages", "Tools", "pick", false, 0, 2}};
     ticks(host, environment, 10);
     host.run_console("state");
-    check(environment.logged("state 2 true 75"), "What the player did on it reaches the plugin\n" + environment.all());
+    check(environment.logged("state 2 true 75 3 Deck 0.5 7.5 false 2"),
+          "What the player did on it reaches the plugin, the stepper on its steps\n" + environment.all());
 }
 
 // A 16-bit mono WAVE file of `samples` at `rate`.
