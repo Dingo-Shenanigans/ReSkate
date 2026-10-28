@@ -1157,6 +1157,41 @@ void shader_selection_checks_the_winner(bool delivered, bool changed_heap, bool 
     expect(keys.contains(9) == private_graph, "unproved graphs cannot leak private program indices into stock");
     expect(keys.contains(5) == !changed_heap, "a non-retained custom contributor still contributes a proven stock alias");
 }
+
+void streamed_world_texture_chunk_gets_its_logical_offset() {
+  const auto id = chunk_id(0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19,
+                           0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20);
+  // Early ReSkateStudio 1.0.0 world textures already have firstMip = 2 and the
+  // 87,408-byte resident tail (aligned to 131,072 bytes in the bundle), while
+  // leaving the bundle chunk's logicalOffset at 0 instead of 2,796,208.
+  auto header = streamed_dxt1_2048_header(id);
+  header[12] = 2u;
+  const auto bundle = bundle_with_chunks(
+      {{id, 0u, 131072u}},
+      {"win32/content/worlds_test/worlds_test_0_0_static_sky_c"});
+  std::vector<std::uint8_t> cas(28u + 87408u, 0x5Au);
+
+  ScopedTempDir temp;
+  const auto mods = temp.path / "Mods";
+  const auto data = temp.path / "Data";
+  write_base_layout(data);
+  write_mod_with_texture(mods / "Park", bundle, cas, header);
+
+  merge_mods(mods, data, "Patch");
+
+  const auto merged_cas =
+      read_bytes(mods / ".reskate" / "Win32" / "configurations" / "layout" /
+                 "defaultinstallpackage" / "cas_01.cas");
+  assert(merged_cas.size() > 28u);
+  const std::span<const std::uint8_t> rewritten_bundle(
+      merged_cas.data() + 28u, merged_cas.size() - 28u);
+  const auto parsed = BinaryBundle::parse(rewritten_bundle);
+  assert(parsed.has_value());
+  assert(parsed->chunks.size() == 1u);
+  assert(parsed->chunks[0].logicalOffset == 2796208u);
+  assert(parsed->chunks[0].logicalSize == 131072u);
+}
+
 } // namespace
 
 int main(int argc, char** argv) try {
