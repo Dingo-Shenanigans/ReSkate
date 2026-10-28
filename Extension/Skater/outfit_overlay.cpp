@@ -7,6 +7,7 @@
 #include "Engine/Vfs/content_catalogs.h"
 #include "Extension/World/load_error_guard.h"
 #include "Extension/Skater/layer_materials.h"
+#include "Engine/Core/Platform/user_data_paths.h"
 #include <Windows.h>
 #include <algorithm>
 #include <array>
@@ -96,8 +97,12 @@ int slot_of(State& s, const SkaterItems& m, std::uintptr_t resource, const std::
 }
 void give_back(State& s, const SkaterItems& m, std::uintptr_t skater, std::uint64_t now);
 // Which items load from which slots, kept between runs beside Skate.exe: a line each, "+slot|item"
-// or "-slot|item".
+// or "-slot|item". A launch with a separate user-data root keeps its own under that root, so what a
+// test build finds never decides what the player's launches try; empty when that root cannot be used.
 std::filesystem::path memory_file() {
+    if (user_data::development_requested()) {
+        try { return user_data::root() / L"ReSkate.layer_slots.txt"; } catch (...) { return {}; }
+    }
     std::array<wchar_t, 32768> buffer{};
     const auto count = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
     if (!count || count >= buffer.size()) return {};

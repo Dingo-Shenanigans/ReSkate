@@ -139,6 +139,10 @@ accepts `park random` from its console or an admin.
 | The game's own settings and saves | `%LOCALAPPDATA%\ReSkate\Game\` (kept apart from the normal game) |
 | Launcher settings | `ReSkateLauncher.settings.json` beside the launcher |
 
+A launch with `--dev-data-root` (see [Running your build](#running-your-build)) keeps all of these in its
+own folder instead, except the mods and the two choices kept with them beside `Skate.exe`: whether loose
+files load (`ReSkate.settings.json`) and which custom Lua scripts are on (`ReSkate.custom.json`).
+
 ### Troubleshooting
 
 **My antivirus says ReSkate is a virus.** It is a false alarm. ReSkate has to load itself into the game as
@@ -299,6 +303,7 @@ Useful launcher flags:
 | `-map <name>` | load that map as soon as the game is up, e.g. `-map "San Vansterdam"`; the name is a map's name, short name or asset path, or the start of one. Over the start map chosen in Settings > GAME |
 | `--no-loose-files` | ignore loose Lua and config files beside the game |
 | `--gpu-diagnostics` | record extra detail when the graphics driver crashes (DRED) |
+| `--dev-data-root=<folder>`, `--dev-data-root <folder>` | keep everything ReSkate stores for you (profile, the game's settings and saves, logs, caches, launcher settings) in that folder, to test with a profile apart from your own. It must be an absolute path outside `%LOCALAPPDATA%\ReSkate`, and not the game's folder itself; one that cannot be used stops the launch instead of falling back to your profile. Setting `RESKATE_DATA_ROOT` does the same |
 
 ### CMake options
 

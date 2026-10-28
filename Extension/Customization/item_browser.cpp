@@ -1,6 +1,7 @@
 #include "item_browser.h"
 #include "item_origins.h"
 #include "Engine/Core/Platform/path_text.h"
+#include "Engine/Core/Platform/user_data_paths.h"
 #include "local_customization_runtime.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Core/Log/logging.h"
@@ -92,9 +93,15 @@ struct Favorites {
         if (loaded) return;
         loaded = true;
         std::array<wchar_t, 32768> buffer{};
+        // A launch with a separate user-data root has pointed RESKATE_FAVORITES_FILE into it
+        // (user_data::initialize_development_root, in the launcher and again before the game's
+        // folder lookups are redirected). Without that variable such a launch keeps no favourites,
+        // rather than the player's beside the game.
         if (const auto length = GetEnvironmentVariableW(L"RESKATE_FAVORITES_FILE", buffer.data(), static_cast<DWORD>(buffer.size()));
             length && length < buffer.size()) {
             file = std::wstring(buffer.data(), length);
+        } else if (user_data::development_requested()) {
+            return;
         } else {
             const auto count = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
             if (!count || count >= buffer.size()) return;

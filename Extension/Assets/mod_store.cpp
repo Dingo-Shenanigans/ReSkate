@@ -1,4 +1,5 @@
 #include "mod_store.h"
+#include "Engine/Core/Platform/user_data_paths.h"
 #include "map_download.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Vfs/https_download.h"
@@ -39,11 +40,10 @@ std::uint64_t unix_now() {
         std::chrono::system_clock::now().time_since_epoch()).count());
 }
 fs::path mods_root() { return mods::engine_data_root() / mods::mods_folder; }
+// The listing cache, beside the launcher's (gui_mods_browse.cpp): empty when the user-data folder
+// cannot be used.
 fs::path local_folder() {
-    std::array<wchar_t, 32768> local{};
-    const auto size = GetEnvironmentVariableW(L"LOCALAPPDATA", local.data(), static_cast<DWORD>(local.size()));
-    if (!size || size >= local.size()) return {};
-    return fs::path(local.data()) / L"ReSkate" / L"thunderstore";
+    try { return user_data::root() / L"thunderstore"; } catch (...) { return {}; }
 }
 std::wstring wide(std::string_view ascii) { return std::wstring(ascii.begin(), ascii.end()); }
 bool same(std::string_view a, std::string_view b) {

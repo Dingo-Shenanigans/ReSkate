@@ -1,5 +1,6 @@
 #include "mod_catalog.h"
 #include "Engine/Core/Platform/path_text.h"
+#include "Engine/Core/Platform/user_data_paths.h"
 #include "builtin_packs.h"
 
 #include "mod_merge.h"
@@ -111,10 +112,8 @@ bool lists_bundle(const fs::path& mod, const std::vector<std::string>& bundles) 
 // before the profile is: the mods are put together as the game starts.
 // {"<mod folder, lower-case>": "<variant>"}
 fs::path variants_file() {
-    std::array<wchar_t, 1024> text{};
-    const auto size = GetEnvironmentVariableW(L"LOCALAPPDATA", text.data(), static_cast<DWORD>(text.size()));
-    if (!size || size >= text.size()) return {};
-    return fs::path(std::wstring(text.data(), size)) / L"ReSkate" / L"variants.json";
+    // Empty (no choices kept) when the user-data folder cannot be used, as without LocalAppData.
+    try { return user_data::root() / L"variants.json"; } catch (...) { return {}; }
 }
 // A variant's name is its folder's: letters, digits, '_' and '-', in small letters.
 bool variant_name(std::string_view name) {

@@ -1,4 +1,5 @@
 #include "bone_cam.h"
+#include "Engine/Core/Platform/user_data_paths.h"
 #include "bone_sprites.h"
 #include "skater_skeleton.h"
 #include "Extension/Console/commands.h"
@@ -622,11 +623,9 @@ bool bone_cam_ringing() noexcept { return state().ringing; }
 namespace {
 // The player's Bone Cam choices, kept between launches: %LOCALAPPDATA%\ReSkate\bone_cam.txt, one
 // `name=value` per line. A missing or unreadable file leaves the defaults.
+// Under a separate user-data root in a launch with --dev-data-root; empty when that cannot be used.
 std::filesystem::path settings_file() {
-    std::array<wchar_t, 32768> local{};
-    const auto length = GetEnvironmentVariableW(L"LOCALAPPDATA", local.data(), static_cast<DWORD>(local.size()));
-    if (!length || length >= local.size()) return {};
-    return std::filesystem::path(std::wstring(local.data(), length)) / L"ReSkate" / L"bone_cam.txt";
+    try { return user_data::root() / L"bone_cam.txt"; } catch (...) { return {}; }
 }
 void save_settings(const State &s) {
     try {

@@ -33,8 +33,9 @@ std::vector<Slot> slots();
 // else one of the accessory slots, then the tattoo and face slots; the catalog item is given that
 // slot's category besides its own, in memory, for this run. An item never tried in a slot goes on
 // alone, and comes off for the next slot if the game describes a failed load within 0.9 s; what
-// loads where is kept in ReSkate.layer_slots.txt beside Skate.exe. Never a paid store item. `items`
-// replaces the owner's; empty takes them off. Empty when taken, otherwise why not.
+// loads where is kept in ReSkate.layer_slots.txt beside Skate.exe (under the user-data root in a
+// launch with --dev-data-root). Never a paid store item. `items` replaces the owner's; empty takes
+// them off. Empty when taken, otherwise why not.
 std::string set_layers(std::string owner, std::vector<std::string> items);
 struct Layers {
     std::vector<std::string> items, worn; // the owner's, and those of them on the skater now

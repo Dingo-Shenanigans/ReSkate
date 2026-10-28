@@ -1,4 +1,5 @@
 #include "trainer.h"
+#include "Engine/Core/Platform/user_data_paths.h"
 #include "trainer_classes.h"
 #include "trainer_gamestate.h"
 #include "trainer_jump.h"
@@ -377,12 +378,8 @@ void say(logging::Level level, const std::string &text) { logging::write(level, 
 
 // ---- storage ---------------------------------------------------------------------------
 std::filesystem::path data_directory() {
-    PWSTR raw{};
-    std::filesystem::path result;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &raw)) && raw)
-        result = std::filesystem::path(raw) / L"ReSkate" / L"trainer";
-    if (raw) CoTaskMemFree(raw);
-    return result;
+    // Empty, as when the folder lookup failed, if the user-data folder cannot be used.
+    try { return user_data::known_folder_root() / L"trainer"; } catch (...) { return {}; }
 }
 std::filesystem::path game_directory() {
     std::vector<wchar_t> exe(32768);

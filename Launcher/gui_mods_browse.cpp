@@ -1,5 +1,6 @@
 #include "gui_internal.h"
 #include "gui_renderer.h"
+#include "Engine/Core/Platform/user_data_paths.h"
 
 #include "Engine/Vfs/builtin_packs.h"
 
@@ -60,10 +61,8 @@ std::vector<ts::Package> fetch_listing(const std::string& community, const std::
 }
 
 fs::path icon_cache() {
-    std::array<wchar_t, 32768> local{};
-    const auto length = GetEnvironmentVariableW(L"LOCALAPPDATA", local.data(), static_cast<DWORD>(local.size()));
-    if (!length || length >= local.size()) return {};
-    return fs::path(local.data()) / L"ReSkate" / L"thunderstore" / L"icons";
+    // Empty (icons are then not kept on disk) when the user-data folder cannot be used.
+    try { return user_data::root() / L"thunderstore" / L"icons"; } catch (...) { return {}; }
 }
 
 // Icon URLs end in Namespace-Name-1.2.3.png, so a file name keyed on that never goes stale.

@@ -1,4 +1,5 @@
 #include "game_settings.h"
+#include "Engine/Core/Platform/user_data_paths.h"
 
 #include <Windows.h>
 
@@ -453,10 +454,8 @@ const char* level_value(const Setting& setting, int level) {
 }
 
 fs::path save_root() {
-    std::array<wchar_t, 32768> local{};
-    const auto length = GetEnvironmentVariableW(L"LOCALAPPDATA", local.data(), static_cast<DWORD>(local.size()));
-    if (!length || length >= local.size()) return {};
-    return fs::path(local.data()) / L"ReSkate" / L"Game" / L"Skate" / L"data";
+    // Empty, as it was without LocalAppData, when the user-data folder cannot be used.
+    try { return user_data::root() / L"Game" / L"Skate" / L"data"; } catch (...) { return {}; }
 }
 
 Saved load(const fs::path& root) {

@@ -11,6 +11,7 @@
 #include "Engine/Vfs/thunderstore_package.h"
 #include "Engine/Vfs/initfs.h"
 #include "Engine/Core/Log/logging.h"
+#include "Engine/Core/Platform/user_data_paths.h"
 #include "Engine/Game/Multiplayer/session_tools.h"
 #include "Extension/Multiplayer/Session/session.h"
 #include "Extension/UI/NativeMenu/ui_sound.h"
@@ -468,13 +469,13 @@ void watch() {
     }
 }
 
+// Plugins' own storage, under a separate user-data root in a launch with --dev-data-root, where a
+// root that cannot be used stops plugins with its reason: the folder beside the game is not
+// separate. Otherwise empty, as before, when LocalAppData cannot be found, and storage then goes
+// beside the game.
 std::filesystem::path local_storage() {
-    PWSTR raw{};
-    std::filesystem::path result;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, 0, nullptr, &raw)) && raw)
-        result = std::filesystem::path(raw) / L"ReSkate" / L"Plugins";
-    CoTaskMemFree(raw);
-    return result;
+    if (user_data::development_requested()) return user_data::known_folder_root() / L"Plugins";
+    try { return user_data::known_folder_root() / L"Plugins"; } catch (...) { return {}; }
 }
 }
 

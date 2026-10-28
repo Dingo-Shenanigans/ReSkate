@@ -4,6 +4,7 @@
 #include "Engine/Vfs/mod_list.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Core/Platform/launcher_support.h"
+#include "Engine/Core/Platform/user_data_paths.h"
 
 #include <Windows.h>
 #include <shellapi.h>
@@ -592,10 +593,9 @@ std::string game_data_signature(const std::vector<DataMod>& mods, const std::map
 }
 
 std::filesystem::path game_shader_cache() {
-    std::array<wchar_t, 32768> local{};
-    const auto size = GetEnvironmentVariableW(L"LOCALAPPDATA", local.data(), static_cast<DWORD>(local.size()));
-    if (!size || size >= local.size()) return {};
-    return fs::path(local.data()) / L"ReSkate" / L"Game" / L"Skate" / L"cache";
+    // The redirected game's cache: under a separate user-data root in a test launch, so clearing it
+    // never empties the player's own. Empty when that folder cannot be used.
+    try { return user_data::root() / L"Game" / L"Skate" / L"cache"; } catch (...) { return {}; }
 }
 
 std::vector<std::string> empty_folder(const std::filesystem::path& folder) {
