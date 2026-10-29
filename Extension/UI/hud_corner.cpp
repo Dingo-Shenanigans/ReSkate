@@ -39,9 +39,10 @@ struct Switch {
     std::size_t size;
     Value down;
 };
-constexpr std::array<Switch, 2> score_switches{{
+constexpr std::array<Switch, 3> score_switches{{
     {corner::hud_widget_active, 1, 0},
     {corner::extra_info_style, 4, static_cast<std::uint32_t>(corner::extra_info_none)},
+    {corner::sequence_state, 4, static_cast<std::uint32_t>(corner::sequence_down)},
 }};
 
 // A score HUD field as the model write hook sees it, on whichever thread the game writes from.
