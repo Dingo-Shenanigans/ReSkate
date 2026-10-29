@@ -310,6 +310,16 @@ struct FakeGame final : Game {
         return {};
     }
     void outfit_clear(std::string_view plugin, std::string_view slot) override { calls.push_back(std::format("outfit clear {} {}", plugin, slot)); }
+    std::string outfit_stand_ins(std::string_view plugin, std::optional<StandIns> wanted) override {
+        if (!wanted) {
+            calls.push_back(std::format("stand-ins {} default", plugin));
+            return {};
+        }
+        calls.push_back(std::format("stand-ins {} {} {} {} {}", plugin, wanted->random ? "random" : "first", wanted->parts,
+                                    wanted->seed, wanted->items.empty() ? std::string("all") : wanted->items.front()));
+        for (const auto& rule : wanted->exclude) calls.push_back(std::format("stand-ins {} exclude {}", plugin, rule));
+        return {};
+    }
     std::string camera_cycle(std::string_view plugin, CycleCamera place) override {
         calls.push_back(std::format("cycle {} {}", plugin, place == CycleCamera::out ? "out" : place == CycleCamera::ready ? "ready" : "active"));
         return {};
@@ -2490,6 +2500,40 @@ void a_plugin_loads_ticks_runs_its_commands_and_unloads() {
     check(environment.logged("[hello] bye after 3"), "Unloading runs its unload handler");
     check(host.status().empty(), "and it is gone");
     check(!host.run_console("hello there"), "with its command");
+}
+
+// What this PC shows in place of other players' items it does not have: asked with
+// "outfit.stand_ins", the options checked, and refused without the permission.
+void plugins_choose_stand_ins() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    Host host(environment, Side::client);
+    host.apply({script("dresser", R"(
+        assert(reskate.outfit.stand_ins({pick = "random", seed = 7}))
+        assert(reskate.outfit.stand_ins({pick = "first", parts = "board", items = {"Own_Truck_Gen_Default_00001"}}))
+        assert(reskate.outfit.stand_ins(nil))
+        assert(not pcall(reskate.outfit.stand_ins, {pick = "sometimes"}), "pick is first or random")
+        assert(not pcall(reskate.outfit.stand_ins, {parts = "hat"}), "parts is both, skater or board")
+        assert(not pcall(reskate.outfit.stand_ins, {seed = -1}), "a seed is 0 or more")
+        assert(not pcall(reskate.outfit.stand_ins, {items = {""}}), "an item has a name")
+        assert(not pcall(reskate.outfit.stand_ins, {items = {12}}), "an item is a name")
+        assert(reskate.outfit.stand_ins({pick = "random", exclude = {"Own_Costume*", "Own_TopShirt_Gen_Hoodie_00003"}}))
+        assert(not pcall(reskate.outfit.stand_ins, {exclude = {"*"}}), "excluding everything is not a name")
+        assert(not pcall(reskate.outfit.stand_ins, {exclude = "Own_Hat"}), "exclude is a list")
+        reskate.log("dressed")
+    )", R"("outfit.stand_ins")"), script("plain", R"(
+        local ok, err = pcall(reskate.outfit.stand_ins, {pick = "random"})
+        assert(not ok and err:find("needs the \"outfit.stand_ins\" permission"), err)
+        reskate.log("refused")
+    )", R"("outfit")")});
+    running(host, "dresser", environment);
+    running(host, "plain", environment);
+    check(environment.logged("[dresser] dressed") && environment.logged("[plain] refused"), "The calls ran\n" + environment.all());
+    check(game.called("stand-ins dresser random 0 7 all") && game.called("stand-ins dresser first 2 0 Own_Truck_Gen_Default_00001") &&
+              game.called("stand-ins dresser default") && game.called("stand-ins dresser exclude Own_Costume*") &&
+              game.called("stand-ins dresser exclude Own_TopShirt_Gen_Hoodie_00003"),
+          "Random from every installed item, the first of a list on the board, and the defaults again\n" + environment.all());
+    check(!game.called("stand-ins plain"), "A plugin without the permission chooses no stand-ins");
 }
 
 void a_permission_must_be_declared() {
@@ -6475,6 +6519,7 @@ int main() {
         run(physics_steps_include_optional_geometry);
         run(a_plugin_loads_ticks_runs_its_commands_and_unloads);
         run(a_permission_must_be_declared);
+        run(plugins_choose_stand_ins);
         run(thunderstore_says_which_packages_run_plugins);
         run(command_names_are_checked);
         run(storage_is_kept_across_loads_and_has_a_quota);

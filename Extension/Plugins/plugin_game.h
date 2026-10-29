@@ -872,6 +872,18 @@ public:
         std::string note;
     };
     virtual OnTop outfit_on_top_state(std::string_view /*plugin*/) { return {}; }
+    // What this PC shows in place of other players' items it does not have (their cosmetics mods;
+    // Extension/Multiplayer/Remote/stand_ins.h): `items` the ones that may stand in (empty: every
+    // installed item that fits), the first that fits or one at random, on the skater, the board or
+    // both. nullopt: the game's defaults again. Empty when set, else why not.
+    struct StandIns {
+        bool random{};
+        int parts{}; // 0 both, 1 skater, 2 board
+        std::vector<std::string> items;
+        std::vector<std::string> exclude; // never to stand in: names, or a name's start and "*"
+        std::uint32_t seed{};
+    };
+    virtual std::string outfit_stand_ins(std::string_view /*plugin*/, std::optional<StandIns>) { return unavailable; }
     virtual std::vector<WornItem> board_parts() { return {}; }
     // An item's title as the game shows it (its catalog's, the one an item grid showed, or its key
     // made readable).

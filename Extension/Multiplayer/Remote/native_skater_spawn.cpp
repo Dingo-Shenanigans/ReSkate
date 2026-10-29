@@ -5,6 +5,7 @@
 #include "native_audio.h"
 #include "puppet_cost.h"
 #include "remote_collision.h"
+#include "stand_ins.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Game/Build/supported_build.h"
 #include "Engine/Game/Build/20260929/engine.h"
@@ -520,6 +521,19 @@ void update_remote_cosmetics(std::uintptr_t base, const NativeFrame &local, cons
         const auto now = GetTickCount64();
         if (r.rejected_appearance && *r.rejected_appearance == appearance && now < r.next_appearance_retry)
             return;
+        // A plugin changed what stands in for missing items: dress this player again. Dressing is
+        // a heavy native pass, so players already shown take turns, one every 100 ms, rather than
+        // the whole server in one frame.
+        const auto stand_ins_now = stand_ins::generation();
+        if (r.stand_ins_applied != stand_ins_now && r.skater_appearance) {
+            static ULONGLONG next_restyle{}; // client thread only
+            if (now >= next_restyle) {
+                next_restyle = now + 100;
+                r.skater_appearance.reset();
+                r.board_appearance.reset();
+            }
+        }
+        if (!r.skater_appearance) r.stand_ins_applied = stand_ins_now;
         try {
             if (!r.skater_appearance || *r.skater_appearance != appearance.skater) {
                 apply_cosmetic_recipe(base, r.entity, local.entity, appearance.skater);

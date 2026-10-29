@@ -37,6 +37,7 @@
 #include "Extension/Throwdowns/throwdown_kit.h"
 #include "plugin_camera.h"
 #include "Extension/Multiplayer/Session/session.h"
+#include "Extension/Multiplayer/Remote/stand_ins.h"
 #include "Extension/Music/external_player.h"
 #include "Extension/Music/spotify_station.h"
 #include "Extension/Objects/ParkEditor/park_editor_runtime.h"
@@ -605,6 +606,20 @@ public:
     OnTop outfit_on_top_state(std::string_view plugin) override {
         auto layers = outfit_overlay::layers(plugin);
         return {std::move(layers.items), std::move(layers.worn), std::move(layers.note)};
+    }
+    std::string outfit_stand_ins(std::string_view plugin, std::optional<StandIns> wanted) override {
+        if (!wanted) {
+            multiplayer::stand_ins::clear(plugin);
+            return {};
+        }
+        multiplayer::stand_ins::Policy policy;
+        policy.owner = std::string(plugin);
+        policy.pick = wanted->random ? multiplayer::stand_ins::Pick::random : multiplayer::stand_ins::Pick::first;
+        policy.parts = static_cast<multiplayer::stand_ins::Parts>(std::clamp(wanted->parts, 0, 2));
+        policy.items = std::move(wanted->items);
+        policy.exclude = std::move(wanted->exclude);
+        policy.seed = wanted->seed;
+        return multiplayer::stand_ins::set(std::move(policy));
     }
     std::uint64_t effect_create(std::string_view plugin, const EffectRequest& request) override { return effects::create(plugin, request); }
     void effect_move(std::string_view plugin, std::uint64_t id, const EffectMatrix& transform) override { effects::move(plugin, id, transform); }
@@ -1738,6 +1753,7 @@ public:
         outfit_overlay::clear(plugin);
         item_browser::release_owner(plugin);
         (void)outfit_overlay::set_layers(std::string(plugin), {});
+        multiplayer::stand_ins::clear(plugin);
         board_pose::clear(plugin);
         board_pose::park(plugin, {});
         (void)board_pose::fit(plugin, std::nullopt);
