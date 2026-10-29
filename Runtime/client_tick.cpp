@@ -1,4 +1,3 @@
-#include "Extension/Rendering/plugin_effects.h"
 #include "runtime_internal.h"
 #include "Extension/Customization/developer_hoodie.h"
 #include "Extension/Customization/developer_board.h"
@@ -43,9 +42,11 @@
 #include "Engine/Vfs/mod_merge.h"
 #include "Extension/Skater/ai_skaters.h"
 #include "Extension/World/world_entities.h"
+#include "Extension/World/owned_bodies.h"
 #include "Extension/Skater/client_source_spawn.h"
 #include "Extension/Skater/skater_slot_override.h"
 #include "Extension/Throwdowns/native_throwdowns.h"
+#include "Extension/Localization/text_overrides.h"
 #include "Extension/Skater/bone_cam.h"
 #include "Extension/Skater/pad_flight.h"
 #include "Extension/Trainer/trainer.h"
@@ -127,8 +128,23 @@ void refresh_interactive_model(std::uintptr_t client, DWORD state, DWORD game_ty
 // - the in-game advertising (billboards served by EA's ad service, with a render pass that
 //   measures how long each was on screen) has nothing to show offline and still costs frame
 //   time: its three switches, the renderer's, the service's and the game's own;
+// Running under Wine on macOS (CrossOver), where hardware_concurrency() includes Efficiency
+// cores under Rosetta 2.
+bool under_macos_wine() noexcept {
+    static const bool macos = []() noexcept {
+        using HostVersion = void(__cdecl*)(const char**, const char**);
+        const auto ntdll = GetModuleHandleW(L"ntdll.dll");
+        const auto host = ntdll ? reinterpret_cast<HostVersion>(GetProcAddress(ntdll, "wine_get_host_version")) : nullptr;
+        const char* sysname{};
+        if (host) host(&sysname, nullptr);
+        return sysname && std::string_view(sysname) == "Darwin";
+    }();
+    return macos;
+}
 // - the world-transform update, which grows with every remote player's entities, is split
-//   over more jobs than Game.cfg's 2.
+//   over more jobs than Game.cfg's 2 (left at 2 under Wine on macOS, where splitting the
+//   synchronous per-frame barrier across half the logical cores schedules barrier jobs onto
+//   Efficiency cores alongside D3DMetal shader threads).
 void apply_performance_settings() {
     static bool applied = false;
     static ULONGLONG next_attempt = 0;
@@ -137,7 +153,8 @@ void apply_performance_settings() {
     if (now < next_attempt) return;
     next_attempt = now + 500;
     try {
-        const auto jobs = std::to_string(std::clamp(std::thread::hardware_concurrency() / 2, 2u, 8u));
+        const auto jobs = std::to_string(
+            under_macos_wine() ? 2u : std::clamp(std::thread::hardware_concurrency() / 2, 2u, 8u));
         const std::array<std::pair<const char*, std::string>, 13> settings{{
             {"DingoTelemetry.Enable", "0"},
             {"DingoTelemetry.EnablePlayerTickEvents", "0"},
@@ -225,7 +242,8 @@ void apply_local_connection_timeouts() {
 // and an RX 7600). The card's size (size_kb) is only the fallback for a driver that reports no
 // budget.
 namespace mesh_pool {
-constexpr std::uint32_t stock_kb = 532960, most_kb = 3584u * 1024u, most_to_12gb_kb = 2048u * 1024u;
+constexpr std::uint32_t stock_kb = 532960, most_kb = 3584u * 1024u, most_to_12gb_kb = 2048u * 1024u,
+                        most_macos_wine_kb = 1280u * 1024u;
 static_assert((std::uint64_t{most_kb} + 24576u) * 1024u <= 0xffffffffull);
 struct Card { std::uint64_t memory{}; std::string name; LUID luid{}; };
 // The hardware adapter with the most dedicated memory: the one the game renders on (a laptop's
@@ -286,15 +304,19 @@ std::optional<Budget> budget_of(const Card& card) {
         adapter->Release();
     }
     factory->Release();
-    // An integrated or unified-memory GPU's own memory is the PC's RAM, so its budget is only what
-    // the PC has free, less room for the rest of the game (under D3DMetal on macOS, DedicatedVideoMemory
-    // is reported as 11.8 GB of a 16 GB Mac and QueryVideoMemoryInfo reports a 24 GB local budget).
-    // 2.1.1's out-of-memory exits (the game's E_OUTOFMEMORY, 3,300 reports) were mostly 8 to 16 GB PCs
-    // with RAM and page file nearly full, and integrated GPUs whose custom-map pool had been set to
-    // 1.3 to 2.2 GB from that budget (2026-10-21).
+    // An integrated GPU's own memory is the PC's RAM, so its budget is only what the PC has free,
+    // less room for the rest of the game. 2.1.1's out-of-memory exits (the game's E_OUTOFMEMORY,
+    // 3,300 reports) were mostly 8 to 16 GB PCs with RAM and page file nearly full, and integrated
+    // GPUs whose custom-map pool had been set to 1.3 to 2.2 GB from that budget (2026-10-21).
+    // A translation layer (D3DMetal on macOS) can report a local budget larger than the adapter's
+    // own dedicated memory (24 GB on an 11.8 GB adapter of a 16 GB Mac) while Wine's
+    // GlobalMemoryStatusEx reports only free pages (1 to 1.8 GB, excluding macOS's inactive file
+    // cache), which would clamp room to 0 and keep every custom map at 520 MB; cap the budget at
+    // the adapter's memory instead.
     constexpr std::uint64_t integrated_below = 1ull << 30, reserve = 2ull << 30;
-    if (MEMORYSTATUSEX status{sizeof(status)};
-        result && (card.memory < integrated_below || result->budget > card.memory) && GlobalMemoryStatusEx(&status)) {
+    if (result && card.memory >= integrated_below)
+        result->budget = (std::min)(result->budget, card.memory);
+    if (MEMORYSTATUSEX status{sizeof(status)}; result && card.memory < integrated_below && GlobalMemoryStatusEx(&status)) {
         const auto spare = (std::min)(status.ullAvailPhys, status.ullAvailPageFile);
         const auto room = spare > reserve ? spare - reserve : 0;
         result->budget = (std::min)(result->budget, result->usage + room);
@@ -441,9 +463,18 @@ void mesh_pool_for_load(bool custom, std::string_view level) {
     bool short_of_room = false;
     if (!kb && custom) {
         const auto bytes = map_mesh_bytes(level);
-        if (bytes)
+        // Under Wine on macOS (CrossOver / D3DMetal), the adapter's reported dedicated memory
+        // (11.8 GB on a 16 GB Mac) is carved out of unified system RAM alongside macOS, Wine and
+        // the game's own 11 to 12 GB commit; sizing a custom map's pool at 520 MB + 0.5x its
+        // all-LOD mesh bytes (up to 1,280 MB instead of 3,584 MB) gives heavy custom maps more
+        // than double the 520 MB base pool while saving 1.1 to 2.3 GB of unified RAM.
+        const bool macos_wine = under_macos_wine();
+        const auto map_most_kb = macos_wine ? mesh_pool::most_macos_wine_kb : mesh_pool::most_kb;
+        if (bytes) {
+            const auto extra_kb = macos_wine ? (bytes / 2 / 1024) : (bytes * 3 / 2 / 1024);
             mesh_pool_map_kb = static_cast<std::uint32_t>(std::clamp<std::uint64_t>(
-                mesh_pool::stock_kb + bytes * 3 / 2 / 1024, mesh_pool::stock_kb, mesh_pool::most_kb));
+                mesh_pool::stock_kb + extra_kb, mesh_pool::stock_kb, map_most_kb));
+        }
         const auto current = mesh_pool_wanted_kb ? mesh_pool_wanted_kb : mesh_pool::stock_kb;
         const auto needs = bytes ? std::format("its meshes {} MB, ", bytes >> 20) : std::string();
         if (const auto budget = mesh_pool::budget_of(card)) {
@@ -575,6 +606,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
     dingosdk::job_spin::apply_default();
     apply_mesh_streaming_pool(state);
     dingosdk::multiplayer::apply_throwdown_strings(r.base);
+    dingosdk::text_overrides::apply_text_overrides(r.base);
     const bool named_context_ready = (state == 13 || state == 21) && native_context_ready();
     {
         std::lock_guard lock(r.mutex);
@@ -810,14 +842,14 @@ void update_model(std::uintptr_t client, TickState& frame) {
             if (pressed & (0x1000 | 1u << 22)) dingosdk::map_download::answer(dingosdk::map_download::picked());
             else if (pressed & (0x2000 | 1u << 23)) dingosdk::map_download::answer(false);
         }
-        // The question: left and right pick, A takes the pick, B is its second answer.
+        // The question: left and right pick, A takes the pick, B is the answer it names for going back.
         static bool question_before{};
-        if (question_up && question_before) {
+        if (!message_up && question_up && question_before) {
             const auto pressed = buttons & ~buttons_before;
             if (pressed & (0x0004 | 1u << 20)) dingosdk::overlay::question_pick(true);
             if (pressed & (0x0008 | 1u << 21)) dingosdk::overlay::question_pick(false);
             if (pressed & (0x1000 | 1u << 22)) dingosdk::overlay::question_answer(dingosdk::overlay::question_picked());
-            else if (pressed & (0x2000 | 1u << 23)) dingosdk::overlay::question_answer(false);
+            else if (pressed & (0x2000 | 1u << 23)) dingosdk::overlay::question_answer(dingosdk::overlay::question_back());
         }
         question_before = question_up;
         // The vote's popup: left and right move the pick, A votes for it, B closes it.
@@ -1147,13 +1179,6 @@ void update_model(std::uintptr_t client, TickState& frame) {
         DINGO_PROFILE_ZONE("tick/update_model/network objects");
         dingosdk::tick_network_objects();
     }
-    {
-        bool loading{};
-        { std::lock_guard lock(r.mutex); loading = r.requests.loading(); }
-        // Invalidate old-world handles before any plugin callback can use them.
-        dingosdk::effects::tick(r.base, client, !r.observer_failed && !loading && named_context_ready,
-            r.debug_model.noclip, r.debug_model.park_editor);
-    }
     if (r.observer_failed) return; // Keep the bounded restore/telemetry path available after catalog failure.
     {
         // Every tick, not at the 500 ms customization pace: the item grids follow the highlight.
@@ -1162,6 +1187,9 @@ void update_model(std::uintptr_t client, TickState& frame) {
     }
     {
         DINGO_PROFILE_ZONE("tick/plugins");
+        // Before the plugins tick, so their owned bodies see this tick's client phase (debug_busy: a
+        // level request is loading).
+        dingosdk::owned_bodies::tick(r.base, client, named_context_ready && !debug_busy);
         dingosdk::plugins::on_client_tick();
         dingosdk::plugins::tick_plugin_settings();
     }
