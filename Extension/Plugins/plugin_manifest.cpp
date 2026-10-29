@@ -20,6 +20,8 @@ namespace {
 // (reskate.server.parks, park_spawn, park_remove); "variants" choosing which of its own mod's
 // variants is in the game (reskate.package.choose); "viewmodel" a model of its own drawn in front of
 // the camera (reskate.viewmodel); "strings" the text the game shows for its ids (reskate.strings).
+// "outfit.stand_ins" what this PC shows in place of other players' items it does not have
+// (reskate.outfit.stand_ins, Extension/Multiplayer/Remote/stand_ins.h); never a paid store item.
 // "world.physics" native rigid bodies the plugin
 // owns (reskate.world.physics: create, read, submit, receipt, acknowledge, release, prepare) and,
 // with "world.raycast", ray batches beside one (probe_batch). "world.physics.observe" adds
@@ -30,13 +32,13 @@ namespace {
 // require_named_actor_categories_absent shows no category and needs only "world.physics" and
 // "world.raycast". A manifest's "resident" list and "variants" are the merge's
 // (Engine/Vfs/mod_list.h ResidentAssets, Variants), not the plugin host's.
-constexpr std::array<std::string_view, 55> permissions{
+constexpr std::array<std::string_view, 56> permissions{
     "console", "storage", "overlay", "menu", "ui.screen", "input", "hud", "events.tricks", "events.skater",
     "skater.read", "skater.teleport", "skater.control", "skater.animation", "trainer", "camera",
     "world.raycast", "world.physics", "world.physics.observe", "world.objects", "world.entities", "world.environment", "world.ai", "travel", "session.read",
     "session.skaters", "session.nametags", "net.session", "net.http", "voice.control", "chat.read",
     "chat.send", "chat.local", "server", "server.parks", "throwdowns", "replay", "music", "progression.read", "settings.read", "audio.ui", "audio", "outfit", "board", "mods.read",
-    "events.physics", "game.speed", "files", "variants", "settings.write", "room", "capture", "effects", "events.physics.geometry", "viewmodel", "strings"};
+    "events.physics", "game.speed", "files", "variants", "settings.write", "room", "capture", "effects", "events.physics.geometry", "viewmodel", "strings", "outfit.stand_ins"};
 }
 
 bool known_permission(std::string_view name) noexcept {

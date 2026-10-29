@@ -1,6 +1,8 @@
 #include "plugin_api.h"
 #include "plugin_game.h"
 #include "plugin_bodies.h"
+#include "Extension/Multiplayer/Remote/cosmetics.h"
+#include "Extension/Multiplayer/Remote/stand_ins.h"
 #include "lua.h"
 #include "lualib.h"
 #include <algorithm>
@@ -8,6 +10,7 @@
 #include <charconv>
 #include <cmath>
 #include <cstring>
+#include <initializer_list>
 #include <optional>
 #include <span>
 
@@ -2042,6 +2045,73 @@ struct WorldApi {
         }
         return 1;
     }
+    // stand_ins({pick = "first" | "random", parts = "both" | "skater" | "board", items = {...}, exclude = {...}, seed = n}):
+    // what this PC shows in place of other players' items it does not have (their cosmetics mods).
+    // No items: every installed item that fits the slot. exclude: never these (names, "*" for any run
+    // of characters), though a player who really wears one still shows it. Never a paid store item. stand_ins(nil): the
+    // game's defaults again. Only what you see changes. true, or false and why not.
+    static int outfit_stand_ins(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "outfit.stand_ins", "reskate.outfit.stand_ins");
+        std::optional<Game::StandIns> wanted;
+        if (!lua_isnoneornil(L, 1)) {
+            luaL_checktype(L, 1, LUA_TTABLE);
+            Game::StandIns s;
+            const auto word = [&](const char* field, std::initializer_list<const char*> choices) -> int {
+                lua_getfield(L, 1, field);
+                int chosen = 0;
+                if (!lua_isnil(L, -1)) {
+                    if (lua_type(L, -1) != LUA_TSTRING) luaL_error(L, "%s is a word", field);
+                    const std::string_view value = lua_tostring(L, -1);
+                    chosen = -1;
+                    int at = 0;
+                    for (const auto* choice : choices) {
+                        if (value == choice) chosen = at;
+                        ++at;
+                    }
+                    if (chosen < 0) luaL_error(L, "%s is not one this knows", field);
+                }
+                lua_pop(L, 1);
+                return chosen;
+            };
+            s.random = word("pick", {"first", "random"}) == 1;
+            s.parts = word("parts", {"both", "skater", "board"});
+            lua_getfield(L, 1, "seed");
+            if (!lua_isnil(L, -1)) {
+                if (!lua_isnumber(L, -1)) luaL_error(L, "seed is a number");
+                const double seed = lua_tonumber(L, -1);
+                if (!(seed >= 0 && seed <= 4294967295.0)) luaL_error(L, "seed is 0 to 4294967295");
+                s.seed = static_cast<std::uint32_t>(seed);
+            }
+            lua_pop(L, 1);
+            // A list of item names (exclude: with "*" for any run of characters).
+            const auto names = [&](const char* field, std::vector<std::string>& out) {
+                lua_getfield(L, 1, field);
+                if (!lua_isnil(L, -1)) {
+                    if (!lua_istable(L, -1)) luaL_error(L, "%s is a list of item names", field);
+                    const int count = lua_objlen(L, -1);
+                    if (count > static_cast<int>(multiplayer::stand_ins::max_items))
+                        luaL_error(L, "%s has at most %d names", field, static_cast<int>(multiplayer::stand_ins::max_items));
+                    for (int i = 1; i <= count; ++i) {
+                        lua_rawgeti(L, -1, i);
+                        std::size_t length = 0;
+                        const char* item = lua_type(L, -1) == LUA_TSTRING ? lua_tolstring(L, -1, &length) : nullptr;
+                        if (!item || !length || length > multiplayer::max_cosmetic_asset || (length == 1 && *item == '*'))
+                            luaL_error(L, "%s is a list of item names", field);
+                        out.emplace_back(item, length);
+                        lua_pop(L, 1);
+                    }
+                }
+                lua_pop(L, 1);
+            };
+            names("items", s.items);
+            names("exclude", s.exclude);
+            wanted = std::move(s);
+        }
+        // Every change dresses the players you see again, which is heavy: not every frame.
+        if (!within(plugin.services_.now_ms(), plugin.control_second_, plugin.controls_, 4)) return result(L, "asked more than 4 times in a second");
+        return result(L, game(plugin).outfit_stand_ins(plugin.id(), std::move(wanted)));
+    }
     static int outfit_status(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "outfit", "reskate.outfit.status");
@@ -3079,7 +3149,7 @@ void WorldApi::install(Plugin& plugin, lua_State* L) {
                                    {"sample", animation_sample}, {"joints", animation_joints}, {"trim", animation_trim}, {"edit", animation_edit},
                                    {"save", animation_save}, {"game_clips", animation_game_clips},
                                    {"mirror", animation_mirror}});
-    add_functions(L, "outfit", {{"set", outfit_set}, {"clear", outfit_clear}, {"find", outfit_find}, {"slots", outfit_slots}, {"status", outfit_status}});
+    add_functions(L, "outfit", {{"set", outfit_set}, {"clear", outfit_clear}, {"find", outfit_find}, {"slots", outfit_slots}, {"status", outfit_status}, {"stand_ins", outfit_stand_ins}});
     add_functions(L, "audio", {{"play", audio_play}, {"set", audio_set}, {"stop", audio_stop}, {"playing", audio_playing}});
     add_functions(L, "server", {{"kick", server_kick}, {"say", server_say}, {"tell", server_tell}, {"move", server_move},
                                 {"ban", server_ban}, {"unban", server_unban}, {"parks", server_parks}, {"park_spawn", server_park_spawn},

@@ -118,6 +118,8 @@ struct Remote {
     // next_appearance_retry instead of on every cosmetics pass. Client thread.
     std::optional<Appearance> rejected_appearance;
     ULONGLONG next_appearance_retry{};
+    // The stand-in policy (stand_ins.h) the outfit shown was dressed with. Client thread.
+    std::uint64_t stand_ins_applied{};
 };
 HookState &shared();
 Remote &remote();

@@ -29,6 +29,7 @@ constexpr Capability capabilities[] = {
     {"session.skaters", "PLAYERS", Risk::amber, "Hide, touch and read other players' skaters"},
     {"session.nametags", "PLAYERS", Risk::amber, "Change nametags on your game"},
     {"voice.control", "PLAYERS", Risk::amber, "Set how loud each player is to you"},
+    {"outfit.stand_ins", "PLAYERS", Risk::grey, "Choose what you see in place of other players' items you don't have"},
     {"session.read", "PLAYERS", Risk::grey, "Read the session and its players"},
     {"chat.send", "CHAT", Risk::red, "Send chat lines as you"},
     {"chat.read", "CHAT", Risk::grey, "Read the session's chat"},
@@ -245,6 +246,7 @@ std::string approval_prompt(const std::vector<PermissionGroup>& groups) {
             if (has("session.skaters")) session.push_back("hide, touch, or read other players' skaters");
             if (has("session.nametags")) session.push_back("change the nametags you see");
             if (has("voice.control")) session.push_back("set how loud each player sounds to you");
+            if (has("outfit.stand_ins")) session.push_back("choose what you see in place of other players' items you don't have");
             if (!session.empty()) actions.push_back(join(session));
             if (has("net.session")) actions.push_back("send messages to other players using the same plugin");
             if (has("throwdowns")) actions.push_back("host and manage throwdowns");
