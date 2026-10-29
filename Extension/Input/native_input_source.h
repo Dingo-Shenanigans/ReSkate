@@ -3,7 +3,7 @@
 #include <cstdint>
 
 // Passive observation of one selected raw XInput stream. This service never
-// changes a report and never owns a native actor, physics clock or input capture.
+// changes a report; its separate opt-in capture extension owns no native actor or clock.
 namespace dingosdk::native_input_source {
 bool lease_request(std::uint64_t owner, std::uint32_t user,
     input_lease::Handle& handle, input_lease::Reason& reason) noexcept;
@@ -40,7 +40,11 @@ private:
     friend void finish(Poll&, std::uint32_t, bool, std::uint32_t,
         const input_lease::Pad&, std::uint32_t, bool, std::uint32_t,
         const input_lease::Pad&) noexcept;
+    friend std::uint32_t finish_capture(Poll&, std::uint32_t, bool, std::uint32_t,
+        const input_lease::Pad&, std::uint32_t, bool, std::uint32_t,
+        const input_lease::Pad&, std::uint64_t, void*, bool (*)(void*, std::uint32_t, const input_lease::Pad&) noexcept) noexcept;
     std::uint64_t ticket_{};
+    std::uint32_t fallback_user_{4};
 };
 void begin(bool outer_game_poll, std::uint32_t user, Poll& poll) noexcept;
 // Raw facts are copied immediately after original, returned facts after existing

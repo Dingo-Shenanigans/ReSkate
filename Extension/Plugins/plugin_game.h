@@ -2,6 +2,7 @@
 #include "plugin_effects.h"
 #include "plugin_wave.h"
 #include "Engine/Game/Input/input_lease.h"
+#include "Engine/Game/Input/input_lease_capture.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Game/World/body_query.h"
 #include "Extension/AnimationStudio/anim_core.h"
@@ -282,6 +283,11 @@ public:
     virtual bool input_lease_state(std::uint64_t, input_lease::Handle, input_lease::Receipt&, input_lease::Reason& reason) noexcept { reason = input_lease::Reason::unavailable; return false; }
     virtual bool input_lease_acknowledge(std::uint64_t, input_lease::Handle, input_lease::Reason& reason) noexcept { reason = input_lease::Reason::unavailable; return false; }
     virtual void input_lease_release_all(std::uint64_t) noexcept {}
+    // Selected-stream capture is a separate permission and owns no native actor.
+    virtual bool input_lease_capture_request(std::uint64_t, input_lease::Handle, const input_lease::Snapshot&, input_lease_capture::Reason& why) noexcept { why = input_lease_capture::Reason::unavailable; return false; }
+    virtual bool input_lease_capture_state(std::uint64_t, input_lease::Handle, input_lease_capture::Receipt&) noexcept { return false; }
+    virtual bool input_lease_capture_release(std::uint64_t, input_lease::Handle) noexcept { return false; }
+    virtual bool input_lease_capture_acknowledge(std::uint64_t, input_lease::Handle) noexcept { return false; }
     // ---- native bodies a plugin owns (reskate.world.physics; Extension/World/owned_bodies.h) ------
     // Owned by one VM instance, not by a reloadable plugin name. Client phase only; the typed
     // handles and epochs reach Lua only inside opaque userdata.

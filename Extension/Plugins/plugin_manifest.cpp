@@ -32,8 +32,10 @@ namespace {
 // (Engine/Vfs/mod_list.h ResidentAssets, Variants), not the plugin host's.
 // "input.lease" reserves one observed XInput source for bounded passive reads
 // and renewal. It neither captures/changes reports nor controls a native actor.
-constexpr std::array<std::string_view, 56> permissions{
-    "console", "storage", "overlay", "menu", "ui.screen", "input", "input.lease", "hud", "events.tricks", "events.skater",
+// "input.capture", together with "input.lease", captures one selected stream
+// until its bounded neutral-release duty is resolved; it grants no actor control.
+constexpr std::array<std::string_view, 57> permissions{
+    "console", "storage", "overlay", "menu", "ui.screen", "input", "input.lease", "input.capture", "hud", "events.tricks", "events.skater",
     "skater.read", "skater.teleport", "skater.control", "skater.animation", "trainer", "camera",
     "world.raycast", "world.physics", "world.physics.observe", "world.objects", "world.entities", "world.environment", "world.ai", "travel", "session.read",
     "session.skaters", "session.nametags", "net.session", "net.http", "voice.control", "chat.read",

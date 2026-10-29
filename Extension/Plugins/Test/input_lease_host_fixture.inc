@@ -3,7 +3,8 @@
 namespace {
 namespace passive_lease_fixture {
 namespace lease = dingosdk::input_lease;
-struct Game final : dingosdk::plugins::Game {
+// Also reused by the capture Host fixture; the passive oracles below are retained.
+struct Game : dingosdk::plugins::Game {
     struct Record { bool used{}, renewed{}; std::uint64_t owner{}; lease::Receipt receipt{}; lease::Snapshot issued{}; };
     std::array<Record, 8> records{};
     std::uint64_t next{9007199254741000ULL}, now{9007199254740997ULL}, ordinal{9007199254741033ULL};
@@ -147,7 +148,11 @@ void passive_input_lease_host_fixture_v1() {
                 local ok,why=pcall(P[name], {}, {}, {})
                 assert(not ok and why:find('input.lease',1,true), name)
             end
-            assert(P.lease_capture==nil and P.lease_capture_state==nil and P.lease_release_capture==nil and P.lease_acknowledge_capture==nil)
+            -- The new surface exists, but passive/generic permission cannot grant capture.
+            for _,name in {'lease_capture','lease_capture_state','lease_release_capture','lease_acknowledge_capture'} do
+                local ok,why=pcall(P[name],{},{},{})
+                assert(not ok and why:find('input.capture',1,true),name)
+            end
         )", granted)});
         f::running(host, "lease-denied"); host.apply({});
         check(!e.fake.calls() && !e.fake.closes, "permission refusal reached a passive lease backend or new cleanup callback");
@@ -226,7 +231,7 @@ void passive_input_lease_host_fixture_v1() {
             reskate.console.command('lease-release','',function()
                 assert(P.lease_release(h));local r=assert(P.lease_state(h))
                 assert(r.status=='released' and not r.source_released and r.polls_in_flight==1 and not r.orphaned)
-                assert(r.capture_reserved==nil and r.report_debt==nil and not P.lease_acknowledge(h));reskate.log('lease-release-complete')
+                assert(r.capture_reserved==false and r.report_debt==nil and not P.lease_acknowledge(h));reskate.log('lease-release-complete')
             end)
             reskate.console.command('lease-ack','',function()
                 local r=assert(P.lease_state(h));assert(r.source_released and r.polls_in_flight==0)

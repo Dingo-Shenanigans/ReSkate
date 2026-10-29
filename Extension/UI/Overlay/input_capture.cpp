@@ -1,4 +1,5 @@
 #include "Extension/Input/native_input_source.h"
+#include "Extension/Input/native_input_capture.h"
 #include "Extension/Input/input_publication.h"
 #include "Engine/Core/Log/logging.h"
 #include "overlay_internal.h"
@@ -412,6 +413,13 @@ input_lease::Pad passive_pad(const XINPUT_GAMEPAD& pad) noexcept {
     return {pad.wButtons, pad.bLeftTrigger, pad.bRightTrigger,
         pad.sThumbLX, pad.sThumbLY, pad.sThumbRX, pad.sThumbRY};
 }
+bool capture_publish(void* destination, std::uint32_t packet, const input_lease::Pad& pad) noexcept {
+    if (!destination) return false;
+    const XINPUT_STATE value{packet, {pad.buttons, pad.left_trigger, pad.right_trigger,
+        pad.left_x, pad.left_y, pad.right_x, pad.right_y}};
+    __try { *static_cast<XINPUT_STATE*>(destination) = value; return true; }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
 bool passive_copy(const XINPUT_STATE* source, XINPUT_STATE& target) noexcept {
     if (!source) return false;
     __try { target = *source; return true; }
@@ -420,8 +428,6 @@ bool passive_copy(const XINPUT_STATE* source, XINPUT_STATE& target) noexcept {
 }
 template<std::size_t I>
 DWORD WINAPI captured_front(DWORD user, XINPUT_STATE* output) {
-    const bool capture = block_polled_input();
-    const bool menu=suppress_challenge_menu();
     const bool outer = overlay_input_access == 0;
     const auto entry_error = GetLastError();
     native_input_source::Poll passive_poll;
@@ -436,6 +442,9 @@ DWORD WINAPI captured_front(DWORD user, XINPUT_STATE* output) {
     const auto original_error = GetLastError();
     XINPUT_STATE raw{};
     const bool raw_known = result == ERROR_SUCCESS && passive_copy(output, raw);
+    const auto staged_revision = native_input_source::publication_revision();
+    const bool capture = block_polled_input();
+    const bool menu = suppress_challenge_menu();
     const auto returned_result = [&]() -> DWORD {
     if (result == ERROR_SUCCESS && output) note_xinput(user, *output);
     // Only the game gets a scripted pad (the character room's walk): ReSkate's own reads get the real one.
@@ -454,10 +463,11 @@ DWORD WINAPI captured_front(DWORD user, XINPUT_STATE* output) {
     }();
     XINPUT_STATE returned{};
     const bool returned_known = returned_result == ERROR_SUCCESS && passive_copy(output, returned);
-    native_input_source::finish(passive_poll, result, raw_known, raw.dwPacketNumber, passive_pad(raw.Gamepad),
-        returned_result, returned_known, returned.dwPacketNumber, passive_pad(returned.Gamepad));
+    const auto published_result = native_input_source::finish_capture(passive_poll, result, raw_known,
+        raw.dwPacketNumber, passive_pad(raw.Gamepad), returned_result, returned_known,
+        returned.dwPacketNumber, passive_pad(returned.Gamepad), staged_revision, output, &capture_publish);
     SetLastError(original_error);
-    return returned_result;
+    return published_result;
 }
 void keep_xinput_capture_first() {
     auto& h = input_hooks();
@@ -915,14 +925,10 @@ template<std::size_t I, bool Extended = false>
 DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
     const auto& hook = Extended ? input_hooks().xinput_extended[I] : input_hooks().xinput_state[I];
     const bool game_poll = !overlay_input_access;
-    const bool capture = block_polled_input();
     const auto entry_error = GetLastError();
     native_input_source::Poll passive_poll;
     native_input_source::begin(game_poll, user, passive_poll);
     note_prompt_read(prompt_xinput);
-    const auto hidden = overlay_input_access ? std::uint16_t{} : static_cast<std::uint16_t>(
-        mode_hidden_buttons.load(std::memory_order_relaxed) |
-        (suppress_challenge_menu()?XINPUT_GAMEPAD_START:0));
     DWORD result;
     { // XInput exports can forward through another hooked XInput export.
         OverlayInputAccess access;
@@ -932,6 +938,11 @@ DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
     const auto original_error = GetLastError();
     XINPUT_STATE raw{};
     const bool raw_known = result == ERROR_SUCCESS && passive_copy(output, raw);
+    const auto staged_revision = native_input_source::publication_revision();
+    const bool capture = block_polled_input();
+    const auto hidden = overlay_input_access ? std::uint16_t{} : static_cast<std::uint16_t>(
+        mode_hidden_buttons.load(std::memory_order_relaxed) |
+        (suppress_challenge_menu()?XINPUT_GAMEPAD_START:0));
     const auto returned_result = [&]() -> DWORD {
     if (result == ERROR_SUCCESS && output) note_xinput(user, *output);
     // Only the game gets a scripted pad (the character room's walk): ReSkate's own reads get the real one.
@@ -952,10 +963,11 @@ DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
     }();
     XINPUT_STATE returned{};
     const bool returned_known = returned_result == ERROR_SUCCESS && passive_copy(output, returned);
-    native_input_source::finish(passive_poll, result, raw_known, raw.dwPacketNumber, passive_pad(raw.Gamepad),
-        returned_result, returned_known, returned.dwPacketNumber, passive_pad(returned.Gamepad));
+    const auto published_result = native_input_source::finish_capture(passive_poll, result, raw_known,
+        raw.dwPacketNumber, passive_pad(raw.Gamepad), returned_result, returned_known,
+        returned.dwPacketNumber, passive_pad(returned.Gamepad), staged_revision, output, &capture_publish);
     SetLastError(original_error);
-    return returned_result;
+    return published_result;
 }
 template<std::size_t I>
 DWORD WINAPI captured_keystroke(DWORD user, DWORD reserved, PXINPUT_KEYSTROKE output) {

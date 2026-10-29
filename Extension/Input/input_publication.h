@@ -6,6 +6,8 @@ namespace dingosdk::native_input_source {
 // Nonrecursive publication gate. Never hold it across original XInput, an
 // extension filter, Lua, UI drawing or another external callback. Existing
 // writer state locks, if needed, come after this gate.
+// Capture may call only its fixed protected-POD-copy transport leaf inside the
+// gate. That leaf cannot call a filter, SDK, Lua, original, or another lock.
 class PublicationScope final {
 public:
     explicit PublicationScope(bool enabled = true) noexcept;

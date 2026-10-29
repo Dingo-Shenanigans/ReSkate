@@ -90,6 +90,8 @@ struct Receipt {
     // Only callbacks that began with this lease reserve its terminal record.
     // A zero count is not evidence that native input consumed a report.
     std::uint32_t polls_in_flight{};
+    // Matching capture ownership/debt or an exact captured callback still reserves the source.
+    bool capture_reserved{};
 };
 // Trusted native facts. Context is the observed client/readiness generation;
 // it is deliberately not described as actor, body, world, or rider authority.
