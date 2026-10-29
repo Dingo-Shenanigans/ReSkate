@@ -1,6 +1,7 @@
 #include "plugin_game_runtime.h"
 #include "Extension/Input/native_input_source.h"
 #include "Extension/Input/native_input_capture.h"
+#include "Extension/Input/native_input_write.h"
 #include "Extension/Rendering/plugin_effects.h"
 #include "plugin_session_feed.h"
 #include "plugin_content.h"
@@ -186,6 +187,10 @@ public:
     bool input_lease_capture_state(std::uint64_t owner, input_lease::Handle h, input_lease_capture::Receipt& r) noexcept override { return native_input_source::capture_state(owner, h, r); }
     bool input_lease_capture_release(std::uint64_t owner, input_lease::Handle h) noexcept override { return native_input_source::capture_release(owner, h); }
     bool input_lease_capture_acknowledge(std::uint64_t owner, input_lease::Handle h) noexcept override { return native_input_source::capture_acknowledge(owner, h); }
+    bool input_lease_write_request(std::uint64_t owner, input_lease::Handle h, const input_lease::Snapshot& s, const input_lease::Pad& pad, input_tracked_write::Version& v, input_tracked_write::Reason& why) noexcept override { return native_input_source::write_request(owner, h, s, pad, v, why); }
+    bool input_lease_write_state(std::uint64_t owner, input_lease::Handle h, input_tracked_write::Version v, input_tracked_write::Receipt& r) noexcept override { return native_input_source::write_state(owner, h, v, r); }
+    bool input_lease_write_release(std::uint64_t owner, input_lease::Handle h) noexcept override { return native_input_source::write_release(owner, h); }
+    bool input_lease_write_acknowledge(std::uint64_t owner, input_lease::Handle h) noexcept override { return native_input_source::write_acknowledge(owner, h); }
     std::string body_prepare() override { return owned_bodies::prepare(); }
     std::string body_create(std::uint64_t owner, const owned_body::Definition& d, owned_body::Handle& h) override { return owned_bodies::create(owner, d, h); }
     std::string body_read(std::uint64_t owner, const owned_body::Handle& h, owned_body::Sample& s) override { return owned_bodies::read(owner, h, s); }

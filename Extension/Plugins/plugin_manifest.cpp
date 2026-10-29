@@ -34,8 +34,10 @@ namespace {
 // and renewal. It neither captures/changes reports nor controls a native actor.
 // "input.capture", together with "input.lease", captures one selected stream
 // until its bounded neutral-release duty is resolved; it grants no actor control.
-constexpr std::array<std::string_view, 57> permissions{
-    "console", "storage", "overlay", "menu", "ui.screen", "input", "input.lease", "input.capture", "hud", "events.tricks", "events.skater",
+// "input.write", together with "input.lease", requests tracked complete Pad
+// output with confirmed publication and retained handback cleanup.
+constexpr std::array<std::string_view, 58> permissions{
+    "console", "storage", "overlay", "menu", "ui.screen", "input", "input.lease", "input.capture", "input.write", "hud", "events.tricks", "events.skater",
     "skater.read", "skater.teleport", "skater.control", "skater.animation", "trainer", "camera",
     "world.raycast", "world.physics", "world.physics.observe", "world.objects", "world.entities", "world.environment", "world.ai", "travel", "session.read",
     "session.skaters", "session.nametags", "net.session", "net.http", "voice.control", "chat.read",

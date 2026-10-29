@@ -3,7 +3,7 @@
 #include <cstdint>
 
 // Passive observation of one selected raw XInput stream. This service never
-// changes a report; its separate opt-in capture extension owns no native actor or clock.
+// changes a report; opt-in neutral capture/tracked writes own no native actor or clock.
 namespace dingosdk::native_input_source {
 bool lease_request(std::uint64_t owner, std::uint32_t user,
     input_lease::Handle& handle, input_lease::Reason& reason) noexcept;

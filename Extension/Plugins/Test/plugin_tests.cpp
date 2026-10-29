@@ -8,6 +8,7 @@
 #include "Extension/Plugins/plugin_manifest.h"
 #include "Extension/Plugins/plugin_session_feed.h"
 #include "Extension/Plugins/plugin_wire.h"
+#include "Engine/Game/Input/input_tracked_write.h"
 #include "Extension/Throwdowns/challenge_registry.h"
 #include "Extension/Throwdowns/custom_modes.h"
 #include "Extension/Throwdowns/throwdown_kit.h"
@@ -6470,6 +6471,7 @@ int main() {
         run(exclusion_facts_host_fixture_v1);
         run(passive_input_lease_host_fixture_v1);
         run(selected_stream_capture_host_fixture_v1);
+        run(tracked_input_write_host_fixture_v1);
         run(owned_body_batches_share_actual_and_logical_query_limits);
         run(effects_require_resident_roots);
         run(expired_effects_return_their_quota);

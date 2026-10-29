@@ -1,5 +1,6 @@
 #include "native_input_source.h"
 #include "native_input_capture.h"
+#include "native_input_write.h"
 #include "Engine/Game/Input/input_lease_capture_policy.h"
 #include "input_publication.h"
 #include "input_source_environment.h"
@@ -13,6 +14,7 @@ namespace dingosdk::native_input_source {
 namespace {
 namespace lease = input_lease;
 namespace capture = input_lease_capture;
+namespace write = input_tracked_write;
 constexpr std::size_t callback_capacity = 128;
 constexpr auto maximum = std::numeric_limits<std::uint64_t>::max();
 struct Reservation {
@@ -74,11 +76,22 @@ struct Callback {
     std::uint32_t user{4};
     capture::Key capture_key{};
     capture::Ticket capture_ticket{};
+    write::Key write_key{};
+    write::Version write_version{};
+};
+struct Writer {
+    bool occupied{}, attempted{};
+    write::Receipt receipt;
+    lease::Pad desired{};
+    capture::Held held_controls;
+    std::uint64_t last_observation{}, release_started_ms{};
 };
 struct State {
     std::mutex gate;
     lease::Broker leases;
     capture::Capture capture;
+    Writer writer;
+    std::uint64_t next_writer_generation{1}, last_output_sequence{};
     bool capture_orphaned{}, callbacks_unknown{};
     std::array<Source, 4> sources{};
     std::array<Reservation, lease::retained_capacity> reservations{};
@@ -92,6 +105,7 @@ struct State {
 };
 State& state() noexcept { static State value; return value; }
 thread_local bool publication_gate_held{};
+void revoke_write(write::Reason reason) noexcept;
 std::uint64_t issue(std::uint64_t& next) noexcept {
     const auto result = next;
     if (next) next = next == maximum ? 0 : next + 1;
@@ -102,9 +116,11 @@ void reset_sources() noexcept {
 }
 void invalidate(lease::Reason reason) noexcept {
     state().leases.invalidate(reason);
-    state().capture.revoke(reason == lease::Reason::context_changed ? capture::Reason::context_changed :
+    const auto why = reason == lease::Reason::context_changed ? capture::Reason::context_changed :
         reason == lease::Reason::stale_epoch ? capture::Reason::clock_regressed :
-        reason == lease::Reason::interference ? capture::Reason::interference : capture::Reason::authority_lost);
+        reason == lease::Reason::interference ? capture::Reason::interference : capture::Reason::authority_lost;
+    state().capture.revoke(why);
+    revoke_write(why);
     reset_sources();
 }
 void advance_revision() noexcept {
@@ -155,6 +171,106 @@ bool stream_in_flight(std::uint32_t user, std::uint64_t except = 0) noexcept {
         if (callback.ticket && callback.ticket != except && callback.user == user) return true;
     return false;
 }
+std::uint32_t write_callbacks(const write::Key& key) noexcept {
+    std::uint32_t count{};
+    if (!key.owner) return count;
+    for (const auto& callback : state().callbacks)
+        if (callback.ticket && callback.write_key == key) ++count;
+    return count;
+}
+bool write_busy(std::uint64_t owner = 0, lease::Handle handle = {}) noexcept {
+    const auto& w = state().writer;
+    return w.occupied && (!owner || (w.receipt.key.owner == owner &&
+        w.receipt.key.lease_sequence == handle.sequence));
+}
+void revoke_write(write::Reason reason) noexcept {
+    auto& s = state(); auto& w = s.writer;
+    if (!w.occupied || w.receipt.phase == write::Phase::complete) return;
+    if (w.receipt.phase != write::Phase::releasing) {
+        w.receipt.phase = write::Phase::releasing; w.receipt.reason = reason;
+        w.release_started_ms = 0;
+        w.held_controls = w.attempted ? capture::Held::all() : capture::Held{};
+    }
+}
+void write_cleanup() noexcept {
+    auto& s = state(); auto& w = s.writer;
+    if (!w.occupied) return;
+    auto& row = w.receipt;
+    // No attempted output means no copied command can survive the closed phase.
+    // A partial attempt sets attempted BEFORE touching the destination.
+    if (row.phase == write::Phase::releasing && !w.attempted && !s.callbacks_unknown &&
+        !write_callbacks(row.key) && row.key.user < 4 && !s.sources[row.key.user].packets.active) {
+        row.phase = write::Phase::complete; row.output_released = true;
+        row.output_debt = row.quarantined = false;
+    }
+    if (row.orphaned && row.phase == write::Phase::complete && row.output_released &&
+        !row.output_debt && !row.quarantined && !s.callbacks_unknown && !write_callbacks(row.key) &&
+        row.key.user < 4 && !s.sources[row.key.user].packets.active) w = {};
+}
+void write_sync(const lease::Guard& current) noexcept {
+    auto& s = state(); auto& w = s.writer;
+    if (!w.occupied) return;
+    auto& row = w.receipt;
+    if (row.phase == write::Phase::pending || row.phase == write::Phase::active) {
+        lease::Receipt passive;
+        if (!s.leases.state(row.key.owner, {row.key.lease_sequence}, passive) || lease::terminal(passive.status))
+            revoke_write(write::Reason::authority_lost);
+        else {
+            row.source_expires_ms = passive.expires_ms;
+            if (!current.ready) revoke_write(write::Reason::authority_lost);
+            else if (!current.focused) revoke_write(write::Reason::focus_lost);
+            else if (!current.gameplay) revoke_write(write::Reason::gameplay_inactive);
+            else if (!current.menu_closed) revoke_write(write::Reason::menu_open);
+            else if (!current.interference_clear) revoke_write(write::Reason::interference);
+            else if (row.key.context_generation != current.context_generation) revoke_write(write::Reason::context_changed);
+            else if (current.now_ms >= row.write_expires_ms) revoke_write(write::Reason::deadline);
+        }
+    }
+    if (row.phase == write::Phase::releasing) {
+        if (!w.release_started_ms && current.now_ms) w.release_started_ms = current.now_ms;
+        const auto& source = s.sources[row.key.user];
+        if (!source.connected || source.epoch != row.key.source_epoch ||
+            (w.release_started_ms && current.now_ms >= w.release_started_ms &&
+                current.now_ms - w.release_started_ms >= write::cleanup_boundary_ms)) row.quarantined = true;
+    }
+    if (s.callbacks_unknown && row.phase != write::Phase::complete) {
+        revoke_write(write::Reason::exhausted);
+        row.reason = write::Reason::exhausted; row.output_debt = row.quarantined = true;
+        row.output_released = false; w.held_controls = capture::Held::all();
+    }
+    write_cleanup();
+}
+// True records ONE fully copied output. Partial/refused attempts retain debt,
+// but are never published counters or a last-confirmed value.
+bool write_result(bool published, write::WrittenKind kind) noexcept {
+    auto& s = state(); auto& w = s.writer; auto& row = w.receipt;
+    if (!published) {
+        revoke_write(write::Reason::publication_unconfirmed);
+        row.reason = write::Reason::publication_unconfirmed;
+        row.output_debt = row.quarantined = true;
+        w.held_controls = capture::Held::all();
+        return false;
+    }
+    auto& category = kind == write::WrittenKind::desired ? row.version_publications :
+        kind == write::WrittenKind::cleanup ? row.cleanup_publications : row.handback_publications;
+    if (row.publications == maximum || category == maximum) {
+        s.failed = s.callbacks_unknown = true;
+        revoke_write(write::Reason::exhausted);
+        row.reason = write::Reason::exhausted; row.output_debt = row.quarantined = true;
+        row.output_released = false; return false;
+    }
+    ++row.publications; ++category; row.last_written_kind = kind;
+    // Keep successful-copy evidence coherent even when accounting exhausts.
+    // Exhaustion below still forbids active status, handback and ACK.
+    if (kind == write::WrittenKind::desired) row.published_revision = row.desired_revision;
+    if (row.publications == maximum || category == maximum) {
+        s.failed = s.callbacks_unknown = true; revoke_write(write::Reason::exhausted);
+        row.reason = write::Reason::exhausted; row.output_debt = row.quarantined = true;
+        row.output_released = false; return false;
+    }
+    if (kind == write::WrittenKind::desired) row.phase = write::Phase::active;
+    return true;
+}
 bool capture_busy(std::uint64_t owner = 0, lease::Handle handle = {}) noexcept {
     const auto& s = state(); const auto& receipt = s.capture.state();
     if (receipt.phase == capture::Phase::idle ||
@@ -163,6 +279,7 @@ bool capture_busy(std::uint64_t owner = 0, lease::Handle handle = {}) noexcept {
         (receipt.key.user < 4 && s.sources[receipt.key.user].packets.active);
 }
 void capture_cleanup() noexcept {
+    write_cleanup();
     auto& s = state(); const auto& receipt = s.capture.state();
     if (s.capture_orphaned && receipt.phase == capture::Phase::complete && !receipt.debt &&
         !s.callbacks_unknown && !captured_callbacks(receipt.key) && receipt.key.user < 4 &&
@@ -173,7 +290,7 @@ void capture_cleanup() noexcept {
 void reclaim_orphans() noexcept {
     auto& s = state(); capture_cleanup();
     for (auto& entry : s.reservations)
-        if (entry.owner && entry.orphaned && !entry.callbacks && !capture_busy(entry.owner, entry.handle)) {
+        if (entry.owner && entry.orphaned && !entry.callbacks && !capture_busy(entry.owner, entry.handle) && !write_busy(entry.owner, entry.handle)) {
             (void)s.leases.acknowledge(entry.owner, entry.handle);
             entry = {};
         }
@@ -203,6 +320,7 @@ void capture_sync(const lease::Guard& guard) noexcept {
     }
     if (s.callbacks_unknown && receipt.phase != capture::Phase::idle)
         (void)s.capture.retain_neutralization(receipt.key);
+    write_sync(guard);
     reclaim_orphans();
 }
 capture::Input capture_input(const Source& source, const lease::Guard& guard,
@@ -226,6 +344,13 @@ void callback_failure(std::uint32_t user) noexcept {
     if (receipt.phase != capture::Phase::idle && receipt.key.user == user) {
         s.callbacks_unknown = true;
         (void)s.capture.retain_neutralization(receipt.key);
+    }
+    if (s.writer.occupied && s.writer.receipt.key.user == user &&
+        s.writer.receipt.phase != write::Phase::complete) {
+        s.callbacks_unknown = true; revoke_write(write::Reason::exhausted);
+        s.writer.receipt.reason = write::Reason::exhausted;
+        s.writer.receipt.output_debt = s.writer.receipt.quarantined = true;
+        s.writer.held_controls = capture::Held::all();
     }
 }
 bool client(const Sample& sample, lease::Reason& reason) noexcept {
@@ -310,7 +435,7 @@ bool lease_request(std::uint64_t owner, std::uint32_t user,
     for (const auto& entry : s.reservations) if (entry.callbacks) {
         reason = lease::Reason::busy; return false;
     }
-    if (capture_busy()) { reason = lease::Reason::busy; return false; }
+    if (capture_busy() || write_busy()) { reason = lease::Reason::busy; return false; }
     Reservation* vacant{};
     for (auto& entry : s.reservations) if (!entry.owner) { vacant = &entry; break; }
     if (!vacant) { reason = lease::Reason::capacity; return false; }
@@ -363,6 +488,7 @@ bool lease_release(std::uint64_t owner, lease::Handle handle, lease::Reason& rea
     if (held.key.owner == owner && held.key.lease_sequence == handle.sequence) {
         (void)state().capture.release(held.key); advance_revision();
     }
+    if (write_busy(owner, handle)) revoke_write(write::Reason::cancelled);
     reason = lease::Reason::none;
     return true;
 }
@@ -378,7 +504,9 @@ bool lease_state(std::uint64_t owner, lease::Handle handle,
     if (!state().leases.state(owner, handle, receipt)) { reason = lease::Reason::unavailable; return false; }
     receipt.polls_in_flight = entry->callbacks;
     receipt.capture_reserved = capture_busy(owner, handle);
-    receipt.source_released = lease::terminal(receipt.status) && !entry->callbacks && !receipt.capture_reserved;
+    receipt.write_reserved = write_busy(owner, handle);
+    receipt.source_released = lease::terminal(receipt.status) && !entry->callbacks &&
+        !receipt.capture_reserved && !receipt.write_reserved;
     receipt.orphaned = entry->orphaned;
     reason = lease::Reason::none;
     return true;
@@ -391,7 +519,7 @@ bool lease_acknowledge(std::uint64_t owner, lease::Handle handle, lease::Reason&
     const auto current = guard(sampled); state().leases.tick(current); capture_sync(current);
     Reservation* entry{};
     if (!owned(owner, handle, entry, reason)) return false;
-    if (entry->callbacks || capture_busy(owner, handle)) { reason = lease::Reason::busy; return false; }
+    if (entry->callbacks || capture_busy(owner, handle) || write_busy(owner, handle)) { reason = lease::Reason::busy; return false; }
     if (!state().leases.acknowledge(owner, handle)) { reason = lease::Reason::unavailable; return false; }
     *entry = {};
     reason = lease::Reason::none;
@@ -404,6 +532,10 @@ void lease_release_all(std::uint64_t owner) noexcept {
     const auto& held = state().capture.state();
     if (held.key.owner == owner && held.phase != capture::Phase::idle) {
         state().capture_orphaned = true; (void)state().capture.release(held.key); advance_revision();
+    }
+    auto& writer = state().writer;
+    if (writer.occupied && writer.receipt.key.owner == owner && !writer.receipt.orphaned) {
+        writer.receipt.orphaned = true; revoke_write(write::Reason::cancelled); advance_revision();
     }
     for (auto& entry : state().reservations) if (entry.owner == owner) {
         entry.orphaned = true;
@@ -425,6 +557,10 @@ bool capture_request(std::uint64_t owner, lease::Handle handle, const lease::Sna
     if (!owner || !s.leases.state(owner, handle, receipt) || receipt.status != lease::Status::active ||
         !s.leases.issued(owner, handle, snapshot) || receipt.user > 3) return false;
     if (s.failed || s.callbacks_unknown) { reason = capture::Reason::exhausted; return false; }
+    if (write_busy()) { reason = capture::Reason::busy; return false; }
+    if (s.capture.state().phase == capture::Phase::idle && handle.sequence <= s.last_output_sequence) {
+        reason = capture::Reason::invalid_key; return false;
+    }
     if (stream_in_flight(receipt.user)) { reason = capture::Reason::busy; return false; }
     const auto& source = s.sources[receipt.user];
     if (!s.leases.accepted(owner, handle, source.observation) ||
@@ -434,7 +570,7 @@ bool capture_request(std::uint64_t owner, lease::Handle handle, const lease::Sna
         source.observation.observation_serial, true, 0, 0, true);
     input.user = receipt.user; input.safety.source_authorized = true;
     const bool result = s.capture.request(key, receipt.expires_ms, input, false, reason);
-    if (result) { s.capture_orphaned = false; advance_revision(); }
+    if (result) { s.capture_orphaned = false; s.last_output_sequence = handle.sequence; advance_revision(); }
     return result;
 }
 bool capture_state(std::uint64_t owner, lease::Handle handle, capture::Receipt& out) noexcept {
@@ -472,6 +608,89 @@ bool capture_acknowledge(std::uint64_t owner, lease::Handle handle) noexcept {
     return s.capture.acknowledge(receipt.key);
 }
 
+bool write_request(std::uint64_t owner, lease::Handle handle, const lease::Snapshot& snapshot,
+    const lease::Pad& desired, write::Version& version, write::Reason& reason) noexcept {
+    version = {}; reason = write::Reason::authority_lost;
+    const auto sampled = sample(); PublicationScope scope;
+    if (!scope.owns()) { reason = write::Reason::busy; return false; }
+    lease::Reason client_reason; if (!client(sampled, client_reason)) return false;
+    auto& s = state(); const auto current = guard(sampled);
+    s.leases.tick(current); capture_sync(current);
+    lease::Receipt passive;
+    if (!owner || !s.leases.state(owner, handle, passive) || passive.status != lease::Status::active ||
+        !s.leases.issued(owner, handle, snapshot) || passive.user > 3) return false;
+    if (s.failed || s.callbacks_unknown || s.revision.load(std::memory_order_relaxed) == maximum) {
+        reason = write::Reason::exhausted; return false;
+    }
+    if (!current.ready || !current.focused || !current.gameplay || !current.menu_closed ||
+        !current.interference_clear || passive.context_generation != current.context_generation) return false;
+    const auto& source = s.sources[passive.user];
+    if (!s.leases.accepted(owner, handle, source.observation) ||
+        snapshot.source_epoch != source.epoch || snapshot.context_generation != current.context_generation ||
+        snapshot.observation_serial != source.observation.observation_serial || snapshot.pad != source.observation.pad ||
+        !snapshot.observed_ms || snapshot.observed_ms > current.now_ms ||
+        current.now_ms - snapshot.observed_ms > lease::maximum_age_ms) {
+        reason = write::Reason::source_stale; return false;
+    }
+    if (current.now_ms > maximum - write::write_lifetime_ms) { reason = write::Reason::deadline; return false; }
+    if (s.capture.state().phase != capture::Phase::idle) { reason = write::Reason::busy; return false; }
+    auto& w = s.writer;
+    if (w.occupied) {
+        if (!write_busy(owner, handle) || w.receipt.orphaned ||
+            (w.receipt.phase != write::Phase::pending && w.receipt.phase != write::Phase::active) ||
+            !w.receipt.version_publications) { reason = write::Reason::busy; return false; }
+        if (w.receipt.version.revision == maximum) { reason = write::Reason::exhausted; return false; }
+        ++w.receipt.version.revision; w.receipt.desired_revision = w.receipt.version.revision;
+        w.receipt.version_publications = 0; w.receipt.phase = write::Phase::pending;
+    } else {
+        if (handle.sequence <= s.last_output_sequence) { reason = write::Reason::invalid_key; return false; }
+        if (stream_in_flight(passive.user)) { reason = write::Reason::busy; return false; }
+        const auto generation = issue(s.next_writer_generation);
+        if (!generation) { reason = write::Reason::exhausted; return false; }
+        w = {}; w.occupied = true;
+        w.receipt.key = {owner, handle.sequence, passive.source_epoch, passive.context_generation, passive.user};
+        w.receipt.version = {generation, 1}; w.receipt.desired_revision = 1;
+        w.last_observation = snapshot.observation_serial;
+        s.last_output_sequence = handle.sequence;
+    }
+    w.desired = desired; w.receipt.write_expires_ms = current.now_ms + write::write_lifetime_ms;
+    w.receipt.source_expires_ms = passive.expires_ms;
+    version = w.receipt.version; reason = write::Reason::none; advance_revision();
+    return true;
+}
+bool write_state(std::uint64_t owner, lease::Handle handle, write::Version version, write::Receipt& out) noexcept {
+    out = {}; const auto sampled = sample(); PublicationScope scope;
+    if (!scope.owns()) return false;
+    lease::Reason reason; if (!client(sampled, reason)) return false;
+    auto& s = state(); const auto current = guard(sampled); s.leases.tick(current); capture_sync(current);
+    if (!owner || !handle.sequence || !write_busy(owner, handle) || s.writer.receipt.version != version) return false;
+    out = s.writer.receipt; out.polls_in_flight = write_callbacks(out.key);
+    out.callbacks_unknown = s.callbacks_unknown;
+    return true;
+}
+bool write_release(std::uint64_t owner, lease::Handle handle) noexcept {
+    const auto sampled = sample(); PublicationScope scope;
+    if (!scope.owns()) return false;
+    lease::Reason reason; if (!client(sampled, reason)) return false;
+    auto& s = state(); const auto current = guard(sampled); s.leases.tick(current); capture_sync(current);
+    if (!owner || !handle.sequence || !write_busy(owner, handle)) return false;
+    if (s.writer.receipt.phase != write::Phase::releasing && s.writer.receipt.phase != write::Phase::complete) {
+        revoke_write(write::Reason::cancelled); advance_revision();
+    }
+    write_cleanup(); return true;
+}
+bool write_acknowledge(std::uint64_t owner, lease::Handle handle) noexcept {
+    const auto sampled = sample(); PublicationScope scope;
+    if (!scope.owns()) return false;
+    lease::Reason reason; if (!client(sampled, reason)) return false;
+    auto& s = state(); const auto current = guard(sampled); s.leases.tick(current); capture_sync(current);
+    if (!owner || !handle.sequence || !write_busy(owner, handle)) return false;
+    const auto& row = s.writer.receipt;
+    if (row.phase != write::Phase::complete || !row.output_released || row.output_debt || row.quarantined ||
+        s.callbacks_unknown || write_callbacks(row.key) || row.key.user >= 4 || s.sources[row.key.user].packets.active) return false;
+    s.writer = {}; reclaim_orphans(); return true;
+}
+
 Poll::~Poll() {
     if (!ticket_) return;
     PublicationScope scope;
@@ -499,12 +718,80 @@ void begin(bool outer, std::uint32_t user, Poll& poll) noexcept {
     if (captured.key.user == user && s.capture.reserved()) {
         value.capture_key = captured.key; value.capture_ticket = s.capture.ticket();
     }
+    if (s.writer.occupied && s.writer.receipt.key.user == user && s.writer.receipt.phase != write::Phase::complete) {
+        value.write_key = s.writer.receipt.key; value.write_version = s.writer.receipt.version;
+    }
     value.handle = s.leases.active_user() == user ? s.leases.active() :
-        value.capture_key.owner ? lease::Handle{value.capture_key.lease_sequence} : lease::Handle{};
+        value.capture_key.owner ? lease::Handle{value.capture_key.lease_sequence} :
+        value.write_key.owner ? lease::Handle{value.write_key.lease_sequence} : lease::Handle{};
     if (auto* entry = reservation(value.handle)) ++entry->callbacks;
     *vacant = value; s.sources[user].latest_start = ordinal; poll.ticket_ = ticket;
 }
 namespace {
+// This runs under the SAME finalizer/publication gate as neutral capture. A
+// copied original can supply cleanup raw facts after revocation, but can never
+// turn those facts back into admission for the desired Pad.
+void finish_write(const Callback& copied, Source& source, const lease::Guard& current,
+    bool current_call, bool observation_updated, bool connected, bool equal,
+    std::uint32_t raw_packet, const lease::Pad& raw, bool has_output,
+    std::uint32_t returned_packet, const lease::Pad& candidate, std::uint64_t staged_revision,
+    void* output, PublishReport publish) noexcept {
+    auto& s = state(); auto& w = s.writer; auto& row = w.receipt;
+    if (!w.occupied || row.phase == write::Phase::complete || copied.write_key != row.key) return;
+    const bool exact_stream = connected && source.connected && source.epoch == row.key.source_epoch;
+    if (!exact_stream) {
+        revoke_write(write::Reason::source_changed);
+        if (w.attempted) row.quarantined = true;
+        return; // Never normalize a replacement or disconnected stream.
+    }
+    const bool same_version = copied.write_version == row.version;
+    const bool stage_current = staged_revision && staged_revision == s.revision.load(std::memory_order_relaxed);
+    const bool fresh = copied.ordinal == source.latest_start && copied.ordinal > w.last_observation &&
+        copied.started_ms && current.now_ms >= copied.started_ms &&
+        current.now_ms - copied.started_ms <= lease::maximum_age_ms;
+    const bool clean = equal && stage_current && current.interference_clear;
+    const bool asserting = row.phase == write::Phase::pending || row.phase == write::Phase::active;
+    if (asserting && same_version && (!clean || !has_output || !fresh))
+        revoke_write(!fresh ? write::Reason::source_stale : write::Reason::interference);
+    const bool desired = (row.phase == write::Phase::pending || row.phase == write::Phase::active) &&
+        same_version && current_call && observation_updated && fresh && clean && has_output &&
+        current.ready && current.focused && current.gameplay && current.menu_closed &&
+        current.context_generation == row.key.context_generation && current.now_ms < row.write_expires_ms &&
+        s.leases.accepted(row.key.owner, {row.key.lease_sequence}, source.observation);
+    if (fresh) {
+        w.last_observation = copied.ordinal;
+        if (row.phase == write::Phase::releasing) w.held_controls.rest(raw);
+    }
+    if (!has_output || (!desired && !w.attempted)) return;
+    auto final = desired ? w.desired : w.held_controls.mask(candidate);
+    // A stale version/ordering/stage can only maintain already-owed neutral
+    // output. It cannot prove physical rest or final raw handback.
+    const bool delayed = !same_version || !fresh || !stage_current || s.callbacks_unknown;
+    if (!desired && delayed) {
+        final = {};
+        if (row.phase == write::Phase::releasing) w.held_controls = capture::Held::all();
+    }
+    const bool handback = !desired && row.phase == write::Phase::releasing && same_version && fresh && clean &&
+        current.focused && current.gameplay && current.menu_closed && !s.callbacks_unknown &&
+        !stream_in_flight(row.key.user, copied.ticket) && !w.held_controls.any() &&
+        row.publications < maximum - 1 && source.packets.can_handback(source.epoch, raw_packet, raw);
+    if (handback) final = raw;
+    const auto revision = s.revision.load(std::memory_order_relaxed);
+    const auto packet = handback ? raw_packet : source.packets.translate(source.epoch, revision,
+        row.desired_revision, raw_packet, returned_packet, raw, final, true);
+    // Record duty before the only destination copy, including refused/partial
+    // copies. A successful wrapper return alone never clears that duty.
+    w.attempted = true; row.output_debt = true;
+    const bool written = publish(output, packet, final);
+    source.packets.confirm(source.epoch, packet, final, written);
+    const auto kind = handback ? write::WrittenKind::handback :
+        desired ? write::WrittenKind::desired : write::WrittenKind::cleanup;
+    if (write_result(written, kind) && handback && !s.callbacks_unknown) {
+        source.packets.handback(source.epoch, revision, row.desired_revision, raw_packet, raw);
+        row.phase = write::Phase::complete; row.output_released = true;
+        row.output_debt = row.quarantined = false; w.held_controls = {};
+    }
+}
 std::uint32_t finalize(std::uint64_t ticket, std::uint32_t fallback_user,
     std::uint32_t original_result, bool raw_known, std::uint32_t raw_packet, const lease::Pad& raw,
     std::uint32_t returned_result, bool returned_known, std::uint32_t returned_packet,
@@ -526,6 +813,19 @@ std::uint32_t finalize(std::uint64_t ticket, std::uint32_t fallback_user,
             const bool written = publish(output, returned_packet + 1, {});
             s.sources[fallback_user].packets.confirm(key.source_epoch, returned_packet + 1, {}, written);
             s.capture.neutralization_result(key, written);
+        }
+        if (fallback_user < 4 && s.callbacks_unknown && s.writer.occupied &&
+            s.writer.receipt.phase != write::Phase::complete && s.writer.receipt.key.user == fallback_user &&
+            s.sources[fallback_user].connected && s.sources[fallback_user].epoch == s.writer.receipt.key.source_epoch &&
+            original_result == 0 && raw_known && output && publish) {
+            auto& writer = s.writer; auto& fallback_source = s.sources[fallback_user];
+            writer.attempted = true; writer.receipt.output_debt = true;
+            const auto packet = fallback_source.packets.translate(fallback_source.epoch,
+                s.revision.load(std::memory_order_relaxed), writer.receipt.desired_revision,
+                raw_packet, returned_packet, raw, {}, true);
+            const bool written = publish(output, packet, {});
+            fallback_source.packets.confirm(fallback_source.epoch, packet, {}, written);
+            (void)write_result(written, write::WrittenKind::cleanup);
         }
         return returned_result;
     }
@@ -554,6 +854,14 @@ std::uint32_t finalize(std::uint64_t ticket, std::uint32_t fallback_user,
         s.leases.observe(copied.handle, source.observation, current);
     }
     capture_sync(current);
+    if (s.writer.occupied && s.writer.receipt.key.user == copied.user &&
+        s.writer.receipt.phase != write::Phase::complete) {
+        const bool known_output = output && publish && original_result == 0 && raw_known &&
+            returned_result == 0 && returned_known;
+        finish_write(copied, source, current, current_call, observation_updated, connected, equal,
+            raw_packet, raw, known_output, returned_packet, candidate, staged_revision, output, publish);
+        drain(ticket); return returned_result;
+    }
     auto final = candidate;
     capture::Plan plan{candidate};
     const bool bound = copied.capture_key.owner && copied.capture_key == s.capture.state().key;

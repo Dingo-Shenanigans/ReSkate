@@ -3,6 +3,7 @@
 #include "plugin_wave.h"
 #include "Engine/Game/Input/input_lease.h"
 #include "Engine/Game/Input/input_lease_capture.h"
+#include "Engine/Game/Input/input_tracked_write.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Game/World/body_query.h"
 #include "Extension/AnimationStudio/anim_core.h"
@@ -288,6 +289,11 @@ public:
     virtual bool input_lease_capture_state(std::uint64_t, input_lease::Handle, input_lease_capture::Receipt&) noexcept { return false; }
     virtual bool input_lease_capture_release(std::uint64_t, input_lease::Handle) noexcept { return false; }
     virtual bool input_lease_capture_acknowledge(std::uint64_t, input_lease::Handle) noexcept { return false; }
+    // A tracked Pad request is not a publication receipt or native actor control.
+    virtual bool input_lease_write_request(std::uint64_t, input_lease::Handle, const input_lease::Snapshot&, const input_lease::Pad&, input_tracked_write::Version&, input_tracked_write::Reason& why) noexcept { why = input_tracked_write::Reason::unavailable; return false; }
+    virtual bool input_lease_write_state(std::uint64_t, input_lease::Handle, input_tracked_write::Version, input_tracked_write::Receipt&) noexcept { return false; }
+    virtual bool input_lease_write_release(std::uint64_t, input_lease::Handle) noexcept { return false; }
+    virtual bool input_lease_write_acknowledge(std::uint64_t, input_lease::Handle) noexcept { return false; }
     // ---- native bodies a plugin owns (reskate.world.physics; Extension/World/owned_bodies.h) ------
     // Owned by one VM instance, not by a reloadable plugin name. Client phase only; the typed
     // handles and epochs reach Lua only inside opaque userdata.

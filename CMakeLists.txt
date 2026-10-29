@@ -508,6 +508,17 @@ if(DINGOSDK_BUILD_PLUGIN_TESTS)
             COMMAND dingosdk_input_capture_source_tests ${mode})
         set_tests_properties(input_capture_source_${mode} PROPERTIES TIMEOUT 10)
     endforeach()
+    add_executable(dingosdk_input_write_source_tests
+        Engine/Game/Input/Test/input_write_source_tests.cpp
+        Extension/Input/native_input_source.cpp)
+    target_include_directories(dingosdk_input_write_source_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    foreach(mode denial pending publication versions source_age source_age_edge expiry capture_exclusion capture_first busy_original
+        filtered staged_revision partial_sink refused_sink selected_drain other_user collision unknown_capacity menu owner_close post_ack
+        held_tail handback_partial packet_only_failure cancel_drain source_expiry replacement)
+        add_test(NAME input_write_source_${mode}
+            COMMAND dingosdk_input_write_source_tests ${mode})
+        set_tests_properties(input_write_source_${mode} PROPERTIES TIMEOUT 10)
+    endforeach()
 endif()
 if(DINGOSDK_BUILD_PLUGIN_TESTS AND WIN32)
     # The owned-body service itself (Extension/World/owned_bodies.cpp), over a constructed local

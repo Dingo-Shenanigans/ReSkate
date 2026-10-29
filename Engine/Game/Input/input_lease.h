@@ -92,6 +92,8 @@ struct Receipt {
     std::uint32_t polls_in_flight{};
     // Matching capture ownership/debt or an exact captured callback still reserves the source.
     bool capture_reserved{};
+    // A matching tracked Pad writer retains this source through its final ACK.
+    bool write_reserved{};
 };
 // Trusted native facts. Context is the observed client/readiness generation;
 // it is deliberately not described as actor, body, world, or rider authority.
