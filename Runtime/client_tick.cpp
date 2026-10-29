@@ -128,8 +128,23 @@ void refresh_interactive_model(std::uintptr_t client, DWORD state, DWORD game_ty
 // - the in-game advertising (billboards served by EA's ad service, with a render pass that
 //   measures how long each was on screen) has nothing to show offline and still costs frame
 //   time: its three switches, the renderer's, the service's and the game's own;
+// Running under Wine on macOS (CrossOver), where hardware_concurrency() includes Efficiency
+// cores under Rosetta 2.
+bool under_macos_wine() noexcept {
+    static const bool macos = []() noexcept {
+        using HostVersion = void(__cdecl*)(const char**, const char**);
+        const auto ntdll = GetModuleHandleW(L"ntdll.dll");
+        const auto host = ntdll ? reinterpret_cast<HostVersion>(GetProcAddress(ntdll, "wine_get_host_version")) : nullptr;
+        const char* sysname{};
+        if (host) host(&sysname, nullptr);
+        return sysname && std::string_view(sysname) == "Darwin";
+    }();
+    return macos;
+}
 // - the world-transform update, which grows with every remote player's entities, is split
-//   over more jobs than Game.cfg's 2.
+//   over more jobs than Game.cfg's 2 (left at 2 under Wine on macOS, where splitting the
+//   synchronous per-frame barrier across half the logical cores schedules barrier jobs onto
+//   Efficiency cores alongside D3DMetal shader threads).
 void apply_performance_settings() {
     static bool applied = false;
     static ULONGLONG next_attempt = 0;
@@ -138,7 +153,8 @@ void apply_performance_settings() {
     if (now < next_attempt) return;
     next_attempt = now + 500;
     try {
-        const auto jobs = std::to_string(std::clamp(std::thread::hardware_concurrency() / 2, 2u, 8u));
+        const auto jobs = std::to_string(
+            under_macos_wine() ? 2u : std::clamp(std::thread::hardware_concurrency() / 2, 2u, 8u));
         const std::array<std::pair<const char*, std::string>, 13> settings{{
             {"DingoTelemetry.Enable", "0"},
             {"DingoTelemetry.EnablePlayerTickEvents", "0"},
@@ -226,7 +242,8 @@ void apply_local_connection_timeouts() {
 // and an RX 7600). The card's size (size_kb) is only the fallback for a driver that reports no
 // budget.
 namespace mesh_pool {
-constexpr std::uint32_t stock_kb = 532960, most_kb = 3584u * 1024u, most_to_12gb_kb = 2048u * 1024u;
+constexpr std::uint32_t stock_kb = 532960, most_kb = 3584u * 1024u, most_to_12gb_kb = 2048u * 1024u,
+                        most_macos_wine_kb = 1280u * 1024u;
 static_assert((std::uint64_t{most_kb} + 24576u) * 1024u <= 0xffffffffull);
 struct Card { std::uint64_t memory{}; std::string name; LUID luid{}; };
 // The hardware adapter with the most dedicated memory: the one the game renders on (a laptop's
@@ -446,9 +463,18 @@ void mesh_pool_for_load(bool custom, std::string_view level) {
     bool short_of_room = false;
     if (!kb && custom) {
         const auto bytes = map_mesh_bytes(level);
-        if (bytes)
+        // Under Wine on macOS (CrossOver / D3DMetal), the adapter's reported dedicated memory
+        // (11.8 GB on a 16 GB Mac) is carved out of unified system RAM alongside macOS, Wine and
+        // the game's own 11 to 12 GB commit; sizing a custom map's pool at 520 MB + 0.5x its
+        // all-LOD mesh bytes (up to 1,280 MB instead of 3,584 MB) gives heavy custom maps more
+        // than double the 520 MB base pool while saving 1.1 to 2.3 GB of unified RAM.
+        const bool macos_wine = under_macos_wine();
+        const auto map_most_kb = macos_wine ? mesh_pool::most_macos_wine_kb : mesh_pool::most_kb;
+        if (bytes) {
+            const auto extra_kb = macos_wine ? (bytes / 2 / 1024) : (bytes * 3 / 2 / 1024);
             mesh_pool_map_kb = static_cast<std::uint32_t>(std::clamp<std::uint64_t>(
-                mesh_pool::stock_kb + bytes * 3 / 2 / 1024, mesh_pool::stock_kb, mesh_pool::most_kb));
+                mesh_pool::stock_kb + extra_kb, mesh_pool::stock_kb, map_most_kb));
+        }
         const auto current = mesh_pool_wanted_kb ? mesh_pool_wanted_kb : mesh_pool::stock_kb;
         const auto needs = bytes ? std::format("its meshes {} MB, ", bytes >> 20) : std::string();
         if (const auto budget = mesh_pool::budget_of(card)) {
