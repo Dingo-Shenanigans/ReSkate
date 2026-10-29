@@ -40,6 +40,14 @@ std::string_view trimmed(std::string_view text) {
     return text;
 }
 
+// A byte limit may fall inside a UTF-8 character; keep only complete characters.
+std::string_view utf8_prefix(std::string_view text, std::size_t limit) {
+    if (text.size() <= limit) return text;
+    auto length = limit;
+    while (length && (static_cast<unsigned char>(text[length]) & 0xC0) == 0x80) --length;
+    return text.substr(0, length);
+}
+
 bool semantic(std::string_view version) {
     int parts = 1;
     bool digit = false;
@@ -174,7 +182,7 @@ std::string Profiles::free_name(std::string_view wanted) const {
     std::string name(wanted);
     for (int number = 2; taken(name); ++number) {
         const auto suffix = std::format(" ({})", number);
-        name = std::string(wanted.substr(0, max_name_bytes - std::min(max_name_bytes, suffix.size()))) + suffix;
+        name = std::string(utf8_prefix(wanted, max_name_bytes - std::min(max_name_bytes, suffix.size()))) + suffix;
     }
     return name;
 }
@@ -195,11 +203,7 @@ std::string clean_profile_name(std::string_view name) {
         if (byte < 0x20 || byte == 0x7f || std::string_view("<>:\"/\\|?*").find(ch) != std::string_view::npos) continue;
         out += ch;
     }
-    while (out.size() > max_name_bytes) {
-        // Never cut a UTF-8 character in half.
-        do out.pop_back();
-        while (!out.empty() && (static_cast<unsigned char>(out.back()) & 0xC0) == 0x80);
-    }
+    out.resize(utf8_prefix(out, max_name_bytes).size());
     while (!out.empty() && out.front() == ' ') out.erase(out.begin());
     while (!out.empty() && (out.back() == ' ' || out.back() == '.')) out.pop_back();
     return out.empty() ? std::string("Profile") : out;
