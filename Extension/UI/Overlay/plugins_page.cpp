@@ -4,6 +4,8 @@
 #include "Extension/UI/skate_theme.h"
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <map>
 #include <string>
 #include <vector>
@@ -20,9 +22,21 @@ struct Edit {
     float value{};
     int chosen{};
     double at{};
+    std::string text;
+    std::array<float, 3> colour{};
 };
 std::map<std::string, Edit>& edits() {
     static auto* value = new std::map<std::string, Edit>;
+    return *value;
+}
+// A text field's characters while it is typed in (ImGui edits them in place), by widget; and the one
+// being typed in, which keeps what the player types over what the plugin last sent.
+std::map<std::string, std::array<char, 201>>& text_buffers() {
+    static auto* value = new std::map<std::string, std::array<char, 201>>;
+    return *value;
+}
+std::string& typing_in() {
+    static auto* value = new std::string;
     return *value;
 }
 // Render thread: the pages as last published, held while drawn.
@@ -40,6 +54,7 @@ void draw_widgets(SkateMenu& menu, const plugin_ui::Panel& panel, double now) {
         in_card = true;
     }
     int item = 0;
+    bool folded = false; // in a section the player folded away: its widgets are not drawn
     for (const auto& w : panel.widgets) {
         // A card opens here and closes at the next one: outside any widget's own ID, each its own.
         if (w.kind == plugin_ui::Widget::Kind::card) {
@@ -47,8 +62,31 @@ void draw_widgets(SkateMenu& menu, const plugin_ui::Panel& panel, double now) {
             const auto id = "plugin-card-" + std::to_string(item++);
             begin_card(menu, id.c_str(), w.text.c_str(), w.help.empty() ? nullptr : w.help.c_str());
             in_card = true;
+            folded = false;
             continue;
         }
+        // A section is a card that folds (fold_card keeps it open or not by its id); the plugin hears
+        // when the player opens or folds it, and its `on` seeds it.
+        if (w.kind == plugin_ui::Widget::Kind::section) {
+            if (in_card) end_card();
+            const auto id = "plugin-section\n" + panel.plugin + '\n' + panel.title + '\n' + w.id;
+            ++item;
+            const bool open = fold_card(menu, id.c_str(), w.text.c_str(), w.help.empty() ? nullptr : w.help.c_str(), w.on);
+            in_card = true;
+            folded = !open;
+            auto& all = edits();
+            const auto edit = all.find(id);
+            if (edit != all.end() && edit->second.on == w.on) all.erase(edit);
+            const bool sent = edit != all.end() && edit->second.on == open;
+            if (open != w.on && !sent) {
+                plugin_ui::Action action{panel.plugin, panel.title, w.id};
+                action.on = open;
+                plugin_ui::act(std::move(action));
+                all[id] = Edit{open, 0, 0, now};
+            }
+            continue;
+        }
+        if (folded) continue;
         ImGui::PushID(item++);
         const auto key = panel.plugin + '\n' + panel.title + '\n' + w.id;
         auto& all = edits();
@@ -88,6 +126,102 @@ void draw_widgets(SkateMenu& menu, const plugin_ui::Panel& panel, double now) {
         case Kind::button:
             if (w.on ? primary_button(menu, w.text.c_str()) : ImGui::Button(w.text.c_str(), ImVec2(-FLT_MIN, px(34)))) send({}, {});
             break;
+        case Kind::buttons: {
+            const int pressed = button_grid(menu, "##buttons", w.choices, w.chosen - 1);
+            if (pressed >= 0) {
+                plugin_ui::Action action;
+                action.chosen = pressed + 1;
+                send(action, {false, 0, pressed + 1});
+            }
+            break;
+        }
+        case Kind::text: {
+            // What the plugin holds, until the player types: then what they typed, while the field
+            // has the keyboard and until the plugin's next build agrees.
+            auto& buffer = text_buffers()[key];
+            if (typing_in() != key) {
+                const auto& shown = edit != all.end() ? edit->second.text : w.input;
+                const auto length = std::min(shown.size(), buffer.size() - 1);
+                std::copy_n(shown.data(), length, buffer.data());
+                buffer[length] = '\0';
+            }
+            if (edit != all.end() && edit->second.text == w.input) all.erase(edit);
+            field(menu, w.text.c_str());
+            if (ImGui::InputTextWithHint("##text", w.help.c_str(), buffer.data(), buffer.size())) {
+                plugin_ui::Action action;
+                action.text = buffer.data();
+                Edit remembered;
+                remembered.text = action.text;
+                send(action, remembered);
+            }
+            if (ImGui::IsItemActive()) typing_in() = key;
+            else if (typing_in() == key) typing_in().clear();
+            break;
+        }
+        case Kind::colour: {
+            auto colour = edit != all.end() ? edit->second.colour : w.colour;
+            if (edit != all.end() && edit->second.colour == w.colour) all.erase(edit);
+            field(menu, w.text.c_str());
+            if (ImGui::ColorEdit3("##colour", colour.data())) {
+                plugin_ui::Action action;
+                action.colour = colour;
+                Edit remembered;
+                remembered.colour = colour;
+                send(action, remembered);
+            }
+            break;
+        }
+        case Kind::stepper: {
+            float value = edit != all.end() ? edit->second.value : w.value;
+            if (edit != all.end() && edit->second.value == w.value) all.erase(edit);
+            const char* format = w.format.empty() ? "%.2f" : w.format.c_str();
+            field(menu, w.text.c_str());
+            bool changed = false;
+            // A window: - value + (ImGui's own buttons, the value typed in between). Full screen: left /
+            // right step it.
+            if (console_style()) {
+                set_console_step(w.step);
+                changed = slider_float("##stepper", &value, w.minimum, w.maximum, format, ImGuiSliderFlags_AlwaysClamp);
+            } else {
+                changed = ImGui::InputFloat("##stepper", &value, w.step, w.step * 10, format);
+            }
+            if (changed) {
+                const float steps = std::round((std::clamp(value, w.minimum, w.maximum) - w.minimum) / w.step);
+                value = std::clamp(w.minimum + steps * w.step, w.minimum, w.maximum);
+                plugin_ui::Action action;
+                action.value = value;
+                send(action, {false, value});
+            }
+            break;
+        }
+        case Kind::list: {
+            int chosen = edit != all.end() ? edit->second.chosen : w.chosen;
+            if (edit != all.end() && edit->second.chosen == w.chosen) all.erase(edit);
+            int picked = -1;
+            if (console_style()) {
+                // Full screen: a row for each, as the music page's songs; A picks one.
+                section(menu, w.text.c_str());
+                for (int i = 0; i < static_cast<int>(w.choices.size()); ++i)
+                    if (list_row(menu, ("##row" + std::to_string(i)).c_str(), w.choices[static_cast<std::size_t>(i)], "", i + 1 == chosen)) picked = i;
+            } else {
+                field(menu, w.text.c_str());
+                const float height = static_cast<float>(w.rows) * ImGui::GetTextLineHeightWithSpacing() + ImGui::GetStyle().FramePadding.y * 2;
+                if (ImGui::BeginListBox("##list", ImVec2(-FLT_MIN, height))) {
+                    for (int i = 0; i < static_cast<int>(w.choices.size()); ++i) {
+                        ImGui::PushID(i);
+                        if (ImGui::Selectable(w.choices[static_cast<std::size_t>(i)].c_str(), i + 1 == chosen)) picked = i;
+                        ImGui::PopID();
+                    }
+                    ImGui::EndListBox();
+                }
+            }
+            if (picked >= 0 && picked + 1 != chosen) {
+                plugin_ui::Action action;
+                action.chosen = picked + 1;
+                send(action, {false, 0, picked + 1});
+            }
+            break;
+        }
         case Kind::toggle: {
             bool on = edit != all.end() ? edit->second.on : w.on;
             if (edit != all.end() && edit->second.on == w.on) all.erase(edit);
