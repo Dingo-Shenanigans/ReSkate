@@ -5,6 +5,7 @@
 #include "Engine/Game/Build/20260929/skater_state.h"
 #include "Extension/Multiplayer/Remote/native_pose_layout.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
+#include "Extension/Skater/pose_offset.h"
 #include <Windows.h>
 #include <algorithm>
 #include <atomic>
@@ -383,6 +384,10 @@ struct Pending {
     std::uintptr_t buffer{};
     std::uint32_t first{}, last{};
     std::vector<NativeBone> bones; // [first, last)
+    // Instead of bones: an offset-only pose, put on [first, last) as the body physics left it when drawn.
+    std::vector<pose_offset::Delta> deltas;
+    std::vector<std::pair<std::uint16_t, pose_offset::Written>> written; // the render thread's, a joint each
+    std::uintptr_t written_buffer{};
     double at{};
     // What the buffer held where the pose was written for the render, put back once the renderer has
     // copied the pose (on_drawn). The game does not set every part of every joint again before the next
@@ -602,6 +607,7 @@ void on_animation(std::uintptr_t component) noexcept {
             (!snap->allowed || (!snap->play && snap->replacements.empty()))) {
             std::lock_guard lock(pending().mutex);
             pending().bones.clear();
+            pending().deltas.clear();
             SetLastError(error);
             return;
         }
@@ -831,6 +837,13 @@ void on_animation(std::uintptr_t component) noexcept {
                 widen(first, last, arm_reach::first_written(goal.hand), arm_reach::last_written(goal.hand) + 1u);
         };
         const auto for_everyone = [](bool on, Shown shown) { return on && shown == Shown::everyone; };
+        // A pose that only moves, turns and scales joints, with nothing else written to the pose drawn,
+        // goes on when the pose is drawn, onto the joints as the body physics left them (pose_offset.h).
+        // Written whole from here, a joint lost what the body physics did to it and its children kept
+        // theirs: posing the hips put the feet into the deck on tricks from standing still.
+        const bool at_draw = posing && snap->offsets_shown != Shown::others && last <= first && !in_room &&
+                             !(carrying && snap->carry_shown != Shown::others) && !(reaching && snap->reach_shown != Shown::others) &&
+                             std::all_of(snap->offsets.begin(), snap->offsets.end(), [](const PoseOffset& o) { return !o.place && !o.keep_children; });
         if (for_everyone(posing, snap->offsets_shown)) pose_joints(l.pose, first, last);
         if (for_everyone(carrying, snap->carry_shown)) carry_item(l.pose, first, last);
         if (for_everyone(reaching, snap->reach_shown)) reach_arm(l.pose, first, last);
@@ -866,7 +879,20 @@ void on_animation(std::uintptr_t component) noexcept {
             if (last > first) first = std::min<std::size_t>(first, placement_joint);
             else first = placement_joint, last = placement_joint + 1u;
         }
-        if (last > first) {
+        if (at_draw && last > first) {
+            thread_local std::vector<pose_offset::Delta> deltas;
+            deltas.clear();
+            for (const auto& o : snap->offsets)
+                if (o.joint >= 2 && o.joint < layout.count) pose_offset::add(deltas, o.joint, o.rotation, o.scale, o.offset, snap->offsets_weight);
+            auto& p = pending();
+            std::lock_guard lock(p.mutex);
+            p.buffer = layout.buffer;
+            p.first = static_cast<std::uint32_t>(first);
+            p.last = static_cast<std::uint32_t>(last);
+            p.bones.clear();
+            p.deltas = deltas;
+            p.at = at;
+        } else if (last > first) {
             for (std::size_t i = first; i < last; ++i)
                 if (!finite(l.pose[i])) throw std::runtime_error("a clip made a broken pose; nothing was written");
             for (std::size_t i = first; i < last; ++i) {
@@ -889,6 +915,7 @@ void on_animation(std::uintptr_t component) noexcept {
                 p.first = static_cast<std::uint32_t>(first);
                 p.last = static_cast<std::uint32_t>(last);
                 p.bones.assign(l.bones.begin() + static_cast<std::ptrdiff_t>(first), l.bones.begin() + static_cast<std::ptrdiff_t>(last));
+                p.deltas.clear();
                 p.at = at;
             }
             if (clip) {
@@ -919,6 +946,7 @@ void on_animation(std::uintptr_t component) noexcept {
             auto& p = pending();
             std::lock_guard lock(p.mutex);
             p.bones.clear();
+            p.deltas.clear();
         }
         // What the others are sent: the pose drawn, or its own copy (Shown). Other players are never
         // sent the room: from joint 2 on only.
@@ -1043,8 +1071,8 @@ void on_render(std::uintptr_t animation_interface) noexcept {
             std::lock_guard probe_lock(pr.mutex);
             ++(pr.*n);
         };
-        if (p.bones.empty() || now_seconds() - p.at > 0.1) {
-            if (!p.bones.empty()) count(&Probe::stale);
+        if ((p.bones.empty() && p.deltas.empty()) || now_seconds() - p.at > 0.1) {
+            if (!p.bones.empty() || !p.deltas.empty()) count(&Probe::stale);
             SetLastError(error);
             return;
         }
@@ -1062,10 +1090,29 @@ void on_render(std::uintptr_t animation_interface) noexcept {
             return;
         }
         p.game = current;
-        for (std::size_t i = 0; i < current.size(); ++i) {
-            std::memcpy(current[i].scale.data(), p.bones[i].scale.data(), 12);
-            current[i].rotation = p.bones[i].rotation;
-            std::memcpy(current[i].position.data(), p.bones[i].position.data(), 12);
+        if (!p.deltas.empty()) {
+            if (p.written_buffer != layout.buffer) p.written.clear();
+            p.written_buffer = layout.buffer;
+            for (const auto& d : p.deltas) {
+                if (d.joint < p.first || d.joint >= p.last) continue;
+                auto& b = current[d.joint - p.first];
+                auto was = std::find_if(p.written.begin(), p.written.end(), [&](const auto& w) { return w.first == d.joint; });
+                const auto before = pose_offset::before_delta(joint_of(b), was != p.written.end() ? std::optional(was->second) : std::nullopt);
+                const auto after = pose_offset::apply(before, d);
+                // As a broken clip writes nothing: a joint the renderer cannot draw is left as the game set it.
+                if (!anim_studio::finite(after)) continue;
+                std::memcpy(b.scale.data(), after.scale.data(), 12);
+                b.rotation = after.rotation;
+                std::memcpy(b.position.data(), after.position.data(), 12);
+                if (was == p.written.end()) was = p.written.insert(p.written.end(), {d.joint, {}});
+                was->second = {before, joint_of(b)};
+            }
+        } else {
+            for (std::size_t i = 0; i < current.size(); ++i) {
+                std::memcpy(current[i].scale.data(), p.bones[i].scale.data(), 12);
+                current[i].rotation = p.bones[i].rotation;
+                std::memcpy(current[i].position.data(), p.bones[i].position.data(), 12);
+            }
         }
         if (poke(layout.buffer + p.first * sizeof(NativeBone), current.data(), current.size() * sizeof(NativeBone))) {
             p.game_first = p.first;

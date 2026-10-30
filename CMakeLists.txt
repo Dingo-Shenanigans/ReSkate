@@ -429,6 +429,12 @@ if(DINGOSDK_BUILD_ANIMATION_STUDIO_TESTS)
     target_include_directories(dingosdk_pose_place_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     target_link_libraries(dingosdk_pose_place_tests PRIVATE dingosdk_json)
     add_test(NAME pose_place COMMAND dingosdk_pose_place_tests)
+    # A joint moved on top of the pose as it is drawn (reskate.skater.pose's offsets), not the animation's.
+    add_executable(dingosdk_pose_offset_tests Extension/Skater/Test/pose_offset_tests.cpp Extension/Skater/pose_offset.cpp
+        Extension/AnimationStudio/anim_core.cpp)
+    target_include_directories(dingosdk_pose_offset_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_link_libraries(dingosdk_pose_offset_tests PRIVATE dingosdk_json)
+    add_test(NAME pose_offset COMMAND dingosdk_pose_offset_tests)
 endif()
 option(DINGOSDK_BUILD_REPLAY_KEYFRAMES_TESTS "Build replay keyframe smoothing regression tests" OFF)
 if(DINGOSDK_BUILD_REPLAY_KEYFRAMES_TESTS)
