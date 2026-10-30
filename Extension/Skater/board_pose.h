@@ -54,9 +54,11 @@ std::string fit(std::string_view owner, std::optional<Fit> value);
 // are, at `velocity` (m/s, world) turning at `spin` (rad/s, world), fall, land on `ground` (a world
 // height) and lie there, until cleared.
 std::string toss(std::string_view owner, std::vector<int> list, Vec3 velocity, Vec3 spin, float ground);
-// The local board's bones as last drawn, in their parents' frames; empty without a board.
+// The local board's bones as last drawn, in their parents' frames; empty without a board, and until
+// the board the local skater has now is drawn (a map load leaves the last one behind).
 std::optional<std::array<Bone, bones>> read();
-// Each client tick: the local skater's animation component (0 for none).
+// Each client tick: the local skater's animation component (0 for none). Once a plugin uses
+// reskate.board, installs the render pose hook its drawing goes through.
 void tick(std::uintptr_t base, std::uintptr_t component) noexcept;
 // From the render pose hook (native_skater.cpp), every skeleton handed to the renderer.
 void on_render_pose(std::uintptr_t animation_interface) noexcept;
