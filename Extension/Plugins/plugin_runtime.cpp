@@ -109,7 +109,7 @@ public:
         return state;
     }
     // As the console's tp: refused in a session whose host has turned teleporting (and noclip) off.
-    Teleport teleport(std::string_view plugin, const Vec3& position, float heading) override {
+    Teleport teleport(std::string_view plugin, const Vec3& position, float heading, std::optional<bool> on_board = std::nullopt) override {
         // A throwdown mode's own moves (line-ups, recoveries, returns to the start) are the game's:
         // allowed while that plugin's own match runs and asks for them (the kit's `match.teleports`),
         // never for another plugin's calls.
@@ -118,7 +118,7 @@ public:
             const bool mine = flag.owned && flag.mode.size() > plugin.size() && flag.mode.starts_with(plugin) && flag.mode[plugin.size()] == '/';
             if (!throwdowns::kit::allows_teleports(plugin, mine)) return Teleport::forbidden;
         }
-        return teleport_local_skater_heading(position, heading) ? Teleport::sent : Teleport::unavailable;
+        return teleport_local_skater_heading(position, heading, on_board) ? Teleport::sent : Teleport::unavailable;
     }
     std::optional<Vec3> raycast(const Vec3& from, const Vec3& to) override { return local_surface_hit(from, to); }
     std::optional<ScoreState> score() override { return score_now; }

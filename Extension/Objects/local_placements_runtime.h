@@ -77,6 +77,7 @@ struct PlacementsRuntime {
     std::uint64_t next_token{1}, teleport_token{}, teleport_queued_at{};
     // A teleport of the local skater to a position (console tp, the host's tpall).
     std::optional<std::array<float,16>> position_teleport;
+    std::optional<bool> position_teleport_on_board;
     std::uint64_t position_teleport_at{};
     // The heading the pending position teleport faces (teleport_local_skater_heading), radians about
     // world up; unset means the identity rotation the other teleports use (facing +Z).

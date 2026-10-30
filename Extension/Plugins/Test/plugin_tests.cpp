@@ -1147,6 +1147,7 @@ struct TestEnvironment final : Environment {
     std::optional<SkaterState> local_skater;
     bool teleport_forbidden{}, teleport_unavailable{};
     std::vector<std::pair<Vec3, float>> teleports;
+    std::vector<std::optional<bool>> teleport_equipment;
     int rays{};
     unsigned skater_reads{};
     std::optional<SkaterState> skater() override { ++skater_reads; return local_skater; }
@@ -1197,10 +1198,11 @@ struct TestEnvironment final : Environment {
     std::vector<HttpResponse> take_http_responses() override { return std::exchange(responses, {}); }
     FakeGame fake;
     Game& game() override { return fake; }
-    Teleport teleport(std::string_view, const Vec3& position, float heading) override {
+    Teleport teleport(std::string_view, const Vec3& position, float heading, std::optional<bool> on_board = std::nullopt) override {
         if (teleport_forbidden) return Teleport::forbidden;
         if (teleport_unavailable || !local_skater) return Teleport::unavailable;
         teleports.emplace_back(position, heading);
+        teleport_equipment.push_back(on_board);
         return Teleport::sent;
     }
     std::optional<Vec3> raycast(const Vec3& from, const Vec3& to) override {
@@ -2907,6 +2909,62 @@ void the_skater_can_be_read_moved_and_the_world_probed() {
     ticks(host, environment, 1);
     host.run_console("probe");
     running(host, "mover", environment);
+}
+
+void teleport_equipment_choices_keep_permissions_and_host_limits() {
+    TestEnvironment environment;
+    environment.local_skater = SkaterState{{1, 0, 2}, 1.5f, 0, 0, false, 0};
+    Host host(environment, Side::client);
+    host.apply({script("bare", R"(
+        for _, on_board in ipairs({true, false}) do
+            local ok, err = pcall(reskate.skater.teleport, vector.create(10, 0, 20), nil, {on_board = on_board})
+            assert(not ok and err:find("skater.teleport"), err)
+        end
+        reskate.log("equipment permission refused")
+    )"), script("teleport-options", R"(
+        reskate.console.command("choose-teleport", "equipment", function(args)
+            local options
+            if args[1] == "on" then options = {on_board = true}
+            elseif args[1] == "off" then options = {on_board = false}
+            elseif args[1] == "empty" then options = {} end
+            local ok, why = reskate.skater.teleport(vector.create(10, 0, 20), nil, options)
+            reskate.log("choice " .. tostring(ok) .. " " .. tostring(why))
+        end)
+        reskate.console.command("bad-teleport-options", "validation", function()
+            for _, bad in ipairs({false, true, 0, "on", {true}, {on_board = 1}, {on_board = "false"},
+                {on_board = {}}, {on_board = function() end}, {on_board = true, stance = 1}, {["on_board\0extra"] = true}}) do
+                assert(not pcall(reskate.skater.teleport, vector.create(10, 0, 20), nil, bad), "invalid teleport options")
+            end
+            reskate.log("equipment options refused")
+        end)
+    )", R"("console", "skater.teleport")")});
+    running(host, "bare", environment);
+    check(environment.logged("equipment permission refused") && environment.teleports.empty(),
+          "Equipment choices require the existing teleport permission and cannot reach the host without it");
+    check(host.run_console("bad-teleport-options") && environment.logged("equipment options refused") && environment.teleports.empty(),
+          "Non-tables, non-boolean choices and unknown keys are rejected before forwarding");
+    check(host.run_console("choose-teleport on") && host.run_console("choose-teleport off") && environment.teleports.size() == 2 &&
+          environment.teleport_equipment == std::vector<std::optional<bool>>{true, false} &&
+          environment.teleports[0].first == Vec3{10, 0, 20} && std::abs(environment.teleports[0].second - 1.5f) < 1e-6f,
+          "True and false remain distinct per-request choices with the existing default heading");
+    host.run_console("choose-teleport");
+    check(environment.teleports.size() == 2 && environment.logged("asked more than twice in a second"),
+          "Equipment choices and legacy calls share the existing teleport rate limit");
+    environment.now += 1000;
+    check(host.run_console("choose-teleport") && host.run_console("choose-teleport empty") && environment.teleports.size() == 4 &&
+          !environment.teleport_equipment[2].has_value() && !environment.teleport_equipment[3].has_value(),
+          "Omitted and empty options forward no equipment override");
+    environment.now += 1000;
+    environment.teleport_forbidden = true;
+    host.run_console("choose-teleport on");
+    check(environment.teleports.size() == 4 && environment.logged("the host has turned teleporting off"),
+          "An explicit equipment choice cannot bypass the host teleport policy");
+    environment.teleport_forbidden = false;
+    environment.teleport_unavailable = true;
+    host.run_console("choose-teleport off");
+    check(environment.teleports.size() == 4 && environment.logged("teleporting is unavailable"),
+          "An explicit equipment choice cannot bypass an unavailable skater or load");
+    running(host, "teleport-options", environment);
 }
 
 void tricks_reach_plugins_that_ask_for_them() {
@@ -6484,6 +6542,7 @@ int main() {
         run(a_plugin_over_its_time_budget_is_stopped);
         run(a_plugin_reloads_when_its_files_change);
         run(the_skater_can_be_read_moved_and_the_world_probed);
+        run(teleport_equipment_choices_keep_permissions_and_host_limits);
         run(plugins_distinguish_clear_unavailable_and_hit_world_probes);
         run(tricks_reach_plugins_that_ask_for_them);
         run(plugins_draw_on_the_overlay);
