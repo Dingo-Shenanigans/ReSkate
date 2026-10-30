@@ -22,6 +22,11 @@ void set_mode(int mode) noexcept;
 // How much louder or quieter than Spotify plays it, 1 as it is.
 float gain() noexcept;
 void set_gain(float gain) noexcept;
+// 3D spatial speaker DSP driven by a plugin (reskate.spatialize_music): scales, pans, and
+// filters the station's own song in place inside process_hook, and silences short world loops.
+void set_spatial(bool active, float left, float right, float lpf_l = 1.0f, float lpf_r = 1.0f, int itd = 0, float env = 0.0f, bool mute_loops = true) noexcept;
+bool spatial_active() noexcept;
+
 // The client thread, each frame: starts the capture when the station is first on, turns
 // Spotify's own output down while its sound is going through the game, and writes what the
 // game's sound files are into the log.
