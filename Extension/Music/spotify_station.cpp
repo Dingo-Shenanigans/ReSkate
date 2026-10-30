@@ -189,7 +189,7 @@ int station_of(const unsigned char* members, std::uint32_t count, unsigned char*
 void song_begun(std::uint32_t channel, std::uintptr_t metadata) noexcept {
     std::lock_guard lock(mutex);
     if (channel < channel_song.size()) channel_song[channel] = metadata;
-    if (channel == station_channel.load(std::memory_order_relaxed) || channel == plain_channel.load(std::memory_order_relaxed))
+    if (music_inject::spatial_active() && (channel == station_channel.load(std::memory_order_relaxed) || channel == plain_channel.load(std::memory_order_relaxed)))
         music_inject::station_song_begins();
 }
 void song_started(std::uintptr_t metadata) noexcept {
