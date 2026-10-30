@@ -883,12 +883,14 @@ public:
         Vec3 scale{1, 1, 1};
     };
     virtual std::optional<std::array<BoardBone, 16>> board_bones() { return std::nullopt; }
-    virtual std::string board_set(std::string_view /*plugin*/, int, const BoardBone&, bool /*world*/) { return unavailable; }
+    // `everyone`: the other players see it too (board_pose.h set), else this screen only.
+    virtual std::string board_set(std::string_view /*plugin*/, int, const BoardBone&, bool /*world*/, bool /*everyone*/) { return unavailable; }
     // `everyone`: hidden from the other players too, not only on this screen.
     virtual std::string board_hide(std::string_view /*plugin*/, int, bool /*everyone*/) { return unavailable; }
     virtual void board_clear(std::string_view /*plugin*/, int /*bone, -1: all*/) {}
     // A size held on a bone of the local board over its animation (board_pose.h scale); none: it ends.
-    virtual std::string board_scale(std::string_view /*plugin*/, int /*bone*/, std::optional<Vec3>) { return unavailable; }
+    // `everyone`: the other players see it too, else this screen only.
+    virtual std::string board_scale(std::string_view /*plugin*/, int /*bone*/, std::optional<Vec3>, bool /*everyone*/) { return unavailable; }
     virtual void board_park(std::string_view /*plugin*/, std::vector<int>) {}
     virtual std::string board_toss(std::string_view /*plugin*/, std::vector<int>, const Vec3&, const Vec3&, float) { return unavailable; }
     // How every board is fitted (board_pose.h fit); none: the plugin's fit ends.

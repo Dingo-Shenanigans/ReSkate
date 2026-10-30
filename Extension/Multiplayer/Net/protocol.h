@@ -440,8 +440,16 @@ void coarsen_rotations(Pose &pose, unsigned bits) noexcept;
 // the size) does it with a bone's scale, which travels in the pose and so shows to everyone, mod
 // or not; one that resized each bone of a chain to the limit grew past it.
 // The skateboard is held closer, to board_scale_limit: nothing in the game resizes one, and a
-// hacked client that does shows everyone a board the size of a car.
-inline constexpr float board_scale_limit = 1.1f;
+// hacked client that does shows everyone a board the size of a car. That is the size the deck,
+// trucks and every other bone of it show at, their own sizes and the ones above them together (the
+// board's whole entry list counts as one chain, so it holds whatever hangs on what). Its wheels
+// (rig bones 6, 7, 10 and 11: board entries 7, 8, 11 and 12, as board[0] is the board's own place)
+// may show at up to wheel_scale_limit, also counting the bones above them: a plugin draws bigger or
+// smaller wheels (reskate.board.scale) and the others see them, a wheel at most twice the game's
+// (116 mm), still within the deck. Both are held to the server's own limit too, so one that allows
+// no resized parts allows no resized wheels.
+inline constexpr float board_scale_limit = 1.1f, wheel_scale_limit = 2.f;
+inline constexpr std::array<std::size_t, 4> board_wheel_entries{7, 8, 11, 12};
 // How far from its skater a skateboard still stops other players (remote_collision.cpp). One
 // left lying further off is seen and not felt, so a hacked client that keeps its board on
 // another player cannot knock them about with it.

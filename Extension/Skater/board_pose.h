@@ -26,17 +26,25 @@ struct Bone {
 enum class Space { local, world };
 inline constexpr int bones = 16, first_writable = 2;
 
+// How far from where its animation put it a set bone is still sent as set: further, the others see
+// it where the animation put it. A plugin's board is drawn a little differently (a deck raised over
+// bigger wheels), not taken apart for everyone.
+inline constexpr float shared_set_reach = 0.05f;
 // Client thread. One owner holds the local board's bones at a time; empty when taken, else why not.
-std::string set(std::string_view owner, int bone, const Bone& value, Space space);
+// `everyone`: the other players see it too (the board as you are sent: Extension/Multiplayer/Remote/
+// native_skater.h's sent pose filter), within shared_set_reach; else on this screen only.
+std::string set(std::string_view owner, int bone, const Bone& value, Space space, bool everyone = true);
 // `everyone`: hidden from the other players too (the board as you are sent: Extension/Multiplayer/
 // Remote/native_skater.h's sent pose filter), not only on this screen.
 std::string hide(std::string_view owner, int bone, bool everyone = false);
 // Also ends the owner's sizes (scale) on that bone, or on all of them.
 void clear(std::string_view owner, int bone = -1);
 // A size held on a bone of the local board over its animation, which still turns and places it:
-// the bone's own axes times `value` (each 0.25 to 4), on this screen only (the game's replay and the
-// other players see the board as it is). One owner a bone; no value: that owner's size on it ends.
-std::string scale(std::string_view owner, int bone, std::optional<Vec3> value);
+// the bone's own axes times `value` (each 0.25 to 4). `everyone`: the other players see it too, as
+// far as their game allows (Extension/Multiplayer/Net/protocol.h limit_bone_scale: the wheels to
+// twice or half their size, the rest of the board barely); else on this screen only. One owner a
+// bone; no value: that owner's size on it ends.
+std::string scale(std::string_view owner, int bone, std::optional<Vec3> value, bool everyone = true);
 // These bones go out of sight on every board, other players' included (a breakable deck's
 // stretches, which the game would draw as cracks).
 void park(std::string_view owner, std::vector<int> list);

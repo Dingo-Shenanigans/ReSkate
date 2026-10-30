@@ -72,7 +72,7 @@ Quat about(const Vec3& axis, float angle) {
 // The pose a bone is written with, as the client tick asked it.
 struct Wanted {
     bool hidden{};
-    bool everyone{}; // hidden from the other players too
+    bool everyone{}; // the other players see it too (hidden or set)
     Quat rotation{0, 0, 0, 1};
     Vec3 position{};
     Space space{};
@@ -96,10 +96,27 @@ struct Shared {
     std::map<std::string, std::vector<int>, std::less<>> park_by;
     std::optional<Piece> piece;
     std::optional<std::array<Bone, bones>> drawn;
-    std::map<int, std::pair<std::string, Vec3>> sized; // a bone's size, and who holds it
+    struct Size {
+        std::string owner;
+        Vec3 value;
+        bool everyone{};
+    };
+    std::map<int, Size> sized; // a bone's size, who holds it, and whether the others see it
 };
 Shared& shared() {
     static auto* value = new Shared;
+    return *value;
+}
+// What the other players are sent of the plugins' board, copied from Shared under its lock: the sent
+// pose filter takes this lock instead, so the render hook (which only tries for Shared's) is never
+// kept waiting by it.
+struct Sent {
+    std::mutex mutex;
+    std::map<int, Vec3> sizes;
+    std::map<int, Wanted> sets;
+};
+Sent& sent() {
+    static auto* value = new Sent;
     return *value;
 }
 std::atomic<std::uintptr_t> base_now{}, holder_now{};
@@ -139,10 +156,50 @@ void refresh_any(Shared& s) {
     for (const auto& [b, want] : s.wanted)
         if (want.hidden && want.everyone) bits |= 1u << b;
     hidden_from_all.store(bits, std::memory_order_release);
+    auto& out = sent();
+    std::lock_guard lock(out.mutex);
+    out.sizes.clear();
+    for (const auto& [b, size] : s.sized)
+        if (size.everyone) out.sizes[b] = size.value;
+    out.sets.clear();
+    for (const auto& [b, want] : s.wanted)
+        // A bone of a piece in flight is the piece's, drawn here only.
+        if (!want.hidden && want.everyone && !(s.piece && std::find(s.piece->bones.begin(), s.piece->bones.end(), b) != s.piece->bones.end()))
+            out.sets[b] = want;
 }
-// The local skater's pose as it is sent: the bones hidden from everyone out of sight in it too, as they
-// are drawn here. board[0] is the board entity's place in the world, then its rig's bones from 0.
+// The local skater's pose as it is sent: the plugins' sizes and sets that the others see, and the
+// bones hidden from everyone out of sight in it too, as they are drawn here. board[0] is the board
+// entity's place in the world, then its rig's bones from 0, so bone b is board[b + 1]. The pose is the
+// animation's (the sizes and sets are only written into what is drawn): a set bone further than
+// shared_set_reach from where the animation put it is sent where the animation put it.
 void on_sent_pose(std::uintptr_t, multiplayer::Pose& pose) noexcept {
+    try {
+        auto& out = sent();
+        std::lock_guard lock(out.mutex);
+        const auto at = [&](int b) -> multiplayer::Transform* {
+            const auto i = static_cast<std::size_t>(b + 1);
+            return i < pose.board.size() ? &pose.board[i] : nullptr;
+        };
+        for (const auto& [b, size] : out.sizes)
+            if (auto* t = at(b)) t->scale = size;
+        const auto* place = at(place_bone);
+        for (const auto& [b, want] : out.sets) {
+            auto* t = at(b);
+            if (!t || (want.space == Space::world && !place)) continue;
+            auto rotation = want.rotation;
+            auto position = want.position;
+            if (want.space == Space::world) {
+                // As on_render_pose writes it: relative to the board's place in this pose.
+                const auto back = conjugate(normalised(Quat{place->rotation}));
+                rotation = normalised(multiply(back, want.rotation));
+                position = rotate(back, sub(want.position, place->position));
+            }
+            if (!finite(position) || length(sub(position, t->position)) > shared_set_reach) continue;
+            t->rotation = rotation;
+            t->position = position;
+        }
+    } catch (...) {
+    }
     const auto bits = hidden_from_all.load(std::memory_order_acquire);
     if (!bits) return;
     for (int b = first_writable; b < bones; ++b)
@@ -200,7 +257,7 @@ void fly(Piece& p, const Quat& place_rotation, const Vec3& place_at, const std::
 }
 }
 
-std::string set(std::string_view owner, int bone, const Bone& value, Space space) {
+std::string set(std::string_view owner, int bone, const Bone& value, Space space, bool everyone) {
     if (bone < first_writable || bone >= bones) return "a board's bone is 2 to 15";
     if (!finite(value.position) || length(value.position) > 1000 ||
         !std::all_of(value.rotation.begin(), value.rotation.end(), [](float v) { return std::isfinite(v); }))
@@ -208,7 +265,7 @@ std::string set(std::string_view owner, int bone, const Bone& value, Space space
     auto& s = shared();
     std::lock_guard lock(s.mutex);
     if (auto why = take(s, owner); !why.empty()) return why;
-    s.wanted[bone] = {false, false, normalised(value.rotation), value.position, space};
+    s.wanted[bone] = {false, everyone, normalised(value.rotation), value.position, space};
     refresh_any(s);
     return {};
 }
@@ -229,7 +286,7 @@ void clear(std::string_view owner, int bone) {
         s.parked.clear();
         for (const auto& [who, list] : s.park_by) s.parked.insert(list.begin(), list.end());
     }
-    std::erase_if(s.sized, [&](const auto& entry) { return entry.second.first == owner && (bone < 0 || entry.first == bone); });
+    std::erase_if(s.sized, [&](const auto& entry) { return entry.second.owner == owner && (bone < 0 || entry.first == bone); });
     if (s.owner == owner) {
         if (bone < 0) {
             s.wanted.clear();
@@ -239,15 +296,15 @@ void clear(std::string_view owner, int bone) {
     }
     refresh_any(s);
 }
-std::string scale(std::string_view owner, int bone, std::optional<Vec3> value) {
+std::string scale(std::string_view owner, int bone, std::optional<Vec3> value, bool everyone) {
     if (bone < first_writable || bone >= bones) return "a board's bone is 2 to 15";
     if (value && !std::all_of(value->begin(), value->end(), [](float v) { return v >= 0.25f && v <= 4.0f; }))
         return "a bone's size is 0.25 to 4 on each axis";
     auto& s = shared();
     std::lock_guard lock(s.mutex);
     const auto held = s.sized.find(bone);
-    if (held != s.sized.end() && held->second.first != owner) return held->second.first + " sizes that bone";
-    if (value) s.sized[bone] = {std::string(owner), *value};
+    if (held != s.sized.end() && held->second.owner != owner) return held->second.owner + " sizes that bone";
+    if (value) s.sized[bone] = {std::string(owner), *value, everyone};
     else if (held != s.sized.end()) s.sized.erase(held);
     refresh_any(s);
     return {};
@@ -388,7 +445,7 @@ void on_render_pose(std::uintptr_t animation_interface) noexcept {
                         {lanes[b].scale[0], lanes[b].scale[1], lanes[b].scale[2]}};
         s.drawn = drawn;
         // Sizes are set rather than multiplied, so a pose that comes by twice is not sized twice.
-        for (const auto& [b, size] : s.sized) (void)store_scale(bone_at(buffer, b), size.second);
+        for (const auto& [b, size] : s.sized) (void)store_scale(bone_at(buffer, b), size.value);
         const Quat place_rotation = normalised(Quat{lanes[place_bone].rotation});
         const Vec3 place_at{lanes[place_bone].position[0], lanes[place_bone].position[1], lanes[place_bone].position[2]};
         const auto back = conjugate(place_rotation);

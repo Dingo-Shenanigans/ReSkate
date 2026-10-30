@@ -312,6 +312,8 @@ bone_scale_limit   How far a mod may resize part of a skater for the other
                    at the same height and build as well as stopping mods; 2
                    leaves height alone and still halves the largest heads.
                    The player with the mod still sees it on their own screen.
+                   A skateboard is held closer whatever this is: its wheels
+                   (a wheel size mod) to 2 at most, the rest of it to 1.1.
                    Console: bone-scale <1-8>|off.
 bone_reach_limit   How far, in metres, a bone of a skater's body or board may
                    be from the one it hangs from for the other players: 0.5

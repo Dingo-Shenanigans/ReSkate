@@ -353,7 +353,30 @@ void limit_bone_scale(Pose &pose, float limit) noexcept {
     };
     hold(pose.root, limit);
     for (auto &t : pose.skater) hold(t, limit);
-    for (auto &t : pose.board) hold(t, std::min(limit, board_scale_limit));
+    // The board: every bone but the wheels within what is left of the limit after the ones before it
+    // (that have grown it, or shrunk it), so however they hang on each other none shows past it; then
+    // each wheel within its own limit after all of them. A wheel carries nothing.
+    {
+        const float most = std::min(limit, board_scale_limit), wheel_most = std::min(limit, wheel_scale_limit);
+        const auto wheel = [](std::size_t i) {
+            return std::find(board_wheel_entries.begin(), board_wheel_entries.end(), i) != board_wheel_entries.end();
+        };
+        float grown = 1.f, shrunk = 1.f;
+        for (std::size_t i = 0; i < pose.board.size(); ++i) {
+            if (wheel(i)) continue;
+            auto &t = pose.board[i];
+            hold(t, most);
+            for (float &axis : t.scale) axis = std::clamp(axis, 1.f / (most * shrunk), most / grown);
+            grown *= std::max(1.f, std::max({t.scale[0], t.scale[1], t.scale[2]}));
+            shrunk *= std::min(1.f, std::min({t.scale[0], t.scale[1], t.scale[2]}));
+        }
+        for (std::size_t i = 0; i < pose.board.size(); ++i) {
+            if (!wheel(i)) continue;
+            auto &t = pose.board[i];
+            hold(t, wheel_most);
+            for (float &axis : t.scale) axis = std::clamp(axis, 1.f / (wheel_most * shrunk), wheel_most / grown);
+        }
+    }
     // A bone shows at its own size times its parents' (and the whole skater's): each held to the
     // limit, a chain of them grew past it (four neck bones at 2x made a neck 16 times as long,
     // seen 2026-10-15). So each bone is held to what is left of the limit after its parents: the

@@ -328,8 +328,8 @@ struct FakeGame final : Game {
         bones[3].position = {0, 0.1f, 0};
         return bones;
     }
-    std::string board_set(std::string_view plugin, int bone, const BoardBone& value, bool world) override {
-        calls.push_back(std::format("board {} {} {:.1f} {}", plugin, bone, value.position[1], world ? "world" : "local"));
+    std::string board_set(std::string_view plugin, int bone, const BoardBone& value, bool world, bool everyone) override {
+        calls.push_back(std::format("board {} {} {:.1f} {}{}", plugin, bone, value.position[1], world ? "world" : "local", everyone ? "" : " me"));
         return {};
     }
     std::string board_hide(std::string_view plugin, int bone, bool everyone) override {
@@ -337,9 +337,9 @@ struct FakeGame final : Game {
         return {};
     }
     void board_park(std::string_view plugin, std::vector<int> bones) override { calls.push_back(std::format("board park {} {}", plugin, bones.size())); }
-    std::string board_scale(std::string_view plugin, int bone, std::optional<Vec3> size) override {
+    std::string board_scale(std::string_view plugin, int bone, std::optional<Vec3> size, bool everyone) override {
         if (!size) calls.push_back(std::format("board scale {} {} none", plugin, bone));
-        else calls.push_back(std::format("board scale {} {} {:.1f} {:.1f} {:.1f}", plugin, bone, (*size)[0], (*size)[1], (*size)[2]));
+        else calls.push_back(std::format("board scale {} {} {:.1f} {:.1f} {:.1f}{}", plugin, bone, (*size)[0], (*size)[1], (*size)[2], everyone ? "" : " me"));
         return {};
     }
     // The Example declared-input deck as the game holds it: seven live selectors, and the eight colours (and a
@@ -4444,6 +4444,10 @@ void the_wider_set_reaches_the_game() {
             assert(reskate.board.scale(6, 1.5) and reskate.board.scale(7, vector.create(1, 2, 3)) and reskate.board.scale(10))
             assert(not pcall(reskate.board.scale, 1, 2), "bone 1 places the board")
             assert(not pcall(reskate.board.scale, 6, "big"), "a size is a number or a vector")
+            -- Shown to the other players unless shown is "me"; a board has no copy for the others alone.
+            assert(reskate.board.scale(11, 1.2, {shown = "me"}) and reskate.board.set(13, {position = vector.create(0, 0.5, 0), shown = "me"}))
+            assert(not pcall(reskate.board.scale, 11, 1.2, {shown = "others"}), "a board's shown is everyone or me")
+            assert(not pcall(reskate.board.set, 13, {position = vector.create(0, 0, 0), shown = "others"}), "a board's shown is everyone or me")
             assert(reskate.board.toss({12, 4}, {velocity = vector.create(1, 3, 0), spin = vector.create(0, 5, 0), ground = -2}))
             local grip = reskate.board.parameters("grip")
             assert(#grip == 4 and grip[1].key == "873f48af36e50d59" and grip[1].name == "graphic" and grip[1].type == "colour", "the grip's parameters")
@@ -4593,7 +4597,8 @@ void the_wider_set_reaches_the_game() {
     host.run_console("deck");
     check(environment.logged("[wide] deck fine") && game.called("board wide 12 2.0 world") && game.called("board hide wide 3") &&
               game.called("board park wide 4") && game.called("board toss wide 2 3 -2") && game.called("board scale wide 6 1.5 1.5 1.5") &&
-              game.called("board scale wide 7 1.0 2.0 3.0") && game.called("board scale wide 10 none"),
+              game.called("board scale wide 7 1.0 2.0 3.0") && game.called("board scale wide 10 none") &&
+              game.called("board scale wide 11 1.2 1.2 1.2 me") && game.called("board wide 13 0.5 local me"),
           "A plugin changes what is drawn of the board\n" + environment.all());
     check(game.called("board parameter wide 1 873f48af36e50d59 colour 1.0") && game.called("board parameter wide 0 841c7d74837f1d39 number 2.5") &&
               game.called("board parameter clear wide 1 8c46cd354b18a9e2") && game.called("board parameter clear wide -1 all"),
