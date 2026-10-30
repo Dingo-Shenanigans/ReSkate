@@ -529,12 +529,15 @@ public:
         for (std::size_t i = 0; i < out.size(); ++i) out[i] = {(*drawn)[i].position, (*drawn)[i].rotation, (*drawn)[i].scale};
         return out;
     }
-    std::string board_set(std::string_view plugin, int bone, const BoardBone& value, bool world) override {
-        return board_pose::set(plugin, bone, {value.position, value.rotation, value.scale}, world ? board_pose::Space::world : board_pose::Space::local);
+    std::string board_set(std::string_view plugin, int bone, const BoardBone& value, bool world, bool everyone) override {
+        return board_pose::set(plugin, bone, {value.position, value.rotation, value.scale}, world ? board_pose::Space::world : board_pose::Space::local,
+                               everyone);
     }
     std::string board_hide(std::string_view plugin, int bone, bool everyone) override { return board_pose::hide(plugin, bone, everyone); }
     void board_clear(std::string_view plugin, int bone) override { board_pose::clear(plugin, bone); }
-    std::string board_scale(std::string_view plugin, int bone, std::optional<Vec3> size) override { return board_pose::scale(plugin, bone, size); }
+    std::string board_scale(std::string_view plugin, int bone, std::optional<Vec3> size, bool everyone) override {
+        return board_pose::scale(plugin, bone, size, everyone);
+    }
     void board_park(std::string_view plugin, std::vector<int> bones) override { board_pose::park(plugin, std::move(bones)); }
     std::string board_toss(std::string_view plugin, std::vector<int> bones, const Vec3& velocity, const Vec3& spin, float ground) override {
         return board_pose::toss(plugin, std::move(bones), velocity, spin, ground);

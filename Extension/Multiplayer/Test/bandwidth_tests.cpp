@@ -223,6 +223,47 @@ void coarse_checks() {
               std::abs(board_held.board[2].scale[0] - 1.f / board_scale_limit) < 1e-5f && board_held.skater[5].scale == std::array<float, 3>{2, 2, 2} &&
               board_free.board[0].scale == std::array<float, 3>{3, 3, 3},
           "A skateboard's scale was not held to its own limit");
+    // A wheel size mod's wheels (rig bones 6, 7, 10, 11: board entries 7, 8, 11, 12) show at up to
+    // twice or half the game's, on any axis; the deck stays at its own limit, and a server that
+    // allows no resized parts allows no resized wheels either.
+    auto wheels = fixture();
+    wheels.pose.board.resize(17);
+    wheels.pose.board[7].scale = {1.9f, 1.9f, 2.2f};  // 110 mm, 70 mm wide
+    wheels.pose.board[8].scale = {.6f, .6f, .6f};     // 35 mm
+    wheels.pose.board[11].scale = {1.5f, 1.5f, 1.5f};
+    wheels.pose.board[4].scale = {1.5f, 1.5f, 1.5f};  // the deck
+    auto wheels_held = wheels.pose, wheels_plain = wheels.pose;
+    limit_bone_scale(wheels_held, 2.f);
+    limit_bone_scale(wheels_plain, 1.f);
+    const float left = wheel_scale_limit / board_scale_limit; // what the deck at its limit leaves a wheel
+    check(wheels_held.board[7].scale == std::array<float, 3>{left, left, left} && std::abs(wheels_held.board[8].scale[0] - .6f) < 1e-5f &&
+              wheels_held.board[4].scale == std::array<float, 3>{board_scale_limit, board_scale_limit, board_scale_limit},
+          "A wheel was not held to what the wheel limit leaves after the deck");
+    wheels.pose.board[4].scale = {1, 1, 1};
+    auto wheels_only = wheels.pose;
+    limit_bone_scale(wheels_only, 2.f);
+    check(wheels_only.board[7].scale == std::array<float, 3>{1.9f, 1.9f, 2.f} && std::abs(wheels_only.board[8].scale[0] - .6f) < 1e-5f &&
+              wheels_only.board[11].scale == std::array<float, 3>{1.5f, 1.5f, 1.5f},
+          "A wheel within the wheel limit was resized");
+    check(wheels_plain.board[7].scale == std::array<float, 3>{1, 1, 1} && wheels_plain.board[8].scale == std::array<float, 3>{1, 1, 1},
+          "A server that allows no resized parts showed resized wheels");
+    auto wheels_eight = wheels.pose;
+    wheels_eight.board[7].scale = {4, 4, 4};
+    wheels_eight.board[8].scale = {.25f, .25f, .25f};
+    limit_bone_scale(wheels_eight, client_bone_scale);
+    check(wheels_eight.board[7].scale == std::array<float, 3>{2, 2, 2} && std::abs(wheels_eight.board[8].scale[0] - .5f) < 1e-5f,
+          "A game's own limit let a wheel past twice or half its size");
+    // However the board's bones hang on each other, they show within its limit together: each at
+    // 1.1 (its entity, place, mount, a truck) used to show a wheel on them at 1.1 to the fifth.
+    auto chained = fixture();
+    chained.pose.board.resize(17);
+    for (const std::size_t entry : {0, 2, 3, 5}) chained.pose.board[entry].scale = {1.1f, 1.1f, 1.1f};
+    chained.pose.board[7].scale = {2, 2, 2};
+    limit_bone_scale(chained.pose, 2.f);
+    float grown = 1.f;
+    for (const std::size_t entry : {0, 2, 3, 5}) grown *= chained.pose.board[entry].scale[0];
+    check(grown <= board_scale_limit + 1e-5f && grown * chained.pose.board[7].scale[0] <= wheel_scale_limit + 1e-4f,
+          "A chain of resized board bones grew past the board's limit");
     // Sizes multiply down a chain (Neck 101, Neck1 102, Head 103): each at the limit, they are
     // held so the head shows at the limit, not at its cube. The whole skater's size counts too
     // (a bone of it may still shrink to its own limit, 0.5).

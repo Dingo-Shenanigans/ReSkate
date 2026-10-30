@@ -1765,7 +1765,20 @@ struct WorldApi {
         }
         return 1;
     }
-    // set(bone, {position, rotation, space = "local" or "world"}).
+    // A board's `shown`: "everyone" (the other players see it too, as far as their game allows) or "me"
+    // (this screen only). A board has no copy only the others see, so not "others".
+    static bool board_shown(lua_State* L, int table, const char* what) {
+        lua_getfield(L, table, "shown");
+        bool everyone = true;
+        if (!lua_isnil(L, -1)) {
+            const std::string_view s = luaL_checkstring(L, -1);
+            if (s == "me") everyone = false;
+            else if (s != "everyone") luaL_error(L, "%s's shown is \"everyone\" or \"me\"", what);
+        }
+        lua_pop(L, 1);
+        return everyone;
+    }
+    // set(bone, {position, rotation, space = "local" or "world", shown = "everyone" or "me"}).
     static int board_set(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "board", "reskate.board.set");
@@ -1782,7 +1795,8 @@ struct WorldApi {
         const std::string space = lua_isnil(L, -1) ? "local" : luaL_checkstring(L, -1);
         lua_pop(L, 1);
         if (!one_of(spaces, space)) luaL_argerror(L, 2, "space is \"local\" or \"world\"");
-        return result(L, game(plugin).board_set(plugin.id(), bone, value, space == "world"));
+        const bool everyone = board_shown(L, 2, "reskate.board.set");
+        return result(L, game(plugin).board_set(plugin.id(), bone, value, space == "world", everyone));
     }
     static int board_hide(lua_State* L) {
         auto& plugin = plugin_of(L);
@@ -1803,19 +1817,26 @@ struct WorldApi {
         game(plugin).board_clear(plugin.id(), lua_isnoneornil(L, 1) ? -1 : bone_number(L, 1));
         return 0;
     }
-    // scale(bone, size): the bone drawn this much bigger over its animation, which still turns and places
-    // it; a number for every axis or a vector, 0.25 to 4 each, on this screen only. scale(bone) ends it.
+    // scale(bone, size, {shown = "everyone" or "me"}): the bone drawn this much bigger over its animation,
+    // which still turns and places it; a number for every axis or a vector, 0.25 to 4 each. The other
+    // players see it too unless shown is "me" (their game holds the wheels to 0.5 to 2, the rest of the
+    // board to 1.1). scale(bone) ends it.
     static int board_scale(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "board", "reskate.board.scale");
         const int bone = bone_number(L, 1);
-        if (lua_isnoneornil(L, 2)) return result(L, game(plugin).board_scale(plugin.id(), bone, std::nullopt));
+        if (lua_isnoneornil(L, 2)) return result(L, game(plugin).board_scale(plugin.id(), bone, std::nullopt, true));
         Vec3 size;
         if (lua_type(L, 2) == LUA_TNUMBER) {
             const auto k = static_cast<float>(lua_tonumber(L, 2));
             size = {k, k, k};
         } else size = position_of(L, 2, "a bone's size");
-        return result(L, game(plugin).board_scale(plugin.id(), bone, size));
+        bool everyone = true;
+        if (!lua_isnoneornil(L, 3)) {
+            luaL_checktype(L, 3, LUA_TTABLE);
+            everyone = board_shown(L, 3, "reskate.board.scale");
+        }
+        return result(L, game(plugin).board_scale(plugin.id(), bone, size, everyone));
     }
     // park({12, 13, 14, 15}): these bones out of sight on every board, other players' too.
     static int board_park(lua_State* L) {
