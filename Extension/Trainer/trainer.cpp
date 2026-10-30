@@ -3755,7 +3755,8 @@ TuningValue tuning_of(const Entry &e) {
 } // namespace
 
 std::optional<TuningValue> tuning_value(std::string_view id, std::string *why) {
-    if (!state().model) {
+    // Before a level's copy is read (the splash screen) every entry holds 0.
+    if (!state().model || !state().ready) {
         if (why) *why = "the game's physics tuning is not read yet";
         return std::nullopt;
     }
@@ -3768,6 +3769,7 @@ std::optional<TuningValue> tuning_value(std::string_view id, std::string *why) {
 }
 std::vector<TuningValue> find_tuning(std::string_view text, std::size_t most) {
     std::vector<TuningValue> found;
+    if (!state().ready) return found;
     const auto pattern = lower(text);
     for (const auto &e : state().entries)
         if (found.size() < most && matches(e.key, pattern)) found.push_back(tuning_of(e));
@@ -3789,6 +3791,9 @@ std::string plugin_tune(std::string_view owner, std::string_view id, std::option
         }
         return {};
     }
+    // A value set before the level's copy is read would keep 0 as what was there, and put it back on
+    // letting go: a plugin that scaled the steering then left the board unable to turn.
+    if (!s.ready) return "the game's physics tuning is not read yet";
     std::string why;
     if (!editable(&why)) return why;
     if (is_locked(*e)) return "the player has locked " + e->id + " in the trainer";
