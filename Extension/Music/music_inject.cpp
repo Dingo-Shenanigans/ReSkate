@@ -194,19 +194,25 @@ std::uint64_t process_hook(std::uintptr_t player, std::uintptr_t mixer) {
             if (seconds) seen->seconds.store(seconds, std::memory_order_relaxed);
         }
         const int mode = which.load(std::memory_order_relaxed);
+        const bool sp = spatial_active();
+        if ((!mode || !spotify_station::active()) && !sp) return result;
+        if (channels < 2 || rate < 8000.0f) return result;
+
+        // The station's own carrier was captured on the first process_hook after song_begun
+        // (via station_song_begins -> capture_next). Every other reader is a world emitter or
+        // short loop; mode 1 skips < 60s readers that aren't the station, mode 3 skips all
+        // non-station readers.
         const bool stations_own = seen && station_file[0] && std::strncmp(seen->name, station_file, sizeof(station_file)) == 0;
         const std::uint32_t dur = seen ? seen->seconds.load(std::memory_order_relaxed) : seconds;
-        if (mode && channels >= 2 && rate >= 8000.0f && spotify_station::active()) {
-            if (!(mode == 1 && !stations_own && dur < 60) && !(mode == 3 && !stations_own)) {
-                if (replace(reader, buffer, frames, channels, rate)) {
-                    last_replaced.store(GetTickCount64(), std::memory_order_relaxed);
-                    replaced_blocks.fetch_add(1, std::memory_order_relaxed);
-                    replaced_frames.fetch_add(frames, std::memory_order_relaxed);
-                    if (seen) seen->replaced.fetch_add(1, std::memory_order_relaxed);
-                }
+        if (mode && spotify_station::active() && !(mode == 1 && !stations_own && dur < 60) && !(mode == 3 && !stations_own)) {
+            if (replace(reader, buffer, frames, channels, rate)) {
+                last_replaced.store(GetTickCount64(), std::memory_order_relaxed);
+                replaced_blocks.fetch_add(1, std::memory_order_relaxed);
+                replaced_frames.fetch_add(frames, std::memory_order_relaxed);
+                if (seen) seen->replaced.fetch_add(1, std::memory_order_relaxed);
             }
         }
-        if (channels >= 2 && rate >= 8000.0f && spatial_active()) {
+        if (sp) {
             const bool short_loop = !stations_own && dur > 0 && dur < 45;
             if (short_loop && sp_mute_loops.load(std::memory_order_relaxed)) spatialize_block(buffer, frames, channels, true);
             else if (stations_own || dur >= 45) spatialize_block(buffer, frames, channels, false);
