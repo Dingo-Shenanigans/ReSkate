@@ -1,3 +1,4 @@
+#include "Extension/Rendering/plugin_effects.h"
 #include "runtime_internal.h"
 #include "Extension/Customization/developer_hoodie.h"
 #include "Extension/Customization/developer_board.h"
@@ -1152,6 +1153,13 @@ void update_model(std::uintptr_t client, TickState& frame) {
         // last one is in, not at the 500 ms customization pace.
         DINGO_PROFILE_ZONE("tick/update_model/network objects");
         dingosdk::tick_network_objects();
+    }
+    {
+        bool loading{};
+        { std::lock_guard lock(r.mutex); loading = r.requests.loading(); }
+        // Invalidate old-world handles before any plugin callback can use them.
+        dingosdk::effects::tick(r.base, client, !r.observer_failed && !loading && named_context_ready,
+            r.debug_model.noclip, r.debug_model.park_editor);
     }
     if (r.observer_failed) return; // Keep the bounded restore/telemetry path available after catalog failure.
     {
