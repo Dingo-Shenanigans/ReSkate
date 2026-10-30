@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <format>
 
@@ -93,6 +94,71 @@ bool replace(std::uint64_t reader, std::uintptr_t buffer, std::uint32_t frames, 
     }
 }
 
+std::atomic<bool> sp_active{false}, sp_mute_loops{true};
+std::atomic<float> sp_left{1.0f}, sp_right{1.0f}, sp_lpf_l{1.0f}, sp_lpf_r{1.0f}, sp_env{0.0f};
+std::atomic<int> sp_itd{0};
+std::atomic<std::uint64_t> sp_expires_at{0};
+float cur_left{1.0f}, cur_right{1.0f}, lpf_l_state{}, lpf_r_state{};
+float hpf_in_l{}, hpf_in_r{}, hpf_out_l{}, hpf_out_r{}, mid_l{}, mid_r{}, rev_lp{};
+std::array<float, 4096> delay_l{}, delay_r{}, rev_buf{};
+std::uint32_t ring_wp{};
+
+void spatialize_block(std::uintptr_t buffer, std::uint32_t frames, std::uint32_t channels, bool silence_only) noexcept {
+    __try {
+        const auto data = at<std::uintptr_t>(buffer + ac::buffer_data);
+        const bool together = at<std::uint8_t>(buffer + ac::buffer_together) != 0;
+        const auto stride = at<std::uint16_t>(buffer + ac::buffer_stride);
+        if (!data || (together && stride < frames) || !frames) return;
+        const auto channel = [&](std::uint32_t index) {
+            return together ? reinterpret_cast<float*>(data + std::size_t{stride} * index * 4) : at<float*>(data + index * 8);
+        };
+        if (silence_only) {
+            for (std::uint32_t c = 0; c < channels; ++c)
+                if (float* const ptr = channel(c)) std::memset(ptr, 0, std::size_t{frames} * 4);
+            return;
+        }
+        float* const left = channel(0);
+        float* const right = channel(1);
+        if (!left || !right) return;
+        const float target_l = sp_left.load(std::memory_order_relaxed), target_r = sp_right.load(std::memory_order_relaxed);
+        const float al = sp_lpf_l.load(std::memory_order_relaxed), ar = sp_lpf_r.load(std::memory_order_relaxed);
+        const float env_wet = sp_env.load(std::memory_order_relaxed);
+        const int itd = sp_itd.load(std::memory_order_relaxed);
+        const std::uint32_t dl = itd < 0 ? static_cast<std::uint32_t>(-itd) : 0u;
+        const std::uint32_t dr = itd > 0 ? static_cast<std::uint32_t>(itd) : 0u;
+        const float step_l = (target_l - cur_left) / static_cast<float>(frames);
+        const float step_r = (target_r - cur_right) / static_cast<float>(frames);
+        const float cab_mix = std::clamp(0.45f + 0.55f * env_wet, 0.0f, 0.90f);
+        for (std::uint32_t i = 0; i < frames; ++i) {
+            cur_left += step_l;
+            cur_right += step_r;
+            const float mid = 0.5f * (left[i] + right[i]);
+            float sl = left[i] + 0.65f * (mid - left[i]), sr = right[i] + 0.65f * (mid - right[i]);
+            hpf_out_l = sl - hpf_in_l + 0.985f * hpf_out_l; hpf_in_l = sl;
+            hpf_out_r = sr - hpf_in_r + 0.985f * hpf_out_r; hpf_in_r = sr;
+            mid_l += 0.032f * (hpf_out_l - mid_l); mid_r += 0.032f * (hpf_out_r - mid_r);
+            sl += cab_mix * ((hpf_out_l + 0.28f * mid_l) - sl);
+            sr += cab_mix * ((hpf_out_r + 0.28f * mid_r) - sr);
+            delay_l[ring_wp & 4095] = sl; delay_r[ring_wp & 4095] = sr;
+            lpf_l_state += al * (delay_l[(ring_wp - dl) & 4095] - lpf_l_state);
+            lpf_r_state += ar * (delay_r[(ring_wp - dr) & 4095] - lpf_r_state);
+            const float t1 = rev_buf[(ring_wp - 624u) & 4095], t2 = rev_buf[(ring_wp - 1392u) & 4095];
+            const float t3 = rev_buf[(ring_wp - 2256u) & 4095], t4 = rev_buf[(ring_wp - 3264u) & 4095];
+            const float rl = 0.42f * t1 - 0.30f * t2 + 0.24f * t3 - 0.16f * t4;
+            const float rr = 0.38f * t2 - 0.32f * t1 + 0.22f * t4 - 0.18f * t3;
+            rev_lp += 0.30f * (0.5f * (lpf_l_state * cur_left + lpf_r_state * cur_right) + 0.22f * t4 - rev_lp);
+            rev_buf[ring_wp & 4095] = rev_lp;
+            left[i] = lpf_l_state * cur_left + env_wet * rl;
+            right[i] = lpf_r_state * cur_right + env_wet * rr;
+            ++ring_wp;
+        }
+        cur_left = target_l; cur_right = target_r;
+        for (std::uint32_t c = 2; c < channels; ++c)
+            if (float* const other = channel(c)) std::memset(other, 0, std::size_t{frames} * 4);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
+
 std::uint64_t process_hook(std::uintptr_t player, std::uintptr_t mixer) {
     // What it is playing, read before it moves on to its next file.
     std::uint32_t length{};
@@ -128,21 +194,22 @@ std::uint64_t process_hook(std::uintptr_t player, std::uintptr_t mixer) {
             if (seconds) seen->seconds.store(seconds, std::memory_order_relaxed);
         }
         const int mode = which.load(std::memory_order_relaxed);
-        if (!mode || channels < 2 || rate < 8000.0f || !spotify_station::active()) return result;
-        // (A song's length is kept from its last block that had one: the blocks of its fade
-        // out are of a file it has already left.)
-        // (A song's length is kept from its last block that had one: the blocks of its fade
-        // out are of a file it has already left.)
-        // The station's own song is replaced whatever its length (one a station was given was
-        // half a minute long, and was heard in the place of what the station plays, 2026-10-12).
         const bool stations_own = seen && station_file[0] && std::strncmp(seen->name, station_file, sizeof(station_file)) == 0;
-        if (mode == 1 && !stations_own && (seen ? seen->seconds.load(std::memory_order_relaxed) : seconds) < 60) return result;
-        if (mode == 3 && !stations_own) return result;
-        if (replace(reader, buffer, frames, channels, rate)) {
-            last_replaced.store(GetTickCount64(), std::memory_order_relaxed);
-            replaced_blocks.fetch_add(1, std::memory_order_relaxed);
-            replaced_frames.fetch_add(frames, std::memory_order_relaxed);
-            if (seen) seen->replaced.fetch_add(1, std::memory_order_relaxed);
+        const std::uint32_t dur = seen ? seen->seconds.load(std::memory_order_relaxed) : seconds;
+        if (mode && channels >= 2 && rate >= 8000.0f && spotify_station::active()) {
+            if (!(mode == 1 && !stations_own && dur < 60) && !(mode == 3 && !stations_own)) {
+                if (replace(reader, buffer, frames, channels, rate)) {
+                    last_replaced.store(GetTickCount64(), std::memory_order_relaxed);
+                    replaced_blocks.fetch_add(1, std::memory_order_relaxed);
+                    replaced_frames.fetch_add(frames, std::memory_order_relaxed);
+                    if (seen) seen->replaced.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+        }
+        if (channels >= 2 && rate >= 8000.0f && spatial_active()) {
+            const bool short_loop = !stations_own && dur > 0 && dur < 45;
+            if (short_loop && sp_mute_loops.load(std::memory_order_relaxed)) spatialize_block(buffer, frames, channels, true);
+            else if (stations_own || dur >= 45) spatialize_block(buffer, frames, channels, false);
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
     }
@@ -229,6 +296,28 @@ int mode() noexcept { return which.load(std::memory_order_relaxed); }
 void set_mode(int mode) noexcept { which.store(std::clamp(mode, 0, 3), std::memory_order_relaxed); }
 float gain() noexcept { return loudness.load(std::memory_order_relaxed); }
 void set_gain(float gain) noexcept { loudness.store(std::clamp(gain, 0.0f, 16.0f), std::memory_order_relaxed); }
+
+void set_spatial(bool active, float left, float right, float lpf_l, float lpf_r, int itd, float env, bool mute_loops) noexcept {
+    if (!active) {
+        sp_active.store(false, std::memory_order_relaxed);
+        sp_expires_at.store(0, std::memory_order_relaxed);
+        cur_left = 1.0f; cur_right = 1.0f;
+        return;
+    }
+    sp_left.store(std::clamp(left, 0.0f, 4.0f), std::memory_order_relaxed);
+    sp_right.store(std::clamp(right, 0.0f, 4.0f), std::memory_order_relaxed);
+    sp_lpf_l.store(std::clamp(lpf_l, 0.04f, 1.0f), std::memory_order_relaxed);
+    sp_lpf_r.store(std::clamp(lpf_r, 0.04f, 1.0f), std::memory_order_relaxed);
+    sp_itd.store(std::clamp(itd, -32, 32), std::memory_order_relaxed);
+    sp_env.store(std::clamp(env, 0.0f, 0.65f), std::memory_order_relaxed);
+    sp_mute_loops.store(mute_loops, std::memory_order_relaxed);
+    sp_expires_at.store(GetTickCount64() + 2000, std::memory_order_relaxed);
+    sp_active.store(true, std::memory_order_relaxed);
+}
+bool spatial_active() noexcept {
+    return sp_active.load(std::memory_order_relaxed) && GetTickCount64() <= sp_expires_at.load(std::memory_order_relaxed);
+}
+
 
 void tick() noexcept {
     if (!hooked.load(std::memory_order_relaxed)) return;
