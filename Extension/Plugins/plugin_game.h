@@ -990,7 +990,18 @@ public:
     // focus. Capture keeps the game from the controller too, for 250 ms a call (renewed each tick),
     // and only while the plugin's camera is shown.
     virtual std::optional<FlightInput> flight_input(std::string_view /*plugin*/) { return std::nullopt; }
-    virtual std::optional<PadInput> gamepad() { return std::nullopt; }
+    struct RailTarget { bool available{}, targeting{}; Vec3 direction{}; };
+    virtual std::optional<RailTarget> rail_target() { return std::nullopt; }
+    virtual std::string select_rail_target(std::string_view, std::optional<int>, bool) { return unavailable; }
+    struct SkaterFrame { Vec3 position{}, forward{}; bool backwards{}, mirrored{}, fakie{}, basis{}; std::uint64_t serial{}; };
+    virtual std::optional<SkaterFrame> skater_frame() { return std::nullopt; }
+    struct AnimationValue { std::string name; double value{}; bool boolean{}, output{}; };
+    virtual std::vector<AnimationValue> animation_values() { return {}; }
+    virtual std::string set_animation_value(std::string_view, double) { return unavailable; }
+    virtual std::optional<bool> gameplay_option(std::string_view) { return std::nullopt; }
+    virtual std::string hold_gameplay_option(std::string_view, std::string_view, std::optional<bool>) { return unavailable; }
+    virtual std::optional<PadInput> gamepad(int /*controller*/ = -1) { return std::nullopt; }
+    virtual std::string write_pad(std::string_view /*plugin*/, unsigned /*controller*/, std::optional<PadInput>) { return unavailable; }
     // The first controller (a radio first), or with device >= 0 that one (StickDevice::device).
     // Neither ever waits on Windows: a thread of ReSkate's reads the controllers.
     virtual std::optional<StickInput> joystick(int /*device*/ = -1) { return std::nullopt; }

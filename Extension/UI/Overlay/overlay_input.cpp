@@ -461,8 +461,23 @@ void begin_input_access() noexcept { ++detail::overlay_input_access; }
 void end_input_access() noexcept { --detail::overlay_input_access; }
 std::uint64_t controls_touched_at() noexcept { return detail::controls_at.load(std::memory_order_relaxed); }
 void note_joystick(std::uint32_t buttons, const std::array<float, 6>& axes) noexcept { detail::note_pad(5, buttons, axes); }
-Gamepad read_gamepad() {
-    const auto sample = read_controller_sample();
+Gamepad read_gamepad(int controller) {
+    detail::OverlayInputAccess access;
+    auto sample = controller < 0 ? read_controller_sample() : ControllerSample{};
+    if (controller >= 0 && controller < 4) {
+        XINPUT_STATE raw{};
+        const auto get = xinput_get_state();
+        if (get && get(static_cast<DWORD>(controller), &raw) == ERROR_SUCCESS) {
+            sample.pad = raw.Gamepad; sample.device = 1u << controller;
+        }
+    } else if (controller == 4) {
+        const auto ps = read_playstation_pads();
+        if (ps.available) {
+            sample.pad = {ps.pad.buttons, ps.pad.left_trigger, ps.pad.right_trigger,
+                ps.pad.left_x, ps.pad.left_y, ps.pad.right_x, ps.pad.right_y};
+            sample.device = 0x100u;
+        }
+    }
     Gamepad out;
     if (!sample.device) return out;
     const auto axis = [](std::int16_t v) { return std::clamp(static_cast<float>(v) / 32767.0f, -1.0f, 1.0f); };

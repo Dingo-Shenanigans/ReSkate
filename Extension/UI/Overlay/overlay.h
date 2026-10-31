@@ -694,7 +694,7 @@ struct Gamepad {
     float left_trigger = 0, right_trigger = 0;
     unsigned buttons = 0;
 };
-Gamepad read_gamepad();
+Gamepad read_gamepad(int controller = -1);
 // The full screen menu's page draws its own controls with their own focus (ONLINE: the pause
 // menu's pages): the controller then drives that, not ImGui's navigation.
 inline std::atomic<bool>& menu_page_owns_pad() {
