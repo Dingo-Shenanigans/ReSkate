@@ -186,6 +186,10 @@ struct Shared {
     std::string show_owner;
     std::optional<std::vector<std::string>> show;
     std::map<std::string, std::vector<std::string>, std::less<>> marks; // by owner
+    std::vector<std::string> favorite_keys;
+    bool favorites_ready{};
+    // Bumped after favorite_keys, so a reader that sees the new generation also sees the new keys.
+    std::atomic<std::uint64_t> favorites_generation{};
     std::atomic<bool> asked{}; // a plugin's request waits: the next tick acts on it
     std::atomic<unsigned> toggles{}, cycles{};
     std::atomic<int> filter{-1};
@@ -636,12 +640,36 @@ void log_status(const State& s) {
             grid.native.empty() ? std::string{} : grid.native.front().title, focus, grid.failed ? ", FAILED" : "");
     }
 }
+// The plugin host reads the set off the client tick. The keys are published before the generation,
+// under this mutex, so the handler of favorites_changed sees the set that changed.
+void publish_favorites(const Favorites& favorites, Shared& sh) {
+    std::vector<std::string> keys(favorites.keys.begin(), favorites.keys.end());
+    std::lock_guard lock(sh.mutex);
+    if (sh.favorites_ready == favorites.loaded && sh.favorite_keys == keys) return;
+    sh.favorite_keys = std::move(keys);
+    sh.favorites_ready = favorites.loaded;
+    if (favorites.loaded) sh.favorites_generation.fetch_add(1, std::memory_order_release);
+}
 } // namespace
 
 View view() {
     auto& sh = shared();
     std::lock_guard lock(sh.mutex);
     return sh.view;
+}
+FavoritesView favorites() noexcept {
+    FavoritesView out;
+    try {
+        auto& sh = shared();
+        std::lock_guard lock(sh.mutex);
+        out.ready = sh.favorites_ready;
+        out.keys = sh.favorite_keys;
+        out.generation = sh.favorites_generation.load(std::memory_order_relaxed);
+    } catch (...) {}
+    return out;
+}
+std::uint64_t favorites_generation() noexcept {
+    return shared().favorites_generation.load(std::memory_order_acquire);
 }
 void toggle_focused_favorite() noexcept { shared().toggles.fetch_add(1); }
 std::string show_items(std::string owner, std::optional<std::vector<std::string>> keys) {
@@ -830,7 +858,9 @@ void update(std::uintptr_t base) noexcept {
             return;
         }
         s.next_sync = now + (s.open ? 40 : 200);
+        const bool first_favorites = !s.favorites.loaded;
         s.favorites.load();
+        if (first_favorites) publish_favorites(s.favorites, sh);
         const bool in_menu = multiplayer::sample_game_ui_state(base).in_menu;
         md::Address ui{}, manager{};
         if (!memory::read(base + addr::engine::ui_manager, ui) || !ui || !memory::read(ui + 0x140, manager) || !manager) return;
@@ -886,6 +916,7 @@ void update(std::uintptr_t base) noexcept {
             s.favorites.save();
             logging::log(Level::info, Channel::customization, "Item favorites: {} {}.", key,
                 s.favorites.keys.contains(key) ? "added" : "removed");
+            publish_favorites(s.favorites, sh);
         }
         ++s.tick;
         // While a plugin's list is shown only the grid that has the focus shows it: the others are out of
