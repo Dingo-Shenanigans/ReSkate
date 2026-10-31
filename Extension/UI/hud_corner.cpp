@@ -200,6 +200,7 @@ bool find_stack(Corner& c, const menu_data::Context& context) {
 // Puts our item into the d-pad's stack, or takes it out; the game's items stay as they are. Our
 // item: empty content, our key, the stack's transition as a push gives it.
 void hide_dpad(Corner& c, const menu_data::Context& context, bool hidden) {
+    if (c.cover.handle && context.type_of(c.cover.handle) != c.cover.type) c.cover = {}; // a level load took it with the HUD's models
     const auto field = items_of(context, c.stack);
     unsigned count{}, stride{};
     auto items = context.array(field, 16, count, stride);
