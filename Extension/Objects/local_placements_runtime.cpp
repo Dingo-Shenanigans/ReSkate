@@ -7,6 +7,9 @@
 #include "Extension/Objects/ParkEditor/park_editor_runtime.h"
 #include "network_object_runtime.h"
 #include "Extension/Profile/runtime_internal.h"
+#include "Extension/Skater/no_bail.h"
+#include "Extension/Throwdowns/throwdown_kit.h"
+#include "Extension/Throwdowns/throwdown_relay.h"
 #include "Extension/World/local_world_layers.h"
 #include <algorithm>
 #include <atomic>
@@ -622,6 +625,7 @@ void update_position_teleport() {
     if (!r.position_teleport) return;
     if (GetTickCount64() > r.position_teleport_at + 5000) {
         r.position_teleport.reset();
+        r.position_teleport_on_board.reset();
         dingosdk::logging::write(dingosdk::logging::Level::warning, dingosdk::logging::Channel::objects,
                                  "Teleport dropped: the skater was busy for 5 s (a bail, a menu or an activity).");
         return;
@@ -631,8 +635,10 @@ void update_position_teleport() {
         !read(local_runtime().base + addr::local_placements::teleport_manager, manager) || !manager ||
         !read(manager, state) || state != 0) return;
     alignas(16) const auto transform = *r.position_teleport;
+    const auto on_board = r.position_teleport_on_board;
     const std::array<float,3> at{transform[12],transform[13],transform[14]};
     r.position_teleport.reset();
+    r.position_teleport_on_board.reset();
     // Preserve the native flag's complete facing basis. The teleport manager
     // still handles streaming, ground checks and physics reset.
     alignas(16) std::array<std::uint64_t, 2> transition{};
@@ -642,6 +648,17 @@ void update_position_teleport() {
     // social/player lookup can reject the same local skater with UINT32_MAX.
     // The session tick prepares the validated skater's native board option
     // before this queued move, so this path also starts a plugin's match on the board.
+    if (on_board.has_value()) {
+        NoBailSkater owner;
+        const auto match = dingosdk::throwdowns::kit::match();
+        const bool offboard = !match.input_lock && (multiplayer::throwdown_relay_waits_offboard() || match.offboard);
+        if ((match.input_lock && !*on_board) || (offboard && *on_board) ||
+            !no_bail_skater(owner) || !prepare_teleport_equipment(owner, *on_board)) {
+            dingosdk::logging::event(dingosdk::logging::Channel::objects,
+                "{\"event\":\"position_teleport_equipment_refused\"}");
+            return;
+        }
+    }
     const auto request = r.teleport(manager, transform.data(), 1, transition.data());
     dingosdk::logging::event(dingosdk::logging::Channel::objects, dingosdk::Json{{"event", "position_teleport_requested"},
         {"x", at[0]}, {"y", at[1]}, {"z", at[2]}, {"request", request}}.dump().c_str());
