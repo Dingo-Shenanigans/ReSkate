@@ -415,6 +415,15 @@ void Host::follow_game() {
             each([&](Plugin& plugin, const std::string&) { plugin.throwdown_phase(active ? "started" : "ended"); });
         }
     }
+    // Starred items (reskate.menu.favorites). The first look is the baseline: a plugin that starts
+    // after the file was read calls favorites() rather than hearing a change that already happened.
+    if (wants("menu")) {
+        const auto generation = game.favorites_generation();
+        if (favorites_known_ && generation != favorites_generation_)
+            each([&](Plugin& plugin, const std::string&) { plugin.favorites_changed(); });
+        favorites_generation_ = generation;
+        favorites_known_ = true;
+    }
     // Answers to a server copy's polls (server.poll), and polls that closed unanswered, to the
     // plugin that asked.
     for (const auto& news : game.take_poll_news()) {

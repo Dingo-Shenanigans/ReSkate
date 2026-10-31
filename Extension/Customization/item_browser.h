@@ -24,6 +24,15 @@ struct View {
     bool held{};                            // that list has nothing in it: the grid keeps one tile only for the game's highlight
 };
 View view();
+// The player's starred items. `ready` is false until they have been read this run; an empty `keys`
+// then means none. `generation` changes when the set does. Any thread.
+struct FavoritesView {
+    bool ready{};
+    std::vector<std::string> keys;
+    std::uint64_t generation{};
+};
+FavoritesView favorites() noexcept;
+std::uint64_t favorites_generation() noexcept;
 // Requests from the keys, the overlay and the console; applied on the client thread.
 void toggle_focused_favorite() noexcept;
 void set_search(std::string text);

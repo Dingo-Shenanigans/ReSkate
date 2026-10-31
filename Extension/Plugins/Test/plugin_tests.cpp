@@ -1129,6 +1129,45 @@ struct FakeGame final : Game {
         return {};
     }
     void grid_mark(std::string_view, std::vector<std::string> keys) override { grid_marked = std::move(keys); }
+    // Item origins and the player's starred keys, as reskate.mods.item_origins and reskate.menu.favorites read them.
+    struct OriginRow {
+        std::string key;
+        bool from_mod{};
+        bool game_item{};
+        std::string folder, title, author, version;
+    };
+    bool origins_ready{};
+    std::vector<OriginRow> origin_rows;
+    ItemFacts item_facts(const std::vector<std::string>& keys) override {
+        ItemFacts out;
+        out.ready = origins_ready;
+        if (!origins_ready) return out;
+        const auto lower = [](std::string_view text) {
+            std::string folded(text);
+            for (auto& c : folded)
+                if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+            return folded;
+        };
+        out.facts.resize(keys.size());
+        for (std::size_t i = 0; i < keys.size(); ++i) {
+            const auto wanted = lower(keys[i]);
+            for (const auto& row : origin_rows)
+                if (lower(row.key) == wanted) {
+                    out.facts[i] = {row.from_mod, row.game_item, row.folder, row.title, row.author, row.version};
+                    break;
+                }
+        }
+        return out;
+    }
+    bool favorites_ready{};
+    std::string favorites_why = "not loaded";
+    std::vector<std::string> favorite_keys;
+    std::uint64_t favorite_generation{};
+    MenuFavorites menu_favorites() override {
+        if (!favorites_ready) return {false, favorites_why, {}, favorite_generation};
+        return {true, {}, favorite_keys, favorite_generation};
+    }
+    std::uint64_t favorites_generation() override { return favorite_generation; }
     bool called(std::string_view part) const {
         return std::any_of(calls.begin(), calls.end(), [&](const auto& c) { return c.find(part) != std::string::npos; });
     }
@@ -3848,6 +3887,127 @@ void plugins_play_sounds_and_read_the_mods() {
     check(environment.logged("mods on on off nil 2"), "Mods by folder or title, on or off\n" + environment.all());
 }
 
+void plugins_read_item_origins_and_favorites() {
+    TestEnvironment environment;
+    environment.mod_list = {{"Author_Pack", "Author Pack", true, "Ada", "1.4.2"}, {"Bare", "Bare", false}};
+    auto& game = environment.fake;
+    game.origins_ready = false;
+    game.origin_rows = {
+        {"own_hat", true, false, "Author_Pack", "Author Pack", "Ada", "1.4.2"},
+        {"deck_stock", true, true, "Author_Pack", "Author Pack", "Ada", "1.4.2"},
+        {"grip_plain", true, false, "Author_Pack", "Author Pack", "", ""},
+        {"shoe_plain", false, true, {}, {}, {}, {}},
+    };
+    game.favorites_ready = false;
+    Host host(environment, Side::client);
+    host.apply({script("picker", R"(
+        local n = 0
+        reskate.on("favorites_changed", function()
+            n += 1
+            reskate.log("favorites changed " .. n)
+        end)
+        local function fields(row)
+            local names = {}
+            for key in pairs(row) do table.insert(names, key) end
+            table.sort(names)
+            return table.concat(names, ",")
+        end
+        reskate.console.command("origins_closed", "x", function()
+            local rows, ready = reskate.mods.item_origins({"own_hat", "shoe_plain"})
+            assert(ready == false, "catalogues not ready")
+            assert(rows.own_hat.source == "unknown" and fields(rows.own_hat) == "source", "a mod is not reported while the catalogues are unread")
+            assert(rows.shoe_plain.source == "unknown" and fields(rows.shoe_plain) == "source", "unknown is not the game")
+            local favs, why = reskate.menu.favorites()
+            assert(favs == nil and why == "not loaded", "favorites not loaded: " .. tostring(why))
+            reskate.log("closed origins")
+        end)
+        reskate.console.command("origins_open", "x", function()
+            local rows, ready = reskate.mods.item_origins({"Own_Hat", "deck_stock", "grip_plain", "shoe_plain", "no_such"})
+            assert(ready == true, "catalogues ready")
+            local hat = rows.Own_Hat
+            assert(hat.source == "mod" and hat.folder == "Author_Pack" and hat.title == "Author Pack"
+                and hat.author == "Ada" and hat.version == "1.4.2", "mod origin")
+            assert(fields(hat) == "author,folder,source,title,version", "a mod origin has those fields")
+            local deck = rows.deck_stock
+            assert(deck.source == "changed" and deck.folder == "Author_Pack" and deck.author == "Ada", "a game item a mod changes")
+            local grip = rows.grip_plain
+            assert(grip.source == "mod" and grip.folder == "Author_Pack" and grip.title == "Author Pack"
+                and grip.author == nil and grip.version == nil, "an undeclared author is left out")
+            local shoe = rows.shoe_plain
+            assert(shoe.source == "game" and fields(shoe) == "source", "a game item no mod touches")
+            assert(rows.no_such.source == "unknown" and fields(rows.no_such) == "source", "a key nowhere is unknown")
+            local empty, still = reskate.mods.item_origins({})
+            local count = 0
+            for _ in pairs(empty) do count += 1 end
+            assert(still == true and count == 0, "an empty ask is ready and empty")
+            reskate.log("open origins")
+        end)
+        reskate.console.command("favorites", "x", function()
+            local favs, why = reskate.menu.favorites()
+            assert(why == nil, tostring(why))
+            assert(favs.own_hat == true and favs.deck_stock == true and favs.shoe_plain == nil, "the starred keys")
+            local count = 0
+            for _ in pairs(favs) do count += 1 end
+            assert(count == 2, "only the starred keys")
+            reskate.log("favorites read")
+        end)
+        reskate.console.command("bounds", "x", function()
+            local too = {}
+            for i = 1, 4001 do too[i] = "k" end
+            local ok, err = pcall(reskate.mods.item_origins, too)
+            assert(not ok and tostring(err):find("at most 4000"), tostring(err))
+            ok, err = pcall(reskate.mods.item_origins, {string.rep("a", 256)})
+            assert(not ok and tostring(err):find("longer than 255"), tostring(err))
+            ok, err = pcall(reskate.mods.item_origins, "own_hat")
+            assert(not ok, tostring(err))
+            reskate.log("bounds held")
+        end)
+        reskate.console.command("mods", "x", function()
+            local pack, bare
+            for _, row in ipairs(reskate.mods.list()) do
+                if row.folder == "Author_Pack" then pack = row else bare = row end
+            end
+            assert(pack.title == "Author Pack" and pack.on == true and pack.author == "Ada" and pack.version == "1.4.2"
+                and pack.installed == nil, "author and version, and no invented install time")
+            assert(bare.folder == "Bare" and bare.on == false and bare.author == nil and bare.version == nil, "a mod that names none")
+            reskate.log("mod list")
+        end)
+    )", R"("console", "mods.read", "menu")"),
+        script("blocked", R"(
+        reskate.console.command("blocked", "x", function()
+            local ok, err = pcall(reskate.mods.item_origins, {"own_hat"})
+            assert(not ok and tostring(err):find("needs the \"mods.read\" permission"), tostring(err))
+            ok, err = pcall(reskate.menu.favorites)
+            assert(not ok and tostring(err):find("needs the \"menu\" permission"), tostring(err))
+            ok, err = pcall(reskate.on, "favorites_changed", function() end)
+            assert(not ok and tostring(err):find("needs the \"menu\" permission"), tostring(err))
+            reskate.log("blocked")
+        end)
+    )", R"("console")")});
+    running(host, "picker", environment);
+    running(host, "blocked", environment);
+    ticks(host, environment, 1);
+    check(!environment.logged("favorites changed"), "The first look does not pretend the set changed\n" + environment.all());
+    check(host.run_console("origins_closed") && environment.logged("closed origins"), "Unread catalogues stay unknown\n" + environment.all());
+    game.origins_ready = true;
+    check(host.run_console("origins_open") && environment.logged("open origins"), "Origins follow the merge and the catalogues\n" + environment.all());
+    game.favorites_ready = true;
+    game.favorite_generation = 1;
+    game.favorite_keys = {"own_hat", "deck_stock"};
+    ticks(host, environment, 1);
+    check(environment.logged("favorites changed 1"), "Loading the favorites file is a change\n" + environment.all());
+    check(host.run_console("favorites") && environment.logged("favorites read"), "Favorites read back\n" + environment.all());
+    ticks(host, environment, 1);
+    check(!environment.logged("favorites changed 2"), "The same set does not fire again\n" + environment.all());
+    game.favorite_keys = {"own_hat"};
+    game.favorite_generation = 2;
+    ticks(host, environment, 1);
+    check(environment.logged("favorites changed 2"), "Starring an item fires once\n" + environment.all());
+    check(host.run_console("bounds") && environment.logged("bounds held"), "Key limits match the grid\n" + environment.all());
+    check(host.run_console("mods") && environment.logged("mod list"), "The mod list names author and version\n" + environment.all());
+    check(host.run_console("blocked") && environment.logged("blocked"), "Without the permission the calls raise\n" + environment.all());
+}
+
 // Two games in one session, each with the same plugin, passing messages through their hosts.
 void plugins_follow_the_session_and_message_each_other() {
     TestEnvironment a, b;
@@ -4683,6 +4843,7 @@ void discovery_finds_the_plugins_among_the_mods_left_on() {
     const auto mods = root / "Mods";
     write(mods / "Alpha" / manifest_file, manifest());
     write(mods / "Alpha" / "plugin" / "main.lua", "");
+    write(mods / "Alpha" / "manifest.json", R"({"name":"Alpha Pack","author":"Ada","version_number":"1.4.2"})");
     write(mods / "Beta" / manifest_file, manifest());
     write(mods / "Beta" / "plugin" / "main.lua", "");
     write(mods / "Beta" / "bin" / "tool.exe", "x");
@@ -4691,9 +4852,13 @@ void discovery_finds_the_plugins_among_the_mods_left_on() {
     write(mods / "JustAMap" / "manifest.json", R"({"name": "Just a map"})");
     check(dingosdk::mods::set_mod_enabled(mods, "Gamma", false), "mods.json switches a mod off");
     FileChecks checks;
-    auto found = discover(root, checks);
+    std::vector<ModInfo> listed;
+    auto found = discover(root, checks, &listed);
     std::sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return a.id < b.id; });
     check(found.size() == 2 && found[0].id == "Alpha" && found[1].id == "Beta", "Only the plugins left on are found");
+    const auto alpha = std::find_if(listed.begin(), listed.end(), [](const ModInfo& mod) { return mod.folder == "Alpha"; });
+    check(alpha != listed.end() && alpha->title == "Alpha Pack" && alpha->author == "Ada" && alpha->version == "1.4.2",
+          "A mod's manifest author and version are what reskate.mods.list reports");
     check(found[0].refusal.empty() && found[1].refusal.find("bin/tool.exe") != std::string::npos, "with what their files say");
     const auto before = found[0].fingerprint;
     write(mods / "Alpha" / "plugin" / "main.lua", "-- changed");
@@ -6513,6 +6678,7 @@ int main() {
         run(plugins_have_menu_panels);
         run(plugins_have_pages);
         run(plugins_play_sounds_and_read_the_mods);
+        run(plugins_read_item_origins_and_favorites);
         run(plugins_follow_the_session_and_message_each_other);
         run(plugins_call_and_hear_each_other);
         run(web_requests_go_only_to_listed_domains);

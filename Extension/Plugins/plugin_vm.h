@@ -124,11 +124,12 @@ struct HttpResponse {
     int status{};          // 0 when it failed
     std::string body, error;
 };
-// A mod in the Mods folder: its folder, the name it gives itself, whether it is on.
+// A mod in the Mods folder: its folder, the name it gives itself, whether it is on, and the author
+// and version its manifest declares (empty when it names none).
 struct ModInfo {
     std::string folder, title;
     bool on{};
-    std::string author; // empty when it names none
+    std::string author, version;
 };
 
 // What a plugin's VM can reach outside itself. The host implements it.
@@ -245,6 +246,8 @@ public:
     void track_changed(const Track& track);
     void throwdown_phase(const char* phase);
     void action(const std::string& name);
+    // menu: the player's starred items changed (reskate.menu.favorites). No arguments.
+    void favorites_changed();
     // ui.screen: the screen it has open, built; and closed (by Esc), which it hears.
     std::optional<plugin_ui::Panel> build_screen(const std::vector<plugin_ui::Action>& actions);
     void close_screen();

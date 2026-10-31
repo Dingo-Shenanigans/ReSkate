@@ -9,9 +9,10 @@
 #include <vector>
 
 // reskate.capture (the screen as the game draws it, saved as a GIF, APNG, PNG or WebM), the game
-// menu's preview turned (reskate.room.turn) and read (reskate.menu.game, reskate.menu.grid), what the
-// skater wears (reskate.outfit.worn, board, title) and reskate.files.reveal: from Fit Check (pull
-// request 326), whose turn finding and card are now a plugin's (contrib/plugins/fit-check).
+// menu's preview turned (reskate.room.turn) and read (reskate.menu.game, reskate.menu.grid,
+// reskate.menu.favorites), what the skater wears (reskate.outfit.worn, board, title) and
+// reskate.files.reveal: from Fit Check (pull request 326), whose turn finding and card are now a
+// plugin's (contrib/plugins/fit-check).
 namespace dingosdk::plugins {
 namespace {
 int result(lua_State* L, const std::string& why) {
@@ -337,6 +338,26 @@ struct CaptureApi {
         game(plugin).grid_mark(plugin.id(), std::move(keys));
         return 0;
     }
+    // menu.favorites(): the player's starred item keys, or nil and why the set is not read yet.
+    // An empty table is a set that was read and holds nothing.
+    static int menu_favorites(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "menu", "reskate.menu.favorites");
+        const auto set = game(plugin).menu_favorites();
+        if (!set.ready) {
+            lua_pushnil(L);
+            if (set.why.empty()) lua_pushstring(L, "not loaded");
+            else lua_pushlstring(L, set.why.data(), set.why.size());
+            return 2;
+        }
+        lua_createtable(L, 0, static_cast<int>(set.keys.size()));
+        for (const auto& key : set.keys) {
+            lua_pushlstring(L, key.data(), key.size());
+            lua_pushboolean(L, 1);
+            lua_settable(L, -3);
+        }
+        return 1;
+    }
     static int push_worn(lua_State* L, const std::vector<Game::WornItem>& list) {
         lua_createtable(L, static_cast<int>(list.size()), 0);
         for (std::size_t i = 0; i < list.size(); ++i) {
@@ -414,7 +435,8 @@ struct CaptureApi {
         add_functions(L, "capture", {{"start", start}, {"stop", stop}, {"discard", discard}, {"state", state}, {"compare", compare},
                                      {"kept", kept}, {"save", save}});
         add_functions(L, "room", {{"turn", room_turn}, {"pose", room_pose}});
-        add_functions(L, "menu", {{"game", menu_game}, {"grid", menu_grid}, {"grid_show", grid_show}, {"grid_mark", grid_mark}});
+        add_functions(L, "menu", {{"game", menu_game}, {"grid", menu_grid}, {"grid_show", grid_show}, {"grid_mark", grid_mark},
+                                  {"favorites", menu_favorites}});
         add_functions(L, "outfit", {{"worn", outfit_worn}, {"board", outfit_board}, {"title", outfit_title}, {"on_top", on_top}, {"on_top_state", on_top_state}});
         add_functions(L, "files", {{"reveal", files_reveal}});
     }

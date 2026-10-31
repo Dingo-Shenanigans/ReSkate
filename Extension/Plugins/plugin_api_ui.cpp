@@ -8,9 +8,9 @@
 #include <cmath>
 
 // The parts of the reskate API that reach players and other games: drawing on the overlay
-// (overlay), toasts, menu panels (menu), menu sounds (audio.ui), the mod list (mods.read), the
-// session (session.read) and messages to the same plugin elsewhere (net.session). As in
-// plugin_api.cpp, every value is checked before it leaves the VM.
+// (overlay), toasts, menu panels (menu), menu sounds (audio.ui), the mod list and where an item
+// comes from (mods.read), the session (session.read) and messages to the same plugin elsewhere
+// (net.session). As in plugin_api.cpp, every value is checked before it leaves the VM.
 namespace dingosdk::plugins {
 namespace {
 float finite(lua_State* L, int index, const char* what) {
@@ -616,16 +616,79 @@ struct UiApi {
         const auto mods = plugin.services_.mods();
         lua_createtable(L, static_cast<int>(mods.size()), 0);
         for (std::size_t i = 0; i < mods.size(); ++i) {
-            lua_createtable(L, 0, 3);
+            lua_createtable(L, 0, 5);
             lua_pushlstring(L, mods[i].folder.data(), mods[i].folder.size());
             lua_setfield(L, -2, "folder");
             lua_pushlstring(L, mods[i].title.data(), mods[i].title.size());
             lua_setfield(L, -2, "title");
             lua_pushboolean(L, mods[i].on);
             lua_setfield(L, -2, "on");
+            // The manifest's own words, left out when it names none. Nothing records when the
+            // folder was first seen, so the list does not invent an install time.
+            if (!mods[i].author.empty()) {
+                lua_pushlstring(L, mods[i].author.data(), mods[i].author.size());
+                lua_setfield(L, -2, "author");
+            }
+            if (!mods[i].version.empty()) {
+                lua_pushlstring(L, mods[i].version.data(), mods[i].version.size());
+                lua_setfield(L, -2, "version");
+            }
             lua_rawseti(L, -2, static_cast<int>(i + 1));
         }
         return 1;
+    }
+    // The same bound as menu.grid_show: a picker asks about the keys a grid already showed it.
+    static std::vector<std::string> item_keys(lua_State* L, int index) {
+        luaL_checktype(L, index, LUA_TTABLE);
+        const int count = lua_objlen(L, index);
+        if (count > 4000) luaL_argerror(L, index, "at most 4000 items");
+        std::vector<std::string> keys;
+        keys.reserve(static_cast<std::size_t>(count));
+        for (int i = 1; i <= count; ++i) {
+            lua_rawgeti(L, index, i);
+            keys.push_back(checked_text(L, lua_gettop(L), 255, "an item's key"));
+            lua_pop(L, 1);
+        }
+        return keys;
+    }
+    static void set_text(lua_State* L, const std::string& text, const char* field) {
+        if (text.empty()) return;
+        lua_pushlstring(L, text.data(), text.size());
+        lua_setfield(L, -2, field);
+    }
+    // mods.item_origins(keys): where each key comes from. The second result is false while the
+    // merge or the catalogues are not read yet; every key is "unknown" then, never "game".
+    static int item_origins(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "mods.read", "reskate.mods.item_origins");
+        const auto keys = item_keys(L, 1);
+        const auto found = plugin.services_.game().item_facts(keys);
+        // A short answer is not a catalogue. Treat it as not ready so a missing fact is never a game item.
+        const bool ready = found.ready && found.facts.size() == keys.size();
+        lua_createtable(L, 0, static_cast<int>(keys.size()));
+        for (std::size_t i = 0; i < keys.size(); ++i) {
+            const Game::ItemFact blank;
+            const auto& fact = ready ? found.facts[i] : blank;
+            const char* source = "unknown";
+            if (ready && fact.from_mod && fact.game) source = "changed";
+            else if (ready && fact.from_mod) source = "mod";
+            else if (ready && fact.game) source = "game";
+            lua_createtable(L, 0, 5);
+            lua_pushstring(L, source);
+            lua_setfield(L, -2, "source");
+            if (ready && fact.from_mod) {
+                set_text(L, fact.folder, "folder");
+                set_text(L, fact.title, "title");
+                set_text(L, fact.author, "author");
+                set_text(L, fact.version, "version");
+            }
+            lua_pushlstring(L, keys[i].data(), keys[i].size());
+            lua_pushvalue(L, -2);
+            lua_settable(L, -4);
+            lua_pop(L, 1);
+        }
+        lua_pushboolean(L, ready);
+        return 2;
     }
 
     // ---- session.read --------------------------------------------------------------------------
@@ -731,7 +794,7 @@ void UiApi::install(Plugin& plugin, lua_State* L) {
     add_functions(L, "ui", {{"toast", F::toast}});
     add_functions(L, "menu", {{"panel", F::panel}, {"page", F::page}});
     add_functions(L, "audio", {{"play_ui", F::play_ui}});
-    add_functions(L, "mods", {{"installed", F::installed}, {"list", F::mods_list}});
+    add_functions(L, "mods", {{"installed", F::installed}, {"list", F::mods_list}, {"item_origins", F::item_origins}});
     add_functions(L, "session", {{"active", F::active}, {"is_dedicated", F::dedicated}, {"players", F::players}, {"me", F::me}, {"host", F::host}});
     add_functions(L, "net", {{"send", F::send}});
 }

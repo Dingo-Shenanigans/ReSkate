@@ -2,8 +2,10 @@
 #include <cstddef>
 #include <filesystem>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 // Which mod each cosmetic item is from, as the last merge found (Engine/Vfs/mod_item_sources.h):
 // the item catalogue's description line and the item card the overlay draws beside the game's.
@@ -11,6 +13,7 @@ namespace dingosdk::item_origins {
 struct Origin {
     std::string title, author, version;  // title with spaces for underscores
     std::string name;                    // "<title> by <author>"
+    std::string folder;                  // its folder under Mods, the name reskate.mods.list reports
     std::filesystem::path icon;          // the mod's icon.png (it may not exist)
     std::size_t items{};                 // how many items the mod adds or changes
 };
@@ -19,6 +22,21 @@ struct Origin {
 std::shared_ptr<const Origin> find(std::string_view key);
 // Whether the game itself ships the item (a mod only changes it), by the content cache.
 bool game_item(std::string_view key);
+// One key as the merge and the catalogues know it. `from_mod` is the winning mod (highest
+// priority). `game` means the game itself ships the key. Both are meaningful only when the
+// lookup is `ready`; a caller must not treat a key as a game item before that.
+struct Fact {
+    bool from_mod{};
+    bool game{};
+    std::string folder, title, author, version;
+};
+struct Lookup {
+    bool ready{};
+    std::vector<Fact> facts;
+};
+// `keys` together, one Fact each, in the order given. `ready` is false until the merge's item
+// file has been read and the content catalogues are available. Any thread.
+Lookup lookup(std::span<const std::string> keys);
 // A mod's item's description: three empty lines (no-break spaces, in UTF-8; plain spaces could
 // be taken for no description), room at the bottom of the game's item card for the overlay to
 // show the mod (UI/Overlay/item_browser_overlay.cpp, draw_mod_card).
