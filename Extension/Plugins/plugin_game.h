@@ -487,6 +487,17 @@ public:
         bool known{}; // The native screen model was resolved; false is not a known closed menu.
     };
     virtual GameMenu game_menu() { return {}; }
+    // What is up over the game (reskate.menu.state and the menu_changed event): the game's own
+    // pause menu, on any of its pages; ReSkate's menu, its window or one of its pages in the pause
+    // menu (`page`: "multiplayer", "mod_options" or "mod_manager", empty for none); and the replay
+    // editor. Read every tick while a plugin has the menu permission, so it should be cheap.
+    struct MenuState {
+        bool pause{}, reskate{}, replay_editor{};
+        std::string page;
+        bool known{}; // The native screen model was resolved, as for GameMenu; false is not a known closed pause menu.
+        bool operator==(const MenuState&) const = default;
+    };
+    virtual MenuState menu_state() { return {}; }
     // The customization grid that has the focus (Extension/Customization/item_browser.h), when one does.
     struct MenuGrid {
         std::string focused, title, category; // the highlighted item: key, title, catalog category

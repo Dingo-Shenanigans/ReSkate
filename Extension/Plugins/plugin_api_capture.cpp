@@ -10,7 +10,8 @@
 
 // reskate.capture (the screen as the game draws it, saved as a GIF, APNG, PNG or WebM), the game
 // menu's preview turned (reskate.room.turn) and read (reskate.menu.game, reskate.menu.grid,
-// reskate.menu.favorites), what the skater wears (reskate.outfit.worn, board, title) and
+// reskate.menu.favorites), what is up over the game (reskate.menu.state: the pause menu, ReSkate's
+// menu, the replay editor), what the skater wears (reskate.outfit.worn, board, title) and
 // reskate.files.reveal: from Fit Check (pull request 326), whose turn finding and card are now a
 // plugin's (contrib/plugins/fit-check).
 namespace dingosdk::plugins {
@@ -271,6 +272,13 @@ struct CaptureApi {
         lua_setfield(L, -2, "buttons");
         return 1;
     }
+    // menu.state(): what is up over the game now, as menu_changed hands it over.
+    static int menu_state(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "menu", "reskate.menu.state");
+        push_menu_state(L, game(plugin).menu_state());
+        return 1;
+    }
     static int menu_grid(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "menu", "reskate.menu.grid");
@@ -435,12 +443,26 @@ struct CaptureApi {
         add_functions(L, "capture", {{"start", start}, {"stop", stop}, {"discard", discard}, {"state", state}, {"compare", compare},
                                      {"kept", kept}, {"save", save}});
         add_functions(L, "room", {{"turn", room_turn}, {"pose", room_pose}});
-        add_functions(L, "menu", {{"game", menu_game}, {"grid", menu_grid}, {"grid_show", grid_show}, {"grid_mark", grid_mark},
-                                  {"favorites", menu_favorites}});
+        add_functions(L, "menu", {{"game", menu_game}, {"state", menu_state}, {"grid", menu_grid}, {"grid_show", grid_show},
+                                  {"grid_mark", grid_mark}, {"favorites", menu_favorites}});
         add_functions(L, "outfit", {{"worn", outfit_worn}, {"board", outfit_board}, {"title", outfit_title}, {"on_top", on_top}, {"on_top_state", on_top_state}});
         add_functions(L, "files", {{"reveal", files_reveal}});
     }
 };
 
 void install_capture_api(Plugin&, lua_State* L) { CaptureApi::install(L); }
+
+void push_menu_state(lua_State* L, const Game::MenuState& state) {
+    lua_createtable(L, 0, 5);
+    lua_pushboolean(L, state.known);
+    lua_setfield(L, -2, "known");
+    lua_pushboolean(L, state.pause);
+    lua_setfield(L, -2, "pause");
+    lua_pushboolean(L, state.reskate);
+    lua_setfield(L, -2, "reskate");
+    lua_pushboolean(L, state.replay_editor);
+    lua_setfield(L, -2, "replay_editor");
+    // Only the words plugins were told of (Enums.MenuPage) reach them.
+    if (one_of(menu_pages, state.page)) push_text(L, state.page, "page");
+}
 } // namespace dingosdk::plugins
