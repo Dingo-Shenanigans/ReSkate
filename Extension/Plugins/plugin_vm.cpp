@@ -767,6 +767,11 @@ void Plugin::action(const std::string& name) {
     fire({"action"}, {name});
 }
 
+void Plugin::favorites_changed() {
+    if (state_ != State::running || !has("menu")) return;
+    fire("favorites_changed", {});
+}
+
 std::optional<plugin_ui::Panel> Plugin::build_screen(const std::vector<plugin_ui::Action>& actions) {
     if (state_ != State::running || !has("ui.screen") || open_screen_.empty()) return std::nullopt;
     const auto found = std::find_if(screens_.begin(), screens_.end(), [&](const auto& e) { return e.title == open_screen_; });

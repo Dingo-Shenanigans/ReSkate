@@ -7,15 +7,30 @@ a mod is touched.
 
 Code: [item_browser.cpp](../Extension/Customization/item_browser.cpp) (client thread),
 [item_browser_order.h](../Extension/Customization/item_browser_order.h) (the pure ordering rule),
-[item_browser_overlay.cpp](../Extension/UI/Overlay/item_browser_overlay.cpp) (search bar, prompts, keys).
+[item_browser_overlay.cpp](../Extension/UI/Overlay/item_browser_overlay.cpp) (search bar, the pickers' filters, prompts, keys).
 
 ## What the player gets
 
 - **F** (left stick click on a pad): the highlighted item becomes a favorite, or stops being one.
   Favorites sit right after the worn item and carry a star where the tile shows its rarity icon.
-- **-** or **Ctrl+F**: a search box; every letter filters the grid at once. Enter keeps the search,
-  Esc clears it.
-- **X**: steps a filter (All, Favorites, Mods, Game items).
+- **-**, **Ctrl+F** or a click on it: a search box, at the top over the empty space right of the grid, with the
+  key prompts on one line under it (it shows no count of what it found); every letter filters the grid at once. Enter, or a click
+  elsewhere, keeps the search, Esc clears it. Each word typed must be in the item's name, in its mod's author, name or folder
+  (so a pack's name or its author's shows that pack's items), or, from three letters on, in its
+  asset name.
+- **X**: steps a filter (All, Favorites, Mods, skate.: the game's own items). An item is a mod's
+  when the mods' merge says a mod adds or changes it, as `reskate.mods.item_origins` reports.
+- In the pickers (clothing, board, tattoos, gestures and appearance: hair, makeup, skin...), four lists in a line
+  right of the search box, as tall as it and level with it: **Author** and **Mod pack** (the mods with items in the grid, and Any; the
+  packs only the chosen author's), **Sort** (Game order, the default, Name A-Z, Name Z-A, Mod pack,
+  Author; favorites still come first) and **Show** (All, Favorites, skate., Mods: the filter X
+  steps). They stack with each other and the search. Click one, or **V**
+  then Left/Right and Enter, to open its list; typing there searches its choices (Backspace edits, "No
+  matches" when none has the text), Up/Down, Home/End, Page Up/Down and the wheel move, Enter or a
+  click picks, Esc clears the search, then closes the list. While a list is open every key is its
+  own: no F, X, V or - and nothing for the game. Esc, V or a click elsewhere gives the keys back to the game.
+  Each picker keeps its own choices for the session (not saved), and
+  keep them across tabs: a tab with none of the chosen author's items shows its first tile only.
 - Favorites are saved to `ReSkate.favorites.json` beside Skate.exe (`RESKATE_FAVORITES_FILE` overrides
   the path), keyed by the item's asset name, so items added later just work.
 
@@ -42,6 +57,34 @@ Schema and field hashes are the `TypeNameHash` and `NameHash` of the data-define
   style (`0xb6800075`) whose `Icon` is the game's `img_Star_Fill_64`. The game sets the reference when
   a tile is shown, so this is re-applied while the grid is open.
 - Our copies are destroyed before level transitions and when the grids are gone.
+- The search's mod words (author, name and folder, folded) are looked up with `item_origins::find`
+  once, when a grid's rows are copied, and kept with each item. A keystroke only looks in those
+  strings. An item no mod adds or changes has none and is found as before. A grid copied before the
+  merge's item file was read has none until the game builds the grid again.
+- The pickers' filters use the same per-item mod (author, folder, name), kept with each item when
+  the rows are copied; a grid's list of mods for Author and Mod pack is made then too, not per frame.
+  Which picker a grid is comes from most of its items' categories (`picker_of`): the game's clothing
+  categories are `cust_` and the slot (`cust_tops`, `cust_hats`, `cust_bottoms`, `cust_shoes`,
+  `cust_socks`, `cust_fullbodycostume`...); tattoos (`tattoo_...`) and gestures (`gesture`, `emote`)
+  are their own pickers, and the body's own `custhead`, `custbodies`, `cust_makeup`, hair, skin...
+  are the appearance picker (outfit_kind and the worn items are unchanged: those are still not worn
+  items there); what is none of them (`voice`, `locomotion`) has no filters; the log has "Item browser: picker ... for category ..." once per new list. The
+  search field starts at the item card's left edge (45.25% of the menu frame, past the grid's
+  scrollbar), at the height it always had, 350 wide at most. The filters follow it, the same gap
+  apart as from each other, the same height and top, up to the menu's right less its margin:
+  Author, Mod pack and Sort, then Show, as wide as its longest choice; where the screen is too
+  narrow for both they give way down to 60%, then the search field down to 200. Their name and
+  choice sit at the search field's icon's inset. An open list drops from its control's left edge,
+  a gap below it, as wide (wider only for its search field), stops above the item card, and is
+  drawn over the key prompts. The prompts are on one line under the search field from its left;
+  V Filters is on it, and it shows the filters' own keys while they have them. The search field
+  is drawn like the filters (tile, lighter under the mouse, blue edge while typing, magnifier at
+  their inset, "Search" in their muted colour, the text as their values); the favorite star sits
+  at its right end, as far in.
+  While they are on screen the overlay reads where the mouse is and its left button, taking nothing
+  from the game; a click on a row, or on the search field, opens it once let go (that click also
+  reaches the game, over nothing of its own there), and the overlay then has the keys and the
+  pointer, as for the search box, until Esc, V or a click elsewhere.
 - Nothing runs outside the game's menus except a cheap check of `sample_game_ui_state().in_menu`.
 
 ## Seen working in game
@@ -57,5 +100,13 @@ the file on the next launch, leaving the menus and coming back.
 - Multiplayer sessions, level changes with a grid open, live mod apply.
 - Other screen sizes for the overlay's placement.
 - The star replaces the rarity icon (bottom left). The tile has no icon slot bottom right.
-- No automated tests yet; `arrange()` in item_browser_order.h is written to be tested on its own.
+- The search, order, Author, Mod pack and Sort in item_browser_order.h are tested on their own
+  (`dingosdk_item_browser_order_tests`, built with the plugin tests, Linux too). Searching by a mod's
+  author or pack has not been tried in game yet. The pickers' filters were seen in game in the
+  board, costume and clothing pickers, with the search box top left, the filters right of it, the
+  prompts under it, searching inside the lists and Show's skate. and Mods. Clicking the search
+  field and its new look have not been seen yet. The tattoos, gestures
+  and appearance pickers' filters have not been seen yet (nor whether those screens have anything
+  of their own where the filters go). A controller cannot reach
+  them yet.
 - `items peek` / `items poke` are research aids used to find the fields above; drop or keep as wanted.

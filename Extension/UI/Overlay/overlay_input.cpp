@@ -158,9 +158,21 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
         if (console_character(message) && s.item_search_character_pending.exchange(false)) return 0;
         // The skater item grids (item_browser_overlay.cpp): while one has the focus and nothing of ours
         // is open, F favorites the highlighted item, X steps the filter and "-" (or Ctrl+F) opens the
-        // search box, which then takes the keys until Enter or Esc. (The game uses Q, E, T and G here:
-        // G opens its feedback card.)
-        if (s.item_search_visible.load() || s.item_search_escape_pending.load()) {
+        // search box, which then takes the keys until Enter or Esc. In the pickers
+        // V goes to their filters at the top, which take the keys until Esc or V; their Esc goes
+        // to them (it clears a list's search, closes the list, then leaves) and not to the game,
+        // its release too. (The game uses Q, E, T and G here: G opens its feedback card.)
+        if (!interactive_visible(s) && (message == WM_MOUSEMOVE || message == WM_LBUTTONDOWN || message == WM_LBUTTONUP))
+            item_browser_mouse(message, static_cast<float>(static_cast<short>(LOWORD(lp))), static_cast<float>(static_cast<short>(HIWORD(lp))));
+        if (s.item_filters_visible.load() || s.item_filters_escape_pending.load()) {
+            if (wp == VK_ESCAPE && (key || release) && !s.console_visible.load() && !s.visible.load()) {
+                if (key && (static_cast<ULONG_PTR>(lp) & (1ull << 30)) == 0) {
+                    s.item_filters_escape_pending.store(true);
+                    s.item_filters_back.fetch_add(1);
+                } else if (release) s.item_filters_escape_pending.store(false);
+                return 0;
+            }
+        } else if (s.item_search_visible.load() || s.item_search_escape_pending.load()) {
             if (wp == VK_ESCAPE && (key || release) && !s.console_visible.load() && !s.visible.load()) {
                 if (key && (static_cast<ULONG_PTR>(lp) & (1ull << 30)) == 0) {
                     s.item_search_escape_pending.store(true);
@@ -184,6 +196,12 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
                 s.item_search_focus_requested.store(true);
                 sync_menu_cursor();
                 window_cursor_input(window, message, wp);
+                std::lock_guard lock(s.input_mutex);
+                s.input.clear();
+                return 0;
+            }
+            if (!control && wp == 'V' && item_browser_filters_shown()) {
+                s.item_filters_visible.store(true);
                 std::lock_guard lock(s.input_mutex);
                 s.input.clear();
                 return 0;

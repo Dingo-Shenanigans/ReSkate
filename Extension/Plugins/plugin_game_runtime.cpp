@@ -72,6 +72,7 @@
 #include "Extension/World/character_room.h"
 #include "Extension/Rendering/Capture/capture_runtime.h"
 #include "Extension/Customization/item_browser.h"
+#include "Extension/Customization/item_origins.h"
 #include "Extension/Customization/worn_items.h"
 #include "Extension/Multiplayer/Hud/game_ui_state.h"
 #include <shellapi.h>
@@ -1377,6 +1378,22 @@ public:
         return item_browser::show_items(std::string(plugin), std::move(keys));
     }
     void grid_mark(std::string_view plugin, std::vector<std::string> keys) override { item_browser::mark_items(std::string(plugin), std::move(keys)); }
+    ItemFacts item_facts(const std::vector<std::string>& keys) override {
+        const auto found = ::dingosdk::item_origins::lookup(keys);
+        ItemFacts out;
+        out.ready = found.ready && found.facts.size() == keys.size();
+        if (!out.ready) return out;
+        out.facts.reserve(found.facts.size());
+        for (const auto& fact : found.facts)
+            out.facts.push_back(ItemFact{fact.from_mod, fact.game, fact.folder, fact.title, fact.author, fact.version});
+        return out;
+    }
+    MenuFavorites menu_favorites() override {
+        const auto set = item_browser::favorites();
+        if (!set.ready) return {false, "not loaded", {}, set.generation};
+        return {true, {}, set.keys, set.generation};
+    }
+    std::uint64_t favorites_generation() override { return item_browser::favorites_generation(); }
     // ---- capture: one plugin records at a time (capture_runtime.h) --------------------------------
     std::string capture_start(std::string_view plugin, const CaptureStart& request) override {
         auto& recorder = capture::recorder();
