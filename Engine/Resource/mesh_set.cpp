@@ -4,6 +4,7 @@
 #include <cstring>
 #include <stdexcept>
 #include <string>
+#include <utility>
 
 namespace dingosdk::frostbite {
 namespace {
@@ -244,6 +245,279 @@ MeshLod any_mesh_lod_geometry(std::span<const std::byte> resource, std::size_t l
     return result;
 }
 
+namespace {
+constexpr std::size_t metadata_section_limit = 4096, metadata_diagnostic_limit = 64;
+
+bool metadata_span(const Reader& r, std::size_t at, std::size_t size) {
+    return at <= r.data.size() && size <= r.data.size() - at;
+}
+std::size_t metadata_pointer(const Reader& r, std::size_t slot, std::size_t required) {
+    const auto relative = r.at<std::uint64_t>(slot);
+    require(r.data.size() >= pointer_base && relative != 0 && relative <= r.data.size() - pointer_base,
+            "a metadata pointer leads outside the resource");
+    const auto at = static_cast<std::size_t>(relative) + pointer_base;
+    require(metadata_span(r, at, required), "a metadata pointer target is truncated");
+    return at;
+}
+constexpr std::array<std::size_t, 2> observation_strides{section_size, 416};
+constexpr std::size_t observation_section_limit = 64, observation_span_limit = 32768;
+constexpr std::size_t observation_slot_limit = 16, observation_diagnostic_limit = 16;
+
+void observation_problem(MeshSectionCandidateObservation& candidate, std::string text) {
+    candidate.observation_complete = false;
+    ++candidate.diagnostic_count;
+    if (candidate.diagnostics.size() < observation_diagnostic_limit) candidate.diagnostics.push_back(std::move(text));
+}
+MeshSectionCandidateObservation observe_section_candidate(const Reader& r,
+    const MeshLodCommonOffsetObservation& common, std::size_t stride) {
+    MeshSectionCandidateObservation result;
+    result.stride = stride;
+    const auto count = common.section_count_raw;
+    if (count == 0) {
+        observation_problem(result, "raw section count is zero; no section table was observed");
+        return result;
+    }
+    if (count > observation_section_limit) {
+        observation_problem(result, "raw section count exceeds observation limit 64");
+        return result;
+    }
+    // Charge both possible tables before allocating sections, even when one later fails bounds.
+    if (count > observation_span_limit / (observation_strides[0] + observation_strides[1])) {
+        observation_problem(result, "combined raw candidate table spans exceed observation limit 32768");
+        return result;
+    }
+    const auto relative = common.section_pointer_raw;
+    if (r.data.size() < pointer_base || relative == 0 || relative > r.data.size() - pointer_base) {
+        observation_problem(result, "raw section pointer cannot be resolved within the resource");
+        return result;
+    }
+    result.table_offset = static_cast<std::size_t>(relative) + pointer_base;
+    result.table_pointer_resolved = true;
+    if (count > (r.data.size() - result.table_offset) / stride) {
+        observation_problem(result, "raw candidate table span is outside the resource");
+        return result;
+    }
+    result.span_bytes = static_cast<std::size_t>(count) * stride;
+    result.table_span_valid = true;
+    result.observation_complete = true;
+    result.sections.reserve(count);
+    for (std::size_t index = 0; index < count; ++index) {
+        const auto at = result.table_offset + index * stride;
+        MeshSectionObservation section;
+        section.resource_offset = at;
+        section.primitive_raw = r.at<std::uint8_t>(at + primitive);
+        section.triangle_count_raw = r.at<std::uint32_t>(at + triangle_count);
+        section.first_index_raw = r.at<std::uint32_t>(at + first_index);
+        section.vertex_start_raw = r.at<std::uint32_t>(at + vertex_start);
+        section.vertex_count_raw = r.at<std::uint32_t>(at + vertex_count);
+        const auto d = at + declaration;
+        section.element_count_raw = r.at<std::uint8_t>(d + element_total);
+        section.stream_count_raw = r.at<std::uint8_t>(d + stream_total);
+        if (section.element_count_raw > observation_slot_limit || section.stream_count_raw > observation_slot_limit) {
+            observation_problem(result, "section " + std::to_string(index) +
+                ": raw declaration count exceeds 16; both declaration arrays were skipped");
+            result.sections.push_back(std::move(section));
+            continue;
+        }
+        section.elements.reserve(section.element_count_raw);
+        for (std::size_t element = 0; element < section.element_count_raw; ++element) {
+            const auto e = d + element * 4;
+            section.elements.push_back({r.at<std::uint8_t>(e), r.at<std::uint8_t>(e + 1),
+                r.at<std::uint8_t>(e + 2), r.at<std::uint8_t>(e + 3)});
+        }
+        section.streams.reserve(section.stream_count_raw);
+        for (std::size_t stream = 0; stream < section.stream_count_raw; ++stream) {
+            const auto s = d + stream_table + stream * 2;
+            section.streams.push_back({r.at<std::uint8_t>(s), r.at<std::uint8_t>(s + 1)});
+        }
+        section.declarations_observed = true;
+        result.sections.push_back(std::move(section));
+    }
+    return result;
+}
+void metadata_problem(MeshSectionLayoutMetadata& candidate, std::string text, bool structural) {
+    if (structural) candidate.structurally_valid = false;
+    candidate.declarations_supported = false;
+    ++candidate.diagnostic_count;
+    if (candidate.diagnostics.size() < metadata_diagnostic_limit) candidate.diagnostics.push_back(std::move(text));
+}
+std::uint8_t metadata_width(std::uint8_t format) {
+    // These widths match the position/skinning reader; other declarations remain unknown.
+    switch (format) {
+    case 3: return 12;
+    case 23: return 8;
+    case 13: return 4;
+    default: return 0;
+    }
+}
+MeshSectionLayoutMetadata metadata_candidate(const Reader& r, const MeshLodMetadata& lod, std::size_t stride) {
+    MeshSectionLayoutMetadata result;
+    result.stride = stride;
+    if (lod.section_table > r.data.size() || lod.section_count > (r.data.size() - lod.section_table) / stride) {
+        metadata_problem(result, "section table span is outside the resource", true);
+        return result;
+    }
+    result.sections.reserve(lod.section_count);
+    for (std::size_t index = 0; index < lod.section_count; ++index) {
+        const auto at = lod.section_table + index * stride;
+        MeshSectionMetadata section;
+        section.resource_offset = at;
+        section.primitive = r.at<std::uint8_t>(at + primitive);
+        section.triangle_count = r.at<std::uint32_t>(at + triangle_count);
+        section.first_index = r.at<std::uint32_t>(at + first_index);
+        section.vertex_start = r.at<std::uint32_t>(at + vertex_start);
+        section.vertex_count = r.at<std::uint32_t>(at + vertex_count);
+        const auto d = at + declaration;
+        section.element_count = r.at<std::uint8_t>(d + element_total);
+        section.stream_count = r.at<std::uint8_t>(d + stream_total);
+        const auto label = "section " + std::to_string(index) + ": ";
+        const auto problem = [&](const char* message, bool structural) { metadata_problem(result, label + message, structural); };
+        if (section.element_count > 16 || section.stream_count > 16) {
+            problem("declaration count exceeds its fixed table", true);
+            result.sections.push_back(std::move(section));
+            continue;
+        }
+        const bool has_vertices = section.vertex_count != 0;
+        const bool has_triangles = section.triangle_count != 0;
+        if (has_triangles && !has_vertices) problem("triangles have no vertices", true);
+        if (has_triangles && section.primitive != triangle_list) problem("primitive interpretation is unsupported", false);
+        if (has_vertices && (section.element_count == 0 || section.stream_count == 0))
+            problem("vertices have no complete declaration", true);
+        bool per_vertex = true;
+        for (std::size_t stream = 0; stream < section.stream_count; ++stream) {
+            const auto s = d + stream_table + stream * 2;
+            const MeshStreamMetadata value{r.at<std::uint8_t>(s), r.at<std::uint8_t>(s + 1)};
+            section.streams.push_back(value);
+            if (value.classification != 0) {
+                per_vertex = false;
+                problem("stream classification interpretation is unsupported", false);
+            } else if (value.stride == 0) {
+                problem("per-vertex stream has zero stride", true);
+            }
+        }
+        std::array<bool, 6> seen{};
+        for (std::size_t element = 0; element < section.element_count; ++element) {
+            const auto e = d + element * 4;
+            MeshElementMetadata value;
+            value.usage = r.at<std::uint8_t>(e);
+            value.format = r.at<std::uint8_t>(e + 1);
+            value.offset = r.at<std::uint8_t>(e + 2);
+            value.stream = r.at<std::uint8_t>(e + 3);
+            value.width = metadata_width(value.format);
+            value.semantic_supported = value.usage >= position && value.usage <= weights_high &&
+                                       value.format == usage_format[value.usage];
+            if (!value.semantic_supported) problem("element usage/format interpretation is unsupported", false);
+            if (value.usage >= position && value.usage <= weights_high) {
+                if (seen[value.usage]) problem("known element usage is duplicated", true);
+                seen[value.usage] = true;
+            }
+            if (value.stream >= section.stream_count) {
+                problem("element refers to an absent stream", true);
+            } else {
+                const auto& stream = section.streams[value.stream];
+                // An unknown classification cannot rule out a candidate through an assumed stride interpretation.
+                if (stream.classification == 0 && (value.offset >= stream.stride ||
+                    (value.width != 0 && value.width > stream.stride - value.offset)))
+                    problem("element span is outside its stream stride", true);
+            }
+            section.elements.push_back(value);
+        }
+        if (has_vertices && !seen[position]) problem("vertex declaration has no position element", true);
+        if (has_vertices && per_vertex && section.stream_count != 0) {
+            std::size_t end = section.vertex_start;
+            bool fits = end <= lod.geometry.vertex_bytes;
+            for (const auto& stream : section.streams) {
+                if (!fits) break;
+                if (stream.stride > (lod.geometry.vertex_bytes - end) / section.vertex_count) fits = false;
+                else end += std::size_t{stream.stride} * section.vertex_count;
+            }
+            section.vertex_range_checked = true;
+            if (!fits) problem("declared streams exceed the vertex buffer", true);
+        }
+        if (has_triangles && section.primitive == triangle_list) {
+            if (lod.index_format != sixteen_bit_indices) {
+                problem("index width interpretation is unsupported", false);
+            } else {
+                section.index_range_checked = true;
+                const std::size_t total = lod.geometry.index_bytes;
+                const bool start_fits = section.first_index <= total / 2;
+                if (!start_fits || section.triangle_count > (total - std::size_t{section.first_index} * 2) / 6)
+                    problem("triangle range exceeds the index buffer", true);
+            }
+        }
+        result.sections.push_back(std::move(section));
+    }
+    return result;
+}
+}
+
+MeshLodMetadata read_mesh_lod_metadata(std::span<const std::byte> resource, std::size_t lod) {
+    const Reader r{resource};
+    MeshLodMetadata result;
+    result.header = r.at<std::array<std::uint32_t, 4>>(0);
+    constexpr std::array<std::uint32_t, 4> static_header{192, 176, 384, 0};
+    require(result.header == known_header || result.header == static_header, "metadata layout header is unsupported");
+    result.skinned = result.header == known_header;
+    result.lod_count = r.at<std::uint16_t>(lod_count);
+    result.lod_index = lod;
+    require(lod < result.lod_count, "metadata has no such level of detail");
+    require(lod_table <= resource.size() && result.lod_count <= (resource.size() - lod_table) / 8,
+            "metadata LOD pointer table is truncated");
+    result.lod_offset = metadata_pointer(r, lod_table + lod * 8, sizeof(std::uint32_t));
+    const auto at = result.lod_offset;
+    result.lod_kind = r.at<std::uint32_t>(at + lod_kind);
+    if (result.lod_kind != known_lod_kind) {
+        result.diagnostics.push_back("LOD kind is unsupported; no LOD layout interpretation was performed");
+        if (result.header == static_header) {
+            if (metadata_span(r, at, geometry_chunk + 16)) {
+                // Raw offset observations do not establish a layout or authorize geometry decoding.
+                MeshLodCommonOffsetObservation observed;
+                observed.section_count_raw = r.at<std::uint32_t>(at + section_count);
+                observed.section_pointer_raw = r.at<std::uint64_t>(at + section_table);
+                observed.index_format_raw = r.at<std::uint32_t>(at + index_format);
+                observed.index_bytes_raw = r.at<std::uint32_t>(at + index_bytes);
+                observed.vertex_bytes_raw = r.at<std::uint32_t>(at + vertex_bytes);
+                observed.geometry_identity_raw = r.at<std::array<std::byte, 16>>(at + geometry_chunk);
+                result.static_common_offsets = observed;
+                for (const auto stride : observation_strides)
+                    result.static_section_candidates.push_back(observe_section_candidate(r, observed, stride));
+            } else {
+                result.diagnostics.push_back("static common-offset observation unavailable: full 132-byte span is missing");
+            }
+        }
+        return result;
+    }
+    require(metadata_span(r, at, geometry_chunk + sizeof(Guid)), "metadata LOD fields are truncated");
+    result.lod_kind_supported = true;
+    result.index_format = r.at<std::uint32_t>(at + index_format);
+    result.geometry.index_bytes = r.at<std::uint32_t>(at + index_bytes);
+    result.geometry.vertex_bytes = r.at<std::uint32_t>(at + vertex_bytes);
+    result.geometry.chunk = r.at<Guid>(at + geometry_chunk);
+    result.section_count = r.at<std::uint32_t>(at + section_count);
+    require(result.section_count <= metadata_section_limit, "metadata has too many sections");
+    if (result.skinned && r.at<std::uint8_t>(skinned_flag) != 1) result.diagnostics.push_back("skinned header flag is inconsistent");
+    if (result.index_format != sixteen_bit_indices) result.diagnostics.push_back("index width interpretation is unsupported");
+    if (result.geometry.chunk == Guid{}) result.diagnostics.push_back("geometry chunk identity is zero");
+    if (result.geometry.vertex_bytes == 0 || result.geometry.index_bytes == 0) result.diagnostics.push_back("geometry buffer is empty");
+    if (result.section_count == 0) {
+        if (r.at<std::uint64_t>(at + section_table) != 0) result.section_table = metadata_pointer(r, at + section_table, 0);
+        result.diagnostics.push_back("no sections to interpret");
+        return result;
+    }
+    result.section_table = metadata_pointer(r, at + section_table, 0);
+    result.candidates.push_back(metadata_candidate(r, result, section_size));
+    if (!result.skinned) result.candidates.push_back(metadata_candidate(r, result, 416));
+    std::size_t plausible{};
+    bool supported{};
+    for (const auto& candidate : result.candidates) {
+        if (!candidate.structurally_valid) continue;
+        ++plausible;
+        supported = candidate.declarations_supported;
+    }
+    result.ambiguous = plausible > 1;
+    result.complete = plausible == 1 && supported && result.diagnostics.empty();
+    return result;
+}
 SkinnedMesh read_skinned_mesh(std::span<const std::byte> resource, std::size_t lod, std::span<const std::byte> geometry) {
     const auto layout = read_mesh_lod(resource, lod);
     const Reader r{resource}, g{geometry};
