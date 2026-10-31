@@ -8,6 +8,8 @@ add_library(dingosdk_runtime SHARED
     Runtime/overlay_callbacks.cpp
     Runtime/console_bridge.cpp
     Runtime/menu_entry_hook.cpp
+    Extension/Input/native_input_source.cpp
+    Extension/Input/input_source_environment.cpp
     Engine/Game/Abi/native_data.cpp
     Extension/Console/commands.cpp
     Extension/Console/perf_commands.cpp

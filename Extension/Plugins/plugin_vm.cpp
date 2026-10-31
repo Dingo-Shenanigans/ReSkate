@@ -271,6 +271,10 @@ void Plugin::close_if_stopped() {
 }
 
 void Plugin::close() {
+    if (input_lease_used_) {
+        input_lease_used_ = false;
+        services_.game().input_lease_release_all(instance_);
+    }
     services_.game().body_release_all(instance_);
     save_storage();
     shapes_.clear();
@@ -401,6 +405,7 @@ void Plugin::tick(double dt_ms) {
     raycasts_ = 0;
     native_casts_ = {};
     body_prepares_ = 0;
+    input_lease_requests_ = input_lease_calls_ = 0;
     effect_calls_ = 0;
     prune_effects();
     const double now = services_.now_ms();

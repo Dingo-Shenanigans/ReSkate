@@ -58,6 +58,9 @@ constexpr Capability capabilities[] = {
     {"world.raycast", "WORLD", Risk::grey, "Cast rays and pick objects in the world"},
     {"camera", "CAMERA", Risk::amber, "Control the camera"},
     {"input", "INPUT", Risk::amber, "Bind your keys, pads and mouse, and read text input"},
+    {"input.lease", "INPUT", Risk::amber, "Reserve and read one observed controller stream, without capturing or changing input"},
+    {"input.capture", "INPUT", Risk::red, "Capture one selected controller stream, with neutral-release cleanup"},
+    {"input.write", "INPUT", Risk::red, "Replace one selected controller stream with tracked output and handback cleanup"},
     // Red: it can relabel anything the game shows, its store's buttons and prices included.
     {"strings", "SCREEN", Risk::red, "Change the text the game shows, in its menus and its store"},
     {"capture", "SCREEN", Risk::amber, "Record your screen"},
@@ -280,7 +283,10 @@ std::string approval_prompt(const std::vector<PermissionGroup>& groups) {
         } else if (group.category == "CAMERA") {
             actions.push_back("control the camera");
         } else if (group.category == "INPUT") {
-            actions.push_back("bind keys, pads, and mouse, and read text input");
+            if (has("input")) actions.push_back("bind keys, pads, and mouse, and read text input");
+            if (has("input.lease")) actions.push_back("reserve and read one observed controller stream, without capturing or changing input");
+            if (has("input.capture")) actions.push_back("capture one selected controller stream, with neutral-release cleanup");
+            if (has("input.write")) actions.push_back("replace one selected controller stream with tracked output and handback cleanup");
         } else if (group.category == "SCREEN") {
             if (has("strings")) actions.push_back("change the text the game shows, in its menus and its store");
             if (has("capture")) actions.push_back("record your screen");

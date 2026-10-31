@@ -1,4 +1,5 @@
 #pragma once
+#include "Extension/Input/input_publication.h"
 #include "overlay.h"
 #include "Engine/Core/Console/command_registry.h"
 #include "Extension/Skater/free_flight.h"
@@ -107,8 +108,10 @@ struct State {
     std::deque<Input> input;
     std::array<bool, 256> game_keys{}; // Window thread only; forwarded message state.
     unsigned game_mouse_buttons = 0;
-    std::atomic<bool> visible{false};
-    std::atomic<bool> editor_visible{false}, editor_exit_requested{false}, editor_flight{false};
+    native_input_source::PublishedAtomic<bool> visible{false};
+    native_input_source::PublishedAtomic<bool> editor_visible{false};
+    std::atomic<bool> editor_exit_requested{false};
+    std::atomic<bool> editor_flight{false};
     std::atomic<ULONGLONG> editor_input_time{0};
     // Raw mouse seen on the game window (WM_INPUT). The park editor's look and
     // buttons use it because Skate's controller mode stops the legacy cursor
@@ -122,43 +125,46 @@ struct State {
     // The mouse registration in effect has RIDEV_NOLEGACY: Windows does not
     // move the cursor, so the overlay moves it from raw input while it owns it.
     std::atomic<bool> mouse_legacy_blocked{false};
-    std::atomic<bool> console_visible{false};
+    native_input_source::PublishedAtomic<bool> console_visible{false};
     std::atomic<bool> console_character_pending{false};
     std::atomic<bool> console_escape_pending{false};
     std::atomic<bool> console_focus_requested{false};
     // Multiplayer text chat (chat_overlay.cpp): T opens it while in a session.
-    std::atomic<bool> chat_visible{false}, chat_available{false};
+    native_input_source::PublishedAtomic<bool> chat_visible{false};
+    std::atomic<bool> chat_available{false};
     std::atomic<bool> chat_character_pending{false}, chat_escape_pending{false}, chat_focus_requested{false};
     std::atomic<bool> chat_command_requested{false}; // opened with "/": the box starts with it
     // The Multiplayer page drawn in the game's pause menu (hub_page.cpp). hub_pointer: it is
     // on screen, so the overlay watches the mouse (position, buttons, wheel) while the game
     // keeps it. hub_typing: one of its text boxes has the keyboard, which the overlay takes
     // for that long, as for chat.
-    std::atomic<bool> hub_pointer{false}, hub_typing{false};
+    std::atomic<bool> hub_pointer{false};
+    native_input_source::PublishedAtomic<bool> hub_typing{false};
     // The map download card is asking (map_download_card.cpp): the overlay has the pointer, with
     // its own cursor, so the card's buttons can be clicked whatever is behind it.
-    std::atomic<bool> prompt_pointer{false};
+    native_input_source::PublishedAtomic<bool> prompt_pointer{false};
     // The item grids' search box (item_browser_overlay.cpp): "-" opens it while a grid has the focus.
-    std::atomic<bool> item_search_visible{false}, item_search_focus_requested{false};
-    std::atomic<bool> plugin_dialog_visible{false};
+    native_input_source::PublishedAtomic<bool> item_search_visible{false};
+    std::atomic<bool> item_search_focus_requested{false};
+    native_input_source::PublishedAtomic<bool> plugin_dialog_visible{false};
     std::atomic<bool> item_search_character_pending{false}, item_search_escape_pending{false};
     // A plugin's full-screen screen is open (plugin_overlay.cpp): it has the input, as the menu.
-    std::atomic<bool> plugin_screen_visible{false};
-    std::atomic<bool> input_attached{false};
-    std::atomic<bool> stop{false};
-    std::atomic<HWND> window{nullptr};
+    native_input_source::PublishedAtomic<bool> plugin_screen_visible{false};
+    native_input_source::PublishedAtomic<bool> input_attached{false};
+    native_input_source::PublishedAtomic<bool> stop{false};
+    native_input_source::PublishedAtomic<HWND> window{nullptr};
     struct WindowHook { WNDPROC previous{}; bool installed{}; };
     std::recursive_mutex window_hook_mutex;
     std::map<HWND, WindowHook> window_hooks;
-    std::atomic<bool> started{false};
+    native_input_source::PublishedAtomic<bool> started{false};
     bool ready = false;
     bool ui_was_interactive = false;
     std::uint32_t mapped_mouse_event = 0; // Render thread: the last queued mouse position mapped into the back buffer.
-    std::atomic<bool> failed{false};
+    native_input_source::PublishedAtomic<bool> failed{false};
     bool win32_ready = false;
     bool dx12_ready = false;
-    std::atomic<bool> freecam_controller_active{false};
-    std::atomic<bool> prompt_input_active{false}; // DingoSDKOverlaySetPromptInputCapture
+    native_input_source::PublishedAtomic<bool> freecam_controller_active{false};
+    native_input_source::PublishedAtomic<bool> prompt_input_active{false}; // DingoSDKOverlaySetPromptInputCapture
     bool show_on_ready = false;
     bool force_windowed = false;
     HANDLE stop_event = nullptr;
@@ -174,7 +180,7 @@ struct State {
     std::vector<Binding> bindings;
     IUnknown* swapchain_identity = nullptr;
     HWND swapchain_window = nullptr;
-    std::atomic<bool> selected_window_destroyed{false};
+    native_input_source::PublishedAtomic<bool> selected_window_destroyed{false};
     // "ReSkate loaded" is queued as a notice the first time the overlay draws.
     bool loaded_notice_posted = false;
     std::chrono::steady_clock::time_point last_selected_present{};

@@ -244,7 +244,8 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS AND WIN32)
     target_include_directories(dingosdk_playstation_report_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME playstation_report COMMAND dingosdk_playstation_report_tests)
     add_executable(dingosdk_scripted_pad_tests Extension/UI/Overlay/Test/scripted_pad_tests.cpp
-        Extension/UI/Overlay/scripted_pad.cpp)
+        Extension/UI/Overlay/Test/scripted_pad_source_unavailable.cpp
+        Extension/UI/Overlay/scripted_pad.cpp Extension/Input/native_input_source.cpp)
     target_include_directories(dingosdk_scripted_pad_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME scripted_pad COMMAND dingosdk_scripted_pad_tests)
     add_executable(dingosdk_physics_tuning_tests Extension/Skater/Test/physics_tuning_tests.cpp
@@ -487,6 +488,37 @@ if(DINGOSDK_BUILD_PLUGIN_TESTS)
     add_executable(dingosdk_viewmodel_tests Extension/UI/Overlay/Test/viewmodel_model_tests.cpp Extension/UI/Overlay/viewmodel_model.cpp)
     target_include_directories(dingosdk_viewmodel_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME viewmodel COMMAND dingosdk_viewmodel_tests "${PROJECT_SOURCE_DIR}/contrib/plugins/fps/viewmodel/pistol.rsvm")
+    add_executable(dingosdk_input_lease_source_tests
+        Engine/Game/Input/Test/input_lease_source_tests.cpp
+        Extension/Input/native_input_source.cpp)
+    target_include_directories(dingosdk_input_lease_source_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    foreach(mode admission raw cleanup publication environment lifetime overlap capacity policy)
+        add_test(NAME input_lease_source_${mode}
+            COMMAND dingosdk_input_lease_source_tests ${mode})
+        set_tests_properties(input_lease_source_${mode} PROPERTIES TIMEOUT 10)
+    endforeach()
+    add_executable(dingosdk_input_capture_source_tests
+        Engine/Game/Input/Test/input_capture_source_tests.cpp
+        Extension/Input/native_input_source.cpp)
+    target_include_directories(dingosdk_input_capture_source_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    foreach(mode denial cold_original publication late_drain interference replacement context_release staged_aba failed_write transport raw_final late_age renewal owner_close capacity
+        held_tail handback_collision handback_partial handback_race post_ack replacement_no_write
+        packet_only_failure handback_equal_pad)
+        add_test(NAME input_capture_source_${mode}
+            COMMAND dingosdk_input_capture_source_tests ${mode})
+        set_tests_properties(input_capture_source_${mode} PROPERTIES TIMEOUT 10)
+    endforeach()
+    add_executable(dingosdk_input_write_source_tests
+        Engine/Game/Input/Test/input_write_source_tests.cpp
+        Extension/Input/native_input_source.cpp)
+    target_include_directories(dingosdk_input_write_source_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    foreach(mode denial pending publication versions source_age source_age_edge expiry capture_exclusion capture_first busy_original
+        filtered staged_revision partial_sink refused_sink selected_drain other_user collision unknown_capacity menu owner_close post_ack
+        held_tail handback_partial packet_only_failure cancel_drain source_expiry replacement)
+        add_test(NAME input_write_source_${mode}
+            COMMAND dingosdk_input_write_source_tests ${mode})
+        set_tests_properties(input_write_source_${mode} PROPERTIES TIMEOUT 10)
+    endforeach()
 endif()
 if(DINGOSDK_BUILD_PLUGIN_TESTS AND WIN32)
     # The owned-body service itself (Extension/World/owned_bodies.cpp), over a constructed local

@@ -1,3 +1,4 @@
+#include "Extension/Input/native_input_source.h"
 #include "runtime_internal.h"
 #include "Extension/Customization/developer_hoodie.h"
 #include "Extension/Customization/developer_board.h"
@@ -74,7 +75,7 @@ const char* state_name(DWORD state) { return dingosdk::client_state_name(state);
 // What update_model learned about this tick's client, reused by the rest of the
 // tick instead of reading the same native chains again.
 struct TickState {
-    bool valid{};
+    bool valid{}, input_ready_published{};
     DWORD state{}, game_type{};
     std::optional<bool> context;             // native_context
     std::optional<const char*> camera_issue; // camera_probe_unavailable_reason, nullptr when ready
@@ -1164,6 +1165,8 @@ void update_model(std::uintptr_t client, TickState& frame) {
         // Before the plugins tick, so their owned bodies see this tick's client phase (debug_busy: a
         // level request is loading).
         dingosdk::owned_bodies::tick(r.base, client, named_context_ready && !debug_busy);
+        dingosdk::native_input_source::tick(r.base, client, named_context_ready && !debug_busy);
+        frame.input_ready_published = true;
         dingosdk::plugins::on_client_tick();
         dingosdk::plugins::tick_plugin_settings();
     }
@@ -1580,6 +1583,8 @@ void tick(std::uintptr_t client, std::uintptr_t update) {
         {
             DINGO_PROFILE_ZONE("tick/update_model");
             update_model(client, tick_state);
+            if (!tick_state.input_ready_published && r.engine_thread.load() == GetCurrentThreadId())
+                dingosdk::native_input_source::tick(r.base, client, false);
         }
         if (r.engine_thread.load() != GetCurrentThreadId()) return;
         DWORD state{},game_type{};
@@ -1784,6 +1789,8 @@ void tick(std::uintptr_t client, std::uintptr_t update) {
         }
     }
     catch (const std::exception&) {
+        if (r.engine_thread.load() == GetCurrentThreadId())
+            dingosdk::native_input_source::tick(r.base, client, false);
         if (!r.observer_failed.exchange(true)) activity_line(dingosdk::ConsoleSource::runtime,
             "Debug controller stopped after an observation error. See the runtime log.", dingosdk::ConsoleSeverity::error);
         std::lock_guard lock(r.mutex);
