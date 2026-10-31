@@ -23,4 +23,6 @@ bool scripted_pad(DWORD user, XINPUT_STATE &state) noexcept;
 // neutral, for turning the game menu's preview (reskate.room.turn); 0 lets go. `stick`: 0 left x,
 // 1 left y, 2 right x, 3 right y. A script playing (play_pad) comes first. Any thread.
 void hold_stick(int stick, float value, unsigned milliseconds) noexcept;
+// Snapshot the same expiring hold for native controller reads. Scripts retain priority.
+bool held_stick(int& stick, SHORT& value) noexcept;
 } // namespace dingosdk::overlay

@@ -279,6 +279,21 @@ int main() {
     std::filesystem::remove(mods / L"Deep_Mod" / L"reskate-plugin.json");
     std::filesystem::remove(mods / L"Deep_Mod" / L"reskate-music.json");
     std::filesystem::remove(mods / L"Deep_Mod" / L"reskate-objects.json");
+    // A plugin-only mod has something to load (the Mods page does not warn about it); an empty one has not.
+    write(mods / L"Plugin_Only" / L"reskate-plugin.json", R"({"entry":"plugin/main.lua","permissions":[]})");
+    write(mods / L"Nothing_Here" / L"manifest.json", R"({"name":"Nothing_Here"})");
+    bool plugin_has_content = false, empty_has_content = true, only_plugin = false, deep_only_plugin = true;
+    for (const auto& entry : mods::scan_mods(game).entries) {
+        if (entry.mod.name == "Plugin_Only") plugin_has_content = mods::has_content(entry.mod), only_plugin = mods::plugin_only(entry.mod);
+        if (entry.mod.name == "Nothing_Here") empty_has_content = mods::has_content(entry.mod);
+        if (entry.mod.name == "Deep_Mod") deep_only_plugin = mods::plugin_only(entry.mod);
+    }
+    check(plugin_has_content && !empty_has_content, "A plugin-only mod has content, an empty folder has none");
+    // A mod that is only a plugin is switched on and off live, without applying the mods; one with
+    // anything a merge puts in the game (Deep_Mod's game data and parks) is not.
+    check(only_plugin && !deep_only_plugin, "Only a mod with a plugin and nothing to merge is plugin-only");
+    std::filesystem::remove_all(mods / L"Plugin_Only");
+    std::filesystem::remove_all(mods / L"Nothing_Here");
     make_zip(sources / L"parkmod.zip", {{"My Park/manifest.json", R"({"name":"My Park"})"},
                                         {"My Park/parks/bam.park.json", "{}"}});
     check(install(mods, sources / L"parkmod.zip") == "My Park", "A park mod (manifest.json only) installs");

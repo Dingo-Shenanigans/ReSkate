@@ -53,6 +53,15 @@ extern "C" std::uint64_t DingoSDKOverlayGrindStickLeaned() noexcept;
 namespace dingosdk::trainer {
 namespace {
 namespace tuning = dingosdk::physics_tuning;
+// A float the game holds at `at`, or false where that memory is gone (diagnostics only).
+bool peek_float(std::uintptr_t at, float &value) noexcept {
+    __try {
+        value = *reinterpret_cast<const float *>(at);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
 namespace kit = dingosdk::throwdowns::kit;
 // A plugin match blocks markers and returns, unless it lets teleports through (its own).
 bool match_blocks_markers() noexcept {
@@ -163,6 +172,8 @@ struct State {
     bool flip_advanced{};
     bool flip_pop{}; // a slowed flip trick pops higher, so it has the air time it needs
     bool flip_flick{}; // a slow flick of the stick turns the board as fast as a full one
+    bool flip_limit{true}; // the game's flip landing limit: a flip still turning near the landing is hurried round
+    bool air_reach_fixed{}; // the turned-up reach from the air that Sticky Grinds saved before 2026-10-24 is cleared (once)
     bool grind_watch{}; // the grind card is asking what the game's switches read (`trainer grind watch`)
     std::map<std::string, bool, std::less<>> folds; // the menu's sections and cards the player has opened or closed
     std::array<float, flip_tricks.size()> flip_trick = [] {
@@ -243,6 +254,7 @@ struct State {
         return a;
     }();
     std::uint64_t tr_option_at{};
+    int grind_assist{-1}; // the game's own Grind Assist (grind_assist_setting), read with the options above
     // What the player's own game settings hold for the settings the trainer can force (read with the options above):
     // a row that is not forced shows this, not the game's default.
     std::array<std::int8_t, grind_settings.size()> grind_own = [] {
@@ -471,6 +483,8 @@ void load_store() {
             s.flip_advanced = o.value("flip_advanced", false);
             s.flip_pop = o.value("flip_pop", false);
             s.flip_flick = o.value("flip_flick", false);
+            s.flip_limit = o.value("flip_landing_limit", true);
+            s.air_reach_fixed = o.value("air_reach_fixed", false);
             for (std::size_t i = 0; i < flip_tricks.size(); ++i)
                 s.flip_trick[i] = std::clamp(o.value(std::string(flip_tricks[i].key), 1.0f), flip_low, flip_high);
             s.boneless_height = std::clamp(o.value("boneless_height", 1.0f), height_low, height_high);
@@ -573,6 +587,8 @@ void save_store() {
         options["flip_advanced"] = s.flip_advanced;
         options["flip_pop"] = s.flip_pop;
         options["flip_flick"] = s.flip_flick;
+        options["flip_landing_limit"] = s.flip_limit;
+        options["air_reach_fixed"] = s.air_reach_fixed;
         for (std::size_t i = 0; i < flip_tricks.size(); ++i)
             if (s.flip_trick[i] != 1.0f) options[std::string(flip_tricks[i].key)] = s.flip_trick[i];
         options["boneless_height"] = s.boneless_height;
@@ -914,6 +930,24 @@ void adopt(const tuning::Values &live) {
         }
         if (e.touched) apply_entry(e);
     }
+    // Grind lock-on turned up (0.8.4 to 0.8.6) doubled the reach from the air too, which steered pops near rails onto them.
+    // The dial moves only the lock-on distance now; the reach it saved turned up goes back to the game's own, once.
+    if (!s.air_reach_fixed) {
+        std::size_t cleared{};
+        constexpr std::string_view reach[]{"physicstrajectory.scoregrind", "physicsgrindsair.maxdist50_50", "physicsgrindsair.maxdist5_0",
+                                           "physicsgrindsair.maxdisttipslide", "physicsgrindsair.maxdistboardslide"};
+        for (const auto key : reach) {
+            auto *e = find_entry(key);
+            if (!e || e->frozen || !(e->value > e->stock)) continue;
+            for (auto &[name, preset] : s.user)
+                if (const auto held = preset.find(e->key); held != preset.end() && held->second > e->stock) preset.erase(held);
+            set_entry(*e, e->stock);
+            ++cleared;
+        }
+        s.air_reach_fixed = true;
+        s.save_due = true;
+        if (cleared) say(logging::Level::info, std::format("Trainer: {} turned-up grind reach values from the air are the game's own again.", cleared));
+    }
     // A linked value saved by itself (before links existed, or edited in the file) still
     // drives its graphs.
     for (auto &e : s.entries) {
@@ -1209,6 +1243,8 @@ const std::vector<Setup> &setups() {
         toggle("trick.flip_advanced", topic_pop, &s.flip_advanced);
         toggle("trick.flip_pop", topic_pop, &s.flip_pop);
         toggle("trick.flip_flick", topic_pop, &s.flip_flick);
+        toggle("trick.flip_limit", topic_pop, &s.flip_limit);
+        all->back().stock = 1; // the game's own: on
         toggle("trick.underflip_split", topic_pop, &s.underflip_split);
         toggle("trick.gravity_landing_own", topic_pop, &s.gravity_landing_own);
         real("trick.gravity_landing", topic_pop, &s.gravity_landing, 1.0f, gravity_low, gravity_high);
@@ -1263,7 +1299,7 @@ const std::vector<Setup> &setups() {
             {"trick.gravity_timing", "Animation timing"},
             {"trick.nocomply_height", "No comply height"}, {"trick.boneless_height", "Boneless height"}, {"trick.hippy_height", "Hippy jump height"},
             {"trick.offboard_height", "Off-board jump height"}, {"trick.pump_power", "Pump power"}, {"trick.revert_boost", "Board bending boost"},
-            {"trick.flip_advanced", "Advanced trick speed"}, {"trick.flip_pop", "Slow flips pop higher"}, {"trick.flip_flick", "Flick tricks at full speed"},
+            {"trick.flip_advanced", "Advanced trick speed"}, {"trick.flip_pop", "Slow flips pop higher"}, {"trick.flip_flick", "Flick tricks at full speed"}, {"trick.flip_limit", "Flip landing limit"},
             {"trick.underflip_split", "Underflip speed: under part only"},
             {"grind.side", "Grind pop: side force"}, {"grind.push", "Grind pop: push with stick (m/s)"}, {"grind.range", "Grinds: left stick turn range (deg)"},
             {"transition.lean", "Transition: lean into the ramp"}, {"transition.carry", "Transition: roll off at your angle"},
@@ -2263,6 +2299,10 @@ void drive_transition(std::uintptr_t base, std::uintptr_t client, std::uint64_t 
     if (now >= s.tr_option_at) {
         // The game's own options: whatever its Settings menu (or the trainer) last set.
         s.tr_option_at = now + 500;
+        if (const auto held = profile_runtime::local_game_option(grind_assist_setting); (held ? static_cast<int>(std::lround(*held)) : -1) != s.grind_assist) {
+            s.grind_assist = held ? static_cast<int>(std::lround(*held)) : -1;
+            s.view_due = true;
+        }
         for (std::size_t i = 0; i < transition_options.size(); ++i) {
             const auto held = profile_runtime::local_game_option(transition_options[i].setting);
             const int value = held ? static_cast<int>(std::lround(*held)) : transition_options[i].stock;
@@ -2434,6 +2474,7 @@ void build_view() {
     next->last = s.last;
     next->editable = editable(&next->blocked);
     next->session_enforced = s.enforced;
+    next->session_stock = s.competition;
     next->boosts_blocked = !s.enforced && multiplayer_session_active() && !session_boosts_allowed();
     next->rows.reserve(s.entries.size());
     for (const auto &e : s.entries) {
@@ -2444,6 +2485,16 @@ void build_view() {
         next->rows.push_back({e.id, e.label, e.group, e.kind, e.value, e.stock, e.touched, e.frozen, e.detail, std::string(friendly), rank, topic,
                               trial, e.used});
         next->rows.back().help = essential_help(e.key);
+        // Grind Assist (the game's own setting, the first row of GRINDS) works in the game's grind code on top of these: at 0, 50
+        // and 100 every tuning and class value read the same (trainer livedump, 2026-10-24), so it changes none of them.
+        static constexpr std::string_view assisted[]{"physicsmode.grindlockdist", "physicsgrindsair.maxdist50_50", "physicsgrindsair.maxdist5_0",
+                                                     "physicsgrindsair.maxdisttipslide", "physicsgrindsair.maxdistboardslide",
+                                                     "physicstrajectory.grindlandingmaxangle", "physicstrajectory.grindmaxspeedsqr",
+                                                     "physicstrajectory.grindmaxspeeddownontogrind", "physicstrajectory.scoregrind"};
+        if (std::ranges::find(assisted, e.key) != std::end(assisted))
+            next->rows.back().help += std::string(next->rows.back().help.empty() ? "" : " ") +
+                "Your game's Grind Assist setting (Grind lock-on, the first row of GRINDS) also helps grinds lock on: it works on top of "
+                "this value and does not change it.";
         if (e.touched) {
             ++next->touched;
             ++next->changed[topic];
@@ -2504,6 +2555,7 @@ void build_view() {
     next->grind_own = s.grind_own;
     next->tr_own = s.tr_own;
     next->tr_option = s.tr_option;
+    next->grind_assist = s.grind_assist;
     next->offboard_height = s.offboard_height;
     next->flip_speed = s.flip_speed;
     next->underflip_speed = s.underflip_speed;
@@ -2511,6 +2563,7 @@ void build_view() {
     next->flip_advanced = s.flip_advanced;
     next->flip_pop = s.flip_pop;
     next->flip_flick = s.flip_flick;
+    next->flip_limit = s.flip_limit;
     next->flip_trick = s.flip_trick;
     next->flip_advanced_blocked = s.flip_advanced && extras_blocked();
     next->flip_live = s.flip_live;
@@ -2747,17 +2800,17 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool playing, const std::s
                 find_classes();
             }
         }
-        flip_speed_in_use(s.boosts.flip != 1.0f || s.flip_advanced || s.flip_trick[late_flip_slot] != 1.0f || s.flip_flick || underflip_in_force() != 1.0f ||
+        flip_speed_in_use(s.boosts.flip != 1.0f || s.flip_advanced || s.flip_trick[late_flip_slot] != 1.0f || s.flip_flick || !s.flip_limit || underflip_in_force() != 1.0f ||
                           underflip_split_in_force());
         // The speed itself goes straight to the trick in the air (drive_flip_speed); the flip curves
         // are only scaled where that number cannot be reached.
         want_flip_speed(s.flip_live ? 1.0f : s.boosts.flip);
         // The player's own choice, and only where their own trick settings count: not under a
         // host's enforced physics or in a session that has turned boosts off.
-        // A flip asked to be slow is slow from the start: the game's rule would hurry it round before
-        // the landing, so it is held off for as long as the speed in force is under the game's own.
-        const bool slow = (s.flip_drive.active ? s.flip_drive.factor : s.boosts.flip) < 1.0f;
-        want_flip_gate(extras_blocked() || !slow ? flip_gate_stock : flip_gate_off);
+        // The game's flip landing limit hurries a flip that is still turning round before the landing. It stays the
+        // game's own unless the player unticks it (Flip landing limit): it was once dropped whenever a flip was slowed
+        // at all, and a flip speed of 0.99 then left the slow-turning shuvits half way round (reported 2026-10-24).
+        want_flip_gate(extras_blocked() || s.flip_limit ? flip_gate_stock : flip_gate_off);
         if (s.boosts.flip != s.flip_applied) {
             // The catch times follow the flip speed (want_class).
             s.flip_applied = s.boosts.flip;
@@ -3370,8 +3423,18 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
     if (v == "transition") return transition_command(a);
     if (v == "foot") return foot_command(a);
     if (v == "grind") {
-        // trainer grind | grind watch 0|1 | grind side <x> | grind <key>|all game|off|on
+        // trainer grind | grind watch 0|1 | grind side <x> | grind assist <0-100> | grind <key>|all game|off|on
         const auto what = lower(arg(0)), to = lower(arg(1));
+        if (what == "assist") {
+            // The player's own game setting, as its Settings menu sets it: in any session, never part of presets or resets.
+            const auto value = number(to);
+            if (!value || !(*value >= 0 && *value <= 100)) return "error: usage: trainer grind assist <0 to 100> (the game's own Grind Assist)";
+            if (!profile_runtime::set_local_game_option(grind_assist_setting, std::round(*value), false)) return "error: the game's settings are not ready yet.";
+            s.grind_assist = static_cast<int>(std::lround(*value));
+            s.tr_option_at = 0; // read back from the game on the next tick
+            s.view_due = true;
+            return std::format("Grind Assist (the game's own setting) is {}.", s.grind_assist);
+        }
         const auto word = [](std::int8_t value) { return value < 0 ? "-" : value ? "on" : "off"; };
         if (what.empty()) {
             std::string out = std::format("Side force off grinds x {:.2f}.", s.grind_side);
@@ -3519,13 +3582,13 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
             if (!value) return "error: return_delay needs seconds.";
             s.return_delay = std::clamp(static_cast<float>(*value), 0.0f, 3600.0f);
         } else if (!flag(arg(1), on)) {
-            return "error: usage: trainer option hud|hud_jump|auto_return|pad|flip_advanced|flip_pop|flip_flick|underflip_split|gravity_landing_own|log 0|1";
+            return "error: usage: trainer option hud|hud_jump|auto_return|pad|flip_advanced|flip_pop|flip_flick|flip_limit|underflip_split|gravity_landing_own|log 0|1";
         } else if (name == "hud") s.hud = on;
         else if (name == "hud_jump") s.hud_jump = on;
         else if (name == "auto_return") s.auto_return = on;
         else if (name == "pad") s.pad_shortcuts = on;
         else if (name == "pad_menu") return "That switch is gone: LB + RB + R3 is the game's bail. Open the menu with Insert.";
-        else if (name == "flip_gate") return "That switch is gone: a flip set slower than the game's own stays slow by itself.";
+        else if (name == "flip_gate") return "That switch is now option flip_limit (Flip landing limit).";
         else if (name == "catch_at") return "That switch is gone: it did not work reliably. Use the flip trick speed.";
         else if (name == "flip_pop") {
             if (on && !editable(&why)) return "error: " + why;
@@ -3533,6 +3596,9 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
         } else if (name == "flip_flick") {
             if (on && !editable(&why)) return "error: " + why;
             s.flip_flick = on;
+        } else if (name == "flip_limit") {
+            if (!on && !editable(&why)) return "error: " + why;
+            s.flip_limit = on;
         } else if (name == "flip_advanced") {
             if (on && !editable(&why)) return "error: " + why;
             s.flip_advanced = on;
@@ -3621,6 +3687,41 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
         std::string result;
         for (const auto &[id, ticks] : s.states) result += std::format("{}{}: {}", result.empty() ? "" : ", ", id, ticks);
         return result.empty() ? "No physics state seen yet." : "Physics states seen (id: ticks): " + result;
+    }
+    if (v == "livedump") {
+        // Diagnostic: what the game itself holds right now (its live tuning, and the first copy of each class value), not the
+        // trainer's own numbers: `trainer livedump <name>` before and after changing one of the game's settings shows what
+        // that setting changes. Writes tuning-live-<name>.txt.
+        const auto name = arg(0).empty() ? std::string("now") : arg(0);
+        if (std::ranges::any_of(name, [](char c) { return !std::isalnum(static_cast<unsigned char>(c)) && c != '-' && c != '_'; }))
+            return "error: a name of letters, digits, - and _.";
+        tuning::Values live;
+        if (!tuning::read_live(s.base, live)) return "error: the game's tuning is not loaded.";
+        const auto directory = data_directory();
+        std::error_code error;
+        std::filesystem::create_directories(directory, error);
+        std::ofstream file(directory / std::filesystem::path("tuning-live-" + name + ".txt"), std::ios::binary | std::ios::trunc);
+        if (!file) return "error: could not write the list.";
+        std::size_t count{};
+        for (const auto &e : s.entries) {
+            double now{};
+            if (e.class_field >= 0) {
+                FieldCopy copy{};
+                if (class_field_copies(static_cast<std::size_t>(e.class_field), &copy, 1) == 0 || !copy.address) continue;
+                float value{};
+                if (!peek_float(copy.address, value)) continue;
+                now = value;
+            } else if (e.kind == Kind::curve || e.kind == Kind::graph || static_cast<std::size_t>(e.offset) + e.size > live.image.size()) {
+                continue;
+            } else {
+                now = read_field(live.image, e);
+            }
+            file << std::format("{}\t{:.6g}\n", e.id, now);
+            ++count;
+        }
+        for (const auto key : {grind_assist_setting, std::string_view("egf_intentpumpingassistamount")})
+            if (const auto held = profile_runtime::local_game_option(key)) file << std::format("setting:{}\t{:.6g}\n", key, *held);
+        return std::format("Wrote {} live values to {}.", count, path_utf8(directory / std::filesystem::path("tuning-live-" + name + ".txt")));
     }
     if (v == "dump") {
         const auto directory = data_directory();

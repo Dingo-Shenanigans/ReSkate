@@ -13,6 +13,7 @@
 #include "Engine/Core/Hooks/hooks.h"
 #include "Engine/Core/Log/logging.h"
 #include "Extension/Customization/local_player_card_runtime.h"
+#include "Extension/Localization/text_overrides.h"
 #include "Extension/Profile/runtime_internal.h"
 #include "Extension/Progression/local_entitlement_trigger_runtime.h"
 #include "Engine/Game/Build/addresses.h"
@@ -898,25 +899,7 @@ constexpr std::array throwdown_strings{
                     "Set and copy [font effect=AttentionOutline color=Attention]specific tricks[/font]. "
                     "Don't spell [font effect=AttentionOutline color=Attention]S.K.A.T.E[/font]."},
 };
-std::uint32_t string_hash(std::string_view id) {
-    std::uint32_t hash = 0xffffffffU;
-    for (const unsigned char c : id) hash = hash * 33 + c;
-    return hash;
-}
-// The string database the store's text is encoded against, or 0 while none is loaded.
-Address string_database(Address base) {
-    namespace loc = addr::localization;
-    if (!read<Address>(base + loc::database_loaded)) return 0;
-    const auto table = read<Address>(base + loc::databases);
-    const auto last = read<std::int32_t>(base + loc::database_last);
-    for (std::int32_t i = 0; table && i <= last && i < 64; ++i) {
-        const auto row = table + 16 * static_cast<Address>(i);
-        if (read<std::uint32_t>(row)) continue;
-        const auto entry = read<Address>(row + 8);
-        return entry ? read<Address>(entry + 0x10) : 0;
-    }
-    return 0;
-}
+using text_overrides::string_hash, text_overrides::string_database;
 } // namespace
 void apply_throwdown_strings(Address base) noexcept {
     namespace loc = addr::localization;
@@ -931,14 +914,7 @@ void apply_throwdown_strings(Address base) noexcept {
     next = now + 2000;
     try {
         if (!verified) {
-            const auto matches = [&](Address rva, const auto& prefix) {
-                std::array<unsigned char, 19> code{};
-                return memory::peek_bytes(base + rva, code.data(), code.size()) &&
-                       std::memcmp(code.data(), prefix.data(), code.size()) == 0;
-            };
-            if (!matches(loc::override_store, loc::override_store_prefix) ||
-                !matches(loc::override_set, loc::override_set_prefix) ||
-                !matches(loc::string_exists, loc::string_exists_prefix)) {
+            if (!text_overrides::string_store_matches(base)) {
                 refused = true;
                 logging::write(logging::Level::warning, logging::Channel::progression,
                     "Throwdowns: the game's string store differs from the supported build; S.K.A.T.E. keeps its raw title.");

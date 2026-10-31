@@ -29,12 +29,21 @@ void register_plugin_commands(Commands& registry) {
     reload.run = [](const Model&, const Values& args, const Output& out) { out(plugins::reload(std::get<std::string>(args[0]))); };
     registry.add(std::move(reload));
 
-    auto off = action("plugin off", "Switch a plugin off until plugin on, or the next launch", Group::console, {plugin_id()});
+    auto off = action("plugin off", "Switch a plugin off until plugin on (all: every plugin, as Ctrl+Shift+End does)", Group::console, {plugin_id()});
     off.run = [](const Model&, const Values& args, const Output& out) { out(plugins::switch_off(std::get<std::string>(args[0]))); };
     registry.add(std::move(off));
 
     auto on = action("plugin on", "Start a plugin that was switched off or stopped", Group::console, {plugin_id()});
     on.run = [](const Model&, const Values& args, const Output& out) { out(plugins::switch_on(std::get<std::string>(args[0]))); };
     registry.add(std::move(on));
+
+    auto dev = variable("plugin dev", "Plugin developer mode: plugins you approved keep their approval when their files change", Group::console,
+                        argument("on|off", Type::boolean));
+    dev.inspect = [](const Model&) { return boolean_state(true, plugins::developer_mode()); };
+    dev.run = [](const Model&, const Values& args, const Output& out) {
+        const bool value = std::get<bool>(args[0]);
+        out(plugins::set_developer_mode(value) ? (value ? "Plugin developer mode on." : "Plugin developer mode off.") : "error: It could not be saved.");
+    };
+    registry.add(std::move(dev));
 }
 } // namespace dingosdk::console

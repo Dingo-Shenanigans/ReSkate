@@ -462,8 +462,9 @@ Pose out_of_sight(Pose pose) {
 // as it stood each frame and their camera looks wherever it likes afterwards: a player who had
 // been behind the camera moved at 20 Hz in the replay.
 constexpr int far_full_rate_return = 190, far_half_rate_start = 200, far_low_rate_start = 350;
-// Metres from a player to the nearer of the local skater and the camera (infinite if neither
-// is known).
+// Metres from a player to the nearer of the local skater and a detached camera (spectating,
+// replay or a drone; the follow camera orbits a few metres around the skater, which would
+// otherwise shift the distance edge as the camera turns). Infinite if neither is known.
 float nearest_distance(const Peer &p, const NativeFrame &local, const std::optional<GameView> &view) {
     const auto &at = p.render_pose.root.position;
     float nearest = std::numeric_limits<float>::infinity();
@@ -472,7 +473,17 @@ float nearest_distance(const Peer &p, const NativeFrame &local, const std::optio
         nearest = std::min(nearest, dx * dx + dy * dy + dz * dz);
     };
     if (local.ready) consider(local.pose.root.position[0], local.pose.root.position[1], local.pose.root.position[2]);
-    if (view) consider(view->world[12], view->world[13], view->world[14]);
+    if (view) {
+        const float cx = view->world[12], cy = view->world[13], cz = view->world[14];
+        if (!local.ready) {
+            consider(cx, cy, cz);
+        } else {
+            const float lx = cx - local.pose.root.position[0];
+            const float ly = cy - local.pose.root.position[1];
+            const float lz = cz - local.pose.root.position[2];
+            if (lx * lx + ly * ly + lz * lz > 12.0f * 12.0f) consider(cx, cy, cz);
+        }
+    }
     return std::sqrt(nearest);
 }
 std::uint64_t far_sample_interval(const Peer &p, float distance) {
@@ -652,7 +663,11 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
             // the next frames slower still.
             const bool held = !sampled && was_visible && p.poses.heard_within(now, 8000000);
             // Showing a player without an actor spawns one (native_skater_spawn.cpp).
-            if (sampled) p.placed = true;
+            // Before a pose placed them, shown_wanted stayed true so their status read "Waiting for
+            // player poses."; check their distance now that render_pose is known.
+            if (sampled && !std::exchange(p.placed, true))
+                p.shown_wanted = s.player_distance >= player_distance_unlimited ||
+                                 nearest_distance(p, local, view) <= s.player_distance;
             const bool spawning = sampled && p.shown_wanted && p.appearance.value() && !was_visible && !remote_skater_entity();
             if (spawning && now < p.next_spawn) {
                 p.native_status = "Waiting to show the player again.";

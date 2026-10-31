@@ -1,8 +1,10 @@
 // The plugin host apart from the game: manifests, the reskate API, storage, modules, hot reload,
 // and the sandbox against plugins written to break it (loops, memory, error floods, escapes).
+#include "Extension/Plugins/plugin_approval.h"
 #include "Extension/Plugins/plugin_content.h"
 #include "Extension/Plugins/plugin_discovery.h"
 #include "Extension/Plugins/plugin_host.h"
+#include "Extension/Plugins/plugin_listing.h"
 #include "Extension/Plugins/plugin_manifest.h"
 #include "Extension/Plugins/plugin_session_feed.h"
 #include "Extension/Plugins/plugin_wire.h"
@@ -15,11 +17,15 @@
 #include "Engine/Game/Input/gameplay_options.h"
 #include "Engine/Game/Skater/animation_values.h"
 #include "Extension/Customization/board_material.h"
+#include "Extension/Localization/text_overrides.h"
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <format>
 #include <fstream>
 #include <iostream>
+#include <iterator>
+#include <limits>
 #include <map>
 #include <set>
 #include <sstream>
@@ -29,6 +35,8 @@ using namespace dingosdk::plugins;
 namespace plugin_ui = dingosdk::plugin_ui;
 namespace board_material = dingosdk::board_material;
 namespace mods = dingosdk::mods;
+namespace owned_body = dingosdk::owned_body;
+namespace body_query = dingosdk::body_query;
 namespace {
 void check(bool value, const std::string& message) { if (!value) throw std::runtime_error(message); }
 
@@ -37,6 +45,259 @@ std::filesystem::path scratch;
 
 // The wider set's game, faked: it records what plugins asked of it and answers as told.
 struct FakeGame final : Game {
+    // Native bodies a plugin owns, as the fake keeps them: one sample per body, advanced by
+    // body_producer_step, which also produces a pending command the way the game's synchronizer would.
+    struct OwnedBody {
+        std::uint64_t owner{};
+        owned_body::Handle handle{};
+        owned_body::Definition definition{};
+        owned_body::Sample sample{};
+        owned_body::Sample latest{};
+        owned_body::Mailbox mailbox{};
+        bool released{}, quarantined{};
+    };
+    std::map<std::uint64_t, OwnedBody> owned;
+    std::vector<std::uint64_t> body_releases;
+    unsigned body_creates{}, body_submissions{}, body_release_calls{};
+    unsigned body_submit_entries{};
+    unsigned body_prepares{};
+    std::string body_prepare_error;
+    std::string body_prepare() override { ++body_prepares; return body_prepare_error; }
+    std::string test_body_create_refusal;
+    unsigned body_create_calls{}, body_read_calls{};
+    bool test_body_read_unavailable{};
+    bool batch_ground_plane{};
+    std::uint64_t body_command_sequence{};
+    unsigned batch_calls{}, batch_rays{};
+    bool batch_available{true}, batch_clear{}, batch_change_after{}, batch_bad_count{};
+    unsigned batch_drift_field{};
+    unsigned batch_failure_ray{std::numeric_limits<unsigned>::max()};
+    body_query::Failure batch_refusal{body_query::Failure::none};
+    unsigned batch_refusal_casts{};
+    bool batch_refusal_accounting_valid{true};
+    body_query::Request last_batch;
+    std::string body_create(std::uint64_t owner, const owned_body::Definition& definition, owned_body::Handle& handle) override {
+        ++body_create_calls;
+        if (!owned_body::valid(definition) || owned.size() >= owned_body::retained_capacity) return "definition or capacity";
+        if (!test_body_create_refusal.empty()) return test_body_create_refusal;
+        ++body_creates;
+        handle = {body_creates, body_creates - 1};
+        auto& b = owned[handle.generation];
+        b.owner = owner;
+        b.handle = handle;
+        b.definition = definition;
+        b.sample.epoch = {77, handle.generation, 100, 3, static_cast<float>(owned_body::native_seconds)};
+        b.sample.position = definition.position;
+        b.sample.rotation = definition.rotation;
+        b.sample.mass = definition.mass;
+        b.sample.inertia = definition.inertia;
+        return {};
+    }
+    OwnedBody* body_of(std::uint64_t owner, const owned_body::Handle& h) {
+        const auto at = owned.find(h.generation);
+        return at != owned.end() && at->second.owner == owner && at->second.handle == h ? &at->second : nullptr;
+    }
+    std::string body_read(std::uint64_t owner, const owned_body::Handle& h, owned_body::Sample& sample) override {
+        ++body_read_calls;
+        if (test_body_read_unavailable) return "constructed sample unavailable";
+        auto* b = body_of(owner, h);
+        if (!b || b->released || b->quarantined) return "owner or generation";
+        b->latest = b->sample;
+        (void)b->mailbox.observe_successor(b->sample);
+        sample = b->sample;
+        return {};
+    }
+    std::string body_submit(std::uint64_t owner, const owned_body::Handle& h, const owned_body::Command& command, std::uint64_t& sequence) override {
+        ++body_submit_entries; // Count entry even when the backend rejects a zero/invalid packet.
+        sequence = 0;
+        auto* b = body_of(owner, h);
+        if (!b || b->released || body_command_sequence == std::numeric_limits<std::uint64_t>::max() ||
+            !b->mailbox.submit(command, b->sample.epoch, 0, body_command_sequence + 1)) return "owner, generation or packet";
+        sequence = ++body_command_sequence;
+        ++body_submissions;
+        return {};
+    }
+    int batch_contact_mode{};
+    unsigned batch_available_corruptions{};
+    // Constructed category sidecars, copied in after execute like the native adapter:
+    // 1 into opted-in hits, 2 into hits even without the opt-in, 3 onto clear rows of
+    // an available result, 4 onto a refused result's first row.
+    int batch_category_mode{};
+    std::array<std::uint32_t, body_query::maximum_rays> batch_categories{};
+    std::array<bool, body_query::maximum_rays> batch_category_missing{};
+    // Constructed owner slots, the same way: 1 into opted-in hits, 2 into hits even
+    // without the opt-in, 3 onto clear rows of an available result.
+    int batch_owner_mode{};
+    std::array<std::uint32_t, body_query::maximum_rays> batch_owners{};
+    std::array<bool, body_query::maximum_rays> batch_owner_missing{};
+    // Constructed backend facts, put on every result whether or not it was asked for.
+    bool batch_claims_local_actor{}, batch_claims_named_categories{};
+    body_query::Result body_probe_batch(std::uint64_t owner, const owned_body::Handle& h, const body_query::Request& request, unsigned allowed) override {
+        ++batch_calls;
+        last_batch = request;
+        if (batch_refusal != body_query::Failure::none) {
+            body_query::Result out;
+            out.count = request.count;
+            out.failure = batch_refusal;
+            out.native_casts = batch_refusal_casts;
+            out.accounting_valid = batch_refusal_accounting_valid;
+            out.local_actor_excluded = batch_claims_local_actor;
+            out.named_actor_categories_absent = batch_claims_named_categories;
+            if (batch_category_mode == 4) { out.rays[0].status = body_query::Status::hit; out.rays[0].in_categories = 9; out.rays[0].in_categories_available = true; }
+            native_casts += out.native_casts;
+            return out;
+        }
+        auto* selected = body_of(owner, h);
+        unsigned fences{}, rays{};
+        const auto fence = [&] {
+            if (!selected || selected->released || selected->quarantined || !body_query::same_sample(selected->sample, request.observation) ||
+                !body_query::same_sample(selected->latest, request.observation) ||
+                (++fences > 1 && batch_change_after)) return false;
+            for (std::size_t i = 0; i < request.exclusions; ++i) {
+                const auto* other = body_of(owner, request.excluded[i]);
+                if (!other || other->released || other->quarantined || other->sample.epoch.world != request.observation.epoch.world) return false;
+            }
+            return true;
+        };
+        auto result = body_query::execute(request, allowed, 1000, [&](const body_query::Ray& ray, unsigned permitted) {
+            ++batch_rays;
+            const auto index = rays++;
+            if (!index && batch_drift_field) {
+                switch (batch_drift_field) {
+                case 1: selected->sample.position[0] += .001f; break;
+                case 2: selected->sample.velocity[1] += .001f; break;
+                case 3: selected->sample.angular_velocity[2] += .001f; break;
+                case 4: selected->sample.rotation[0] += .001f; break;
+                }
+            }
+            const auto cast_count = std::min(permitted, query_cast_cost);
+            native_casts += cast_count;
+            body_query::Probe out;
+            out.native_casts = batch_bad_count ? permitted + 1 : cast_count;
+            out.budget_exhausted = cast_count < query_cast_cost;
+            if (!batch_available || !cast_count || out.budget_exhausted || index == batch_failure_ray) return out;
+            out.hit.status = batch_clear ? body_query::Status::clear : body_query::Status::hit;
+            for (std::size_t i = 0; i < ray.from.size(); ++i) out.hit.position[i] = (ray.from[i] + ray.to[i]) * .5f;
+            out.hit.fraction = .5f;
+            if (batch_ground_plane && !batch_clear) {
+                // Constructed fixture geometry only; the shared query fences still apply.
+                const float dy = ray.to[1] - ray.from[1];
+                const float fraction = dy != 0 ? -ray.from[1] / dy : std::numeric_limits<float>::quiet_NaN();
+                if (!std::isfinite(dy) || !std::isfinite(fraction) || fraction < 0 || fraction > 1) {
+                    out.hit = {};
+                    out.hit.status = body_query::Status::clear;
+                    return out; // Preserve this attempted cast's actual accounting.
+                }
+                out.hit.fraction = fraction;
+                for (std::size_t i = 0; i < ray.from.size(); ++i)
+                    out.hit.position[i] = ray.from[i] + (ray.to[i] - ray.from[i]) * fraction;
+            }
+            if (batch_contact_mode && !batch_clear) {
+                out.hit.normal_available = out.hit.surface_velocity_available = true;
+                out.hit.normal = {0, 1, 0};
+                out.hit.surface_velocity = {2, 0, -1};
+                if (batch_contact_mode == 2) out.hit.normal[1] = std::numeric_limits<float>::quiet_NaN();
+                if (batch_contact_mode == 3) out.hit.normal[1] = -1;
+            }
+            return out;
+        }, fence);
+        // Deliberately malformed AVAILABLE results exercise the binding's own
+        // independent result guard, after the shared query core has accepted.
+        if (result.available && batch_contact_mode >= 4) {
+            ++batch_available_corruptions;
+            if (batch_contact_mode == 4) result.rays[0].normal[1] = std::numeric_limits<float>::quiet_NaN();
+            if (batch_contact_mode == 5) result.rays[0].normal[1] = -1;
+            if (batch_contact_mode == 6) result.rays[0].surface_velocity_available = false;
+        }
+        for (std::size_t i = 0; result.available && batch_category_mode >= 1 && batch_category_mode <= 3 && i < result.count; ++i) {
+            auto& hit = result.rays[i];
+            const bool copied = batch_category_mode == 3 ? hit.status == body_query::Status::clear :
+                hit.status == body_query::Status::hit && !batch_category_missing[i] &&
+                (request.include_shape_categories || batch_category_mode == 2);
+            if (copied) { hit.in_categories = batch_categories[i]; hit.in_categories_available = true; }
+        }
+        for (std::size_t i = 0; result.available && batch_owner_mode >= 1 && batch_owner_mode <= 3 && i < result.count; ++i) {
+            auto& hit = result.rays[i];
+            const bool copied = batch_owner_mode == 3 ? hit.status == body_query::Status::clear :
+                hit.status == body_query::Status::hit && !batch_owner_missing[i] && (request.include_hit_owner || batch_owner_mode == 2);
+            if (copied) { hit.owner = batch_owners[i]; hit.owner_available = true; hit.owner_assigned = batch_owners[i] != 0xffffffffU; }
+        }
+        if (result.available) {
+            result.local_actor_excluded = batch_claims_local_actor;
+            result.named_actor_categories_absent = batch_claims_named_categories;
+        }
+        return result;
+    }
+    std::string body_receipt(std::uint64_t owner, const owned_body::Handle& h, std::uint64_t selected, owned_body::Receipt& receipt) override {
+        auto* b = body_of(owner, h);
+        if (!b) return "owner or generation";
+        if (!b->released && !b->quarantined && b->mailbox.needs_successor()) {
+            b->latest = b->sample;
+            (void)b->mailbox.observe_successor(b->sample);
+        }
+        if (!b->mailbox.find(selected, receipt)) return "receipt sequence unavailable";
+        receipt.retained = b->released;
+        receipt.quarantined = b->quarantined;
+        return {};
+    }
+    std::string body_acknowledge(std::uint64_t owner, const owned_body::Handle& h, std::uint64_t sequence) override {
+        auto* b = body_of(owner, h);
+        return b && b->mailbox.acknowledge(sequence) ? std::string{} : "not ready to acknowledge";
+    }
+    std::string body_release(std::uint64_t owner, const owned_body::Handle& h) override {
+        ++body_release_calls;
+        auto* b = body_of(owner, h);
+        if (!b) return "owner or generation";
+        b->released = true;
+        b->mailbox.cancel();
+        return {};
+    }
+    void body_release_all(std::uint64_t owner) override {
+        body_releases.push_back(owner);
+        for (auto& [id, b] : owned) { (void)id; if (b.owner == owner) { b.released = true; b.mailbox.cancel(); } }
+    }
+    void body_producer_step(bool complete = true) {
+        for (auto& [id, b] : owned) {
+            (void)id;
+            if (b.released || b.quarantined) continue;
+            ++b.sample.epoch.serial;
+            b.sample.epoch.time += b.sample.epoch.seconds;
+            owned_body::Command out;
+            if (b.mailbox.consume(b.sample.epoch, 1, out)) {
+                (void)b.mailbox.finish(true, complete, complete);
+                if (!complete) b.quarantined = true;
+            }
+        }
+    }
+    struct Effect { std::string owner; EffectRequest request; bool stopped{}; float alpha{1}; };
+    std::map<std::uint64_t, Effect> effects;
+    std::uint64_t effect_serial{}, effect_epoch{1};
+    bool effects_ready{true};
+    std::uint64_t effect_create(std::string_view plugin, const EffectRequest& request) override {
+        if (!effects_ready) return 0;
+        const auto id = ++effect_serial;
+        effects.emplace(id, Effect{std::string(plugin), request});
+        return id;
+    }
+    void effect_move(std::string_view plugin, std::uint64_t id, const EffectMatrix& matrix) override {
+        if (auto it = effects.find(id); it != effects.end() && it->second.owner == plugin) it->second.request.transform = matrix;
+    }
+    void effect_stop(std::string_view plugin, std::uint64_t id) override {
+        if (auto it = effects.find(id); it != effects.end() && it->second.owner == plugin) it->second.stopped = true;
+    }
+    void effect_opacity(std::string_view plugin, std::uint64_t id, float value) override {
+        if (auto it = effects.find(id); it != effects.end() && it->second.owner == plugin) it->second.alpha = value;
+    }
+    void effect_release(std::string_view plugin, std::uint64_t id) override {
+        if (auto it = effects.find(id); it != effects.end() && it->second.owner == plugin) effects.erase(it);
+    }
+    std::vector<std::uint64_t> effects_live(std::string_view plugin) override {
+        std::vector<std::uint64_t> result;
+        for (const auto& [id, e] : effects) if (e.owner == plugin) result.push_back(id);
+        return result;
+    }
+    void effects_clear(std::string_view plugin) override { std::erase_if(effects, [&](const auto& e) { return e.second.owner == plugin; }); }
+    std::pair<bool, std::uint64_t> effects_state() override { return {effects_ready, effect_epoch}; }
     std::optional<std::uint32_t> state;
     std::uint64_t wipe{};
     std::vector<std::string> calls;
@@ -80,6 +341,11 @@ struct FakeGame final : Game {
         return {};
     }
     void board_park(std::string_view plugin, std::vector<int> bones) override { calls.push_back(std::format("board park {} {}", plugin, bones.size())); }
+    std::string board_scale(std::string_view plugin, int bone, std::optional<Vec3> size) override {
+        if (!size) calls.push_back(std::format("board scale {} {} none", plugin, bone));
+        else calls.push_back(std::format("board scale {} {} {:.1f} {:.1f} {:.1f}", plugin, bone, (*size)[0], (*size)[1], (*size)[2]));
+        return {};
+    }
     // The Example declared-input deck as the game holds it: seven live selectors, and the eight colours (and a
     // number) its mod declares for its shader. What plugins hold of it is kept by the same rules as
     // the game's (board_material.h: take, listed, release). Off: no deck declares anything.
@@ -177,6 +443,20 @@ struct FakeGame final : Game {
     std::string trick_label(std::string_view plugin, std::string_view from, std::string_view to) override {
         calls.push_back(std::format("trick label {} {}={}", plugin, from, to));
         return {};
+    }
+    std::map<std::string, std::string> strings; // "<plugin> <key>" -> text
+    std::string strings_set(std::string_view plugin, const std::vector<std::pair<std::string, std::string>>& texts) override {
+        calls.push_back(std::format("strings {} {} {}={}", plugin, texts.size(), texts.empty() ? "" : texts[0].first,
+                                    texts.empty() ? "" : texts[0].second));
+        for (const auto& [key, text] : texts) strings[std::format("{} {}", plugin, key)] = text;
+        return {};
+    }
+    std::string strings_case_rules(std::string_view plugin, std::string_view rules) override {
+        calls.push_back(std::format("case rules {} {}", plugin, rules));
+        return {};
+    }
+    std::optional<bool> string_exists(std::string_view key) override {
+        return std::any_of(strings.begin(), strings.end(), [&](const auto& s) { return s.first.ends_with(" " + std::string(key)); });
     }
     std::string trick_record_as(std::string_view plugin, std::vector<std::uint32_t> from, std::uint32_t to, int within_ms) override {
         std::string ids;
@@ -300,6 +580,47 @@ struct FakeGame final : Game {
                           : std::format("look {} none", plugin));
         return {};
     }
+    // One plugin's viewmodel at a time, as the real one.
+    std::string viewmodeler;
+    std::string viewmodel_load(std::string_view plugin, const std::filesystem::path& file) override {
+        if (!viewmodeler.empty() && viewmodeler != plugin) return viewmodeler + " has the viewmodel";
+        viewmodeler = plugin;
+        calls.push_back(std::format("viewmodel load {} {}", plugin, file.filename().string()));
+        return {};
+    }
+    void viewmodel_unload(std::string_view plugin) override {
+        if (viewmodeler != plugin) return;
+        viewmodeler.clear();
+        calls.push_back(std::format("viewmodel unload {}", plugin));
+    }
+    std::optional<ViewmodelInfo> viewmodel_info(std::string_view plugin) override {
+        if (viewmodeler != plugin) return std::nullopt;
+        return ViewmodelInfo{"ready", "", {{"FPS_Pistol_Fire", 0.25}, {"FPS_Pistol_Idle", 2}}, {"Root", "Rif_end"}};
+    }
+    std::string viewmodel_show(std::string_view plugin, std::optional<ViewmodelLook> l) override {
+        if (viewmodeler != plugin) return "this plugin has no viewmodel loaded";
+        calls.push_back(l ? std::format("viewmodel show {} {:.2f} {:.2f} {:.2f} {:.0f} {:.0f} {:.0f} {:.0f} {:.1f} {:.1f}", plugin, l->offset[0], l->offset[1],
+                                        l->offset[2], l->yaw, l->pitch, l->roll, l->fov, l->ambient, l->brightness)
+                          : std::format("viewmodel hide {}", plugin));
+        return {};
+    }
+    std::string viewmodel_play(std::string_view plugin, std::string_view clip, bool loop, float speed, float fade) override {
+        if (viewmodeler != plugin) return "this plugin has no viewmodel loaded";
+        if (clip != "FPS_Pistol_Fire" && clip != "FPS_Pistol_Idle") return "the viewmodel has no clip \"" + std::string(clip) + "\"";
+        calls.push_back(std::format("viewmodel play {} {} {} {:.1f} {:.2f}", plugin, clip, loop, speed, fade));
+        return {};
+    }
+    void viewmodel_stop(std::string_view plugin) override {
+        if (viewmodeler == plugin) calls.push_back(std::format("viewmodel stop {}", plugin));
+    }
+    std::optional<ViewmodelState> viewmodel_state(std::string_view plugin) override {
+        if (viewmodeler != plugin) return std::nullopt;
+        return ViewmodelState{"FPS_Pistol_Fire", 0.1, 0.25, false};
+    }
+    std::optional<ViewmodelBone> viewmodel_bone(std::string_view plugin, std::string_view bone) override {
+        if (viewmodeler != plugin || bone != "Rif_end") return std::nullopt;
+        return ViewmodelBone{{0.08f, -0.2f, 0.4f}, {1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+    }
     std::map<std::string, Tuning> tunings{{"physicsmode.jumpmaxheight", {"PhysicsMode.JumpMaxHeight", "Jump height", "Jumps", "number", 1.2, 1.2, ""}},
                                           {"physicsmode.autopushenabled", {"PhysicsMode.AutoPushEnabled", "Auto push", "Push", "flag", 0, 0, ""}}};
     std::optional<Tuning> tuning(std::string_view id, std::string& why) override {
@@ -368,7 +689,28 @@ struct FakeGame final : Game {
             if (std::string_view(name).starts_with(prefix) && (!meshes_only || entity_bounds(name))) out.emplace_back(name);
         return out;
     }
+    // reskate.world.probe's ray, as told; the bounded adapter below counts its native casts.
+    WorldProbe probe_result;
+    unsigned probes{}, world_picks{};
+    Vec3 probe_from{}, probe_to{};
+    WorldProbe world_probe(const Vec3& from, const Vec3& to) {
+        ++probes;
+        probe_from = from;
+        probe_to = to;
+        return probe_result;
+    }
+    CountedProbe world_probe_bounded(const Vec3& from, const Vec3& to, unsigned allowed) override {
+        if (!allowed) return {};
+        const auto cast_count = std::min(allowed, probe_cast_cost);
+        native_casts += cast_count;
+        const auto probe = world_probe(from, to);
+        return {cast_count && cast_count == probe_cast_cost ? probe : WorldProbe{}, cast_count};
+    }
+    // The counted queries' native cost per ray (batch rays, world.probe), and the native casts
+    // they spent. world.pick and world.raycast are not counted.
+    unsigned query_cast_cost{1}, probe_cast_cost{1}, native_casts{};
     std::optional<WorldPick> world_pick(const Vec3& from, const Vec3&) override {
+        ++world_picks;
         if (from[1] > 50) return std::nullopt; // the sky: nothing met
         WorldPick pick{{1, 0, 2}, true, std::array<float, 16>{0, 0, -1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 3, 1}, "World/Props/TrashCan_01"};
         return pick;
@@ -509,13 +851,16 @@ struct FakeGame final : Game {
     int read_controller = -1;
     std::optional<PadInput> written_pad; unsigned written_controller{};
     std::string write_pad(std::string_view, unsigned controller, std::optional<PadInput> value) override { written_controller = controller; written_pad = value; return {}; }
-    std::optional<StickInput> joystick() override {
+    std::optional<StickInput> joystick(int device) override {
+        if (device > 1) return std::nullopt;
         StickInput stick;
-        stick.axes = {0, -1, 0.5f, 0, 0, 0};
+        stick.axes = {0, -1, 0.5f, 0, 0, 0, 0.25f, -0.75f};
         stick.buttons = 0x4;
-        stick.name = "Radio";
+        stick.name = device == 1 ? "Pad" : "Radio";
+        stick.device = device == 1 ? 1 : 0;
         return stick;
     }
+    std::vector<StickDevice> joysticks() override { return {{0, "Radio"}, {1, "Pad"}}; }
     std::string capture_input(std::string_view plugin, bool on) override {
         calls.push_back(std::format("capture {} {}", plugin, on ? "on" : "off"));
         return {};
@@ -600,7 +945,8 @@ struct FakeGame final : Game {
     std::optional<std::uint32_t> pad_bits_now;
     InputFocus focus_now{};
     std::optional<std::uint32_t> pad_bits(bool) override { return pad_bits_now; }
-    InputFocus input_focus() override { return focus_now; }
+    unsigned focus_reads{};
+    InputFocus input_focus() override { ++focus_reads; return focus_now; }
     std::optional<Cursor> cursor_now;
     std::optional<Cursor> cursor() override { return cursor_now; }
     void dialog_close(std::string_view plugin, std::string_view id) override { calls.push_back(std::format("dialog close {} {}", plugin, id)); }
@@ -703,11 +1049,14 @@ struct FakeGame final : Game {
     void release(std::string_view plugin) override {
         released.emplace_back(plugin);
         entity_clear(plugin);
+        effects_clear(plugin);
+        viewmodel_unload(plugin);
         board_material::detail::release(declared_holds, plugin, std::nullopt, std::nullopt);
     }
     // The game menu, its item grid, what is worn, and a screen capture of something turning once
     // every `turning` frames (reskate.capture, room.turn, menu.game/grid, outfit.board).
     GameMenu menu_now;
+    unsigned menu_reads{};
     std::optional<MenuGrid> grid_now;
     std::vector<WornItem> board_now, outfit_now;
     std::vector<std::string> render_settings; // more settings, each on
@@ -716,13 +1065,18 @@ struct FakeGame final : Game {
     std::vector<CaptureStart> capture_starts;
     std::vector<CaptureSave> capture_saves;
     float turned{};
+    std::optional<RoomPose> preview;
+    std::optional<RoomPose> room_pose(bool skater) override {
+        calls.push_back(skater ? "pose skater" : "pose board");
+        return preview;
+    }
     std::string room_turn(std::string_view, float value, int stick) override {
         if (value != 0 && !menu_now.open) return "the game's menu is not open";
         turned = value;
         calls.push_back(std::format("turn {:.2f} {}", value, stick));
         return {};
     }
-    GameMenu game_menu() override { return menu_now; }
+    GameMenu game_menu() override { ++menu_reads; return menu_now; }
     std::optional<MenuGrid> menu_grid() override { return grid_now; }
     std::vector<WornItem> board_parts() override { return board_now; }
     std::vector<WornItem> outfit_worn() override { return outfit_now; }
@@ -762,6 +1116,9 @@ struct FakeGame final : Game {
     // grid was asked to show and mark (Item Tabs).
     std::set<int> keys_held;
     bool key_down(int virtual_key) override { return keys_held.contains(virtual_key); }
+    // The game window has the focus and nothing is in the way (reskate.input.allowed): off unless a test says so.
+    bool input_open{};
+    bool input_allowed() override { return input_open; }
     std::vector<std::uint8_t> kept_keys;
     std::uint16_t kept_buttons{};
     void game_keys(std::string_view, std::vector<std::uint8_t> keys) override { kept_keys = std::move(keys); }
@@ -796,6 +1153,7 @@ struct TestEnvironment final : Environment {
     double now = 1000;
     void log(LogLevel, std::string_view text) override { logs.emplace_back(text); }
     void console(std::string_view text) override { lines.emplace_back(text); }
+    std::optional<bool> approved(const Candidate&) override { return std::nullopt; }
     double now_ms() override { return now; }
     std::filesystem::path storage_root() override { return scratch / "storage"; }
     bool builtin_command(std::string_view word) override { return word == "perf" || word == "load"; }
@@ -804,7 +1162,8 @@ struct TestEnvironment final : Environment {
     bool teleport_forbidden{}, teleport_unavailable{};
     std::vector<std::pair<Vec3, float>> teleports;
     int rays{};
-    std::optional<SkaterState> skater() override { return local_skater; }
+    unsigned skater_reads{};
+    std::optional<SkaterState> skater() override { ++skater_reads; return local_skater; }
     std::optional<ScoreState> score_now;
     std::optional<ScoreState> score() override { return score_now; }
     std::vector<std::string> toasts, sounds;
@@ -917,6 +1276,523 @@ void stopped(const Host& host, std::string_view id, std::string_view because) {
     check(status.reason.find(because) != std::string::npos, std::string(id) + " stopped for \"" + status.reason + "\", not for " + std::string(because));
 }
 
+void effects_require_resident_roots() {
+    auto declaration = dingosdk::Json::parse(manifest(R"("effects")"));
+    const std::string particle = "effects/reskate/test/ebp_spark";
+    declaration["effects"] = dingosdk::Json::array({particle});
+    const auto refused = [&](const dingosdk::Json& value) {
+        try { (void)parse_manifest(value.dump()); } catch (const std::exception&) { return; }
+        throw std::runtime_error("An effect without valid resident coverage was accepted");
+    };
+    refused(declaration);
+    for (const auto* bundle : {"win32/levels/test/sublevel", "win32/levels/test/root",
+                               "win32/levels/game/dingolevel_root/dingolevel_root_extra"}) {
+        declaration["resident"] = dingosdk::Json::array({dingosdk::Json{
+            {"bundle", bundle}, {"roots", dingosdk::Json::array({"effects/reskate/test/"})}}});
+        refused(declaration);
+    }
+    for (const auto* roots : {R"([])", R"(["effects/reskate/test"])", R"(["effects/reskate/tes/"])",
+                             R"(["effects/reskate/test/ebp_spark_extra"])"}) {
+        declaration["resident"] = dingosdk::Json::array({dingosdk::Json{
+            {"bundle", "win32/levels/game/dingolevel_root/dingolevel_root"}, {"roots", dingosdk::Json::parse(roots)}}});
+        refused(declaration);
+    }
+    for (const auto* root : {"effects/reskate/test/", "EFFECTS/RESKATE/TEST/", "effects/reskate/test/ebp_spark"}) {
+        declaration["resident"] = dingosdk::Json::array({dingosdk::Json{
+            {"bundle", "win32/levels/game/dingolevel_root/dingolevel_root"}, {"roots", dingosdk::Json::array({root})}}});
+        check(parse_manifest(declaration.dump()).effects.contains(particle), "Exact and directory roots cover an effect");
+    }
+    declaration["resident"][0]["bundle"] = "WIN32/LEVELS/GAME/DINGOLEVEL_ROOT/DINGOLEVEL_ROOT";
+    check(parse_manifest(declaration.dump()).effects.contains(particle), "Resident bundle names are normalized consistently with the merge");
+    declaration["resident"] = dingosdk::Json::parse(R"([
+        {"bundle":"win32/levels/game/dingolevel_root/dingolevel_root","roots":["effects/reskate/other/"]},
+        {"bundle":"win32/levels/test/sublevel","roots":["effects/reskate/test/"]}
+    ])");
+    refused(declaration); // Coverage must be in the same row as the supported bundle.
+    // The merge discards the entire resident list when any row or shader is malformed.
+    for (const auto* bad : {R"([{"roots":["effects/reskate/test/"]}])",
+                           R"([{"bundle":"win32/levels/game/dingolevel_root/dingolevel_root","roots":["effects/reskate/test/"],"shaders":[{"name":"depot","roots":[]}]}])",
+                           R"([{"bundle":"win32/levels/game/dingolevel_root/dingolevel_root","roots":["effects/reskate/test/"]},{"bundle":7}])"}) {
+        declaration["resident"] = dingosdk::Json::parse(bad);
+        refused(declaration);
+    }
+    bool denied = false;
+    try { (void)parse_manifest(manifest(R"("events.physics.geometry")")); }
+    catch (const std::exception&) { denied = true; }
+    check(denied, "Geometry does not bypass the base physics permission");
+}
+
+void expired_effects_return_their_quota() {
+    TestEnvironment environment;
+    Limits limits;
+    limits.call_ms = 1000;
+    Host host(environment, Side::client, limits);
+    auto declaration = dingosdk::Json::parse(manifest(R"("effects", "console")"));
+    declaration["effects"] = dingosdk::Json::array({"effects/reskate/test/ebp_spark", "world/materials/decal/reskate_test/stain_dv"});
+    declaration["resident"] = dingosdk::Json::parse(R"([{"bundle":"win32/levels/game/dingolevel_root/dingolevel_root", "roots":["effects/reskate/test/", "world/materials/decal/reskate_test/"]}])");
+    host.apply({package("effects-expire", {{manifest_file, declaration.dump()}, {"plugin/main.lua", R"(
+        local fx = reskate.effects
+        local m = {1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1}
+        reskate.console.command("fxfill", "", function()
+            for i=1,24 do assert(fx.particle("effects/reskate/test/ebp_spark", m)) end
+            for i=1,2048 do assert(fx.decal("world/materials/decal/reskate_test/stain_dv", m)) end
+            assert(fx.particle("effects/reskate/test/ebp_spark", m) == nil)
+            assert(fx.decal("world/materials/decal/reskate_test/stain_dv", m) == nil)
+        end)
+    )"}})});
+    auto& game = environment.fake;
+    check(host.run_console("fxfill") && game.effects.size() == 2072, "Both effect quotas can be filled");
+    game.effects.clear(); // Ten-minute native expiry, with no change to the world epoch.
+    ticks(host, environment, 1);
+    check(host.run_console("fxfill") && game.effects.size() == 2072, "Expiry returns both quotas without Lua release/clear");
+    ticks(host, environment, 1);
+    game.effects.clear();
+    ++game.effect_epoch;
+    // A console call can arrive after the native reset but before Plugin::tick.
+    check(host.run_console("fxfill") && game.effects.size() == 2072, "A reset returns quota even before the next VM tick");
+    running(host, "effects-expire", environment);
+}
+
+void plugins_render_private_effects() {
+    TestEnvironment environment;
+    // Filling every decal slot tests the resource quota, with room for a busy CI machine.
+    Limits limits;
+    limits.call_ms = 1000;
+    Host host(environment, Side::client, limits);
+    host.apply({script("effects-denied", R"(
+        for _,f in pairs(reskate.effects) do
+            local ok,why=pcall(f)
+            assert(not ok and why:find("permission"), tostring(why))
+        end
+        reskate.log("all effects denied")
+    )")});
+    running(host, "effects-denied", environment);
+    check(environment.logged("all effects denied"), environment.all());
+    check(environment.fake.effects.empty(), "A plugin without permission cannot reach the renderer");
+    auto declaration = dingosdk::Json::parse(manifest(R"("effects", "console")"));
+    const std::string particle = "effects/reskate/test/ebp_spark";
+    const std::string material = "world/materials/decal/reskate_test/stain_dv";
+    declaration["effects"] = dingosdk::Json::array({particle, material});
+    declaration["resident"] = dingosdk::Json::parse(R"([{"bundle":"win32/levels/game/dingolevel_root/dingolevel_root", "roots":["effects/reskate/test/", "world/materials/decal/reskate_test/"]}])");
+    for (unsigned scenario = 0; scenario < 3; ++scenario) {
+        auto invalid = declaration;
+        if (scenario == 0) invalid["permissions"] = dingosdk::Json::array();
+        else if (scenario == 1) invalid["effects"] = particle;
+        else {
+            auto names = dingosdk::Json::array();
+            for (unsigned i = 0; i < 129; ++i) names.push_back(particle + std::to_string(i));
+            invalid["effects"] = std::move(names);
+        }
+        bool refused = false;
+        try { (void)parse_manifest(invalid.dump()); } catch (const std::exception&) { refused = true; }
+        check(refused, "An effect allowlist needs permission, an array and at most 128 names");
+    }
+    for (const auto* forbidden : {"effects/gestures/effectblueprints/ebp_gesture_applause", "effects/reskate/../store/item", "world/materials/decal/paid"}) {
+        auto invalid = declaration;
+        invalid["effects"] = dingosdk::Json::array({forbidden});
+        bool refused = false;
+        try { (void)parse_manifest(invalid.dump()); } catch (const std::exception&) { refused = true; }
+        check(refused, "Stock, store and path escapes are refused in effects manifests");
+    }
+    const auto main = R"(
+        local fx=reskate.effects
+        local m={1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1}
+        local p="effects/reskate/test/ebp_spark"
+        local d="world/materials/decal/reskate_test/stain_dv"
+        assert(not pcall(fx.particle,"effects/reskate/test/not_declared",m))
+        assert(not pcall(fx.particle,"effects/gestures/effectblueprints/ebp_gesture_applause",m))
+        assert(not pcall(fx.decal,p,m))
+        local broken=table.clone(m); broken[1]=0/0
+        assert(not pcall(fx.particle,p,broken))
+        broken=table.clone(m); broken[4]=1
+        assert(not pcall(fx.particle,p,broken))
+        broken=table.clone(m); broken[1]=0
+        assert(not pcall(fx.particle,p,broken))
+        assert(not pcall(fx.decal,d,m,{lift=2}))
+        for i=1,24 do assert(fx.particle(p,m)) end
+        assert(fx.particle(p,m)==nil,"particle quota")
+        for i=1,2048 do assert(fx.decal(d,m,{attach=true,lift=.04})) end
+        assert(fx.decal(d,m)==nil,"decal quota")
+        fx.clear()
+        local id=assert(fx.particle(p,m))
+        m[13]=3; fx.move(id,m); fx.stop(id)
+        assert(not pcall(fx.opacity,id,-1))
+        local decal=assert(fx.decal(d,m,{attach=true,lift=.04})); fx.opacity(decal,.5)
+        reskate.console.command("fxgone","",function() fx.release(id); fx.release(decal) end)
+        reskate.console.command("fxfail","",function() error("intentional") end)
+    )";
+    host.apply({package("effects-owner", {{manifest_file, declaration.dump()}, {"plugin/main.lua", main}})});
+    running(host, "effects-owner", environment);
+    auto& game = environment.fake;
+    check(game.effects.size() == 2, "Quota objects are cleared before the two live effects");
+    for (const auto& [id, e] : game.effects) {
+        check(e.request.transform[12] == 3, "Effects move without native addresses");
+        check(e.request.decal ? e.alpha == .5f && e.request.attach : e.stopped, "Stop, opacity and attachment reach the game");
+    }
+    const auto owned_id = game.effects.begin()->first;
+    auto intruder = R"(assert(not pcall(reskate.effects.release, )" + std::to_string(owned_id) + R"()); reskate.log("foreign effect denied"))";
+    host.apply({{ "effects-owner", scratch / "mods" / "effects-owner", "1", {} },
+                package("effects-intruder", {{manifest_file, declaration.dump()}, {"plugin/main.lua", intruder}})});
+    running(host, "effects-intruder", environment);
+    check(environment.logged("foreign effect denied") && game.effects.size() == 2, "Handles never cross plugin ownership");
+    check(host.run_console("fxgone") && game.effects.empty(), "Release disposes both owned references");
+    host.reload("effects-owner");
+    running(host, "effects-owner", environment);
+    check(game.effects.size() == 2, "Reload starts from a clean owner");
+    for (int i = 0; i < 6; ++i) (void)host.run_console("fxfail");
+    stopped(host, "effects-owner", "errors");
+    check(game.effects.empty(), "Stopping a failing VM releases its effects");
+}
+
+void failed_plugin_startup_releases_effects() {
+    for (const auto side : {Side::client, Side::server}) {
+        TestEnvironment environment;
+        const std::string suffix = side == Side::server ? "@server" : "";
+        const std::string owner = "effect-startup" + suffix;
+        Host host(environment, side, {}, suffix);
+        auto declaration = dingosdk::Json::parse(manifest(R"("effects", "console")", "both"));
+        declaration["effects"] = dingosdk::Json::array({"effects/reskate/test/ebp_spark", "world/materials/decal/reskate_test/stain_dv"});
+        declaration["resident"] = dingosdk::Json::parse(R"([{"bundle":"win32/levels/game/dingolevel_root/dingolevel_root", "roots":["effects/reskate/test/", "world/materials/decal/reskate_test/"]}])");
+        // The other copy of this same plugin keeps its effects when this one fails.
+        auto& game = environment.fake;
+        const auto other = game.effect_create(side == Side::server ? "effect-startup" : "effect-startup@server", {});
+        const std::string main = R"(
+            local m = {1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1}
+            assert(reskate.effects.particle("effects/reskate/test/ebp_spark", m))
+            assert(reskate.effects.decal("world/materials/decal/reskate_test/stain_dv", m))
+            reskate.console.command("fxstartup", "", function() end)
+        )";
+        host.apply({package("effect-startup", {{manifest_file, declaration.dump()},
+            {"plugin/main.lua", main + R"(error("intentional effect startup failure"))"}})});
+        stopped(host, "effect-startup", "error");
+        check(environment.logged("intentional effect startup failure") && game.effect_serial == 3,
+              "Startup reached the failure after creating both effects\n" + environment.all());
+        check(game.effects.size() == 1 && game.effects.contains(other), "Failed startup releases only its own effects immediately");
+        check(game.released == std::vector<std::string>{owner}, "Startup failure releases the full owner id, including its server suffix");
+        ticks(host, environment, 2);
+        check(game.effects.size() == 1 && game.effects.contains(other), "Later ticks preserve the other copy's effects");
+        (void)host.switch_on(owner);
+        stopped(host, "effect-startup", "error");
+        check(game.effect_serial == 5 && game.effects.size() == 1 && game.effects.contains(other),
+              "Repeated startup failures do not accumulate effects");
+        write(scratch / "mods/effect-startup/plugin/main.lua", main);
+        (void)host.switch_on(owner);
+        running(host, "effect-startup", environment);
+        check(host.run_console("fxstartup") && game.effects.size() == 3, "A repaired plugin can reclaim its command and create new effects");
+        host.shutdown();
+        check(game.effects.size() == 1 && game.effects.contains(other), "Shutdown still releases only this copy's effects");
+    }
+}
+
+void plugins_track_effect_lifetimes() {
+    TestEnvironment environment;
+    Limits limits;
+    limits.call_ms = 1000; // Exercise all 8192 operations independently of the timing tests.
+    Host host(environment, Side::client, limits);
+    auto declaration = dingosdk::Json::parse(manifest(R"("effects", "console")"));
+    declaration["effects"] = dingosdk::Json::array({"effects/reskate/test/ebp_spark"});
+    declaration["resident"] = dingosdk::Json::parse(R"([{"bundle":"win32/levels/game/dingolevel_root/dingolevel_root", "roots":["effects/reskate/test/", "world/materials/decal/reskate_test/"]}])");
+    host.apply({package("effect-lifetime", {{manifest_file, declaration.dump()}, {"plugin/main.lua", R"(
+        local fx = reskate.effects
+        local asset = "effects/reskate/test/ebp_spark"
+        local transform = {1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1}
+        local ready, epoch = fx.state()
+        assert(ready)
+        local expired = assert(fx.particle(asset, transform))
+        reskate.console.command("fxmissing", "", function()
+            local available, current = fx.state()
+            assert(not available and current ~= epoch)
+            local id, why = fx.particle(asset, transform)
+            assert(id == nil and why:find("unavailable"))
+            fx.release(expired)
+            assert(not pcall(fx.release, expired), "a released handle cannot be reused")
+            fx.clear(); fx.clear()
+            reskate.log("expired effects cleared")
+        end)
+        reskate.console.command("fxbudget", "", function()
+            for i = 1, 8192 do fx.state() end
+            local ok, why = pcall(fx.state)
+            assert(not ok and why:find("8192"))
+            reskate.log("effect call limit enforced")
+        end)
+        reskate.console.command("fxnew", "", function()
+            assert(fx.state())
+            local id = assert(fx.particle(asset, transform))
+            assert(id ~= expired, "a new world never reuses a stale handle")
+            reskate.log("effect created after reset")
+        end)
+    )"}})});
+    running(host, "effect-lifetime", environment);
+    auto& game = environment.fake;
+    check(game.effects.size() == 1, "An effect belongs to the running plugin");
+    game.effects_ready = false;
+    ++game.effect_epoch;
+    game.effects.clear(); // Native world teardown precedes the plugin's next callback.
+    check(host.run_console("fxmissing") && environment.logged("expired effects cleared"), environment.all());
+    game.effects_ready = true;
+    ticks(host, environment, 1);
+    check(host.run_console("fxbudget") && environment.logged("effect call limit enforced"), environment.all());
+    ticks(host, environment, 1);
+    check(host.run_console("fxnew") && environment.logged("effect created after reset") && game.effects.size() == 1,
+          "The next tick restores the operation allowance\n" + environment.all());
+    host.reload("effect-lifetime");
+    running(host, "effect-lifetime", environment);
+    check(game.effects.size() == 1, "Reload releases the previous VM's native effects");
+    host.apply({});
+    check(game.effects.empty(), "Removing a plugin releases all its effects");
+}
+
+void physics_steps_include_optional_geometry() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({script("physics-geometry", R"(
+        local samples = 0
+        reskate.on("physics_step", function(step)
+            samples += 1
+            local body = step.bodies["Left forearm"]
+            if samples == 1 then
+                assert(step.at == 1000 and math.abs(step.seconds - .05) < .000001)
+                assert(step.state == 300 and step.wipeout and step.ragdoll and not step.airborne)
+                assert(body.impact == 12 and body.slide == 5 and body.world and not body.board)
+                assert(body.point[1] == 2 and body.point[2] == 0 and body.point[3] == 4)
+                assert(body.normal[1] == 0 and body.normal[2] == 1 and body.normal[3] == 0)
+                local expected = {1,0,0,0,0,1,0,0,0,0,1,0,2,.25,4,1}
+                for _, name in {"Pelvis", "Left forearm"} do
+                    local pose = step.poses[name]
+                    assert(#pose.transform == 16 and #pose.velocity == 3)
+                    for i, value in expected do assert(pose.transform[i] == value) end
+                    assert(pose.velocity[1] == 5 and pose.velocity[2] == -10 and pose.velocity[3] == 0)
+                end
+                assert(step.bodies.Pelvis == nil, "a body can have a pose without a contact")
+                reskate.log("contact geometry received")
+            else
+                assert(step.state == nil and step.ragdoll == nil)
+                assert(body.point == nil and body.normal == nil and next(step.poses) == nil)
+                reskate.log("missing geometry stays absent")
+            end
+        end)
+    )", R"("events.physics", "events.physics.geometry")"), script("physics-basic", R"(
+        reskate.on("physics_step", function(step)
+            assert(step.poses == nil and step.state == nil)
+            local body = step.bodies["Left forearm"]
+            assert(body and body.impact == 12 and body.point == nil and body.normal == nil)
+            reskate.log("basic physics has no geometry")
+        end)
+    )", R"("events.physics")"), script("physics-denied", R"(
+        local ok, why = pcall(reskate.on, "physics_step", function() error("not permitted") end)
+        assert(not ok and why:find("events.physics"))
+        reskate.log("physics permission enforced")
+    )")});
+    running(host, "physics-geometry", environment);
+    running(host, "physics-denied", environment);
+    check(environment.logged("physics permission enforced"), environment.all());
+    PhysicsStep value;
+    value.at = environment.now; value.seconds = .05f; value.state = 300;
+    value.wipeout = true; value.ragdoll = true;
+    const EffectMatrix matrix{1,0,0,0,0,1,0,0,0,0,1,0,2,.25f,4,1};
+    value.poses.emplace("Pelvis", PhysicsStep::Pose{matrix, {5, -10, 0}});
+    value.poses.emplace("Left forearm", PhysicsStep::Pose{matrix, {5, -10, 0}});
+    value.bodies.push_back({"Left forearm", 12, 5, false, false, true, Vec3{2,0,4}, Vec3{0,1,0}});
+    environment.fake.steps.push_back(value);
+    ticks(host, environment, 1);
+    check(environment.logged("contact geometry received") && environment.logged("basic physics has no geometry"), environment.all());
+    value.state.reset(); value.ragdoll.reset(); value.poses.clear();
+    value.bodies[0].point.reset(); value.bodies[0].normal.reset();
+    environment.fake.steps.push_back(value);
+    ticks(host, environment, 1);
+    check(environment.logged("missing geometry stays absent"), environment.all());
+}
+
+void plugin_approval_follows_the_plugins_own_files() {
+    const auto mod = scratch / "approval-mod";
+    std::filesystem::remove_all(mod);
+    write(mod / manifest_file, manifest(R"("settings.write")"));
+    write(mod / "plugin" / "main.lua", "print('a')");
+    write(mod / "clothes" / "shirt.dat", "cloth");
+    const auto first = plugin_fingerprint(mod);
+    write(mod / "clothes" / "shirt.dat", "a different shirt");
+    write(mod / "clothes" / "new.dat", "more");
+    check(plugin_fingerprint(mod) == first, "A cosmetic asset of the mod does not change the plugin's fingerprint");
+    write(mod / "plugin" / "main.lua", "print('b')");
+    const auto second = plugin_fingerprint(mod);
+    check(second != first, "A change to a plugin file does");
+    write(mod / "plugin" / "extra.lua", "return 1");
+    check(plugin_fingerprint(mod) != second, "and so does a new file in the plugin's folder");
+    write(mod / manifest_file, manifest(R"("settings.write", "console")"));
+    check(plugin_fingerprint(mod) != second, "and its manifest");
+
+    // Bytes moved between the end of one file and the next file's name must not give the same print.
+    const auto split = scratch / "approval-split", merged = scratch / "approval-merged";
+    for (const auto& folder : {split, merged}) {
+        std::filesystem::remove_all(folder);
+        write(folder / manifest_file, manifest());
+    }
+    // As the first version of the print laid it out: a file's name in UTF-16, then "|", then its bytes.
+    const auto named = [](std::string_view name) {
+        std::string bytes;
+        for (const char c : name) bytes += {c, '\0'};
+        return bytes + '|';
+    };
+    write(split / "plugin" / "a.dat", "X" + named("plugin/b.lua") + "EVIL");
+    write(split / "plugin" / "c.lua", "C");
+    write(split / "plugin" / "d.lua", "D");
+    write(merged / "plugin" / "a.dat", "X");
+    write(merged / "plugin" / "b.lua", "EVIL");
+    write(merged / "plugin" / "c.lua", "C" + named("plugin/d.lua") + "D");
+    check(plugin_fingerprint(split) != plugin_fingerprint(merged), "Moving bytes between a file and the next one's name changes the print");
+    check(plugin_fingerprint(mod).size() > 60, "The print is a SHA-256");
+
+    const auto file = scratch / "approvals" / "plugin_approvals.json";
+    std::filesystem::remove_all(file.parent_path());
+    {
+        Approvals approvals(file);
+        check(approvals.state("pack", "1-a") == Approval::asking, "A plugin nobody answered for asks");
+        approvals.set("pack", "1-a", true);
+        approvals.set("other", "2-b", false);
+        check(approvals.state("pack", "1-a") == Approval::on && approvals.state("other", "2-b") == Approval::off, "Answers are kept");
+        check(approvals.state("pack", "1-changed") == Approval::asking, "An answer is void for other files");
+    }
+    Approvals again(file);
+    check(again.state("pack", "1-a") == Approval::on && again.state("other", "2-b") == Approval::off, "Answers come back from the file");
+    check(again.state("pack", "1-changed") == Approval::asking && again.state("unknown", "1-a") == Approval::asking, "and a changed or unknown plugin asks again");
+    again.set_developer(true);
+    check(again.state("pack", "1-changed") == Approval::on, "In developer mode an approved plugin keeps its approval when its files change");
+    check(again.state("other", "3-c") == Approval::off, "and a refusal holds as well");
+    check(again.state("unknown", "1-a") == Approval::asking, "but a plugin nobody answered for still asks");
+    again.set_developer(false);
+    check(again.state("pack", "1-changed") == Approval::on && again.state("pack", "1-a") == Approval::asking,
+          "The answer moved to the new files, so the old ones ask again");
+
+    const auto groups = permission_groups(parse_manifest(manifest(R"("net.http", "audio", "files", "audio.ui", "settings.write", "storage")")));
+    check(groups.size() == 5 && groups[0].risk == Risk::red && groups[1].risk == Risk::red && groups[2].risk == Risk::amber &&
+              groups[3].risk == Risk::grey && groups[4].risk == Risk::grey,
+          "Permissions come under a category each, the riskiest first");
+    const auto sound = std::find_if(groups.begin(), groups.end(), [](const auto& g) { return g.category == "SOUND"; });
+    check(sound != groups.end() && sound->phrases.size() == 2 && sound->risk == Risk::grey, "A category lists each of its permissions once");
+    const auto input_groups = permission_groups(parse_manifest(manifest(R"("input", "input.write")")));
+    check(input_groups.size() == 1 && input_groups.front().category == "INPUT" &&
+          input_groups.front().phrases.size() == 2 && input_groups.front().risk == Risk::amber &&
+          approval_prompt(input_groups).find("controller input while you play") != std::string::npos,
+          "Controller replacement is disclosed in the player's input approval group");
+    const auto write_prompt = approval_prompt(permission_groups(parse_manifest(manifest(R"("input.write")"))));
+    check(write_prompt.find("controller input while you play") != std::string::npos &&
+          write_prompt.find("bind keys") == std::string::npos,
+          "Write-only input permission does not claim controller-reading or bind access");
+    const auto none = permission_groups(parse_manifest(manifest()));
+    check(none.size() == 1 && none.front().category == "BASIC" && none.front().risk == Risk::grey &&
+              none.front().phrases.front().starts_with("No special permissions"),
+          "A plugin with no permissions says so");
+    for (const auto name : known_permissions())
+        check(!permission_category(name).empty(), "Every known permission has a category: " + std::string(name));
+
+    auto summary_manifest = manifest(R"("net.http", "chat.read", "settings.write")");
+    summary_manifest.pop_back();
+    summary_manifest += R"(, "domains": ["api.example.com"]})";
+    const auto summary_groups = permission_groups(parse_manifest(summary_manifest));
+    const auto summary_prompt = approval_prompt(summary_groups);
+    check(summary_prompt.starts_with("This mod includes a plugin - a script that runs inside your game.\n\nWhat it can do\n"),
+          "The question introduces the plugin and its capabilities in plain language");
+    check(summary_prompt.find("Change game settings") != std::string::npos && summary_prompt.find("Read chat") != std::string::npos &&
+              summary_prompt.find("Send requests over the internet") != std::string::npos,
+          "The summary follows the permissions this manifest actually requested");
+    check(summary_prompt.find("Send chat") == std::string::npos && summary_prompt.find("throwdowns") == std::string::npos &&
+              summary_prompt.find("api.example.com") == std::string::npos,
+          "It leaves unrequested capabilities and full domain details out of the question");
+    check(summary_prompt.find("! ") == std::string::npos && summary_prompt.find("harmless") == std::string::npos &&
+              summary_prompt.find("SETTINGS") == std::string::npos && summary_prompt.find("WEB") == std::string::npos,
+          "It does not show risk marks, category headings, or harmless labels");
+    const auto web = std::find_if(summary_groups.begin(), summary_groups.end(), [](const auto& group) { return group.category == "WEB"; });
+    check(web != summary_groups.end() && web->phrases.front().find("api.example.com") != std::string::npos,
+          "The full domain detail remains available in Plugin Manager");
+    check(summary_prompt.find("Only turn it on if you trust its source. Full permissions: Insert menu -> Plugins -> Plugin Manager.") != std::string::npos &&
+              summary_prompt.ends_with("The rest of the mod works with the plugin off."),
+          "The question gives the approved trust, navigation, and off-state wording");
+    check(approval_prompt(none).find("No special permissions") != std::string::npos,
+          "A permissionless plugin says it has no special permissions");
+    for (const auto name : known_permissions()) {
+        auto requested = std::string("\"") + std::string(name) + "\"";
+        if (name == "events.physics.geometry") requested = R"("events.physics", "events.physics.geometry")";
+        const auto requested_prompt = approval_prompt(permission_groups(parse_manifest(manifest(requested))));
+        check(requested_prompt.find("\n- ") != std::string::npos && requested_prompt.find("No special permissions") == std::string::npos,
+              "A request for " + std::string(name) + " has a capability summary");
+        if (name == "room")
+            check(requested_prompt.find("character room, where others see your skater") != std::string::npos,
+                  "The room permission says others can see the skater");
+        if (name == "events.physics.geometry")
+            check(requested_prompt.find("Follow detailed skater physics, including geometry, each step") != std::string::npos,
+                  "The geometry permission says it adds detailed physics geometry");
+    }
+
+    // Every requested permission group contributes a capability summary, while the card remains bounded.
+    {
+        std::string all;
+        for (const auto name : known_permissions()) all += (all.empty() ? "\"" : ", \"") + std::string(name) + "\"";
+        const auto everything = permission_groups(parse_manifest(manifest(all)));
+        const auto prompt = approval_prompt(everything);
+        check(prompt.size() < 3000, "Summaries for every capability stay concise enough for the question");
+        for (const auto& group : everything)
+            check(approval_prompt(std::vector<PermissionGroup>{group}).find("\n- ") != std::string::npos,
+                  "The question summarizes requested capabilities for " + group.category);
+        check(prompt.find("!") == std::string::npos && prompt.find("harmless") == std::string::npos,
+              "The all-permissions summary does not restore risk marks or harmless wording");
+
+        std::string domains = R"("domains":[)";
+        constexpr std::string_view digits = "0123456789abcdef";
+        for (std::size_t i = 0; i < digits.size(); ++i) {
+            if (i) domains += ", ";
+            std::string label(63, 'a');
+            label.back() = digits[i];
+            const auto host = label + "." + std::string(63, 'b') + "." + std::string(63, 'c') + "." + std::string(61, 'd');
+            check(host.size() == 253, "The long-host fixture uses the manifest's maximum host length");
+            domains += "\"" + host + "\"";
+        }
+        domains += "]";
+        auto maximal_manifest = manifest(all);
+        maximal_manifest.pop_back();
+        maximal_manifest += ", " + domains + "}";
+        const auto maximal_groups = permission_groups(parse_manifest(maximal_manifest));
+        const auto maximal_prompt = approval_prompt(maximal_groups);
+        check(maximal_prompt.size() < 3000, "Maximum domain names do not expand the concise prompt");
+        const auto maximal_web = std::find_if(maximal_groups.begin(), maximal_groups.end(), [](const auto& group) { return group.category == "WEB"; });
+        const auto first_host = std::string(62, 'a') + "0." + std::string(63, 'b') + "." + std::string(63, 'c') + "." + std::string(61, 'd');
+        check(maximal_web != maximal_groups.end() &&
+                  std::any_of(maximal_web->phrases.begin(), maximal_web->phrases.end(), [&](const auto& phrase) {
+                      return phrase.find(first_host) != std::string::npos;
+                  }),
+              "The complete host list remains in the full permission details");
+        for (std::size_t i = 0; i < digits.size(); ++i) {
+            std::string label(63, 'a');
+            label.back() = digits[i];
+            const auto host = label + "." + std::string(63, 'b') + "." + std::string(63, 'c') + "." + std::string(61, 'd');
+            check(maximal_prompt.find(host) == std::string::npos, "The prompt omits full host " + std::to_string(i));
+        }
+    }
+    check(permission_groups(parse_manifest(manifest(R"("audio", "settings.read", "settings.write")"))).front().category == "SETTINGS",
+          "A category is as risky as its riskiest permission");
+
+    // A host with an environment that has not approved the plugin holds it until the player does.
+    struct Strict final : Environment {
+        bool allowed{};
+        void log(LogLevel, std::string_view) override {}
+        void console(std::string_view) override {}
+        double now_ms() override { return 0; }
+        std::filesystem::path storage_root() override { return scratch / "approval-storage"; }
+        bool builtin_command(std::string_view) override { return false; }
+        std::optional<bool> approved(const Candidate&) override { return allowed; }
+        void approve(const Candidate&, bool on) override { allowed = on; }
+    } environment;
+    write(mod / manifest_file, manifest());
+    Host host(environment, Side::client);
+    const std::vector<Candidate> found{{"approval-mod", mod, "1", {}, "p"}};
+    host.apply(found);
+    check(host.status().front().state == "switched off", "A plugin that is not approved does not load");
+    check(host.switch_on("approval-mod").find("started") != std::string::npos && host.status().front().state == "running", "and runs once turned on");
+    environment.allowed = false;
+    host.apply(found);
+    check(host.status().front().state == "switched off", "An approval taken back unloads it");
+    host.shutdown();
+}
+
 void a_manifest_says_what_a_plugin_is() {
     const auto good = parse_manifest(manifest(R"("console", "storage")"));
     check(good.api == 1 && good.entry == "plugin/main.lua" && good.side == Side::client, "A manifest is read");
@@ -942,6 +1818,663 @@ void a_manifest_says_what_a_plugin_is() {
     check(safe_relative_path("a/b.lua") == "a/b.lua", "A path inside the package is kept");
     for (const auto* bad : {"", "/a", "a//b", "./a", "a/../b", "..", "a\\b", "c:a", "a.", "a /b", "a\nb"})
         check(safe_relative_path(bad).empty(), std::string("A path that could leave the package is refused: ") + bad);
+}
+
+void plugins_own_typed_bodies_and_acknowledge_measured_results() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    const auto candidate = script("owned-body", R"(
+        local P, v = reskate.world.physics, vector.create
+        local definition = {mass = 12, inertia = v(2, 3, 4), position = v(1, 2, 3), rotation = {0, 0, 0, 1}, capsules = {{a = v(0, 0, 0), b = v(0, .5, 0), radius = .1}}}
+        local h = assert(P.create(definition))
+        assert(type(h) == "userdata" and getmetatable(h) == "locked")
+        local s = assert(P.read(h))
+        assert(type(s.epoch) == "userdata" and s.position == v(1, 2, 3) and s.mass == 12 and s.rotation[4] == 1 and type(s.serial) == "string")
+        local other = assert(P.create(definition))
+        assert(not pcall(P.read, {}), "forged body")
+        assert(not pcall(P.submit, h, {}, {}), "forged epoch")
+        assert(not pcall(P.submit, other, s.epoch, {}), "epoch transplanted to another body")
+        assert(not pcall(P.submit, h, s.epoch, {impulse = v(0, 2, 0)}), "anonymous impulse")
+        assert(not pcall(P.submit, h, s.epoch, {force = v(40000, 40000, 0)}), "vector norm")
+        assert(not pcall(P.submit, h, s.epoch, {torque = v(0 / 0, 0, 0)}), "NaN")
+        assert(not pcall(P.submit, h, s.epoch, {impulse_id = 1.5}), "fractional event")
+        assert(not pcall(P.submit, h, s.epoch, {native_handle = 42}), "raw handle field")
+        definition.mask = 0xffffffff
+        assert(not pcall(P.create, definition), "arbitrary collision mask")
+        definition.mask = nil
+        assert(P.submit(h, s.epoch, {impulse = v(0, 2, 0), impulse_id = 1}))
+        assert(not P.submit(h, s.epoch, {}), "immutable pending packet")
+        local queued = assert(P.receipt(h))
+        assert(queued.outcome == "queued" and not queued.successor and not P.acknowledge(h, queued.sequence))
+        assert(not pcall(P.acknowledge, h, 1), "sequence string cannot be a coerced number")
+        assert(not pcall(P.acknowledge, h, queued.sequence .. string.char(0) .. "junk"), "sequence cannot hide trailing bytes")
+        local done = false
+        reskate.on("tick", function()
+            if done then return end
+            local r = assert(P.receipt(h))
+            if r.outcome == "queued" then return end
+            assert(r.outcome == "applied" and r.force_attempted and r.torque_attempted)
+            if not r.successor then
+                assert(not P.acknowledge(h, r.sequence), "no fictitious successor")
+                return
+            end
+            assert(tonumber(r.produced_serial) == tonumber(s.serial) + 1)
+            assert(tonumber(r.successor.serial) > tonumber(r.produced_serial))
+            assert(P.acknowledge(h, r.sequence))
+            assert(not P.acknowledge(h, r.sequence), "ack twice")
+            assert(not P.submit(h, s.epoch, {}), "old observed serial")
+            assert(P.release(h) and P.release(other))
+            assert(not P.read(h))
+            assert(P.receipt(h).retained)
+            done = true
+            reskate.log("owned body acknowledged its measured successor")
+        end)
+    )", R"("world.physics")");
+    host.apply({candidate});
+    running(host, "owned-body", environment);
+    check(environment.fake.body_creates == 2 && environment.fake.body_submissions == 1, "API forwarded only bounded accepted definitions and one packet");
+    environment.fake.body_producer_step();
+    ticks(host, environment, 1);
+    running(host, "owned-body", environment);
+    check(!environment.logged("acknowledged its measured"), "setter completion was not treated as an integrated successor");
+    environment.fake.body_producer_step();
+    ticks(host, environment, 1);
+    running(host, "owned-body", environment);
+    check(environment.logged("owned body acknowledged its measured successor"), environment.all());
+    const auto old_owner = environment.fake.owned.begin()->second.owner;
+    host.apply({});
+    check(std::find(environment.fake.body_releases.begin(), environment.fake.body_releases.end(), old_owner) != environment.fake.body_releases.end(), "VM close releases its instance");
+    host.apply({candidate});
+    running(host, "owned-body", environment);
+    check(environment.fake.owned.at(3).owner != old_owner, "reloaded VM reused its old native owner epoch");
+    owned_body::Sample sample;
+    check(!environment.fake.body_read(environment.fake.owned.at(3).owner, {1, 0}, sample).empty(), "another VM instance adopted a retained body");
+}
+
+void plugins_pipeline_native_steps_and_select_owned_receipts() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({script("body-pipeline", R"(
+        local P, v = reskate.world.physics, vector.create
+        local d = {mass = 12, inertia = v(2, 3, 4), position = v(0, 2, 0), rotation = {0, 0, 0, 1}, capsules = {{a = v(0, 0, 0), b = v(0, .5, 0), radius = .1}}}
+        local h, other = assert(P.create(d)), assert(P.create(d))
+        local ids = {}
+        local function publish(sample)
+            local ok, why, id = P.submit(h, sample.epoch, {force = v(0, 20, 0)})
+            assert(ok and why == nil and type(id) == "string")
+            table.insert(ids, id)
+            return id
+        end
+        publish(assert(P.read(h)))
+        local ok, why, foreign = P.submit(other, assert(P.read(other)).epoch, {})
+        assert(ok and why == nil and type(foreign) == "string" and foreign ~= ids[1])
+        local done = false
+        reskate.on("tick", function()
+            if done then return end
+            local sample = assert(P.read(h))
+            local first = assert(P.receipt(h))
+            assert(first.sequence == ids[1] and first.outcome == "applied")
+            assert(not P.receipt(h, foreign), "foreign body's sequence selected a local receipt")
+            assert(not P.receipt(h, "999999999999"), "absent sequence")
+            assert(not pcall(P.receipt, h, 1) and not pcall(P.receipt, h, ids[1] .. string.char(0) .. "x")
+                and not pcall(P.receipt, h, "0" .. ids[1]), "malformed selection")
+            if #ids == 1 then assert(not first.successor and not P.acknowledge(h, ids[1])) end
+            if #ids >= 2 then assert(first.successor.serial == "102", "first successor moved to a later observation") end
+            if #ids < 4 then
+                local id = publish(sample)
+                assert(P.receipt(h, id).outcome == "queued" and P.receipt(h).sequence == ids[1])
+                return
+            end
+            local accepted, reason = P.submit(h, sample.epoch, {})
+            assert(not accepted and type(reason) == "string", "full receipt ring lost backpressure")
+            assert(not P.acknowledge(h, ids[2]), "ack order")
+            assert(P.acknowledge(h, ids[1]) and not P.receipt(h, ids[1]), "freed record stayed selectable")
+            local fifth = publish(sample)
+            assert(P.receipt(h, fifth).outcome == "queued" and P.receipt(h).sequence == ids[2])
+            assert(tonumber(P.receipt(h, ids[2]).produced_serial) == 102 and tonumber(P.receipt(h, ids[3]).produced_serial) == 103
+                and tonumber(P.receipt(h, ids[4]).produced_serial) == 104, "consecutive 60Hz control skipped a native step")
+            done = true
+            reskate.log("body pipeline advanced four native steps without awaiting acknowledgement")
+        end)
+    )", R"("world.physics")")});
+    running(host, "body-pipeline", environment);
+    for (unsigned i = 0; i < 4; ++i) { environment.fake.body_producer_step(); ticks(host, environment, 1); running(host, "body-pipeline", environment); }
+    check(environment.logged("body pipeline advanced four native steps"), environment.all());
+    check(environment.fake.body_submissions == 6, "full-ring refusal was forwarded or consecutive commands were dropped");
+    const auto pending_sequence = environment.fake.owned.at(1).mailbox.sequence;
+    host.apply({});
+    auto& retired = environment.fake.owned.at(1);
+    owned_body::Receipt canceled;
+    check(retired.released && !retired.mailbox.pending && retired.mailbox.failed && retired.mailbox.find(pending_sequence, canceled) &&
+        canceled.outcome == owned_body::Outcome::rejected, "VM unload did not revoke a pipelined pending packet");
+}
+void plugins_can_inspect_later_partial_failure_without_acknowledging_unmeasured_head() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({script("body-pipeline-failure", R"(
+        local P, v = reskate.world.physics, vector.create
+        local h = assert(P.create({mass = 12, inertia = v(2, 3, 4), position = v(0, 2, 0), rotation = {0, 0, 0, 1}, capsules = {{a = v(0, 0, 0), b = v(0, .5, 0), radius = .1}}}))
+        local ok, why, first = P.submit(h, assert(P.read(h)).epoch, {impulse = v(0, 2, 0), impulse_id = 1})
+        assert(ok and not why and type(first) == "string")
+        local second, held, done
+        reskate.on("tick", function()
+            if done then return end
+            if not second then
+                held = assert(P.read(h)).epoch
+                assert(P.receipt(h, first).outcome == "applied" and not P.receipt(h, first).successor)
+                local ok, why, id = P.submit(h, held, {impulse = v(0, 2, 0), impulse_id = 2})
+                assert(ok and not why)
+                second = id
+                return
+            end
+            local head, later = assert(P.receipt(h)), assert(P.receipt(h, second))
+            assert(head.sequence == first and head.outcome == "applied" and not head.successor and head.quarantined)
+            assert(later.outcome == "partial" and later.force_attempted and not later.torque_attempted and later.quarantined)
+            assert(not P.acknowledge(h, first) and not P.acknowledge(h, second), "failure waived successor or ack order")
+            assert(not P.read(h) and not P.submit(h, held, {}), "failed owner stayed writable")
+            assert(P.release(h) and P.receipt(h, second).retained)
+            done = true
+            reskate.log("later partial body receipt is inspectable behind unmeasured head")
+        end)
+    )", R"("world.physics")")});
+    running(host, "body-pipeline-failure", environment);
+    environment.fake.body_producer_step();
+    ticks(host, environment, 1);
+    running(host, "body-pipeline-failure", environment);
+    environment.fake.body_producer_step(false);
+    ticks(host, environment, 1);
+    running(host, "body-pipeline-failure", environment);
+    check(environment.logged("later partial body receipt is inspectable"), environment.all());
+    check(environment.fake.body_submissions == 2 && environment.fake.owned.at(1).mailbox.failed, "partial command was replayed or failed mailbox reopened");
+}
+
+void native_body_permission_and_client_boundary_are_enforced() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({script("no-body-permission", R"(
+        local P = reskate.world.physics
+        for _, name in {"create", "read", "submit", "receipt", "acknowledge", "release", "probe_batch"} do
+            local ok, why = pcall(P[name], {})
+            assert(not ok and string.find(why, "world.physics"), name)
+        end
+    )")});
+    running(host, "no-body-permission", environment);
+    check(environment.fake.body_creates == 0 && environment.fake.body_submissions == 0, "missing permission reached Game");
+    TestEnvironment server_environment;
+    Host server(server_environment, Side::server);
+    auto server_plugin = package("server-body", {{manifest_file, manifest(R"("world.physics","world.raycast")", "server")}, {"plugin/main.lua", R"(
+        local ok, why = pcall(reskate.world.physics.create, {})
+        assert(not ok and string.find(why, "client phase only"))
+        ok, why = pcall(reskate.world.physics.probe_batch, {}, {}, {})
+        assert(not ok and string.find(why, "client phase only"))
+    )"}});
+    server.apply({server_plugin});
+    running(server, "server-body", server_environment);
+    check(server_environment.fake.body_creates == 0, "server reached native body creation");
+}
+
+std::string batch_main(std::string body) {
+    return R"(
+        local P, v = reskate.world.physics, vector.create
+        local d = {mass = 12, inertia = v(2, 3, 4), position = v(0, 2, 0), rotation = {0, 0, 0, 1}, capsules = {{a = v(0, 0, 0), b = v(0, .5, 0), radius = .1}}}
+        local h, other = assert(P.create(d)), assert(P.create(d))
+        local sample = assert(P.read(h))
+        local epoch = sample.epoch
+        local ray = {from = v(0, 2, 0), to = v(0, -2, 0)}
+        local function rays(n) local out = {} for i = 1, n do out[i] = ray end return out end
+        local function unavailable(out, reason)
+            assert(out.status == "unavailable" and out.reason == reason, tostring(out.reason))
+            for _, r in out.rays do assert(r.status == "unavailable" and not r.position and not r.fraction and not r.body and not r.motion) end
+        end
+    )" + body;
+}
+
+void body_contact_details_are_known_and_epoch_bound() {
+    body_query::Request last;
+    unsigned corruptions{};
+    const auto load = [&](const char* id, int mode, bool clear, std::string assertions) {
+        // Each case starts a fresh synthetic native world. Retained body slots
+        // are never erased/recycled merely to make another case fit.
+        TestEnvironment environment;
+        Host host(environment, Side::client);
+        auto& game = environment.fake;
+        game.batch_contact_mode = mode;
+        game.batch_clear = clear;
+        host.apply({script(id, batch_main(assertions), R"("world.physics","world.raycast")")});
+        running(host, id, environment);
+        last = game.last_batch;
+        corruptions += game.batch_available_corruptions;
+        check(game.body_submissions == 0, "contact reads submitted body commands");
+    };
+    load("contact-measured", 1, false, R"(
+        local out = P.probe_batch(h, epoch, rays(1), {require_contact = true, exclude_local_actor = true})
+        -- The constructed backend runs the batch but establishes no actor exclusion,
+        -- and the binding reports the backend's fact, never the request's flag.
+        assert(out.status == "available" and out.epoch == epoch and out.local_actor_excluded == false and out.owned_bodies_excluded)
+        local hit = out.rays[1]
+        assert(hit.motion == "measured" and hit.normal_available and hit.normal == v(0, 1, 0))
+        assert(hit.surface_velocity_available and hit.surface_velocity == v(2, 0, -1))
+        assert(not pcall(P.probe_batch, h, epoch, rays(1), {require_contact = 1}))
+    )");
+    check(last.require_contact && last.exclude_local_actor, "contact options were dropped");
+    load("contact-unknown", 0, false, R"(
+        unavailable(P.probe_batch(h, epoch, rays(1), {require_contact = true}), "contact_measurement_unavailable")
+        local out = P.probe_batch(h, epoch, rays(1))
+        assert(out.status == "available" and out.epoch == epoch and not out.local_actor_excluded)
+        assert(out.rays[1].normal_available == false and out.rays[1].surface_velocity_available == false)
+        assert(not out.rays[1].normal and not out.rays[1].surface_velocity)
+    )");
+    for (int mode = 2; mode <= 6; ++mode) {
+        load(("contact-malformed-" + std::to_string(mode)).c_str(), mode, false, R"(
+            unavailable(P.probe_batch(h, epoch, rays(1), {require_contact = true}), "invalid_query_backend_result")
+        )");
+    }
+    check(corruptions == 3, "binding guard was not given all three malformed AVAILABLE backend results");
+    load("contact-clear", 1, true, R"(
+        local out = P.probe_batch(h, epoch, rays(1), {require_contact = true})
+        assert(out.status == "available" and out.rays[1].status == "clear")
+        assert(not out.rays[1].normal and not out.rays[1].surface_velocity)
+    )");
+}
+
+// A named query preset is a request option, not a claim about the result. A call
+// without it keeps the exact earlier result fields; an explicit preset adds only
+// the echo of what was asked, on a hit, a clear and a refusal alike.
+void owned_body_batches_select_a_named_query_preset() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    auto& game = environment.fake;
+    host.apply({script("preset-no-ray", R"(
+        local ok, why = pcall(reskate.world.physics.probe_batch, {}, {}, {}, {query_preset = "terrain"})
+        assert(not ok and why:find("world.raycast"))
+        reskate.log("query preset without world.raycast denied")
+    )", R"("world.physics")"), script("preset-batch", batch_main(R"(
+        local fields = {status = true, reason = true, native_casts = true, budget_exhausted = true, epoch = true,
+            local_actor_excluded = true, owned_bodies_excluded = true, rays = true}
+        local function shape(out, echo)
+            local n = 0
+            for k in out do
+                n += 1
+                assert(fields[k] or (echo and k == "requested_query_preset"), "unexpected batch field " .. tostring(k))
+            end
+            assert(n == (out.reason and 8 or 7) + (echo and 1 or 0), "batch field count " .. n)
+            assert(out.requested_query_preset == echo, "request echo " .. tostring(out.requested_query_preset))
+        end
+        reskate.console.command("preset-default", "", function()
+            local out = P.probe_batch(h, epoch, rays(1))
+            assert(out.status == "available")
+            shape(out, nil)
+            out = P.probe_batch(h, epoch, rays(1), {require_contact = false, exclude_local_actor = false})
+            assert(out.status == "available")
+            shape(out, nil)
+        end)
+        reskate.console.command("preset-hit", "", function(args)
+            local out = P.probe_batch(h, epoch, rays(2), {query_preset = args[1]})
+            assert(out.status == "available" and out.native_casts == 2 and not out.local_actor_excluded)
+            shape(out, args[1])
+            for _, r in out.rays do assert(r.status == "hit" and r.position == v(0, 0, 0) and r.fraction == .5 and r.motion == "unknown") end
+        end)
+        reskate.console.command("preset-clear", "", function()
+            local out = P.probe_batch(h, epoch, rays(1), {query_preset = "terrain", require_contact = true})
+            assert(out.status == "available")
+            shape(out, "terrain")
+            local r = out.rays[1]
+            assert(r.status == "clear" and not r.position and not r.normal and not r.surface_velocity and not r.body and not r.motion)
+        end)
+        reskate.console.command("preset-refused", "", function()
+            local out = P.probe_batch(h, epoch, rays(1), {query_preset = "terrain", exclude_local_actor = true})
+            unavailable(out, "local_actor_exclusion_unavailable")
+            shape(out, "terrain")
+            assert(out.native_casts == 0 and out.local_actor_excluded == false and out.owned_bodies_excluded == false)
+        end)
+        reskate.console.command("preset-contact", "", function(args)
+            local out = P.probe_batch(h, epoch, rays(1), {query_preset = "terrain", require_contact = true})
+            shape(out, "terrain")
+            if args[1] == "missing" then unavailable(out, "contact_measurement_unavailable") return end
+            local r = out.rays[1]
+            assert(out.status == "available" and r.motion == "measured" and r.normal == v(0, 1, 0))
+            assert(r.surface_velocity_available and r.surface_velocity == v(2, 0, -1), "moving measured surface lost its velocity")
+        end)
+        reskate.console.command("preset-invalid", "", function()
+            for _, bad in {"Terrain", "TERRAIN", "static", "", "terrain" .. string.char(0), "camera ", 1, 0, true, {}, function() end} do
+                assert(not pcall(P.probe_batch, h, epoch, rays(1), {query_preset = bad}), "preset " .. tostring(bad))
+            end
+            assert(not pcall(P.probe_batch, h, epoch, rays(1), {query_mask = 1}), "raw mask option")
+            assert(not pcall(P.probe_batch, h, epoch, rays(1), {filter = 1, query_preset = "terrain"}), "raw filter beside a preset")
+            assert(not pcall(P.probe_batch, h, epoch, rays(1), {query_presets = "terrain"}), "misspelled option")
+            assert(not pcall(P.probe_batch, h, {}, rays(1), {query_preset = "terrain"}), "forged epoch with a preset")
+            assert(not pcall(P.probe_batch, other, epoch, rays(1), {query_preset = "terrain"}), "another body's epoch with a preset")
+            assert(not pcall(P.probe_batch, epoch, epoch, rays(1), {query_preset = "terrain"}), "an epoch is not a body")
+        end)
+        reskate.log("query preset batches ready")
+    )"), R"("world.physics","world.raycast","console")")});
+    running(host, "preset-no-ray", environment);
+    running(host, "preset-batch", environment);
+    check(environment.logged("query preset without world.raycast denied") && environment.logged("query preset batches ready") &&
+        !game.batch_calls, environment.all());
+    check(host.run_console("preset-default") && game.batch_calls == 2 && game.last_batch.preset == body_query::QueryPreset::camera,
+        "a batch without a preset changed its result fields or left camera\n" + environment.all());
+    for (const auto preset : {body_query::QueryPreset::terrain, body_query::QueryPreset::camera}) {
+        ticks(host, environment, 1);
+        const auto calls = game.batch_calls;
+        check(host.run_console(std::string("preset-hit ") + body_query::name(preset)) && game.batch_calls == calls + 1 &&
+            game.last_batch.preset == preset, std::string("explicit preset did not reach the backend: ") + body_query::name(preset) + "\n" + environment.all());
+    }
+    ticks(host, environment, 1);
+    game.batch_clear = true;
+    check(host.run_console("preset-clear") && game.last_batch.preset == body_query::QueryPreset::terrain && game.last_batch.require_contact,
+        "terrain clear invented geometry or lost its options\n" + environment.all());
+    game.batch_clear = false;
+    ticks(host, environment, 1);
+    game.batch_refusal = body_query::Failure::local_actor_exclusion_unavailable;
+    auto casts = game.native_casts;
+    check(host.run_console("preset-refused") && game.last_batch.preset == body_query::QueryPreset::terrain &&
+        game.last_batch.exclude_local_actor && game.native_casts == casts,
+        "a terrain request echo became actor exclusion or spent a cast\n" + environment.all());
+    game.batch_refusal = body_query::Failure::none;
+    ticks(host, environment, 1);
+    check(host.run_console("preset-contact missing"), "terrain admitted a hit without contact measurements\n" + environment.all());
+    ticks(host, environment, 1);
+    game.batch_contact_mode = 1;
+    check(host.run_console("preset-contact measured") && game.last_batch.preset == body_query::QueryPreset::terrain,
+        "terrain lost a measured moving contact\n" + environment.all());
+    game.batch_contact_mode = 0;
+    ticks(host, environment, 1);
+    const auto calls = game.batch_calls;
+    casts = game.native_casts;
+    check(host.run_console("preset-invalid") && game.batch_calls == calls && game.native_casts == casts,
+        "a rejected preset option reached the backend\n" + environment.all());
+    // Another VM's owner or a stale generation is refused with a preset set, before any cast.
+    auto request = game.last_batch;
+    request.preset = body_query::QueryPreset::terrain;
+    const auto owner = game.owned.at(1).owner;
+    casts = game.native_casts;
+    auto refused = game.body_probe_batch(owner + 1, {1, 0}, request, 64);
+    check(!refused.available && !refused.native_casts && game.native_casts == casts, "another VM's body was queried with a preset");
+    refused = game.body_probe_batch(owner, {1, 7}, request, 64);
+    check(!refused.available && !refused.native_casts && game.native_casts == casts, "a stale body generation was queried with a preset");
+}
+
+void owned_body_batches_are_permissioned_opaque_and_transactional() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({script("batch-no-ray", R"(
+        local ok, why = pcall(reskate.world.physics.probe_batch, {}, {}, {}, {require_contact = true})
+        assert(not ok and why:find("world.raycast"))
+    )", R"("world.physics")"), script("batch-no-body", R"(
+        local ok, why = pcall(reskate.world.physics.probe_batch, {}, {}, {}, {require_contact = true})
+        assert(not ok and why:find("world.physics"))
+    )", R"("world.raycast")"), script("body-batch", batch_main(R"(
+        local out = P.probe_batch(h, epoch, rays(2), {exclude_bodies = {other, h}, exclude_local_actor = true})
+        assert(out.status == "available" and out.native_casts == 2 and #out.rays == 2 and not out.reason)
+        assert(out.local_actor_excluded == false, "a request flag alone became an exclusion fact")
+        local a, b = out.rays[1], out.rays[2]
+        assert(a.status == "hit" and a.position == v(0, 0, 0) and a.fraction == .5 and a.motion == "unknown")
+        assert(b.status == "hit" and a.body == nil and b.body == nil, "a hit carries no body token")
+        assert(not a.normal and not a.velocity and not a.surface_velocity and not a.feature and not a.world)
+        assert(not pcall(P.probe_batch, h, {}, rays(1)) and not pcall(P.probe_batch, other, epoch, rays(1)), "epoch transplant")
+        local next = P.probe_batch(h, epoch, rays(1))
+        assert(next.status == "available" and next.rays[1].body == nil)
+        assert(not pcall(P.probe_batch, h, epoch, {}) and not pcall(P.probe_batch, h, epoch, rays(33)), "batch bound")
+        assert(not pcall(P.probe_batch, h, epoch, {ray, raw_pointer = 123}), "array keys")
+        assert(not pcall(P.probe_batch, h, epoch, {{from = ray.from, to = ray.to, normal = v(0, 1, 0)}}), "geometry policy input")
+        assert(not pcall(P.probe_batch, h, epoch, {{from = ray.from, to = ray.from}}), "zero ray")
+        assert(not pcall(P.probe_batch, h, epoch, {{from = ray.from, to = v(0 / 0, 0, 0)}}), "nonfinite ray")
+        assert(not pcall(P.probe_batch, h, epoch, rays(1), {exclude_bodies = {123}}), "raw native exclusion")
+        assert(not pcall(P.probe_batch, h, epoch, rays(1), {exclude_bodies = {[2] = other}}), "sparse exclusion")
+        assert(not pcall(P.probe_batch, h, epoch, rays(1), {exclude_local_actor = 1}), "boolean actor switch")
+        assert(not pcall(P.probe_batch, h, epoch, rays(1), {native_world = 1}), "no native world option")
+        assert(not pcall(P.probe_batch, h, epoch, rays(1), {["exclude_bodies" .. string.char(0) .. "raw"] = {}}), "NUL option name")
+        assert(not pcall(P.probe_batch, h, epoch, rays(1), {}, {}), "extra arguments")
+        assert(P.submit(h, epoch, {force = v(0, 20, 0)}), "query did not consume command epoch")
+        local first = assert(P.receipt(h))
+        assert(P.probe_batch(h, epoch, rays(1)).status == "available")
+        local after = assert(P.receipt(h))
+        assert(after.sequence == first.sequence and after.outcome == "queued" and not after.successor, "query consumed pending packet")
+        reskate.console.command("batch-pending", "", function()
+            assert(P.probe_batch(h, epoch, rays(1)).status == "available")
+        end)
+        reskate.console.command("batch-excluded", "", function()
+            unavailable(P.probe_batch(h, epoch, rays(1), {exclude_bodies = {other}}), "body_epoch_or_observation_changed")
+            assert(P.receipt(h).sequence == first.sequence and P.receipt(h).outcome == "queued")
+        end)
+        reskate.log("owned batch API verified")
+    )"), R"("world.physics","world.raycast","console")")});
+    running(host, "batch-no-ray", environment);
+    running(host, "batch-no-body", environment);
+    running(host, "body-batch", environment);
+    check(environment.logged("owned batch API verified") && environment.fake.batch_calls == 3, environment.all());
+    auto& game = environment.fake;
+    const auto mailbox = game.owned.at(1).mailbox;
+    check(host.run_console("batch-pending"), "query while a packet is pending");
+    const auto& after = game.owned.at(1).mailbox;
+    check(after.pending && after.count == mailbox.count && after.sequence == mailbox.sequence && after.last_submitted == mailbox.last_submitted &&
+        after.command.epoch == mailbox.command.epoch && after.oldest().outcome == mailbox.oldest().outcome && !after.oldest().successor_available,
+        "read-only query changed command/receipt state");
+    game.owned.at(2).sample.epoch.world = 78;
+    const auto casts = game.native_casts;
+    check(host.run_console("batch-excluded") && game.native_casts == casts, "foreign-world exclusion reached native query");
+    auto request = game.last_batch;
+    const auto owner = game.owned.at(1).owner;
+    auto refused = game.body_probe_batch(owner + 1, {1, 0}, request, 64);
+    check(!refused.available && !refused.native_casts && game.native_casts == casts, "another VM adopted an owned exclusion/anchor");
+    refused = game.body_probe_batch(owner, {1, 7}, request, 64);
+    check(!refused.available && !refused.native_casts && game.native_casts == casts, "stale handle generation/slot reached query");
+    Game portable;
+    check(!portable.body_probe_batch(1, {1, 0}, {}, 64).available && !portable.world_probe_bounded({}, {}, 64).probe.available &&
+        !portable.world_probe_bounded({}, {}, 64).native_casts && !portable.world_pick({}, {}),
+        "portable backend fabricated collision or native calls");
+}
+void owned_body_batches_share_actual_and_logical_query_limits() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    auto& game = environment.fake;
+    game.body_list = {{9, {{1, {1, 0, 0}, {1, 2, 0}, .16f}}}};
+    game.probe_result = {true, false};
+    game.query_cast_cost = game.probe_cast_cost = 2;
+    host.apply({script("batch-budget", batch_main(R"(
+        local from, to = v(0, 1, 0), v(10, 1, 0)
+        local down, ground = v(0, 1, 0), v(0, -1, 0)
+        local function upstream_rays(when)
+            assert(reskate.world.pick(from, to), "world.pick " .. when)
+            assert(reskate.world.raycast(down, ground) == v(0, 0, 0) and not reskate.world.raycast(from, to), "world.raycast " .. when)
+            local player = reskate.session.raycast(from, to)
+            assert(player and player.player == "9" and math.abs(player.distance - 0.84) < 1e-4, "session.raycast " .. when)
+        end
+        reskate.console.command("batch-mixed", "", function()
+            for i = 1, 4 do assert(reskate.world.probe(from, to).status == "clear") end
+            upstream_rays("before the native casts are spent")
+            local batch = P.probe_batch(h, epoch, rays(28))
+            assert(batch.status == "available" and batch.native_casts == 56)
+            unavailable(P.probe_batch(h, epoch, rays(1)), "native_cast_budget_exhausted")
+            assert(reskate.world.probe(from, to).status == "unavailable")
+            -- The native cast budget is world.probe's and probe_batch's alone. The rays plugins
+            -- already had still count only as raycasts, and answer as they always did.
+            upstream_rays("after the native casts are spent")
+        end)
+        reskate.console.command("batch-zero", "", function()
+            unavailable(P.probe_batch(h, epoch, rays(32)), "query_preconditions_unavailable")
+            unavailable(P.probe_batch(h, epoch, rays(32)), "query_preconditions_unavailable")
+            local ok, why = pcall(P.probe_batch, h, epoch, rays(1))
+            assert(not ok and why:find("more than 64 raycasts"), "each input ray spends logical budget")
+            assert(not pcall(reskate.world.probe, from, to) and not pcall(reskate.session.raycast, from, to, {world = false}))
+        end)
+        reskate.console.command("batch-partial", "", function()
+            for i = 1, 61 do reskate.world.probe(from, to) end
+            local batch = P.probe_batch(h, epoch, rays(2))
+            unavailable(batch, "native_cast_budget_exhausted")
+            assert(batch.native_casts == 3 and batch.budget_exhausted, "last allowed cast is counted")
+        end)
+        reskate.console.command("batch-once", "", function(args)
+            local batch = P.probe_batch(h, epoch, rays(2))
+            unavailable(batch, args[1])
+            if args[1] == "invalid_query_backend_result" or args[1] == "query_backend_exception" then
+                assert(not batch.native_casts, "invalid backend count is not a measured count")
+                unavailable(P.probe_batch(h, epoch, rays(1)), "native_cast_budget_exhausted")
+            else assert(batch.native_casts == tonumber(args[2])) end
+        end)
+        reskate.console.command("batch-refusal-budget", "", function()
+            local batch = P.probe_batch(h, epoch, rays(2))
+            unavailable(batch, "body_exclusions_unavailable")
+            assert(batch.native_casts == 0 and not batch.budget_exhausted)
+            for i = 1, 32 do assert(reskate.world.probe(from, to).status == "clear") end
+            assert(reskate.world.probe(from, to).status == "unavailable", "zero-cast refusal must leave all 64 native casts")
+        end)
+        reskate.console.command("batch-clear", "", function()
+            local batch = P.probe_batch(h, epoch, rays(32))
+            assert(batch.status == "available" and batch.native_casts == 64)
+            for _, r in batch.rays do assert(r.status == "clear" and not r.position and not r.body and not r.motion) end
+        end)
+        reskate.console.command("batch-unknown", "", function()
+            local batch = P.probe_batch(h, epoch, rays(1))
+            assert(batch.status == "available" and batch.rays[1].status == "hit" and batch.rays[1].motion == "unknown" and not batch.rays[1].body)
+        end)
+        reskate.console.command("batch-expired", "", function()
+            unavailable(P.probe_batch(h, epoch, rays(1)), "body_epoch_or_observation_changed")
+            assert(not P.submit(h, epoch, {}), "query must not relabel an expired epoch")
+        end)
+        reskate.console.command("batch-latest", "", function(args)
+            local pending
+            if args[1] == "read" then
+                assert(P.read(h).serial == sample.serial, "fixture keeps listener epoch")
+            else
+                pending = assert(P.receipt(h))
+                assert(pending.outcome == "applied" and not pending.successor and pending.produced_serial == sample.serial,
+                    "receipt refresh occurs while waiting for a later successor")
+            end
+            local out = P.probe_batch(h, epoch, rays(2))
+            unavailable(out, "body_epoch_or_observation_changed")
+            assert(out.native_casts == 0, "new latest cannot rebind the immutable old sample")
+            if pending then
+                local after = assert(P.receipt(h, pending.sequence))
+                assert(after.outcome == "applied" and not after.successor and after.produced_serial == pending.produced_serial)
+            end
+        end)
+    )"), R"("world.physics","world.raycast","session.skaters","console")")});
+    running(host, "batch-budget", environment);
+    const auto picks_before = game.world_picks, probes_before = game.probes;
+    const auto rays_before = environment.rays;
+    check(host.run_console("batch-mixed") && game.native_casts == 64 && game.batch_calls == 1 && game.probes == probes_before + 4,
+        "world.probe and batches escaped their 64 native casts, or a probe past them reached its backend\n" + environment.all());
+    check(game.world_picks == picks_before + 2 && environment.rays == rays_before + 6,
+        "spending the native casts kept world.pick, world.raycast or session.raycast's wall check from its backend\n" + environment.all());
+    ticks(host, environment, 1);
+    game.query_cast_cost = 0;
+    auto before = game.batch_calls;
+    auto casts = game.native_casts;
+    check(host.run_console("batch-zero") && game.batch_calls == before + 2 && game.native_casts == casts, "zero-call unavailable batches escaped logical cap\n" + environment.all());
+    ticks(host, environment, 1);
+    game.batch_change_after = true;
+    check(host.run_console("batch-once body_epoch_or_observation_changed 0") && game.native_casts == casts,
+        "zero-cast precondition reason overrode the post-query observation fence\n" + environment.all());
+    game.batch_change_after = false;
+    for (const auto reason : {body_query::Failure::client_phase_unavailable, body_query::Failure::local_actor_exclusion_unavailable,
+        body_query::Failure::body_exclusions_unavailable}) {
+        ticks(host, environment, 1);
+        game.batch_refusal = reason;
+        casts = game.native_casts;
+        check(host.run_console(std::string("batch-once ") + body_query::name(reason) + " " + std::to_string(game.batch_refusal_casts)) &&
+            game.native_casts == casts + game.batch_refusal_casts && !game.owned.at(1).mailbox.pending &&
+            !game.owned.at(1).mailbox.count && !game.owned.at(1).mailbox.failed && !game.body_submissions,
+            "typed backend refusal was lost, invented geometry or mutated command state\n" + environment.all());
+    }
+    ticks(host, environment, 1);
+    game.batch_refusal = body_query::Failure::body_exclusions_unavailable;
+    game.query_cast_cost = 2;
+    casts = game.native_casts;
+    const bool refusal_budget_command = host.run_console("batch-refusal-budget");
+    check(refusal_budget_command && game.native_casts == casts + 64 && !game.body_submissions,
+        "known zero-cast exclusion refusal poisoned or spent the shared native allowance\n" + environment.all());
+    for (const auto reason : {body_query::Failure::query_backend_exception, body_query::Failure::unavailable}) {
+        ticks(host, environment, 1);
+        game.batch_refusal = reason;
+        game.batch_refusal_casts = 2;
+        game.batch_refusal_accounting_valid = false;
+        before = game.batch_calls;
+        casts = game.native_casts;
+        const auto expected = reason == body_query::Failure::query_backend_exception ? "query_backend_exception" : "invalid_query_backend_result";
+        check(host.run_console(std::string("batch-once ") + expected + " 0") && game.batch_calls == before + 1 &&
+            game.native_casts == casts + 2 && !game.owned.at(1).mailbox.pending && !game.owned.at(1).mailbox.count &&
+            !game.owned.at(1).mailbox.failed && !game.body_submissions,
+            "unknown catch accounting lost its reason, exposed a count or failed to close the remaining budget\n" + environment.all());
+    }
+    game.batch_refusal = body_query::Failure::none;
+    game.batch_refusal_casts = 0;
+    game.batch_refusal_accounting_valid = true;
+    ticks(host, environment, 1);
+    game.query_cast_cost = 2;
+    game.probe_cast_cost = 1;
+    casts = game.native_casts;
+    check(host.run_console("batch-partial") && game.native_casts == casts + 64, "partial batch retry overspent cap\n" + environment.all());
+    ticks(host, environment, 1);
+    game.batch_change_after = true;
+    check(host.run_console("batch-once body_epoch_or_observation_changed 4"), "post-query fence did not discard whole batch\n" + environment.all());
+    ticks(host, environment, 1);
+    game.batch_change_after = false;
+    game.batch_failure_ray = 1;
+    check(host.run_console("batch-once query_unavailable 4"), "partial unavailable geometry escaped\n" + environment.all());
+    ticks(host, environment, 1);
+    game.batch_failure_ray = std::numeric_limits<unsigned>::max();
+    game.query_cast_cost = 3;
+    check(host.run_console("batch-once ray_cast_limit_exhausted 2"), "per-ray two-cast bound waived\n" + environment.all());
+    ticks(host, environment, 1);
+    game.query_cast_cost = 2;
+    game.batch_bad_count = true;
+    before = game.batch_calls;
+    check(host.run_console("batch-once invalid_query_backend_result 0") && game.batch_calls == before + 1, "malformed backend accounting did not close tick\n" + environment.all());
+    ticks(host, environment, 1);
+    game.batch_bad_count = false;
+    game.batch_clear = true;
+    check(host.run_console("batch-clear"), "all-clear full batch failed\n" + environment.all());
+    ticks(host, environment, 1);
+    game.batch_clear = false;
+    check(host.run_console("batch-unknown"), "a hit carried a body token\n" + environment.all());
+    const auto canonical = game.last_batch.observation;
+    auto& selected = game.owned.at(1);
+    const auto sequence = game.body_command_sequence;
+    for (unsigned field = 1; field <= 4; ++field) {
+        ticks(host, environment, 1);
+        selected.sample = selected.latest = canonical;
+        game.batch_drift_field = field;
+        check(host.run_console("batch-once body_epoch_or_observation_changed 4") && body_query::same_sample(selected.latest, canonical) &&
+            selected.sample.epoch == canonical.epoch && !selected.mailbox.pending && !selected.mailbox.count && game.body_command_sequence == sequence,
+            "same-epoch native pose/velocity drift escaped or query published its read-only observation\n" + environment.all());
+    }
+    game.batch_drift_field = 0;
+    ticks(host, environment, 1);
+    selected.sample = selected.latest = canonical;
+    selected.sample.velocity[0] = .001f;
+    casts = game.native_casts;
+    check(host.run_console("batch-once body_epoch_or_observation_changed 0") && game.native_casts == casts && body_query::same_sample(selected.latest, canonical),
+        "pre-query native drift was relabeled as a canonical same-epoch sample\n" + environment.all());
+    for (const char* route : {"batch-latest read", "batch-latest receipt"}) {
+        ticks(host, environment, 1);
+        selected.sample = selected.latest = canonical;
+        selected.sample.position[2] += .001f;
+        casts = game.native_casts;
+        const bool receipt = std::string_view(route).ends_with("receipt");
+        if (receipt) {
+            // Requested99 -> produced100 is applied but cannot be confirmed by another
+            // serial100 observation. Receipt must still reread native pose and replace latest.
+            owned_body::Command prior;
+            prior.epoch = canonical.epoch;
+            --prior.epoch.serial;
+            prior.epoch.time -= prior.epoch.seconds;
+            owned_body::Command applied;
+            check(selected.mailbox.submit(prior, prior.epoch, 0, 1) && selected.mailbox.consume(canonical.epoch, 1, applied) &&
+                selected.mailbox.finish(true, true, true) && selected.mailbox.needs_successor(), "applied/unmeasured receipt setup");
+        }
+        check(host.run_console(route) && game.native_casts == casts && body_query::same_sample(selected.latest, selected.sample) &&
+            !body_query::same_sample(selected.latest, canonical) && selected.latest.epoch == canonical.epoch && selected.mailbox.count == (receipt ? 1u : 0u) &&
+            (!receipt || (selected.mailbox.oldest().outcome == owned_body::Outcome::applied && !selected.mailbox.oldest().successor_available)),
+            "same-epoch read/receipt latest replacement rebound an older immutable query token\n" + environment.all());
+    }
+    selected.sample = selected.latest = canonical;
+    ticks(host, environment, 1);
+    game.body_producer_step();
+    casts = game.native_casts;
+    check(host.run_console("batch-expired") && game.native_casts == casts && game.body_submissions == 0, "expired query mutated command admission\n" + environment.all());
+    running(host, "batch-budget", environment);
 }
 
 void a_plugin_loads_ticks_runs_its_commands_and_unloads() {
@@ -1004,6 +2537,21 @@ void a_permission_must_be_declared() {
         assert(not ok and err:find("needs the \"board\" permission"), err)
         ok, err = pcall(reskate.board.parameters, "deck")
         assert(not ok and err:find("needs the \"board\" permission"), err)
+        ok, err = pcall(reskate.strings.set, "ID_MENU_PLAY", "Play")
+        assert(not ok and err:find("needs the \"strings\" permission"), err)
+        ok, err = pcall(reskate.strings.set_many, {ID_MENU_PLAY = "Play"})
+        assert(not ok and err:find("needs the \"strings\" permission"), err)
+        ok, err = pcall(reskate.strings.exists, "ID_MENU_PLAY")
+        assert(not ok and err:find("needs the \"strings\" permission"), err)
+        ok, err = pcall(reskate.strings.set_case_rules, "tr")
+        assert(not ok and err:find("needs the \"strings\" permission"), err)
+        assert(reskate.strings.hash("ID_MENU_PLAY"):sub(1, 1) == "#", "a hash is computed freely")
+        ok, err = pcall(reskate.board.scale, 6, 1.5)
+        assert(not ok and err:find("needs the \"board\" permission"), err)
+        ok, err = pcall(reskate.input.joysticks)
+        assert(not ok and err:find("needs the \"input\" permission"), err)
+        ok, err = pcall(reskate.input.joystick, 1)
+        assert(not ok and err:find("needs the \"input\" permission"), err)
         reskate.console.print("never")
     )")});
     stopped(host, "bare", "raised an error");
@@ -1222,6 +2770,90 @@ void a_plugin_reloads_when_its_files_change() {
     running(host, "live", environment);
     check(host.reload("live").find("reloaded") != std::string::npos, "and reloaded by hand");
     check(host.reload("nobody").starts_with("error: "), "A plugin that is not there cannot be");
+}
+
+void plugins_distinguish_clear_unavailable_and_hit_world_probes() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({script("bare-probe", R"(
+        local ok, why = pcall(reskate.world.probe, vector.create(1, 2, 3), vector.create(1, -2, 3))
+        assert(not ok and why:find("world.raycast"), tostring(why))
+        reskate.log("probe permission refused")
+    )"), script("surface", R"(
+        local from, to = vector.create(1, 2, 3), vector.create(1, -2, 3)
+        local function fields(result)
+            for key in pairs(result) do
+                assert(key == "status" or key == "position" or key == "fraction", "no unqualified native fields")
+            end
+            assert(result.normal == nil and result.surface_velocity == nil and result.world == nil and result.body == nil)
+        end
+        reskate.console.command("surface", "x", function(args)
+            local result = reskate.world.probe(from, to)
+            fields(result)
+            assert(result.status == args[1], "distinct probe status: " .. result.status)
+            if result.status == "hit" then
+                assert(result.position == vector.create(1, 0, 3) and result.fraction == 0.5, "actual hit fields")
+            else
+                assert(result.position == nil and result.fraction == nil, "only hits carry geometry")
+            end
+            reskate.log("surface " .. args[1])
+        end)
+        reskate.console.command("surface-bad", "x", function()
+            assert(not pcall(reskate.world.probe, vector.create(0 / 0, 0, 0), to), "NaN")
+            assert(not pcall(reskate.world.probe, from, vector.create(math.huge, 0, 0)), "infinity")
+            assert(not pcall(reskate.world.probe, vector.create(100001, 0, 0), to), "outside map bounds")
+            assert(not pcall(reskate.world.probe, {1, 2, 3}, to), "a vector is required")
+            assert(not pcall(reskate.world.probe, vector.create(0, 0, 0), vector.create(1001, 0, 0)), "ray length")
+            assert(not pcall(reskate.world.probe, from, to, 1234), "no native handle or exclusion argument")
+            local empty = reskate.world.probe(from, from)
+            assert(empty.status == "unavailable" and empty.position == nil and empty.fraction == nil, "zero length is not clear")
+            reskate.log("bad probe inputs refused")
+        end)
+        reskate.console.command("surface-budget", "x", function()
+            for i = 1, 32 do reskate.world.probe(from, to) end
+            for i = 1, 16 do reskate.world.raycast(from, to) end
+            for i = 1, 16 do reskate.world.pick(from, to) end
+            local ok, why = pcall(reskate.world.probe, from, to)
+            assert(not ok and why:find("more than 64 raycasts"), "one shared raycast limit")
+            assert(not pcall(reskate.world.raycast, from, to) and not pcall(reskate.world.pick, from, to), "old APIs share the cap")
+            reskate.log("probe shared budget refused")
+        end)
+    )", R"("console", "world.raycast")")});
+    running(host, "bare-probe", environment);
+    running(host, "surface", environment);
+    auto& game = environment.fake;
+    check(game.probes == 0 && environment.logged("probe permission refused"), "Permission denial never reaches the backend");
+    check(host.run_console("surface unavailable"), "The default backend is unavailable");
+    game.probe_result = {true, false, {std::numeric_limits<float>::quiet_NaN(), 0, 0}, std::numeric_limits<float>::infinity()};
+    check(host.run_console("surface clear"), "A successful miss stays distinct and exposes no hit fields");
+    game.probe_result = {true, true, {1, 0, 3}, 0.5f};
+    check(host.run_console("surface hit") && game.probe_from == Vec3{1, 2, 3} && game.probe_to == Vec3{1, -2, 3},
+          "The actual segment and hit pass through the generic Game method");
+    const float nan = std::numeric_limits<float>::quiet_NaN(), inf = std::numeric_limits<float>::infinity();
+    const Game::WorldProbe malformed[] = {
+        {true, true, {nan, 0, 3}, .5f}, {true, true, {inf, 0, 3}, .5f},
+        {true, true, {1, 0, 3}, nan}, {true, true, {1, 0, 3}, inf},
+        {true, true, {1, 0, 3}, -.1f}, {true, true, {1, 0, 3}, 1.1f},
+        {true, true, {2, 0, 3}, .5f}, {true, true, {100001, 0, 3}, .5f},
+    };
+    for (const auto& value : malformed) {
+        game.probe_result = value;
+        check(host.run_console("surface unavailable"), "Malformed backend hits are unavailable, not clear or geometry");
+    }
+    const auto before_bad = game.probes;
+    check(host.run_console("surface-bad") && environment.logged("bad probe inputs refused") && game.probes == before_bad,
+          "Invalid and zero-length inputs never reach the native query adapter");
+    ticks(host, environment, 1);
+    const auto before_budget = game.probes;
+    const auto rays_before = environment.rays;
+    const auto picks_before = game.world_picks;
+    check(host.run_console("surface-budget") && environment.logged("probe shared budget refused") && game.probes == before_budget + 32 &&
+          environment.rays == rays_before + 16 && game.world_picks == picks_before + 16,
+          "world.probe shares world.raycast and world.pick's 64 raycasts a tick, and refused calls never reach their backend");
+    ticks(host, environment, 1);
+    game.probe_result = {};
+    check(host.run_console("surface unavailable") && game.probes == before_budget + 33, "A new tick renews the query budget");
+    running(host, "surface", environment);
 }
 
 void the_skater_can_be_read_moved_and_the_world_probed() {
@@ -1463,6 +3095,67 @@ void plugins_have_what_a_prop_hunt_needs() {
     check(game.called("entity prophunt 3 World/Props/TrashCan_01 0.00 0.00 0.00 0.00 on 0 7 held ground 1.5 ghost"), "on the floor and not solid\n" + environment.all());
 }
 
+// A viewmodel (a shooter's arms and gun): loaded from the package, shown with a placement, its clips
+// played, a bone read back; one plugin's at a time, given up when it stops, and only with the permission.
+void plugins_show_a_viewmodel() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    Host host(environment, Side::client);
+    const std::string main = R"(
+        assert(reskate.viewmodel.info() == nil, "nothing loaded yet")
+        assert(not reskate.viewmodel.show({}), "nothing to show")
+        assert(not pcall(reskate.viewmodel.load, "plugin/main.lua"), "a viewmodel is a .rsvm file")
+        assert(not pcall(reskate.viewmodel.load, "../other/gun.rsvm"), "inside the package")
+        assert(not pcall(reskate.viewmodel.load, "missing.rsvm"), "a file that is there")
+        assert(reskate.viewmodel.load("gun/pistol.rsvm"))
+        local info = reskate.viewmodel.info()
+        assert(info.status == "ready" and #info.clips == 2 and info.clips[1].name == "FPS_Pistol_Fire" and info.clips[1].duration == 0.25, "its clips")
+        assert(info.bones[2] == "Rif_end", "its bones")
+        assert(reskate.viewmodel.show({offset = vector.create(0.02, -0.01, 0.03), pitch = 4, roll = -2, fov = 55, ambient = 0.8, brightness = 1.2}))
+        assert(not pcall(reskate.viewmodel.show, {fov = 170}), "a lens of 20 to 120 degrees")
+        assert(not pcall(reskate.viewmodel.show, {offset = vector.create(0, 0, 9)}), "within 5 m of the eye")
+        assert(not pcall(reskate.viewmodel.show, {sky = 2}), "colours are vectors")
+        assert(reskate.viewmodel.play("FPS_Pistol_Fire", {speed = 1.5, fade = 0.05}))
+        assert(reskate.viewmodel.play("FPS_Pistol_Idle", {loop = true}))
+        local ok, why = reskate.viewmodel.play("Dance")
+        assert(not ok and why:find("no clip"), "a clip it does not have")
+        assert(not pcall(reskate.viewmodel.play, "FPS_Pistol_Fire", {speed = 20}), "speed 0 to 10")
+        local s = reskate.viewmodel.state()
+        assert(s.clip == "FPS_Pistol_Fire" and s.duration == 0.25 and not s.done, "what plays")
+        local muzzle = reskate.viewmodel.bone("Rif_end")
+        assert(muzzle and math.abs(muzzle.position.z - 0.4) < 1e-6 and muzzle.z.z == 1, "a bone in the view")
+        assert(reskate.viewmodel.bone("Nope") == nil)
+        reskate.viewmodel.stop()
+        assert(reskate.viewmodel.hide())
+        reskate.log("armed")
+    )";
+    host.apply({package("shooter", {{manifest_file, manifest(R"("viewmodel")")}, {"plugin/main.lua", main}, {"gun/pistol.rsvm", "RSVM"}})});
+    ticks(host, environment, 1);
+    running(host, "shooter", environment);
+    check(environment.logged("[shooter] armed"), "A viewmodel's calls work\n" + environment.all());
+    check(game.called("viewmodel load shooter pistol.rsvm") && game.called("viewmodel show shooter 0.02 -0.01 0.03 0 4 -2 55 0.8 1.2") &&
+              game.called("viewmodel play shooter FPS_Pistol_Fire false 1.5 0.05") && game.called("viewmodel play shooter FPS_Pistol_Idle true 1.0 0.10") &&
+              game.called("viewmodel stop shooter") && game.called("viewmodel hide shooter"),
+          "Loaded, shown where asked, played, stopped and hidden\n" + environment.all());
+    // Another plugin cannot take it while the first has it.
+    host.apply({package("shooter", {{manifest_file, manifest(R"("viewmodel")")}, {"plugin/main.lua", main}, {"gun/pistol.rsvm", "RSVM"}}),
+                package("rival", {{manifest_file, manifest(R"("viewmodel")")}, {"plugin/main.lua", R"(
+        local ok, why = reskate.viewmodel.load("gun.rsvm")
+        reskate.log(tostring(ok) .. " " .. tostring(why))
+    )"}, {"gun.rsvm", "RSVM"}})});
+    ticks(host, environment, 1);
+    check(environment.logged("[rival] false shooter has the viewmodel"), "One plugin's viewmodel at a time\n" + environment.all());
+    // Without the permission, none of it.
+    host.apply({package("sneaky", {{manifest_file, manifest()}, {"plugin/main.lua", R"(
+        reskate.log(tostring(pcall(reskate.viewmodel.load, "gun.rsvm")) .. " " .. tostring(pcall(reskate.viewmodel.show, {})) .. " " ..
+            tostring(pcall(reskate.viewmodel.play, "FPS_Pistol_Fire")) .. " " .. tostring(pcall(reskate.viewmodel.bone, "Rif_end")) .. " " ..
+            tostring(pcall(reskate.viewmodel.info)))
+    )"}, {"gun.rsvm", "RSVM"}})});
+    ticks(host, environment, 1);
+    check(environment.logged("[sneaky] false false false false false"), "viewmodel is needed\n" + environment.all());
+    check(game.viewmodeler.empty(), "Given up when its plugin stops\n" + environment.all());
+}
+
 // What a camera mode needs (the Filmer): an arm that reaches, where the hand is, cruise control, the
 // mouse, and the right stick and stick clicks kept from the game.
 
@@ -1540,6 +3233,22 @@ void controller_reports_preserve_non_controls() {
         replace_playstation_report(kind, bluetooth, bytes.data(), bytes.size(), pad);
         check((bytes[face + 1] & 0x0c) == 0, "low triggers clear their digital bits");
     }
+    // The current host reads padded DS4 Bluetooth reports and can apply a
+    // menu-preview hold after a plugin replacement. Keep both paths composable.
+    std::array<std::uint8_t, dualshock4_bluetooth_read_length> padded{}; padded.fill(0x5a); padded[0] = 0x11;
+    const auto padding_before = padded;
+    const PlayStationGamepad replacement{0x1000, 200, 0, -32768, 16000, 12000, -8000};
+    check(replace_playstation_report(PlayStationPad::dualshock4, true, padded.data(), padded.size(), replacement) &&
+          refresh_playstation_bluetooth_crc(padded.data(), padded.size()), "replacement reaches a padded DS4 Bluetooth report with a fresh CRC");
+    for (std::size_t i = playstation_bluetooth_report_length; i < padded.size(); ++i)
+        check(padded[i] == padding_before[i], "Windows report padding is retained");
+    check(set_playstation_stick(PlayStationPad::dualshock4, true, padded.data(), padded.size(), 0, 16000),
+          "upstream menu preview can override its one stick after a replacement");
+    const auto combined = parse_playstation_report(PlayStationPad::dualshock4, true, padded.data(), padded.size());
+    check(combined && combined->buttons == replacement.buttons && combined->right_trigger == 0 &&
+          std::abs(static_cast<int>(combined->left_x) - 16000) <= 258 &&
+          std::abs(static_cast<int>(combined->right_x) - replacement.right_x) <= 129,
+          "menu preview preserves the replacement's other controls");
     std::array<std::uint8_t,2> short_report{0x31, 0}; const auto before = short_report;
     check(!replace_playstation_report(PlayStationPad::dualsense, true, short_report.data(), short_report.size(), {}) && short_report == before,
         "truncated reports stay untouched");
@@ -1802,6 +3511,11 @@ void plugins_read_joints_and_tune_physics() {
         assert(circle:find("in a circle"), circle)
         assert(reskate.settings.set("Camera.Height", 1.5) and reskate.settings.set("Chat.Show", true) and
             reskate.settings.set("Render.Mode", "fast") and reskate.settings.set("Camera.Height", nil))
+        -- How loud the game is stays the player's: a plugin that turned every volume up to scare them is why.
+        for _, name in ipairs({"Audio.MasterVolume", "Sound.SfxVolume", "Music.Volume", "Audio.Mute", "VoIP.Enabled"}) do
+            local ok, why = reskate.settings.set(name, 1)
+            assert(not ok and why:find("sound settings"), name)
+        end
         reskate.log("tuned")
     )";
     host.apply({package("tuner", {{manifest_file, manifest(R"("skater.read", "skater.control", "session.skaters", "settings.write", "skater.animation")")}, {"plugin/main.lua", main}})});
@@ -1862,6 +3576,13 @@ void plugins_touch_hide_and_ray_at_players() {
         assert(reskate.session.raycast(vector.create(8, 3, 0), vector.create(8, -5, 0)) == nil, "the ground in the way")
         local under = reskate.session.raycast(vector.create(8, 3, 0), vector.create(8, -5, 0), {world = false})
         assert(under and under.player == "13", "through the world")
+        -- From inside a player's capsule the hit is where the ray starts, and the world, checked
+        -- along no length at all, is not in the way.
+        local inside = reskate.session.raycast(vector.create(1, 0.5, 0), vector.create(1, 0.5, 5))
+        assert(inside and inside.player == "9" and inside.distance == 0 and inside.position == vector.create(1, 0.5, 0),
+            "from inside a player's capsule, that player: " .. tostring(inside and inside.distance))
+        local near = reskate.session.raycast(vector.create(5, -0.2, 0), vector.create(5, 3, 0))
+        assert(near and near.player == "12" and math.abs(near.distance - 0.54) < 1e-4, "the world within 0.4 m before a player is not in the way")
         assert(not pcall(reskate.session.raycast, vector.create(0, 0, 0), vector.create(2000, 0, 0)), "too long")
         assert(reskate.session.hide("12") and reskate.session.hidden()[1] == "12")
         assert(reskate.session.hide({id = "12"}, false) and #reskate.session.hidden() == 0)
@@ -1903,6 +3624,72 @@ void plugins_touch_hide_and_ray_at_players() {
     )"}})});
     ticks(host, environment, 1);
     check(environment.logged("[sneaky] false false false false"), "session.skaters is needed\n" + environment.all());
+}
+
+// Menu pose observation is permission-gated and never writes board bones.
+void plugins_use_background_capture() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    Host host(environment, Side::client);
+    host.apply({package("background", {{manifest_file, manifest(R"("capture")")}, {"plugin/main.lua", R"(
+        assert(reskate.capture.start({background=true,depth=true}))
+        reskate.capture.stop()
+        assert(reskate.capture.start({depth=true}))
+        reskate.on("tick",function()
+            local status=reskate.capture.state()
+            assert(type(status.pending)=="number" and type(status.dropped)=="number")
+            if status.pending==2 and status.dropped==7 then reskate.log("queue metrics") end
+        end)
+        reskate.log("background options")
+    )"}})});
+    ticks(host, environment, 1);
+    running(host, "background", environment);
+    check(game.capture_starts.size() == 2 && game.capture_starts[0].background && !game.capture_starts[1].background,
+          "background processing is opt-in; existing callers stay synchronous\n" + environment.all());
+    game.capture_now.pending = 2;
+    game.capture_now.dropped = 7;
+    ticks(host, environment, 1);
+    check(environment.logged("[background] queue metrics"), "pending and dropped frame metrics reach the plugin");
+    const auto calls = game.capture_starts.size();
+    host.apply({package("denied", {{manifest_file, manifest(R"("room")")}, {"plugin/main.lua", R"(
+        assert(not pcall(function()reskate.capture.start({background=true})end))
+        reskate.log("capture denied")
+    )"}})});
+    ticks(host, environment, 1);
+    check(environment.logged("[denied] capture denied") && game.capture_starts.size() == calls,
+          "background capture still requires capture permission");
+}
+
+void plugins_read_menu_pose() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    Host host(environment, Side::client);
+    game.preview = Game::RoomPose{{1, -69, -5}, {0, 0, 0, 1}, 0.01, 42};
+    host.apply({package("observer", {{manifest_file, manifest(R"("room")")}, {"plugin/main.lua", R"(
+        local pose = reskate.room.pose("board")
+        assert(pose.position.y == -69 and pose.rotation[4] == 1)
+        assert(pose.age == 0.01 and pose.sequence == 42)
+        assert(reskate.room.pose("skater"))
+        assert(not pcall(reskate.room.pose, "other"))
+        reskate.log("observed")
+    )"}})});
+    ticks(host, environment, 1);
+    running(host, "observer", environment);
+    check(environment.logged("[observer] observed"), "Menu pose available with room permission\n" + environment.all());
+    check(game.called("pose board") && game.called("pose skater"), "Both subjects are observed");
+    game.preview.reset();
+    host.apply({package("empty", {{manifest_file, manifest(R"("room")")}, {"plugin/main.lua", R"(
+        assert(reskate.room.pose() == nil)
+        reskate.log("no pose")
+    )"}})});
+    ticks(host, environment, 1);
+    check(environment.logged("[empty] no pose"), "An unavailable pose is nil");
+    host.apply({package("denied", {{manifest_file, manifest(R"("capture")")}, {"plugin/main.lua", R"(
+        assert(not pcall(reskate.room.pose, "board"))
+        reskate.log("denied")
+    )"}})});
+    ticks(host, environment, 1);
+    check(environment.logged("[denied] denied"), "room permission is required");
 }
 
 // Typing into a field a plugin draws (only while its screen is open), and the character room.
@@ -2343,10 +4130,15 @@ void plugins_server_copies_are_the_authority() {
     player.session_now = {true, false, {{2, "Bob", true, false}, {1, "Ann", false, true}}};
     const std::string main = R"(
         reskate.log("side " .. reskate.side)
-        if reskate.side == "server" then
+        local E = reskate.Enums
+        assert(E.Side.server == "server" and E.Event.tick == "tick" and E.Key.Enter == "Enter" and E.LogLevel.warn == "warn"
+            and E.Target.all == "all" and E.EntityStatus.ready == "ready" and E.Throwdown.spot_battle == "spot_battle")
+        assert(not pcall(function() E.Pop.huge = "huge" end), "an enum is read-only")
+        reskate.log("enum check", E.LogLevel.warn)
+        if reskate.side == E.Side.server then
             reskate.on("message", function(from, text)
                 reskate.log("server heard " .. text .. " from " .. from.name)
-                assert(reskate.net.send("all", "state " .. text))
+                assert(reskate.net.send(reskate.Enums.Target.all, "state " .. text))
                 assert(reskate.server.kick(from, "testing"))
                 assert(reskate.server.say("round over"))
                 assert(not pcall(reskate.net.send, "server", "x"), "it is the server")
@@ -2773,6 +4565,64 @@ void declared_board_colours_through_the_api() {
     check(environment.fake.declared_holds.empty(), "Unloading lets go of every one (the game puts them back to their defaults)");
 }
 
+void game_menu_distinguishes_unknown_from_closed() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    Host host(environment, Side::client);
+    host.apply({script("menu-reader", R"(
+        local function snapshot(known, open, skaters, count)
+            local row = reskate.menu.game()
+            local fields = 0
+            for key in pairs(row) do
+                assert(key == "known" or key == "open" or key == "skaters" or key == "buttons", key)
+                fields += 1
+            end
+            assert(fields == 4 and type(row.known) == "boolean" and type(row.open) == "boolean"
+                and type(row.skaters) == "boolean" and type(row.buttons) == "table")
+            assert(row.known == known and row.open == open and row.skaters == skaters and #row.buttons == count)
+            return row
+        end
+        reskate.console.command("menu_unknown", "x", function()
+            snapshot(false, false, false, 0)
+            reskate.log("unknown menu preserved")
+        end)
+        reskate.console.command("menu_closed", "x", function()
+            snapshot(true, false, false, 0)
+            reskate.log("known closed menu preserved")
+        end)
+        reskate.console.command("menu_open", "x", function()
+            local row = snapshot(true, true, true, 2)
+            assert(row.buttons[1] == "Skaters" and row.buttons[2] == "Board")
+            reskate.log("known open menu preserved")
+        end)
+        reskate.console.command("menu_buttons", "x", function()
+            local row = snapshot(true, true, false, 64)
+            assert(row.buttons[1] == "1" and row.buttons[64] == "64")
+            reskate.log("menu button bound preserved")
+        end)
+    )", R"("menu", "console")"), script("menu-denied", R"(
+        local ok, why = pcall(reskate.menu.game)
+        assert(not ok and why:find('needs the "menu" permission', 1, true), tostring(why))
+        reskate.log("menu permission denied")
+    )")});
+    running(host, "menu-reader", environment);
+    running(host, "menu-denied", environment);
+    check(environment.logged("menu permission denied") && game.menu_reads == 0,
+          "Without menu permission the backend is not entered\n" + environment.all());
+    check(host.run_console("menu_unknown") && environment.logged("unknown menu preserved"),
+          "An unknown menu retains every old field\n" + environment.all());
+    game.menu_now = {false, true, {}, true};
+    check(host.run_console("menu_closed") && environment.logged("known closed menu preserved"),
+          "A known closed menu still suppresses Skaters\n" + environment.all());
+    game.menu_now = {true, true, {"Skaters", "Board"}, true};
+    check(host.run_console("menu_open") && environment.logged("known open menu preserved"),
+          "A known open menu retains the page and button order\n" + environment.all());
+    game.menu_now = {true, false, {}, true};
+    for (unsigned i = 1; i <= 65; ++i) game.menu_now.buttons.push_back(std::to_string(i));
+    check(host.run_console("menu_buttons") && environment.logged("menu button bound preserved") && game.menu_reads == 4,
+          "The old button limit and call count remain unchanged\n" + environment.all());
+}
+
 void the_wider_set_reaches_the_game() {
     TestEnvironment environment;
     auto& game = environment.fake;
@@ -2800,6 +4650,9 @@ void the_wider_set_reaches_the_game() {
             assert(not pcall(reskate.board.set, 1, {position = vector.create(0, 0, 0)}), "bone 1 places the board")
             assert(reskate.board.hide(3))
             reskate.board.park({12, 13, 14, 15})
+            assert(reskate.board.scale(6, 1.5) and reskate.board.scale(7, vector.create(1, 2, 3)) and reskate.board.scale(10))
+            assert(not pcall(reskate.board.scale, 1, 2), "bone 1 places the board")
+            assert(not pcall(reskate.board.scale, 6, "big"), "a size is a number or a vector")
             assert(reskate.board.toss({12, 4}, {velocity = vector.create(1, 3, 0), spin = vector.create(0, 5, 0), ground = -2}))
             local grip = reskate.board.parameters("grip")
             assert(#grip == 4 and grip[1].key == "873f48af36e50d59" and grip[1].name == "graphic" and grip[1].type == "colour", "the grip's parameters")
@@ -2880,6 +4733,12 @@ void the_wider_set_reaches_the_game() {
             assert(pad.buttons.a and not pad.buttons.b and pad.left_x == 0.25 and pad.right_trigger == 1, "the gamepad")
             local stick = reskate.input.joystick()
             assert(stick.axes[2] == -1 and stick.buttons[3] and not stick.buttons[1] and stick.name == "Radio", "the radio")
+            assert(#stick.axes == 8 and stick.axes[7] == 0.25 and stick.axes[8] == -0.75, "a radio's channels 7 and 8")
+            assert(stick.device == 0, "the radio's number")
+            local list = reskate.input.joysticks()
+            assert(#list == 2 and list[2].device == 1 and list[2].name == "Pad", "every controller")
+            assert(reskate.input.joystick(1).name == "Pad" and reskate.input.joystick(5) == nil, "a chosen controller")
+            assert(not pcall(reskate.input.joystick, -1) and not pcall(reskate.input.joystick, 1.5), "a controller's number")
             assert(reskate.input.capture(true))
             reskate.camera.release()
             assert(reskate.skater.freeze(true))
@@ -2942,7 +4801,8 @@ void the_wider_set_reaches_the_game() {
           "A plugin wears items over the outfit\n" + environment.all());
     host.run_console("deck");
     check(environment.logged("[wide] deck fine") && game.called("board wide 12 2.0 world") && game.called("board hide wide 3") &&
-              game.called("board park wide 4") && game.called("board toss wide 2 3 -2"),
+              game.called("board park wide 4") && game.called("board toss wide 2 3 -2") && game.called("board scale wide 6 1.5 1.5 1.5") &&
+              game.called("board scale wide 7 1.0 2.0 3.0") && game.called("board scale wide 10 none"),
           "A plugin changes what is drawn of the board\n" + environment.all());
     check(game.called("board parameter wide 1 873f48af36e50d59 colour 1.0") && game.called("board parameter wide 0 841c7d74837f1d39 number 2.5") &&
               game.called("board parameter clear wide 1 8c46cd354b18a9e2") && game.called("board parameter clear wide -1 all"),
@@ -3051,6 +4911,107 @@ void discovery_finds_the_plugins_among_the_mods_left_on() {
     check(again[0].fingerprint != before, "A changed file changes the fingerprint, which reloads it");
 }
 
+void discovery_can_recheck_sources_when_mod_metadata_is_unchanged() {
+    const auto root = scratch / "same-metadata-game";
+    const auto mods = root / "Mods";
+    const auto directory = mods / "Snapshot";
+    const auto source = directory / "plugin" / "main.lua";
+    write(directory / manifest_file, manifest());
+    write(source, "old-code");
+    check(mods::set_mod_enabled(mods, "Snapshot", true), "mods.json records the plugin as enabled");
+    FileChecks checks;
+    const auto found = discover(root, checks);
+    check(found.size() == 1 && found.front().sources, "Discovery captures the source files with the candidate");
+    const auto old = found.front();
+    const auto timestamp = std::filesystem::last_write_time(source);
+    write(source, "new-code");
+    std::filesystem::last_write_time(source, timestamp);
+    check(mods::mod_fingerprint(directory) == old.fingerprint, "Same-size bytes with the old timestamp keep the mod metadata fingerprint");
+    const auto cached = discover(root, checks);
+    check(cached.front().plugin_fingerprint == old.plugin_fingerprint && cached.front().sources == old.sources,
+          "The normal discovery cache keeps its already-approved snapshot");
+    checks.forget_plugin(old);
+    const auto refreshed = discover(root, checks);
+    check(refreshed.front().plugin_fingerprint != old.plugin_fingerprint &&
+              refreshed.front().sources->at(plugin_source_key("plugin/main.lua")) == "new-code",
+          "A manual reload can request a fresh snapshot even when size and timestamp match");
+    auto same_bytes = plugin_snapshot(directory);
+    auto verified = refreshed.front();
+    verified.sources = same_bytes.sources;
+    check(verified.sources != refreshed.front().sources && verified == refreshed.front(),
+          "A fresh pointer to identical source bytes is not a plugin change");
+}
+
+void an_approved_plugin_runs_only_the_source_snapshot_it_was_shown() {
+    const auto directory = scratch / "snapshot-plugin";
+    const auto entry = directory / "plugin" / "main.lua";
+    const auto module = directory / "plugin" / "Helper.lua";
+    std::filesystem::remove_all(directory);
+    write(directory / manifest_file, manifest());
+    write(entry, R"(reskate.log("entry-old") reskate.on("tick", function() reskate.log(require("helper").version) end))");
+    write(module, R"(return {version = "module-old"})");
+    auto snapshot = plugin_snapshot(directory);
+    check(snapshot.error.empty() && snapshot.sources, "The complete source snapshot is ready to load");
+
+    struct ApprovalEnvironment final : Environment {
+        std::string approved_fingerprint;
+        bool allowed{true};
+        std::vector<std::string> logs;
+        void log(LogLevel, std::string_view text) override { logs.emplace_back(text); }
+        void console(std::string_view) override {}
+        double now_ms() override { return 1000; }
+        std::filesystem::path storage_root() override { return scratch / "snapshot-storage"; }
+        bool builtin_command(std::string_view) override { return false; }
+        std::optional<bool> approved(const Candidate& candidate) override {
+            return allowed && candidate.plugin_fingerprint == approved_fingerprint;
+        }
+        void approve(const Candidate& candidate, bool on) override {
+            approved_fingerprint = candidate.plugin_fingerprint;
+            allowed = on;
+        }
+        bool logged(std::string_view text) const {
+            return std::any_of(logs.begin(), logs.end(), [&](const auto& line) { return line.find(text) != std::string::npos; });
+        }
+    } environment;
+    environment.approved_fingerprint = snapshot.fingerprint;
+
+    Candidate candidate{"snapshot", directory, "mod-fingerprint", {}, snapshot.fingerprint, snapshot.sources};
+    Host host(environment, Side::client);
+    host.apply({candidate});
+    check(environment.logged("entry-old"), "The approved entry source runs");
+    const auto entry_time = std::filesystem::last_write_time(entry);
+    const auto module_time = std::filesystem::last_write_time(module);
+    const auto original_entry_size = std::filesystem::file_size(entry);
+    const auto original_module_size = std::filesystem::file_size(module);
+    write(entry, R"(reskate.log("entry-new") reskate.on("tick", function() reskate.log(require("helper").version) end))");
+    write(module, R"(return {version = "module-new"})");
+    std::filesystem::last_write_time(entry, entry_time);
+    std::filesystem::last_write_time(module, module_time);
+    check(std::filesystem::file_size(entry) == original_entry_size && std::filesystem::file_size(module) == original_module_size,
+          "The changed entry and lazy module keep their original sizes");
+    check(plugin_fingerprint(directory) != candidate.plugin_fingerprint, "The actual changed source bytes have a new approval fingerprint");
+
+    host.tick(16);
+    check(environment.logged("module-old") && !environment.logged("module-new"),
+          "A first-time require reads the approved snapshot after its disk file changes");
+    check(host.reload("snapshot").find("reloaded") != std::string::npos, "The unchanged approved snapshot can still be reloaded");
+    host.tick(16);
+    check(environment.logged("entry-old") && !environment.logged("entry-new"),
+          "Reload does not execute changed entry bytes under the old approval");
+    check(!environment.logged("module-new"), "Reload also keeps a lazy module on the approved snapshot");
+
+    auto changed_snapshot = plugin_snapshot(directory);
+    auto changed = candidate;
+    changed.plugin_fingerprint = changed_snapshot.fingerprint;
+    changed.sources = changed_snapshot.sources;
+    host.apply({changed});
+    check(status_of(host, "snapshot").state == "switched off" && !environment.logged("entry-new"),
+          "A changed snapshot stays held until the player approves its new fingerprint");
+    check(host.switch_on("snapshot").find("started") != std::string::npos, "A new explicit approval starts the changed snapshot");
+    check(environment.logged("entry-new"), "The new entry runs only after the new approval");
+    host.shutdown();
+}
+
 // contrib/plugins, kept on this machine and out of the repository: a test of one that is not here
 // is skipped (main reports it), not failed.
 struct Absent {
@@ -3069,6 +5030,50 @@ std::string printed_lines(const TestEnvironment& environment) {
     std::string text;
     for (const auto& line : environment.lines) text += line + "\n";
     return text;
+}
+
+// Use the Blood package's own manifest: model-only tests miss permission changes
+// that remove the poses and contact normals before physics_step reaches it.
+void blood_renders_an_impact_through_the_host() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    Host host(environment, Side::client);
+    host.apply({contributed("blood")});
+    running(host, "blood", environment);
+    check(host.run_console("blood test") && environment.printed("tests passed"),
+          "Blood's own checks pass:\n" + printed_lines(environment) + environment.all());
+    check(host.run_console("blood on") && host.run_console("blood color 2"), "Blood is enabled with green effects");
+
+    PhysicsStep step;
+    step.at = environment.now; step.seconds = .05f; step.state = 100; step.ragdoll = false;
+    const EffectMatrix pose{1,0,0,0,0,1,0,0,0,0,1,0,0,.15f,0,1};
+    step.poses.emplace("Pelvis", PhysicsStep::Pose{pose, {5, -10, 0}});
+    step.poses.emplace("Left forearm", PhysicsStep::Pose{pose, {5, -10, 0}});
+    game.steps.push_back(step);
+    ticks(host, environment, 1);
+    check(game.effects.empty(), "A pose without an impact creates no blood");
+
+    step.at = environment.now; step.state = 300; step.wipeout = true; step.ragdoll = true;
+    step.bodies.push_back({"Left forearm", 12, 5, false, false, true, Vec3{0,0,0}, Vec3{0,1,0}});
+    game.steps.push_back(step);
+    ticks(host, environment, 1);
+    running(host, "blood", environment);
+    const auto particles = std::count_if(game.effects.begin(), game.effects.end(), [](const auto& effect) {
+        return !effect.second.request.decal;
+    });
+    check(particles == 3 && game.effects.size() == 4,
+          "A host-delivered impact creates three particle sources and a decal; check events.physics.geometry in Blood's manifest\n" + environment.all());
+    for (const auto& [id, effect] : game.effects) {
+        (void)id;
+        check(effect.owner == "blood" && effect.request.asset.find("_green") != std::string::npos,
+              "Blood uses its declared green assets");
+        check(!effect.request.decal || effect.request.attach, "The impact stain attaches to the receiving surface");
+    }
+    check(host.run_console("blood") && environment.printed("1 impacts, 3 particle sources, 1 marks"),
+          "Blood reports the impact delivered through its real permissions:\n" + printed_lines(environment));
+    host.switch_off("blood");
+    check(game.effects.empty(), "Disabling Blood releases the impact effects");
+    std::cout << "Blood package: model checks and host-delivered impact passed\n";
 }
 
 void reskate_test_passes_its_own_checks() {
@@ -3385,6 +5390,55 @@ void rock_to_fakie_relabels_and_records_the_stall() {
     game.pad_bits_now = 0x2000u;
     ticks(host, environment, 1);
     check(!game.called("trick record"), "B outside a stall asks nothing\n" + environment.all());
+}
+
+// reskate.strings: the text the game shows for its ids, by id or by #hash; checked before the game
+// gets it, and given back when the plugin unloads.
+void plugins_change_the_games_text() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    Host host(environment, Side::client);
+    host.apply({script("words", R"(
+        reskate.log("hash " .. reskate.strings.hash("ID_MENU_PLAY"))
+        assert(reskate.strings.set("ID_MENU_PLAY", "Oyna"))
+        assert(reskate.strings.set("#00ab12CD", "\u{c7}\u{131}k"))
+        local n = reskate.strings.set_many({_about = "notes", ID_A = "Bir", ["#ff"] = "\u{130}ki"})
+        assert(n == 2, n)
+        assert(reskate.strings.exists("ID_A") == true and reskate.strings.exists("ID_NONE") == false, "exists")
+        assert(not pcall(reskate.strings.set, "#xyz", "a"), "a bad hash")
+        assert(not pcall(reskate.strings.set, "#123456789", "a"), "a hash of 9 digits")
+        assert(not pcall(reskate.strings.set, "two words", "a"), "an id has no spaces")
+        assert(not pcall(reskate.strings.set, "ID_B", "\xff"), "not UTF-8")
+        assert(not pcall(reskate.strings.set, "ID_B", "a\0b"), "a NUL")
+        assert(not pcall(reskate.strings.set, "ID_B", string.rep("a", 512)), "512 units are too many")
+        assert(reskate.strings.set("ID_B", string.rep("\u{15f}", 511)), "511 two-byte characters fit")
+        assert(not pcall(reskate.strings.set_many, {ID_C = 1}), "a text is a string")
+        assert(not pcall(reskate.strings.set_many, {"x"}), "keys are ids")
+        assert(not pcall(reskate.strings.set_many, {ID_C = "c", ["bad id"] = "d"}), "one bad pair refuses all")
+        assert(reskate.strings.set_case_rules("tr"), "Turkish casing")
+        assert(reskate.strings.set_case_rules(), "the game's casing again")
+        assert(not pcall(reskate.strings.set_case_rules, "de"), "only tr")
+        reskate.log("strings fine")
+    )", R"("strings")")});
+    running(host, "words", environment);
+    check(environment.logged("[words] strings fine"), "The strings API checks what it is given\n" + environment.all());
+    check(environment.logged(std::format("[words] hash #{:08x}", dingosdk::text_overrides::string_hash("ID_MENU_PLAY"))),
+          "A hash is the game's id hash\n" + environment.all());
+    check(game.called("strings words 1 ID_MENU_PLAY=Oyna") && game.called("strings words 1 #00ab12CD="), "Each text reaches the game");
+    check(game.called("strings words 2 ") && !game.strings.contains("words _about"), "set_many leaves notes out");
+    check(!game.strings.contains("words ID_C"), "and takes nothing of a table with a bad pair");
+    std::vector<std::string> rules;
+    std::copy_if(game.calls.begin(), game.calls.end(), std::back_inserter(rules), [](const std::string& c) { return c.starts_with("case rules "); });
+    check(rules == std::vector<std::string>{"case rules words tr", "case rules words "},
+          "Casing rules reach the game, and only known ones");
+    using dingosdk::text_overrides::turkish_case;
+    static_assert(turkish_case(u'i', u'I', 2) == char16_t{0x130} && turkish_case(u'I', u'i', 1) == char16_t{0x131});
+    static_assert(turkish_case(char16_t{0x131}, u'I', 2) == u'I' && turkish_case(char16_t{0x130}, u'i', 1) == u'i', "the game maps these already");
+    static_assert(turkish_case(u'a', u'A', 2) == u'A' && turkish_case(u'i', u'i', 0) == u'i' && turkish_case(u'I', u'I', 2) == u'I');
+    check(dingosdk::text_overrides::string_hash("") == 0xffffffffU && dingosdk::text_overrides::string_hash("a") == 0xffffffffU * 33 + 'a',
+          "The hash starts from 0xffffffff and takes h * 33 + byte");
+    host.apply({});
+    check(std::find(game.released.begin(), game.released.end(), "words") != game.released.end(), "Unloading gives its text back");
 }
 
 // Shared content: a plugin names a folder in its manifest's "content" and reads it in every enabled
@@ -3939,6 +5993,104 @@ void the_throwdowns_page_lists_the_stock_cards_and_plugin_modes() {
 
 // The Filmer (contrib/plugins/filmer): an AI filmer follows a skater riding a carving line, then you film
 // someone, with your skater carrying the camcorder for the others; all within the 2 ms a tick a plugin has.
+// The FPS plugin (contrib/plugins/fps): its own checks pass; on foot it takes the camera at the head,
+// hides the skater and shows its pistol; a click shoots (a fire clip); back on the board, all of it
+// is given back.
+void fps_shoots_on_foot() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    const std::string plugin = "fps";
+    Host host(environment, Side::client);
+    host.apply({contributed(plugin)});
+    running(host, plugin, environment);
+    check(host.run_console("fps test"), "fps test");
+    check(environment.logged("fps test: all"), "The FPS plugin's own checks pass\n" + environment.all());
+    check(game.called("viewmodel load fps pistol.rsvm"), "It loads its pistol\n" + environment.all());
+    game.input_open = true;
+    game.pad = std::nullopt; // the fake pad holds RT down
+    environment.local_skater = SkaterState{{0, 0.9f, 0}, 0, 0, 0, false, 0};
+    game.state = 504; // on foot
+    ticks(host, environment, 3);
+    check(game.called("camera fps"), "On foot, the view is the skater's eyes\n" + environment.all());
+    check(game.called("viewmodel show fps") && game.called("viewmodel play fps FPS_Pistol_Idle true"), "with the pistol in hand, idling\n" + environment.all());
+    check(game.kept_keys == std::vector<std::uint8_t>{'R', 9}, "R (the reload) and Tab (the score) are kept from the game");
+    game.keys_held = {1}; // the left mouse button
+    ticks(host, environment, 1);
+    game.keys_held = {};
+    ticks(host, environment, 1);
+    check(game.called("viewmodel play fps FPS_Pistol_Fire false"), "A click shoots\n" + environment.all());
+    game.state = 100; // riding
+    ticks(host, environment, 2);
+    check(game.called("viewmodel hide fps") && game.kept_keys.empty(), "On the board, the game's camera and keys are back\n" + environment.all());
+    check(!environment.logged(".lua:"), "No Lua errors\n" + environment.all());
+}
+
+// The FPS plugin's deathmatch: the authority's copy (here a dedicated server's) and two players'.
+// Both say hello and join; Ann shoots Bob in the head twice; the authority hurts, then kills him:
+// Bob's skater bails, Ann's hit is confirmed as a kill, everyone hears the kill and the score.
+void fps_deathmatch_kills_and_scores() {
+    TestEnvironment server, ann, bob;
+    server.session_now = {true, true, {{7, "Ann", false, true}, {8, "Bob", false, false}}};
+    ann.session_now = {true, true, {{7, "Ann", true, true}, {8, "Bob", false, false}}};
+    bob.session_now = {true, true, {{8, "Bob", true, false}, {7, "Ann", false, true}}};
+    Host server_host(server, Side::server), ann_host(ann, Side::client), bob_host(bob, Side::client);
+    server_host.apply({contributed("fps")});
+    ann_host.apply({contributed("fps")});
+    bob_host.apply({contributed("fps")});
+    // Input is open only for a click: the fake mouse moves a little on every read, which would turn
+    // Ann's aim off Bob while the test waits.
+    for (auto* player : {&ann, &bob}) {
+        player->fake.pad = std::nullopt;
+        player->fake.state = 504; // on foot
+        player->local_skater = SkaterState{{0, 0.9f, 0}, 0, 0, 0, false, 0};
+    }
+    // Bob stands 5 m in front of Ann's eyes (the fake head joint is at 0, 103, 0).
+    ann.fake.body_list = {Body{8, {BodyCapsule{0, {0, 103.0f, 5}, {0, 103.2f, 5}, 0.3f}, BodyCapsule{1, {0, 102.0f, 5}, {0, 102.9f, 5}, 0.3f}}}};
+    // What each sends, to whom it is for: the authority, everyone, or one player.
+    const std::pair<TestEnvironment*, std::uint64_t> players[] = {{&ann, 7}, {&bob, 8}};
+    const auto pump = [&](int count) {
+        for (int i = 0; i < count; ++i) {
+            for (const auto& [from, id] : players)
+                for (auto& bytes : std::exchange(from->sent, {})) {
+                    const auto to = wire::to_of(bytes);
+                    if (to == wire::authority) server.incoming.push_back({id, bytes});
+                    else
+                        for (const auto& [other, other_id] : players)
+                            if (other != from && (to == 0 || to == other_id)) other->incoming.push_back({id, bytes});
+                }
+            for (auto& bytes : std::exchange(server.sent, {})) {
+                const auto to = wire::to_of(bytes);
+                for (const auto& [player, id] : players)
+                    if (to == 0 || to == id) player->incoming.push_back({7, bytes});
+            }
+            ticks(server_host, server, 1);
+            ticks(ann_host, ann, 1);
+            ticks(bob_host, bob, 1);
+        }
+    };
+    const auto click = [&] {
+        ann.fake.keys_held = {1};
+        ann.fake.input_open = true;
+        pump(1);
+        ann.fake.input_open = false;
+        ann.fake.keys_held = {};
+        pump(12); // past the pistol's 0.14 s between shots
+    };
+    pump(120); // hellos answered, and past the 1.5 s a player is kept safe after joining
+    running(server_host, "fps", server);
+    check(ann.fake.called("camera fps") && bob.fake.called("camera fps"), "Both are in first person\n" + ann.all() + bob.all());
+    click();
+    check(!bob.fake.called("wipeout"), "One headshot hurts\n" + server.all() + bob.all());
+    click();
+    pump(4);
+    check(bob.fake.called("wipeout 3.0"), "The second kills: Bob bails\n" + server.all() + ann.all() + bob.all());
+    for (auto* environment : {&server, &ann, &bob}) check(!environment->logged(".lua:"), "No Lua errors\n" + environment->all());
+    // Ann's view of the match: a kill confirmed and the score (asked from her copy's console).
+    check(ann_host.run_console("fps status"), "fps status");
+    running(ann_host, "fps", ann);
+    running(bob_host, "fps", bob);
+}
+
 void filmer_follows_and_films() {
     TestEnvironment environment;
     auto& game = environment.fake;
@@ -4416,6 +6568,86 @@ void reskate_hostile_is_stopped_or_refused_every_time() {
 }
 }
 
+// A mod's plugin runs only from a package Thunderstore lists as a plugin: one disguised as a
+// cosmetics pack does not, nor one taken off Thunderstore since; a folder that is not a package, or
+// a package Thunderstore never had, is the player's own and runs. Until a package has been looked
+// up, its plugin waits, unless Thunderstore cannot be reached: then the check is skipped until it
+// answers. The answers are kept in a file and asked again after six hours.
+void thunderstore_says_which_packages_run_plugins() {
+    const auto file = scratch / "listings.json";
+    std::filesystem::remove(file);
+    const auto answer = [](std::string owner, std::string name, std::vector<std::string> categories, std::string review = "approved") {
+        std::string list;
+        for (const auto& category : categories) list += (list.empty() ? "\"" : ",\"") + category + "\"";
+        return ListingAnswer{ListingAnswer::Kind::listed,
+                             R"({"namespace":")" + owner + R"(","name":")" + name + R"(","community_listings":[{"community":"reskate","categories":[)" +
+                                 list + R"(],"review_status":")" + review + R"("}]})"};
+    };
+    std::int64_t now = 1'800'000'000;
+    {
+        Listings listings(file);
+        check(listings.verdict("My Plugin", now).runs && listings.verdict("myplugin", now).runs, "A folder that is not a package runs its plugin");
+        const auto waiting = listings.verdict("kokomorning2-Walmart_Cosmetics-1.0.0", now);
+        check(!waiting.runs && waiting.why.find("waiting") != std::string::npos, "A package not looked up yet waits");
+        (void)listings.verdict("Team-Speedometer", now);
+        (void)listings.verdict("Team-Taken_Down", now);
+        (void)listings.verdict("Team-Not_Yet_Uploaded", now);
+        (void)listings.verdict("Team-Rejected", now);
+        auto wanted = listings.take_wanted(now);
+        std::sort(wanted.begin(), wanted.end());
+        check(wanted == std::vector<std::string>{"Team-Not_Yet_Uploaded", "Team-Rejected", "Team-Speedometer", "Team-Taken_Down",
+                                                 "kokomorning2-Walmart_Cosmetics"},
+              "Each package is looked up once, under the folder's spelling and without its version");
+        check(listings.take_wanted(now + 1).empty(), "and not again at once");
+        listings.record("kokomorning2-Walmart_Cosmetics", answer("kokomorning2", "Walmart_Cosmetics", {"Cosmetics", "Skateboards"}), now);
+        listings.record("Team-Speedometer", answer("Team", "Speedometer", {"Plugins", "Misc"}), now);
+        listings.record("Team-Taken_Down", answer("Team", "Taken_Down", {"Plugins"}), now);
+        listings.record("Team-Not_Yet_Uploaded", {ListingAnswer::Kind::missing, {}}, now);
+        listings.record("Team-Rejected", answer("Team", "Rejected", {"Plugins"}, "rejected"), now);
+        const auto disguised = listings.verdict("kokomorning2-Walmart_Cosmetics-1.0.0", now);
+        check(!disguised.runs && disguised.why.find("not list") != std::string::npos && disguised.why.find("Cosmetics, Skateboards") != std::string::npos,
+              "A cosmetics package's plugin does not run, and the player is told what it is listed as: " + disguised.why);
+        check(listings.verdict("Team-Speedometer", now).runs, "A package listed as a plugin runs it");
+        check(listings.verdict("Team-Not_Yet_Uploaded", now).runs, "A package Thunderstore never had runs, as a plugin of the player's own");
+        check(!listings.verdict("Team-Rejected", now).runs, "A package the moderators rejected does not");
+        listings.record("Team-Speedometer", {ListingAnswer::Kind::failed, {}}, now + 10);
+        check(listings.verdict("Team-Speedometer", now + 10).runs, "A failed lookup keeps what was known");
+        listings.record("Team-Speedometer", answer("Someone", "Else", {"Plugins"}), now + 10);
+        check(listings.verdict("Team-Speedometer", now + 10).runs, "An answer about another package changes nothing");
+        listings.record("Team-Taken_Down", {ListingAnswer::Kind::missing, {}}, now + 20);
+        const auto gone = listings.verdict("Team-Taken_Down", now + 20);
+        check(!gone.runs && gone.why.find("taken off") != std::string::npos, "A plugin taken off Thunderstore stops");
+        check(listings.take_wanted(now + 100).empty(), "Known answers are not asked again soon");
+        check(listings.take_wanted(now + Listings::refresh_seconds + 30).size() == 5, "but are after six hours");
+    }
+    {
+        Listings again(file);
+        check(!again.verdict("kokomorning2-Walmart_Cosmetics", now).runs && again.verdict("Team-Speedometer", now).runs &&
+                  !again.verdict("Team-Taken_Down", now).runs && again.verdict("Team-Not_Yet_Uploaded", now).runs,
+              "The answers are kept across launches");
+    }
+    {
+        // Offline: a package never answered for runs without the check, until Thunderstore answers.
+        Listings offline;
+        check(!offline.verdict("Team-Offline_Pack", now).runs && offline.take_wanted(now).size() == 1, "A package waits for its first lookup");
+        offline.record("Team-Offline_Pack", {ListingAnswer::Kind::failed, {}}, now);
+        check(offline.verdict("Team-Offline_Pack", now).runs, "When Thunderstore cannot be reached, the check is skipped");
+        check(offline.take_wanted(now + Listings::retry_seconds).size() == 1, "and it is asked again a minute later");
+        offline.record("Team-Offline_Pack", answer("Team", "Offline_Pack", {"Cosmetics"}), now + Listings::retry_seconds);
+        check(!offline.verdict("Team-Offline_Pack", now + Listings::retry_seconds).runs, "Once it answers, its answer holds");
+        offline.record("Team-Offline_Pack", {ListingAnswer::Kind::failed, {}}, now + Listings::refresh_seconds * 2);
+        check(!offline.verdict("Team-Offline_Pack", now + Listings::refresh_seconds * 2).runs,
+              "and going offline later does not undo a refusal");
+    }
+    check(listing_package("Owner-Name-1.2.3") == std::optional<std::string>("Owner-Name") && listing_package("Owner-Name") &&
+              !listing_package("Owner-Name-latest") && !listing_package("Owner") && !listing_package("Own er-Name"),
+          "A folder is named as a package, or not");
+}
+#include "measured_contact_host_fixture.inc"
+#include "body_prepare_host_fixture.inc"
+#include "shape_categories_host_fixture.inc"
+#include "exclusion_facts_host_fixture.inc"
+
 int main() {
     unsigned skipped = 0;
     const auto run = [&](void (*test)()) {
@@ -4430,8 +6662,29 @@ int main() {
         scratch = std::filesystem::temp_directory_path() / "reskate-plugin-tests";
         std::filesystem::remove_all(scratch);
         run(a_manifest_says_what_a_plugin_is);
+        run(plugin_approval_follows_the_plugins_own_files);
+        run(an_approved_plugin_runs_only_the_source_snapshot_it_was_shown);
+        run(measured_contact_host_fixture_v1);
+        run(plugins_own_typed_bodies_and_acknowledge_measured_results);
+        run(plugins_pipeline_native_steps_and_select_owned_receipts);
+        run(plugins_can_inspect_later_partial_failure_without_acknowledging_unmeasured_head);
+        run(native_body_permission_and_client_boundary_are_enforced);
+        run(body_prepare_host_fixture_v1);
+        run(owned_body_batches_are_permissioned_opaque_and_transactional);
+        run(body_contact_details_are_known_and_epoch_bound);
+        run(owned_body_batches_select_a_named_query_preset);
+        run(shape_categories_host_fixture_v1);
+        run(exclusion_facts_host_fixture_v1);
+        run(owned_body_batches_share_actual_and_logical_query_limits);
+        run(effects_require_resident_roots);
+        run(expired_effects_return_their_quota);
+        run(plugins_render_private_effects);
+        run(failed_plugin_startup_releases_effects);
+        run(plugins_track_effect_lifetimes);
+        run(physics_steps_include_optional_geometry);
         run(a_plugin_loads_ticks_runs_its_commands_and_unloads);
         run(a_permission_must_be_declared);
+        run(thunderstore_says_which_packages_run_plugins);
         run(command_names_are_checked);
         run(storage_is_kept_across_loads_and_has_a_quota);
         run(packages_json_and_modules);
@@ -4440,6 +6693,7 @@ int main() {
         run(a_plugin_over_its_time_budget_is_stopped);
         run(a_plugin_reloads_when_its_files_change);
         run(the_skater_can_be_read_moved_and_the_world_probed);
+        run(plugins_distinguish_clear_unavailable_and_hit_world_probes);
         run(tricks_reach_plugins_that_ask_for_them);
         run(plugins_draw_on_the_overlay);
         run(plugins_draw_pictures);
@@ -4447,9 +6701,14 @@ int main() {
         run(plugins_have_what_a_prop_hunt_needs);
         run(plugins_write_normalized_controllers);
         run(plugins_reach_cruise_and_read_the_mouse);
+        run(plugins_show_a_viewmodel);
+        run(fps_shoots_on_foot);
+        run(fps_deathmatch_kills_and_scores);
         run(plugins_carry_and_take_a_step_in_the_camera_cycle);
         run(plugins_read_joints_and_tune_physics);
         run(plugins_type_and_use_the_room);
+        run(plugins_read_menu_pose);
+        run(plugins_use_background_capture);
         run(plugins_touch_hide_and_ray_at_players);
         run(plugins_use_the_games_clips);
         run(plugins_edit_clips);
@@ -4467,6 +6726,7 @@ int main() {
         run(plugins_follow_the_session_and_message_each_other);
         run(plugins_call_and_hear_each_other);
         run(web_requests_go_only_to_listed_domains);
+        run(game_menu_distinguishes_unknown_from_closed);
         run(the_wider_set_reaches_the_game);
         run(declared_board_colours_through_the_api);
         run(key_names_become_binds);
@@ -4474,10 +6734,13 @@ int main() {
         run(timers_run_when_due);
         run(a_package_with_a_program_or_on_the_wrong_side_is_not_loaded);
         run(discovery_finds_the_plugins_among_the_mods_left_on);
+        run(discovery_can_recheck_sources_when_mod_metadata_is_unchanged);
+        run(blood_renders_an_impact_through_the_host);
         run(reskate_test_passes_its_own_checks);
         run(road_rash_marks_the_skater_as_it_bails);
         run(dual_stick_edits_the_companions_settings);
         run(rock_to_fakie_relabels_and_records_the_stall);
+        run(plugins_change_the_games_text);
         run(a_plugin_reads_the_content_folder_it_names);
         run(content_is_read_from_the_mod_folders);
         run(board_break_snaps_the_board_on_a_slam);

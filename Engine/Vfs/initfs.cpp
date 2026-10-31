@@ -211,6 +211,17 @@ Json read_preferences(const fs::path& root) {
 }
 }
 
+bool plugin_developer_mode(const fs::path& root) {
+    const auto settings = read_preferences(root);
+    return settings.contains("plugin_developer_mode") && settings["plugin_developer_mode"].is_boolean() && settings["plugin_developer_mode"].get<bool>();
+}
+void set_plugin_developer_mode(const fs::path& root, bool on) {
+    auto settings = read_preferences(root);
+    settings["plugin_developer_mode"] = on;
+    const auto text = settings.dump(2);
+    write_atomic(root, root / L"ReSkate.settings.json", std::span(reinterpret_cast<const unsigned char*>(text.data()), text.size()), true);
+}
+
 fs::path utf8_path(std::string_view text) {
     return fs::path(std::u8string(reinterpret_cast<const char8_t*>(text.data()), text.size()));
 }

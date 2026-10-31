@@ -73,7 +73,8 @@ bool ready(std::string_view owner);
 // domain's named-asset table; kept for two seconds.
 std::vector<std::string> blueprints(std::uintptr_t base, std::string_view prefix, std::size_t most, bool meshes_only = false);
 // A world object blueprint's mesh box in its own frame (min, max), when it has a mesh and the mesh
-// is loaded; empty for one that shows nothing, or that is not loaded.
+// is loaded; empty for one that shows nothing, or that is not loaded. Answers are kept a few seconds
+// and searches are rationed (detail::LookupCache), so a box can outlive its blueprint briefly.
 using Box = std::array<std::array<float, 3>, 2>;
 std::optional<Box> blueprint_bounds(std::uintptr_t base, std::string_view blueprint);
 std::size_t count(std::string_view owner);

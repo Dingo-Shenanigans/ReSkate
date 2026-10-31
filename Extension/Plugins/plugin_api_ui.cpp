@@ -366,7 +366,7 @@ struct UiApi {
         need(L, plugin, "overlay", "reskate.ui.toast");
         const auto message = checked_text(L, 1, 200, "a toast");
         const std::string level = luaL_optstring(L, 2, "info");
-        if (level != "info" && level != "warn" && level != "error") luaL_argerror(L, 2, "the level is \"info\", \"warn\" or \"error\"");
+        if (!one_of(log_levels, level)) luaL_argerror(L, 2, "the level is \"info\", \"warn\" or \"error\"");
         const double now = plugin.services_.now_ms();
         std::erase_if(plugin.toasts_, [&](double at) { return now - at >= 5000; });
         if (static_cast<int>(plugin.toasts_.size()) >= plugin.limits_.toasts) {

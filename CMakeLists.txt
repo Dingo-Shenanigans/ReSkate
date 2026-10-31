@@ -62,6 +62,12 @@ if(DINGOSDK_BUILD_PARK_EDITOR_TESTS AND WIN32)
     add_executable(dingosdk_object_categories_tests Extension/Objects/Test/object_categories_tests.cpp)
     target_link_libraries(dingosdk_object_categories_tests PRIVATE dingosdk_local_profile)
     add_test(NAME object_categories COMMAND dingosdk_object_categories_tests)
+    # The park editor's native ray (Extension/Objects/ParkEditor/park_editor_surface.h) over a
+    # constructed result: the editor's own rules and exclusions, and the counted cast behind
+    # reskate.world.probe and the ray batches (clear, hit and malformed results, presets and
+    # measured contact normals).
+    add_executable(dingosdk_surface_probe_tests Extension/Objects/ParkEditor/Test/surface_probe_tests.cpp)
+    add_test(NAME surface_probe COMMAND dingosdk_surface_probe_tests)
 endif()
 option(DINGOSDK_BUILD_MULTIPLAYER_TESTS "Build multiplayer protocol regression tests" OFF)
 if(DINGOSDK_BUILD_MULTIPLAYER_TESTS)
@@ -193,7 +199,8 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS)
     add_test(NAME server_map_update COMMAND dingosdk_server_map_update_tests)
     if(WIN32)
         # By hand: what the music player outside the game is playing (Extension/Music/external_player.h).
-        add_executable(dingosdk_external_player_probe Extension/Music/Test/external_player_probe.cpp Extension/Music/external_player.cpp)
+        add_executable(dingosdk_external_player_probe Extension/Music/Test/external_player_probe.cpp Extension/Music/external_player.cpp
+            Extension/Music/Test/external_player_probe_stubs.cpp)
         target_include_directories(dingosdk_external_player_probe PRIVATE "${PROJECT_SOURCE_DIR}")
         add_executable(dingosdk_app_audio_probe Extension/Music/Test/app_audio_probe.cpp Extension/Music/app_audio_capture.cpp)
         target_include_directories(dingosdk_app_audio_probe PRIVATE "${PROJECT_SOURCE_DIR}")
@@ -236,6 +243,10 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS AND WIN32)
     add_executable(dingosdk_playstation_report_tests Engine/Game/Input/Test/playstation_report_tests.cpp)
     target_include_directories(dingosdk_playstation_report_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME playstation_report COMMAND dingosdk_playstation_report_tests)
+    add_executable(dingosdk_scripted_pad_tests Extension/UI/Overlay/Test/scripted_pad_tests.cpp
+        Extension/UI/Overlay/scripted_pad.cpp)
+    target_include_directories(dingosdk_scripted_pad_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME scripted_pad COMMAND dingosdk_scripted_pad_tests)
     add_executable(dingosdk_physics_tuning_tests Extension/Skater/Test/physics_tuning_tests.cpp
         Extension/Skater/physics_tuning_model.cpp)
     target_include_directories(dingosdk_physics_tuning_tests PRIVATE "${PROJECT_SOURCE_DIR}")
@@ -450,6 +461,14 @@ endif()
 option(DINGOSDK_BUILD_PLUGIN_TESTS "Build plugin host regression tests" OFF)
 if(DINGOSDK_BUILD_PLUGIN_TESTS)
     enable_testing()
+    # The owned-body contracts behind reskate.world.physics (Engine/Game/World): definitions, the
+    # command mailbox, ray batches and their budget, hit identity, measured contact and shape
+    # categories, over constructed values and fake memory.
+    foreach(test owned_body body_query body_contact_read body_shape_categories)
+        add_executable(dingosdk_${test}_tests Engine/Game/World/Test/${test}_tests.cpp)
+        target_include_directories(dingosdk_${test}_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+        add_test(NAME ${test} COMMAND dingosdk_${test}_tests)
+    endforeach()
     # The plugin host apart from the game: manifests, the reskate API, storage, modules, hot reload,
     # and the sandbox against plugins written to break it. These build on Linux too, so they can be
     # run without Windows.
@@ -463,8 +482,37 @@ if(DINGOSDK_BUILD_PLUGIN_TESTS)
     # It also runs the test plugins in contrib/plugins.
     target_compile_definitions(dingosdk_plugin_tests PRIVATE "RESKATE_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\"")
     add_test(NAME plugins COMMAND dingosdk_plugin_tests)
+    # reskate.viewmodel's file and clips (Extension/UI/Overlay/viewmodel_model.h), and the FPS plugin's
+    # exported pistol when contrib/plugins has it.
+    add_executable(dingosdk_viewmodel_tests Extension/UI/Overlay/Test/viewmodel_model_tests.cpp Extension/UI/Overlay/viewmodel_model.cpp)
+    target_include_directories(dingosdk_viewmodel_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME viewmodel COMMAND dingosdk_viewmodel_tests "${PROJECT_SOURCE_DIR}/contrib/plugins/fps/viewmodel/pistol.rsvm")
 endif()
 if(DINGOSDK_BUILD_PLUGIN_TESTS AND WIN32)
+    # The owned-body service itself (Extension/World/owned_bodies.cpp), over a constructed local
+    # client, physics world and TLS: ray batches, measured contact, presets, categories and
+    # preparation. The test includes owned_bodies.cpp once and defines the hook, No Bail, session
+    # and ray functions it calls; do not add a second object for any of them.
+    add_executable(dingosdk_owned_body_source_tests Extension/World/Test/owned_body_source_tests.cpp)
+    target_include_directories(dingosdk_owned_body_source_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_compile_options(dingosdk_owned_body_source_tests PRIVATE /Gy /Gw)
+    target_link_options(dingosdk_owned_body_source_tests PRIVATE /OPT:REF)
+    add_test(NAME owned_body_source COMMAND dingosdk_owned_body_source_tests)
+    # How often reskate.entities.bounds may search every asset domain (world_entities_contract.h).
+    add_executable(dingosdk_world_entities_contract_tests Extension/World/Test/world_entities_contract_tests.cpp)
+    target_include_directories(dingosdk_world_entities_contract_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME world_entities_contract COMMAND dingosdk_world_entities_contract_tests)
+    set_tests_properties(owned_body_source PROPERTIES TIMEOUT 15)
+    add_executable(dingosdk_effect_geometry_tests Extension/Rendering/Test/effect_geometry_tests.cpp
+        Extension/Skater/skater_physics.cpp Extension/Plugins/plugin_effects.cpp)
+    target_include_directories(dingosdk_effect_geometry_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_link_libraries(dingosdk_effect_geometry_tests PRIVATE dingosdk_logging)
+    add_test(NAME effect_geometry COMMAND dingosdk_effect_geometry_tests)
+    add_executable(dingosdk_effect_lifetime_tests Extension/Rendering/Test/effect_lifetime_tests.cpp
+        Extension/Plugins/plugin_effects.cpp)
+    target_include_directories(dingosdk_effect_lifetime_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_link_libraries(dingosdk_effect_lifetime_tests PRIVATE dingosdk_logging)
+    add_test(NAME effect_lifetime COMMAND dingosdk_effect_lifetime_tests)
     # Tricks read from the score HUD's values (Extension/Skater/trick_watch.h), what plugins hear.
     add_executable(dingosdk_trick_watch_tests Extension/Skater/Test/trick_watch_tests.cpp Extension/Skater/trick_watch.cpp)
     target_include_directories(dingosdk_trick_watch_tests PRIVATE "${PROJECT_SOURCE_DIR}")

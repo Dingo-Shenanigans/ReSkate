@@ -45,6 +45,10 @@ struct WorldPick {
     std::string blueprint;
 };
 std::optional<WorldPick> local_world_pick(const std::array<float, 3> &from, const std::array<float, 3> &to);
+// The park editor's picking reader (park_editor_selection.cpp), for a native surface ray cast
+// outside the editor: the physics body that hit `index` of the ray's result met. False when the
+// picking calls did not match their bytes or the body is not valid in `world`.
+bool local_surface_hit_body(std::uintptr_t world, std::uint32_t index, std::uintptr_t data, std::array<std::uint64_t, 2> &body);
 // Gives world_entities the physics world (its objects made not solid, and those standing on the floor).
 void register_world_physics() noexcept;
 struct WorldRayHit {

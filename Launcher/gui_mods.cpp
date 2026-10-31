@@ -158,7 +158,8 @@ std::string summary(const ModsPanel& panel, const mods::Mod& mod) {
     if (!mod.levels.empty()) parts.push_back(mod.levels.size() == 1 ? "1 map" : std::to_string(mod.levels.size()) + " maps");
     else if (mod.provides_layout) parts.push_back("game data");
     if (!mod.park_maps.empty()) parts.push_back(mod.park_maps.size() == 1 ? "1 park" : std::to_string(mod.park_maps.size()) + " parks");
-    if (!mod.provides_layout && !mod.provides_levels && mod.park_maps.empty()) parts.push_back("nothing to load");
+    if (mod.provides_plugin) parts.push_back("plugin");
+    if (!mods::has_content(mod)) parts.push_back("nothing to load");
     std::string text;
     for (const auto& part : parts) text += (text.empty() ? "" : "  /  ") + part;
     return text;
@@ -772,7 +773,7 @@ void installed_row(const Fonts& fonts, ModsPanel& panel, const thunderstore::Ins
         ImGui::SetTooltip(entry.enabled ? "Enabled: loads when Skate starts" : "Disabled: stays installed, does not load");
 
     // The same icon the store shows, so a mod looks like itself on both pages.
-    mod_icon(panel, package, ImVec2(start.x + c.icon, middle - S(15)), S(30));
+    mod_icon(panel, package, ImVec2(start.x + c.icon, middle - S(15)), S(30), mod.directory);
 
     // Right to left: the menu, how it stands, and what it is.
     ImGui::SetCursorScreenPos(ImVec2(start.x + r.more, middle - c.more * 0.5f));
@@ -1450,10 +1451,10 @@ void mod_overview(const Fonts& fonts, ModsPanel& panel, const thunderstore::Inst
         panel.selected = -1;
         ImGui::CloseCurrentPopup();
     };
-    // The icon (the package's, when the mod is on Thunderstore), with the name, a line of what
-    // it is and its description beside it.
+    // The icon (the package's when the mod is on Thunderstore, else its own icon.png), with the name,
+    // a line of what it is and its description beside it.
     const float icon = S(104), header_top = ImGui::GetCursorPosY();
-    mod_icon(panel, package, ImGui::GetCursorScreenPos(), icon);
+    mod_icon(panel, package, ImGui::GetCursorScreenPos(), icon, mod.directory);
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + icon + S(20));
     ImGui::BeginGroup();
     ImGui::PushTextWrapPos(0);
@@ -1528,9 +1529,10 @@ void mod_overview(const Fonts& fonts, ModsPanel& panel, const thunderstore::Inst
             "mod folder, or rebuild it with a current ReSkate Studio.");
         if (!missing->second.empty()) ImGui::TextDisabled("%s", missing->second.front().c_str());
     }
-    if (!mod.provides_layout && !mod.provides_levels && mod.park_maps.empty())
+    if (!mods::has_content(mod))
         ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::warning),
-            "This folder has no layout.toc or reskate-levels.json, so the game has nothing to load from it.");
+            "This folder has no layout.toc, reskate-levels.json, reskate-plugin.json or parks, so the game has "
+            "nothing to load from it.");
     if (!readme_field(fonts, panel, package, &mod)) ImGui::TextDisabled("This mod has no README.");
     ImGui::PopTextWrapPos();
     ImGui::EndChild();

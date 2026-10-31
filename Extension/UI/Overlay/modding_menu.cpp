@@ -130,7 +130,8 @@ void draw_installed_mods(SkateMenu& menu) {
     for (const auto& entry : list.entries) {
         const bool effect = in_effect(entry.mod.name);
         if (effect) ++loaded;
-        if (entry.enabled != effect && !excluded(entry.mod.name) && !set_aside(entry)) ++pending;
+        // (A mod that is only a plugin is switched on and off live: nothing of it waits to be applied.)
+        if (entry.enabled != effect && !excluded(entry.mod.name) && !set_aside(entry) && !mods::plugin_only(entry.mod)) ++pending;
     }
     // Mods still in effect whose folder has been deleted: applying unloads them.
     std::vector<std::string> removed;
@@ -243,9 +244,12 @@ void draw_installed_mods(SkateMenu& menu) {
             status = "SET ASIDE";
             hover = "Set aside: it changes what another mod's chosen variant replaces (a deck pack's deck, say), and "
                     "only one of them can be in the game. Pick another variant on that mod's own page, or disable that mod.";
-        } else if (entry.enabled && effect) {
+        } else if (entry.enabled && (effect || mods::plugin_only(mod))) {
+            // (A mod that is only a plugin runs as soon as it is on: nothing of it is applied.)
             status = "LOADED";
             colour = skate_theme::good;
+        } else if (mods::plugin_only(mod)) {
+            // (and stops as soon as it is off)
         } else if (entry.enabled) {
             status = "APPLY TO LOAD";
             colour = skate_theme::danger;

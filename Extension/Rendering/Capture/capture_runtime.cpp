@@ -17,9 +17,14 @@ std::span<const std::uint8_t> built_in(const wchar_t* name) {
 bool grab_active() noexcept { return recorder().active(); }
 bool grab_wants() noexcept { return recorder().wants_frame(); }
 void grab_take(const overlay::GrabbedFrame& frame) noexcept {
-    recorder().take_frame({frame.data, frame.width, frame.height, frame.pitch, frame.bgra, frame.depth, frame.depth_pitch});
+    recorder().take_frame({frame.data, frame.width, frame.height, frame.pitch, frame.bgra, frame.depth, frame.depth_pitch, frame.origin_x,
+                           frame.origin_y, frame.source_width, frame.source_height});
 }
-constexpr overlay::FrameGrabHost frame_grab_host{&grab_active, &grab_wants, &grab_take};
+overlay::GrabRegion grab_region(std::uint32_t width, std::uint32_t height) noexcept {
+    const auto area = recorder().requested_area(width, height);
+    return {area.x, area.y, area.width, area.height};
+}
+constexpr overlay::FrameGrabHost frame_grab_host{&grab_active, &grab_wants, &grab_take, &grab_region};
 } // namespace
 
 Recorder& recorder() noexcept {

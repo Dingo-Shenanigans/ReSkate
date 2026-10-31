@@ -1,6 +1,7 @@
 #include "skater_animation.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Game/Build/20260929/no_bail.h"
+#include "Engine/Game/Build/20260929/native_skater.h"
 #include "Engine/Game/Build/20260929/skater_state.h"
 #include "Extension/Multiplayer/Remote/native_pose_layout.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
@@ -292,6 +293,15 @@ std::atomic<double> room_seen_at{-1e9}, room_restore_until{};
 std::mutex room_facing_mutex;
 Quat room_facing{0, 0, 0, 1};
 bool room_facing_valid{};
+// Separate from the rig-writing plan: observing a menu pose never takes its ownership.
+std::atomic<double> preview_until{};
+struct PreviewSample {
+    Joint place;
+    double at{-1e9};
+    std::uint64_t sequence{};
+};
+std::mutex preview_mutex;
+std::array<PreviewSample, 2> preview_samples;
 // The joints asked for as last evaluated (joint()), for the client thread.
 std::mutex joints_mutex;
 std::vector<std::pair<std::uint16_t, Joint>> joints_now;
@@ -347,6 +357,25 @@ struct Live {
 Live& live() {
     static auto* l = new Live;
     return *l;
+}
+void observe_preview(std::uintptr_t animation_interface, bool skater) {
+    const double now = now_seconds();
+    if (now > preview_until.load(std::memory_order_acquire) || animation_interface <= addr::native_skater::render_animation_interface_offset) return;
+    const auto layout = multiplayer::read_native_pose_layout(peek, live().base.load(std::memory_order_acquire), animation_interface - addr::native_skater::render_animation_interface_offset, 512);
+    if (!layout.buffer || layout.count != (skater ? skeleton_joints : board_bones)) return;
+    std::array<NativeBone, 4> bones{};
+    if (!peek(layout.buffer, bones.data(), sizeof(bones))) return;
+    auto place = compose(joint_of(bones[0]), joint_of(bones[1]));
+    if (!skater) place = compose(compose(place, joint_of(bones[2])), joint_of(bones[3]));
+    if (!finite(place)) return;
+    // The same measured room bounds used by hide_in_room; gameplay rigs are excluded.
+    for (std::size_t i = 0; i < 3; ++i)
+        if (!(std::abs(place.position[i] - room_spot[i]) < room_reach[i])) return;
+    std::lock_guard lock(preview_mutex);
+    auto& sample = preview_samples[skater ? 1 : 0];
+    sample.place = place;
+    sample.at = now;
+    ++sample.sequence;
 }
 // The pose to draw, from the animation thread to the render publication.
 struct Pending {
@@ -1001,6 +1030,7 @@ void on_render(std::uintptr_t animation_interface) noexcept {
     try {
         const auto holder = read<std::uintptr_t>(component + 0xa0);
         if (!holder || !*holder || animation_interface != *holder + 0xc0) {
+            observe_preview(animation_interface, true);
             hide_in_room(animation_interface, true);
             SetLastError(error);
             return;
@@ -1071,6 +1101,7 @@ void on_board_render(std::uintptr_t animation_interface, std::uintptr_t /*render
     try {
         const auto bh = l.board_holder.load(std::memory_order_acquire);
         if (!bh || animation_interface != bh + 0xc0) {
+            observe_preview(animation_interface, false);
             hide_in_room(animation_interface, false);
             SetLastError(error);
             return;
@@ -1198,6 +1229,14 @@ void carry(std::optional<carry::Goal> goal, bool push_straightens, Shown shown) 
     plan_draft.carry_until = plan_draft.carry ? now_seconds() + 0.3 : 0;
     publish();
 }
+std::optional<PreviewPose> preview_pose(bool skater) {
+    const double now = now_seconds();
+    preview_until.store(now + 0.5, std::memory_order_release);
+    std::lock_guard lock(preview_mutex);
+    const auto& sample = preview_samples[skater ? 1 : 0];
+    if (now - sample.at > 0.25) return std::nullopt;
+    return PreviewPose{sample.place, now - sample.at, sample.sequence};
+}
 std::optional<Joint> joint(std::uint16_t index) {
     if (index >= 395) return std::nullopt;
     const double now = now_seconds();
@@ -1295,7 +1334,7 @@ void tick(std::uintptr_t base, std::uintptr_t component, bool allowed) {
     const double now = now_seconds();
     const bool wanted = plan_draft.play || !plan_draft.replacements.empty() || recording() ||
                         (plan_draft.reach && now < plan_draft.reach_until) || (plan_draft.carry && now < plan_draft.carry_until) ||
-                        now < plan_draft.joints_until ||
+                        now < plan_draft.joints_until || now < preview_until.load(std::memory_order_acquire) ||
                         (!plan_draft.offsets.empty() && now < plan_draft.offsets_until) || room_watch.load(std::memory_order_acquire) ||
                         room_shown.load(std::memory_order_acquire) || now < room_restore_until.load(std::memory_order_acquire);
     if (wanted && !hooked && base) {

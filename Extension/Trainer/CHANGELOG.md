@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.8.7 - 2026-10-24
+
+Built on ReSkate 2.1.2, the first ReSkate release with this trainer in it. Fixes for what players reported on 2.1.2.
+
+- **Shuvits turn like the other flips again.** Any flip trick speed under 1, even 0.99, switched off the game's flip
+  landing limit, the rule that hurries a flip still turning just before the landing round. Shuvits and 360 shuvits
+  lean on it most, so they came round slower than everything else. The limit is now the game's own unless you untick
+  the new **Flip landing limit** box under Flip trick speed (unticked counts as modified; pair it with "Slow flips pop
+  higher" if you want slowed flips to stay slow right to the ground). `trainer option flip_limit 0|1`.
+- **Pops near rails and ledges are the game's own again.** Since 0.8.4 the Grind lock-on dial also doubled the reach
+  from the air and the weight of an edge in the landing choice, so with it turned up every pop near a rail or ledge
+  was steered onto it and slowed you down. **Grind lock-on is now your game's own Grind Assist** (the first row of
+  GRINDS, the same number as the game's Settings menu, changed from either place; it never counts as modified and no
+  preset or reset touches it). The lock-on distance, the reach from the air for each grind, the lock-on angle and
+  speeds and the weight of an edge are rows of their own in GRINDS. Air reach a turned-up dial saved goes back to the
+  game's own once, on the first load (locked values are left alone). Sticky Grinds stays as a switch.
+  Measured: Grind Assist at 0, 50 and 100 leaves every tuning and class value the same, so it works in the game's
+  grind code on top of them; the lock-on rows' tooltips say so.
+- **Presets with a quote in the name save.** A name like `Andy's` opened a quote the console never saw closed
+  ("Command has unterminated quote") and nothing was saved. Every preset button now sends the name quoted.
+- **QUICK SETTINGS works with a pad.** In the full screen menu the rows for the trainer's own settings (flip speed,
+  gravity, the switches) were a mouse-only drag box; they are now the same switch, list and slider rows as the sections.
+- **SERVER PHYSICS banner.** In a multiplayer game where the host or the server sets everyone's physics, a large box
+  across the top of SANDBOX says so (and in a match on the game's own physics).
+- `trainer livedump [name]` (diagnostic): writes what the game holds right now, its live tuning, class values and assist
+  settings, to `tuning-live-<name>.txt`.
+
 ## v0.8.6 - 2026-10-21
 
 Built on ReSkate 2.1.1, like 0.8.3.

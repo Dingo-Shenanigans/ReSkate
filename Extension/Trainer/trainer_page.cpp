@@ -140,6 +140,16 @@ std::string number(double value) { return std::format("{:.6g}", value); }
 void trainer_command(SkateMenu &menu, const CallbacksV3 &callbacks, const std::string &text) {
     send_console(menu, callbacks, "trainer " + text);
 }
+// A name the player typed, as one console argument: quoted, with its quotes and backslashes escaped (a preset called
+// Andy's would otherwise open a quote the console never sees closed, and nothing was saved).
+std::string console_arg(std::string_view name) {
+    std::string out = "\"";
+    for (const char c : name) {
+        if (c == '"' || c == '\\' || c == '\'') out += '\\';
+        out += c;
+    }
+    return out + '"';
+}
 
 // The rows EVERY VALUE and a search show.
 void filter_rows(Page &p, const trainer::View &view) {
@@ -342,7 +352,7 @@ void preset_switch(SkateMenu &menu, const CallbacksV3 &callbacks, const trainer:
     if (preset.active) ImGui::PushStyleColor(ImGuiCol_Button, skate_theme::blue);
     const bool pressed = ImGui::Button(preset.name.c_str());
     if (preset.active) ImGui::PopStyleColor();
-    if (pressed) trainer_command(menu, callbacks, std::string(preset.active ? "preset remove " : "preset apply ") + preset.name);
+    if (pressed) trainer_command(menu, callbacks, std::string(preset.active ? "preset remove " : "preset apply ") + console_arg(preset.name));
     if (ImGui::IsItemHovered() && !preset.note.empty()) wrapped_tooltip("%s", preset.note.c_str());
 }
 // A built-in preset as a dial: one multiplier that moves everything the preset moves.
@@ -398,7 +408,7 @@ void dial_row(SkateMenu &menu, const CallbacksV3 &callbacks, Page &p, const trai
     if (preset.active) ImGui::PushStyleColor(ImGuiCol_Button, skate_theme::blue);
     const bool pressed = ImGui::Button(preset.name.c_str(), ImVec2(button, 0));
     if (preset.active) ImGui::PopStyleColor();
-    if (pressed) trainer_command(menu, callbacks, std::string(preset.active ? "preset remove " : "preset apply ") + preset.name);
+    if (pressed) trainer_command(menu, callbacks, std::string(preset.active ? "preset remove " : "preset apply ") + console_arg(preset.name));
     if (ImGui::IsItemHovered()) wrapped_tooltip("%s", preset.note.c_str());
     if (moved) {
         ImGui::SameLine();
@@ -442,14 +452,14 @@ void preset_row(SkateMenu &menu, const CallbacksV3 &callbacks, Page &p, const tr
         ImGui::PushStyleColor(ImGuiCol_Button, skate_theme::blue);
         if (ImGui::Button("Turn off")) {
             clear_edits(p);
-            trainer_command(menu, callbacks, "preset remove " + picked->name);
+            trainer_command(menu, callbacks, "preset remove " + console_arg(picked->name));
         }
         ImGui::PopStyleColor();
         tip("Puts everything this preset set back to the game's own.");
     } else {
         if (ImGui::Button("Load") && picked) {
             clear_edits(p);
-            trainer_command(menu, callbacks, "preset apply " + picked->name);
+            trainer_command(menu, callbacks, "preset apply " + console_arg(picked->name));
         }
         tip("Sets every value and setting saved in this preset. Press RESET EVERYTHING first to get exactly the preset and nothing else.");
     }
@@ -460,7 +470,7 @@ void preset_row(SkateMenu &menu, const CallbacksV3 &callbacks, Page &p, const tr
     tip("A name for the preset you are about to save.");
     ImGui::SameLine();
     ImGui::BeginDisabled(!p.preset_name[0] || view.stock);
-    if (ImGui::Button("Save")) trainer_command(menu, callbacks, std::string("preset save ") + p.preset_name.data());
+    if (ImGui::Button("Save")) trainer_command(menu, callbacks, std::string("preset save ") + console_arg(p.preset_name.data()));
     ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         wrapped_tooltip("%s", view.stock ? "Nothing is changed, so there is nothing to save yet."
@@ -480,10 +490,10 @@ void preset_row(SkateMenu &menu, const CallbacksV3 &callbacks, Page &p, const tr
         ImGui::PushID(preset->name.c_str());
         if (preset->active) {
             ImGui::PushStyleColor(ImGuiCol_Button, skate_theme::blue);
-            if (ImGui::Button("Turn off", ImVec2(button, 0))) trainer_command(menu, callbacks, "preset remove " + preset->name);
+            if (ImGui::Button("Turn off", ImVec2(button, 0))) trainer_command(menu, callbacks, "preset remove " + console_arg(preset->name));
             ImGui::PopStyleColor();
         } else if (ImGui::Button("Load", ImVec2(button, 0))) {
-            trainer_command(menu, callbacks, "preset apply " + preset->name);
+            trainer_command(menu, callbacks, "preset apply " + console_arg(preset->name));
         }
         tip("Load sets every value and setting saved in this preset. Turn off puts those back to the game's own.");
         ImGui::SameLine();
@@ -495,10 +505,10 @@ void preset_row(SkateMenu &menu, const CallbacksV3 &callbacks, Page &p, const tr
         if (ImGui::SmallButton("This map")) trainer_command(menu, callbacks, "profile set " + preset->name);
         tip("Loads this preset by itself every time this map loads.");
         ImGui::SameLine();
-        if (ImGui::SmallButton("Share")) trainer_command(menu, callbacks, "preset export " + preset->name);
+        if (ImGui::SmallButton("Share")) trainer_command(menu, callbacks, "preset export " + console_arg(preset->name));
         if (ImGui::IsItemHovered()) wrapped_tooltip("Copies this preset to the clipboard as one line of text. Paste it in a chat;\nanyone with the trainer can import it.");
         ImGui::SameLine();
-        if (ImGui::SmallButton("Delete")) trainer_command(menu, callbacks, "preset delete " + preset->name);
+        if (ImGui::SmallButton("Delete")) trainer_command(menu, callbacks, "preset delete " + console_arg(preset->name));
         tip("Removes this preset from your list.");
         ImGui::PopID();
     }
@@ -526,6 +536,37 @@ void preset_row(SkateMenu &menu, const CallbacksV3 &callbacks, Page &p, const tr
 // ---- the first section: every kind of preset, and everything that is changed in one list ---------
 // One of the trainer's own settings (a trick height, a grind switch, a bending rule ...) as a row that changes it.
 void setup_row(SkateMenu &menu, const CallbacksV3 &callbacks, Page &p, const trainer::View &view, const trainer::SetupRow &row) {
+    if (console_style()) {
+        // Full screen: the controls the sections use (a mouse-only drag box here could not be changed from a pad).
+        ImGui::PushID(row.key.c_str());
+        const bool can = view.editable && callbacks.queue_console_command;
+        const auto stock = row.kind == trainer::setup_mode ? std::string("left to the game") : row.kind == trainer::setup_switch ? std::string(row.stock != 0 ? "on" : "off")
+                                                                                                                                  : number(row.stock);
+        const auto hint = std::format("One of the trainer's own settings ({}). The game's own: {}. Go to shows it where it lives, with its explanation.", row.key, stock);
+        if (row.kind == trainer::setup_switch) {
+            bool on = row.value != 0;
+            if (toggle_row(menu, row.title.c_str(), hint.c_str(), on, can)) trainer_command(menu, callbacks, std::format("setup {} {}", row.key, on ? 1 : 0));
+        } else if (row.kind == trainer::setup_mode) {
+            static constexpr const char *modes[]{"The game's own", "Held off", "Held on"};
+            int mode = row.value < 0 ? 0 : row.value != 0 ? 2 : 1;
+            field(menu, row.title.c_str(), hint.c_str());
+            ImGui::BeginDisabled(!can);
+            if (ImGui::Combo("##value", &mode, modes, 3)) trainer_command(menu, callbacks, std::format("setup {} {}", row.key, mode - 1));
+            ImGui::EndDisabled();
+        } else {
+            field(menu, (row.value != row.stock ? row.title + "  *" : row.title).c_str(), hint.c_str());
+            double value = row.value;
+            const double size = std::max({std::abs(row.stock), std::abs(row.value), 0.05});
+            set_console_step(size * 0.02);
+            // The bar spans a sensible range around the game's own (stepping on past its ends, or the box beside it, goes further).
+            const double low = std::max(row.low, row.stock > 0 ? 0.0 : -size * 4), high = std::min(row.high, row.stock > 0 ? row.stock * 4 : size * 4);
+            ImGui::BeginDisabled(!can);
+            if (slider_double("##value", &value, low, std::max(high, low + 1e-6), "%.4g")) trainer_command(menu, callbacks, std::format("setup {} {}", row.key, number(value)));
+            ImGui::EndDisabled();
+        }
+        ImGui::PopID();
+        return;
+    }
     ImGui::PushID(row.key.c_str());
     ImGui::Dummy(ImVec2(ImGui::GetFrameHeight(), ImGui::GetFrameHeight())); // where a value's lock box is
     ImGui::SameLine();
@@ -536,7 +577,7 @@ void setup_row(SkateMenu &menu, const CallbacksV3 &callbacks, Page &p, const tra
     ImGui::PopStyleColor();
     if (ImGui::IsItemHovered())
         wrapped_tooltip("One of the trainer's own settings (%s). The game's own: %s. Go to shows it where it lives, with its explanation.", row.key.c_str(),
-                        row.kind == trainer::setup_mode ? "left to the game" : row.kind == trainer::setup_switch ? "off" : number(row.stock).c_str());
+                        row.kind == trainer::setup_mode ? "left to the game" : row.kind == trainer::setup_switch ? (row.stock != 0 ? "on" : "off") : number(row.stock).c_str());
     ImGui::SameLine(column);
     const float reset = ImGui::CalcTextSize("Reset").x + ImGui::GetStyle().FramePadding.x * 2;
     ImGui::BeginDisabled(!view.editable || !callbacks.queue_console_command);
@@ -659,7 +700,7 @@ void presets_card(SkateMenu &menu, const CallbacksV3 &callbacks, Page &p, const 
         for (const auto &preset : view.presets) {
             if (!preset.builtin || preset.name == "Stock" || preset.name.starts_with("Skate 3") || preset.name.starts_with("Transition:")) continue;
             if (button(preset.name.c_str(), preset.active, preset.note.c_str()))
-                trainer_command(menu, callbacks, std::string(preset.active ? "preset remove " : "preset apply ") + preset.name);
+                trainer_command(menu, callbacks, std::string(preset.active ? "preset remove " : "preset apply ") + console_arg(preset.name));
         }
         begin("Yours", "The presets you saved or imported. Save, share and delete them in the row above the tabs.");
         bool own = false;
@@ -668,7 +709,7 @@ void presets_card(SkateMenu &menu, const CallbacksV3 &callbacks, Page &p, const 
             own = true;
             ImGui::PushID(preset.name.c_str());
             if (button(preset.name.c_str(), preset.active, preset.active ? "On. Press to put what it set back to the game's own." : "Press to load it on top of what is set now."))
-                trainer_command(menu, callbacks, std::string(preset.active ? "preset remove " : "preset apply ") + preset.name);
+                trainer_command(menu, callbacks, std::string(preset.active ? "preset remove " : "preset apply ") + console_arg(preset.name));
             ImGui::PopID();
         }
         if (!own) ImGui::TextDisabled("none yet: set the game up, then name it and Save in the row above the tabs");
@@ -1047,10 +1088,29 @@ void topic_body(SkateMenu &menu, const Model &model, const CallbacksV3 &callback
         ImGui::EndDisabled();
         from_trickline({"trick-pops", "trick-spins"});
         break;
-    case trainer::topic_grinds:
+    case trainer::topic_grinds: {
+        // Grind lock-on is the game's own Grind Assist: the same number as its Settings menu, changed from either place. Never
+        // MODIFIED, in no preset or reset, and the player's own in any session (the owner's ask, 2026-10-24).
+        ImGui::PushID("grind-assist");
+        const char *help = "Your game's own Grind Assist, the same number as in its Settings menu: change it here or there. How much the game "
+                           "helps the board onto a rail or ledge. It is your setting, so it never counts as MODIFIED and no preset or reset "
+                           "changes it. The lock-on distance, the reach from the air and the lock-on speeds and angle are the game's tuning "
+                           "values, in the rows of this section.";
+        field(menu, "Grind lock-on (GAME SETTING: Grind Assist)", help);
+        if (view.grind_assist < 0) {
+            ImGui::TextDisabled("not saved yet: set it once in the game's Settings");
+        } else {
+            double assist = view.grind_assist;
+            ImGui::BeginDisabled(!callbacks.queue_console_command);
+            if (slider_double("##assist", &assist, 0.0, 100.0, "%.0f")) trainer_command(menu, callbacks, std::format("grind assist {:.0f}", assist));
+            ImGui::EndDisabled();
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) wrapped_tooltip("%s", help);
+        ImGui::PopID();
         from_trickline({"grind-feel", "grind-stick", "grind-exits"});
         dials_card(menu, callbacks, p, view, topic, can_edit);
         break;
+    }
     case trainer::topic_trickline:
         from_trickline({"trickline", "trick-revert"});
         // Dark Pop is ReSkate's own switch (not a tuning value), so it is live even where the tuning is locked.
@@ -1316,7 +1376,7 @@ void trick_heights(SkateMenu &menu, const CallbacksV3 &callbacks, Page &p, const
     }
     if (!view.flip_live && (view.flip_speed != 1.0f || view.flip_advanced || view.flip_flick) && wanted("Flip trick speed"))
         ImGui::TextDisabled("Finding the flip animations: flip speeds take hold about 15 seconds after a level loads.");
-    if (wanted("Flip trick speed") || wanted("Slow flips pop higher") || wanted("Flick tricks at full speed")) {
+    if (wanted("Flip trick speed") || wanted("Slow flips pop higher") || wanted("Flick tricks at full speed") || wanted("Flip landing limit")) {
         bool pop = view.flip_pop;
         if (ImGui::Checkbox("Slow flips pop higher, so they land clean", &pop)) trainer_command(menu, callbacks, std::format("option flip_pop {}", pop ? 1 : 0));
         if (ImGui::IsItemHovered())
@@ -1333,6 +1393,13 @@ void trick_heights(SkateMenu &menu, const CallbacksV3 &callbacks, Page &p, const
                                   "half way round. With this every flip trick turns as if the flick was a full one: with 'Slow flips pop higher' "
                                   "they all get the same pop and all come round in it. It works at every flip trick speed. With it on a slow "
                                   "flick no longer gives a slow flip.");
+        bool limit = view.flip_limit;
+        if (ImGui::Checkbox("Flip landing limit", &limit)) trainer_command(menu, callbacks, std::format("option flip_limit {}", limit ? 1 : 0));
+        if (ImGui::IsItemHovered())
+            wrapped_tooltip("%s", "The game's own rule: a flip trick still turning just before the landing (about 1/6 s) is hurried "
+                                  "round so it lands bolts. Shuvits and 360 shuvits lean on it most, since they turn slowly. Ticked is the "
+                                  "game's own. Untick it to let slowed flips stay slow right to the ground: a trick that is not round "
+                                  "by then lands as it is, so pair it with 'Slow flips pop higher'. Unticked counts as modified.");
     }
     if (wanted(advanced_label)) {
         bool on = view.flip_advanced;
@@ -2183,6 +2250,26 @@ void trainer_page(SkateMenu &menu, const Model &model, const CallbacksV3 &callba
         std::string id;
         bool open{};
         while (take_fold_change(id, open)) trainer_command(menu, callbacks, std::format("fold {} {}", id, open ? 1 : 0));
+    }
+    // A session that sets everyone's physics: said in large type over everything else, so nobody tunes a game that
+    // ignores it (the owner's ask, 2026-10-24).
+    if (view->session_enforced || view->session_stock) {
+        const ImVec4 amber(1.0f, 0.75f, 0.3f, 1.0f);
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.35f, 0.18f, 0.0f, 0.92f));
+        ImGui::PushStyleColor(ImGuiCol_Border, amber);
+        ImGui::BeginChild("server-physics", ImVec2(0, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding);
+        if (menu.heading) ImGui::PushFont(menu.heading);
+        ImGui::TextColored(amber, "%s", view->session_stock ? "MATCH PHYSICS: THE GAME'S OWN" : "SERVER PHYSICS IN USE");
+        if (menu.heading) ImGui::PopFont();
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextUnformatted(view->session_stock
+                                   ? "This match skates on the game's own physics for everyone. Your trainer settings, presets and boosts do "
+                                     "nothing until the match ends; they are kept for afterwards."
+                                   : "This multiplayer game's host or server sets everyone's physics. Your trainer settings, presets and "
+                                     "boosts do nothing here; you skate with theirs. Your own setup comes back when you leave.");
+        ImGui::PopTextWrapPos();
+        ImGui::EndChild();
+        ImGui::PopStyleColor(2);
     }
     // Everything that changes how the game plays, said in words. The first parts are the trainer's own; the cheats,
     // grind exits, Board Break and the game speed are ReSkate's and count all the same.

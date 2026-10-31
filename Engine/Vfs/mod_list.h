@@ -174,6 +174,12 @@ const ResidentAssets::Shader* resident_shader(const Mod& mod, std::string_view b
 // "Parks", "Plugin", "Game data", "Objects", "Music". Empty when it holds none of these. A plugin
 // that also ships game data reads as a plugin first, since its code is what it is for.
 std::vector<std::string> mod_contents(const Mod& mod);
+// Whether a mod holds a plugin and nothing a merge puts in the game (no game data, maps, parks,
+// objects, music or variants). Such a mod is switched on or off without applying the mods: the
+// plugin host loads and unloads its plugin from the Mods folder by itself (plugin_runtime.h).
+bool plugin_only(const Mod& mod);
+// Whether the game finds anything in the mod to load: what mod_contents lists, or variants.
+bool has_content(const Mod& mod);
 
 // Folder names travel into engine paths, so only plain ASCII is accepted:
 // letters, digits, space, '_', '-' and '.', not starting with '.'.

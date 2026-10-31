@@ -364,6 +364,8 @@ void plugin_images_lost();
 // by their URL, in the SRV heap's slots from store_icon_first_slot on.
 inline constexpr UINT store_icon_first_slot = screen_look_slot + screen_look_slots, store_icon_slots = 64;
 ImTextureID store_icon(const std::string& url);
+// Then a viewmodel's pictures (viewmodel.h): three for each of its at most eight materials.
+inline constexpr UINT viewmodel_first_slot = store_icon_first_slot + store_icon_slots, viewmodel_slots = 24;
 struct StoreIconUpload {
     std::string url;
     int slot{};

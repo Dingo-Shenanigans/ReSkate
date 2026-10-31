@@ -124,3 +124,8 @@ void update_highlights() {
     }
 }
 } // namespace dingosdk::profile_runtime::park_editor_detail
+namespace dingosdk {
+bool local_surface_hit_body(std::uintptr_t world, std::uint32_t index, std::uintptr_t data, std::array<std::uint64_t, 2> &body) {
+    return profile_runtime::park_editor_detail::surface_body(world, index, data, body);
+}
+} // namespace dingosdk

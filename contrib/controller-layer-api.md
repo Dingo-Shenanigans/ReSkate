@@ -51,3 +51,7 @@ In-game validation is still required for XInput and native DS4/DualSense USB/Blu
 ## Consumer integration
 
 The standalone Dual Stick 6.6 Lua port is maintained in the separate [Dual Stick repository](https://github.com/GoalTrains/reskatedualstick/tree/codex/lua-controls-6.6/lua). Its foot mapping, grind-state handling, pop-to-air handoff and rail-circle logic stay in Luau. This SDK branch contains only reusable controller and local-rider primitives; no Dual Stick mode or native companion is required by the plugin once the APIs are available.
+
+## Current-main integration (2026-10-31)
+
+Revalidated on upstream main 9506a39 (ReSkate 2.1.3). Controller writes appear explicitly in both the permission category and the short approval question. Upstream joystick selection/listing, menu-preview stick holds and padded DS4 Bluetooth CRC handling are preserved; regressions cover the combined replacement/menu-preview path and unchanged padding. Runtime and native plugin tests build/pass, with optional maintainer fixtures skipped as reported by the test runner. No game/runtime files are installed by this branch update.

@@ -77,6 +77,9 @@ inline constexpr Fingerprint shape_valid{0x25d7e00, {
 // Category bits (PhysicsCollisionCategory; configurations/delmarphysicscategorypresets).
 inline constexpr unsigned category_remote_character_proxy = 21, category_local_skater = 26,
                           category_character_proxy = 28;
+// The other definitions whose names say character, ragdoll, skateboard or skater.
+inline constexpr unsigned category_character = 2, category_ragdoll = 3, category_skateboard = 25,
+                          category_remote_skater = 29;
 // Retail's remote-skater proxy (0x10451f0 remote branch): In RemoteCharacterProxy,
 // CollidesWith CharacterProxy. LocalSkater is added so the local rig (CollidesWith bit 21
 // while party collision is on) meets it under either pair rule.

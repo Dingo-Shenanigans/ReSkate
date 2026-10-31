@@ -4,6 +4,9 @@
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <deque>
+#include <future>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -30,11 +33,12 @@ const char* extension(Format format) noexcept;
 
 struct RecordRequest {
     Area area;
-    bool depth{true};          // cut each frame out by the game's depth where it has one
-    std::uint32_t height{};    // each kept picture this tall at most (0: as on screen)
-    std::uint32_t skip{};      // presented frames let go first
-    std::uint32_t most{2400};  // frames taken at most; then it stops by itself
-    double seconds{60};        // and after this long
+    bool depth{true};         // cut each frame out by the game's depth where it has one
+    std::uint32_t height{};   // each kept picture this tall at most (0: as on screen)
+    std::uint32_t skip{};     // presented frames let go first
+    std::uint32_t most{2400}; // frames taken at most; then it stops by itself
+    double seconds{60};       // and after this long
+    bool background{};        // bounded owned CPU jobs; stop/save drain pending work
 };
 // Pictures and bytes held at once, at most: past them every other kept frame is let go, and from
 // then on only every other frame taken is kept (and so on).
@@ -47,9 +51,10 @@ enum class State { idle, recording, stopped, saving, saved, failed };
 struct Status {
     State state{State::idle};
     std::uint32_t taken{}, kept{};
-    bool depth{};            // every kept frame was cut out by the game's depth
-    std::string message;     // what went wrong, or what was saved
+    bool depth{};        // every kept frame was cut out by the game's depth
+    std::string message; // what went wrong, or what was saved
     std::filesystem::path file;
+    std::uint32_t dropped{}, pending{};
 };
 
 enum class Cutout { automatic, depth, colour, none };
@@ -57,25 +62,25 @@ struct SaveRequest {
     std::vector<std::uint32_t> frames; // frames taken (from 0), each saved as the nearest one kept
     Format format{Format::gif};
     std::uint32_t fps{30};
-    std::uint32_t size{512};           // the square what was recorded is fitted into, in pixels
-    std::optional<Rgb> background;     // flattened over it; none: transparent
-    Cutout cutout{Cutout::automatic};  // automatic: by depth when every frame had it, else by colour
-    bool solid{true};                  // a hole what turns closes all round is part of it (a board), or only a small one (a skater)
-    std::string card_title;            // a card beside it: this title, then each line (none without lines)
+    std::uint32_t size{512};          // the square what was recorded is fitted into, in pixels
+    std::optional<Rgb> background;    // flattened over it; none: transparent
+    Cutout cutout{Cutout::automatic}; // automatic: by depth when every frame had it, else by colour
+    bool solid{true};                 // a hole what turns closes all round is part of it (a board), or only a small one (a skater)
+    std::string card_title;           // a card beside it: this title, then each line (none without lines)
     std::vector<Part> card;
-    PanelFonts fonts;                  // for the card; must outlive the save
-    std::filesystem::path file;        // where it is written (its folder is made)
+    PanelFonts fonts;           // for the card; must outlive the save
+    std::filesystem::path file; // where it is written (its folder is made)
 };
 
 class Recorder {
-public:
+  public:
     // A new recording, letting go of the last one; false (and why) while one is being saved.
     bool start(const RecordRequest& request, std::string& why);
     // No more frames; what was taken is kept for compare, kept and save.
     void stop() noexcept;
     // Lets go of everything taken.
     void discard() noexcept;
-    Status status() const;
+    Status status();
     // How unlike two frames taken look: the mean difference of their thumbnails' grey levels
     // (0..255), or a negative number when either is not known.
     float compare(std::uint32_t a, std::uint32_t b) const;
@@ -88,9 +93,34 @@ public:
     // Render thread, every presented frame.
     bool active() const noexcept;
     bool wants_frame() noexcept;
+    // Screen-space colour rectangle consumed by this recording. The overlay
+    // can copy only these pixels while retaining the full-screen depth source.
+    Rect requested_area(std::uint32_t width, std::uint32_t height) const noexcept;
     void take_frame(const PixelView& frame) noexcept;
 
-private:
+  private:
+    struct Prepared {
+        Image picture;
+        Rect bounds;
+        std::uint32_t width{}, height{};
+        std::vector<float> thumbnail;
+        bool depth{};
+    };
+    struct Pending {
+        std::uint64_t generation{};
+        std::uint32_t number{};
+        std::size_t bytes{};
+        std::shared_future<std::shared_ptr<Prepared>> result;
+    };
+    struct Stored {
+        Image picture;
+        Rect bounds;
+        std::uint32_t width{}, height{};
+    };
+    static Prepared prepare(const PixelView& frame, Rect area, const RecordRequest& request);
+    void commit_locked(Prepared prepared, std::uint32_t number);
+    void drain_ready_locked();
+    void drain_all(std::uint64_t generation) noexcept;
     void fail(std::string message);
     void encode(SaveRequest request) noexcept;
 
@@ -100,7 +130,10 @@ private:
     Rect area_;
     std::uint32_t skip_{}, stride_{1};
     std::chrono::steady_clock::time_point started_{};
-    std::vector<Image> pictures_;
+    std::vector<Stored> pictures_;
+    std::deque<Pending> pending_;
+    std::uint64_t generation_{};
+    std::size_t pending_bytes_{}, kept_bytes_{};
     std::vector<std::uint32_t> kept_at_;
     std::vector<bool> kept_depth_;
     std::vector<std::vector<float>> thumbnails_; // every frame taken

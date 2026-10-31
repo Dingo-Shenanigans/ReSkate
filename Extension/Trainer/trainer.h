@@ -97,6 +97,7 @@ struct View {
     bool editable{};     // false while a session's host sets everyone's physics (the host's apply)
     std::string blocked; // the reason shown on locked rows
     bool session_enforced{}; // a guest where the host (or the server) sets everyone's physics
+    bool session_stock{};    // a match that skates on the game's own physics (competition_stock_physics)
     bool boosts_blocked{};   // a session whose host turned boosts off: the trick extras are the game's own
     std::vector<Row> rows;
     std::vector<std::string> groups;
@@ -136,6 +137,7 @@ struct View {
     bool tr_spine{};
     std::array<std::int8_t, transition_settings.size()> tr_setting{};
     std::array<int, transition_options.size()> tr_option{}; // the game's own options, as the game holds them now
+    int grind_assist{-1}; // the game's own Grind Assist as the game holds it (-1: not saved in the profile yet)
     // What the player's own game settings hold for the settings the trainer can force (0 off / 1 on).
     std::array<std::int8_t, grind_settings.size()> grind_own{};
     std::array<std::int8_t, transition_settings.size()> tr_own{};
@@ -151,6 +153,7 @@ struct View {
     bool flip_advanced{};     // each flip trick also has a speed of its own
     bool flip_pop{};          // a slowed flip trick pops higher
     bool flip_flick{};        // a slow flick turns the board as fast as a full one
+    bool flip_limit{true};    // the game's flip landing limit (unticked: a flip near the landing is not hurried round)
     std::array<float, flip_tricks.size()> flip_trick{}; // those, in the order of flip_tricks
     bool flip_advanced_blocked{};       // ticked, but this session's rules keep the game's own flips
     bool flip_live{};                   // the game's flip states are found: the speeds act

@@ -25,6 +25,8 @@ constexpr int listing_timeout_ms = 20000;
 constexpr int download_timeout_ms = 30000;
 constexpr std::size_t max_icons = 128;          // loaded icon textures, of the renderer's 160 slots
 constexpr std::uint64_t max_icon_bytes = 6 * 1024 * 1024;
+// Marks an Icons key that is an icon.png on disk rather than a URL.
+constexpr std::string_view local_icon_prefix = "file:";
 
 void log(logging::Level level, const std::string& message) {
     logging::write(level, logging::Channel::launcher, message);
@@ -101,9 +103,13 @@ void icon_worker(Icons& icons) {
         }
         Icons::Decoded decoded{url};
         try {
-            const auto cached = cache.empty() ? fs::path() : cache / icon_file(url);
-            auto bytes = cached.empty() ? std::vector<unsigned char>() : read_bytes(cached);
-            if (bytes.empty()) {
+            const bool local = url.starts_with(local_icon_prefix);
+            const auto cached = local ? fs::path(wide(std::string_view(url).substr(local_icon_prefix.size())))
+                              : cache.empty() ? fs::path() : cache / icon_file(url);
+            std::error_code size_error;
+            auto bytes = cached.empty() || (local && fs::file_size(cached, size_error) > max_icon_bytes)
+                ? std::vector<unsigned char>() : read_bytes(cached);
+            if (bytes.empty() && !local) {
                 const auto body = fetch(wide(url), max_icon_bytes, never);
                 bytes.assign(body.begin(), body.end());
                 if (!cached.empty()) {
@@ -333,10 +339,11 @@ bool category_menu(const char* id, std::vector<std::string>& only, std::vector<s
 }
 
 // Placed by hand: a row lays its own icon, text and badges out.
-void mod_icon(ModsPanel& panel, const thunderstore::Package* package, ImVec2 position, float size) {
+void mod_icon(ModsPanel& panel, const thunderstore::Package* package, ImVec2 position, float size,
+    const std::filesystem::path& folder) {
     const ImVec2 end(position.x + size, position.y + size);
     auto* draw = ImGui::GetWindowDrawList();
-    if (const auto id = package ? package_icon(panel, *package) : ImTextureID{})
+    if (const auto id = package ? package_icon(panel, *package) : !folder.empty() ? folder_icon(panel, folder) : ImTextureID{})
         draw->AddImageRounded(id, position, end, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, S(4));
     else
         draw->AddRectFilled(position, end, rgba(255, 255, 255, 0.06f), S(4));
@@ -525,10 +532,10 @@ void start_store_install(ModsPanel& panel, std::vector<thunderstore::Package> pa
     });
 }
 
-ImTextureID package_icon(ModsPanel& panel, const thunderstore::Package& package) {
-    const auto& url = package.latest().icon;
+namespace {
+// The texture for an icon URL (or local_icon_prefix and a path), or empty while the worker loads it.
+ImTextureID icon_texture(Icons& icons, const std::string& url) {
     if (url.empty() || !g_renderer) return {};
-    auto& icons = panel.icons;
     auto& entry = icons.entries[url];
     entry.used = ImGui::GetFrameCount();
     if (entry.id || entry.failed || entry.queued) return entry.id;
@@ -540,6 +547,18 @@ ImTextureID package_icon(ModsPanel& panel, const thunderstore::Package& package)
     if (!icons.worker.joinable()) icons.worker = std::thread([&icons] { icon_worker(icons); });
     icons.wake.notify_one();
     return {};
+}
+} // namespace
+
+ImTextureID package_icon(ModsPanel& panel, const thunderstore::Package& package) {
+    return icon_texture(panel.icons, package.latest().icon);
+}
+
+ImTextureID folder_icon(ModsPanel& panel, const std::filesystem::path& folder) {
+    // A Thunderstore package ships its icon.png beside manifest.json, so a mod installed by hand
+    // or not (yet) on Thunderstore usually has one too.
+    const auto path = utf8((folder / L"icon.png").wstring());
+    return icon_texture(panel.icons, path.empty() ? path : std::string(local_icon_prefix) + path);
 }
 
 void pump_icons(ModsPanel& panel) {

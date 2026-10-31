@@ -1,6 +1,8 @@
 #include "gui_internal.h"
 
 #include "Engine/Game/World/world_names.h"
+#include "Engine/Core/Log/logging.h"
+#include "Engine/Vfs/initfs.h"
 
 #include <cmath>
 #include <format>
@@ -438,6 +440,18 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
         setting_check("Discord status", "Show on your Discord profile where you are skating: the map, the server or lobby "
                       "and how many are in it. Off, the game does not talk to Discord at all.", settings.discord_status);
         if (start_map_choice(settings, launcher.session(), ui)) launcher.save();
+        if (!ui.plugin_developer) {
+            try { ui.plugin_developer = initfs::plugin_developer_mode(paths.directory); } catch (const std::exception&) { ui.plugin_developer = false; }
+        }
+        bool developer = *ui.plugin_developer;
+        setting_check("Plugin developer mode", "Updates to plugins you already approved won't ask again while this is on. "
+                      "A plugin you have not approved is still held until you answer.", developer);
+        if (developer != *ui.plugin_developer) {
+            try { initfs::set_plugin_developer_mode(paths.directory, developer); } catch (const std::exception& error) {
+                logging::log(logging::Level::warning, logging::Channel::launcher, "Plugin developer mode was not saved: {}", error.what());
+            }
+            ui.plugin_developer = developer;
+        }
         ImGui::Spacing();
         section_caption(fonts, "EXTRA GAME ARGUMENTS");
         std::array<char, 1024> arguments{};
@@ -551,6 +565,7 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
         // Read again the next time: the game may have run in between, and mods may have changed.
         ui.game.loaded = false;
         ui.start_maps.reset();
+        ui.plugin_developer.reset();
     }
 }
 

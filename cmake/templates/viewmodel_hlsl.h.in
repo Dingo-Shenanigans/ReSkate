@@ -1,0 +1,6 @@
+#pragma once
+// Generated from Extension/UI/Overlay/viewmodel.hlsl (cmake/UI.cmake).
+namespace dingosdk::viewmodel {
+inline constexpr char viewmodel_hlsl[] =
+R"viewmodel_hlsl(@viewmodel_hlsl_source@)viewmodel_hlsl";
+}

@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <map>
 #include <memory>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -17,7 +18,12 @@ struct Candidate {
     std::filesystem::path directory; // the mod folder
     std::string fingerprint;         // changes when any of its files does
     std::string refusal;             // why it may not load, from its files alone, or empty
-    bool operator==(const Candidate&) const = default;
+    std::string plugin_fingerprint;  // changes when a file of the plugin itself does (plugin_approval.h)
+    std::shared_ptr<const PluginSources> sources; // the approved manifest and code, captured off the game thread
+    bool operator==(const Candidate& other) const {
+        return id == other.id && directory == other.directory && fingerprint == other.fingerprint && refusal == other.refusal &&
+               plugin_fingerprint == other.plugin_fingerprint;
+    }
 };
 
 // What the host needs from where it runs: the game, or the test runner.
@@ -27,6 +33,12 @@ public:
     virtual void log(LogLevel level, std::string_view text) = 0;
     virtual void console(std::string_view text) = 0;
     virtual double now_ms() = 0;
+    // Whether the player has this plugin turned on (plugin_approval.h); one they have not is held, not
+    // loaded. Nothing: there is no player to ask here, and the host only remembers `plugin off`. Every
+    // environment says so itself: none loads plugins by default.
+    virtual std::optional<bool> approved(const Candidate&) = 0;
+    // `plugin on` and `plugin off`: the player's answer for the plugin as it is now.
+    virtual void approve(const Candidate&, bool /*on*/) {}
     // <root>/<plugin id>/storage.json holds each plugin's storage.
     virtual std::filesystem::path storage_root() = 0;
     // Whether ReSkate has a console command starting with this word.
@@ -113,7 +125,7 @@ private:
         Candidate candidate;
         std::unique_ptr<Plugin> plugin;
         std::string failure; // why it is not running
-        bool held{};         // switched off with `plugin off` until `plugin on` or the game restarts
+        bool held{};         // not turned on by the player: waiting for an answer, or switched off
     };
     void load(Entry& entry);
     void unload(Entry& entry);

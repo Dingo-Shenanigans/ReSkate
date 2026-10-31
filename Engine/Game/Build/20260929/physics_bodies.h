@@ -15,6 +15,10 @@ namespace dingosdk::game::build::v20260929::physics_bodies {
 // solid_body(const body*) clears it (0x708be0 -> 0x25d3170). The game's ghosting also sets the
 // object's main body's bit at +0x9f8 (main_ghost 0x25d3360, which tells the world too) and its
 // solid side clears it (main_solid 0x25d2e90). Client thread.
+// rigid_bodies.h reads the same store for the bodies plugins own (Extension/World/owned_bodies.cpp)
+// and calls what this header calls a body a shape: its store + 0xf98 maps each one to the rigid
+// body that carries it. body_owner_offset is indexed by that same handle, so it holds each shape's
+// owner slot.
 inline constexpr std::uintptr_t store_offset = 0x28;
 inline constexpr std::uintptr_t body_owner_offset = 0x1008, owner_kind_offset = 0x8b0, owner_value_offset = 0x8b8;
 inline constexpr std::uintptr_t ghost_body = 0x25d3610, solid_body = 0x25d3170, main_ghost = 0x25d3360, main_solid = 0x25d2e90;

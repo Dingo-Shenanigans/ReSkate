@@ -1,5 +1,7 @@
 #pragma once
+#include "plugin_approval.h"
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -35,4 +37,19 @@ std::vector<CommandHint> command_hints();
 std::string reload(std::string_view id);
 std::string switch_off(std::string_view id);
 std::string switch_on(std::string_view id);
+// Plugin developer mode (Engine/Vfs/initfs.h, shared with the launcher): a plugin that has an answer
+// keeps it when its files change. False from set_developer_mode when it could not be saved. Any thread.
+bool developer_mode();
+bool set_developer_mode(bool on) noexcept;
+// The plugins that may load, for the menu: each one is asking, on or off for the files it has now.
+// Those waiting for an answer come first, then on, then off, each by title.
+// Any thread.
+struct Installed {
+    std::string id, title, author; // read by a player; the author is empty when unknown
+    std::vector<PermissionGroup> can; // what it can do, in plain words by category
+    Approval approval;
+};
+std::vector<Installed> installed();
+// The player turning a plugin on or off (it is applied on the next client tick). Any thread.
+void set_enabled(std::string_view id, bool on);
 }

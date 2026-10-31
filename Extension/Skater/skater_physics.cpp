@@ -53,6 +53,14 @@ bool read_contacts(const NoBailSkater& skater, skater_body::Contacts& result) no
         const std::uintptr_t side = tracked > ordinary ? body::bone_tracked_offset : 0;
         b.slide = vec3(field<std::array<float, 4>>(records, index, body::bone_slide_offset + side));
         const auto hit = [&](std::uintptr_t offset) { return field<std::uint8_t>(records, index, offset) != 0; };
+        const auto point = field<std::array<float, 4>>(records, index, body::bone_point_offset);
+        const auto normal = field<std::array<float, 4>>(records, index, body::bone_normal_offset + side);
+        const auto finite3 = [](const auto& v) {
+            return std::all_of(v.begin(), v.begin() + 3, [](float x) { return std::isfinite(x) && std::abs(x) < 100000; });
+        };
+        if (b.touching && finite3(point)) b.point = Vec3{point[0], point[1], point[2]};
+        const float norm = normal[0]*normal[0] + normal[1]*normal[1] + normal[2]*normal[2];
+        if (b.touching && finite3(normal) && norm > .25f && norm < 2.25f) b.normal = Vec3{normal[0], normal[1], normal[2]};
         b.hit = {hit(body::bone_hit_board_offset), hit(body::bone_hit_vehicle_offset), hit(body::bone_hit_world_offset),
             hit(body::bone_hit_kind_5_offset), hit(body::bone_hit_kind_11_offset)};
     }
@@ -122,6 +130,10 @@ bool start(std::uintptr_t base) noexcept {
             return false;
         }
     }
+    {
+        std::array<unsigned char, 32> actual{};
+        if (!memory::peek(base + body::body_transform_contract.rva, actual) || actual != body::body_transform_contract.bytes) return false;
+    }
     if (!no_bail_available()) {
         logging::write(logging::Level::warning, logging::Channel::skater,
             "The skater's physics steps are unavailable: they come through No Bail's hooks, which did not start.");
@@ -139,6 +151,7 @@ Step read_step(const NoBailSkater& skater, float seconds, bool wipeout) noexcept
     step.wipeout = wipeout;
     std::uint32_t physics_state{};
     if (memory::peek(skater.context + state::physics_state_offset, physics_state)) {
+        step.state = physics_state;
         // On the board by the physics state; off it (on foot, and through a whole bail) by the offboard state.
         const bool offboard = physics_state == addr::no_bail::offboard_physics_state;
         Offboard flags;
@@ -150,6 +163,27 @@ Step read_step(const NoBailSkater& skater, float seconds, bool wipeout) noexcept
         if (read_motion(skater, board, pelvis, spin)) {
             step.velocity = offboard ? pelvis : board;
             step.spin = game::length(spin);
+        }
+    }
+    std::uintptr_t physics{}, type{}, bodies{};
+    std::uint32_t count{};
+    if (memory::peek(skater.rig + state::rig_physics_offset, physics) &&
+        memory::peek(physics, type) && type == skater.base + state::rig_physics_vtable &&
+        memory::peek(physics + state::physics_bodies_offset, bodies) && memory::peek(bodies, count) && count == state::rig_body_count) {
+        for (std::size_t i = 1; i < skater_body::count; ++i) {
+            const auto at = bodies + i * state::physics_body_size;
+            std::uintptr_t owner{}; Step::Pose pose;
+            if (!memory::peek(at + state::body_owner_offset, owner) || owner != physics ||
+                !memory::peek(at + body::body_transform_offset, pose.transform) ||
+                !memory::peek(at + state::body_velocity_offset, pose.velocity) || !finite(pose.velocity)) continue;
+            bool valid = true;
+            for (float v : pose.transform) valid = valid && std::isfinite(v) && std::abs(v) < 100000;
+            for (unsigned a = 0; a < 3; ++a) for (unsigned b = 0; b <= a; ++b) {
+                float dot{};
+                for (unsigned k = 0; k < 3; ++k) dot += pose.transform[a*4+k] * pose.transform[b*4+k];
+                valid = valid && std::abs(dot - (a == b ? 1.0f : 0.0f)) < .05f;
+            }
+            if (valid) step.poses[i] = pose;
         }
     }
     (void)read_contacts(skater, step.body);

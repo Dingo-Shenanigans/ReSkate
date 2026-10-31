@@ -141,15 +141,21 @@ target_link_libraries(dingosdk_world_layer_scan PUBLIC dingosdk_json PRIVATE din
 # VMs and the API; finding plugins among the mods needs the mod list, so it is Windows only for now.
 add_library(dingosdk_plugins STATIC
     Extension/Plugins/plugin_manifest.cpp
+    Extension/Plugins/plugin_approval.cpp
+    Extension/Plugins/plugin_listing.cpp
     Extension/Plugins/plugin_vm.cpp
     Extension/Plugins/plugin_api.cpp
     Extension/Plugins/plugin_api_ui.cpp
     Extension/Plugins/plugin_api_more.cpp
     Extension/Plugins/plugin_api_world.cpp
+    Extension/Plugins/plugin_api_physics.cpp
     Extension/Plugins/plugin_api_services.cpp
     Extension/Plugins/plugin_api_throwdowns.cpp
     Extension/Plugins/plugin_api_capture.cpp
     Extension/Plugins/plugin_content.cpp
+    Extension/Plugins/plugin_api_effects.cpp
+    Extension/Plugins/plugin_api_viewmodel.cpp
+    Extension/Plugins/plugin_effects.cpp
     # The throwdown kit's store and the plugins' modes, which the plugin host and the game's
     # native UI share (kit::flag is the game's: Extension/Throwdowns/native_flag_session.cpp).
     Extension/Throwdowns/throwdown_kit.cpp
@@ -159,7 +165,7 @@ add_library(dingosdk_plugins STATIC
     Extension/AnimationStudio/anim_core.cpp
     Extension/Skater/pose_place.cpp
     Extension/Plugins/plugin_wave.cpp)
-target_link_libraries(dingosdk_plugins PUBLIC dingosdk_json dingosdk_console_core PRIVATE dingosdk_luau)
+target_link_libraries(dingosdk_plugins PUBLIC dingosdk_json dingosdk_console_core PRIVATE dingosdk_luau dingosdk_launcher_support)
 if(WIN32)
     target_sources(dingosdk_plugins PRIVATE Extension/Plugins/plugin_discovery.cpp)
     target_link_libraries(dingosdk_plugins PUBLIC dingosdk_mod_list)

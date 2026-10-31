@@ -283,7 +283,7 @@ bool toggle_row(SkateMenu& menu, const char* label, const char* hint, bool& valu
         const auto size = menu.bold->CalcTextSizeA(px(17), FLT_MAX, 0, state);
         const ImU32 state_ink = !available ? muted : focused || hovered ? paper : value ? blue : muted;
         draw->AddText(menu.bold, px(17), ImVec2(end.x - px(24) - size.x, at.y + (height - size.y) * .5f), state_ink, state);
-        if (hovered) ImGui::SetTooltip("%s", hint);
+        if (hovered && *hint) ImGui::SetTooltip("%s", hint);
         ImGui::EndDisabled();
         ImGui::PopID();
         return clicked;
@@ -316,7 +316,7 @@ bool toggle_row(SkateMenu& menu, const char* label, const char* hint, bool& valu
     const auto text = menu.bold->CalcTextSizeA(px(14), FLT_MAX, 0, state);
     draw->AddText(menu.bold, px(14), ImVec2(box.x + (block - text.x) * 0.5f, box.y + (height - px(15) - text.y) * 0.5f),
         on ? skate_theme::black : muted, state);
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", hint);
+    if (*hint && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", hint);
     ImGui::EndDisabled();
     ImGui::PopID();
     return clicked;
@@ -1011,15 +1011,11 @@ namespace {
 bool page_hidden(const SkateMenu& menu, const Model& model, int page) {
     // Developer (the network view) is hidden for now; offline there is no Online. HOME is the
     // full screen menu's: a window has its side rail instead.
-    // PLUGINS shows while a plugin has a page.
-    if (page == page_plugins) {
-        const auto pages = plugin_pages();
-        if (!pages || pages->empty()) return true;
-    }
     return page == page_developer || (page == page_home && !menu.fullscreen_drawn) || (model.steam_offline && page == page_online);
 }
 // A plugin's page is titled with its name, and says whose it is.
 const char* page_title(SkateMenu& menu) {
+    if (menu.page == page_plugins && !menu.fullscreen_drawn && !shown_plugin_page(menu)) return "PLUGIN MANAGER";
     if (menu.page == page_plugins && !menu.fullscreen_drawn)
         if (const auto* shown = shown_plugin_page(menu)) {
             static std::string title;
@@ -1030,6 +1026,7 @@ const char* page_title(SkateMenu& menu) {
     return menu.page == page_addons && menu.addon > addon_all ? addon_names[static_cast<std::size_t>(menu.addon)] : page_names[static_cast<std::size_t>(menu.page)];
 }
 const char* page_subtitle(SkateMenu& menu) {
+    if (menu.page == page_plugins && !menu.fullscreen_drawn && !shown_plugin_page(menu)) return "Which plugins may run.";
     if (menu.page == page_plugins && !menu.fullscreen_drawn)
         if (const auto* shown = shown_plugin_page(menu)) {
             static std::string subtitle;
@@ -1211,7 +1208,7 @@ void draw_windowed(SkateMenu& menu, const Model& model, const CallbacksV3& callb
             for (int i = 0; i < page_count; ++i) {
                 if (page_hidden(menu, model, i)) continue;
                 if (i == page_addons) rows += addon_count - addon_first;
-                else if (i == page_plugins) rows += static_cast<int>(plugin_pages()->size());
+                else if (i == page_plugins) rows += static_cast<int>(plugin_pages()->size()) + 1;
                 else ++rows;
                 if (group_of(i)) ++groups;
             }
@@ -1256,8 +1253,15 @@ void draw_windowed(SkateMenu& menu, const Model& model, const CallbacksV3& callb
                     ImGui::PopID();
                 }
             } else if (i == page_plugins) {
-                // A row for each plugin with a page, by its name.
+                // The PLUGIN MANAGER first, then a row for each plugin with a page, by its name.
                 const auto pages = plugin_pages();
+                const bool manager = menu.page == page_plugins && !shown_plugin_page(menu);
+                ImGui::PushID("plugin-manager");
+                if (row("##plugin", "PLUGIN MANAGER", manager, row_height, 0, menu.bold, px(16))) {
+                    open_page(menu, page_plugins);
+                    menu.plugin_page = plugin_manager_entry;
+                }
+                ImGui::PopID();
                 for (const auto& entry : *pages) {
                     ImGui::PushID(entry.plugin.c_str());
                     std::string name = entry.title;

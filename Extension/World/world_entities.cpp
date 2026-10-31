@@ -358,12 +358,17 @@ std::optional<Box> blueprint_bounds(std::uintptr_t base, std::string_view bluepr
     const auto find = game::native_data().find_asset;
     if (!find || blueprint.empty() || blueprint.size() > 200) return std::nullopt;
     const std::string name(blueprint);
-    const auto read = [](auto at) { return ptr(at); };
-    for (std::uint16_t domain = 0; domain < 0xbbf; ++domain) {
-        if (!ptr(base + addr::engine::domain_owners, std::uintptr_t(domain) * 8)) continue;
-        if (const auto asset = find(domain, name.c_str()); detail::object_blueprint(asset, base, read)) return asset_bounds(base, asset);
-    }
-    return std::nullopt;
+    static std::mutex mutex;
+    static auto* cache = new detail::LookupCache<Box>;
+    std::lock_guard lock(mutex);
+    return cache->get(name, GetTickCount64(), [&]() -> std::optional<Box> {
+        const auto read = [](auto at) { return ptr(at); };
+        for (std::uint16_t domain = 0; domain < 0xbbf; ++domain) {
+            if (!ptr(base + addr::engine::domain_owners, std::uintptr_t(domain) * 8)) continue;
+            if (const auto asset = find(domain, name.c_str()); detail::object_blueprint(asset, base, read)) return asset_bounds(base, asset);
+        }
+        return std::nullopt;
+    });
 }
 
 void set_joint_source(JointSource source) noexcept { joint_source.store(source, std::memory_order_release); }

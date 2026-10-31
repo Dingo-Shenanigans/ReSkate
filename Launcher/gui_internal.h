@@ -447,6 +447,8 @@ struct Ui {
     // The maps Settings offers to start in, read from the Mods folder when GAME is first drawn
     // after Settings opens.
     std::optional<std::vector<launcher_start_maps::StartMap>> start_maps;
+    // Plugin developer mode (initfs.h), read when the settings open and again after a launch.
+    std::optional<bool> plugin_developer;
     int binding{};              // 1 = menu key, 2 = console key, while waiting for a press
     std::string key_error;
     bool mods{};
@@ -709,9 +711,12 @@ std::vector<const thunderstore::Package*> updates(const Store& store, const thun
 void start_store_install(ModsPanel& panel, std::vector<thunderstore::Package> packages);
 // The package's icon texture, or empty while it loads; uploads finished icons.
 ImTextureID package_icon(ModsPanel& panel, const thunderstore::Package& package);
-// That icon drawn at `position`, or a placeholder square while it loads or
-// when the mod never came from Thunderstore.
-void mod_icon(ModsPanel& panel, const thunderstore::Package* package, ImVec2 position, float size);
+// The icon.png in an installed mod's folder, for a mod the listing does not have.
+ImTextureID folder_icon(ModsPanel& panel, const std::filesystem::path& folder);
+// That icon drawn at `position` (else the one in `folder`, when given), or a placeholder
+// square while it loads or when there is none.
+void mod_icon(ModsPanel& panel, const thunderstore::Package* package, ImVec2 position, float size,
+    const std::filesystem::path& folder = {});
 void pump_icons(ModsPanel& panel);
 // A category menu for a list of mods (GET MODS, MY MODS): each category shown only, hidden, or either,
 // a click going round them, with how many mods are in each (category_count adds to that). One chosen

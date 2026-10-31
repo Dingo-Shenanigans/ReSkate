@@ -13,6 +13,7 @@
 #include "Engine/Game/Profile/progression.h"
 #include "Engine/Game/Profile/object_persistence_model.h"
 #include "Engine/Game/World/park_editor.h"
+#include "Engine/Game/World/body_query.h"
 #include "Engine/Game/Input/controller_bindings.h"
 #include "Engine/Game/UI/menu_scale.h"
 #include "Engine/Core/Json/json.h"
@@ -98,6 +99,34 @@ std::optional<float> local_ground_height(float x, float z, float top, float bott
 // client physics world. Empty when the line is clear, collision is still streaming, or the query
 // is unavailable. Client update thread.
 std::optional<std::array<float, 3>> local_surface_hit(const std::array<float, 3>& from, const std::array<float, 3>& to);
+// One counted ray into the same client physics world, for the plugins' counted world queries
+// (reskate.world.probe and world.physics.probe_batch; world.raycast keeps local_surface_hit).
+// Client update thread. available is false when the query could not run or its result was
+// malformed; a clear ray is available without a hit, and does not prove that collision for the
+// whole region has streamed. native_casts is 1 when the native ray was called, whatever it
+// returned, and 0 when the request was refused first. The ray looks up no owner, ignores
+// nothing and is never cast again.
+struct LocalSurfaceProbe {
+    bool available{}, hit{};
+    std::array<float, 3> position{};
+    float fraction{};
+    std::uintptr_t context{}, world{}; // the client TLS context and its resolved world
+    // Only with read_shape: the nearest hit's handle from the native picking reader, or zero when
+    // it could not be read. It is the shape that was hit (physics_bodies.h), a diagnostic for the
+    // caller to qualify again.
+    std::array<std::uint64_t, 2> hit_shape{};
+    std::array<float, 3> normal{};
+    bool normal_available{};
+    unsigned native_casts{};
+};
+// What a caller adds to the plain ray. measure_contact also reads the hit's point and normal;
+// preset picks the native filter only, and an unknown value makes no native call.
+struct LocalSurfaceQuery {
+    bool read_shape{}, measure_contact{};
+    body_query::QueryPreset preset{body_query::QueryPreset::camera};
+};
+LocalSurfaceProbe probe_local_surface_counted(const std::array<float, 3>& from, const std::array<float, 3>& to,
+                                              const LocalSurfaceQuery& query = {});
 // Small allowlisted progression commands, executed on the game update thread.
 bool set_local_progression(const std::vector<std::string>& arguments);
 // Small ReSkate-owned booleans saved beside the profile under a "ReSkate."

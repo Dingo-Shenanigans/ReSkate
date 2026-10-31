@@ -1,7 +1,11 @@
 #pragma once
 #include "plugin_vm.h"
 #include "lua.h"
+#include <algorithm>
 #include <initializer_list>
+#include <span>
+#include <string_view>
+#include <utility>
 
 // Inside the plugin host only: the reskate API a plugin's VM gets.
 namespace dingosdk::plugins {
@@ -16,6 +20,8 @@ void install_ui_api(Plugin& plugin, lua_State* L);
 void install_more_api(Plugin& plugin, lua_State* L);
 // The wider set's game parts (plugin_api_world.cpp), into the same table.
 void install_world_api(Plugin& plugin, lua_State* L);
+// Native bodies a plugin owns and their ray batches (plugin_api_physics.cpp), into reskate.world.
+void install_physics_api(Plugin& plugin, lua_State* L);
 // General services for a game layer: the skater's telemetry and Bone Cam, the pad and keys, the
 // free and pad-flown cameras, the session's world, competition physics and the trick feed
 // (plugin_api_services.cpp).
@@ -26,6 +32,9 @@ void install_kit_api(Plugin& plugin, lua_State* L);
 // Screen captures, the game menu's preview turned and read, what the skater wears, and the data
 // folder shown (plugin_api_capture.cpp).
 void install_capture_api(Plugin& plugin, lua_State* L);
+void install_effects_api(Plugin& plugin, lua_State* L);
+// A rigged, animated model in front of the camera (plugin_api_viewmodel.cpp).
+void install_viewmodel_api(Plugin& plugin, lua_State* L);
 
 // ---- adding to the reskate table ---------------------------------------------------------------
 // A new part of the API is a file of `static int name(lua_State*)` functions and an install_*_api
@@ -47,6 +56,27 @@ void add_functions(lua_State* L, const char* field, std::initializer_list<ApiFun
 void add_functions(lua_State* L, std::initializer_list<ApiFunction> functions);
 // Pushes a new read-only table of the functions, kept outside reskate (the draw and ui handles).
 void push_functions(lua_State* L, std::initializer_list<ApiFunction> functions);
+
+// ---- fixed words -------------------------------------------------------------------------------
+// The words an API function takes or gives from a fixed set. Each list is also reskate.Enums.<name>
+// (Api::install), so the check and the constant cannot drift apart.
+using Words = std::span<const std::string_view>;
+inline constexpr std::string_view log_levels[] = {"info", "warn", "error"};                 // Enums.LogLevel
+inline constexpr std::string_view aligns[] = {"left", "centre", "center", "right"};         // Enums.Align
+inline constexpr std::string_view launches[] = {"grind", "ollie", "no_comply", "boneless"};  // Enums.Launch
+inline constexpr std::string_view stances[] = {"regular", "goofy"};                         // Enums.Stance
+inline constexpr std::string_view pops[] = {"low", "mid", "high"};                          // Enums.Pop
+inline constexpr std::string_view spaces[] = {"local", "world"};                            // Enums.Space
+inline constexpr std::string_view throwdown_modes[] = {"jam", "spot_battle", "skate"};      // Enums.Throwdown
+inline constexpr std::string_view throwdown_cards[] = {"skate", "spot", "spot_battle", "jam"}; // Enums.Card
+inline constexpr std::string_view entity_statuses[] = {"waiting", "loading", "missing", "ready", "hidden"}; // Enums.EntityStatus
+inline constexpr std::string_view send_targets[] = {"all", "server"};                       // Enums.Target
+// Named keys for input.key and the like (letters and digits are their own character): Enums.Key.
+inline constexpr std::pair<std::string_view, int> key_names[] = {
+    {"Enter", 13}, {"Backspace", 8}, {"Escape", 27}, {"End", 35}, {"Home", 36}, {"PageUp", 33}, {"PageDown", 34}, {"Space", 32},
+    {"Shift", 16}, {"Ctrl", 17}, {"Alt", 18}, {"Tab", 9}, {"Left", 37}, {"Up", 38}, {"Right", 39}, {"Down", 40},
+    {"[", 0xDB}, {"]", 0xDD}, {"Delete", 46}, {"LeftMouse", 1}, {"RightMouse", 2}, {"MiddleMouse", 4}};
+inline bool one_of(Words words, std::string_view word) { return std::ranges::find(words, word) != words.end(); }
 
 // ---- what most API functions start with --------------------------------------------------------
 // The plugin calling, or a Lua error once it has been stopped.

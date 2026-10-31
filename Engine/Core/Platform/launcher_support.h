@@ -113,6 +113,8 @@ void validate_game_file(const std::filesystem::path& path);
 // in launcher_pe.cpp; PE helpers are Windows-only.
 #endif
 std::string sha256_file(const std::filesystem::path& path);
+// The same for bytes in memory.
+std::string sha256_bytes(std::string_view data);
 void validate_steam_api_file(const std::filesystem::path& path);
 
 // -offline: the launcher sets RESKATE_OFFLINE=1 so the game runs without Steam,

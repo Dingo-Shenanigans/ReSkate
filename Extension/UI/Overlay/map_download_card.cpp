@@ -231,7 +231,9 @@ void draw_asked_list(State& s) {
     const std::string headline = with_map ? std::format("{} and {} {}", card.items.front().name, plugins, plugins == 1 ? "plugin" : "plugins")
                                           : std::format("{} {}", plugins, plugins == 1 ? "plugin" : "plugins");
     const std::string why = std::format("The {} needs {} to join. Plugins and maps are the only mods a {} can ask for, and they come from Thunderstore.",
-                                        host, card.items.size() == 1 ? "this" : "these", host);
+                                        host, card.items.size() == 1 ? "this" : "these", host) +
+        (plugins ? " A plugin is a script that runs inside your game. It is not turned on by the download: once it is in, it asks you, "
+                   "with the list of what it can do, whether to turn it on." : "");
     const std::string total = card.bytes ? "Downloads " + megabytes(card.bytes) + " in all" : std::string();
 
     dingosdk::ControllerInput pad;

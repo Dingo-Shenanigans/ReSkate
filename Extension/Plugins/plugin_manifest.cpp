@@ -1,5 +1,9 @@
 #include "plugin_manifest.h"
+#include "plugin_effects.h"
 #include "Engine/Core/Json/json.h"
+#include "Engine/Vfs/resident_assets.h"
+#include "Engine/Game/Build/addresses.h"
+#include "Engine/Game/Build/20260929/effects.h"
 #include <algorithm>
 #include <array>
 #include <fstream>
@@ -14,21 +18,33 @@ namespace {
 // trick events, the trick list's feed and flick diagrams (reskate.tricks); "throwdowns" the
 // throwdown kit (modes, documents, the native flag); "server.parks" a dedicated server's park mods
 // (reskate.server.parks, park_spawn, park_remove); "variants" choosing which of its own mod's
-// variants is in the game (reskate.package.choose). A manifest's "resident" list and "variants" are
-// the merge's (Engine/Vfs/mod_list.h ResidentAssets, Variants), not the plugin host's.
-constexpr std::array<std::string_view, 50> permissions{
+// variants is in the game (reskate.package.choose); "viewmodel" a model of its own drawn in front of
+// the camera (reskate.viewmodel); "strings" the text the game shows for its ids (reskate.strings).
+// "world.physics" native rigid bodies the plugin
+// owns (reskate.world.physics: create, read, submit, receipt, acknowledge, release, prepare) and,
+// with "world.raycast", ray batches beside one (probe_batch). "world.physics.observe" adds
+// probe_batch's passive diagnostics on top of those two: include_shape_categories (a read-time
+// category mask), include_hit_owner (an equality-only token for a hit shape's owner slot) and
+// query_preset "all" (a filter that tests every shape with a category, actors' shapes included).
+// It grants no force, raw filter, exclusion or actor identity. probe_batch's
+// require_named_actor_categories_absent shows no category and needs only "world.physics" and
+// "world.raycast". A manifest's "resident" list and "variants" are the merge's
+// (Engine/Vfs/mod_list.h ResidentAssets, Variants), not the plugin host's.
+constexpr std::array<std::string_view, 56> permissions{
     "console", "storage", "overlay", "menu", "ui.screen", "input", "input.write", "hud", "events.tricks", "events.skater",
     "skater.read", "skater.teleport", "skater.control", "skater.animation", "trainer", "camera",
-    "world.raycast", "world.objects", "world.entities", "world.environment", "world.ai", "travel", "session.read",
+    "world.raycast", "world.physics", "world.physics.observe", "world.objects", "world.entities", "world.environment", "world.ai", "travel", "session.read",
     "session.skaters", "session.nametags", "net.session", "net.http", "voice.control", "chat.read",
     "chat.send", "chat.local", "server", "server.parks", "throwdowns", "replay", "music", "progression.read", "settings.read", "audio.ui", "audio", "outfit", "board", "mods.read",
-    "events.physics", "game.speed", "files", "variants", "settings.write", "room", "capture"};
+    "events.physics", "game.speed", "files", "variants", "settings.write", "room", "capture", "effects", "events.physics.geometry", "viewmodel", "strings"};
 }
 
 bool known_permission(std::string_view name) noexcept {
     for (const auto known : permissions) if (known == name) return true;
     return false;
 }
+
+std::vector<std::string_view> known_permissions() { return {permissions.begin(), permissions.end()}; }
 
 std::string safe_relative_path(std::string_view path) {
     if (path.empty() || path.size() > 260 || path.front() == '/') return {};
@@ -92,6 +108,29 @@ Manifest parse_manifest(std::string_view text) {
             if (!known_permission(name))
                 throw std::runtime_error("unknown permission \"" + name + "\": check the spelling, or update ReSkate");
             result.permissions.insert(name);
+        }
+    }
+    if (result.permissions.contains("events.physics.geometry") && !result.permissions.contains("events.physics"))
+        throw std::runtime_error("events.physics.geometry also needs the events.physics permission");
+    if (json.contains("effects")) {
+        const auto& list = json.at("effects");
+        if (!result.permissions.contains("effects") || !list.is_array() || list.size() > 128)
+            throw std::runtime_error("effects needs the effects permission and at most 128 private asset names");
+        const auto resident = json.contains("resident") ? mods::parse_resident_assets(json.at("resident")) :
+            std::vector<mods::ResidentAssets>{};
+        for (const auto& item : list) {
+            if (!item.is_string() || (!private_effect_asset(item.string(), false) && !private_effect_asset(item.string(), true)))
+                throw std::runtime_error("effects accepts private reskate particle/material paths only; stock and store assets are refused");
+            const auto& name = item.string();
+            const bool covered = std::any_of(resident.begin(), resident.end(), [&](const auto& bundle) {
+                if (bundle.bundle != addr::effects::resident_bundle) return false;
+                return std::any_of(bundle.roots.begin(), bundle.roots.end(), [&](const auto& root) {
+                    return root.ends_with('/') ? name.starts_with(root) : name == root;
+                });
+            });
+            if (!covered) throw std::runtime_error("every effect must be covered by resident roots in " +
+                std::string(addr::effects::resident_bundle) + ": " + name);
+            result.effects.insert(name);
         }
     }
     if (json.contains("domains")) {

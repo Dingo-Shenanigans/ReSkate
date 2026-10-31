@@ -1,6 +1,8 @@
 #pragma once
+#include "plugin_effects.h"
 #include "plugin_wave.h"
 #include "Engine/Core/Json/json.h"
+#include "Engine/Game/World/body_query.h"
 #include "Extension/AnimationStudio/anim_core.h"
 #include "Extension/Skater/pose_place.h"
 #include "Extension/Throwdowns/throwdown_kit.h"
@@ -73,9 +75,16 @@ struct PadInput {
     std::uint32_t buttons{};
     bool playstation{};
 };
+// A joystick or radio's eight axes (X, Y, Z, Rx, Ry, Rz, the two sliders) and 32 buttons.
 struct StickInput {
-    std::array<float, 6> axes{};
+    std::array<float, 8> axes{};
     std::uint32_t buttons{};
+    std::string name;
+    int device = -1; // its number, as joysticks() lists it
+};
+// A controller plugged in: its number (for joystick(device)) and name.
+struct StickDevice {
+    int device{};
     std::string name;
 };
 // A sound a plugin plays (reskate.audio): its wave, or the motor synth when it has none.
@@ -113,7 +122,7 @@ struct SkaterNews {
     std::vector<Fall> falls;
 };
 // One physics step of the local skater (events.physics): when (the steady clock, ms, as
-// reskate.time.now), how long it simulated, and what the body did; only the bodies touching something.
+// reskate.time.now), how long it simulated, contacts, and available body poses even in the air.
 struct PhysicsStep {
     double at{};
     float seconds{};
@@ -125,8 +134,12 @@ struct PhysicsStep {
         std::string name; // as body_hit names it
         float impact{}, slide{};
         bool board{}, vehicle{}, world{}; // world: anything but the board and vehicles
+        std::optional<Vec3> point, normal;
     };
     std::vector<Body> bodies;
+    struct Pose { EffectMatrix transform{}; Vec3 velocity{}; };
+    std::map<std::string, Pose, std::less<>> poses; // all available local bodies, including airborne ones
+    std::optional<std::uint32_t> state;
 };
 // What a plugin sets of a launch into the air, m/s, each if given: across the direction of travel
 // (+ its left), along it, and up. And a launch as it went (Extension/Skater/launches.h).
@@ -259,6 +272,31 @@ struct Progress {
 class Game {
 public:
     virtual ~Game() = default;
+    // ---- native bodies a plugin owns (reskate.world.physics; Extension/World/owned_bodies.h) ------
+    // Owned by one VM instance, not by a reloadable plugin name. Client phase only; the typed
+    // handles and epochs reach Lua only inside opaque userdata.
+    // Generic deferred producer setup and readiness only; no owner or definition is kept.
+    virtual std::string body_prepare() { return unavailable; }
+    virtual std::string body_create(std::uint64_t, const owned_body::Definition&, owned_body::Handle&) { return unavailable; }
+    virtual std::string body_read(std::uint64_t, const owned_body::Handle&, owned_body::Sample&) { return unavailable; }
+    // allowed is the VM's remaining native cast budget; the result counts every native call made.
+    virtual body_query::Result body_probe_batch(std::uint64_t, const owned_body::Handle&, const body_query::Request&, unsigned) { return {}; }
+    virtual std::string body_submit(std::uint64_t, const owned_body::Handle&, const owned_body::Command&, std::uint64_t&) { return unavailable; }
+    virtual std::string body_receipt(std::uint64_t, const owned_body::Handle&, std::uint64_t, owned_body::Receipt&) { return unavailable; }
+    virtual std::string body_acknowledge(std::uint64_t, const owned_body::Handle&, std::uint64_t) { return unavailable; }
+    virtual std::string body_release(std::uint64_t, const owned_body::Handle&) { return unavailable; }
+    // When the VM closes: every body it still owns is released (retained and parked).
+    virtual void body_release_all(std::uint64_t) {}
+    // Client-only particles and projected materials. Handles are owned by their plugin.
+    virtual std::uint64_t effect_create(std::string_view, const EffectRequest&) { return 0; }
+    virtual void effect_move(std::string_view, std::uint64_t, const EffectMatrix&) {}
+    virtual void effect_stop(std::string_view, std::uint64_t) {}
+    virtual void effect_opacity(std::string_view, std::uint64_t, float) {}
+    virtual void effect_release(std::string_view, std::uint64_t) {}
+    virtual std::vector<std::uint64_t> effects_live(std::string_view) { return {}; }
+    virtual void effects_clear(std::string_view) {}
+    virtual std::pair<bool, std::uint64_t> effects_state() { return {false, 0}; }
+
     // ---- the local skater ----------------------------------------------------------------------
     // Its physics state (100s riding, 200s in the air, 300 a wipeout, 400s grinding, 504 off the
     // board), or empty without a skater; and how many wipeouts it has had this session.
@@ -301,6 +339,19 @@ public:
     virtual std::vector<std::string> entity_blueprints(std::string_view /*prefix*/, bool /*meshes_only*/) { return {}; }
     // A world object blueprint's mesh box in its own frame (min, max), when it has a loaded mesh.
     virtual std::optional<std::array<Vec3, 2>> entity_bounds(std::string_view /*blueprint*/) { return std::nullopt; }
+    // reskate.world.probe's ray: one current client-world ray that tells an unavailable query from
+    // a successful clear ray. A hit supplies its actual position and segment fraction only. No
+    // surface normal, velocity, native handles or world/owner epoch is qualified by this observation.
+    struct WorldProbe {
+        bool available{}, hit{};
+        Vec3 position{};
+        float fraction{};
+    };
+    // At most `allowed` native casts (what is left of the VM's native cast budget, never more than
+    // body_query::casts_per_ray), all of them counted, failed ones included; the game's ray makes
+    // one. An unavailable backend reports zero casts. world.raycast and world.pick do not use it.
+    struct CountedProbe { WorldProbe probe{}; unsigned native_casts{}; };
+    virtual CountedProbe world_probe_bounded(const Vec3&, const Vec3&, unsigned) { return {}; }
     // The world raycast and the object it meets (Extension/Objects/ParkEditor/park_editor_runtime.h,
     // local_world_pick): where; and the object's transform (rows right, up, forward with their
     // scale, then position) and blueprint, when known.
@@ -402,11 +453,19 @@ public:
     // stick of a stand-in pad: `value` -1..1 of the stick held for 300 ms (call it every tick), 0 lets
     // go; `stick` 0 left x, 1 left y, 2 right x, 3 right y. Only while the game's menu is open.
     virtual std::string room_turn(std::string_view /*plugin*/, float /*value*/, int /*stick*/) { return unavailable; }
+    struct RoomPose {
+        Vec3 position{};
+        std::array<float, 4> rotation{0, 0, 0, 1};
+        double age{};
+        std::uint64_t sequence{};
+    };
+    virtual std::optional<RoomPose> room_pose(bool /*skater*/) { return std::nullopt; }
     // The game's menu: whether it is open, whether it shows the Skaters page, and the navigations of
     // the open page's buttons (how the game names where each goes: "CASPresetPurchase", ...).
     struct GameMenu {
         bool open{}, skaters{};
         std::vector<std::string> buttons;
+        bool known{}; // The native screen model was resolved; false is not a known closed menu.
     };
     virtual GameMenu game_menu() { return {}; }
     // The customization grid that has the focus (Extension/Customization/item_browser.h), when one does.
@@ -430,6 +489,7 @@ public:
         bool depth{true};
         std::uint32_t height{}, skip{}, most{2400};
         double seconds{60};
+        bool background{};
     };
     virtual std::string capture_start(std::string_view /*plugin*/, const CaptureStart&) { return unavailable; }
     virtual void capture_stop(std::string_view /*plugin*/) {}
@@ -439,6 +499,7 @@ public:
         std::uint32_t taken{}, kept{};
         bool depth{};
         std::string message, file; // file: its path in the plugin's data folder
+        std::uint32_t dropped{},pending{};
     };
     // Another plugin's capture reads as idle.
     virtual CaptureStatus capture_status(std::string_view /*plugin*/) { return {"idle"}; }
@@ -498,6 +559,17 @@ public:
     // the ticker's label `from` shown as `to` (empty: that label is the game's again), and the next
     // trick with one of `from`'s ids, within `within_ms`, recorded as `to`. Empty when done, else why not.
     virtual std::string trick_label(std::string_view /*plugin*/, std::string_view /*from*/, std::string_view /*to*/) { return unavailable; }
+    // ---- strings: the text the game shows for its ids (Extension/Localization/text_overrides.h) ----
+    // Each key (an id, or "#" and 1 to 8 hex digits for one known by its hash) shown as its UTF-8
+    // text, checked by the API; stored over the next ticks. Empty when taken, else why not.
+    virtual std::string strings_set(std::string_view /*plugin*/, const std::vector<std::pair<std::string, std::string>>& /*texts*/) {
+        return unavailable;
+    }
+    // Whether the game has text for the key; nullopt when it cannot say.
+    virtual std::optional<bool> string_exists(std::string_view /*key*/) { return std::nullopt; }
+    // The casing rules the UI's own capitalization follows while the plugin is loaded: "tr" (i to U+0130,
+    // I to U+0131), or "" for the game's. Empty when taken, else why not.
+    virtual std::string strings_case_rules(std::string_view /*plugin*/, std::string_view /*rules*/) { return unavailable; }
     // ---- content: a folder of every enabled mod, as the plugin's manifest names it ("content") -------
     struct ContentFile {
         std::string mod, title; // the mod's folder name and its own name
@@ -815,6 +887,8 @@ public:
     // `everyone`: hidden from the other players too, not only on this screen.
     virtual std::string board_hide(std::string_view /*plugin*/, int, bool /*everyone*/) { return unavailable; }
     virtual void board_clear(std::string_view /*plugin*/, int /*bone, -1: all*/) {}
+    // A size held on a bone of the local board over its animation (board_pose.h scale); none: it ends.
+    virtual std::string board_scale(std::string_view /*plugin*/, int /*bone*/, std::optional<Vec3>) { return unavailable; }
     virtual void board_park(std::string_view /*plugin*/, std::vector<int>) {}
     virtual std::string board_toss(std::string_view /*plugin*/, std::vector<int>, const Vec3&, const Vec3&, float) { return unavailable; }
     // How every board is fitted (board_pose.h fit); none: the plugin's fit ends.
@@ -928,12 +1002,49 @@ public:
     virtual std::string hold_gameplay_option(std::string_view, std::string_view, std::optional<bool>) { return unavailable; }
     virtual std::optional<PadInput> gamepad(int /*controller*/ = -1) { return std::nullopt; }
     virtual std::string write_pad(std::string_view /*plugin*/, unsigned /*controller*/, std::optional<PadInput>) { return unavailable; }
-    virtual std::optional<StickInput> joystick() { return std::nullopt; }
+    // The first controller (a radio first), or with device >= 0 that one (StickDevice::device).
+    // Neither ever waits on Windows: a thread of ReSkate's reads the controllers.
+    virtual std::optional<StickInput> joystick(int /*device*/ = -1) { return std::nullopt; }
+    virtual std::vector<StickDevice> joysticks() { return {}; }
     virtual std::string capture_input(std::string_view /*plugin*/, bool) { return unavailable; }
     // A named action on a key or pad combo (controller_bindings.h's encoding); presses come back
     // from take_presses as (plugin, action), only while the game itself has the input.
     virtual std::string bind(std::string_view /*plugin*/, std::string_view, std::uint32_t) { return unavailable; }
     virtual std::vector<std::pair<std::string, std::string>> take_presses() { return {}; }
+    // ---- viewmodel: a rigged, animated model in front of the camera (Extension/UI/Overlay/viewmodel.h) --
+    // One plugin's at a time: the one that loaded it, until it unloads it or stops. Its file (.rsvm,
+    // from contrib/viewmodel_export.py) and pictures are read in the background.
+    virtual std::string viewmodel_load(std::string_view /*plugin*/, const std::filesystem::path& /*file*/) { return unavailable; }
+    virtual void viewmodel_unload(std::string_view /*plugin*/) {}
+    struct ViewmodelInfo {
+        std::string status;  // "loading", "ready" or "failed"
+        std::string why;
+        std::vector<std::pair<std::string, double>> clips; // name, seconds
+        std::vector<std::string> bones;
+    };
+    virtual std::optional<ViewmodelInfo> viewmodel_info(std::string_view /*plugin*/) { return std::nullopt; }
+    // Where and how it is drawn, for the next 300 ms (view space: x right, y up, z forward, metres).
+    struct ViewmodelLook {
+        Vec3 offset{};
+        float yaw{}, pitch{}, roll{}, fov{60};
+        Vec3 light{-0.35f, 0.75f, -0.55f}, light_colour{1.0f, 0.96f, 0.9f}, sky{0.55f, 0.62f, 0.75f}, ground{0.32f, 0.29f, 0.26f};
+        float ambient{0.6f}, brightness{1};
+    };
+    virtual std::string viewmodel_show(std::string_view /*plugin*/, std::optional<ViewmodelLook>) { return unavailable; }
+    virtual std::string viewmodel_play(std::string_view /*plugin*/, std::string_view /*clip*/, bool /*loop*/, float /*speed*/, float /*fade*/) {
+        return unavailable;
+    }
+    virtual void viewmodel_stop(std::string_view /*plugin*/) {}
+    struct ViewmodelState {
+        std::string clip;
+        double time{}, duration{};
+        bool done{};
+    };
+    virtual std::optional<ViewmodelState> viewmodel_state(std::string_view /*plugin*/) { return std::nullopt; }
+    struct ViewmodelBone {
+        Vec3 position{}, x{}, y{}, z{};
+    };
+    virtual std::optional<ViewmodelBone> viewmodel_bone(std::string_view /*plugin*/, std::string_view /*bone*/) { return std::nullopt; }
     // Everything a plugin holds of the game (its HUD hide, nametags, binds), when it stops.
     virtual void release(std::string_view /*plugin*/) {}
 };

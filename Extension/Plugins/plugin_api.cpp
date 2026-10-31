@@ -231,7 +231,7 @@ struct ApiFunctions {
         auto& plugin = plugin_of(L);
         const auto message = text_of(L, 1);
         const std::string level = luaL_optstring(L, 2, "info");
-        if (level != "info" && level != "warn" && level != "error") luaL_argerror(L, 2, "the level must be \"info\", \"warn\" or \"error\"");
+        if (!one_of(log_levels, level)) luaL_argerror(L, 2, "the level must be \"info\", \"warn\" or \"error\"");
         plugin.log(level == "error" ? LogLevel::error : level == "warn" ? LogLevel::warn : LogLevel::info, message);
         return 0;
     }
@@ -661,7 +661,8 @@ struct ApiFunctions {
         for (const auto& candidate : candidates) {
             const auto path = package_path(L, plugin, candidate, false);
             std::error_code code;
-            if (std::filesystem::is_regular_file(path, code)) {
+            const bool exists = plugin.sources_ ? plugin.sources_->contains(plugin_source_key(candidate)) : std::filesystem::is_regular_file(path, code);
+            if (exists) {
                 key = candidate;
                 file = path;
                 break;
@@ -710,21 +711,25 @@ void Api::install(Plugin& plugin, lua_State* L) {
     lua_setfield(L, -2, "side");
     // Named constants, read-only and built from the C++ lists so they cannot drift:
     // reskate.Enums.Side.server is "server", reskate.Enums.Event.tick is "tick". Plain strings still work.
-    lua_createtable(L, 0, 2);
-    lua_createtable(L, 0, 3);
-    for (const auto side : {Side::client, Side::server, Side::both}) {
-        lua_pushstring(L, side_name(side));
-        lua_setfield(L, -2, side_name(side));
-    }
-    readonly();
-    lua_setfield(L, -2, "Side");
-    lua_createtable(L, 0, static_cast<int>(events.size()));
-    for (const auto& event : events) {
-        lua_pushlstring(L, event.name.data(), event.name.size());
-        lua_setfield(L, -2, std::string(event.name).c_str());
-    }
-    readonly();
-    lua_setfield(L, -2, "Event");
+    const auto push_enum = [&](const char* name, const auto& values, auto word) {
+        lua_createtable(L, 0, static_cast<int>(std::size(values)));
+        for (const auto& value : values) {
+            const std::string_view w = word(value);
+            lua_pushlstring(L, w.data(), w.size());
+            lua_setfield(L, -2, std::string(w).c_str());
+        }
+        readonly();
+        lua_setfield(L, -2, name);
+    };
+    const auto same = [](std::string_view w) { return w; };
+    lua_createtable(L, 0, 13);
+    push_enum("Side", std::array{Side::client, Side::server, Side::both}, [](Side side) { return std::string_view(side_name(side)); });
+    push_enum("Event", events, [](const Event& event) { return event.name; });
+    push_enum("Key", key_names, [](const auto& key) { return key.first; });
+    for (const auto& [name, words] : {std::pair<const char*, Words>{"LogLevel", log_levels}, {"Align", aligns}, {"Launch", launches},
+                                      {"Stance", stances}, {"Pop", pops}, {"Space", spaces}, {"Throwdown", throwdown_modes},
+                                      {"Card", throwdown_cards}, {"EntityStatus", entity_statuses}, {"Target", send_targets}})
+        push_enum(name, words, same);
     readonly();
     lua_setfield(L, -2, "Enums");
     using F = ApiFunctions;
@@ -743,9 +748,12 @@ void Api::install(Plugin& plugin, lua_State* L) {
     install_ui_api(plugin, L);
     install_more_api(plugin, L);
     install_world_api(plugin, L);
+    install_physics_api(plugin, L);
     install_services_api(plugin, L);
     install_kit_api(plugin, L);
     install_capture_api(plugin, L);
+    install_effects_api(plugin, L);
+    install_viewmodel_api(plugin, L);
     readonly();
     lua_setglobal(L, "reskate");
     lua_pushcfunction(L, ApiFunctions::print, "print");

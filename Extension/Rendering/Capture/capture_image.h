@@ -41,9 +41,12 @@ struct PixelView {
     // near, 0 at the far plane), `depth_pitch` bytes a row, the frame's size.
     const std::uint8_t* depth{};
     std::uint32_t depth_pitch{};
+    // A cropped colour readback can retain full-screen depth. Pixel coordinates
+    // are local to its colour rectangle; only depth adds this screen origin.
+    std::uint32_t origin_x{}, origin_y{}, source_width{}, source_height{};
     float depth_at(std::uint32_t x, std::uint32_t y) const noexcept {
         float v;
-        std::memcpy(&v, depth + std::size_t{y} * depth_pitch + std::size_t{x} * 4, 4);
+        std::memcpy(&v, depth + std::size_t{origin_y + y} * depth_pitch + std::size_t{origin_x + x} * 4, 4);
         return v;
     }
     std::array<std::uint8_t, 3> rgb(std::uint32_t x, std::uint32_t y) const noexcept {

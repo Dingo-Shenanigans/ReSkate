@@ -12,6 +12,8 @@ inline constexpr std::array<unsigned char, 18> animation_update_prefix{
 // Expected code of engine::board_render_pose.
 inline constexpr std::array<unsigned char, 15> board_render_pose_prefix{
     0x48,0x89,0x5c,0x24,0x18,0x48,0x89,0x74,0x24,0x20,0x57,0x48,0x83,0xec,0x60};
+// The evaluated render interface is embedded at this offset in its animation holder.
+inline constexpr std::uintptr_t render_animation_interface_offset = 0xc0;
 // Render pose interface vtable; slot +0x10 is engine::board_render_pose.
 inline constexpr std::uintptr_t board_render_pose_interface_vtable = 0x63db790;
 // Hands a skeleton's render data to the renderer (slot, render_data): its caller (0x2c20d99) calls it

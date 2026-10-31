@@ -263,6 +263,10 @@ Mods read_mods() {
             row.state = State::apply_to_load;
             row.why = "Its new version is installed: it goes in the game when the mods are applied.";
             reload_for_update |= !live_mods::only_maps(mod.directory);
+        } else if (mods::plugin_only(mod)) {
+            // (Nothing of it is merged: the plugin host takes it from the Mods folder by itself.)
+            row.in_effect = entry.enabled;
+            row.state = entry.enabled ? State::loaded : State::disabled;
         } else if (entry.enabled && row.in_effect) row.state = State::loaded;
         else if (entry.enabled) row.state = State::apply_to_load;
         else if (row.in_effect) row.state = State::apply_to_unload;
