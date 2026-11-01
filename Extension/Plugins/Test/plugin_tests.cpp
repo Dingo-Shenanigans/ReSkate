@@ -894,7 +894,9 @@ void ui_value_reservations_enforce_limits_and_collisions() {
     const auto before = registry.records().size();
     check(registry.reserve("new", {{"good", 1.f}, {"bad", std::numeric_limits<float>::infinity()}}) == "invalid UI value" &&
           registry.records().size() == before, "Invalid batches are rejected without partial reservation");
-    check(registry.reserve("quota", {{"sHaG9mdHCM", 1.f}, {"yX391OQUvL", 2.f}}) ==
+    check(ui_values::symbol("layout", "sHaG9mdHCM") == ui_values::symbol("layout", "yX391OQUvL"),
+          "Same-batch collision fixture hashes match");
+    check(registry.reserve("layout", {{"sHaG9mdHCM", 1.f}, {"yX391OQUvL", 2.f}}) ==
               "UI symbol collision or reserved symbol", "Same-batch hash collisions fail closed");
     // Known collision across distinct plugin namespaces, not merely within one batch.
     check(ui_values::symbol("alpha", "enfwbtm118vb") == ui_values::symbol("bravo", "aixvpnvhxvhq"),
