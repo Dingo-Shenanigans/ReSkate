@@ -172,6 +172,7 @@ void stop(Session &s, std::string reason) {
     fetching_map_flag.store(false, std::memory_order_relaxed);
     s.world = 1;
     s.travelling = false;
+    s.local_reload = s.local_reload_started = s.reload_ready_due = false;
     s.host_world_ready = true;
     s.travel_started = s.last_world_state = s.last_world_ready = 0;
     s.world_state_sequence = 0;
@@ -461,8 +462,9 @@ Pose out_of_sight(Pose pose) {
 // as it stood each frame and their camera looks wherever it likes afterwards: a player who had
 // been behind the camera moved at 20 Hz in the replay.
 constexpr int far_full_rate_return = 190, far_half_rate_start = 200, far_low_rate_start = 350;
-// Metres from a player to the nearer of the local skater and the camera (infinite if neither
-// is known).
+// Metres from a player to the nearer of the local skater and a detached camera (spectating,
+// replay or a drone; the follow camera orbits a few metres around the skater, which would
+// otherwise shift the distance edge as the camera turns). Infinite if neither is known.
 float nearest_distance(const Peer &p, const NativeFrame &local, const std::optional<GameView> &view) {
     const auto &at = p.render_pose.root.position;
     float nearest = std::numeric_limits<float>::infinity();
@@ -471,7 +473,17 @@ float nearest_distance(const Peer &p, const NativeFrame &local, const std::optio
         nearest = std::min(nearest, dx * dx + dy * dy + dz * dz);
     };
     if (local.ready) consider(local.pose.root.position[0], local.pose.root.position[1], local.pose.root.position[2]);
-    if (view) consider(view->world[12], view->world[13], view->world[14]);
+    if (view) {
+        const float cx = view->world[12], cy = view->world[13], cz = view->world[14];
+        if (!local.ready) {
+            consider(cx, cy, cz);
+        } else {
+            const float lx = cx - local.pose.root.position[0];
+            const float ly = cy - local.pose.root.position[1];
+            const float lz = cz - local.pose.root.position[2];
+            if (lx * lx + ly * ly + lz * lz > 12.0f * 12.0f) consider(cx, cy, cz);
+        }
+    }
     return std::sqrt(nearest);
 }
 std::uint64_t far_sample_interval(const Peer &p, float distance) {
@@ -651,7 +663,11 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
             // the next frames slower still.
             const bool held = !sampled && was_visible && p.poses.heard_within(now, 8000000);
             // Showing a player without an actor spawns one (native_skater_spawn.cpp).
-            if (sampled) p.placed = true;
+            // Before a pose placed them, shown_wanted stayed true so their status read "Waiting for
+            // player poses."; check their distance now that render_pose is known.
+            if (sampled && !std::exchange(p.placed, true))
+                p.shown_wanted = s.player_distance >= player_distance_unlimited ||
+                                 nearest_distance(p, local, view) <= s.player_distance;
             const bool spawning = sampled && p.shown_wanted && p.appearance.value() && !was_visible && !remote_skater_entity();
             if (spawning && now < p.next_spawn) {
                 p.native_status = "Waiting to show the player again.";
@@ -864,7 +880,8 @@ std::string plugin_chat(std::string_view plugin, std::string_view text, std::uin
 }
 void host_map_change(std::string_view destination) {
     auto &s = session();
-    if (s.mode != Mode::host || (!s.started_map && !s.travelling)) return;
+    // (Not the host's own reload of the same map: its players stay where they are.)
+    if (s.mode != Mode::host || s.local_reload || (!s.started_map && !s.travelling)) return;
     try {
         begin_host_world(s, destination, now_us());
         publish(s);
@@ -873,8 +890,84 @@ void host_map_change(std::string_view destination) {
         publish(s);
     }
 }
+bool begin_local_reload() {
+    auto &s = session();
+    if (s.mode != Mode::host && s.mode != Mode::join) return true;
+    if (!s.started_map || s.travelling || s.awaiting_map || !s.host_world_ready) return false;
+    const auto now = now_us();
+    s.local_reload = true;
+    s.local_reload_started = s.reload_ready_due = false;
+    s.travelling = true;
+    s.travel_started = now;
+    if (s.mode == Mode::host) {
+        // The players wait for the host, who says it is not in the world for now.
+        s.host_world_ready = false;
+        send_world_state(s, now);
+        s.status = "Reloading the map for your mods. Your players stay connected.";
+    } else {
+        s.status = "Reloading the map for your mods. You stay in the session.";
+    }
+    publish(s);
+    return true;
+}
+namespace {
+// The end of a local reload: back in the same world, as it was.
+void end_local_reload(Session &s, const NativeFrame &local, std::uint64_t now) {
+    s.local_reload = s.local_reload_started = false;
+    s.travelling = false;
+    s.context = local.context;
+    s.parent = local.parent;
+    for (auto &peer : active_peers(s)) peer.last_packet = now;
+    if (s.mode == Mode::host) {
+        s.host_world_ready = true;
+        s.last_world_state = 0;
+        send_world_state(s, now);
+        s.status = "Map reloaded. Your players are still here.";
+    } else {
+        s.reload_ready_due = true;
+        s.status = "Map reloaded. Still in the same session.";
+    }
+}
+}
+void cancel_local_reload() {
+    auto &s = session();
+    if (!s.local_reload || s.local_reload_started) return;
+    s.local_reload = false;
+    s.travelling = false;
+    if (s.mode == Mode::host) {
+        s.host_world_ready = true;
+        send_world_state(s, now_us());
+    }
+    s.status.clear();
+    publish(s);
+}
 bool observe_local_world(Session &s, const NativeFrame &local, std::string_view current, std::uint64_t now) {
     const auto map = current.empty() ? 0 : map_hash(current);
+    if (s.local_reload) {
+        // The map is unloaded and loaded again for the player's own reasons (begin_local_reload): no
+        // map change, so nothing of the session changes while it loads.
+        if (!s.local_reload_started) {
+            if (!local.ready || local.context != s.context) s.local_reload_started = true;
+            else if (now - s.travel_started > 20000000) {
+                // The load never began (it was refused): the session carries on as it was.
+                end_local_reload(s, local, now);
+                return true;
+            } else
+                return true;
+        }
+        if (!local.ready) {
+            if (now - s.travel_started > 180000000) {
+                stop(s, "The map took too long to reload.");
+                return false;
+            }
+            return true;
+        }
+        if (map != s.map) {
+            stop(s, "Session ended because your local map changed. Join again to return to the host.");
+            return false;
+        }
+        end_local_reload(s, local, now);
+    }
     const bool changed = s.started_map &&
         (!local.ready || s.map != map || s.context != local.context || s.parent != local.parent);
     if (s.mode == Mode::host) {

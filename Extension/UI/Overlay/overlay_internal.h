@@ -192,6 +192,8 @@ struct State {
     ComPtr<ID3D12Resource> mod_icon_texture, mod_icon_upload;
     // Plugins' pictures (plugin_images.cpp), from the fifth slot on.
     std::array<ComPtr<ID3D12Resource>, 16> plugin_textures, plugin_uploads;
+    // Thunderstore icons for the Mod Manager page (store_icons.cpp), after the screen look's slots.
+    std::array<ComPtr<ID3D12Resource>, 64> store_textures, store_uploads; // store_icon_slots
     ComPtr<ID3D12GraphicsCommandList> commands;
     ComPtr<ID3D12Fence> fence;
     HANDLE fence_event = nullptr;
@@ -358,6 +360,24 @@ std::optional<PluginImageUpload> take_plugin_image();
 // id 0: it failed; `later`: the slot was busy, so it waits for another frame.
 void plugin_image_uploaded(const std::string& path, int slot, ImTextureID id, bool later = false);
 void plugin_images_lost();
+// Thunderstore packages' icons for the pause menu's Mod Manager page (store_icons.cpp), the same way,
+// by their URL, in the SRV heap's slots from store_icon_first_slot on.
+inline constexpr UINT store_icon_first_slot = screen_look_slot + screen_look_slots, store_icon_slots = 64;
+ImTextureID store_icon(const std::string& url);
+// Then a viewmodel's pictures (viewmodel.h): three for each of its at most eight materials.
+inline constexpr UINT viewmodel_first_slot = store_icon_first_slot + store_icon_slots, viewmodel_slots = 24;
+struct StoreIconUpload {
+    std::string url;
+    int slot{};
+    CardPixels pixels;
+};
+std::optional<StoreIconUpload> take_store_icon();
+void store_icon_uploaded(const std::string& url, int slot, ImTextureID id, bool later = false);
+void store_icons_lost();
+// Mods being applied with the pause menu closed (hub_page.cpp): whether its card is up, and drawing it.
+bool mod_apply_card_pending();
+void draw_mod_apply_card();
+static_assert(std::tuple_size_v<decltype(State::store_textures)> == store_icon_slots);
 void mod_icon_uploaded(ImTextureID texture, unsigned serial);
 void mod_icon_lost();
 // Game debug text (game_text_overlay.cpp): polled every presented frame.

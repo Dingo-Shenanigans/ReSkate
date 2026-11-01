@@ -5,12 +5,15 @@
 #include "lua.h"
 #include "luacode.h"
 #include "lualib.h"
+#include <atomic>
 #include <cstdlib>
 #include <format>
 #include <fstream>
 
 namespace dingosdk::plugins {
 namespace {
+// Each load gets a new VM instance, so a reloaded plugin never adopts the old VM's bodies.
+std::atomic<std::uint64_t> next_instance{1};
 double elapsed_ms(std::chrono::steady_clock::time_point since) {
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - since).count();
 }
@@ -44,9 +47,10 @@ std::string read_package_file(const std::filesystem::path& file, std::size_t mos
     return text;
 }
 
-Plugin::Plugin(std::string id, std::filesystem::path directory, Manifest manifest, Services& services, Limits limits)
-    : id_(std::move(id)), directory_(std::move(directory)), manifest_(std::move(manifest)), services_(services),
-      limits_(limits) {
+Plugin::Plugin(std::string id, std::filesystem::path directory, Manifest manifest, Services& services, Limits limits,
+               std::shared_ptr<const PluginSources> sources)
+    : id_(std::move(id)), directory_(std::move(directory)), sources_(std::move(sources)), manifest_(std::move(manifest)),
+      services_(services), limits_(limits) {
     const auto entry = std::filesystem::path(manifest_.entry);
     code_root_ = entry.has_parent_path() ? entry.parent_path().generic_string() : std::string{};
 }
@@ -85,6 +89,7 @@ void Plugin::interrupt(lua_State* L, int gc) {
 
 bool Plugin::load(std::string entry) {
     if (L_) return state_ == State::running;
+    instance_ = next_instance.fetch_add(1, std::memory_order_relaxed);
     state_ = State::loading;
     reason_.clear();
     halt_ = Halt::none;
@@ -157,7 +162,14 @@ bool Plugin::load(std::string entry) {
 
 bool Plugin::load_chunk(lua_State* L, const std::string& relative, const std::filesystem::path& file) {
     std::string error;
-    const auto source = read_package_file(file, limits_.source_bytes, error);
+    std::string source;
+    if (sources_) {
+        const auto found = sources_->find(plugin_source_key(relative));
+        if (found == sources_->end()) error = "not in the approved source snapshot";
+        else if (found->second.size() > limits_.source_bytes)
+            error = std::format("is larger than {} MB", limits_.source_bytes >> 20);
+        else source = found->second;
+    } else source = read_package_file(file, limits_.source_bytes, error);
     if (!error.empty()) {
         lua_pushstring(L, error.c_str());
         return false;
@@ -259,6 +271,7 @@ void Plugin::close_if_stopped() {
 }
 
 void Plugin::close() {
+    services_.game().body_release_all(instance_);
     save_storage();
     shapes_.clear();
     panels_.clear();
@@ -373,10 +386,23 @@ void Plugin::trick(const TrickNews& news) {
     }
 }
 
+void Plugin::prune_effects() {
+    if (effect_handles_.empty()) return;
+    auto live = services_.game().effects_live(id_);
+    std::sort(live.begin(), live.end());
+    std::erase_if(effect_handles_, [&](const auto& entry) {
+        return !std::binary_search(live.begin(), live.end(), entry.first);
+    });
+}
+
 void Plugin::tick(double dt_ms) {
     if (state_ != State::running) return;
     ++tick_number_;
     raycasts_ = 0;
+    native_casts_ = {};
+    body_prepares_ = 0;
+    effect_calls_ = 0;
+    prune_effects();
     const double now = services_.now_ms();
     std::vector<int> due;
     for (const auto& [id, timer] : timers_)

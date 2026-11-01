@@ -158,7 +158,8 @@ std::string summary(const ModsPanel& panel, const mods::Mod& mod) {
     if (!mod.levels.empty()) parts.push_back(mod.levels.size() == 1 ? "1 map" : std::to_string(mod.levels.size()) + " maps");
     else if (mod.provides_layout) parts.push_back("game data");
     if (!mod.park_maps.empty()) parts.push_back(mod.park_maps.size() == 1 ? "1 park" : std::to_string(mod.park_maps.size()) + " parks");
-    if (!mod.provides_layout && !mod.provides_levels && mod.park_maps.empty()) parts.push_back("nothing to load");
+    if (mod.provides_plugin) parts.push_back("plugin");
+    if (!mods::has_content(mod)) parts.push_back("nothing to load");
     std::string text;
     for (const auto& part : parts) text += (text.empty() ? "" : "  /  ") + part;
     return text;
@@ -772,7 +773,7 @@ void installed_row(const Fonts& fonts, ModsPanel& panel, const thunderstore::Ins
         ImGui::SetTooltip(entry.enabled ? "Enabled: loads when Skate starts" : "Disabled: stays installed, does not load");
 
     // The same icon the store shows, so a mod looks like itself on both pages.
-    mod_icon(panel, package, ImVec2(start.x + c.icon, middle - S(15)), S(30));
+    mod_icon(panel, package, ImVec2(start.x + c.icon, middle - S(15)), S(30), mod.directory);
 
     // Right to left: the menu, how it stands, and what it is.
     ImGui::SetCursorScreenPos(ImVec2(start.x + r.more, middle - c.more * 0.5f));
@@ -1450,10 +1451,10 @@ void mod_overview(const Fonts& fonts, ModsPanel& panel, const thunderstore::Inst
         panel.selected = -1;
         ImGui::CloseCurrentPopup();
     };
-    // The icon (the package's, when the mod is on Thunderstore), with the name, a line of what
-    // it is and its description beside it.
+    // The icon (the package's when the mod is on Thunderstore, else its own icon.png), with the name,
+    // a line of what it is and its description beside it.
     const float icon = S(104), header_top = ImGui::GetCursorPosY();
-    mod_icon(panel, package, ImGui::GetCursorScreenPos(), icon);
+    mod_icon(panel, package, ImGui::GetCursorScreenPos(), icon, mod.directory);
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + icon + S(20));
     ImGui::BeginGroup();
     ImGui::PushTextWrapPos(0);
@@ -1528,9 +1529,10 @@ void mod_overview(const Fonts& fonts, ModsPanel& panel, const thunderstore::Inst
             "mod folder, or rebuild it with a current ReSkate Studio.");
         if (!missing->second.empty()) ImGui::TextDisabled("%s", missing->second.front().c_str());
     }
-    if (!mod.provides_layout && !mod.provides_levels && mod.park_maps.empty())
+    if (!mods::has_content(mod))
         ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::warning),
-            "This folder has no layout.toc or reskate-levels.json, so the game has nothing to load from it.");
+            "This folder has no layout.toc, reskate-levels.json, reskate-plugin.json or parks, so the game has "
+            "nothing to load from it.");
     if (!readme_field(fonts, panel, package, &mod)) ImGui::TextDisabled("This mod has no README.");
     ImGui::PopTextWrapPos();
     ImGui::EndChild();
@@ -1947,25 +1949,73 @@ void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, Mo
     if (!panel.confirm_remove.empty() && !ImGui::IsPopupOpen(uninstall)) ImGui::OpenPopup(uninstall);
     if (!panel.conflict_name.empty() && !ImGui::IsPopupOpen("Replace mod")) ImGui::OpenPopup("Replace mod");
     ImGui::SetNextWindowSize(ImVec2(S(460), 0));
+    // Centred every frame by its size now: its height changes with the dependencies it lists, and placed
+    // only when it appears it would keep the last one's (a short confirmation after a long one sat high).
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     if (ImGui::BeginPopupModal(uninstall, nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove)) {
-        const auto names = panel.confirm_remove;
+        const auto chosen = panel.confirm_remove;
         const auto title = [&](const std::string& name) -> const std::string& {
             for (const auto& entry : entries)
                 if (entry.mod.name == name) return entry.mod.title;
             return name;
         };
+        // A mod pack's dependencies stay installed unless asked: offer the ones nothing else needs.
+        if (panel.remove_extras_for != chosen) {
+            std::vector<std::string> everything;
+            for (const auto& entry : entries) everything.push_back(entry.mod.name);
+            panel.remove_extras = launcher_mods::orphaned_dependencies(panel.root, chosen, everything);
+            panel.remove_extras_for = chosen;
+            panel.remove_extras_picked.assign(panel.remove_extras.size(), 1);
+        }
+        auto names = chosen;
+        int picked = 0;
+        for (std::size_t i = 0; i < panel.remove_extras.size(); ++i)
+            if (panel.remove_extras_picked[i]) {
+                names.push_back(panel.remove_extras[i]);
+                ++picked;
+            }
         std::uint64_t bytes{};
         for (const auto& name : names)
             if (const auto found = panel.sizes.find(name); found != panel.sizes.end()) bytes += found->second;
         ImGui::PushTextWrapPos(0);
-        if (names.size() == 1) {
-            ImGui::Text("Uninstall \"%s\"? Its folder goes to the Recycle Bin.", title(names.front()).c_str());
+        if (chosen.size() == 1) {
+            ImGui::Text("Uninstall \"%s\"? Its folder goes to the Recycle Bin.", title(chosen.front()).c_str());
         } else {
-            ImGui::Text("Uninstall these %d mods? Their folders go to the Recycle Bin.", static_cast<int>(names.size()));
+            ImGui::Text("Uninstall these %d mods? Their folders go to the Recycle Bin.", static_cast<int>(chosen.size()));
             ImGui::Spacing();
-            const std::size_t listed = std::min<std::size_t>(names.size(), 8);
-            for (std::size_t i = 0; i < listed; ++i) ImGui::TextDisabled("%s", title(names[i]).c_str());
-            if (names.size() > listed) ImGui::TextDisabled("and %d more", static_cast<int>(names.size() - listed));
+            const std::size_t listed = std::min<std::size_t>(chosen.size(), 8);
+            for (std::size_t i = 0; i < listed; ++i) ImGui::TextDisabled("%s", title(chosen[i]).c_str());
+            if (chosen.size() > listed) ImGui::TextDisabled("and %d more", static_cast<int>(chosen.size() - listed));
+        }
+        if (!panel.remove_extras.empty()) {
+            ImGui::Spacing();
+            const auto count = static_cast<int>(panel.remove_extras.size());
+            const auto label = picked == count || picked == 0
+                ? (count == 1 ? std::string("Uninstall 1 modpack dependency?") : std::format("Uninstall {} modpack dependencies?", count))
+                : std::format("Uninstall {} of {} modpack dependencies?", picked, count);
+            // The labels as far from their boxes as the settings page has them (an item's spacing, not the inner one).
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemInnerSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, ImGui::GetStyle().ItemInnerSpacing.y));
+            // The first box ticks or unticks them all; it shows a mark of its own while only some are ticked.
+            bool all = picked == count;
+            ImGui::PushItemFlag(ImGuiItemFlags_MixedValue, picked > 0 && picked < count);
+            if (ImGui::Checkbox((label + "###all_extras").c_str(), &all))
+                std::fill(panel.remove_extras_picked.begin(), panel.remove_extras_picked.end(), static_cast<char>(all));
+            ImGui::PopItemFlag();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Mods it brought in that no other installed mod needs. Untick any to keep.");
+            // One box each, in a list that scrolls past eight.
+            const float row = ImGui::GetFrameHeightWithSpacing();
+            const float shown = std::min<float>(static_cast<float>(count), 8.0f) * row + ImGui::GetStyle().WindowPadding.y;
+            ImGui::Indent(S(28));
+            ImGui::BeginChild("##extras", ImVec2(0, shown), ImGuiChildFlags_NavFlattened);
+            for (std::size_t i = 0; i < panel.remove_extras.size(); ++i) {
+                ImGui::PushID(static_cast<int>(i));
+                bool on = panel.remove_extras_picked[i] != 0;
+                if (ImGui::Checkbox(title(panel.remove_extras[i]).c_str(), &on)) panel.remove_extras_picked[i] = on;
+                ImGui::PopID();
+            }
+            ImGui::EndChild();
+            ImGui::Unindent(S(28));
+            ImGui::PopStyleVar();
         }
         if (bytes) ImGui::TextDisabled("That frees %s.", size_text(bytes).c_str());
         ImGui::PopTextWrapPos();
@@ -1973,11 +2023,18 @@ void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, Mo
         // Escape (and a controller's B) answers Cancel, never the destructive choice.
         if (ImGui::Button("Cancel", ImVec2(S(110), 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
             panel.confirm_remove.clear();
+            panel.remove_extras_for.clear();
             ImGui::CloseCurrentPopup();
         }
         ImGui::SameLine();
         push_primary_button();
-        if (ImGui::Button("UNINSTALL", ImVec2(S(110), 0))) {
+        // Not while an install runs: it writes what packs brought in (brought-in.json) too.
+        ImGui::BeginDisabled(installing);
+        const bool confirmed = ImGui::Button("UNINSTALL", ImVec2(S(110), 0));
+        ImGui::EndDisabled();
+        if (installing && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("Wait for the install to finish");
+        if (confirmed && !installing) {
             // Stops at the first folder that will not go: what went is gone, the rest is untouched.
             std::vector<std::string> removed;
             std::string failure;
@@ -1997,6 +2054,14 @@ void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, Mo
             };
             const auto first = removed.empty() ? std::string() : title(removed.front());
             std::erase_if(entries, [&](const auto& entry) { return gone(entry.mod.name); });
+            // A record that cannot be rewritten (a locked or read-only Mods folder) is only stale: the mods are gone already.
+            if (!removed.empty())
+                try {
+                    launcher_mods::forget_brought_in(panel.root, removed);
+                } catch (const std::exception& failure) {
+                    logging::write(logging::Level::warning, logging::Channel::launcher,
+                                   std::string("Could not update what uninstalled packs brought in: ") + failure.what());
+                }
             if (!removed.empty()) save(panel);
             auto message = !failure.empty() ? failure
                 : removed.size() == 1 ? "Uninstalled " + first + ". It is in the Recycle Bin if you want it back."
@@ -2008,6 +2073,7 @@ void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, Mo
             panel.message = message;
             panel.message_error = error;
             panel.confirm_remove.clear();
+            panel.remove_extras_for.clear();
             ImGui::CloseCurrentPopup();
         }
         pop_primary_button();

@@ -59,6 +59,10 @@ void set_render_pose_listener(RenderPosePublished listener) noexcept;
 // writes then is what is drawn. And for the board, before the listener above, with the render data
 // the pose was handed over in.
 void set_pose_override_render_listener(RenderPosePublished listener) noexcept;
+// The pose override once more, when the renderer has copied that pose (submit_render_pose, right
+// after): what it put in the bone buffer for the render can go again, so that what runs until the next
+// render (the game's own passes over the buffer, the next animation update) reads only the game's pose.
+void set_pose_override_drawn_listener(RenderPosePublished listener) noexcept;
 using BoardPosePublished = void (*)(std::uintptr_t animation_interface, std::uintptr_t render_data) noexcept;
 void set_pose_override_board_listener(BoardPosePublished listener) noexcept;
 // Far-player savings (puppet_cost.cpp): native work a remote player's skater and skateboard

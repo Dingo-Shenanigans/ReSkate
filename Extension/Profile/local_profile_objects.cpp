@@ -121,6 +121,47 @@ std::optional<std::array<float, 3>> local_surface_hit(const std::array<float, 3>
     if (!hit) return {};
     return std::array<float, 3>{(*hit)[0], (*hit)[1], (*hit)[2]};
 }
+LocalSurfaceProbe probe_local_surface_counted(const std::array<float, 3>& from, const std::array<float, 3>& to,
+                                              const LocalSurfaceQuery& query) {
+    LocalSurfaceProbe result;
+    if (!editor::surface_query_filter(query.preset)) return result;
+    std::lock_guard lock(local_runtime().native_mutex);
+    auto& r = placements_runtime();
+    if (!local_runtime().active || !r.context) return result;
+    for (const auto v : {from[0], from[1], from[2], to[0], to[1], to[2]})
+        if (!std::isfinite(v) || std::abs(v) > 1e5f) return result;
+    static std::uintptr_t api_base{};
+    static editor::NativeSurfaceApi api;
+    static bool api_contact{};
+    // The contact readers' bytes are compared only once a caller asks to measure contact, and
+    // a changed image base clears that choice.
+    if (api_base != local_runtime().base || (query.measure_contact && !api_contact)) {
+        api = editor::surface_api(local_runtime().base, query.measure_contact);
+        api_base = local_runtime().base;
+        api_contact = query.measure_contact;
+    }
+    if (!api.ready) return result;
+    // The authoritative server context's world is null in this client query path. Resolve the
+    // current client TLS context instead of keeping an address across unloads.
+    std::array<std::uintptr_t, 2> context{};
+    r.context(context.data());
+    result.context = context[0];
+    if (!context[0]) return result;
+    result.world = api.world(context[0]);
+    if (!result.world) return result;
+    // The park editor's picking reader, for a caller that qualifies the shape it hit.
+    const auto shape_reader = query.read_shape ? &local_surface_hit_body : nullptr;
+    const auto cast = editor::cast_surface_counted(api, result.world, from, to, shape_reader, query.measure_contact, query.preset);
+    result.native_casts = cast.native_casts;
+    result.available = cast.surface.available;
+    result.hit = cast.surface.hit;
+    result.position = cast.surface.position;
+    result.fraction = cast.surface.fraction;
+    result.hit_shape = cast.surface.body;
+    result.normal = cast.surface.normal;
+    result.normal_available = cast.surface.normal_available;
+    return result;
+}
 bool teleport_to_local_placed_object(std::string_view map, std::uint64_t token) {
     std::lock_guard lock(local_runtime().native_mutex);
     auto& r = placements_runtime();

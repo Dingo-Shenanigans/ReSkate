@@ -73,6 +73,12 @@ std::string merge_fingerprint(const Catalog& catalog, const std::vector<const Mo
     std::set<std::string> tocs;
     for (const auto* mod : mods) {
         inputs += "mod " + mod->name + '\n';
+        for (const auto& bundle : mod->variant_authority) inputs += "variant authority " + bundle + '\n';
+        for (const auto& [bundle, keys] : mod->variant_projection) {
+            inputs += "variant projection " + bundle + '\n';
+            for (const auto& key : keys) inputs += key + '\n';
+        }
+        for (const auto& [bundle, target] : mod->variant_targets) inputs += "variant target " + bundle + ' ' + target + '\n';
         std::vector<fs::path> files;
         std::error_code error;
         for (fs::recursive_directory_iterator it(mod->directory, error), end; it != end && !error;

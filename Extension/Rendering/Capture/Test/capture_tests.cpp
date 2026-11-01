@@ -2,6 +2,9 @@
 #include "Extension/Rendering/Capture/capture_matte.h"
 #include "Extension/Rendering/Capture/capture_panel.h"
 #include "Extension/Rendering/Capture/capture_recorder.h"
+#include "Extension/Rendering/Capture/capture_parallel.h"
+#include "Extension/Rendering/Capture/capture_readback.h"
+#include <stdexcept>
 
 #include <cmath>
 #include <cstdio>
@@ -418,7 +421,519 @@ void test_recording(const std::filesystem::path& fonts, Format format, bool skat
     expect(recorder.status().state == State::idle && recorder.kept().empty(), "discarded, nothing is held");
 }
 
+// The cut by the game's depth: a skater standing on a floor that curves away at the sides. Shoes only
+// 3% nearer than the floor under them are kept (they went missing, 2026-10-24); the curved floor is
+// not taken for the skater.
+void test_depth_cut() {
+    constexpr std::uint32_t w = 200, h = 150;
+    std::vector<float> depth(std::size_t{w} * h);
+    std::vector<std::uint8_t> pixels(std::size_t{w} * h * 4, 90);
+    const auto floor_at = [&](std::uint32_t x) {
+        const float t = (2.0f * x + 1) / w - 1;
+        return 100.0f - 30.0f * t * t; // nearer at the sides, as a curved backdrop is
+    };
+    for (std::uint32_t y = 0; y < h; ++y)
+        for (std::uint32_t x = 0; x < w; ++x) {
+            float distance = floor_at(x);
+            if (x >= 80 && x < 120 && y >= 20 && y < 130) distance *= 0.6f;             // the skater
+            else if (x >= 85 && x < 115 && y >= 130 && y < 140) distance *= 0.97f;     // their shoes
+            depth[std::size_t{y} * w + x] = 1.0f / distance;
+        }
+    const PixelView frame{pixels.data(), w, h, w * 4, true, reinterpret_cast<const std::uint8_t*>(depth.data()), w * 4};
+    Image picture(w, h);
+    expect(depth_mask(frame, {0, 0, w, h}, picture), "the depth shows something in front");
+    std::size_t shoes = 0, floor = 0;
+    for (std::uint32_t y = 130; y < 140; ++y)
+        for (std::uint32_t x = 87; x < 113; ++x) shoes += picture.at(x, y)[3] == 255;
+    for (std::uint32_t y = 0; y < h; ++y)
+        for (std::uint32_t x = 0; x < w; ++x)
+            if ((x < 70 || x >= 130) && picture.at(x, y)[3]) ++floor;
+    expect(shoes == 26 * 10, "shoes just in front of the floor are kept");
+    expect(floor == 0, "a backdrop curving away is not taken for the subject");
+}
+
+// The cut by the game's depth: a skater standing on a floor that curves away at the sides. Shoes only
+// 0.5% nearer than the floor under them are kept (they went missing, 2026-10-24); the curved floor is
+// not taken for the skater.
+void test_depth_cut_contact() {
+    constexpr std::uint32_t w = 200, h = 150;
+    std::vector<float> depth(std::size_t{w} * h);
+    std::vector<std::uint8_t> pixels(std::size_t{w} * h * 4, 90);
+    const auto floor_at = [&](std::uint32_t x) {
+        const float t = (2.0f * x + 1) / w - 1;
+        return 100.0f - 30.0f * t * t; // nearer at the sides, as a curved backdrop is
+    };
+    for (std::uint32_t y = 0; y < h; ++y)
+        for (std::uint32_t x = 0; x < w; ++x) {
+            float distance = floor_at(x);
+            if (x >= 80 && x < 120 && y >= 20 && y < 130) distance *= 0.6f;             // the skater
+            else if (x >= 85 && x < 115 && y >= 130 && y < 134) distance *= 0.995f;     // their shoes
+            depth[std::size_t{y} * w + x] = 1.0f / distance;
+        }
+    const PixelView frame{pixels.data(), w, h, w * 4, true, reinterpret_cast<const std::uint8_t*>(depth.data()), w * 4};
+    Image picture(w, h);
+    expect(depth_mask(frame, {0, 0, w, h}, picture), "the depth shows something in front");
+    std::size_t shoes = 0, floor = 0;
+    for (std::uint32_t y = 130; y < 134; ++y)
+        for (std::uint32_t x = 87; x < 113; ++x) shoes += picture.at(x, y)[3] == 255;
+    for (std::uint32_t y = 0; y < h; ++y)
+        for (std::uint32_t x = 0; x < w; ++x)
+            if ((x < 70 || x >= 130) && picture.at(x, y)[3]) ++floor;
+    expect(shoes == 26 * 4, "near-contact soles extend the depth silhouette without colour contrast");
+    expect(floor == 0, "a backdrop curving away is not taken for the subject");
+}
+
+
+// A wide shallow foreground and far depth outliers must not bias the floor fit,
+// including the floor directly under the subject where sole recovery can grow.
+void test_depth_cut_wide_and_far() {
+    constexpr std::uint32_t w=800,h=200;
+    for (bool far : {false,true}) {
+        std::vector<float> depth(std::size_t{w}*h);
+        std::vector<std::uint8_t> pixels(std::size_t{w}*h*4,90);
+        for (std::uint32_t y=0;y<h;++y) for (std::uint32_t x=0;x<w;++x) {
+            const double t=(2.0*x+1)/w-1;
+            double d=100-25*t*t;
+            if (x>=300 && x<500 && y>=20 && y<130) d*=.6;
+            if (x>=200 && x<600 && y>=130 && y<140) d*=.97;
+            if (far && x>=650 && x<660) d=9000000;
+            depth[std::size_t{y}*w+x]=static_cast<float>(1/d);
+        }
+        Image picture(w,h);
+        const PixelView frame{pixels.data(),w,h,w*4,true,reinterpret_cast<const std::uint8_t*>(depth.data()),w*4};
+        expect(depth_mask(frame,{0,0,w,h},picture),"wide subject has a depth cut-out");
+        for (std::uint32_t y=130;y<140;++y) for (std::uint32_t x=205;x<595;++x)
+            expect(picture.at(x,y)[3]==255,"wide 3%-nearer shoes survive a curved floor fit");
+        for (std::uint32_t y=140;y<h;++y) for (std::uint32_t x=0;x<w;++x)
+            expect(picture.at(x,y)[3]==0,"floor directly beneath subject stays transparent");
+        for (std::uint32_t y=0;y<h;++y) for (std::uint32_t x=650;x<660;++x)
+            expect(picture.at(x,y)[3]==0,"far depth outliers never become foreground");
+    }
+}
+
+// Background below wide cuffs must not be extended as though every column ended
+// at a sole. Shadows can differ from the floor colour without being foreground.
+void test_depth_cut_cuff_background() {
+    constexpr std::uint32_t w=200,h=180;
+    for (int background : {0,1,2}) {
+        std::vector<float> depth(std::size_t{w}*h,1.0f/100.0f);
+        std::vector<std::uint8_t> pixels(std::size_t{w}*h*4,90);
+        Image picture(w,h);
+        for (std::uint32_t y=0;y<h;++y) for (std::uint32_t x=0;x<w;++x) {
+            const bool body=x>=65 && x<135 && y>=15 && y<90;
+            const bool cuff=((x>=70 && x<95)||(x>=110 && x<135)) && y>=90 && y<120;
+            const bool ankle=((x>=78 && x<87)||(x>=118 && x<127)) && y>=120 && y<137;
+            const bool shoe=((x>=78 && x<93)||(x>=118 && x<133)) && y>=137 && y<143;
+            const bool sole=((x>=79 && x<92)||(x>=119 && x<132)) && y>=143 && y<147;
+            const bool cuff_gap=!ankle && ((x>=70 && x<95)||(x>=110 && x<135)) && y>=120 && y<127;
+            const auto at=std::size_t{y}*w+x;
+            if (body||cuff||ankle||shoe) depth[at]=1.0f/60.0f;
+            if (sole) depth[at]=1.0f/99.5f;
+            if (cuff_gap && background==1) depth[at]=0;
+            if (cuff_gap && background==2) depth[at]=1.0f/99.0f;
+            for (int c=0;c<3;++c) {
+                const auto colour=static_cast<std::uint8_t>(cuff_gap?45:body||cuff||ankle||shoe||sole?150:90);
+                pixels[at*4+static_cast<std::size_t>(c)]=colour;
+                picture.at(x,y)[c]=colour;
+            }
+        }
+        const PixelView frame{pixels.data(),w,h,w*4,false,reinterpret_cast<const std::uint8_t*>(depth.data()),w*4};
+        expect(depth_mask(frame,{0,0,w,h},picture),"cuffed skater has a depth silhouette");
+        for (std::uint32_t y=120;y<127;++y) for (std::uint32_t x=70;x<78;++x)
+            expect(picture.at(x,y)[3]==0,"contrasting background below trouser cuff stays transparent");
+        for (std::uint32_t y=143;y<147;++y) for (std::uint32_t x=80;x<91;++x)
+            expect(picture.at(x,y)[3]==255,"near-contact soles remain intact after cuff cleanup");
+        for (std::uint32_t y=147;y<155;++y) for (std::uint32_t x=70;x<95;++x)
+            expect(picture.at(x,y)[3]==0,"floor beneath recovered sole remains transparent");
+    }
+}
+
+void test_capture_background() {
+    using namespace dingosdk::capture;
+    constexpr std::uint32_t w = 512, h = 512;
+    std::vector<std::uint8_t> pixels(std::size_t{w} * h * 4, 90);
+    std::vector<float> depth(std::size_t{w} * h, 0.01f);
+    for (std::uint32_t y = 65; y < 450; ++y)
+        for (std::uint32_t x = 190; x < 325; ++x) {
+            depth[std::size_t{y} * w + x] = 0.02f;
+            auto* colour = pixels.data() + (std::size_t{y} * w + x) * 4;
+            colour[0] = static_cast<std::uint8_t>(x);
+            colour[1] = static_cast<std::uint8_t>(y);
+            colour[2] = 180;
+        }
+    const auto original_pixels = pixels;
+    const auto original_depth = depth;
+    const auto view = [&] {
+        return PixelView{pixels.data(), w, h, w * 4, true, reinterpret_cast<const std::uint8_t*>(depth.data()), w * 4};
+    };
+    RecordRequest request;
+    request.height = 384;
+    Recorder serial, background;
+    std::string why;
+    expect(serial.start(request, why), "serial comparison recording starts");
+    serial.take_frame(view());
+    serial.stop();
+    request.background = true;
+    expect(background.start(request, why), "background comparison recording starts");
+    background.take_frame(view());
+    // Simulate the readback mappings being reused immediately on return.
+    std::fill(pixels.begin(), pixels.end(), std::uint8_t{0});
+    std::fill(depth.begin(), depth.end(), 0.0f);
+    background.stop();
+    expect(background.status().taken == 1 && background.status().kept == 1 && background.status().depth && background.status().pending == 0,
+           "stop drains owned colour/depth work after source buffers change");
+    const auto root = std::filesystem::temp_directory_path() / "capture_background_tests";
+    std::filesystem::create_directories(root);
+    const auto save = [&](Recorder& recorder, const char* name, Format format = Format::png, std::uint32_t count = 1) {
+        SaveRequest output;
+        for (std::uint32_t n = 0; n < count; ++n)
+            output.frames.push_back(n);
+        output.format = format;
+        output.fps = 60;
+        output.size = 96;
+        output.cutout = Cutout::depth;
+        output.solid = false;
+        output.file = root / name;
+        expect(recorder.save(output, why), "background/serial PNG save starts");
+        for (int n = 0; n < 1000 && recorder.status().state == State::saving; ++n)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        expect(recorder.status().state == State::saved, "background/serial PNG save finishes");
+        std::ifstream input(output.file, std::ios::binary);
+        return std::vector<std::uint8_t>(std::istreambuf_iterator<char>(input), {});
+    };
+    const auto expected = save(serial, "serial.png"), actual = save(background, "background.png");
+    expect(!actual.empty() && actual == expected, "sparse background frames reconstruct pixel-identical encoded output");
+    std::copy(original_pixels.begin(), original_pixels.end(), pixels.begin());
+    std::copy(original_depth.begin(), original_depth.end(), depth.begin());
+    Recorder moving_serial, moving_background;
+    request.background = false;
+    expect(moving_serial.start(request, why), "moving serial recording starts");
+    request.background = true;
+    expect(moving_background.start(request, why), "moving background recording starts");
+    for (std::uint32_t n = 0; n < 6; ++n) {
+        std::fill(depth.begin(), depth.end(), 0.01f);
+        for (std::uint32_t y = 65; y < 450; ++y)
+            for (std::uint32_t x = 190 + n * 4; x < 325 + n * 4; ++x)
+                depth[std::size_t{y} * w + x] = 0.02f;
+        moving_serial.take_frame(view());
+        moving_background.take_frame(view());
+        for (int wait = 0; wait < 1000 && moving_background.status().pending; ++wait)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    moving_serial.stop();
+    moving_background.stop();
+    const auto serial_animation = save(moving_serial, "serial-animation.png", Format::apng, 6);
+    const auto background_animation = save(moving_background, "background-animation.png", Format::apng, 6);
+    expect(!background_animation.empty() && serial_animation == background_animation,
+           "moving sparse canvases preserve every APNG pixel and position");
+    const auto animation_chunks = chunks(background_animation);
+    expect(std::count(animation_chunks.begin(), animation_chunks.end(), "fcTL") == 6,
+           "background output retains six real animation frames");
+    for (std::size_t at = 8; at + 12 <= background_animation.size();) {
+        const auto size = be32(background_animation.data() + at);
+        if (std::memcmp(background_animation.data() + at + 4, "fcTL", 4) == 0 && size >= 26) {
+            const auto* control = background_animation.data() + at + 8;
+            expect(control[20] == 0 && control[21] == 1 && control[22] == 0 && control[23] == 60,
+                   "background APNG uses an actual 1/60-second frame delay");
+        }
+        at += size + 12;
+    }
+    Recorder thinned;
+    RecordRequest small;
+    small.depth = false;
+    small.most = 1000;
+    expect(thinned.start(small, why), "frame-count thinning recording starts");
+    std::vector<std::uint8_t> tiny_pixels(64 * 64 * 4, 150);
+    for (int n = 0; n < 481; ++n)
+        thinned.take_frame({tiny_pixels.data(), 64, 64, 64 * 4, false});
+    thinned.stop();
+    expect(thinned.kept().front() == 0 && thinned.kept().size() == 241, "frame-count thinning preserves its first frame without self-move");
+    SaveRequest first;
+    first.frames = {0};
+    first.format = Format::png;
+    first.size = 64;
+    first.cutout = Cutout::none;
+    first.file = root / "thinned.png";
+    expect(thinned.save(first, why), "first thinned frame can still be encoded");
+    for (int wait = 0; wait < 1000 && thinned.status().state == State::saving; ++wait)
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    expect(thinned.status().state == State::saved, "thinning keeps its first image data intact");
+    Recorder stressed;
+    request.most = 1000;
+    expect(stressed.start(request, why), "bounded background recording starts");
+    for (int n = 0; n < 100; ++n) {
+        stressed.take_frame(view());
+        expect(stressed.status().pending <= 3, "background queue stays bounded");
+    }
+    stressed.stop();
+    const auto state = stressed.status();
+    const auto kept = stressed.kept();
+    expect(state.taken + state.dropped == 100 && state.pending == 0 && kept.size() == state.taken,
+           "every presented job is either retained or reported dropped, with no invented frames");
+    expect(std::is_sorted(kept.begin(), kept.end()) && std::adjacent_find(kept.begin(), kept.end()) == kept.end(),
+           "background frames commit in order");
+    Recorder cancelled;
+    expect(cancelled.start(request, why), "cancellable background recording starts");
+    cancelled.take_frame(view());
+    cancelled.discard();
+    expect(cancelled.status().state == State::idle && cancelled.status().taken == 0 && cancelled.kept().empty(),
+           "discard retires queued generations");
+    expect(cancelled.start(request, why), "restart after cancellation");
+    cancelled.take_frame(view());
+    expect(cancelled.start(request, why), "restart while processing retires previous work");
+    expect(cancelled.status().taken == 0 && cancelled.kept().empty(), "old pending frames never enter a new recording");
+    std::uint8_t tiny = 0;
+    cancelled.take_frame({&tiny, 8192, 8192, 8192 * 4, false, &tiny, 8192 * 4});
+    expect(cancelled.status().state == State::failed && cancelled.status().message.find("memory limit") != std::string::npos,
+           "oversized raw jobs fail before reading source pixels or allocating unbounded memory");
+}
+
+void test_capture_cropped_readback() {
+    using namespace dingosdk::capture;
+    for (const auto dimensions : std::array<std::array<std::uint32_t, 2>, 3>{{{800, 450}, {1920, 1080}, {2560, 720}}}) {
+        const auto w = dimensions[0], h = dimensions[1];
+        for (const bool skater : {false, true}) {
+            Recorder full_recorder, cropped_recorder;
+            RecordRequest request;
+            request.area = skater ? Area{0.27f, 0.14f, 0.735f, 0.985f, true} : Area{0.655f, 0.185f, 0.86f, 0.985f, true};
+            request.height = 480;
+            std::string why;
+            expect(full_recorder.start(request, why) && cropped_recorder.start(request, why), "cropped/full recordings start");
+            const auto area = full_recorder.requested_area(w, h), wanted = area_on(request.area, w, h);
+            expect(area.x == wanted.x && area.y == wanted.y && area.width == wanted.width && area.height == wanted.height,
+                   "requested readback rectangle preserves menu and ultrawide mapping");
+            std::vector<std::uint8_t> pixels(std::size_t{w} * h * 4);
+            std::vector<float> depth(std::size_t{w} * h, 0.01f);
+            for (std::uint32_t y = 0; y < h; ++y)
+                for (std::uint32_t x = 0; x < w; ++x) {
+                    auto* out = pixels.data() + (std::size_t{y} * w + x) * 4;
+                    out[0] = static_cast<std::uint8_t>(x);
+                    out[1] = static_cast<std::uint8_t>(y);
+                    out[2] = static_cast<std::uint8_t>(x + y);
+                    out[3] = 255;
+                    if (x > area.x + area.width / 3 && x < area.x + area.width * 2 / 3 && y > area.y + area.height / 10 &&
+                        y < area.y + area.height * 9 / 10)
+                        depth[std::size_t{y} * w + x] = 0.02f;
+                }
+            const PixelView full{pixels.data(), w, h, w * 4, true, reinterpret_cast<const std::uint8_t*>(depth.data()), w * 4};
+            const auto pitch = (area.width * 4 + 255u) & ~255u;
+            std::vector<std::uint8_t> copy(std::size_t{pitch} * area.height, 0xcd);
+            for (std::uint32_t y = 0; y < area.height; ++y)
+                std::copy_n(pixels.data() + (std::size_t{area.y + y} * w + area.x) * 4, std::size_t{area.width} * 4,
+                            copy.data() + std::size_t{y} * pitch);
+            PixelView cropped_view{copy.data(), area.width, area.height, pitch, true, full.depth, full.depth_pitch, area.x, area.y, w, h};
+            const Rect local{0, 0, area.width, area.height};
+            expect(thumbnail(full, area) == thumbnail(cropped_view, local),
+                   "cropped colour thumbnails match full-screen colour coordinates");
+            Image original(area.width, area.height), cropped_picture(area.width, area.height);
+            expect(depth_mask(full, area, original) == depth_mask(cropped_view, local, cropped_picture) &&
+                       original.rgba == cropped_picture.rgba,
+                   "cropped colour origin selects the identical full-screen depth silhouette");
+            full_recorder.take_frame(full);
+            auto stale = cropped_view;
+            ++stale.origin_x;
+            cropped_recorder.take_frame(stale);
+            expect(cropped_recorder.status().taken == 0, "stale readback region is ignored after an area change");
+            cropped_recorder.take_frame(cropped_view);
+            expect(full_recorder.status().taken == 1 && cropped_recorder.status().taken == 1 && cropped_recorder.status().depth,
+                   "cropped recorder retains the same numbered depth frame");
+            full_recorder.discard();
+            cropped_recorder.discard();
+        }
+    }
+}
+
+void test_capture_hdr_pixels() {
+    using namespace dingosdk::capture;
+    constexpr std::uint32_t w = 1024, h = 259, pitch = w * 4 + 64;
+    std::vector<std::uint8_t> packed(std::size_t{pitch} * h, 0xcd), actual;
+    for (std::uint32_t y = 0; y < h; ++y)
+        for (std::uint32_t x = 0; x < w; ++x) {
+            const std::uint32_t value = x | (y << 10) | (((x + y) & 1023) << 20) | (3u << 30);
+            std::memcpy(packed.data() + std::size_t{y} * pitch + x * 4, &value, 4);
+        }
+    readback_rgba(packed.data(), w, h, pitch, ReadbackColour::rgb10, actual);
+    bool same = true;
+    for (std::uint32_t y = 0; y < h; ++y)
+        for (std::uint32_t x = 0; x < w; ++x) {
+            const auto* pixel = actual.data() + (std::size_t{y} * w + x) * 4;
+            same = same && pixel[0] == x * 255 / 1023 && pixel[1] == y * 255 / 1023 && pixel[2] == ((x + y) & 1023) * 255 / 1023 &&
+                   pixel[3] == 255;
+        }
+    expect(same, "parallel HDR10 conversion preserves all channel values and padded row strides");
+    constexpr std::uint32_t half_pitch = w * 8 + 64;
+    packed.assign(std::size_t{half_pitch} * h, 0xcd);
+    for (std::uint32_t y = 0; y < h; ++y)
+        for (std::uint32_t x = 0; x < w; ++x) {
+            const auto n = static_cast<std::uint16_t>(y * w + x);
+            const std::uint16_t channels[]{n, static_cast<std::uint16_t>(n + 7891), static_cast<std::uint16_t>(n + 23117), 0x3c00};
+            std::memcpy(packed.data() + std::size_t{y} * half_pitch + x * 8, channels, 8);
+        }
+    readback_rgba(packed.data(), w, h, half_pitch, ReadbackColour::half_float, actual);
+    same = true;
+    for (std::uint32_t y = 0; y < h; ++y)
+        for (std::uint32_t x = 0; x < w; ++x) {
+            const auto n = static_cast<std::uint16_t>(y * w + x);
+            const std::uint16_t values[]{n, static_cast<std::uint16_t>(n + 7891), static_cast<std::uint16_t>(n + 23117)};
+            const auto* pixel = actual.data() + (std::size_t{y} * w + x) * 4;
+            for (int c = 0; c < 3; ++c)
+                same = same && pixel[c] == readback_srgb8(readback_half(values[c]));
+            same = same && pixel[3] == 255;
+        }
+    expect(same, "HDR half lookup preserves the previous conversion for all 65536 encodings");
+    expect(readback_srgb8(readback_half(0x3c00)) == 255 && readback_srgb8(readback_half(0x3800)) == 188 &&
+               readback_srgb8(readback_half(0x7e00)) == 0 && readback_srgb8(readback_half(0xfc00)) == 0,
+           "half conversion retains white, midpoint, NaN and negative infinity behavior");
+}
+
+void test_capture_parallel_rows() {
+    using namespace dingosdk::capture;
+    std::array<unsigned, 19> visits{};
+    parallel_rows(19, 20000, [&](std::uint32_t first, std::uint32_t last) {
+        for (auto row = first; row < last; ++row)
+            ++visits[row];
+    });
+    expect(std::all_of(visits.begin(), visits.end(), [](unsigned count) { return count == 1; }),
+           "parallel rows cover a non-divisible height exactly once");
+    bool propagated = false;
+    try {
+        parallel_rows(19, 20000, [](std::uint32_t first, std::uint32_t last) {
+            for (auto row = first; row < last; ++row)
+                if (row == 17)
+                    throw std::runtime_error("worker failure");
+        });
+    } catch (const std::runtime_error&) {
+        propagated = true;
+    }
+    expect(propagated, "worker failures reach capture cleanup after all workers join");
+}
+
+void test_capture_parallel_pixels() {
+    using namespace dingosdk::capture;
+    const std::array<std::array<std::uint32_t, 4>, 3> cases{{{97, 83, 171, 151}, {641, 479, 733, 597}, {1786, 1825, 939, 960}}};
+    // Golden hashes from the serial cuff-fixed mask and original area filter.
+    const std::array<std::uint64_t, 3> golden{167371848359352969ull, 16840209323894955362ull, 5533595409890215556ull};
+    std::size_t at = 0;
+    for (const auto& dimensions : cases) {
+        const auto w = dimensions[0], h = dimensions[1];
+        Image picture(w, h);
+        std::uint32_t seed = 17;
+        for (auto& byte : picture.rgba) {
+            seed = seed * 1664525u + 1013904223u;
+            byte = static_cast<std::uint8_t>(seed >> 24);
+        }
+        std::vector<float> depth(std::size_t{w} * h);
+        for (std::uint32_t y = 0; y < h; ++y)
+            for (std::uint32_t x = 0; x < w; ++x) {
+                const float t = (static_cast<float>(x) + 0.5f) / static_cast<float>(w);
+                float distance = 100.0f + 12.0f * t * t;
+                if (x > w / 3 && x < w * 2 / 3 && y > h / 10 && y < h * 9 / 10)
+                    distance *= 0.6f;
+                if (y == h * 9 / 10 && x > w / 3 && x < w * 2 / 3)
+                    distance *= 0.995f;
+                const bool empty = (y < h / 12 || y % 13 == 0) && (x < w / 8 || x > w * 7 / 8);
+                depth[std::size_t{y} * w + x] = empty ? 0 : 1.0f / distance;
+            }
+        const PixelView frame{picture.rgba.data(), w, h, w * 4, false, reinterpret_cast<const std::uint8_t*>(depth.data()), w * 4};
+        const bool result = depth_mask(frame, {0, 0, w, h}, picture);
+        expect(result, "golden depth fixture has a foreground silhouette");
+        const auto actual = resized(picture, dimensions[2], dimensions[3]);
+
+        std::uint64_t hash = 14695981039346656037ull;
+        for (const auto byte : actual.rgba) {
+            hash ^= byte;
+            hash *= 1099511628211ull;
+        }
+        expect(hash == golden[at++], "parallel depth and resize match original "
+                                     "pixels including inherited backdrop rows");
+    }
+}
+
+// Optional CPU profile, outside normal tests: same crop and output size as
+// a large skater capture on a 4K screen. Reports costs, never asserts timing.
+void profile_capture() {
+    using namespace dingosdk::capture;
+    constexpr std::uint32_t width = 3840, height = 2160;
+    std::vector<std::uint8_t> pixels(std::size_t{width} * height * 4, 90);
+    std::vector<float> depth(std::size_t{width} * height, 0.01f);
+    const Rect area{1037, 302, 1786, 1825};
+    for (std::uint32_t y = 400; y < 2000; ++y)
+        for (std::uint32_t x = 1700; x < 2150; ++x)
+            depth[std::size_t{y} * width + x] = 0.02f;
+    const PixelView frame{pixels.data(), width, height, width * 4, false, reinterpret_cast<const std::uint8_t*>(depth.data()), width * 4};
+    Image picture(area.width, area.height);
+    for (std::size_t n = 3; n < picture.rgba.size(); n += 4)
+        picture.rgba[n] = 255;
+    const auto measure = [](const char* label, auto fn) {
+        fn();
+        const auto begin = std::chrono::steady_clock::now();
+        for (int n = 0; n < 12; ++n)
+            fn();
+        const auto ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin).count() / 12;
+        std::printf("%s %.3f ms/frame\n", label, ms);
+    };
+    std::vector<std::uint8_t> converted(std::size_t{width} * height * 4);
+    measure("serial HDR10 reference", [&] {
+        for (std::uint32_t y = 0; y < height; ++y)
+            for (std::uint32_t x = 0; x < width; ++x) {
+                std::uint32_t value;
+                std::memcpy(&value, pixels.data() + (std::size_t{y} * width + x) * 4, 4);
+                auto* out = converted.data() + (std::size_t{y} * width + x) * 4;
+                for (int c = 0; c < 3; ++c)
+                    out[c] = static_cast<std::uint8_t>(((value >> (10 * c)) & 0x3ff) * 255 / 1023);
+                out[3] = 255;
+            }
+    });
+    measure("HDR10 conversion", [&] { readback_rgba(pixels.data(), width, height, width * 4, ReadbackColour::rgb10, converted); });
+    measure("depth mask", [&] { (void)depth_mask(frame, area, picture); });
+    measure("resize", [&] { (void)resized(picture, 939, 960); });
+    Recorder recorder;
+    RecordRequest request;
+    request.area = {0.27f, 0.14f, 0.735f, 0.985f};
+    request.height = 960;
+    std::string why;
+    if (!recorder.start(request, why)) {
+        std::printf("profile failed: %s\n", why.c_str());
+        return;
+    }
+    measure("whole recorder", [&] { recorder.take_frame(frame); });
+    recorder.discard();
+}
+
+void profile_background() {
+    using namespace dingosdk::capture;
+    constexpr std::uint32_t w=3440,h=1440;
+    std::vector<std::uint8_t> pixels(std::size_t{w}*h*4,90);
+    std::vector<float> depth(std::size_t{w}*h,0.01f);
+    for(std::uint32_t y=220;y<1380;++y) for(std::uint32_t x=1560;x<1950;++x) depth[std::size_t{y}*w+x]=0.02f;
+    const PixelView frame{pixels.data(),w,h,w*4,false,reinterpret_cast<const std::uint8_t*>(depth.data()),w*4};
+    Recorder recorder;RecordRequest request;request.area={0.27f,0.14f,0.735f,0.985f,true};request.background=true;request.height=960;
+    std::string why;if(!recorder.start(request,why)){std::printf("profile start failed\n");return;}
+    double total=0,maximum=0;
+    const auto begin=std::chrono::steady_clock::now();
+    for (int n=0;n<240;++n) {
+        std::this_thread::sleep_until(begin+std::chrono::microseconds(n*1000000/60));
+        const auto started=std::chrono::steady_clock::now();recorder.take_frame(frame);
+        const auto ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-started).count();
+        total+=ms;maximum=std::max(maximum,ms);
+    }
+    recorder.stop();const auto state=recorder.status();
+    std::printf("background 60 Hz: accepted %u, retained %u, dropped %u, pending %u; enqueue mean %.3f ms, max %.3f ms\n",
+        state.taken,state.kept,state.dropped,state.pending,total/240,maximum);
+}
+
 int main(int argc, char** argv) {
+    if(argc>1 && std::string(argv[1])=="--profile-background"){profile_background();return 0;}
+    if (argc>1 && std::string(argv[1])=="--profile-capture") { profile_capture(); return 0; }
+    test_capture_background();
+    test_capture_cropped_readback();
+    test_capture_hdr_pixels();
+    test_capture_parallel_rows();
+    test_capture_parallel_pixels();
+    test_depth_cut_cuff_background();
+    test_depth_cut_wide_and_far();
+    test_depth_cut_contact();
+    test_depth_cut();
     test_matte();
     test_backdrop_key(false);
     test_backdrop_key(true);

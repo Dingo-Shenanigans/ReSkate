@@ -211,6 +211,8 @@ class ServerEnvironment final : public Environment {
              std::string(text));
     }
     void console(std::string_view text) override { log_(std::string(text)); }
+    // A server loads the plugins its admin put in Mods: there is no player to ask.
+    std::optional<bool> approved(const Candidate&) override { return std::nullopt; }
     double now_ms() override {
         return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
     }

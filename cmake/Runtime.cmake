@@ -46,6 +46,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Multiplayer/Hud/native_party_hooks.cpp
     Extension/Multiplayer/Hud/native_party_requests.cpp
     Extension/Throwdowns/native_throwdowns.cpp
+    Extension/Localization/text_overrides.cpp
     Extension/Throwdowns/native_type_scan.cpp
     Extension/Throwdowns/throwdown_lab.cpp
     Extension/Throwdowns/native_flag_session.cpp
@@ -102,6 +103,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Settings/named_settings.cpp
     Extension/World/console_commands.cpp
     Extension/World/world_entities.cpp
+    Extension/World/owned_bodies.cpp
     Extension/World/character_room.cpp
     Extension/World/guid_table_guard.cpp
     Extension/Skater/bone_cam.cpp
@@ -128,6 +130,9 @@ add_library(dingosdk_runtime SHARED
     Extension/Assets/map_icons.cpp
     Engine/Vfs/thunderstore_package.cpp
     Launcher/mod_manager.cpp
+    Launcher/thunderstore.cpp
+    Extension/Assets/mod_store.cpp
+    Extension/Assets/mod_store_view.cpp
     Extension/Assets/loose_files.cpp
     Extension/Scripting/lua_startup.cpp
     Extension/Scripting/lua_native_block.cpp
@@ -137,6 +142,8 @@ add_library(dingosdk_runtime SHARED
     Extension/Plugins/plugin_http.cpp
     Extension/Plugins/plugin_game_runtime.cpp
     Extension/Plugins/plugin_ui_values.cpp
+    Extension/Rendering/plugin_effects.cpp
+    Extension/Plugins/plugin_joystick.cpp
     Extension/Skater/skater_animation.cpp
     Extension/Plugins/plugin_sound.cpp
     Extension/Skater/skater_events.cpp

@@ -2,7 +2,7 @@
 #include <cstdint>
 namespace dingosdk::multiplayer {
 void tick_native_throwdown_menu(std::uintptr_t base, bool loading, bool in_menu) noexcept;
-bool release_native_throwdown_menu(std::uintptr_t base) noexcept;
+bool release_native_throwdown_menu(std::uintptr_t base, bool before_unload) noexcept;
 bool native_throwdown_setup_open() noexcept;
 bool native_throwdown_hud_ready() noexcept;
 bool native_throwdown_match_panel_open() noexcept;

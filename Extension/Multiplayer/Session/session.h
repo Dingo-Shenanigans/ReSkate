@@ -19,6 +19,14 @@ unsigned server_poll_answers() noexcept;
 bool queue_command(std::string_view action, std::string_view argument, std::string_view password);
 // Called just before the host's validated native load is submitted, on the client thread.
 void host_map_change(std::string_view destination);
+// Before reloading the map being played for the player's own reasons (the mods they just applied,
+// Runtime/client_tick.cpp): the session stays as it is while it loads, as it does through a map
+// change the host makes, and a host's players are not moved (they wait for the host, who stays on
+// the same map). False when the session is in no state to (changing maps, or still joining): the
+// map is then not reloaded. True with no session. Client thread.
+bool begin_local_reload();
+// The reload asked for could not be: the session carries on as it was. Client thread.
+void cancel_local_reload();
 enum class MapLoadResult { waiting, queued, failed, missing }; // missing: the map is not installed
 // Runs on the client thread; only catalog-registered destinations may be queued.
 using MapLoader = MapLoadResult (*)(std::string_view map, bool submitted, std::string &detail);

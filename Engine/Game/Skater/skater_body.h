@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 
 // The skater's body as the physics simulates it (Engine/Game/Build/20260929/skater_body.h):
 // 24 rigid bodies, the ragdoll, and the contacts of each physics step. Plain data;
@@ -48,6 +49,7 @@ struct BodyContact {
     float impact{};  // the hardest contact's speed along its normal, metres per second
     Vec3 slide{};    // its normal x relative velocity: the length is the speed along the surface
     HitKinds hit;
+    std::optional<Vec3> point, normal; // hardest contact, world space; absent if unreadable
 };
 // The whole body in one physics step.
 struct Contacts {

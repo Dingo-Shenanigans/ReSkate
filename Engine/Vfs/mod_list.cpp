@@ -1,4 +1,5 @@
 #include "mod_list.h"
+#include "resident_assets.h"
 #include "Engine/Game/Build/supported_build.h"
 
 #include "Engine/Core/Json/json.h"
@@ -153,40 +154,7 @@ void read_resident(Mod& mod, std::vector<std::string>& notes) {
     try {
         const auto root = parse(path, maximum_plugin_bytes);
         if (!root.is_object() || !root.contains("resident")) return;
-        const auto name_of = [](const Json& value) {
-            if (!value.is_string() || value.string().empty() || value.string().size() > 260) throw std::runtime_error("a name is 1 to 260 characters");
-            for (const auto c : value.string())
-                if (static_cast<unsigned char>(c) < 0x20 || static_cast<unsigned char>(c) > 0x7e || c == '\\')
-                    throw std::runtime_error("names are printable ASCII with / between folders");
-            return lower(value.string());
-        };
-        const auto names_of = [&](const Json& list, std::size_t most) {
-            if (!list.is_array() || list.size() > most) throw std::runtime_error("roots is a list of at most " + std::to_string(most) + " names");
-            std::vector<std::string> out;
-            for (const auto& item : list) out.push_back(name_of(item));
-            return out;
-        };
-        const auto& list = root.at("resident");
-        if (!list.is_array() || list.size() > 16) throw std::runtime_error("resident is a list of at most 16 bundles");
-        std::vector<ResidentAssets> result;
-        for (const auto& row : list) {
-            if (!row.is_object() || !row.contains("bundle")) throw std::runtime_error("each resident entry names its bundle");
-            ResidentAssets entry;
-            entry.bundle = name_of(row.at("bundle"));
-            if (row.contains("roots")) entry.roots = names_of(row.at("roots"), 512);
-            if (row.contains("shaders")) {
-                const auto& shaders = row.at("shaders");
-                if (!shaders.is_array() || shaders.size() > 32) throw std::runtime_error("shaders is a list of at most 32 depots");
-                for (const auto& shader : shaders) {
-                    if (!shader.is_object() || !shader.contains("name") || !shader.contains("roots"))
-                        throw std::runtime_error("each shader names its depot and its roots");
-                    entry.shaders.push_back({name_of(shader.at("name")), names_of(shader.at("roots"), 64)});
-                    if (entry.shaders.back().roots.empty()) throw std::runtime_error("a shader needs its roots");
-                }
-            }
-            result.push_back(std::move(entry));
-        }
-        mod.resident = std::move(result);
+        mod.resident = parse_resident_assets(root.at("resident"));
     } catch (const std::exception& failure) {
         notes.push_back("Mod " + mod.name + ": " + plugin_manifest_file + "'s resident list could not be read (" + failure.what() + ")");
     }
@@ -229,6 +197,43 @@ void read_variants(Mod& mod, std::vector<std::string>& notes) {
         mod.variants = std::move(result);
     } catch (const std::exception& failure) {
         notes.push_back("Mod " + mod.name + ": " + plugin_manifest_file + "'s variants could not be read (" + failure.what() + ")");
+    }
+}
+
+// Invalid cooperation never removes an existing displacement rule. Read this
+// independently of variants, and publish neither side of a partial declaration.
+void read_variant_additions(Mod& mod, std::vector<std::string>& notes) {
+    const auto path = mod.directory / plugin_manifest_file;
+    std::error_code error;
+    if (!fs::is_regular_file(path, error) || error) return;
+    try {
+        const auto root = parse(path, maximum_plugin_bytes);
+        if (!root.is_object() || !root.contains("variant_additions")) return;
+        const auto& policy = root.at("variant_additions");
+        if (!policy.is_object()) throw std::runtime_error("variant_additions is an object");
+        const auto list = [&](const char* field) {
+            std::vector<std::string> result;
+            if (!policy.contains(field)) return result;
+            const auto& values = policy.at(field);
+            if (!values.is_array() || values.size() > 16) throw std::runtime_error("at most 16 exact bundle names per side");
+            for (const auto& value : values) {
+                if (!value.is_string() || value.string().size() > 260) throw std::runtime_error("bundle name must be a string of at most 260 characters");
+                auto name = lower(value.string());
+                if (!name.starts_with("win32/") || name.find("..") != std::string::npos ||
+                    name.find("//") != std::string::npos || name.back() == '/' ||
+                    std::ranges::any_of(name, [](unsigned char c) { return c <= 0x20 || c >= 0x7f || c == '\\' || c == '*' || c == '?'; }))
+                    throw std::runtime_error("an exact win32 bundle name is required");
+                if (std::ranges::find(result, name) != result.end()) throw std::runtime_error("repeated bundle permission");
+                result.push_back(std::move(name));
+            }
+            return result;
+        };
+        VariantAdditions parsed;
+        parsed.accept = list("accept");
+        parsed.contribute = list("contribute");
+        mod.variant_additions = std::move(parsed);
+    } catch (const std::exception& failure) {
+        notes.push_back("Mod " + mod.name + ": private variant additions refused (" + failure.what() + ")");
     }
 }
 
@@ -498,6 +503,7 @@ Mod describe_mod(const std::filesystem::path& directory, std::string name, std::
     read_levels(mod);
     read_resident(mod, notes);
     read_variants(mod, notes);
+    read_variant_additions(mod, notes);
     read_plugin_entry(mod);
     read_studio_marker(mod);
     return mod;
@@ -514,6 +520,15 @@ std::vector<std::string> mod_contents(const Mod& mod) {
     if (mod.provides_objects) parts.push_back("Objects");
     if (mod.provides_music) parts.push_back("Music");
     return parts;
+}
+
+bool plugin_only(const Mod& mod) {
+    return mod.provides_plugin && !mod.provides_layout && !mod.provides_levels && mod.park_maps.empty() && !mod.provides_objects &&
+           !mod.provides_music && !mod.variants.has_value();
+}
+
+bool has_content(const Mod& mod) {
+    return !mod_contents(mod).empty() || mod.variants.has_value();
 }
 
 bool resident_root(const Mod& mod, std::string_view bundle, std::string_view name) noexcept {

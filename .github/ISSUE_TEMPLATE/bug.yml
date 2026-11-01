@@ -62,6 +62,14 @@ body:
     validations:
       required: true
   - type: textarea
+    id: launcher-details
+    attributes:
+      label: Launcher details
+      description: |
+        If the launcher's STATUS box showed a PROBLEM, press **Copy details** under it and paste the text here.
+        It has the exact error, which the STATUS box only summarises.
+      render: text
+  - type: textarea
     id: log
     attributes:
       label: Log

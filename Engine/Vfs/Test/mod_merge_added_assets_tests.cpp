@@ -14,9 +14,12 @@
 #include "Engine/Resource/cas_codec.h"
 #include "Engine/Resource/ebx_document.h"
 #include "Engine/Resource/toc.h"
+#include "Engine/Resource/shader_lookup.h"
 #include "Engine/Vfs/game_archives.h"
 #include "Engine/Vfs/mod_catalog.h"
 #include "Engine/Vfs/mod_merge_internal.h"
+#include "Engine/Vfs/variant_additions_native.h"
+#include "Engine/Game/Build/supported_build.h"
 #include "Engine/Vfs/native_db.h"
 
 #include <Windows.h>
@@ -865,9 +868,316 @@ void two_merges_write_the_same_bytes() {
     expect(read(patch / "Win32" / "pkg" / "cas_01.cas") == archive, "same bytes: the patch's own archive differs");
     expect(read(patch / "Win32" / fs::path(second_map_toc)) == toc, "same bytes: the second map's TOC differs");
 }
+
+void a_manifest_after_the_first_payload_keeps_asset_order() {
+    Fixture fixture("manifest-order");
+    const auto assets = game_copy();
+    fixture.add("native", false, shared_toc, {}, assets);
+    const auto root = fixture.catalog.root / "native";
+    const auto toc = fb::read_toc(read(root / "Win32" / fs::path(shared_toc)));
+    auto bundle = toc.bundles.front();
+    auto region = fb::read_bundle_region(bundle.region);
+    // [manifest, first, second] becomes [first, manifest, second].
+    std::swap(region.files[0], region.files[1]);
+    bundle.region = fb::write_bundle_region(region.files);
+    const auto layout = vfs::read_layout(root / "layout.toc");
+    mods::detail::CasStore store(fixture.catalog.data_root / "Data", fixture.root / "unused", layout.root);
+    const auto listing = mods::detail::list_bundle(store, root, fixture.catalog.data_root / "Data", bundle,
+                                                  fixture.catalog.data_root);
+    expect(listing.has_value(), "a manifest after a payload is found");
+    if (!listing) return;
+    for (std::size_t index = 0; index < assets.size(); ++index)
+        expect(mods::detail::read_asset(store, root, fixture.catalog.data_root / "Data", *listing, index,
+                                        fixture.catalog.data_root) == assets[index].payload,
+               "finding a non-first manifest preserves each asset's payload, not the manifest bytes");
+}
+
+void native_variant_additions_preserve_replacements_and_removals(bool donor_first) {
+    Fixture fixture(donor_first ? "cooperative-first" : "cooperative-last");
+    auto donor_assets = game_copy();
+    donor_assets.push_back({"test/private", 1, ebx_document(guid(10), {})});
+    fixture.add("donor", false, shared_toc, {}, donor_assets);
+    if (donor_first) {
+        const auto path = fixture.catalog.root / "donor" / "Win32" / fs::path(shared_toc);
+        auto toc = fb::read_toc(read(path));
+        auto region = fb::read_bundle_region(toc.bundles.front().region);
+        std::swap(region.files[0], region.files[1]);
+        toc.bundles.front().region = fb::write_bundle_region(region.files);
+        write(path, fb::write_patch_toc(toc.bundles));
+    }
+    // The selected variant replaces the playlist and deliberately drops test/other.
+    fixture.add("choice", false, shared_toc, {}, {{"test/playlist", 1, ebx_document(guid(1), {guid(1)})}});
+    auto& donor = fixture.catalog.mods[0];
+    auto& choice = fixture.catalog.mods[1];
+    mods::Mod owner;
+    owner.name = "Pack"; owner.directory = fixture.catalog.root / "Pack";
+    owner.variants = mods::Variants{"decks", {}, {bundle_name}};
+    owner.variant_additions.accept = {bundle_name};
+    donor.variant_additions.contribute = {bundle_name};
+    const auto projection = mods::detail::admit_variant_additions(fixture.catalog.data_root, owner, choice, donor, {});
+    expect(projection.at(bundle_name) == std::set<std::string>{"0:test/private"}, "native admission projects exactly the private EBX");
+    donor.variant_projection = projection;
+    donor.variant_targets[bundle_name] = choice.name;
+    choice.variant_authority.insert(bundle_name);
+    if (!donor_first) std::swap(fixture.catalog.mods[0], fixture.catalog.mods[1]);
+    const auto report = mods::merge_mods(fixture.catalog);
+    expect(report.issue.empty() && report.built, "native cooperative merge builds\n" + describe(report));
+    Patch patch(fixture);
+    expect(!patch.file(shared_toc, "test/other"), "a stock original the selected variant removed is not resurrected");
+    const auto private_file = patch.file(shared_toc, "test/private");
+    expect(private_file && fb::decode_cas(patch.bytes(private_file->location, private_file->offset, private_file->size, "private addition"),
+                                        {fixture.catalog.data_root}) == donor_assets.back().payload,
+           "private addition retains its original payload in either priority order");
+    const auto playlist = patch.file(shared_toc, "test/playlist");
+    expect(playlist.has_value(), "the variant's replacement remains present");
+    if (playlist) {
+        const auto document = fb::ebx::read_document(fb::decode_cas(patch.bytes(playlist->location, playlist->offset,
+            playlist->size, "variant replacement"), {fixture.catalog.data_root}));
+        expect(document.imports.size() == 1 && document.imports.front().fileGuid == guid(1),
+               "the variant's replacement wins over donor scaffold in either priority order");
+    }
+
+    auto without_donor = fixture.catalog;
+    std::erase_if(without_donor.mods, [](const auto& m) { return m.name == "donor"; });
+    auto retry = mods::merge_mods(without_donor);
+    expect(retry.issue.empty() && retry.built, "retry with the donor removed clears stale authority and still merges");
+    mods::reconcile_variant_additions(without_donor);
+    expect(std::ranges::all_of(without_donor.mods, [](const auto& m) { return m.variant_authority.empty(); }),
+           "variant authority needs a surviving donor");
+    auto without_variant = fixture.catalog;
+    std::erase_if(without_variant.mods, [](const auto& m) { return m.name == "choice"; });
+    mods::reconcile_variant_additions(without_variant);
+    expect(std::ranges::none_of(without_variant.mods, [](const auto& m) { return m.name == "donor"; }),
+           "retry removes a donor when its verified variant was removed");
+    retry = mods::merge_mods(without_variant);
+    expect(retry.issue.empty() && retry.built, "retry without either member still merges the remaining catalogue");
+
+    // Native readers must detect an added asset hidden behind a new name but the game's GUID.
+    auto collision_assets = game_copy();
+    collision_assets.push_back({"test/renamed", 1, ebx_document(guid(2), {})});
+    fixture.add("collision", false, shared_toc, {}, collision_assets);
+    auto& collision = fixture.catalog.mods.back();
+    collision.variant_additions.contribute = {bundle_name};
+    bool refused{};
+    try { (void)mods::detail::admit_variant_additions(fixture.catalog.data_root, owner, fixture.catalog.mods[donor_first ? 1 : 0], collision, {}); }
+    catch (const std::exception&) { refused = true; }
+    expect(refused, "native renamed partition GUID collision is refused");
+    // The donor passed admission, then its TOC became unreadable before a job
+    // collected sources. Keep the selected variant usable and blame that donor.
+    write(fixture.catalog.root / "donor" / "Win32" / fs::path(shared_toc), Bytes{std::byte{0xff}});
+    retry = mods::merge_mods(fixture.catalog);
+    expect(retry.issue.empty() && retry.problems.contains("donor"),
+           "a TOC lost after admission is a donor problem, not a merge-wide issue");
+}
+
+void catalog_checks_native_cooperation_again_when_the_variant_changes() {
+    Fixture fixture("catalog-cooperation");
+    struct LocalAppData {
+        std::wstring previous;
+        explicit LocalAppData(const fs::path& root) {
+            const auto size = GetEnvironmentVariableW(L"LOCALAPPDATA", nullptr, 0);
+            if (size) {
+                previous.resize(size);
+                const auto copied = GetEnvironmentVariableW(L"LOCALAPPDATA", previous.data(), size);
+                previous.resize(copied);
+            }
+            SetEnvironmentVariableW(L"LOCALAPPDATA", root.wstring().c_str());
+        }
+        ~LocalAppData() { SetEnvironmentVariableW(L"LOCALAPPDATA", previous.empty() ? nullptr : previous.c_str()); }
+    } appdata(fixture.root / "appdata");
+    auto added = game_copy();
+    added.push_back({"test/private", 1, ebx_document(guid(10), {})});
+    fixture.add("donor", false, shared_toc, {}, added);
+    fixture.add("Pack/decks/standard", false, shared_toc, {}, game_copy());
+    fixture.add("Pack/decks/collision", false, shared_toc, {}, added);
+    const auto text = [&](const fs::path& path, std::string_view value) {
+        Bytes bytes; put_bytes(bytes, value); write(path, bytes);
+    };
+    const auto stamp = "ReSkate Studio native Patch v1\nskate_sha256=" + std::string(supported_build::game_sha256) + "\n";
+    text(fixture.catalog.root / "donor" / mods::studio_marker_file, stamp);
+    text(fixture.catalog.root / "Pack" / mods::studio_marker_file, stamp);
+    const auto owner_manifest = fixture.catalog.root / "Pack" / mods::plugin_manifest_file;
+    text(owner_manifest, R"({"api":1,"entry":"plugin/main.lua","variants":{"folder":"decks","order":["standard"],"displaces":["win32/test/shared"]},"variant_additions":{"accept":["win32/test/shared"]}})");
+    text(fixture.catalog.root / "donor" / mods::plugin_manifest_file,
+         R"({"variant_additions":{"contribute":["win32/test/shared"]}})");
+    auto catalog = mods::load_catalog(fixture.catalog.data_root, {}, false);
+    const auto find = [](const mods::Catalog& c) -> const mods::Mod* {
+        const auto at = std::ranges::find_if(c.mods, [](const auto& m) { return m.name == "donor"; });
+        return at == c.mods.end() ? nullptr : &*at;
+    };
+    expect(find(catalog) && find(catalog)->variant_projection.contains(bundle_name), "catalog admits native additions after both author permissions and delivery checks");
+    // Change the default choice without writing the real user's variants file.
+    text(owner_manifest, R"({"api":1,"entry":"plugin/main.lua","variants":{"folder":"decks","order":["collision"],"displaces":["win32/test/shared"]},"variant_additions":{"accept":["win32/test/shared"]}})");
+    catalog = mods::load_catalog(fixture.catalog.data_root, {}, false);
+    expect(!find(catalog), "catalog checks the newly selected variant and refuses its identity collision");
+    text(owner_manifest, R"({"api":1,"entry":"plugin/main.lua","variants":{"folder":"decks","order":["standard"],"displaces":["win32/test/shared"]}})");
+    catalog = mods::load_catalog(fixture.catalog.data_root, {}, false);
+    expect(!find(catalog), "catalog retains strict displacement when the variant owner has not opted in");
+    text(owner_manifest, R"({"api":1,"entry":"plugin/main.lua","variants":{"folder":"decks","order":["standard"],"displaces":["win32/test/shared"]},"variant_additions":{"accept":["win32/test/shared"]}})");
+    auto rival = game_copy();
+    rival.push_back({"test/renamed-private", 1, ebx_document(guid(10), {})});
+    fixture.add("rival", false, shared_toc, {}, rival);
+    text(fixture.catalog.root / "rival" / mods::studio_marker_file, stamp);
+    text(fixture.catalog.root / "rival" / mods::plugin_manifest_file,
+         R"({"variant_additions":{"contribute":["win32/test/shared"]}})");
+    for (const auto* order : {
+        R"({"schema":1,"mods":[{"name":"donor","enabled":true},{"name":"rival","enabled":true}]})",
+        R"({"schema":1,"mods":[{"name":"rival","enabled":true},{"name":"donor","enabled":true}]})"}) {
+        text(fixture.catalog.root / "mods.json", order);
+        catalog = mods::load_catalog(fixture.catalog.data_root, {}, false);
+        expect(!find(catalog) && std::ranges::none_of(catalog.mods, [](const auto& m) { return m.name == "rival"; }),
+               "two private contributors reusing a GUID are both refused in either priority order");
+    }
+}
+// `second_custom`: a higher-priority custom pack too, with its own bytecode, so both custom graphs can
+// be kept; the higher one's must be.
+void shader_selection_checks_the_winner(bool delivered, bool changed_heap, bool alias_first, bool overwritten = false,
+                                       bool encoder_available = true, bool second_custom = false) {
+    Fixture fixture("shader-selection-" + std::to_string(delivered) + std::to_string(changed_heap) +
+                    std::to_string(alias_first) + std::to_string(overwritten) + std::to_string(second_custom));
+    const auto table = [](bool extended) {
+        Resource resource{"test/program_lookup", Bytes(extended ? 544 : 208)};
+        const std::uint32_t count = extended ? 2 : 1;
+        const std::uint64_t start = extended ? 208 : 16;
+        std::memcpy(resource.payload.data(), &count, 4);
+        std::memcpy(resource.payload.data() + 4, &start, 8);
+        resource.payload[192] = std::byte{7};
+        put32(resource.payload, 4); // the header pointer's relocation
+        return resource;
+    };
+    const auto rows = [](Resource resource, const std::map<std::uint64_t, std::uint32_t>& values) {
+        put32(resource.payload, static_cast<std::uint32_t>(values.size()));
+        for (const auto& [key, index] : values) {
+            for (int shift = 0; shift < 64; shift += 8) resource.payload.push_back(static_cast<std::byte>(key >> shift));
+            put32(resource.payload, 1); put32(resource.payload, index);
+        }
+        return resource;
+    };
+    auto stock = rows(table(false), {{1, 0}});
+    auto aliases = rows(table(false), {{1, 0}, {2, 0}});
+    auto custom = rows(table(true), {{1, 0}, {2, 0}, {5, 0}, {9, 1}, {99, 2}});
+    if (changed_heap) custom.payload[192] = std::byte{8};
+    auto higher = rows(table(true), {{1, 0}, {2, 0}, {11, 1}});
+    higher.payload[400] = std::byte{3}; // its own second program: another graph than the lower pack's
+    const auto write_layer = [&](const fs::path& root, bool patch, const Resource& programs, bool code, unsigned code_version,
+                                 const char* code_name = "shaders/bytecode/test", std::uint32_t code_id = 43) {
+        fs::create_directories(root / "Win32" / "pkg");
+        write(root / "layout.toc", layout_toc());
+        fb::BinaryBundle manifest;
+        fb::BundleAsset asset;
+        asset.kind = fb::AssetKind::resource; asset.name = programs.name; asset.resourceId = 42;
+        asset.resourceType = fb::shader::programLookupType;
+        asset.sha1 = mods::detail::sha1_of(programs.payload); asset.originalSize = programs.payload.size();
+        const auto size = programs.payload.size() > 544 ? 544U : 208U;
+        put32(asset.resourceMeta, size); put32(asset.resourceMeta, 4);
+        put32(asset.resourceMeta, static_cast<std::uint32_t>(programs.payload.size() - size - 4)); put32(asset.resourceMeta, 0);
+        manifest.resources.push_back(asset);
+        const Bytes bytecode{static_cast<std::byte>(code_version)};
+        if (code) {
+            asset.name = code_name; asset.resourceId = code_id; asset.resourceType = fb::shader::bytecodeType;
+            asset.sha1 = mods::detail::sha1_of(bytecode); asset.originalSize = bytecode.size(); asset.resourceMeta.assign(16, std::byte{0});
+            manifest.resources.push_back(asset);
+        }
+        auto archive = fb::write_binary_bundle(manifest);
+        std::vector<fb::BundleFileInfo> files{{{patch, package, 1}, 0, static_cast<std::uint32_t>(archive.size())}};
+        const auto append_payload = [&](const Bytes& payload) {
+            const auto bytes = encoded(payload);
+            files.push_back({{patch, package, 1}, static_cast<std::uint32_t>(archive.size()), static_cast<std::uint32_t>(bytes.size())});
+            archive.insert(archive.end(), bytes.begin(), bytes.end());
+        };
+        append_payload(programs.payload);
+        if (code) append_payload(bytecode);
+        write(root / "Win32" / "pkg" / "cas_01.cas", archive);
+        const std::vector<fb::TocBundle> bundles{{bundle_name, fb::write_bundle_region(files), 1}};
+        write(root / "Win32" / fs::path(shared_toc), fb::write_patch_toc(bundles));
+    };
+    write_layer(fixture.catalog.data_root / "Data", false, stock, false, 0);
+    write_layer(fixture.catalog.root / "custom", true, custom, delivered, 1);
+    write_layer(fixture.catalog.root / "aliases", true, aliases, overwritten, 2);
+    if (second_custom) write_layer(fixture.catalog.root / "higher", true, higher, true, 3, "shaders/bytecode/higher", 44);
+    // The first mod listed has the highest priority.
+    auto order = alias_first ? std::vector<const char*>{"aliases", "custom"} : std::vector<const char*>{"custom", "aliases"};
+    if (second_custom) order = {"aliases", "higher", "custom"};
+    for (const auto* name : order) {
+        mods::Mod mod; mod.name = name; mod.directory = fixture.catalog.root / name; mod.provides_layout = true;
+        fixture.catalog.mods.push_back(std::move(mod));
+    }
+    const auto report = mods::merge_mods(fixture.catalog);
+    expect(report.issue.empty() && report.built, "shader graph selection builds\n" + describe(report));
+    Patch patch(fixture);
+    const auto toc = fb::read_toc(read(patch.root / "Win32" / fs::path(shared_toc)));
+    const auto listing = mods::detail::list_bundle(patch.store, patch.root, patch.base, toc.bundles.front(), patch.game);
+    expect(listing && !listing->manifest.resources.empty(), "shader result has its native resource manifest");
+    if (!listing || listing->manifest.resources.empty()) return;
+    const auto program = std::find_if(listing->manifest.resources.begin(), listing->manifest.resources.end(),
+        [](const auto& resource) { return resource.resourceType == fb::shader::programLookupType; });
+    expect(program != listing->manifest.resources.end(), "program lookup resource survives");
+    if (program == listing->manifest.resources.end()) return;
+    const auto program_index = listing->manifest.ebx.size() + static_cast<std::size_t>(program - listing->manifest.resources.begin());
+    const auto payload = mods::detail::read_asset(patch.store, patch.root, patch.base, *listing, program_index, patch.game);
+    if (payload.size() < 12) { expect(false, "program lookup payload is complete"); return; }
+    if (!encoder_available) {
+        // This case starts before any codec has been loaded. A failed rebuild
+        // must retain the selected alias payload AND its matching metadata.
+        expect(payload == aliases.payload, "failed encoding keeps the selected payload");
+        std::uint32_t kept_size{}; std::memcpy(&kept_size, program->resourceMeta.data(), 4);
+        expect(kept_size == 208, "failed encoding does not publish replacement graph metadata");
+        expect(std::any_of(report.notes.begin(), report.notes.end(), [](const auto& note) {
+            return note.find("edits could not be combined") != std::string::npos;
+        }), "missing encoder exercises the failed-rebuild path");
+        return;
+    }
+    std::uint32_t count{}; std::memcpy(&count, payload.data(), 4);
+    const bool private_graph = delivered && !changed_heap && !overwritten;
+    expect(count == (private_graph ? 2U : 1U), "winning and promoted custom graphs need both stock preservation and retained bundle-owned bytecode");
+    const auto& meta = program->resourceMeta;
+    std::uint32_t size{}, fixups{}, number{};
+    std::memcpy(&size, meta.data(), 4); std::memcpy(&fixups, meta.data() + 4, 4);
+    std::size_t at = static_cast<std::size_t>(size) + fixups;
+    if (at + 4 > payload.size()) { expect(false, "program lookup section is bounded"); return; }
+    std::memcpy(&number, payload.data() + at, 4); at += 4;
+    std::set<std::uint64_t> keys;
+    for (std::uint32_t row = 0; row < number; ++row) {
+        if (at + 12 > payload.size()) { expect(false, "program row header is bounded"); return; }
+        std::uint64_t key{}; std::uint32_t values{};
+        std::memcpy(&key, payload.data() + at, 8); std::memcpy(&values, payload.data() + at + 8, 4); at += 12;
+        keys.insert(key);
+        for (std::uint32_t value = 0; value < values; ++value) {
+            if (at + 4 > payload.size()) { expect(false, "program row indices are bounded"); return; }
+            std::uint32_t index{}; std::memcpy(&index, payload.data() + at, 4); at += 4;
+            expect(index < count, "native output rows stay in the retained graph's range");
+        }
+    }
+    if (second_custom) {
+        expect(count == 2 && keys.contains(11) && !keys.contains(9),
+               "of two usable custom graphs under an alias-only winner, the higher-priority one is kept");
+        return;
+    }
+    expect(keys.contains(2) && !keys.contains(99), "safe stock aliases survive and invalid winning rows are actually written out");
+    expect(keys.contains(9) == private_graph, "unproved graphs cannot leak private program indices into stock");
+    expect(keys.contains(5) == !changed_heap, "a non-retained custom contributor still contributes a proven stock alias");
+}
 } // namespace
 
-int main() try {
+int main(int argc, char** argv) try {
+    // Rebuilt native resources use the game's Oodle encoder. The normal suite
+    // needs no game files; supplying a game root enables these archive checks.
+    if (argc > 1 && *argv[1]) {
+        (void)fb::encode_cas(Bytes{std::byte{1}}, {fs::path(argv[1])});
+        shader_selection_checks_the_winner(true, false, false);
+        shader_selection_checks_the_winner(true, false, true);
+        shader_selection_checks_the_winner(false, false, false);
+        shader_selection_checks_the_winner(true, true, false);
+        shader_selection_checks_the_winner(true, false, true, true);
+        shader_selection_checks_the_winner(true, false, true, false, true, true);
+    } else {
+        shader_selection_checks_the_winner(true, false, true, false, false);
+        std::cout << "Successful shader archive selection checks require a local game root; skipped\n";
+    }
+    catalog_checks_native_cooperation_again_when_the_variant_changes();
+    native_variant_additions_preserve_replacements_and_removals(true);
+    native_variant_additions_preserve_replacements_and_removals(false);
+    a_manifest_after_the_first_payload_keeps_asset_order();
     replaced_while_the_game_runs();
     const auto baseline = map_only();
     expect(baseline > 0, "map only: the map's copy exists (" + std::to_string(baseline) + ")");

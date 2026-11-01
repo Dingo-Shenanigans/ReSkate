@@ -2,6 +2,7 @@
 
 #include "Engine/Core/Json/json.h"
 #include "Engine/Core/Platform/path_text.h"
+#include "Engine/Core/Platform/shared_file.h"
 
 #include <algorithm>
 #include <fstream>
@@ -11,12 +12,10 @@
 namespace dingosdk::mods {
 namespace fs = std::filesystem;
 
-std::vector<ItemSource> read_item_sources(const fs::path& file) noexcept {
+std::optional<std::vector<ItemSource>> read_item_sources_checked(const fs::path& file) noexcept {
     std::vector<ItemSource> sources;
     try {
-        std::ifstream input(file, std::ios::binary);
-        if (!input) return {};
-        const std::string text{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
+        const auto text = read_shared_text(file, 64u << 20);
         const auto root = Json::parse(text, {64u << 20, 32, 1u << 24});
         const auto& mods = root.at("mods");
         for (std::size_t i = 0; i < mods.size(); ++i) {
@@ -28,9 +27,13 @@ std::vector<ItemSource> read_item_sources(const fs::path& file) noexcept {
             sources.push_back(std::move(source));
         }
     } catch (...) {
-        return {};  // an unreadable file only means no card says where its item is from
+        return std::nullopt;
     }
     return sources;
+}
+
+std::vector<ItemSource> read_item_sources(const fs::path& file) noexcept {
+    return read_item_sources_checked(file).value_or(std::vector<ItemSource>{});
 }
 
 void write_item_sources(const fs::path& file, const std::vector<ItemSource>& sources) {

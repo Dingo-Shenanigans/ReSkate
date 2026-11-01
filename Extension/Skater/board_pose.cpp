@@ -49,6 +49,17 @@ bool store(std::uintptr_t address, const Quat& rotation, const Vec3& position) n
         return false;
     }
 }
+// A bone's scale, its fourth lane as it is.
+bool store_scale(std::uintptr_t address, const Vec3& scale) noexcept {
+    if (address < 0x10000 || address > highest_user - sizeof(Lane)) return false;
+    __try {
+        auto* lane = reinterpret_cast<float*>(address);
+        lane[0] = scale[0]; lane[1] = scale[1]; lane[2] = scale[2];
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
 bool finite(const Vec3& v) { return std::isfinite(v[0]) && std::isfinite(v[1]) && std::isfinite(v[2]); }
 Vec3 add(const Vec3& a, const Vec3& b) { return {a[0] + b[0], a[1] + b[1], a[2] + b[2]}; }
 Vec3 sub(const Vec3& a, const Vec3& b) { return {a[0] - b[0], a[1] - b[1], a[2] - b[2]}; }
@@ -85,6 +96,7 @@ struct Shared {
     std::map<std::string, std::vector<int>, std::less<>> park_by;
     std::optional<Piece> piece;
     std::optional<std::array<Bone, bones>> drawn;
+    std::map<int, std::pair<std::string, Vec3>> sized; // a bone's size, and who holds it
 };
 Shared& shared() {
     static auto* value = new Shared;
@@ -122,7 +134,7 @@ bool store_float(std::uintptr_t address, float value) noexcept {
     }
 }
 void refresh_any(Shared& s) {
-    any.store(!s.wanted.empty() || !s.parked.empty() || s.piece.has_value(), std::memory_order_release);
+    any.store(!s.wanted.empty() || !s.parked.empty() || s.piece.has_value() || !s.sized.empty(), std::memory_order_release);
     std::uint32_t bits = 0;
     for (const auto& [b, want] : s.wanted)
         if (want.hidden && want.everyone) bits |= 1u << b;
@@ -217,6 +229,7 @@ void clear(std::string_view owner, int bone) {
         s.parked.clear();
         for (const auto& [who, list] : s.park_by) s.parked.insert(list.begin(), list.end());
     }
+    std::erase_if(s.sized, [&](const auto& entry) { return entry.second.first == owner && (bone < 0 || entry.first == bone); });
     if (s.owner == owner) {
         if (bone < 0) {
             s.wanted.clear();
@@ -225,6 +238,19 @@ void clear(std::string_view owner, int bone) {
         if (s.wanted.empty() && !s.piece) s.owner.clear();
     }
     refresh_any(s);
+}
+std::string scale(std::string_view owner, int bone, std::optional<Vec3> value) {
+    if (bone < first_writable || bone >= bones) return "a board's bone is 2 to 15";
+    if (value && !std::all_of(value->begin(), value->end(), [](float v) { return v >= 0.25f && v <= 4.0f; }))
+        return "a bone's size is 0.25 to 4 on each axis";
+    auto& s = shared();
+    std::lock_guard lock(s.mutex);
+    const auto held = s.sized.find(bone);
+    if (held != s.sized.end() && held->second.first != owner) return held->second.first + " sizes that bone";
+    if (value) s.sized[bone] = {std::string(owner), *value};
+    else if (held != s.sized.end()) s.sized.erase(held);
+    refresh_any(s);
+    return {};
 }
 void park(std::string_view owner, std::vector<int> list) {
     std::erase_if(list, [](int b) { return b < first_writable || b >= bones; });
@@ -361,6 +387,8 @@ void on_render_pose(std::uintptr_t animation_interface) noexcept {
             drawn[b] = {{lanes[b].position[0], lanes[b].position[1], lanes[b].position[2]}, Quat{lanes[b].rotation},
                         {lanes[b].scale[0], lanes[b].scale[1], lanes[b].scale[2]}};
         s.drawn = drawn;
+        // Sizes are set rather than multiplied, so a pose that comes by twice is not sized twice.
+        for (const auto& [b, size] : s.sized) (void)store_scale(bone_at(buffer, b), size.second);
         const Quat place_rotation = normalised(Quat{lanes[place_bone].rotation});
         const Vec3 place_at{lanes[place_bone].position[0], lanes[place_bone].position[1], lanes[place_bone].position[2]};
         const auto back = conjugate(place_rotation);

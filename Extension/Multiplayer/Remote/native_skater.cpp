@@ -10,6 +10,7 @@
 #include "Engine/Game/Build/20260929/engine.h"
 #include <algorithm>
 #include <cstring>
+#include <utility>
 #include <span>
 
 namespace dingosdk::multiplayer {
@@ -334,6 +335,8 @@ void observe_destruction(std::uintptr_t entity) {
         r.next_native_animation = r.next_safety_audit = r.next_entity_audit = r.next_status = 0;
     }
 }
+// The render data the pose override last wrote a pose for, on this thread, until it is submitted.
+thread_local std::uintptr_t override_drawn_interface{}, override_drawn_data{};
 bool render_pose_hook(std::uintptr_t animation_interface, std::uintptr_t render_data) {
     const bool result = shared().original_render_pose(animation_interface, render_data);
     // A pose override's board (skater_animation.cpp), with the renderer's own pointer to the pose.
@@ -350,11 +353,25 @@ bool render_pose_hook(std::uintptr_t animation_interface, std::uintptr_t render_
         apply_render_pose(animation_interface, render_data);
     }
     // A pose override of the local skater, after everything that ran since its animation update.
-    if (const auto listener = shared().override_render_listener.load(std::memory_order_acquire); result && listener)
+    if (const auto listener = shared().override_render_listener.load(std::memory_order_acquire); result && listener) {
         listener(animation_interface);
+        override_drawn_interface = animation_interface;
+        override_drawn_data = render_data;
+    }
     // Last, so that what it does to a board's pose (another player's included) is what is drawn:
     // the breakable deck's parts, and plugins' board (reskate.board).
     if (result) board_pose::on_render_pose(animation_interface);
+    return result;
+}
+// Called right after render_pose with the same render data; the bones are copied for the render in it.
+std::uintptr_t submit_render_pose_hook(std::uintptr_t slot, std::uintptr_t render_data) {
+    const auto result = shared().original_submit_render_pose(slot, render_data);
+    if (override_drawn_data && render_data == override_drawn_data) {
+        const auto animation_interface = std::exchange(override_drawn_interface, 0);
+        override_drawn_data = 0;
+        if (const auto listener = shared().override_drawn_listener.load(std::memory_order_acquire))
+            listener(animation_interface);
+    }
     return result;
 }
 void animation_hook(std::uintptr_t component, std::uintptr_t update) {
@@ -432,6 +449,7 @@ void install(std::uintptr_t base) {
     prefix(base, native::initialize_creation_list, native::initialize_creation_list_prefix);
     prefix(base, native::free_creation_page, native::free_creation_page_prefix);
     prefix(base, addr::engine::board_render_pose, native::board_render_pose_prefix);
+    prefix(base, native::submit_render_pose, native::submit_render_pose_prefix);
     require(ptr(base + addr::engine::board_entity_vtable, 0x158) == base + entities::place_entity &&
                 ptr(base + addr::engine::board_holder_vtable, 0x88) ==
                     base + native::board_holder_resource_methods[0] &&
@@ -462,11 +480,19 @@ void install(std::uintptr_t base) {
         throw Unavailable("Cannot prepare skateboard render pose hook.");
     }
     shared().original_render_pose = reinterpret_cast<RenderPose>(original);
+    auto *submit = reinterpret_cast<void *>(base + native::submit_render_pose);
+    if (hook_prepare(submit, reinterpret_cast<void *>(&submit_render_pose_hook), &original) != HookOk) {
+        hook_remove(render_pose);
+        hook_remove(destruction);
+        hook_remove(animation);
+        throw Unavailable("Cannot prepare render pose submission hook.");
+    }
+    shared().original_submit_render_pose = reinterpret_cast<SubmitRenderPose>(original);
     // The far-player component update hooks (puppet_cost.cpp) join the same transaction. A
     // mismatch there only leaves that saving off; it never blocks the actor hooks.
     const auto savings = puppet_cost::prepare_hooks(base);
     const bool queued = hook_queue_enable(animation) == HookOk && hook_queue_enable(destruction) == HookOk &&
-                        hook_queue_enable(render_pose) == HookOk;
+                        hook_queue_enable(render_pose) == HookOk && hook_queue_enable(submit) == HookOk;
     std::size_t saving_hooks = 0;
     for (std::size_t i = 0; queued && i < savings.count; ++i)
         saving_hooks += hook_queue_enable(savings.targets[i]) == HookOk;
@@ -626,6 +652,9 @@ void set_pose_override_listener(AnimationEvaluated listener) noexcept {
 }
 void set_pose_override_render_listener(RenderPosePublished listener) noexcept {
     shared().override_render_listener.store(listener, std::memory_order_release);
+}
+void set_pose_override_drawn_listener(RenderPosePublished listener) noexcept {
+    shared().override_drawn_listener.store(listener, std::memory_order_release);
 }
 void set_pose_override_board_listener(BoardPosePublished listener) noexcept {
     shared().override_board_listener.store(listener, std::memory_order_release);

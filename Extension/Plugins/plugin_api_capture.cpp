@@ -94,6 +94,7 @@ struct CaptureApi {
             if (frame != "screen" && frame != "menu") luaL_error(L, "frame is \"screen\" or \"menu\"");
             request.menu = frame == "menu";
             request.depth = flag_option(L, 1, "depth", true);
+            request.background = flag_option(L, 1, "background", false);
             request.height = static_cast<std::uint32_t>(number_option(L, 1, "height", 0, 0, 4096));
             if (request.height && request.height < 64) luaL_error(L, "height is 0 (as on screen) or 64 to 4096");
             request.skip = static_cast<std::uint32_t>(number_option(L, 1, "skip", 0, 0, 600));
@@ -116,8 +117,10 @@ struct CaptureApi {
     static int state(lua_State* L) {
         auto& plugin = capturing(L, "reskate.capture.state");
         const auto now = game(plugin).capture_status(plugin.id());
-        lua_createtable(L, 0, 6);
+        lua_createtable(L, 0, 8);
         push_text(L, now.state, "state");
+        lua_pushinteger(L,static_cast<int>(now.dropped));lua_setfield(L,-2,"dropped");
+        lua_pushinteger(L,static_cast<int>(now.pending));lua_setfield(L,-2,"pending");
         lua_pushinteger(L, static_cast<int>(now.taken));
         lua_setfield(L, -2, "taken");
         lua_pushinteger(L, static_cast<int>(now.kept));
@@ -213,6 +216,29 @@ struct CaptureApi {
         return result(L, game(plugin).capture_save(plugin.id(), request));
     }
 
+    // Read-only menu rig sample, with room permission and no ownership of the rig.
+    static int room_pose(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "room", "reskate.room.pose");
+        const std::string subject = luaL_optstring(L, 1, "board");
+        if (subject != "board" && subject != "skater") luaL_argerror(L, 1, "board or skater");
+        const auto pose = game(plugin).room_pose(subject == "skater");
+        if (!pose) { lua_pushnil(L); return 1; }
+        lua_createtable(L, 0, 4);
+        lua_pushvector(L, pose->position[0], pose->position[1], pose->position[2]);
+        lua_setfield(L, -2, "position");
+        lua_createtable(L, 4, 0);
+        for (int i = 0; i < 4; ++i) {
+            lua_pushnumber(L, pose->rotation[static_cast<std::size_t>(i)]);
+            lua_rawseti(L, -2, i + 1);
+        }
+        lua_setfield(L, -2, "rotation");
+        lua_pushnumber(L, pose->age);
+        lua_setfield(L, -2, "age");
+        lua_pushnumber(L, static_cast<double>(pose->sequence));
+        lua_setfield(L, -2, "sequence");
+        return 1;
+    }
     // room.turn(value, stick): the game menu's preview turned by a stand-in pad's stick, held 300 ms.
     static int room_turn(lua_State* L) {
         auto& plugin = plugin_of(L);
@@ -229,7 +255,9 @@ struct CaptureApi {
         auto& plugin = plugin_of(L);
         need(L, plugin, "menu", "reskate.menu.game");
         const auto menu = game(plugin).game_menu();
-        lua_createtable(L, 0, 3);
+        lua_createtable(L, 0, 4);
+        lua_pushboolean(L, menu.known);
+        lua_setfield(L, -2, "known");
         lua_pushboolean(L, menu.open);
         lua_setfield(L, -2, "open");
         lua_pushboolean(L, menu.open && menu.skaters);
@@ -385,7 +413,7 @@ struct CaptureApi {
     static void install(lua_State* L) {
         add_functions(L, "capture", {{"start", start}, {"stop", stop}, {"discard", discard}, {"state", state}, {"compare", compare},
                                      {"kept", kept}, {"save", save}});
-        add_functions(L, "room", {{"turn", room_turn}});
+        add_functions(L, "room", {{"turn", room_turn}, {"pose", room_pose}});
         add_functions(L, "menu", {{"game", menu_game}, {"grid", menu_grid}, {"grid_show", grid_show}, {"grid_mark", grid_mark}});
         add_functions(L, "outfit", {{"worn", outfit_worn}, {"board", outfit_board}, {"title", outfit_title}, {"on_top", on_top}, {"on_top_state", on_top_state}});
         add_functions(L, "files", {{"reveal", files_reveal}});

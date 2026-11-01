@@ -1,5 +1,6 @@
 #pragma once
 #include "Engine/Game/World/park_rotation.h"
+#include <functional>
 #include "Engine/Game/World/park_editor.h"
 #include "Engine/Game/World/world_layers.h"
 #include "Engine/Game/World/world_controls.h"
@@ -452,6 +453,18 @@ void set_menu_map_pictures(const std::vector<MapVoteIcon>& pictures) noexcept;
 void show_message(std::string title, std::string text) noexcept;
 bool message_asking() noexcept;
 void message_dismiss() noexcept;
+// A question with two answers, in the message's look (message_card.cpp), held and answered by the
+// runtime as the message is: left and right pick, A takes the pick, B goes back. `label`
+// says what is asking ("MOD MANAGER"); `answer` is called once, with true for the first answer, on
+// whichever thread answers it. Esc or B (going back) gives the second
+// answer, or the first when `back_is_yes`. A message to say OK to goes over it. Any thread.
+void ask_question(std::string label, std::string title, std::string text, std::string yes, std::string no,
+                  std::function<void(bool)> answer, bool back_is_yes = false) noexcept;
+bool question_back() noexcept;
+bool question_asking() noexcept;
+void question_pick(bool yes) noexcept;
+bool question_picked() noexcept;
+void question_answer(bool yes) noexcept;
 bool map_vote_asking() noexcept;
 void map_vote_move(int by) noexcept;
 void map_vote_take() noexcept;
@@ -460,7 +473,7 @@ void map_vote_dismiss() noexcept;
 using ChatFeed = MultiplayerChat (*)();
 void set_chat_feed(ChatFeed) noexcept;
 // The game's pause menu, as far as ReSkate's own pages in it go: whether one of them is the
-// page on screen, and which (`section` 0: Multiplayer, 1: Mod Options). The overlay draws
+// page on screen, and which (`section` 0: Multiplayer, 1: Mod Options, 2: Mod Manager). The overlay draws
 // everything in such a page itself, its tabs too (hub_page.cpp). Read every presented frame
 // (thread-safe, cheap).
 struct HubPage {
@@ -575,13 +588,18 @@ ItemPrompts item_browser_prompts() noexcept;
 // A presented frame as the game drew it, before ReSkate's own UI goes on top: 8-bit RGBA rows
 // (BGRA when `bgra`), `pitch` bytes apart. Valid only during the call it is handed to.
 struct GrabbedFrame {
-    const std::uint8_t *data{};
+    const std::uint8_t* data{};
     std::uint32_t width{}, height{}, pitch{};
     bool bgra{};
     // The game's depth for the same frame, when it was found (depth_probe.cpp): 32-bit floats,
     // reversed (1 near, 0 at the far plane), `depth_pitch` bytes a row, the size of the frame.
-    const std::uint8_t *depth{};
+    const std::uint8_t* depth{};
     std::uint32_t depth_pitch{};
+    // Optional cropped colour rectangle; depth still addresses the full source.
+    std::uint32_t origin_x{}, origin_y{}, source_width{}, source_height{};
+};
+struct GrabRegion {
+    std::uint32_t x{}, y{}, width{}, height{};
 };
 // Screen captures (Extension/Rendering/Capture, reskate.capture): asked on every presented frame, on
 // the render thread, whether they want its pixels, and handed them when they do. While `active` says
@@ -589,7 +607,9 @@ struct GrabbedFrame {
 struct FrameGrabHost {
     bool (*active)() noexcept {};
     bool (*wants_frame)() noexcept {};
-    void (*take_frame)(const GrabbedFrame &frame) noexcept {};
+    void (*take_frame)(const GrabbedFrame& frame) noexcept {};
+    // Optional screen-space colour region. Without it the whole frame is copied.
+    GrabRegion (*region)(std::uint32_t width, std::uint32_t height) noexcept {};
 };
 // `host` must stay valid for the life of the process.
 void set_frame_grab(const FrameGrabHost *host) noexcept;

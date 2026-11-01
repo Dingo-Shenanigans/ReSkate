@@ -260,6 +260,25 @@ std::string sha256_file(const fs::path& path) {
 #endif
 }
 
+std::string sha256_bytes(std::string_view data) {
+    std::array<unsigned char, 32> digest{};
+#ifdef _WIN32
+    if (BCryptHash(BCRYPT_SHA256_ALG_HANDLE, nullptr, 0, reinterpret_cast<PUCHAR>(const_cast<char*>(data.data())),
+            static_cast<ULONG>(data.size()), digest.data(), static_cast<ULONG>(digest.size())) < 0)
+        detail::fail("Cannot compute SHA-256");
+#else
+    SHA256(reinterpret_cast<const unsigned char*>(data.data()), data.size(), digest.data());
+#endif
+    constexpr char digits[] = "0123456789abcdef";
+    std::string output;
+    output.reserve(digest.size() * 2);
+    for (const auto byte : digest) {
+        output.push_back(digits[byte >> 4]);
+        output.push_back(digits[byte & 15]);
+    }
+    return output;
+}
+
 #ifdef _WIN32
 
 PeFileInfo inspect_pe_file(const fs::path& path) {
@@ -267,7 +286,11 @@ PeFileInfo inspect_pe_file(const fs::path& path) {
     return parse_pe(file.data(), file.size()).info;
 }
 
-std::uint32_t exported_function_rva(const fs::path& path, std::string_view export_name) {
+namespace {
+enum class ExportLookup { found, unnamed, forwarded };
+struct ExportEntry { ExportLookup lookup{}; std::uint32_t rva{}; };
+
+ExportEntry find_export(const fs::path& path, std::string_view export_name) {
     const MappedFile file(path);
     const auto pe = parse_pe(file.data(), file.size());
     const auto& directory = pe.nt.OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
@@ -283,14 +306,27 @@ std::uint32_t exported_function_rva(const fs::path& path, std::string_view expor
         const auto ordinal = rva_object<std::uint16_t>(file, pe,
             exports.AddressOfNameOrdinals + index * sizeof(std::uint16_t));
         if (ordinal >= exports.NumberOfFunctions) fail("Invalid PE export ordinal");
-        const auto function = rva_object<std::uint32_t>(file, pe,
+        const auto rva = rva_object<std::uint32_t>(file, pe,
             exports.AddressOfFunctions + ordinal * sizeof(std::uint32_t));
         const std::uint64_t export_end = static_cast<std::uint64_t>(directory.VirtualAddress) + directory.Size;
-        if (!function || (function >= directory.VirtualAddress && function < export_end))
-            fail("Initializer export is missing or forwarded");
-        return function;
+        if (!rva || (rva >= directory.VirtualAddress && rva < export_end)) return {ExportLookup::forwarded, rva};
+        return {ExportLookup::found, rva};
     }
-    fail("Required initializer export is missing");
+    return {ExportLookup::unnamed, 0};
+}
+}
+
+std::uint32_t exported_function_rva(const fs::path& path, std::string_view export_name) {
+    const auto entry = find_export(path, export_name);
+    if (entry.lookup == ExportLookup::forwarded) fail("Initializer export is missing or forwarded");
+    if (entry.lookup == ExportLookup::unnamed) fail("Required initializer export is missing");
+    return entry.rva;
+}
+
+std::optional<std::uint32_t> exported_rva(const fs::path& path, std::string_view export_name) {
+    const auto entry = find_export(path, export_name);
+    if (entry.lookup != ExportLookup::found) return std::nullopt;
+    return entry.rva;
 }
 
 void validate_game_file(const fs::path& path) {

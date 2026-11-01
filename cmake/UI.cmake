@@ -32,6 +32,7 @@ add_library(dingosdk_overlay STATIC
     Extension/UI/Overlay/game_images.cpp
     Extension/UI/Overlay/xray_overlay.cpp
     Extension/UI/Overlay/plugin_images.cpp
+    Extension/UI/Overlay/store_icons.cpp
     Extension/UI/Overlay/menu_map_pictures.cpp
     Extension/UI/Overlay/skate_menu_skater.cpp
     Extension/UI/Overlay/skate_menu_settings.cpp
@@ -54,6 +55,8 @@ add_library(dingosdk_overlay STATIC
     Extension/Music/music_page.cpp
     Extension/Trainer/trainer_view.cpp
     Extension/UI/Overlay/screen_look.cpp
+    Extension/UI/Overlay/viewmodel.cpp
+    Extension/UI/Overlay/viewmodel_model.cpp
 )
 target_link_libraries(dingosdk_overlay PUBLIC dingosdk_logging dingosdk_profiler dingosdk_imgui dingosdk_hooks dingosdk_console_core dxguid PRIVATE dingosdk_playstation_input shell32 dingosdk_initfs dingosdk_custom_scripts dingosdk_game_archives dingosdk_mods dingosdk_json windowscodecs ole32)
 
@@ -98,6 +101,29 @@ if(WIN32)
         add_custom_target(dingosdk_screen_look_check DEPENDS "${screen_look_checked}")
         add_dependencies(dingosdk_overlay dingosdk_screen_look_check)
     endif()
+endif()
+
+# A viewmodel's shader (reskate.viewmodel), the same way: text in the DLL, checked with fxc when there is
+# one. It is short enough for one string literal.
+set(viewmodel_hlsl_path "${PROJECT_SOURCE_DIR}/Extension/UI/Overlay/viewmodel.hlsl")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${viewmodel_hlsl_path}")
+file(READ "${viewmodel_hlsl_path}" viewmodel_hlsl_source)
+string(LENGTH "${viewmodel_hlsl_source}" viewmodel_hlsl_length)
+if(viewmodel_hlsl_length GREATER 15000)
+    message(FATAL_ERROR "viewmodel.hlsl is longer than one MSVC string literal: split it as the screen look's is")
+endif()
+configure_file(cmake/templates/viewmodel_hlsl.h.in "${CMAKE_CURRENT_BINARY_DIR}/generated/viewmodel_hlsl.h" @ONLY)
+if(WIN32 AND DINGOSDK_FXC)
+    set(viewmodel_checked "${CMAKE_CURRENT_BINARY_DIR}/generated/viewmodel.checked")
+    add_custom_command(OUTPUT "${viewmodel_checked}"
+        COMMAND "${DINGOSDK_FXC}" /nologo /T vs_5_0 /E vs_main /Fo "${CMAKE_CURRENT_BINARY_DIR}/generated/viewmodel_vs.cso" "${viewmodel_hlsl_path}"
+        COMMAND "${DINGOSDK_FXC}" /nologo /T ps_5_0 /E ps_main /Fo "${CMAKE_CURRENT_BINARY_DIR}/generated/viewmodel_ps.cso" "${viewmodel_hlsl_path}"
+        COMMAND "${CMAKE_COMMAND}" -E touch "${viewmodel_checked}"
+        DEPENDS "${viewmodel_hlsl_path}"
+        COMMENT "Checking the viewmodel's shader with fxc"
+        VERBATIM)
+    add_custom_target(dingosdk_viewmodel_check DEPENDS "${viewmodel_checked}")
+    add_dependencies(dingosdk_overlay dingosdk_viewmodel_check)
 endif()
 
 # The window shown from the moment ReSkate loads until the game's own window appears.

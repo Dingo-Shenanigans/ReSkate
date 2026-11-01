@@ -1230,14 +1230,17 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
         std::any_of(peers.begin(), peers.end(), [](const auto &peer) { return peer.handshaken && !peer.world_ready; })) &&
         (!s.last_world_state || now - s.last_world_state >= 1000000) && (s.travelling || s.world > 1))
         send_world_state(s, now);
-    if (s.mode == Mode::join && s.world > 1 && (s.travelling || !s.last_world_ready) &&
-        (!s.last_world_ready || now - s.last_world_ready >= 1000000)) {
+    // (And through a reload of its own, begin_local_reload, whatever the world: the host or server hears
+    // it is loading, not silent, and when it is back.)
+    if (s.mode == Mode::join && (s.world > 1 || s.local_reload || s.reload_ready_due) && (s.travelling || !s.last_world_ready || s.reload_ready_due) &&
+        (!s.last_world_ready || now - s.last_world_ready >= 1000000 || s.reload_ready_due)) {
         if (const auto *host_peer = find_peer(s, s.host_id); host_peer && host_peer->handshaken) {
             auto ready = packet(s, PacketKind::world_ready, now);
             ready.world_ready = local.ready && !s.awaiting_map;
             ready.map_fetching = !ready.world_ready && s.fetching_since != 0;
             send_required(s, s.host_id, encode_wire(ready));
             s.last_world_ready = now;
+            s.reload_ready_due = false;
         }
     }
     if (s.public_host)

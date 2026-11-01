@@ -279,6 +279,21 @@ int main() {
     std::filesystem::remove(mods / L"Deep_Mod" / L"reskate-plugin.json");
     std::filesystem::remove(mods / L"Deep_Mod" / L"reskate-music.json");
     std::filesystem::remove(mods / L"Deep_Mod" / L"reskate-objects.json");
+    // A plugin-only mod has something to load (the Mods page does not warn about it); an empty one has not.
+    write(mods / L"Plugin_Only" / L"reskate-plugin.json", R"({"entry":"plugin/main.lua","permissions":[]})");
+    write(mods / L"Nothing_Here" / L"manifest.json", R"({"name":"Nothing_Here"})");
+    bool plugin_has_content = false, empty_has_content = true, only_plugin = false, deep_only_plugin = true;
+    for (const auto& entry : mods::scan_mods(game).entries) {
+        if (entry.mod.name == "Plugin_Only") plugin_has_content = mods::has_content(entry.mod), only_plugin = mods::plugin_only(entry.mod);
+        if (entry.mod.name == "Nothing_Here") empty_has_content = mods::has_content(entry.mod);
+        if (entry.mod.name == "Deep_Mod") deep_only_plugin = mods::plugin_only(entry.mod);
+    }
+    check(plugin_has_content && !empty_has_content, "A plugin-only mod has content, an empty folder has none");
+    // A mod that is only a plugin is switched on and off live, without applying the mods; one with
+    // anything a merge puts in the game (Deep_Mod's game data and parks) is not.
+    check(only_plugin && !deep_only_plugin, "Only a mod with a plugin and nothing to merge is plugin-only");
+    std::filesystem::remove_all(mods / L"Plugin_Only");
+    std::filesystem::remove_all(mods / L"Nothing_Here");
     make_zip(sources / L"parkmod.zip", {{"My Park/manifest.json", R"({"name":"My Park"})"},
                                         {"My Park/parks/bam.park.json", "{}"}});
     check(install(mods, sources / L"parkmod.zip") == "My Park", "A park mod (manifest.json only) installs");
@@ -523,6 +538,46 @@ int main() {
               "Only a retired mod is left out");
     }
 
+    // A mod pack's dependencies: only what its install brought in (brought-in.json), and nothing another mod needs.
+    {
+        const auto packs = root / L"pack-mods";
+        const auto manifest = [&](const char* folder, const char* dependencies) {
+            write(packs / folder / "manifest.json",
+                  std::string(R"({"name":"x","version_number":"1.0.0","dependencies":)") + dependencies + "}");
+        };
+        manifest("Me-Pack", R"(["Team-A-1.0.0","Team-B-2.0.0","Team-Had-1.0.0"])");
+        manifest("Team-A", R"(["Team-C-1.0.0"])");
+        manifest("Team-B", "[]");
+        manifest("Team-C", "[]");
+        manifest("Team-Had", "[]");
+        manifest("Me-Other", R"(["team-b-2.0.0"])");
+        manifest("Team-D", "[]");
+        const std::vector<std::string> all{"Team-D", "Team-Had", "Team-C", "Me-Other", "Team-B", "Team-A", "Me-Pack"};
+        check(launcher_mods::orphaned_dependencies(packs, {"Me-Pack"}, all).empty(), "A pack with no record offered mods");
+        // Team-Had was installed before the pack: its install brought in A, B and C only.
+        launcher_mods::record_brought_in(packs, "Me-Pack", {"Team-A", "Team-C"});
+        launcher_mods::record_brought_in(packs, "me-pack", {"Team-B", "Team-A"});
+        check(launcher_mods::brought_in(packs, "Me-Pack") == std::vector<std::string>{"Team-A", "Team-C", "Team-B"},
+              "What a pack brought in was not kept, or kept twice");
+        check(launcher_mods::orphaned_dependencies(packs, {"Me-Pack"}, all) == std::vector<std::string>{"Team-C", "Team-A"},
+              "A pack's brought-in mods were not offered, or one another mod needs (or the player had) was");
+        check(launcher_mods::orphaned_dependencies(packs, {"Me-Pack", "Me-Other"}, all) ==
+                  std::vector<std::string>{"Team-C", "Team-B", "Team-A"},
+              "A brought-in mod only removed mods need was not offered");
+        check(launcher_mods::orphaned_dependencies(packs, {"Team-D"}, all).empty(), "A mod that brought nothing in offered some");
+        check(launcher_mods::orphaned_dependencies(packs, {"Me-Pack", "Team-A"}, all) == std::vector<std::string>{"Team-C"},
+              "A brought-in mod removed already was offered again");
+        launcher_mods::forget_brought_in(packs, {"me-pack"});
+        check(launcher_mods::brought_in(packs, "Me-Pack").empty(), "An uninstalled pack's record was kept");
+        // A dependency with a name longer than a folder's is installed cut, as thunderstore::folder_for has it.
+        const std::string long_name = "Team-" + std::string(70, 'x');
+        manifest("Me-Long", (R"([")" + long_name + R"(-1.0.0"])").c_str());
+        launcher_mods::record_brought_in(packs, "Me-Long", {long_name.substr(0, 64)});
+        check(launcher_mods::orphaned_dependencies(packs, {"Me-Long"}, {"Me-Long", long_name.substr(0, 64)}) ==
+                  std::vector<std::string>{long_name.substr(0, 64)},
+              "A dependency with a long name was not matched to its cut folder");
+    }
+
     {
         // What the mods give the game's data, for emptying the game's shader cache when it changes: the mods
         // with a layout, in load order, with their files, and the variants in play.
@@ -546,6 +601,49 @@ int main() {
         check(launcher_mods::game_shader_cache().filename() == L"cache" &&
                   launcher_mods::game_shader_cache().parent_path().filename() == L"Skate",
               "The game's shader cache is ReSkate's own, under Game/Skate");
+    }
+
+    // Changes the game cannot make while it holds a mod's files: they wait for the next start.
+    {
+        const auto waiting_mods = root / L"waiting" / L"Mods";
+        make_zip(sources / L"held-v1.zip", {{"Held Mod/layout.toc", "v1"}});
+        make_zip(sources / L"held-v2.zip", {{"Held Mod/layout.toc", "v2"}});
+        check(install(waiting_mods, sources / L"held-v1.zip") == "Held Mod", "pending: the first copy installs");
+        auto held = CreateFileW((waiting_mods / L"Held Mod" / L"layout.toc").c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+                                OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        check(!error_of([&] { install(waiting_mods, sources / L"held-v2.zip", true); }).empty(), "pending: a copy in use cannot be replaced now");
+        std::atomic<bool> cancel{};
+        check(launcher_mods::install_later(waiting_mods, sources / L"held-v2.zip", {}, cancel) == "Held Mod", "pending: the update is kept for later");
+        auto waiting = launcher_mods::pending(waiting_mods);
+        check(waiting.updates == std::vector<std::string>{"Held Mod"} && waiting.removals.empty(), "pending: the update is what waits");
+        check(read(waiting_mods / L"Held Mod" / L"layout.toc") == "v1", "pending: the copy in use is untouched");
+        check(dingosdk::mods::scan_mods(waiting_mods.parent_path()).entries.size() == 1, "pending: the waiting copy is not a mod of its own");
+        const auto still_held = launcher_mods::apply_pending(waiting_mods);
+        check(still_held.size() == 1 && still_held.front().find("waits") != std::string::npos &&
+                  read(waiting_mods / L"Held Mod" / L"layout.toc") == "v1" && launcher_mods::pending(waiting_mods).updates.size() == 1,
+              "pending: while the game still holds it, the update keeps waiting and the old copy stays");
+        CloseHandle(held);
+        const auto applied = launcher_mods::apply_pending(waiting_mods);
+        check(applied.size() == 1 && read(waiting_mods / L"Held Mod" / L"layout.toc") == "v2", "pending: at the next start the update goes in");
+        check(!fs::exists(waiting_mods / launcher_mods::pending_folder), "pending: nothing is left behind once it is all done");
+        check(launcher_mods::apply_pending(waiting_mods).empty(), "pending: nothing waiting is nothing to do");
+
+        launcher_mods::remove_later(waiting_mods, "Held Mod");
+        launcher_mods::remove_later(waiting_mods, "Held Mod");
+        waiting = launcher_mods::pending(waiting_mods);
+        check(waiting.removals == std::vector<std::string>{"Held Mod"} && waiting.updates.empty(), "pending: an uninstall waits, once");
+        check(launcher_mods::install_later(waiting_mods, sources / L"held-v1.zip", {}, cancel) == "Held Mod" &&
+                  launcher_mods::pending(waiting_mods).removals.empty(),
+              "pending: installing it again takes back the uninstall");
+        launcher_mods::remove_later(waiting_mods, "Held Mod");
+        waiting = launcher_mods::pending(waiting_mods);
+        check(waiting.updates.empty() && waiting.removals.size() == 1, "pending: uninstalling it takes back the update");
+        check(!error_of([&] { launcher_mods::remove_later(waiting_mods, "..\\elsewhere"); }).empty(), "pending: only mod folder names are uninstalled");
+        // (A mod to uninstall that is gone already is simply dropped; the Recycle Bin is not tried here.)
+        launcher_mods::remove_later(waiting_mods, "Never Installed");
+        fs::remove_all(waiting_mods / L"Held Mod");
+        launcher_mods::apply_pending(waiting_mods);
+        check(!fs::exists(waiting_mods / launcher_mods::pending_folder), "pending: uninstalls of mods already gone are dropped");
     }
 
     std::error_code ignored;

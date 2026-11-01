@@ -1,5 +1,6 @@
 #include "plugin_api.h"
 #include "plugin_game.h"
+#include "Extension/Localization/text_overrides.h"
 #include "lua.h"
 #include "lualib.h"
 #include <algorithm>
@@ -9,8 +10,9 @@
 
 // General services a game layer in Lua reads and drives each tick: the skater's telemetry, stance
 // and Bone Cam, the pad and keys, the free and pad-flown cameras, spectating, the session's world,
-// the competition's stock physics, and skate.'s trick list and flick diagrams. None of them knows a
-// throwdown mode; each checks its permission and the game (plugin_game.h) does the rest.
+// the competition's stock physics, skate.'s trick list and flick diagrams, and the text the game
+// shows for its ids. None of them knows a throwdown mode; each checks its permission and the game
+// (plugin_game.h) does the rest.
 namespace dingosdk::plugins {
 struct ServicesApi {
     static Game& game(Plugin& plugin) { return plugin.services_.game(); }
@@ -146,11 +148,7 @@ int key_code(lua_State* L, int index) {
         return vk;
     }
     const std::string name = luaL_checkstring(L, index);
-    static const std::pair<const char*, int> names[] = {
-        {"Enter", 13}, {"Backspace", 8}, {"Escape", 27}, {"End", 35}, {"Home", 36}, {"PageUp", 33}, {"PageDown", 34}, {"Space", 32},
-        {"Shift", 16}, {"Ctrl", 17}, {"Alt", 18}, {"Tab", 9}, {"Left", 37}, {"Up", 38}, {"Right", 39}, {"Down", 40},
-        {"[", 0xDB}, {"]", 0xDD}, {"Delete", 46}, {"LeftMouse", 1}, {"RightMouse", 2}, {"MiddleMouse", 4}};
-    for (const auto& [n, vk] : names)
+    for (const auto& [n, vk] : key_names)
         if (name == n) return vk;
     if (name.size() == 1 && ((name[0] >= 'A' && name[0] <= 'Z') || (name[0] >= '0' && name[0] <= '9'))) return name[0];
     luaL_argerror(L, index, "a key name (A-Z, 0-9, Enter, Backspace, Escape, End, PageUp, PageDown, [, ], ...) or a virtual key");
@@ -467,6 +465,133 @@ int read_content(lua_State* L) {
     return 1;
 }
 
+// ---- strings: the text the game shows for its ids -------------------------------------------------
+// Why a key is not one strings.set takes, or null: an id ("ID_MENU_PLAY"), 1 to 255 printable ASCII
+// characters not starting with #, or "#" and 1 to 8 hex digits for a string known only by its hash.
+const char* key_problem(std::string_view key) {
+    if (key.starts_with('#')) {
+        const auto digits = key.substr(1);
+        const bool hex = !digits.empty() && digits.size() <= 8 && std::all_of(digits.begin(), digits.end(), [](char c) {
+            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+        });
+        return hex ? nullptr : "a #hash is # and 1 to 8 hex digits";
+    }
+    if (key.empty() || key.size() > 255) return "an id is 1 to 255 characters";
+    for (const unsigned char c : key)
+        if (c <= 0x20 || c > 0x7e) return "an id is printable ASCII, without spaces";
+    return nullptr;
+}
+// Why a text is not one the game's store takes, or null: UTF-8 (no overlong form, surrogate or NUL)
+// of at most 511 UTF-16 units, as the store's conversion holds (text_overrides.h).
+const char* text_problem(std::string_view text) {
+    std::size_t units = 0;
+    for (std::size_t at = 0; at < text.size();) {
+        const auto byte = [&](std::size_t i) { return static_cast<unsigned char>(text[i]); };
+        const unsigned lead = byte(at);
+        std::size_t size = 1;
+        char32_t c = lead;
+        if (lead >= 0xc2 && lead <= 0xdf) { size = 2; c = lead & 0x1f; }
+        else if (lead >= 0xe0 && lead <= 0xef) { size = 3; c = lead & 0x0f; }
+        else if (lead >= 0xf0 && lead <= 0xf4) { size = 4; c = lead & 0x07; }
+        else if (lead >= 0x80) return "a text must be UTF-8";
+        if (!lead) return "a text cannot hold a NUL character";
+        if (at + size > text.size()) return "a text must be UTF-8";
+        for (std::size_t i = 1; i < size; ++i) {
+            if ((byte(at + i) & 0xc0) != 0x80) return "a text must be UTF-8";
+            c = c << 6 | (byte(at + i) & 0x3f);
+        }
+        if ((size == 3 && (c < 0x800 || (c >= 0xd800 && c <= 0xdfff))) || (size == 4 && (c < 0x10000 || c > 0x10ffff)))
+            return "a text must be UTF-8";
+        units += size == 4 ? 2 : 1;
+        at += size;
+    }
+    return units > text_overrides::most_units ? "a text is at most 511 characters (UTF-16 units)" : nullptr;
+}
+std::string string_key(lua_State* L, int index, const char* what) {
+    std::size_t length = 0;
+    const char* key = luaL_checklstring(L, index, &length);
+    if (const auto why = key_problem(std::string_view(key, length))) luaL_error(L, "%s: %s", what, why);
+    return std::string(key, length);
+}
+// strings.set(key, text): the game shows `text` wherever it shows the id's text, from the next ticks
+// on. True, or false and why not.
+int strings_set(lua_State* L) {
+    auto& plugin = allowed(L, "strings", "reskate.strings.set");
+    auto key = string_key(L, 1, "reskate.strings.set");
+    std::size_t length = 0;
+    const char* text = luaL_checklstring(L, 2, &length);
+    if (const auto why = text_problem(std::string_view(text, length))) luaL_error(L, "reskate.strings.set: %s", why);
+    return result(L, game_of(plugin).strings_set(plugin.id(), {{std::move(key), std::string(text, length)}}));
+}
+// strings.set_many({[key] = text, ...}): set for each pair, keys starting with _ left out (notes in a
+// data file). How many it took, or nil and why not; nothing is taken when one pair is refused.
+int strings_set_many(lua_State* L) {
+    auto& plugin = allowed(L, "strings", "reskate.strings.set_many");
+    luaL_checktype(L, 1, LUA_TTABLE);
+    std::vector<std::pair<std::string, std::string>> texts;
+    lua_pushnil(L);
+    while (lua_next(L, 1)) {
+        if (lua_type(L, -2) != LUA_TSTRING) luaL_error(L, "reskate.strings.set_many takes a table of ids and texts");
+        std::size_t key_length = 0, text_length = 0;
+        const char* key = lua_tolstring(L, -2, &key_length);
+        const std::string_view name(key, key_length);
+        if (name.starts_with('_')) {
+            lua_pop(L, 1);
+            continue;
+        }
+        const std::string shown(name.substr(0, 64));
+        if (const auto why = key_problem(name)) luaL_error(L, "reskate.strings.set_many: \"%s\": %s", shown.c_str(), why);
+        if (lua_type(L, -1) != LUA_TSTRING) luaL_error(L, "reskate.strings.set_many: \"%s\": a text is a string", shown.c_str());
+        const char* text = lua_tolstring(L, -1, &text_length);
+        if (const auto why = text_problem(std::string_view(text, text_length)))
+            luaL_error(L, "reskate.strings.set_many: \"%s\": %s", shown.c_str(), why);
+        if (texts.size() >= text_overrides::most_texts) luaL_error(L, "reskate.strings.set_many: at most 65536 strings");
+        texts.emplace_back(std::string(name), std::string(text, text_length));
+        lua_pop(L, 1);
+    }
+    if (const auto why = game_of(plugin).strings_set(plugin.id(), texts); !why.empty()) {
+        lua_pushnil(L);
+        lua_pushlstring(L, why.data(), why.size());
+        return 2;
+    }
+    lua_pushnumber(L, static_cast<double>(texts.size()));
+    return 1;
+}
+// strings.exists(key): whether the game has text for the id, its own or a plugin's stored already;
+// nil while it cannot say (before the game's text is up, or on a server).
+int strings_exists(lua_State* L) {
+    auto& plugin = allowed(L, "strings", "reskate.strings.exists");
+    const auto key = string_key(L, 1, "reskate.strings.exists");
+    const auto has = game_of(plugin).string_exists(key);
+    if (has) lua_pushboolean(L, *has);
+    else lua_pushnil(L);
+    return 1;
+}
+// strings.set_case_rules(rules): "tr" makes the text the game capitalizes itself (an upper-case
+// heading) follow Turkish rules, i to U+0130 and I to U+0131, while the plugin is loaded; "" or nil gives the
+// game's rules back. True, or false and why not.
+int strings_set_case_rules(lua_State* L) {
+    auto& plugin = allowed(L, "strings", "reskate.strings.set_case_rules");
+    std::size_t length = 0;
+    const char* rules = luaL_optlstring(L, 1, "", &length);
+    const std::string_view name(rules, length);
+    if (name != "tr" && !name.empty()) luaL_error(L, "reskate.strings.set_case_rules: the rules are \"tr\" or \"\"");
+    return result(L, game_of(plugin).strings_case_rules(plugin.id(), name));
+}
+// strings.hash(id): the id's "#xxxxxxxx" key, as a dump of the game's text names the strings whose
+// id it does not know. Needs no permission: it only computes.
+int strings_hash(lua_State* L) {
+    std::size_t length = 0;
+    const char* id = luaL_checklstring(L, 1, &length);
+    if (!length || length > 255) luaL_argerror(L, 1, "an id, 1 to 255 characters");
+    const auto hash = text_overrides::string_hash(std::string_view(id, length));
+    char key[10]{'#'};
+    constexpr char digits[] = "0123456789abcdef";
+    for (int i = 0; i < 8; ++i) key[1 + i] = digits[(hash >> (28 - 4 * i)) & 0xf];
+    lua_pushlstring(L, key, 9);
+    return 1;
+}
+
 } // namespace
 
 void install_services_api(Plugin&, lua_State* L) {
@@ -478,5 +603,7 @@ void install_services_api(Plugin&, lua_State* L) {
                                  {"find", find_tuning}, {"tune", tune}});
     add_functions(L, "tricks", {{"feed", trick_feed}, {"gesture", gesture}, {"label", label}, {"record_as", record_as}});
     add_functions(L, "mods", {{"content", content}, {"read_content", read_content}});
+    add_functions(L, "strings", {{"set", strings_set}, {"set_many", strings_set_many}, {"exists", strings_exists}, {"hash", strings_hash},
+                                {"set_case_rules", strings_set_case_rules}});
 }
 } // namespace dingosdk::plugins

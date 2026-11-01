@@ -119,6 +119,7 @@ using vfs::for_each_install_chunk_file;
 
 struct Source {
     fs::path root;
+    const Mod* mod{};
     const ArchivePlacement* placement{};
     fb::TocDocument toc;
 };

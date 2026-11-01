@@ -55,6 +55,17 @@ void hold_stick(int stick, float value, unsigned milliseconds) noexcept {
     s.held_until = value == 0 ? std::chrono::steady_clock::time_point{}
                               : std::chrono::steady_clock::now() + std::chrono::milliseconds(milliseconds);
 }
+bool held_stick(int& stick, SHORT& value) noexcept {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    const auto now = std::chrono::steady_clock::now();
+    // Native-only readers may never poll XInput to retire a completed script.
+    if (s.active && s.current + 1 == s.steps.size() && now - s.done_at > linger) s.active = false;
+    if (s.active || now >= s.held_until) return false;
+    stick = s.stick;
+    value = s.value;
+    return true;
+}
 bool scripted_pad(DWORD user, XINPUT_STATE &output) noexcept {
     auto &s = state();
     if (user != 0) return false;

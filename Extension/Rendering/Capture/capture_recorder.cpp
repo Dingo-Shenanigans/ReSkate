@@ -1,5 +1,6 @@
 #include "capture_recorder.h"
 #include "capture_matte.h"
+#include "capture_parallel.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -10,107 +11,213 @@
 
 namespace dingosdk::capture {
 namespace {
-// `area` of a frame, copied out in the frame's own channel order.
-std::vector<std::uint8_t> copy_area(const PixelView& frame, Rect area) {
-    std::vector<std::uint8_t> out(std::size_t{area.width} * area.height * 4);
-    for (std::uint32_t y = 0; y < area.height; ++y)
-        std::copy_n(frame.data + std::size_t{area.y + y} * frame.pitch + std::size_t{area.x} * 4, std::size_t{area.width} * 4,
-                    out.data() + std::size_t{y} * area.width * 4);
-    return out;
-}
-
-Image opaque_image(const PixelView& view) {
+Image opaque_image(const PixelView &view) {
     Image out(view.width, view.height);
-    for (std::uint32_t y = 0; y < view.height; ++y)
-        for (std::uint32_t x = 0; x < view.width; ++x) {
-            const auto rgb = view.rgb(x, y);
-            auto* p = out.at(x, y);
-            p[0] = rgb[0], p[1] = rgb[1], p[2] = rgb[2], p[3] = 255;
-        }
+    parallel_rows(view.height, view.width, [&](std::uint32_t first, std::uint32_t last) {
+        for (std::uint32_t y = first; y < last; ++y)
+            for (std::uint32_t x = 0; x < view.width; ++x) {
+                const auto rgb = view.rgb(x, y);
+                auto *p = out.at(x, y);
+                p[0] = rgb[0], p[1] = rgb[1], p[2] = rgb[2], p[3] = 255;
+            }
+    });
     return out;
 }
 } // namespace
 
-// What turns, by the game's depth: nearer than the backdrop behind it. The backdrop's distance for
-// each row is that of the area's outer columns (the backdrop, or the floor where the row meets it:
-// the camera is level, so the floor is about as far all along a row), and what is 8% nearer
-// than that is the board or skater. The game's UI is never in the depth, and neither are a colour's
-// likeness to the backdrop or the floor's reflection. Into `picture`'s alpha; false when the depth
-// shows nothing there.
-bool depth_mask(const PixelView& frame, Rect area, Image& picture) {
-    if (!frame.depth || picture.width != area.width || picture.height != area.height) return false;
+// What turns, by the game's depth: nearer than the backdrop behind it. The
+// game's UI is never in the depth, and neither are a colour's likeness to the
+// backdrop or the floor's reflection.
+//
+// The backdrop's distance is fitted along each row: everything clearly nearer
+// than the row's outer columns (8%) is set aside with a wide border round it,
+// and a curve (quadratic across the row) is fitted to the distance of the rest,
+// the backdrop or the floor, curved as a studio backdrop is. Against that fit,
+// anything 1.5% nearer is in front. A shoe on the floor is only centimetres
+// nearer than the floor behind it: the rough per-row guess with an 8% margin
+// cut shoes away where they met the floor (2026-10-24). Into `picture`'s alpha;
+// false when the depth shows nothing there.
+bool depth_mask(const PixelView &frame, Rect area, Image &picture) {
+    if (!frame.depth || picture.width != area.width || picture.height != area.height)
+        return false;
     const auto w = area.width, h = area.height;
     const auto margin = std::max<std::uint32_t>(2, w * 6 / 100);
-    std::vector<float> edge;
-    float behind = 0;
-    std::size_t found = 0;
-    for (std::uint32_t y = 0; y < h; ++y) {
-        edge.clear();
-        for (std::uint32_t x = 0; x < w; x = x + 1 == margin ? w - margin : x + 1) {
-            const float d = frame.depth_at(area.x + x, area.y + y);
-            if (d > 1e-7f) edge.push_back(1.0f / d);
-        }
-        if (!edge.empty()) {
-            std::nth_element(edge.begin(), edge.begin() + static_cast<std::ptrdiff_t>(edge.size() / 2), edge.end());
-            behind = edge[edge.size() / 2];
-        }
-        for (std::uint32_t x = 0; x < w; ++x) {
-            const float d = frame.depth_at(area.x + x, area.y + y);
-            const bool in_front = d > 1e-7f && (behind <= 0 || 1.0f / d < behind * 0.92f);
-            picture.at(x, y)[3] = in_front ? 255 : 0;
-            found += in_front;
-        }
+    const auto border = std::max<std::uint32_t>(2, w * 6 / 100);
+    std::vector<float> distances(std::size_t{w} * h), background(h);
+    // The row fit uses the same column coordinates in every row and pass.
+    // Compute them once instead of dividing per pixel on the render thread.
+    std::vector<std::array<double, 4>> powers(w);
+    for (std::uint32_t x = 0; x < w; ++x) {
+        const double t = (2.0 * x + 1) / w - 1, t2 = t * t;
+        powers[x] = {t, t2, t2 * t, t2 * t2};
     }
-    // The soles: where the feet meet the floor the depth cannot tell them from it. Carried down from
-    // the lowest part of the skater in each column while the colour is unlike the floor's along that
-    // row (the area's outer columns again), a little way at most.
-    std::vector<std::array<int, 3>> floor_colour(h);
-    std::vector<int> channel;
-    for (std::uint32_t y = 0; y < h; ++y)
-        for (int c = 0; c < 3; ++c) {
-            channel.clear();
-            for (std::uint32_t x = 0; x < w; x = x + 1 == margin ? w - margin : x + 1) channel.push_back(picture.at(x, y)[c]);
-            std::nth_element(channel.begin(), channel.begin() + static_cast<std::ptrdiff_t>(channel.size() / 2), channel.end());
-            floor_colour[y][static_cast<std::size_t>(c)] = channel[channel.size() / 2];
+    std::vector<std::uint8_t> near_floor(std::size_t{w} * h);
+    std::vector<std::size_t> row_found(h);
+    parallel_rows(h, w, [&](std::uint32_t first, std::uint32_t last) {
+        std::vector<float> edge;
+        edge.reserve(std::size_t{margin} * 2);
+        for (std::uint32_t y = first; y < last; ++y) {
+            auto *distance = distances.data() + std::size_t{y} * w;
+            edge.clear();
+            for (std::uint32_t x = 0; x < w; ++x) {
+                const float d = frame.depth_at(area.x + x, area.y + y);
+                distance[x] = d > 1e-7f ? 1.0f / d : 0.0f;
+                if ((x < margin || x >= w - margin) && distance[x] > 0)
+                    edge.push_back(distance[x]);
+            }
+            if (!edge.empty()) {
+                std::nth_element(edge.begin(), edge.begin() + static_cast<std::ptrdiff_t>(edge.size() / 2), edge.end());
+                background[y] = edge[edge.size() / 2];
+            }
         }
+    });
+    // Empty outer rows inherit the preceding valid backdrop, exactly as the
+    // serial fit does. Resolve that dependency before processing independent
+    // rows.
+    float previous = 0;
+    for (auto &value : background) {
+        if (value > 0)
+            previous = value;
+        else
+            value = previous;
+    }
+    parallel_rows(h, w, [&](std::uint32_t first, std::uint32_t last) {
+        std::vector<std::uint8_t> aside(w);
+        std::vector<int> intervals(std::size_t{w} + 1);
+        for (std::uint32_t y = first; y < last; ++y) {
+            const auto *distance = distances.data() + std::size_t{y} * w;
+            const float behind = background[y];
+            std::array<double, 3> fit{};
+            bool have_fit = false;
+            std::size_t found = 0;
+            // Expand foreground intervals in linear time rather than filling a
+            // wide border separately for every foreground pixel on the render thread.
+            std::fill(intervals.begin(), intervals.end(), 0);
+            for (std::uint32_t x = 0; x < w; ++x)
+                if (distance[x] > 0 && behind > 0 && distance[x] < behind * 0.92f) {
+                    ++intervals[x > border ? x - border : 0u];
+                    --intervals[std::min(w, x + border + 1)];
+                }
+            int covered = 0;
+            for (std::uint32_t x = 0; x < w; ++x) {
+                covered += intervals[x];
+                aside[x] = covered != 0;
+            }
+            // Anchor the initial curve to the outer backdrop, so wide shallow shoes
+            // cannot pull it towards themselves. Refine over the row only with
+            // samples agreeing with that anchor. Far props/holes never enter sums.
+            const auto solve = [&](bool edges_only, const std::array<double, 3> &reference) {
+                double s0 = 0, s1 = 0, s2 = 0, s3 = 0, s4 = 0, r0 = 0, r1 = 0, r2 = 0;
+                for (std::uint32_t x = 0; x < w; ++x) {
+                    if (edges_only && x == margin && x < w - margin)
+                        x = w - margin;
+                    const double value = distance[x], t = powers[x][0], t2 = powers[x][1];
+                    if (aside[x] || value <= 0 || behind <= 0 || value < behind * .92 || value > behind * 1.5)
+                        continue;
+                    if (edges_only && x >= margin && x < w - margin)
+                        continue;
+                    const double predicted = reference[0] + reference[1] * t + reference[2] * t2;
+                    if (!edges_only && (predicted <= 0 || std::abs(value - predicted) > predicted * .015))
+                        continue;
+                    s0 += 1;
+                    s1 += t;
+                    s2 += t2;
+                    s3 += powers[x][2];
+                    s4 += powers[x][3];
+                    r0 += value;
+                    r1 += value * t;
+                    r2 += value * t2;
+                }
+                const double det = s0 * (s2 * s4 - s3 * s3) - s1 * (s1 * s4 - s3 * s2) + s2 * (s1 * s3 - s2 * s2);
+                if (s0 < 6 || std::abs(det) <= 1e-9)
+                    return false;
+                const std::array<double, 3> result{(r0 * (s2 * s4 - s3 * s3) - s1 * (r1 * s4 - s3 * r2) + s2 * (r1 * s3 - s2 * r2)) / det,
+                                                   (s0 * (r1 * s4 - r2 * s3) - r0 * (s1 * s4 - s3 * s2) + s2 * (s1 * r2 - r1 * s2)) / det,
+                                                   (s0 * (s2 * r2 - s3 * r1) - s1 * (s1 * r2 - r1 * s2) + r0 * (s1 * s3 - s2 * s2)) / det};
+                if (!std::all_of(result.begin(), result.end(), [](double v) { return std::isfinite(v); }))
+                    return false;
+                fit = result;
+                have_fit = true;
+                return true;
+            };
+            if (behind > 0) {
+                fit = {behind, 0, 0};
+                have_fit = true;
+                if (solve(true, fit)) {
+                    const auto anchor = fit;
+                    (void)solve(false, anchor);
+                }
+            }
+            for (std::uint32_t x = 0; x < w; ++x) {
+                const double t = powers[x][0];
+                const double backdrop = fit[0] + fit[1] * t + fit[2] * t * t;
+                const bool in_front = distance[x] > 0 && (!have_fit || backdrop <= 0 || distance[x] < backdrop * 0.985);
+                // Weak depth evidence is only used by the bounded sole extension
+                // below, never to seed a new foreground region on the floor.
+                near_floor[std::size_t{y} * w + x] = distance[x] > 0 && have_fit && backdrop > 0 && distance[x] < backdrop * 0.997;
+                picture.at(x, y)[3] = in_front ? 255 : 0;
+                found += in_front;
+            }
+            row_found[y] = found;
+        }
+    });
+    std::size_t found = 0;
+    for (const auto count : row_found)
+        found += count;
+    // Near-contact soles can be only 0.5% in front of the floor. Recover
+    // them only near the silhouette's bottom, with weak depth evidence.
+    // A per-column colour extension also grew background below wide cuffs:
+    // a shadow or different backdrop colour is not evidence of a sole.
     const auto reach = std::max<std::uint32_t>(2, h / 25);
+    std::uint32_t bottom = 0;
+    std::vector<std::uint32_t> lowest_at(w,h);
+    // Find column bottoms in the existing contiguous row pass instead of
+    // scanning every empty column backwards with an image-width stride.
+    for (std::uint32_t y = 0; y < h; ++y)
+        for (std::uint32_t x = margin; x + margin < w; ++x)
+            if (picture.at(x, y)[3]) {
+                bottom = y;
+                lowest_at[x] = y;
+            }
+    const auto contact_top = bottom > reach ? bottom - reach : 0u;
     for (std::uint32_t x = margin; x + margin < w; ++x) {
-        std::uint32_t lowest = h;
-        for (std::uint32_t y = h; y-- > 0;)
-            if (picture.at(x, y)[3]) { lowest = y; break; }
-        if (lowest >= h) continue;
+        const auto lowest=lowest_at[x];
+        if (lowest >= h || lowest < contact_top)
+            continue;
         for (std::uint32_t y = lowest + 1; y < h && y <= lowest + reach; ++y) {
-            auto* p = picture.at(x, y);
-            int off = 0;
-            for (int c = 0; c < 3; ++c) off = std::max(off, std::abs(p[c] - floor_colour[y][static_cast<std::size_t>(c)]));
-            if (off <= 24) break;
-            p[3] = 255;
+            if (!near_floor[std::size_t{y} * w + x])
+                break;
+            picture.at(x, y)[3] = 255;
         }
     }
     return found > 64;
 }
 
-// Keeps only what turned, and says where it is. What moves over the turn (opaque and unlike the
-// first frame) is the subject; what is solid in any frame, changes at all, and is joined to that is
-// the rest of it (the nose and tail sit on the axis the board turns about and change little);
-// everything else in the area is the game's UI, and is cleared from every frame. A rim two pixels wide is kept round it
-// for the soft edges.
-// The pixels the game drew the same in every frame, as captured (before the backdrop is keyed out,
-// which can shade a still pixel differently from frame to frame): the game's UI (a prompt, its
-// leader line) stays exactly as it is, while every part of what turns, its nose and tail too,
-// takes the light differently as it goes round.
-std::vector<std::uint8_t> unchanging(const std::vector<Image>& frames) {
-    const auto& first = frames.front();
-    std::vector<std::uint8_t> low(first.rgba), high(first.rgba), out(first.rgba.size() / 4);
-    for (const auto& frame : frames)
-        for (std::size_t i = 0; i < frame.rgba.size(); ++i)
-            low[i] = std::min(low[i], frame.rgba[i]), high[i] = std::max(high[i], frame.rgba[i]);
-    for (std::size_t p = 0; p < out.size(); ++p) {
-        int spread = 0;
-        for (std::size_t c = 0; c < 3; ++c) spread = std::max(spread, high[p * 4 + c] - low[p * 4 + c]);
-        out[p] = spread <= 3;
-    }
-    return out;
+// Keeps only what turned, and says where it is. What moves over the turn
+// (opaque and unlike the first frame) is the subject; what is solid in any
+// frame, changes at all, and is joined to that is the rest of it (the nose and
+// tail sit on the axis the board turns about and change little); everything
+// else in the area is the game's UI, and is cleared from every frame. A rim two
+// pixels wide is kept round it for the soft edges. The pixels the game drew the
+// same in every frame, as captured (before the backdrop is keyed out, which can
+// shade a still pixel differently from frame to frame): the game's UI (a
+// prompt, its leader line) stays exactly as it is, while every part of what
+// turns, its nose and tail too, takes the light differently as it goes round.
+std::vector<std::uint8_t> unchanging(const std::vector<Image> &frames) {
+  const auto &first = frames.front();
+  std::vector<std::uint8_t> low(first.rgba), high(first.rgba),
+      out(first.rgba.size() / 4);
+  for (const auto &frame : frames)
+    for (std::size_t i = 0; i < frame.rgba.size(); ++i)
+      low[i] = std::min(low[i], frame.rgba[i]),
+      high[i] = std::max(high[i], frame.rgba[i]);
+  for (std::size_t p = 0; p < out.size(); ++p) {
+    int spread = 0;
+    for (std::size_t c = 0; c < 3; ++c)
+      spread = std::max(spread, high[p * 4 + c] - low[p * 4 + c]);
+    out[p] = spread <= 3;
+  }
+  return out;
 }
 
 Rect keep_moving(std::vector<Image>& frames, const std::vector<std::uint8_t>& fixed) {
@@ -244,7 +351,11 @@ bool Recorder::start(const RecordRequest& request, std::string& why) {
         why = "a capture is being saved";
         return false;
     }
+    std::deque<Pending> previous;
     std::lock_guard lock(mutex_);
+    previous.swap(pending_);
+    ++generation_;
+    pending_bytes_ = kept_bytes_ = 0;
     request_ = request;
     request_.most = std::clamp<std::uint32_t>(request.most, 1, 20000);
     area_ = {};
@@ -257,26 +368,41 @@ bool Recorder::start(const RecordRequest& request, std::string& why) {
 }
 
 void Recorder::stop() noexcept {
-    std::lock_guard lock(mutex_);
-    if (status_.state == State::recording) status_.state = State::stopped;
+    std::uint64_t generation;
+    {
+        std::lock_guard lock(mutex_);
+        generation = generation_;
+        if (status_.state == State::recording)
+            status_.state = State::stopped;
+    }
+    drain_all(generation);
 }
 
 void Recorder::discard() noexcept {
-    if (saving_.load()) return;
+    if (saving_.load())
+        return;
+    std::deque<Pending> previous;
     std::lock_guard lock(mutex_);
+    previous.swap(pending_);
+    ++generation_;
+    pending_bytes_ = kept_bytes_ = 0;
     pictures_.clear(), pictures_.shrink_to_fit();
     kept_at_.clear(), kept_depth_.clear(), thumbnails_.clear(), thumbnails_.shrink_to_fit();
     status_ = {};
 }
 
-Status Recorder::status() const {
+Status Recorder::status() {
     std::lock_guard lock(mutex_);
-    return status_;
+    drain_ready_locked();
+    auto result = status_;
+    result.pending = static_cast<std::uint32_t>(pending_.size());
+    return result;
 }
 
 float Recorder::compare(std::uint32_t a, std::uint32_t b) const {
     std::lock_guard lock(mutex_);
-    if (a >= thumbnails_.size() || b >= thumbnails_.size()) return -1;
+    if (a >= thumbnails_.size() || b >= thumbnails_.size() || thumbnails_[a].empty() || thumbnails_[b].empty())
+        return -1;
     return unlike(thumbnails_[a], thumbnails_[b]);
 }
 
@@ -297,7 +423,8 @@ void Recorder::fail(std::string message) {
 
 bool Recorder::wants_frame() noexcept {
     std::lock_guard lock(mutex_);
-    if (status_.state != State::recording) return false;
+    if (status_.state != State::recording)
+        return false;
     // However it goes, a recording lets go within its time.
     if (std::chrono::steady_clock::now() - started_ > std::chrono::duration<double>(request_.seconds)) {
         status_.state = State::stopped;
@@ -311,57 +438,100 @@ bool Recorder::wants_frame() noexcept {
     return true;
 }
 
+Rect Recorder::requested_area(std::uint32_t width, std::uint32_t height) const noexcept {
+    std::lock_guard lock(mutex_);
+    return area_on(request_.area, width, height);
+}
+
 void Recorder::take_frame(const PixelView& frame) noexcept {
     try {
         Rect area;
         RecordRequest request;
+        std::uint64_t generation;
         {
             std::lock_guard lock(mutex_);
-            if (status_.state != State::recording) return;
+            if (status_.state != State::recording)
+                return;
             if (!frame.data || !frame.width || !frame.height) {
                 fail("the game's picture could not be read");
                 return;
             }
+            const auto source_width = frame.source_width ? frame.source_width : frame.width;
+            const auto source_height = frame.source_height ? frame.source_height : frame.height;
+            area_ = area_on(request_.area, source_width, source_height);
             if (area_.empty()) {
-                area_ = area_on(request_.area, frame.width, frame.height);
-                if (area_.empty()) {
-                    fail("the area is not on the screen");
-                    return;
-                }
+                fail("the area is not on the screen");
+                return;
             }
+            // A restart may choose another area while a copy is already in
+            // flight. Ignore that stale rectangle; the next frame uses the new one.
+            if (area_.x < frame.origin_x || area_.y < frame.origin_y || area_.x - frame.origin_x > frame.width ||
+                area_.y - frame.origin_y > frame.height || area_.width > frame.width - (area_.x - frame.origin_x) ||
+                area_.height > frame.height - (area_.y - frame.origin_y))
+                return;
             area = area_;
+            area.x -= frame.origin_x;
+            area.y -= frame.origin_y;
             request = request_;
-        }
-        // The heavy part outside the lock: the area copied, cut out, and made the size it is kept at.
-        auto small = thumbnail(frame, area);
-        const auto copy = copy_area(frame, area);
-        auto picture = opaque_image({copy.data(), area.width, area.height, area.width * 4, frame.bgra});
-        const bool by_depth = request.depth && depth_mask(frame, area, picture);
-        if (!by_depth)
-            for (std::size_t i = 3; i < picture.rgba.size(); i += 4) picture.rgba[i] = 255;
-        if (request.height && request.height < picture.height)
-            picture = resized(picture, std::max<std::uint32_t>(1, picture.width * request.height / picture.height), request.height);
-        const auto most = std::clamp<std::size_t>(kept_bytes / std::max<std::size_t>(picture.rgba.size(), 1), 60, most_kept);
-        std::lock_guard lock(mutex_);
-        if (status_.state != State::recording) return;
-        const auto n = static_cast<std::uint32_t>(thumbnails_.size());
-        thumbnails_.push_back(std::move(small));
-        if (n % stride_ == 0) {
-            kept_at_.push_back(n);
-            kept_depth_.push_back(by_depth);
-            pictures_.push_back(std::move(picture));
-            if (pictures_.size() > most) { // keep every other one, and from now on every other
-                std::size_t w = 0;
-                for (std::size_t r = 0; r < pictures_.size(); r += 2)
-                    pictures_[w] = std::move(pictures_[r]), kept_depth_[w] = kept_depth_[r], kept_at_[w++] = kept_at_[r];
-                pictures_.resize(w), kept_at_.resize(w), kept_depth_.resize(w);
-                stride_ *= 2;
+            generation = generation_;
+            drain_ready_locked();
+            if (status_.state != State::recording)
+                return;
+            if (request.background && pending_.size() >= 3) {
+                ++status_.dropped;
+                return;
             }
         }
-        status_.taken = n + 1;
-        status_.kept = static_cast<std::uint32_t>(pictures_.size());
-        status_.depth = !kept_depth_.empty() && std::all_of(kept_depth_.begin(), kept_depth_.end(), [](bool d) { return d; });
-        if (status_.taken >= request_.most) status_.state = State::stopped;
+        if (request.background) {
+            // GPU mappings belong to the render thread. Copy both matching
+            // rectangles before returning; workers only see owned CPU memory.
+            const auto bytes = std::size_t{area.width} * area.height * 4;
+            const bool with_depth = request.depth && frame.depth;
+            const auto owned_bytes = bytes * (with_depth ? 2u : 1u);
+            constexpr std::size_t max_pending_bytes = std::size_t{64} << 20;
+            if (owned_bytes > max_pending_bytes)
+                throw std::runtime_error("capture area exceeds background-processing memory limit");
+            std::vector<std::uint8_t> colour(bytes), depth(with_depth ? bytes : 0);
+            for (std::uint32_t y = 0; y < area.height; ++y) {
+                std::copy_n(frame.data + std::size_t{area.y + y} * frame.pitch + std::size_t{area.x} * 4, std::size_t{area.width} * 4,
+                            colour.data() + std::size_t{y} * area.width * 4);
+                if (with_depth)
+                    std::copy_n(frame.depth + std::size_t{frame.origin_y + area.y + y} * frame.depth_pitch +
+                                    std::size_t{frame.origin_x + area.x} * 4,
+                                std::size_t{area.width} * 4, depth.data() + std::size_t{y} * area.width * 4);
+            }
+            std::lock_guard lock(mutex_);
+            if (generation != generation_ || status_.state != State::recording)
+                return;
+            if (pending_.size() >= 3 || pending_bytes_ + owned_bytes > max_pending_bytes) {
+                ++status_.dropped;
+                return;
+            }
+            const auto number = status_.taken;
+            auto future =
+                std::async(std::launch::async, [colour = std::move(colour), depth = std::move(depth), width = area.width,
+                                                height = area.height, bgra = frame.bgra, request]() {
+                    const PixelView owned{colour.data(), width, height, width * 4, bgra, depth.empty() ? nullptr : depth.data(), width * 4};
+                    return std::make_shared<Prepared>(prepare(owned, {0, 0, width, height}, request));
+                }).share();
+            pending_.push_back({generation, number, owned_bytes, std::move(future)});
+            pending_bytes_ += owned_bytes;
+            thumbnails_.emplace_back();
+            ++status_.taken;
+            if (status_.taken >= request_.most)
+                status_.state = State::stopped;
+            return;
+        }
+        auto prepared = prepare(frame, area, request);
+        std::lock_guard lock(mutex_);
+        if (generation != generation_ || status_.state != State::recording)
+            return;
+        const auto number = status_.taken;
+        thumbnails_.emplace_back();
+        ++status_.taken;
+        commit_locked(std::move(prepared), number);
+        if (status_.taken >= request_.most)
+            status_.state = State::stopped;
     } catch (const std::exception& error) {
         std::lock_guard lock(mutex_);
         fail(error.what());
@@ -371,17 +541,112 @@ void Recorder::take_frame(const PixelView& frame) noexcept {
     }
 }
 
+Recorder::Prepared Recorder::prepare(const PixelView& frame, Rect area, const RecordRequest& request) {
+    Prepared out;
+    out.thumbnail = thumbnail(frame, area);
+    const auto* pixels = frame.data + std::size_t{area.y} * frame.pitch + std::size_t{area.x} * 4;
+    out.picture = opaque_image({pixels, area.width, area.height, frame.pitch, frame.bgra});
+    out.depth = request.depth && depth_mask(frame, area, out.picture);
+    if (!out.depth)
+        for (std::size_t n = 3; n < out.picture.rgba.size(); n += 4)
+            out.picture.rgba[n] = 255;
+    if (request.height && request.height < out.picture.height)
+        out.picture =
+            resized(out.picture, std::max<std::uint32_t>(1, out.picture.width * request.height / out.picture.height), request.height);
+    out.width = out.picture.width;
+    out.height = out.picture.height;
+    out.bounds = {0, 0, out.width, out.height};
+    if (request.background && out.depth) {
+        const auto bounds = content_bounds(out.picture, 1);
+        if (!bounds.empty()) {
+            out.picture = cropped(out.picture, bounds);
+            out.bounds = bounds;
+        }
+    }
+    return out;
+}
+
+void Recorder::commit_locked(Prepared prepared, std::uint32_t number) {
+    thumbnails_[number] = std::move(prepared.thumbnail);
+    if (number % stride_ == 0) {
+        kept_bytes_ += prepared.picture.rgba.size();
+        pictures_.push_back({std::move(prepared.picture), prepared.bounds, prepared.width, prepared.height});
+        kept_at_.push_back(number);
+        kept_depth_.push_back(prepared.depth);
+        if (pictures_.size() > most_kept || (kept_bytes_ > kept_bytes && pictures_.size() > (request_.background ? 1u : 60u))) {
+            std::size_t at = 0;
+            for (std::size_t n = 0; n < pictures_.size(); n += 2) {
+                if (at != n)
+                    pictures_[at] = std::move(pictures_[n]);
+                kept_depth_[at] = kept_depth_[n];
+                kept_at_[at++] = kept_at_[n];
+            }
+            pictures_.resize(at);
+            kept_depth_.resize(at);
+            kept_at_.resize(at);
+            stride_ *= 2;
+            kept_bytes_ = 0;
+            for (const auto& picture : pictures_)
+                kept_bytes_ += picture.picture.rgba.size();
+        }
+    }
+    status_.kept = static_cast<std::uint32_t>(pictures_.size());
+    status_.depth = !kept_depth_.empty() && std::all_of(kept_depth_.begin(), kept_depth_.end(), [](bool value) { return value; });
+}
+
+void Recorder::drain_ready_locked() {
+    while (!pending_.empty() && pending_.front().result.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
+        auto pending = std::move(pending_.front());
+        pending_.pop_front();
+        pending_bytes_ -= pending.bytes;
+        try {
+            auto prepared = pending.result.get();
+            if (pending.generation == generation_ && (status_.state == State::recording || status_.state == State::stopped))
+                commit_locked(std::move(*prepared), pending.number);
+        } catch (const std::exception& error) {
+            fail(error.what());
+        } catch (...) {
+            fail("background capture processing failed");
+        }
+    }
+}
+
+void Recorder::drain_all(std::uint64_t generation) noexcept {
+    for (;;) {
+        std::shared_future<std::shared_ptr<Prepared>> work;
+        {
+            std::lock_guard lock(mutex_);
+            if (generation != generation_ || pending_.empty())
+                return;
+            work = pending_.front().result;
+        }
+        // Another status poll may complete the same front item. Each waiter
+        // holds its own shared-future handle; only the locked drain commits it.
+        work.wait();
+        std::lock_guard lock(mutex_);
+        if (generation != generation_)
+            return;
+        drain_ready_locked();
+    }
+}
+
 bool Recorder::save(SaveRequest request, std::string& why) {
     if (request.frames.empty() || request.frames.size() > most_saved) {
         why = "a capture saves 1 to " + std::to_string(most_saved) + " frames";
         return false;
     }
+    stop();
     if (saving_.exchange(true)) {
         why = "a capture is being saved";
         return false;
     }
     {
         std::lock_guard lock(mutex_);
+        if (status_.state == State::failed) {
+            saving_.store(false);
+            why = status_.message;
+            return false;
+        }
         if (pictures_.empty()) {
             saving_.store(false);
             why = "nothing was recorded";
@@ -406,7 +671,11 @@ void Recorder::encode(SaveRequest o) noexcept {
                 std::size_t best = 0;
                 for (std::size_t k = 1; k < kept_at_.size(); ++k)
                     if (std::llabs(static_cast<long long>(kept_at_[k]) - wanted) < std::llabs(static_cast<long long>(kept_at_[best]) - wanted)) best = k;
-                frames.push_back(pictures_[best]);
+                const auto& stored=pictures_[best];
+                Image restored(stored.width,stored.height);
+                for (std::uint32_t y=0;y<stored.bounds.height;++y)
+                    std::copy_n(stored.picture.at(0,y),std::size_t{stored.bounds.width}*4,restored.at(stored.bounds.x,stored.bounds.y+y));
+                frames.push_back(std::move(restored));
             }
             by_depth = std::all_of(kept_depth_.begin(), kept_depth_.end(), [](bool d) { return d; });
         }

@@ -2,6 +2,7 @@
 #include "Extension/AnimationStudio/anim_core.h"
 #include "Extension/Skater/arm_reach.h"
 #include "Extension/Skater/carry.h"
+#include "Extension/Skater/pose_place.h"
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -66,14 +67,17 @@ void reach(std::optional<arm_reach::Goal> goal, Shown shown = Shown::everyone);
 // holds for 0.3 s: set it every tick. `push_straightens`: riding, the knees straighten (most of the
 // crouch let go) while a foot is down pushing.
 void carry(std::optional<carry::Goal> goal, bool push_straightens = false, Shown shown = Shown::everyone);
-// Joints turned (in their own frame) and scaled on top of the animation and any clip, before any
-// carry and reach; `weight` 0..1 of the way. Joints 0 and 1 (the skater's world placement) are left
-// alone. It holds for 0.3 s: set it every tick; empty ends it.
+// Joints turned (in their own frame), scaled and moved on top of the animation and any clip, or set to
+// a place (pose_place.h), before any carry and reach; `weight` 0..1 of the way. Posed in the order
+// given (pose_place::order). Joints 0 and 1 (the skater's world placement) are left alone. It holds
+// for 0.3 s: set it every tick; empty ends it.
 struct PoseOffset {
     std::uint16_t joint{};
     anim_studio::Quat rotation{0, 0, 0, 1};
     float scale{1};
     anim_studio::Vec3 offset{}; // added to its position, in its parent's frame
+    std::optional<pose_place::Place> place; // set instead of added, after the above
+    bool keep_children{};                   // its children stay where they were in the world
 };
 void pose(std::vector<PoseOffset> offsets, float weight, Shown shown = Shown::everyone);
 // Where a joint (of the 395) was in the world in the last pose evaluated, after any clip and reach;
@@ -88,6 +92,14 @@ std::optional<arm_reach::Placed> hand(arm_reach::Hand side);
 // the room's floor, facing as the menu's skater did, as high above the floor as he is above his own
 // ground; the room's own skater and board are hidden meanwhile and come back after. Only what is
 // drawn moves: the skater stays where he is, and other players are not sent the room. Any thread.
+// Read-only observation of the native menu rig, before any plugin pose writes.
+// Asking renews a short observation window; no board/camera ownership is taken.
+struct PreviewPose {
+    anim_studio::Joint place;
+    double age{};
+    std::uint64_t sequence{};
+};
+std::optional<PreviewPose> preview_pose(bool skater);
 void watch_room(bool on) noexcept;
 bool room_skater_seen() noexcept;
 void show_in_room(bool on) noexcept;

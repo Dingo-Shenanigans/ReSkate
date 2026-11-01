@@ -9,6 +9,7 @@
 #include "Extension/UI/Overlay/skate_style.h"
 #include <algorithm>
 #include <imgui_internal.h>
+#include <map>
 #include <memory>
 #include <chrono>
 #include <mutex>
@@ -307,6 +308,86 @@ void draw_plugin_screen() {
     ImGui::PopStyleVar();
 }
 
+namespace {
+// The photosensitivity guard. A plugin's drawing may not flash: how much light it adds over the
+// screen (each filled shape's colour, by its luminance and opacity, times the share of the screen
+// it covers) may rise only so fast, and falls as fast as it likes. A white flash eight times a
+// second, which a plugin disguised as cosmetics put over players' screens, comes out at a tenth of
+// its strength; a bright picture still comes up, over two thirds of a second. Fast flashing over a
+// large part of the screen can bring on seizures (WCAG 2.3.1 allows three flashes a second).
+constexpr float light_rise_per_second = 1.5f;
+// A plugin covering this share of the screen or more is named in a corner, with the key that
+// switches plugins off.
+constexpr float named_cover = 0.6f;
+struct Glare {
+    float shown{};
+};
+std::map<std::string, Glare, std::less<>>& glares() {
+    static std::map<std::string, Glare, std::less<>> value; // render thread only
+    return value;
+}
+float luminance(ImU32 colour) {
+    const auto channel = [&](int shift) { return static_cast<float>(colour >> shift & 0xff) / 255.0f; };
+    return (0.2126f * channel(IM_COL32_R_SHIFT) + 0.7152f * channel(IM_COL32_G_SHIFT) + 0.0722f * channel(IM_COL32_B_SHIFT)) *
+           channel(IM_COL32_A_SHIFT);
+}
+float opacity(ImU32 colour) { return static_cast<float>(colour >> IM_COL32_A_SHIFT & 0xff) / 255.0f; }
+float share(const plugin_ui::Vec3& a, const plugin_ui::Vec3& b, ImVec2 display) {
+    const float x0 = std::clamp(std::min(a[0], b[0]), 0.0f, display.x), x1 = std::clamp(std::max(a[0], b[0]), 0.0f, display.x);
+    const float y0 = std::clamp(std::min(a[1], b[1]), 0.0f, display.y), y1 = std::clamp(std::max(a[1], b[1]), 0.0f, display.y);
+    return (x1 - x0) * (y1 - y0) / (display.x * display.y);
+}
+// What a layer puts over the screen this frame: the light it adds, and how much of the screen it
+// hides (each up to the whole screen).
+struct Cover {
+    float light{}, hidden{};
+};
+Cover cover(const plugin_ui::Layer& layer, ImVec2 display) {
+    using Kind = plugin_ui::Shape::Kind;
+    Cover out;
+    for (const auto& shape : layer.shapes) {
+        const auto& p = shape.points;
+        const auto add = [&](float part, ImU32 colour) {
+            out.light += part * luminance(colour);
+            out.hidden += part * opacity(colour);
+        };
+        switch (shape.kind) {
+        case Kind::rect:
+            if (shape.style.fill && p.size() >= 2) add(share(p[0], p[1], display), shape.style.colour);
+            break;
+        case Kind::image:
+        case Kind::game_image:
+        case Kind::rough_rect:
+            if (p.size() >= 2) add(share(p[0], p[1], display), shape.style.colour);
+            break;
+        case Kind::gradient:
+            if (p.size() >= 2 && shape.colours.size() == 4) {
+                const float part = share(p[0], p[1], display) / 4.0f;
+                for (const auto colour : shape.colours) add(part, colour);
+            }
+            break;
+        case Kind::poly:
+            if (shape.style.fill && !p.empty()) {
+                plugin_ui::Vec3 low = p[0], high = p[0];
+                for (const auto& point : p)
+                    for (int i = 0; i < 2; ++i) low[i] = std::min(low[i], point[i]), high[i] = std::max(high[i], point[i]);
+                add(share(low, high, display) * 0.5f, shape.style.colour); // (about half its box)
+            }
+            break;
+        default: break;
+        }
+    }
+    out.light = std::min(out.light, 1.0f);
+    out.hidden = std::min(out.hidden, 1.0f);
+    return out;
+}
+ImU32 dimmed(ImU32 colour, float by) {
+    if (by >= 1.0f) return colour;
+    const auto alpha = static_cast<ImU32>(static_cast<float>(colour >> IM_COL32_A_SHIFT & 0xff) * by + 0.5f);
+    return (colour & ~IM_COL32_A_MASK) | (alpha << IM_COL32_A_SHIFT);
+}
+}
+
 void draw_plugins() {
     const auto layers = frame();
     if (!layers || layers->empty()) return;
@@ -333,9 +414,28 @@ void draw_plugins() {
         }
     }
     using Kind = plugin_ui::Shape::Kind;
+    const float dt = std::clamp(ImGui::GetIO().DeltaTime, 0.0f, 0.25f);
+    std::vector<std::string> covering; // plugins over most of the screen, named after the drawing
     for (const auto& layer : *layers) {
+        // How far this frame's light may go (the photosensitivity guard, above).
+        const auto over = cover(layer, display);
+        auto& glare = glares()[layer.plugin];
+        const float allowed = std::min(over.light, glare.shown + light_rise_per_second * dt);
+        glare.shown = allowed;
+        const float dim = over.light > allowed && over.light > 0 ? allowed / over.light : 1.0f;
+        if (over.hidden >= named_cover) covering.push_back(layer.plugin);
         int clips = 0;
-        for (const auto& shape : layer.shapes) {
+        plugin_ui::Shape held;
+        for (const auto& source : layer.shapes) {
+            // (Copied only while it is being dimmed.)
+            const plugin_ui::Shape* drawn = &source;
+            if (dim < 1.0f) {
+                held = source;
+                held.style.colour = dimmed(held.style.colour, dim);
+                for (auto& colour : held.colours) colour = dimmed(colour, dim);
+                drawn = &held;
+            }
+            const auto& shape = *drawn;
             const auto& style = shape.style;
             const auto& p = shape.points;
             auto* font = fonts[static_cast<std::size_t>(std::clamp(style.font, 0, 4))];
@@ -418,6 +518,20 @@ void draw_plugins() {
             }
         }
         for (; clips > 0; --clips) draw->PopClipRect();
+    }
+    // Who is over the screen, on top of anything a plugin draws (they draw behind the overlay's own
+    // windows), so a player knows which mod it is and how to stop it.
+    if (!covering.empty()) {
+        std::string names;
+        for (const auto& name : covering) names += (names.empty() ? "" : ", ") + name;
+        const auto line = "Plugin " + names + " is drawing over your screen. Ctrl+Shift+End switches plugins off.";
+        auto* top = ImGui::GetForegroundDrawList();
+        auto* font = fonts[1];
+        const float size = 18.0f * k, pad = 8.0f * k;
+        const auto extent = font->CalcTextSizeA(size, FLT_MAX, 0, line.c_str());
+        const ImVec2 min(16.0f * k, display.y - 16.0f * k - extent.y - pad * 2), max(min.x + extent.x + pad * 2, display.y - 16.0f * k);
+        top->AddRectFilled(min, max, IM_COL32(0, 0, 0, 220), 4.0f * k);
+        top->AddText(font, size, ImVec2(min.x + pad, min.y + pad), IM_COL32(255, 255, 255, 255), line.c_str());
     }
 }
 }

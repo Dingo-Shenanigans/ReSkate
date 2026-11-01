@@ -79,4 +79,44 @@ inline std::optional<PlayStationGamepad> parse_playstation_report(PlayStationPad
         return detail::playstation_common(report + 3, report + 7, report[10], report[11]);
     return {};
 }
+// A full Bluetooth input report (DualShock 4 0x11, DualSense 0x31) is 78 bytes as the pad sends
+// it, and its last four bytes are a CRC-32 over the 0xA1 input prefix and the 74 bytes before them.
+inline constexpr std::size_t playstation_bluetooth_report_length = 78;
+// Windows pads every DualShock 4 read over Bluetooth to that pad's longest input report, 547
+// bytes, so a full report read from it is 547 bytes long. Its CRC is still at offset 74: the
+// padding is not part of the report the pad sent. A DualSense's longest is the 78-byte report.
+inline constexpr std::size_t dualshock4_bluetooth_read_length = 547;
+// Writes a new CRC into a full Bluetooth report that was changed. A stale CRC makes the game's
+// reader discard the report, so the change never reaches it. Returns false, and leaves the bytes
+// alone, for a report that has no CRC: USB reports and the Bluetooth simple report (0x01).
+inline bool refresh_playstation_bluetooth_crc(std::uint8_t* report, std::size_t size) noexcept {
+    if (!report || (size != playstation_bluetooth_report_length && size != dualshock4_bluetooth_read_length)) return false;
+    const auto id = report[0];
+    if (id != 0x11 && (id != 0x31 || size != playstation_bluetooth_report_length)) return false;
+    std::uint32_t crc = 0xffffffffu;
+    const auto feed = [&crc](std::uint8_t byte) {
+        crc ^= byte;
+        for (unsigned bit = 0; bit < 8; ++bit) crc = (crc >> 1) ^ (0xedb88320u & (0u - (crc & 1u)));
+    };
+    feed(0xa1);
+    constexpr std::size_t covered = playstation_bluetooth_report_length - 4;
+    for (std::size_t i = 0; i < covered; ++i) feed(report[i]);
+    crc = ~crc;
+    for (std::size_t i = 0; i < 4; ++i) report[covered + i] = static_cast<std::uint8_t>(crc >> (8 * i));
+    return true;
+}
+// Change one menu-preview stick in an already identified report. Other input,
+// sensors, sequence counters and Windows padding stay intact.
+inline bool set_playstation_stick(PlayStationPad kind, bool bluetooth, std::uint8_t* report,
+    std::size_t size, int stick, std::int16_t value) noexcept {
+    if (stick < 0 || stick > 3 || !parse_playstation_report(kind, bluetooth, report, size)) return false;
+    const unsigned offset = report[0] == 0x31 ? 2 : report[0] == 0x11 ? 3 : 1;
+    const bool invert = (stick & 1) != 0;
+    const int centred = static_cast<int>(value) / 258;
+    report[offset + static_cast<unsigned>(stick)] = static_cast<std::uint8_t>(
+        std::clamp(invert ? 127 - centred : 128 + centred, 0, 255));
+    refresh_playstation_bluetooth_crc(report, size);
+    return true;
+}
+
 }

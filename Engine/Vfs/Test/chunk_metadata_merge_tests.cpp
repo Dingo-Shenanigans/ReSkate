@@ -170,6 +170,17 @@ int main() {
     check(read_list(merge_chunk_metadata(lists, unknown, gameList, shipped)) ==
               std::vector<Record>{mesh, Record{}, textureA, other, textureB, mesh, Record{}},
           "a chunk no list describes gets a record that says nothing, and the others stay in step");
+    // The game reads a record without "h64" as a "g" record, and one with neither through null.
+    {
+        const auto written = merge_chunk_metadata(lists, unknown, gameList, shipped);
+        const std::span<const unsigned char> bytes(reinterpret_cast<const unsigned char*>(written.data()), written.size());
+        const auto root = db::read(bytes, "chunk metadata", nullptr);
+        check(std::ranges::all_of(root.children, [](const db::Node& row) {
+                  const auto* owner = row.field("h64");
+                  return owner && owner->payload().size() == 8 && row.field("meta");
+              }),
+              "every record has the owner hash and meta the game reads");
+    }
 
     // A bundle the game has no list for (it has no chunks there, or does not ship the bundle): every
     // chunk is a mod's, with the record of the copy it came in. Maps each add their loading screen

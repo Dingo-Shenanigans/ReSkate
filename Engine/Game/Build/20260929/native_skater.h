@@ -12,8 +12,18 @@ inline constexpr std::array<unsigned char, 18> animation_update_prefix{
 // Expected code of engine::board_render_pose.
 inline constexpr std::array<unsigned char, 15> board_render_pose_prefix{
     0x48,0x89,0x5c,0x24,0x18,0x48,0x89,0x74,0x24,0x20,0x57,0x48,0x83,0xec,0x60};
+// The evaluated render interface is embedded at this offset in its animation holder.
+inline constexpr std::uintptr_t render_animation_interface_offset = 0xc0;
 // Render pose interface vtable; slot +0x10 is engine::board_render_pose.
 inline constexpr std::uintptr_t board_render_pose_interface_vtable = 0x63db790;
+// Hands a skeleton's render data to the renderer (slot, render_data): its caller (0x2c20d99) calls it
+// right after engine::board_render_pose, with the same render data, and the bones are copied for the
+// render inside it (2026-10-25, a guard page on the local skater's bone buffer). A thunk into the
+// renderer's interface (+0xd8).
+inline constexpr std::uintptr_t submit_render_pose = 0x4c7e7a0;
+inline constexpr std::array<unsigned char, 26> submit_render_pose_prefix{
+    0x4c,0x8b,0xc9,0x4c,0x8b,0xc2,0x48,0x8b,0x0d,0x4b,0x91,0x53,0x02,0x41,0x8b,0x11,
+    0x48,0x8b,0x01,0x48,0xff,0xa0,0xd8,0x00,0x00,0x00};
 // Entity helper verified together with the creation functions; not called directly.
 inline constexpr std::uintptr_t entity_helper = 0x2b761d0;
 inline constexpr std::array<unsigned char, 17> entity_helper_prefix{

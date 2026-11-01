@@ -14,6 +14,9 @@ namespace dingosdk::frostbite::shader {
 
 inline constexpr std::uint32_t programLookupType = 0xE2E6955B;
 inline constexpr std::uint32_t textureLookupType = 0x2D254A89;
+// Native ShaderProgram bytecode resource type, also used by Studio's native
+// shader resource writer; confirmed on the pinned build's shaders/bytecode/*.
+inline constexpr std::uint32_t bytecodeType = 0x0E2B02F7;
 
 struct Table {
     std::span<const std::byte> resource;
@@ -24,20 +27,24 @@ struct MergedTable {
     std::vector<std::byte> resource;
     std::vector<std::byte> resourceMeta;
     std::size_t added{};       // rows taken from the edits
-    std::size_t conflicts{};   // rows two edits disagreed on; the first won
+    std::size_t conflicts{};   // disagreements: retained graph wins, then first edit
     std::size_t outside{};     // rows left out: they point past the base's programs
+    std::size_t removed{};     // invalid rows removed from the retained table itself
 };
 
-// `resourceMeta` is 16 bytes: program size, relocation size, lookup size. The
-// program blob and its relocations are identical across copies because a mod
-// only ever points new keys at programs that are already there. The blob starts
-// with its record count (u32), and every value of a lookup row is a record's
-// index: the game takes it without a bounds check (an index past the end puts
-// a pointer outside the database into its shader registry, Skate.exe 0x3f72280),
-// so an added row with an index the base's blob does not have is left out
-// (`outside`): a mod that brought programs of its own cannot have them merged
-// onto the base's.
-[[nodiscard]] MergedTable merge_program_lookup(const Table& base, std::span<const Table> edits);
+// The selected bundle contributor owns the retained program graph. Merge only
+// private aliases whose program heap and relocation bytes match it exactly. No program
+// records or relocations are copied or rebased. An optional stock table allows
+// stock aliases from other graphs that also preserve the stock graph. Retained
+// graph rows win clashes, even against higher-priority alias contributors; other
+// fresh keys use edit order. `outside` includes
+// rows from incompatible graphs as well as out-of-range indices.
+// Selection helpers for contributors to the SAME bundle. A caller selecting a
+// different contributor must also retain that contributor's compiled resources.
+[[nodiscard]] bool preserves_stock_programs(const Table& candidate, const Table& stock);
+[[nodiscard]] bool same_program_graph(const Table& candidate, const Table& other);
+[[nodiscard]] bool only_stock_aliases(const Table& candidate, const Table& stock);
+[[nodiscard]] MergedTable merge_program_lookup(const Table& base, std::span<const Table> edits, const Table& stock = {});
 
 [[nodiscard]] MergedTable merge_texture_lookup(const Table& base, std::span<const Table> edits);
 

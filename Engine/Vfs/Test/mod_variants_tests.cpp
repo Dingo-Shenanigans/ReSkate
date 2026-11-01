@@ -93,6 +93,23 @@ int main() {
           "A disabled pack still decided what loads");
     check(mods::variant_of("Pack#wide") == "wide" && mods::variant_owner("Pack#wide") == "Pack" && mods::variant_owner("Pack").empty(),
           "A variant's entry does not name its variant and mod");
+    const auto cooperation = [&](const std::string& policy) {
+        write(mods_root / "Pack" / "reskate-plugin.json",
+              "{\"api\":1,\"variants\":{\"folder\":\"decks\",\"displaces\":[\"deck_bundle\"]},\"variant_additions\":" + policy + "}");
+        std::vector<std::string> notes;
+        return mods::describe_mod(mods_root / "Pack", "Pack", notes);
+    };
+    auto permitted = cooperation(R"({"accept":["WIN32/TEST/DECK"],"contribute":["win32/test/other"]})");
+    check(permitted.variant_additions.accept == std::vector<std::string>{"win32/test/deck"} &&
+          permitted.variant_additions.contribute == std::vector<std::string>{"win32/test/other"}, "Both exact bundle permissions are parsed");
+    for (const auto* invalid : {R"({"accept":true})", R"({"accept":["win32/*"]})", R"({"accept":["win32/../deck"]})",
+                               R"({"accept":["win32/test","WIN32/TEST"]})", R"({"accept":["win32/test"],"contribute":[3]})"}) {
+        permitted = cooperation(invalid);
+        check(permitted.variants && permitted.variants->displaces == std::vector<std::string>{"deck_bundle"},
+              "Malformed cooperation retains the author's displacement rule");
+        check(permitted.variant_additions.accept.empty() && permitted.variant_additions.contribute.empty(),
+              "Malformed cooperation grants neither side, even after a valid first field");
+    }
     fs::remove_all(root);
     std::cout << "Mod variants: order, choice, fallback, set aside, disabled and malformed passed.\n";
 }

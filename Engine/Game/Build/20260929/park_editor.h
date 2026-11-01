@@ -1,6 +1,7 @@
 #pragma once
 #include "Engine/Game/Build/fingerprint.h"
 #include "engine.h"
+#include "remote_collision.h"
 #include <array>
 #include <cstdint>
 
@@ -72,4 +73,36 @@ inline constexpr std::array<Fingerprint, 4> surface_contracts{
      {0x25fa1d0,
       {0x48, 0x89, 0x5c, 0x24, 0x08, 0x57, 0x48, 0x83, 0xec, 0x20, 0x48, 0x8b, 0xfa, 0x48, 0x8b, 0xd9,
        0x33, 0xd2, 0x48, 0x39, 0x51, 0x08, 0x48, 0x0f, 0x45, 0xd1, 0x48, 0x8b, 0xcf, 0xe8, 0xbe, 0x93}}}};
+// Query filters for that ray request (request + 0x20). The wrapper passes it through
+// 0x2664c00 to 0x2627bd0's query-category mask, and a candidate shape is tested only
+// when its categories AND this mask are nonzero. camera is the filter the native
+// camera ray sends. terrain is the game's serialized physics category query preset
+// "Terrain", category bit 0 alone. The serialized presets do not show which shapes
+// carry that bit: a terrain hit is not proof of terrain, static geometry or an
+// actor-free result, and the Static preset lacks bit 0, so some ramps and props
+// may not be tested at all.
+inline constexpr std::uint32_t camera_query_filter = 0x40080303;
+inline constexpr std::uint32_t terrain_query_filter = 0x00000001;
+// A diagnostic filter with every bit set, so the AND gate tests every shape whose
+// categories are nonzero, actors' shapes included. The game's capsule wrapper starts
+// its own mask fields at FFFFFFFF. A shape with no category is still never tested.
+inline constexpr std::uint32_t all_query_filter = 0xFFFFFFFF;
+// The categories whose definition names say character, ragdoll, character proxy,
+// skateboard or skater, plus bit 31, which only the SkateboardCollisionHelper shape
+// template carries. These are definitions and templates, not live assignments: a
+// shape with none of these bits is not shown to be free of an actor. Bits 6 and 12
+// of the Character template are left out on purpose, because the Terrain and
+// DynamicGameplay templates carry them too and would be refused as actors.
+inline constexpr unsigned category_skateboard_collision_helper = 31;
+inline constexpr std::uint32_t named_actor_categories =
+    (1u << remote_collision::category_character) | (1u << remote_collision::category_ragdoll) |
+    (1u << remote_collision::category_remote_character_proxy) | (1u << remote_collision::category_skateboard) |
+    (1u << remote_collision::category_local_skater) | (1u << remote_collision::category_character_proxy) |
+    (1u << remote_collision::category_remote_skater) | (1u << category_skateboard_collision_helper);
+static_assert(named_actor_categories == 0xB620000C);
+// Only a filter that shares no bit with them can back a claim that no returned hit
+// carried one. Camera and terrain qualify; all does not, and is refused for it.
+static_assert((camera_query_filter & named_actor_categories) == 0);
+static_assert((terrain_query_filter & named_actor_categories) == 0);
+static_assert((all_query_filter & named_actor_categories) != 0);
 }

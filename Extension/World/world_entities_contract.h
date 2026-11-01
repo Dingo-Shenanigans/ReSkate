@@ -4,6 +4,9 @@
 #include "Engine/Game/Build/20260929/skater_entities.h"
 #include <cstdint>
 #include <limits>
+#include <map>
+#include <optional>
+#include <string>
 #include <string_view>
 
 // The checks behind world_entities.cpp, as SmokeyDawg58 wrote them for his fork's gates (its source
@@ -96,4 +99,37 @@ template<class ReadPointer>
 bool object_resident(std::uintptr_t cached, std::uintptr_t resolved, std::uintptr_t base, ReadPointer read) {
     return cached && resolved == cached && object_blueprint(resolved, base, read);
 }
+
+// What blueprint_bounds answered per name. Each search asks all 0xbbf asset domains, entering each
+// one's named-asset lock. A plugin asking every frame (build 55a7342, baked_core on Skate 2 Improved)
+// kept doing that while the game freed a streamed sublevel's registry, and woke in a lock whose memory
+// was gone (Skate.exe+0x3db7939 writing 0x24, the lock's debug record at null). A found box is kept for
+// five seconds, a miss for one, and at most `scans_per_second` searches run each second; past that a
+// name keeps its last answer, or has none yet.
+template<class Value>
+class LookupCache {
+public:
+    static constexpr std::uint64_t found_for = 5000, missed_for = 1000;
+    static constexpr unsigned scans_per_second = 8;
+    static constexpr std::size_t most_names = 1024;
+    template<class Search>
+    std::optional<Value> get(const std::string& name, std::uint64_t now, Search search) {
+        auto entry = entries_.find(name);
+        if (entry != entries_.end() && now < entry->second.at + (entry->second.value ? found_for : missed_for)) return entry->second.value;
+        if (now >= window_ + 1000) window_ = now, scans_ = 0;
+        if (scans_ >= scans_per_second) return entry == entries_.end() ? std::nullopt : entry->second.value;
+        ++scans_;
+        if (entry == entries_.end()) {
+            if (entries_.size() >= most_names) entries_.clear();
+            entry = entries_.emplace(name, Entry{}).first;
+        }
+        entry->second = {search(), now};
+        return entry->second.value;
+    }
+private:
+    struct Entry { std::optional<Value> value; std::uint64_t at{}; };
+    std::map<std::string, Entry> entries_;
+    std::uint64_t window_{};
+    unsigned scans_{};
+};
 } // namespace dingosdk::world_entities::detail

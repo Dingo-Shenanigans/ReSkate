@@ -24,25 +24,30 @@
 #include "Extension/World/world_pool_usage.h"
 #include "Extension/World/physics_world_size.h"
 #include "Extension/World/spatial_cull_ids.h"
+#include <format>
 #include <string>
 
 namespace dingosdk::runtime {
-namespace {
-bool stage(logging::Channel channel, const char* name, bool ready, const std::string& error) {
-    logging::log(ready ? logging::Level::info : logging::Level::error, channel,
-        "{}: {}{}", name, ready ? "ready" : "failed", error.empty() ? "" : " - " + error);
-    return ready;
-}
-}
-bool initialize_bootstrap(std::uintptr_t base) {
-    if (!base) return false;
+bool initialize_bootstrap(std::uintptr_t base, std::string& failure) {
+    if (!base) {
+        failure = "Bootstrap started without the game image.";
+        logging::write(logging::Level::error, logging::Channel::runtime, failure);
+        return false;
+    }
     using logging::Channel;
+    const auto stage = [&failure](Channel channel, const char* name, bool ready, const std::string& error) {
+        const auto line = std::format("{}: {}{}", name, ready ? "ready" : "failed", error.empty() ? "" : " - " + error);
+        logging::write(ready ? logging::Level::info : logging::Level::error, channel, line);
+        if (!ready) failure = line;
+        return ready;
+    };
     std::string error;
     bool ready = start_startup_interventions(base, error);
     if (!stage(Channel::runtime, "Startup interventions", ready, error)) return false;
     const auto hooks = hook_initialize();
     if (hooks != HookOk && hooks != HookAlreadyInitialized) {
-        logging::log(logging::Level::error, Channel::hooks, "Hook service failed: {} ({})", hook_status_string(hooks), static_cast<long>(hooks));
+        failure = std::format("Hook service failed: {} ({})", hook_status_string(hooks), static_cast<long>(hooks));
+        logging::write(logging::Level::error, Channel::hooks, failure);
         return false;
     }
     logging::write(logging::Level::info, Channel::hooks, "Microsoft Detours hook service ready.");

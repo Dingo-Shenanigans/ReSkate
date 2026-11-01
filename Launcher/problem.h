@@ -1,5 +1,6 @@
 #pragma once
 
+#include <initializer_list>
 #include <string>
 #include <string_view>
 
@@ -24,7 +25,47 @@ inline constexpr std::string_view attach_advice =
     "Anti-virus software usually blocks this. Add your skate. folder as an exclusion, close overlays "
     "(Discord, MSI Afterburner, RTSS), then press RETRY.";
 
+// DingoSDKDebugInitialize answered FALSE (launch.cpp): ReSkate.dll was in and
+// running, and stopped on purpose. Its reason leads; anti-virus is not a cause
+// here unless the reason is a hook another program got in the way of.
+inline constexpr std::string_view stopped_while_starting = "ReSkate stopped while starting";
+
+// The runtime's reason as the start of the advice, ending like a sentence.
+inline std::string sentence(std::string_view text) {
+    std::string line(text);
+    if (!line.empty() && line.back() != '.' && line.back() != '!' && line.back() != '?') line += '.';
+    return line;
+}
+
+inline Problem explain_stop(std::string_view raw) {
+    const std::string headline(stopped_while_starting);
+    if (raw.starts_with(headline + " without saying why"))
+        return {headline,
+                "It did not say why. Press Open logs and look at the last ERROR lines, then press RETRY. If it keeps "
+                "happening, share ReSkate.log on the ReSkate Discord."};
+    auto reason = raw.substr(headline.size());
+    for (const auto opening : {std::string_view(": "), std::string_view("; ReSkate.log says: ")})
+        if (reason.starts_with(opening)) { reason.remove_prefix(opening.size()); break; }
+    if (mentions(raw, "Save is already in use"))
+        return {"Skate is already running",
+                "Your save is open in another copy of Skate. Close that one, or end Skate.exe in Task Manager if "
+                "it is stuck, then press RETRY."};
+    // The folder's game_instance mutex: two games started at the same moment (the launcher checks first).
+    if (mentions(raw, "already running from this folder"))
+        return {"Skate is already running",
+                "Another copy of Skate is running from this folder. Close that one, or end Skate.exe in Task "
+                "Manager if it is stuck, then press RETRY."};
+    if (mentions(raw, "hook") || mentions(raw, "Hook") || mentions(raw, "Overlay startup failed"))
+        return {"ReSkate could not hook into Skate",
+                sentence(reason) + " Another program is probably changing Skate as it starts. Close overlays "
+                "(Discord, MSI Afterburner, RTSS) and allow your ReSkate folder in your anti-virus, then press RETRY."};
+    return {headline,
+            sentence(reason) + " Press RETRY. If it keeps happening, press Copy details and share it with "
+            "logs\\ReSkate.log on the ReSkate Discord."};
+}
+
 inline Problem explain(std::string_view raw) {
+    if (raw.starts_with(stopped_while_starting)) return explain_stop(raw);
     // Most specific first: the later rules match whole families of failures.
     if (mentions(raw, "must be beside ReSkateLauncher.exe"))
         return {"ReSkate's files are not together",

@@ -362,10 +362,28 @@ void install_depth_probe(ID3D12GraphicsCommandList* list) noexcept {
     if (!list || installed.exchange(true)) return;
     auto* const table = *reinterpret_cast<void***>(list);
     void* original{};
-    if (hook_prepare(table[26], reinterpret_cast<void*>(&hooked_barrier), &original) != HookOk) return;
+    const auto prepared = hook_prepare(table[26], reinterpret_cast<void*>(&hooked_barrier), &original);
+    const auto prepare_failure = hook_last_failure();
+    if (prepared != HookOk) {
+        logging::printf(logging::Level::warning, logging::Channel::graphics,
+            "Fit Check depth probe: ResourceBarrier hook_prepare failed at %p: %s (%ld); operation=%s error=%ld thread=%lu.",
+            table[26], hook_status_string(prepared), static_cast<long>(prepared), prepare_failure.operation,
+            prepare_failure.error, prepare_failure.thread_id);
+        return;
+    }
     original_barrier.store(reinterpret_cast<ResourceBarrierFn>(original));
-    if (hook_enable(table[26]) != HookOk)
-        logging::printf(logging::Level::warning, logging::Channel::graphics, "Fit Check depth probe: the barrier hook could not start.");
+    const auto enabled = hook_enable(table[26]);
+    const auto enable_failure = hook_last_failure();
+    if (enabled != HookOk) {
+        original_barrier.store(nullptr);
+        logging::printf(logging::Level::warning, logging::Channel::graphics,
+            "Fit Check depth probe: ResourceBarrier hook_enable failed at %p: %s (%ld); operation=%s error=%ld thread=%lu.",
+            table[26], hook_status_string(enabled), static_cast<long>(enabled), enable_failure.operation,
+            enable_failure.error, enable_failure.thread_id);
+    } else {
+        logging::printf(logging::Level::info, logging::Channel::graphics,
+            "Fit Check depth probe: ResourceBarrier hook installed at %p.", table[26]);
+    }
 }
 
 bool depth_probe_pending() {

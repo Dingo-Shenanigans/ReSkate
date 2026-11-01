@@ -3,9 +3,13 @@
 #include "skate_menu_internal.h"
 #include "cursor.h"
 #include "input_capture.h"
+#include "scripted_pad.h"
+#include "Extension/UI/NativeMenu/native_menu.h"
 #include "Extension/UI/NativeMenu/native_menu_view.h"
 #include "Extension/UI/NativeMenu/native_tools_view.h"
 #include "Extension/Boot/discord_presence.h"
+#include "Extension/Assets/map_download.h"
+#include "Extension/Assets/mod_store.h"
 #include "Extension/Music/local_music_playback.h"
 #include "Extension/Profile/local_profile_runtime.h"
 #include "Engine/Game/Input/controller_bindings.h"
@@ -16,6 +20,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <map>
@@ -1422,7 +1427,12 @@ void settings_page(Ui &ui, ImVec2 a, ImVec2 z) {
 // ---------------------------------------------------------------- focus
 
 // Moves the focus one control over, by where the controls were drawn last frame.
-void move_focus(Hub &h, int dx, int dy) {
+#include "mod_manager_page.inl"
+
+// `in_list`: up and down from a control in a scrolling list stay in that list while it has anything
+// that way (the Mod Manager's rows, whose next row up can be out of view and further than the bar
+// over the list).
+void move_focus(Hub &h, int dx, int dy, bool in_list = false) {
     const Item *from{};
     for (const auto &entry : h.last)
         if (entry.id == h.focus) from = &entry;
@@ -1433,8 +1443,13 @@ void move_focus(Hub &h, int dx, int dy) {
     const ImVec2 centre((from->a.x + from->b.x) * .5f, (from->a.y + from->b.y) * .5f);
     const Item *best{};
     float best_score = FLT_MAX;
+    const auto same_list = [&](const Item &entry) { return from->list && entry.list == from->list; };
+    bool list_only{};
+    if (in_list && dy && from->list)
+        for (const auto &entry : h.last)
+            if (entry.id != from->id && same_list(entry) && (dy > 0 ? entry.a.y - from->b.y : from->a.y - entry.b.y) >= -2) list_only = true;
     for (const auto &entry : h.last) {
-        if (entry.id == from->id) continue;
+        if (entry.id == from->id || (list_only && !same_list(entry))) continue;
         // Measured from the nearest point of the other control, so a wide row is as close as it looks.
         const ImVec2 closest(std::clamp(centre.x, entry.a.x, entry.b.x), std::clamp(centre.y, entry.a.y, entry.b.y));
         const float along = dx ? (closest.x - centre.x) * static_cast<float>(dx) : (closest.y - centre.y) * static_cast<float>(dy);
@@ -1467,12 +1482,20 @@ bool hub_page_pending() {
         if (!h.page.visible) h.dismissed = false;
     }
     const bool shown = h.page.visible && !h.dismissed;
+    // The Mod Manager's changes that are not applied are asked about once the pause menu has closed
+    // (not when another of its pages comes up), if it was open this time.
+    if (auto &mods = mod_page(); mods.visited && !shown && !dingosdk::multiplayer::native_pause_menu_open()) {
+        mods.visited = false;
+        offer_apply(mods);
+    }
     if (shown != h.shown) {
         h.shown = shown;
         h.next_model = {};
         h.searched = false;
         h.last.clear();
         if (!shown) {
+            dingosdk::multiplayer::hold_native_menu_back(false);
+            if (!mod_page().leaving) mod_page().declined = false;
             h.recording_bind = 0;
             set_typing(h, 0);
             wipe(h.password), wipe(h.code_password), wipe(h.host_password);
@@ -1578,9 +1601,18 @@ void hub_frame(Hub &h, ImDrawList *draw, float u, ImVec2 a, ImVec2 z, float tabs
     if (ui.moved && !h.typing) h.ring = false;
     h.focus_moved = false;
     int previous_tab{}, next_tab{};
+    // On the Mod Manager, a mod's page holds the menu's Back (hold_native_menu_back): B and Escape go
+    // back to the list there, and keep holding it until they are let go.
+    auto &mods_page = mod_page();
+    const bool on_mods = !embedded && h.page.section == 2;
+    const bool back_down = keys[7] || (ui.pad.buttons & 0x2000);
     if (ui.input && !typing_before) {
         // Back closes the game's menu, which takes a moment to say so: this goes at once.
-        if (!embedded && (key_new(7) || (pressed & 0x2000))) h.dismissed = true;
+        if (!embedded && (key_new(7) || (pressed & 0x2000))) {
+            if (on_mods && mods_hold_back(mods_page)) mods_back(h, mods_page), mods_page.hold_back_until = GetTickCount64() + 300, h.sound = sound_select;
+            else if (on_mods && guard_leave(mods_page)) offer_leave(mods_page), h.sound = sound_select;
+            else if (!on_mods || GetTickCount64() >= mods_page.hold_back_until) h.dismissed = true;
+        }
         const std::array<bool, 4> held{keys[0] || (ui.pad.buttons & 1), keys[1] || (ui.pad.buttons & 2), keys[2] || (ui.pad.buttons & 4), keys[3] || (ui.pad.buttons & 8)};
         const std::array<bool, 4> fresh{key_new(0) || (pressed & 1), key_new(1) || (pressed & 2), key_new(2) || (pressed & 4), key_new(3) || (pressed & 8)};
         const auto tick = GetTickCount64();
@@ -1590,9 +1622,14 @@ void hub_frame(Hub &h, ImDrawList *draw, float u, ImVec2 a, ImVec2 z, float tabs
         if (direction < 0 && tick >= h.repeat_at)
             for (int i = 0; i < 4; ++i)
                 if (held[static_cast<std::size_t>(i)]) direction = i, h.repeat_at = tick + (embedded ? 160 : 70);
-        if (direction >= 0) {
+        if (direction >= 0 && on_mods && h.ring && h.focus == featured_card && (direction == 2 || direction == 3)) {
+            // Left and right on the Mod Manager's carousel turn it, at a pace to see each card go by.
+            mods_page.carousel_turn = direction == 3 ? 1 : -1;
+            h.repeat_at = std::max(h.repeat_at, tick + 260);
+            h.sound = sound_navigate;
+        } else if (direction >= 0) {
             // The first press only shows where the focus is.
-            if (h.ring || !h.focus) move_focus(h, direction == 2 ? -1 : direction == 3 ? 1 : 0, direction == 0 ? -1 : direction == 1 ? 1 : 0);
+            if (h.ring || !h.focus) move_focus(h, direction == 2 ? -1 : direction == 3 ? 1 : 0, direction == 0 ? -1 : direction == 1 ? 1 : 0, on_mods);
             h.ring = true;
             h.focus_moved = true;
         }
@@ -1602,6 +1639,26 @@ void hub_frame(Hub &h, ImDrawList *draw, float u, ImVec2 a, ImVec2 z, float tabs
         previous_tab = key_new(5) || (pressed & 0x10000);
         next_tab = key_new(6) || (pressed & 0x20000);
     }
+    if (back_down && GetTickCount64() < mods_page.hold_back_until) mods_page.hold_back_until = GetTickCount64() + 300;
+    // The answer to leaving with changes not applied: LATER (or an apply that reloads nothing) lets go
+    // of Back, and a moment later presses it for the player, on the pad only the game reads.
+    if (const int answer = mods_page.leave_answer.exchange(0)) {
+        mods_page.leaving = false;
+        mods_page.declined = true;
+        mods_page.visited = false; // (asked already)
+        const bool reloads = answer == 1 && mods_page.mods && mods_page.mods->effect != live_mods::ApplyEffect::maps_only;
+        if (!reloads) mods_page.close_at = GetTickCount64() + 250;
+    }
+    if (mods_page.close_at && GetTickCount64() >= mods_page.close_at) {
+        mods_page.close_at = 0;
+        if (dingosdk::multiplayer::native_pause_menu_open()) {
+            XINPUT_GAMEPAD back{}, neutral{};
+            back.wButtons = XINPUT_GAMEPAD_B;
+            overlay::play_pad({{0, back}, {6, neutral}, {12, neutral}});
+        }
+    }
+    if (!embedded)
+        dingosdk::multiplayer::hold_native_menu_back(on_mods && (mods_hold_back(mods_page) || guard_leave(mods_page) || GetTickCount64() < mods_page.hold_back_until));
     h.keys_before = keys;
     // A key that ended the typing (Enter, Escape) is still down: it is not a fresh press of anything.
     // And so is one held while the game was not the window in front.
@@ -1611,12 +1668,15 @@ void hub_frame(Hub &h, ImDrawList *draw, float u, ImVec2 a, ImVec2 z, float tabs
 
     // ---- the page's tabs
     const bool tools = !embedded && h.page.section == 1;
+    const bool mods = !embedded && h.page.section == 2;
     {
         // (Each page keeps the tab it was left on.)
         std::vector<std::pair<int, const char *>> tabs;
         int multiplayer_tab = static_cast<int>(h.tab);
-        int &open = tools ? h.tools_tab : multiplayer_tab;
-        if (tools) {
+        int &open = tools ? h.tools_tab : mods ? mod_page().tab : multiplayer_tab;
+        if (mods) {
+            tabs = {{browse_tab, "BROWSE"}, {installed_tab, "MY MODS"}, {updates_tab, "UPDATES"}};
+        } else if (tools) {
             if (h.tools_tab == custom_tab) h.tools_tab = official_tab;
             tabs = {{official_tab, "MAPS"}, {world_tab, "WORLD"}, {parks_tab, "PARKS"},
                     {player_tab, "PLAYER"}, {online_tab, "ONLINE"}, {visuals_tab, "VISUALS"}, {binds_tab, "BINDS"}};
@@ -1657,14 +1717,15 @@ void hub_frame(Hub &h, ImDrawList *draw, float u, ImVec2 a, ImVec2 z, float tabs
             x = q.x + 20 * u;
         }
         cap(0x20000, "C");
-        if (!tools) h.tab = static_cast<Tab>(multiplayer_tab);
+        if (!tools && !mods) h.tab = static_cast<Tab>(multiplayer_tab);
     }
 
     // Under the connecting card the page is still drawn, to look at and not to use.
     const bool page_input = ui.input, page_clicked = ui.clicked, page_doubled = ui.doubled;
     const bool failed = !connecting && !h.failed.empty() && !in_session;
-    if ((connecting || failed) && !tools) ui.input = ui.clicked = ui.doubled = false;
+    if ((connecting || failed) && !tools && !mods) ui.input = ui.clicked = ui.doubled = false;
     if (tools) tools_page(ui, a, z);
+    else if (mods) mod_manager_page(ui, a, z);
     else switch (h.tab) {
     case Tab::browser: browser_page(ui, a, z); break;
     case Tab::host: host_page(ui, a, z); break;
@@ -1672,7 +1733,7 @@ void hub_frame(Hub &h, ImDrawList *draw, float u, ImVec2 a, ImVec2 z, float tabs
     case Tab::voice: voice_page(ui, a, z); break;
     case Tab::settings: settings_page(ui, a, z); break;
     }
-    if ((connecting || failed) && !tools) {
+    if ((connecting || failed) && !tools && !mods) {
         ui.input = page_input, ui.clicked = page_clicked, ui.doubled = page_doubled;
         h.items.clear();   // nothing of the page takes the focus: only the card's way out
         if (connecting) connecting_page(ui, a, z);
@@ -1751,4 +1812,57 @@ void draw_online_embedded(ImDrawList *draw, ImVec2 a, ImVec2 z, const Model &mod
     hub_frame(h, draw, u, ImVec2(a.x, a.y + (tabs_height + 64) * u), z, a.y, input, true);
 }
 bool online_embedded_typing() { return hub().typing != 0; }
+
+// Mods being applied with the pause menu closed (most often after the Mod Manager's question): a
+// small card at the right edge, out of the way of skating, as the map download's is, then a few
+// seconds of how it went.
+namespace {
+bool apply_card_seen{};
+ULONGLONG apply_card_until{};
+std::string apply_card_result;
+}
+bool mod_apply_card_pending() {
+    const bool applying = live_mods::busy() && dingosdk::map_download::view().stage == dingosdk::map_download::Stage::idle;
+    const bool menu = hub().shown || dingosdk::multiplayer::native_pause_menu_open();
+    if (applying && !menu) apply_card_seen = true, apply_card_until = 0;
+    else if (apply_card_seen && !applying) {
+        apply_card_seen = false;
+        apply_card_until = GetTickCount64() + 4000;
+        apply_card_result = live_mods::status();
+    }
+    return (applying && !menu) || GetTickCount64() < apply_card_until;
+}
+void draw_mod_apply_card() {
+    auto &s = state();
+    auto *bold = s.menu.bold ? s.menu.bold : ImGui::GetFont();
+    auto *body = s.menu.body ? s.menu.body : ImGui::GetFont();
+    const auto display = ImGui::GetIO().DisplaySize;
+    const float u = std::min(display.x / layout_width, display.y / layout_height);
+    const bool applying = live_mods::busy();
+    const auto progress = live_mods::progress();
+    const float width = 820 * u, inset = 30 * u, bar = 12 * u;
+    const float height = inset + 24 * u + 12 * u + 38 * u + 18 * u + bar + 14 * u + 26 * u + inset;
+    const ImVec2 min(std::floor(display.x - 48 * u - width), std::floor(display.y * 0.2f)), max(min.x + width, min.y + height);
+    auto *draw = ImGui::GetForegroundDrawList();
+    skate_theme::rough_rect(draw, min, max, IM_COL32(26, 26, 26, 235), 0x4d3, u * 2);
+    draw->AddRectFilled(min, ImVec2(min.x + 8 * u, max.y), applying ? theme::blue : skate_theme::good);
+    const float left = min.x + inset + 8 * u, right = max.x - inset;
+    float y = min.y + inset;
+    draw->AddText(bold, 24 * u, ImVec2(left, y), theme::blue, "MOD MANAGER");
+    y += 36 * u;
+    draw->AddText(bold, 38 * u, ImVec2(left, y), theme::paper, applying ? "APPLYING MODS" : "MODS APPLIED");
+    y += 56 * u;
+    const float fraction = !applying ? 1.f : progress.total ? static_cast<float>(progress.done) / static_cast<float>(progress.total) : -1.f;
+    draw->AddRectFilled(ImVec2(left, y), ImVec2(right, y + bar), skate_theme::tile_light, 6 * u);
+    if (fraction >= 0) draw->AddRectFilled(ImVec2(left, y), ImVec2(left + (right - left) * std::clamp(fraction, 0.f, 1.f), y + bar), applying ? theme::blue : skate_theme::good, 6 * u);
+    else {
+        const float t = static_cast<float>(std::fmod(ImGui::GetTime(), 2.0)) / 2.f, w = (right - left) * .25f;
+        const float x = left + (right - left - w) * (t < .5f ? t * 2 : 2 - t * 2);
+        draw->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + bar), theme::blue, 6 * u);
+    }
+    y += bar + 14 * u;
+    const std::string line = applying ? (progress.step.empty() ? std::string("Merging the mods into the game...") : progress.step)
+                                      : (apply_card_result.empty() ? std::string("Done.") : apply_card_result);
+    label(draw, body, 26 * u, ImVec2(left, y), right, theme::muted, line);
+}
 } // namespace dingosdk::overlay::detail

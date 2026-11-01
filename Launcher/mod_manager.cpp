@@ -450,6 +450,140 @@ std::string install(const fs::path& mods, const fs::path& source, bool replace,
     }
 }
 
+namespace {
+// The mod folders `folder`'s manifest.json lists as dependencies, folded to lower case.
+std::vector<std::string> listed_dependencies(const fs::path& folder) {
+    std::vector<std::string> result;
+    try {
+        std::string text;
+        {
+            std::ifstream input(folder / mods::manifest_file, std::ios::binary);
+            if (!input) return result;
+            text.assign(std::istreambuf_iterator<char>(input), {});
+        }
+        if (text.starts_with("\xef\xbb\xbf")) text.erase(0, 3);
+        const auto json = Json::parse(text, JsonLimits{1024 * 1024, 16, 65536});
+        if (!json.is_object() || !json.contains("dependencies") || !json.at("dependencies").is_array()) return result;
+        for (const auto& item : json.at("dependencies")) {
+            if (!item.is_string()) continue;
+            const auto& name = item.string();
+            // Namespace-Name-1.2.3: the folder is everything before the version.
+            const auto dash = name.rfind('-');
+            if (dash == std::string::npos || name.find('-') == dash) continue;
+            // (A long name installs cut to the longest folder name, as thunderstore::folder_for has it.)
+            result.push_back(lower(std::string_view(name).substr(0, std::min(dash, mods::maximum_mod_name))));
+        }
+    } catch (...) {
+        result.clear();
+    }
+    return result;
+}
+
+Json read_brought_in(const fs::path& mods) {
+    try {
+        std::ifstream input(mods / brought_in_file, std::ios::binary);
+        if (!input) return Json::object();
+        const std::string text{std::istreambuf_iterator<char>(input), {}};
+        auto json = Json::parse(text, JsonLimits{4 * 1024 * 1024, 8, 65536});
+        return json.is_object() ? json : Json::object();
+    } catch (...) {
+        return Json::object();
+    }
+}
+
+void write_brought_in(const fs::path& mods, const Json& json) {
+    const auto target = mods / brought_in_file;
+    auto temporary = target;
+    temporary += L".tmp";
+    {
+        std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+        if (!output) throw std::runtime_error("Could not write " + utf8(target.filename().wstring()) + ".");
+        output << json.dump(2) << '\n';
+    }
+    std::error_code error;
+    fs::rename(temporary, target, error);
+    if (error) throw std::runtime_error("Could not write " + utf8(target.filename().wstring()) + ".");
+}
+}
+
+std::vector<std::string> brought_in(const fs::path& mods, const std::string& pack) {
+    std::vector<std::string> result;
+    const auto json = read_brought_in(mods);
+    for (const auto& [name, list] : json.items())
+        if (lower(name) == lower(pack) && list.is_array())
+            for (const auto& item : list)
+                if (item.is_string() && mods::valid_mod_name(item.string())) result.push_back(item.string());
+    return result;
+}
+
+void record_brought_in(const fs::path& mods, const std::string& pack, const std::vector<std::string>& dependencies) {
+    if (dependencies.empty()) return;
+    auto json = read_brought_in(mods);
+    auto names = brought_in(mods, pack);
+    for (const auto& name : dependencies)
+        if (std::none_of(names.begin(), names.end(), [&](const std::string& have) { return lower(have) == lower(name); }))
+            names.push_back(name);
+    auto list = Json::array();
+    for (const auto& name : names) list.push_back(Json(name));
+    for (auto it = json.items().begin(); it != json.items().end();)
+        it = lower(it->first) == lower(pack) ? json.items().erase(it) : std::next(it);
+    json.items()[pack] = std::move(list);
+    write_brought_in(mods, json);
+}
+
+void forget_brought_in(const fs::path& mods, const std::vector<std::string>& removed) {
+    auto json = read_brought_in(mods);
+    bool changed = false;
+    for (auto it = json.items().begin(); it != json.items().end();) {
+        const bool gone = std::any_of(removed.begin(), removed.end(), [&](const std::string& name) { return lower(name) == lower(it->first); });
+        if (gone) { it = json.items().erase(it); changed = true; }
+        else ++it;
+    }
+    if (changed) write_brought_in(mods, json);
+}
+
+std::vector<std::string> orphaned_dependencies(const fs::path& mods, const std::vector<std::string>& removing,
+                                               const std::vector<std::string>& installed) {
+    std::vector<std::string> folded;
+    for (const auto& name : installed) folded.push_back(lower(name));
+    const auto is_installed = [&](const std::string& name) { return std::find(folded.begin(), folded.end(), name) != folded.end(); };
+    std::vector<std::string> gone;
+    for (const auto& name : removing) gone.push_back(lower(name));
+    const auto listed = [&](const std::string& name) {
+        const auto at = std::find(folded.begin(), folded.end(), name);
+        return at == folded.end() ? std::vector<std::string>{} : listed_dependencies(mods / from_utf8(installed[at - folded.begin()]));
+    };
+    // What the removed mods brought in when they were installed (their dependencies' dependencies too):
+    // only these, so a mod that was installed before them is never offered.
+    std::vector<std::string> candidates;
+    for (const auto& pack : removing)
+        for (const auto& name : brought_in(mods, pack)) {
+            const auto dependency = lower(name);
+            if (is_installed(dependency) && std::find(gone.begin(), gone.end(), dependency) == gone.end() &&
+                std::find(candidates.begin(), candidates.end(), dependency) == candidates.end())
+                candidates.push_back(dependency);
+        }
+    // What a mod that stays still lists stays too, with what that one lists in turn.
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (std::size_t i = 0; i < folded.size(); ++i) {
+            const auto& name = folded[i];
+            if (std::find(gone.begin(), gone.end(), name) != gone.end() ||
+                std::find(candidates.begin(), candidates.end(), name) != candidates.end())
+                continue;
+            for (const auto& dependency : listed(name))
+                if (const auto at = std::find(candidates.begin(), candidates.end(), dependency); at != candidates.end()) {
+                    candidates.erase(at);
+                    changed = true;
+                }
+        }
+    }
+    std::vector<std::string> result;
+    for (std::size_t i = 0; i < folded.size(); ++i)
+        if (std::find(candidates.begin(), candidates.end(), folded[i]) != candidates.end()) result.push_back(installed[i]);
+    return result;
+}
+
 std::string game_data_signature(const std::vector<DataMod>& mods, const std::map<std::string, std::string, std::less<>>& variants) {
     std::string text;
     for (const auto& mod : mods) text += mod.name + '=' + mods::mod_fingerprint(mod.directory) + ';';
@@ -483,6 +617,114 @@ void remove(const fs::path& mods, const std::string& name) {
     std::error_code error;
     if (!fs::is_directory(target, error)) fail("\"" + name + "\" is not installed.");
     recycle(target);
+}
+
+namespace {
+constexpr wchar_t removals_file[] = L"remove.txt";
+fs::path pending_root(const fs::path& mods) { return mods / from_utf8(pending_folder); }
+std::vector<std::string> read_removals(const fs::path& mods) {
+    std::vector<std::string> names;
+    std::ifstream in(pending_root(mods) / removals_file);
+    for (std::string line; std::getline(in, line);) {
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+        if (mods::valid_mod_name(line) && std::find(names.begin(), names.end(), line) == names.end()) names.push_back(line);
+    }
+    return names;
+}
+// Replaces remove.txt (or removes it when there is nothing in it).
+void write_removals(const fs::path& mods, const std::vector<std::string>& names) {
+    const auto file = pending_root(mods) / removals_file;
+    std::error_code error;
+    if (names.empty()) {
+        fs::remove(file, error);
+        return;
+    }
+    fs::create_directories(file.parent_path());
+    const auto temporary = fs::path(file).concat(L".tmp");
+    {
+        std::ofstream out(temporary, std::ios::binary | std::ios::trunc);
+        for (const auto& name : names) out << name << '\n';
+        if (!out) fail("Could not note the mod to uninstall (is the disk full?).");
+    }
+    if (!MoveFileExW(temporary.c_str(), file.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        fail("Could not note the mod to uninstall.");
+}
+} // namespace
+
+std::string install_later(const fs::path& mods, const fs::path& source, const Progress& progress,
+                          const std::atomic<bool>& cancel, const InstallOptions& options) {
+    const auto name = install(pending_root(mods), source, true, progress, cancel, options);
+    auto removals = read_removals(mods);
+    if (std::erase(removals, name)) write_removals(mods, removals);
+    return name;
+}
+
+void remove_later(const fs::path& mods, const std::string& name) {
+    if (!mods::valid_mod_name(name)) fail("\"" + name + "\" is not a mod folder.");
+    std::error_code error;
+    fs::remove_all(pending_root(mods) / from_utf8(name), error);
+    auto removals = read_removals(mods);
+    if (std::find(removals.begin(), removals.end(), name) == removals.end()) removals.push_back(name);
+    write_removals(mods, removals);
+}
+
+Pending pending(const fs::path& mods) noexcept {
+    Pending result;
+    try {
+        std::error_code error;
+        for (fs::directory_iterator it(pending_root(mods), error), end; !error && it != end; it.increment(error)) {
+            const auto name = utf8(it->path().filename().wstring());
+            // (install()'s own staging folder is a dot folder too.)
+            if (it->is_directory(error) && mods::valid_mod_name(name) && !name.ends_with(".replaced")) result.updates.push_back(name);
+        }
+        result.removals = read_removals(mods);
+    } catch (...) {}
+    return result;
+}
+
+std::vector<std::string> apply_pending(const fs::path& mods) noexcept {
+    std::vector<std::string> lines;
+    try {
+        const auto waiting = pending(mods);
+        if (waiting.updates.empty() && waiting.removals.empty()) return lines;
+        const auto root = pending_root(mods);
+        for (const auto& name : waiting.updates) {
+            const auto target = mods / from_utf8(name), copy = root / from_utf8(name);
+            const auto aside = root / (from_utf8(name).wstring() + L".replaced");
+            std::error_code error;
+            fs::remove_all(aside, error);
+            if (fs::exists(target, error) && !MoveFileExW(target.c_str(), aside.c_str(), MOVEFILE_WRITE_THROUGH)) {
+                lines.push_back("The update of " + name + " waits: its folder is in use (Windows error " + std::to_string(GetLastError()) + ").");
+                continue;
+            }
+            if (!MoveFileExW(copy.c_str(), target.c_str(), MOVEFILE_WRITE_THROUGH)) {
+                const auto code = GetLastError();
+                MoveFileExW(aside.c_str(), target.c_str(), MOVEFILE_WRITE_THROUGH);
+                lines.push_back("The update of " + name + " waits: it could not be moved in (Windows error " + std::to_string(code) + ").");
+                continue;
+            }
+            fs::remove_all(aside, error);
+            lines.push_back("Updated " + name + " (installed in game, waiting for this start).");
+        }
+        std::vector<std::string> kept;
+        for (const auto& name : waiting.removals) {
+            std::error_code error;
+            if (!fs::is_directory(mods / from_utf8(name), error)) continue;
+            try {
+                recycle(mods / from_utf8(name));
+                lines.push_back("Uninstalled " + name + " (asked for in game).");
+            } catch (const std::exception& failure) {
+                kept.push_back(name);
+                lines.push_back("Uninstalling " + name + " waits: " + failure.what());
+            }
+        }
+        try { write_removals(mods, kept); } catch (const std::exception& failure) { lines.push_back(failure.what()); }
+        std::error_code error;
+        if (fs::is_empty(root, error)) fs::remove(root, error);
+    } catch (const std::exception& failure) {
+        lines.push_back(std::string("Mod changes waiting from the game could not be made: ") + failure.what());
+    } catch (...) {}
+    return lines;
 }
 
 } // namespace dingosdk::launcher_mods

@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 // Live mods: applying Mods/ and mods.json while the game runs, so a change
@@ -66,4 +67,7 @@ bool only_maps(const std::filesystem::path& directory);
 // reskate-levels.json of every mod a live apply left enabled, highest
 // priority first; handed out once per successful apply.
 std::optional<std::vector<std::filesystem::path>> take_level_manifests();
+// The folder of the mod in effect that registers the level `asset` (any case): the last live
+// apply's mods, else the launch's. Empty for a level no mod registers. Any thread.
+std::filesystem::path level_mod_directory(std::string_view asset);
 }

@@ -607,6 +607,10 @@ void Launcher::run_play() {
         fail("Skate is already running from this folder. Close it before starting it again.");
         return;
     }
+    // Updates and uninstalls the game's Mod Manager could not make while it ran (mod_manager.h),
+    // now that nothing holds the mods' files.
+    for (const auto& line : launcher_mods::apply_pending(mods_data_root() / mods::mods_folder))
+        logging::write(logging::Level::info, logging::Channel::launcher, line);
     if (!ignore_mod_problems_ && !run_mod_merge()) return;
     ignore_mod_problems_ = false;
     set(Phase::launching, "Starting Skate");

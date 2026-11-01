@@ -25,7 +25,7 @@ using menu_view::page_count, menu_view::tools_page;
 // back before our models are released. Native tabs are found by their label, not index.
 constexpr std::string_view store_tab_label = "ID_MENU_STORE", social_tab_label = "ID_MENU_SOCIAL";
 constexpr unsigned social_tab_index = 4; // Before the Store is removed.
-constexpr std::array<unsigned, page_count> page_slots{0, 1};
+constexpr std::array<unsigned, page_count> page_slots{0, 1, 2};
 // The Store item taken out of the pause menu, its index there, and that menu.
 struct RemovedStore { Value item; unsigned index{}; Handle core{}; Address manager{};std::uint32_t key{}; };
 RemovedStore removed_store;
@@ -76,7 +76,7 @@ Address action(const Context& context, std::string command, std::string argument
     const bool unused = *slot == count;
     if (unused) {
         static const std::array functions{callbacks<0>(std::make_index_sequence<max_actions>{}),
-            callbacks<1>(std::make_index_sequence<max_actions>{})};
+            callbacks<1>(std::make_index_sequence<max_actions>{}), callbacks<2>(std::make_index_sequence<max_actions>{})};
         // Native void-action descriptor used by this build. Only the invokers are
         // replaced; it is never added to the game's global function registry.
         const auto prototype = context.base + addr::native_menu::action_prototype;
@@ -191,8 +191,9 @@ namespace {
 // Which of ReSkate's pages is on screen, for the overlay (native_menu_page): when one was last
 // seen selected with the pause menu up (GetTickCount64; 0: not now), and which.
 std::atomic<std::uint64_t> page_seen{};
-std::atomic<int> page_shown{}; // 0: Multiplayer, 1: Mod Options
+std::atomic<int> page_shown{}; // 0: Multiplayer, 1: Mod Options, 2: Mod Manager
 std::atomic<bool> game_in_menu{};
+std::atomic<bool> back_wanted{}; // hold_native_menu_back
 // Returns the key of the tab the pause menu has selected (0: none of ours can be told).
 std::uint32_t restore_last_tab(const Context& context, Value menu) {
     static std::uint32_t remembered{};
@@ -234,6 +235,21 @@ std::uint32_t restore_last_tab(const Context& context, Value menu) {
     }
     return key_at(selected);
 }
+void build_back_action(const Context& context, State& s);
+// The Mod Manager's Back while a mod's page is open: active, with no input and no navigation, so it
+// swallows Escape and B (see build_back_action) and the overlay takes them; given back otherwise.
+void hold_back(const Context& context, State& s, bool held) {
+    if (!held) {
+        build_back_action(context, s);
+        return;
+    }
+    const auto base = context.path(s.page, {0x10810f0b, button_field, 0xa704272a, 0xc52416ef, 0xa704272a});
+    const auto back = context.field(base, 0xa2b71c93);
+    context.set(context.field(back, 0x3d00de27), Address{});
+    context.text(context.field(back, 0xb1e14cd6), "");
+    context.set(context.field(base, 0x4b3146e9), true);
+    s.back_held = true;
+}
 // Page Back is a button action: input UI_Back, navigation "ToggleMenu", no
 // delegate, handled by the shared navigation handler. An active action with
 // neither swallows Escape/controller B. Build it directly rather than copying
@@ -248,6 +264,7 @@ void build_back_action(const Context& context, State& s) {
     context.set(context.field(back, 0x3d00de27), back_input);
     context.text(context.field(back, 0xb1e14cd6), "ToggleMenu");
     context.set(context.field(base, 0x4b3146e9), true);
+    s.back_held = false;
 }
 void insert(const Context& context) {
     auto& s = state();
@@ -464,8 +481,8 @@ void initialize(const Context& context, Root root, const MultiplayerModel& model
     context.set(context.field(backdrop_stack, 0x3b14d43c), false);
     context.set(context.field(backdrop_stack, 0x2a98baa3), false);
     build_back_action(context, s);
-    static constexpr std::array<const char*, page_count> titles{"MULTIPLAYER", "MOD OPTIONS"},
-        tab_names{"Multiplayer", "Mod Options"};
+    static constexpr std::array<const char*, page_count> titles{"MULTIPLAYER", "MOD OPTIONS", "MOD MANAGER"},
+        tab_names{"Multiplayer", "Mod Options", "Mod Manager"};
     context.text(context.path(s.page, {0x3781b603, text_field}), titles[s.slot]);
     context.set(context.field(s.page, 0xe1d821a3), true);
     context.set(context.field(s.page, 0x616cb924), false);
@@ -512,28 +529,41 @@ void initialize(const Context& context, Root root, const MultiplayerModel& model
     context.copy(context.field(s.menu_item, 0xd78d240b),
                  context.address(context.path(s.core, {content, 0x54c9abee})));
     tab_label(context, s.menu_item, tab_names[s.slot], menu_key());
-    // Seed both states with an already-live native fallback: Social for
-    // Multiplayer, Hub for ReSkate. Optional art must never gate either page.
-    // Copy only visual fields; actions remain attached to our own models.
+    // Seed every state with an already-live native fallback: Social for
+    // Multiplayer, Hub for ReSkate, and the Store's own art for the Mod Manager
+    // (the Store tab ReSkate takes out; Hub's when it is gone already). Optional
+    // art must never gate a page. Copy only visual fields; actions remain
+    // attached to our own models.
     const auto core_items = context.path(s.core, {content, items});
-    const auto source_tab = context.field(context.element(core_items, s.slot ? 1 : social_index(context, s.core)), tab_data);
+    Value source_item = context.element(core_items, s.slot ? 1 : social_index(context, s.core));
+    if (s.slot == menu_view::mods_page) {
+        unsigned core_count{}, core_stride{};
+        context.array(core_items, 16, core_count, core_stride);
+        if (const auto store = find_tab(context, core_items, core_count, store_tab_label)) source_item = context.element(core_items, *store);
+        else if (removed_store.manager == context.manager && removed_store.item.handle &&
+                 context.type_of(removed_store.item.handle) == removed_store.item.type) source_item = removed_store.item;
+    }
+    const auto source_tab = context.field(source_item, tab_data);
     const auto target_tab = context.field(s.menu_item, tab_data);
     for (const auto hash : {0xd4f0f044U, 0xbc92d1faU, 0xa3c18619U})
         context.copy(context.field(target_tab, hash), context.address(context.field(source_tab, hash)));
     // Prefer the exact requested glyph, resolving it from the locked native
     // image registry rather than searching neighboring widget allocations.
+    // (The Mod Manager asks for none: the Store's art is what it wants.)
     static constexpr std::array<const char*, page_count> idle_icons{"UI/Textures/Icons/HUB/img_Icon_SocialDefault_512",
-        "UI/Textures/Skatepedia/img_Skatepedia_SkateTricks_Idle_1024"};
+        "UI/Textures/Skatepedia/img_Skatepedia_SkateTricks_Idle_1024", nullptr};
     static constexpr std::array<const char*, page_count> focused_icons{"UI/Textures/Icons/HUB/img_Icon_SocialFocused_512",
-        "UI/Textures/Skatepedia/img_Skatepedia_SkateTricks_Focused_1024"};
+        "UI/Textures/Skatepedia/img_Skatepedia_SkateTricks_Focused_1024", nullptr};
     const auto* idle = idle_icons[s.slot];
     const auto* focused = focused_icons[s.slot];
     bool requested_icon{};
-    try { requested_icon = publish_tab_icons(context, target_tab, idle, focused); }
-    catch (const std::exception&) { /* The authored fallback is already retained. */ }
-    if (!requested_icon) logging::printf(logging::Level::info, logging::Channel::ui,
-        "Native %s menu: using native fallback icons; optional pair unavailable: %s / %s",
-        tab_names[s.slot], idle, focused);
+    if (idle && focused) {
+        try { requested_icon = publish_tab_icons(context, target_tab, idle, focused); }
+        catch (const std::exception&) { /* The authored fallback is already retained. */ }
+        if (!requested_icon) logging::printf(logging::Level::info, logging::Channel::ui,
+            "Native %s menu: using native fallback icons; optional pair unavailable: %s / %s",
+            tab_names[s.slot], idle, focused);
+    }
     render(context, model);
     insert(context);
     status(std::string("Native ") + tab_names[s.slot] + " menu: tab registered.");
@@ -594,8 +624,9 @@ void tick_page(std::uintptr_t base, bool loading) noexcept {
             hide_top_bar_currency(context, active.model);
             update_hub(context);
             // Tell the overlay while this page is the one on screen: it draws the body.
-            const bool ours = shown_tab == our_key || shown_tab == our_key + tools_page * 0x100;
-            const auto& shown_page = page_state(shown_tab == our_key ? 0 : tools_page);
+            const bool ours = shown_tab >= our_key && shown_tab < our_key + page_count * 0x100 && (shown_tab - our_key) % 0x100 == 0;
+            const unsigned shown_slot = ours ? (shown_tab - our_key) / 0x100 : 0;
+            const auto& shown_page = page_state(shown_slot);
             bool on_screen = ours && game_in_menu.load(std::memory_order_relaxed) && shown_page.page.handle &&
                              context.type_of(shown_page.page.handle) == shown_page.page.type;
             // The game's side menu (pause pressed again) and what opens from it (Settings...) go
@@ -613,9 +644,12 @@ void tick_page(std::uintptr_t base, bool loading) noexcept {
                 } catch (...) {}
             }
             // (Said at once when another page takes its place, not left to go stale.)
-            page_shown.store(shown_tab == our_key ? 0 : 1, std::memory_order_relaxed);
+            page_shown.store(static_cast<int>(shown_slot), std::memory_order_relaxed);
             page_seen.store(on_screen ? now : 0, std::memory_order_relaxed);
         }
+        if (s.slot == menu_view::mods_page && active.model.handle == s.core.handle && s.page.handle &&
+            context.type_of(s.page.handle) == s.page.type && back_wanted.load(std::memory_order_relaxed) != s.back_held)
+            hold_back(context, s, !s.back_held);
         bool pending{};
         { std::lock_guard pending_lock(s.mutex); pending = !s.pending.empty(); }
         if (active.model.handle == s.core.handle && s.page.handle && now < s.next_render && !pending &&
@@ -657,7 +691,7 @@ void tick_page(std::uintptr_t base, bool loading) noexcept {
     s.next_render = 0;
 }
 bool prepare_native_menu_level_load(std::uintptr_t base) noexcept {
-    if (!release_native_throwdown_menu(base)) return false;
+    if (!release_native_throwdown_menu(base, true)) return false;
     if (std::all_of(page_slots.begin(), page_slots.end(), [](unsigned slot) { return page_state(slot).owned_models.empty(); }))
         return true;
     try {
@@ -750,6 +784,8 @@ overlay::HubPage native_menu_page() noexcept {
     if (!seen || GetTickCount64() - seen > 200) return {};
     return {true, page_shown.load(std::memory_order_relaxed)};
 }
+void hold_native_menu_back(bool held) noexcept { back_wanted.store(held, std::memory_order_relaxed); }
+bool native_pause_menu_open() noexcept { return game_in_menu.load(std::memory_order_relaxed); }
 void tick_native_menu(std::uintptr_t base, bool loading) noexcept {
     const ui::OwnUiWrites own_writes; // Custom labels are not the native trick list.
     run_pending_ui_dump(base);

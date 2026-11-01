@@ -4,6 +4,7 @@
 #include "Engine/Resource/ebx_writer.h"
 #include "Engine/Core/Platform/path_text.h"
 
+#include <algorithm>
 #include <optional>
 #include <stdexcept>
 
@@ -30,7 +31,8 @@ std::optional<Listing> list_bundle(const CasStore& store, const fs::path& root, 
     }
     if (region.files.empty()) return std::nullopt;
     const auto expected = region.files.size() - 1;
-    for (const auto& candidate : region.files) {
+    for (std::size_t candidate_at = 0; candidate_at < region.files.size(); ++candidate_at) {
+        const auto& candidate = region.files[candidate_at];
         if (candidate.size > (32u << 20)) continue;
         try {
             auto manifest = store.read_manifest(candidate.location.patch ? root : baseRoot, candidate.location,
@@ -38,6 +40,10 @@ std::optional<Listing> list_bundle(const CasStore& store, const fs::path& root, 
             if (manifest.ebx.size() + manifest.resources.size() + manifest.chunks.size() != expected) continue;
             listing.manifest = std::move(manifest);
             listing.files = std::move(region.files);
+            // Callers index assets after slot zero. Finding a manifest later in
+            // the region must not leave its bytes in an asset's payload slot.
+            const auto at = listing.files.begin() + static_cast<std::ptrdiff_t>(candidate_at);
+            std::rotate(listing.files.begin(), at, at + 1);
             listing.first = 1;
             return listing;
         } catch (const std::exception&) {}

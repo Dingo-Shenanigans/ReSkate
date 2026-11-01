@@ -272,6 +272,8 @@ struct TransitionOption {
     int stock{};              // the game's default
     int low{}, high{};
 };
+// The game's own Grind Assist (its Settings menu): what the trainer's Grind lock-on row shows and sets, 0 to 100.
+inline constexpr std::string_view grind_assist_setting = "egf_grindassistamount";
 inline constexpr std::array<TransitionOption, 3> transition_options{{
     {"pumpassist", "Pump assist", "The game's own Pump Assist: how much of a pump you get without pressing for it. The game takes the larger of your left stick and this, "
      "so at its default of 85 the stick only adds the last 15 percent. 0 is fully manual: no press, no pump. Skate 3 gave about 70 percent of a pump by "

@@ -1,6 +1,7 @@
 #include "skater_animation.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Game/Build/20260929/no_bail.h"
+#include "Engine/Game/Build/20260929/native_skater.h"
 #include "Engine/Game/Build/20260929/skater_state.h"
 #include "Extension/Multiplayer/Remote/native_pose_layout.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
@@ -292,6 +293,15 @@ std::atomic<double> room_seen_at{-1e9}, room_restore_until{};
 std::mutex room_facing_mutex;
 Quat room_facing{0, 0, 0, 1};
 bool room_facing_valid{};
+// Separate from the rig-writing plan: observing a menu pose never takes its ownership.
+std::atomic<double> preview_until{};
+struct PreviewSample {
+    Joint place;
+    double at{-1e9};
+    std::uint64_t sequence{};
+};
+std::mutex preview_mutex;
+std::array<PreviewSample, 2> preview_samples;
 // The joints asked for as last evaluated (joint()), for the client thread.
 std::mutex joints_mutex;
 std::vector<std::pair<std::uint16_t, Joint>> joints_now;
@@ -321,13 +331,6 @@ struct Live {
     std::vector<Joint> pose, custom, scratch;
     std::vector<Joint> sent; // the pose the others are sent, when it is not the one drawn (Shown)
     float carry_push{};      // how much a foot is down pushing, eased (carry's push_straightens)
-    // The game's own scale of each joint a pose() scaled in the pose drawn. The game never sets a joint's
-    // scale again, so the scale the last render wrote is still in the buffer at the next update: pose()
-    // scaled it again on top (a forearm at 0.001 was at 1e-6 the next frame, and on to 0), and it stayed
-    // when the pose ended (Filmer's own-view forearm, 2026-10-22: the arms gone after Filmer stopped,
-    // and on foot the body physics, which read the buffer, lost the skater). Put back at every update.
-    std::map<std::uint16_t, std::array<float, 3>> own_scale;
-    std::uintptr_t own_scale_buffer{};
     // In the room: the placement written for the last render, and the game's own one before it.
     Joint room_written, game_placement;
     bool room_written_valid{}, game_placement_valid{};
@@ -355,6 +358,25 @@ Live& live() {
     static auto* l = new Live;
     return *l;
 }
+void observe_preview(std::uintptr_t animation_interface, bool skater) {
+    const double now = now_seconds();
+    if (now > preview_until.load(std::memory_order_acquire) || animation_interface <= addr::native_skater::render_animation_interface_offset) return;
+    const auto layout = multiplayer::read_native_pose_layout(peek, live().base.load(std::memory_order_acquire), animation_interface - addr::native_skater::render_animation_interface_offset, 512);
+    if (!layout.buffer || layout.count != (skater ? skeleton_joints : board_bones)) return;
+    std::array<NativeBone, 4> bones{};
+    if (!peek(layout.buffer, bones.data(), sizeof(bones))) return;
+    auto place = compose(joint_of(bones[0]), joint_of(bones[1]));
+    if (!skater) place = compose(compose(place, joint_of(bones[2])), joint_of(bones[3]));
+    if (!finite(place)) return;
+    // The same measured room bounds used by hide_in_room; gameplay rigs are excluded.
+    for (std::size_t i = 0; i < 3; ++i)
+        if (!(std::abs(place.position[i] - room_spot[i]) < room_reach[i])) return;
+    std::lock_guard lock(preview_mutex);
+    auto& sample = preview_samples[skater ? 1 : 0];
+    sample.place = place;
+    sample.at = now;
+    ++sample.sequence;
+}
 // The pose to draw, from the animation thread to the render publication.
 struct Pending {
     std::mutex mutex;
@@ -362,6 +384,18 @@ struct Pending {
     std::uint32_t first{}, last{};
     std::vector<NativeBone> bones; // [first, last)
     double at{};
+    // What the buffer held where the pose was written for the render, put back once the renderer has
+    // copied the pose (on_drawn). The game does not set every part of every joint again before the next
+    // animation update; it only puts back a stored pose after two of every three renders (2026-10-25, a
+    // guard page on the buffer). Left in the buffer, the pose drawn went into the game's own passes and
+    // into the next pose posed from it: a scale on top of the scale (a forearm at 0.001 was at 1e-6 the
+    // next frame, and on to 0), an offset on the spine counted twice, its children placed against the
+    // hips' posed scale, every third update; and it stayed when the pose ended (Filmer's own-view
+    // forearm, 2026-10-22: the arms gone after Filmer stopped, and on foot the body physics lost the
+    // skater).
+    std::vector<NativeBone> game; // [game_first, game_first + size)
+    std::uint32_t game_first{};
+    std::uintptr_t game_buffer{}, game_interface{};
 };
 Pending& pending() {
     static auto* p = new Pending;
@@ -564,7 +598,7 @@ void on_animation(std::uintptr_t component) noexcept {
         const bool posing = !snap->offsets.empty() && now < snap->offsets_until;
         const bool carrying = snap->carry && now < snap->carry_until;
         const bool in_room = room_shown.load(std::memory_order_acquire);
-        if (!busy && !reaching && !carrying && !joints_wanted && !posing && !in_room && l.own_scale.empty() &&
+        if (!busy && !reaching && !carrying && !joints_wanted && !posing && !in_room &&
             (!snap->allowed || (!snap->play && snap->replacements.empty()))) {
             std::lock_guard lock(pending().mutex);
             pending().bones.clear();
@@ -604,18 +638,6 @@ void on_animation(std::uintptr_t component) noexcept {
             l.game_placement_valid = true;
         }
         if (!room_shown.load(std::memory_order_acquire)) l.room_written_valid = false;
-        // Scaled joints get the game's own scale back first, in the buffer too (the body physics read it
-        // after this update; only the render gets the posed scale), and are posed again from it.
-        if (l.own_scale_buffer != layout.buffer) {
-            l.own_scale.clear(); // another skater's buffer: the game's scales
-            l.own_scale_buffer = layout.buffer;
-        }
-        for (const auto& [i, scale] : l.own_scale) {
-            auto& b = l.bones[i];
-            if (std::memcmp(b.scale.data(), scale.data(), sizeof(scale)) == 0) continue;
-            std::memcpy(b.scale.data(), scale.data(), sizeof(scale));
-            (void)poke(layout.buffer + i * sizeof(NativeBone), b.scale.data(), sizeof(scale));
-        }
         l.pose.resize(layout.count);
         for (std::size_t i = 0; i < layout.count; ++i) l.pose[i] = joint_of(l.bones[i]);
         if (snap->play) {
@@ -766,23 +788,26 @@ void on_animation(std::uintptr_t component) noexcept {
                 last = to;
             }
         };
-        // Joints turned and scaled, after the clip; then something carried; then an arm reaching. Each
-        // goes into the pose drawn, the pose sent, or both (Shown), and its joints join what is written.
-        std::vector<std::uint16_t> scaled_now; // joints scaled in the pose drawn this update
+        // Joints turned, scaled and moved, or set to a place (pose_place.h), after the clip; then something
+        // carried; then an arm reaching. Each goes into the pose drawn, the pose sent, or both (Shown), and
+        // its joints join what is written (a joint's children too, when they are kept where they were).
         const auto pose_joints = [&](std::vector<Joint>& pose, std::size_t& first, std::size_t& last) {
             const float w = std::clamp(snap->offsets_weight, 0.0f, 1.0f);
+            thread_local std::vector<pose_place::Kept> kept;
             for (const auto& o : snap->offsets) {
                 if (o.joint < 2 || o.joint >= layout.count) continue;
+                if (o.keep_children) pose_place::keep(pose, o.joint, kept);
                 auto& j = pose[o.joint];
                 j.rotation = normalised(multiply(j.rotation, slerp(Quat{0, 0, 0, 1}, o.rotation, w)));
                 // Never quite 0: a joint at scale 0 has no inverse. This small, it is as good as gone.
                 const float s = std::max(1.0f + (o.scale - 1.0f) * w, smallest_scale);
-                if (s != 1.0f && &pose == &l.pose) {
-                    l.own_scale.try_emplace(o.joint, j.scale);
-                    scaled_now.push_back(o.joint);
-                }
                 for (auto& k : j.scale) k *= s;
                 for (std::size_t a = 0; a < 3; ++a) j.position[a] += o.offset[a] * w;
+                if (o.place) pose_place::apply(pose, o.joint, *o.place, w);
+                if (o.keep_children) {
+                    pose_place::put_back(pose, o.joint, kept);
+                    for (const auto& k : kept) widen(first, last, k.joint, k.joint + 1u);
+                }
                 widen(first, last, o.joint, o.joint + 1u);
             }
         };
@@ -826,8 +851,6 @@ void on_animation(std::uintptr_t component) noexcept {
                 apply(who, reaching, snap->reach_shown, reach_arm);
             }
         }
-        // A joint no longer scaled has had its own scale back since the top of this update: forgotten.
-        std::erase_if(l.own_scale, [&](const auto& entry) { return std::ranges::find(scaled_now, entry.first) == scaled_now.end(); });
         if (joints_wanted) {
             const std::span<const Joint> pose(l.pose.data(), l.pose.size());
             thread_local std::vector<std::pair<std::uint16_t, Joint>> placed;
@@ -926,6 +949,12 @@ void on_animation(std::uintptr_t component) noexcept {
 }
 
 // What other players get of the local skater: the clip, as drawn here.
+// What the others are sent of a joint: the pose's scale with its place, since a place under a scaled
+// joint (keep_children, or one placed relative to another joint or the world) is worked out with that
+// scale in it; sent without it, the joint landed up to a thousand times its distance away. And no
+// joint further from its parent than any part of a body is: a place may be far off in the parent's
+// frame, and the others would draw the skater's arms and head across the map.
+constexpr float sent_scale_floor = 0.001f, sent_scale_ceiling = 10.0f, farthest_sent_joint = 4.0f;
 void on_send(std::uintptr_t component, std::vector<multiplayer::Transform>& skater) noexcept {
     try {
         auto& sp = sent_pose();
@@ -934,7 +963,12 @@ void on_send(std::uintptr_t component, std::vector<multiplayer::Transform>& skat
         for (std::uint32_t i = sp.first; i < sp.last; ++i) {
             const auto& j = sp.joints[i - sp.first];
             skater[i].rotation = j.rotation;
-            skater[i].position = j.position;
+            auto position = j.position;
+            const float length = std::sqrt(position[0] * position[0] + position[1] * position[1] + position[2] * position[2]);
+            if (length > farthest_sent_joint)
+                for (auto& axis : position) axis *= farthest_sent_joint / length;
+            skater[i].position = position;
+            for (std::size_t a = 0; a < 3; ++a) skater[i].scale[a] = std::clamp(j.scale[a], sent_scale_floor, sent_scale_ceiling);
         }
     } catch (...) {
     }
@@ -996,12 +1030,14 @@ void on_render(std::uintptr_t animation_interface) noexcept {
     try {
         const auto holder = read<std::uintptr_t>(component + 0xa0);
         if (!holder || !*holder || animation_interface != *holder + 0xc0) {
+            observe_preview(animation_interface, true);
             hide_in_room(animation_interface, true);
             SetLastError(error);
             return;
         }
         auto& p = pending();
         std::lock_guard lock(p.mutex);
+        p.game.clear(); // only ever what this render wrote over
         const auto count = [](int Probe::*n) {
             auto& pr = probe();
             std::lock_guard probe_lock(pr.mutex);
@@ -1025,12 +1061,33 @@ void on_render(std::uintptr_t animation_interface) noexcept {
             SetLastError(error);
             return;
         }
+        p.game = current;
         for (std::size_t i = 0; i < current.size(); ++i) {
             std::memcpy(current[i].scale.data(), p.bones[i].scale.data(), 12);
             current[i].rotation = p.bones[i].rotation;
             std::memcpy(current[i].position.data(), p.bones[i].position.data(), 12);
         }
-        (void)poke(layout.buffer + p.first * sizeof(NativeBone), current.data(), current.size() * sizeof(NativeBone));
+        if (poke(layout.buffer + p.first * sizeof(NativeBone), current.data(), current.size() * sizeof(NativeBone))) {
+            p.game_first = p.first;
+            p.game_buffer = layout.buffer;
+            p.game_interface = animation_interface;
+        } else {
+            p.game.clear();
+        }
+    } catch (...) {
+    }
+    SetLastError(error);
+}
+
+// The renderer has copied the pose: the buffer gets back what the game had there.
+void on_drawn(std::uintptr_t animation_interface) noexcept {
+    const auto error = GetLastError();
+    try {
+        auto& p = pending();
+        std::lock_guard lock(p.mutex);
+        if (!p.game.empty() && animation_interface == p.game_interface)
+            (void)poke(p.game_buffer + p.game_first * sizeof(NativeBone), p.game.data(), p.game.size() * sizeof(NativeBone));
+        p.game.clear();
     } catch (...) {
     }
     SetLastError(error);
@@ -1044,6 +1101,7 @@ void on_board_render(std::uintptr_t animation_interface, std::uintptr_t /*render
     try {
         const auto bh = l.board_holder.load(std::memory_order_acquire);
         if (!bh || animation_interface != bh + 0xc0) {
+            observe_preview(animation_interface, false);
             hide_in_room(animation_interface, false);
             SetLastError(error);
             return;
@@ -1171,6 +1229,14 @@ void carry(std::optional<carry::Goal> goal, bool push_straightens, Shown shown) 
     plan_draft.carry_until = plan_draft.carry ? now_seconds() + 0.3 : 0;
     publish();
 }
+std::optional<PreviewPose> preview_pose(bool skater) {
+    const double now = now_seconds();
+    preview_until.store(now + 0.5, std::memory_order_release);
+    std::lock_guard lock(preview_mutex);
+    const auto& sample = preview_samples[skater ? 1 : 0];
+    if (now - sample.at > 0.25) return std::nullopt;
+    return PreviewPose{sample.place, now - sample.at, sample.sequence};
+}
 std::optional<Joint> joint(std::uint16_t index) {
     if (index >= 395) return std::nullopt;
     const double now = now_seconds();
@@ -1268,7 +1334,7 @@ void tick(std::uintptr_t base, std::uintptr_t component, bool allowed) {
     const double now = now_seconds();
     const bool wanted = plan_draft.play || !plan_draft.replacements.empty() || recording() ||
                         (plan_draft.reach && now < plan_draft.reach_until) || (plan_draft.carry && now < plan_draft.carry_until) ||
-                        now < plan_draft.joints_until ||
+                        now < plan_draft.joints_until || now < preview_until.load(std::memory_order_acquire) ||
                         (!plan_draft.offsets.empty() && now < plan_draft.offsets_until) || room_watch.load(std::memory_order_acquire) ||
                         room_shown.load(std::memory_order_acquire) || now < room_restore_until.load(std::memory_order_acquire);
     if (wanted && !hooked && base) {
@@ -1276,6 +1342,7 @@ void tick(std::uintptr_t base, std::uintptr_t component, bool allowed) {
         if (multiplayer::install_entity_hooks(base, detail)) {
             multiplayer::set_pose_override_listener(&on_animation);
             multiplayer::set_pose_override_render_listener(&on_render);
+            multiplayer::set_pose_override_drawn_listener(&on_drawn);
             multiplayer::set_pose_override_board_listener(&on_board_render);
             multiplayer::set_local_pose_filter(&on_send);
             hooked = true;

@@ -5,6 +5,7 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <string>
 #include <string_view>
@@ -47,6 +48,20 @@ struct Catalog {
     std::map<std::string, std::string, std::less<>> variants_in_play;
     std::vector<std::string> set_aside;
 };
+
+// Retry rounds and live apply may remove a previously admitted donor or its
+// selected variant. Withdraw orphan donors and rebuild authority from survivors.
+void reconcile_variant_additions(Catalog& catalog);
+
+struct ModSource {
+    std::string name;
+    std::filesystem::path directory;
+    bool operator==(const ModSource&) const = default;
+};
+// The launch catalogue, or the last successfully applied catalogue. Reading
+// saved mods.json alone must not activate content that is not running yet.
+std::vector<ModSource> active_mod_sources();
+std::uint64_t active_sources_revision() noexcept;
 
 // Variants (mod_list.h). For the run each variant is a mod of its own, listed after the mod that
 // holds it as <mod's folder>#<variant>, with that mod's build stamp; mods.json and the mod list only

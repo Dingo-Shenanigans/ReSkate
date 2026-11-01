@@ -100,6 +100,7 @@ fixup repair), mesh sets, skeletons, textures, material grids, shader lookup.
 The virtual file system and modding pipeline:
 - `initfs`, `game_archives`, `game_bundles`, `game_textures`, `native_db` — reading the game's data.
 - `mod_list`, `mod_catalog`, `mod_item_sources`, `mod_conflicts`, `mod_scoring` — the `Mods/` folder and `mods.json`.
+- `variant_additions_*` — explicit variant cooperation, native admission and private-asset projection planning.
 - `mod_merge*` — merging mods into the game's data (overrides, combine, grid, textures, loading screens, CAS store, scan cache, build stamp).
 - `content_cache*`, `content_catalogs` — the merged-content cache and its install.
 - `thunderstore_package`, `https_download` — Thunderstore packages.
@@ -123,7 +124,7 @@ The game's native ABI and plain data models, no hooks:
 | `Settings/` | named settings, simulation time, multiplayer settings lock |
 | `Skater/` | first person, velocity boost, skater body |
 | `UI/` | game view, menu entries and scale, loading screen selection |
-| `World/` | world model, layers, parks (rotation, randomization, editor), travel, custom level manifest |
+| `World/` | world model, layers, parks (rotation, randomization, editor), travel, custom level manifest, owned native bodies and their ray batches |
 
 ## `Extension/`
 
@@ -137,13 +138,14 @@ commands and a `Test/` folder.
 | `Console/` | built-in console commands, perf commands, memory ledger |
 | `Customization/` | cosmetics catalog, item browser, local customization, player card |
 | `Multiplayer/` | Steam lobbies, sessions, parties, voice and text chat (see below) |
+| `Localization/` | the game's text as plugins change it (`reskate.strings`): the string-override store |
 | `Music/` | local music, playlists and artwork, external players: Spotify, YouTube Music, Plex |
 | `News/` | launcher/game news feed |
 | `Objects/` | object placement and the Park Editor (`ParkEditor/`), park object sets, park mods |
 | `Plugins/` | the Luau plugin host and its `reskate.*` API (see below) |
 | `Profile/` | offline profile storage: skater, progress, missions, objects, preferences |
 | `Progression/` | challenges, entitlements, neighborhood unlocks, fast travel unlock, rip score, board wear |
-| `Rendering/` | graphics controls and labels, display startup, replay export |
+| `Rendering/` | graphics controls and labels, display startup, replay export, plugin particles and surface decals |
 | `ReplayKeyframes/` | replay keyframe curves and settings |
 | `Scripting/` | Lua startup, custom script loader, native blocking |
 | `Settings/` | gameplay/native/user settings, input bindings, engine tweaks, replay drafts |
@@ -152,7 +154,7 @@ commands and a `Test/` folder.
 | `Trainer/` | trick trainer: waypoints, jumps, landings, presets |
 | `Travel/` | location travel |
 | `UI/` | the in-game UI (see below) |
-| `World/` | level loading, loading screens, time/atmosphere, population, park rotation, world layers, engine guards |
+| `World/` | level loading, loading screens, time/atmosphere, population, park rotation, world layers, engine guards, native bodies plugins own |
 | `AnimationStudio/` | animation core |
 
 ### `Extension/Multiplayer/`
@@ -176,9 +178,13 @@ commands and a `Test/` folder.
 The Luau plugin host. A plugin is a folder in `Mods/` with a `reskate-plugin.json`.
 - `plugin_discovery`, `plugin_manifest` — find and read plugins.
 - `plugin_vm`, `plugin_runtime`, `plugin_host` — the sandboxed Luau VM and plugin lifecycle.
-- `plugin_api*.cpp` — the `reskate.*` API (game, world, UI, more); `plugin_game*`, `plugin_camera`, `plugin_joystick`.
+- `plugin_api*.cpp` — the `reskate.*` API (game, world, physics, UI, more); `plugin_game*`, `plugin_camera`, `plugin_joystick`.
+- `Test/` — the host tests, and in `Test/fixtures/` the plugins they load.
 - `plugin_ui`, `plugin_sound`, `plugin_wave`, `plugin_http`, `plugin_session_feed`, `plugin_wire` — pages, audio, HTTP, multiplayer messages.
 - `plugin_commands` — the `plugin` console command.
+- `plugin_effects`, `plugin_api_effects` — the permission, asset declarations and Lua calls for
+  [plugin particles and decals](contrib/plugin-effects.md). `Extension/Rendering/plugin_effects`
+  owns their native references, surface attachments and world lifetime.
 
 ## `Runtime/`
 

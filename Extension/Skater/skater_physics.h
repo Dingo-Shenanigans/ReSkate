@@ -13,6 +13,7 @@ namespace dingosdk::skater_physics {
 // One physics step of the local skater.
 struct Step {
     float seconds{}; // how long the step simulated, in the game's time
+    std::optional<std::uint32_t> state; // native selector state; no memory identity
     bool wipeout{};  // the step asks for a wipeout
     bool airborne{}; // the skater is in the air, on the board or off it
     // The body is a ragdoll; empty when the skater state could not be read.
@@ -22,6 +23,8 @@ struct Step {
     std::optional<game::Vec3> velocity;
     // How fast the pelvis turns, any way round, radians per second; empty when unknown.
     std::optional<float> spin;
+    struct Pose { std::array<float, 16> transform{}; game::Vec3 velocity{}; };
+    std::array<std::optional<Pose>, skater_body::count> poses;
     skater_body::Contacts body; // what each body touched in the step
 };
 
