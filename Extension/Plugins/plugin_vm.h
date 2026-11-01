@@ -177,7 +177,6 @@ public:
 enum class State { loading, running, stopped };
 
 class Plugin {
-    friend struct ValuesApi;
 public:
     // `directory` is the mod folder; `id` its folder name.
     Plugin(std::string id, std::filesystem::path directory, Manifest manifest, Services& services, Limits limits);
@@ -275,6 +274,7 @@ private:
     friend struct ServicesApi;
     friend struct KitApi;
     friend struct CaptureApi;
+    friend struct ValuesApi;
     struct Subcommand { std::string name, args, help; };
     struct Command { std::string help; int function{}; std::vector<Subcommand> subcommands; };
     struct Timer { double due{}, every{}; int function{}; };

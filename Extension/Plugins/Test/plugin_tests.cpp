@@ -15,6 +15,7 @@
 #include <format>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <set>
 #include <sstream>
@@ -31,10 +32,14 @@ std::filesystem::path scratch;
 // The wider set's game, faked: it records what plugins asked of it and answers as told.
 struct FakeGame final : Game {
     std::map<std::string, ui_values::Values> ui_models;
+    ui_values::Reservations ui_reservations;
     std::string ui_error;
     std::string publish_ui_values(std::string_view plugin, const ui_values::Values& values) override {
         if (!ui_error.empty()) return ui_error;
-        ui_models[std::string(plugin)] = values;
+        if (const auto error = ui_reservations.reserve(plugin, values); !error.empty()) return error;
+        if (values.empty()) return {};
+        auto& models = ui_models[std::string(plugin)];
+        for (const auto& [name, value] : values) models.insert_or_assign(name, value);
         return {};
     }
     std::optional<std::uint32_t> state;
@@ -874,6 +879,51 @@ void a_manifest_says_what_a_plugin_is() {
         check(safe_relative_path(bad).empty(), std::string("A path that could leave the package is refused: ") + bad);
 }
 
+void ui_value_reservations_enforce_limits_and_collisions() {
+    ui_values::Reservations registry;
+    ui_values::Values first, rest;
+    for (int i = 0; i < 20; ++i) first.emplace("v" + std::to_string(i), static_cast<float>(i));
+    for (int i = 20; i < 32; ++i) rest.emplace("v" + std::to_string(i), static_cast<float>(i));
+    check(registry.reserve("quota", first).empty() && registry.reserve("quota", rest).empty(),
+          "Different partial calls merge into 32 lifetime reservations");
+    check(registry.records().size() == 32, "The quota counts the union, not the last batch");
+    check(registry.reserve("quota", {{"v0", 200.f}}).empty() && registry.records().size() == 32,
+          "Re-publishing an existing name does not consume quota");
+    check(registry.reserve("quota", {{"v32", 1.f}}) == "UI value limit reached",
+          "The 33rd lifetime name is refused");
+    const auto before = registry.records().size();
+    check(registry.reserve("new", {{"good", 1.f}, {"bad", std::numeric_limits<float>::infinity()}}) == "invalid UI value" &&
+          registry.records().size() == before, "Invalid batches are rejected without partial reservation");
+    check(registry.reserve("quota", {{"sHaG9mdHCM", 1.f}, {"yX391OQUvL", 2.f}}) ==
+              "UI symbol collision or reserved symbol", "Same-batch hash collisions fail closed");
+    // Known collision across distinct plugin namespaces, not merely within one batch.
+    check(ui_values::symbol("alpha", "enfwbtm118vb") == ui_values::symbol("bravo", "aixvpnvhxvhq"),
+          "The cross-plugin collision fixture is real");
+    check(registry.reserve("alpha", {{"enfwbtm118vb", 1.f}}).empty(), "First claimant reserves a symbol");
+    check(registry.reserve("bravo", {{"aixvpnvhxvhq", 2.f}}) == "UI symbol collision",
+          "A different plugin cannot claim the same symbol");
+    check(registry.records().size() == before + 1, "Collisions do not leak reservations");
+
+    ui_values::Reservations process;
+    for (int plugin = 0; plugin < 8; ++plugin) {
+        ui_values::Values batch;
+        for (int name = 0; name < 32; ++name) batch.emplace("v" + std::to_string(name), static_cast<float>(name));
+        check(process.reserve("process" + std::to_string(plugin), batch).empty(), "Eight plugins fill the process quota");
+    }
+    check(process.records().size() == ui_values::maximum_process_values, "Exactly 256 names were reserved");
+    check(process.reserve("ninth", {{"one", 1.f}}) == "UI value limit reached" &&
+          process.records().size() == ui_values::maximum_process_values, "257th name is refused atomically");
+
+    const auto id = ui_values::symbol("quota", "v0");
+    check(!registry.unchanged("quota", {{"v0", 0.f}}, 0x1234), "A reservation alone is not published");
+    registry.mark_published(id, 0x1234, 0x5678, 0.f);
+    check(registry.unchanged("quota", {{"v0", 0.f}}, 0x1234), "Identical value in the same manager is a no-op");
+    check(!registry.unchanged("quota", {{"v0", 1.f}}, 0x1234), "A changed float must publish");
+    check(!registry.unchanged("quota", {{"v0", 0.f}}, 0x2222), "A new manager must re-register");
+    check(!registry.unchanged("quota", {{"v0", 0.f}, {"v1", 1.f}}, 0x1234),
+          "An unregistered name forces publication");
+}
+
 void plugins_publish_only_their_own_ui_values() {
     TestEnvironment environment;
     Host host(environment, Side::client);
@@ -881,6 +931,7 @@ void plugins_publish_only_their_own_ui_values() {
         assert(type(reskate.ui.symbol("left")) == "number")
         assert(reskate.ui.symbol("left") ~= reskate.ui.symbol("top"))
         assert(reskate.ui.values({left = 100, top = 165, width = 620}))
+        assert(reskate.ui.values({width = 625}))
         assert(not pcall(reskate.ui.values, {width = 0/0}))
         assert(not pcall(reskate.ui.values, {width = math.huge}))
         assert(not pcall(reskate.ui.values, {width = 100001}))
@@ -897,7 +948,10 @@ void plugins_publish_only_their_own_ui_values() {
         assert(not ok and why == "UI symbol collision or reserved symbol")
     )", R"("ui.models")")});
     running(host, "layout", environment);
-    check(environment.fake.ui_models.at("layout").at("width") == 620, "UI values reach the game as numbers");
+    check(environment.fake.ui_models.at("layout").at("width") == 625 &&
+          environment.fake.ui_models.at("layout").at("left") == 100 &&
+          environment.fake.ui_models.at("layout").at("top") == 165,
+          "Partial UI updates merge instead of replacing prior fields");
     check(ui_values::symbol("layout", "left") != ui_values::symbol("other", "left"), "UI values are namespaced by plugin");
     environment.fake.ui_error = "unavailable here";
     host.apply({script("notready", R"(
@@ -911,47 +965,24 @@ void plugins_publish_only_their_own_ui_values() {
     )")});
     running(host, "sneaky", environment);
     check(!environment.fake.ui_models.contains("sneaky"), "No permission means no UI model write");
+    // A listen host has a real game provider, so refusing server copies must
+    // happen at the API layer, not rely on Game's default provider.
+    TestEnvironment server_environment;
+    Host server(server_environment, Side::server, {}, "@server");
+    server.apply({package("server-layout", {
+        {manifest_file, manifest(R"("ui.models")", "both")},
+        {"plugin/main.lua", R"(
+            local ok, why = reskate.ui.values({left = 8})
+            assert(not ok and why == "ui.models is client-only")
+            assert(not pcall(reskate.ui.symbol, "left"))
+        )"}
+    })});
+    running(server, "server-layout", server_environment);
+    check(server_environment.fake.ui_models.empty() && server_environment.fake.ui_reservations.records().empty(),
+          "Listen-server copies never reserve or publish native UI values");
     Game absent;
-    check(absent.publish_ui_values("layout", {{"left", 1.f}}) == unavailable, "Servers do not publish native UI values");
-}
-
-void live_controller_edits_geometry_not_recorded_input() {
-    TestEnvironment environment;
-    auto& game = environment.fake;
-    game.focus_now.focused = true;
-    game.pad = PadInput{};
-    Host host(environment, Side::client);
-    const std::string id = "Live_Controller_Layout";
-    const auto source = std::filesystem::path(RESKATE_SOURCE_DIR) / "contrib/examples/live-controller-layout";
-    host.apply({{id, source, "1", {}}});
-    host.set_level("sanvan");
-    ticks(host, environment, 1);
-    running(host, id, environment);
-    const auto left = [&] { return game.ui_models.at(id).at("left"); };
-    check(left() == 100, "Default layout is published");
-    game.presses = {{id, "edit_layout"}};
-    ticks(host, environment, 2); // enter and release the save/cancel buttons
-    game.pad->left_x = 1;
-    ticks(host, environment, 2);
-    check(left() > 100, "The stick moves the live geometry");
-    game.focus_now.focused = false;
-    ticks(host, environment, 1);
-    check(left() == 100, "Focus loss restores the saved layout");
-    game.focus_now.focused = true;
-    game.pad->left_x = 0;
-    game.presses = {{id, "edit_layout"}};
-    ticks(host, environment, 2);
-    game.pad->left_x = 1;
-    ticks(host, environment, 1);
-    const auto moved = left();
-    game.pad->buttons = 0x1000;
-    ticks(host, environment, 1);
-    check(left() == moved && game.files.contains(id + "/layout.json"), "Save persists the live geometry");
-    host.reload(id);
-    ticks(host, environment, 1);
-    check(left() == moved, "Reload restores saved geometry");
-    host.switch_off(id);
-    check(left() == 0, "The host releases a stopped plugin's UI values");
+    check(absent.publish_ui_values("layout", {{"left", 1.f}}) == unavailable,
+          "Dedicated-server Game provider is unavailable");
 }
 
 void a_plugin_loads_ticks_runs_its_commands_and_unloads() {
@@ -2810,6 +2841,47 @@ Candidate contributed(const std::string& id) {
     const auto directory = contrib_plugin(id);
     return {id, directory, "1", check_package_files(directory)};
 }
+
+void live_controller_edits_geometry_not_recorded_input() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    game.focus_now.focused = true;
+    game.pad = PadInput{};
+    Host host(environment, Side::client);
+    const std::string id = "Live_Controller_Layout";
+    // External mod sources are intentionally not committed to this repository.
+    // The existing test runner skips this test if contrib/plugins lacks the mod.
+    host.apply({contributed(id)});
+    host.set_level("sanvan");
+    ticks(host, environment, 1);
+    running(host, id, environment);
+    const auto left = [&] { return game.ui_models.at(id).at("left"); };
+    check(left() == 100, "Default layout is published");
+    game.presses = {{id, "edit_layout"}};
+    ticks(host, environment, 2); // enter and release the save/cancel buttons
+    game.pad->left_x = 1;
+    ticks(host, environment, 2);
+    check(left() > 100, "The stick moves the live geometry");
+    game.focus_now.focused = false;
+    ticks(host, environment, 1);
+    check(left() == 100, "Focus loss restores the saved layout");
+    game.focus_now.focused = true;
+    game.pad->left_x = 0;
+    game.presses = {{id, "edit_layout"}};
+    ticks(host, environment, 2);
+    game.pad->left_x = 1;
+    ticks(host, environment, 1);
+    const auto moved = left();
+    game.pad->buttons = 0x1000;
+    ticks(host, environment, 1);
+    check(left() == moved && game.files.contains(id + "/layout.json"), "Save persists the live geometry");
+    host.reload(id);
+    ticks(host, environment, 1);
+    check(left() == moved, "Reload restores saved geometry");
+    host.switch_off(id);
+    check(left() == 0, "The host releases a stopped plugin's UI values");
+}
+
 std::string printed_lines(const TestEnvironment& environment) {
     std::string text;
     for (const auto& line : environment.lines) text += line + "\n";
@@ -4175,6 +4247,7 @@ int main() {
         scratch = std::filesystem::temp_directory_path() / "reskate-plugin-tests";
         std::filesystem::remove_all(scratch);
         run(a_manifest_says_what_a_plugin_is);
+        run(ui_value_reservations_enforce_limits_and_collisions);
         run(plugins_publish_only_their_own_ui_values);
         run(live_controller_edits_geometry_not_recorded_input);
         run(a_plugin_loads_ticks_runs_its_commands_and_unloads);

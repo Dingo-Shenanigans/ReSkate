@@ -26,6 +26,7 @@ void install_kit_api(Plugin& plugin, lua_State* L);
 // Screen captures, the game menu's preview turned and read, what the skater wears, and the data
 // folder shown (plugin_api_capture.cpp).
 void install_capture_api(Plugin& plugin, lua_State* L);
+// Permission-gated, namespaced floats for authored native game UI (plugin_api_values.cpp).
 void install_values_api(Plugin& plugin, lua_State* L);
 
 // ---- adding to the reskate table ---------------------------------------------------------------

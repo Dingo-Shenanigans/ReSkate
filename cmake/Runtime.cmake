@@ -1,6 +1,5 @@
 add_library(dingosdk_runtime SHARED
     Runtime/runtime_init.cpp
-    Extension/Plugins/plugin_ui_values.cpp
     Runtime/runtime_state.cpp
     Runtime/client_tick.cpp
     Runtime/frame_timing.cpp
@@ -137,6 +136,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Plugins/plugin_commands.cpp
     Extension/Plugins/plugin_http.cpp
     Extension/Plugins/plugin_game_runtime.cpp
+    Extension/Plugins/plugin_ui_values.cpp
     Extension/Skater/skater_animation.cpp
     Extension/Plugins/plugin_sound.cpp
     Extension/Skater/skater_events.cpp

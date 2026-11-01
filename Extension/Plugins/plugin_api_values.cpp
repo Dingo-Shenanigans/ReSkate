@@ -6,11 +6,13 @@
 namespace dingosdk::plugins {
 struct ValuesApi {
     static Game& game(Plugin& plugin) { return plugin.services_.game(); }
+    static bool server(Plugin& plugin) { return plugin.services_.authority(); }
 };
 namespace {
 int ui_symbol(lua_State* L) {
     auto& plugin = plugin_of(L);
     need(L, plugin, "ui.models", "reskate.ui.symbol");
+    if (ValuesApi::server(plugin)) luaL_error(L, "ui.models is client-only");
     const auto name = checked_text(L, 1, 48, "a UI value name");
     if (!ui_values::valid_name(name)) luaL_error(L, "a UI value name needs 1 to 48 letters, digits, _ or -");
     lua_pushnumber(L, ui_values::symbol(plugin.id(), name));
@@ -19,6 +21,11 @@ int ui_symbol(lua_State* L) {
 int ui_values_publish(lua_State* L) {
     auto& plugin = plugin_of(L);
     need(L, plugin, "ui.models", "reskate.ui.values");
+    if (ValuesApi::server(plugin)) {
+        lua_pushboolean(L, false);
+        lua_pushliteral(L, "ui.models is client-only");
+        return 2;
+    }
     luaL_checktype(L, 1, LUA_TTABLE);
     ui_values::Values values;
     lua_pushnil(L);

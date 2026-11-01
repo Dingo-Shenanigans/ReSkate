@@ -259,6 +259,7 @@ struct Progress {
 class Game {
 public:
     virtual ~Game() = default;
+    // Publish incremental, plugin-owned float models for authored game UI; unavailable on dedicated servers.
     virtual std::string publish_ui_values(std::string_view /*plugin*/, const ui_values::Values&) { return unavailable; }
     // ---- the local skater ----------------------------------------------------------------------
     // Its physics state (100s riding, 200s in the air, 300 a wipeout, 400s grinding, 504 off the
