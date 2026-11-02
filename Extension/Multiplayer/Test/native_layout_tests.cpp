@@ -662,12 +662,12 @@ void cosmetic_layout_regression() {
         cat.put(category3 + 0x38, std::uint32_t{78});
         add(node3, asset3, name3, categories3, 0, "Own_Cap"); // another category
         const CosmeticMemory memory{std::cref(cat), fixture_base};
-        const auto items = memory.catalog();
-        check(items.size() == 3 && items[1].name == "Own_Hoodie" && items[2].categories == std::vector<std::uint32_t>{78},
+        const auto catalog = memory.catalog();
+        check(catalog.size() == 3 && catalog[1].name == "Own_Hoodie" && catalog[2].categories == std::vector<std::uint32_t>{78},
               "The catalog walk must find every installed item and its categories");
         check(memory.slot_category(res, 0) == 77, "A slot's category must be read");
         std::vector<std::string> fits;
-        for (const auto &item : items)
+        for (const auto &item : catalog)
             if (std::find(item.categories.begin(), item.categories.end(), 77U) != item.categories.end()) fits.push_back(item.name);
         check(fits == std::vector<std::string>{"Own_Shirt", "Own_Hoodie"}, "Only the slot's items are candidates");
         const auto dress = [&](const stand_ins::Policy &policy, std::uint64_t outfit, auto blocked) {
@@ -683,16 +683,16 @@ void cosmetic_layout_regression() {
             check(!reject(cat, r), "A stand-in must pass native validation");
             return r.items[0].asset;
         };
-        const auto none = [](const std::string &) { return false; };
+        const auto nothing_blocked = [](const std::string &) { return false; };
         stand_ins::Policy first;
-        check(dress(first, 1, none) == "Own_Shirt", "\"first\" takes the first that fits");
+        check(dress(first, 1, nothing_blocked) == "Own_Shirt", "\"first\" takes the first that fits");
         stand_ins::Policy random;
         random.pick = stand_ins::Pick::random;
         std::set<std::string> seen;
         for (std::uint32_t seed = 0; seed < 64; ++seed) {
             random.seed = seed;
-            const auto picked = dress(random, 42, none);
-            check(picked == dress(random, 42, none), "One outfit must get the same stand-in every time");
+            const auto picked = dress(random, 42, nothing_blocked);
+            check(picked == dress(random, 42, nothing_blocked), "One outfit must get the same stand-in every time");
             seen.insert(picked);
         }
         check(seen == std::set<std::string>{"Own_Shirt", "Own_Hoodie"}, "\"random\" must pick among every item that fits");

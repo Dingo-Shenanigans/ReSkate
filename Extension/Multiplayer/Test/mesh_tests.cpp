@@ -118,6 +118,22 @@ void VoiceChat::process_native(std::uintptr_t) noexcept {}
 void VoiceChat::receive(const Packet&) {}
 std::vector<VoiceData> VoiceChat::take_capture() { return {}; }
 }
+// No plugins, throwdown kit, skater push or local profile: the session's calls into them find nothing.
+namespace dingosdk {
+bool prepare_on_board_teleport(std::uintptr_t, std::uintptr_t) noexcept { return false; }
+PlayerCardModel local_profile_player_card() { return {}; }
+}
+namespace dingosdk::skater_push {
+bool holding() noexcept { return false; }
+}
+namespace dingosdk::throwdowns::kit {
+Match match() noexcept { return {}; }
+bool hidden(std::uint64_t) noexcept { return false; }
+}
+namespace dingosdk::plugins {
+void receive_message(std::uint64_t, const std::vector<std::uint8_t>&) noexcept {}
+std::vector<std::vector<std::uint8_t>> take_outgoing() noexcept { return {}; }
+}
 
 namespace dingosdk::multiplayer {
 struct SimulatedNetwork {
