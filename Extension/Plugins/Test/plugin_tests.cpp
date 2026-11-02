@@ -4142,6 +4142,7 @@ void plugins_have_pages() {
             assert(not pcall(ui.stepper, ui, "bad4", "Bad", 1, 0, 2, 0), "a step is above 0")
             assert(not pcall(ui.list, ui, "bad5", "Bad", {}), "a list has items")
             assert(not pcall(ui.colour, ui, "bad6", "Bad", {r = "x"}), "a colour is three numbers")
+            assert(not pcall(ui.colour, ui, "bad8", "Bad", {0/0, 0, 0}), "and finite ones")
             assert(not pcall(ui.text, ui, "bad7", "Bad", string.rep("x", 201)), "a text field holds at most 200 characters")
             assert(not pcall(ui.slider, ui, "bad", "Bad", 1, 0, 2, "%s"), "a slider's format is one number")
             assert(not pcall(ui.slider, ui, "bad2", "Bad", 1, 0, 2, "%f %f"), "and only one")

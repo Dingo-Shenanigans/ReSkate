@@ -565,7 +565,8 @@ struct UiApi {
                 lua_pop(L, 1);
                 lua_rawgeti(L, index, i + 1);
             }
-            if (!lua_isnumber(L, -1)) luaL_argerror(L, index, "a colour is {r, g, b} or {r = , g = , b = }, each 0 to 1");
+            // A NaN would pass the clamp and reach ImGui's colour picker, which turns it into an int.
+            if (!lua_isnumber(L, -1) || !std::isfinite(lua_tonumber(L, -1))) luaL_argerror(L, index, "a colour is {r, g, b} or {r = , g = , b = }, each 0 to 1");
             colour[static_cast<std::size_t>(i)] = std::clamp(static_cast<float>(lua_tonumber(L, -1)), 0.0f, 1.0f);
             lua_pop(L, 1);
         }

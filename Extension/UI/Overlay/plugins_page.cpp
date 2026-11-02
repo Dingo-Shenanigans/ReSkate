@@ -75,8 +75,11 @@ void draw_widgets(SkateMenu& menu, const plugin_ui::Panel& panel, double now) {
             in_card = true;
             folded = !open;
             auto& all = edits();
-            const auto edit = all.find(id);
-            if (edit != all.end() && edit->second.on == w.on) all.erase(edit);
+            auto edit = all.find(id);
+            if (edit != all.end() && edit->second.on == w.on) {
+                all.erase(edit); // the plugin has it now
+                edit = all.end();
+            }
             const bool sent = edit != all.end() && edit->second.on == open;
             if (open != w.on && !sent) {
                 plugin_ui::Action action{panel.plugin, panel.title, w.id};
