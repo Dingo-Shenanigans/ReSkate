@@ -3076,7 +3076,7 @@ void tricks_reach_plugins_that_ask_for_them() {
         reskate.on("line_broken", function(e) reskate.log("broken by a " .. e.reason) end)
         reskate.console.command("score", "x", function()
             local s = reskate.score.current()
-            reskate.log(s and string.format("score %.0f x%.1f %s", s.line, s.multiplier, tostring(s.in_trick)) or "no score")
+            reskate.log(s and string.format("score %.0f x%.1f %s %.2f", s.line, s.multiplier, tostring(s.in_trick), s.timer) or "no score")
         end)
     )", R"("console", "events.tricks")")});
     check(host.wants_tricks(), "With a plugin that has events.tricks, tricks are read");
@@ -3098,9 +3098,9 @@ void tricks_reach_plugins_that_ask_for_them() {
     check(environment.logged("[tricks] started at 1 2 3") && environment.logged("[tricks] landed 250 x2.0 from 1 to 9 in 1200 ms") &&
           environment.logged("[tricks] broken by a slam"), "Each trick event reaches it, with its values\n" + environment.all());
     host.run_console("score");
-    environment.score_now = ScoreState{708, 2, true};
+    environment.score_now = ScoreState{708, 2, true, {}, {}, false, 0.5f};
     host.run_console("score");
-    check(environment.logged("[tricks] no score") && environment.logged("[tricks] score 708 x2.0 true"), "and the score HUD as it is");
+    check(environment.logged("[tricks] no score") && environment.logged("[tricks] score 708 x2.0 true 0.50"), "and the score HUD as it is");
     running(host, "tricks", environment);
 }
 

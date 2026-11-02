@@ -262,7 +262,7 @@ void read_tricks() {
     signals.wipeout = skater.skater && skater.physics_state >= 300 && skater.physics_state < 400;
     const auto event = trick_watch.update(signals);
     environment->score_now = ScoreState{hud->line_score, hud->multiplier, trick_watch.in_trick(), hud->header, hud->descriptor,
-                                        tricks::names_manual(*hud)};
+                                        tricks::names_manual(*hud), hud->line_timer};
     if (!hud->header.empty()) last_trick_name = hud->header;
     const auto now = std::chrono::steady_clock::now();
     TrickNews news;

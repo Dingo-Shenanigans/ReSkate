@@ -657,6 +657,8 @@ struct ApiFunctions {
         lua_setfield(L, -2, "detail");
         lua_pushboolean(L, now->manual);
         lua_setfield(L, -2, "manual");
+        lua_pushnumber(L, now->timer);
+        lua_setfield(L, -2, "timer");
         return 1;
     }
     // Modules come from the plugin's own package, beside its entry: require("./rules") or

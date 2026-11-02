@@ -39,9 +39,10 @@ struct Switch {
     std::size_t size;
     Value down;
 };
-constexpr std::array<Switch, 2> score_switches{{
+constexpr std::array<Switch, 3> score_switches{{
     {corner::hud_widget_active, 1, 0},
     {corner::extra_info_style, 4, static_cast<std::uint32_t>(corner::extra_info_none)},
+    {corner::sequence_state, 4, static_cast<std::uint32_t>(corner::sequence_down)},
 }};
 
 // A score HUD field as the model write hook sees it, on whichever thread the game writes from.
@@ -199,6 +200,7 @@ bool find_stack(Corner& c, const menu_data::Context& context) {
 // Puts our item into the d-pad's stack, or takes it out; the game's items stay as they are. Our
 // item: empty content, our key, the stack's transition as a push gives it.
 void hide_dpad(Corner& c, const menu_data::Context& context, bool hidden) {
+    if (c.cover.handle && context.type_of(c.cover.handle) != c.cover.type) c.cover = {}; // a level load took it with the HUD's models
     const auto field = items_of(context, c.stack);
     unsigned count{}, stride{};
     auto items = context.array(field, 16, count, stride);

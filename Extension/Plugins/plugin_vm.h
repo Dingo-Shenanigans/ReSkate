@@ -104,6 +104,7 @@ struct ScoreState {
     bool in_trick{};
     std::string trick, detail; // the HUD's sequence header and descriptor ("Manual", "Kickflip"...)
     bool manual{};             // a manual is going on, as the HUD names it
+    float timer{};             // the HUD's line timer: what is left before the multiplier ends
 };
 // The multiplayer session as plugins see it: who is in it (the local player too).
 struct SessionPlayer {

@@ -28,8 +28,8 @@ struct Watched {
     const char* name;
     std::uint32_t hash;
 };
-enum : std::size_t { line_score, is_slam, multiplier, action_active, sequence_header, sequence_descriptor, sequence_state };
-constexpr std::array<Watched, 7> watched{{
+enum : std::size_t { line_score, is_slam, multiplier, action_active, sequence_header, sequence_descriptor, sequence_state, line_timer };
+constexpr std::array<Watched, 8> watched{{
     {"LineScore", 1086322279u},
     {"IsSlam", 2943226809u},
     {"Multiplier", 1782700230u},
@@ -38,6 +38,7 @@ constexpr std::array<Watched, 7> watched{{
     {"SequenceHeader", 3018447676u},
     {"SequenceDescriptor", 3894822438u},
     {"SequenceState", 2134799591u},
+    {"LineTimer", 3181226295u}, // 0xbd9da937, found by a ui dump mid-line
 }};
 constexpr std::size_t value_bytes = 16; // read per field
 
@@ -170,7 +171,7 @@ std::optional<ScoreHud> read_score_hud(std::uintptr_t image_base) noexcept {
     if (!ok) return std::nullopt;
     const auto& f = h.fields;
     ScoreHud result{flag_of(f[action_active]), flag_of(f[is_slam]), score_of(f[line_score]), score_of(f[multiplier]),
-                    text_of(f[sequence_header]), text_of(f[sequence_descriptor]), enum_of(f[sequence_state])};
+                    text_of(f[sequence_header]), text_of(f[sequence_descriptor]), enum_of(f[sequence_state]), score_of(f[line_timer])};
     trace_sequence(result);
     return result;
 }
