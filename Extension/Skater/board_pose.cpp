@@ -106,6 +106,9 @@ std::atomic<std::uintptr_t> base_now{}, holder_now{};
 std::atomic<bool> any{};
 // The bones hidden from everyone, as bits (bone b is bit b), for the sent pose filter without the lock.
 std::atomic<std::uint32_t> hidden_from_all{};
+// The bones sized (scale) the same way, and each one's size, so the others see them too.
+std::atomic<std::uint32_t> sized_bones{};
+std::array<std::array<std::atomic<float>, 3>, bones> sized_to{};
 // How every board is fitted (fit): the baseplates held on the deck, and the wheels' spread. Read by
 // the render hook without the lock; the owner is under it.
 std::atomic<bool> fitted{}, fit_plates{};
@@ -139,17 +142,27 @@ void refresh_any(Shared& s) {
     for (const auto& [b, want] : s.wanted)
         if (want.hidden && want.everyone) bits |= 1u << b;
     hidden_from_all.store(bits, std::memory_order_release);
+    std::uint32_t sized = 0;
+    for (const auto& [b, size] : s.sized) {
+        for (std::size_t i = 0; i < 3; ++i) sized_to[static_cast<std::size_t>(b)][i].store(size.second[i], std::memory_order_relaxed);
+        sized |= 1u << b;
+    }
+    sized_bones.store(sized, std::memory_order_release);
 }
-// The local skater's pose as it is sent: the bones hidden from everyone out of sight in it too, as they
-// are drawn here. board[0] is the board entity's place in the world, then its rig's bones from 0.
+// The local skater's pose as it is sent: the bones hidden from everyone out of sight in it too, and the
+// sized ones at their sizes, as they are drawn here (each player's game then holds the sizes to the
+// session's bone scale limit: limit_bone_scale, protocol.h). board[0] is the board entity's place in
+// the world, then its rig's bones from 0.
 void on_sent_pose(std::uintptr_t, multiplayer::Pose& pose) noexcept {
     const auto bits = hidden_from_all.load(std::memory_order_acquire);
-    if (!bits) return;
-    for (int b = first_writable; b < bones; ++b)
-        if ((bits & (1u << b)) && static_cast<std::size_t>(b + 1) < pose.board.size()) {
-            auto& at = pose.board[static_cast<std::size_t>(b + 1)].position;
-            if (length(at) < 100.0f) at[1] -= 2000.0f;
-        }
+    const auto sized = sized_bones.load(std::memory_order_acquire);
+    if (!bits && !sized) return;
+    for (int b = first_writable; b < bones && static_cast<std::size_t>(b + 1) < pose.board.size(); ++b) {
+        auto& bone = pose.board[static_cast<std::size_t>(b + 1)];
+        if (sized & (1u << b))
+            for (std::size_t i = 0; i < 3; ++i) bone.scale[i] = sized_to[static_cast<std::size_t>(b)][i].load(std::memory_order_relaxed);
+        if ((bits & (1u << b)) && length(bone.position) < 100.0f) bone.position[1] -= 2000.0f;
+    }
 }
 std::string take(Shared& s, std::string_view owner) {
     if (!s.owner.empty() && s.owner != owner) return s.owner + " holds the board";

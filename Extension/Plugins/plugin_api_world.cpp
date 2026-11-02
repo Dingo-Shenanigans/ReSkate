@@ -1804,7 +1804,8 @@ struct WorldApi {
         return 0;
     }
     // scale(bone, size): the bone drawn this much bigger over its animation, which still turns and places
-    // it; a number for every axis or a vector, 0.25 to 4 each, on this screen only. scale(bone) ends it.
+    // it; a number for every axis or a vector, 0.25 to 4 each, on this screen and to the other players
+    // within the session's bone scale limit. scale(bone) ends it.
     static int board_scale(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "board", "reskate.board.scale");
