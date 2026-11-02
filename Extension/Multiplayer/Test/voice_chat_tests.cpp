@@ -137,8 +137,13 @@ int main() try {
             check(!decode(std::span(encoded).first(i)), "Truncated voice policy accepted");
         auto invalid = encoded; invalid[end - 8] = 2;
         check(!decode(invalid), "Invalid host voice toggle accepted");
+        // Every bit of the guest tools byte has a meaning since ollies can be locked (128): it is
+        // read, not refused.
         invalid = encoded; invalid[end - 1] = 128;
-        check(!decode(invalid), "Invalid guest noclip / No Bail byte accepted");
+        const auto ollies = decode(invalid);
+        check(ollies && ollies->guest_ollies && !ollies->guest_noclip && !ollies->guest_no_bail && !ollies->guest_boosts &&
+                  !ollies->enforce_tuning && ollies->server_votes == 0,
+              "The guest tools byte's ollie lock was not read as one");
         invalid = encoded;
         for (std::size_t i = end - 7; i < end - 3; ++i) invalid[i] = 0;
         check(!decode(invalid), "Zero host voice revision accepted");

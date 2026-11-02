@@ -176,8 +176,8 @@ int run() {
     save_config(locks);
     {
         std::ifstream in(file, std::ios::binary);
-        const std::string written((std::istreambuf_iterator<char>(in)), {});
-        check(written.find(R"("throwdown_locks": [)") != std::string::npos && written.find(R"("nobail")") != std::string::npos,
+        const std::string locks_json((std::istreambuf_iterator<char>(in)), {});
+        check(locks_json.find(R"("throwdown_locks": [)") != std::string::npos && locks_json.find(R"("nobail")") != std::string::npos,
               "Throwdown locks not written as names");
     }
     check(load_config(file).throwdown_locks == (lock_nobail | lock_tuning), "Throwdown locks lost");

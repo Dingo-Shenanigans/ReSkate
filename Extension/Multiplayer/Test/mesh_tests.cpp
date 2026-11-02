@@ -11,6 +11,24 @@
 #include <map>
 #include <set>
 
+// Game, plugin and profile hooks the session calls since these stubs were written: nothing to
+// hold, hide or relay without the game, as in the other stubs below.
+namespace dingosdk {
+bool prepare_on_board_teleport(std::uintptr_t, std::uintptr_t) noexcept { return true; }
+PlayerCardModel local_profile_player_card() { return {}; }
+}
+namespace dingosdk::skater_push {
+bool holding() noexcept { return false; }
+}
+namespace dingosdk::throwdowns::kit {
+Match match() noexcept { return {}; }
+bool hidden(std::uint64_t) noexcept { return false; }
+}
+namespace dingosdk::plugins {
+void receive_message(std::uint64_t, const std::vector<std::uint8_t>&) noexcept {}
+std::vector<std::vector<std::uint8_t>> take_outgoing() noexcept { return {}; }
+}
+
 namespace dingosdk {
 bool read_local_camera_transform(std::uintptr_t, std::uintptr_t, std::array<float, 16>&) noexcept { return false; }
 ParksModel simulated_parks;
