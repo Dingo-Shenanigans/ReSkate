@@ -1102,36 +1102,72 @@ struct WorldApi {
         keep_clip(L, plugin, "clip:" + std::to_string(++plugin.recordings_), std::move(clip));
         return 1;
     }
+    static void push_joint(lua_State* L, const anim_studio::Joint& joint) {
+        lua_createtable(L, 0, 3);
+        push_position(L, joint.position);
+        lua_setfield(L, -2, "position");
+        push_quaternion(L, joint.rotation);
+        lua_setfield(L, -2, "rotation");
+        lua_pushnumber(L, (joint.scale[0] + joint.scale[1] + joint.scale[2]) / 3);
+        lua_setfield(L, -2, "scale");
+    }
     // sample(clip, joint, seconds): the joint in its parent's frame at that time, {position, rotation, scale}.
+    // sample(clip, {joint, ...}, seconds): {[joint] = {position, rotation, scale}, ...} from one sampling of the
+    // clip, keyed by each joint as given; a joint the clip does not hold is left out.
     static int animation_sample(lua_State* L) {
         auto& plugin = animating(L, "reskate.animation.sample");
         const auto clip = clip_at(L, plugin, 1);
-        const auto joint = clip_joint(L, 2);
-        const double t = luaL_checknumber(L, 3);
-        if (!std::isfinite(t)) luaL_argerror(L, 3, "seconds into the clip");
-        anim_studio::Joint out;
-        if (joint == anim_studio::board_joint) {
-            if (!clip->sample_board(static_cast<float>(t), out)) {
-                lua_pushnil(L);
-                return 1;
+        const bool many = lua_istable(L, 2);
+        std::vector<std::uint16_t> joints;
+        if (many) {
+            const int count = lua_objlen(L, 2);
+            joints.reserve(count);
+            for (int i = 1; i <= count; ++i) {
+                lua_rawgeti(L, 2, i);
+                joints.push_back(clip_joint(L, -1));
+                lua_pop(L, 1);
             }
         } else {
-            if (joint >= clip->joints) {
-                lua_pushnil(L);
-                return 1;
-            }
-            thread_local std::vector<anim_studio::Joint> pose;
-            pose.resize(clip->joints);
-            clip->sample(static_cast<float>(t), pose);
-            out = pose[joint];
+            joints.push_back(clip_joint(L, 2));
         }
-        lua_createtable(L, 0, 3);
-        push_position(L, out.position);
-        lua_setfield(L, -2, "position");
-        push_quaternion(L, out.rotation);
-        lua_setfield(L, -2, "rotation");
-        lua_pushnumber(L, (out.scale[0] + out.scale[1] + out.scale[2]) / 3);
-        lua_setfield(L, -2, "scale");
+        const double t = luaL_checknumber(L, 3);
+        if (!std::isfinite(t)) luaL_argerror(L, 3, "seconds into the clip");
+        const auto at = static_cast<float>(t);
+        thread_local std::vector<anim_studio::Joint> pose;
+        bool sampled = false, board_sampled = false, has_board = false;
+        anim_studio::Joint board;
+        // The joint, sampling the clip (or its board) the first time one needs it; false when the clip has none.
+        const auto sample = [&](std::uint16_t joint, anim_studio::Joint& out) {
+            if (joint == anim_studio::board_joint) {
+                if (!board_sampled) {
+                    board_sampled = true;
+                    has_board = clip->sample_board(at, board);
+                }
+                out = board;
+                return has_board;
+            }
+            if (joint >= clip->joints) return false;
+            if (!sampled) {
+                sampled = true;
+                pose.resize(clip->joints);
+                clip->sample(at, pose);
+            }
+            out = pose[joint];
+            return true;
+        };
+        anim_studio::Joint out;
+        if (!many) {
+            if (sample(joints[0], out)) push_joint(L, out);
+            else lua_pushnil(L);
+            return 1;
+        }
+        lua_createtable(L, 0, static_cast<int>(joints.size()));
+        for (std::size_t i = 0; i < joints.size(); ++i) {
+            if (!sample(joints[i], out)) continue;
+            lua_rawgeti(L, 2, static_cast<int>(i + 1)); // the key, as the plugin gave it
+            push_joint(L, out);
+            lua_rawset(L, -3);
+        }
         return 1;
     }
     // joints(): the joints an animation editor offers, in order: {joint, label, moves}.

@@ -2847,10 +2847,13 @@ void a_runaway_plugin_is_stopped_and_the_rest_go_on() {
 void a_plugin_over_its_time_budget_is_stopped() {
     TestEnvironment environment;
     Host host(environment, Side::client);
-    host.apply({script("busy", R"(reskate.on("tick", function() local s = os.clock() while os.clock() - s < 0.004 do end end))"),
+    // 8 ms a tick is over the 6 ms budget; 3 ms, which a slow PC could take for a fair plugin, is not.
+    host.apply({script("busy", R"(reskate.on("tick", function() local s = os.clock() while os.clock() - s < 0.008 do end end))"),
+        script("steady", R"(reskate.on("tick", function() local s = os.clock() while os.clock() - s < 0.003 do end end))"),
         script("light", R"(reskate.on("tick", function() local s = 0 for i = 1, 100 do s += i end end))")});
-    ticks(host, environment, 60 * 5);
-    stopped(host, "busy", "ms a tick for 3 s");
+    ticks(host, environment, 60 * 7);
+    stopped(host, "busy", "ms a tick for 5 s, over its 6 ms");
+    running(host, "steady", environment);
     running(host, "light", environment);
 }
 
@@ -3977,6 +3980,12 @@ void plugins_edit_clips() {
         assert(math.abs(s.rotation[3] - 0.70711) < 1e-3 and math.abs(s.rotation[4] - 0.70711) < 1e-3, "the hips turned 90 degrees")
         assert(math.abs(s.position.y - 0.5) < 1e-4 and math.abs(reskate.animation.sample(work, "hips", 0.25).position.y - 0.25) < 1e-4, "and moved, blended")
         assert(reskate.animation.sample(rec, 7, 0.5).rotation[4] == 1, "the recording stays as it was")
+        local many = reskate.animation.sample(work, {7, "hips", 8, 394, "board"}, 0.25)
+        local one = reskate.animation.sample(work, 8, 0.25)
+        assert(math.abs(many[7].position.y - 0.25) < 1e-4 and math.abs(many.hips.position.y - 0.25) < 1e-4, "joints sampled together")
+        assert(many[8].rotation[4] == one.rotation[4] and many[8].scale == one.scale and many[394] ~= nil, "as one at a time")
+        assert(many.board == nil and next(reskate.animation.sample(work, {}, 0)) == nil, "the board left out of a clip without it")
+        assert(not pcall(reskate.animation.sample, work, {7, "nose"}, 0), "a joint that is not one")
         assert(reskate.animation.edit(rec, {}, {name = "work"}) == "edit:work", "the same name again")
         assert(reskate.animation.sample("edit:work", 7, 0.5).rotation[4] == 1, "replaces it")
         local list = reskate.animation.joints()
@@ -5715,7 +5724,7 @@ void animator_studio_records_and_saves() {
         }
     check(tiles > 30 && texts > 60, std::format("The studio's screen is drawn: {} tiles, {} texts\n", tiles, texts) + environment.all());
     const auto studio_ms = status_of(host, "animator-studio").tick_ms;
-    std::cout << std::format("animator-studio: {:.3f} ms a tick open (its budget is 2 ms)\n", studio_ms);
+    std::cout << std::format("animator-studio: {:.3f} ms a tick open (its budget is 6 ms)\n", studio_ms);
     check(studio_ms < 2, "It stays within its time");
     running(host, "animator-studio", environment);
     // The middle mouse button pans the camera: it moves sideways, looking the same way.
@@ -5997,7 +6006,7 @@ void board_break_snaps_the_board_on_a_slam() {
 
 // The FPV drone as a mod (contrib/plugins/fpv-drone): its own tests of the flight maths pass, and
 // over the fake world (flat ground at y = 0) it flies the camera, keeps the game off the input,
-// plays its motor, follows the skater and tells the session where it is, within its 2 ms a tick.
+// plays its motor, follows the skater and tells the session where it is, within 2 ms a tick.
 // Hall of Meat as a mod (contrib/plugins/hall-of-meat): its own checks pass, and a bail fed through
 // physics_step shows the x-ray, hides the HUD corner, slows the game at a break and keeps the map's best.
 void hall_of_meat_scores_a_bail() {
@@ -6416,7 +6425,7 @@ void the_throwdowns_page_lists_the_stock_cards_and_plugin_modes() {
 }
 
 // The Filmer (contrib/plugins/filmer): an AI filmer follows a skater riding a carving line, then you film
-// someone, with your skater carrying the camcorder for the others; all within the 2 ms a tick a plugin has.
+// someone, with your skater carrying the camcorder for the others; all well within the 6 ms a tick a plugin has.
 // The FPS plugin (contrib/plugins/fps): its own checks pass; on foot it takes the camera at the head,
 // hides the skater and shows its pistol; a click shoots (a fire clip); back on the board, all of it
 // is given back.
@@ -6563,8 +6572,8 @@ void filmer_follows_and_films() {
               "The AI filmer rides behind the skater, a filmer's distance off, low\n" + environment.all());
     }
     const auto follow_ms = status_of(host, plugin).tick_ms;
-    std::cout << "Filmer follow: " << follow_ms << " ms a tick (its budget is 2 ms)\n";
-    check(follow_ms < 2.0, "The Filmer follows within its 2 ms a tick");
+    std::cout << "Filmer follow: " << follow_ms << " ms a tick (its budget is 6 ms)\n";
+    check(follow_ms < 2.0, "The Filmer follows within 2 ms a tick");
     // You film the skater ahead of you, holding the camcorder out for the others to see.
     environment.lines.clear();
     check(host.run_console("filmer mode film"), "filmer mode film");
@@ -6577,7 +6586,7 @@ void filmer_follows_and_films() {
     check(game.called("hide filmer false false false stick true false true"), "The right stick and its click are the camera's");
     const auto film_ms = status_of(host, plugin).tick_ms;
     std::cout << "Filmer film: " << film_ms << " ms a tick\n";
-    check(film_ms < 2.0, "You film within the 2 ms a tick");
+    check(film_ms < 2.0, "You film within 2 ms a tick");
     check(host.run_console("filmer slap") && environment.printed("Clip 1 marked"), "A slap marks a clip\n" + printed_lines(environment));
     check(host.run_console("filmer mode off"), "filmer mode off");
     ticks(host, environment, 30);
@@ -6739,7 +6748,7 @@ void smokey_throwdowns_register_and_play_one_up() {
             kit::post(key, "start", {std::to_string(id)});
             ticks(host, environment, 400);
             const auto ms = status_of(host, plugin).tick_ms;
-            std::cout << "SmokeyDawg58 " << mode << ": " << ms << " ms a tick playing (its budget is 2 ms)\n";
+            std::cout << "SmokeyDawg58 " << mode << ": " << ms << " ms a tick playing (its budget is 6 ms)\n";
             check(ms < 2, mode + ": within its time");
             docs = docs_of(key);
             const auto& hud = docs.hud;
@@ -6926,7 +6935,7 @@ void fpv_drone_flies_and_follows() {
     ticks(host, environment, 120);
     check(game.called("camera release fpv-drone") && game.called("outfit clear fpv-drone eyewear") && game.called("hud fpv-drone off"),
           "Landing gives the camera, the eyewear and the HUD back\n" + environment.all());
-    std::cout << std::format("fpv-drone: {:.3f} ms a tick flying, {:.3f} ms following (its budget is 2 ms)\n", flying_ms, following_ms);
+    std::cout << std::format("fpv-drone: {:.3f} ms a tick flying, {:.3f} ms following (its budget is 6 ms)\n", flying_ms, following_ms);
     check(flying_ms < 2 && following_ms < 2, "It stays within its time");
     // Another player's drone: a marker, a tag on their nametag and their motor; gone once not heard from.
     game.calls.clear();
@@ -6960,7 +6969,7 @@ void reskate_hostile_is_stopped_or_refused_every_time() {
     const Case cases[] = {
         {"loop", true, 0}, {"caught-loop", true, 0}, {"tick-loop", true, 1}, {"memory", true, 0},
         {"caught-memory", true, 0}, {"huge-string", true, 0}, {"buffer", true, 0}, {"coroutines", true, 0},
-        {"errors", true, 10}, {"slow", true, 60 * 5}, {"log-flood", false, 1}, {"timers", false, 1},
+        {"errors", true, 10}, {"slow", true, 60 * 7}, {"log-flood", false, 1}, {"timers", false, 1},
         {"recursion", false, 1}, {"escapes", false, 1}, {"teleport-spam", false, 1}, {"raycast-flood", false, 1}, {"trick-loop", true, 0, true}, {"draw-flood", false, 2}, {"toast-spam", false, 1},
         {"sound-spam", false, 1}, {"message-flood", false, 1}, {"panel-loop", true, 2, false, true},
         {"chat-spam", false, 1}, {"edit-spam", false, 1}, {"travel-spam", false, 1}, {"web-elsewhere", false, 1},

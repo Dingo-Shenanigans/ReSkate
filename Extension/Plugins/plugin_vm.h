@@ -30,8 +30,8 @@ struct Limits {
     std::size_t memory = 64u << 20;     // the VM's heap
     double call_ms = 50;                // one call into the plugin (load, a handler, a command)
     double unload_ms = 20;              // its unload handlers, together
-    double tick_ms = 2;                 // the average time a tick, over a window of 1 s...
-    int over_windows = 3;               // ...over it this many windows in a row stops it
+    double tick_ms = 6;                 // the average time a tick, over a window of 1 s...
+    int over_windows = 5;               // ...over it this many windows in a row stops it
     int errors = 5;                     // more errors than this...
     double error_window_ms = 10'000;    // ...in this long stops it
     int log_lines_per_second = 50;
