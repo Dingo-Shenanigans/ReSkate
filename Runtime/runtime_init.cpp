@@ -18,6 +18,7 @@
 #include "Extension/World/light_table_guard.h"
 #include "Extension/World/guid_table_guard.h"
 #include "Extension/World/texture_handle_guard.h"
+#include "Extension/World/reference_list_guard.h"
 #include "Extension/World/physics_wake_guard.h"
 #include "Extension/World/streaming_copy_guard.h"
 #include "Extension/World/stack_check_report.h"
@@ -400,6 +401,7 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
         (void)dingosdk::light_table_guard::install(r.base);
         (void)dingosdk::guid_table_guard::install(r.base);
         (void)dingosdk::texture_handle_guard::install(r.base);
+        (void)dingosdk::reference_list_guard::install(r.base);
         (void)dingosdk::physics_wake_guard::install(r.base);
         (void)dingosdk::streaming_copy_guard::install(r.base);
         (void)dingosdk::load_error_guard::install(r.base);

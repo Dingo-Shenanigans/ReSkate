@@ -100,6 +100,7 @@ add_library(dingosdk_runtime SHARED
     Extension/World/stack_check_report.cpp
     Extension/World/texture_handle_limit.cpp
     Extension/World/texture_handle_guard.cpp
+    Extension/World/reference_list_guard.cpp
     Extension/World/physics_wake_guard.cpp
     Extension/World/streaming_copy_guard.cpp
     Extension/Settings/replay_drafts.cpp
