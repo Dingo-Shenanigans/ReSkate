@@ -374,6 +374,18 @@ int main() {
               "Package files install with the mod");
         make_zip(sources / L"Map-2.zip", {{"layout.toc", "toc"}});
         check(install(store, sources / L"Map-2.zip") == "Map-2", "Names that merely end in a number keep it");
+        // The same download saved again: the browser numbers the copy, " (1)" or "(1)", and so does the
+        // folder it is extracted to. It is still that package, not a second mod beside it.
+        make_zip(sources / L"Zee-Desert_Springs-1.2.3 (1).zip", {{"manifest.json", manifest}, {"layout.toc", "toc"}});
+        std::string copy;
+        try { install(store, sources / L"Zee-Desert_Springs-1.2.3 (1).zip"); } catch (const launcher_mods::AlreadyInstalled& existing) {
+            copy = existing.name;
+        }
+        check(copy == "Zee-Desert_Springs", "A package downloaded twice asks to replace the installed one");
+        write(sources / L"Zee-Desert_Springs-1.2.3(2)" / L"manifest.json", manifest);
+        write(sources / L"Zee-Desert_Springs-1.2.3(2)" / L"layout.toc", "toc");
+        check(install(store, sources / L"Zee-Desert_Springs-1.2.3(2)", true) == "Zee-Desert_Springs",
+              "A numbered copy's extracted folder installs as the package");
 
         // The usual packaging mistake: the mod folder zipped inside the package.
         make_zip(sources / L"nested.zip", {{"manifest.json", manifest}, {"icon.png", "png"}, {"README.md", "readme"},
