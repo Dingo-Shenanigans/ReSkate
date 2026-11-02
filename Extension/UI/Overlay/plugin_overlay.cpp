@@ -8,6 +8,8 @@
 #include "Extension/UI/Overlay/overlay.h"
 #include "Extension/UI/Overlay/skate_style.h"
 #include <algorithm>
+#include <array>
+#include <map>
 #include <imgui_internal.h>
 #include <map>
 #include <memory>
@@ -223,7 +225,10 @@ void draw_plugin_screen() {
         ImGui::Separator();
         ImGui::Spacing();
         int item = 0;
+        bool folded = false; // in a section folded away: its widgets are not drawn
         for (const auto& w : screen->widgets) {
+            if (folded && w.kind != plugin_ui::Widget::Kind::section && w.kind != plugin_ui::Widget::Kind::card) continue;
+            if (w.kind == plugin_ui::Widget::Kind::card) folded = false;
             ImGui::PushID(item++);
             plugin_ui::Action action{screen->plugin, screen->title, w.id};
             bool acted = false;
@@ -263,6 +268,93 @@ void draw_plugin_screen() {
                 ImGui::ProgressBar((w.value - w.minimum) / (w.maximum - w.minimum), ImVec2(wide, 0), w.text.c_str());
                 break;
             case Kind::button: acted = ImGui::Button(w.text.c_str(), ImVec2(button, 0)); break;
+            case Kind::text: {
+                // ImGui edits the characters in place: kept by widget while the field has the keyboard.
+                static std::map<std::string, std::array<char, 201>> buffers;
+                auto& buffer = buffers[w.id];
+                ImGui::SetNextItemWidth(wide);
+                const auto id = ImGui::GetID("##text");
+                if (ImGui::GetActiveID() != id) {
+                    const auto length = std::min(w.input.size(), buffer.size() - 1);
+                    std::copy_n(w.input.data(), length, buffer.data());
+                    buffer[length] = '\0';
+                }
+                if (ImGui::InputTextWithHint("##text", w.help.c_str(), buffer.data(), buffer.size())) {
+                    action.text = buffer.data();
+                    acted = true;
+                }
+                ImGui::SameLine();
+                ImGui::TextUnformatted(w.text.c_str());
+                break;
+            }
+            case Kind::colour: {
+                auto colour = w.colour;
+                ImGui::SetNextItemWidth(wide);
+                if (ImGui::ColorEdit3(w.text.c_str(), colour.data())) {
+                    action.colour = colour;
+                    acted = true;
+                }
+                break;
+            }
+            case Kind::stepper: {
+                float value = w.value;
+                ImGui::SetNextItemWidth(wide);
+                if (ImGui::InputFloat(w.text.c_str(), &value, w.step, w.step * 10, w.format.empty() ? "%.2f" : w.format.c_str())) {
+                    const float steps = std::round((std::clamp(value, w.minimum, w.maximum) - w.minimum) / w.step);
+                    action.value = std::clamp(w.minimum + steps * w.step, w.minimum, w.maximum);
+                    acted = true;
+                }
+                break;
+            }
+            case Kind::section: {
+                ImGui::Spacing();
+                ImGui::SetNextItemOpen(w.on, ImGuiCond_Once);
+                const bool open = ImGui::CollapsingHeader(w.text.c_str());
+                if (!w.help.empty() && open) ImGui::TextDisabled("%s", w.help.c_str());
+                if (open != w.on) {
+                    action.on = open;
+                    acted = true;
+                }
+                folded = !open;
+                break;
+            }
+            case Kind::list: {
+                ImGui::TextUnformatted(w.text.c_str());
+                const float height = static_cast<float>(w.rows) * ImGui::GetTextLineHeightWithSpacing() + ImGui::GetStyle().FramePadding.y * 2;
+                if (ImGui::BeginListBox("##list", ImVec2(wide, height))) {
+                    for (int i = 0; i < static_cast<int>(w.choices.size()); ++i) {
+                        ImGui::PushID(i);
+                        if (ImGui::Selectable(w.choices[static_cast<std::size_t>(i)].c_str(), i + 1 == w.chosen) && i + 1 != w.chosen) {
+                            action.chosen = i + 1;
+                            acted = true;
+                        }
+                        ImGui::PopID();
+                    }
+                    ImGui::EndListBox();
+                }
+                break;
+            }
+            case Kind::buttons: {
+                const float right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+                for (int i = 0; i < static_cast<int>(w.choices.size()); ++i) {
+                    const auto& name = w.choices[static_cast<std::size_t>(i)];
+                    const float width = ImGui::CalcTextSize(name.c_str()).x + ImGui::GetStyle().FramePadding.x * 2;
+                    if (i > 0) {
+                        ImGui::SameLine();
+                        if (ImGui::GetCursorScreenPos().x + width > right) ImGui::NewLine();
+                    }
+                    ImGui::PushID(i);
+                    const bool lit = i + 1 == w.chosen;
+                    if (lit) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+                    if (ImGui::Button(name.c_str())) {
+                        action.chosen = i + 1;
+                        acted = true;
+                    }
+                    if (lit) ImGui::PopStyleColor();
+                    ImGui::PopID();
+                }
+                break;
+            }
             case Kind::toggle: {
                 bool on = w.on;
                 if (ImGui::Checkbox(w.text.c_str(), &on)) {
