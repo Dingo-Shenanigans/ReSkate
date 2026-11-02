@@ -3,6 +3,10 @@
 
 namespace dingosdk::game::build::v20260929::no_bail {
 // Supported SHA-256 fbce74d5e28ef525dbba2cb4adbebc13405bdbd88f31bc940bca45e4ae88b8f9.
+// Skater-component arrival preference. Native 0xf9d170 copies on-board,
+// stance and lip-mount bytes to +0xc0..+0xc2; the local teleport consumer at
+// 0x566898 reads the on-board byte. We change only that byte, not stance/lip.
+inline constexpr std::uintptr_t teleport_on_board_option = 0xc0;
 // void(collector, int32 reason, float magnitude): writes cause byte +0x28,
 // XMM2 magnitude to +0x4c, and increments cause count +0xe0. Both the full
 // wipeout and recoverable runout predicates consume this collector.

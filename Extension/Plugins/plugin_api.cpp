@@ -570,8 +570,11 @@ struct ApiFunctions {
         else lua_pushnil(L);
         return 1;
     }
-    // skater.teleport: true when the teleport was sent (it happens within a few seconds); false
+    // skater.teleport: true means queued, not an arrival or equipment acknowledgement; false
     // and why when the host has turned teleporting off, it cannot be done now, or it is asked too often.
+    // Explicit on_board sets the native spawn preference at dispatch. The engine may retain it
+    // for later teleports; omitted options leave that preference unchanged. This is native state,
+    // not a saved SDK setting, and no automatic restoration is promised.
     static int skater_teleport(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "skater.teleport", "reskate.skater.teleport");
@@ -584,6 +587,21 @@ struct ApiFunctions {
             if (!std::isfinite(given)) luaL_argerror(L, 2, "the heading must be a finite number of radians");
             heading = static_cast<float>(std::remainder(given, 2 * 3.14159265358979323846));
         }
+        std::optional<bool> on_board;
+        if (!lua_isnoneornil(L, 3)) {
+            luaL_checktype(L, 3, LUA_TTABLE);
+            lua_pushnil(L);
+            while (lua_next(L, 3)) {
+                std::size_t size = 0;
+                const char* key = lua_type(L, -2) == LUA_TSTRING ? lua_tolstring(L, -2, &size) : nullptr;
+                if (!key || std::string_view(key, size) != "on_board")
+                    luaL_argerror(L, 3, "the only teleport option is on_board");
+                if (lua_type(L, -1) != LUA_TBOOLEAN)
+                    luaL_argerror(L, 3, "on_board must be a boolean");
+                on_board = lua_toboolean(L, -1) != 0;
+                lua_pop(L, 1);
+            }
+        }
         const double now = plugin.services_.now_ms();
         if (now - plugin.teleport_second_ >= 1000) {
             plugin.teleport_second_ = now;
@@ -591,7 +609,7 @@ struct ApiFunctions {
         }
         const char* refusal = nullptr;
         if (++plugin.teleports_ > plugin.limits_.teleports_per_second) refusal = "asked more than twice in a second";
-        else switch (plugin.services_.teleport(plugin.id(), at, heading)) {
+        else switch (plugin.services_.teleport(plugin.id(), at, heading, on_board)) {
         case Teleport::sent: break;
         case Teleport::forbidden: refusal = "the host has turned teleporting off"; break;
         case Teleport::unavailable: refusal = "teleporting is unavailable now (no skater, or a load)"; break;

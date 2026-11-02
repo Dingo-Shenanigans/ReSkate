@@ -45,7 +45,7 @@ public:
     virtual bool builtin_command(std::string_view word) = 0;
     // The game (Services, plugin_vm.h). Where there is none, there is no skater and nothing to hit.
     virtual std::optional<SkaterState> skater() { return std::nullopt; }
-    virtual Teleport teleport(std::string_view /*plugin*/, const Vec3&, float) { return Teleport::unavailable; }
+    virtual Teleport teleport(std::string_view /*plugin*/, const Vec3&, float, std::optional<bool> = std::nullopt) { return Teleport::unavailable; }
     virtual std::optional<Vec3> raycast(const Vec3&, const Vec3&) { return std::nullopt; }
     virtual std::optional<ScoreState> score() { return std::nullopt; }
     virtual void toast(std::string_view /*plugin*/, LogLevel, std::string_view) {}
@@ -141,8 +141,8 @@ private:
     std::filesystem::path storage_file(std::string_view plugin) override;
     std::string claim_command(std::string_view plugin, std::string_view name) override;
     std::optional<SkaterState> skater() override { return environment_.skater(); }
-    Teleport teleport(std::string_view plugin, const Vec3& position, float heading) override {
-        return environment_.teleport(plugin, position, heading);
+    Teleport teleport(std::string_view plugin, const Vec3& position, float heading, std::optional<bool> on_board = std::nullopt) override {
+        return environment_.teleport(plugin, position, heading, on_board);
     }
     std::optional<Vec3> raycast(const Vec3& from, const Vec3& to) override { return environment_.raycast(from, to); }
     std::optional<ScoreState> score() override { return environment_.score(); }
