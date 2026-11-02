@@ -11,6 +11,12 @@
 #include <iostream>
 #include <limits>
 
+// park_editor_runtime.cpp tells placement physics about edits (placement_adapters.cpp, in the runtime
+// DLL only, with its hooks); here nothing listens.
+namespace dingosdk::placement_adapters {
+void edited(std::uint64_t, const Pose&, bool) {}
+}
+
 namespace dingosdk::profile_runtime {
 namespace fixture {
 std::map<std::uint64_t, profile::PlacedObject> world;
