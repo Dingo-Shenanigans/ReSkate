@@ -59,6 +59,38 @@ void names() {
     check(set.find("PACK") == &set.list[0], "Profiles are not found whatever the case");
 }
 
+void utf8_names() {
+    for (const std::string character : {"\xC3\xA9", "\xE2\x82\xAC", "\xF0\x9F\x9B\xB9"}) {
+        const auto fits = std::string(profiles::max_name_bytes - character.size(), 'x') + character;
+        check(profiles::clean_profile_name(fits) == fits, "A complete UTF-8 character at the limit was changed");
+        check(profiles::clean_profile_name(fits + "z") == fits,
+              "Truncating later text removed part of a complete UTF-8 character");
+        for (std::size_t bytes = 1; bytes < character.size(); ++bytes) {
+            const auto prefix = std::string(profiles::max_name_bytes - bytes, 'x');
+            check(profiles::clean_profile_name(prefix + character) == prefix,
+                  "Cleaning a name left part of a UTF-8 character");
+
+            const auto duplicate_prefix = std::string(profiles::max_name_bytes - 4 - bytes, 'x');
+            const auto wanted = duplicate_prefix + character;
+            profiles::Profiles set;
+            set.list = {{wanted, {}}};
+            check(set.free_name(wanted) == duplicate_prefix + " (2)",
+                  "A duplicate-name suffix split a UTF-8 character");
+        }
+    }
+
+    const auto wanted = std::string(41, 'x') + "\xE2\x82\xAC";
+    profiles::Profiles set;
+    set.list = {{wanted, {}}};
+    for (int number = 2; number <= 10; ++number) {
+        const auto next = set.free_name(wanted);
+        const auto prefix = number < 10 ? wanted : std::string(41, 'x');
+        check(next == prefix + " (" + std::to_string(number) + ")",
+              "A longer duplicate-name suffix did not keep a whole UTF-8 prefix");
+        set.list.push_back({next, {}});
+    }
+}
+
 void applying() {
     const auto list = installed({{"Team-A", "1.0.0", true}, {"Team-B", "2.1.0", false}, {"Local Mod", "wip", true}});
     const auto captured = profiles::capture("Now", list);
@@ -157,6 +189,28 @@ void exporting(const std::filesystem::path& root) {
     check(!error_of([] { profiles::parse_code_payload("#r2modman\n!!!!"); }).empty(), "A payload that is not base64 was accepted");
 }
 
+void utf8_roundtrips(const std::filesystem::path& root) {
+    profiles::Profiles set;
+    const auto cleaned = profiles::clean_profile_name(std::string(47, 'x') + "\xC3\xA9");
+    const auto wanted = std::string(43, 'y') + "\xE2\x82\xAC";
+    set.list = {{wanted, {}}};
+    const auto duplicate = set.free_name(wanted);
+    set.list.push_back({cleaned, {{"Team-Map", "1.0.0", true}}});
+    set.list.push_back({duplicate, {{"Team-Other", "2.0.0", false}}});
+    set.active = duplicate;
+    check(error_of([&] { profiles::save(root, set); }).empty(), "UTF-8 profile names could not be saved");
+    const auto loaded = profiles::load(root);
+    check(loaded.list == set.list && loaded.active == duplicate, "UTF-8 profile names did not survive saving and loading");
+    for (const auto& profile : set.list) {
+        check(profiles::parse_export(profiles::export_text(profile)) == profile,
+              "A UTF-8 profile name did not survive a text export");
+        check(profiles::parse_archive(profiles::export_archive(profile)) == profile,
+              "A UTF-8 profile name did not survive an archive export");
+        check(profiles::parse_code_payload(profiles::code_payload(profile)) == profile,
+              "A UTF-8 profile name did not survive a share-code payload");
+    }
+}
+
 void codes() {
     check(profiles::valid_code("0193a2b4-7c1d-4e5f-8a9b-0c1d2e3f4a5b") && !profiles::valid_code("short") &&
           !profiles::valid_code("0193a2b4/../../etc") && !profiles::valid_code("0193a2b4 7c1d 4e5f"), "Profile codes are not checked");
@@ -175,10 +229,12 @@ int wmain(int argc, wchar_t** argv) {
         return 2;
     }
     names();
+    utf8_names();
     applying();
     keeping_others();
     storage(std::filesystem::path(argv[1]) / L"profiles");
     exporting(std::filesystem::path(argv[1]) / L"profiles");
+    utf8_roundtrips(std::filesystem::path(argv[1]) / L"profiles");
     codes();
     if (failures) return 1;
     std::cout << "Mod profile names, applying, storage, exports and codes passed.\n";
