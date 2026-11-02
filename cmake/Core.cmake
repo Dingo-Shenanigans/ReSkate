@@ -152,6 +152,7 @@ add_library(dingosdk_plugins STATIC
     Extension/Plugins/plugin_api_services.cpp
     Extension/Plugins/plugin_api_throwdowns.cpp
     Extension/Plugins/plugin_api_capture.cpp
+    Extension/Plugins/plugin_api_object_physics.cpp
     Extension/Plugins/plugin_content.cpp
     Extension/Plugins/plugin_api_effects.cpp
     Extension/Plugins/plugin_api_viewmodel.cpp

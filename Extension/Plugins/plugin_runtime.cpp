@@ -7,6 +7,7 @@
 #include "plugin_camera.h"
 #include "plugin_http.h"
 #include "plugin_game_runtime.h"
+#include "Extension/Objects/placement_physics.h"
 #include "plugin_wire.h"
 #include "Engine/Vfs/thunderstore_package.h"
 #include "Engine/Vfs/initfs.h"
@@ -592,6 +593,7 @@ void on_client_tick() noexcept {
         last_tick = now;
         if (host->wants_tricks()) read_tricks();
         else environment->score_now.reset();
+        placement_physics::client_tick();
         host->tick(dt);
         if (serving) server_host->tick(dt);
     } catch (const std::exception& error) {
@@ -604,6 +606,7 @@ void set_level(std::string_view level) noexcept {
     try {
         // A new level starts a new line: a trick going on before it scores nothing.
         if (level != watched_level) {
+            placement_physics::reset();
             watched_level = std::string(level);
             trick_watch = tricks::TrickWatch{};
         }

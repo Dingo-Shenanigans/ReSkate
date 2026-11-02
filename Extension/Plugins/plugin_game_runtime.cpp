@@ -1,5 +1,6 @@
 #include "plugin_game_runtime.h"
 #include "Extension/Rendering/plugin_effects.h"
+#include "Extension/Objects/placement_physics.h"
 #include "plugin_session_feed.h"
 #include "plugin_content.h"
 #include "Runtime/runtime_internal.h"
@@ -191,6 +192,19 @@ public:
     std::string body_acknowledge(std::uint64_t owner, const owned_body::Handle& h, std::uint64_t sequence) override { return owned_bodies::acknowledge(owner, h, sequence); }
     std::string body_release(std::uint64_t owner, const owned_body::Handle& h) override { return owned_bodies::release(owner, h); }
     void body_release_all(std::uint64_t owner) override { owned_bodies::release_all(owner); }
+    std::string object_physics(std::string_view plugin, std::uint64_t id, const std::optional<ObjectPhysics>& options) override {
+        return placement_physics::configure(base_, plugin, id, options);
+    }
+    std::string object_velocity(std::string_view plugin, std::uint64_t id, const Vec3& value) override {
+        return placement_physics::velocity(plugin, id, value);
+    }
+    std::string object_pose(std::string_view plugin, std::uint64_t id, const Vec3& at, const std::array<float, 4>& q) override {
+        return placement_physics::pose(plugin, id, at, q);
+    }
+    std::optional<ObjectMotion> object_motion(std::string_view plugin, std::uint64_t id) override { return placement_physics::sample(plugin, id); }
+    std::optional<MarkerEvents> marker_events(std::string_view plugin) override { return placement_physics::marker_events(base_, plugin); }
+    std::optional<ObjectContact> object_contact(std::string_view plugin, const Vec3& from, const Vec3& to) override { return placement_physics::contact(plugin, from, to); }
+    std::optional<PhysicsActor> physics_actor() override { return placement_physics::actor(); }
 
     // ---- the local skater ----------------------------------------------------------------------
     std::optional<std::uint32_t> physics_state() override {
@@ -1849,6 +1863,7 @@ public:
         input::pad_outputs().release(plugin);
         grind_target::release(plugin);
         input::gameplay_options().release(plugin);
+        placement_physics::release(plugin);
         if (capture_owner_ == plugin) {
             capture::recorder().discard();
             capture_owner_.clear();

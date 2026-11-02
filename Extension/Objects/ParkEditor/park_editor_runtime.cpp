@@ -1,5 +1,6 @@
 #include "park_editor_runtime.h"
 #include "park_editor_internal.h"
+#include "Extension/Objects/placement_adapters.h"
 #include "Extension/Customization/local_customization.h"
 #include "Extension/Customization/local_customization_runtime.h"
 #include "Extension/Objects/object_categories.h"
@@ -255,6 +256,7 @@ void move_existing(std::uint64_t entity, const profile::PlacedObject &object) {
         e.physics_move(body.data(), rigid.data());
     }
     e.transform_move(query.data(), pose.data(), source);
+    placement_adapters::edited(entity, pose, false);
 }
 struct WorldRays {
     struct Ray {
@@ -541,6 +543,13 @@ void update_park_editor() {
             return; // Cancel/no-op preserves autosave and undo/redo history.
         }
         r.document.maps[r.map] = tx.change.after;
+        for (const auto& row : r.rows) {
+            if (!row.spawned) continue;
+            alignas(16) std::array<std::uint64_t,3> query{};
+            placement_geometry::Pose pose{};
+            if (r.query(query.data(), row.entity)==query.data() && r.pose(pose.data(), query.data())==pose.data())
+                placement_adapters::edited(row.entity, pose, true);
+        }
         for (const auto &object : tx.change.after)
             r.next_id = std::max(r.next_id, object.id + 1);
         if (tx.history < 0) {

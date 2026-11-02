@@ -47,10 +47,12 @@ constexpr Capability capabilities[] = {
     {"events.skater", "SKATER", Risk::grey, "Follow your skater's state, bails and launches"},
     {"events.physics", "SKATER", Risk::grey, "Follow your skater's physics every step"},
     {"events.physics.geometry", "SKATER", Risk::grey, "Follow your skater's physics every step"},
+    {"marker.read", "SKATER", Risk::grey, "See when you save and return to your marker"},
     {"world.objects", "WORLD", Risk::red, "List, place, move and remove park objects"},
     // Red: real bodies in your game's physics world, pushed with forces, which the game cannot free until it restarts.
     {"world.physics", "WORLD", Risk::red, "Create physical bodies in your world and push them around"},
     {"world.physics.observe", "WORLD", Risk::red, "See what its rays hit, other skaters' shapes included"},
+    {"objects.physics", "WORLD", Risk::red, "Make your own park's objects fall, roll and get knocked over (offline)"},
     {"travel", "WORLD", Risk::red, "Travel to locations and levels"},
     {"world.environment", "WORLD", Risk::red, "Change the time of day, world controls and parks"},
     {"world.entities", "WORLD", Risk::amber, "Spawn objects that only you see"},
@@ -270,10 +272,12 @@ std::string approval_prompt(const std::vector<PermissionGroup>& groups) {
             if (has("events.skater")) actions.push_back("follow your skater's state, bails, and launches");
             if (has("events.physics.geometry")) actions.push_back("follow detailed skater physics, including geometry, each step");
             else if (has("events.physics")) actions.push_back("follow your skater's physics each step");
+            if (has("marker.read")) actions.push_back("see when you save and return to your marker");
         } else if (group.category == "WORLD") {
             if (has("world.objects")) actions.push_back("list and edit park objects");
             if (has("world.physics")) actions.push_back("create physical bodies in your world and push them around");
             if (has("world.physics.observe")) actions.push_back("see what its rays hit, other skaters' shapes included");
+            if (has("objects.physics")) actions.push_back("make your own park's objects fall, roll, and get knocked over (offline)");
             if (has("travel")) actions.push_back("travel to locations and levels");
             if (has("world.environment")) actions.push_back("change parks, world controls, and time of day");
             if (has("world.entities")) actions.push_back("spawn objects visible only to you");
