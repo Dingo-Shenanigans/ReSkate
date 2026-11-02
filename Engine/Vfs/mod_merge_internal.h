@@ -220,8 +220,10 @@ std::vector<std::byte> read_asset(const CasStore& store, const fs::path& root, c
 // change are returned encoded, by region index, for the merged patch.
 struct StreamedTextures {
     std::map<std::size_t, std::vector<std::byte>> headers;
-    std::uint64_t bytes{};   // what no longer stays loaded
+    std::vector<std::size_t> offsets;   // already-streamed textures whose chunk logicalOffset was 0
+    std::uint64_t bytes{};              // what no longer stays loaded
     std::string example;
+    std::string offset_example;
 };
 // `only`: just these of the region's files (a ScanCache's: the textures changed before).
 StreamedTextures stream_resident_textures(const CasStore& store, const fs::path& root, fb::BinaryBundle& manifest,
