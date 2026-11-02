@@ -961,8 +961,16 @@ public:
         if (!value) return std::nullopt;
         return RailTarget{value->available, value->targeting, value->direction};
     }
+    // Choosing the rail, physics outputs and gameplay options are boosts like flip_speed's: not where
+    // the host has turned boosts off, nor in a throwdown on stock physics. Releasing always works.
+    static std::string boost_refusal() {
+        if (multiplayer_session_active() && !session_boosts_allowed()) return "the host has turned boosts off";
+        if (multiplayer::local_throwdown_active() && !competition_stock_physics()) return "not while a throwdown runs";
+        return {};
+    }
     std::string select_rail_target(std::string_view plugin, std::optional<int> type, bool negative) override {
         if (type && !input_allowed()) return "gameplay input is unavailable";
+        if (type) if (auto why = boost_refusal(); !why.empty()) return why;
         return grind_target::request(plugin, type, negative);
     }
     std::optional<SkaterFrame> skater_frame() override {
@@ -1005,6 +1013,7 @@ public:
     }
     std::string set_animation_value(std::string_view name, double value) override {
         if (!input_allowed()) return "gameplay input is unavailable";
+        if (auto why = boost_refusal(); !why.empty()) return why;
         NoBailSkater a{}, b{};
         if (!no_bail_skater(a)) return "the local skater is unavailable";
         const auto first = dingosdk::animation_values::read(a.base, a.core);
@@ -1025,6 +1034,7 @@ public:
     std::optional<bool> gameplay_option(std::string_view name) override { return input::gameplay_options().get(name); }
     std::string hold_gameplay_option(std::string_view plugin, std::string_view name, std::optional<bool> value) override {
         if (value.has_value() && !input_allowed()) return "gameplay input is unavailable";
+        if (value.has_value()) if (auto why = boost_refusal(); !why.empty()) return why;
         return input::gameplay_options().hold(plugin, name, value, GetTickCount64());
     }
     std::optional<PadInput> gamepad(int controller) override {

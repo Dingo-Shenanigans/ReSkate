@@ -5,6 +5,7 @@
 #include "Engine/Game/Input/gameplay_options.h"
 #include "local_user_settings.h"
 #include "Extension/Trainer/trainer_gamestate.h"
+#include <algorithm>
 #include <optional>
 #include <string_view>
 #include <array>
@@ -149,13 +150,24 @@ bool gameplay_get_bool(std::uintptr_t m, const void* a) {
         return *forced;
     }
     const auto saved = saved_gameplay_setting<bool>(a);
-    const bool value = saved ? *saved : gameplay_settings().get_bool(m, a);
-    note_stance(a, value);
+    bool value = saved ? *saved : gameplay_settings().get_bool(m, a);
+    // A plugin's hold (reskate.settings.hold_gameplay) is what the game reads, and so the stance noted.
+    // Several of these a frame: the name is read into the stack as gameplay_setting_key's identifier
+    // reads it, with no heap string unless the option is new.
     PreserveError preserve;
-    try {
-        std::string key;
-        if (gameplay_setting_key(a, key)) return input::gameplay_options().observe(key, value, GetTickCount64(), editing);
-    } catch (...) { }
+    std::uintptr_t asset{}, name{};
+    if (memory::peek(reinterpret_cast<std::uintptr_t>(a), asset) && (asset & ~std::uintptr_t{4}) &&
+        memory::peek((asset & ~std::uintptr_t{4}) + 0x60, name) && name) {
+        char text[256];
+        const auto length = memory::peek_cstring(name, text, sizeof(text));
+        const std::string_view key(text, length > 0 ? static_cast<std::size_t>(length) : 0);
+        if (!key.empty() && std::none_of(key.begin(), key.end(), [](char c) { return static_cast<unsigned char>(c) < 32 || c == 127; })) {
+            try {
+                value = input::gameplay_options().observe(key, value, GetTickCount64(), editing);
+            } catch (...) { }
+        }
+    }
+    note_stance(a, value);
     return value;
 }
 

@@ -13,7 +13,10 @@ class GameplayOptions {
 public:
     bool observe(std::string_view name, bool original, std::uint64_t now, bool editing) {
         std::lock_guard lock(mutex_);
-        auto& entry = entries_[std::string(name)]; entry.original = original;
+        // The game asks several times a frame: a name already seen costs a lookup, not a heap string.
+        auto at = entries_.find(name);
+        if (at == entries_.end()) at = entries_.emplace(std::string(name), Entry{}).first;
+        auto& entry = at->second; entry.original = original;
         if (!editing && !entry.owner.empty() && now < entry.expires) return entry.value;
         if (now >= entry.expires) entry.owner.clear();
         return original;
