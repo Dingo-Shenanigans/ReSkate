@@ -852,9 +852,12 @@ struct FakeGame final : Game {
         return {};
     }
     std::uint64_t sound_ids{};
+    bool hold_waves{}; // keep each sound's wave, as a voice still playing does
+    std::vector<std::shared_ptr<const Wave>> held_waves;
     std::uint64_t play_sound(std::string_view plugin, SoundStart sound) override {
         calls.push_back(std::format("sound {} {} {:.2f} {:.2f} {}{}", plugin, sound.wave ? std::to_string(sound.wave->samples.size()) : "motor", sound.volume,
                                     sound.pitch, sound.loop, sound.position ? std::format(" at {} {} {}", (*sound.position)[0], (*sound.position)[1], (*sound.position)[2]) : ""));
+        if (hold_waves && sound.wave) held_waves.push_back(std::move(sound.wave));
         return ++sound_ids;
     }
     bool change_sound(std::string_view plugin, std::uint64_t id, const SoundChange& change) override {
@@ -3826,6 +3829,60 @@ void plugins_play_their_own_sounds() {
         check(environment.fake.called(call), std::string("The game was asked: ") + call + "\n" + environment.all());
 }
 
+void plugins_play_any_number_of_different_sounds() {
+    // "play <round> <names...>" logs "<round> played <name>" or "<round> refused <name>: <why>".
+    const auto play = R"(
+        reskate.console.command("play", "round names", function(args)
+            for i = 2, #args do
+                local ok, why = pcall(reskate.audio.play, "sounds/" .. args[i] .. ".wav")
+                reskate.log(args[1] .. (ok and " played " or " refused ") .. args[i] .. (ok and "" or ": " .. tostring(why)))
+            end
+        end)
+    )";
+    const std::map<std::string, std::string> files{{manifest_file, manifest(R"("console", "audio")")}, {"sounds/a.wav", wave_file(16000, 1000)},
+                                                   {"sounds/b.wav", wave_file(16000, 2000)}, {"sounds/c.wav", wave_file(16000, 3000)},
+                                                   {"plugin/main.lua", play}};
+    {
+        TestEnvironment environment;
+        Limits limits;
+        limits.sounds = 2;
+        Host host(environment, Side::client, limits);
+        host.apply({package("dj", files)});
+        running(host, "dj", environment);
+        // Holding two, a third lets go of the one played longest ago, and a wave let go plays again.
+        host.run_console("play 1 a b c a b");
+        check(environment.logged("1 played c") && environment.logged("1 played b") && !environment.logged("refused"),
+              "Past the limit the oldest idle wave is let go\n" + environment.all());
+        check(environment.fake.called("sound dj 1000 1.00 1.00 false") && environment.fake.called("sound dj 3000 1.00 1.00 false"),
+              "and every sound reached the game\n" + environment.all());
+        // While every wave it holds is still playing, a new one is refused; once one ends it plays.
+        environment.fake.hold_waves = true;
+        host.run_console("play 2 a b c");
+        check(environment.logged("2 played b") && environment.logged("2 refused c: ") && environment.logged("all it holds are playing"),
+              "Only waves no sound plays are let go\n" + environment.all());
+        environment.fake.held_waves.clear();
+        environment.fake.hold_waves = false;
+        host.run_console("play 3 c");
+        check(environment.logged("3 played c"), "A wave whose sound ended is let go\n" + environment.all());
+    }
+    {
+        // The bytes held count too: room for b (2000 samples) or c (3000), not both.
+        TestEnvironment environment;
+        Limits limits;
+        limits.sound_bytes = 5000 * sizeof(std::int16_t) - 1;
+        Host host(environment, Side::client, limits);
+        host.apply({package("dj", files)});
+        running(host, "dj", environment);
+        environment.fake.hold_waves = true;
+        host.run_console("play 1 b c");
+        check(environment.logged("1 played b") && environment.logged("1 refused c: "), "A plugin holds at most so many bytes of waves\n" + environment.all());
+        environment.fake.held_waves.clear();
+        environment.fake.hold_waves = false;
+        host.run_console("play 2 c b");
+        check(environment.logged("2 played c") && environment.logged("2 played b"), "and lets go of idle ones to stay under it\n" + environment.all());
+    }
+}
+
 void plugins_play_sounds_and_read_the_mods() {
     TestEnvironment environment;
     environment.mod_list = {{"Owner-Map", "A Map", true}, {"OldThing", "Old Thing", false}};
@@ -6510,6 +6567,7 @@ int main() {
         run(plugins_server_copies_show_cards_and_polls);
         run(plugins_animate_the_skater);
         run(plugins_play_their_own_sounds);
+        run(plugins_play_any_number_of_different_sounds);
         run(plugins_have_menu_panels);
         run(plugins_have_pages);
         run(plugins_play_sounds_and_read_the_mods);

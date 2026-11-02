@@ -48,7 +48,11 @@ struct Limits {
     std::size_t shape_text_bytes = 64u << 10;
     std::size_t images = 32; // different pictures a plugin draws
     std::size_t clip_bytes = 48u << 20; // the clips a plugin holds, as poses (40 bytes a joint a frame)
-    std::size_t sounds = 32;            // different waves a plugin plays, each at most 30 s
+    // Different waves a plugin holds at once, each at most 30 s, and their decoded samples together
+    // (16 kHz mono 16-bit, so 30 s is about 0.9 MB). Past either, the wave played longest ago that
+    // no sound still plays is let go; only when every one is still playing is a new one refused.
+    std::size_t sounds = 256;
+    std::size_t sound_bytes = 64u << 20;
     int toasts = 3;                     // in 5 s
     int sounds_per_second = 10;
     std::size_t message_bytes = 4096 - 14; // a plugin message's payload (plugin_wire.h's header is 14)
@@ -355,8 +359,16 @@ private:
     std::map<std::string, std::shared_ptr<const anim_studio::Clip>, std::less<>> clips_;
     std::size_t clip_bytes_{};
     int recordings_{};
-    // reskate.audio: waves by their path in the package, and how many sounds began this second.
-    std::map<std::string, std::shared_ptr<const Wave>, std::less<>> waves_;
+    // reskate.audio: waves by their path in the package, each with when it was last played (a count
+    // of plays, for letting go of the oldest), the bytes they hold (at most limits_.sound_bytes),
+    // and how many sounds began this second.
+    struct CachedWave {
+        std::shared_ptr<const Wave> wave;
+        std::uint64_t played{};
+    };
+    std::map<std::string, CachedWave, std::less<>> waves_;
+    std::size_t wave_bytes_{};
+    std::uint64_t wave_plays_{};
     double wave_second_{};
     int wave_starts_{};
     int draw_table_{}, ui_table_{};

@@ -2050,15 +2050,34 @@ struct WorldApi {
         return 1;
     }
     // ---- audio --------------------------------------------------------------------------------------------
+    static std::size_t wave_bytes(const Wave& wave) { return wave.samples.size() * sizeof(std::int16_t); }
+    // A plugin plays any number of different waves over a run, but holds at most limits_.sounds of
+    // them and limits_.sound_bytes together. To make room it lets go of the wave played longest ago
+    // that no sound plays now: a playing voice holds its own reference, so a use count of 1 is only
+    // this cache's. References are only taken on the plugin's thread, so a 1 read here stays 1.
     static std::shared_ptr<const Wave> wave_at(lua_State* L, Plugin& plugin, const std::string& path) {
-        if (const auto found = plugin.waves_.find(path); found != plugin.waves_.end()) return found->second;
-        if (plugin.waves_.size() >= plugin.limits_.sounds) luaL_error(L, "a plugin plays at most %d different sounds", static_cast<int>(plugin.limits_.sounds));
+        if (const auto found = plugin.waves_.find(path); found != plugin.waves_.end()) {
+            found->second.played = ++plugin.wave_plays_;
+            return found->second.wave;
+        }
         std::string error;
         const auto bytes = read_package_file(package_file(L, plugin, path), 8u << 20, error);
         if (bytes.empty()) luaL_error(L, "the sound %s cannot be read: %s", path.c_str(), error.empty() ? "it is empty" : error.c_str());
         auto wave = decode_wave(std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size()), 30, error);
         if (!wave) luaL_error(L, "the sound %s cannot be played: %s", path.c_str(), error.c_str());
-        return plugin.waves_.emplace(path, std::move(wave)).first->second;
+        const auto size = wave_bytes(*wave);
+        while (plugin.waves_.size() >= plugin.limits_.sounds || plugin.wave_bytes_ + size > plugin.limits_.sound_bytes) {
+            auto oldest = plugin.waves_.end();
+            for (auto it = plugin.waves_.begin(); it != plugin.waves_.end(); ++it)
+                if (it->second.wave.use_count() == 1 && (oldest == plugin.waves_.end() || it->second.played < oldest->second.played)) oldest = it;
+            if (oldest == plugin.waves_.end())
+                luaL_error(L, "a plugin holds at most %d different sounds (%d MB) at once, and all it holds are playing",
+                           static_cast<int>(plugin.limits_.sounds), static_cast<int>(plugin.limits_.sound_bytes >> 20));
+            plugin.wave_bytes_ -= std::min(plugin.wave_bytes_, wave_bytes(*oldest->second.wave));
+            plugin.waves_.erase(oldest);
+        }
+        plugin.wave_bytes_ += size;
+        return plugin.waves_.emplace(path, Plugin::CachedWave{std::move(wave), ++plugin.wave_plays_}).first->second.wave;
     }
     // volume, pitch, range, throttle, speed, loop, position (a vector, or "skater").
     static void sound_options(lua_State* L, int index, SoundStart* start, SoundChange* change) {
