@@ -54,6 +54,83 @@ void field_vec(lua_State* L, const char* name, const Vec3& v) {
     lua_setfield(L, -2, name);
 }
 
+// Boolean gameplay preferences, observed from the game's own getter. Temporary holds never save.
+std::string gameplay_name(lua_State* L) {
+    luaL_checktype(L, 1, LUA_TSTRING);
+    std::size_t length{}; const auto* text = luaL_checklstring(L, 1, &length);
+    if (!length || length > 120 || std::string_view(text, length).find('\0') != std::string_view::npos)
+        luaL_argerror(L, 1, "a gameplay option name, 1 to 120 characters");
+    return std::string(text, length);
+}
+int gameplay_option(lua_State* L) {
+    auto& p = allowed(L, "settings.read", "reskate.settings.gameplay");
+    const auto value = game_of(p).gameplay_option(gameplay_name(L));
+    if (value) lua_pushboolean(L, *value); else lua_pushnil(L);
+    return 1;
+}
+int hold_gameplay(lua_State* L) {
+    auto& p = allowed(L, "settings.write", "reskate.settings.hold_gameplay");
+    const auto name = gameplay_name(L);
+    std::optional<bool> value;
+    if (!lua_isnoneornil(L, 2)) {
+        luaL_checktype(L, 2, LUA_TBOOLEAN);
+        value = lua_toboolean(L, 2) != 0;
+    }
+    return result(L, game_of(p).hold_gameplay_option(p.id(), name, value));
+}
+
+// The local rider's occupied, named animation values. No native addresses leave the host.
+int rail_target(lua_State* L) {
+    auto& p = allowed(L, "skater.read", "reskate.skater.rail_target");
+    const auto value = game_of(p).rail_target();
+    if (!value) { lua_pushnil(L); return 1; }
+    lua_createtable(L, 0, 3);
+    field_bool(L, "available", value->available); field_bool(L, "targeting", value->targeting); field_vec(L, "direction", value->direction);
+    return 1;
+}
+int select_rail_target(lua_State* L) {
+    auto& p = allowed(L, "skater.control", "reskate.skater.select_rail_target");
+    std::optional<int> type;
+    if (!lua_isnoneornil(L, 1)) {
+        luaL_checktype(L, 1, LUA_TNUMBER); const auto value = lua_tonumber(L, 1);
+        if (!std::isfinite(value) || value < 0 || value > 6 || value != std::floor(value)) luaL_argerror(L, 1, "a native rail target class, 0 to 6");
+        type = static_cast<int>(value);
+    }
+    if (!lua_isnoneornil(L, 2)) luaL_checktype(L, 2, LUA_TBOOLEAN);
+    return result(L, game_of(p).select_rail_target(p.id(), type, lua_toboolean(L, 2) != 0));
+}
+int skater_frame(lua_State* L) {
+    auto& p = allowed(L, "skater.read", "reskate.skater.frame");
+    const auto frame = game_of(p).skater_frame();
+    if (!frame) { lua_pushnil(L); return 1; }
+    lua_createtable(L, 0, 6);
+    field_vec(L, "position", frame->position); field_vec(L, "forward", frame->forward);
+    field_bool(L, "backwards", frame->backwards); field_bool(L, "mirrored", frame->mirrored); field_bool(L, "fakie", frame->fakie); field_bool(L, "basis", frame->basis);
+    field_number(L, "serial", static_cast<double>(frame->serial));
+    return 1;
+}
+int animation_values(lua_State* L) {
+    auto& p = allowed(L, "skater.read", "reskate.skater.animation_values");
+    const auto values = game_of(p).animation_values();
+    lua_createtable(L, 0, static_cast<int>(values.size()));
+    for (const auto& value : values) {
+        lua_createtable(L, 0, 2);
+        if (value.boolean) lua_pushboolean(L, value.value != 0); else lua_pushnumber(L, value.value);
+        lua_setfield(L, -2, "value");
+        field_bool(L, "output", value.output);
+        lua_setfield(L, -2, value.name.c_str());
+    }
+    return 1;
+}
+int set_animation_value(lua_State* L) {
+    auto& p = allowed(L, "skater.animation", "reskate.skater.set_animation_value");
+    const auto name = gameplay_name(L);
+    luaL_checktype(L, 2, LUA_TNUMBER);
+    const auto value = lua_tonumber(L, 2);
+    if (!std::isfinite(value) || std::abs(value) > 1e6) luaL_argerror(L, 2, "a finite number within a million");
+    return result(L, game_of(p).set_animation_value(name, value));
+}
+
 // ---- skater --------------------------------------------------------------------------------------
 // skater.telemetry(): the trainer's telemetry, its last jump, the physics watch and the bail's body.
 int telemetry(lua_State* L) {
@@ -595,7 +672,8 @@ int strings_hash(lua_State* L) {
 } // namespace
 
 void install_services_api(Plugin&, lua_State* L) {
-    add_functions(L, "skater", {{"telemetry", telemetry}, {"goofy", goofy}, {"bone_cam", bone_cam}});
+    add_functions(L, "settings", {{"gameplay", gameplay_option}, {"hold_gameplay", hold_gameplay}});
+    add_functions(L, "skater", {{"rail_target", rail_target}, {"select_rail_target", select_rail_target}, {"frame", skater_frame}, {"animation_values", animation_values}, {"set_animation_value", set_animation_value}, {"telemetry", telemetry}, {"goofy", goofy}, {"bone_cam", bone_cam}});
     add_functions(L, "input", {{"pad_bits", pad_bits}, {"key", key}, {"wheel", wheel}, {"mouse", mouse}, {"game_buttons", game_buttons}, {"game_keys", game_keys}, {"allowed", input_allowed}, {"focus", focus}});
     add_functions(L, "session", {{"spectate", spectate}, {"world", world}});
     add_functions(L, "camera", {{"free", free_camera}, {"pad_flight", pad_flight}});
