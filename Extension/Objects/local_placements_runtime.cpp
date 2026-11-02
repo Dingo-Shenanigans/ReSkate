@@ -652,12 +652,14 @@ void update_position_teleport() {
         NoBailSkater owner;
         const auto match = dingosdk::throwdowns::kit::match();
         const bool offboard = !match.input_lock && (multiplayer::throwdown_relay_waits_offboard() || match.offboard);
+        // When the board option cannot be set (a match's own lock, No Bail's protection holding the
+        // board, which it renews every tick while No Bail is on, or a lost race), the move still
+        // happens with the board as it is: the plugin was told it was queued, and the move is
+        // already off the queue.
         if ((match.input_lock && !*on_board) || (offboard && *on_board) ||
-            !no_bail_skater(owner) || !prepare_teleport_equipment(owner, *on_board)) {
+            !no_bail_skater(owner) || !prepare_teleport_equipment(owner, *on_board))
             dingosdk::logging::event(dingosdk::logging::Channel::objects,
-                "{\"event\":\"position_teleport_equipment_refused\"}");
-            return;
-        }
+                "{\"event\":\"position_teleport_equipment_kept\"}");
     }
     const auto request = r.teleport(manager, transform.data(), 1, transition.data());
     dingosdk::logging::event(dingosdk::logging::Channel::objects, dingosdk::Json{{"event", "position_teleport_requested"},

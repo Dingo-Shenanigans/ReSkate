@@ -572,7 +572,9 @@ struct ApiFunctions {
     }
     // skater.teleport: true means queued, not an arrival or equipment acknowledgement; false
     // and why when the host has turned teleporting off, it cannot be done now, or it is asked too often.
-    // Explicit on_board sets the native spawn preference at dispatch. The engine may retain it
+    // Explicit on_board sets the native spawn preference at dispatch, when it can be set (not against a
+    // match's own lock, nor while No Bail holds the board); otherwise the move happens with the board
+    // as it is. The engine may retain it
     // for later teleports; omitted options leave that preference unchanged. This is native state,
     // not a saved SDK setting, and no automatic restoration is promised.
     static int skater_teleport(lua_State* L) {
