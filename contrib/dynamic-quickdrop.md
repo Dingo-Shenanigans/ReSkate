@@ -12,15 +12,16 @@ and its sources unchanged while reviewing this contribution.
   pose sampling, and pose restoration without losing quaternion rotation.
 - `marker.read`: poll accepted native marker saves/returns, filtered to the local
   skater. No input-binding guesses, raw entities, native handles or memory API.
-- A Luau example with session-local include/exclude pins, native-marker snapshot
-  save/return, and file-backed Favorites using the existing catalog/placement API.
+- A Luau plugin (Dynamic QuickDrop, its own mod, not in this repository) with session-local
+  include/exclude pins, native-marker snapshot save/return, and file-backed Favorites using the
+  existing catalog/placement API.
 - Native client/server replica identity validation, process-wide claim arbitration,
   row lifetime/map-generation checks, bounded event history and unload cleanup.
 - Native moving-surface query views, transformed authored edges/chain continuity,
   and contact-point-relative grind friction for opted-in local bodies only.
 - Native dropper selection samples the current physics pose, freezes selected
   bodies, consumes preview/commit/cancel transforms, and hands control back to the
-  solver after editing. Edits are consumed before authoritative pose mirroring.
+  solver after editing. The server copy is not mirrored while an edit of it is pending.
 - The original mass/classification and time-scaled impact/pressure rules in a Lua
   policy module; short native collision rays confirm actual body contact.
 - Stable hold-RB/R1 targeting with one toggle per deliberate 600 ms hold, reset on
@@ -35,12 +36,15 @@ Moving surface support is an explicit generic per-claim option and can be disabl
 in the plugin page. The solver's real motion type is unchanged by query adapters:
 only the original allowlisted surface/material call sites see a different view.
 Cached grind geometry validates shape generation and preserves native identities.
-Borrowed chain allocations stay stable for the process lifetime, bounded to 65536
-retained edges; exhaustion falls back to native queries rather than freeing a
-pointer a contact may still hold.
+A chain's world edges are double-buffered: a contact keeps reading the copy it was given while the
+next pose is written to the other. Chains are kept until the next world is active (a contact may
+still hold one until then), at most 65536 edges a world; past that, native queries are used.
+A level's teardown (the level transition callback in Runtime/runtime_init.cpp) forgets every claim
+and published body without a native write, and the hooks read no stored world pointer until the
+next world is active.
 
 Physics is **off by default on every plugin load**. Enable it explicitly in the
-example's plugin page in an isolated offline development installation. Native APIs
+plugin's page in an isolated offline development installation. Native APIs
 refuse multiplayer sessions and relinquish claims on layout clear/level changes.
 The ReSkate menu and park editor temporarily freeze claimed objects; native
 dropper edits use the handoff above instead of requiring the plugin to be disabled.
@@ -71,12 +75,22 @@ reskate.objects.velocity(id, vector.create(1, 0, 0))
 reskate.objects.pose(id, motion.position, motion.rotation)
 reskate.objects.physics(id, nil) -- release this plugin's claim
 local hit = reskate.objects.contact(from, to) -- {id=string, position=vector}, or nil
-local actor = reskate.objects.actor() -- also needs skater.read AND input
--- {velocity, walking_velocity, wish, grounded, on_foot, active, device, physics_state}
+local movement = reskate.skater.movement() -- needs skater.read, not objects.physics
+-- {velocity, walking_velocity, grounded, on_foot, physics_state}, and with "input" also
+-- {stick (camera-relative, flat, 0 to 1 long), device, focused}; nil without a local skater
 
 local events, overflow = reskate.marker.events()
 -- {"saved", "returned", ...}, boolean; or nil, "unavailable here"
 ```
+
+Physics never changes the saved park. While an object is claimed, the 1 s placement poll does not
+save its pose; released, the object goes back to its layout pose (where it was claimed, or where a
+committed edit put it). A plugin that wants an object to stay where it fell moves it with
+`reskate.objects.move`, which saves.
+
+Threads: the plugin API and the client tick write only the client replica. The server copy is
+written only from the server park tick, which mirrors a moving object's pose and carries out the
+restores the client side queued.
 
 Mass is finite, 0.1–20000 kg; speed is a finite magnitude at most 45 m/s, not 45
 per axis. Pose positions are finite within 100 km and rotations are near-unit
@@ -89,17 +103,17 @@ or native body is unavailable. Pose application is not transactional across the
 two realms: a native failure after the client update can require a retry.
 Pose/velocity writes refuse active native editing. Contact rays are at most 10 m
 and share the host's existing 64-ray/tick budget. They expose only this plugin's
-claims, and never see through a blocking world hit. The actor sampler is read-only,
-validates native walking ownership/state, reads movement intent without consuming
-input, and reports inactive during menu/editing/free-camera/focus loss. It exposes
-neither skater pointers nor native controller handles. `device` is a controller
-index used only to invalidate a hold across device changes.
+claims, and never see through a blocking world hit. `reskate.skater.movement` is a general
+read-only skater API: it validates native walking ownership/state, reads the stick without consuming
+input, and reports `focused = false` during menus, free camera, the park editor or focus loss. A
+plugin that also cares about its own objects being edited checks `motion.editing`. It exposes neither
+skater pointers nor native controller handles. `device` is a controller index.
 
 Claims are limited to 32 objects/plugin and 128/process. Only initially fixed
 local bodies may be claimed; an occupied claim cannot be stolen, released,
 sampled, moved or accelerated by another plugin. Release restores the original
-inverse mass and fixed motion, at the current physics pose. The authoritative
-copy follows the validated client pose while claimed; stale samples are ignored.
+inverse mass and fixed motion, at the layout pose. The authoritative copy follows the validated
+client pose while claimed; stale samples are ignored.
 Layout ID, row token, map generation, replica identity and body generation are
 revalidated before use. The opaque motion generation allows plugins to discard
 snapshots when a layout ID refers to a replacement object.
@@ -109,14 +123,17 @@ Marker consumers have independent cursors (up to 128). The bounded history holds
 consumer is told `overflow=true`, so it can discard stale actions. Unload removes
 the consumer; a level transition clears pending operations. Only the accepted
 return-to-saved-marker transition produces `returned`, not arbitrary teleports.
-Hook targets, prefixes and memory-layout offsets live in the supported build's
-`placement_physics.h` and `placement_adapters.h`; hooks use the SDK's Detours wrapper
-and grouped install. Empty or released allowlists make installed hooks inert.
+Hook targets, prefixes, memory-layout offsets and the motion-type values live in the supported
+build's `placement_physics.h`, `placement_adapters.h` and `skater_movement.h`, each with what it is
+and its signature. Every call site the hooks tell apart by return address is checked at start to be
+a direct call to the hooked function. Hooks use the SDK's Detours wrapper and grouped install. Empty
+or released allowlists make installed hooks inert.
 
 ## Build and regression testing
 
-Copy `contrib/examples/dynamic-quickdrop` into `Mods/Dynamic_QuickDrop` only in an
-isolated development installation built from this branch. Do not combine it with
+The plugin ships as its own mod. Maintainers keep a copy in `contrib/plugins/dynamic-quickdrop`
+(ignored, STRUCTURE.md), where its tests find it; without it they are skipped. Install it as
+`Mods/Dynamic_QuickDrop` only in an isolated development installation. Do not combine it with
 the old custom DLL's physics hooks.
 
 Build `dingosdk_runtime` and `dingosdk_plugin_tests` with
@@ -136,7 +153,7 @@ check against the local supported executable verified 14 native prefixes and 24
 call sites. Reproduce it without installing or extracting game data:
 
 ```powershell
-python contrib/examples/dynamic-quickdrop/verify_contracts.py 'C:\Games\ReSkate-1.0.0\Skate.exe'
+python contrib/plugins/dynamic-quickdrop/verify_contracts.py 'C:\Games\ReSkate-1.0.0\Skate.exe'
 ```
 
 In-game regression checklist: save/return after rotation/tumbling,

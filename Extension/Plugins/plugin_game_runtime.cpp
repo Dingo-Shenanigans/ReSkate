@@ -1,6 +1,7 @@
 #include "plugin_game_runtime.h"
 #include "Extension/Rendering/plugin_effects.h"
 #include "Extension/Objects/placement_physics.h"
+#include "Extension/Skater/skater_movement.h"
 #include "plugin_session_feed.h"
 #include "plugin_content.h"
 #include "Runtime/runtime_internal.h"
@@ -204,7 +205,7 @@ public:
     std::optional<ObjectMotion> object_motion(std::string_view plugin, std::uint64_t id) override { return placement_physics::sample(plugin, id); }
     std::optional<MarkerEvents> marker_events(std::string_view plugin) override { return placement_physics::marker_events(base_, plugin); }
     std::optional<ObjectContact> object_contact(std::string_view plugin, const Vec3& from, const Vec3& to) override { return placement_physics::contact(plugin, from, to); }
-    std::optional<PhysicsActor> physics_actor() override { return placement_physics::actor(); }
+    std::optional<SkaterMovement> skater_movement() override { return dingosdk::skater_movement::read(base_); }
 
     // ---- the local skater ----------------------------------------------------------------------
     std::optional<std::uint32_t> physics_state() override {

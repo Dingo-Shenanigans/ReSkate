@@ -33,11 +33,6 @@ struct ObjectContact {
     std::uint64_t id{};
     std::array<float, 3> position{};
 };
-struct PhysicsActor {
-    std::array<float, 3> velocity{}, walking_velocity{}, wish{};
-    bool grounded{}, on_foot{}, active{};
-    std::uint32_t device{}, physics_state{};
-};
 inline bool valid_object_physics(const ObjectPhysics& value) {
     return std::isfinite(value.mass) && value.mass >= .1f && value.mass <= 20000;
 }

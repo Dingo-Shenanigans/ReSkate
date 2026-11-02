@@ -2,6 +2,7 @@
 #include "plugin_effects.h"
 #include "plugin_wave.h"
 #include "plugin_object_physics.h"
+#include "plugin_skater_movement.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Game/World/body_query.h"
 #include "Extension/AnimationStudio/anim_core.h"
@@ -313,7 +314,8 @@ public:
     virtual std::optional<ObjectMotion> object_motion(std::string_view, std::uint64_t) { return std::nullopt; }
     virtual std::optional<MarkerEvents> marker_events(std::string_view) { return std::nullopt; }
     virtual std::optional<ObjectContact> object_contact(std::string_view, const Vec3&, const Vec3&) { return std::nullopt; }
-    virtual std::optional<PhysicsActor> physics_actor() { return std::nullopt; }
+    // The local skater's movement (reskate.skater.movement); nil without a local skater.
+    virtual std::optional<SkaterMovement> skater_movement() { return std::nullopt; }
     // ---- the local skater ----------------------------------------------------------------------
     // Its physics state (100s riding, 200s in the air, 300 a wipeout, 400s grinding, 504 off the
     // board), or empty without a skater; and how many wipeouts it has had this session.

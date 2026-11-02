@@ -2,6 +2,7 @@ add_library(dingosdk_runtime SHARED
     Runtime/runtime_init.cpp
     Extension/Objects/placement_physics.cpp
     Extension/Objects/placement_adapters.cpp
+    Extension/Skater/skater_movement.cpp
     Runtime/runtime_state.cpp
     Runtime/client_tick.cpp
     Runtime/frame_timing.cpp
@@ -118,6 +119,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Objects/console_commands.cpp
     Extension/Objects/ParkEditor/park_editor_commands.cpp
     Extension/Objects/ParkEditor/park_editor_runtime.cpp
+    Extension/Objects/ParkEditor/park_editor_bodies.cpp
     Extension/Objects/ParkEditor/park_editor_preview.cpp
     Extension/Objects/ParkEditor/park_editor_selection.cpp
     Extension/Objects/ParkEditor/world_pick.cpp

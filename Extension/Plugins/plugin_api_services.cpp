@@ -133,6 +133,29 @@ int set_animation_value(lua_State* L) {
 
 // ---- skater --------------------------------------------------------------------------------------
 // skater.telemetry(): the trainer's telemetry, its last jump, the physics watch and the bail's body.
+// movement(): the local skater's velocity, physics state, whether it is on foot and grounded, and its
+// walking velocity; with "input" also the movement stick in the camera's frame, the controller it came
+// from and whether the game has focus. Nil without a local skater.
+int movement(lua_State* L) {
+    auto& plugin = allowed(L, "skater.read", "reskate.skater.movement");
+    const auto m = game_of(plugin).skater_movement();
+    if (!m) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_createtable(L, 0, 9);
+    field_vec(L, "velocity", m->velocity);
+    field_number(L, "physics_state", m->physics_state);
+    field_bool(L, "on_foot", m->on_foot);
+    field_bool(L, "grounded", m->grounded);
+    field_vec(L, "walking_velocity", m->walking_velocity);
+    if (plugin.has("input")) {
+        field_vec(L, "stick", m->stick);
+        field_number(L, "device", m->device);
+        field_bool(L, "focused", m->focused);
+    }
+    return 1;
+}
 int telemetry(lua_State* L) {
     auto& plugin = allowed(L, "skater.read", "reskate.skater.telemetry");
     const auto t = game_of(plugin).skater_telemetry(plugin.id());
@@ -673,7 +696,7 @@ int strings_hash(lua_State* L) {
 
 void install_services_api(Plugin&, lua_State* L) {
     add_functions(L, "settings", {{"gameplay", gameplay_option}, {"hold_gameplay", hold_gameplay}});
-    add_functions(L, "skater", {{"rail_target", rail_target}, {"select_rail_target", select_rail_target}, {"frame", skater_frame}, {"animation_values", animation_values}, {"set_animation_value", set_animation_value}, {"telemetry", telemetry}, {"goofy", goofy}, {"bone_cam", bone_cam}});
+    add_functions(L, "skater", {{"rail_target", rail_target}, {"select_rail_target", select_rail_target}, {"frame", skater_frame}, {"animation_values", animation_values}, {"set_animation_value", set_animation_value}, {"telemetry", telemetry}, {"movement", movement}, {"goofy", goofy}, {"bone_cam", bone_cam}});
     add_functions(L, "input", {{"pad_bits", pad_bits}, {"key", key}, {"wheel", wheel}, {"mouse", mouse}, {"game_buttons", game_buttons}, {"game_keys", game_keys}, {"allowed", input_allowed}, {"focus", focus}});
     add_functions(L, "session", {{"spectate", spectate}, {"world", world}});
     add_functions(L, "camera", {{"free", free_camera}, {"pad_flight", pad_flight}});

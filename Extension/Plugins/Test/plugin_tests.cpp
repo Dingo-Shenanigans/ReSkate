@@ -306,9 +306,9 @@ struct FakeGame final : Game {
     std::map<std::uint64_t, ObjectMotion> object_motion_now;
     std::map<std::uint64_t, std::string> physics_owners;
     std::map<std::string, MarkerEvents> marker_feed;
-    std::optional<PhysicsActor> actor_now;
+    std::optional<SkaterMovement> movement_now;
     std::optional<ObjectContact> contact_now;
-    std::optional<PhysicsActor> physics_actor() override { return actor_now; }
+    std::optional<SkaterMovement> skater_movement() override { return movement_now; }
     std::optional<ObjectContact> object_contact(std::string_view plugin, const Vec3&, const Vec3&) override {
         if (contact_now && physics_claims.owns(plugin, contact_now->id)) return contact_now;
         return std::nullopt;
@@ -2591,6 +2591,17 @@ void owned_body_batches_share_actual_and_logical_query_limits() {
     running(host, "batch-budget", environment);
 }
 
+// contrib/plugins, kept on this machine and out of the repository: a test of one that is not here
+// is skipped (main reports it), not failed.
+struct Absent {
+    std::string id;
+};
+std::filesystem::path contrib_plugin(const std::string& id) {
+    const auto directory = std::filesystem::path(RESKATE_SOURCE_DIR) / "contrib" / "plugins" / id;
+    if (!std::filesystem::exists(directory / "reskate-plugin.json")) throw Absent{id};
+    return directory;
+}
+
 void physics_claims_are_bounded_and_exclusive() {
     ObjectPhysicsClaims claims;
     check(!claims.claim("a", 0).empty(), "Zero is not a layout ID");
@@ -2673,7 +2684,7 @@ void plugins_control_only_claimed_object_physics() {
         assert(not pcall(reskate.objects.pose, "42", vector.create(0,0,0), {0,0,0,1}))
         assert(not pcall(reskate.objects.motion, "42"))
         assert(not pcall(reskate.marker.events))
-        assert(not pcall(reskate.objects.actor))
+        assert(not pcall(reskate.skater.movement))
         assert(not pcall(reskate.objects.contact, vector.create(0,0,0), vector.create(1,0,0)))
     )")});
     running(host, "sneaky", environment);
@@ -2698,7 +2709,7 @@ void quickdrop_plugin_pins_and_favorites_stay_in_lua() {
     auto& game = environment.fake;
     Host host(environment, Side::client);
     const std::string id = "Dynamic_QuickDrop";
-    const auto source = std::filesystem::path(RESKATE_SOURCE_DIR) / "contrib/examples/dynamic-quickdrop";
+    const auto source = contrib_plugin("dynamic-quickdrop");
     host.apply({{id, source, "1", {}}});
     host.set_level("sanvan");
     ticks(host, environment, 1);
@@ -2768,14 +2779,15 @@ void moving_edges_keep_their_authored_identity() {
 void object_contact_queries_are_owned_and_budgeted() {
     TestEnvironment environment;
     environment.fake.contact_now = ObjectContact{42, {0,0,1}};
-    environment.fake.actor_now = PhysicsActor{};
-    environment.fake.actor_now->active = true;
+    environment.fake.movement_now = SkaterMovement{};
+    environment.fake.movement_now->focused = true;
+    environment.fake.movement_now->stick = {0, 0, 1};
     Host host(environment, Side::client);
     host.apply({script("queries", R"(
         assert(reskate.objects.physics("42", {mass=.3,surface=true}))
         assert(reskate.objects.motion("42").surface)
-        local actor=reskate.objects.actor()
-        assert(actor.active and actor.walking_velocity and actor.wish)
+        local movement=reskate.skater.movement()
+        assert(movement.focused and movement.walking_velocity and movement.stick.z==1 and movement.device==0)
         assert(not pcall(reskate.objects.contact,vector.create(0,0,0),vector.create(11,0,0)))
         assert(not pcall(reskate.objects.contact,vector.create(0/0,0,0),vector.create(1,0,0)))
         for i=1,64 do
@@ -2793,23 +2805,29 @@ void object_contact_queries_are_owned_and_budgeted() {
         assert(not reskate.objects.physics("42",nil))
         assert(reskate.objects.motion("42")==nil)
         assert(reskate.objects.contact(vector.create(0,0,0),vector.create(0,0,1))==nil)
-        assert(not pcall(reskate.objects.actor))
+        assert(not pcall(reskate.skater.movement))
         end)
-    )", R"("objects.physics")")});
+    )", R"("objects.physics")"),
+    script("reader", R"(
+        -- skater.read alone: the movement, without the stick, controller or focus ("input").
+        local movement=assert(reskate.skater.movement())
+        assert(movement.velocity and movement.walking_velocity and movement.on_foot==false)
+        assert(movement.stick==nil and movement.device==nil and movement.focused==nil)
+    )", R"("skater.read")")});
     ticks(host,environment,2);
-    running(host,"queries",environment);running(host,"outsider",environment);
+    running(host,"queries",environment);running(host,"outsider",environment);running(host,"reader",environment);
 }
 
 void quickdrop_rb_and_contact_policy_run_in_the_real_plugin() {
     TestEnvironment environment;
     environment.local_skater=SkaterState{};
     auto& game=environment.fake;
-    game.actor_now=PhysicsActor{};game.actor_now->active=true;game.actor_now->device=1;
+    game.movement_now=SkaterMovement{};game.movement_now->focused=true;game.movement_now->device=1;
     game.contact_now=ObjectContact{42,{0,0,1}};
     game.pad=PadInput{};
     Host host(environment,Side::client);
     const std::string id="Dynamic_QuickDrop";
-    host.apply({{id,std::filesystem::path(RESKATE_SOURCE_DIR)/"contrib/examples/dynamic-quickdrop","1",{}}});
+    host.apply({{id,contrib_plugin("dynamic-quickdrop"),"1",{}}});
     host.set_level("sanvan");environment.panels_open=true;environment.shown=id;
     ticks(host,environment,10);
     using A=plugin_ui::Action;
@@ -2830,7 +2848,7 @@ void quickdrop_rb_and_contact_policy_run_in_the_real_plugin() {
     game.marker_feed[id]={{"returned"},false};ticks(host,environment,1);
     check(game.object_motion_now.at(42).position[0]==7,"A second deliberate hold includes the current pose");
     game.pad->buttons=0;
-    game.actor_now->on_foot=true;game.actor_now->grounded=true;game.actor_now->walking_velocity={0,0,3};game.actor_now->wish={0,0,3};
+    game.movement_now->on_foot=true;game.movement_now->grounded=true;game.movement_now->walking_velocity={0,0,3};game.movement_now->stick={0,0,1};
     game.object_motion_now.at(42).velocity={};
     ticks(host,environment,1);
     const auto impact=game.object_motion_now.at(42).velocity[2];
@@ -2842,7 +2860,7 @@ void quickdrop_rb_and_contact_policy_run_in_the_real_plugin() {
 }
 
 void quickdrop_gameplay_policy_is_a_sandboxed_module() {
-    std::ifstream input(std::filesystem::path(RESKATE_SOURCE_DIR) / "contrib/examples/dynamic-quickdrop/plugin/policy.lua");
+    std::ifstream input(contrib_plugin("dynamic-quickdrop") / "plugin/policy.lua");
     const std::string policy{std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>()};
     check(!policy.empty(), "QuickDrop policy source is present");
     TestEnvironment environment;
@@ -5840,16 +5858,6 @@ void an_approved_plugin_runs_only_the_source_snapshot_it_was_shown() {
     host.shutdown();
 }
 
-// contrib/plugins, kept on this machine and out of the repository: a test of one that is not here
-// is skipped (main reports it), not failed.
-struct Absent {
-    std::string id;
-};
-std::filesystem::path contrib_plugin(const std::string& id) {
-    const auto directory = std::filesystem::path(RESKATE_SOURCE_DIR) / "contrib" / "plugins" / id;
-    if (!std::filesystem::exists(directory / "reskate-plugin.json")) throw Absent{id};
-    return directory;
-}
 Candidate contributed(const std::string& id) {
     const auto directory = contrib_plugin(id);
     return {id, directory, "1", check_package_files(directory)};

@@ -1,12 +1,15 @@
 #include "placement_adapters.h"
+#include "Engine/Core/Hooks/hooks.h"
 #include "Engine/Game/Build/20260929/local_placements.h"
 #include "Engine/Game/Build/20260929/placement_adapters.h"
 #include "Engine/Game/Build/20260929/placement_physics.h"
 #include "Engine/Game/Build/20260929/remote_collision.h"
+#include "Engine/Game/Build/20260929/skater_movement.h"
 #include "Engine/Game/Build/20260929/skater_state.h"
 #include "Engine/Game/Multiplayer/session_tools.h"
-#include "ParkEditor/park_editor_internal.h"
+#include "ParkEditor/park_editor_bodies.h"
 #include "local_placements_runtime.h"
+#include <atomic>
 #include <deque>
 #include <intrin.h>
 
@@ -17,6 +20,10 @@ namespace abi = addr::placement_adapters;
 namespace physics = addr::placement_physics;
 std::uintptr_t base{};
 bool attempted{}, ready{};
+// False from a level's teardown until the next world is active: every stored world pointer (the
+// published bodies, surfaces, cached edges and chains) is from the old world then, and no hook
+// reads through one.
+std::atomic<bool> world_live{true};
 std::mutex mutex;
 std::map<std::uint64_t, Published> published;
 std::map<std::uint64_t, std::uintptr_t> selected;
@@ -38,19 +45,29 @@ struct NativeChain {
     const Edge* edges{};
     std::uint32_t count{}, padding{};
 };
+// A chain's edges in the body's frame, and in the world twice over: chain_hook hands a contact one
+// world copy and writes the next pose into the other, so a caller still reading the copy it was
+// given is not written under. It writes only when the body has moved.
 struct CachedChain {
     Body body{}, shape{};
-    std::vector<Edge> local, world;
+    std::vector<Edge> local;
+    std::array<std::vector<Edge>, 2> world;
+    unsigned front{};
+    Pose posed{};
+    bool placed{};
 };
 std::map<Body, std::vector<CachedEdge>> cached_edges;
 std::map<std::array<std::uint64_t, 2>, CachedChain*> cached_chains;
-// Contacts borrow pointers across worker phases. Never invalidate published
-// storage, even on level reset. A process-wide budget bounds retention.
+// Contacts borrow these pointers across worker phases, so a chain is never freed while its world is:
+// the storage is let go when the next world is active (world_ready), and a world holds at most
+// max_chain_edges.
 std::deque<CachedChain> chain_storage;
 std::size_t chain_edge_count{};
+bool chains_retired{};
+constexpr std::size_t max_chain_edges = 65536;
 bool (*chain_original)(const std::uint64_t*, NativeChain*){};
 void (*edges_original)(std::uintptr_t){};
-bool (*edge_query_original)(std::uintptr_t, const float*, std::uintptr_t, int, int, int){};
+bool (*edge_query_original)(std::uintptr_t, const float*, std::uintptr_t){};
 void (*friction_original)(std::uintptr_t, float, float, float){};
 int (*motion_original)(const Body*){};
 void* (*root_original)(void*, std::uint64_t, bool){};
@@ -103,7 +120,7 @@ void reconcile(std::uintptr_t controller) {
 }
 void* root_hook(void* out, std::uint64_t entity, bool checks) {
     auto* result = root_original(out, entity, checks);
-    if (checks && result == out && out && !multiplayer_session_active()) {
+    if (checks && result == out && out && world_live.load(std::memory_order_acquire) && !multiplayer_session_active()) {
         std::lock_guard lock(mutex);
         if (published.contains(*static_cast<std::uint64_t*>(out)))
             *reinterpret_cast<std::uint32_t*>(static_cast<std::byte*>(out) + abi::root_flags) &= ~abi::root_dynamic_restriction;
@@ -113,7 +130,7 @@ void* root_hook(void* out, std::uint64_t entity, bool checks) {
 void transform_hook(const void* query, const float* pose, std::uintptr_t source) {
     const auto caller = reinterpret_cast<std::uintptr_t>(_ReturnAddress()) - base;
     transform_original(query, pose, source);
-    if (std::none_of(abi::transform_calls.begin(), abi::transform_calls.end(), [&](auto call) { return caller == call + 5; }))
+    if (!world_live.load(std::memory_order_acquire) || std::none_of(abi::transform_calls.begin(), abi::transform_calls.end(), [&](auto call) { return caller == call + 5; }))
         return;
     try {
         Pose wanted{};
@@ -133,7 +150,7 @@ void transform_hook(const void* query, const float* pose, std::uintptr_t source)
 }
 float* pose_hook(float* out, const void* query) {
     auto* result = pose_original(out, query);
-    if (!selecting || result != out || !out || !query || multiplayer_session_active())
+    if (!selecting || result != out || !out || !query || !world_live.load(std::memory_order_acquire) || multiplayer_session_active())
         return result;
     try {
         std::uint64_t entity{};
@@ -220,16 +237,16 @@ void finish_hook(std::uintptr_t controller, const void* entities, bool keep, boo
 }
 int motion_hook(const Body* body) {
     const auto actual = motion_original(body);
-    if (actual != 3 || !body || multiplayer_session_active())
+    if (actual != physics::motion_dynamic || !body || !world_live.load(std::memory_order_acquire) || multiplayer_session_active())
         return actual;
     const auto caller = reinterpret_cast<std::uintptr_t>(_ReturnAddress()) - base;
     int view = actual;
     for (auto call : abi::moving_calls)
         if (caller == call + 5)
-            view = 2;
+            view = physics::motion_keyframed;
     for (auto call : abi::material_calls)
         if (caller == call + 5)
-            view = 1;
+            view = physics::motion_fixed;
     if (view == actual)
         return actual;
     Body handle{};
@@ -238,8 +255,11 @@ int motion_hook(const Body* body) {
     std::lock_guard lock(mutex);
     return surface_context && surfaces.contains(handle) ? view : actual;
 }
+// Adds the claimed surfaces' edges that overlap the box center +/- half to a native edge list: the
+// count at `result`, at most 100 edges of 0x70 bytes from result + edge_data. The overlap test is the
+// game's own per-edge one (placement_geometry::overlaps).
 void adapt_edges(std::uintptr_t result, Vec3 center, Vec3 half) {
-    if (multiplayer_session_active())
+    if (!world_live.load(std::memory_order_acquire) || multiplayer_session_active())
         return;
     try {
         std::uint32_t count{};
@@ -249,7 +269,7 @@ void adapt_edges(std::uintptr_t result, Vec3 center, Vec3 half) {
         if (!surface_context || surfaces.empty())
             return;
         std::erase_if(cached_edges,
-                      [&](const auto& e) { return !surfaces.contains(e.first) || !valid(&e.first) || motion_original(&e.first) != 3; });
+                      [&](const auto& e) { return !surfaces.contains(e.first) || !valid(&e.first) || motion_original(&e.first) != physics::motion_dynamic; });
         std::vector<Edge> native(count);
         if (count && !memory::peek_bytes(result + abi::edge_data, native.data(), count * sizeof(Edge)))
             return;
@@ -266,7 +286,7 @@ void adapt_edges(std::uintptr_t result, Vec3 center, Vec3 half) {
                     !memory::peek(generations + index, generation))
                     continue;
                 shape.generation = generation;
-                if (!profile_runtime::park_editor_detail::editor_state().picking_api.body_valid(&shape) ||
+                if (!profile_runtime::park_handle_valid(&shape) ||
                     shape_body(&shape, &owner) != &owner || owner != body)
                     continue;
                 Pose pose{};
@@ -283,16 +303,18 @@ void adapt_edges(std::uintptr_t result, Vec3 center, Vec3 half) {
                         continue;
                     auto& stored = cached_chains[edge.identity];
                     if (!stored || stored->body != body || stored->shape != shape || stored->local.size() != chain.count) {
-                        if (chain_edge_count + chain.count > 65536)
+                        if (chain_edge_count + chain.count > max_chain_edges)
                             continue;
                         chain_storage.emplace_back();
                         stored = &chain_storage.back();
                         stored->body = body;
                         stored->shape = shape;
                         stored->local.resize(chain.count);
-                        stored->world.resize(chain.count);
+                        for (auto& copy : stored->world)
+                            copy.resize(chain.count);
                         chain_edge_count += chain.count;
                     }
+                    stored->placed = false; // its local edges may have changed
                     for (unsigned n = 0; n < chain.count; ++n)
                         stored->local[n] = transform(snapshot[n], inverse, rotate(inverse, {-pose[8], -pose[9], -pose[10]}));
                 }
@@ -317,7 +339,7 @@ void adapt_edges(std::uintptr_t result, Vec3 center, Vec3 half) {
                 continue;
             std::erase_if(edges, [&](const auto& e) {
                 Body owner{};
-                return !profile_runtime::park_editor_detail::editor_state().picking_api.body_valid(&e.shape) ||
+                return !profile_runtime::park_handle_valid(&e.shape) ||
                        shape_body(&e.shape, &owner) != &owner || owner != body;
             });
             for (const auto& edge : edges) {
@@ -342,7 +364,7 @@ void adapt_edges(std::uintptr_t result, Vec3 center, Vec3 half) {
 bool chain_hook(const std::uint64_t* identity, NativeChain* out) {
     if (chain_original(identity, out))
         return true;
-    if (multiplayer_session_active())
+    if (!world_live.load(std::memory_order_acquire) || multiplayer_session_active())
         return false;
     try {
         std::array<std::uint64_t, 2> key{};
@@ -354,24 +376,35 @@ bool chain_hook(const std::uint64_t* identity, NativeChain* out) {
             return false;
         auto& chain = *at->second;
         Body owner{};
-        if (!surfaces.contains(chain.body) || !valid(&chain.body) || motion_original(&chain.body) != 3 ||
-            !profile_runtime::park_editor_detail::editor_state().picking_api.body_valid(&chain.shape) ||
+        if (!surfaces.contains(chain.body) || !valid(&chain.body) || motion_original(&chain.body) != physics::motion_dynamic ||
+            !profile_runtime::park_handle_valid(&chain.shape) ||
             shape_body(&chain.shape, &owner) != &owner || owner != chain.body)
             return false;
         Pose pose{};
         pose[0] = pose[1] = pose[2] = 1;
         if (!read_body_pose(chain.body, pose))
             return false;
-        for (std::size_t n = 0; n < chain.local.size(); ++n)
-            chain.world[n] = transform(chain.local[n], {pose[4], pose[5], pose[6], pose[7]}, {pose[8], pose[9], pose[10]});
-        *out = {chain.world.data(), static_cast<std::uint32_t>(chain.world.size()), 0};
+        if (!chain.placed || !same_pose(chain.posed, pose)) {
+            auto& next = chain.world[chain.front ^ 1];
+            for (std::size_t n = 0; n < chain.local.size(); ++n)
+                next[n] = transform(chain.local[n], {pose[4], pose[5], pose[6], pose[7]}, {pose[8], pose[9], pose[10]});
+            chain.front ^= 1;
+            chain.posed = pose;
+            chain.placed = true;
+        }
+        const auto& world = chain.world[chain.front];
+        *out = {world.data(), static_cast<std::uint32_t>(world.size()), 0};
         return true;
     } catch (...) {
         return false;
     }
 }
+// The game's edge gather around a grind context: the box is its position +/- query_half (1.2 m on
+// each axis), and it gathers nothing while the context has disabled_query set.
 void edges_hook(std::uintptr_t cache) {
     edges_original(cache);
+    if (!world_live.load(std::memory_order_acquire))
+        return;
     std::uintptr_t context{};
     std::uint32_t flags{};
     Vec3 center{}, half{};
@@ -385,11 +418,13 @@ void edges_hook(std::uintptr_t cache) {
     }
     adapt_edges(cache + abi::edge_data, center, half);
 }
-bool edge_query_hook(std::uintptr_t registry, const float* bounds, std::uintptr_t out, int mode, int first, int second) {
-    const auto result = edge_query_original(registry, bounds, out, mode, first, second);
+// The game's edge query over a box: bounds is its min (floats 0-2) and max (floats 4-6); true when it
+// found any.
+bool edge_query_hook(std::uintptr_t registry, const float* bounds, std::uintptr_t out) {
+    const auto result = edge_query_original(registry, bounds, out);
     std::array<float, 8> box{};
     Vec3 local{};
-    if (!out || !memory::peek(reinterpret_cast<std::uintptr_t>(bounds), box))
+    if (!out || !world_live.load(std::memory_order_acquire) || !memory::peek(reinterpret_cast<std::uintptr_t>(bounds), box))
         return result;
     const Vec3 center{(box[0] + box[4]) * .5f, (box[1] + box[5]) * .5f, (box[2] + box[6]) * .5f};
     const Vec3 half{(box[4] - box[0]) * .5f, (box[5] - box[1]) * .5f, (box[6] - box[2]) * .5f};
@@ -403,7 +438,7 @@ bool edge_query_hook(std::uintptr_t registry, const float* bounds, std::uintptr_
     return memory::peek(out, count) && count > 0;
 }
 void friction_hook(std::uintptr_t grind, float first, float second, float third) {
-    if (multiplayer_session_active()) {
+    if (!world_live.load(std::memory_order_acquire) || multiplayer_session_active()) {
         friction_original(grind, first, second, third);
         return;
     }
@@ -418,7 +453,7 @@ void friction_hook(std::uintptr_t grind, float first, float second, float third)
     alignas(16) std::array<float, 4> moving{}, point{current.point[0], current.point[1], current.point[2], 0};
     const bool relative = current.context && GetTickCount64() <= current.at + 100 && memory::peek(grind + abi::grind_context, context) &&
                           context == current.context && memory::peek(context + addr::skater_state::physics_state_offset, physics_state) &&
-                          physics_state >= 400 && physics_state < 500 && memory::peek(context + abi::context_velocity, velocity) &&
+                          physics_state >= 400 && physics_state < 500 && memory::peek(context + addr::skater_movement::context_velocity, velocity) &&
                           valid(&current.body) && point_velocity(&current.body, moving.data(), point.data()) == moving.data() &&
                           std::all_of(moving.begin(), moving.begin() + 3, [](float v) { return std::isfinite(v) && std::abs(v) < 45; });
     if (!relative) {
@@ -426,13 +461,25 @@ void friction_hook(std::uintptr_t grind, float first, float second, float third)
         return;
     }
     for (unsigned axis = 0; axis < 3; ++axis)
-        reinterpret_cast<float*>(context + abi::context_velocity)[axis] = velocity[axis] - moving[axis];
+        reinterpret_cast<float*>(context + addr::skater_movement::context_velocity)[axis] = velocity[axis] - moving[axis];
     friction_original(grind, first, second, third);
-    std::copy(velocity.begin(), velocity.end(), reinterpret_cast<float*>(context + abi::context_velocity));
+    std::copy(velocity.begin(), velocity.end(), reinterpret_cast<float*>(context + addr::skater_movement::context_velocity));
 }
 template <std::size_t N> bool matches(std::uintptr_t address, const std::array<unsigned char, N>& expected) {
     std::array<unsigned char, N> bytes{};
     return memory::peek(address, bytes) && bytes == expected;
+}
+// Every call site the hooks tell apart by return address is still a direct call (E8 rel32) to the
+// function hooked, so a return address of site + 5 means that caller and no other.
+template <std::size_t N> bool calls(const std::array<std::uintptr_t, N>& sites, std::uintptr_t target) {
+    return std::all_of(sites.begin(), sites.end(), [&](std::uintptr_t site) {
+        std::array<unsigned char, 5> call{};
+        std::int32_t offset{};
+        if (!memory::peek(base + site, call) || call[0] != 0xe8)
+            return false;
+        std::memcpy(&offset, call.data() + 1, sizeof offset);
+        return site + 5 + static_cast<std::intptr_t>(offset) == target;
+    });
 }
 } // namespace
 bool start(std::uintptr_t image_base) {
@@ -448,7 +495,8 @@ bool start(std::uintptr_t image_base) {
         !matches(base + abi::chain, abi::chain_prefix) || !matches(base + physics::motion_type, physics::motion_type_prefix) ||
         !matches(base + physics::body_pose, physics::body_pose_prefix) ||
         !matches(base + addr::local_placements::object_root, addr::local_placements::object_root_prefix) ||
-        !matches(base + movement[2].rva, movement[2].bytes))
+        !matches(base + movement[2].rva, movement[2].bytes) || !calls(abi::transform_calls, movement[2].rva) ||
+        !calls(abi::moving_calls, physics::motion_type) || !calls(abi::material_calls, physics::motion_type))
         return false;
     const auto& validity = addr::remote_collision::body_valid;
     if (!matches(base + validity.rva, validity.bytes))
@@ -487,7 +535,7 @@ bool start(std::uintptr_t image_base) {
 }
 void publish(const std::map<std::uint64_t, Published>& roots) {
     std::lock_guard lock(mutex);
-    published = roots;
+    published = world_live.load(std::memory_order_acquire) ? roots : std::map<std::uint64_t, Published>{};
     surfaces.clear();
     for (const auto& [entity, p] : roots) {
         (void)entity;
@@ -507,6 +555,14 @@ void edited(std::uint64_t entity, const Pose& pose, bool committed) {
     const auto at = published.find(entity);
     if (at != published.end() && edits.size() < 4096)
         edits.push_back({at->second.id, pose, committed});
+}
+bool pending(std::uint64_t id) {
+    std::lock_guard lock(mutex);
+    return std::any_of(edits.begin(), edits.end(), [&](const Edit& edit) { return edit.id == id; }) ||
+           std::any_of(selected.begin(), selected.end(), [&](const auto& e) {
+               const auto at = published.find(e.first);
+               return at != published.end() && at->second.id == id;
+           });
 }
 Inbox drain() {
     std::lock_guard lock(mutex);
@@ -537,4 +593,26 @@ void reset() {
     surface_context = 0;
     supporting = {};
 }
+void world_gone() noexcept {
+    world_live.store(false, std::memory_order_release);
+    try {
+        reset();
+        std::lock_guard lock(mutex);
+        chains_retired = true;
+    } catch (...) {
+    }
+}
+void world_ready() noexcept {
+    try {
+        std::lock_guard lock(mutex);
+        if (chains_retired) {
+            chain_storage.clear();
+            chain_edge_count = 0;
+            chains_retired = false;
+        }
+    } catch (...) {
+    }
+    world_live.store(true, std::memory_order_release);
+}
+bool world_current() noexcept { return world_live.load(std::memory_order_acquire); }
 } // namespace dingosdk::placement_adapters

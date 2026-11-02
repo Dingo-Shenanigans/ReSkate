@@ -501,6 +501,8 @@ void update_placement_poses() {
     auto& objects = r.document.maps[r.map]; bool changed{};
     for (auto& row : r.rows) {
         if (!row.spawned) continue;
+        // A plugin's physics moves it (placement_physics.h): where it falls is not where it is saved.
+        if (row.saved_id && placement_physics::claimed(row.saved_id)) continue;
         if (std::any_of(r.resizes.begin(), r.resizes.end(), [&](const auto& x) { return x.entity == row.entity; }))
             continue; // Its native scale is still 1x, or the resize is not yet read back.
         alignas(16) std::array<std::uint64_t, 2> reference{};

@@ -1,26 +1,30 @@
 #include "placement_physics.h"
 #include <Windows.h>
+#include "Engine/Core/Hooks/hooks.h"
 #include "Engine/Game/Build/20260929/local_placements.h"
-#include "Engine/Game/Build/20260929/no_bail.h"
-#include "Engine/Game/Build/20260929/offboard_flight.h"
+#include "Engine/Game/Build/20260929/park_editor.h"
 #include "Engine/Game/Build/20260929/placement_adapters.h"
 #include "Engine/Game/Build/20260929/placement_physics.h"
 #include "Engine/Game/Build/20260929/remote_collision.h"
+#include "Engine/Game/Build/20260929/skater_movement.h"
 #include "Engine/Game/Build/20260929/skater_state.h"
 #include "Engine/Game/Multiplayer/session_tools.h"
 #include "Extension/Multiplayer/Hud/game_ui_state.h"
-#include "Extension/Skater/client_source_spawn.h"
 #include "Extension/Skater/no_bail.h"
-#include "Extension/UI/Overlay/overlay.h"
-#include "ParkEditor/park_editor_internal.h"
+#include "Extension/Skater/skater_movement.h"
+#include "ParkEditor/park_editor_bodies.h"
+#include "ParkEditor/park_editor_runtime.h"
 #include "local_placements_runtime.h"
 #include "placement_adapters.h"
-#include <deque>
+#include <atomic>
 
+// Threads: the plugin API and client_tick run on the client tick and write only the client replica
+// (its body and transform). The server copy is written only by server_tick, from the server park
+// tick (local_park_rotation.cpp park_tick_hook): it mirrors a moving object's pose and carries out
+// the restores the client side queues. Both hold native_mutex, which orders ReSkate's own state.
 namespace dingosdk::placement_physics {
 namespace {
 using namespace profile_runtime;
-namespace pe = profile_runtime::park_editor_detail;
 namespace abi = addr::placement_physics;
 namespace phys = addr::remote_collision;
 using Pose = std::array<float, 12>;
@@ -37,16 +41,26 @@ struct Lease {
     float inverse_mass{};
     plugins::ObjectPhysics options;
     Pose pose{};
+    // The pose in the park's layout: where it was claimed, or where an edit put it. A released object
+    // goes back to it, so physics never changes a saved layout.
     Pose fixed_pose{};
     bool editing{};
     std::uint64_t edit_until{}, edit_revision{};
 };
+// A write to the server copy, done by the next server_tick if its row is still the one it was for.
+struct ServerRestore {
+    std::uint64_t id{}, token{}, map_generation{}, server{};
+    Pose pose{};
+};
 struct State {
     std::uintptr_t base{};
-    std::uintptr_t client{};
     bool ready{};
     std::map<std::uint64_t, Lease> leases;
     plugins::ObjectPhysicsClaims claims;
+    std::vector<ServerRestore> restores;
+    // Set by a level's teardown (before_level_transition, which may run on another thread): the
+    // leases are forgotten, without a native write, by the next call that holds native_mutex.
+    std::atomic<bool> world_gone{};
     void (*motion)(const Body*, int){};
     int (*motion_type)(const Body*){};
     void (*linear)(const Body*, const float*){};
@@ -60,6 +74,15 @@ struct State {
 State& state() {
     static auto* s = new State;
     return *s;
+}
+// Under native_mutex: drops what a torn-down level left. Its bodies are gone, so nothing is written.
+void forget_gone_world() {
+    auto& s = state();
+    if (!s.world_gone.exchange(false))
+        return;
+    s.leases.clear();
+    s.claims.clear();
+    s.restores.clear();
 }
 void publish_roots() {
     std::map<std::uint64_t, placement_adapters::Published> roots;
@@ -78,7 +101,7 @@ bool start(std::uintptr_t base) {
     auto& s = state();
     if (s.ready)
         return s.base == base;
-    if (!base || !pe::editor_state().native_ready || !pe::editor_state().picking_api.ready)
+    if (!base || !park_bodies_ready())
         return false;
     for (const auto* contract : {&phys::set_motion_type, &phys::set_linear_velocity, &phys::set_angular_velocity, &phys::wake_body,
                                  &phys::body_valid, &phys::set_body_980})
@@ -111,14 +134,13 @@ const PlacementRow* row_for(std::uint64_t id) {
 }
 bool body_of(std::uint64_t entity, Body& body) {
     auto& r = placements_runtime();
-    auto& e = pe::editor_state();
-    if (!entity || !r.resolve || !r.valid || !e.physics_query)
+    if (!entity || !r.resolve || !r.valid || !park_bodies_ready())
         return false;
     alignas(16) std::array<std::uint64_t, 2> root{};
-    alignas(16) std::array<std::uint64_t, 5> component{};
-    return r.resolve(root.data(), entity, false) == root.data() && root[0] == entity && r.valid(root.data()) &&
-           e.physics_query(root.data(), component.data()) == component.data() && component[2] && component[3] &&
-           memory::peek(component[3], body) && body.world && body.index < 1000000 && state().valid(&body);
+    if (r.resolve(root.data(), entity, false) != root.data() || root[0] != entity || !r.valid(root.data()))
+        return false;
+    const auto handle = placed_body_handle(root.data());
+    return handle && memory::peek(handle, body) && body.world && body.index < 1000000 && state().valid(&body);
 }
 std::map<std::uint32_t, std::uint64_t> client_objects() {
     std::map<std::uint32_t, std::uint64_t> result;
@@ -148,14 +170,17 @@ std::map<std::uint32_t, std::uint64_t> client_objects() {
     }
     return result;
 }
-bool current(std::uint64_t id, const Lease& lease) {
-    if (!placements_runtime().manager || placements_runtime().map.empty() || placements_runtime().map_generation != lease.map_generation)
+// The row a lease (or a queued restore) was made for is still live, the same placement and map.
+bool row_current(std::uint64_t id, std::uint64_t token, std::uint64_t map_generation, std::uint64_t server) {
+    if (!placements_runtime().manager || placements_runtime().map.empty() || placements_runtime().map_generation != map_generation)
         return false;
     const auto* row = row_for(id);
-    if (!row || row->token != lease.token || row->entity != lease.server)
+    return row && row->token == token && row->entity == server;
+}
+bool current(std::uint64_t id, const Lease& lease) {
+    if (!row_current(id, lease.token, lease.map_generation, lease.server))
         return false;
-    const auto& api = pe::editor_state().picking_api;
-    const auto server = editor::buildkit_identity(api, lease.server), client = editor::buildkit_identity(api, lease.client);
+    const auto server = placed_identity(lease.server), client = placed_identity(lease.client);
     Body body;
     return server && client && *server == *client && body_of(lease.client, body) && body == lease.body;
 }
@@ -164,15 +189,6 @@ bool inverse_mass(const Body& body, float& value) {
     return memory::peek(body.world + abi::world_state, data) && memory::peek(data + abi::mass_buffer, buffer) && buffer &&
            memory::peek(buffer + std::uint64_t{body.index} * sizeof(float), value) && std::isfinite(value) && value > 0 && value < 1000 &&
            std::isfinite(1.f / value);
-}
-bool finite(const Pose& pose) {
-    for (unsigned i : {0u, 1u, 2u, 4u, 5u, 6u, 7u, 8u, 9u, 10u})
-        if (!std::isfinite(pose[i]) || std::abs(pose[i]) > 100000)
-            return false;
-    float norm{};
-    for (unsigned i = 4; i < 8; ++i)
-        norm += pose[i] * pose[i];
-    return norm > .95f && norm < 1.05f && pose[0] > .001f;
 }
 bool sample_pose(Lease& lease) {
     auto& r = placements_runtime();
@@ -183,25 +199,25 @@ bool sample_pose(Lease& lease) {
         return false;
     std::copy_n(rigid.begin(), 4, lease.pose.begin() + 4);
     std::copy_n(rigid.begin() + 4, 3, lease.pose.begin() + 8);
-    if (!finite(lease.pose))
+    if (!placement_geometry::finite(lease.pose))
         return false;
     lease.sampled = GetTickCount64();
     return true;
 }
+// Moves one copy's body and transform to `pose` as the dropper does, leaving it in motion type `mode`.
 bool place(std::uint64_t entity, const Pose& pose, int mode) {
     auto& r = placements_runtime();
-    auto& e = pe::editor_state();
     auto& s = state();
     alignas(16) std::array<std::uint64_t, 3> query{};
     std::uintptr_t source{};
     Body body;
-    if (!finite(pose) || r.query(query.data(), entity) != query.data() || !body_of(entity, body) ||
+    if (!placement_geometry::finite(pose) || r.query(query.data(), entity) != query.data() || !body_of(entity, body) ||
         !memory::peek(s.base + addr::park_editor::transform_notification_source, source))
         return false;
-    s.motion(&body, 2);
+    s.motion(&body, abi::motion_keyframed);
     alignas(16) std::array<float, 8> rigid{pose[8], pose[9], pose[10], pose[0], pose[4], pose[5], pose[6], pose[7]};
-    e.physics_move(&body, rigid.data());
-    e.transform_move(query.data(), pose.data(), source);
+    move_placed_body(&body, rigid.data());
+    set_placed_transform(query.data(), pose.data(), source);
     s.motion(&body, mode);
     return true;
 }
@@ -210,30 +226,28 @@ void stop(const Body& body) {
     state().linear(&body, zero.data());
     state().angular(&body, zero.data());
 }
-void restore(std::uint64_t id, Lease lease) {
+// Ends a lease (client tick): the client replica goes back to its layout pose, fixed, with its own
+// mass; the server copy is queued to follow (server_tick), even when the replica cannot be reached.
+void restore(std::uint64_t id, const Lease& lease) {
     auto& s = state();
+    if (s.restores.size() < 256)
+        s.restores.push_back({id, lease.token, lease.map_generation, lease.server, lease.fixed_pose});
     if (!current(id, lease))
         return; // Never write through a stale row/body generation.
-    if (sample_pose(lease))
-        (void)place(lease.server, lease.pose, 1);
+    if (!place(lease.client, lease.fixed_pose, abi::motion_fixed))
+        s.motion(&lease.body, abi::motion_fixed);
     stop(lease.body);
     s.mass(&lease.body, lease.inverse_mass);
-    s.motion(&lease.body, 1);
 }
 bool suspended() {
-    return multiplayer_session_active() || !placements_runtime().manager || placements_runtime().map.empty() ||
-           placements_runtime().clearing || !lobby_object_placement_allowed();
+    return !placement_adapters::world_current() || multiplayer_session_active() || !placements_runtime().manager ||
+           placements_runtime().map.empty() || placements_runtime().clearing || !lobby_object_placement_allowed();
 }
 std::uint64_t contact_owner(std::uintptr_t world, std::uint32_t index, std::uintptr_t data) {
-    auto& e = pe::editor_state();
-    const auto& api = e.picking_api;
-    alignas(16) editor::SurfaceBody body{};
-    alignas(16) std::array<std::uint64_t, 2> entity{}, root{};
-    if (!pe::surface_body(world, index, data, body))
-        return 0;
-    api.body_entity(entity.data(), body.data());
+    alignas(16) std::array<std::uint64_t, 2> root{};
+    const auto entity = surface_hit_entity(world, index, data);
     auto& r = placements_runtime();
-    if (!entity[0] || r.resolve(root.data(), entity[0], false) != root.data() || !root[0] || !r.valid(root.data()))
+    if (!entity || r.resolve(root.data(), entity, false) != root.data() || !root[0] || !r.valid(root.data()))
         return 0;
     for (const auto& [id, lease] : state().leases)
         if (lease.client == root[0] || lease.server == root[0])
@@ -242,15 +256,12 @@ std::uint64_t contact_owner(std::uintptr_t world, std::uint32_t index, std::uint
 }
 std::optional<plugins::ObjectContact> cast(const std::array<float, 3>& from, const std::array<float, 3>& to) {
     auto& r = placements_runtime();
-    auto& e = pe::editor_state();
-    if (!r.context || !e.surface_api.ready)
+    if (!r.context)
         return std::nullopt;
     std::array<std::uintptr_t, 2> context{};
     r.context(context.data());
-    const auto world = e.surface_api.world(context[0]);
     std::uint64_t id{};
-    const auto point =
-        world ? editor::cast_surface(e.surface_api, world, from, to, &contact_owner, {}, &id) : std::optional<std::array<float, 3>>{};
+    const auto point = cast_placed_surface(context[0], from, to, &contact_owner, &id);
     if (!point || !id)
         return std::nullopt;
     for (float value : *point)
@@ -258,6 +269,7 @@ std::optional<plugins::ObjectContact> cast(const std::array<float, 3>& from, con
             return std::nullopt;
     return plugins::ObjectContact{id, *point};
 }
+// Client tick only: applies the dropper's edits and selections to the client replicas.
 placement_adapters::Inbox receive_edits() {
     auto inbox = placement_adapters::drain();
     auto& s = state();
@@ -267,7 +279,7 @@ placement_adapters::Inbox receive_edits() {
         if (at == s.leases.end() || !current(at->first, at->second))
             continue;
         auto& lease = at->second;
-        if (place(lease.client, edit.pose, 1)) {
+        if (place(lease.client, edit.pose, abi::motion_fixed)) {
             stop(lease.body);
             lease.pose = edit.pose;
             lease.fixed_pose = edit.pose;
@@ -286,7 +298,7 @@ placement_adapters::Inbox receive_edits() {
         if (!lease.editing)
             lease.fixed_pose = lease.pose;
         lease.editing = true;
-        s.motion(&lease.body, 1);
+        s.motion(&lease.body, abi::motion_fixed);
         stop(lease.body);
     }
     return inbox;
@@ -343,6 +355,7 @@ bool start_markers(std::uintptr_t base) {
 std::string configure(std::uintptr_t base, std::string_view plugin, std::uint64_t id,
                       const std::optional<plugins::ObjectPhysics>& options) {
     std::lock_guard lock(local_runtime().native_mutex);
+    forget_gone_world();
     auto& s = state();
     if (!options) {
         if (!s.claims.owns(plugin, id))
@@ -375,14 +388,14 @@ std::string configure(std::uintptr_t base, std::string_view plugin, std::uint64_
             return "object physics rate limit reached";
         lease.options = *options;
     } else {
-        const auto identity = editor::buildkit_identity(pe::editor_state().picking_api, row->entity);
+        const auto identity = placed_identity(row->entity);
         const auto records = client_objects();
         if (!identity)
             return "object identity is unavailable";
         const auto at = records.find(identity->drop_id);
         if (at == records.end())
             return "the object's client replica is unavailable";
-        const auto client = editor::buildkit_identity(pe::editor_state().picking_api, at->second);
+        const auto client = placed_identity(at->second);
         if (!client || *client != *identity)
             return "object replica identity differs";
         Lease lease;
@@ -396,7 +409,8 @@ std::string configure(std::uintptr_t base, std::string_view plugin, std::uint64_
             return "object physics body is unavailable";
         lease.fixed_pose = lease.pose;
         Body authoritative;
-        if (s.motion_type(&lease.body) != 1 || !body_of(lease.server, authoritative) || s.motion_type(&authoritative) != 1)
+        if (s.motion_type(&lease.body) != abi::motion_fixed || !body_of(lease.server, authoritative) ||
+            s.motion_type(&authoritative) != abi::motion_fixed)
             return "only fixed local placement bodies may be claimed";
         if (auto why = s.claims.claim(plugin, id); !why.empty())
             return why;
@@ -404,7 +418,7 @@ std::string configure(std::uintptr_t base, std::string_view plugin, std::uint64_
     }
     auto& lease = s.leases.at(id);
     s.mass(&lease.body, 1.f / lease.options.mass);
-    s.motion(&lease.body, lease.options.dynamic ? 3 : 1);
+    s.motion(&lease.body, lease.options.dynamic ? abi::motion_dynamic : abi::motion_fixed);
     if (lease.options.dynamic) {
         s.wake(&lease.body);
         s.sleep(&lease.body, false);
@@ -416,6 +430,7 @@ std::string configure(std::uintptr_t base, std::string_view plugin, std::uint64_
 }
 std::string velocity(std::string_view plugin, std::uint64_t id, const std::array<float, 3>& value) {
     std::lock_guard lock(local_runtime().native_mutex);
+    forget_gone_world();
     auto& s = state();
     if (!plugins::valid_object_velocity(value))
         return "invalid velocity";
@@ -436,6 +451,7 @@ std::string velocity(std::string_view plugin, std::uint64_t id, const std::array
 }
 std::optional<plugins::ObjectMotion> sample(std::string_view plugin, std::uint64_t id) {
     std::lock_guard lock(local_runtime().native_mutex);
+    forget_gone_world();
     auto& s = state();
     if (!s.claims.owns(plugin, id))
         return std::nullopt;
@@ -459,8 +475,7 @@ std::optional<plugins::ObjectMotion> sample(std::string_view plugin, std::uint64
         !memory::peek(data + abi::velocity_count, count) || !memory::peek(data + abi::velocity_page, page) || count > 1000000 ||
         lease.body.index >= count || page > 16)
         return std::nullopt;
-    const auto stride = ((std::uint64_t{count} * 16 + 60) & ~std::uint64_t{63});
-    if (!memory::peek(buffer + stride * page + std::uint64_t{lease.body.index} * 16, result.velocity))
+    if (!memory::peek(buffer + abi::velocity_page_stride(count) * page + std::uint64_t{lease.body.index} * 16, result.velocity))
         return std::nullopt;
     for (float v : result.velocity)
         if (!std::isfinite(v) || std::abs(v) > 1000)
@@ -469,6 +484,7 @@ std::optional<plugins::ObjectMotion> sample(std::string_view plugin, std::uint64
 }
 std::string pose(std::string_view plugin, std::uint64_t id, const std::array<float, 3>& position, const std::array<float, 4>& rotation) {
     std::lock_guard lock(local_runtime().native_mutex);
+    forget_gone_world();
     auto& s = state();
     for (float value : position)
         if (!std::isfinite(value) || std::abs(value) > 100000)
@@ -486,7 +502,8 @@ std::string pose(std::string_view plugin, std::uint64_t id, const std::array<flo
     auto wanted = lease.pose;
     std::copy(position.begin(), position.end(), wanted.begin() + 8);
     std::copy(rotation.begin(), rotation.end(), wanted.begin() + 4);
-    if (!place(lease.client, wanted, lease.options.dynamic ? 3 : 1) || !place(lease.server, wanted, 2))
+    // The client replica moves now; server_tick mirrors the new pose to the server copy.
+    if (!place(lease.client, wanted, lease.options.dynamic ? abi::motion_dynamic : abi::motion_fixed))
         return "object pose could not be applied";
     stop(lease.body);
     if (lease.options.dynamic) {
@@ -507,9 +524,19 @@ std::optional<plugins::MarkerEvents> marker_events(std::uintptr_t base, std::str
     std::lock_guard lock(marker_mutex);
     return marker_journal.poll(plugin, local ? skater.entity : 0);
 }
+bool claimed(std::uint64_t id) noexcept {
+    try {
+        std::lock_guard lock(local_runtime().native_mutex);
+        forget_gone_world();
+        return state().leases.contains(id);
+    } catch (...) {
+        return false;
+    }
+}
 void release(std::string_view plugin) noexcept {
     try {
         std::lock_guard lock(local_runtime().native_mutex);
+        forget_gone_world();
         auto& s = state();
         std::erase_if(s.leases, [&](auto& entry) {
             if (entry.second.owner != plugin)
@@ -527,6 +554,7 @@ void release(std::string_view plugin) noexcept {
 void client_tick() noexcept {
     try {
         std::lock_guard lock(local_runtime().native_mutex);
+        forget_gone_world();
         auto& s = state();
         if (!s.ready || s.leases.empty())
             return;
@@ -549,11 +577,11 @@ void client_tick() noexcept {
             if (editing && !lease.editing)
                 lease.fixed_pose = lease.pose;
             lease.editing = editing;
-            const int mode = lease.options.dynamic && !editing ? 3 : 1;
+            const int mode = lease.options.dynamic && !editing ? abi::motion_dynamic : abi::motion_fixed;
             if (editing && !placement_geometry::same_pose(lease.pose, lease.fixed_pose))
-                (void)place(lease.client, lease.fixed_pose, 1);
+                (void)place(lease.client, lease.fixed_pose, abi::motion_fixed);
             s.motion(&lease.body, mode);
-            if (mode == 1)
+            if (mode == abi::motion_fixed)
                 stop(lease.body);
             else {
                 s.wake(&lease.body);
@@ -564,9 +592,11 @@ void client_tick() noexcept {
             roots[lease.client] = {id, body, lease.options.surface && !editing};
         }
         placement_adapters::publish(roots);
+        // A claimed surface under the board, found by rays down through the deck, carries the board
+        // while it grinds (placement_adapters.cpp friction_hook).
         NoBailSkater player;
-        const auto motion_actor = actor();
-        const bool riding = !menu && motion_actor && !motion_actor->on_foot && motion_actor->active && no_bail_skater(player);
+        const auto movement = skater_movement::read(s.base);
+        const bool riding = !menu && movement && !movement->on_foot && movement->focused && no_bail_skater(player);
         placement_adapters::Body support_body{};
         std::array<float, 3> point{};
         if (riding) {
@@ -574,13 +604,14 @@ void client_tick() noexcept {
             std::uintptr_t board{}, physics{}, parts{}, owner{};
             std::uint32_t count{};
             std::array<float, 3> at{};
-            if (memory::peek(player.core + adapter::skater_board, board) && memory::peek(board + adapter::board_physics, physics) &&
+            if (memory::peek(player.core + addr::skater_movement::skater_board, board) && memory::peek(board + adapter::board_physics, physics) &&
                 memory::peek(physics, owner) && owner == s.base + addr::skater_state::board_physics_vtable &&
-                memory::peek(physics + adapter::board_parts, parts) && memory::peek(parts, count) && count == 9 &&
+                memory::peek(physics + adapter::board_parts, parts) && memory::peek(parts, count) && count == adapter::board_part_count &&
                 memory::peek(parts + adapter::parts_owner, owner) && owner == physics &&
                 memory::peek(parts + adapter::parts_position, at)) {
-                for (float side : {0.f, -.08f, .08f, -.16f, .16f, -.24f, .24f}) {
-                    const auto hit = cast({at[0] + side, at[1] + .4f, at[2]}, {at[0] + side, at[1] - .6f, at[2]});
+                for (float side : adapter::board_ray_offsets) {
+                    const auto hit = cast({at[0] + side, at[1] + adapter::board_ray_above, at[2]},
+                                          {at[0] + side, at[1] - adapter::board_ray_below, at[2]});
                     if (!hit)
                         continue;
                     const auto found = s.leases.find(hit->id);
@@ -600,6 +631,7 @@ void client_tick() noexcept {
 }
 std::optional<plugins::ObjectContact> contact(std::string_view plugin, const std::array<float, 3>& from, const std::array<float, 3>& to) {
     std::lock_guard lock(local_runtime().native_mutex);
+    forget_gone_world();
     if (!state().ready || suspended())
         return std::nullopt;
     for (unsigned i = 0; i < 3; ++i)
@@ -615,91 +647,50 @@ std::optional<plugins::ObjectContact> contact(std::string_view plugin, const std
         return std::nullopt;
     return hit;
 }
-std::optional<plugins::PhysicsActor> actor() {
-    std::lock_guard lock(local_runtime().native_mutex);
-    namespace adapter = addr::placement_adapters;
-    namespace flight = addr::offboard_flight;
-    namespace sk = addr::skater_state;
-    NoBailSkater player;
-    if (!state().ready || suspended() || !no_bail_skater(player))
-        return std::nullopt;
-    plugins::PhysicsActor result;
-    if (!memory::peek(player.context + adapter::context_velocity, result.velocity))
-        return std::nullopt;
-    for (float value : result.velocity)
-        if (!std::isfinite(value) || std::abs(value) > 100)
-            return std::nullopt;
-    std::uintptr_t trick{}, offboard{}, parent{}, type{}, context{}, board{}, rig{}, active{};
-    std::uint8_t ragdoll{}, air{};
-    std::uint32_t physics_state{};
-    if (!memory::peek(player.context + sk::physics_state_offset, physics_state))
-        return std::nullopt;
-    result.physics_state = physics_state;
-    result.on_foot = physics_state == addr::no_bail::offboard_physics_state;
-    const bool offboard_ready =
-        memory::peek(player.core + sk::trick_state_offset, trick) && memory::peek(trick + sk::offboard_state_offset, offboard) && offboard;
-    result.grounded = result.on_foot && offboard_ready && memory::peek(offboard + sk::ragdoll_offset, ragdoll) && !ragdoll &&
-                      memory::peek(offboard + sk::in_the_air_offset, air) && !air &&
-                      memory::peek(player.core + adapter::skater_parent, parent) && memory::peek(parent, type) &&
-                      type == player.base + flight::offboard_flight_vtable && memory::peek(parent + adapter::state_context, context) &&
-                      context == player.context && memory::peek(parent + adapter::state_board, board) &&
-                      memory::peek(player.core + adapter::skater_board, type) && board == type &&
-                      memory::peek(parent + adapter::state_rig, rig) && rig == player.rig &&
-                      memory::peek(parent + adapter::active_state, active) && active == parent + flight::offboard_flight_states[0].offset &&
-                      memory::peek(active, type) && type == player.base + flight::offboard_flight_states[0].vtable_rva &&
-                      memory::peek(active + adapter::walking_velocity, result.walking_velocity);
-    for (float value : result.walking_velocity)
-        if (!std::isfinite(value) || std::abs(value) > 100) {
-            result.grounded = false;
-            result.walking_velocity = {};
-            break;
-        }
-    DWORD foreground_process{};
-    GetWindowThreadProcessId(GetForegroundWindow(), &foreground_process);
-    result.active = foreground_process == GetCurrentProcessId() && !client_free_camera_active() &&
-                    !multiplayer::sample_game_ui_state(state().base).in_menu && !park_editor_owns_placements();
-    for (const auto& [id, lease] : state().leases) {
-        (void)id;
-        if (lease.editing)
-            result.active = false;
-    }
-    ControllerInput pad;
-    DingoSDKOverlayReadControllerInput(&pad);
-    result.device = pad.device;
-    if (result.active) {
-        overlay::FlightInput movement;
-        DingoSDKOverlayReadFlightInput(&movement, true, true);
-        std::array<float, 16> camera{};
-        const float amount = (std::min)(1.f, std::hypot(movement.right, movement.forward));
-        if (movement.active && amount > .05f && read_local_camera_transform(state().base, state().client, camera)) {
-            auto direction = std::array<float, 3>{camera[0] * movement.right - camera[8] * movement.forward, 0,
-                                                  camera[2] * movement.right - camera[10] * movement.forward};
-            const float length = std::sqrt(placement_geometry::dot(direction, direction));
-            if (length > .01f)
-                result.wish = placement_geometry::mul(direction, amount * 3.f / length);
-        }
-    }
-    return result;
-}
-void set_client(std::uintptr_t client) noexcept { state().client = client; }
 void server_tick() noexcept {
     try {
         std::lock_guard lock(local_runtime().native_mutex);
+        forget_gone_world();
         auto& s = state();
-        if (!s.ready || s.leases.empty() || suspended())
+        if (!s.ready)
             return;
-        (void)receive_edits(); // Consume previews before an old mirrored pose can
-                               // overwrite them.
+        // Released objects: the server copy goes back to its layout pose, fixed.
+        for (const auto& queued : std::exchange(s.restores, {})) {
+            if (!row_current(queued.id, queued.token, queued.map_generation, queued.server) || s.leases.contains(queued.id))
+                continue;
+            Body body;
+            if (!place(queued.server, queued.pose, abi::motion_fixed) && body_of(queued.server, body))
+                s.motion(&body, abi::motion_fixed);
+        }
+        if (s.leases.empty() || suspended())
+            return;
+        // Moving objects: the server copy follows the client replica, keyframed. An object being edited
+        // is left to the dropper, which moves the server copy itself.
         const auto now = GetTickCount64();
         for (const auto& [id, lease] : s.leases)
-            if (now <= lease.sampled + 100 && current(id, lease))
-                (void)place(lease.server, lease.pose, 2);
+            if (!lease.editing && now <= lease.sampled + 100 && !placement_adapters::pending(id) &&
+                row_current(id, lease.token, lease.map_generation, lease.server))
+                (void)place(lease.server, lease.pose, abi::motion_keyframed);
     } catch (...) {
     }
+}
+void before_level_transition(unsigned next) noexcept {
+    // The same states plugin effects treat as a world's end and start (plugin_effects.cpp).
+    if (next == 3 || next == 14 || next == 22 || next == 24 || next == 25) {
+        state().world_gone.store(true);
+        placement_adapters::world_gone();
+        try {
+            std::lock_guard lock(marker_mutex);
+            marker_journal.reset();
+        } catch (...) {
+        }
+    } else if (next == 13 || next == 21)
+        placement_adapters::world_ready();
 }
 void reset() noexcept {
     try {
         std::lock_guard lock(local_runtime().native_mutex);
+        forget_gone_world();
         auto& s = state();
         for (auto& [id, lease] : s.leases)
             restore(id, lease);

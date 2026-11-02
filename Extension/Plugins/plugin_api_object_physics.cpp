@@ -171,38 +171,10 @@ int contact(lua_State* L) {
     lua_setfield(L, -2, "position");
     return 1;
 }
-int actor(lua_State* L) {
-    auto& plugin = allowed(L, "objects.physics", "reskate.objects.actor");
-    need(L, plugin, "skater.read", "reskate.objects.actor");
-    need(L, plugin, "input", "reskate.objects.actor");
-    const auto value = ObjectPhysicsApi::game(plugin).physics_actor();
-    if (!value) {
-        lua_pushnil(L);
-        return 1;
-    }
-    lua_createtable(L, 0, 6);
-    push_position(L, value->velocity);
-    lua_setfield(L, -2, "velocity");
-    push_position(L, value->walking_velocity);
-    lua_setfield(L, -2, "walking_velocity");
-    push_position(L, value->wish);
-    lua_setfield(L, -2, "wish");
-    lua_pushboolean(L, value->grounded);
-    lua_setfield(L, -2, "grounded");
-    lua_pushboolean(L, value->on_foot);
-    lua_setfield(L, -2, "on_foot");
-    lua_pushboolean(L, value->active);
-    lua_setfield(L, -2, "active");
-    lua_pushnumber(L, value->device);
-    lua_setfield(L, -2, "device");
-    lua_pushnumber(L, value->physics_state);
-    lua_setfield(L, -2, "physics_state");
-    return 1;
-}
 } // namespace
 void install_object_physics_api(Plugin&, lua_State* L) {
     add_functions(L, "objects", {{"physics", physics}, {"velocity", velocity}, {"motion", motion}, {"pose", pose}});
-    add_functions(L, "objects", {{"contact", contact}, {"actor", actor}});
+    add_functions(L, "objects", {{"contact", contact}});
     add_functions(L, "marker", {{"events", marker_events}});
 }
 } // namespace dingosdk::plugins
