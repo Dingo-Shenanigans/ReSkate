@@ -39,6 +39,7 @@
 #include "Extension/Multiplayer/Session/session.h"
 #include "Extension/Multiplayer/Remote/stand_ins.h"
 #include "Extension/Music/external_player.h"
+#include "Extension/Music/music_inject.h"
 #include "Extension/Music/spotify_station.h"
 #include "Extension/Objects/ParkEditor/park_editor_runtime.h"
 #include "Extension/Profile/local_profile_runtime.h"
@@ -471,6 +472,11 @@ public:
     std::string game_music(std::string_view command) override {
         if (command != "next") return "there is no such command";
         return spotify_station::game_next() ? std::string{} : "the game's music cannot skip now (a Spotify station is on, or no song has started)";
+    }
+    bool spatialize_music(std::optional<MusicSpatial> spatial) override {
+        if (!spatial) music_inject::set_spatial(false, 1.0f, 1.0f);
+        else music_inject::set_spatial(true, spatial->left, spatial->right, spatial->lpf_left, spatial->lpf_right, spatial->itd, spatial->env, spatial->mute_loops);
+        return music_inject::spatial_active();
     }
     Progress progress() override {
         const auto model = local_profile_progression();

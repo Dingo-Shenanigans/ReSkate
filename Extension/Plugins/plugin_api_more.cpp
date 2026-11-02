@@ -1,9 +1,9 @@
 #include "plugin_api.h"
-#include "Extension/Music/music_inject.h"
 #include "lua.h"
 #include "lualib.h"
 #include <algorithm>
 #include <cmath>
+#include <optional>
 
 // Phase 3's parts of the reskate API (docs: ReSkate Plugin System Design, "the wider set"). As in
 // plugin_api.cpp, every value is checked before it leaves the VM.
@@ -172,30 +172,43 @@ struct MoreApi {
         return 1;
     }
 
-// spatialize_music(nil | false | {active = true, left = 0..4, right = 0..4, lpf_l = 0.04..1, lpf_r = 0.04..1, itd = -32..32, env = 0..0.65, mute_loops = true})
+// spatialize_music(nil | false | {active = true, left = 0..4, right = 0..4, lpf = 0.04..1, lpf_l, lpf_r,
+// itd = -32..32, env = 0..0.65, mute_loops = true}): numbers past their ranges are held to them.
+// Held about 2 s, so a plugin calls it each tick it wants it; whether it is on.
     static int music_spatialize(lua_State* L) {
         auto& plugin = plugin_of(L);
-        if (!plugin.has("music")) luaL_error(L, "reskate.spatialize_music needs the \"music\" permission in reskate-plugin.json");
-        if (lua_isnoneornil(L, 1) || (lua_isboolean(L, 1) && !lua_toboolean(L, 1))) {
-            music_inject::set_spatial(false, 1.0f, 1.0f);
-        } else if (lua_istable(L, 1)) {
-            const auto num = [&](const char* k, double def) {
-                lua_getfield(L, 1, k);
-                const double v = luaL_optnumber(L, -1, def);
+        need(L, plugin, "music", "reskate.spatialize_music");
+        std::optional<MusicSpatial> spatial;
+        if (lua_istable(L, 1)) {
+            const auto number = [&](const char* name, double fallback, double least, double most) {
+                lua_getfield(L, 1, name);
+                const double v = luaL_optnumber(L, -1, fallback);
                 lua_pop(L, 1);
-                return static_cast<float>(v);
+                if (!std::isfinite(v)) luaL_error(L, "%s is a finite number", name);
+                return std::clamp(v, least, most);
             };
-            lua_getfield(L, 1, "active");
-            const bool active = lua_isnil(L, -1) || lua_toboolean(L, -1) != 0;
-            lua_pop(L, 1);
-            lua_getfield(L, 1, "mute_loops");
-            const bool mute = lua_isnil(L, -1) || lua_toboolean(L, -1) != 0;
-            lua_pop(L, 1);
-            const float lpf = num("lpf", 1.0);
-            music_inject::set_spatial(active, num("left", 1.0), num("right", 1.0),
-                num("lpf_l", lpf), num("lpf_r", lpf), static_cast<int>(num("itd", 0.0)), num("env", 0.0), mute);
+            const auto flag = [&](const char* name) {
+                lua_getfield(L, 1, name);
+                const bool on = lua_isnil(L, -1) || lua_toboolean(L, -1) != 0;
+                lua_pop(L, 1);
+                return on;
+            };
+            if (flag("active")) {
+                MusicSpatial s;
+                s.left = static_cast<float>(number("left", 1, 0, 4));
+                s.right = static_cast<float>(number("right", 1, 0, 4));
+                const double lpf = number("lpf", 1, 0.04, 1);
+                s.lpf_left = static_cast<float>(number("lpf_l", lpf, 0.04, 1));
+                s.lpf_right = static_cast<float>(number("lpf_r", lpf, 0.04, 1));
+                s.itd = static_cast<int>(number("itd", 0, -32, 32));
+                s.env = static_cast<float>(number("env", 0, 0, 0.65));
+                s.mute_loops = flag("mute_loops");
+                spatial = s;
+            }
+        } else if (!lua_isnoneornil(L, 1) && !(lua_isboolean(L, 1) && !lua_toboolean(L, 1))) {
+            luaL_argerror(L, 1, "a table, or nil or false for off");
         }
-        lua_pushboolean(L, music_inject::spatial_active() ? 1 : 0);
+        lua_pushboolean(L, plugin.services_.game().spatialize_music(spatial) ? 1 : 0);
         return 1;
     }
 

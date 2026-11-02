@@ -15,7 +15,9 @@
 #include "Engine/Game/Input/pad_output.h"
 #include "Engine/Game/Input/playstation_report.h"
 #include "Engine/Game/Input/gameplay_options.h"
+#ifdef _WIN32 // reads memory as the game does (Engine/Core/Platform/memory.h)
 #include "Engine/Game/Skater/animation_values.h"
+#endif
 #include "Extension/Customization/board_material.h"
 #include "Extension/Localization/text_overrides.h"
 #include <algorithm>
@@ -1048,6 +1050,12 @@ struct FakeGame final : Game {
     }
     Track track() override { return now_playing; }
     std::string music(std::string_view command) override { calls.push_back("music " + std::string(command)); return {}; }
+    bool spatialize_music(std::optional<MusicSpatial> spatial) override {
+        if (!spatial) calls.push_back("spatial off");
+        else calls.push_back(std::format("spatial {:.2f} {:.2f} {:.2f} {:.2f} {} {:.2f} {}", spatial->left, spatial->right, spatial->lpf_left, spatial->lpf_right,
+                                         spatial->itd, spatial->env, spatial->mute_loops));
+        return spatial.has_value();
+    }
     Progress progress() override { return {true, {{"historic", "Historic", 4}}, {{"c1", "line", "historic", 2, 1, 3}}, 1500, 9000, 2}; }
     std::optional<std::string> setting(std::string_view name) override {
         if (std::find(render_settings.begin(), render_settings.end(), name) != render_settings.end()) return "true";
@@ -3427,6 +3435,7 @@ void controller_reports_preserve_non_controls() {
         "truncated reports stay untouched");
 }
 
+#ifdef _WIN32
 void animation_values_require_occupied_typed_local_pages() {
     namespace av = dingosdk::animation_values;
     namespace layout = av::layout;
@@ -3456,6 +3465,7 @@ void animation_values_require_occupied_typed_local_pages() {
     put(page, 4, 0.5f); put(node, layout::type, std::uintptr_t{});
     check(av::read(base, address(core)).empty(), "wrong descriptor types are refused");
 }
+#endif
 
 void plugins_read_frames_and_hold_gameplay_options() {
     TestEnvironment environment;
@@ -4284,6 +4294,31 @@ void plugins_play_any_number_of_different_sounds() {
         host.run_console("play 2 c b");
         check(environment.logged("2 played c") && environment.logged("2 played b"), "and lets go of idle ones to stay under it\n" + environment.all());
     }
+}
+
+void plugins_spatialize_the_station() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({script("speakers", R"(
+        reskate.console.command("place", "x", function()
+            assert(reskate.spatialize_music({left = 2, right = 0.5, lpf = 0.5, lpf_r = 0.25, itd = 12.7, env = 0.3}))
+            assert(reskate.spatialize_music({left = 9, right = -1, lpf = 0, itd = 400, env = 2, mute_loops = false}), "held to the ranges")
+            assert(not reskate.spatialize_music({active = false}) and not reskate.spatialize_music(false) and not reskate.spatialize_music())
+            assert(not pcall(reskate.spatialize_music, {left = 0/0}), "a finite number")
+            assert(not pcall(reskate.spatialize_music, 3), "a table, or nothing")
+            reskate.log("placed")
+        end)
+    )", R"("console", "music")"),
+                script("deaf", R"(
+        local ok, why = pcall(reskate.spatialize_music, {left = 2})
+        assert(not ok and why:find("permission"), tostring(why))
+        reskate.log("refused")
+    )", R"("console")")});
+    running(host, "speakers", environment);
+    host.run_console("place");
+    check(environment.logged("[speakers] placed") && environment.logged("[deaf] refused"), "A plugin with music spatializes the station; one without cannot\n" + environment.all());
+    for (const auto* call : {"spatial 2.00 0.50 0.50 0.25 12 0.30 true", "spatial 4.00 0.00 0.04 0.04 32 0.65 false", "spatial off"})
+        check(environment.fake.called(call), std::string("The game was asked: ") + call + "\n" + environment.all());
 }
 
 void plugins_play_sounds_and_read_the_mods() {
@@ -7085,6 +7120,11 @@ int main() {
         run(plugins_place_world_entities);
         run(plugins_have_what_a_prop_hunt_needs);
         run(plugins_write_normalized_controllers);
+        run(controller_reports_preserve_non_controls);
+        run(plugins_read_frames_and_hold_gameplay_options);
+#ifdef _WIN32
+        run(animation_values_require_occupied_typed_local_pages);
+#endif
         run(plugins_reach_cruise_and_read_the_mouse);
         run(plugins_set_the_flip_speed);
         run(plugins_show_a_viewmodel);
@@ -7109,6 +7149,7 @@ int main() {
         run(plugins_play_any_number_of_different_sounds);
         run(plugins_have_menu_panels);
         run(plugins_have_pages);
+        run(plugins_spatialize_the_station);
         run(plugins_play_sounds_and_read_the_mods);
         run(plugins_read_item_origins_and_favorites);
         run(plugins_follow_the_session_and_message_each_other);

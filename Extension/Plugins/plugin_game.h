@@ -206,6 +206,15 @@ struct Track {
     std::string app, title, artist, album;
     std::uint64_t revision{};
 };
+// reskate.spatialize_music: the Spotify station's song between the speakers (each side's gain 0 to
+// 4, low-pass 0.04 to 1, the delay between ears -32 to 32 samples, room 0 to 0.65), and short world
+// loops silenced while it is on. Values arrive within those ranges.
+struct MusicSpatial {
+    float left{1}, right{1}, lpf_left{1}, lpf_right{1};
+    int itd{};
+    float env{};
+    bool mute_loops{true};
+};
 struct ThrowdownState {
     bool active{}, host{};
     struct Player {
@@ -645,6 +654,9 @@ public:
     // then the outside player's song is the one heard), and "next" for it.
     virtual std::optional<Track> game_track() { return std::nullopt; }
     virtual std::string game_music(std::string_view) { return unavailable; }
+    // The station's song spatialized for about 2 s (a plugin renews it each tick), or off for none;
+    // whether it is on now.
+    virtual bool spatialize_music(std::optional<MusicSpatial>) { return false; }
     virtual Progress progress() { return {}; }
     virtual std::optional<std::string> setting(std::string_view) { return std::nullopt; }
     virtual std::vector<std::string> setting_names() { return {}; }
