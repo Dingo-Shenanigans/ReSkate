@@ -237,7 +237,7 @@ void coarse_checks() {
     limit_bone_scale(wheels_plain, 1.f);
     const float left = wheel_scale_limit / board_scale_limit; // what the deck at its limit leaves a wheel
     check(wheels_held.board[7].scale == std::array<float, 3>{left, left, left} && std::abs(wheels_held.board[8].scale[0] - .6f) < 1e-5f &&
-              wheels_held.board[4].scale == std::array<float, 3>{board_scale_limit, board_scale_limit, board_scale_limit},
+              wheels_held.board[4].scale == std::array<float, 3>{1.5f, board_scale_limit, board_scale_limit},
           "A wheel was not held to what the wheel limit leaves after the deck");
     wheels.pose.board[4].scale = {1, 1, 1};
     auto wheels_only = wheels.pose;
@@ -253,6 +253,39 @@ void coarse_checks() {
     limit_bone_scale(wheels_eight, client_bone_scale);
     check(wheels_eight.board[7].scale == std::array<float, 3>{2, 2, 2} && std::abs(wheels_eight.board[8].scale[0] - .5f) < 1e-5f,
           "A game's own limit let a wheel past twice or half its size");
+    // A wider or narrower deck (rig bones 3, 4, 8: entries 4, 5, 9) with trucks to match: one axis of
+    // each, whichever, to width_scale_limit, the others to the board's; what hangs below them is held
+    // as if they were not widened. Other bones of the board get no such axis.
+    auto wide = fixture();
+    wide.pose.board.resize(17);
+    wide.pose.board[4].scale = {1.4f, 1, 1};   // an 11 inch deck
+    wide.pose.board[5].scale = {1, 1, 1.4f};   // its trucks, along another axis
+    wide.pose.board[9].scale = {1, 1, 1.4f};
+    wide.pose.board[7].scale = {2, 2, 2};
+    auto wide_held = wide.pose;
+    limit_bone_scale(wide_held, 2.f);
+    check(wide_held.board[4].scale == std::array<float, 3>{1.4f, 1, 1} && wide_held.board[5].scale == std::array<float, 3>{1, 1, 1.4f} &&
+              wide_held.board[9].scale == std::array<float, 3>{1, 1, 1.4f} && wide_held.board[7].scale == std::array<float, 3>{2, 2, 2},
+          "A widened deck, its trucks or a wheel on them was resized");
+    auto too_wide = fixture();
+    too_wide.pose.board.resize(17);
+    too_wide.pose.board[4].scale = {.5f, 1.3f, 1};  // narrowest axis is the width; the length is held
+    too_wide.pose.board[5].scale = {3, 1, 1};
+    too_wide.pose.board[3].scale = {1.4f, 1, 1};    // the mount: no wide axis
+    auto too_wide_held = too_wide.pose, too_wide_plain = too_wide.pose, too_wide_server = too_wide.pose;
+    limit_bone_scale(too_wide_held, 2.f);
+    limit_bone_scale(too_wide_plain, 1.f);
+    limit_bone_scale(too_wide_server, 1.2f);
+    const float after_mount = width_scale_limit / board_scale_limit;
+    check(std::abs(too_wide_held.board[3].scale[0] - board_scale_limit) < 1e-5f &&
+              std::abs(too_wide_held.board[4].scale[0] - 1.f / width_scale_limit) < 1e-5f &&
+              std::abs(too_wide_held.board[4].scale[1] - 1.f) < 1e-5f && // the mount at 1.1 leaves the deck 1
+              std::abs(too_wide_held.board[5].scale[0] - after_mount) < 1e-5f,
+          "A deck or truck was not held to the width limit, or a bone without a wide axis got one");
+    check(too_wide_plain.board[4].scale == std::array<float, 3>{1, 1, 1} && too_wide_plain.board[5].scale == std::array<float, 3>{1, 1, 1},
+          "A server that allows no resized parts showed a widened deck");
+    check(std::abs(too_wide_server.board[5].scale[0] - 1.2f / board_scale_limit) < 1e-5f,
+          "A deck's width went past the server's own limit");
     // However the board's bones hang on each other, they show within its limit together: each at
     // 1.1 (its entity, place, mount, a truck) used to show a wheel on them at 1.1 to the fifth.
     auto chained = fixture();
@@ -260,9 +293,9 @@ void coarse_checks() {
     for (const std::size_t entry : {0, 2, 3, 5}) chained.pose.board[entry].scale = {1.1f, 1.1f, 1.1f};
     chained.pose.board[7].scale = {2, 2, 2};
     limit_bone_scale(chained.pose, 2.f);
-    float grown = 1.f;
-    for (const std::size_t entry : {0, 2, 3, 5}) grown *= chained.pose.board[entry].scale[0];
-    check(grown <= board_scale_limit + 1e-5f && grown * chained.pose.board[7].scale[0] <= wheel_scale_limit + 1e-4f,
+    float grown = 1.f; // along axis 1: the truck (entry 5) may keep axis 0 as its width
+    for (const std::size_t entry : {0, 2, 3, 5}) grown *= chained.pose.board[entry].scale[1];
+    check(grown <= board_scale_limit + 1e-5f && grown * chained.pose.board[7].scale[1] <= wheel_scale_limit + 1e-4f,
           "A chain of resized board bones grew past the board's limit");
     // Sizes multiply down a chain (Neck 101, Neck1 102, Head 103): each at the limit, they are
     // held so the head shows at the limit, not at its cube. The whole skater's size counts too

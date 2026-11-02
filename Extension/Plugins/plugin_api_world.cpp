@@ -1819,8 +1819,8 @@ struct WorldApi {
     }
     // scale(bone, size, {shown = "everyone" or "me"}): the bone drawn this much bigger over its animation,
     // which still turns and places it; a number for every axis or a vector, 0.25 to 4 each. The other
-    // players see it too unless shown is "me" (their game holds the wheels to 0.5 to 2, the rest of the
-    // board to 1.1). scale(bone) ends it.
+    // players see it too unless shown is "me" (their game holds the wheels to 0.5 to 2, the deck and
+    // trucks to 1.5 along one axis, their width, the rest of the board to 1.1). scale(bone) ends it.
     static int board_scale(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "board", "reskate.board.scale");

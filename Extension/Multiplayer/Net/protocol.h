@@ -446,10 +446,16 @@ void coarsen_rotations(Pose &pose, unsigned bits) noexcept;
 // (rig bones 6, 7, 10 and 11: board entries 7, 8, 11 and 12, as board[0] is the board's own place)
 // may show at up to wheel_scale_limit, also counting the bones above them: a plugin draws bigger or
 // smaller wheels (reskate.board.scale) and the others see them, a wheel at most twice the game's
-// (116 mm), still within the deck. Both are held to the server's own limit too, so one that allows
-// no resized parts allows no resized wheels.
-inline constexpr float board_scale_limit = 1.1f, wheel_scale_limit = 2.f;
+// (116 mm), still within the deck. The deck and its trucks (rig bones 3, 4 and 8: entries 4, 5 and
+// 9) may each stretch along one axis, the one furthest from its own size, to width_scale_limit: a
+// plugin draws a narrower or wider deck with trucks to match (7.5 to 11 inches and beyond) and the
+// others see it, longer or thicker only within board_scale_limit. That axis does not count against
+// what hangs below (a wheel on a widened truck is held as before), so a board shows at most that
+// wide, never that big. All of them are held to the server's own limit too, so one that allows no
+// resized parts allows no resized wheels or decks.
+inline constexpr float board_scale_limit = 1.1f, wheel_scale_limit = 2.f, width_scale_limit = 1.5f;
 inline constexpr std::array<std::size_t, 4> board_wheel_entries{7, 8, 11, 12};
+inline constexpr std::array<std::size_t, 3> board_width_entries{4, 5, 9};
 // How far from its skater a skateboard still stops other players (remote_collision.cpp). One
 // left lying further off is seen and not felt, so a hacked client that keeps its board on
 // another player cannot knock them about with it.

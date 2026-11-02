@@ -42,7 +42,8 @@ void clear(std::string_view owner, int bone = -1);
 // A size held on a bone of the local board over its animation, which still turns and places it:
 // the bone's own axes times `value` (each 0.25 to 4). `everyone`: the other players see it too, as
 // far as their game allows (Extension/Multiplayer/Net/protocol.h limit_bone_scale: the wheels to
-// twice or half their size, the rest of the board barely); else on this screen only. One owner a
+// twice or half their size, the deck and trucks to 1.5 along one axis (their width), the rest of
+// the board barely); else on this screen only. One owner a
 // bone; no value: that owner's size on it ends.
 std::string scale(std::string_view owner, int bone, std::optional<Vec3> value, bool everyone = true);
 // These bones go out of sight on every board, other players' included (a breakable deck's

@@ -355,20 +355,38 @@ void limit_bone_scale(Pose &pose, float limit) noexcept {
     for (auto &t : pose.skater) hold(t, limit);
     // The board: every bone but the wheels within what is left of the limit after the ones before it
     // (that have grown it, or shrunk it), so however they hang on each other none shows past it; then
-    // each wheel within its own limit after all of them. A wheel carries nothing.
+    // each wheel within its own limit after all of them. A wheel carries nothing. The deck and the
+    // trucks may stretch one axis further (width_scale_limit), which is left out of what they pass on.
     {
-        const float most = std::min(limit, board_scale_limit), wheel_most = std::min(limit, wheel_scale_limit);
+        const float most = std::min(limit, board_scale_limit), wheel_most = std::min(limit, wheel_scale_limit),
+                    width_most = std::min(limit, width_scale_limit);
         const auto wheel = [](std::size_t i) {
             return std::find(board_wheel_entries.begin(), board_wheel_entries.end(), i) != board_wheel_entries.end();
+        };
+        const auto widens = [](std::size_t i) {
+            return std::find(board_width_entries.begin(), board_width_entries.end(), i) != board_width_entries.end();
         };
         float grown = 1.f, shrunk = 1.f;
         for (std::size_t i = 0; i < pose.board.size(); ++i) {
             if (wheel(i)) continue;
             auto &t = pose.board[i];
+            std::size_t width = t.scale.size(); // none
+            if (widens(i)) {
+                const auto off = [](float axis) { return std::isfinite(axis) && axis > 0.f ? std::max(axis, 1.f / axis) : 1.f; };
+                width = 0;
+                for (std::size_t a = 1; a < t.scale.size(); ++a)
+                    if (off(t.scale[a]) > off(t.scale[width])) width = a;
+            }
+            float stretch = width < t.scale.size() ? t.scale[width] : 1.f;
             hold(t, most);
             for (float &axis : t.scale) axis = std::clamp(axis, 1.f / (most * shrunk), most / grown);
+            if (width < t.scale.size()) {
+                stretch = std::isfinite(stretch) ? std::clamp(stretch, 1.f / (width_most * shrunk), width_most / grown) : 1.f;
+                t.scale[width] = 1.f; // left out of what it passes on
+            }
             grown *= std::max(1.f, std::max({t.scale[0], t.scale[1], t.scale[2]}));
             shrunk *= std::min(1.f, std::min({t.scale[0], t.scale[1], t.scale[2]}));
+            if (width < t.scale.size()) t.scale[width] = stretch;
         }
         for (std::size_t i = 0; i < pose.board.size(); ++i) {
             if (!wheel(i)) continue;
