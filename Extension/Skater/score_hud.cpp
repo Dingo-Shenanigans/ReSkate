@@ -59,13 +59,16 @@ struct Hud {
 Hud hud; // client thread
 
 // A score field's value: the game's widget logic keeps scores as floats (kind 19, as LineTimer
-// and Multiplier); an integer reading is taken if the float one is not sensible.
+// and Multiplier). A field known to be one is read as one, so a timer counting down through tiny
+// values does not read as the integer of its bits; for another kind, an integer reading is taken
+// if the float one is not sensible.
 float score_of(const Bound& field) {
     if (!field.present || !field.read || field.size != 4) return 0;
     float f{};
     std::int32_t i{};
     std::memcpy(&f, field.now.data(), 4);
     std::memcpy(&i, field.now.data(), 4);
+    if (field.kind == 19) return std::isfinite(f) ? f : 0;
     if (std::isfinite(f) && (f == 0 || (std::abs(f) > 1e-3f && std::abs(f) < 1e9f))) return f;
     return static_cast<float>(i);
 }
