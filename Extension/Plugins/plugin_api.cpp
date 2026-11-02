@@ -17,7 +17,7 @@ namespace {
 struct Event {
     std::string_view name, permission;
 };
-constexpr std::array<Event, 31> events{{
+constexpr std::array<Event, 32> events{{
     {"load", {}}, {"unload", {}}, {"tick", {}}, {"level_loaded", {}}, {"level_unloading", {}},
     {"trick_started", "events.tricks"}, {"trick_landed", "events.tricks"}, {"line_broken", "events.tricks"},
     {"draw", "overlay"}, {"player_joined", "session.read"}, {"player_left", "session.read"}, {"message", "net.session"},
@@ -26,7 +26,7 @@ constexpr std::array<Event, 31> events{{
     {"board_landed", "events.skater"}, {"body_hit", "events.skater"}, {"bail_end", "events.skater"},
     {"physics_step", "events.physics"}, {"launch", "events.skater"}, {"trick_notes", "events.tricks"},
     {"throwdown_ui", "throwdowns"}, {"touch", "session.skaters"}, {"touch_end", "session.skaters"}, {"camera_cycle", "camera"},
-    {"poll_answer", "server"}, {"poll_closed", "server"},
+    {"poll_answer", "server"}, {"poll_closed", "server"}, {"favorites_changed", "menu"},
 }};
 constexpr std::size_t maximum_key = 128;
 constexpr std::size_t maximum_command = 48;
@@ -570,8 +570,11 @@ struct ApiFunctions {
         else lua_pushnil(L);
         return 1;
     }
-    // skater.teleport: true when the teleport was sent (it happens within a few seconds); false
+    // skater.teleport: true means queued, not an arrival or equipment acknowledgement; false
     // and why when the host has turned teleporting off, it cannot be done now, or it is asked too often.
+    // Explicit on_board sets the native spawn preference at dispatch. The engine may retain it
+    // for later teleports; omitted options leave that preference unchanged. This is native state,
+    // not a saved SDK setting, and no automatic restoration is promised.
     static int skater_teleport(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "skater.teleport", "reskate.skater.teleport");
@@ -584,6 +587,21 @@ struct ApiFunctions {
             if (!std::isfinite(given)) luaL_argerror(L, 2, "the heading must be a finite number of radians");
             heading = static_cast<float>(std::remainder(given, 2 * 3.14159265358979323846));
         }
+        std::optional<bool> on_board;
+        if (!lua_isnoneornil(L, 3)) {
+            luaL_checktype(L, 3, LUA_TTABLE);
+            lua_pushnil(L);
+            while (lua_next(L, 3)) {
+                std::size_t size = 0;
+                const char* key = lua_type(L, -2) == LUA_TSTRING ? lua_tolstring(L, -2, &size) : nullptr;
+                if (!key || std::string_view(key, size) != "on_board")
+                    luaL_argerror(L, 3, "the only teleport option is on_board");
+                if (lua_type(L, -1) != LUA_TBOOLEAN)
+                    luaL_argerror(L, 3, "on_board must be a boolean");
+                on_board = lua_toboolean(L, -1) != 0;
+                lua_pop(L, 1);
+            }
+        }
         const double now = plugin.services_.now_ms();
         if (now - plugin.teleport_second_ >= 1000) {
             plugin.teleport_second_ = now;
@@ -591,7 +609,7 @@ struct ApiFunctions {
         }
         const char* refusal = nullptr;
         if (++plugin.teleports_ > plugin.limits_.teleports_per_second) refusal = "asked more than twice in a second";
-        else switch (plugin.services_.teleport(plugin.id(), at, heading)) {
+        else switch (plugin.services_.teleport(plugin.id(), at, heading, on_board)) {
         case Teleport::sent: break;
         case Teleport::forbidden: refusal = "the host has turned teleporting off"; break;
         case Teleport::unavailable: refusal = "teleporting is unavailable now (no skater, or a load)"; break;
@@ -639,6 +657,8 @@ struct ApiFunctions {
         lua_setfield(L, -2, "detail");
         lua_pushboolean(L, now->manual);
         lua_setfield(L, -2, "manual");
+        lua_pushnumber(L, now->timer);
+        lua_setfield(L, -2, "timer");
         return 1;
     }
     // Modules come from the plugin's own package, beside its entry: require("./rules") or
@@ -722,13 +742,14 @@ void Api::install(Plugin& plugin, lua_State* L) {
         lua_setfield(L, -2, name);
     };
     const auto same = [](std::string_view w) { return w; };
-    lua_createtable(L, 0, 13);
+    lua_createtable(L, 0, 14);
     push_enum("Side", std::array{Side::client, Side::server, Side::both}, [](Side side) { return std::string_view(side_name(side)); });
     push_enum("Event", events, [](const Event& event) { return event.name; });
     push_enum("Key", key_names, [](const auto& key) { return key.first; });
     for (const auto& [name, words] : {std::pair<const char*, Words>{"LogLevel", log_levels}, {"Align", aligns}, {"Launch", launches},
                                       {"Stance", stances}, {"Pop", pops}, {"Space", spaces}, {"Throwdown", throwdown_modes},
-                                      {"Card", throwdown_cards}, {"EntityStatus", entity_statuses}, {"Target", send_targets}})
+                                      {"Card", throwdown_cards}, {"EntityStatus", entity_statuses}, {"Target", send_targets},
+                                      {"ItemSource", item_sources}})
         push_enum(name, words, same);
     readonly();
     lua_setfield(L, -2, "Enums");

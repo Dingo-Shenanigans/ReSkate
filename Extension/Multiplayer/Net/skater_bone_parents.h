@@ -31,4 +31,11 @@ inline constexpr std::array<std::int16_t, 386> skater_bone_parents{
     341, 360, 360, 360, 360, 360, 360, 341, 341, 341, 341, 370, 370, 370, 370, 1, 1, 376, 377, 378,
     378, 378, 377, 382, 382, 382,
 };
+// The same for a pose's board: 0 is the board entity's place, then its 16-bone rig from 1 (rig bone
+// b is board[b + 1]; Extension/Skater/board_pose.h numbers the rig). The rig's reference, its place
+// and the deck's mount hang in a line; the deck and both trucks hang on the mount, and each truck's
+// baseplate and wheels on its truck (board_pose.cpp's truck_rests). Where a breakable deck's stretches
+// (rig 12 to 15) hang is not recorded; they are taken to hang on the deck, which holds them closer
+// than the mount would.
+inline constexpr std::array<std::int16_t, 17> board_bone_parents{-1, 0, 1, 2, 3, 3, 5, 5, 5, 3, 9, 9, 9, 4, 4, 4, 4};
 }

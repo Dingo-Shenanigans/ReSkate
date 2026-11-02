@@ -314,6 +314,16 @@ struct FakeGame final : Game {
         return {};
     }
     void outfit_clear(std::string_view plugin, std::string_view slot) override { calls.push_back(std::format("outfit clear {} {}", plugin, slot)); }
+    std::string outfit_stand_ins(std::string_view plugin, std::optional<StandIns> wanted) override {
+        if (!wanted) {
+            calls.push_back(std::format("stand-ins {} default", plugin));
+            return {};
+        }
+        calls.push_back(std::format("stand-ins {} {} {} {} {}", plugin, wanted->random ? "random" : "first", wanted->parts,
+                                    wanted->seed, wanted->items.empty() ? std::string("all") : wanted->items.front()));
+        for (const auto& rule : wanted->exclude) calls.push_back(std::format("stand-ins {} exclude {}", plugin, rule));
+        return {};
+    }
     std::string camera_cycle(std::string_view plugin, CycleCamera place) override {
         calls.push_back(std::format("cycle {} {}", plugin, place == CycleCamera::out ? "out" : place == CycleCamera::ready ? "ready" : "active"));
         return {};
@@ -560,6 +570,10 @@ struct FakeGame final : Game {
     }
     std::string set_velocity(std::string_view plugin, const Vec3& v, bool add) override {
         calls.push_back(std::format("velocity {} {:.1f} {:.1f} {:.1f}{}", plugin, v[0], v[1], v[2], add ? " add" : ""));
+        return {};
+    }
+    std::string flip_speed(std::string_view plugin, float factor) override {
+        calls.push_back(std::format("flip speed {} {:.2f}", plugin, factor));
         return {};
     }
     std::string skater_reach(std::string_view plugin, std::optional<Reach> r) override {
@@ -866,9 +880,12 @@ struct FakeGame final : Game {
         return {};
     }
     std::uint64_t sound_ids{};
+    bool hold_waves{}; // keep each sound's wave, as a voice still playing does
+    std::vector<std::shared_ptr<const Wave>> held_waves;
     std::uint64_t play_sound(std::string_view plugin, SoundStart sound) override {
         calls.push_back(std::format("sound {} {} {:.2f} {:.2f} {}{}", plugin, sound.wave ? std::to_string(sound.wave->samples.size()) : "motor", sound.volume,
                                     sound.pitch, sound.loop, sound.position ? std::format(" at {} {} {}", (*sound.position)[0], (*sound.position)[1], (*sound.position)[2]) : ""));
+        if (hold_waves && sound.wave) held_waves.push_back(std::move(sound.wave));
         return ++sound_ids;
     }
     bool change_sound(std::string_view plugin, std::uint64_t id, const SoundChange& change) override {
@@ -1143,6 +1160,45 @@ struct FakeGame final : Game {
         return {};
     }
     void grid_mark(std::string_view, std::vector<std::string> keys) override { grid_marked = std::move(keys); }
+    // Item origins and the player's starred keys, as reskate.mods.item_origins and reskate.menu.favorites read them.
+    struct OriginRow {
+        std::string key;
+        bool from_mod{};
+        bool game_item{};
+        std::string folder, title, author, version;
+    };
+    bool origins_ready{};
+    std::vector<OriginRow> origin_rows;
+    ItemFacts item_facts(const std::vector<std::string>& keys) override {
+        ItemFacts out;
+        out.ready = origins_ready;
+        if (!origins_ready) return out;
+        const auto lower = [](std::string_view text) {
+            std::string folded(text);
+            for (auto& c : folded)
+                if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+            return folded;
+        };
+        out.facts.resize(keys.size());
+        for (std::size_t i = 0; i < keys.size(); ++i) {
+            const auto wanted = lower(keys[i]);
+            for (const auto& row : origin_rows)
+                if (lower(row.key) == wanted) {
+                    out.facts[i] = {row.from_mod, row.game_item, row.folder, row.title, row.author, row.version};
+                    break;
+                }
+        }
+        return out;
+    }
+    bool favorites_ready{};
+    std::string favorites_why = "not loaded";
+    std::vector<std::string> favorite_keys;
+    std::uint64_t favorite_generation{};
+    MenuFavorites menu_favorites() override {
+        if (!favorites_ready) return {false, favorites_why, {}, favorite_generation};
+        return {true, {}, favorite_keys, favorite_generation};
+    }
+    std::uint64_t favorites_generation() override { return favorite_generation; }
     bool called(std::string_view part) const {
         return std::any_of(calls.begin(), calls.end(), [&](const auto& c) { return c.find(part) != std::string::npos; });
     }
@@ -1161,6 +1217,7 @@ struct TestEnvironment final : Environment {
     std::optional<SkaterState> local_skater;
     bool teleport_forbidden{}, teleport_unavailable{};
     std::vector<std::pair<Vec3, float>> teleports;
+    std::vector<std::optional<bool>> teleport_equipment;
     int rays{};
     unsigned skater_reads{};
     std::optional<SkaterState> skater() override { ++skater_reads; return local_skater; }
@@ -1211,10 +1268,11 @@ struct TestEnvironment final : Environment {
     std::vector<HttpResponse> take_http_responses() override { return std::exchange(responses, {}); }
     FakeGame fake;
     Game& game() override { return fake; }
-    Teleport teleport(std::string_view, const Vec3& position, float heading) override {
+    Teleport teleport(std::string_view, const Vec3& position, float heading, std::optional<bool> on_board = std::nullopt) override {
         if (teleport_forbidden) return Teleport::forbidden;
         if (teleport_unavailable || !local_skater) return Teleport::unavailable;
         teleports.emplace_back(position, heading);
+        teleport_equipment.push_back(on_board);
         return Teleport::sent;
     }
     std::optional<Vec3> raycast(const Vec3& from, const Vec3& to) override {
@@ -2515,6 +2573,40 @@ void a_plugin_loads_ticks_runs_its_commands_and_unloads() {
     check(!host.run_console("hello there"), "with its command");
 }
 
+// What this PC shows in place of other players' items it does not have: asked with
+// "outfit.stand_ins", the options checked, and refused without the permission.
+void plugins_choose_stand_ins() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    Host host(environment, Side::client);
+    host.apply({script("dresser", R"(
+        assert(reskate.outfit.stand_ins({pick = "random", seed = 7}))
+        assert(reskate.outfit.stand_ins({pick = "first", parts = "board", items = {"Own_Truck_Gen_Default_00001"}}))
+        assert(reskate.outfit.stand_ins(nil))
+        assert(not pcall(reskate.outfit.stand_ins, {pick = "sometimes"}), "pick is first or random")
+        assert(not pcall(reskate.outfit.stand_ins, {parts = "hat"}), "parts is both, skater or board")
+        assert(not pcall(reskate.outfit.stand_ins, {seed = -1}), "a seed is 0 or more")
+        assert(not pcall(reskate.outfit.stand_ins, {items = {""}}), "an item has a name")
+        assert(not pcall(reskate.outfit.stand_ins, {items = {12}}), "an item is a name")
+        assert(reskate.outfit.stand_ins({pick = "random", exclude = {"Own_Costume*", "Own_TopShirt_Gen_Hoodie_00003"}}))
+        assert(not pcall(reskate.outfit.stand_ins, {exclude = {"*"}}), "excluding everything is not a name")
+        assert(not pcall(reskate.outfit.stand_ins, {exclude = "Own_Hat"}), "exclude is a list")
+        reskate.log("dressed")
+    )", R"("outfit.stand_ins")"), script("plain", R"(
+        local ok, err = pcall(reskate.outfit.stand_ins, {pick = "random"})
+        assert(not ok and err:find("needs the \"outfit.stand_ins\" permission"), err)
+        reskate.log("refused")
+    )", R"("outfit")")});
+    running(host, "dresser", environment);
+    running(host, "plain", environment);
+    check(environment.logged("[dresser] dressed") && environment.logged("[plain] refused"), "The calls ran\n" + environment.all());
+    check(game.called("stand-ins dresser random 0 7 all") && game.called("stand-ins dresser first 2 0 Own_Truck_Gen_Default_00001") &&
+              game.called("stand-ins dresser default") && game.called("stand-ins dresser exclude Own_Costume*") &&
+              game.called("stand-ins dresser exclude Own_TopShirt_Gen_Hoodie_00003"),
+          "Random from every installed item, the first of a list on the board, and the defaults again\n" + environment.all());
+    check(!game.called("stand-ins plain"), "A plugin without the permission chooses no stand-ins");
+}
+
 void a_permission_must_be_declared() {
     TestEnvironment environment;
     Host host(environment, Side::client);
@@ -2932,6 +3024,62 @@ void the_skater_can_be_read_moved_and_the_world_probed() {
     running(host, "mover", environment);
 }
 
+void teleport_equipment_choices_keep_permissions_and_host_limits() {
+    TestEnvironment environment;
+    environment.local_skater = SkaterState{{1, 0, 2}, 1.5f, 0, 0, false, 0};
+    Host host(environment, Side::client);
+    host.apply({script("bare", R"(
+        for _, on_board in ipairs({true, false}) do
+            local ok, err = pcall(reskate.skater.teleport, vector.create(10, 0, 20), nil, {on_board = on_board})
+            assert(not ok and err:find("skater.teleport"), err)
+        end
+        reskate.log("equipment permission refused")
+    )"), script("teleport-options", R"(
+        reskate.console.command("choose-teleport", "equipment", function(args)
+            local options
+            if args[1] == "on" then options = {on_board = true}
+            elseif args[1] == "off" then options = {on_board = false}
+            elseif args[1] == "empty" then options = {} end
+            local ok, why = reskate.skater.teleport(vector.create(10, 0, 20), nil, options)
+            reskate.log("choice " .. tostring(ok) .. " " .. tostring(why))
+        end)
+        reskate.console.command("bad-teleport-options", "validation", function()
+            for _, bad in ipairs({false, true, 0, "on", {true}, {on_board = 1}, {on_board = "false"},
+                {on_board = {}}, {on_board = function() end}, {on_board = true, stance = 1}, {["on_board\0extra"] = true}}) do
+                assert(not pcall(reskate.skater.teleport, vector.create(10, 0, 20), nil, bad), "invalid teleport options")
+            end
+            reskate.log("equipment options refused")
+        end)
+    )", R"("console", "skater.teleport")")});
+    running(host, "bare", environment);
+    check(environment.logged("equipment permission refused") && environment.teleports.empty(),
+          "Equipment choices require the existing teleport permission and cannot reach the host without it");
+    check(host.run_console("bad-teleport-options") && environment.logged("equipment options refused") && environment.teleports.empty(),
+          "Non-tables, non-boolean choices and unknown keys are rejected before forwarding");
+    check(host.run_console("choose-teleport on") && host.run_console("choose-teleport off") && environment.teleports.size() == 2 &&
+          environment.teleport_equipment == std::vector<std::optional<bool>>{true, false} &&
+          environment.teleports[0].first == Vec3{10, 0, 20} && std::abs(environment.teleports[0].second - 1.5f) < 1e-6f,
+          "True and false remain distinct per-request choices with the existing default heading");
+    host.run_console("choose-teleport");
+    check(environment.teleports.size() == 2 && environment.logged("asked more than twice in a second"),
+          "Equipment choices and legacy calls share the existing teleport rate limit");
+    environment.now += 1000;
+    check(host.run_console("choose-teleport") && host.run_console("choose-teleport empty") && environment.teleports.size() == 4 &&
+          !environment.teleport_equipment[2].has_value() && !environment.teleport_equipment[3].has_value(),
+          "Omitted and empty options forward no equipment override");
+    environment.now += 1000;
+    environment.teleport_forbidden = true;
+    host.run_console("choose-teleport on");
+    check(environment.teleports.size() == 4 && environment.logged("the host has turned teleporting off"),
+          "An explicit equipment choice cannot bypass the host teleport policy");
+    environment.teleport_forbidden = false;
+    environment.teleport_unavailable = true;
+    host.run_console("choose-teleport off");
+    check(environment.teleports.size() == 4 && environment.logged("teleporting is unavailable"),
+          "An explicit equipment choice cannot bypass an unavailable skater or load");
+    running(host, "teleport-options", environment);
+}
+
 void tricks_reach_plugins_that_ask_for_them() {
     TestEnvironment environment;
     Host host(environment, Side::client);
@@ -2951,7 +3099,7 @@ void tricks_reach_plugins_that_ask_for_them() {
         reskate.on("line_broken", function(e) reskate.log("broken by a " .. e.reason) end)
         reskate.console.command("score", "x", function()
             local s = reskate.score.current()
-            reskate.log(s and string.format("score %.0f x%.1f %s", s.line, s.multiplier, tostring(s.in_trick)) or "no score")
+            reskate.log(s and string.format("score %.0f x%.1f %s %.2f", s.line, s.multiplier, tostring(s.in_trick), s.timer) or "no score")
         end)
     )", R"("console", "events.tricks")")});
     check(host.wants_tricks(), "With a plugin that has events.tricks, tricks are read");
@@ -2973,9 +3121,9 @@ void tricks_reach_plugins_that_ask_for_them() {
     check(environment.logged("[tricks] started at 1 2 3") && environment.logged("[tricks] landed 250 x2.0 from 1 to 9 in 1200 ms") &&
           environment.logged("[tricks] broken by a slam"), "Each trick event reaches it, with its values\n" + environment.all());
     host.run_console("score");
-    environment.score_now = ScoreState{708, 2, true};
+    environment.score_now = ScoreState{708, 2, true, {}, {}, false, 0.5f};
     host.run_console("score");
-    check(environment.logged("[tricks] no score") && environment.logged("[tricks] score 708 x2.0 true"), "and the score HUD as it is");
+    check(environment.logged("[tricks] no score") && environment.logged("[tricks] score 708 x2.0 true 0.50"), "and the score HUD as it is");
     running(host, "tricks", environment);
 }
 
@@ -3154,6 +3302,31 @@ void plugins_show_a_viewmodel() {
     ticks(host, environment, 1);
     check(environment.logged("[sneaky] false false false false false"), "viewmodel is needed\n" + environment.all());
     check(game.viewmodeler.empty(), "Given up when its plugin stops\n" + environment.all());
+}
+
+// A flip mode's speed: flip tricks in the air turned slower or faster for a moment, 1 or nothing to let go.
+void plugins_set_the_flip_speed() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    Host host(environment, Side::client);
+    host.apply({package("flipper", {{manifest_file, manifest(R"("skater.control")")}, {"plugin/main.lua", R"(
+        assert(reskate.skater.flip_speed(0.3) and reskate.skater.flip_speed(2) and reskate.skater.flip_speed() and reskate.skater.flip_speed(1))
+        assert(not pcall(reskate.skater.flip_speed, 0.01) and not pcall(reskate.skater.flip_speed, 11), "0.05 to 10")
+        assert(not pcall(reskate.skater.flip_speed, 0 / 0), "a number")
+        reskate.log("flipped")
+    )"}})});
+    ticks(host, environment, 1);
+    running(host, "flipper", environment);
+    check(environment.logged("[flipper] flipped"), "flip_speed takes 0.05 to 10\n" + environment.all());
+    check(game.called("flip speed flipper 0.30") && game.called("flip speed flipper 2.00") && game.called("flip speed flipper 1.00"),
+          "A slower flip, a faster one, and let go\n" + environment.all());
+    // Without skater.control, not.
+    host.apply({package("sneaky", {{manifest_file, manifest()}, {"plugin/main.lua", R"(
+        reskate.log(tostring(pcall(reskate.skater.flip_speed, 0.5)))
+    )"}})});
+    ticks(host, environment, 1);
+    check(environment.logged("[sneaky] false"), "skater.control is needed\n" + environment.all());
+    check(!game.called("flip speed sneaky 0.50"), "Nothing reached the game");
 }
 
 // What a camera mode needs (the Filmer): an arm that reaches, where the hand is, cruise control, the
@@ -3939,6 +4112,7 @@ void plugins_have_pages() {
     Host host(environment, Side::client);
     host.apply({script("pages", R"(
         local tab, on, strength = 1, false, 50
+        local size, name, tint, count, open, pick = 2, "Board", {r = 1, g = 0, b = 0}, 3, true, 0
         reskate.menu.page("Tools", function(ui)
             tab = ui:tabs("tabs", {"MAIN", "MORE"}, tab)
             ui:card("SWITCHES", "What it does")
@@ -3948,13 +4122,27 @@ void plugins_have_pages() {
             ui:note("A note")
             ui:warn("A warning")
             ui:button("go", "GO", true)
+            size = ui:buttons("sizes", {"50 MM", "54 MM", "58 MM"}, size) or size
+            name = ui:text("name", "Name", name, "Type a name")
+            tint = ui:colour("tint", "Tint", tint)
+            count = ui:stepper("count", "Count", count, 0, 10, 0.5, "%.1f")
+            open = ui:section("more", "MORE", "Folds away", open)
+            pick = ui:list("pick", "Pick", {"a", "b", "c", "d"}, pick)
+            assert(not pcall(ui.buttons, ui, "bad3", {}), "buttons are 1 to 32 names")
+            assert(not pcall(ui.stepper, ui, "bad4", "Bad", 1, 0, 2, 0), "a step is above 0")
+            assert(not pcall(ui.list, ui, "bad5", "Bad", {}), "a list has items")
+            assert(not pcall(ui.colour, ui, "bad6", "Bad", {r = "x"}), "a colour is three numbers")
+            assert(not pcall(ui.text, ui, "bad7", "Bad", string.rep("x", 201)), "a text field holds at most 200 characters")
             assert(not pcall(ui.slider, ui, "bad", "Bad", 1, 0, 2, "%s"), "a slider's format is one number")
             assert(not pcall(ui.slider, ui, "bad2", "Bad", 1, 0, 2, "%f %f"), "and only one")
         end)
         assert(not pcall(reskate.menu.page, "Again", function() end), "one page")
         assert(not pcall(reskate.menu.panel, "Tools", function() end), "a panel cannot share the page's title")
         reskate.menu.panel("Extra", function(ui) ui:label("more") end)
-        reskate.console.command("state", "x", function() reskate.log(string.format("state %d %s %.0f", tab, tostring(on), strength)) end)
+        reskate.console.command("state", "x", function()
+            reskate.log(string.format("state %d %s %.0f %d %s %.1f %.1f %s %d", tab, tostring(on), strength, size, name, tint.g, count,
+                tostring(open), pick))
+        end)
     )", R"("console", "menu")"), script("others", R"(
         reskate.menu.panel("Theirs", function(ui) ui:label("theirs") end)
     )", R"("menu")")});
@@ -3973,15 +4161,24 @@ void plugins_have_pages() {
           "The shown plugin's page is built, then its panels, and no other plugin's\n" + environment.all());
     using K = plugin_ui::Widget::Kind;
     const auto& w = environment.panels[0].widgets;
-    check(w.size() == 8 && w[0].kind == K::tabs && w[0].choices.size() == 2 && w[1].kind == K::card && w[1].help == "What it does" &&
+    check(w.size() == 14 && w[0].kind == K::tabs && w[0].choices.size() == 2 && w[1].kind == K::card && w[1].help == "What it does" &&
               w[2].help == "Turns it on" && w[3].format == "%.0f%%" && w[4].kind == K::info && w[4].help == "fine" && w[5].kind == K::note &&
               w[6].kind == K::warn && w[7].on,
           "with its tabs, cards, help, the slider's format, info lines, notes and a main button");
+    check(w[8].kind == K::buttons && w[8].choices.size() == 3 && w[8].chosen == 2 && w[9].kind == K::text && w[9].input == "Board" &&
+              w[9].help == "Type a name" && w[10].kind == K::colour && w[10].colour[0] == 1 && w[10].colour[1] == 0 && w[11].kind == K::stepper &&
+              w[11].step == 0.5f && w[11].value == 3 && w[11].format == "%.1f" && w[12].kind == K::section && w[12].on &&
+              w[12].help == "Folds away" && w[13].kind == K::list && w[13].choices.size() == 4 && w[13].chosen == 0 && w[13].rows == 6,
+          "and a row of buttons with one lit, a text field, a colour, a stepper, a section and a list");
     using A = plugin_ui::Action;
-    environment.actions = {A{"pages", "Tools", "tabs", false, 0, 2}, A{"pages", "Tools", "on", true}, A{"pages", "Tools", "strength", false, 75}};
+    environment.actions = {A{"pages", "Tools", "tabs", false, 0, 2}, A{"pages", "Tools", "on", true}, A{"pages", "Tools", "strength", false, 75},
+                           A{"pages", "Tools", "sizes", false, 0, 3}, A{"pages", "Tools", "name", false, 0, 0, "Deck"},
+                           A{"pages", "Tools", "tint", false, 0, 0, "", {0, 0.5f, 1}}, A{"pages", "Tools", "count", false, 7.3f},
+                           A{"pages", "Tools", "more", false}, A{"pages", "Tools", "pick", false, 0, 2}};
     ticks(host, environment, 10);
     host.run_console("state");
-    check(environment.logged("state 2 true 75"), "What the player did on it reaches the plugin\n" + environment.all());
+    check(environment.logged("state 2 true 75 3 Deck 0.5 7.5 false 2"),
+          "What the player did on it reaches the plugin, the stepper on its steps\n" + environment.all());
 }
 
 // A 16-bit mono WAVE file of `samples` at `rate`.
@@ -4035,6 +4232,60 @@ void plugins_play_their_own_sounds() {
         check(environment.fake.called(call), std::string("The game was asked: ") + call + "\n" + environment.all());
 }
 
+void plugins_play_any_number_of_different_sounds() {
+    // "play <round> <names...>" logs "<round> played <name>" or "<round> refused <name>: <why>".
+    const auto play = R"(
+        reskate.console.command("play", "round names", function(args)
+            for i = 2, #args do
+                local ok, why = pcall(reskate.audio.play, "sounds/" .. args[i] .. ".wav")
+                reskate.log(args[1] .. (ok and " played " or " refused ") .. args[i] .. (ok and "" or ": " .. tostring(why)))
+            end
+        end)
+    )";
+    const std::map<std::string, std::string> files{{manifest_file, manifest(R"("console", "audio")")}, {"sounds/a.wav", wave_file(16000, 1000)},
+                                                   {"sounds/b.wav", wave_file(16000, 2000)}, {"sounds/c.wav", wave_file(16000, 3000)},
+                                                   {"plugin/main.lua", play}};
+    {
+        TestEnvironment environment;
+        Limits limits;
+        limits.sounds = 2;
+        Host host(environment, Side::client, limits);
+        host.apply({package("dj", files)});
+        running(host, "dj", environment);
+        // Holding two, a third lets go of the one played longest ago, and a wave let go plays again.
+        host.run_console("play 1 a b c a b");
+        check(environment.logged("1 played c") && environment.logged("1 played b") && !environment.logged("refused"),
+              "Past the limit the oldest idle wave is let go\n" + environment.all());
+        check(environment.fake.called("sound dj 1000 1.00 1.00 false") && environment.fake.called("sound dj 3000 1.00 1.00 false"),
+              "and every sound reached the game\n" + environment.all());
+        // While every wave it holds is still playing, a new one is refused; once one ends it plays.
+        environment.fake.hold_waves = true;
+        host.run_console("play 2 a b c");
+        check(environment.logged("2 played b") && environment.logged("2 refused c: ") && environment.logged("all it holds are playing"),
+              "Only waves no sound plays are let go\n" + environment.all());
+        environment.fake.held_waves.clear();
+        environment.fake.hold_waves = false;
+        host.run_console("play 3 c");
+        check(environment.logged("3 played c"), "A wave whose sound ended is let go\n" + environment.all());
+    }
+    {
+        // The bytes held count too: room for b (2000 samples) or c (3000), not both.
+        TestEnvironment environment;
+        Limits limits;
+        limits.sound_bytes = 5000 * sizeof(std::int16_t) - 1;
+        Host host(environment, Side::client, limits);
+        host.apply({package("dj", files)});
+        running(host, "dj", environment);
+        environment.fake.hold_waves = true;
+        host.run_console("play 1 b c");
+        check(environment.logged("1 played b") && environment.logged("1 refused c: "), "A plugin holds at most so many bytes of waves\n" + environment.all());
+        environment.fake.held_waves.clear();
+        environment.fake.hold_waves = false;
+        host.run_console("play 2 c b");
+        check(environment.logged("2 played c") && environment.logged("2 played b"), "and lets go of idle ones to stay under it\n" + environment.all());
+    }
+}
+
 void plugins_play_sounds_and_read_the_mods() {
     TestEnvironment environment;
     environment.mod_list = {{"Owner-Map", "A Map", true}, {"OldThing", "Old Thing", false}};
@@ -4055,6 +4306,133 @@ void plugins_play_sounds_and_read_the_mods() {
     check(environment.logged("played 10") && environment.sounds.size() == 10, "Ten sounds a second\n" + environment.all());
     host.run_console("mods");
     check(environment.logged("mods on on off nil 2"), "Mods by folder or title, on or off\n" + environment.all());
+}
+
+void plugins_read_item_origins_and_favorites() {
+    TestEnvironment environment;
+    environment.mod_list = {{"Author_Pack", "Author Pack", true, "Ada", "1.4.2"}, {"Bare", "Bare", false}};
+    auto& game = environment.fake;
+    game.origins_ready = false;
+    game.origin_rows = {
+        {"own_hat", true, false, "Author_Pack", "Author Pack", "Ada", "1.4.2"},
+        {"deck_stock", true, true, "Author_Pack", "Author Pack", "Ada", "1.4.2"},
+        {"grip_plain", true, false, "Author_Pack", "Author Pack", "", ""},
+        {"shoe_plain", false, true, {}, {}, {}, {}},
+    };
+    game.favorites_ready = false;
+    Host host(environment, Side::client);
+    host.apply({script("picker", R"(
+        local n = 0
+        reskate.on("favorites_changed", function()
+            n += 1
+            reskate.log("favorites changed " .. n)
+        end)
+        local function fields(row)
+            local names = {}
+            for key in pairs(row) do table.insert(names, key) end
+            table.sort(names)
+            return table.concat(names, ",")
+        end
+        reskate.console.command("origins_closed", "x", function()
+            local rows, ready = reskate.mods.item_origins({"own_hat", "shoe_plain"})
+            assert(ready == false, "catalogues not ready")
+            assert(rows.own_hat.source == "unknown" and fields(rows.own_hat) == "source", "a mod is not reported while the catalogues are unread")
+            assert(rows.shoe_plain.source == "unknown" and fields(rows.shoe_plain) == "source", "unknown is not the game")
+            local favs, why = reskate.menu.favorites()
+            assert(favs == nil and why == "not loaded", "favorites not loaded: " .. tostring(why))
+            reskate.log("closed origins")
+        end)
+        reskate.console.command("origins_open", "x", function()
+            local rows, ready = reskate.mods.item_origins({"Own_Hat", "deck_stock", "grip_plain", "shoe_plain", "no_such"})
+            assert(ready == true, "catalogues ready")
+            local hat = rows.Own_Hat
+            assert(hat.source == "mod" and hat.folder == "Author_Pack" and hat.title == "Author Pack"
+                and hat.author == "Ada" and hat.version == "1.4.2", "mod origin")
+            assert(fields(hat) == "author,folder,source,title,version", "a mod origin has those fields")
+            local deck = rows.deck_stock
+            assert(deck.source == "changed" and deck.folder == "Author_Pack" and deck.author == "Ada", "a game item a mod changes")
+            local grip = rows.grip_plain
+            assert(grip.source == "mod" and grip.folder == "Author_Pack" and grip.title == "Author Pack"
+                and grip.author == nil and grip.version == nil, "an undeclared author is left out")
+            local shoe = rows.shoe_plain
+            assert(shoe.source == "game" and fields(shoe) == "source", "a game item no mod touches")
+            assert(rows.no_such.source == "unknown" and fields(rows.no_such) == "source", "a key nowhere is unknown")
+            local S = reskate.Enums.ItemSource
+            assert(S.mod == "mod" and S.changed == "changed" and S.game == "game" and S.unknown == "unknown", "Enums.ItemSource")
+            assert(fields(S) == "changed,game,mod,unknown", "Enums.ItemSource holds the four sources")
+            assert(hat.source == S.mod and deck.source == S.changed and shoe.source == S.game and rows.no_such.source == S.unknown,
+                "a source is an Enums.ItemSource word")
+            assert(not pcall(function() S.other = "other" end), "Enums.ItemSource is read-only")
+            local empty, still = reskate.mods.item_origins({})
+            local count = 0
+            for _ in pairs(empty) do count += 1 end
+            assert(still == true and count == 0, "an empty ask is ready and empty")
+            reskate.log("open origins")
+        end)
+        reskate.console.command("favorites", "x", function()
+            local favs, why = reskate.menu.favorites()
+            assert(why == nil, tostring(why))
+            assert(favs.own_hat == true and favs.deck_stock == true and favs.shoe_plain == nil, "the starred keys")
+            local count = 0
+            for _ in pairs(favs) do count += 1 end
+            assert(count == 2, "only the starred keys")
+            reskate.log("favorites read")
+        end)
+        reskate.console.command("bounds", "x", function()
+            local too = {}
+            for i = 1, 4001 do too[i] = "k" end
+            local ok, err = pcall(reskate.mods.item_origins, too)
+            assert(not ok and tostring(err):find("at most 4000"), tostring(err))
+            ok, err = pcall(reskate.mods.item_origins, {string.rep("a", 256)})
+            assert(not ok and tostring(err):find("longer than 255"), tostring(err))
+            ok, err = pcall(reskate.mods.item_origins, "own_hat")
+            assert(not ok, tostring(err))
+            reskate.log("bounds held")
+        end)
+        reskate.console.command("mods", "x", function()
+            local pack, bare
+            for _, row in ipairs(reskate.mods.list()) do
+                if row.folder == "Author_Pack" then pack = row else bare = row end
+            end
+            assert(pack.title == "Author Pack" and pack.on == true and pack.author == "Ada" and pack.version == "1.4.2"
+                and pack.installed == nil, "author and version, and no invented install time")
+            assert(bare.folder == "Bare" and bare.on == false and bare.author == nil and bare.version == nil, "a mod that names none")
+            reskate.log("mod list")
+        end)
+    )", R"("console", "mods.read", "menu")"),
+        script("blocked", R"(
+        reskate.console.command("blocked", "x", function()
+            local ok, err = pcall(reskate.mods.item_origins, {"own_hat"})
+            assert(not ok and tostring(err):find("needs the \"mods.read\" permission"), tostring(err))
+            ok, err = pcall(reskate.menu.favorites)
+            assert(not ok and tostring(err):find("needs the \"menu\" permission"), tostring(err))
+            ok, err = pcall(reskate.on, "favorites_changed", function() end)
+            assert(not ok and tostring(err):find("needs the \"menu\" permission"), tostring(err))
+            reskate.log("blocked")
+        end)
+    )", R"("console")")});
+    running(host, "picker", environment);
+    running(host, "blocked", environment);
+    ticks(host, environment, 1);
+    check(!environment.logged("favorites changed"), "The first look does not pretend the set changed\n" + environment.all());
+    check(host.run_console("origins_closed") && environment.logged("closed origins"), "Unread catalogues stay unknown\n" + environment.all());
+    game.origins_ready = true;
+    check(host.run_console("origins_open") && environment.logged("open origins"), "Origins follow the merge and the catalogues\n" + environment.all());
+    game.favorites_ready = true;
+    game.favorite_generation = 1;
+    game.favorite_keys = {"own_hat", "deck_stock"};
+    ticks(host, environment, 1);
+    check(environment.logged("favorites changed 1"), "Loading the favorites file is a change\n" + environment.all());
+    check(host.run_console("favorites") && environment.logged("favorites read"), "Favorites read back\n" + environment.all());
+    ticks(host, environment, 1);
+    check(!environment.logged("favorites changed 2"), "The same set does not fire again\n" + environment.all());
+    game.favorite_keys = {"own_hat"};
+    game.favorite_generation = 2;
+    ticks(host, environment, 1);
+    check(environment.logged("favorites changed 2"), "Starring an item fires once\n" + environment.all());
+    check(host.run_console("bounds") && environment.logged("bounds held"), "Key limits match the grid\n" + environment.all());
+    check(host.run_console("mods") && environment.logged("mod list"), "The mod list names author and version\n" + environment.all());
+    check(host.run_console("blocked") && environment.logged("blocked"), "Without the permission the calls raise\n" + environment.all());
 }
 
 // Two games in one session, each with the same plugin, passing messages through their hosts.
@@ -4892,6 +5270,7 @@ void discovery_finds_the_plugins_among_the_mods_left_on() {
     const auto mods = root / "Mods";
     write(mods / "Alpha" / manifest_file, manifest());
     write(mods / "Alpha" / "plugin" / "main.lua", "");
+    write(mods / "Alpha" / "manifest.json", R"({"name":"Alpha Pack","author":"Ada","version_number":"1.4.2"})");
     write(mods / "Beta" / manifest_file, manifest());
     write(mods / "Beta" / "plugin" / "main.lua", "");
     write(mods / "Beta" / "bin" / "tool.exe", "x");
@@ -4900,9 +5279,13 @@ void discovery_finds_the_plugins_among_the_mods_left_on() {
     write(mods / "JustAMap" / "manifest.json", R"({"name": "Just a map"})");
     check(dingosdk::mods::set_mod_enabled(mods, "Gamma", false), "mods.json switches a mod off");
     FileChecks checks;
-    auto found = discover(root, checks);
+    std::vector<ModInfo> listed;
+    auto found = discover(root, checks, &listed);
     std::sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return a.id < b.id; });
     check(found.size() == 2 && found[0].id == "Alpha" && found[1].id == "Beta", "Only the plugins left on are found");
+    const auto alpha = std::find_if(listed.begin(), listed.end(), [](const ModInfo& mod) { return mod.folder == "Alpha"; });
+    check(alpha != listed.end() && alpha->title == "Alpha Pack" && alpha->author == "Ada" && alpha->version == "1.4.2",
+          "A mod's manifest author and version are what reskate.mods.list reports");
     check(found[0].refusal.empty() && found[1].refusal.find("bin/tool.exe") != std::string::npos, "with what their files say");
     const auto before = found[0].fingerprint;
     write(mods / "Alpha" / "plugin" / "main.lua", "-- changed");
@@ -6684,6 +7067,7 @@ int main() {
         run(physics_steps_include_optional_geometry);
         run(a_plugin_loads_ticks_runs_its_commands_and_unloads);
         run(a_permission_must_be_declared);
+        run(plugins_choose_stand_ins);
         run(thunderstore_says_which_packages_run_plugins);
         run(command_names_are_checked);
         run(storage_is_kept_across_loads_and_has_a_quota);
@@ -6693,6 +7077,7 @@ int main() {
         run(a_plugin_over_its_time_budget_is_stopped);
         run(a_plugin_reloads_when_its_files_change);
         run(the_skater_can_be_read_moved_and_the_world_probed);
+        run(teleport_equipment_choices_keep_permissions_and_host_limits);
         run(plugins_distinguish_clear_unavailable_and_hit_world_probes);
         run(tricks_reach_plugins_that_ask_for_them);
         run(plugins_draw_on_the_overlay);
@@ -6701,6 +7086,7 @@ int main() {
         run(plugins_have_what_a_prop_hunt_needs);
         run(plugins_write_normalized_controllers);
         run(plugins_reach_cruise_and_read_the_mouse);
+        run(plugins_set_the_flip_speed);
         run(plugins_show_a_viewmodel);
         run(fps_shoots_on_foot);
         run(fps_deathmatch_kills_and_scores);
@@ -6720,9 +7106,11 @@ int main() {
         run(plugins_server_copies_show_cards_and_polls);
         run(plugins_animate_the_skater);
         run(plugins_play_their_own_sounds);
+        run(plugins_play_any_number_of_different_sounds);
         run(plugins_have_menu_panels);
         run(plugins_have_pages);
         run(plugins_play_sounds_and_read_the_mods);
+        run(plugins_read_item_origins_and_favorites);
         run(plugins_follow_the_session_and_message_each_other);
         run(plugins_call_and_hear_each_other);
         run(web_requests_go_only_to_listed_domains);

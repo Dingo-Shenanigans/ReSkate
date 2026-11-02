@@ -81,14 +81,24 @@ struct Widget {
     // titled tile the widgets after it go in (`help` its subtitle). note / warn: muted help text, a
     // warning. info: `text` and its value in `help`. tabs: the page's tabs, `choices` and `chosen`.
     // toggle and dropdown: `help` says what it does. slider: `format` shows its value ("%.0f %%").
-    // button: `on` makes it the card's main action.
-    enum class Kind { heading, label, separator, button, toggle, slider, dropdown, bar, card, note, warn, info, tabs } kind{Kind::label};
+    // button: `on` makes it the card's main action. buttons: small buttons side by side, wrapping as the
+    // card's width runs out, `choices` their names and `chosen` the one lit (0: none); pressing one sends
+    // its number. text: a line to type in, `input` what it holds and `help` what it shows when empty.
+    // colour: `colour` (red, green, blue, 0 to 1). stepper: `value` from `minimum` to `maximum` in
+    // `step`s. section: a card that folds, `on` while open; the widgets after it go in it, until the
+    // next card or section. list: one of `choices` (`chosen`, 0 for none), `rows` of them in view.
+    enum class Kind { heading, label, separator, button, toggle, slider, dropdown, bar, card, note, warn, info, tabs, buttons, text, colour,
+                      stepper, section, list } kind{Kind::label};
     std::string id, text;
     bool on{};
     float value{}, minimum{}, maximum{1};
     std::vector<std::string> choices;
     int chosen{};
     std::string help, format;
+    std::string input;
+    std::array<float, 3> colour{};
+    float step{};
+    int rows{};
 };
 struct Panel {
     std::string plugin, title;
@@ -118,12 +128,15 @@ struct Rebind {
     std::string plugin, action;
     std::optional<std::uint32_t> combo;
 };
-// What the player did to a widget: pressed a button, or set a toggle, slider or dropdown.
+// What the player did to a widget: pressed a button, or set a toggle, slider, dropdown, text,
+// colour, stepper, section (`on`: open) or list.
 struct Action {
     std::string plugin, panel, widget;
     bool on{};
     float value{};
     int chosen{};
+    std::string text;
+    std::array<float, 3> colour{};
 };
 
 namespace detail {

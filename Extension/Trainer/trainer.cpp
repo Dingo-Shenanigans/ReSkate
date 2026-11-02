@@ -149,6 +149,12 @@ struct State {
         double before{};
     };
     std::map<std::string, PluginTune, std::less<>> plugin_tunes;
+    // Plugins' flip speeds (plugin_flip_speed), by owner: the factor and when it runs out (GetTickCount64).
+    struct PluginFlip {
+        float factor{1.0f};
+        std::uint64_t until{};
+    };
+    std::map<std::string, PluginFlip, std::less<>> plugin_flips;
     UserPresets user;                                                                   // presets
     std::vector<std::string> active;                                                    // presets applied since Stock
     std::map<std::string, MapData, std::less<>> maps;
@@ -1801,6 +1807,15 @@ constexpr bool plain_pop(std::uint32_t trick) { return trick <= 1 || trick == 16
 // The ollies among those (ollie, nollie, their pops, the boned ollie). With "Slow flips pop higher" they are slowed and
 // popped like a flip trick (the owner's ask of 2026-10-11): the pop gives them the air a slowed clip hangs for.
 constexpr bool ollie_pop(std::uint32_t trick) { return trick == 1 || trick == 16 || trick == 31 || trick == 32 || trick == 42; }
+// Every plugin's flip speed that has not run out, multiplied together (1: none).
+float plugin_flip_factor() {
+    auto &s = state();
+    const auto now = GetTickCount64();
+    float factor = 1.0f;
+    for (const auto &[owner, flip] : s.plugin_flips)
+        if (now < flip.until) factor *= flip.factor;
+    return factor;
+}
 void drive_flip_speed(std::uintptr_t base, bool airborne, float to_landing) {
     auto &s = state();
     auto &drive = s.flip_drive;
@@ -1843,7 +1858,7 @@ void drive_flip_speed(std::uintptr_t base, bool airborne, float to_landing) {
     }
     if (now.trick) s.flip_trick_seen = now.trick;
     float factor = s.boosts.flip;
-    if (!extras_blocked()) factor *= own_trick_speed(flip_trick_index(now.trick));
+    if (!extras_blocked()) factor *= own_trick_speed(flip_trick_index(now.trick)) * plugin_flip_factor();
     if (s.logging && (now.underflip_anim != drive.underflip_anim || now.underflip_state != drive.underflip_state ||
                       now.underflip_window != drive.underflip_window))
         say(logging::Level::info, std::format("Trainer underflip states: trick {} ({}), Is.Underflip anim {} state {}, window {}, game's speed {:.3f}, "
@@ -2801,7 +2816,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool playing, const std::s
             }
         }
         flip_speed_in_use(s.boosts.flip != 1.0f || s.flip_advanced || s.flip_trick[late_flip_slot] != 1.0f || s.flip_flick || !s.flip_limit || underflip_in_force() != 1.0f ||
-                          underflip_split_in_force());
+                          underflip_split_in_force() || plugin_flip_factor() != 1.0f);
         // The speed itself goes straight to the trick in the air (drive_flip_speed); the flip curves
         // are only scaled where that number cannot be reached.
         want_flip_speed(s.flip_live ? 1.0f : s.boosts.flip);
@@ -3755,7 +3770,8 @@ TuningValue tuning_of(const Entry &e) {
 } // namespace
 
 std::optional<TuningValue> tuning_value(std::string_view id, std::string *why) {
-    if (!state().model) {
+    // Before a level's copy is read (the splash screen) every entry holds 0.
+    if (!state().model || !state().ready) {
         if (why) *why = "the game's physics tuning is not read yet";
         return std::nullopt;
     }
@@ -3768,6 +3784,7 @@ std::optional<TuningValue> tuning_value(std::string_view id, std::string *why) {
 }
 std::vector<TuningValue> find_tuning(std::string_view text, std::size_t most) {
     std::vector<TuningValue> found;
+    if (!state().ready) return found;
     const auto pattern = lower(text);
     for (const auto &e : state().entries)
         if (found.size() < most && matches(e.key, pattern)) found.push_back(tuning_of(e));
@@ -3789,6 +3806,9 @@ std::string plugin_tune(std::string_view owner, std::string_view id, std::option
         }
         return {};
     }
+    // A value set before the level's copy is read would keep 0 as what was there, and put it back on
+    // letting go: a plugin that scaled the steering then left the board unable to turn.
+    if (!s.ready) return "the game's physics tuning is not read yet";
     std::string why;
     if (!editable(&why)) return why;
     if (is_locked(*e)) return "the player has locked " + e->id + " in the trainer";
@@ -3798,8 +3818,21 @@ std::string plugin_tune(std::string_view owner, std::string_view id, std::option
     changed(false);
     return {};
 }
+std::string plugin_flip_speed(std::string_view owner, float factor, unsigned hold_ms) {
+    auto &s = state();
+    const auto now = GetTickCount64();
+    std::erase_if(s.plugin_flips, [&](const auto &entry) { return entry.second.until <= now; });
+    if (!std::isfinite(factor) || factor == 1.0f || hold_ms == 0) {
+        if (const auto found = s.plugin_flips.find(owner); found != s.plugin_flips.end()) s.plugin_flips.erase(found);
+        return {};
+    }
+    if (extras_blocked()) return "the host sets the physics";
+    s.plugin_flips.insert_or_assign(std::string(owner), State::PluginFlip{std::clamp(factor, flip_low, 10.0f), now + hold_ms});
+    return {};
+}
 void release_plugin_tunes(std::string_view owner) {
     auto &s = state();
+    if (const auto found = s.plugin_flips.find(owner); found != s.plugin_flips.end()) s.plugin_flips.erase(found);
     std::vector<std::string> mine;
     for (const auto &[key, tune] : s.plugin_tunes)
         if (tune.owner == owner) mine.push_back(key);

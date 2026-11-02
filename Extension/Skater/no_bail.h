@@ -38,6 +38,10 @@ struct NoBailSkater {
     std::uintptr_t base{}, entity{}, core{}, context{}, rig{};
 };
 bool no_bail_skater(NoBailSkater& skater) noexcept;
+// At an admitted local teleport dispatch, set only the captured owner's arrival
+// preference. Unknown/replaced owners or protected board state refuse. The game
+// can retain this preference; this neither restores it nor acknowledges arrival.
+bool prepare_teleport_equipment(const NoBailSkater& expected, bool on_board) noexcept;
 // Every physics step of that skater, whether or not No Bail protects it: No Bail's hook on the
 // skeleton response runs once per step, right after the step's body contacts, and hands it on after
 // its own filtering, so a wipeout it filtered never happened. `seconds` is the step's simulated time.

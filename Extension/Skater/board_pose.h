@@ -34,8 +34,9 @@ std::string hide(std::string_view owner, int bone, bool everyone = false);
 // Also ends the owner's sizes (scale) on that bone, or on all of them.
 void clear(std::string_view owner, int bone = -1);
 // A size held on a bone of the local board over its animation, which still turns and places it:
-// the bone's own axes times `value` (each 0.25 to 4), on this screen only (the game's replay and the
-// other players see the board as it is). One owner a bone; no value: that owner's size on it ends.
+// the bone's own axes times `value` (each 0.25 to 4), on this screen and in the pose the other players
+// are sent, where it is held to the session's bone scale limit as a skater's resized bones are (the
+// game's replay sees the board as it is). One owner a bone; no value: that owner's size on it ends.
 std::string scale(std::string_view owner, int bone, std::optional<Vec3> value);
 // These bones go out of sight on every board, other players' included (a breakable deck's
 // stretches, which the game would draw as cracks).
@@ -54,9 +55,11 @@ std::string fit(std::string_view owner, std::optional<Fit> value);
 // are, at `velocity` (m/s, world) turning at `spin` (rad/s, world), fall, land on `ground` (a world
 // height) and lie there, until cleared.
 std::string toss(std::string_view owner, std::vector<int> list, Vec3 velocity, Vec3 spin, float ground);
-// The local board's bones as last drawn, in their parents' frames; empty without a board.
+// The local board's bones as last drawn, in their parents' frames; empty without a board, and until
+// the board the local skater has now is drawn (a map load leaves the last one behind).
 std::optional<std::array<Bone, bones>> read();
-// Each client tick: the local skater's animation component (0 for none).
+// Each client tick: the local skater's animation component (0 for none). Once a plugin uses
+// reskate.board, installs the render pose hook its drawing goes through.
 void tick(std::uintptr_t base, std::uintptr_t component) noexcept;
 // From the render pose hook (native_skater.cpp), every skeleton handed to the renderer.
 void on_render_pose(std::uintptr_t animation_interface) noexcept;

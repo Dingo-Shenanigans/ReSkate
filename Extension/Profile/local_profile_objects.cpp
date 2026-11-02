@@ -53,22 +53,23 @@ bool delete_local_placed_object(std::string_view map, std::uint64_t token) {
 bool teleport_local_skater(const std::array<float, 3>& position) {
     return teleport_local_skater_transform({1,0,0,0,0,1,0,0,0,0,1,0,position[0],position[1],position[2],1});
 }
-bool teleport_local_skater_transform(const std::array<float,16>& transform) {
+bool teleport_local_skater_transform(const std::array<float,16>& transform, std::optional<bool> on_board) {
     std::lock_guard lock(local_runtime().native_mutex);
     auto& r = placements_runtime();
     if (!local_runtime().active || !r.teleport || !r.transition_ctor || !r.transition_destroy) return false;
     for (const auto v : transform)
         if (!std::isfinite(v) || std::abs(v) > 1e6f) return false;
     r.position_teleport = transform;
+    r.position_teleport_on_board = on_board;
     r.position_teleport_at = GetTickCount64();
     return true;
 }
 // Upright at the spot, facing `heading` (radians about world up): the root's rows are right
 // (cos h, 0, -sin h), up, forward (sin h, 0, cos h); h = 0 faces +Z.
-bool teleport_local_skater_heading(const std::array<float, 3>& position, float heading) {
+bool teleport_local_skater_heading(const std::array<float, 3>& position, float heading, std::optional<bool> on_board) {
     if (!std::isfinite(heading)) return false;
     const float sh = std::sin(heading), ch = std::cos(heading);
-    return teleport_local_skater_transform({ch, 0, -sh, 0, 0, 1, 0, 0, sh, 0, ch, 0, position[0], position[1], position[2], 1});
+    return teleport_local_skater_transform({ch, 0, -sh, 0, 0, 1, 0, 0, sh, 0, ch, 0, position[0], position[1], position[2], 1}, on_board);
 }
 bool local_skater_teleport_pending() {
     std::lock_guard lock(local_runtime().native_mutex);

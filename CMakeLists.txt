@@ -299,7 +299,8 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS AND WIN32)
     target_include_directories(dingosdk_custom_throwdown_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME custom_throwdowns COMMAND dingosdk_custom_throwdown_tests)
     add_executable(dingosdk_multiplayer_native_tests
-        Extension/Multiplayer/Test/native_layout_tests.cpp Extension/Multiplayer/Net/protocol.cpp)
+        Extension/Multiplayer/Test/native_layout_tests.cpp Extension/Multiplayer/Net/protocol.cpp
+        Extension/Multiplayer/Remote/stand_ins.cpp)
     add_test(NAME multiplayer_native_layout COMMAND dingosdk_multiplayer_native_tests)
     add_executable(dingosdk_multiplayer_lobby_tests
         Extension/Multiplayer/Test/lobby_tests.cpp Extension/Multiplayer/Steam/steam_lobbies.cpp
@@ -429,6 +430,12 @@ if(DINGOSDK_BUILD_ANIMATION_STUDIO_TESTS)
     target_include_directories(dingosdk_pose_place_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     target_link_libraries(dingosdk_pose_place_tests PRIVATE dingosdk_json)
     add_test(NAME pose_place COMMAND dingosdk_pose_place_tests)
+    # A joint moved on top of the pose as it is drawn (reskate.skater.pose's offsets), not the animation's.
+    add_executable(dingosdk_pose_offset_tests Extension/Skater/Test/pose_offset_tests.cpp Extension/Skater/pose_offset.cpp
+        Extension/AnimationStudio/anim_core.cpp)
+    target_include_directories(dingosdk_pose_offset_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_link_libraries(dingosdk_pose_offset_tests PRIVATE dingosdk_json)
+    add_test(NAME pose_offset COMMAND dingosdk_pose_offset_tests)
 endif()
 option(DINGOSDK_BUILD_REPLAY_KEYFRAMES_TESTS "Build replay keyframe smoothing regression tests" OFF)
 if(DINGOSDK_BUILD_REPLAY_KEYFRAMES_TESTS)
@@ -482,6 +489,11 @@ if(DINGOSDK_BUILD_PLUGIN_TESTS)
     # It also runs the test plugins in contrib/plugins.
     target_compile_definitions(dingosdk_plugin_tests PRIVATE "RESKATE_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\"")
     add_test(NAME plugins COMMAND dingosdk_plugin_tests)
+    # The item grids' search and order (Extension/Customization/item_browser_order.h), pure, so it
+    # runs on Linux too.
+    add_executable(dingosdk_item_browser_order_tests Extension/Customization/Test/item_browser_order_tests.cpp)
+    target_include_directories(dingosdk_item_browser_order_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME item_browser_order COMMAND dingosdk_item_browser_order_tests)
     # reskate.viewmodel's file and clips (Extension/UI/Overlay/viewmodel_model.h), and the FPS plugin's
     # exported pistol when contrib/plugins has it.
     add_executable(dingosdk_viewmodel_tests Extension/UI/Overlay/Test/viewmodel_model_tests.cpp Extension/UI/Overlay/viewmodel_model.cpp)

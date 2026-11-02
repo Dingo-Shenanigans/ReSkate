@@ -37,6 +37,7 @@
 #include "Extension/Throwdowns/throwdown_kit.h"
 #include "plugin_camera.h"
 #include "Extension/Multiplayer/Session/session.h"
+#include "Extension/Multiplayer/Remote/stand_ins.h"
 #include "Extension/Music/external_player.h"
 #include "Extension/Music/spotify_station.h"
 #include "Extension/Objects/ParkEditor/park_editor_runtime.h"
@@ -76,6 +77,7 @@
 #include "Extension/World/character_room.h"
 #include "Extension/Rendering/Capture/capture_runtime.h"
 #include "Extension/Customization/item_browser.h"
+#include "Extension/Customization/item_origins.h"
 #include "Extension/Customization/worn_items.h"
 #include "Extension/Multiplayer/Hud/game_ui_state.h"
 #include <shellapi.h>
@@ -610,6 +612,20 @@ public:
         auto layers = outfit_overlay::layers(plugin);
         return {std::move(layers.items), std::move(layers.worn), std::move(layers.note)};
     }
+    std::string outfit_stand_ins(std::string_view plugin, std::optional<StandIns> wanted) override {
+        if (!wanted) {
+            multiplayer::stand_ins::clear(plugin);
+            return {};
+        }
+        multiplayer::stand_ins::Policy policy;
+        policy.owner = std::string(plugin);
+        policy.pick = wanted->random ? multiplayer::stand_ins::Pick::random : multiplayer::stand_ins::Pick::first;
+        policy.parts = static_cast<multiplayer::stand_ins::Parts>(std::clamp(wanted->parts, 0, 2));
+        policy.items = std::move(wanted->items);
+        policy.exclude = std::move(wanted->exclude);
+        policy.seed = wanted->seed;
+        return multiplayer::stand_ins::set(std::move(policy));
+    }
     std::uint64_t effect_create(std::string_view plugin, const EffectRequest& request) override { return effects::create(plugin, request); }
     void effect_move(std::string_view plugin, std::uint64_t id, const EffectMatrix& transform) override { effects::move(plugin, id, transform); }
     void effect_stop(std::string_view plugin, std::uint64_t id) override { effects::stop(plugin, id); }
@@ -865,6 +881,12 @@ public:
         if (multiplayer::local_throwdown_active() && !competition_stock_physics()) return "not while a throwdown runs";
         set_plugin_velocity(velocity, add);
         return {};
+    }
+    // A flip's speed is a trick setting like the trainer's flip speed: the host's word and no throwdown.
+    std::string flip_speed(std::string_view plugin, float factor) override {
+        if (factor != 1 && multiplayer_session_active() && !session_boosts_allowed()) return "the host has turned boosts off";
+        if (factor != 1 && multiplayer::local_throwdown_active() && !competition_stock_physics()) return "not while a throwdown runs";
+        return trainer::plugin_flip_speed(plugin, factor, 300);
     }
     std::string hide_pad(std::string_view plugin, const PadHidden& h) override {
         if (!pad_hide::available()) return "hiding pad controls is unavailable for this game build";
@@ -1461,6 +1483,22 @@ public:
         return item_browser::show_items(std::string(plugin), std::move(keys));
     }
     void grid_mark(std::string_view plugin, std::vector<std::string> keys) override { item_browser::mark_items(std::string(plugin), std::move(keys)); }
+    ItemFacts item_facts(const std::vector<std::string>& keys) override {
+        const auto found = ::dingosdk::item_origins::lookup(keys);
+        ItemFacts out;
+        out.ready = found.ready && found.facts.size() == keys.size();
+        if (!out.ready) return out;
+        out.facts.reserve(found.facts.size());
+        for (const auto& fact : found.facts)
+            out.facts.push_back(ItemFact{fact.from_mod, fact.game, fact.folder, fact.title, fact.author, fact.version});
+        return out;
+    }
+    MenuFavorites menu_favorites() override {
+        const auto set = item_browser::favorites();
+        if (!set.ready) return {false, "not loaded", {}, set.generation};
+        return {true, {}, set.keys, set.generation};
+    }
+    std::uint64_t favorites_generation() override { return item_browser::favorites_generation(); }
     // ---- capture: one plugin records at a time (capture_runtime.h) --------------------------------
     std::string capture_start(std::string_view plugin, const CaptureStart& request) override {
         auto& recorder = capture::recorder();
@@ -1825,6 +1863,7 @@ public:
         outfit_overlay::clear(plugin);
         item_browser::release_owner(plugin);
         (void)outfit_overlay::set_layers(std::string(plugin), {});
+        multiplayer::stand_ins::clear(plugin);
         board_pose::clear(plugin);
         board_pose::park(plugin, {});
         (void)board_pose::fit(plugin, std::nullopt);

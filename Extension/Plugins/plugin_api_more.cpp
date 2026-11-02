@@ -1,4 +1,5 @@
 #include "plugin_api.h"
+#include "Extension/Music/music_inject.h"
 #include "lua.h"
 #include "lualib.h"
 #include <algorithm>
@@ -171,6 +172,33 @@ struct MoreApi {
         return 1;
     }
 
+// spatialize_music(nil | false | {active = true, left = 0..4, right = 0..4, lpf_l = 0.04..1, lpf_r = 0.04..1, itd = -32..32, env = 0..0.65, mute_loops = true})
+    static int music_spatialize(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        if (!plugin.has("music")) luaL_error(L, "reskate.spatialize_music needs the \"music\" permission in reskate-plugin.json");
+        if (lua_isnoneornil(L, 1) || (lua_isboolean(L, 1) && !lua_toboolean(L, 1))) {
+            music_inject::set_spatial(false, 1.0f, 1.0f);
+        } else if (lua_istable(L, 1)) {
+            const auto num = [&](const char* k, double def) {
+                lua_getfield(L, 1, k);
+                const double v = luaL_optnumber(L, -1, def);
+                lua_pop(L, 1);
+                return static_cast<float>(v);
+            };
+            lua_getfield(L, 1, "active");
+            const bool active = lua_isnil(L, -1) || lua_toboolean(L, -1) != 0;
+            lua_pop(L, 1);
+            lua_getfield(L, 1, "mute_loops");
+            const bool mute = lua_isnil(L, -1) || lua_toboolean(L, -1) != 0;
+            lua_pop(L, 1);
+            const float lpf = num("lpf", 1.0);
+            music_inject::set_spatial(active, num("left", 1.0), num("right", 1.0),
+                num("lpf_l", lpf), num("lpf_r", lpf), static_cast<int>(num("itd", 0.0)), num("env", 0.0), mute);
+        }
+        lua_pushboolean(L, music_inject::spatial_active() ? 1 : 0);
+        return 1;
+    }
+
     static void install(Plugin& plugin, lua_State* L);
 };
 
@@ -180,7 +208,7 @@ void MoreApi::install(Plugin& plugin, lua_State* L) {
     (void)plugin;
     // The reskate table is on top of the stack.
     using F = MoreApi;
-    add_functions(L, {{"expose", F::expose}, {"require_plugin", F::require_plugin}, {"emit", F::emit}, {"on_plugin", F::on_plugin}});
+    add_functions(L, {{"expose", F::expose}, {"require_plugin", F::require_plugin}, {"emit", F::emit}, {"on_plugin", F::on_plugin}, {"spatialize_music", F::music_spatialize}});
     add_functions(L, "http", {{"request", F::http_request}});
 }
 }
