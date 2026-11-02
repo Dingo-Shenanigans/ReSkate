@@ -2085,14 +2085,13 @@ struct WorldApi {
                 s.seed = static_cast<std::uint32_t>(seed);
             }
             lua_pop(L, 1);
-            // A list of item names (exclude: with "*" for any run of characters).
-            const auto names = [&](const char* field, std::vector<std::string>& out) {
+            // A list of at most `limit` item names (exclude: with "*" for any run of characters).
+            const auto names = [&](const char* field, std::size_t limit, std::vector<std::string>& out) {
                 lua_getfield(L, 1, field);
                 if (!lua_isnil(L, -1)) {
                     if (!lua_istable(L, -1)) luaL_error(L, "%s is a list of item names", field);
                     const int count = lua_objlen(L, -1);
-                    if (count > static_cast<int>(multiplayer::stand_ins::max_items))
-                        luaL_error(L, "%s has at most %d names", field, static_cast<int>(multiplayer::stand_ins::max_items));
+                    if (count > static_cast<int>(limit)) luaL_error(L, "%s has at most %d names", field, static_cast<int>(limit));
                     for (int i = 1; i <= count; ++i) {
                         lua_rawgeti(L, -1, i);
                         std::size_t length = 0;
@@ -2105,8 +2104,8 @@ struct WorldApi {
                 }
                 lua_pop(L, 1);
             };
-            names("items", s.items);
-            names("exclude", s.exclude);
+            names("items", multiplayer::stand_ins::max_items, s.items);
+            names("exclude", multiplayer::stand_ins::max_exclude, s.exclude);
             wanted = std::move(s);
         }
         // Every change dresses the players you see again, which is heavy: not every frame.

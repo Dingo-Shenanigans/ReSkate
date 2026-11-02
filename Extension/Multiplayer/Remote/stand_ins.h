@@ -1,5 +1,6 @@
 #pragma once
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -16,6 +17,8 @@ namespace dingosdk::multiplayer::stand_ins {
 enum class Pick : std::uint8_t { first, random };
 enum class Parts : std::uint8_t { both, skater, board };
 inline constexpr std::size_t max_items = 4096;
+// Every candidate is matched against every rule, so the rules are few.
+inline constexpr std::size_t max_exclude = 64;
 struct Policy {
     std::string owner; // the plugin holding it
     Pick pick{Pick::first};
@@ -27,6 +30,9 @@ struct Policy {
     // really wears still shows.
     std::vector<std::string> exclude;
     std::uint32_t seed{};
+    // Whether each of `items` is left after `exclude`. set() works it out on the plugin's thread, so
+    // the engine thread matches none of them when it dresses a player.
+    std::vector<bool> kept;
 };
 
 // The policy in force, or null for the game's defaults. Any thread.
@@ -44,25 +50,47 @@ inline std::string lower(std::string_view text) {
         if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
     return out;
 }
-// Whether `name` fits `rule`, in which "*" is any run of characters, none included. Both lower case.
-inline bool fits(std::string_view name, std::string_view rule) {
-    std::size_t n = 0, r = 0, star = std::string_view::npos, from = 0;
-    while (n < name.size()) {
-        if (r < rule.size() && rule[r] == '*') {
-            star = r++; // the star takes nothing yet; it takes one more each time what follows fails
-            from = n;
-        } else if (r < rule.size() && rule[r] == name[n]) {
-            ++r;
-            ++n;
-        } else if (star != std::string_view::npos) {
-            r = star + 1;
-            n = ++from;
-        } else {
-            return false;
-        }
+// Where `piece` (not empty) first starts in `text`, or npos. Knuth-Morris-Pratt, so the work is
+// linear in both whatever a plugin writes; a piece longer than a rule can be is plainly searched.
+inline std::size_t find_piece(std::string_view text, std::string_view piece) {
+    std::array<std::uint8_t, 256> back{}; // the longest start of `piece` that also ends piece[0..i]
+    if (piece.size() > back.size()) return text.find(piece);
+    for (std::size_t i = 1, k = 0; i < piece.size(); ++i) {
+        while (k && piece[i] != piece[k]) k = back[k - 1];
+        if (piece[i] == piece[k]) ++k;
+        back[i] = static_cast<std::uint8_t>(k);
     }
-    while (r < rule.size() && rule[r] == '*') ++r;
-    return r == rule.size();
+    for (std::size_t i = 0, k = 0; i < text.size(); ++i) {
+        while (k && text[i] != piece[k]) k = back[k - 1];
+        if (text[i] == piece[k]) ++k;
+        if (k == piece.size()) return i + 1 - k;
+    }
+    return std::string_view::npos;
+}
+// Whether `name` fits `rule`, in which "*" is any run of characters, none included. Both lower case.
+// What comes before the first star starts the name and what follows the last ends it; each piece
+// between is taken where it first appears after the one before, which never loses a match. A piece
+// longer than what is left of the name fails before it is searched, so the work stays about the
+// length of the name and the rule however many stars or rules a plugin sends.
+inline bool fits(std::string_view name, std::string_view rule) {
+    const auto first = rule.find('*');
+    if (first == std::string_view::npos) return name == rule;
+    const auto last = rule.rfind('*');
+    const auto head = rule.substr(0, first), tail = rule.substr(last + 1);
+    if (head.size() + tail.size() > name.size() || !name.starts_with(head) || !name.ends_with(tail)) return false;
+    auto rest = name.substr(head.size(), name.size() - head.size() - tail.size());
+    auto middle = rule.substr(first + 1, last - first); // keeps the last star, so every piece ends in one
+    while (!middle.empty()) {
+        const auto star = middle.find('*');
+        const auto piece = middle.substr(0, star);
+        middle.remove_prefix(star + 1);
+        if (piece.empty()) continue;
+        if (piece.size() > rest.size()) return false;
+        const auto at = find_piece(rest, piece);
+        if (at == std::string_view::npos) return false;
+        rest.remove_prefix(at + piece.size());
+    }
+    return true;
 }
 // Whether `asset` is in the policy's exclude list (which set() keeps lower case).
 inline bool excluded(const Policy &policy, std::string_view asset) {
@@ -93,8 +121,10 @@ inline std::uint64_t text_hash(std::string_view text, std::uint64_t h = 14695981
 // the missing item and the policy's seed, so a player keeps the same stand-ins for as long as they
 // wear the same outfit (no flicker each time it is put on again), different players and slots get
 // different ones, and a new seed gives everybody new ones.
-inline std::vector<std::string> order(const Policy &policy, std::vector<std::string> candidates, std::uint64_t outfit,
-                                      std::uint32_t slot, std::string_view missing) {
+// The same order for any list of that length: the engine thread orders positions in its lists.
+template <class T>
+std::vector<T> order(const Policy &policy, std::vector<T> candidates, std::uint64_t outfit, std::uint32_t slot,
+                     std::string_view missing) {
     if (policy.pick != Pick::random || candidates.size() < 2) return candidates;
     std::uint64_t state = mix(outfit ^ mix(text_hash(missing) ^ (std::uint64_t{slot} << 32 | policy.seed)));
     for (std::size_t i = candidates.size() - 1; i > 0; --i) {

@@ -12,6 +12,7 @@
 #include <Windows.h>
 #include <map>
 #include <mutex>
+#include <numeric>
 #include <set>
 #include <tuple>
 
@@ -29,31 +30,86 @@ template <class T> void put(std::uintptr_t p, const T &value) {
         throw std::runtime_error("Cannot update the remote cosmetic component.");
 }
 bool reserved(const std::string &asset) { return profile_runtime::reserved_cosmetic(asset); }
-// The installed items that may stand in, by the category of slot they go in: every item in the
-// catalog but the paid store copies. Walked once per catalog (a live mod apply makes a new one),
-// on the client update thread, the only one that dresses peers.
-template <class Memory> std::vector<std::string> catalog_for(const Memory &memory, std::uintptr_t base, std::uint32_t category) {
+// The candidates for one missing item under a plugin's policy (stand_ins.h), most likely first,
+// then the game's defaults. The installed items that may stand in are kept by the category of slot
+// they go in: every item in the catalog but the paid store copies, walked once per catalog (a live
+// mod apply makes a new one). Which of them, or of the policy's own list, are left is worked out
+// once per policy, catalog and category, not for every missing item of every player: this runs on
+// the client update thread, the only one that dresses peers, and a plugin's lists can be long.
+template <class Memory>
+std::vector<std::string> stand_ins_for(const Memory &memory, std::uintptr_t base,
+                                       const std::shared_ptr<const stand_ins::Policy> &policy, std::uintptr_t resource,
+                                       std::size_t index, std::uint64_t outfit, const CosmeticSlot &missing) {
     static std::mutex mutex;
     static std::uintptr_t cached_manager{};
     static std::uint32_t cached_total{};
     static std::map<std::uint32_t, std::vector<std::string>> by_category;
-    const auto manager = memory.ptr(base, addr::engine::cosmetics_manager);
-    const auto total = memory.template get<std::uint32_t>(manager, 0x3c);
+    // Held, so no other policy can take its address while the lists below are worked out for it.
+    static std::shared_ptr<const stand_ins::Policy> cached_policy;
+    static std::vector<std::string> defaults;
+    // By category: whether each name of the list it uses (the category's, or the policy's items) may
+    // stand in: installed here, fits the slot, not paid and not excluded.
+    static std::map<std::uint32_t, std::vector<bool>> usable;
+    // The first that may stand in is taken unless the catalog changed under the cache, so a few will
+    // do, however long the lists are.
+    constexpr std::size_t tried = 16;
     std::lock_guard lock(mutex);
-    if (manager != cached_manager || total != cached_total) {
-        by_category.clear();
-        cached_manager = cached_total = 0;
-        for (const auto &item : memory.catalog())
-            if (!reserved(item.name))
-                for (const auto c : item.categories) by_category[c].push_back(item.name);
-        // The walk follows the catalog's hash buckets; sorted, "first" means the same item on
-        // every PC whatever order the catalog was filled in.
-        for (auto &[c, names] : by_category) std::sort(names.begin(), names.end());
-        cached_manager = manager;
-        cached_total = total;
+    if (policy != cached_policy) {
+        usable.clear();
+        defaults.clear();
+        for (const auto item : default_cosmetic_items)
+            if (!stand_ins::excluded(*policy, item)) defaults.emplace_back(item);
+        cached_policy = policy;
     }
-    const auto found = by_category.find(category);
-    return found == by_category.end() ? std::vector<std::string>{} : found->second;
+    std::vector<std::string> out;
+    try {
+        const auto manager = memory.ptr(base, addr::engine::cosmetics_manager);
+        const auto total = memory.template get<std::uint32_t>(manager, 0x3c);
+        if (manager != cached_manager || total != cached_total) {
+            by_category.clear();
+            usable.clear();
+            cached_manager = cached_total = 0;
+            for (const auto &item : memory.catalog())
+                if (!reserved(item.name))
+                    for (const auto c : item.categories) by_category[c].push_back(item.name);
+            // The walk follows the catalog's hash buckets; sorted, "first" means the same item on
+            // every PC whatever order the catalog was filled in.
+            for (auto &[c, names] : by_category) std::sort(names.begin(), names.end());
+            cached_manager = manager;
+            cached_total = total;
+        }
+        const auto category = memory.slot_category(resource, index);
+        static const std::vector<std::string> none;
+        const auto found = by_category.find(category);
+        const auto &installed = found == by_category.end() ? none : found->second;
+        const bool listed = !policy->items.empty();
+        const auto &names = listed ? policy->items : installed;
+        auto entry = usable.find(category);
+        if (entry == usable.end()) {
+            // A listed item may stand in when it is one of the category's installed items, which is
+            // what substitute_missing_each would find out by looking each one up.
+            std::vector<bool> may(names.size());
+            for (std::size_t i = 0; i < names.size(); ++i)
+                may[i] = listed ? i < policy->kept.size() && policy->kept[i] &&
+                                      std::binary_search(installed.begin(), installed.end(), names[i])
+                                : !stand_ins::excluded(*policy, names[i]);
+            entry = usable.emplace(category, std::move(may)).first;
+        }
+        const auto &keep = entry->second;
+        // The whole list is ordered, then filtered: an item blocked or not installed moves no other
+        // player's stand-in.
+        std::vector<std::uint32_t> positions(names.size());
+        std::iota(positions.begin(), positions.end(), std::uint32_t{0});
+        for (const auto at : stand_ins::order(*policy, std::move(positions), outfit, missing.slot, missing.asset)) {
+            if (!keep[at]) continue;
+            out.push_back(names[at]);
+            if (out.size() == tried) break;
+        }
+    } catch (const std::exception &) {
+        out.clear(); // a catalog not ready yet: the defaults this time
+    }
+    out.insert(out.end(), defaults.begin(), defaults.end());
+    return out;
 }
 std::uint64_t outfit_hash(const CosmeticRecipe &recipe) {
     auto h = stand_ins::text_hash({}, recipe.key);
@@ -144,19 +200,7 @@ void apply_cosmetic_recipe(std::uintptr_t base, std::uintptr_t entity, std::uint
         swaps = memory.substitute_missing_each(
             resource, usable,
             [&](std::size_t index, const CosmeticSlot &missing) {
-                std::vector<std::string> candidates;
-                try {
-                    candidates = policy->items.empty() ? catalog_for(memory, base, memory.slot_category(resource, index))
-                                                       : policy->items;
-                } catch (const std::exception &) {
-                    candidates.clear(); // a catalog not ready yet: the defaults this time
-                }
-                candidates = stand_ins::order(*policy, std::move(candidates), outfit, missing.slot, missing.asset);
-                candidates.insert(candidates.end(), default_cosmetic_items.begin(), default_cosmetic_items.end());
-                // Excluded after the shuffle: what is left keeps its order, so blocking an item
-                // changes the stand-in only of the players who were shown it.
-                std::erase_if(candidates, [&](const std::string &c) { return stand_ins::excluded(*policy, c); });
-                return candidates;
+                return stand_ins_for(memory, base, policy, resource, index, outfit, missing);
             },
             reserved);
     } else {

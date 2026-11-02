@@ -2596,7 +2596,11 @@ void plugins_choose_stand_ins() {
         assert(not pcall(reskate.outfit.stand_ins, {seed = -1}), "a seed is 0 or more")
         assert(not pcall(reskate.outfit.stand_ins, {items = {""}}), "an item has a name")
         assert(not pcall(reskate.outfit.stand_ins, {items = {12}}), "an item is a name")
-        assert(reskate.outfit.stand_ins({pick = "random", exclude = {"Own_Costume*", "Own_TopShirt_Gen_Hoodie_00003"}}))
+        local rules = {"Own_Costume*", "Own_TopShirt_Gen_Hoodie_00003"}
+        for i = 3, 64 do rules[i] = "*Rule" .. i .. "*" end
+        assert(reskate.outfit.stand_ins({pick = "random", exclude = rules}))
+        rules[65] = "*Rule65*"
+        assert(not pcall(reskate.outfit.stand_ins, {exclude = rules}), "at most 64 exclude rules")
         assert(not pcall(reskate.outfit.stand_ins, {exclude = {"*"}}), "excluding everything is not a name")
         assert(not pcall(reskate.outfit.stand_ins, {exclude = "Own_Hat"}), "exclude is a list")
         reskate.log("dressed")
@@ -2610,7 +2614,8 @@ void plugins_choose_stand_ins() {
     check(environment.logged("[dresser] dressed") && environment.logged("[plain] refused"), "The calls ran\n" + environment.all());
     check(game.called("stand-ins dresser random 0 7 all") && game.called("stand-ins dresser first 2 0 Own_Truck_Gen_Default_00001") &&
               game.called("stand-ins dresser default") && game.called("stand-ins dresser exclude Own_Costume*") &&
-              game.called("stand-ins dresser exclude Own_TopShirt_Gen_Hoodie_00003"),
+              game.called("stand-ins dresser exclude Own_TopShirt_Gen_Hoodie_00003") &&
+              game.called("stand-ins dresser exclude *Rule64*") && !game.called("stand-ins dresser exclude *Rule65*"),
           "Random from every installed item, the first of a list on the board, and the defaults again\n" + environment.all());
     check(!game.called("stand-ins plain"), "A plugin without the permission chooses no stand-ins");
 }

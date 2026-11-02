@@ -724,6 +724,37 @@ void cosmetic_layout_regression() {
                   !star("own_costume_gen_ghostskater_00002", "*ghostskater_00001") && !star("own_hat", "own*cap") &&
                   !star("own_hat_", "own_hat") && !star("hat", "*hat*x"),
               "A star stands for any run of characters, anywhere in a rule");
+        // The matcher agrees with a plain one on every short name and rule of a small alphabet, and
+        // rules made to be slow against long names still give the right answer.
+        const auto plain = [](std::string_view n, std::string_view r) {
+            std::vector<std::vector<bool>> can(n.size() + 1, std::vector<bool>(r.size() + 1));
+            can[0][0] = true;
+            for (std::size_t j = 1; j <= r.size(); ++j) can[0][j] = r[j - 1] == '*' && can[0][j - 1];
+            for (std::size_t i = 1; i <= n.size(); ++i)
+                for (std::size_t j = 1; j <= r.size(); ++j)
+                    can[i][j] = r[j - 1] == '*' ? can[i - 1][j] || can[i][j - 1] : r[j - 1] == n[i - 1] && can[i - 1][j - 1];
+            return static_cast<bool>(can[n.size()][r.size()]);
+        };
+        const auto words = [](std::string_view letters, std::size_t longest) {
+            std::vector<std::string> out{""};
+            for (std::size_t from = 0; from < out.size(); ++from)
+                if (out[from].size() < longest)
+                    for (const auto c : letters) out.push_back(out[from] + c);
+            return out;
+        };
+        const auto names = words("ab", 7), rules = words("ab*", 5);
+        std::size_t disagree = 0;
+        for (const auto &n : names)
+            for (const auto &r : rules) disagree += star(n, r) != plain(n, r);
+        check(disagree == 0, "The star matcher must agree with a plain one");
+        const std::string long_name(255, 'a');
+        std::string many_stars;
+        for (int i = 0; i < 127; ++i) many_stars += "*a";
+        check(!star(long_name, "*" + std::string(253, 'a') + "b") && star(long_name, "*" + std::string(254, 'a')) &&
+                  star(long_name, many_stars + "*") && !star(long_name, many_stars + "*b") &&
+                  star(std::string(254, 'a'), "a*" + std::string(253, 'a')) &&
+                  !star(std::string(253, 'a'), "a*" + std::string(253, 'a')),
+              "Long names and rules made to be slow must still match right");
         blocked.pick = stand_ins::Pick::random;
         for (std::uint32_t seed = 0; seed < 64; ++seed) {
             blocked.seed = random.seed = seed;
@@ -732,6 +763,14 @@ void cosmetic_layout_regression() {
             std::erase_if(full, [&](const std::string &c) { return stand_ins::excluded(blocked, c); });
             std::erase_if(kept, [&](const std::string &c) { return stand_ins::excluded(blocked, c); });
             check(full == kept && full.size() == 39, "Blocking items must not move the others' order");
+            // The engine thread orders positions in its lists, not the names: the same order.
+            std::vector<std::uint32_t> positions;
+            for (std::uint32_t i = 0; i < many.size(); ++i) positions.push_back(i);
+            const auto ordered = stand_ins::order(random, positions, 7, 11, "Unknown");
+            const auto shuffled_names = stand_ins::order(random, many, 7, 11, "Unknown");
+            bool same = ordered.size() == many.size();
+            for (std::size_t i = 0; same && i < ordered.size(); ++i) same = shuffled_names[i] == many[ordered[i]];
+            check(same, "Positions and names must be ordered alike");
         }
         // The store: one owner at a time, the exclude list kept lower case, cleared only by its owner.
         stand_ins::Policy mine;
@@ -744,6 +783,13 @@ void cosmetic_layout_regression() {
         mine.exclude = {"OWN_HOODIE"};
         check(stand_ins::set(mine).empty() && stand_ins::current()->exclude == std::vector<std::string>{"own_hoodie"},
               "The exclude list is kept lower case");
+        mine.items = {"Own_Hoodie", "Own_Shirt", "OWN_HOODIE_2"};
+        mine.exclude = {"Own_Hoodie*"};
+        check(stand_ins::set(mine).empty() && stand_ins::current()->kept == std::vector<bool>{false, true, false},
+              "set() works out which items the exclude list leaves");
+        mine.exclude.assign(stand_ins::max_exclude + 1, "own_hat");
+        check(stand_ins::set(mine).empty() && stand_ins::current()->exclude.size() == stand_ins::max_exclude,
+              "No more exclude rules are kept than the limit");
         stand_ins::clear("theirs");
         check(stand_ins::current() != nullptr, "Only the owner clears it");
         stand_ins::clear("mine");

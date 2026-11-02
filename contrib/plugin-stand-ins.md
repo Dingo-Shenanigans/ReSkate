@@ -21,7 +21,7 @@ reskate.outfit.stand_ins(nil)
 | `pick` | `"first"` | `"first"`: the candidates in order; `"random"`: shuffled per missing item |
 | `parts` | `"both"` | which recipes it covers: `"skater"`, `"board"` or `"both"`; the others keep the defaults |
 | `items` | every installed item | the candidates, at most 4096 names; only those that fit the slot are taken |
-| `exclude` | none | never these: names, `*` for any run of characters (`*GhostSkater*`), any case; at most 4096 |
+| `exclude` | none | never these: names, `*` for any run of characters (`*GhostSkater*`), any case; at most 64 |
 | `seed` | 0 | 0 to 4294967295; a new seed gives new random picks |
 
 It returns `true`, or `false` and why not: another plugin holds the stand-ins, or it was asked
@@ -44,6 +44,10 @@ more than 4 times in a second (each change dresses every player shown again).
   different outfits get different ones, and every PC with the same items and seed shows the same.
 - A change re-dresses the players already shown one at a time, 100 ms apart
   (`update_remote_cosmetics`), not the whole server in one frame.
+- Dressing runs on the engine thread, so it does little per missing item however long the lists
+  are: `items` is matched against `exclude` once when the stand-ins are set, on the plugin's
+  thread; which items each slot category can take is worked out once per policy and catalog; and
+  a star rule is matched in time linear in the name and the rule.
 - One plugin holds the stand-ins at a time; they go back to the defaults when it unloads.
 
 ## Where it lives
@@ -51,7 +55,7 @@ more than 4 times in a second (each change dresses every player shown again).
 - `Extension/Multiplayer/Remote/stand_ins.h/.cpp`: the policy, its store and the ordering.
 - `native_cosmetics_layout.h`: `catalog()` (the whole installed catalog), `slot_category`,
   `substitute_missing_each` (fallbacks per missing item).
-- `native_cosmetics.cpp`: the candidates per slot category, cached per catalog.
+- `native_cosmetics.cpp`: the candidates per slot category, cached per catalog and policy.
 - `Extension/Plugins/plugin_api_world.cpp`: the Lua call; `plugin_game_runtime.cpp`: the policy
   set and cleared.
 - Tests: `cosmetic_layout_regression` (catalog walk, first and random, paid items never taken)
