@@ -80,6 +80,12 @@ public:
     }
 };
 
+// Resident non-solid visuals and joint attachments follow every eligible client tick.
+// Unattached solid objects keep their 16 ms throttle; unchanged matrices never move.
+constexpr bool movement_due(bool changed, bool solid, bool attached, std::uint64_t now, std::uint64_t moved) noexcept {
+    return changed && (!solid || attached || now >= moved + 16);
+}
+
 // A world object blueprint (ObjectBlueprint, or a type derived from it): never a skater's blueprint.
 template<class ReadPointer>
 bool object_blueprint(std::uintptr_t asset, std::uintptr_t base, ReadPointer read) {
