@@ -3,6 +3,7 @@
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/engine.h"
 #include "Engine/Game/Build/20260929/ui_values.h"
+#include <algorithm>
 #include <array>
 #include <cstring>
 
@@ -70,20 +71,58 @@ void release(std::uintptr_t base, std::string_view plugin) noexcept {
     try {
         const auto manager = manager_of(base);
         if (!manager || !game::native_data().models.publish) return;
+
+        auto& reservations = owned();
+        const auto& records = reservations.records();
+
+        // Skip the native model write lock when this plugin has
+        // no published handles in the current UI manager.
+        const auto belongs_here = [&](const auto& entry) {
+            const auto& record = entry.second;
+            return record.plugin == plugin &&
+                   record.manager == manager &&
+                   record.handle != 0 &&
+                   record.published;
+        };
+
+        if (std::none_of(records.begin(), records.end(), belongs_here))
+            return;
+
         game::ModelWriteLock lock(manager);
         const md::Context context(base, manager);
         const auto type = base + addr::engine::float_type;
-        if (md::kind(type) != 19 || md::size(type) != sizeof(float)) return;
-        // Only neutralize handles we actually published into this manager.
-        // Never call publish here: it would create aliases after a manager change.
-        for (const auto& [id, record] : owned().records()) {
-            if (record.plugin != plugin || record.manager != manager || !record.handle || !record.published) continue;
+
+        if (md::kind(type) != 19 || md::size(type) != sizeof(float))
+            return;
+
+        // Neutralize only previously published handles owned by
+        // this plugin in the current manager.
+        // Never create new aliases or models while unloading.
+        for (const auto& [id, record] : records) {
+            if (record.plugin != plugin ||
+                record.manager != manager ||
+                !record.handle ||
+                !record.published)
+                continue;
+
             try {
-                if (context.type_of(record.handle) != type) continue;
-                context.set_if_changed(md::Value{record.handle, type}, 0.f);
-                owned().mark_published(id, manager, record.handle, 0.f);
-            } catch (...) { /* A stale handle must not stop neutralizing other owned models. */ }
+                if (context.type_of(record.handle) != type)
+                    continue;
+
+                context.set_if_changed(
+                    md::Value{record.handle, type},
+                    0.f
+                );
+
+                reservations.mark_published(
+                    id, manager, record.handle, 0.f
+                );
+            } catch (...) {
+                // Continue cleanup after an individual stale handle.
+            }
         }
-    } catch (...) {}
+    } catch (...) {
+        // Plugin cleanup must never throw.
+    }
 }
 }
