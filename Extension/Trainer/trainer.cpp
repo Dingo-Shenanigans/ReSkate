@@ -1807,14 +1807,15 @@ constexpr bool plain_pop(std::uint32_t trick) { return trick <= 1 || trick == 16
 // The ollies among those (ollie, nollie, their pops, the boned ollie). With "Slow flips pop higher" they are slowed and
 // popped like a flip trick (the owner's ask of 2026-10-11): the pop gives them the air a slowed clip hangs for.
 constexpr bool ollie_pop(std::uint32_t trick) { return trick == 1 || trick == 16 || trick == 31 || trick == 32 || trick == 42; }
-// Every plugin's flip speed that has not run out, multiplied together (1: none).
+// Every plugin's flip speed that has not run out, multiplied together (1: none), held to the range one plugin
+// may ask for: three plugins at 10 would otherwise turn flips at 1000 times.
 float plugin_flip_factor() {
     auto &s = state();
     const auto now = GetTickCount64();
     float factor = 1.0f;
     for (const auto &[owner, flip] : s.plugin_flips)
         if (now < flip.until) factor *= flip.factor;
-    return factor;
+    return std::clamp(factor, flip_low, 10.0f);
 }
 void drive_flip_speed(std::uintptr_t base, bool airborne, float to_landing) {
     auto &s = state();
