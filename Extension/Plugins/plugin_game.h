@@ -481,6 +481,29 @@ public:
     // give it back; and the tiles it marks with the game's check. Empty when taken, else why not.
     virtual std::string grid_show(std::string_view /*plugin*/, std::optional<std::vector<std::string>> /*keys*/) { return unavailable; }
     virtual void grid_mark(std::string_view /*plugin*/, std::vector<std::string> /*keys*/) {}
+    // Where an item key comes from (Customization/item_origins.h). `ready` is false until the merge
+    // file has been read and the content catalogues are available: until then a key is not a game
+    // item. `from_mod` is the winning mod; `game` means the game itself ships the key.
+    struct ItemFact {
+        bool from_mod{};
+        bool game{};
+        std::string folder, title, author, version;
+    };
+    struct ItemFacts {
+        bool ready{};
+        std::vector<ItemFact> facts;
+    };
+    virtual ItemFacts item_facts(const std::vector<std::string>& /*keys*/) { return {}; }
+    // The player's starred items. `ready` false, with `why`, means the set has not been read, which
+    // is not an empty set. `generation` changes when the set does.
+    struct MenuFavorites {
+        bool ready{};
+        std::string why;
+        std::vector<std::string> keys;
+        std::uint64_t generation{};
+    };
+    virtual MenuFavorites menu_favorites() { return {false, "not loaded"}; }
+    virtual std::uint64_t favorites_generation() { return 0; }
     // ---- capture: the screen as the game draws it (Extension/Rendering/Capture) ---------------------
     // One plugin records at a time; frames are numbered from 0 as they are taken.
     struct CaptureStart {

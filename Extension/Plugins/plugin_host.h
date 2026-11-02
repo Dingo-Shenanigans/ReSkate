@@ -196,6 +196,8 @@ private:
     bool chat_started_{};
     std::uint64_t track_revision_{};
     double next_track_{};
+    std::uint64_t favorites_generation_{};
+    bool favorites_known_{};
     bool throwdown_active_{};
 };
 }

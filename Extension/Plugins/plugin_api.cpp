@@ -17,7 +17,7 @@ namespace {
 struct Event {
     std::string_view name, permission;
 };
-constexpr std::array<Event, 31> events{{
+constexpr std::array<Event, 32> events{{
     {"load", {}}, {"unload", {}}, {"tick", {}}, {"level_loaded", {}}, {"level_unloading", {}},
     {"trick_started", "events.tricks"}, {"trick_landed", "events.tricks"}, {"line_broken", "events.tricks"},
     {"draw", "overlay"}, {"player_joined", "session.read"}, {"player_left", "session.read"}, {"message", "net.session"},
@@ -26,7 +26,7 @@ constexpr std::array<Event, 31> events{{
     {"board_landed", "events.skater"}, {"body_hit", "events.skater"}, {"bail_end", "events.skater"},
     {"physics_step", "events.physics"}, {"launch", "events.skater"}, {"trick_notes", "events.tricks"},
     {"throwdown_ui", "throwdowns"}, {"touch", "session.skaters"}, {"touch_end", "session.skaters"}, {"camera_cycle", "camera"},
-    {"poll_answer", "server"}, {"poll_closed", "server"},
+    {"poll_answer", "server"}, {"poll_closed", "server"}, {"favorites_changed", "menu"},
 }};
 constexpr std::size_t maximum_key = 128;
 constexpr std::size_t maximum_command = 48;
@@ -722,13 +722,14 @@ void Api::install(Plugin& plugin, lua_State* L) {
         lua_setfield(L, -2, name);
     };
     const auto same = [](std::string_view w) { return w; };
-    lua_createtable(L, 0, 13);
+    lua_createtable(L, 0, 14);
     push_enum("Side", std::array{Side::client, Side::server, Side::both}, [](Side side) { return std::string_view(side_name(side)); });
     push_enum("Event", events, [](const Event& event) { return event.name; });
     push_enum("Key", key_names, [](const auto& key) { return key.first; });
     for (const auto& [name, words] : {std::pair<const char*, Words>{"LogLevel", log_levels}, {"Align", aligns}, {"Launch", launches},
                                       {"Stance", stances}, {"Pop", pops}, {"Space", spaces}, {"Throwdown", throwdown_modes},
-                                      {"Card", throwdown_cards}, {"EntityStatus", entity_statuses}, {"Target", send_targets}})
+                                      {"Card", throwdown_cards}, {"EntityStatus", entity_statuses}, {"Target", send_targets},
+                                      {"ItemSource", item_sources}})
         push_enum(name, words, same);
     readonly();
     lua_setfield(L, -2, "Enums");

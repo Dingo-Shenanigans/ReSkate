@@ -569,12 +569,23 @@ struct ItemBrowserView {
     std::string mod_title, mod_author, mod_version, mod_icon;
     unsigned mod_items{};
     bool mod_changed{};
+    unsigned filter_index{};            // into `filters`, every filter's name
+    std::vector<std::string> filters;
+    // The grid is a picker (clothing, board, tattoos, gestures, appearance): its Author (a name), Mod pack (a mod's folder),
+    // each empty for any, and Sort (into `sorts`); and the mods with items in it (folder, name, author).
+    bool picker{};
+    std::string author, pack;
+    unsigned sort{};
+    std::vector<std::string> sorts;
+    std::vector<std::array<std::string, 3>> packs;
 };
 struct ItemBrowserHost {
     ItemBrowserView (*view)(){};
     void (*toggle_favorite)(){};
     void (*set_search)(const char *text){};
     void (*cycle_filter)(){};
+    void (*set_filter)(unsigned filter){};
+    void (*narrow)(const char *author, const char *pack, unsigned sort){};
 };
 // `host` must stay valid for the life of the process.
 void set_item_browser(const ItemBrowserHost *host) noexcept;
