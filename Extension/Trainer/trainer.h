@@ -233,5 +233,9 @@ std::optional<TuningValue> tuning_value(std::string_view id, std::string *why = 
 std::vector<TuningValue> find_tuning(std::string_view text, std::size_t most);
 // Empty when done, else why not. No value: lets go of this plugin's.
 std::string plugin_tune(std::string_view owner, std::string_view id, std::optional<double> value);
+// Flip tricks in the air turn at `factor` times their speed (with the player's own flip speed) for the next
+// `hold_ms`, so a plugin calls it every tick; 1 lets go. Every plugin's factors multiply. Empty when done, else why not.
+std::string plugin_flip_speed(std::string_view owner, float factor, unsigned hold_ms);
+// Lets go of this plugin's values and flip speed.
 void release_plugin_tunes(std::string_view owner);
 } // namespace dingosdk::trainer

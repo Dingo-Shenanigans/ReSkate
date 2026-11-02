@@ -959,6 +959,8 @@ public:
     // The board's velocity set (or `add`ed to) by the next physics step with the skater on its board,
     // within 500 ms.
     virtual std::string set_velocity(std::string_view /*plugin*/, const Vec3& /*velocity*/, bool /*add*/) { return unavailable; }
+    // Flip tricks in the air turn at `factor` times their speed for the next 300 ms (1 ends it).
+    virtual std::string flip_speed(std::string_view /*plugin*/, float /*factor*/) { return unavailable; }
     // What of the pad the game does not see (reskate.input.hide): the triggers, the left stick's
     // sideways while grinding, the right stick and the stick clicks.
     struct PadHidden {

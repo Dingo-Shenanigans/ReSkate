@@ -12,7 +12,8 @@
 namespace dingosdk::plugins {
 namespace {
 // What each permission opens, where it is not plain from its name: "skater.control" the skater's
-// push (with push_wait / push_reset), hold and the competition's stock physics (reskate.physics);
+// push (with push_wait / push_reset), hold, flip speed (reskate.skater.flip_speed) and the competition's
+// stock physics (reskate.physics);
 // "camera" the free and pad-flown cameras and the Bone Cam (reskate.skater.bone_cam);
 // "session.read" spectating and the session's world (reskate.session.world); "events.tricks" the
 // trick events, the trick list's feed and flick diagrams (reskate.tricks); "throwdowns" the

@@ -862,6 +862,12 @@ public:
         set_plugin_velocity(velocity, add);
         return {};
     }
+    // A flip's speed is a trick setting like the trainer's flip speed: the host's word and no throwdown.
+    std::string flip_speed(std::string_view plugin, float factor) override {
+        if (factor != 1 && multiplayer_session_active() && !session_boosts_allowed()) return "the host has turned boosts off";
+        if (factor != 1 && multiplayer::local_throwdown_active() && !competition_stock_physics()) return "not while a throwdown runs";
+        return trainer::plugin_flip_speed(plugin, factor, 300);
+    }
     std::string hide_pad(std::string_view plugin, const PadHidden& h) override {
         if (!pad_hide::available()) return "hiding pad controls is unavailable for this game build";
         pad_hide::hide(plugin, {h.left_trigger, h.right_trigger, h.left_x_grinding, h.right_stick, h.left_stick_click, h.right_stick_click});

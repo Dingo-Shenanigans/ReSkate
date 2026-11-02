@@ -558,6 +558,10 @@ struct FakeGame final : Game {
         calls.push_back(std::format("velocity {} {:.1f} {:.1f} {:.1f}{}", plugin, v[0], v[1], v[2], add ? " add" : ""));
         return {};
     }
+    std::string flip_speed(std::string_view plugin, float factor) override {
+        calls.push_back(std::format("flip speed {} {:.2f}", plugin, factor));
+        return {};
+    }
     std::string skater_reach(std::string_view plugin, std::optional<Reach> r) override {
         calls.push_back(r ? std::format("reach {} {} {:.1f} {:.1f} {:.1f} {} {:.2f}", plugin, r->left ? "left" : "right", r->at[0], r->at[1], r->at[2],
                                         r->rotation.has_value(), r->weight) +
@@ -3134,6 +3138,31 @@ void plugins_show_a_viewmodel() {
     ticks(host, environment, 1);
     check(environment.logged("[sneaky] false false false false false"), "viewmodel is needed\n" + environment.all());
     check(game.viewmodeler.empty(), "Given up when its plugin stops\n" + environment.all());
+}
+
+// A flip mode's speed: flip tricks in the air turned slower or faster for a moment, 1 or nothing to let go.
+void plugins_set_the_flip_speed() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    Host host(environment, Side::client);
+    host.apply({package("flipper", {{manifest_file, manifest(R"("skater.control")")}, {"plugin/main.lua", R"(
+        assert(reskate.skater.flip_speed(0.3) and reskate.skater.flip_speed(2) and reskate.skater.flip_speed() and reskate.skater.flip_speed(1))
+        assert(not pcall(reskate.skater.flip_speed, 0.01) and not pcall(reskate.skater.flip_speed, 11), "0.05 to 10")
+        assert(not pcall(reskate.skater.flip_speed, 0 / 0), "a number")
+        reskate.log("flipped")
+    )"}})});
+    ticks(host, environment, 1);
+    running(host, "flipper", environment);
+    check(environment.logged("[flipper] flipped"), "flip_speed takes 0.05 to 10\n" + environment.all());
+    check(game.called("flip speed flipper 0.30") && game.called("flip speed flipper 2.00") && game.called("flip speed flipper 1.00"),
+          "A slower flip, a faster one, and let go\n" + environment.all());
+    // Without skater.control, not.
+    host.apply({package("sneaky", {{manifest_file, manifest()}, {"plugin/main.lua", R"(
+        reskate.log(tostring(pcall(reskate.skater.flip_speed, 0.5)))
+    )"}})});
+    ticks(host, environment, 1);
+    check(environment.logged("[sneaky] false"), "skater.control is needed\n" + environment.all());
+    check(!game.called("flip speed sneaky 0.50"), "Nothing reached the game");
 }
 
 // What a camera mode needs (the Filmer): an arm that reaches, where the hand is, cruise control, the
@@ -6548,6 +6577,7 @@ int main() {
         run(plugins_place_world_entities);
         run(plugins_have_what_a_prop_hunt_needs);
         run(plugins_reach_cruise_and_read_the_mouse);
+        run(plugins_set_the_flip_speed);
         run(plugins_show_a_viewmodel);
         run(fps_shoots_on_foot);
         run(fps_deathmatch_kills_and_scores);
