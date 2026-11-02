@@ -23,7 +23,11 @@ namespace {
 // and the viewmodel, with white's brightness in nits.
 int output_transfer{};
 float output_white_nits{80};
+// The window-to-buffer scale fit_display_to_buffer last applied, for the mouse positions the item
+// browser takes from the window's own messages (item_browser_overlay.cpp). Render thread only.
+ImVec2 window_scale{1.0f, 1.0f};
 }
+ImVec2 window_to_buffer_scale() { return window_scale; }
 
 // ImGui draws into the swapchain's back buffer, so its display is the buffer, in the buffer's
 // pixels. The Win32 backend sizes the display by the window's client area and places the mouse in
@@ -39,6 +43,7 @@ void fit_display_to_buffer(State& s, ID3D12Resource* buffer) {
     if (client.x <= 0 || client.y <= 0 || pixels.x <= 0 || pixels.y <= 0) return;
     io.DisplaySize = pixels;
     const ImVec2 scale(pixels.x / client.x, pixels.y / client.y);
+    window_scale = scale;
     for (auto& event : ImGui::GetCurrentContext()->InputEventsQueue) {
         if (event.Type != ImGuiInputEventType_MousePos || event.EventId <= s.mapped_mouse_event) continue;
         s.mapped_mouse_event = event.EventId;

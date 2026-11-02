@@ -22,6 +22,7 @@ void set_item_browser(const ItemBrowserHost* host) noexcept { item_browser_host.
 } // namespace dingosdk::overlay
 
 namespace dingosdk::overlay::detail {
+ImVec2 window_to_buffer_scale(); // overlay_render.cpp (fit_display_to_buffer)
 namespace {
 struct Panel {
     ItemBrowserView view;
@@ -324,6 +325,12 @@ Pointer read_pointer() {
             ptr.mouse = m.released;
         }
         p.releases = m.releases;
+        // The messages place it in the window's client pixels; everything here is laid out in the
+        // back buffer's, which differ when the window is scaled for the display or stretched.
+        // ImGui's own mouse gets the same mapping (fit_display_to_buffer), done on this thread.
+        const ImVec2 scale = window_to_buffer_scale();
+        for (auto* at : {&ptr.mouse, &ptr.pressed_at})
+            if (at->x > -FLT_MAX / 2) *at = ImVec2(at->x * scale.x, at->y * scale.y);
     }
     ptr.moved = ptr.mouse.x != p.last_mouse.x || ptr.mouse.y != p.last_mouse.y;
     p.last_mouse = ptr.mouse;

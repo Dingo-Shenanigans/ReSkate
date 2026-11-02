@@ -43,8 +43,9 @@ void toggle_focused_favorite() noexcept;
 void set_search(std::string text);
 void set_filter(Filter filter) noexcept;
 void cycle_filter() noexcept;
-// The Author, Mod pack and Sort of the picker that has the focus.
-void set_narrow(Narrow narrow);
+// The Author, Mod pack and Sort of `picker`, which they were chosen in. Dropped unless that picker
+// still has the focus when the client thread gets to them.
+void set_narrow(Picker picker, Narrow narrow);
 // A plugin's own list in the item grid that has the focus: these items (keys), in this order, taken
 // from every item grid of the screen (the game keeps them all, one per tab), less what the search
 // leaves out; nullopt gives the grid back. One owner at a time: empty when taken, else why not. Any thread.

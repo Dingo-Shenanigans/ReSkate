@@ -204,7 +204,10 @@ struct Shared {
     std::atomic<bool> asked{}; // a plugin's request waits: the next tick acts on it
     std::atomic<unsigned> toggles{}, cycles{};
     std::atomic<int> filter{-1};
-    std::optional<Narrow> narrow; // asked for the picker that has the focus
+    // Asked for the picker the overlay showed then (narrow_for). The focus may have moved on by
+    // the next tick, so it is only taken while that picker still has it.
+    std::optional<Narrow> narrow;
+    Picker narrow_for{};
     std::atomic<bool> status{};
 };
 Shared& shared() { static auto* value = new Shared; return *value; }
@@ -755,10 +758,11 @@ void set_search(std::string text) {
     sh.search_pending = true;
 }
 void set_filter(Filter filter) noexcept { shared().filter.store(static_cast<int>(filter)); }
-void set_narrow(Narrow narrow) {
+void set_narrow(Picker picker, Narrow narrow) {
     auto& sh = shared();
     std::lock_guard lock(sh.mutex);
     sh.narrow = std::move(narrow);
+    sh.narrow_for = picker;
     sh.asked.store(true);
 }
 std::string known_title(std::string_view key) {
@@ -767,10 +771,17 @@ std::string known_title(std::string_view key) {
     const auto found = t.by_key.find(key);
     return found == t.by_key.end() ? std::string() : found->second;
 }
+namespace {
+// The picker in the view last handed to this thread. The overlay reads the view and then asks for
+// an Author, Mod pack and Sort built from it on its render thread, so this is the picker that set
+// was made for, whatever has the focus by now.
+thread_local Picker overlay_picker{};
+}
 const overlay::ItemBrowserHost* overlay_host() noexcept {
     static const overlay::ItemBrowserHost host{
         [] {
             const auto current = view();
+            overlay_picker = current.picker;
             overlay::ItemBrowserView out;
             out.open = current.open;
             out.search = current.search;
@@ -808,7 +819,7 @@ const overlay::ItemBrowserHost* overlay_host() noexcept {
             narrow.author = author ? author : "";
             narrow.pack = pack ? pack : "";
             narrow.sort = sort < std::size(sort_names) ? static_cast<Sort>(sort) : Sort::game;
-            set_narrow(std::move(narrow));
+            set_narrow(overlay_picker, std::move(narrow));
         }};
     return &host;
 }
@@ -959,7 +970,9 @@ void update(std::uintptr_t base) noexcept {
             std::lock_guard shared_lock(sh.mutex);
             if (std::exchange(sh.search_pending, false)) s.search = sh.search;
             pokes.swap(sh.pokes);
-            if (auto* picker = focused_picker(s); picker && sh.narrow) picker->narrow = std::move(*sh.narrow);
+            if (auto* picker = focused_picker(s); picker && sh.narrow && sh.narrow_for != Picker::none &&
+                picker == &s.pickers[static_cast<std::size_t>(sh.narrow_for)])
+                picker->narrow = std::move(*sh.narrow);
             sh.narrow.reset();
             s.show = sh.show;
             s.marked.clear();

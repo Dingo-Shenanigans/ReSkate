@@ -172,6 +172,11 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
                 } else if (release) s.item_filters_escape_pending.store(false);
                 return 0;
             }
+            // V held down after it opened them: its first key-down never reached ImGui, so a repeat
+            // would look like a fresh press there and close them again. Only a new press leaves.
+            if (key && wp == 'V' && (static_cast<ULONG_PTR>(lp) & (1ull << 30)) != 0 && s.item_filters_visible.load() &&
+                !s.console_visible.load() && !s.visible.load())
+                return 0;
         } else if (s.item_search_visible.load() || s.item_search_escape_pending.load()) {
             if (wp == VK_ESCAPE && (key || release) && !s.console_visible.load() && !s.visible.load()) {
                 if (key && (static_cast<ULONG_PTR>(lp) & (1ull << 30)) == 0) {
