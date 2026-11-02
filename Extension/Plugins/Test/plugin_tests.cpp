@@ -4227,6 +4227,64 @@ std::string wave_file(unsigned rate, std::size_t samples) {
     return out;
 }
 
+// An IMA ADPCM WAVE file of these blocks, as ffmpeg's adpcm_ima_wav writes one (its fact chunk when `frames`).
+std::string adpcm_file(unsigned channels, unsigned bits, unsigned block_align, const std::vector<std::uint8_t>& blocks, std::uint32_t frames = 0) {
+    std::string body = "WAVEfmt ";
+    const auto put = [&](std::uint32_t v, int bytes) {
+        for (int i = 0; i < bytes; ++i) body.push_back(static_cast<char>((v >> (8 * i)) & 0xff));
+    };
+    put(20, 4);
+    put(0x11, 2);
+    put(channels, 2);
+    put(16000, 4);
+    put(16000 * block_align / 9, 4);
+    put(block_align, 2);
+    put(bits, 2);
+    put(2, 2);
+    put(1 + (block_align - 4 * channels) * 2 / channels, 2); // its frames a block
+    if (frames) {
+        body += "fact";
+        put(4, 4);
+        put(frames, 4);
+    }
+    body += "data";
+    put(static_cast<std::uint32_t>(blocks.size()), 4);
+    body.append(blocks.begin(), blocks.end());
+    std::string out = "RIFF";
+    for (int i = 0; i < 4; ++i) out.push_back(static_cast<char>((body.size() >> (8 * i)) & 0xff));
+    return out + body;
+}
+
+void plugins_play_ima_adpcm_sounds() {
+    const auto decode = [](const std::string& bytes, float most_seconds, std::string& error) {
+        return decode_wave(std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size()), most_seconds, error);
+    };
+    const auto as_played = [](int sample) { return static_cast<std::int16_t>(static_cast<float>(sample) / 32768.0f * 32767.0f); };
+    // Two mono blocks of 9 frames: a header (predictor, step index) and 8 nibbles, low first. The fact chunk
+    // keeps 13 of the 18. The values are those of the IMA ADPCM reference decoder.
+    const std::vector<std::uint8_t> mono{0xe8, 0x03, 0, 0, 0x77, 0x07, 0x9b, 0x10, 0x30, 0xf8, 20, 0, 0xf3, 0x48, 0x00, 0x8c};
+    const int expected[13] = {1000, 1011, 1041, 1104, 1113, 1056, 1034, 1040, 1058, -2000, -1957, -2040, -2052};
+    std::string error;
+    auto wave = decode(adpcm_file(1, 4, 8, mono, 13), 30, error);
+    check(wave && wave->samples.size() == 13, "An IMA ADPCM sound plays, as long as its fact chunk says: " + error);
+    bool same = wave != nullptr;
+    for (std::size_t i = 0; same && i < 13; ++i) same = wave->samples[i] == as_played(expected[i]);
+    check(same, "decoded as the reference decoder does, block by block");
+    wave = decode(adpcm_file(1, 4, 8, mono), 30, error);
+    check(wave && wave->samples.size() == 18, "every frame of its blocks without one");
+    // Two channels, each the other's mirror (every nibble's sign flipped): mixed to mono they cancel.
+    const std::vector<std::uint8_t> stereo{0xe8, 0x03, 0, 0, 0x18, 0xfc, 0, 0, 0x77, 0x07, 0x9b, 0x10, 0xff, 0x8f, 0x13, 0x98};
+    wave = decode(adpcm_file(2, 4, 16, stereo), 30, error);
+    same = wave && wave->samples.size() == 9;
+    for (std::size_t i = 0; same && i < 9; ++i) same = wave->samples[i] == 0;
+    check(same, "and its channels are mixed to mono, each from its own bytes: " + error);
+    check(!decode(adpcm_file(1, 4, 8, mono, 13), 0.0005f, error) && error.find("longer than") != std::string::npos,
+          "A long IMA ADPCM sound is refused");
+    check(!decode(adpcm_file(1, 3, 8, mono), 30, error) && !decode(adpcm_file(1, 4, 6, mono), 30, error) &&
+              error == "its format is not 8 to 32-bit PCM, 32-bit float or IMA ADPCM",
+          "and so are other bits a sample, and blocks that are not a header and whole 4-byte groups");
+}
+
 void plugins_play_their_own_sounds() {
     std::string error;
     const auto bytes = wave_file(8000, 4000);
@@ -7161,6 +7219,7 @@ int main() {
         run(plugins_server_copies_show_cards_and_polls);
         run(plugins_animate_the_skater);
         run(plugins_play_their_own_sounds);
+        run(plugins_play_ima_adpcm_sounds);
         run(plugins_play_any_number_of_different_sounds);
         run(plugins_have_menu_panels);
         run(plugins_have_pages);
