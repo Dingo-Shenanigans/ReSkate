@@ -1,5 +1,6 @@
 #include "world_entities.h"
 #include "world_entities_contract.h"
+#include "level_loading.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/memory.h"
 #include "Engine/Game/Abi/native_data.h"
@@ -368,7 +369,7 @@ std::optional<Box> blueprint_bounds(std::uintptr_t base, std::string_view bluepr
             if (const auto asset = find(domain, name.c_str()); detail::object_blueprint(asset, base, read)) return asset_bounds(base, asset);
         }
         return std::nullopt;
-    });
+    }, level_content_active());
 }
 
 void set_joint_source(JointSource source) noexcept { joint_source.store(source, std::memory_order_release); }

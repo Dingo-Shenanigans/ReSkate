@@ -39,6 +39,19 @@ int main() {
         check(cache.get("rail", 1000, search) == 3 && searches == 2, "a miss is searched again after a second");
     }
     {
+        // Outside an active level (loading, unloading, quitting) nothing is searched: a name keeps its
+        // last answer, even one past its time, or has none.
+        Cache cache;
+        int searches = 0;
+        const auto found = [&]() -> std::optional<int> { ++searches; return 5; };
+        check(cache.get("ramp", 0, found) == 5 && searches == 1, "a name is searched in an active level");
+        check(cache.get("ramp", 10 * Cache::found_for, found, false) == 5 && searches == 1,
+              "outside an active level a name keeps its last answer");
+        check(!cache.get("ledge", 10 * Cache::found_for, found, false) && searches == 1,
+              "outside an active level a new name is not searched");
+        check(cache.get("ledge", 10 * Cache::found_for, found) == 5 && searches == 2, "back in a level it is");
+    }
+    {
         // A plugin asking for many names every frame: at most eight searches each second.
         Cache cache;
         int searches = 0;
