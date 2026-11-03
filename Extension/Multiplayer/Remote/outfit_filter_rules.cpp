@@ -24,6 +24,18 @@ bool hides(const Rules &rules, std::uint64_t player, std::string_view key, const
     return !rules.mod_items || rules.players.contains(player);
 }
 
+std::string readable_key(std::string_view key) {
+    while (key.size() > 4 && lower(key.substr(0, 4)) == "own_") key.remove_prefix(4);
+    std::string out;
+    for (const char c : key) {
+        const char shown = c == '_' ? ' ' : c;
+        if (shown == ' ' && (out.empty() || out.back() == ' ')) continue;
+        out += shown;
+    }
+    while (!out.empty() && out.back() == ' ') out.pop_back();
+    return out.empty() ? std::string(key) : out;
+}
+
 std::string to_json(const Rules &rules) {
     auto root = Json::object();
     root["schema"] = 1;

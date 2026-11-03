@@ -43,21 +43,97 @@ void filter_card(SkateMenu &menu) {
     end_card();
 }
 
+// A player's items from mods, a row each: whether it shows, its name and mod, and its buttons on
+// the same row (the name is cut short before them).
+void item_rows(SkateMenu &menu, const filter::Rules &rules, const std::vector<filter::WornItem> &items) {
+    if (items.empty()) {
+        note("Nothing from a mod, or their outfit has not been put on here yet.");
+        return;
+    }
+    if (!ImGui::BeginTable("items", 3, ImGuiTableFlags_SizingStretchProp)) return;
+    ImGui::TableSetupColumn("##state", ImGuiTableColumnFlags_WidthFixed, px(118));
+    ImGui::TableSetupColumn("##item");
+    ImGui::TableSetupColumn("##buttons", ImGuiTableColumnFlags_WidthFixed, px(196));
+    for (std::size_t i = 0; i < items.size(); ++i) {
+        const auto &item = items[i];
+        ImGui::PushID(static_cast<int>(i));
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::AlignTextToFramePadding();
+        if (item.hidden) tag(menu, "HIDDEN", skate_theme::danger);
+        else if (!item.installed) tag(menu, "NOT INSTALLED", skate_theme::warning);
+        else tag(menu, "SHOWN", skate_theme::good);
+        ImGui::TableNextColumn();
+        ImGui::AlignTextToFramePadding();
+        cell_text(item.title + (item.mod_title.empty() ? "" : "  -  " + item.mod_title));
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", item.key.c_str());
+        ImGui::TableNextColumn();
+        const bool item_hidden = rules.items.contains(lower(item.key));
+        if (ImGui::Button(item_hidden ? "Show item" : "Hide item", ImVec2(px(92), 0)))
+            change(menu, [&](filter::Rules &r) {
+                if (item_hidden) r.items.erase(lower(item.key));
+                else r.items.insert(lower(item.key));
+            });
+        if (!item.mod.empty()) {
+            ImGui::SameLine();
+            const bool mod_hidden = rules.mods.contains(item.mod);
+            if (ImGui::Button(mod_hidden ? "Show mod" : "Hide mod", ImVec2(px(92), 0)))
+                change(menu, [&](filter::Rules &r) {
+                    if (mod_hidden) r.mods.erase(item.mod);
+                    else r.mods.insert(item.mod);
+                });
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Every item from %s, on everyone.", item.mod_title.c_str());
+        }
+        ImGui::PopID();
+    }
+    ImGui::EndTable();
+}
+
 void players_card(SkateMenu &menu, const MultiplayerModel &mp) {
     const auto rules = filter::rules();
-    begin_card(menu, "outfits-players", "PLAYERS", "Items from mods each player wears");
+    // Everyone but this player, by name whatever its case (then by ID, for players named alike).
+    struct Row {
+        const MultiplayerPlayer *peer;
+        std::string name;
+        std::vector<filter::WornItem> items;
+    };
+    std::vector<Row> rows;
+    for (const auto &peer : mp.roster)
+        if (peer.id != mp.local_id) rows.push_back({&peer, lower(peer.name), filter::worn(peer.id)});
+    std::ranges::sort(rows, [](const Row &a, const Row &b) { return a.name != b.name ? a.name < b.name : a.peer->id < b.peer->id; });
+
+    const auto count = std::to_string(rows.size()) + (rows.size() == 1 ? " player" : " players");
+    begin_card(menu, "outfits-players", "PLAYERS", count.c_str());
+    if (rows.empty()) {
+        note("Players appear here once you are in a session with them.");
+        end_card();
+        return;
+    }
+    // A search finds players by name, or by what they wear: an item's or its mod's name. A player
+    // found by what they wear opens, showing only the items that matched.
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::InputTextWithHint("##outfits-search", "Search players, items or mods", menu.outfits_search.data(), menu.outfits_search.size());
+    const auto query = lower(menu.outfits_search.data());
+    const auto has = [&](const std::string &text) { return lower(text).find(query) != std::string::npos; };
     std::size_t shown{};
-    for (const auto &peer : mp.roster) {
-        if (peer.id == mp.local_id) continue;
+    for (const auto &row : rows) {
+        const auto &peer = *row.peer;
+        std::vector<filter::WornItem> items = row.items;
+        bool by_items{};
+        if (!query.empty() && !has(peer.name)) {
+            std::erase_if(items, [&](const filter::WornItem &item) { return !has(item.title) && !has(item.mod_title) && !has(item.key); });
+            if (items.empty()) continue;
+            by_items = true;
+        }
         ++shown;
         ImGui::PushID(std::to_string(peer.id).c_str());
-        const auto items = filter::worn(peer.id);
         const bool plain = rules->players.contains(peer.id);
-        const auto title = peer.name + "  (" + std::to_string(items.size()) + (items.size() == 1 ? " mod item)" : " mod items)");
+        const auto title = peer.name + "  (" + std::to_string(row.items.size()) + (row.items.size() == 1 ? " mod item)" : " mod items)");
         // The row folds open on its arrow and name only, as tall as the button beside it, so the
         // button is never under the fold's (or the next row's) click area.
         const float right = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
         ImGui::AlignTextToFramePadding();
+        if (by_items) ImGui::SetNextItemOpen(true);
         const bool open = ImGui::TreeNodeEx("##player", ImGuiTreeNodeFlags_AllowOverlap, "%s", title.c_str());
         ImGui::SameLine(right - px(170));
         if (ImGui::Button(plain ? "Show mod items" : "Game items only", ImVec2(px(170), 0)))
@@ -68,41 +144,12 @@ void players_card(SkateMenu &menu, const MultiplayerModel &mp) {
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("%s", plain ? "Show this player's mod items again." : "Show this player in the game's own items only.");
         if (open) {
-            if (items.empty()) note("Nothing from a mod, or their outfit has not been put on here yet.");
-            for (std::size_t i = 0; i < items.size(); ++i) {
-                const auto &item = items[i];
-                ImGui::PushID(static_cast<int>(i));
-                if (item.hidden) tag(menu, "HIDDEN", skate_theme::danger);
-                else if (!item.installed) tag(menu, "NOT INSTALLED", skate_theme::warning);
-                else tag(menu, "SHOWN", skate_theme::good);
-                ImGui::SameLine(0, px(8));
-                const auto line = item.title + (item.mod_title.empty() ? "" : "  -  " + item.mod_title);
-                ImGui::AlignTextToFramePadding();
-                cell_text(line);
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", item.key.c_str());
-                const bool item_hidden = rules->items.contains(lower(item.key));
-                if (ImGui::SmallButton(item_hidden ? "Show item" : "Hide item"))
-                    change(menu, [&](filter::Rules &r) {
-                        if (item_hidden) r.items.erase(lower(item.key));
-                        else r.items.insert(lower(item.key));
-                    });
-                if (!item.mod.empty()) {
-                    ImGui::SameLine();
-                    const bool mod_hidden = rules->mods.contains(item.mod);
-                    if (ImGui::SmallButton(mod_hidden ? "Show its mod" : "Hide its mod"))
-                        change(menu, [&](filter::Rules &r) {
-                            if (mod_hidden) r.mods.erase(item.mod);
-                            else r.mods.insert(item.mod);
-                        });
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Every item from %s, on everyone.", item.mod_title.c_str());
-                }
-                ImGui::PopID();
-            }
+            item_rows(menu, *rules, items);
             ImGui::TreePop();
         }
         ImGui::PopID();
     }
-    if (!shown) note("Players appear here once you are in a session with them.");
+    if (!shown) note("No player's name, items or mods match the search.");
     end_card();
 }
 
@@ -120,7 +167,7 @@ void hidden_card(SkateMenu &menu) {
         if (ImGui::Button("Show", ImVec2(px(80), 0))) change(menu, undo);
         ImGui::PopID();
     };
-    for (const auto &key : rules->items) row(key, "ITEM", [&](filter::Rules &r) { r.items.erase(key); });
+    for (const auto &key : rules->items) row(filter::readable_key(key), "ITEM", [&](filter::Rules &r) { r.items.erase(key); });
     for (const auto &mod : rules->mods) row(mod, "MOD", [&](filter::Rules &r) { r.mods.erase(mod); });
     for (const auto &[id, name] : rules->players)
         row(name.empty() ? std::to_string(id) : name, "PLAYER", [&, id = id](filter::Rules &r) { r.players.erase(id); });

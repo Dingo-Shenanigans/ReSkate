@@ -80,6 +80,14 @@ int main() {
         check(loose.players.size() == 1 && loose.players.contains(12) && loose.players.at(12).empty(),
               "only numbered players, a name that is not text left empty");
     }
+    {
+        check(readable_key("Own_NikeSB_Olive") == "NikeSB Olive", "a key reads as words");
+        check(readable_key("Own_Nike_SB_x_Chunky_Dunky_Dunk_Low_-_Clean") == "Nike SB x Chunky Dunky Dunk Low - Clean",
+              "a dash between words stays one dash");
+        check(readable_key("Own_Own_TopShirt_SSK_JERSEY_BLK") == "TopShirt SSK JERSEY BLK", "a doubled Own_ goes too");
+        check(readable_key("own_carhartt__cap_") == "carhartt cap", "runs of underscores are one space, none at the end");
+        check(readable_key("Own_") == "Own" && readable_key("Hellboy") == "Hellboy", "a bare Own_ keeps its word, a plain name is as it was");
+    }
     if (failures) std::cerr << failures << " outfit filter test(s) failed\n";
     else std::cout << "outfit filter tests passed\n";
     return failures ? 1 : 0;

@@ -10,6 +10,7 @@
 #include "Extension/Boot/discord_presence.h"
 #include "Extension/Assets/map_download.h"
 #include "Extension/Assets/mod_store.h"
+#include "Extension/Multiplayer/Remote/outfit_filter.h"
 #include "Extension/Music/local_music_playback.h"
 #include "Extension/Profile/local_profile_runtime.h"
 #include "Engine/Game/Input/controller_bindings.h"
@@ -1291,6 +1292,19 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
                 online("chat-bubbles-duration", whole(stepped(mp.chat_bubbles_duration, seconds, way)));
             if (const int way = list.adjust("Bubble lines", whole(static_cast<float>(mp.chat_bubbles_history)), mp.chat_bubbles))
                 online("chat-bubbles-history", whole(stepped(static_cast<float>(mp.chat_bubbles_history), lines, way)));
+            list.title("OUTFITS");
+            {
+                // The one switch that fits a controller list; hiding single items, mods or players
+                // is in the windowed menu (multiplayer_outfits.cpp).
+                namespace outfit_filter = dingosdk::multiplayer::outfit_filter;
+                const auto rules = outfit_filter::rules();
+                if (list.setting("Other players' mod items", rules->mod_items ? "Shown" : "Game items only", true)) {
+                    auto next = *rules;
+                    next.mod_items = !next.mod_items;
+                    outfit_filter::set_rules(std::move(next));
+                }
+                list.note("Hide single items, mods or players in the windowed menu: ONLINE > OUTFITS.");
+            }
             if (dingosdk::discord_presence::available()) {
                 list.title("DISCORD");
                 if (list.setting("Discord status", on_off(dingosdk::discord_presence::enabled()), true)) dingosdk::discord_presence::set_enabled(!dingosdk::discord_presence::enabled());

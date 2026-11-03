@@ -524,7 +524,7 @@ std::vector<outfit_filter::WornItem> mod_items(const Appearance &appearance, std
             if (facts.game && facts.mod.empty()) continue;
             outfit_filter::WornItem item{slot.asset, {}, facts.mod};
             item.installed = facts.game || !facts.mod.empty();
-            item.title = item.installed ? worn_items::item_title(slot.asset) : slot.asset;
+            item.title = item.installed ? worn_items::item_title(slot.asset) : outfit_filter::readable_key(slot.asset);
             if (const auto origin = item_origins::find(slot.asset)) item.mod_title = origin->title;
             item.hidden = outfit_filter::hides(rules, player, slot.asset, facts);
             out.push_back(std::move(item));

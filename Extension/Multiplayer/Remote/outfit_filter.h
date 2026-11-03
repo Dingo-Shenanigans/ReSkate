@@ -28,6 +28,10 @@ struct ItemFacts {
 // Whether `player`'s item `key` is shown as the default instead. An item nobody's rule names shows.
 bool hides(const Rules &rules, std::uint64_t player, std::string_view key, const ItemFacts &facts);
 
+// An item key as a name to read, for an item this PC has no title for: "Own_Nike_SB_x_Dunk_-_Worn"
+// is "Nike SB x Dunk - Worn". The "Own_" the game puts first (twice, in some mods) goes.
+std::string readable_key(std::string_view key);
+
 std::string to_json(const Rules &rules);
 Rules from_json(std::string_view text) noexcept;
 inline constexpr char rules_file[] = ".reskate-outfit-filter.json";
