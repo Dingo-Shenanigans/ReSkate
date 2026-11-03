@@ -928,11 +928,25 @@ void category_tabs(SkateMenu& menu, int& selected, std::span<const char* const> 
     }
     ImGui::PushID(id);
     const float gap = px(6);
-    const float tab_width = (ImGui::GetContentRegionAvail().x - gap * (tabs.size() - 1)) / tabs.size();
     const float height = px(34);
+    // As many rows as it takes for every label to fit (two rows of three, say), the tabs of
+    // each row as wide as each other.
+    const int count = static_cast<int>(tabs.size());
+    const float avail = ImGui::GetContentRegionAvail().x;
+    float widest = 0;
+    for (const char* label : tabs) widest = std::max(widest, menu.bold->CalcTextSizeA(px(15), FLT_MAX, 0, label).x);
+    int columns = count;
+    for (int rows = 1; rows <= count; ++rows) {
+        columns = (count + rows - 1) / rows;
+        if ((avail - gap * static_cast<float>(columns - 1)) / static_cast<float>(columns) >= widest + px(16)) break;
+    }
+    const int rows = (count + columns - 1) / columns;
+    const float tab_width = (avail - gap * static_cast<float>(columns - 1)) / static_cast<float>(columns);
+    const auto start = ImGui::GetCursorScreenPos();
     auto* draw = ImGui::GetWindowDrawList();
-    for (int i = 0; i < static_cast<int>(tabs.size()); ++i) {
-        if (i) ImGui::SameLine(0, gap);
+    for (int i = 0; i < count; ++i) {
+        ImGui::SetCursorScreenPos(ImVec2(start.x + static_cast<float>(i % columns) * (tab_width + gap),
+                                         start.y + static_cast<float>(i / columns) * (height + gap)));
         const auto at = ImGui::GetCursorScreenPos();
         ImGui::PushID(i);
         if (ImGui::InvisibleButton("##tab", ImVec2(tab_width, height), ImGuiButtonFlags_EnableNav) && selected != i) {
@@ -953,6 +967,8 @@ void category_tabs(SkateMenu& menu, int& selected, std::span<const char* const> 
             on ? skate_theme::black : paper, label);
         draw->PopClipRect();
     }
+    ImGui::SetCursorScreenPos(ImVec2(start.x, start.y + static_cast<float>(rows) * height + static_cast<float>(rows - 1) * gap));
+    ImGui::Dummy(ImVec2(0, 0));
     ImGui::PopID();
     ImGui::Dummy(ImVec2(0, px(6)));
 }
