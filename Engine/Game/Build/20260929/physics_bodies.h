@@ -21,6 +21,11 @@ namespace dingosdk::game::build::v20260929::physics_bodies {
 // owner slot.
 inline constexpr std::uintptr_t store_offset = 0x28;
 inline constexpr std::uintptr_t body_owner_offset = 0x1008, owner_kind_offset = 0x8b0, owner_value_offset = 0x8b8;
+// A spawned world object's physics component, held by its entity and kept by its bodies' owner in
+// owner_value_offset. Read in a running game on 2026-11-02: eight spawned objects of five blueprints
+// (a traffic cone, trash bags, a barrier, two of them side by side, one worn on a skater), each
+// with a value of its own that matched here. Their bodies are not in the entity itself.
+inline constexpr std::uintptr_t entity_physics_component = 0xb8;
 inline constexpr std::uintptr_t ghost_body = 0x25d3610, solid_body = 0x25d3170, main_ghost = 0x25d3360, main_solid = 0x25d2e90;
 inline constexpr std::array<unsigned char, 24> main_ghost_prefix{
     0x40,0x53,0x48,0x83,0xec,0x20,0x44,0x8b,0x49,0x08,0x48,0x8b,0xd9,0x41,0x8b,0xc9,0x41,0xba,0x01,0x00,0x00,0x00,0x41,0xd3};
