@@ -5,6 +5,7 @@
 #include "lua.h"
 #include "luacode.h"
 #include "lualib.h"
+#include <algorithm>
 #include <atomic>
 #include <cstdlib>
 #include <format>
@@ -160,7 +161,16 @@ bool Plugin::load(std::string entry) {
     return true;
 }
 
+void Plugin::untime(Clock::duration took) {
+    if (!timed_) return; // the entry's own compile, before its call starts
+    const auto allowance = std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double, std::milli>(limits_.io_ms));
+    const auto moved = std::clamp(took, Clock::duration::zero(), std::max(Clock::duration::zero(), allowance - untimed_));
+    untimed_ += moved;
+    deadline_ += moved;
+}
+
 bool Plugin::load_chunk(lua_State* L, const std::string& relative, const std::filesystem::path& file) {
+    const Untimed untimed{*this}; // a module's compile is ReSkate's work, as the entry's is
     std::string error;
     std::string source;
     if (sources_) {
@@ -205,6 +215,7 @@ bool Plugin::call(int count, std::string_view what, double limit_ms, int results
     const auto start = Clock::now();
     deadline_ = start + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double, std::milli>(limit_ms));
     timed_ = true;
+    untimed_ = {};
     interrupts_ = 0;
     ++calls_;
     const int status = lua_pcall(L_, count, results, function);

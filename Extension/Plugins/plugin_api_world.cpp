@@ -899,6 +899,7 @@ struct WorldApi {
         const auto name = checked_text(L, index, 200, "a clip");
         if (const auto found = plugin.clips_.find(name); found != plugin.clips_.end()) return found->second;
         if (name.starts_with("rec:") || name.starts_with("clip:") || name.starts_with("edit:")) luaL_error(L, "there is no clip %s", name.c_str());
+        const Plugin::Untimed untimed{plugin}; // reading and decoding it (Plugin::Untimed)
         std::string error, bytes;
         // The game's own: read out of its data, not a file.
         if (name.starts_with("game:")) {
@@ -2196,6 +2197,7 @@ struct WorldApi {
             found->second.played = ++plugin.wave_plays_;
             return found->second.wave;
         }
+        const Plugin::Untimed untimed{plugin}; // reading and decoding it (Plugin::Untimed)
         std::string error;
         const auto bytes = read_package_file(package_file(L, plugin, path), 8u << 20, error);
         if (bytes.empty()) luaL_error(L, "the sound %s cannot be read: %s", path.c_str(), error.empty() ? "it is empty" : error.c_str());

@@ -3336,6 +3336,46 @@ void the_sandbox_holds() {
     check(environment.logged("sandbox fine"), "Every way out is closed\n" + environment.all());
 }
 
+// ReSkate's own reading and compiling is not a plugin's running time (Limits::io_ms): a module that
+// takes far longer to compile than a call may run still loads, the time is let off only up to the
+// allowance, and a plugin that reads a file in a loop is stopped all the same.
+void reskates_own_reading_is_not_a_plugins_time() {
+    // About 1 MB of code in a function that never runs: it compiles for tens of milliseconds.
+    std::string big = "local function never()\n";
+    while (big.size() < 1'000'000 - 64) big += "    do local a = {1, 2, 3, x = 'y'} if a.x == 'z' then a[1] = a[2] + a[3] end end\n";
+    big += "end\nreturn {}\n";
+    // The loop after it gives the interrupt its safe points, where it looks at the clock.
+    const std::string main = R"(require("big") for i = 1, 1000 do end reskate.log("big loaded"))";
+    {
+        TestEnvironment environment;
+        Limits limits;
+        limits.call_ms = 5;
+        Host host(environment, Side::client, limits);
+        host.apply({package("big-module", {{manifest_file, manifest()}, {"plugin/main.lua", main}, {"plugin/big.lua", big}})});
+        running(host, "big-module", environment);
+        check(environment.logged("big loaded"), "A module's compile is not counted against the load's 5 ms");
+    }
+    {
+        TestEnvironment environment;
+        Limits limits;
+        limits.call_ms = 5;
+        limits.io_ms = 0;
+        Host host(environment, Side::client, limits);
+        host.apply({package("big-module-counted", {{manifest_file, manifest()}, {"plugin/main.lua", main}, {"plugin/big.lua", big}})});
+        stopped(host, "big-module-counted", "ran longer than 5 ms");
+    }
+    {
+        TestEnvironment environment;
+        Limits limits;
+        limits.call_ms = 5;
+        limits.io_ms = 20;
+        Host host(environment, Side::client, limits);
+        host.apply({package("read-loop", {{manifest_file, manifest()}, {"plugin/main.lua", R"(while true do reskate.package.read("plugin/big.lua") end)"},
+                                          {"plugin/big.lua", big}})});
+        stopped(host, "read-loop", "ran longer than 5 ms");
+    }
+}
+
 void a_runaway_plugin_is_stopped_and_the_rest_go_on() {
     TestEnvironment environment;
     Host host(environment, Side::client);
@@ -7770,6 +7810,7 @@ int main() {
         run(packages_json_and_modules);
         run(the_sandbox_holds);
         run(a_runaway_plugin_is_stopped_and_the_rest_go_on);
+        run(reskates_own_reading_is_not_a_plugins_time);
         run(a_plugin_over_its_time_budget_is_stopped);
         run(a_plugin_reloads_when_its_files_change);
         run(the_skater_can_be_read_moved_and_the_world_probed);

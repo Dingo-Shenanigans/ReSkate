@@ -304,7 +304,11 @@ struct ApiFunctions {
         auto& plugin = plugin_of(L);
         const auto file = package_path(L, plugin, luaL_checkstring(L, 1), false);
         std::string error;
-        const auto text = read_package_file(file, plugin.limits_.file_bytes, error);
+        std::string text;
+        {
+            const Plugin::Untimed untimed{plugin};
+            text = read_package_file(file, plugin.limits_.file_bytes, error);
+        }
         if (error == "not found") {
             lua_pushnil(L);
             return 1;
@@ -317,7 +321,11 @@ struct ApiFunctions {
         auto& plugin = plugin_of(L);
         const auto file = package_path(L, plugin, luaL_checkstring(L, 1), false);
         std::string error;
-        const auto text = read_package_file(file, plugin.limits_.file_bytes, error);
+        std::string text;
+        {
+            const Plugin::Untimed untimed{plugin};
+            text = read_package_file(file, plugin.limits_.file_bytes, error);
+        }
         if (error == "not found") {
             lua_pushnil(L);
             return 1;
