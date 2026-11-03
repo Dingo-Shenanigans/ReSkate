@@ -306,6 +306,7 @@ void publish(Session &s, const NativeFrame *local) {
         }
     view.status = s.status;
     view.native_status = s.native_status;
+    for (const auto &[id, name] : s.ignored_players) view.ignored.push_back({id, name});
     view.audio_captured = captured_audio_frames();
     each_peer([&] {
         auto &p = s.peers[peer_slot];
@@ -341,6 +342,7 @@ void publish(Session &s, const NativeFrame *local) {
         view.roster.back().party_leader = p.member.party_leader;
         view.roster.back().party_member = party_member(s, p.member.id);
         view.roster.back().objects_solid = objects_solid(s, p.member.id);
+        view.roster.back().ignored = ignored(s, p.member.id);
         if (!p.rate_at) {
             p.rate_at = now;
             p.native_rate_count = native_count;
@@ -469,6 +471,9 @@ std::vector<MultiplayerChatCommand> own_chat_commands(const Session &s) {
         {"/help", "/help", "List these commands"},
         {"/tp", "/tp <player>", "Teleport beside a player (or /tp <x> <y> <z>)", "player"},
         {"/p", "/p <message>", "Talk to your party only"},
+        {"/ignore", "/ignore <player>", "Hide a player and everything they do, on your screen, in every session", "player"},
+        {"/unignore", "/unignore <player>", "Stop ignoring a player"},
+        {"/ignored", "/ignored", "The players you ignore"},
     };
     if (s.mode == Mode::host || s.mode == Mode::join) {
         list.push_back({"/party invite", "/party invite <player>", "Invite a player to your party", "player"});
@@ -740,7 +745,37 @@ std::pair<std::uint32_t, std::string> player_role(Session &s, std::uint64_t send
     }
     return {nametag_white, {}};
 }
+bool ignored(const Session &s, std::uint64_t id) { return id && s.ignored_players.contains(id); }
+void set_ignored(Session &s, std::uint64_t id, std::string name, bool on) {
+    if (!id) return;
+    if (on) s.ignored_players[id] = name.substr(0, 64);
+    else s.ignored_players.erase(id);
+    s.voice.mute(id, on);
+    // Saved as JSON text ({"<SteamID64>": "<name>"}): the profile store keeps plain values.
+    auto list = Json::object();
+    for (const auto &[who, last] : s.ignored_players) list[std::to_string(who)] = last;
+    profile_runtime::set_local_values({{"IgnoredPlayers", Json(list.dump())}});
+    ++s.party_revision; // (the roster shows who is ignored)
+    publish(s);
+}
+void load_ignored(Session &s) {
+    const auto saved = profile_runtime::local_value("IgnoredPlayers");
+    if (!saved || !saved->is_string()) return;
+    try {
+        const auto list = Json::parse(saved->string());
+        if (!list.is_object()) return;
+        for (const auto &[key, value] : list.items()) {
+            std::uint64_t id{};
+            const auto parsed = std::from_chars(key.data(), key.data() + key.size(), id);
+            if (parsed.ec != std::errc{} || parsed.ptr != key.data() + key.size() || !id) continue;
+            s.ignored_players[id] = value.is_string() ? value.string().substr(0, 64) : std::string{};
+            s.voice.mute(id, true);
+        }
+    } catch (const std::exception &) { /* An unreadable list is an empty one. */ }
+}
 void add_chat(Session &s, std::uint64_t sender, std::string name, std::string text, bool local, bool marks) {
+    // An ignored player's lines (and so their chat bubbles) never show, and no plugin hears them.
+    if (!local && !(dedicated_host(s) && sender == s.host_id) && ignored(s, sender)) return;
     if (name.empty()) name = sender ? "Player" : "ReSkate";
     auto [color, tag] = player_role(s, sender, local, marks);
     // The dedicated server's own lines (its chat, and its answers sent to this player alone) stand out.

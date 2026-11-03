@@ -519,11 +519,11 @@ void multiplayer_page(SkateMenu &menu, const Model &model, const CallbacksV3 &ca
     menu.multiplayer_session_seen = has_session;
     // YOUR TAG only for a player the backend lists (it was the SPECIAL page).
     if (mp.identity_tag.empty())
-        category_tabs(menu, menu.multiplayer_tab, {"SERVERS", has_session ? "SESSION" : "HOST", "VOICE", "BANS", "PLAYERS AND CHAT"},
+        category_tabs(menu, menu.multiplayer_tab, {"SERVERS", has_session ? "SESSION" : "HOST", "VOICE", "BANS AND IGNORED", "PLAYERS AND CHAT"},
                       "multiplayer-categories");
     else
         category_tabs(menu, menu.multiplayer_tab,
-                      {"SERVERS", has_session ? "SESSION" : "HOST", "VOICE", "BANS", "PLAYERS AND CHAT", "YOUR TAG"},
+                      {"SERVERS", has_session ? "SESSION" : "HOST", "VOICE", "BANS AND IGNORED", "PLAYERS AND CHAT", "YOUR TAG"},
                       "multiplayer-categories");
     if (menu.multiplayer_tab != multiplayer_voice_tab) menu.voice_bind_capture = 0;
     ImGui::PushID(menu.multiplayer_tab);

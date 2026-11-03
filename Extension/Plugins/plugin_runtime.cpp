@@ -628,7 +628,7 @@ bool run_console(const std::string& text) noexcept {
 
 // Another player's plugin message. On a lobby's host the server copies hear what is for them and
 // what is for everyone; the authority's words come only from the authority (session.cpp checks).
-void receive_message(std::uint64_t sender, const std::vector<std::uint8_t>& bytes) noexcept {
+void receive_message(std::uint64_t sender, const std::vector<std::uint8_t>& bytes, bool to_client) noexcept {
     try {
         std::lock_guard lock(messages_mutex);
         const auto to = wire::to_of(bytes);
@@ -638,8 +638,8 @@ void receive_message(std::uint64_t sender, const std::vector<std::uint8_t>& byte
         if (serving) {
             if (wire::from_authority(bytes)) return;
             if (to == wire::authority || to == 0) put(server_mail);
-            if (to != wire::authority) put(client_mail);
-        } else if (to != wire::authority) put(client_mail);
+            if (to != wire::authority && to_client) put(client_mail);
+        } else if (to != wire::authority && to_client) put(client_mail);
     } catch (...) {}
 }
 

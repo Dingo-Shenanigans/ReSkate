@@ -75,6 +75,13 @@ struct MultiplayerPlayer {
     bool party_leader{}, party_member{};
     // The local player made this player's placed objects solid; they are ghosts otherwise.
     bool objects_solid{};
+    // The local player ignores them (/ignore): nothing of theirs shows or is heard here.
+    bool ignored{};
+};
+// A player the local player ignores (/ignore), here or not: their SteamID64 and the name they last had.
+struct MultiplayerIgnored {
+    std::uint64_t id{};
+    std::string name;
 };
 // A party invite waiting for an answer (dedicated servers).
 struct MultiplayerPartyInvite {
@@ -266,6 +273,7 @@ struct MultiplayerModel {
     bool password_required{};
     int players = 1, capacity = multiplayer_player_limit;
     std::vector<MultiplayerPlayer> roster;
+    std::vector<MultiplayerIgnored> ignored; // everyone the local player ignores, in or out of this session
     // The local player's party. Players form their own, in a lobby as on a dedicated server
     // (`parties`: invite, leave, kick... are available in any session).
     std::uint32_t party{};

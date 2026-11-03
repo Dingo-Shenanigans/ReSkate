@@ -91,6 +91,7 @@ void receive_party(Session &s, const Packet &p, std::uint64_t now) {
     const auto from = p.party_player;
     auto *inviter = find_peer(s, from);
     const auto name = inviter && !inviter->member.name.empty() ? inviter->member.name : s.transport.name(from);
+    if (p.party_action == PartyAction::invited && ignored(s, from)) return; // (an ignored player's invite is dropped unseen)
     if (p.party_action == PartyAction::invited) {
         std::erase_if(s.party_invites, [&](const auto &invite) { return invite.from == from; });
         if (s.party_invites.size() >= 8) s.party_invites.erase(s.party_invites.begin());
