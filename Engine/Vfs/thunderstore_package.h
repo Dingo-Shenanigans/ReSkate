@@ -36,8 +36,9 @@ struct Choice {
     std::string icon;
     std::string reason;    // why not, for the player
 };
-// What the package has to be listed as: a map (the "Maps" category) or a plugin ("Plugins").
-enum class Kind { map, plugin };
+// What the package has to be listed as: a map (the "Maps" category), a plugin ("Plugins"), or the
+// cosmetics another player wears ("Cosmetics" or "Skateboards"; Extension/Assets/peer_cosmetics_fetch.h).
+enum class Kind { map, plugin, cosmetics };
 // Reads that answer. The package is taken only when it is the one asked for, is listed in
 // `community` as `kind`, is not deprecated or marked NSFW there and was not rejected by the
 // community's moderators.

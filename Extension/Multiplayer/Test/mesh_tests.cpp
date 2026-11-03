@@ -303,7 +303,10 @@ bool show_remote(std::uintptr_t, std::uintptr_t, const NativeFrame &, const Pose
     return true;
 }
 void remove_remote(std::uintptr_t) noexcept {}
-void update_remote_cosmetics(std::uintptr_t, const NativeFrame &, const Appearance &, std::string &) {}
+void update_remote_cosmetics(std::uintptr_t, const NativeFrame &, const Appearance &, std::uint64_t, std::string &) {}
+namespace outfit_filter {
+std::uint64_t revision() noexcept { return 0; }
+} // namespace outfit_filter
 std::uint64_t remote_pose_updates() noexcept { return 0; }
 std::uint64_t remote_board_pose_updates() noexcept { return 0; }
 NativeAnimationStats remote_animation_stats() noexcept { return {}; }

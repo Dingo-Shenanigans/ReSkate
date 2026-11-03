@@ -84,7 +84,7 @@ if(WIN32)
 
     # The Mods folder list and mods.json writer, without the merge: shared with
     # the launcher's mod manager.
-    add_library(dingosdk_mod_list STATIC Engine/Vfs/mod_list.cpp)
+    add_library(dingosdk_mod_list STATIC Engine/Vfs/mod_list.cpp Engine/Vfs/peer_cosmetics.cpp)
     target_link_libraries(dingosdk_mod_list PUBLIC dingosdk_json)
 endif()
 

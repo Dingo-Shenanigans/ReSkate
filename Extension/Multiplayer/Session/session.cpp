@@ -14,6 +14,7 @@
 #include "party_book.h"
 #include "Engine/Game/World/world_names.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
+#include "Extension/Multiplayer/Remote/outfit_filter.h"
 #include "Extension/Multiplayer/Hud/custom_nametags.h"
 #include "Extension/Multiplayer/Hud/follow_camera.h"
 #include "Extension/Throwdowns/native_throwdowns.h"
@@ -574,11 +575,14 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
     bool native_pass{};
     const auto apply_cosmetics = [&](Peer &p, bool spawned) {
         if (now - p.last_cosmetic_apply < 500000) return;
-        if (p.applied_cosmetics != p.cosmetic_revision && !spawned) {
+        // The outfit filter's rules changing puts every outfit on again, one player per frame too.
+        const auto filter = outfit_filter::revision();
+        if ((p.applied_cosmetics != p.cosmetic_revision || p.applied_filter != filter) && !spawned) {
             if (native_pass) return;
             native_pass = true;
         }
-        update_remote_cosmetics(s.base, local, *p.appearance.value(), p.cosmetic_status);
+        update_remote_cosmetics(s.base, local, *p.appearance.value(), p.member.id, p.cosmetic_status);
+        p.applied_filter = filter;
         // The effects their costume and board items come with follow the outfit.
         if (p.applied_cosmetics != p.cosmetic_revision && s.sync_effects) note_remote_outfit(now);
         p.last_cosmetic_apply = now;

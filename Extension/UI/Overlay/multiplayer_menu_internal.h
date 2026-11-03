@@ -21,4 +21,7 @@ void session_page(SkateMenu &menu, const Model &model);
 void bans_page(SkateMenu &menu, const Model &model);
 void ban_popup(SkateMenu &menu);
 void voice_controls(SkateMenu &menu, const MultiplayerModel &mp);
+// OUTFITS tab: what of other players' outfits shows here, and the cosmetics fetched for them
+// (multiplayer_outfits.cpp).
+void outfits_page(SkateMenu &menu, const Model &model);
 } // namespace dingosdk::overlay::menu::multiplayer_detail

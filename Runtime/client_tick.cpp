@@ -5,6 +5,7 @@
 #include "Extension/Assets/live_mods.h"
 #include "Extension/Assets/map_download.h"
 #include "Extension/Assets/map_icons.h"
+#include "Extension/Assets/peer_cosmetics_fetch.h"
 #include "Extension/Music/spotify_station.h"
 #include "Extension/Multiplayer/Hud/game_ui_state.h"
 #include "Extension/Music/music_inject.h"
@@ -1651,6 +1652,7 @@ void tick(std::uintptr_t client, std::uintptr_t update) {
             // fetch it (map_download.h), which then applies it and joins the session again.
             if (const auto need = dingosdk::multiplayer::take_map_need()) dingosdk::map_download::offer(*need);
             dingosdk::map_download::tick();
+            dingosdk::peer_cosmetics_fetch::tick(loading);
             dingosdk::map_icons::tick();
     dingosdk::texture_handle_limit::tick();
     dingosdk::report_native_render_resources();

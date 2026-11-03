@@ -87,6 +87,15 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS)
         target_link_libraries(dingosdk_map_download_timeout_tests PRIVATE dingosdk_json)
         add_test(NAME map_download_timeout COMMAND dingosdk_map_download_timeout_tests
             "${CMAKE_CURRENT_BINARY_DIR}/map-download-fixtures")
+        add_executable(dingosdk_outfit_filter_tests Extension/Multiplayer/Test/outfit_filter_tests.cpp
+            Extension/Multiplayer/Remote/outfit_filter_rules.cpp)
+        target_include_directories(dingosdk_outfit_filter_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+        target_link_libraries(dingosdk_outfit_filter_tests PRIVATE dingosdk_json)
+        add_test(NAME outfit_filter COMMAND dingosdk_outfit_filter_tests)
+        add_executable(dingosdk_peer_cosmetics_tests Engine/Vfs/Test/peer_cosmetics_tests.cpp)
+        target_include_directories(dingosdk_peer_cosmetics_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+        target_link_libraries(dingosdk_peer_cosmetics_tests PRIVATE dingosdk_mod_list)
+        add_test(NAME peer_cosmetics COMMAND dingosdk_peer_cosmetics_tests "${CMAKE_CURRENT_BINARY_DIR}/peer-cosmetics-fixtures")
         add_executable(dingosdk_voice_tests Extension/Multiplayer/Test/voice_chat_tests.cpp Extension/Multiplayer/Net/protocol.cpp
             Extension/Multiplayer/Net/delta_codec.cpp Extension/Multiplayer/Net/wire_codec.cpp)
         target_link_libraries(dingosdk_voice_tests PRIVATE dingosdk_lz4 dingosdk_zstd)

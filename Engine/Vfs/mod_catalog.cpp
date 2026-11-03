@@ -1,4 +1,5 @@
 #include "mod_catalog.h"
+#include "peer_cosmetics.h"
 #include "Engine/Core/Platform/path_text.h"
 #include "builtin_packs.h"
 
@@ -343,6 +344,11 @@ Catalog load_catalog(const std::filesystem::path& data_root, const MergeObserver
     // when there is none, so the content loads without any mod installed.
     std::vector<std::string> builtin_notes;
     const auto builtin = unpack_builtin_packs(data_root / mods_folder, builtin_notes);
+    // Cosmetics fetched for other players that the policy lets go are deleted before anything reads
+    // the folder (peer_cosmetics.h). Not by a live merge: the game has their files open by then.
+    if (run_merge)
+        for (auto& line : peer_cosmetics::clean_up(data_root / mods_folder, peer_cosmetics::now_seconds()))
+            builtin_notes.push_back(std::move(line));
     auto list = scan_mods(data_root);
     for (auto& note : builtin_notes) list.notes.push_back(std::move(note));
     result.root = std::move(list.root);

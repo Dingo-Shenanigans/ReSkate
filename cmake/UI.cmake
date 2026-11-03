@@ -51,6 +51,7 @@ add_library(dingosdk_overlay STATIC
     Extension/UI/Overlay/multiplayer_menu.cpp
     Extension/UI/Overlay/multiplayer_lobbies.cpp
     Extension/UI/Overlay/multiplayer_session.cpp
+    Extension/UI/Overlay/multiplayer_outfits.cpp
     Extension/Trainer/trainer_page.cpp
     Extension/Music/music_page.cpp
     Extension/Trainer/trainer_view.cpp

@@ -93,6 +93,23 @@ int main() {
         refused("not json", "an answer that is not JSON is refused");
         refused("[]", "an answer that is not an object is refused");
     }
+    {
+        // Cosmetics another player wears (Extension/Assets/peer_cosmetics_fetch.h): their categories, not a map's.
+        const package::Name pack{"NolanIsHigh", "Cosmetics_Pack", ""};
+        const auto cosmetics = package::Kind::cosmetics;
+        check(package::choose(answer("NolanIsHigh", "Cosmetics_Pack", "1.0.0", "reskate", "Cosmetics", "unreviewed"), pack, "reskate", cosmetics).ok,
+              "a cosmetics package is taken as cosmetics");
+        check(package::choose(answer("NolanIsHigh", "Cosmetics_Pack", "1.0.0", "reskate", "Skateboards", "unreviewed"), pack, "reskate", cosmetics).ok,
+              "and a skateboards one");
+        const auto map = package::choose(answer("NolanIsHigh", "Cosmetics_Pack", "1.0.0", "reskate", "Maps", "unreviewed"), pack, "reskate", cosmetics);
+        check(!map.ok && map.reason.find("cosmetics") != std::string::npos, "a map is not fetched as cosmetics");
+        auto marked = answer("NolanIsHigh", "Cosmetics_Pack", "1.0.0", "reskate", "Cosmetics", "unreviewed");
+        const std::string off = "\"has_nsfw_content\":false";
+        marked.replace(marked.find(off), off.size(), "\"has_nsfw_content\":true");
+        check(!package::choose(marked, pack, "reskate", cosmetics).ok, "cosmetics marked NSFW are refused");
+        check(!package::choose(answer("NolanIsHigh", "Cosmetics_Pack", "1.0.0", "reskate", "NSFW", "unreviewed"), pack, "reskate", cosmetics).ok,
+              "and cosmetics in the NSFW category");
+    }
     if (failures) {
         std::cerr << failures << " failure(s)\n";
         return 1;

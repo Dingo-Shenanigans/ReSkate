@@ -73,7 +73,6 @@ Choice choose(std::string_view json, const Name& wanted, std::string_view commun
             choice.reason = "Its package on Thunderstore is marked deprecated.";
             return choice;
         }
-        const std::string_view category_wanted = kind == Kind::plugin ? "Plugins" : "Maps";
         bool listed{}, fits{}, rejected{}, nsfw{};
         if (root.contains("community_listings") && root.at("community_listings").is_array())
             for (const auto& listing : root.at("community_listings")) {
@@ -84,7 +83,12 @@ Choice choose(std::string_view json, const Name& wanted, std::string_view commun
                 if (listing.contains("categories") && listing.at("categories").is_array())
                     for (const auto& category : listing.at("categories"))
                     {
-                        fits = fits || (category.is_string() && same(category.string(), category_wanted));
+                        const auto named = [&](std::string_view wanted_category) {
+                            return category.is_string() && same(category.string(), wanted_category);
+                        };
+                        fits = fits || (kind == Kind::plugin    ? named("Plugins")
+                                        : kind == Kind::cosmetics ? named("Cosmetics") || named("Skateboards")
+                                                                  : named("Maps"));
                         nsfw = nsfw || (category.is_string() && same(category.string(), "NSFW"));
                     }
             }
@@ -92,8 +96,9 @@ Choice choose(std::string_view json, const Name& wanted, std::string_view commun
         if (rejected) { choice.reason = "Its package was rejected by Thunderstore's moderators."; return choice; }
         if (nsfw) { choice.reason = "Its package is marked NSFW on Thunderstore."; return choice; }
         if (!fits) {
-            choice.reason = kind == Kind::plugin ? "Its package is not listed as a plugin on Thunderstore."
-                                                 : "Its package is not listed as a map on Thunderstore.";
+            choice.reason = kind == Kind::plugin    ? "Its package is not listed as a plugin on Thunderstore."
+                          : kind == Kind::cosmetics ? "Its package is not listed as cosmetics or skateboards on Thunderstore."
+                                                    : "Its package is not listed as a map on Thunderstore.";
             return choice;
         }
         const auto newest = root.contains("latest") ? text_of(root.at("latest"), "version_number") : std::string();

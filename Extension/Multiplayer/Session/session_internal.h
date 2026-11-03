@@ -116,6 +116,7 @@ struct Peer {
     // Bumped per accepted outfit; render compares it with the one its actor wears
     // (0 after a spawn) to spread native recipe applies over frames.
     std::uint64_t cosmetic_revision{}, applied_cosmetics{};
+    std::uint64_t applied_filter{}; // outfit_filter::revision() their outfit was last put on under
     DeveloperHoodieState developer_hoodie;
     DeveloperBoardState developer_board;
     AudioBuffer audio;

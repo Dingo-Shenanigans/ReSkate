@@ -38,6 +38,8 @@ add_library(dingosdk_runtime SHARED
     Extension/Multiplayer/Remote/puppet_cost.cpp
     Extension/Multiplayer/Remote/native_cosmetics.cpp
     Extension/Multiplayer/Remote/stand_ins.cpp
+    Extension/Multiplayer/Remote/outfit_filter.cpp
+    Extension/Multiplayer/Remote/outfit_filter_rules.cpp
     Extension/Multiplayer/Remote/native_audio.cpp
     Extension/Multiplayer/Remote/native_vfx.cpp
     Extension/Multiplayer/Voice/voice_chat.cpp
@@ -133,6 +135,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Assets/mod_layers.cpp
     Extension/Assets/live_mods.cpp
     Extension/Assets/map_download.cpp
+    Extension/Assets/peer_cosmetics_fetch.cpp
     Extension/Assets/map_icons.cpp
     Engine/Vfs/thunderstore_package.cpp
     Launcher/mod_manager.cpp

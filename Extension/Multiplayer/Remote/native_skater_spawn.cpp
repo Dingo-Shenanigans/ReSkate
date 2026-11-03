@@ -9,8 +9,12 @@
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Game/Build/supported_build.h"
 #include "Engine/Game/Build/20260929/engine.h"
+#include "outfit_filter.h"
+#include "Extension/Customization/item_origins.h"
+#include "Extension/Customization/worn_items.h"
 #include <mutex>
 #include <map>
+#include <set>
 #include <algorithm>
 #include <cstring>
 #include <intrin.h>
@@ -506,8 +510,30 @@ void remove_remote(std::uintptr_t base) noexcept {
     } catch (...) { /* Level teardown may have already invalidated the entity. */
     }
 }
+namespace {
+// The items of a player's outfit a mod adds or changes, for the outfit menu, and whether the
+// filter hides each. The game's own items are left out. Client thread (the catalog's titles).
+std::vector<outfit_filter::WornItem> mod_items(const Appearance &appearance, std::uint64_t player,
+                                               const outfit_filter::Rules &rules) {
+    std::vector<outfit_filter::WornItem> out;
+    std::set<std::string, std::less<>> listed;
+    for (const auto *recipe : {&appearance.skater, &appearance.board})
+        for (const auto &slot : recipe->items) {
+            if (slot.asset.empty() || !listed.insert(slot.asset).second || out.size() >= max_cosmetic_slots * 2) continue;
+            const auto facts = outfit_filter::facts(slot.asset);
+            if (facts.game && facts.mod.empty()) continue;
+            outfit_filter::WornItem item{slot.asset, {}, facts.mod};
+            item.installed = facts.game || !facts.mod.empty();
+            item.title = item.installed ? worn_items::item_title(slot.asset) : slot.asset;
+            if (const auto origin = item_origins::find(slot.asset)) item.mod_title = origin->title;
+            item.hidden = outfit_filter::hides(rules, player, slot.asset, facts);
+            out.push_back(std::move(item));
+        }
+    return out;
+}
+} // namespace
 void update_remote_cosmetics(std::uintptr_t base, const NativeFrame &local, const Appearance &appearance,
-                             std::string &detail) {
+                             std::uint64_t player, std::string &detail) {
     auto &r = remote();
     try {
         require(valid_appearance(appearance), "Peer cosmetic recipe is invalid.");
@@ -534,10 +560,18 @@ void update_remote_cosmetics(std::uintptr_t base, const NativeFrame &local, cons
             }
         }
         if (!r.skater_appearance) r.stand_ins_applied = stand_ins_now;
+        // The filter's rules as they are now, the same for both recipes of this pass.
+        const auto filter = outfit_filter::revision();
+        const auto rules = outfit_filter::rules();
+        const auto hidden = [&](const std::string &asset) {
+            return outfit_filter::hides(*rules, player, asset, outfit_filter::facts(asset));
+        };
         try {
-            if (!r.skater_appearance || *r.skater_appearance != appearance.skater) {
-                apply_cosmetic_recipe(base, r.entity, local.entity, appearance.skater);
+            if (!r.skater_appearance || *r.skater_appearance != appearance.skater || r.skater_filter != filter) {
+                apply_cosmetic_recipe(base, r.entity, local.entity, appearance.skater, hidden);
                 r.skater_appearance = appearance.skater;
+                r.skater_filter = filter;
+                outfit_filter::note_worn(player, mod_items(appearance, player, *rules));
             }
             r.rejected_appearance.reset();
             if (!r.board_entity || !local.board_entity) {
@@ -545,9 +579,11 @@ void update_remote_cosmetics(std::uintptr_t base, const NativeFrame &local, cons
                 detail = "Cosmetics: skater recipe applied; waiting for the skateboard.";
                 return;
             }
-            if (!r.board_appearance || *r.board_appearance != appearance.board) {
-                apply_cosmetic_recipe(base, r.board_entity, local.board_entity, appearance.board);
+            if (!r.board_appearance || *r.board_appearance != appearance.board || r.board_filter != filter) {
+                apply_cosmetic_recipe(base, r.board_entity, local.board_entity, appearance.board, hidden);
                 r.board_appearance = appearance.board;
+                r.board_filter = filter;
+                outfit_filter::note_worn(player, mod_items(appearance, player, *rules));
             }
         } catch (...) {
             const bool again = r.rejected_appearance && *r.rejected_appearance == appearance;
