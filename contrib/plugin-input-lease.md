@@ -70,6 +70,6 @@ Read cleanup from the actual receipt fields: passive `capture_reserved` and `sou
 
 ## Validation scope
 
-Windows Release builds completed for the runtime, launcher and server plus six relevant test executables. All 62 selected CTest entries passed. The plugin test entry skipped 18 unavailable optional contrib subcases. The Cargo-built Spotify component was disabled; optional asset and shader warnings were reported.
+Windows Release builds completed for the runtime, launcher and server plus the plugin, passive-source, capture-source, scripted-pad and held-input test executables, on upstream main with `reskate.input.write`. All 35 selected CTest entries passed: 9 passive-source, 23 capture-source, plugins, scripted pad and held input. The plugin test entry skipped 21 optional contrib subcases whose plugins are not in the checkout. The Cargo-built Spotify component was disabled.
 
 This is not a full configured CTest-suite result. Native hardware and in-game validation, concurrent callback runs, garbage-collection runs and counter-exhaustion runs remain unrun. The selected tests do not establish physical-device identity, gameplay consumption or native cleanup behavior under real controller polling.

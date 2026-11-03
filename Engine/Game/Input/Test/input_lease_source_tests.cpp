@@ -93,6 +93,14 @@ void raw() {
     close(handle); report(); handle = request();
     report(0, 9, {}, {}, 0, true, false);
     check(state(handle).status == lease::Status::revoked, "unknown returned output revokes");
+    // reskate.input.write replaces a report like this and a lease does not reserve against it:
+    // the replacement wins, and no lease can stand beside it until it ends.
+    close(handle); report(); handle = request();
+    report(0, 9, {}, changed);
+    check(state(handle).reason == lease::Reason::source_unavailable, "a replaced report revokes as unavailable");
+    close(handle); report(0, 10, {}, changed);
+    check(!source::lease_request(1, 0, handle, reason) && reason == lease::Reason::source_unavailable, "no lease on a replaced stream");
+    report(); handle = request();
     close(handle);
 }
 void cleanup() {
