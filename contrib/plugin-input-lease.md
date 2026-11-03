@@ -25,15 +25,17 @@ A sample has decimal-string `sequence`, `source_epoch`, `observation_serial`, `o
 
 ### Receipts and release
 
-A passive receipt reports decimal-string `sequence`, `requested_ms`, `expires_ms`, `observed_ms`, `source_epoch`, `context_generation`, `last_observation`, `renewals`; numeric `user` and `polls_in_flight` (0..128); `status`, `reason`, `source_released`, `orphaned`, `capture_reserved` and `write_reserved`. A newly admitted `warming` receipt has zero observation/time/renewal strings. `active` has an issued observation. Neither state reports the source released. `released`, `revoked` and `expired` are terminal; their original stop reason remains available. The reason words and fixed numeric bounds are declared in `Engine/Game/Input/input_lease.h`.
+A passive receipt reports decimal-string `sequence`, `requested_ms`, `expires_ms`, `observed_ms`, `source_epoch`, `context_generation`, `last_observation`, `renewals`; numeric `user` and `polls_in_flight` (0..128); `status`, `reason`, `source_released`, `orphaned` and `capture_reserved`. A newly admitted `warming` receipt has zero observation/time/renewal strings. `active` has an issued observation. Neither state reports the source released. `released`, `revoked` and `expired` are terminal; their original stop reason remains available. The reason words and fixed numeric bounds are declared in `Engine/Game/Input/input_lease.h`.
 
-A terminal record may still reserve its source while callbacks which already began are draining. `source_released` becomes true only when `polls_in_flight` is zero and neither `capture_reserved` nor `write_reserved` remains. Capture ownership, output cleanup debt or an outstanding callback can retain that reservation. ACK requires terminal state, released source, no capture/write reservation and zero callbacks; it removes that retained passive receipt. It cannot erase capture or writer cleanup duty.
+A terminal record may still reserve its source while callbacks which already began are draining. `source_released` becomes true only when `polls_in_flight` is zero and `capture_reserved` is false. Capture ownership, neutral-release debt or an outstanding callback can retain that reservation. ACK requires terminal state, released source, no capture reservation and zero callbacks; it removes that retained passive receipt. It cannot erase capture cleanup duty.
 
 Release, receipt reads and ACK remain available on the original client thread after focus/readiness/menu loss so a plugin can discharge ownership. Other policy/read failures refuse samples and can terminalize the lease. A VM close revokes its touched owner once, marks retained records orphaned and permits only already-started callback drain, never publication into a later lease.
 
 Passive samples and receipts label their scope: `transport="xinput"`, `source_identity="observed_stream"`, `physical_device_identity="unobserved"`, `mode="observe"`, `native_consumption="unobserved"`. The stream identity is not proof of a physical device or game consumption. These six methods grant neither capture, report writing nor actor control.
 
-The native service has four source slots, at most eight retained records and at most one live lease; an old callback reservation blocks replacement. Each VM can make at most 64 valid calls across the six passive, four capture and four [tracked-output methods](controller-layer-api.md), and one passive lease request in a normal tick interval. These counters reset in the existing VM tick; startup calls share the first interval. Close cleanup is separate from this call budget. A refused or malformed request cannot be retried indefinitely within an interval.
+The native service has four source slots, at most eight retained records and at most one live lease; an old callback reservation blocks replacement. Each VM can make at most 64 valid calls across the six passive and four capture methods, and one passive lease request in a normal tick interval. These counters reset in the existing VM tick; startup calls share the first interval. Close cleanup is separate from this call budget. A refused or malformed request cannot be retried indefinitely within an interval.
+
+A lease does not reserve a stream against [`reskate.input.write`](controller-layer-api.md). The two share no ownership, so that replacement can start on a leased stream and it wins: the stream stops being clean input, a new lease is refused, and a live lease is revoked with `source_unavailable`.
 
 ## Selected-stream capture
 
@@ -56,13 +58,15 @@ A complete capture receipt remains readable after passive ACK until capture ACK;
 
 Callback capacity/counter failure sets `callbacks_unknown=true`, `quarantined=true` and releasing/`debt=true`. The bounded known count is not a total-drain proof. ACK/new admission remain blocked; timeout or VM disappearance does not clear unknown duty. Owner close revokes and marks orphaned records while preserving exact callback/neutral obligations. State DTO corruption is refused as `invalid input capture backend receipt`; inconsistent successful request results are refused as `invalid input capture backend result`.
 
+A `reskate.input.write` replacement on a captured stream ends capture as interference, like any other filter that changes the report. Its cleanup duty stays retained until the replacement has ended and the same-stream handback is confirmed.
+
 ### Compatibility with older observations
 
 Pass the whole issued sample returned by `lease_read` to methods which require a sample, rather than passing only `sample.epoch` or rebuilding a sample from selected fields. Retain the issued sample when associating work with its epoch. Public diagnostic strings cannot create or replace the opaque epoch, and copying or editing those strings does not refresh an observation.
 
-Raw `sample.pad.buttons` is an integer bitmask. It is not the named boolean table accepted by tracked output, whose axes and triggers also use normalized ranges. Convert those control representations explicitly without replacing the original issued sample used for admission.
+Raw `sample.pad.buttons` is an integer bitmask. It is not the named boolean table of `reskate.input.gamepad` and `reskate.input.write`, whose axes and triggers also use normalized ranges. Convert those control representations explicitly without replacing the original issued sample used for admission.
 
-Read cleanup from the actual receipt fields: passive `capture_reserved`/`write_reserved` and `source_released`, capture `debt`, writer `output_debt`/`output_released`, and the relevant callback counts/unknown flag. Do not manufacture epoch, terminal or debt fields, substitute a missing field with `false`, or infer completed cleanup from an older receipt shape. Missing or unavailable facts do not authorize release of retained ownership.
+Read cleanup from the actual receipt fields: passive `capture_reserved` and `source_released`, capture `debt`, and the relevant callback counts/unknown flag. Do not manufacture epoch, terminal or debt fields, substitute a missing field with `false`, or infer completed cleanup from an older receipt shape. Missing or unavailable facts do not authorize release of retained ownership.
 
 ## Validation scope
 
