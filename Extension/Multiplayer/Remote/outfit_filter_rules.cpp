@@ -36,6 +36,19 @@ std::string readable_key(std::string_view key) {
     return out.empty() ? std::string(key) : out;
 }
 
+std::string readable_mod(std::string_view folder) {
+    const auto dash = folder.find('-');
+    const auto name = dash == std::string_view::npos || dash + 1 == folder.size() ? folder : folder.substr(dash + 1);
+    std::string out;
+    for (const char c : name) {
+        const char shown = c == '_' ? ' ' : c;
+        if (shown == ' ' && (out.empty() || out.back() == ' ')) continue;
+        out += shown;
+    }
+    while (!out.empty() && out.back() == ' ') out.pop_back();
+    return out.empty() ? std::string(folder) : out;
+}
+
 std::string to_json(const Rules &rules) {
     auto root = Json::object();
     root["schema"] = 1;

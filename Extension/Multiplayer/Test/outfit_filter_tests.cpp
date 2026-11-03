@@ -88,6 +88,11 @@ int main() {
         check(readable_key("own_carhartt__cap_") == "carhartt cap", "runs of underscores are one space, none at the end");
         check(readable_key("Own_") == "Own" && readable_key("Hellboy") == "Hellboy", "a bare Own_ keeps its word, a plain name is as it was");
     }
+    {
+        check(readable_mod("nolanishigh-nolanishighs_cosmetics_pack_1") == "nolanishighs cosmetics pack 1", "a mod folder reads as its name");
+        check(readable_mod("altdoug-south_florida__") == "south florida", "runs of underscores are one space");
+        check(readable_mod("plain") == "plain" && readable_mod("owner-") == "owner-", "a folder with no name after the owner is as it was");
+    }
     if (failures) std::cerr << failures << " outfit filter test(s) failed\n";
     else std::cout << "outfit filter tests passed\n";
     return failures ? 1 : 0;

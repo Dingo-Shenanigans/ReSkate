@@ -44,6 +44,7 @@ struct SkateMenu {
     std::string multiplayer_password_code, multiplayer_password_error;
     std::array<char,65> multiplayer_host_password{}, multiplayer_join_password{};
     std::array<char,65> outfits_search{}; // ONLINE > OUTFITS: players or items to show
+    int outfits_view{};                   // ONLINE > OUTFITS: 0 by player, 1 by mod
     std::array<char,96> multiplayer_join_code{};
     std::array<char,128> multiplayer_lobby_search{};
     std::array<char,129> multiplayer_lobby_name{};

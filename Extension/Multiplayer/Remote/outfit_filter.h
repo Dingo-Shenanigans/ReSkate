@@ -31,6 +31,9 @@ bool hides(const Rules &rules, std::uint64_t player, std::string_view key, const
 // An item key as a name to read, for an item this PC has no title for: "Own_Nike_SB_x_Dunk_-_Worn"
 // is "Nike SB x Dunk - Worn". The "Own_" the game puts first (twice, in some mods) goes.
 std::string readable_key(std::string_view key);
+// A mod folder as a name to read, for a mod no one here wears: "nolanishigh-nolanishighs_cosmetics_pack_1"
+// is "nolanishighs cosmetics pack 1". The owner before the first dash goes.
+std::string readable_mod(std::string_view folder);
 
 std::string to_json(const Rules &rules);
 Rules from_json(std::string_view text) noexcept;
