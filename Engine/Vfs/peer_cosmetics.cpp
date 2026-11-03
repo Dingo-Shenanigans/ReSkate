@@ -34,6 +34,7 @@ std::int64_t number_of(const Json& row, std::string_view key) {
 Policy clamped(Policy policy) {
     policy.days = std::clamp(policy.days, 1U, 365U);
     policy.max_mb = std::clamp<std::uint64_t>(policy.max_mb, 100, 65536);
+    policy.automatic_mb = std::clamp<std::uint64_t>(policy.automatic_mb, 10, 1024);
     return policy;
 }
 std::string days_text(std::int64_t seconds) {
@@ -51,6 +52,7 @@ std::string to_json(const Store& store) {
     rules["days"] = policy.days;
     rules["max_mb"] = policy.max_mb;
     rules["automatic"] = policy.automatic;
+    rules["automatic_mb"] = policy.automatic_mb;
     root["policy"] = std::move(rules);
     auto rows = Json::object();
     for (const auto& [folder, entry] : store.mods) {
@@ -79,6 +81,7 @@ Store from_json(std::string_view text) noexcept {
             if (const auto days = number_of(rules, "days"); days > 0) store.policy.days = static_cast<unsigned>(std::min<std::int64_t>(days, 365));
             if (const auto most = number_of(rules, "max_mb"); most > 0) store.policy.max_mb = static_cast<std::uint64_t>(most);
             if (rules.contains("automatic") && rules.at("automatic").is_boolean()) store.policy.automatic = rules.at("automatic").get<bool>();
+            if (const auto most = number_of(rules, "automatic_mb"); most > 0) store.policy.automatic_mb = static_cast<std::uint64_t>(most);
             store.policy = clamped(store.policy);
         }
         if (root.contains("mods") && root.at("mods").is_object())

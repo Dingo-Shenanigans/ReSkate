@@ -137,7 +137,8 @@ void register_outfit_commands(Commands &registry) {
             out(std::string("Mod items on others: ") + (rules.mod_items ? "shown" : "hidden") + "; hidden items " +
                 std::to_string(rules.items.size()) + ", mods " + std::to_string(rules.mods.size()) + ", players " +
                 std::to_string(rules.players.size()) + ".");
-            out(std::string("Fetching missing items: ") + (view.policy.automatic ? "on its own" : "when asked") + ".");
+            out(std::string("Fetching missing items: ") +
+                (view.policy.automatic ? "on its own, up to " + std::to_string(view.policy.automatic_mb) + " MB a pack" : "when asked") + ".");
             out("Fetched cosmetics: " + std::to_string(view.mods.size()) + " mods, " + std::to_string(view.bytes >> 20) + " MB; cleanup " +
                 std::string(store::cleanup_names[static_cast<std::size_t>(view.policy.cleanup)]) + " (" +
                 std::to_string(view.policy.days) + " days, " + std::to_string(view.policy.max_mb) + " MB).");

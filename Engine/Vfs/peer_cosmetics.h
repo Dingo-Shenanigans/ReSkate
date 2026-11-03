@@ -29,8 +29,10 @@ struct Policy {
     unsigned days = 14;          // 1..365
     std::uint64_t max_mb = 2048; // 100..65536
     // Fetch the package of an item another player wears that this PC lacks, as soon as they say
-    // which it is. Off: only when the player asks, item by item.
+    // which it is ("Download all by default"), when it is at most `automatic_mb`. Off, or bigger:
+    // only when the player asks, item by item.
     bool automatic{};
+    std::uint64_t automatic_mb = 200; // 10..1024
     bool operator==(const Policy&) const = default;
 };
 inline constexpr std::array<std::string_view, 4> cleanup_names{"unused", "size", "every-launch", "never"};

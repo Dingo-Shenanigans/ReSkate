@@ -19,9 +19,10 @@
 // launch. Wearing one of its items, or seeing anyone wear one, counts as using it.
 namespace dingosdk::peer_cosmetics_fetch {
 // Starts fetching `package` ("Owner-Name" or "Owner-Name-1.2.3") for the player named `from`,
-// who wears the item `key` from it (empty: none to check, from the console). Returns what
+// who wears the item `key` from it (empty: none to check, from the console). One bigger than
+// `most_bytes` (0: the largest fetched for anyone, 1 GB) is not downloaded. Returns what
 // happened to the request; the outcome shows in status() and the log.
-std::string fetch(const std::string& package, const std::string& from, const std::string& key = {});
+std::string fetch(const std::string& package, const std::string& from, const std::string& key = {}, std::uint64_t most_bytes = 0);
 struct Status {
     bool busy{};
     std::string package;     // the one in hand, or the last
@@ -29,6 +30,15 @@ struct Status {
     std::string line;        // what it is doing, or how the last one ended
 };
 Status status();
+
+// How big a package's download is, for its Fetch button: looked up on Thunderstore in the
+// background the first time it is asked for (one at a time), then remembered for the game.
+struct Size {
+    bool known{};
+    std::uint64_t bytes{};   // 0 when Thunderstore does not say
+    std::string problem;     // why it would not be fetched (not cosmetics, not there), if it would not
+};
+Size size(const std::string& package);
 
 struct Fetched {
     std::string folder, title, version, from;

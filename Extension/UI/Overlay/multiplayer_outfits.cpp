@@ -44,12 +44,19 @@ void filter_card(SkateMenu &menu) {
     note("Items you hide show as the default for their slot. An item you do not have shows that way already.");
     auto policy = fetched::view().policy;
     bool automatic = policy.automatic;
-    if (toggle_row(menu, "Fetch missing items", "When another player wears a mod item you do not have, download the cosmetics "
-                                                "package they say it is from, so you see it from the next level load. Off: "
-                                                "fetch one yourself with its Fetch button.", automatic)) {
-        policy.automatic = automatic;
-        if (!fetched::set_policy(policy)) feedback(menu, "The setting could not be saved.");
+    bool changed = toggle_row(menu, "Download all by default",
+                              "When another player wears a mod item you do not have, download the cosmetics package they say it "
+                              "is from, so you see it from the next level load. Off: download one yourself with its Fetch button.",
+                              automatic);
+    policy.automatic = automatic;
+    if (policy.automatic) {
+        field(menu, "Up to", "Bigger packs are not downloaded on their own; their Fetch button still works.");
+        int mb = static_cast<int>(policy.automatic_mb);
+        slider_int("##outfits-automatic-size", &mb, 10, 1024, "%d MB per pack", ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic);
+        if (ImGui::IsItemDeactivatedAfterEdit()) changed = true;
+        policy.automatic_mb = static_cast<std::uint64_t>(mb);
     }
+    if (changed && !fetched::set_policy(policy)) feedback(menu, "The setting could not be saved.");
     end_card();
 }
 
@@ -62,7 +69,15 @@ void item_state(SkateMenu &menu, const filter::WornItem &item, bool hidden, cons
     if (item.package.empty()) return tag(menu, "NOT INSTALLED", skate_theme::warning);
     const auto state = fetched::status();
     if (state.busy && lower(state.package) == filter::package_folder(item.package)) return tag(menu, "FETCHING", skate_theme::warning);
-    if (ImGui::Button("Fetch", ImVec2(px(110), 0))) feedback(menu, fetched::fetch(item.package, from, item.key).c_str());
+    // With the pack's size once Thunderstore has said, and not at all for a pack that would not be taken.
+    const auto size = fetched::size(item.package);
+    if (size.known && !size.problem.empty()) {
+        tag(menu, "NOT INSTALLED", skate_theme::warning);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", size.problem.c_str());
+        return;
+    }
+    const auto label = size.known && size.bytes ? "Fetch " + megabytes(size.bytes) : std::string("Fetch");
+    if (ImGui::Button(label.c_str(), ImVec2(px(126), 0))) feedback(menu, fetched::fetch(item.package, from, item.key).c_str());
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Not installed. Download %s from Thunderstore, as its wearer says it is from there; it shows from the next level load.",
                           item.package.c_str());
@@ -76,7 +91,7 @@ void item_rows(SkateMenu &menu, const filter::Rules &rules, const std::vector<fi
         return;
     }
     if (!ImGui::BeginTable("items", 3, ImGuiTableFlags_SizingStretchProp)) return;
-    ImGui::TableSetupColumn("##state", ImGuiTableColumnFlags_WidthFixed, px(118));
+    ImGui::TableSetupColumn("##state", ImGuiTableColumnFlags_WidthFixed, px(132));
     ImGui::TableSetupColumn("##item");
     ImGui::TableSetupColumn("##buttons", ImGuiTableColumnFlags_WidthFixed, px(196));
     for (std::size_t i = 0; i < items.size(); ++i) {
@@ -251,7 +266,7 @@ void mod_rows(SkateMenu &menu, const filter::Rules &rules, const std::vector<Wor
         }
         if (open) {
             if (ImGui::BeginTable("items", 3, ImGuiTableFlags_SizingStretchProp)) {
-                ImGui::TableSetupColumn("##state", ImGuiTableColumnFlags_WidthFixed, px(118));
+                ImGui::TableSetupColumn("##state", ImGuiTableColumnFlags_WidthFixed, px(132));
                 ImGui::TableSetupColumn("##item");
                 ImGui::TableSetupColumn("##buttons", ImGuiTableColumnFlags_WidthFixed, px(92));
                 for (const auto *item : items) {

@@ -34,7 +34,7 @@ std::vector<std::string> folders(const std::vector<store::Removal> &removals) {
 int main(int argc, char **argv) {
     {
         store::Store s;
-        s.policy = {store::Cleanup::size, 30, 4096, true};
+        s.policy = {store::Cleanup::size, 30, 4096, true, 350};
         s.mods["Nolan-Pack"] = {"1.2.3", "Ann", now - 3 * day, now - day, false};
         s.mods["Muska-Decks"] = {"1.0.0", "", now, now, true};
         check(store::from_json(store::to_json(s)) == s, "the store reads back as written");
@@ -45,6 +45,10 @@ int main(int argc, char **argv) {
               "an unknown cleanup is the default; days and size kept in range");
         check(!loose.policy.automatic && !store::from_json(R"({"policy": {"automatic": 1}})").policy.automatic,
               "fetching on its own is off unless the file says true");
+        check(loose.policy.automatic_mb == 200 &&
+                  store::from_json(R"({"policy": {"automatic_mb": 5}})").policy.automatic_mb == 10 &&
+                  store::from_json(R"({"policy": {"automatic_mb": 99999}})").policy.automatic_mb == 1024,
+              "the size fetched on its own is 200 MB unless set, and kept in range");
         check(loose.mods.size() == 1 && loose.mods.contains("Ok-Mod"), "a folder name that is not a mod's is dropped");
         check(loose.mods.at("Ok-Mod").version.empty() && loose.mods.at("Ok-Mod").seen == 50, "seen is never before fetched");
     }

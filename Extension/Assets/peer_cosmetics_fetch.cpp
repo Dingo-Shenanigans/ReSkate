@@ -13,7 +13,9 @@
 #include <winhttp.h>
 #include <algorithm>
 #include <atomic>
+#include <map>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <span>
 #include <thread>
@@ -65,21 +67,89 @@ void say(std::string line, logging::Level level = logging::Level::info) {
     current.line = std::move(line);
 }
 
-void work(package::Name name, std::string from, std::string key) {
+// Sizes looked up, by lower case folder, and those still to look up.
+std::mutex size_mutex;
+std::map<std::string, Size, std::less<>> sizes;
+std::vector<package::Name> size_queue;
+bool sizing{};
+constexpr std::size_t remembered_sizes = 256;
+
+void remember_size(const std::string& folder, Size size) {
+    std::lock_guard lock(size_mutex);
+    if (sizes.size() < remembered_sizes || sizes.contains(lower(folder))) sizes[lower(folder)] = std::move(size);
+}
+
+// What Thunderstore says of a package: which version to fetch and how big it is, or why not.
+struct Lookup {
+    package::Choice choice;
+    std::optional<std::uint64_t> bytes;
+    std::string problem;
+};
+Lookup look_up(const package::Name& name, https::Watch* watching) {
+    Lookup out;
+    const auto folder = name.folder();
+    https::Download result;
+    const auto answer = https::get_text(package::details_url(name), 512 * 1024, 20, agent, &result, watching);
+    if (!answer) {
+        out.problem = result.http_status == 404 ? folder + " is not on Thunderstore." : "Thunderstore could not be reached.";
+        return out;
+    }
+    out.choice = package::choose(*answer, name, community, package::Kind::cosmetics);
+    if (!out.choice.ok) {
+        out.problem = folder + ": " + out.choice.reason;
+        return out;
+    }
+    out.bytes = https::content_length(package::download_url(name, out.choice.version), 8, agent, watching);
+    return out;
+}
+
+void size_work() {
+    for (;;) {
+        package::Name name;
+        {
+            std::lock_guard lock(size_mutex);
+            if (size_queue.empty()) {
+                sizing = false;
+                return;
+            }
+            name = std::move(size_queue.front());
+            size_queue.erase(size_queue.begin());
+        }
+        Size size{true};
+        try {
+            const auto found = look_up(name, nullptr);
+            size.problem = found.problem;
+            size.bytes = found.bytes.value_or(0);
+            // Thunderstore not answering is not the package's fault: asked again next time.
+            if (found.problem == "Thunderstore could not be reached.") size.known = false;
+        } catch (...) {
+            size.known = false;
+        }
+        if (size.known) remember_size(name.folder(), std::move(size));
+        else {
+            std::lock_guard lock(size_mutex);
+            sizes.erase(lower(name.folder()));
+        }
+    }
+}
+
+void work(package::Name name, std::string from, std::string key, std::uint64_t most_bytes) {
     struct Done { ~Done() { busy.store(false); } } done;
     const auto folder = name.folder();
     const auto root = mods_root();
     try {
         say("looking up " + folder + " on Thunderstore.");
-        https::Download result;
-        const auto answer = https::get_text(package::details_url(name), 512 * 1024, 20, agent, &result, &watch);
-        if (!answer)
-            return say(result.http_status == 404 ? folder + " is not on Thunderstore." : "Thunderstore could not be reached.", logging::Level::warning);
-        const auto choice = package::choose(*answer, name, community, package::Kind::cosmetics);
-        if (!choice.ok) return say(folder + ": " + choice.reason, logging::Level::warning);
+        const auto found = look_up(name, &watch);
+        if (!found.problem.empty()) return say(found.problem, logging::Level::warning);
+        const auto& choice = found.choice;
         const auto url = package::download_url(name, choice.version);
-        if (const auto length = https::content_length(url, 8, agent, &watch); length && *length > largest_download)
-            return say(folder + " is " + std::to_string(*length >> 20) + " MB, more than is fetched for another player's outfit.", logging::Level::warning);
+        if (found.bytes) remember_size(folder, {true, *found.bytes, {}});
+        const auto most = most_bytes ? std::min(most_bytes, largest_download) : largest_download;
+        if (found.bytes && *found.bytes > most)
+            return say(folder + " is " + std::to_string(*found.bytes >> 20) + " MB, more than " +
+                       (most == largest_download ? std::string("is fetched for another player's outfit.")
+                                                 : "you download on their own. Fetch it from ONLINE > OUTFITS."),
+                       logging::Level::warning);
 
         wchar_t temp[MAX_PATH + 1]{};
         const auto length = GetTempPathW(MAX_PATH, temp);
@@ -90,7 +160,7 @@ void work(package::Name name, std::string from, std::string key) {
         watch.received.store(0);
         watch.total.store(0);
         say("downloading " + folder + " " + choice.version + ".");
-        const auto download = https::get(url, archive, largest_download, download_seconds, agent, &watch);
+        const auto download = https::get(url, archive, most, download_seconds, agent, &watch);
         if (!download.ok) {
             fs::remove(archive, error);
             return say(download.http_status && download.http_status != 200
@@ -158,7 +228,7 @@ template <class Change> bool change_store(Change&& change) {
 }
 } // namespace
 
-std::string fetch(const std::string& text, const std::string& from, const std::string& key) {
+std::string fetch(const std::string& text, const std::string& from, const std::string& key, std::uint64_t most_bytes) {
     const auto name = package::parse_name(text);
     if (!name) return "\"" + text + "\" is not a Thunderstore package name (Owner-Name or Owner-Name-1.2.3).";
     std::error_code error;
@@ -178,12 +248,33 @@ std::string fetch(const std::string& text, const std::string& from, const std::s
     }
     watch.cancel.store(false);
     try {
-        std::thread(work, *name, from, key).detach();
+        std::thread(work, *name, from, key, most_bytes).detach();
     } catch (...) {
         busy.store(false);
         return "The fetch could not be started.";
     }
     return "Fetching " + name->folder() + "; `outfits status` says how it goes.";
+}
+
+Size size(const std::string& text) {
+    const auto name = package::parse_name(text);
+    if (!name) return {true, 0, "\"" + text + "\" is not a Thunderstore package name."};
+    std::lock_guard lock(size_mutex);
+    if (const auto found = sizes.find(lower(name->folder())); found != sizes.end()) return found->second;
+    if (sizes.size() >= remembered_sizes) return {};
+    // Asked for: not known until the lookup is done. An empty entry stops asking twice.
+    sizes[lower(name->folder())] = {};
+    size_queue.push_back(*name);
+    if (!sizing) {
+        try {
+            std::thread(size_work).detach();
+            sizing = true;
+        } catch (...) {
+            sizes.erase(lower(name->folder()));
+            size_queue.pop_back();
+        }
+    }
+    return {};
 }
 
 Status status() {
@@ -309,6 +400,16 @@ void fetch_wanted(ULONGLONG now) {
         {
             std::lock_guard lock(run_mutex);
             if (folder.empty() || tried.contains(folder)) continue;
+        }
+        // One known to be over the player's size is left for its Fetch button, and not counted.
+        const auto most = view().policy.automatic_mb << 20;
+        if (const auto known = size(want.package); known.known && (!known.problem.empty() || known.bytes > most)) {
+            std::lock_guard lock(run_mutex);
+            tried.insert(folder);
+            continue;
+        }
+        {
+            std::lock_guard lock(run_mutex);
             if (automatic_fetches >= automatic_limit) {
                 tried.insert(folder);
                 say("not fetching " + want.package + ": " + std::to_string(automatic_limit) +
@@ -321,7 +422,7 @@ void fetch_wanted(ULONGLONG now) {
             ++automatic_fetches;
         }
         logging::log(logging::Level::info, logging::Channel::assets, "Fetched cosmetics: on its own, for {}: {}", want.key,
-                     fetch(want.package, {}, want.key));
+                     fetch(want.package, {}, want.key, most));
         return;
     }
 }
