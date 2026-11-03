@@ -1,4 +1,6 @@
 #include "board_pose.h"
+#include "Engine/Core/Hooks/hooks.h"
+#include "Engine/Core/Log/logging.h"
 #include "Extension/AnimationStudio/anim_core.h"
 #include "Extension/Multiplayer/Remote/native_pose_layout.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
@@ -96,6 +98,7 @@ struct Shared {
     std::map<std::string, std::vector<int>, std::less<>> park_by;
     std::optional<Piece> piece;
     std::optional<std::array<Bone, bones>> drawn;
+    std::uintptr_t drawn_holder{}; // whose board `drawn` is: a map load or a new board leaves it behind
     std::map<int, std::pair<std::string, Vec3>> sized; // a bone's size, and who holds it
 };
 Shared& shared() {
@@ -104,8 +107,17 @@ Shared& shared() {
 }
 std::atomic<std::uintptr_t> base_now{}, holder_now{};
 std::atomic<bool> any{};
+// A plugin has used reskate.board, so the board's drawing is to be hooked (tick).
+std::atomic<bool> used{};
+Shared& used_by_plugin() {
+    used.store(true, std::memory_order_release);
+    return shared();
+}
 // The bones hidden from everyone, as bits (bone b is bit b), for the sent pose filter without the lock.
 std::atomic<std::uint32_t> hidden_from_all{};
+// The bones sized (scale) the same way, and each one's size, so the others see them too.
+std::atomic<std::uint32_t> sized_bones{};
+std::array<std::array<std::atomic<float>, 3>, bones> sized_to{};
 // How every board is fitted (fit): the baseplates held on the deck, and the wheels' spread. Read by
 // the render hook without the lock; the owner is under it.
 std::atomic<bool> fitted{}, fit_plates{};
@@ -139,17 +151,27 @@ void refresh_any(Shared& s) {
     for (const auto& [b, want] : s.wanted)
         if (want.hidden && want.everyone) bits |= 1u << b;
     hidden_from_all.store(bits, std::memory_order_release);
+    std::uint32_t sized = 0;
+    for (const auto& [b, size] : s.sized) {
+        for (std::size_t i = 0; i < 3; ++i) sized_to[static_cast<std::size_t>(b)][i].store(size.second[i], std::memory_order_relaxed);
+        sized |= 1u << b;
+    }
+    sized_bones.store(sized, std::memory_order_release);
 }
-// The local skater's pose as it is sent: the bones hidden from everyone out of sight in it too, as they
-// are drawn here. board[0] is the board entity's place in the world, then its rig's bones from 0.
+// The local skater's pose as it is sent: the bones hidden from everyone out of sight in it too, and the
+// sized ones at their sizes, as they are drawn here (each player's game then holds the sizes to the
+// session's bone scale limit: limit_bone_scale, protocol.h). board[0] is the board entity's place in
+// the world, then its rig's bones from 0.
 void on_sent_pose(std::uintptr_t, multiplayer::Pose& pose) noexcept {
     const auto bits = hidden_from_all.load(std::memory_order_acquire);
-    if (!bits) return;
-    for (int b = first_writable; b < bones; ++b)
-        if ((bits & (1u << b)) && static_cast<std::size_t>(b + 1) < pose.board.size()) {
-            auto& at = pose.board[static_cast<std::size_t>(b + 1)].position;
-            if (length(at) < 100.0f) at[1] -= 2000.0f;
-        }
+    const auto sized = sized_bones.load(std::memory_order_acquire);
+    if (!bits && !sized) return;
+    for (int b = first_writable; b < bones && static_cast<std::size_t>(b + 1) < pose.board.size(); ++b) {
+        auto& bone = pose.board[static_cast<std::size_t>(b + 1)];
+        if (sized & (1u << b))
+            for (std::size_t i = 0; i < 3; ++i) bone.scale[i] = sized_to[static_cast<std::size_t>(b)][i].load(std::memory_order_relaxed);
+        if ((bits & (1u << b)) && length(bone.position) < 100.0f) bone.position[1] -= 2000.0f;
+    }
 }
 std::string take(Shared& s, std::string_view owner) {
     if (!s.owner.empty() && s.owner != owner) return s.owner + " holds the board";
@@ -205,7 +227,7 @@ std::string set(std::string_view owner, int bone, const Bone& value, Space space
     if (!finite(value.position) || length(value.position) > 1000 ||
         !std::all_of(value.rotation.begin(), value.rotation.end(), [](float v) { return std::isfinite(v); }))
         return "a bone's place is finite";
-    auto& s = shared();
+    auto& s = used_by_plugin();
     std::lock_guard lock(s.mutex);
     if (auto why = take(s, owner); !why.empty()) return why;
     s.wanted[bone] = {false, false, normalised(value.rotation), value.position, space};
@@ -214,7 +236,7 @@ std::string set(std::string_view owner, int bone, const Bone& value, Space space
 }
 std::string hide(std::string_view owner, int bone, bool everyone) {
     if (bone < first_writable || bone >= bones) return "a board's bone is 2 to 15";
-    auto& s = shared();
+    auto& s = used_by_plugin();
     std::lock_guard lock(s.mutex);
     if (auto why = take(s, owner); !why.empty()) return why;
     s.wanted[bone] = {true, everyone};
@@ -243,7 +265,7 @@ std::string scale(std::string_view owner, int bone, std::optional<Vec3> value) {
     if (bone < first_writable || bone >= bones) return "a board's bone is 2 to 15";
     if (value && !std::all_of(value->begin(), value->end(), [](float v) { return v >= 0.25f && v <= 4.0f; }))
         return "a bone's size is 0.25 to 4 on each axis";
-    auto& s = shared();
+    auto& s = used_by_plugin();
     std::lock_guard lock(s.mutex);
     const auto held = s.sized.find(bone);
     if (held != s.sized.end() && held->second.first != owner) return held->second.first + " sizes that bone";
@@ -254,7 +276,7 @@ std::string scale(std::string_view owner, int bone, std::optional<Vec3> value) {
 }
 void park(std::string_view owner, std::vector<int> list) {
     std::erase_if(list, [](int b) { return b < first_writable || b >= bones; });
-    auto& s = shared();
+    auto& s = used_by_plugin();
     std::lock_guard lock(s.mutex);
     s.park_by[std::string(owner)] = std::move(list);
     s.parked.clear();
@@ -262,7 +284,7 @@ void park(std::string_view owner, std::vector<int> list) {
     refresh_any(s);
 }
 std::string fit(std::string_view owner, std::optional<Fit> value) {
-    auto& s = shared();
+    auto& s = used_by_plugin();
     std::lock_guard lock(s.mutex);
     if (!value) {
         if (fit_owner == owner) {
@@ -284,7 +306,7 @@ std::string toss(std::string_view owner, std::vector<int> list, Vec3 velocity, V
     if (list.empty()) return "a piece is bones 2 to 15";
     if (!finite(velocity) || !finite(spin) || length(velocity) > 50 || length(spin) > 50 || !std::isfinite(ground))
         return "a piece leaves at most 50 m/s, turning at most 50 rad/s";
-    auto& s = shared();
+    auto& s = used_by_plugin();
     std::lock_guard lock(s.mutex);
     if (auto why = take(s, owner); !why.empty()) return why;
     Piece piece;
@@ -297,8 +319,11 @@ std::string toss(std::string_view owner, std::vector<int> list, Vec3 velocity, V
     return {};
 }
 std::optional<std::array<Bone, bones>> read() {
-    auto& s = shared();
+    auto& s = used_by_plugin();
     std::lock_guard lock(s.mutex);
+    // Only the board the local skater has now: after a map load the last one drawn is another map's.
+    const auto holder = holder_now.load(std::memory_order_acquire);
+    if (!holder || s.drawn_holder != holder) return std::nullopt;
     return s.drawn;
 }
 void tick(std::uintptr_t base, std::uintptr_t component) noexcept {
@@ -316,6 +341,24 @@ void tick(std::uintptr_t base, std::uintptr_t component) noexcept {
     if (!sending) {
         multiplayer::set_local_sent_pose_filter(&on_sent_pose);
         sending = true;
+    }
+    // What is drawn of the board passes through native_skater's render pose hook, and in a solo game
+    // nothing else installs it: the multiplayer session does only in a session, and skater poses, the
+    // first person camera and AI skaters only once they are used. Without it every map ReSkate loads
+    // itself (the start map, the MAP page) went without the plugins' board until one of those
+    // happened to run (2026-10-30, logged in game). So it is installed here, once a plugin uses
+    // reskate.board and there is a skater.
+    static bool hooked{};
+    if (!hooked && base && component && used.load(std::memory_order_acquire)) {
+        hooked = true;
+        std::string detail;
+        bool installed{};
+        {
+            HookBatch batch;
+            installed = multiplayer::install_entity_hooks(base, detail);
+        }
+        if (installed) logging::log(logging::Level::info, logging::Channel::skater, "Plugin board: listening to the board's drawing.");
+        else logging::log(logging::Level::warning, logging::Channel::skater, "Plugin board: the board's drawing cannot be hooked: {}", detail);
     }
 }
 
@@ -387,6 +430,7 @@ void on_render_pose(std::uintptr_t animation_interface) noexcept {
             drawn[b] = {{lanes[b].position[0], lanes[b].position[1], lanes[b].position[2]}, Quat{lanes[b].rotation},
                         {lanes[b].scale[0], lanes[b].scale[1], lanes[b].scale[2]}};
         s.drawn = drawn;
+        s.drawn_holder = holder;
         // Sizes are set rather than multiplied, so a pose that comes by twice is not sized twice.
         for (const auto& [b, size] : s.sized) (void)store_scale(bone_at(buffer, b), size.second);
         const Quat place_rotation = normalised(Quat{lanes[place_bone].rotation});

@@ -37,6 +37,7 @@ void install_effects_api(Plugin& plugin, lua_State* L);
 void install_viewmodel_api(Plugin& plugin, lua_State* L);
 // Selected-stream passive leases and separately permissioned capture (plugin_api_input_lease.cpp).
 void install_input_lease_api(Plugin& plugin, lua_State* L);
+void install_object_physics_api(Plugin& plugin, lua_State* L);
 
 // ---- adding to the reskate table ---------------------------------------------------------------
 // A new part of the API is a file of `static int name(lua_State*)` functions and an install_*_api
@@ -73,6 +74,8 @@ inline constexpr std::string_view throwdown_modes[] = {"jam", "spot_battle", "sk
 inline constexpr std::string_view throwdown_cards[] = {"skate", "spot", "spot_battle", "jam"}; // Enums.Card
 inline constexpr std::string_view entity_statuses[] = {"waiting", "loading", "missing", "ready", "hidden"}; // Enums.EntityStatus
 inline constexpr std::string_view send_targets[] = {"all", "server"};                       // Enums.Target
+// mods.item_origins: where a key comes from. It picks these by position, so keep the order.
+inline constexpr std::string_view item_sources[] = {"mod", "changed", "game", "unknown"};   // Enums.ItemSource
 // Named keys for input.key and the like (letters and digits are their own character): Enums.Key.
 inline constexpr std::pair<std::string_view, int> key_names[] = {
     {"Enter", 13}, {"Backspace", 8}, {"Escape", 27}, {"End", 35}, {"Home", 36}, {"PageUp", 33}, {"PageDown", 34}, {"Space", 32},

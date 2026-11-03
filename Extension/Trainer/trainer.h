@@ -227,11 +227,17 @@ struct TuningValue {
     double value{}, stock{};
     std::string tuner; // the plugin whose value it is, if any
 };
-// Empty, and why, while the game's tuning is not read or there is no such value.
+// Empty, and why, while the game's tuning is not read (no level's copy yet) or there is no such value.
 std::optional<TuningValue> tuning_value(std::string_view id, std::string *why = nullptr);
-// Values whose id has every word of `text` (a word starting with ! must not be in it), at most `most`.
+// Values whose id has every word of `text` (a word starting with ! must not be in it), at most `most`;
+// none while the game's tuning is not read.
 std::vector<TuningValue> find_tuning(std::string_view text, std::size_t most);
-// Empty when done, else why not. No value: lets go of this plugin's.
+// Empty when done, else why not (a value is refused while the game's tuning is not read). No value:
+// lets go of this plugin's.
 std::string plugin_tune(std::string_view owner, std::string_view id, std::optional<double> value);
+// Flip tricks in the air turn at `factor` times their speed (with the player's own flip speed) for the next
+// `hold_ms`, so a plugin calls it every tick; 1 lets go. Every plugin's factors multiply. Empty when done, else why not.
+std::string plugin_flip_speed(std::string_view owner, float factor, unsigned hold_ms);
+// Lets go of this plugin's values and flip speed.
 void release_plugin_tunes(std::string_view owner);
 } // namespace dingosdk::trainer

@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstring>
 #include <map>
+#include <utility>
 
 namespace dingosdk::multiplayer {
 struct NativeCosmeticItem {
@@ -138,6 +139,39 @@ template <class Read> struct CosmeticMemory {
         }
         throw std::runtime_error("Cosmetic asset is not installed.");
     }
+    // Every item in the local catalog, the way lookup reads one. Also remembered in `known`.
+    std::vector<Item> catalog() const {
+        const auto manager = ptr(base, addr::engine::cosmetics_manager);
+        check(ptr(manager) == base + addr::engine::cosmetics_manager_vtable && get<std::uint8_t>(manager, 0xa8) == 1,
+              "Cosmetic catalog is not ready.");
+        const auto buckets = ptr(manager, 0x30);
+        const auto size = get<std::uint32_t>(manager, 0x38), total = get<std::uint32_t>(manager, 0x3c);
+        check(size && size <= 16384 && total && total <= 8192, "Cosmetic catalog exceeds bounds.");
+        std::vector<Item> out;
+        out.reserve(total);
+        for (std::uint32_t bucket = 0; bucket < size; ++bucket)
+            for (auto node = ptr(buckets, bucket * 8ULL); node; node = ptr(node, 0x10)) {
+                check(out.size() < total, "Cosmetic catalog exceeds bounds.");
+                const auto hash = get<std::uint32_t>(node);
+                const auto asset = ptr(node, 8) & ~std::uintptr_t{4};
+                Item item{text(ptr(asset, 0x38)), {}};
+                check(!item.name.empty() && get<std::uint32_t>(asset, 0x48) == hash &&
+                          cosmetic_asset_hash(item.name) == hash,
+                      "Cosmetic catalog asset differs.");
+                for (auto category : array<std::uintptr_t>(ptr(asset, 0x20), 32))
+                    item.categories.push_back(get<std::uint32_t>(category & ~std::uintptr_t{4}, 0x38));
+                known.emplace(hash, item);
+                out.push_back(std::move(item));
+            }
+        return out;
+    }
+    // The category hash of template slot `index`, which an item must list to go there.
+    std::uint32_t slot_category(std::uintptr_t res, std::size_t index) const {
+        const auto slots = ptr(res, 0x28);
+        check(index < count(slots, 24, max_cosmetic_slots), "Cosmetic slot is out of range.");
+        const auto slot = ptr(slots, index * 24 + 8) & ~std::uintptr_t{4};
+        return get<std::uint32_t>(ptr(slot, 0x30) & ~std::uintptr_t{4}, 0x38);
+    }
     CosmeticRecipe capture(std::uintptr_t entity) const {
         const auto c = component(entity), res = resource(c);
         check(!get<std::uint8_t>(c, 0x10a) && !get<std::uint8_t>(c, 0x10d),
@@ -183,11 +217,21 @@ template <class Read> struct CosmeticMemory {
     std::vector<std::pair<std::string, std::string>> substitute_missing(
         std::uintptr_t res, CosmeticRecipe &r, const Fallbacks &fallbacks,
         const Blocked &blocked = [](const std::string &) { return false; }) const {
+        return substitute_missing_each(
+            res, r, [&](std::size_t, const CosmeticSlot &) -> const Fallbacks & { return fallbacks; }, blocked);
+    }
+    // substitute_missing, with the fallbacks for each missing item from `fallbacks_for(index, item)`
+    // (template slot index, the item this PC does not have), tried in the order it gives them.
+    template <class FallbacksFor, class Blocked = bool (*)(const std::string &)>
+    std::vector<std::pair<std::string, std::string>> substitute_missing_each(
+        std::uintptr_t res, CosmeticRecipe &r, const FallbacksFor &fallbacks_for,
+        const Blocked &blocked = [](const std::string &) { return false; }) const {
         std::vector<std::pair<std::string, std::string>> swaps;
         for (std::size_t i = 0; i < r.items.size(); ++i) {
             auto &item = r.items[i];
             if (item_installed(res, i, item) && (item.asset.empty() || !blocked(item.asset))) continue;
             CosmeticSlot replacement{item.slot, {}, item.parameters};
+            const auto &fallbacks = fallbacks_for(i, std::as_const(item));
             for (const auto &candidate : fallbacks) {
                 CosmeticSlot fallback{item.slot, std::string(candidate), item.parameters};
                 if (item_installed(res, i, fallback) && !blocked(fallback.asset)) {

@@ -39,6 +39,19 @@ int main() {
         check(cache.get("rail", 1000, search) == 3 && searches == 2, "a miss is searched again after a second");
     }
     {
+        // Outside an active level (loading, unloading, quitting) nothing is searched: a name keeps its
+        // last answer, even one past its time, or has none.
+        Cache cache;
+        int searches = 0;
+        const auto found = [&]() -> std::optional<int> { ++searches; return 5; };
+        check(cache.get("ramp", 0, found) == 5 && searches == 1, "a name is searched in an active level");
+        check(cache.get("ramp", 10 * Cache::found_for, found, false) == 5 && searches == 1,
+              "outside an active level a name keeps its last answer");
+        check(!cache.get("ledge", 10 * Cache::found_for, found, false) && searches == 1,
+              "outside an active level a new name is not searched");
+        check(cache.get("ledge", 10 * Cache::found_for, found) == 5 && searches == 2, "back in a level it is");
+    }
+    {
         // A plugin asking for many names every frame: at most eight searches each second.
         Cache cache;
         int searches = 0;
@@ -59,6 +72,37 @@ int main() {
         value = 2;
         check(cache.get("a", 5001, search) == 1, "a stale name keeps its answer while searches are used up");
         check(cache.get("a", 6000, search) == 2, "and is searched again once there is room");
+    }
+    {
+        using dingosdk::world_entities::detail::movement_due;
+        check(!movement_due(false, false, false, 2000, 1000) &&
+              !movement_due(false, false, true, 2000, 1000) &&
+              !movement_due(false, true, false, 2000, 1000) &&
+              !movement_due(false, true, true, 2000, 1000),
+              "unchanged matrices never move, regardless of solidity or attachment");
+        check(movement_due(true, false, false, 1000, 1000),
+              "a changed non-solid visual does not wait for the wall clock");
+        check(!movement_due(true, true, false, 1015, 1000),
+              "an unattached solid object still waits at 15 ms");
+        check(movement_due(true, true, false, 1016, 1000),
+              "an unattached solid object still moves at 16 ms");
+        check(movement_due(true, true, true, 1000, 1000) &&
+              movement_due(true, false, true, 1000, 1000),
+              "changed joint attachments still move every client tick");
+        // Consecutive 15/16 ms client frames must not hold alternate visual updates.
+        // Each resident part can have a different last-move time.
+        std::uint64_t moved[8]{1000, 1001, 1002, 1003, 1004, 1005, 1006, 1007};
+        constexpr std::uint64_t frames[]{1015, 1030, 1046, 1061, 1077};
+        unsigned moves{};
+        for (const auto now : frames) {
+            bool all_moved = true;
+            for (auto& previous : moved) {
+                if (movement_due(true, false, false, now, previous)) previous = now, ++moves;
+                else all_moved = false;
+            }
+            check(all_moved, "all changed non-solid parts advance on each 15/16 ms client frame");
+        }
+        check(moves == 40u, "eight changed visual parts move once on each of five client frames");
     }
     if (failures) return 1;
     std::cout << "world entities contract tests passed\n";

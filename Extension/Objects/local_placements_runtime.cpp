@@ -4,9 +4,13 @@
 #include "Engine/Game/Build/20260929/local_placements.h"
 #include "Extension/Customization/local_customization_runtime.h"
 #include "local_placements_runtime.h"
+#include "placement_physics.h"
 #include "Extension/Objects/ParkEditor/park_editor_runtime.h"
 #include "network_object_runtime.h"
 #include "Extension/Profile/runtime_internal.h"
+#include "Extension/Skater/no_bail.h"
+#include "Extension/Throwdowns/throwdown_kit.h"
+#include "Extension/Throwdowns/throwdown_relay.h"
 #include "Extension/World/local_world_layers.h"
 #include <algorithm>
 #include <atomic>
@@ -94,6 +98,7 @@ void queue_placement_save() {
 }
 
 void placement_reset_session() {
+    placement_physics::reset();
     placement_table_changed();
     reset_network_object_world();
     reset_park_editor();
@@ -485,6 +490,7 @@ void update_placement_poses() {
     if (!placement_session_ready()) return;
     update_placement_creates();
     update_park_editor_moves();
+    placement_physics::server_tick();
     update_network_object_moves();
     update_placement_resizes();
     if (!placement_session_ready() || r.clearing || park_editor_owns_placements() || GetTickCount64() < r.next_poll) return;
@@ -495,6 +501,8 @@ void update_placement_poses() {
     auto& objects = r.document.maps[r.map]; bool changed{};
     for (auto& row : r.rows) {
         if (!row.spawned) continue;
+        // A plugin's physics moves it (placement_physics.h): where it falls is not where it is saved.
+        if (row.saved_id && placement_physics::claimed(row.saved_id)) continue;
         if (std::any_of(r.resizes.begin(), r.resizes.end(), [&](const auto& x) { return x.entity == row.entity; }))
             continue; // Its native scale is still 1x, or the resize is not yet read back.
         alignas(16) std::array<std::uint64_t, 2> reference{};
@@ -622,6 +630,7 @@ void update_position_teleport() {
     if (!r.position_teleport) return;
     if (GetTickCount64() > r.position_teleport_at + 5000) {
         r.position_teleport.reset();
+        r.position_teleport_on_board.reset();
         dingosdk::logging::write(dingosdk::logging::Level::warning, dingosdk::logging::Channel::objects,
                                  "Teleport dropped: the skater was busy for 5 s (a bail, a menu or an activity).");
         return;
@@ -631,8 +640,10 @@ void update_position_teleport() {
         !read(local_runtime().base + addr::local_placements::teleport_manager, manager) || !manager ||
         !read(manager, state) || state != 0) return;
     alignas(16) const auto transform = *r.position_teleport;
+    const auto on_board = r.position_teleport_on_board;
     const std::array<float,3> at{transform[12],transform[13],transform[14]};
     r.position_teleport.reset();
+    r.position_teleport_on_board.reset();
     // Preserve the native flag's complete facing basis. The teleport manager
     // still handles streaming, ground checks and physics reset.
     alignas(16) std::array<std::uint64_t, 2> transition{};
@@ -642,6 +653,19 @@ void update_position_teleport() {
     // social/player lookup can reject the same local skater with UINT32_MAX.
     // The session tick prepares the validated skater's native board option
     // before this queued move, so this path also starts a plugin's match on the board.
+    if (on_board.has_value()) {
+        NoBailSkater owner;
+        const auto match = dingosdk::throwdowns::kit::match();
+        const bool offboard = !match.input_lock && (multiplayer::throwdown_relay_waits_offboard() || match.offboard);
+        // When the board option cannot be set (a match's own lock, No Bail's protection holding the
+        // board, which it renews every tick while No Bail is on, or a lost race), the move still
+        // happens with the board as it is: the plugin was told it was queued, and the move is
+        // already off the queue.
+        if ((match.input_lock && !*on_board) || (offboard && *on_board) ||
+            !no_bail_skater(owner) || !prepare_teleport_equipment(owner, *on_board))
+            dingosdk::logging::event(dingosdk::logging::Channel::objects,
+                "{\"event\":\"position_teleport_equipment_kept\"}");
+    }
     const auto request = r.teleport(manager, transform.data(), 1, transition.data());
     dingosdk::logging::event(dingosdk::logging::Channel::objects, dingosdk::Json{{"event", "position_teleport_requested"},
         {"x", at[0]}, {"y", at[1]}, {"z", at[2]}, {"request", request}}.dump().c_str());

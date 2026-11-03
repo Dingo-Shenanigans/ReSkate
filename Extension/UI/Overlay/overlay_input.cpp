@@ -158,9 +158,26 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
         if (console_character(message) && s.item_search_character_pending.exchange(false)) return 0;
         // The skater item grids (item_browser_overlay.cpp): while one has the focus and nothing of ours
         // is open, F favorites the highlighted item, X steps the filter and "-" (or Ctrl+F) opens the
-        // search box, which then takes the keys until Enter or Esc. (The game uses Q, E, T and G here:
-        // G opens its feedback card.)
-        if (s.item_search_visible.load() || s.item_search_escape_pending.load()) {
+        // search box, which then takes the keys until Enter or Esc. In the pickers
+        // V goes to their filters at the top, which take the keys until Esc or V; their Esc goes
+        // to them (it clears a list's search, closes the list, then leaves) and not to the game,
+        // its release too. (The game uses Q, E, T and G here: G opens its feedback card.)
+        if (!interactive_visible(s) && (message == WM_MOUSEMOVE || message == WM_LBUTTONDOWN || message == WM_LBUTTONUP))
+            item_browser_mouse(message, static_cast<float>(static_cast<short>(LOWORD(lp))), static_cast<float>(static_cast<short>(HIWORD(lp))));
+        if (s.item_filters_visible.load() || s.item_filters_escape_pending.load()) {
+            if (wp == VK_ESCAPE && (key || release) && !s.console_visible.load() && !s.visible.load()) {
+                if (key && (static_cast<ULONG_PTR>(lp) & (1ull << 30)) == 0) {
+                    s.item_filters_escape_pending.store(true);
+                    s.item_filters_back.fetch_add(1);
+                } else if (release) s.item_filters_escape_pending.store(false);
+                return 0;
+            }
+            // V held down after it opened them: its first key-down never reached ImGui, so a repeat
+            // would look like a fresh press there and close them again. Only a new press leaves.
+            if (key && wp == 'V' && (static_cast<ULONG_PTR>(lp) & (1ull << 30)) != 0 && s.item_filters_visible.load() &&
+                !s.console_visible.load() && !s.visible.load())
+                return 0;
+        } else if (s.item_search_visible.load() || s.item_search_escape_pending.load()) {
             if (wp == VK_ESCAPE && (key || release) && !s.console_visible.load() && !s.visible.load()) {
                 if (key && (static_cast<ULONG_PTR>(lp) & (1ull << 30)) == 0) {
                     s.item_search_escape_pending.store(true);
@@ -184,6 +201,12 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
                 s.item_search_focus_requested.store(true);
                 sync_menu_cursor();
                 window_cursor_input(window, message, wp);
+                std::lock_guard lock(s.input_mutex);
+                s.input.clear();
+                return 0;
+            }
+            if (!control && wp == 'V' && item_browser_filters_shown()) {
+                s.item_filters_visible.store(true);
                 std::lock_guard lock(s.input_mutex);
                 s.input.clear();
                 return 0;
@@ -461,8 +484,23 @@ void begin_input_access() noexcept { ++detail::overlay_input_access; }
 void end_input_access() noexcept { --detail::overlay_input_access; }
 std::uint64_t controls_touched_at() noexcept { return detail::controls_at.load(std::memory_order_relaxed); }
 void note_joystick(std::uint32_t buttons, const std::array<float, 6>& axes) noexcept { detail::note_pad(5, buttons, axes); }
-Gamepad read_gamepad() {
-    const auto sample = read_controller_sample();
+Gamepad read_gamepad(int controller) {
+    detail::OverlayInputAccess access;
+    auto sample = controller < 0 ? read_controller_sample() : ControllerSample{};
+    if (controller >= 0 && controller < 4) {
+        XINPUT_STATE raw{};
+        const auto get = xinput_get_state();
+        if (get && get(static_cast<DWORD>(controller), &raw) == ERROR_SUCCESS) {
+            sample.pad = raw.Gamepad; sample.device = 1u << controller;
+        }
+    } else if (controller == 4) {
+        const auto ps = read_playstation_pads();
+        if (ps.available) {
+            sample.pad = {ps.pad.buttons, ps.pad.left_trigger, ps.pad.right_trigger,
+                ps.pad.left_x, ps.pad.left_y, ps.pad.right_x, ps.pad.right_y};
+            sample.device = 0x100u;
+        }
+    }
     Gamepad out;
     if (!sample.device) return out;
     const auto axis = [](std::int16_t v) { return std::clamp(static_cast<float>(v) / 32767.0f, -1.0f, 1.0f); };

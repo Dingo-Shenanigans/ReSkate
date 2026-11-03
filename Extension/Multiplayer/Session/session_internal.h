@@ -527,8 +527,12 @@ inline void set_next_maps(std::vector<NextMapWanted> maps) {
 }
 // "/p <message>" in a lobby: one line for the local player's party only, relayed by the host.
 std::string send_party_chat(Session &s, std::string_view typed);
-// The "/" commands this session offers (the chat overlay lists them as the player types "/").
+// The "/" commands this session offers (the chat overlay lists them as the player types "/"):
+// its own, then the plugins' (set_plugin_chat_commands).
 std::vector<MultiplayerChatCommand> chat_commands(const Session &s);
+// A "/" line for a plugin's command: kept for take_plugin_chat_commands when `verb` is one of the
+// plugins' and not one of the session's own. False when it is not a plugin's.
+bool queue_plugin_chat_command(const Session &s, std::string_view verb, std::string_view arguments);
 // One encoded throwdown message from this player to everyone else (through the host).
 void send_throwdown(Session &s, std::vector<std::uint8_t> message);
 // Tell the session this player is typing (`on`) or has stopped. Relayed like chat.

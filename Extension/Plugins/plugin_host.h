@@ -45,7 +45,7 @@ public:
     virtual bool builtin_command(std::string_view word) = 0;
     // The game (Services, plugin_vm.h). Where there is none, there is no skater and nothing to hit.
     virtual std::optional<SkaterState> skater() { return std::nullopt; }
-    virtual Teleport teleport(std::string_view /*plugin*/, const Vec3&, float) { return Teleport::unavailable; }
+    virtual Teleport teleport(std::string_view /*plugin*/, const Vec3&, float, std::optional<bool> = std::nullopt) { return Teleport::unavailable; }
     virtual std::optional<Vec3> raycast(const Vec3&, const Vec3&) { return std::nullopt; }
     virtual std::optional<ScoreState> score() { return std::nullopt; }
     virtual void toast(std::string_view /*plugin*/, LogLevel, std::string_view) {}
@@ -132,6 +132,9 @@ private:
     // A plugin that stopped itself (a limit, its errors) is closed and its commands released.
     void collect(Entry& entry);
     void release_commands(std::string_view id);
+    // The chat "/" commands the player typed, to their plugins; and the list to the chat when it changed.
+    void run_chat_commands();
+    void publish_chat_commands();
     Entry* find(std::string_view id);
 
     void log(std::string_view plugin, LogLevel level, std::string_view text) override;
@@ -140,9 +143,10 @@ private:
     std::string level() override;
     std::filesystem::path storage_file(std::string_view plugin) override;
     std::string claim_command(std::string_view plugin, std::string_view name) override;
+    std::string claim_chat_command(std::string_view plugin, std::string_view name) override;
     std::optional<SkaterState> skater() override { return environment_.skater(); }
-    Teleport teleport(std::string_view plugin, const Vec3& position, float heading) override {
-        return environment_.teleport(plugin, position, heading);
+    Teleport teleport(std::string_view plugin, const Vec3& position, float heading, std::optional<bool> on_board = std::nullopt) override {
+        return environment_.teleport(plugin, position, heading, on_board);
     }
     std::optional<Vec3> raycast(const Vec3& from, const Vec3& to) override { return environment_.raycast(from, to); }
     std::optional<ScoreState> score() override { return environment_.score(); }
@@ -178,6 +182,8 @@ private:
     std::string suffix_;
     std::map<std::string, Entry, std::less<>> entries_;
     std::map<std::string, std::string, std::less<>> commands_; // command name: plugin id
+    std::map<std::string, std::string, std::less<>> chat_commands_; // chat "/" command name: plugin id
+    bool chat_commands_changed_{};
     std::string level_;
     double next_save_{};
     SessionState session_;
@@ -196,6 +202,8 @@ private:
     bool chat_started_{};
     std::uint64_t track_revision_{};
     double next_track_{};
+    std::uint64_t favorites_generation_{};
+    bool favorites_known_{};
     bool throwdown_active_{};
 };
 }

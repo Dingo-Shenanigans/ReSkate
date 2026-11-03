@@ -80,6 +80,12 @@ public:
     }
 };
 
+// Resident non-solid visuals and joint attachments follow every eligible client tick.
+// Unattached solid objects keep their 16 ms throttle; unchanged matrices never move.
+constexpr bool movement_due(bool changed, bool solid, bool attached, std::uint64_t now, std::uint64_t moved) noexcept {
+    return changed && (!solid || attached || now >= moved + 16);
+}
+
 // A world object blueprint (ObjectBlueprint, or a type derived from it): never a skater's blueprint.
 template<class ReadPointer>
 bool object_blueprint(std::uintptr_t asset, std::uintptr_t base, ReadPointer read) {
@@ -106,6 +112,9 @@ bool object_resident(std::uintptr_t cached, std::uintptr_t resolved, std::uintpt
 // was gone (Skate.exe+0x3db7939 writing 0x24, the lock's debug record at null). A found box is kept for
 // five seconds, a miss for one, and at most `scans_per_second` searches run each second; past that a
 // name keeps its last answer, or has none yet.
+// The rationing did not end it: in 2.1.3 (Sentry, 2026-11-02, ntdll+0x1a12d) 12 of 30 sampled reports
+// still came through here, 14 of them while the game quit. A search is only allowed (`may_search`) in an
+// active level; while a level loads, unloads or the game shuts down, every name keeps its last answer.
 template<class Value>
 class LookupCache {
 public:
@@ -113,11 +122,11 @@ public:
     static constexpr unsigned scans_per_second = 8;
     static constexpr std::size_t most_names = 1024;
     template<class Search>
-    std::optional<Value> get(const std::string& name, std::uint64_t now, Search search) {
+    std::optional<Value> get(const std::string& name, std::uint64_t now, Search search, bool may_search = true) {
         auto entry = entries_.find(name);
         if (entry != entries_.end() && now < entry->second.at + (entry->second.value ? found_for : missed_for)) return entry->second.value;
         if (now >= window_ + 1000) window_ = now, scans_ = 0;
-        if (scans_ >= scans_per_second) return entry == entries_.end() ? std::nullopt : entry->second.value;
+        if (!may_search || scans_ >= scans_per_second) return entry == entries_.end() ? std::nullopt : entry->second.value;
         ++scans_;
         if (entry == entries_.end()) {
             if (entries_.size() >= most_names) entries_.clear();

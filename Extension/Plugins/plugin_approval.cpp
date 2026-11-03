@@ -29,10 +29,12 @@ constexpr Capability capabilities[] = {
     {"session.skaters", "PLAYERS", Risk::amber, "Hide, touch and read other players' skaters"},
     {"session.nametags", "PLAYERS", Risk::amber, "Change nametags on your game"},
     {"voice.control", "PLAYERS", Risk::amber, "Set how loud each player is to you"},
+    {"outfit.stand_ins", "PLAYERS", Risk::grey, "Choose what you see in place of other players' items you don't have"},
     {"session.read", "PLAYERS", Risk::grey, "Read the session and its players"},
     {"chat.send", "CHAT", Risk::red, "Send chat lines as you"},
     {"chat.read", "CHAT", Risk::grey, "Read the session's chat"},
     {"chat.local", "CHAT", Risk::grey, "Show chat notices on your screen"},
+    {"chat.commands", "CHAT", Risk::grey, "Add / commands to your chat"},
     {"server", "SERVER", Risk::red, "Moderate, chat and run polls on a server you host"},
     {"server.parks", "SERVER", Risk::red, "Add or remove a server's park mods"},
     {"skater.teleport", "SKATER", Risk::red, "Teleport your skater"},
@@ -46,10 +48,12 @@ constexpr Capability capabilities[] = {
     {"events.skater", "SKATER", Risk::grey, "Follow your skater's state, bails and launches"},
     {"events.physics", "SKATER", Risk::grey, "Follow your skater's physics every step"},
     {"events.physics.geometry", "SKATER", Risk::grey, "Follow your skater's physics every step"},
+    {"marker.read", "SKATER", Risk::grey, "See when you save and return to your marker"},
     {"world.objects", "WORLD", Risk::red, "List, place, move and remove park objects"},
     // Red: real bodies in your game's physics world, pushed with forces, which the game cannot free until it restarts.
     {"world.physics", "WORLD", Risk::red, "Create physical bodies in your world and push them around"},
     {"world.physics.observe", "WORLD", Risk::red, "See what its rays hit, other skaters' shapes included"},
+    {"objects.physics", "WORLD", Risk::red, "Make your own park's objects fall, roll and get knocked over (offline)"},
     {"travel", "WORLD", Risk::red, "Travel to locations and levels"},
     {"world.environment", "WORLD", Risk::red, "Change the time of day, world controls and parks"},
     {"world.entities", "WORLD", Risk::amber, "Spawn objects that only you see"},
@@ -60,6 +64,7 @@ constexpr Capability capabilities[] = {
     {"input", "INPUT", Risk::amber, "Bind your keys, pads and mouse, and read text input"},
     {"input.lease", "INPUT", Risk::amber, "Reserve and read one observed controller stream, without capturing or changing input"},
     {"input.capture", "INPUT", Risk::red, "Capture one selected controller stream, with neutral-release cleanup"},
+    {"input.write", "INPUT", Risk::amber, "Replace your controller input while you play"},
     // Red: it can relabel anything the game shows, its store's buttons and prices included.
     {"strings", "SCREEN", Risk::red, "Change the text the game shows, in its menus and its store"},
     {"capture", "SCREEN", Risk::amber, "Record your screen"},
@@ -247,6 +252,7 @@ std::string approval_prompt(const std::vector<PermissionGroup>& groups) {
             if (has("session.skaters")) session.push_back("hide, touch, or read other players' skaters");
             if (has("session.nametags")) session.push_back("change the nametags you see");
             if (has("voice.control")) session.push_back("set how loud each player sounds to you");
+            if (has("outfit.stand_ins")) session.push_back("choose what you see in place of other players' items you don't have");
             if (!session.empty()) actions.push_back(join(session));
             if (has("net.session")) actions.push_back("send messages to other players using the same plugin");
             if (has("throwdowns")) actions.push_back("host and manage throwdowns");
@@ -254,6 +260,7 @@ std::string approval_prompt(const std::vector<PermissionGroup>& groups) {
             if (has("chat.read")) actions.push_back("read chat");
             if (has("chat.send")) actions.push_back("send chat lines as you");
             if (has("chat.local")) actions.push_back("show chat notices on your screen");
+            if (has("chat.commands")) actions.push_back("add / commands to your chat");
         } else if (group.category == "SERVER") {
             if (has("server")) actions.push_back("moderate servers you host");
             if (has("server.parks")) actions.push_back("add or remove park mods on servers you host");
@@ -269,10 +276,12 @@ std::string approval_prompt(const std::vector<PermissionGroup>& groups) {
             if (has("events.skater")) actions.push_back("follow your skater's state, bails, and launches");
             if (has("events.physics.geometry")) actions.push_back("follow detailed skater physics, including geometry, each step");
             else if (has("events.physics")) actions.push_back("follow your skater's physics each step");
+            if (has("marker.read")) actions.push_back("see when you save and return to your marker");
         } else if (group.category == "WORLD") {
             if (has("world.objects")) actions.push_back("list and edit park objects");
             if (has("world.physics")) actions.push_back("create physical bodies in your world and push them around");
             if (has("world.physics.observe")) actions.push_back("see what its rays hit, other skaters' shapes included");
+            if (has("objects.physics")) actions.push_back("make your own park's objects fall, roll, and get knocked over (offline)");
             if (has("travel")) actions.push_back("travel to locations and levels");
             if (has("world.environment")) actions.push_back("change parks, world controls, and time of day");
             if (has("world.entities")) actions.push_back("spawn objects visible only to you");
@@ -285,6 +294,7 @@ std::string approval_prompt(const std::vector<PermissionGroup>& groups) {
             if (has("input")) actions.push_back("bind keys, pads, and mouse, and read text input");
             if (has("input.lease")) actions.push_back("reserve and read one observed controller stream, without capturing or changing input");
             if (has("input.capture")) actions.push_back("capture one selected controller stream, with neutral-release cleanup");
+            if (has("input.write")) actions.push_back("replace your controller input while you play");
         } else if (group.category == "SCREEN") {
             if (has("strings")) actions.push_back("change the text the game shows, in its menus and its store");
             if (has("capture")) actions.push_back("record your screen");

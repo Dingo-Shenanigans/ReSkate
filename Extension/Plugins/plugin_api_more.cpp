@@ -3,6 +3,7 @@
 #include "lualib.h"
 #include <algorithm>
 #include <cmath>
+#include <optional>
 
 // Phase 3's parts of the reskate API (docs: ReSkate Plugin System Design, "the wider set"). As in
 // plugin_api.cpp, every value is checked before it leaves the VM.
@@ -171,6 +172,46 @@ struct MoreApi {
         return 1;
     }
 
+// spatialize_music(nil | false | {active = true, left = 0..4, right = 0..4, lpf = 0.04..1, lpf_l, lpf_r,
+// itd = -32..32, env = 0..0.65, mute_loops = true}): numbers past their ranges are held to them.
+// Held about 2 s, so a plugin calls it each tick it wants it; whether it is on.
+    static int music_spatialize(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "music", "reskate.spatialize_music");
+        std::optional<MusicSpatial> spatial;
+        if (lua_istable(L, 1)) {
+            const auto number = [&](const char* name, double fallback, double least, double most) {
+                lua_getfield(L, 1, name);
+                const double v = luaL_optnumber(L, -1, fallback);
+                lua_pop(L, 1);
+                if (!std::isfinite(v)) luaL_error(L, "%s is a finite number", name);
+                return std::clamp(v, least, most);
+            };
+            const auto flag = [&](const char* name) {
+                lua_getfield(L, 1, name);
+                const bool on = lua_isnil(L, -1) || lua_toboolean(L, -1) != 0;
+                lua_pop(L, 1);
+                return on;
+            };
+            if (flag("active")) {
+                MusicSpatial s;
+                s.left = static_cast<float>(number("left", 1, 0, 4));
+                s.right = static_cast<float>(number("right", 1, 0, 4));
+                const double lpf = number("lpf", 1, 0.04, 1);
+                s.lpf_left = static_cast<float>(number("lpf_l", lpf, 0.04, 1));
+                s.lpf_right = static_cast<float>(number("lpf_r", lpf, 0.04, 1));
+                s.itd = static_cast<int>(number("itd", 0, -32, 32));
+                s.env = static_cast<float>(number("env", 0, 0, 0.65));
+                s.mute_loops = flag("mute_loops");
+                spatial = s;
+            }
+        } else if (!lua_isnoneornil(L, 1) && !(lua_isboolean(L, 1) && !lua_toboolean(L, 1))) {
+            luaL_argerror(L, 1, "a table, or nil or false for off");
+        }
+        lua_pushboolean(L, plugin.services_.game().spatialize_music(spatial) ? 1 : 0);
+        return 1;
+    }
+
     static void install(Plugin& plugin, lua_State* L);
 };
 
@@ -180,7 +221,7 @@ void MoreApi::install(Plugin& plugin, lua_State* L) {
     (void)plugin;
     // The reskate table is on top of the stack.
     using F = MoreApi;
-    add_functions(L, {{"expose", F::expose}, {"require_plugin", F::require_plugin}, {"emit", F::emit}, {"on_plugin", F::on_plugin}});
+    add_functions(L, {{"expose", F::expose}, {"require_plugin", F::require_plugin}, {"emit", F::emit}, {"on_plugin", F::on_plugin}, {"spatialize_music", F::music_spatialize}});
     add_functions(L, "http", {{"request", F::http_request}});
 }
 }

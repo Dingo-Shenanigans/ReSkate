@@ -148,6 +148,12 @@ struct State {
     std::atomic<bool> item_search_focus_requested{false};
     native_input_source::PublishedAtomic<bool> plugin_dialog_visible{false};
     std::atomic<bool> item_search_character_pending{false}, item_search_escape_pending{false};
+    // The pickers' Author, Mod pack, Sort and Show at the top
+    // (item_browser_overlay.cpp). item_filters_visible: V or a click on one has them take the keys
+    // and the pointer until Esc, V or a click elsewhere. item_filters_back counts the Esc presses
+    // they get.
+    std::atomic<bool> item_filters_visible{false}, item_filters_escape_pending{false};
+    std::atomic<unsigned> item_filters_back{0};
     // A plugin's full-screen screen is open (plugin_overlay.cpp): it has the input, as the menu.
     native_input_source::PublishedAtomic<bool> plugin_screen_visible{false};
     native_input_source::PublishedAtomic<bool> input_attached{false};
@@ -404,6 +410,10 @@ void draw_perf_window();
 enum class ItemBrowserKey { favorite, filter };
 bool item_browser_pending();
 bool item_browser_open();
+bool item_browser_filters_shown(); // the grid that has the focus is a picker with its filters
+// The game window's mouse moves and left clicks (client pixels) while the game has the mouse: the
+// pickers' filters watch them. Window procedure.
+void item_browser_mouse(UINT message, float x, float y);
 void item_browser_key(ItemBrowserKey key);
 void item_browser_search_cleared(); // Esc in the search box
 void draw_item_browser();

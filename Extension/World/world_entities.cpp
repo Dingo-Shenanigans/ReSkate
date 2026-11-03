@@ -1,5 +1,6 @@
 #include "world_entities.h"
 #include "world_entities_contract.h"
+#include "level_loading.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/memory.h"
 #include "Engine/Game/Abi/native_data.h"
@@ -368,7 +369,7 @@ std::optional<Box> blueprint_bounds(std::uintptr_t base, std::string_view bluepr
             if (const auto asset = find(domain, name.c_str()); detail::object_blueprint(asset, base, read)) return asset_bounds(base, asset);
         }
         return std::nullopt;
-    });
+    }, level_content_active());
 }
 
 void set_joint_source(JointSource source) noexcept { joint_source.store(source, std::memory_order_release); }
@@ -610,8 +611,9 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
             if (const auto l = live.find(key); l != live.end()) {
                 bodies_for(base, key, l->second, w, now);
                 // Move a resident object in place: recreating restarts its effects and makes it jump.
-                // One on a joint follows it every frame.
-                if (l->second.matrix != w.matrix && (w.attach || now >= l->second.moved + 16)) {
+                // Joint attachments and non-solid visuals follow changed transforms every client tick.
+                if (detail::movement_due(l->second.matrix != w.matrix, w.solid, w.attach.has_value(),
+                    now, l->second.moved)) {
                     move(base, l->second, w.matrix);
                     std::lock_guard lock(s.mutex);
                     if (const auto at = s.live.find(key); at != s.live.end()) at->second.matrix = w.matrix, at->second.moved = now;

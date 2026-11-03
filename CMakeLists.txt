@@ -202,7 +202,8 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS)
         add_executable(dingosdk_external_player_probe Extension/Music/Test/external_player_probe.cpp Extension/Music/external_player.cpp
             Extension/Music/Test/external_player_probe_stubs.cpp)
         target_include_directories(dingosdk_external_player_probe PRIVATE "${PROJECT_SOURCE_DIR}")
-        add_executable(dingosdk_app_audio_probe Extension/Music/Test/app_audio_probe.cpp Extension/Music/app_audio_capture.cpp)
+        add_executable(dingosdk_app_audio_probe Extension/Music/Test/app_audio_probe.cpp Extension/Music/app_audio_capture.cpp
+            Extension/Music/audio_dsp.cpp)
         target_include_directories(dingosdk_app_audio_probe PRIVATE "${PROJECT_SOURCE_DIR}")
     endif()
     add_executable(dingosdk_word_filter_tests Engine/Core/Text/Test/word_filter_tests.cpp)
@@ -300,7 +301,8 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS AND WIN32)
     target_include_directories(dingosdk_custom_throwdown_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME custom_throwdowns COMMAND dingosdk_custom_throwdown_tests)
     add_executable(dingosdk_multiplayer_native_tests
-        Extension/Multiplayer/Test/native_layout_tests.cpp Extension/Multiplayer/Net/protocol.cpp)
+        Extension/Multiplayer/Test/native_layout_tests.cpp Extension/Multiplayer/Net/protocol.cpp
+        Extension/Multiplayer/Remote/stand_ins.cpp)
     add_test(NAME multiplayer_native_layout COMMAND dingosdk_multiplayer_native_tests)
     add_executable(dingosdk_multiplayer_lobby_tests
         Extension/Multiplayer/Test/lobby_tests.cpp Extension/Multiplayer/Steam/steam_lobbies.cpp
@@ -345,11 +347,13 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS AND WIN32)
         Extension/Multiplayer/Net/protocol.cpp
         Extension/Multiplayer/Net/delta_codec.cpp Extension/Multiplayer/Net/wire_codec.cpp
         Extension/Multiplayer/Remote/playback_buffers.cpp Extension/Multiplayer/Session/password.cpp
-        Server/server_activity.cpp Server/server_votes.cpp Server/server_commands.cpp Server/server_parks.cpp Extension/Throwdowns/throwdown_wire.cpp)
+        Server/server_activity.cpp Server/server_votes.cpp Server/server_commands.cpp Server/server_parks.cpp Extension/Throwdowns/throwdown_wire.cpp
+        Server/server_plugins.cpp)
     target_include_directories(dingosdk_server_load_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     target_include_directories(dingosdk_server_load_tests SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/External/steam_networking")
     target_link_libraries(dingosdk_server_load_tests PRIVATE dingosdk_launcher_support dingosdk_world_layer_scan dingosdk_json
-        dingosdk_lz4 dingosdk_zstd dingosdk_logging dingosdk_miniz dingosdk_word_filter dingosdk_https winhttp bcrypt winmm)
+        dingosdk_lz4 dingosdk_zstd dingosdk_logging dingosdk_miniz dingosdk_word_filter dingosdk_https winhttp bcrypt winmm
+        dingosdk_plugins)
 endif()
 # The route and logging tests live in the local, untracked tests/ folder.
 option(DINGOSDK_BUILD_ROUTE_TESTS "Build native route cycle regression tests" OFF)
@@ -430,6 +434,12 @@ if(DINGOSDK_BUILD_ANIMATION_STUDIO_TESTS)
     target_include_directories(dingosdk_pose_place_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     target_link_libraries(dingosdk_pose_place_tests PRIVATE dingosdk_json)
     add_test(NAME pose_place COMMAND dingosdk_pose_place_tests)
+    # A joint moved on top of the pose as it is drawn (reskate.skater.pose's offsets), not the animation's.
+    add_executable(dingosdk_pose_offset_tests Extension/Skater/Test/pose_offset_tests.cpp Extension/Skater/pose_offset.cpp
+        Extension/AnimationStudio/anim_core.cpp)
+    target_include_directories(dingosdk_pose_offset_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_link_libraries(dingosdk_pose_offset_tests PRIVATE dingosdk_json)
+    add_test(NAME pose_offset COMMAND dingosdk_pose_offset_tests)
 endif()
 option(DINGOSDK_BUILD_REPLAY_KEYFRAMES_TESTS "Build replay keyframe smoothing regression tests" OFF)
 if(DINGOSDK_BUILD_REPLAY_KEYFRAMES_TESTS)
@@ -483,6 +493,11 @@ if(DINGOSDK_BUILD_PLUGIN_TESTS)
     # It also runs the test plugins in contrib/plugins.
     target_compile_definitions(dingosdk_plugin_tests PRIVATE "RESKATE_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\"")
     add_test(NAME plugins COMMAND dingosdk_plugin_tests)
+    # The item grids' search and order (Extension/Customization/item_browser_order.h), pure, so it
+    # runs on Linux too.
+    add_executable(dingosdk_item_browser_order_tests Extension/Customization/Test/item_browser_order_tests.cpp)
+    target_include_directories(dingosdk_item_browser_order_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME item_browser_order COMMAND dingosdk_item_browser_order_tests)
     # reskate.viewmodel's file and clips (Extension/UI/Overlay/viewmodel_model.h), and the FPS plugin's
     # exported pistol when contrib/plugins has it.
     add_executable(dingosdk_viewmodel_tests Extension/UI/Overlay/Test/viewmodel_model_tests.cpp Extension/UI/Overlay/viewmodel_model.cpp)

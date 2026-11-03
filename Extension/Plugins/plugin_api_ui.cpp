@@ -8,9 +8,9 @@
 #include <cmath>
 
 // The parts of the reskate API that reach players and other games: drawing on the overlay
-// (overlay), toasts, menu panels (menu), menu sounds (audio.ui), the mod list (mods.read), the
-// session (session.read) and messages to the same plugin elsewhere (net.session). As in
-// plugin_api.cpp, every value is checked before it leaves the VM.
+// (overlay), toasts, menu panels (menu), menu sounds (audio.ui), the mod list and where an item
+// comes from (mods.read), the session (session.read) and messages to the same plugin elsewhere
+// (net.session). As in plugin_api.cpp, every value is checked before it leaves the VM.
 namespace dingosdk::plugins {
 namespace {
 float finite(lua_State* L, int index, const char* what) {
@@ -521,6 +521,137 @@ struct UiApi {
         lua_pushboolean(L, pressed);
         return 1;
     }
+    // buttons(id, {names}, lit): small buttons side by side, `lit` (a number) shown as the one in use; the
+    // number of the one pressed, or nil.
+    static int buttons(lua_State* L) {
+        auto& plugin = building(L);
+        plugin_ui::Widget widget{plugin_ui::Widget::Kind::buttons, widget_id(L, plugin, 2)};
+        luaL_checktype(L, 3, LUA_TTABLE);
+        const int count = lua_objlen(L, 3);
+        if (count < 1 || count > 32) luaL_argerror(L, 3, "buttons are 1 to 32 names");
+        for (int i = 1; i <= count; ++i) {
+            lua_rawgeti(L, 3, i);
+            widget.choices.push_back(checked_text(L, -1, 40, "a button's name"));
+            lua_pop(L, 1);
+        }
+        const int lit = static_cast<int>(luaL_optinteger(L, 4, 0));
+        widget.chosen = lit >= 1 && lit <= count ? lit : 0;
+        const auto* action = pending(plugin, plugin.pending_, plugin.building_->title, widget.id);
+        plugin.building_->widgets.push_back(std::move(widget));
+        if (action && action->chosen >= 1 && action->chosen <= count) lua_pushinteger(L, action->chosen);
+        else lua_pushnil(L);
+        return 1;
+    }
+    // text(id, label, value, hint): a line to type in; what it holds now (at most 200 characters).
+    static int text_field(lua_State* L) {
+        auto& plugin = building(L);
+        plugin_ui::Widget widget{plugin_ui::Widget::Kind::text, widget_id(L, plugin, 2), checked_text(L, 3, 60, "a text field's label")};
+        widget.input = lua_isnoneornil(L, 4) ? std::string{} : checked_text(L, 4, 200, "a text field's text");
+        if (!lua_isnoneornil(L, 5)) widget.help = checked_text(L, 5, 120, "a text field's hint");
+        if (const auto* action = pending(plugin, plugin.pending_, plugin.building_->title, widget.id)) widget.input = action->text.substr(0, 200);
+        const auto now = widget.input;
+        plugin.building_->widgets.push_back(std::move(widget));
+        lua_pushlstring(L, now.data(), now.size());
+        return 1;
+    }
+    // A colour as {r, g, b} or {r = , g = , b = }, each 0 to 1; and pushed back as the named one.
+    static std::array<float, 3> colour_at(lua_State* L, int index) {
+        luaL_checktype(L, index, LUA_TTABLE);
+        std::array<float, 3> colour{};
+        static constexpr const char* names[] = {"r", "g", "b"};
+        for (int i = 0; i < 3; ++i) {
+            lua_getfield(L, index, names[i]);
+            if (lua_isnil(L, -1)) {
+                lua_pop(L, 1);
+                lua_rawgeti(L, index, i + 1);
+            }
+            // A NaN would pass the clamp and reach ImGui's colour picker, which turns it into an int.
+            if (!lua_isnumber(L, -1) || !std::isfinite(lua_tonumber(L, -1))) luaL_argerror(L, index, "a colour is {r, g, b} or {r = , g = , b = }, each 0 to 1");
+            colour[static_cast<std::size_t>(i)] = std::clamp(static_cast<float>(lua_tonumber(L, -1)), 0.0f, 1.0f);
+            lua_pop(L, 1);
+        }
+        return colour;
+    }
+    static void push_colour(lua_State* L, const std::array<float, 3>& colour) {
+        lua_createtable(L, 0, 3);
+        static constexpr const char* names[] = {"r", "g", "b"};
+        for (int i = 0; i < 3; ++i) {
+            lua_pushnumber(L, colour[static_cast<std::size_t>(i)]);
+            lua_setfield(L, -2, names[i]);
+        }
+    }
+    // colour(id, label, colour): a colour to pick; the one picked now, {r = , g = , b = }.
+    static int colour(lua_State* L) {
+        auto& plugin = building(L);
+        plugin_ui::Widget widget{plugin_ui::Widget::Kind::colour, widget_id(L, plugin, 2), checked_text(L, 3, 60, "a colour's label")};
+        widget.colour = colour_at(L, 4);
+        if (const auto* action = pending(plugin, plugin.pending_, plugin.building_->title, widget.id))
+            for (std::size_t i = 0; i < 3; ++i) widget.colour[i] = std::clamp(action->colour[i], 0.0f, 1.0f);
+        const auto now = widget.colour;
+        plugin.building_->widgets.push_back(std::move(widget));
+        push_colour(L, now);
+        return 1;
+    }
+    // stepper(id, label, value, min, max, step, format): a number that goes up and down by `step`, held in
+    // its range and on its steps; the value now.
+    static int stepper(lua_State* L) {
+        auto& plugin = building(L);
+        plugin_ui::Widget widget{plugin_ui::Widget::Kind::stepper, widget_id(L, plugin, 2), checked_text(L, 3, 60, "a stepper's label")};
+        widget.minimum = finite(L, 5, "the minimum");
+        widget.maximum = finite(L, 6, "the maximum");
+        if (!(widget.maximum > widget.minimum)) luaL_argerror(L, 6, "the maximum must be above the minimum");
+        widget.step = finite(L, 7, "the step");
+        if (!(widget.step > 0) || widget.step > widget.maximum - widget.minimum) luaL_argerror(L, 7, "a step is above 0 and within the range");
+        widget.value = finite(L, 4, "the value");
+        if (!lua_isnoneornil(L, 8)) {
+            widget.format = slider_format(L, 8);
+            if (const auto at = widget.format.find("%d"); at != std::string::npos) widget.format.replace(at, 2, "%.0f");
+        }
+        if (const auto* action = pending(plugin, plugin.pending_, plugin.building_->title, widget.id)) widget.value = action->value;
+        const float steps = std::round((std::clamp(widget.value, widget.minimum, widget.maximum) - widget.minimum) / widget.step);
+        widget.value = std::clamp(widget.minimum + steps * widget.step, widget.minimum, widget.maximum);
+        const float value = widget.value;
+        plugin.building_->widgets.push_back(std::move(widget));
+        lua_pushnumber(L, value);
+        return 1;
+    }
+    // section(id, title, subtitle, open): a card that folds; the widgets after it go in it, until the next
+    // card or section. Whether it is open now (the player opens and folds it): when it is not, the page
+    // may leave its widgets out.
+    static int section(lua_State* L) {
+        auto& plugin = building(L);
+        plugin_ui::Widget widget{plugin_ui::Widget::Kind::section, widget_id(L, plugin, 2), checked_text(L, 3, 60, "a section's title")};
+        if (!lua_isnoneornil(L, 4)) widget.help = checked_text(L, 4, 120, "a section's subtitle");
+        widget.on = lua_isnoneornil(L, 5) ? true : lua_toboolean(L, 5) != 0;
+        if (const auto* action = pending(plugin, plugin.pending_, plugin.building_->title, widget.id)) widget.on = action->on;
+        const bool open = widget.on;
+        plugin.building_->widgets.push_back(std::move(widget));
+        lua_pushboolean(L, open);
+        return 1;
+    }
+    // list(id, label, items, chosen, rows): one of a long list (1 to 200 items), `rows` of them in view (3 to
+    // 12, 6 when not given); the chosen one's number, 0 for none.
+    static int list(lua_State* L) {
+        auto& plugin = building(L);
+        plugin_ui::Widget widget{plugin_ui::Widget::Kind::list, widget_id(L, plugin, 2), checked_text(L, 3, 60, "a list's label")};
+        luaL_checktype(L, 4, LUA_TTABLE);
+        const int count = lua_objlen(L, 4);
+        if (count < 1 || count > 200) luaL_argerror(L, 4, "a list has 1 to 200 items");
+        for (int i = 1; i <= count; ++i) {
+            lua_rawgeti(L, 4, i);
+            widget.choices.push_back(checked_text(L, -1, 80, "a list's item"));
+            lua_pop(L, 1);
+        }
+        widget.chosen = static_cast<int>(luaL_optinteger(L, 5, 0));
+        widget.rows = static_cast<int>(luaL_optinteger(L, 6, 6));
+        if (widget.rows < 3 || widget.rows > 12) luaL_argerror(L, 6, "a list shows 3 to 12 rows");
+        if (const auto* action = pending(plugin, plugin.pending_, plugin.building_->title, widget.id)) widget.chosen = action->chosen;
+        widget.chosen = widget.chosen >= 1 && widget.chosen <= count ? widget.chosen : 0;
+        const int chosen = widget.chosen;
+        plugin.building_->widgets.push_back(std::move(widget));
+        lua_pushinteger(L, chosen);
+        return 1;
+    }
     static int toggle(lua_State* L) {
         auto& plugin = building(L);
         plugin_ui::Widget widget{plugin_ui::Widget::Kind::toggle, widget_id(L, plugin, 2), checked_text(L, 3, 60, "a toggle's text")};
@@ -616,16 +747,80 @@ struct UiApi {
         const auto mods = plugin.services_.mods();
         lua_createtable(L, static_cast<int>(mods.size()), 0);
         for (std::size_t i = 0; i < mods.size(); ++i) {
-            lua_createtable(L, 0, 3);
+            lua_createtable(L, 0, 5);
             lua_pushlstring(L, mods[i].folder.data(), mods[i].folder.size());
             lua_setfield(L, -2, "folder");
             lua_pushlstring(L, mods[i].title.data(), mods[i].title.size());
             lua_setfield(L, -2, "title");
             lua_pushboolean(L, mods[i].on);
             lua_setfield(L, -2, "on");
+            // The manifest's own words, left out when it names none. Nothing records when the
+            // folder was first seen, so the list does not invent an install time.
+            if (!mods[i].author.empty()) {
+                lua_pushlstring(L, mods[i].author.data(), mods[i].author.size());
+                lua_setfield(L, -2, "author");
+            }
+            if (!mods[i].version.empty()) {
+                lua_pushlstring(L, mods[i].version.data(), mods[i].version.size());
+                lua_setfield(L, -2, "version");
+            }
             lua_rawseti(L, -2, static_cast<int>(i + 1));
         }
         return 1;
+    }
+    // The same bound as menu.grid_show: a picker asks about the keys a grid already showed it.
+    static std::vector<std::string> item_keys(lua_State* L, int index) {
+        luaL_checktype(L, index, LUA_TTABLE);
+        const int count = lua_objlen(L, index);
+        if (count > 4000) luaL_argerror(L, index, "at most 4000 items");
+        std::vector<std::string> keys;
+        keys.reserve(static_cast<std::size_t>(count));
+        for (int i = 1; i <= count; ++i) {
+            lua_rawgeti(L, index, i);
+            keys.push_back(checked_text(L, lua_gettop(L), 255, "an item's key"));
+            lua_pop(L, 1);
+        }
+        return keys;
+    }
+    static void set_text(lua_State* L, const std::string& text, const char* field) {
+        if (text.empty()) return;
+        lua_pushlstring(L, text.data(), text.size());
+        lua_setfield(L, -2, field);
+    }
+    // mods.item_origins(keys): where each key comes from. The second result is false while the
+    // merge or the catalogues are not read yet; every key is "unknown" then, never "game".
+    static int item_origins(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "mods.read", "reskate.mods.item_origins");
+        const auto keys = item_keys(L, 1);
+        const auto found = plugin.services_.game().item_facts(keys);
+        // A short answer is not a catalogue. Treat it as not ready so a missing fact is never a game item.
+        const bool ready = found.ready && found.facts.size() == keys.size();
+        lua_createtable(L, 0, static_cast<int>(keys.size()));
+        for (std::size_t i = 0; i < keys.size(); ++i) {
+            const Game::ItemFact blank;
+            const auto& fact = ready ? found.facts[i] : blank;
+            // Words from item_sources (Enums.ItemSource): mod, changed, game, unknown.
+            std::string_view source = item_sources[3];
+            if (ready && fact.from_mod && fact.game) source = item_sources[1];
+            else if (ready && fact.from_mod) source = item_sources[0];
+            else if (ready && fact.game) source = item_sources[2];
+            lua_createtable(L, 0, 5);
+            lua_pushlstring(L, source.data(), source.size());
+            lua_setfield(L, -2, "source");
+            if (ready && fact.from_mod) {
+                set_text(L, fact.folder, "folder");
+                set_text(L, fact.title, "title");
+                set_text(L, fact.author, "author");
+                set_text(L, fact.version, "version");
+            }
+            lua_pushlstring(L, keys[i].data(), keys[i].size());
+            lua_pushvalue(L, -2);
+            lua_settable(L, -4);
+            lua_pop(L, 1);
+        }
+        lua_pushboolean(L, ready);
+        return 2;
     }
 
     // ---- session.read --------------------------------------------------------------------------
@@ -723,7 +918,8 @@ void UiApi::install(Plugin& plugin, lua_State* L) {
     lua_pop(L, 1);
 
     push_functions(L, {{"heading", F::heading}, {"label", F::label}, {"separator", F::separator}, {"button", F::button},
-                       {"toggle", F::toggle}, {"slider", F::slider}, {"dropdown", F::dropdown}, {"bar", F::bar}, {"card", F::card},
+                       {"toggle", F::toggle}, {"buttons", F::buttons}, {"text", F::text_field}, {"colour", F::colour},
+                       {"color", F::colour}, {"stepper", F::stepper}, {"section", F::section}, {"list", F::list}, {"slider", F::slider}, {"dropdown", F::dropdown}, {"bar", F::bar}, {"card", F::card},
                        {"note", F::note}, {"warn", F::warn}, {"info", F::info}, {"tabs", F::tabs}});
     plugin.ui_table_ = lua_ref(L, -1);
     lua_pop(L, 1);
@@ -731,7 +927,7 @@ void UiApi::install(Plugin& plugin, lua_State* L) {
     add_functions(L, "ui", {{"toast", F::toast}});
     add_functions(L, "menu", {{"panel", F::panel}, {"page", F::page}});
     add_functions(L, "audio", {{"play_ui", F::play_ui}});
-    add_functions(L, "mods", {{"installed", F::installed}, {"list", F::mods_list}});
+    add_functions(L, "mods", {{"installed", F::installed}, {"list", F::mods_list}, {"item_origins", F::item_origins}});
     add_functions(L, "session", {{"active", F::active}, {"is_dedicated", F::dedicated}, {"players", F::players}, {"me", F::me}, {"host", F::host}});
     add_functions(L, "net", {{"send", F::send}});
 }

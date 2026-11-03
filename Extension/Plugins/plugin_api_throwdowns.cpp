@@ -361,6 +361,16 @@ struct KitApi {
             if (!(std::abs(a) <= 100)) luaL_argerror(L, 1, "a velocity is at most 100 m/s on each axis");
         return result(L, game(plugin).set_velocity(plugin.id(), v, lua_toboolean(L, 2) != 0));
     }
+    // flip_speed(factor): flip tricks in the air turn at factor times their speed (0.05 to 10, times the
+    // player's own flip speed) for the next 300 ms, so call it every tick; 1 or nil ends it. The game
+    // still finishes a slowed flip before the landing.
+    static int flip_speed(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "skater.control", "reskate.skater.flip_speed");
+        const double factor = luaL_optnumber(L, 1, 1);
+        if (!(factor >= 0.05 && factor <= 10)) luaL_argerror(L, 1, "a flip speed is 0.05 to 10 times the game's");
+        return result(L, game(plugin).flip_speed(plugin.id(), static_cast<float>(factor)));
+    }
     static int hold(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "skater.control", "reskate.skater.hold");
@@ -381,6 +391,6 @@ void KitApi::install(Plugin&, lua_State* L) {
     lua_pop(L, 1);
     add_functions(L, "files", {{"list", files_list}, {"read", files_read}, {"write", files_write}, {"remove", files_remove}});
     add_functions(L, "ui", {{"dialog", dialog}, {"close_dialog", close_dialog}});
-    add_functions(L, "skater", {{"push", push}, {"push_wait", push_wait}, {"push_reset", push_reset}, {"hold", hold}, {"cruise", cruise}, {"set_velocity", set_velocity}});
+    add_functions(L, "skater", {{"push", push}, {"push_wait", push_wait}, {"push_reset", push_reset}, {"hold", hold}, {"cruise", cruise}, {"set_velocity", set_velocity}, {"flip_speed", flip_speed}});
 }
 }

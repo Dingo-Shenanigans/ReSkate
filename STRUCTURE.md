@@ -117,12 +117,12 @@ The game's native ABI and plain data models, no hooks:
 | `Abi/` | native strings, data layouts, transforms, callback queue |
 | `Build/` | `supported_build.h` (hashes, Steam depot/manifest pins), `fingerprint.h`, `image_identity`, `addresses.h` |
 | `Build/20260929/` | one header per area with every address, fingerprint and patch for this `Skate.exe` build, as `addr::<area>::<name>` |
-| `Input/` | controller bindings, PlayStation reports, voice input |
+| `Input/` | controller bindings, PlayStation reports, voice input, a plugin's replacement pad output (`pad_output.h`), held gameplay options |
 | `Multiplayer/` | session model and limits, tick/voice/distance settings, role commands, chat rate |
 | `Profile/` | progression, player card, object persistence models |
 | `Rendering/` | draw packets, graphics controls |
 | `Settings/` | named settings, simulation time, multiplayer settings lock |
-| `Skater/` | first person, velocity boost, skater body |
+| `Skater/` | first person, velocity boost, skater body, the rider's animation values |
 | `UI/` | game view, menu entries and scale, loading screen selection |
 | `World/` | world model, layers, parks (rotation, randomization, editor), travel, custom level manifest, owned native bodies and their ray batches |
 
@@ -141,7 +141,7 @@ commands and a `Test/` folder.
 | `Localization/` | the game's text as plugins change it (`reskate.strings`): the string-override store |
 | `Music/` | local music, playlists and artwork, external players: Spotify, YouTube Music, Plex |
 | `News/` | launcher/game news feed |
-| `Objects/` | object placement and the Park Editor (`ParkEditor/`), park object sets, park mods |
+| `Objects/` | object placement and the Park Editor (`ParkEditor/`), park object sets, park mods, placement physics for plugins (`placement_physics`, `placement_adapters`: placed objects that move, and surfaces that move with them) |
 | `Plugins/` | the Luau plugin host and its `reskate.*` API (see below) |
 | `Profile/` | offline profile storage: skater, progress, missions, objects, preferences |
 | `Progression/` | challenges, entitlements, neighborhood unlocks, fast travel unlock, rip score, board wear |
@@ -149,7 +149,7 @@ commands and a `Test/` folder.
 | `ReplayKeyframes/` | replay keyframe curves and settings |
 | `Scripting/` | Lua startup, custom script loader, native blocking |
 | `Settings/` | gameplay/native/user settings, input bindings, engine tweaks, replay drafts |
-| `Skater/` | first person, noclip, free flight, physics tuning, no-bail, AI skaters, x-ray, breakable deck, launches and pad hiding for plugins, trick watch |
+| `Skater/` | first person, noclip, free flight, physics tuning, no-bail, AI skaters, x-ray, breakable deck, launches and pad hiding for plugins, trick watch, pose offsets on the drawn pose, rail target choice and movement reads for plugins |
 | `Throwdowns/` | native throwdowns, custom (plugin) modes, relay and wire format |
 | `Trainer/` | trick trainer: waypoints, jumps, landings, presets |
 | `Travel/` | location travel |
@@ -163,7 +163,7 @@ commands and a `Test/` folder.
 | `Net/` | protocol, wire/delta/pose/sound codecs |
 | `Steam/` | lobbies, server browser, transport and lanes, friend join, social |
 | `Session/` | session state, send/receive, parties, commands, rooms, passwords |
-| `Remote/` | remote skaters: native skater spawn, cosmetics, poses, audio, VFX, collision |
+| `Remote/` | remote skaters: native skater spawn, cosmetics, stand-ins for items this PC lacks (`stand_ins`), poses, audio, VFX, collision |
 | `Hud/` | nametags, indicators, player UI |
 | `Voice/` | voice capture and playback |
 
@@ -185,6 +185,8 @@ The Luau plugin host. A plugin is a folder in `Mods/` with a `reskate-plugin.jso
 - `plugin_effects`, `plugin_api_effects` — the permission, asset declarations and Lua calls for
   [plugin particles and decals](contrib/plugin-effects.md). `Extension/Rendering/plugin_effects`
   owns their native references, surface attachments and world lifetime.
+- [Item origins and favorites](contrib/plugin-item-origins.md) — `reskate.mods.item_origins` and
+  `reskate.menu.favorites`, read-only, for plugins that filter the item grids.
 
 ## `Runtime/`
 
@@ -266,7 +268,7 @@ A plugin mod's folder looks like:
 
 ## Tests
 
-Tests live in a `Test/` folder beside the code they cover (about 115 files) and build as
+Tests live in a `Test/` folder beside the code they cover (about 135 files) and build as
 `dingosdk_*_tests` executables. Turn groups on with `DINGOSDK_BUILD_MULTIPLAYER_TESTS`,
 `DINGOSDK_BUILD_LAUNCHER_TESTS`, `DINGOSDK_BUILD_PARK_EDITOR_TESTS`, `DINGOSDK_BUILD_CRASH_REPORT_TESTS`
 and `DINGOSDK_BUILD_PLUGIN_TESTS`, then run `ctest --test-dir build/vs2022-x64 -C Release`.

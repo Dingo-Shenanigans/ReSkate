@@ -153,6 +153,7 @@ add_library(dingosdk_plugins STATIC
     Extension/Plugins/plugin_api_input_lease.cpp
     Extension/Plugins/plugin_api_throwdowns.cpp
     Extension/Plugins/plugin_api_capture.cpp
+    Extension/Plugins/plugin_api_object_physics.cpp
     Extension/Plugins/plugin_content.cpp
     Extension/Plugins/plugin_api_effects.cpp
     Extension/Plugins/plugin_api_viewmodel.cpp
@@ -164,6 +165,7 @@ add_library(dingosdk_plugins STATIC
     Extension/Throwdowns/challenge_registry.cpp
     Extension/Plugins/plugin_host.cpp
     Extension/AnimationStudio/anim_core.cpp
+    Extension/Skater/pose_offset.cpp
     Extension/Skater/pose_place.cpp
     Extension/Plugins/plugin_wave.cpp)
 target_link_libraries(dingosdk_plugins PUBLIC dingosdk_json dingosdk_console_core PRIVATE dingosdk_luau dingosdk_launcher_support)

@@ -22,7 +22,8 @@ std::vector<Candidate> discover(const std::filesystem::path& data_root, FileChec
     FileChecks seen;
     if (mods) {
         mods->clear();
-        for (const auto& entry : list.entries) mods->push_back({entry.mod.name, entry.mod.title, entry.enabled, entry.mod.author});
+        for (const auto& entry : list.entries)
+            mods->push_back({entry.mod.name, entry.mod.title, entry.enabled, entry.mod.author, entry.mod.version});
     }
     for (const auto& entry : list.entries) {
         if (!entry.enabled) continue;

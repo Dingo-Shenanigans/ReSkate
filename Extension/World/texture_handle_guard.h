@@ -9,8 +9,14 @@
 // it builds for no texture rather than ask the missing texture for its key (Skate.exe+0x3e6ddc1,
 // where 2.1.2's first guard only moved the crash). The material draws without that texture where
 // the game would have closed.
+//
+// What still crashed in 2.1.3 at the same sites was a holder that is not one: an id whose entry is
+// free or never held a texture. Resolve is hooked too and checks that what it would read through is
+// a texture (its vtable in the game's image) before the game calls it, and answers none otherwise.
+// And a texture parameter value of a kind the game has no handler for (a broken shader preset's,
+// Skate.exe+0x3f87028) is left empty, the type's own default, instead of crashing its copy.
 namespace dingosdk::texture_handle_guard {
-// Checks this build's function and hooks it; once. False when the build differs (no guard).
+// Checks this build's functions and hooks them; once. False when the build differs (no guard).
 bool install(std::uintptr_t base) noexcept;
 // How many times a handle had no texture and no redirect since the game started.
 std::uint64_t stale() noexcept;

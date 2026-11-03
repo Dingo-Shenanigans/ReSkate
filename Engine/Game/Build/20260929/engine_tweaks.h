@@ -1,5 +1,6 @@
 #pragma once
 #include "Engine/Game/Build/fingerprint.h"
+#include <array>
 #include <cstdint>
 
 // Engine work the developers left on the table (Extension/Rendering/engine_tweaks.cpp, `perf`
@@ -85,4 +86,47 @@ inline constexpr std::uintptr_t section_dirty = 0x18;            // dword
 inline constexpr std::uint32_t section_dirty_mask = 0x3ffff;
 inline constexpr std::uintptr_t section_list_dirty = 0x1c;       // word
 inline constexpr std::uint16_t section_list_dirty_mask = 0x3f;
+
+// 6. Simulation stall guards under Wine on macOS (Rosetta 2 + hybrid P/E cores):
+// (a) TaskQueue::runnerLoop (0x3225d00): when a runner sees an empty ring buffer (+0xc0) and
+// decrements the active runner count (+0x14c) via `lock xaddl [rax+0x14c], -1`, it only re-reads
+// the ring buffer after the barrier when the old runner count was 1 (`cmp ecx, 1; jne exit`).
+// When two runners exit concurrently while EntityGraph pushes tasks (0x184d630, which skips
+// spawning a runner whenever +0x14c != 0), skipping the post-barrier check strands tasks in the
+// queue with 0 active runners and stalls GameSimulationLoop (GameStall 0x18e13d2). Replacing the
+// 6-byte `jne` at +16 with a 6-byte nop makes every exiting runner re-check +0xc0 after `xaddl`.
+inline constexpr std::uintptr_t task_queue_runner_exit_rva = 0x3225d98;
+inline constexpr std::array<unsigned char, 32> task_queue_runner_exit_contract{
+    0x48,0x8b,0x03,                          // mov rax,[rbx]
+    0x8b,0xcf,                               // mov ecx,edi (-1)
+    0xf0,0x0f,0xc1,0x88,0x4c,0x01,0x00,0x00, // lock xadd [rax+0x14c],ecx
+    0x83,0xf9,0x01,                          // cmp ecx,1
+    0x0f,0x85,0x96,0x01,0x00,0x00,           // jne exit (0x3225f44)
+    0x48,0x8b,0x03,                          // mov rax,[rbx]
+    0x8b,0x88,0xc0,0x00,0x00,0x00,           // mov ecx,[rax+0xc0]
+    0x90};                                   // nop
+inline constexpr std::uintptr_t task_queue_runner_exit_patch_offset = 16;
+inline constexpr std::array<unsigned char, 6> task_queue_runner_exit_patch{
+    0x0f,0x1f,0x40,0x00,0x66,0x90};          // 6-byte nop
+
+// (b) Server step shared reader lock (0x4db7ad0): tests `eax & 0xffff0000` (writer active/waiting)
+// at 0x4db7ae9 and then executes a single `lock cmpxchg [rcx+0x11640], edx` without a retry loop.
+// If two readers race on +0x11640 while no writer holds the lock, the losing reader jumps to the
+// writer-wait path (0x4db7bad), which queues a retry job on +0x11648; with no writer active
+// (+0x11650 == 0), 0x321e620 returns without scheduling the retry job and leaks the Server step
+// continuation token. Retargeting the 6-byte `jne` at +22 back to +0 (`jne 0x4db7ae9`) retries
+// the reader CAS until it succeeds or a writer sets the upper 16 bits.
+inline constexpr std::uintptr_t server_step_reader_lock_rva = 0x4db7ae9;
+inline constexpr std::array<unsigned char, 28> server_step_reader_lock_contract{
+    0xa9,0x00,0x00,0xff,0xff,                // retry: test eax,0xffff0000
+    0x0f,0x85,0xb9,0x00,0x00,0x00,           // jne wait_for_writer (0x4db7bad)
+    0x8d,0x50,0x01,                          // lea edx,[rax+1]
+    0xf0,0x0f,0xb1,0x91,0x40,0x16,0x01,0x00, // lock cmpxchg [rcx+0x11640],edx
+    0x0f,0x85,0xa8,0x00,0x00,0x00};          // jne wait_for_writer (0x4db7bad)
+inline constexpr std::uintptr_t server_step_reader_lock_patch_offset = 22;
+inline constexpr std::array<unsigned char, 6> server_step_reader_lock_patch{
+    0x75,0xe8,                               // jne retry (0x4db7ae9)
+    0x0f,0x1f,0x40,0x00};                    // 4-byte nop
+static_assert(static_cast<signed char>(server_step_reader_lock_patch[1]) ==
+              0 - static_cast<int>(server_step_reader_lock_patch_offset + 2));
 }

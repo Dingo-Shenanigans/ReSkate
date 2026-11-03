@@ -89,6 +89,10 @@ struct RowButton {
     const char* hint = nullptr;
 };
 int button_row(SkateMenu& menu, const char* id, std::initializer_list<RowButton> buttons);
+// Many small buttons in rows, each as wide as its name, wrapping as the row runs out; full screen,
+// tiles as button_row's, as many to a row as fit. `lit` (from 0, -1 for none) draws as chosen.
+// Returns the one pressed, or -1.
+int button_grid(SkateMenu& menu, const char* id, const std::vector<std::string>& names, int lit);
 // One of a list, under a label. In a window, a drop-down after a field() label; full screen, one
 // row: the label, then "< option >" that left / right change. With `pressed`, A on the row sets it
 // (for a choice applied by A, such as a park layout) instead of stepping on.

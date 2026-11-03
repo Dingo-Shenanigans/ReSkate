@@ -22,13 +22,30 @@ struct View {
     bool focused_favorite{};
     bool showing{};                         // a plugin's list is shown in the grid that has the focus (show_items)
     bool held{};                            // that list has nothing in it: the grid keeps one tile only for the game's highlight
+    // The grid that has the focus is a picker (picker_of) (and shows no plugin's list):
+    // its Author, Mod pack and Sort, and the mods with items in it.
+    Picker picker{};
+    Narrow narrow;
+    std::vector<Pack> packs;
 };
 View view();
+// The player's starred items. `ready` is false until they have been read this run; an empty `keys`
+// then means none. `generation` changes when the set does. Any thread.
+struct FavoritesView {
+    bool ready{};
+    std::vector<std::string> keys;
+    std::uint64_t generation{};
+};
+FavoritesView favorites() noexcept;
+std::uint64_t favorites_generation() noexcept;
 // Requests from the keys, the overlay and the console; applied on the client thread.
 void toggle_focused_favorite() noexcept;
 void set_search(std::string text);
 void set_filter(Filter filter) noexcept;
 void cycle_filter() noexcept;
+// The Author, Mod pack and Sort of `picker`, which they were chosen in. Dropped unless that picker
+// still has the focus when the client thread gets to them.
+void set_narrow(Picker picker, Narrow narrow);
 // A plugin's own list in the item grid that has the focus: these items (keys), in this order, taken
 // from every item grid of the screen (the game keeps them all, one per tab), less what the search
 // leaves out; nullopt gives the grid back. One owner at a time: empty when taken, else why not. Any thread.

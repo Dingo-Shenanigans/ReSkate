@@ -7,6 +7,7 @@
 #include "plugin_camera.h"
 #include "plugin_http.h"
 #include "plugin_game_runtime.h"
+#include "Extension/Objects/placement_physics.h"
 #include "plugin_wire.h"
 #include "Engine/Vfs/thunderstore_package.h"
 #include "Engine/Vfs/initfs.h"
@@ -109,7 +110,7 @@ public:
         return state;
     }
     // As the console's tp: refused in a session whose host has turned teleporting (and noclip) off.
-    Teleport teleport(std::string_view plugin, const Vec3& position, float heading) override {
+    Teleport teleport(std::string_view plugin, const Vec3& position, float heading, std::optional<bool> on_board = std::nullopt) override {
         // A throwdown mode's own moves (line-ups, recoveries, returns to the start) are the game's:
         // allowed while that plugin's own match runs and asks for them (the kit's `match.teleports`),
         // never for another plugin's calls.
@@ -118,7 +119,7 @@ public:
             const bool mine = flag.owned && flag.mode.size() > plugin.size() && flag.mode.starts_with(plugin) && flag.mode[plugin.size()] == '/';
             if (!throwdowns::kit::allows_teleports(plugin, mine)) return Teleport::forbidden;
         }
-        return teleport_local_skater_heading(position, heading) ? Teleport::sent : Teleport::unavailable;
+        return teleport_local_skater_heading(position, heading, on_board) ? Teleport::sent : Teleport::unavailable;
     }
     std::optional<Vec3> raycast(const Vec3& from, const Vec3& to) override { return local_surface_hit(from, to); }
     std::optional<ScoreState> score() override { return score_now; }
@@ -262,7 +263,7 @@ void read_tricks() {
     signals.wipeout = skater.skater && skater.physics_state >= 300 && skater.physics_state < 400;
     const auto event = trick_watch.update(signals);
     environment->score_now = ScoreState{hud->line_score, hud->multiplier, trick_watch.in_trick(), hud->header, hud->descriptor,
-                                        tricks::names_manual(*hud)};
+                                        tricks::names_manual(*hud), hud->line_timer};
     if (!hud->header.empty()) last_trick_name = hud->header;
     const auto now = std::chrono::steady_clock::now();
     TrickNews news;
@@ -592,6 +593,7 @@ void on_client_tick() noexcept {
         last_tick = now;
         if (host->wants_tricks()) read_tricks();
         else environment->score_now.reset();
+        placement_physics::client_tick();
         host->tick(dt);
         if (serving) server_host->tick(dt);
     } catch (const std::exception& error) {
@@ -604,6 +606,7 @@ void set_level(std::string_view level) noexcept {
     try {
         // A new level starts a new line: a trick going on before it scores nothing.
         if (level != watched_level) {
+            placement_physics::reset();
             watched_level = std::string(level);
             trick_watch = tricks::TrickWatch{};
         }

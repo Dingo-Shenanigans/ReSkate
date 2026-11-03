@@ -30,8 +30,8 @@ struct Limits {
     std::size_t memory = 64u << 20;     // the VM's heap
     double call_ms = 50;                // one call into the plugin (load, a handler, a command)
     double unload_ms = 20;              // its unload handlers, together
-    double tick_ms = 2;                 // the average time a tick, over a window of 1 s...
-    int over_windows = 3;               // ...over it this many windows in a row stops it
+    double tick_ms = 6;                 // the average time a tick, over a window of 1 s...
+    int over_windows = 5;               // ...over it this many windows in a row stops it
     int errors = 5;                     // more errors than this...
     double error_window_ms = 10'000;    // ...in this long stops it
     int log_lines_per_second = 50;
@@ -41,6 +41,7 @@ struct Limits {
     std::size_t handlers = 256;         // per event
     std::size_t timers = 1024;
     std::size_t commands = 64;
+    std::size_t chat_commands = 8;      // "/" commands in chat
     int raycasts_per_tick = 64;
     float raycast_metres = 1000;        // the longest ray
     int teleports_per_second = 2;
@@ -48,7 +49,13 @@ struct Limits {
     std::size_t shape_text_bytes = 64u << 10;
     std::size_t images = 32; // different pictures a plugin draws
     std::size_t clip_bytes = 48u << 20; // the clips a plugin holds, as poses (40 bytes a joint a frame)
-    std::size_t sounds = 32;            // different waves a plugin plays, each at most 30 s
+    // Different waves a plugin holds at once, each at most 30 s, and their decoded samples together
+    // (16 kHz mono 16-bit, so 30 s is about 0.9 MB). Past either, the wave played longest ago that
+    // no sound still plays is let go; only when every one is still playing is a new one refused.
+    // A plugin plays at most 8 sounds at once (plugin_sound.cpp), so 32 always leaves one to let go,
+    // and 32 waves of 30 s keep a plugin's samples near 30 MB, well inside sound_bytes.
+    std::size_t sounds = 32;
+    std::size_t sound_bytes = 64u << 20;
     int toasts = 3;                     // in 5 s
     int sounds_per_second = 10;
     std::size_t message_bytes = 4096 - 14; // a plugin message's payload (plugin_wire.h's header is 14)
@@ -100,6 +107,7 @@ struct ScoreState {
     bool in_trick{};
     std::string trick, detail; // the HUD's sequence header and descriptor ("Manual", "Kickflip"...)
     bool manual{};             // a manual is going on, as the HUD names it
+    float timer{};             // the HUD's line timer: what is left before the multiplier ends
 };
 // The multiplayer session as plugins see it: who is in it (the local player too).
 struct SessionPlayer {
@@ -124,11 +132,12 @@ struct HttpResponse {
     int status{};          // 0 when it failed
     std::string body, error;
 };
-// A mod in the Mods folder: its folder, the name it gives itself, whether it is on.
+// A mod in the Mods folder: its folder, the name it gives itself, whether it is on, and the author
+// and version its manifest declares (empty when it names none).
 struct ModInfo {
     std::string folder, title;
     bool on{};
-    std::string author; // empty when it names none
+    std::string author, version;
 };
 
 // What a plugin's VM can reach outside itself. The host implements it.
@@ -142,10 +151,14 @@ public:
     virtual std::filesystem::path storage_file(std::string_view plugin) = 0;
     // Empty when the plugin may have the console command; otherwise why not.
     virtual std::string claim_command(std::string_view plugin, std::string_view name) = 0;
+    // Empty when the plugin may have the chat's "/name"; otherwise why not.
+    virtual std::string claim_chat_command(std::string_view plugin, std::string_view name) = 0;
     // The local skater, or empty without one (the menu, a load).
     virtual std::optional<SkaterState> skater() = 0;
     // `plugin`: whose call it is (a throwdown match of its own may let it through, kit::allows_teleports).
-    virtual Teleport teleport(std::string_view plugin, const Vec3& position, float heading) = 0;
+    // An empty on_board leaves the native spawn preference unchanged. An explicit value sets it
+    // at dispatch; native code may retain it for later teleports rather than automatically restoring it.
+    virtual Teleport teleport(std::string_view plugin, const Vec3& position, float heading, std::optional<bool> on_board = std::nullopt) = 0;
     // Where the line first meets the world's collision, or empty when it is clear (or not loaded).
     virtual std::optional<Vec3> raycast(const Vec3& from, const Vec3& to) = 0;
     // The score HUD now, or empty without one.
@@ -179,6 +192,7 @@ public:
 enum class State { loading, running, stopped };
 
 class Plugin {
+    friend struct ObjectPhysicsApi;
 public:
     // `directory` is the mod folder; `id` its folder name.
     Plugin(std::string id, std::filesystem::path directory, Manifest manifest, Services& services, Limits limits,
@@ -245,12 +259,18 @@ public:
     void track_changed(const Track& track);
     void throwdown_phase(const char* phase);
     void action(const std::string& name);
+    // menu: the player's starred items changed (reskate.menu.favorites). No arguments.
+    void favorites_changed();
     // ui.screen: the screen it has open, built; and closed (by Esc), which it hears.
     std::optional<plugin_ui::Panel> build_screen(const std::vector<plugin_ui::Action>& actions);
     void close_screen();
     std::uint32_t channel() const noexcept { return channel_hash_; }
     // A console command it registered: the words after the command's name.
     void run_command(const std::string& name, const std::vector<std::string>& arguments);
+    // A chat "/" command it registered: the rest of the line the player typed.
+    void run_chat_command(const std::string& name, const std::string& arguments);
+    // Its chat "/" commands: the name, its arguments as help shows them, and its help.
+    std::vector<ChatCommandInfo> chat_commands() const;
     void save_storage();
 
     const std::string& id() const noexcept { return id_; }
@@ -358,8 +378,16 @@ private:
     std::map<std::string, std::shared_ptr<const anim_studio::Clip>, std::less<>> clips_;
     std::size_t clip_bytes_{};
     int recordings_{};
-    // reskate.audio: waves by their path in the package, and how many sounds began this second.
-    std::map<std::string, std::shared_ptr<const Wave>, std::less<>> waves_;
+    // reskate.audio: waves by their path in the package, each with when it was last played (a count
+    // of plays, for letting go of the oldest), the bytes they hold (at most limits_.sound_bytes),
+    // and how many sounds began this second.
+    struct CachedWave {
+        std::shared_ptr<const Wave> wave;
+        std::uint64_t played{};
+    };
+    std::map<std::string, CachedWave, std::less<>> waves_;
+    std::size_t wave_bytes_{};
+    std::uint64_t wave_plays_{};
     double wave_second_{};
     int wave_starts_{};
     int draw_table_{}, ui_table_{};
@@ -402,6 +430,8 @@ private:
     std::map<int, Timer> timers_;
     int next_timer_{1};
     std::map<std::string, Command, std::less<>> commands_;
+    struct ChatCommand { std::string args, help; int function{}; };
+    std::map<std::string, ChatCommand, std::less<>> chat_commands_;
     std::set<std::string, std::less<>> loading_modules_;
 
     Json storage_ = Json::object();

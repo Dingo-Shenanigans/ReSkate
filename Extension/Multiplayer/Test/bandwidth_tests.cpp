@@ -213,16 +213,36 @@ void coarse_checks() {
               plain.skater[5].scale == std::array<float, 3>{1, 1, 1} && plain.skater[6].scale == std::array<float, 3>{1, 1, 1} &&
               free.skater[5].scale == std::array<float, 3>{4, 4, 4},
           "A bone's scale was not held to the limit");
-    big.pose.board.resize(3);
-    big.pose.board[0].scale = {3, 3, 3};
-    big.pose.board[2].scale = {.2f, 1, 1};
-    auto board_held = big.pose, board_free = big.pose;
+    // A skateboard's bones (reskate.board.scale) are held to the same limit, and never past
+    // board_scale_limit, however far the session lets a skater's grow.
+    big.pose.board.resize(17);
+    big.pose.board[3].scale = {3, 3, 3};
+    big.pose.board[4].scale = {.2f, 1, 1};
+    auto board_held = big.pose, board_free = big.pose, board_most = big.pose;
+    board_most.board[3].scale = {6, 6, 6};
     limit_bone_scale(board_held, 2.f);
     limit_bone_scale(board_free, 0.f);
-    check(board_held.board[0].scale == std::array<float, 3>{board_scale_limit, board_scale_limit, board_scale_limit} &&
-              std::abs(board_held.board[2].scale[0] - 1.f / board_scale_limit) < 1e-5f && board_held.skater[5].scale == std::array<float, 3>{2, 2, 2} &&
-              board_free.board[0].scale == std::array<float, 3>{3, 3, 3},
-          "A skateboard's scale was not held to its own limit");
+    limit_bone_scale(board_most, 8.f);
+    check(board_held.board[3].scale == std::array<float, 3>{2, 2, 2} && std::abs(board_held.board[4].scale[0] - .5f) < 1e-5f &&
+              board_held.skater[5].scale == std::array<float, 3>{2, 2, 2} && board_free.board[3].scale == std::array<float, 3>{3, 3, 3} &&
+              board_most.board[3].scale == std::array<float, 3>{board_scale_limit, board_scale_limit, board_scale_limit},
+          "A skateboard's scale was not held to the limit");
+    // The board's sizes multiply down its rig too: a whole board (the deck's mount, rig 2) at the
+    // limit leaves its wheels (rig 6, on the truck rig 4) no more, while the deck (rig 3) and the
+    // wheels each sized alone keep their sizes. Rig bone b is board[b + 1].
+    auto rig = fixture();
+    rig.pose.board.resize(17);
+    rig.pose.board[3].scale = {2, 2, 2};
+    rig.pose.board[7].scale = {2, 2, 2};
+    auto whole_board = rig.pose;
+    limit_bone_scale(whole_board, 2.f);
+    rig.pose.board[3].scale = {1, 1, 1};
+    rig.pose.board[4].scale = {2, 2, 2};
+    auto deck_and_wheel = rig.pose;
+    limit_bone_scale(deck_and_wheel, 2.f);
+    check(whole_board.board[3].scale == std::array<float, 3>{2, 2, 2} && whole_board.board[7].scale == std::array<float, 3>{1, 1, 1} &&
+              deck_and_wheel.board[4].scale == std::array<float, 3>{2, 2, 2} && deck_and_wheel.board[7].scale == std::array<float, 3>{2, 2, 2},
+          "A skateboard's sizes grew past the limit down its rig, or held bones apart from each other");
     // Sizes multiply down a chain (Neck 101, Neck1 102, Head 103): each at the limit, they are
     // held so the head shows at the limit, not at its cube. The whole skater's size counts too
     // (a bone of it may still shrink to its own limit, 0.5).

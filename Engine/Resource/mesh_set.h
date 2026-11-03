@@ -6,6 +6,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
@@ -15,6 +16,82 @@ struct MeshLod {
     Guid chunk; // the geometry chunk: the vertex buffer, then the index buffer
     std::uint32_t vertex_bytes{}, index_bytes{};
 };
+// Resource-only observations. Unknown codes remain numeric; no geometry chunk is read.
+struct MeshElementMetadata {
+    std::uint8_t usage{}, format{}, offset{}, stream{}, width{}; // width 0 means unknown
+    bool semantic_supported{};
+};
+struct MeshStreamMetadata { std::uint8_t stride{}, classification{}; };
+struct MeshSectionMetadata {
+    std::size_t resource_offset{};
+    std::uint8_t primitive{}, element_count{}, stream_count{};
+    std::uint32_t triangle_count{}, first_index{}, vertex_start{}, vertex_count{};
+    std::vector<MeshElementMetadata> elements;
+    std::vector<MeshStreamMetadata> streams;
+    bool vertex_range_checked{}, index_range_checked{};
+};
+struct MeshSectionLayoutMetadata {
+    std::size_t stride{};
+    bool structurally_valid{true}, declarations_supported{true};
+    std::vector<MeshSectionMetadata> sections;
+    std::size_t diagnostic_count{}; // diagnostics holds at most 64 messages
+    std::vector<std::string> diagnostics;
+};
+// Raw values at offsets shared by known readers, not a layout interpretation or a chunk GUID.
+struct MeshLodCommonOffsetObservation {
+    std::uint32_t section_count_raw{};
+    std::uint64_t section_pointer_raw{};
+    std::uint32_t index_format_raw{}, index_bytes_raw{}, vertex_bytes_raw{};
+    std::array<std::byte, 16> geometry_identity_raw{};
+};
+// These bytes use existing reader offsets without qualifying a static section layout.
+struct MeshElementObservation {
+    std::uint8_t usage_raw{}, format_raw{}, offset_raw{}, stream_raw{};
+};
+struct MeshStreamObservation { std::uint8_t stride_raw{}, classification_raw{}; };
+struct MeshSectionObservation {
+    std::size_t resource_offset{};
+    std::uint8_t primitive_raw{}, element_count_raw{}, stream_count_raw{};
+    std::uint32_t triangle_count_raw{}, first_index_raw{}, vertex_start_raw{}, vertex_count_raw{};
+    std::vector<MeshElementObservation> elements;
+    std::vector<MeshStreamObservation> streams;
+    bool declarations_observed{};
+};
+struct MeshSectionCandidateObservation {
+    std::size_t stride{}, table_offset{}, span_bytes{};
+    bool table_pointer_resolved{}, table_span_valid{}, observation_complete{};
+    std::vector<MeshSectionObservation> sections;
+    std::size_t diagnostic_count{}; // diagnostics holds at most 16 messages
+    std::vector<std::string> diagnostics;
+};
+struct MeshLodMetadata {
+    std::array<std::uint32_t, 4> header{};
+    bool skinned{}, lod_kind_supported{};
+    std::size_t lod_count{}, lod_index{}, lod_offset{}, section_table{};
+    std::uint32_t lod_kind{}, index_format{}, section_count{};
+    MeshLod geometry;
+    std::optional<MeshLodCommonOffsetObservation> static_common_offsets;
+    std::vector<MeshSectionCandidateObservation> static_section_candidates;
+    std::vector<MeshSectionLayoutMetadata> candidates;
+    std::vector<std::string> diagnostics;
+    bool ambiguous{}, complete{};
+};
+// Throws for unknown headers or unreadable core resource/LOD fields. An unsupported LOD kind
+// returns complete false with a diagnostic. When lod_kind_supported is false, only header,
+// skinned, lod_count, lod_index, lod_offset, lod_kind and diagnostics are available. For the
+// exact static header, static_common_offsets may additionally hold six raw observations when
+// their full 132-byte span is present. Then static_section_candidates always holds both 384/416
+// stride attempts, including failures; neither is selected or interpreted. A resolved pointer
+// makes table_offset available, and a valid full table span makes span_bytes available.
+// observation_complete only means all bounded raw section/declaration bytes were observed.
+// Counts are capped at 64, combined table spans at 32768 bytes, and each declaration at 16 slots.
+// No geometry identity is interpreted. Other fields remain defaults, not observations. Kind 1
+// still requires its full LOD span and leaves both static observation fields empty.
+// Parseable candidate errors and unknown declarations are returned explicitly. Static section
+// strides are never chosen by first fit: both plausible candidates make complete false.
+// complete means this reader reported one structurally sound, understood declaration layout;
+// it never qualifies index contents, native encoding, materials, dependencies or rendering.
+[[nodiscard]] MeshLodMetadata read_mesh_lod_metadata(std::span<const std::byte> resource, std::size_t lod);
 // The `lod`-th level of detail (0 the finest) of a MeshSet resource. Throws for a layout this
 // reader does not know.
 [[nodiscard]] MeshLod read_mesh_lod(std::span<const std::byte> resource, std::size_t lod);

@@ -107,6 +107,29 @@ void Host::collect(Entry& entry) {
 
 void Host::release_commands(std::string_view id) {
     std::erase_if(commands_, [&](const auto& item) { return item.second == id; });
+    if (std::erase_if(chat_commands_, [&](const auto& item) { return item.second == id; }) > 0) chat_commands_changed_ = true;
+}
+
+void Host::run_chat_commands() {
+    if (side_ != Side::client) return; // (a lobby host's server copies share its game: they leave these alone)
+    for (const auto& call : environment_.game().take_chat_commands()) {
+        const auto owner = chat_commands_.find(call.name);
+        if (owner == chat_commands_.end()) continue;
+        auto* entry = find(owner->second);
+        if (!entry || !entry->plugin) continue;
+        entry->plugin->run_chat_command(call.name, call.arguments);
+        collect(*entry);
+    }
+}
+
+void Host::publish_chat_commands() {
+    if (side_ != Side::client || !chat_commands_changed_) return;
+    chat_commands_changed_ = false;
+    std::vector<ChatCommandInfo> list;
+    for (const auto& [id, entry] : entries_)
+        if (entry.plugin)
+            for (auto& info : entry.plugin->chat_commands()) list.push_back(std::move(info));
+    environment_.game().set_chat_commands(std::move(list));
 }
 
 void Host::apply(const std::vector<Candidate>& found) {
@@ -151,6 +174,7 @@ void Host::tick(double dt_ms) {
     deliver_events();
     deliver_http();
     follow_game();
+    run_chat_commands();
     for (auto& [id, entry] : entries_) {
         if (!entry.plugin) continue;
         entry.plugin->tick(dt_ms);
@@ -158,6 +182,7 @@ void Host::tick(double dt_ms) {
         if (save && entry.plugin) entry.plugin->save_storage();
     }
     draw_and_build();
+    publish_chat_commands();
 }
 
 void Host::follow_session() {
@@ -415,6 +440,15 @@ void Host::follow_game() {
             each([&](Plugin& plugin, const std::string&) { plugin.throwdown_phase(active ? "started" : "ended"); });
         }
     }
+    // Starred items (reskate.menu.favorites). The first look is the baseline: a plugin that starts
+    // after the file was read calls favorites() rather than hearing a change that already happened.
+    if (wants("menu")) {
+        const auto generation = game.favorites_generation();
+        if (favorites_known_ && generation != favorites_generation_)
+            each([&](Plugin& plugin, const std::string&) { plugin.favorites_changed(); });
+        favorites_generation_ = generation;
+        favorites_known_ = true;
+    }
     // Answers to a server copy's polls (server.poll), and polls that closed unanswered, to the
     // plugin that asked.
     for (const auto& news : game.take_poll_news()) {
@@ -654,6 +688,21 @@ std::string Host::claim_command(std::string_view plugin, std::string_view name) 
         if (overlaps) return std::format("the plugin {} has the console command \"{}\"", owner, taken);
     }
     commands_.emplace(std::string(name), std::string(plugin));
+    return {};
+}
+
+std::string Host::claim_chat_command(std::string_view plugin, std::string_view name) {
+    // The chat's own commands and a dedicated server's (a session also keeps the ones it lists first).
+    static constexpr std::string_view reserved[] = {
+        "help", "tp", "p", "party", "w", "whisper", "tell", "msg", "msg-party", "msg-admins", "vote", "votes", "vote-cancel",
+        "yes", "no", "y", "n", "poll", "kick", "ban", "unban", "map", "map-pool", "rotation", "tod", "tpall", "tphere",
+        "teleport", "announce", "announce-to", "announcements", "role", "roles", "park-mod", "bone-scale"};
+    if (std::find(std::begin(reserved), std::end(reserved), name) != std::end(reserved))
+        return std::format("the chat has a command \"/{}\": pick another name", name);
+    if (const auto taken = chat_commands_.find(name); taken != chat_commands_.end() && taken->second != plugin)
+        return std::format("the plugin {} has the chat command \"/{}\"", taken->second, name);
+    chat_commands_.insert_or_assign(std::string(name), std::string(plugin));
+    chat_commands_changed_ = true;
     return {};
 }
 }

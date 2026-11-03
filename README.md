@@ -165,7 +165,8 @@ on (it is by default), the crash details have already been sent; see
 ## Mods
 
 - Install mods from the launcher's **MODS** page: browse Thunderstore, or drag a `.zip` or folder onto the
-  window.
+  window. A Thunderstore zip of a mod you already have asks to replace it, even when the browser saved a
+  second copy as `Team-Name-1.2.3 (1).zip`, so one mod never ends up installed twice.
 - **PROFILES** on that page saves which mods are on, and in what order, under a name. Loading a profile
   switches to it and downloads any of its mods you do not have; every mod stays installed once. **COPY CODE**
   and **SAVE FILE** share a profile, and **IMPORT CODE** and **IMPORT FILE** take one in. The codes and
@@ -313,8 +314,8 @@ Useful launcher flags:
 ### Tests
 
 Each module keeps its regression tests in a `Test/` folder. Turn them on with any of
-`DINGOSDK_BUILD_MULTIPLAYER_TESTS`, `DINGOSDK_BUILD_LAUNCHER_TESTS`, `DINGOSDK_BUILD_PARK_EDITOR_TESTS`
-and `DINGOSDK_BUILD_CRASH_REPORT_TESTS`, then run CTest:
+`DINGOSDK_BUILD_MULTIPLAYER_TESTS`, `DINGOSDK_BUILD_LAUNCHER_TESTS`, `DINGOSDK_BUILD_PARK_EDITOR_TESTS`,
+`DINGOSDK_BUILD_CRASH_REPORT_TESTS` and `DINGOSDK_BUILD_PLUGIN_TESTS`, then run CTest:
 
 ```powershell
 cmake --preset vs2022-x64 -DDINGOSDK_BUILD_MULTIPLAYER_TESTS=ON -DDINGOSDK_BUILD_LAUNCHER_TESTS=ON
