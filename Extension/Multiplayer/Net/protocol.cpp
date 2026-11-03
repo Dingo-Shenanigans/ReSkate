@@ -263,6 +263,22 @@ bool valid_appearance(const Appearance &a) noexcept {
             size += 8 + item.asset.size() + item.parameters.size() * 4;
         }
     }
+    // Where items come from: each an item the outfit has, once, from a package by name.
+    if (a.sources.size() > max_item_sources) return false;
+    size += 1;
+    for (std::size_t i = 0; i < a.sources.size(); ++i) {
+        const auto &source = a.sources[i];
+        const auto worn = [&](const CosmeticRecipe &r) {
+            return std::ranges::any_of(r.items, [&](const CosmeticSlot &item) { return item.asset == source.asset; });
+        };
+        if (source.asset.empty() || source.package.empty() || !valid_map_package(source.package) ||
+            !(worn(a.skater) || worn(a.board)))
+            return false;
+        for (std::size_t j = 0; j < i; ++j)
+            if (a.sources[j].asset == source.asset)
+                return false;
+        size += 2 + source.asset.size() + source.package.size();
+    }
     return size <= max_appearance_bytes;
 }
 bool valid_transform(const Transform &t) noexcept {
@@ -594,6 +610,12 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
             for (const auto part : style.to) w.integer(part, 1);
             w.integer(style.speed, 1);
         }
+        w.integer(p.appearance.sources.size(), 1);
+        for (const auto &source : p.appearance.sources)
+            for (const auto *text : {&source.asset, &source.package}) {
+                w.integer(text->size(), 1);
+                w.bytes.insert(w.bytes.end(), text->begin(), text->end());
+            }
     } else if (p.kind == PacketKind::audio) {
         w.integer(p.audio.size(), 2);
         AudioState previous;
@@ -964,6 +986,15 @@ std::optional<Packet> decode(std::span<const std::uint8_t> bytes) noexcept {
                 style.speed = static_cast<std::uint8_t>(r.integer(1));
                 styled = styled && valid_mark_style(style);
             }
+            const auto sources = r.integer(1);
+            if (sources > max_item_sources) return {};
+            p.appearance.sources.resize(static_cast<std::size_t>(sources));
+            for (auto &source : p.appearance.sources)
+                for (auto *text : {&source.asset, &source.package}) {
+                    auto value = read_text(r, bytes, 1, max_cosmetic_asset);
+                    if (!value) return {};
+                    *text = std::move(*value);
+                }
             if (flags > 3 || !styled || !p.map || !valid_appearance(p.appearance))
                 return {};
         } else if (p.kind == PacketKind::audio) {

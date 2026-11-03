@@ -9,6 +9,7 @@
 #include "Engine/Core/Log/logging.h"
 #include "Extension/Skater/physics_tuning.h"
 #include "Engine/Vfs/mod_scoring.h"
+#include "Extension/Multiplayer/Remote/outfit_filter.h"
 #include "Extension/Multiplayer/Remote/remote_collision.h"
 #include <algorithm>
 #include <atomic>
@@ -735,6 +736,8 @@ void send_local(Session &s, const NativeFrame &local, std::uint64_t now, std::ui
             appearance->hide_tag = !own_tag_shown();
             appearance->hide_items = !own_items_shown();
             appearance->marks = developer_hoodie_detail::own_styles.load();
+            // And the package each item from a mod comes from, so a player without it can get it.
+            appearance->sources = outfit_filter::item_sources(*appearance);
         }
         if (appearance && (!s.sent_appearance || *appearance != *s.sent_appearance)) {
             auto p = packet(s, PacketKind::cosmetics, now);

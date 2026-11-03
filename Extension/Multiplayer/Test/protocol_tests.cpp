@@ -373,6 +373,18 @@ void cosmetics_codec() {
           "A player's cosmetic styles were lost");
     check(!valid_mark_style({static_cast<MarkMode>(4), {}, {}, 0}) && !valid_mark_style({MarkMode::standard, {}, {}, 3}),
           "A cosmetic style no menu can make was accepted");
+    // And the package each of their items from a mod comes from, so a player without it can fetch it.
+    auto sourced = p;
+    sourced.appearance.sources = {{"Own_Shirt", "NolanIsHigh-Cosmetics_Pack_1-1.0.2"}, {"Own_Deck", "AltDoug-Decks"}};
+    const auto named = decode(encode(sourced));
+    check(named && named->appearance == sourced.appearance && named->appearance.sources[1].package == "AltDoug-Decks" &&
+              !(named->appearance == p.appearance),
+          "The packages a player's items come from were lost");
+    {
+        const auto sourced_bytes = encode(sourced);
+        for (std::size_t n = bytes.size(); n < sourced_bytes.size(); ++n)
+            check(!decode(std::span(sourced_bytes).first(n)), "Truncated item packages accepted");
+    }
     for (std::size_t n = 0; n < bytes.size(); ++n)
         check(!decode(std::span(bytes).first(n)), "Truncated cosmetics accepted");
     auto corrupt = bytes;
@@ -416,6 +428,20 @@ void cosmetics_codec() {
         bad.skater.items.push_back(
             {i, std::string(max_cosmetic_asset, 'x'), std::vector<std::uint32_t>(max_cosmetic_parameters)});
     check(reject(bad), "Aggregate cosmetic packet budget not enforced");
+    bad = p.appearance;
+    bad.sources = {{"Own_Hat", "Owner-Hats"}};
+    check(reject(bad), "A package for an item the outfit does not have accepted");
+    bad.sources = {{"Own_Shirt", "Owner-Shirts"}, {"Own_Shirt", "Other-Shirts"}};
+    check(reject(bad), "Two packages for one item accepted");
+    for (const auto *package : {"", "NoDash", "Owner-Shirts-1.2", "Own er-Shirts", "../Owner-Shirts"}) {
+        bad.sources = {{"Own_Shirt", package}};
+        check(reject(bad), "An item's package that is not a package's name accepted");
+    }
+    bad.sources = {{"", "Owner-Shirts"}};
+    check(reject(bad), "A package for no item accepted");
+    bad = p.appearance;
+    for (std::size_t i = 0; i <= max_item_sources; ++i) bad.sources.push_back({"Own_Shirt", "Owner-Shirts"});
+    check(reject(bad), "More item packages than allowed accepted");
     AppearanceBuffer state;
     PoseBuffer poses;
     check(poses.push(frame(9, 1), 1000) && state.push(p), "Pose sequence must not gate reliable cosmetics");

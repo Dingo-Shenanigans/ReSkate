@@ -42,12 +42,35 @@ void filter_card(SkateMenu &menu) {
                                       "and an item from a mod shows as the default for its slot, or nothing.", mod_items))
         change(menu, [&](filter::Rules &r) { r.mod_items = mod_items; });
     note("Items you hide show as the default for their slot. An item you do not have shows that way already.");
+    auto policy = fetched::view().policy;
+    bool automatic = policy.automatic;
+    if (toggle_row(menu, "Fetch missing items", "When another player wears a mod item you do not have, download the cosmetics "
+                                                "package they say it is from, so you see it from the next level load. Off: "
+                                                "fetch one yourself with its Fetch button.", automatic)) {
+        policy.automatic = automatic;
+        if (!fetched::set_policy(policy)) feedback(menu, "The setting could not be saved.");
+    }
     end_card();
+}
+
+// The first column of an item's row: whether it shows. One not installed here whose wearer named
+// its package can be fetched from here instead.
+void item_state(SkateMenu &menu, const filter::WornItem &item, bool hidden, const std::string &from) {
+    ImGui::AlignTextToFramePadding();
+    if (hidden) return tag(menu, "HIDDEN", skate_theme::danger);
+    if (item.installed) return tag(menu, "SHOWN", skate_theme::good);
+    if (item.package.empty()) return tag(menu, "NOT INSTALLED", skate_theme::warning);
+    const auto state = fetched::status();
+    if (state.busy && lower(state.package) == filter::package_folder(item.package)) return tag(menu, "FETCHING", skate_theme::warning);
+    if (ImGui::Button("Fetch", ImVec2(px(110), 0))) feedback(menu, fetched::fetch(item.package, from, item.key).c_str());
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Not installed. Download %s from Thunderstore, as its wearer says it is from there; it shows from the next level load.",
+                          item.package.c_str());
 }
 
 // A player's items from mods, a row each: whether it shows, its name and mod, and its buttons on
 // the same row (the name is cut short before them).
-void item_rows(SkateMenu &menu, const filter::Rules &rules, const std::vector<filter::WornItem> &items) {
+void item_rows(SkateMenu &menu, const filter::Rules &rules, const std::vector<filter::WornItem> &items, const std::string &from) {
     if (items.empty()) {
         note("Nothing from a mod, or their outfit has not been put on here yet.");
         return;
@@ -61,10 +84,7 @@ void item_rows(SkateMenu &menu, const filter::Rules &rules, const std::vector<fi
         ImGui::PushID(static_cast<int>(i));
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
-        ImGui::AlignTextToFramePadding();
-        if (item.hidden) tag(menu, "HIDDEN", skate_theme::danger);
-        else if (!item.installed) tag(menu, "NOT INSTALLED", skate_theme::warning);
-        else tag(menu, "SHOWN", skate_theme::good);
+        item_state(menu, item, item.hidden, from);
         ImGui::TableNextColumn();
         ImGui::AlignTextToFramePadding();
         cell_text(item.title + (item.mod_title.empty() ? "" : "  -  " + item.mod_title));
@@ -147,7 +167,7 @@ void player_rows(SkateMenu &menu, const filter::Rules &rules, const std::vector<
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("%s", plain ? "Show this player's mod items again." : "Show this player in the game's own items only.");
         if (open) {
-            item_rows(menu, rules, items);
+            item_rows(menu, rules, items, peer.name);
             ImGui::TreePop();
         }
         ImGui::PopID();
@@ -156,7 +176,8 @@ void player_rows(SkateMenu &menu, const filter::Rules &rules, const std::vector<
 }
 
 // The same items by the mod they come from, each once however many wear it. Items not installed
-// here have no mod this PC knows of, so they come last, together, and are hidden one by one.
+// here are under the package their wearer names; those of no package come last, together, and
+// are hidden one by one.
 void mod_rows(SkateMenu &menu, const filter::Rules &rules, const std::vector<Worn> &rows, const std::string &query) {
     struct Item {
         filter::WornItem worn;
@@ -191,6 +212,10 @@ void mod_rows(SkateMenu &menu, const filter::Rules &rules, const std::vector<Wor
     }
 
     const auto has = [&](const std::string &text) { return lower(text).find(query) != std::string::npos; };
+    const auto name_of = [&](std::uint64_t id) {
+        const auto found = std::ranges::find(rows, id, [](const Worn &row) { return row.peer->id; });
+        return found == rows.end() ? std::string() : found->peer->name;
+    };
     const auto players = [](std::size_t n) { return std::to_string(n) + (n == 1 ? " player" : " players"); };
     std::size_t shown{};
     for (const auto *mod : mods) {
@@ -235,10 +260,7 @@ void mod_rows(SkateMenu &menu, const filter::Rules &rules, const std::vector<Wor
                     ImGui::PushID(key.c_str());
                     ImGui::TableNextRow();
                     ImGui::TableNextColumn();
-                    ImGui::AlignTextToFramePadding();
-                    if (item_hidden || mod_hidden) tag(menu, "HIDDEN", skate_theme::danger);
-                    else if (!item->worn.installed) tag(menu, "NOT INSTALLED", skate_theme::warning);
-                    else tag(menu, "SHOWN", skate_theme::good);
+                    item_state(menu, item->worn, item_hidden || mod_hidden, name_of(*item->players.begin()));
                     ImGui::TableNextColumn();
                     ImGui::AlignTextToFramePadding();
                     cell_text(item->worn.title + "  -  " + players(item->players.size()));
@@ -306,8 +328,7 @@ void hidden_card(SkateMenu &menu, const MultiplayerModel &mp) {
 void fetched_card(SkateMenu &menu) {
     const auto view = fetched::view();
     const auto state = fetched::status();
-    // Only once there is something to look after: until players say which package an item is
-    // from, cosmetics are only fetched from the console (`outfits fetch`).
+    // Only once there is something to look after: the switch to fetch on its own is above.
     if (view.mods.empty() && !state.busy) return;
     begin_card(menu, "outfits-fetched", "FETCHED COSMETICS",
                (std::to_string(view.mods.size()) + (view.mods.size() == 1 ? " mod, " : " mods, ") + megabytes(view.bytes)).c_str());

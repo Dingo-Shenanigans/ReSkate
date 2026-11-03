@@ -14,6 +14,8 @@
 #include <algorithm>
 #include <atomic>
 #include <mutex>
+#include <set>
+#include <span>
 #include <thread>
 #include <tuple>
 
@@ -46,13 +48,24 @@ Status current;         // under status_mutex, but for the counters the watch ke
 https::Watch watch;
 std::atomic<bool> busy{}, apply_wanted{}, stop_install{};
 
+// What this game run asked for (lower case folders), so nothing is fetched twice, and the
+// items fetched packages must turn out to have.
+struct Check {
+    std::string folder, key;
+    ULONGLONG merged_at{}; // when the merge after the fetch was done; 0 until then
+};
+std::mutex run_mutex;
+std::set<std::string, std::less<>> tried;
+std::size_t automatic_fetches{};
+std::vector<Check> checks;
+
 void say(std::string line, logging::Level level = logging::Level::info) {
     logging::log(level, logging::Channel::assets, "Fetched cosmetics: {}", line);
     std::lock_guard lock(status_mutex);
     current.line = std::move(line);
 }
 
-void work(package::Name name, std::string from) {
+void work(package::Name name, std::string from, std::string key) {
     struct Done { ~Done() { busy.store(false); } } done;
     const auto folder = name.folder();
     const auto root = mods_root();
@@ -109,6 +122,10 @@ void work(package::Name name, std::string from) {
             s.mods[folder] = {choice.version, from.substr(0, 64), now, now, false};
             if (!store::write(root, s)) say(std::string(store::store_file) + " could not be written; " + folder + " is kept like your own mods.", logging::Level::warning);
         }
+        if (!key.empty()) {
+            std::lock_guard lock(run_mutex);
+            checks.push_back({folder, std::move(key), 0});
+        }
         apply_wanted.store(true);
         say("fetched " + folder + " " + choice.version + (from.empty() ? "" : " for " + from) + "; its items show from the next level load.");
     } catch (const std::exception& failure) {
@@ -141,7 +158,7 @@ template <class Change> bool change_store(Change&& change) {
 }
 } // namespace
 
-std::string fetch(const std::string& text, const std::string& from) {
+std::string fetch(const std::string& text, const std::string& from, const std::string& key) {
     const auto name = package::parse_name(text);
     if (!name) return "\"" + text + "\" is not a Thunderstore package name (Owner-Name or Owner-Name-1.2.3).";
     std::error_code error;
@@ -152,12 +169,16 @@ std::string fetch(const std::string& text, const std::string& from) {
     }
     if (busy.exchange(true)) return "Another package is being fetched; try again when it is done.";
     {
+        std::lock_guard lock(run_mutex);
+        tried.insert(lower(name->folder()));
+    }
+    {
         std::lock_guard lock(status_mutex);
         current = {true, name->folder(), 0, 0, "starting."};
     }
     watch.cancel.store(false);
     try {
-        std::thread(work, *name, from).detach();
+        std::thread(work, *name, from, key).detach();
     } catch (...) {
         busy.store(false);
         return "The fetch could not be started.";
@@ -233,6 +254,79 @@ bool remove_at_next_launch(const std::string& folder, bool remove) {
     });
 }
 
+namespace {
+// A fetched package has to have the item it was fetched for: a player could name any cosmetics
+// package for any item. Looked at once the merge after it is done and item_origins has read
+// what it wrote (it looks every two seconds).
+void check_items(ULONGLONG now) {
+    static ULONGLONG next{};
+    if (now < next) return;
+    next = now + 2000;
+    const bool merging = apply_wanted.load() || live_mods::busy();
+    std::vector<Check> due;
+    {
+        std::lock_guard lock(run_mutex);
+        for (auto& check : checks)
+            if (!check.merged_at && !merging) check.merged_at = now;
+        for (auto at = checks.begin(); at != checks.end();)
+            if (at->merged_at && now - at->merged_at >= 5000) {
+                due.push_back(std::move(*at));
+                at = checks.erase(at);
+            } else
+                ++at;
+    }
+    for (auto& check : due) {
+        const auto found = item_origins::lookup(std::span(&check.key, 1));
+        if (!found.ready) {
+            // Not known yet: looked at again, for up to two minutes.
+            if (now - check.merged_at < 120000) {
+                std::lock_guard lock(run_mutex);
+                checks.push_back(std::move(check));
+            }
+            continue;
+        }
+        const auto& fact = found.facts.front();
+        const auto from = lower(fact.folder.substr(0, fact.folder.find('#')));
+        if (fact.from_mod && from == lower(check.folder)) {
+            logging::log(logging::Level::info, logging::Channel::assets, "Fetched cosmetics: {} has {}, as its wearer said.", check.folder, check.key);
+            continue;
+        }
+        remove_at_next_launch(check.folder, true);
+        say(check.folder + " does not have the item " + check.key + " it was fetched for, so it is deleted at the next launch.",
+            logging::Level::warning);
+    }
+}
+
+// On its own, when the player chose that: the package of the next item someone wears that this
+// PC lacks, one at a time.
+void fetch_wanted(ULONGLONG now) {
+    static ULONGLONG next{};
+    if (now < next || busy.load()) return;
+    next = now + 5000;
+    if (!view().policy.automatic) return;
+    for (const auto& want : multiplayer::outfit_filter::wanted()) {
+        const auto folder = multiplayer::outfit_filter::package_folder(want.package);
+        {
+            std::lock_guard lock(run_mutex);
+            if (folder.empty() || tried.contains(folder)) continue;
+            if (automatic_fetches >= automatic_limit) {
+                tried.insert(folder);
+                say("not fetching " + want.package + ": " + std::to_string(automatic_limit) +
+                    " packages were fetched on their own this game already. Fetch more from ONLINE > OUTFITS.");
+                continue;
+            }
+            // Tried once a game, whatever comes of it: one that is installed already, or failed, is
+            // not asked for again every pass.
+            tried.insert(folder);
+            ++automatic_fetches;
+        }
+        logging::log(logging::Level::info, logging::Channel::assets, "Fetched cosmetics: on its own, for {}: {}", want.key,
+                     fetch(want.package, {}, want.key));
+        return;
+    }
+}
+} // namespace
+
 void tick(bool loading) {
     if (loading) return;
     if (apply_wanted.load() && !live_mods::busy()) {
@@ -241,8 +335,10 @@ void tick(bool loading) {
         const auto result = live_mods::apply(false);
         logging::log(logging::Level::info, logging::Channel::assets, "Fetched cosmetics: live apply: {}", result);
     }
-    static ULONGLONG next_seen{};
     const auto now = GetTickCount64();
+    check_items(now);
+    fetch_wanted(now);
+    static ULONGLONG next_seen{};
     if (now < next_seen) return;
     next_seen = now + seen_interval_ms;
     auto seen = multiplayer::outfit_filter::take_seen_mods();

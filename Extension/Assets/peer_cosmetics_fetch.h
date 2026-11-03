@@ -9,16 +9,19 @@
 // deprecated, NSFW or rejected), downloaded from thunderstore.io, installed into Mods at the bottom
 // of the load order, and taken out again unless it is cosmetics and nothing else. Its items are in
 // the game from the next level load (a live merge without a reload: reloading in a session would
-// end it). For now the console starts a fetch (`outfits fetch`); the session will, once players
-// say which package each item they wear is from.
+// end it). Players say which package each item they wear is from (Appearance::sources): the
+// menu fetches one when asked, and the tick on its own when the policy says to. A package is
+// fetched for an item; once merged, the item has to be from it, or it is deleted at the next
+// launch and not fetched again.
 //
 // The menu keeps them: when they are deleted (the policy, applied at launch), keeping one (it is
 // the player's own from then on, as if installed from the launcher), or deleting one at the next
 // launch. Wearing one of its items, or seeing anyone wear one, counts as using it.
 namespace dingosdk::peer_cosmetics_fetch {
-// Starts fetching `package` ("Owner-Name" or "Owner-Name-1.2.3") for the player named `from`.
-// Returns what happened to the request; the outcome shows in status() and the log.
-std::string fetch(const std::string& package, const std::string& from);
+// Starts fetching `package` ("Owner-Name" or "Owner-Name-1.2.3") for the player named `from`,
+// who wears the item `key` from it (empty: none to check, from the console). Returns what
+// happened to the request; the outcome shows in status() and the log.
+std::string fetch(const std::string& package, const std::string& from, const std::string& key = {});
 struct Status {
     bool busy{};
     std::string package;     // the one in hand, or the last
@@ -46,8 +49,11 @@ bool keep(const std::string& folder);
 // Deletes a fetched mod at the next launch (or not, with false).
 bool remove_at_next_launch(const std::string& folder, bool remove);
 
-// Client thread, every tick: the live merge a finished fetch asked for, and marking the fetched
-// mods anyone wore since the last pass as seen (looked at once a minute; a mod's date is written
+// Client thread, every tick: the live merge a finished fetch asked for, checking that the item
+// a package was fetched for is from it once merged, the next package other players wear to
+// fetch on its own (policy.automatic: one at a time, each at most once a game, at most
+// automatic_limit a game), and marking the fetched mods anyone wore since the last pass as seen (looked at once a minute; a mod's date is written
 // again once it is an hour old). Nothing of the skater is read while a level loads.
 void tick(bool loading);
+inline constexpr std::size_t automatic_limit = 16;
 } // namespace dingosdk::peer_cosmetics_fetch

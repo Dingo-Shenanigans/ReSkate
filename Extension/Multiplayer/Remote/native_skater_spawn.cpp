@@ -520,12 +520,22 @@ std::vector<outfit_filter::WornItem> mod_items(const Appearance &appearance, std
     for (const auto *recipe : {&appearance.skater, &appearance.board})
         for (const auto &slot : recipe->items) {
             if (slot.asset.empty() || !listed.insert(slot.asset).second || out.size() >= max_cosmetic_slots * 2) continue;
-            const auto facts = outfit_filter::facts(slot.asset);
+            auto facts = outfit_filter::facts(slot.asset);
             if (facts.game && facts.mod.empty()) continue;
             outfit_filter::WornItem item{slot.asset, {}, facts.mod};
             item.installed = facts.game || !facts.mod.empty();
             item.title = item.installed ? worn_items::item_title(slot.asset) : outfit_filter::readable_key(slot.asset);
             if (const auto origin = item_origins::find(slot.asset)) item.mod_title = origin->title;
+            // One not installed here is of the package its wearer names, if they name one: listed
+            // and hidden with that mod, and fetched from it.
+            const auto source = std::ranges::find(appearance.sources, slot.asset, &ItemSource::asset);
+            if (!item.installed && source != appearance.sources.end()) {
+                if (auto folder = outfit_filter::package_folder(source->package); !folder.empty()) {
+                    item.package = source->package;
+                    item.mod_title = outfit_filter::readable_mod(source->package.substr(0, folder.size()));
+                    item.mod = facts.mod = std::move(folder);
+                }
+            }
             item.hidden = outfit_filter::hides(rules, player, slot.asset, facts);
             out.push_back(std::move(item));
         }

@@ -1,6 +1,7 @@
 #include "Extension/Console/commands.h"
 #include "Extension/Assets/peer_cosmetics_fetch.h"
 #include "Extension/Customization/item_browser.h"
+#include "Extension/Customization/worn_items.h"
 #include "Extension/Multiplayer/Remote/outfit_filter.h"
 #include <charconv>
 
@@ -51,10 +52,11 @@ void register_outfit_commands(Commands &registry) {
     arguments.rest = true;
     arguments.complete = [](const Model &, auto) {
         return std::vector<std::string>{"status", "mod-items", "hide-item", "show-item", "hide-mod", "show-mod",
-                                        "fetch", "keep", "remove", "cleanup"};
+                                        "fetch", "automatic", "sources", "wanted", "keep", "remove", "cleanup"};
     };
     auto outfits = action("outfits", "Other players' outfits: status, mod-items on|off, hide-item|show-item <key>, "
-                          "hide-mod|show-mod <Owner-Name>, fetch <Owner-Name[-1.2.3]> [player], keep|remove <Owner-Name>, "
+                          "hide-mod|show-mod <Owner-Name>, fetch <Owner-Name[-1.2.3]> [player], automatic on|off, sources, wanted, "
+                          "keep|remove <Owner-Name>, "
                           "cleanup unused <days>|size <MB>|every-launch|never",
                           Group::console, {std::move(arguments)});
     outfits.run = [](const Model &, const Values &values, const Output &out) {
@@ -85,6 +87,29 @@ void register_outfit_commands(Commands &registry) {
         } else if (verb == "fetch" && !rest.empty()) {
             const auto gap = rest.find(' ');
             out(fetched::fetch(rest.substr(0, gap), gap == std::string::npos ? std::string{} : rest.substr(gap + 1)));
+        } else if (verb == "automatic" && (rest == "on" || rest == "off")) {
+            auto policy = fetched::view().policy;
+            policy.automatic = rest == "on";
+            out(!fetched::set_policy(policy) ? std::string("The setting could not be saved.")
+                : policy.automatic ? "Items other players wear that you do not have are fetched on their own."
+                                   : "Items other players wear are fetched only when you ask.");
+        } else if (verb == "sources") {
+            // What this player's outfit tells everyone else, as sent with it.
+            std::vector<std::string> keys;
+            try {
+                for (const auto &item : worn_items::worn_outfit()) keys.push_back(item.item);
+                for (const auto &part : worn_items::worn_board(false)) keys.push_back(part.item);
+            } catch (...) {
+                return out("Your outfit cannot be read now.");
+            }
+            const auto sources = filter::item_sources(keys);
+            if (sources.empty()) out("You wear nothing from a mod named as a Thunderstore package, so your outfit names no package.");
+            for (const auto &source : sources) out("  " + source.asset + " from " + source.package);
+        } else if (verb == "wanted") {
+            // What others wear that this PC lacks, from a package they named.
+            const auto wanted = filter::wanted();
+            if (wanted.empty()) out("Nobody here wears an item you lack from a package they named (or you hide them).");
+            for (const auto &want : wanted) out("  " + want.key + " from " + want.package + ", worn by " + std::to_string(want.player));
         } else if (verb == "keep" && !rest.empty()) {
             out(fetched::keep(rest) ? rest + " is one of your own mods now; it is never deleted for being unused."
                                     : rest + " is not a fetched mod.");
@@ -112,6 +137,7 @@ void register_outfit_commands(Commands &registry) {
             out(std::string("Mod items on others: ") + (rules.mod_items ? "shown" : "hidden") + "; hidden items " +
                 std::to_string(rules.items.size()) + ", mods " + std::to_string(rules.mods.size()) + ", players " +
                 std::to_string(rules.players.size()) + ".");
+            out(std::string("Fetching missing items: ") + (view.policy.automatic ? "on its own" : "when asked") + ".");
             out("Fetched cosmetics: " + std::to_string(view.mods.size()) + " mods, " + std::to_string(view.bytes >> 20) + " MB; cleanup " +
                 std::string(store::cleanup_names[static_cast<std::size_t>(view.policy.cleanup)]) + " (" +
                 std::to_string(view.policy.days) + " days, " + std::to_string(view.policy.max_mb) + " MB).");

@@ -92,6 +92,12 @@ int main() {
         check(readable_mod("nolanishigh-nolanishighs_cosmetics_pack_1") == "nolanishighs cosmetics pack 1", "a mod folder reads as its name");
         check(readable_mod("altdoug-south_florida__") == "south florida", "runs of underscores are one space");
         check(readable_mod("plain") == "plain" && readable_mod("owner-") == "owner-", "a folder with no name after the owner is as it was");
+        check(package_folder("NolanIsHigh-Cosmetics_Pack_1-1.0.2") == "nolanishigh-cosmetics_pack_1" &&
+                  package_folder("AltDoug-South_Florida") == "altdoug-south_florida",
+              "a package's folder, with or without its version, in lower case");
+        check(package_folder("") .empty() && package_folder("NoDash").empty() && package_folder("-Name").empty() &&
+                  package_folder("Owner-").empty() && package_folder("Owner--1.0.0").empty(),
+              "no folder for what is not a package's name");
     }
     if (failures) std::cerr << failures << " outfit filter test(s) failed\n";
     else std::cout << "outfit filter tests passed\n";

@@ -2,7 +2,9 @@
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Vfs/mod_catalog.h"
 #include "Extension/Customization/item_origins.h"
+#include "Extension/Multiplayer/Net/protocol.h"
 #include <Windows.h>
+#include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <fstream>
@@ -25,6 +27,10 @@ State &state() {
     return *value;
 }
 std::atomic<std::uint64_t> current_revision{1};
+std::string lower(std::string text) {
+    for (auto &c : text) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return text;
+}
 fs::path rules_path() { return mods::engine_data_root() / mods::mods_folder / rules_file; }
 
 Rules load() {
@@ -106,5 +112,39 @@ std::set<std::string, std::less<>> take_seen_mods() {
     auto &s = state();
     std::lock_guard lock(s.mutex);
     return std::exchange(s.seen, {});
+}
+
+std::vector<Wanted> wanted() {
+    auto &s = state();
+    std::lock_guard lock(s.mutex);
+    std::vector<Wanted> out;
+    std::set<std::string, std::less<>> listed;
+    for (const auto &[player, noted] : s.worn)
+        for (const auto &item : noted.second)
+            if (!item.installed && !item.hidden && !item.package.empty() && listed.insert(lower(item.package)).second)
+                out.push_back({item.package, item.key, player});
+    return out;
+}
+
+std::vector<ItemSource> item_sources(const std::vector<std::string> &keys) {
+    std::vector<ItemSource> out;
+    for (const auto &key : keys) {
+        if (out.size() >= max_item_sources) break;
+        if (key.empty() || item_origins::game_item(key) ||
+            std::ranges::any_of(out, [&](const ItemSource &source) { return source.asset == key; }))
+            continue;
+        const auto origin = item_origins::find(key);
+        if (!origin) continue;
+        auto package = map_package_name(origin->folder.substr(0, origin->folder.find('#')), origin->version);
+        if (!package.empty()) out.push_back({key, std::move(package)});
+    }
+    return out;
+}
+
+std::vector<ItemSource> item_sources(const Appearance &appearance) {
+    std::vector<std::string> keys;
+    for (const auto *recipe : {&appearance.skater, &appearance.board})
+        for (const auto &slot : recipe->items) keys.push_back(slot.asset);
+    return item_sources(keys);
 }
 } // namespace dingosdk::multiplayer::outfit_filter

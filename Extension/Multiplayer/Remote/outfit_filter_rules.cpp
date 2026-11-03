@@ -49,6 +49,15 @@ std::string readable_mod(std::string_view folder) {
     return out.empty() ? std::string(folder) : out;
 }
 
+std::string package_folder(std::string_view package) {
+    // Thunderstore's owners and names have no dash, so the folder is what comes before a second.
+    const auto first = package.find('-');
+    if (first == 0 || first == std::string_view::npos || first + 1 == package.size()) return {};
+    const auto second = package.find('-', first + 1);
+    if (second == first + 1) return {};
+    return lower(package.substr(0, second));
+}
+
 std::string to_json(const Rules &rules) {
     auto root = Json::object();
     root["schema"] = 1;

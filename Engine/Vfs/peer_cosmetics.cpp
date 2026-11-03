@@ -50,6 +50,7 @@ std::string to_json(const Store& store) {
     rules["cleanup"] = std::string(cleanup_names[static_cast<std::size_t>(policy.cleanup)]);
     rules["days"] = policy.days;
     rules["max_mb"] = policy.max_mb;
+    rules["automatic"] = policy.automatic;
     root["policy"] = std::move(rules);
     auto rows = Json::object();
     for (const auto& [folder, entry] : store.mods) {
@@ -77,6 +78,7 @@ Store from_json(std::string_view text) noexcept {
                 if (cleanup == cleanup_names[i]) store.policy.cleanup = static_cast<Cleanup>(i);
             if (const auto days = number_of(rules, "days"); days > 0) store.policy.days = static_cast<unsigned>(std::min<std::int64_t>(days, 365));
             if (const auto most = number_of(rules, "max_mb"); most > 0) store.policy.max_mb = static_cast<std::uint64_t>(most);
+            if (rules.contains("automatic") && rules.at("automatic").is_boolean()) store.policy.automatic = rules.at("automatic").get<bool>();
             store.policy = clamped(store.policy);
         }
         if (root.contains("mods") && root.at("mods").is_object())

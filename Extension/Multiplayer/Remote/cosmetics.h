@@ -52,6 +52,17 @@ inline bool rainbow_style(const MarkStyle &style) noexcept { return style.mode =
 inline bool valid_mark_style(const MarkStyle &style) noexcept {
     return style.mode <= MarkMode::solid && style.speed <= 2;
 }
+// Which Thunderstore package one of the outfit's items comes from ("Owner-Name-1.2.3", or
+// "Owner-Name" when its manifest gives no version), so a player without it can fetch it
+// (Extension/Assets/peer_cosmetics_fetch.h). Only for items from a mod, at most one per item
+// worn. The receiver trusts none of it: what is fetched is checked on Thunderstore, and against
+// the item, again.
+struct ItemSource {
+    std::string asset;
+    std::string package;
+    bool operator==(const ItemSource &) const = default;
+};
+inline constexpr std::size_t max_item_sources = 32;
 struct Appearance {
     CosmeticRecipe skater, board;
     PlayerCard card;
@@ -59,6 +70,7 @@ struct Appearance {
     // nobody shows their tag, or nobody animates their hoodie and board.
     bool hide_tag{}, hide_items{};
     MarkStyles marks{};
+    std::vector<ItemSource> sources; // valid_appearance: each names an item of the outfit
     bool operator==(const Appearance &) const = default;
 };
 // Stand-ins for a peer's cosmetic that this PC does not have (a player's

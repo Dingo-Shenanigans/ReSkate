@@ -1,4 +1,5 @@
 #pragma once
+#include "cosmetics.h"
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -34,6 +35,9 @@ std::string readable_key(std::string_view key);
 // A mod folder as a name to read, for a mod no one here wears: "nolanishigh-nolanishighs_cosmetics_pack_1"
 // is "nolanishighs cosmetics pack 1". The owner before the first dash goes.
 std::string readable_mod(std::string_view folder);
+// The mod folder a package installs to, as the rules name it: "Owner-Name-1.2.3" is "owner-name".
+// Empty when it is not a package's name.
+std::string package_folder(std::string_view package);
 
 std::string to_json(const Rules &rules);
 Rules from_json(std::string_view text) noexcept;
@@ -51,7 +55,10 @@ ItemFacts facts(std::string_view key);
 // An item a player wears that a mod adds or changes, as their outfit was last put on here.
 struct WornItem {
     std::string key, title;
-    std::string mod, mod_title; // its mod's folder (lower case) and title; empty when not installed here
+    // Its mod's folder (lower case) and title. For an item not installed here, the package its
+    // wearer says it is from, if they said (empty otherwise).
+    std::string mod, mod_title;
+    std::string package; // as the wearer named it ("Owner-Name-1.2.3"), for one not installed here
     bool installed{}, hidden{};
 };
 // The session's game thread, when it puts a player's outfit on; the menu reads them.
@@ -59,4 +66,16 @@ void note_worn(std::uint64_t player, std::vector<WornItem> items);
 std::vector<WornItem> worn(std::uint64_t player);
 // The mod folders anyone was seen wearing items of since the last call, lower case.
 std::set<std::string, std::less<>> take_seen_mods();
+// The packages of items players wear that are not installed here and that the rules show, each
+// with one such item and its wearer, from the outfits last put on.
+struct Wanted {
+    std::string package, key;
+    std::uint64_t player{};
+};
+std::vector<Wanted> wanted();
+
+// This player's outfit's items from mods with the package each comes from, as sent with it.
+// Items of the game's own, and of mod folders not named as packages, are left out. Any thread.
+std::vector<ItemSource> item_sources(const Appearance &appearance);
+std::vector<ItemSource> item_sources(const std::vector<std::string> &keys);
 } // namespace dingosdk::multiplayer::outfit_filter
