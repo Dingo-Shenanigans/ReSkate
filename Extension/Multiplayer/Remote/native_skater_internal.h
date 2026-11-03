@@ -114,6 +114,9 @@ struct Remote {
     std::string board_status;
     std::string issue;
     std::optional<CosmeticRecipe> skater_appearance, board_appearance;
+    // plugin_feed::hidden_items_revision() each recipe was put on under: a plugin hiding other
+    // items puts the same recipe on again.
+    std::uint64_t skater_hidden{}, board_hidden{};
     // The last appearance the native copy or catalog check rejected, retried at
     // next_appearance_retry instead of on every cosmetics pass. Client thread.
     std::optional<Appearance> rejected_appearance;

@@ -425,6 +425,23 @@ public:
         return plugin_feed::hide(std::string(plugin), player, hidden) ? std::string{} : "at most 256 players are hidden";
     }
     std::vector<std::uint64_t> hidden_players(std::string_view plugin) override { return plugin_feed::hidden_by(std::string(plugin)); }
+    std::optional<PlayerOutfit> player_outfit(std::uint64_t player) override {
+        auto outfit = plugin_feed::outfit_of(player);
+        if (!outfit) return std::nullopt;
+        return PlayerOutfit{std::move(outfit->skater), std::move(outfit->board)};
+    }
+    std::string hide_items(std::string_view plugin, HiddenItems items) override {
+        const auto lower = [](std::string name) {
+            for (auto& c : name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            return name;
+        };
+        plugin_feed::HiddenItems hidden;
+        for (auto& name : items.everyone) hidden.everyone.insert(lower(std::move(name)));
+        for (auto& [player, names] : items.players)
+            for (auto& name : names) hidden.players[player].insert(lower(std::move(name)));
+        plugin_feed::hide_items(std::string(plugin), std::move(hidden));
+        return {};
+    }
     void set_nametag(std::string_view plugin, std::uint64_t player, std::string text, std::uint32_t colour) override {
         plugin_feed::set_tag(std::string(plugin), player, std::move(text), colour);
     }
@@ -1886,6 +1903,7 @@ public:
         }
         if (hold_owner_ == plugin) (void)skater_hold(plugin, false);
         plugin_feed::release_hidden(std::string(plugin));
+        plugin_feed::release_hidden_items(std::string(plugin));
         world_entities::clear(plugin);
         throwdown_flag_leave(plugin);
         dialog_close(plugin, {});

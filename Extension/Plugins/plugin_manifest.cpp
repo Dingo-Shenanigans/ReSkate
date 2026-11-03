@@ -15,7 +15,9 @@ namespace {
 // push (with push_wait / push_reset), hold, flip speed (reskate.skater.flip_speed) and the competition's
 // stock physics (reskate.physics);
 // "camera" the free and pad-flown cameras and the Bone Cam (reskate.skater.bone_cam);
-// "session.read" spectating and the session's world (reskate.session.world); "events.tricks" the
+// "session.read" spectating, the session's world (reskate.session.world) and what other players wear
+// (reskate.session.outfit); "session.skaters" also hiding other players, or some of their items
+// (reskate.session.hide, hide_items); "events.tricks" the
 // trick events, the trick list's feed and flick diagrams (reskate.tricks); "throwdowns" the
 // throwdown kit (modes, documents, the native flag); "server.parks" a dedicated server's park mods
 // (reskate.server.parks, park_spawn, park_remove); "variants" choosing which of its own mod's
