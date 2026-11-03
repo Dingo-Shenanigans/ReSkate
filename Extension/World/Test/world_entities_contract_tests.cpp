@@ -118,16 +118,16 @@ int main() {
         const auto meeting = [](std::array<std::optional<int>, 3> met) {
             return [met](int from, int) { return met[static_cast<std::size_t>(from)]; };
         };
-        check(own_bodies(rays, meeting({168, 168, 168}), mine, owned).empty() && asked == 0,
+        check(own_bodies(rays, meeting({42, 42, 42}), mine, owned).empty() && asked == 0,
               "another owner's bodies in the box are never taken, however many rays meet them");
         check(own_bodies(rays, meeting({std::nullopt, std::nullopt, std::nullopt}), mine, owned).empty(),
               "an object nothing is met in has no bodies");
-        check(own_bodies(rays, meeting({168, 200, 300}), mine, owned) == std::vector<int>({200, 201}) && asked == 1,
+        check(own_bodies(rays, meeting({42, 200, 300}), mine, owned) == std::vector<int>({200, 201}) && asked == 1,
               "a ray past another owner's body can still find the object's own, and the first found stands");
-        check(own_bodies(rays, meeting({std::nullopt, 200, 168}), mine, owned) == std::vector<int>({200, 201}),
+        check(own_bodies(rays, meeting({std::nullopt, 200, 42}), mine, owned) == std::vector<int>({200, 201}),
               "a ray that meets nothing does not end the search");
         const auto none_for_first = [](int body) { return body == 200 ? std::vector<int>{} : std::vector<int>{body}; };
-        check(own_bodies(rays, meeting({200, 300, 168}), mine, none_for_first) == std::vector<int>({300}),
+        check(own_bodies(rays, meeting({200, 300, 42}), mine, none_for_first) == std::vector<int>({300}),
               "an owner whose bodies could not be listed is passed over");
     }
     {
