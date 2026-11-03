@@ -348,6 +348,8 @@ struct FakeGame final : Game {
     std::uint64_t wipe{};
     std::vector<std::string> calls;
     std::vector<ChatLine> lines;
+    std::vector<ChatCommandInfo> chat_command_list; // as the plugins last gave it
+    std::vector<ChatCommandCall> typed_commands;    // waiting for the next tick
     Track now_playing;
     ThrowdownState throwdown;
     std::vector<std::pair<std::string, std::string>> presses;
@@ -823,6 +825,8 @@ struct FakeGame final : Game {
         calls.push_back(std::format("notice {} {} {:08x}", plugin, text, colour));
         return {};
     }
+    void set_chat_commands(std::vector<ChatCommandInfo> commands) override { chat_command_list = std::move(commands); }
+    std::vector<ChatCommandCall> take_chat_commands() override { return std::exchange(typed_commands, {}); }
     ThrowdownState throwdowns() override { return throwdown; }
     ClipRef recorded;
     std::vector<std::string> game_clip_names(std::string_view containing, std::size_t most, std::string& why) override {
@@ -2973,6 +2977,57 @@ void plugins_choose_stand_ins() {
               game.called("stand-ins dresser exclude *Rule64*") && !game.called("stand-ins dresser exclude *Rule65*"),
           "Random from every installed item, the first of a list on the board, and the defaults again\n" + environment.all());
     check(!game.called("stand-ins plain"), "A plugin without the permission chooses no stand-ins");
+}
+
+// reskate.chat.command: "/name" typed in chat runs the plugin's function with the rest of the line,
+// the list reaches the chat and leaves with the plugin, the chat's own names and another plugin's
+// are refused, and a plugin without "chat.commands" cannot add one.
+void plugins_add_chat_commands() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    Host host(environment, Side::client);
+    host.apply({script("emoter", R"(
+        reskate.chat.command("emote", "Play an emote", function(text, words)
+            reskate.log("emote [" .. text .. "] " .. #words .. " " .. tostring(words[1]) .. " " .. tostring(words[2]))
+        end, "<name|off>")
+        assert(not pcall(reskate.chat.command, "vote", "x", function() end), "the chat's own")
+        assert(not pcall(reskate.chat.command, "Emote2", "x", function() end), "uppercase")
+        assert(not pcall(reskate.chat.command, "two words", "x", function() end), "one word")
+        assert(not pcall(reskate.chat.command, "x", "x", function() end), "two letters at least")
+        assert(not pcall(reskate.chat.command, "9lives", "x", function() end), "a letter first")
+        assert(not pcall(reskate.chat.command, "emote", "x", function() end), "twice")
+        assert(not pcall(reskate.chat.command, "line", "two\nlines", function() end), "one line of help")
+        assert(not pcall(reskate.chat.command, "nofn", "x", "not a function"), "a function")
+        for i = 1, 7 do reskate.chat.command("c" .. i, "x", function() end) end
+        assert(not pcall(reskate.chat.command, "c8", "x", function() end), "at most 8")
+        reskate.log("commands set")
+    )", R"("chat.commands")"), script("plain", R"(
+        local ok, err = pcall(reskate.chat.command, "dance", "x", function() end)
+        assert(not ok and err:find("needs the \"chat.commands\" permission"), err)
+        reskate.log("plain refused")
+    )", R"("chat.local")"), script("rival", R"(
+        local ok, err = pcall(reskate.chat.command, "emote", "x", function() end)
+        assert(not ok and err:find("emoter"), err)
+        reskate.log("rival refused")
+    )", R"("chat.commands")")});
+    running(host, "emoter", environment);
+    running(host, "plain", environment);
+    running(host, "rival", environment);
+    check(environment.logged("[emoter] commands set") && environment.logged("[plain] plain refused") && environment.logged("[rival] rival refused"),
+          "The calls ran\n" + environment.all());
+    ticks(host, environment, 1);
+    const auto& list = game.chat_command_list;
+    check(list.size() == 8 && std::any_of(list.begin(), list.end(), [](const auto& c) {
+              return c.plugin == "emoter" && c.name == "emote" && c.args == "<name|off>" && c.help == "Play an emote";
+          }),
+          "The chat is given the plugin's commands");
+    game.typed_commands = {{"emote", "floss  now"}, {"dance", "x"}};
+    ticks(host, environment, 1);
+    check(environment.logged("[emoter] emote [floss  now] 2 floss now"), "A typed command runs with the rest of its line\n" + environment.all());
+    check(game.typed_commands.empty(), "and the chat's typed commands are taken");
+    host.switch_off("emoter");
+    ticks(host, environment, 1);
+    check(game.chat_command_list.empty(), "A plugin's chat commands go when it stops");
 }
 
 void a_permission_must_be_declared() {
@@ -7529,6 +7584,7 @@ int main() {
         run(a_plugin_loads_ticks_runs_its_commands_and_unloads);
         run(a_permission_must_be_declared);
         run(plugins_choose_stand_ins);
+        run(plugins_add_chat_commands);
         run(thunderstore_says_which_packages_run_plugins);
         run(command_names_are_checked);
         run(storage_is_kept_across_loads_and_has_a_quota);

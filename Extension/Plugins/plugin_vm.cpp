@@ -465,6 +465,25 @@ void Plugin::run_command(const std::string& name, const std::vector<std::string>
     call(1, "the command " + name, limits_.call_ms);
 }
 
+void Plugin::run_chat_command(const std::string& name, const std::string& arguments) {
+    if (state_ != State::running) return;
+    const auto found = chat_commands_.find(name);
+    if (found == chat_commands_.end()) return;
+    lua_getref(L_, found->second.function);
+    lua_pushlstring(L_, arguments.data(), arguments.size());
+    lua_newtable(L_);
+    int count = 0;
+    for (std::size_t at = 0; at < arguments.size();) {
+        const auto start = arguments.find_first_not_of(' ', at);
+        if (start == std::string::npos) break;
+        const auto end = std::min(arguments.find(' ', start), arguments.size());
+        lua_pushlstring(L_, arguments.data() + start, end - start);
+        lua_rawseti(L_, -2, ++count);
+        at = end;
+    }
+    call(2, "the chat command /" + name, limits_.call_ms);
+}
+
 void Plugin::draw() {
     shapes_.clear();
     shape_text_ = 0;
@@ -808,6 +827,12 @@ std::vector<CommandInfo> Plugin::commands() const {
         result.push_back({name, {}, command.help});
         for (const auto& sub : command.subcommands) result.push_back({name + " " + sub.name, sub.args, sub.help});
     }
+    return result;
+}
+
+std::vector<ChatCommandInfo> Plugin::chat_commands() const {
+    std::vector<ChatCommandInfo> result;
+    for (const auto& [name, command] : chat_commands_) result.push_back({id_, name, command.args, command.help});
     return result;
 }
 

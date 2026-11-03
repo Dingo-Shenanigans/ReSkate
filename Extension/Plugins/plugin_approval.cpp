@@ -34,6 +34,7 @@ constexpr Capability capabilities[] = {
     {"chat.send", "CHAT", Risk::red, "Send chat lines as you"},
     {"chat.read", "CHAT", Risk::grey, "Read the session's chat"},
     {"chat.local", "CHAT", Risk::grey, "Show chat notices on your screen"},
+    {"chat.commands", "CHAT", Risk::grey, "Add / commands to your chat"},
     {"server", "SERVER", Risk::red, "Moderate, chat and run polls on a server you host"},
     {"server.parks", "SERVER", Risk::red, "Add or remove a server's park mods"},
     {"skater.teleport", "SKATER", Risk::red, "Teleport your skater"},
@@ -257,6 +258,7 @@ std::string approval_prompt(const std::vector<PermissionGroup>& groups) {
             if (has("chat.read")) actions.push_back("read chat");
             if (has("chat.send")) actions.push_back("send chat lines as you");
             if (has("chat.local")) actions.push_back("show chat notices on your screen");
+            if (has("chat.commands")) actions.push_back("add / commands to your chat");
         } else if (group.category == "SERVER") {
             if (has("server")) actions.push_back("moderate servers you host");
             if (has("server.parks")) actions.push_back("add or remove park mods on servers you host");

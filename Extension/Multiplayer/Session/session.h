@@ -98,6 +98,18 @@ MultiplayerChat chat();
 // "Plugin" tag, so it can't pass for a player or the server. Client thread; "" when shown,
 // otherwise why not (no session).
 std::string plugin_chat(std::string_view plugin, std::string_view text, std::uint32_t text_color = 0);
+// "/" commands plugins add (reskate.chat.command). The plugin host gives the whole list whenever
+// it changes; /help and the chat's "/" list show them. A "/" line whose first word is one of them,
+// and not one of the session's own commands, stays on this PC for take_plugin_chat_commands
+// instead of going to the server. Both thread-safe.
+struct PluginChatCommand {
+    std::string plugin, name, args, help; // name: one word, without the "/"
+};
+struct PluginChatCall {
+    std::string name, arguments; // arguments: the rest of the line, trimmed
+};
+void set_plugin_chat_commands(std::vector<PluginChatCommand> commands);
+std::vector<PluginChatCall> take_plugin_chat_commands();
 // A lobby host's plugins (their server copies): drops a player from the session (they cannot
 // rejoin it), or moves their skater. "" when done, otherwise why not. Client thread.
 std::string host_kick(std::uint64_t player, std::string_view why);

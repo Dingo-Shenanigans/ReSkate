@@ -41,6 +41,7 @@ struct Limits {
     std::size_t handlers = 256;         // per event
     std::size_t timers = 1024;
     std::size_t commands = 64;
+    std::size_t chat_commands = 8;      // "/" commands in chat
     int raycasts_per_tick = 64;
     float raycast_metres = 1000;        // the longest ray
     int teleports_per_second = 2;
@@ -150,6 +151,8 @@ public:
     virtual std::filesystem::path storage_file(std::string_view plugin) = 0;
     // Empty when the plugin may have the console command; otherwise why not.
     virtual std::string claim_command(std::string_view plugin, std::string_view name) = 0;
+    // Empty when the plugin may have the chat's "/name"; otherwise why not.
+    virtual std::string claim_chat_command(std::string_view plugin, std::string_view name) = 0;
     // The local skater, or empty without one (the menu, a load).
     virtual std::optional<SkaterState> skater() = 0;
     // `plugin`: whose call it is (a throwdown match of its own may let it through, kit::allows_teleports).
@@ -264,6 +267,10 @@ public:
     std::uint32_t channel() const noexcept { return channel_hash_; }
     // A console command it registered: the words after the command's name.
     void run_command(const std::string& name, const std::vector<std::string>& arguments);
+    // A chat "/" command it registered: the rest of the line the player typed.
+    void run_chat_command(const std::string& name, const std::string& arguments);
+    // Its chat "/" commands: the name, its arguments as help shows them, and its help.
+    std::vector<ChatCommandInfo> chat_commands() const;
     void save_storage();
 
     const std::string& id() const noexcept { return id_; }
@@ -420,6 +427,8 @@ private:
     std::map<int, Timer> timers_;
     int next_timer_{1};
     std::map<std::string, Command, std::less<>> commands_;
+    struct ChatCommand { std::string args, help; int function{}; };
+    std::map<std::string, ChatCommand, std::less<>> chat_commands_;
     std::set<std::string, std::less<>> loading_modules_;
 
     Json storage_ = Json::object();

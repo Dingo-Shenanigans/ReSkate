@@ -203,6 +203,13 @@ struct ChatLine {
     std::string name, text;
     bool local{}, server{};
 };
+// A plugin's "/" command (reskate.chat.command), and one the player typed.
+struct ChatCommandInfo {
+    std::string plugin, name, args, help;
+};
+struct ChatCommandCall {
+    std::string name, arguments;
+};
 struct Track {
     bool available{}, playing{};
     std::string app, title, artist, album;
@@ -413,6 +420,11 @@ public:
     virtual std::string send_chat(std::string_view) { return unavailable; }
     // A line in this player's chat only, under the plugin's name with a "Plugin" tag.
     virtual std::string local_chat(std::string_view /*plugin*/, std::string_view, std::uint32_t /*colour, 0 the usual*/) { return unavailable; }
+    // The "/" commands the plugins have now, for /help and the chat's "/" list (the whole list each
+    // time it changes); and the ones the player typed since the last call. A typed one stays on this
+    // PC: it is not sent to the server.
+    virtual void set_chat_commands(std::vector<ChatCommandInfo>) {}
+    virtual std::vector<ChatCommandCall> take_chat_commands() { return {}; }
     virtual ThrowdownState throwdowns() { return {}; }
     // A drop the local player hosts where the skater stands, for chosen players of the session
     // (`series` "JamSession", "SpotBattle" or "ThrowdownSkate"): they see it and join it with the

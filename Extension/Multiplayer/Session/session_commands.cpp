@@ -723,6 +723,9 @@ std::string command(std::string_view action, std::string_view argument, std::str
                 return refused.empty() ? "Message sent." : refused;
             } else if (!dedicated_host(s) && verb == "party") {
                 result = party_command(s, rest);
+            } else if (queue_plugin_chat_command(s, verb, rest)) {
+                // A plugin's: it runs on this PC at the plugins' next tick, and answers itself.
+                return "Command sent.";
             } else {
                 result = send_chat_command(s, argument);
             }

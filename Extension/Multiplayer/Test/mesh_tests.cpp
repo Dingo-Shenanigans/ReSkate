@@ -2416,6 +2416,32 @@ void typing_checks() {
           "A missed stop notice left the dots up, or cleared the deadline");
     std::cout << "Typing notices: relay, stop and expiry passed.\n";
 }
+
+// A plugin's "/" command (reskate.chat.command): offered in the "/" list, kept on this PC when
+// typed, and never one of the session's own.
+void plugin_chat_command_checks() {
+    Simulation sim;
+    for (unsigned i = 0; i < 2; ++i) sim.add();
+    sim.run(60); sim.fresh(2);
+    auto &first = *sim.nodes[1];
+    set_plugin_chat_commands({{"posebox", "emote", "<name|off>", "Play an emote"}, {"rogue", "party", "", "Not the chat's"}});
+    const auto list = chat_commands(first);
+    check(std::any_of(list.begin(), list.end(), [](const auto &c) {
+              return c.name == "/emote" && c.usage == "/emote <name|off>" && c.description == "Play an emote (posebox)";
+          }),
+          "A plugin's command is not in the \"/\" list");
+    check(queue_plugin_chat_command(first, "emote", "  floss now  "), "A plugin's command was not kept");
+    check(!queue_plugin_chat_command(first, "party", "list"), "A plugin took the chat's own /party");
+    check(!queue_plugin_chat_command(first, "dance", ""), "A command no plugin has was kept");
+    const auto calls = take_plugin_chat_commands();
+    check(calls.size() == 1 && calls[0].name == "emote" && calls[0].arguments == "floss now", "The typed command did not come through trimmed");
+    check(take_plugin_chat_commands().empty(), "A typed command came through twice");
+    for (int i = 0; i < 40; ++i) (void)queue_plugin_chat_command(first, "emote", "x");
+    check(take_plugin_chat_commands().size() == 32, "Typed commands piled up past 32");
+    set_plugin_chat_commands({});
+    check(!queue_plugin_chat_command(first, "emote", ""), "A command was kept after its plugin let it go");
+    std::cout << "Plugin chat commands: listed, kept here and refused for the chat's own passed.\n";
+}
 } // namespace
 } // namespace dingosdk::multiplayer
 int main(int argc, char **argv) {
@@ -2467,6 +2493,7 @@ int main(int argc, char **argv) {
         dingosdk::multiplayer::mesh_checks();
         dingosdk::multiplayer::throwdown_routing_checks();
         dingosdk::multiplayer::typing_checks();
+        dingosdk::multiplayer::plugin_chat_command_checks();
         dingosdk::multiplayer::party_checks();
         dingosdk::multiplayer::role_checks();
         dingosdk::multiplayer::global_ban_checks();

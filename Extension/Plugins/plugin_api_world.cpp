@@ -866,6 +866,31 @@ struct WorldApi {
         if (!within(plugin.services_.now_ms(), plugin.local_chat_second_, plugin.local_chats_, 5)) return result(L, "more than 5 lines in a second");
         return result(L, game(plugin).local_chat(plugin.id(), text, colour));
     }
+    // ---- chat.commands --------------------------------------------------------------------------------
+    // command(name, help, function, args): "/name ..." typed in chat runs function(text, words) on this
+    // PC and is never sent. The chat's own commands and a dedicated server's stay theirs.
+    static int chat_command(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "chat.commands", "reskate.chat.command");
+        if (plugin.services_.authority()) luaL_error(L, "reskate.chat.command is for a player's game: a server copy hears /commands in the chat event");
+        const auto name = checked_text(L, 1, 24, "a chat command's name");
+        bool valid = name.size() >= 2 && name.front() >= 'a' && name.front() <= 'z';
+        for (const char c : name) valid = valid && ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-');
+        if (!valid) luaL_error(L, "\"%s\" is not a chat command name: one lowercase word of 2 to 24 a-z, 0-9, _ and -, starting with a letter", name.c_str());
+        const auto help = checked_text(L, 2, 120, "a chat command's help");
+        luaL_checktype(L, 3, LUA_TFUNCTION);
+        const auto args = lua_isnoneornil(L, 4) ? std::string{} : checked_text(L, 4, 60, "a chat command's arguments");
+        for (const unsigned char c : help + args)
+            if (c < 0x20) luaL_error(L, "a chat command's help and arguments are one line of text");
+        if (plugin.chat_commands_.contains(name)) luaL_error(L, "the chat command \"/%s\" is registered already", name.c_str());
+        if (plugin.chat_commands_.size() >= plugin.limits_.chat_commands)
+            luaL_error(L, "more than %d chat commands", static_cast<int>(plugin.limits_.chat_commands));
+        if (const auto refusal = plugin.services_.claim_chat_command(plugin.id(), name); !refusal.empty()) luaL_error(L, "%s", refusal.c_str());
+        lua_pushvalue(L, 3);
+        plugin.chat_commands_[name] = {args, help, lua_ref(L, -1)};
+        lua_pop(L, 1);
+        return 0;
+    }
     // ---- skater.animation -----------------------------------------------------------------------------
     static std::size_t pose_bytes(const anim_studio::Clip& clip) { return clip.times.size() * clip.joints * 40 + clip.board.size() * 40; }
     // A clip by its path in the package (an Animation Studio clip file, FAS1 to FAS3), "data:<path>" in
@@ -3253,7 +3278,7 @@ void WorldApi::install(Plugin& plugin, lua_State* L) {
                                  {"touching", session_touching}, {"hide", session_hide}, {"hidden", session_hidden},
                                  {"raycast", session_raycast}});
     add_functions(L, "voice", {{"set_volume", voice_volume}});
-    add_functions(L, "chat", {{"send", chat_send}, {"notice", chat_local}});
+    add_functions(L, "chat", {{"send", chat_send}, {"notice", chat_local}, {"command", chat_command}});
     add_functions(L, "animation", {{"play", animation_play}, {"stop", animation_stop}, {"playing", animation_playing}, {"replace", animation_replace},
                                    {"record", animation_record}, {"recorded", animation_recorded}, {"forget", animation_forget}, {"trick", animation_trick},
                                    {"seek", animation_seek}, {"pause", animation_pause}, {"time", animation_time}, {"info", animation_info},
