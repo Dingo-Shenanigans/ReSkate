@@ -177,6 +177,9 @@ void hidden_card(SkateMenu &menu) {
 void fetched_card(SkateMenu &menu) {
     const auto view = fetched::view();
     const auto state = fetched::status();
+    // Only once there is something to look after: until players say which package an item is
+    // from, cosmetics are only fetched from the console (`outfits fetch`).
+    if (view.mods.empty() && !state.busy) return;
     begin_card(menu, "outfits-fetched", "FETCHED COSMETICS",
                (std::to_string(view.mods.size()) + (view.mods.size() == 1 ? " mod, " : " mods, ") + megabytes(view.bytes)).c_str());
     note("Mods fetched because another player wore them. They are deleted when the game starts, as chosen here. "
