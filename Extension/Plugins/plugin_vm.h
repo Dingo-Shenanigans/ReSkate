@@ -299,6 +299,7 @@ private:
     friend struct ServicesApi;
     friend struct KitApi;
     friend struct CaptureApi;
+    friend struct ValuesApi;
     friend struct PhysicsApi;
     friend struct EffectsApi;
     friend struct ViewmodelApi;

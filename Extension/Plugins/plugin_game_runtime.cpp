@@ -1,4 +1,5 @@
 #include "plugin_game_runtime.h"
+#include "plugin_ui_values.h"
 #include "Extension/Rendering/plugin_effects.h"
 #include "Extension/Objects/placement_physics.h"
 #include "Extension/Skater/skater_movement.h"
@@ -182,6 +183,9 @@ std::filesystem::path game_folder() {
 class RealGame final : public Game {
 public:
     explicit RealGame(std::uintptr_t base) : base_(base) {}
+    std::string publish_ui_values(std::string_view plugin, const ui_values::Values& values) override {
+        return ui_values::publish(base_, plugin, values);
+    }
     std::string body_prepare() override { return owned_bodies::prepare(); }
     std::string body_create(std::uint64_t owner, const owned_body::Definition& d, owned_body::Handle& h) override { return owned_bodies::create(owner, d, h); }
     std::string body_read(std::uint64_t owner, const owned_body::Handle& h, owned_body::Sample& s) override { return owned_bodies::read(owner, h, s); }
@@ -1875,6 +1879,7 @@ public:
         grind_target::release(plugin);
         input::gameplay_options().release(plugin);
         placement_physics::release(plugin);
+        ui_values::release(base_, plugin);
         if (capture_owner_ == plugin) {
             capture::recorder().discard();
             capture_owner_.clear();

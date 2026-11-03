@@ -778,6 +778,7 @@ void Api::install(Plugin& plugin, lua_State* L) {
     install_effects_api(plugin, L);
     install_viewmodel_api(plugin, L);
     install_object_physics_api(plugin, L);
+    install_values_api(plugin, L);
     readonly();
     lua_setglobal(L, "reskate");
     lua_pushcfunction(L, ApiFunctions::print, "print");

@@ -1,4 +1,5 @@
 #pragma once
+#include "plugin_ui_values.h"
 #include "plugin_effects.h"
 #include "plugin_wave.h"
 #include "plugin_object_physics.h"
@@ -290,6 +291,8 @@ struct Progress {
 class Game {
 public:
     virtual ~Game() = default;
+    // Publish incremental, plugin-owned float models for authored game UI; unavailable on dedicated servers.
+    virtual std::string publish_ui_values(std::string_view, const ui_values::Values&) { return unavailable; }
     // ---- native bodies a plugin owns (reskate.world.physics; Extension/World/owned_bodies.h) ------
     // Owned by one VM instance, not by a reloadable plugin name. Client phase only; the typed
     // handles and epochs reach Lua only inside opaque userdata.
