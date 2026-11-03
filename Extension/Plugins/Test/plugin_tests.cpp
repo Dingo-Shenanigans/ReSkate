@@ -2958,8 +2958,18 @@ void plugins_choose_stand_ins() {
         local rules = {"Own_Costume*", "Own_TopShirt_Gen_Hoodie_00003"}
         for i = 3, 64 do rules[i] = "*Rule" .. i .. "*" end
         assert(reskate.outfit.stand_ins({pick = "random", exclude = rules}))
-        rules[65] = "*Rule65*"
-        assert(not pcall(reskate.outfit.stand_ins, {exclude = rules}), "at most 64 exclude rules")
+        rules[65], rules[66] = "*Rule65*", "*Rule66*" -- 65 with a star, beside the plain name
+        local ok, err = pcall(reskate.outfit.stand_ins, {exclude = rules})
+        assert(not ok and tostring(err):find("at most 64 names with"), "at most 64 exclude rules with a star")
+        -- A second on (at most 4 changes a second): plain names go far past 64.
+        reskate.time.after(1100, function()
+            local names = {}
+            for i = 1, 4096 do names[i] = "Own_Item_" .. i end
+            assert(reskate.outfit.stand_ins({pick = "random", exclude = names}), "4096 plain names")
+            names[4097] = "Own_Item_4097"
+            assert(not pcall(reskate.outfit.stand_ins, {exclude = names}), "and no more")
+            reskate.log("many names")
+        end)
         assert(not pcall(reskate.outfit.stand_ins, {exclude = {"*"}}), "excluding everything is not a name")
         assert(not pcall(reskate.outfit.stand_ins, {exclude = "Own_Hat"}), "exclude is a list")
         reskate.log("dressed")
@@ -2977,6 +2987,10 @@ void plugins_choose_stand_ins() {
               game.called("stand-ins dresser exclude *Rule64*") && !game.called("stand-ins dresser exclude *Rule65*"),
           "Random from every installed item, the first of a list on the board, and the defaults again\n" + environment.all());
     check(!game.called("stand-ins plain"), "A plugin without the permission chooses no stand-ins");
+    ticks(host, environment, 80);
+    check(environment.logged("[dresser] many names") && game.called("stand-ins dresser exclude Own_Item_4096") &&
+              !game.called("stand-ins dresser exclude Own_Item_4097"),
+          "4096 plain names may be left out, and no more\n" + environment.all());
 }
 
 // reskate.chat.command: "/name" typed in chat runs the plugin's function with the rest of the line,

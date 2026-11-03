@@ -17,8 +17,17 @@ std::string set(Policy next) {
     // The items are matched against the exclude list here, once, on the plugin's thread, not by the
     // engine thread for every missing item of every player it dresses.
     if (next.items.size() > max_items) next.items.resize(max_items);
-    if (next.exclude.size() > max_exclude) next.exclude.resize(max_exclude);
-    for (auto &rule : next.exclude) rule = lower(rule);
+    // Plain names go to the set, rules with a "*" stay in the list; at most the limit of each.
+    std::vector<std::string> rules;
+    for (auto &rule : next.exclude) {
+        auto lowered = lower(rule);
+        if (lowered.find('*') != std::string::npos) {
+            if (rules.size() < max_exclude) rules.push_back(std::move(lowered));
+        } else if (next.exclude_names.size() < max_exclude_names) {
+            next.exclude_names.insert(std::move(lowered));
+        }
+    }
+    next.exclude = std::move(rules);
     next.kept.assign(next.items.size(), true);
     for (std::size_t i = 0; i < next.items.size(); ++i) next.kept[i] = !excluded(next, next.items[i]);
     std::lock_guard lock(mutex);

@@ -781,15 +781,33 @@ void cosmetic_layout_regression() {
         theirs.owner = "theirs";
         check(!stand_ins::set(theirs).empty(), "Another plugin's is refused while one holds it");
         mine.exclude = {"OWN_HOODIE"};
-        check(stand_ins::set(mine).empty() && stand_ins::current()->exclude == std::vector<std::string>{"own_hoodie"},
+        check(stand_ins::set(mine).empty() && stand_ins::current()->exclude_names.contains("own_hoodie") &&
+                  stand_ins::current()->exclude.empty(),
               "The exclude list is kept lower case");
         mine.items = {"Own_Hoodie", "Own_Shirt", "OWN_HOODIE_2"};
         mine.exclude = {"Own_Hoodie*"};
         check(stand_ins::set(mine).empty() && stand_ins::current()->kept == std::vector<bool>{false, true, false},
               "set() works out which items the exclude list leaves");
-        mine.exclude.assign(stand_ins::max_exclude + 1, "own_hat");
+        mine.exclude.assign(stand_ins::max_exclude + 1, "own_hat*");
         check(stand_ins::set(mine).empty() && stand_ins::current()->exclude.size() == stand_ins::max_exclude,
-              "No more exclude rules are kept than the limit");
+              "No more exclude rules with a star are kept than the limit");
+        // Plain names: many more, looked up in a set, and matched in any case.
+        mine.items.clear();
+        mine.exclude.clear();
+        for (std::size_t i = 0; i < 500; ++i) mine.exclude.push_back("Own_Item_" + std::to_string(i));
+        mine.exclude.push_back("Own_Cap*");
+        check(stand_ins::set(mine).empty() && stand_ins::current()->exclude_names.size() == 500 &&
+                  stand_ins::current()->exclude == std::vector<std::string>{"own_cap*"},
+              "Plain names go to the set, rules with a star to the list");
+        const auto named = stand_ins::current();
+        check(stand_ins::excluded(*named, "OWN_ITEM_499") && stand_ins::excluded(*named, "own_item_0") &&
+                  stand_ins::excluded(*named, "Own_Cap_Red") && !stand_ins::excluded(*named, "Own_Item_500") &&
+                  !stand_ins::excluded(*named, "Own_Item_49x"),
+              "A plain name leaves out that item only, in any case, beside the star rules");
+        mine.exclude.assign(stand_ins::max_exclude_names + 10, "");
+        for (std::size_t i = 0; i < mine.exclude.size(); ++i) mine.exclude[i] = "n" + std::to_string(i);
+        check(stand_ins::set(mine).empty() && stand_ins::current()->exclude_names.size() == stand_ins::max_exclude_names,
+              "No more plain names are kept than their limit");
         stand_ins::clear("theirs");
         check(stand_ins::current() != nullptr, "Only the owner clears it");
         stand_ins::clear("mine");
