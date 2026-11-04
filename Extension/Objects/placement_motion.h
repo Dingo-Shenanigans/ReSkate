@@ -11,7 +11,7 @@
 // (v2.1.4-2, offline) that refused every claim with "only fixed local placement bodies may be
 // claimed", even on a freshly placed stock Build Kit prop. Its motion is now taken as server_tick finds
 // it, on the thread that owns it: fixed or keyframed copies are mirrored and put back as they were;
-// a dynamic one is simulated by the game and is left alone.
+// for a dynamic one, which the game simulates itself, the claim is let go (placement_physics.cpp).
 namespace dingosdk::placement_motion {
 namespace abi = game::build::v20260929::placement_physics;
 // Not seen yet: server_tick has not read the server copy, so nothing was written to it.
