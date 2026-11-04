@@ -16,7 +16,10 @@
 #include "ParkEditor/park_editor_runtime.h"
 #include "local_placements_runtime.h"
 #include "placement_adapters.h"
+#include "placement_motion.h"
+#include "Engine/Core/Log/logging.h"
 #include <atomic>
+#include <format>
 
 // Threads: the plugin API and client_tick run on the client tick and write only the client replica
 // (its body and transform). The server copy is written only by server_tick, from the server park
@@ -46,11 +49,21 @@ struct Lease {
     Pose fixed_pose{};
     bool editing{};
     std::uint64_t edit_until{}, edit_revision{};
+    // The server copy's motion before this claim first mirrored it, read by server_tick on the thread
+    // that owns the copy (placement_motion.h); unseen until then.
+    int server_motion{placement_motion::unseen};
+    // When the claim was made, and whether server_tick found it cannot mirror the server copy (it
+    // cannot be resolved within a second, or the game moves it itself): client_tick then lets the
+    // claim go, so the client replica never moves where the server copy does not follow.
+    std::uint64_t claimed_at{};
+    bool server_lost{};
 };
 // A write to the server copy, done by the next server_tick if its row is still the one it was for.
 struct ServerRestore {
     std::uint64_t id{}, token{}, map_generation{}, server{};
     Pose pose{};
+    // The motion to put the copy back in; unseen when the claim never wrote it.
+    int motion{placement_motion::unseen};
 };
 struct State {
     std::uintptr_t base{};
@@ -231,7 +244,11 @@ void stop(const Body& body) {
 void restore(std::uint64_t id, const Lease& lease) {
     auto& s = state();
     if (s.restores.size() < 256)
-        s.restores.push_back({id, lease.token, lease.map_generation, lease.server, lease.fixed_pose});
+        s.restores.push_back({id, lease.token, lease.map_generation, lease.server, lease.fixed_pose,
+                              placement_motion::server_restore(lease.server_motion)});
+    else if (static bool told{}; !std::exchange(told, true))
+        logging::log(logging::Level::warning, logging::Channel::objects,
+            "Object physics: more than 256 released objects wait for their server copy to be put back; the rest stay where they were left.");
     if (!current(id, lease))
         return; // Never write through a stale row/body generation.
     if (!place(lease.client, lease.fixed_pose, abi::motion_fixed))
@@ -408,12 +425,21 @@ std::string configure(std::uintptr_t base, std::string_view plugin, std::uint64_
         if (!body_of(lease.client, lease.body) || !inverse_mass(lease.body, lease.inverse_mass) || !sample_pose(lease))
             return "object physics body is unavailable";
         lease.fixed_pose = lease.pose;
-        Body authoritative;
-        if (s.motion_type(&lease.body) != abi::motion_fixed || !body_of(lease.server, authoritative) ||
-            s.motion_type(&authoritative) != abi::motion_fixed)
+        // Only the client replica is checked here: it is the copy a claim drives. The server copy's
+        // motion is taken by server_tick when it first mirrors it (it lets the claim go if it cannot).
+        // A refusal says which motion the replica had: claims used to be refused on either copy with
+        // one sentence, and which copy failed was never known.
+        if (const auto motion = s.motion_type(&lease.body); !placement_motion::client_claimable(motion)) {
+            if (static unsigned told{}; told < 8) {
+                ++told;
+                logging::log(logging::Level::info, logging::Channel::objects,
+                    "Object physics: a claim of object {} was refused: its client replica's motion is {}, not fixed.", id, motion);
+            }
             return "only fixed local placement bodies may be claimed";
+        }
         if (auto why = s.claims.claim(plugin, id); !why.empty())
             return why;
+        lease.claimed_at = GetTickCount64();
         s.leases.emplace(id, std::move(lease));
     }
     auto& lease = s.leases.at(id);
@@ -562,7 +588,7 @@ void client_tick() noexcept {
         const auto inbox = pause ? placement_adapters::Inbox{} : receive_edits();
         const auto now = GetTickCount64();
         for (auto at = s.leases.begin(); at != s.leases.end();) {
-            if (!pause && current(at->first, at->second) && sample_pose(at->second)) {
+            if (!pause && !at->second.server_lost && current(at->first, at->second) && sample_pose(at->second)) {
                 ++at;
                 continue;
             }
@@ -654,23 +680,52 @@ void server_tick() noexcept {
         auto& s = state();
         if (!s.ready)
             return;
-        // Released objects: the server copy goes back to its layout pose, fixed.
+        // Released objects: the server copy goes back to its layout pose, in the motion it had before
+        // the claim mirrored it. A copy the claim never wrote is left as it is.
         for (const auto& queued : std::exchange(s.restores, {})) {
-            if (!row_current(queued.id, queued.token, queued.map_generation, queued.server) || s.leases.contains(queued.id))
+            if (!row_current(queued.id, queued.token, queued.map_generation, queued.server))
+                continue;
+            if (const auto again = s.leases.find(queued.id); again != s.leases.end()) {
+                // Claimed again before this restore ran: the copy is still as the old claim left it.
+                again->second.server_motion = placement_motion::inherit(again->second.server_motion, queued.motion);
+                continue;
+            }
+            if (queued.motion == placement_motion::unseen)
                 continue;
             Body body;
-            if (!place(queued.server, queued.pose, abi::motion_fixed) && body_of(queued.server, body))
-                s.motion(&body, abi::motion_fixed);
+            if (!place(queued.server, queued.pose, queued.motion) && body_of(queued.server, body))
+                s.motion(&body, queued.motion);
         }
         if (s.leases.empty() || suspended())
             return;
         // Moving objects: the server copy follows the client replica, keyframed. An object being edited
         // is left to the dropper, which moves the server copy itself.
         const auto now = GetTickCount64();
-        for (const auto& [id, lease] : s.leases)
-            if (!lease.editing && now <= lease.sampled + 100 && !placement_adapters::pending(id) &&
-                row_current(id, lease.token, lease.map_generation, lease.server))
-                (void)place(lease.server, lease.pose, abi::motion_keyframed);
+        for (auto& [id, lease] : s.leases) {
+            if (lease.editing || now > lease.sampled + 100 || placement_adapters::pending(id) ||
+                !row_current(id, lease.token, lease.map_generation, lease.server))
+                continue;
+            if (lease.server_lost)
+                continue;
+            if (lease.server_motion == placement_motion::unseen) {
+                // Read once, before the first write. A copy that cannot be resolved yet is tried again
+                // next tick, for a second; the claim on the client replica goes on meanwhile.
+                Body server;
+                const bool found = body_of(lease.server, server);
+                if (found) lease.server_motion = s.motion_type(&server);
+                if (!found ? now > lease.claimed_at + 1000 : !placement_motion::server_mirrorable(lease.server_motion)) {
+                    lease.server_lost = true;
+                    logging::log(logging::Level::warning, logging::Channel::objects,
+                        "Object physics: object {} let go: {}.", id,
+                        found ? std::format("the game moves its server copy itself (motion {})", lease.server_motion)
+                              : std::string("its server copy could not be found"));
+                    continue;
+                }
+                if (!found)
+                    continue;
+            }
+            (void)place(lease.server, lease.pose, abi::motion_keyframed);
+        }
     } catch (...) {
     }
 }

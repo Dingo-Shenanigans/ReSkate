@@ -675,6 +675,9 @@ struct Status {
     std::uint64_t rendered_frames = 0;
 };
 bool keyboard_shortcuts_allowed() noexcept;
+// Whether the ReSkate menu is open, windowed or full screen (not the console, the park editor or a
+// plugin's screen). Any thread, without the render lock DingoSDKOverlayGetStatus takes.
+bool menu_visible() noexcept;
 
 // A short message in the top-left corner of the game window: a title line and
 // optional detail, stacked under earlier ones and fading out on their own

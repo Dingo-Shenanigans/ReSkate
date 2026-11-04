@@ -80,6 +80,8 @@ std::string status() { return {}; }
 namespace dingosdk::profile_runtime {
 void install_script_error_log(std::uintptr_t) noexcept {}
 void install_board_wear_hold(std::uintptr_t) noexcept {}
+// No paid store items in the mesh's outfits (session.cpp leaves them out of reskate.session.outfit).
+bool reserved_cosmetic(std::string_view) { return false; }
 bool simulated_profile_store_ready = true;
 std::map<std::string, Json, std::less<>> simulated_profile;
 bool local_profile_store_ready() noexcept { return simulated_profile_store_ready; }
@@ -303,7 +305,7 @@ bool show_remote(std::uintptr_t, std::uintptr_t, const NativeFrame &, const Pose
     return true;
 }
 void remove_remote(std::uintptr_t) noexcept {}
-void update_remote_cosmetics(std::uintptr_t, const NativeFrame &, const Appearance &, std::string &) {}
+void update_remote_cosmetics(std::uintptr_t, const NativeFrame &, const Appearance &, std::uint64_t, std::string &) {}
 std::uint64_t remote_pose_updates() noexcept { return 0; }
 std::uint64_t remote_board_pose_updates() noexcept { return 0; }
 NativeAnimationStats remote_animation_stats() noexcept { return {}; }

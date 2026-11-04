@@ -40,6 +40,9 @@ void install_viewmodel_api(Plugin& plugin, lua_State* L);
 // Selected-stream passive leases and separately permissioned capture (plugin_api_input_lease.cpp).
 void install_input_lease_api(Plugin& plugin, lua_State* L);
 void install_object_physics_api(Plugin& plugin, lua_State* L);
+// The clips and sounds read since the last tick (reskate.animation.preload, reskate.audio.preload,
+// plugin_api_world.cpp), handed into the plugin's own and called back. Plugin::tick.
+void deliver_preloads(Plugin& plugin);
 
 // ---- adding to the reskate table ---------------------------------------------------------------
 // A new part of the API is a file of `static int name(lua_State*)` functions and an install_*_api
@@ -78,6 +81,7 @@ inline constexpr std::string_view entity_statuses[] = {"waiting", "loading", "mi
 inline constexpr std::string_view send_targets[] = {"all", "server"};                       // Enums.Target
 // mods.item_origins: where a key comes from. It picks these by position, so keep the order.
 inline constexpr std::string_view item_sources[] = {"mod", "changed", "game", "unknown"};   // Enums.ItemSource
+inline constexpr std::string_view menu_pages[] = {"multiplayer", "mod_options", "mod_manager"}; // Enums.MenuPage
 // Named keys for input.key and the like (letters and digits are their own character): Enums.Key.
 inline constexpr std::pair<std::string_view, int> key_names[] = {
     {"Enter", 13}, {"Backspace", 8}, {"Escape", 27}, {"End", 35}, {"Home", 36}, {"PageUp", 33}, {"PageDown", 34}, {"Space", 32},
@@ -99,6 +103,9 @@ std::string data_path(lua_State* L, int index, bool folder);
 Vec3 position_of(lua_State* L, int index, const char* what);
 void push_position(lua_State* L, const Vec3& v);
 
+// What is up over the game as plugins get it (reskate.menu.state, menu_changed):
+// {known, pause, reskate, replay_editor, page}, page nil when none of ReSkate's pages is shown.
+void push_menu_state(lua_State* L, const Game::MenuState& state);
 // A player as plugins get one: {id = "<SteamID64>", name, me, host}.
 void push_player(lua_State* L, const SessionPlayer& player);
 // A file's bytes when it is a regular file no larger than `most`; otherwise empty, and `error`

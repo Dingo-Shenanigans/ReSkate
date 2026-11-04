@@ -841,7 +841,7 @@ Address spectate_name_hook(Address output) {
     }
     return state().spectate_name(output);
 }
-std::uint32_t teleport_hook(Address reason, const void *matrix, Address destination,
+std::uint32_t teleport_request(Address reason, const void *matrix, Address destination,
     std::uint64_t id, std::uint8_t mode, Address stance, Address transition) {
     if (const auto value = target(id)) {
         if (!available(*value)) return UINT32_MAX;
@@ -882,6 +882,29 @@ std::uint32_t teleport_hook(Address reason, const void *matrix, Address destinat
         }
     }
     return state().teleport(reason, matrix, destination, id, mode, stance, transition);
+}
+// Every teleport request (RequestTeleport: Fast Travel, a party teleport, a plugin's) is logged
+// with where it goes and what the game answered. Reported 2026-11-04: Fast Travel back to the
+// player's own flag sometimes leaves a black screen. The fade waits for the request it was given;
+// a refused one (no request id) or one that never finishes would leave it black, and this tells
+// those apart in a player's log.
+std::uint32_t teleport_hook(Address reason, const void *matrix, Address destination,
+    std::uint64_t id, std::uint8_t mode, Address stance, Address transition) {
+    const auto result = teleport_request(reason, matrix, destination, id, mode, stance, transition);
+    try {
+        std::array<float, 16> world{};
+        std::array<std::uint8_t, 3> options{};
+        const bool placed = matrix && memory::peek_bytes(reinterpret_cast<Address>(matrix), world.data(), sizeof world);
+        const bool optioned = stance && memory::peek_bytes(stance, options.data(), options.size());
+        logging::log(logging::Level::info, logging::Channel::player,
+            "Teleport: request {} to {}, {}mode {}, options {}{}.",
+            result == UINT32_MAX ? std::string("refused") : std::format("{}", result),
+            placed ? std::format("({:.1f}, {:.1f}, {:.1f})", world[12], world[13], world[14]) : std::string("no place"),
+            id ? std::format("player {:#x}, ", id) : std::string(), mode,
+            optioned ? std::format("board {} stance {} lip {}", options[0], options[1], options[2]) : std::string("none"),
+            transition ? "" : ", no transition");
+    } catch (...) {}
+    return result;
 }
 void adapt_predicate(Address vm, Address resource, std::uint32_t hash) {
     if (hash != 0x57a3de89 && hash != 0xe86b5cc2) return;

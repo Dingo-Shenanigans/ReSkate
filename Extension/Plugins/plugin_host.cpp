@@ -326,6 +326,18 @@ void Host::follow_game() {
             each([&](Plugin& plugin, const std::string&) { plugin.game_event("bail_end", "events.skater", data); });
         }
     }
+    // The pause menu, ReSkate's menu and the replay editor coming up and going. A plugin that loads
+    // with one already up reads it (menu.state); what was up before anyone listened is not news.
+    if (wants("menu")) {
+        const auto now = game.menu_state();
+        if (menu_state_ && now != *menu_state_) {
+            const auto previous = *menu_state_;
+            each([&](Plugin& plugin, const std::string&) { plugin.menu_changed(now, previous); });
+        }
+        menu_state_ = now;
+    } else {
+        menu_state_.reset();
+    }
     const bool geometry = wants("events.physics.geometry");
     if (wants("events.physics"))
         for (const auto& step : game.take_physics_steps()) {

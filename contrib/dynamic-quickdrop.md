@@ -109,11 +109,19 @@ input, and reports `focused = false` during menus, free camera, the park editor 
 plugin that also cares about its own objects being edited checks `motion.editing`. It exposes neither
 skater pointers nor native controller handles. `device` is a controller index.
 
-Claims are limited to 32 objects/plugin and 128/process. Only initially fixed
-local bodies may be claimed; an occupied claim cannot be stolen, released,
-sampled, moved or accelerated by another plugin. Release restores the original
-inverse mass and fixed motion, at the layout pose. The authoritative copy follows the validated
-client pose while claimed; stale samples are ignored.
+Claims are limited to 32 objects/plugin and 128/process. Only an object whose client replica
+stands fixed may be claimed; an occupied claim cannot be stolen, released,
+sampled, moved or accelerated by another plugin. Release restores the replica's original
+inverse mass and fixed motion, at the layout pose. The authoritative (server) copy is not checked
+at claim time: the server park tick reads its motion once, before its first write. A fixed or
+keyframed copy follows the validated client pose while claimed (stale samples are ignored) and goes
+back to the layout pose in the motion it had. A claim whose server copy the game moves itself
+(dynamic), or that cannot be found within a second, is let go on the next client tick, so the
+replica never moves where the server copy, and its collision, does not follow; the log says which
+("Object physics: object N let go: ..."). Requiring a fixed server copy at claim time refused every
+claim in game on v2.1.4-2, even on a freshly placed stock prop; a refusal now logs the replica's
+motion, as the old check never said which copy failed. The rules are in `Extension/Objects/placement_motion.h`, tested by
+`placement_motion`.
 Layout ID, row token, map generation, replica identity and body generation are
 revalidated before use. The opaque motion generation allows plugins to discard
 snapshots when a layout ID refers to a replacement object.

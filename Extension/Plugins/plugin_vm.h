@@ -4,6 +4,7 @@
 #include "plugin_game.h"
 #include "Engine/Core/Json/json.h"
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <filesystem>
@@ -28,7 +29,8 @@ enum class LogLevel { info, warn, error };
 
 struct Limits {
     std::size_t memory = 64u << 20;     // the VM's heap
-    double call_ms = 50;                // one call into the plugin (load, a handler, a command)
+    double call_ms = 50;                // one call into the plugin (load, a handler, a command): past it, said...
+    double hang_ms = 1000;              // ...and past this, stopped as a hang
     double io_ms = 250;                 // ReSkate's own reading and compiling in one call, kept out of call_ms up to this
     double unload_ms = 20;              // its unload handlers, together
     double tick_ms = 6;                 // the average time a tick, over a window of 1 s...
@@ -57,6 +59,7 @@ struct Limits {
     // and 32 waves of 30 s keep a plugin's samples near 30 MB, well inside sound_bytes.
     std::size_t sounds = 32;
     std::size_t sound_bytes = 64u << 20;
+    std::size_t preloads = 8;           // clips and sounds being read at once (reskate.animation.preload, reskate.audio.preload)
     int toasts = 3;                     // in 5 s
     int sounds_per_second = 10;
     std::size_t message_bytes = 4096 - 14; // a plugin message's payload (plugin_wire.h's header is 14)
@@ -241,6 +244,8 @@ public:
     void http_done(const HttpResponse& response);
     // The wider set's events, each to a plugin with its permission and a handler for it.
     void skater_changed(const char* state, const char* previous);
+    // menu: the pause menu, ReSkate's menu or the replay editor came up or went (menu_changed).
+    void menu_changed(const Game::MenuState& state, const Game::MenuState& previous);
     void bailed(std::uint64_t wipeouts, std::optional<SlamNews> slam);
     void launched(const LaunchNews& launch);
     // A game event with plain data (board_landed, body_hit, bail_end), to a plugin with `permission`.
@@ -331,7 +336,9 @@ private:
     // Calls the function under the `count` arguments on top of the main stack; false (and the
     // error reported) when it raised one. Stops the plugin past its limits.
     // With `results`, those are left on the main stack when it returns true.
-    bool call(int count, std::string_view what, double limit_ms, int results = 0);
+    // A call past limit_ms is said, with where the script was, and goes on; one past
+    // limits_.hang_ms is stopped. With `strict` (unload's share of its time) limit_ms stops it.
+    bool call(int count, std::string_view what, double limit_ms, int results = 0, bool strict = false);
     void report(std::string_view what, std::string_view message);
     // reskate.log and console.print: at most limits_.log_lines_per_second lines between them.
     bool count_line();
@@ -359,7 +366,10 @@ private:
     std::size_t memory_{};
     Halt halt_{Halt::none};
     bool memory_exceeded_{};
-    Clock::time_point deadline_{};
+    Clock::time_point deadline_{};  // past it, the call is stopped
+    Clock::time_point slow_after_{}; // past it, the call is said (Plugin::call)
+    std::optional<std::string> slow_at_; // where the script was when it passed slow_after_
+    double slow_told_{-1e9};          // a slow call is said at most every 10 s
     Clock::duration untimed_{}; // of limits_.io_ms, used by this call
     bool timed_{};
     unsigned interrupts_{};
@@ -381,6 +391,7 @@ private:
     unsigned body_prepares_{};          // explicit native body preparation calls since the last tick
     unsigned input_lease_requests_{}, input_lease_calls_{};
     bool input_lease_used_{}; // release a touched passive source before other VM cleanup
+    unsigned body_reuses_{};            // creates that asked to reuse a parked native body since the last tick
     std::optional<float> touch_reach_;
     std::map<std::uint64_t, Contact> contacts_;
     double teleport_second_{};
@@ -405,6 +416,22 @@ private:
     std::map<std::string, CachedWave, std::less<>> waves_;
     std::size_t wave_bytes_{};
     std::uint64_t wave_plays_{};
+    // reskate.animation.preload and reskate.audio.preload: a package file read and decoded on a
+    // thread of its own, which fills in `result` and then sets `done`. A tick hands what it made
+    // into clips_ or waves_ and calls back (deliver_preloads, plugin_api_world.cpp).
+    struct Preloaded {
+        std::atomic<bool> done{};
+        std::shared_ptr<const anim_studio::Clip> clip;
+        std::shared_ptr<const Wave> wave;
+        std::string error;
+    };
+    struct Preload {
+        std::string path;
+        bool sound{};
+        int callback{}; // a ref, or 0
+        std::shared_ptr<Preloaded> result;
+    };
+    std::vector<Preload> preloads_;
     double wave_second_{};
     int wave_starts_{};
     int draw_table_{}, ui_table_{};
