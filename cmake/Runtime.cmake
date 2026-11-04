@@ -345,16 +345,16 @@ set(dingosdk_startup_art "${PROJECT_SOURCE_DIR}/assets/startup_splash.png")
 if(NOT EXISTS "${dingosdk_startup_art}")
     set(dingosdk_startup_art "${PROJECT_SOURCE_DIR}/assets/startup_splash.jpg")
 endif()
-if(EXISTS "${PROJECT_SOURCE_DIR}/assets")
-    # Adding or removing the picture re-runs the configure step.
-    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/assets")
-endif()
+# Adding or removing the picture re-runs the configure step: a glob of its two names, which CMake
+# checks itself. A folder named in CMAKE_CONFIGURE_DEPENDS did that before, but MSBuild knows only
+# files there, so it re-ran CMake in every project on every build, and a parallel build's CMake runs
+# collided writing the same generated files ("Configuring incomplete" in a release build).
+file(GLOB dingosdk_startup_art_names CONFIGURE_DEPENDS
+    "${PROJECT_SOURCE_DIR}/assets/startup_splash.png" "${PROJECT_SOURCE_DIR}/assets/startup_splash.jpg")
 # Chat emotes (Better Chat's pack format; Extension/UI/Overlay/chat_emotes.h), built into
-# ReSkate.dll when the repository has assets/emotes/emotes.json and emotes.png.
+# ReSkate.dll when the repository has assets/emotes/emotes.json and emotes.png (globbed likewise).
 set(dingosdk_emotes "${PROJECT_SOURCE_DIR}/assets/emotes")
-if(EXISTS "${dingosdk_emotes}")
-    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${dingosdk_emotes}")
-endif()
+file(GLOB dingosdk_emotes_names CONFIGURE_DEPENDS "${dingosdk_emotes}/emotes.json" "${dingosdk_emotes}/emotes.png")
 if(EXISTS "${dingosdk_emotes}/emotes.json" AND EXISTS "${dingosdk_emotes}/emotes.png")
     file(TO_NATIVE_PATH "${dingosdk_emotes}" dingosdk_emotes_native)
     string(REPLACE "\\" "\\\\" dingosdk_emotes_native "${dingosdk_emotes_native}")
