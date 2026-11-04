@@ -191,5 +191,6 @@ cleanup of an active body during unload, a world change or a partial failure are
 against constructed worlds and values. Re-activation has been run in the game by one mod, a bike
 that creates one compound with `reuse` on each mount and releases it on each return: in five
 launches, every create made while its body was parked got that body back (5 of 5, no refusal), and
-the bike rode on it, fell and was returned again. Whether the game treats a body that was dynamic,
-parked and made dynamic again exactly like a new one has not been measured.
+the bike rode on it, fell and was returned again. In a sixth, twelve Mount and Return cycles made one
+allocation and eleven re-activations of the same body, with no refusal. Whether the game treats a
+body that was dynamic, parked and made dynamic again exactly like a new one has not been measured.
