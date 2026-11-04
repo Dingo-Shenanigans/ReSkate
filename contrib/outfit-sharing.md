@@ -106,7 +106,7 @@ it has (`nabi_role21_ap` and more), so its closure may be larger than what one l
 
 ## Showing a received item
 
-The received files are kept in a cache outside `Mods/` (`Mods/.reskate/shared-outfits/`), as a
+The received files are kept in a cache outside `Mods/` (`Mods/.synchros/`), as a
 layer the merge reads after every enabled mod and never lists, so it can never win over a mod
 the player installed.
 

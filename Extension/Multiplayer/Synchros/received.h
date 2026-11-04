@@ -38,7 +38,7 @@ private:
     bool done_{};
 };
 
-// The cache, under Mods/.reskate/shared-outfits/: never listed as a mod, never in the wardrobe.
+// The cache, under Mods/.synchros/cache (Engine/Vfs/synchros_outfit_mod.h): never listed as a mod.
 //
 //   files/<2 hex>/<40 hex>   each file, under its content id, written whole or not at all
 //   wearers/<steamid>.bin    what that wearer was last seen wearing: its items' listings

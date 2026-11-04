@@ -3,6 +3,8 @@
 #include "local_customization_runtime.h"
 #include "Extension/Profile/runtime_internal.h"
 #include "Engine/Vfs/content_catalogs.h"
+#include "Engine/Vfs/synchros_outfit_mod.h"
+#include "item_origins.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/engine.h"
 #include "Engine/Game/Build/20260929/local_customization.h"
@@ -83,6 +85,11 @@ bool reserved_cosmetic_hash(std::uint32_t hash) {
 }
 bool installed_item_owned(const profile::Snapshot& snapshot, std::string_view key, std::uint32_t hash, bool build_kit) {
     if (cosmetic_runtime().ownership_unavailable || reserved_cosmetic_hash(hash)) return false;
+    // Another player's item this PC was only sent to see them in it (Skate Synchros) is never the
+    // player's, whatever unlocks are on.
+    if (!build_kit)
+        if (const auto origin = item_origins::find(key); origin && origin->folder.starts_with(synchros::synchros_folder))
+            return false;
     const auto option = snapshot.bool_options.find(build_kit ? profile::unlock_objects_option : profile::unlock_cosmetics_option);
     if (option != snapshot.bool_options.end() && option->second) return true;
     const dingosdk::Json* section = &snapshot.customization;

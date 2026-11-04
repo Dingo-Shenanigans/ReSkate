@@ -4,6 +4,7 @@
 
 #include "mod_merge.h"
 #include "mod_conflicts.h"
+#include "synchros_outfit_mod.h"
 #include "variant_additions_native.h"
 #include "native_db.h"
 #include "Engine/Core/Json/json.h"
@@ -367,6 +368,14 @@ Catalog load_catalog(const std::filesystem::path& data_root, const MergeObserver
         // After every installed mod, so none of theirs is ever shadowed by it; always on.
         for (const auto& pack : builtin)
             list.entries.push_back({describe_mod(pack.directory, pack.name, result.notes), true});
+        // Skate Synchros: other players' outfits this PC was sent (synchros_outfit_mod.h), after
+        // everything else, so they never win over anything installed. They are merged and checked
+        // for store copies like any mod, each wearer's on its own.
+        for (const auto& folder : synchros::outfit_folders(data_root / mods_folder / synchros::synchros_folder / "mods")) {
+            auto mod = describe_mod(folder.directory, synchros::outfit_mod_prefix + std::to_string(folder.wearer), result.notes);
+            mod.title = "Skate Synchros: shared outfit";
+            list.entries.push_back({std::move(mod), true});
+        }
         // Variants (mod_catalog.h): each variant a mod holds becomes a mod of its own for the run,
         // listed after it as <folder>#<variant>, so that variants are chosen, set aside and switched
         // like mods in folders of their own. It carries its mod's build stamp.
