@@ -72,7 +72,7 @@ thread_local bool publishing{};
 std::uint64_t model_write(Address manager, std::uint64_t handle, Address type, const void* value, std::uint8_t flag) {
     auto& h = hook();
     // SmokeyDawg58's trick feed reads the score HUD's trick list off the same writes.
-    if (handle && value && tricks::feed::wanted()) tricks::feed::tap(handle, type, value);
+    if (handle && value && tricks::feed::wanted()) tricks::feed::tap(manager, handle, type, value, flag);
     if (handle && value && !publishing) {
         for (std::size_t index = 0; index < score_switches.size(); ++index) {
             auto& field = h.fields[index];
