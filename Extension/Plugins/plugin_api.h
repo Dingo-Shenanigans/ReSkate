@@ -102,7 +102,7 @@ Vec3 position_of(lua_State* L, int index, const char* what);
 void push_position(lua_State* L, const Vec3& v);
 
 // What is up over the game as plugins get it (reskate.menu.state, menu_changed):
-// {pause, reskate, replay_editor, page}, page nil when none of ReSkate's pages is shown.
+// {known, pause, reskate, replay_editor, page}, page nil when none of ReSkate's pages is shown.
 void push_menu_state(lua_State* L, const Game::MenuState& state);
 // A player as plugins get one: {id = "<SteamID64>", name, me, host}.
 void push_player(lua_State* L, const SessionPlayer& player);
