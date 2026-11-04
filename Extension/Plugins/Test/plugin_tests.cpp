@@ -3120,7 +3120,19 @@ void plugins_read_and_hide_other_players_items() {
         local many = {}
         for i = 1, 4097 do many[i] = "Own_" .. i end
         assert(not pcall(reskate.session.hide_items, {items = many}), "at most 4096 names")
+        local crowd = {}
+        for i = 1, 65 do crowd[tostring(100 + i)] = {"Own_Hat"} end
+        assert(not pcall(reskate.session.hide_items, {players = crowd}), "items of at most 64 players")
+        crowd[tostring(101)] = nil
+        assert(reskate.session.hide_items({players = crowd}), "64 players is fine")
+        assert(reskate.session.hide_items({items = {"Own_A"}}))
+        local ok, why = reskate.session.hide_items({items = {"Own_B"}})
+        assert(ok == false and why == "asked more than 4 times in a second", why)
         reskate.log("hid")
+      end)
+      reskate.console.command("again", "x", function()
+        assert(reskate.session.hide_items({items = {"Own_B"}}), "a second later it can change again")
+        reskate.log("again")
       end)
     )", R"("console", "session.read", "session.skaters")"), script("reader", R"(
         local ok, err = pcall(reskate.session.hide_items, {items = {"Own_Hat"}})
@@ -3133,13 +3145,18 @@ void plugins_read_and_hide_other_players_items() {
     )", R"("session.skaters")")});
     ticks(host, environment, 1); // the session reaches the plugins at a tick
     host.run_console("go");
+    environment.now += 1000;
+    host.run_console("again");
     running(host, "filter", environment);
     running(host, "reader", environment);
     running(host, "hider", environment);
-    check(environment.logged("[filter] hid") && environment.logged("[reader] refused hiding") && environment.logged("[hider] refused reading"),
+    check(environment.logged("[filter] hid") && environment.logged("[filter] again") && environment.logged("[reader] refused hiding") && environment.logged("[hider] refused reading"),
           "The calls ran\n" + environment.all());
     check(game.called("hide-items filter Own_Skull_Mask 7:Own_Nolan_Tee") && std::ranges::count(game.calls, std::string("hide-items filter")) == 1,
           "A list on everyone and on one player, then none\n" + environment.all());
+    check(game.called("hide-items filter Own_A") && game.called("hide-items filter Own_B") &&
+              std::ranges::count(game.calls, std::string("hide-items filter Own_B")) == 1,
+          "The fifth change in a second is refused and reaches nothing; a second later it goes through\n" + environment.all());
     check(!game.called("hide-items reader") && !game.called("hide-items hider Own_Hat"), "A plugin without the permission hides nothing");
 }
 
