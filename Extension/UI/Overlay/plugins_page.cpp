@@ -3,6 +3,7 @@
 #include "Extension/Plugins/plugin_ui.h"
 #include "Extension/UI/skate_theme.h"
 
+#include <imgui_internal.h>
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -264,9 +265,9 @@ const plugin_ui::PageEntry* shown_plugin_page(SkateMenu& menu) {
 }
 
 namespace {
-// The manager's open row (one at a time, by plugin id), and the plugins seen waiting for an answer:
-// one opens by itself the first time it is seen waiting, so a prompt that was missed is not the only
-// way to answer it. In memory only.
+// The list's open row (one at a time, by plugin id), and the plugins seen waiting for an answer: one
+// opens by itself the first time it is seen waiting, so a prompt that was missed is not the only way
+// to answer it. In memory only.
 std::string& open_plugin() {
     static auto* value = new std::string;
     return *value;
@@ -275,22 +276,29 @@ std::set<std::string>& seen_waiting() {
     static auto* value = new std::set<std::string>;
     return *value;
 }
+// The plugin whose page was just left with B: its row takes the focus back as the list draws.
+std::string& refocus_plugin() {
+    static auto* value = new std::string;
+    return *value;
+}
 
 ImU32 risk_colour(plugins::Risk risk) {
     return risk == plugins::Risk::red ? skate_theme::danger : risk == plugins::Risk::amber ? skate_theme::warning : IM_COL32(88, 90, 96, 255);
 }
 
-// One plugin as a row: its name, then its author and the kinds of thing it can do (the riskiest
-// first), and a blue edge while it runs. Its ON / OFF switch sits beside the row, so a plugin is turned
-// on or off without opening it (right on the D-pad from the row reaches it). A opens the plain list of
-// what it can do, each kind in its risk's colour (red, amber, grey). One waiting for an answer has no
-// switch to flip: it is answered in the open row, under the list of what it may do.
-void plugin_row(SkateMenu& menu, const plugins::Installed& plugin) {
+// One plugin as a row: its name; its author and the kinds of thing it can do, or, while it waits for an
+// answer, what it asks for (amber, with an amber edge and ASKS); "Page >" when it has a page; ON or OFF
+// at the right end. A opens its page when it has one, else its details; X turns it on or off (a click on
+// ON / OFF too); Y opens its details. Its details are the plain list of what it can do, each kind in its
+// risk's colour (red, amber, grey), and the buttons that switch or answer it. One waiting for an answer
+// is only answered there, under the list of what it may do: X opens them instead of switching it.
+void plugin_row(SkateMenu& menu, const plugins::Installed& plugin, bool has_page) {
     namespace st = skate_theme;
     const bool waiting = plugin.approval == plugins::Approval::asking;
     const bool on = plugin.approval == plugins::Approval::on;
     auto& open = open_plugin();
     if (waiting && seen_waiting().insert(plugin.id).second && open.empty()) open = plugin.id;
+    const bool is_open = open == plugin.id;
     // The author is whoever wrote the manifest: cut short, so a long one cannot crowd out the rest.
     std::string by = plugin.author;
     if (by.size() > 40) {
@@ -299,20 +307,55 @@ void plugin_row(SkateMenu& menu, const plugins::Installed& plugin) {
         if (!by.empty() && (static_cast<unsigned char>(by.back()) & 0xC0) == 0xC0) by.pop_back();
         by += "...";
     }
-    std::string detail = by.empty() ? std::string() : "by " + by;
     std::string kinds;
     for (const auto& group : plugin.can) kinds += (kinds.empty() ? "" : ", ") + group.category;
-    if (!kinds.empty()) detail += (detail.empty() ? "" : "  /  ") + kinds;
-    const char* side = waiting ? "WAITING FOR YOUR OK" : "";
-    const float gap = px(6), switch_width = px(84);
-    const bool is_open = expand_row(menu, plugin.id.c_str(), plugin.title, detail, side, open, on, switch_width + gap);
-    const float row = ImGui::GetItemRectSize().y;
-    ImGui::SameLine(0, gap);
-    bool switched = on;
-    if (switch_tile(menu, "switch", switched, ImVec2(switch_width, row), !waiting,
-                    waiting ? "Open the plugin to see what it may do and answer it." : on ? "A turns it off." : "A lets it run.", "ASK"))
-        plugins::set_enabled(plugin.id, switched);
-    if (!is_open) return;
+    LibraryRow row;
+    row.name = plugin.title;
+    if (waiting) {
+        row.detail = kinds.empty() ? std::string("Asks to run") : "Asks for: " + kinds;
+        row.detail_colour = st::warning;
+        row.edge = st::warning;
+        row.tag = "ASKS";
+        row.tag_fill = st::warning;
+        row.tag_ink = st::black;
+        row.hint = "A or X shows what it asks for, to answer it.";
+    } else {
+        row.detail = by;
+        if (!kinds.empty()) row.detail += (row.detail.empty() ? "" : " \xc2\xb7 ") + kinds;
+        row.tag = on ? "ON" : "OFF";
+        if (on) row.tag_fill = st::blue, row.tag_ink = st::white;
+        if (has_page) row.side = "Page \xe2\x80\xba";
+        row.hint = has_page ? "A opens its page. X turns it on or off. Y shows what it may do." : "A shows what it may do. X turns it on or off.";
+    }
+    row.open = is_open;
+    const auto pressed = library_row(menu, "##plugin", row);
+    const ImGuiID row_id = ImGui::GetItemID();
+    if (refocus_plugin() == plugin.id) {
+        ImGui::SetFocusID(row_id, ImGui::GetCurrentWindow());
+        ImGui::ScrollToItem();
+        refocus_plugin().clear();
+    }
+    if (pressed == RowPress::a) {
+        if (has_page && !waiting) {
+            menu.plugin_page = plugin.id;
+            open.clear();
+        } else {
+            open = is_open ? std::string() : plugin.id;
+        }
+    } else if (pressed == RowPress::x) {
+        if (waiting) open = plugin.id;
+        else plugins::set_enabled(plugin.id, !on);
+    } else if (pressed == RowPress::y) {
+        open = is_open ? std::string() : plugin.id;
+    }
+    if (!is_open || open != plugin.id) return;
+    // B closes the details, and the focus comes back to the row from the buttons that are going away.
+    hold_back();
+    if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) && !ImGui::GetIO().WantTextInput) {
+        open.clear();
+        ImGui::SetFocusID(row_id, ImGui::GetCurrentWindow());
+        return;
+    }
     ImGui::Indent(px(40));
     for (const auto& group : plugin.can) {
         ImGui::PushStyleColor(ImGuiCol_Text, group.risk == plugins::Risk::grey ? st::grey_text : risk_colour(group.risk));
@@ -324,17 +367,29 @@ void plugin_row(SkateMenu& menu, const plugins::Installed& plugin) {
     }
     ImGui::Unindent(px(40));
     if (waiting) {
-        const int pressed = row_actions(menu, "answer", {{"TURN ON", true, true, "Let it run."}, {"KEEP OFF", true, false, "It stays off."}});
-        if (pressed >= 0) plugins::set_enabled(plugin.id, pressed == 0);
+        const int answer = row_actions(menu, "answer", {{"TURN ON", true, true, "Let it run."}, {"KEEP OFF", true, false, "It stays off."}});
+        if (answer >= 0) plugins::set_enabled(plugin.id, answer == 0);
+    } else {
+        const RowButton turn{on ? "TURN OFF" : "TURN ON", true, !on, on ? "Stop it." : "Let it run."};
+        const int action = has_page ? row_actions(menu, "switch", {turn, {"OPEN PAGE", true, false, "Its page, in place of this list."}})
+                                    : row_actions(menu, "switch", {turn});
+        if (action == 0) plugins::set_enabled(plugin.id, !on);
+        if (action == 1) {
+            menu.plugin_page = plugin.id;
+            open.clear();
+        }
     }
 }
-}
 
-// Every plugin that may load, down one column even in a wide window. One that has no answer yet says
-// so, so a prompt that was missed is not the only way to answer.
-void installed_plugins(SkateMenu& menu) {
-    begin_full_card(menu, "plugins-installed", "INSTALLED PLUGINS");
+// PLUGINS' list: plugin developer mode, then every installed plugin, a row each, down one column.
+void plugin_list(SkateMenu& menu, const std::vector<plugin_ui::PageEntry>& pages) {
+    ImGui::BeginChild("plugin-list", ImVec2(0, page_body_height(menu)), ImGuiChildFlags_NavFlattened);
+    page_prompts("Open page", "On / off", "Permissions");
+    bool developer = plugins::developer_mode();
+    if (toggle_row(menu, "Plugin dev mode", "Updates to plugins you already approved won't ask again.", developer))
+        plugins::set_developer_mode(developer);
     const auto list = plugins::installed();
+    section(menu, ("INSTALLED  \xc2\xb7  " + std::to_string(list.size())).c_str());
     if (list.empty())
         note("No plugin is installed. A plugin is a mod with a reskate-plugin.json: a script that runs inside the game and can add "
              "pages, modes and tools.");
@@ -342,52 +397,35 @@ void installed_plugins(SkateMenu& menu) {
     if (asking == 1) warn("A plugin is waiting for your OK. Open it to answer.");
     else if (asking > 1) warn((std::to_string(asking) + " plugins are waiting for your OK. Open one to answer.").c_str());
     for (const auto& plugin : list) {
+        const bool has_page = std::ranges::any_of(pages, [&](const plugin_ui::PageEntry& p) { return p.plugin == plugin.id; });
         ImGui::PushID(plugin.id.c_str());
-        plugin_row(menu, plugin);
+        plugin_row(menu, plugin, has_page);
         ImGui::PopID();
     }
-    end_card();
-}
-
-// The first entry of PLUGINS: plugin developer mode, then every installed plugin and whether it may run,
-// in one column.
-void plugin_manager_page(SkateMenu& menu, bool no_pages) {
-    ImGui::BeginChild("plugin-manager", ImVec2(0, page_body_height(menu)), ImGuiChildFlags_NavFlattened);
-    begin_full_card(menu, "plugin-developer", "PLUGIN DEVELOPMENT");
-    bool developer = plugins::developer_mode();
-    if (toggle_row(menu, "Plugin developer mode", "Updates to plugins you already approved won't ask again.", developer))
-        plugins::set_developer_mode(developer);
-    note("Updates to plugins you already approved won't ask again while this is on.");
-    end_card();
-    installed_plugins(menu);
-    if (no_pages) {
-        begin_full_card(menu, "plugins-none", "PLUGIN PAGES");
+    note("X turns a plugin on or off from its row. A on a plugin with a page opens it full size, with the plugin's own tabs; "
+         "B comes back here. Y shows what it may do. While dev mode is on, updates to plugins you approved won't ask again.");
+    if (!list.empty() && pages.empty())
         note("No plugin has a page of its own. A plugin adds one with reskate.menu.page (it needs the \"menu\" permission). "
              "plugin list in the console lists every plugin too.");
-        end_card();
-    }
     ImGui::EndChild();
+}
 }
 
 void plugins_page(SkateMenu& menu) {
     const auto pages = plugin_pages();
     const auto* shown = shown_plugin_page(menu);
-    // The PLUGIN MANAGER is the first entry, then each plugin with a page: this page's tabs (tab 0 is the
-    // manager, tab n is pages[n - 1]).
-    {
-        std::vector<const char*> names{"PLUGIN MANAGER"};
-        int selected = 0;
-        for (std::size_t i = 0; i < pages->size(); ++i) {
-            names.push_back((*pages)[i].title.c_str());
-            if (shown && (*pages)[i].plugin == shown->plugin) selected = static_cast<int>(i) + 1;
-        }
-        category_tabs(menu, selected, names, "plugin-pages");
-        selected = std::clamp(selected, 0, static_cast<int>(pages->size()));
-        shown = selected == 0 ? nullptr : &(*pages)[static_cast<std::size_t>(selected - 1)];
-        menu.plugin_page = shown ? shown->plugin : plugin_manager_entry;
-    }
+    // The list, or the page of the plugin opened from it, full size: its own tabs are the page's tabs and
+    // its name the page's title (skate_menu.cpp). B goes back to the list.
     if (!shown) {
-        plugin_manager_page(menu, pages->empty());
+        plugin_list(menu, *pages);
+        return;
+    }
+    hold_back();
+    if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) && !ImGui::GetIO().WantTextInput && !ImGui::IsAnyItemActive() &&
+        !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)) {
+        refocus_plugin() = shown->plugin;
+        menu.plugin_page = plugin_manager_entry;
+        plugin_list(menu, *pages);
         return;
     }
     plugin_ui::note_page_shown(shown->plugin);

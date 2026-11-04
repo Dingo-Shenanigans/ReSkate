@@ -6,6 +6,8 @@
 #include <imgui.h>
 #include <optional>
 #include <map>
+#include <string>
+#include <vector>
 
 namespace dingosdk::overlay {
 struct AtmosphereEdit {
@@ -73,7 +75,14 @@ struct SkateMenu {
     bool scale_editing{};
     // Selected tab on each page; see the Page list in skate_menu_internal.h.
     int map_tab = 0, build_tab = 0, skater_tab = 0, settings_tab = 0, mods_tab = 0;
-    std::string plugin_page; // the PLUGINS section's plugin, by its id
+    std::string plugin_page; // the plugin whose page PLUGINS shows, by its id (menu::plugin_manager_entry: the list)
+    // The pages opened lately this run, newest first, at most three, HOME left out (HOME's PICK UP WHERE
+    // YOU LEFT OFF): the page, the tab it was on (-1: none), what to call it, and a plugin's page by its id.
+    struct RecentPage {
+        int page = -1, tab = -1;
+        std::string label, plugin;
+    };
+    std::vector<RecentPage> recent;
     // The layout, the side sheet's width and the window's size as just chosen or dragged (the last two in
     // pixels at 1080 lines and scale 1), until the saved setting comes back through the model.
     std::optional<int> layout_pending;

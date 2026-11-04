@@ -49,9 +49,6 @@ inline void category_tabs(SkateMenu& menu, int& selected, std::initializer_list<
 //   tag                    a small coloured badge, e.g. HOST or IN GAME
 //   primary_button         a card's main action: blue, full width
 void begin_card(SkateMenu& menu, const char* id, const char* title = nullptr, const char* subtitle = nullptr);
-// A card across the whole page even in a wide window, never in the two columns: for a list that reads
-// down one column (the installed plugins). end_card() closes it as any card.
-void begin_full_card(SkateMenu& menu, const char* id, const char* title = nullptr, const char* subtitle = nullptr);
 void end_card();
 // A card that folds: a click on its title row (or A on the controller) closes it down to that row and opens it again.
 // Returns whether the body is to be drawn; end_card() follows either way:
@@ -121,20 +118,40 @@ void debug_request(SkateMenu& menu, const CallbacksV3& callbacks, DebugRequest r
 // actions under it, and again, or B, closes them. `open` is the id of the list's open row (empty for
 // none), kept by the page. `detail` is a muted line under the title, `side` sits at the right end and
 // `current` marks the row with a blue edge. Returns whether the row is open: the page then draws
-// what goes under it, its actions as row_actions. `reserve` keeps that much of the row's right end free
-// for a control drawn beside it on the same line (ImGui::SameLine), such as a switch_tile.
+// what goes under it, its actions as row_actions.
 bool expand_row(SkateMenu& menu, const char* id, const std::string& title, const std::string& detail, const std::string& side,
-                std::string& open, bool current = false, float reserve = 0.0f);
-// An ON / OFF switch as a tile of its own, `size` big, for a switch beside a row (a plugin's beside its
-// expand_row, which keeps `reserve` free for it): A or a click flips `value` and returns true. Disabled,
-// it shows `unavailable` in place of ON / OFF.
-bool switch_tile(SkateMenu& menu, const char* id, bool& value, ImVec2 size, bool enabled = true, const char* hint = nullptr,
-                 const char* unavailable = nullptr);
+                std::string& open, bool current = false);
 // The actions of an open row: chips under its title, as many to a row as fit; `on` draws the main
 // one in blue. Returns the one pressed, or -1.
 int row_actions(SkateMenu& menu, const char* id, std::initializer_list<RowButton> actions);
 // Whether a page had a row open last frame, so B is that row's to close and not the menu's Back.
 bool page_holds_back();
+// A page with something of its own open (a row's details it draws itself, a page within the page) says
+// so each frame: B is then the page's to read and the menu's Back waits.
+void hold_back();
+// X on the controller pressed this frame (the menu keeps it from ImGui: see skate_menu.cpp).
+bool pad_x_pressed();
+// What A, X and Y do on this page, shown in the footer's prompts in place of Select (null: not shown).
+// Set while the page draws, each frame it wants them.
+void page_prompts(const char* a, const char* x = nullptr, const char* y = nullptr);
+// One thing of a library (a mod, a plugin, a page to go back to) as a row: a picture or a colour square,
+// its name, a muted line under it, side text, and its state as a tag at the right end. `edge` marks one
+// that needs a look (amber, red); `open` one whose details the page draws under it. What the player
+// did to it: A or a click; X, or a click on the tag; Y, or a right click.
+struct LibraryRow {
+    std::string name, detail;  // detail: the line under the name (empty: a one-line row)
+    std::string side;          // before the tag, such as "Page >"
+    ImU32 detail_colour = 0, side_colour = 0; // 0: muted
+    const char* tag = nullptr; // ON, OFF, ASKS, UPDATE...
+    ImU32 tag_fill = 0, tag_ink = 0; // 0: OFF's greys
+    ImU32 edge = 0;
+    ImU32 swatch = 0;          // a square before the name (0: none)...
+    ImTextureID image{};       // ...or a picture in its place
+    bool open = false;
+    const char* hint = nullptr;
+};
+enum class RowPress { none, a, x, y };
+RowPress library_row(SkateMenu& menu, const char* id, const LibraryRow& row);
 // HOST shows the host form until a session exists, then that session (SESSION).
 inline constexpr int multiplayer_session_tab = 1, multiplayer_voice_tab = 2, multiplayer_bans_tab = 3, multiplayer_chat_tab = 4;
 void multiplayer_display_settings(SkateMenu&, const Model&);
@@ -166,16 +183,19 @@ void cheats_tab(SkateMenu&, const Model&, const CallbacksV3&);
 // (skate_menu_world.cpp). Setting it from a menu control goes through set_time_of_day, `quiet`
 // leaving the game's reply off the page.
 int time_of_day_shown(const Model&);
+// The level being played, by name (a session's map, else the official map loaded); empty while not known.
+std::string loaded_level_name(const Model&);
 void set_time_of_day(SkateMenu&, const Model&, const CallbacksV3&, int next, bool quiet);
 // The PLUGINS section (plugins_page.cpp): the plugins with a page, as last published (held for the
 // frame); the one the menu shows (the first when its choice is gone; nullptr for none); and its page.
 std::shared_ptr<const std::vector<plugin_ui::PageEntry>> plugin_pages();
-// What menu.plugin_page holds while the PLUGIN MANAGER, the first entry of PLUGINS, is shown: no mod id can start with this.
+// What menu.plugin_page holds while PLUGINS shows its list of plugins: no mod id can start with this.
 inline constexpr const char* plugin_manager_entry = "" "plugin-manager";
-// The plugin page shown, or null while that is the PLUGIN MANAGER (also when the page chosen is gone).
+// The plugin page shown, or null while that is the list (also when the page chosen is gone).
 const plugin_ui::PageEntry* shown_plugin_page(SkateMenu& menu);
 void plugins_page(SkateMenu& menu);
-// The menu's first page: a tile for each part of the menu (skate_menu_addons.cpp).
+// The menu's first page (skate_menu_addons.cpp): where the player is, the quick switches, and the pages
+// to pick up again.
 void home_page(SkateMenu&, const Model&, const CallbacksV3&);
 // Shuffle, on Settings > MUSIC (skate_menu_settings.cpp).
 void music_playback_card(SkateMenu&);

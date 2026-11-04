@@ -44,6 +44,12 @@ bool level_loaded(const Model& model, const Level& level) {
     if (model.multiplayer.active && !session.empty()) return same(level.asset, std::string(session));
     return model.world.map != WorldMap::none && level_map(level) == model.world.map;
 }
+std::string loaded_level_name(const Model& model) {
+    for (const auto& level : model.levels)
+        if (!same(level.asset, root_asset) && level_loaded(model, level)) return level_name(level);
+    if (model.multiplayer.active && !model.multiplayer.map.empty()) return level_name(model.multiplayer.map);
+    return model.world.map != WorldMap::none ? world_map_label(model.world.map) : std::string();
+}
 
 void level_picker(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
     std::vector<const Level*> destinations;
