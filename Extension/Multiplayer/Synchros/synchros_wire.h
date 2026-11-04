@@ -14,7 +14,7 @@
 // no message says who sent it.
 //
 // A viewer asks; the wearer answers:
-//   Hello (session, proofs of the codes the viewer holds)  ->  Welcome (allowed or not)
+//   Hello (session, proofs of the personal and group codes the viewer holds)  ->  Welcome (allowed or not)
 //   Want (the worn items the viewer lacks)                  ->  Contents (each item's files, or why not)
 //   Fetch (the files it does not have yet, by content id)   ->  Piece... (each file in pieces)
 //   either side: Refuse (why it stops)
@@ -43,7 +43,8 @@ enum class Kind : std::uint8_t { hello = 1, welcome = 2, want = 3, contents = 4,
 
 struct Hello {
     std::uint64_t session{};
-    std::vector<Proof> proofs;  // at most max_entered_codes
+    std::vector<Proof> personal;  // at most max_entered_codes (sharing_rules.h)
+    std::vector<Proof> group;     // at most max_groups
 };
 struct Welcome {
     bool allowed{};

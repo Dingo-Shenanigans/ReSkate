@@ -79,27 +79,36 @@ void put_u64(std::vector<std::uint8_t>& out, std::uint64_t value) {
 }
 } // namespace
 
-std::string make_code() {
+std::string make_code(CodeKind kind) {
     std::array<std::uint8_t, 11> random{};
     random_bytes(random.data(), random.size());
     std::string symbols;
     // Each byte's low five bits: 256 is a multiple of 32, so every symbol is as likely.
     for (const auto byte : random) symbols += alphabet[byte & 31];
     symbols += check_symbol(symbols);
-    return show_code(symbols);
+    return show_code(symbols, kind);
 }
 
-std::optional<std::string> read_code(std::string_view typed) {
+std::optional<CodeKind> typed_kind(std::string_view typed) noexcept {
+    std::size_t at = 0;
+    while (at < typed.size() && (typed[at] == ' ' || typed[at] == '\t')) ++at;
+    if (typed.size() - at < 3) return std::nullopt;
+    auto up = [](char c) { return c >= 'a' && c <= 'z' ? static_cast<char>(c - 32) : c; };
+    const std::string head{up(typed[at]), up(typed[at + 1]), up(typed[at + 2])};
+    if (head == personal_prefix) return CodeKind::personal;
+    if (head == group_prefix) return CodeKind::group;
+    return std::nullopt;
+}
+
+std::optional<std::string> read_code(std::string_view typed, CodeKind kind) {
+    // The prefix, if typed, has to be this kind's.
+    if (const auto said = typed_kind(typed)) {
+        if (*said != kind) return std::nullopt;
+        typed.remove_prefix(typed.find_first_not_of(" \t") + 3);
+    }
     std::string symbols;
-    for (std::size_t i = 0; i < typed.size(); ++i) {
-        const char c = typed[i];
+    for (const char c : typed) {
         if (c == '-' || c == ' ' || c == '\t') continue;
-        // The "RSK" in front, if it was typed.
-        if (symbols.empty() && typed.size() - i >= 3 && (c == 'R' || c == 'r') && (typed[i + 1] == 'S' || typed[i + 1] == 's') &&
-            (typed[i + 2] == 'K' || typed[i + 2] == 'k')) {
-            i += 2;
-            continue;
-        }
         const int value = symbol_value(c);
         if (value < 0) return std::nullopt;
         symbols += alphabet[static_cast<std::size_t>(value)];
@@ -109,17 +118,20 @@ std::optional<std::string> read_code(std::string_view typed) {
     return symbols;
 }
 
-std::string show_code(std::string_view symbols) {
-    std::string out(code_prefix);
+std::string show_code(std::string_view symbols, CodeKind kind) {
+    std::string out(prefix_of(kind));
     for (std::size_t i = 0; i < symbols.size(); ++i) {
-        if (i && i % 4 == 0) out += '-';
+        if (i % 4 == 0) out += '-';
         out += symbols[i];
     }
     return out;
 }
 
-CodeKey code_key(std::string_view symbols) {
-    std::vector<std::uint8_t> data{'S', 'k', 'a', 't', 'e', 'S', 'y', 'n', 'c', 'h', 'r', 'o', 's', 'C', 'o', 'd', 'e'};
+CodeKey code_key(std::string_view symbols, CodeKind kind) {
+    std::vector<std::uint8_t> data{'S', 'k', 'a', 't', 'e', 'S', 'y', 'n', 'c', 'h', 'r', 'o', 's'};
+    const std::string_view label = kind == CodeKind::group ? "Group" : "Code";
+    data.insert(data.end(), label.begin(), label.end());
+    data.push_back(0);
     data.insert(data.end(), symbols.begin(), symbols.end());
     return digest(nullptr, 0, data.data(), data.size());
 }
@@ -132,10 +144,10 @@ Proof code_proof(const CodeKey& key, std::uint64_t session, std::uint64_t wearer
     return digest(key.data(), key.size(), data.data(), data.size());
 }
 
-bool proof_matches(const CodeKey& own, const Proof& proof, std::uint64_t session, std::uint64_t wearer,
+bool proof_matches(const CodeKey& key, const Proof& proof, std::uint64_t session, std::uint64_t wearer,
                    std::uint64_t viewer) noexcept {
     try {
-        const auto expected = code_proof(own, session, wearer, viewer);
+        const auto expected = code_proof(key, session, wearer, viewer);
         std::uint8_t difference = 0;
         for (std::size_t i = 0; i < expected.size(); ++i) difference |= static_cast<std::uint8_t>(expected[i] ^ proof[i]);
         return difference == 0;

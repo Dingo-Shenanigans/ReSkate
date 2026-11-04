@@ -100,8 +100,10 @@ std::vector<std::uint8_t> encode(const Message& message) {
         if constexpr (std::is_same_v<T, Hello>) {
             w.u8(static_cast<std::uint8_t>(Kind::hello)); w.u8(wire_version);
             w.u64(m.session);
-            w.u32(static_cast<std::uint32_t>(m.proofs.size()));
-            for (const auto& p : m.proofs) w.raw(p);
+            w.u32(static_cast<std::uint32_t>(m.personal.size()));
+            for (const auto& p : m.personal) w.raw(p);
+            w.u32(static_cast<std::uint32_t>(m.group.size()));
+            for (const auto& p : m.group) w.raw(p);
         } else if constexpr (std::is_same_v<T, Welcome>) {
             w.u8(static_cast<std::uint8_t>(Kind::welcome)); w.u8(wire_version);
             w.u8(m.allowed ? 1 : 0);
@@ -149,8 +151,10 @@ std::optional<Message> decode(std::span<const std::uint8_t> bytes) {
     case Kind::hello: {
         Hello m;
         m.session = r.u64();
-        const auto n = r.count(max_entered_codes);
-        for (std::size_t i = 0; i < n && r.ok; ++i) { Proof p{}; r.raw(p); m.proofs.push_back(p); }
+        const auto personal = r.count(max_entered_codes);
+        for (std::size_t i = 0; i < personal && r.ok; ++i) { Proof p{}; r.raw(p); m.personal.push_back(p); }
+        const auto group = r.count(max_groups);
+        for (std::size_t i = 0; i < group && r.ok; ++i) { Proof p{}; r.raw(p); m.group.push_back(p); }
         if (!m.session) r.ok = false;
         out = std::move(m);
         break;

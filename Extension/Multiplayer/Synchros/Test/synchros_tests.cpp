@@ -14,112 +14,156 @@ void check(bool ok, const char* why) { if (!ok) throw std::runtime_error(why); }
 constexpr std::uint64_t session = 0x1122334455667788ULL, me = 76561198000000001ULL, them = 76561198000000002ULL,
                         other = 76561198000000003ULL;
 
+constexpr std::uint64_t group_member = 76561198000000004ULL;
+
 void codes_look_right_and_read_back() {
     std::set<std::string> seen;
-    for (int i = 0; i < 200; ++i) {
-        const auto shown = make_code();
-        check(shown.size() == 18 && shown.starts_with("RSK-") && shown[8] == '-' && shown[13] == '-', "RSK-XXXX-XXXX-XXXX");
-        const auto symbols = read_code(shown);
-        check(symbols && show_code(*symbols) == shown, "a code reads back as itself");
-        seen.insert(shown);
+    for (const auto kind : {CodeKind::personal, CodeKind::group}) {
+        for (int i = 0; i < 200; ++i) {
+            const auto shown = make_code(kind);
+            check(shown.size() == 18 && shown.starts_with(prefix_of(kind)) && shown[3] == '-' && shown[8] == '-' && shown[13] == '-',
+                  "RSK-XXXX-XXXX-XXXX or RSG-...");
+            const auto symbols = read_code(shown, kind);
+            check(symbols && show_code(*symbols, kind) == shown, "a code reads back as itself");
+            check(typed_kind(shown) == kind, "its prefix says its kind");
+            seen.insert(shown);
+        }
     }
-    check(seen.size() == 200, "codes do not repeat");
+    check(seen.size() == 400, "codes do not repeat");
 }
 
 void reading_is_forgiving_but_checked() {
-    const auto shown = make_code();
-    const auto symbols = *read_code(shown);
+    const auto shown = make_code(CodeKind::personal);
+    const auto symbols = *read_code(shown, CodeKind::personal);
     std::string typed;
     for (const char c : symbols) typed += static_cast<char>(c >= 'A' && c <= 'Z' ? c + 32 : c);
-    check(read_code(typed) == symbols, "lower case, no dashes, no prefix");
-    check(read_code("rsk " + typed.substr(0, 4) + " " + typed.substr(4)) == symbols, "spaces and a lower-case prefix");
-    // One changed character, anywhere, is caught.
+    check(read_code(typed, CodeKind::personal) == symbols, "lower case, no dashes, no prefix");
+    check(read_code("rsk " + typed.substr(0, 4) + " " + typed.substr(4), CodeKind::personal) == symbols, "spaces and a lower-case prefix");
+    check(!read_code("RSG-" + symbols, CodeKind::personal), "a group prefix is not a personal code");
+    check(read_code("RSG-" + symbols, CodeKind::group) == symbols, "the same characters read as a group code with its prefix");
     for (std::size_t at = 0; at < symbols.size(); ++at) {
         auto wrong = symbols;
         wrong[at] = wrong[at] == '7' ? '8' : '7';
-        check(!read_code(wrong), "a typo is not a code");
+        check(!read_code(wrong, CodeKind::personal), "a typo is not a code");
     }
-    // Two neighbours swapped, where they differ, is caught.
     for (std::size_t at = 0; at + 1 < symbols.size(); ++at) {
         if (symbols[at] == symbols[at + 1]) continue;
         auto wrong = symbols;
         std::swap(wrong[at], wrong[at + 1]);
-        check(!read_code(wrong), "swapped characters are not a code");
+        check(!read_code(wrong, CodeKind::personal), "swapped characters are not a code");
     }
-    check(!read_code(symbols.substr(0, 11)), "too short");
-    check(!read_code(symbols + "0"), "too long");
-    check(!read_code("RSK-U000-0000-0000"), "U is not in the alphabet");
-    // O for 0 and I or L for 1.
-    std::string zeros = "00000000000";
-    std::string with_check = zeros + "0";
-    check(read_code(with_check).has_value(), "all zeros is a code (its check is 0)");
-    check(read_code("OOOO-OOOO-OOOO") == with_check, "O reads as 0");
+    check(!read_code(symbols.substr(0, 11), CodeKind::personal), "too short");
+    check(!read_code(symbols + "0", CodeKind::personal), "too long");
+    check(!read_code("RSK-U000-0000-0000", CodeKind::personal), "U is not in the alphabet");
+    check(read_code("OOOO-OOOO-OOOO", CodeKind::personal) == std::string(12, '0'), "O reads as 0");
 }
 
-void proofs_bind_the_pair_and_session() {
-    const auto symbols = *read_code(make_code());
-    const auto key = code_key(symbols);
+void proofs_bind_the_pair_session_and_kind() {
+    const auto symbols = *read_code(make_code(CodeKind::personal), CodeKind::personal);
+    const auto key = code_key(symbols, CodeKind::personal);
     const auto proof = code_proof(key, session, me, them);
     check(proof_matches(key, proof, session, me, them), "the right proof matches");
     check(!proof_matches(key, proof, session + 1, me, them), "not in another session");
     check(!proof_matches(key, proof, session, me, other), "not for another viewer");
     check(!proof_matches(key, proof, session, other, them), "not for another wearer");
-    check(!proof_matches(code_key(*read_code(make_code())), proof, session, me, them), "not under another code");
+    check(!proof_matches(code_key(symbols, CodeKind::group), proof, session, me, them), "a group key from the same characters differs");
 }
 
-void both_ends_opt_in() {
+void both_ends_opt_in_and_codes_are_the_only_way_in() {
     Settings wearer, viewer;
-    const Peer friend_peer{them, true}, stranger{other, false};
-    check(!may_send(wearer, friend_peer), "sharing is off until turned on");
-    check(!may_ask(viewer, friend_peer), "showing is off until turned on");
+    SessionGrants grants;
+    check(!may_send(wearer, grants, them), "sharing is off until turned on");
     wearer.share = true;
+    check(!may_send(wearer, grants, them), "no code, no outfit, friend or not");
     viewer.show = true;
-    check(may_send(wearer, friend_peer), "a friend gets it");
-    check(!may_send(wearer, stranger), "a stranger does not");
-    check(may_ask(viewer, friend_peer), "a friend is asked");
-    check(!may_ask(viewer, stranger), "a stranger is not asked without a code");
-    wearer.share_with_friends = false;
-    check(!may_send(wearer, friend_peer), "friends can be turned off");
+    check(!may_ask(viewer, me), "a viewer with no codes asks nobody");
+    const auto shown = renew_code(wearer);
+    check(enter_code(viewer, shown).empty(), "the code is entered");
+    check(may_ask(viewer, me), "now it asks");
+    viewer.show = false;
+    check(!may_ask(viewer, me), "not with showing off");
 }
 
-void a_code_pairs_a_stranger() {
+void a_personal_code_pairs_one_way() {
     Settings wearer, viewer;
+    SessionGrants grants;
     wearer.share = viewer.show = true;
     const auto shown = renew_code(wearer);
     check(enter_code(viewer, shown).empty(), "the code is entered");
     check(!enter_code(viewer, shown).empty(), "not twice");
     check(!enter_code(wearer, shown).empty(), "not your own");
     check(!enter_code(viewer, "RSK-0000-0000-0001").empty(), "a typo is refused");
-    check(may_ask(viewer, {me, false}), "the viewer asks the wearer it has a code for");
-    const auto proofs = proofs_for(viewer, session, me, them);
-    check(!may_send(wearer, {them, false}), "not before the proof");
-    check(accept_proof(wearer, proofs, session, me, them), "the proof is accepted");
-    check(may_send(wearer, {them, false}), "paired");
-    // A proof made for someone else's request is not accepted for this one.
-    Settings other_wearer = wearer;
-    other_wearer.paired.clear();
-    check(!accept_proof(other_wearer, proofs_for(viewer, session, me, other), session, me, them), "a proof for another pair fails");
+    check(!enter_code(viewer, make_code(CodeKind::group)).empty(), "a group code is pointed at groups");
+    check(accept_proofs(wearer, grants, proofs_for(viewer, session, me, them), session, me, them), "the proof is accepted");
+    check(may_send(wearer, grants, them), "paired");
+    // One way: the wearer has no code of the viewer's, so it is not let in to see the viewer.
+    Settings viewer_as_wearer = viewer;
+    viewer_as_wearer.share = true;
+    renew_code(viewer_as_wearer);
+    SessionGrants viewer_grants;
+    check(!accept_proofs(viewer_as_wearer, viewer_grants, proofs_for(wearer, session, them, me), session, them, me),
+          "giving your code does not get you theirs");
     // A new code keeps those already paired, but the old code pairs nobody new.
     renew_code(wearer);
-    check(may_send(wearer, {them, false}), "still paired after a new code");
+    check(may_send(wearer, grants, them), "still paired after a new code");
     Settings latecomer;
     latecomer.show = true;
     check(enter_code(latecomer, shown).empty(), "the old code can still be typed");
-    check(!accept_proof(wearer, proofs_for(latecomer, session, me, other), session, me, other), "but it pairs nobody new");
+    check(!accept_proofs(wearer, grants, proofs_for(latecomer, session, me, other), session, me, other), "but it pairs nobody new");
+}
+
+void a_group_lets_everyone_in_it_see_each_other() {
+    Settings a, b, c, outsider;
+    for (auto* p : {&a, &b, &c, &outsider}) p->share = p->show = true;
+    const auto code = create_group(a, "Sk8 Crew");
+    check(a.groups.size() == 1 && a.groups[0].created && a.groups[0].name == "Sk8 Crew", "the group is made");
+    check(join_group(b, code, "Crew").empty() && join_group(c, code, "").empty(), "two join it");
+    check(!join_group(b, code, "again").empty(), "not twice");
+    check(!join_group(b, make_code(CodeKind::personal), "").empty(), "a personal code is pointed at codes");
+    check(!b.groups[0].created && !renew_group_code(b, 0).size(), "only the PC that made it offers a new group code");
+    // Every pair of members, both ways.
+    const std::uint64_t ids[3] = {me, them, group_member};
+    Settings* members[3] = {&a, &b, &c};
+    for (int w = 0; w < 3; ++w)
+        for (int v = 0; v < 3; ++v) {
+            if (w == v) continue;
+            SessionGrants grants;
+            check(may_ask(*members[v], ids[w]), "a member asks the others");
+            check(accept_proofs(*members[w], grants, proofs_for(*members[v], session, ids[w], ids[v]), session, ids[w], ids[v]),
+                  "a member's proof is accepted by every other member");
+            check(may_send(*members[w], grants, ids[v]), "and gets the outfit");
+            check(!members[w]->paired.contains(ids[v]), "a group lets in for the session, it does not pair");
+        }
+    SessionGrants grants;
+    check(!accept_proofs(a, grants, proofs_for(outsider, session, me, other), session, me, other), "someone outside the group gets nothing");
+    // A new group code: whoever keeps only the old one no longer matches the members who moved.
+    const auto renewed = renew_group_code(a, 0);
+    check(!renewed.empty(), "the maker makes a new group code");
+    leave_group(b, 0);
+    check(join_group(b, renewed, "Crew").empty(), "b moves to the new code");
+    SessionGrants fresh;
+    check(accept_proofs(a, fresh, proofs_for(b, session, me, them), session, me, them), "b still matches a");
+    check(!accept_proofs(a, fresh, proofs_for(c, session, me, group_member), session, me, group_member), "c, on the old code, does not");
+    // Grants are for one session.
+    check(!may_send(a, SessionGrants{session + 1, {}}, them), "a group grant does not carry into another session");
+    // Leaving.
+    leave_group(a, 0);
+    SessionGrants after;
+    check(!accept_proofs(a, after, proofs_for(b, session, me, them), session, me, them), "after leaving, nobody gets in by it");
 }
 
 void blocking_wins() {
-    Settings wearer;
-    wearer.share = true;
-    renew_code(wearer);
-    wearer.paired.insert(them);
-    block(wearer, them);
-    check(!may_send(wearer, {them, true}), "a blocked friend gets nothing");
-    check(!wearer.paired.contains(them), "and is unpaired");
-    Settings viewer;
-    viewer.show = true;
-    block(viewer, me);
-    check(!may_ask(viewer, {me, true}), "a blocked player is not asked");
+    Settings wearer, viewer;
+    SessionGrants grants;
+    wearer.share = viewer.show = true;
+    const auto code = create_group(wearer, "g");
+    join_group(viewer, code, "g");
+    check(accept_proofs(wearer, grants, proofs_for(viewer, session, me, them), session, me, them), "in the same group");
+    block(wearer, grants, them);
+    check(!may_send(wearer, grants, them), "a blocked group member gets nothing");
+    check(!accept_proofs(wearer, grants, proofs_for(viewer, session, me, them), session, me, them), "and cannot prove their way back");
+    block(viewer, grants, me);
+    check(!may_ask(viewer, me), "a blocked player is not asked");
 }
 
 File sample_file(std::uint8_t seed, FileKind kind = FileKind::ebx) {
@@ -150,9 +194,13 @@ template<class T> T round_trip(const T& message) {
 }
 
 void every_message_round_trips() {
-    Hello hello{session, {code_proof(code_key(*read_code(make_code())), session, me, them)}};
+    Settings holder;
+    enter_code(holder, make_code(CodeKind::personal));
+    create_group(holder, "g");
+    const auto proofs = proofs_for(holder, session, me, them);
+    Hello hello{session, proofs.personal, proofs.group};
     const auto h = round_trip(hello);
-    check(h.session == session && h.proofs == hello.proofs, "hello");
+    check(h.session == session && h.personal == hello.personal && h.group == hello.group && h.group.size() == 1, "hello");
     check(round_trip(Welcome{true}).allowed && !round_trip(Welcome{false}).allowed, "welcome");
     check(round_trip(Want{{"items/board_bottomart/own_x", "items/cust_tops/own_y"}}).items.size() == 2, "want");
     Contents contents{{ItemContents{"items/board_bottomart/own_x", Withheld::none, {sample_file(1), sample_file(2, FileKind::resource),
@@ -179,7 +227,7 @@ void malformed_messages_are_refused() {
     auto kind = bytes; kind[0] = 99;
     check(!decode(kind), "an unknown kind");
     check(!decode(encode(Message{Want{}})), "a want of nothing");
-    check(!decode(encode(Message{Hello{0, {}}})), "a hello without a session");
+    check(!decode(encode(Message{Hello{0, {}, {}}})), "a hello without a session");
     // A name with a control character is not a name the game has.
     check(!decode(encode(Message{Want{{std::string("items/x\n")}}})), "control characters");
     // Too many items.
@@ -286,9 +334,10 @@ int main() {
     try {
         codes_look_right_and_read_back();
         reading_is_forgiving_but_checked();
-        proofs_bind_the_pair_and_session();
-        both_ends_opt_in();
-        a_code_pairs_a_stranger();
+        proofs_bind_the_pair_session_and_kind();
+        both_ends_opt_in_and_codes_are_the_only_way_in();
+        a_personal_code_pairs_one_way();
+        a_group_lets_everyone_in_it_see_each_other();
         blocking_wins();
         every_message_round_trips();
         malformed_messages_are_refused();

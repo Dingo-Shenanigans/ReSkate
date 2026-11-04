@@ -10,40 +10,46 @@ Status: design, with the first measurements. Nothing here is built yet.
 
 - **Opt in, both ends.** Two settings, both off: *Share my outfit* and *Show shared outfits*.
   With either off nothing is sent or asked for, and stand-ins work as they do today.
-- **Only people you choose.** An outfit is shared with mutual Steam friends, and with anyone
-  given your **share code**. Everyone else sees stand-ins.
+- **Codes are the only way in.** Nobody sees a player's modded outfit without a code from them,
+  Steam friend or not. A **personal code** lets whoever has it see its owner's outfit; a **group
+  code** lets everyone who has it see everyone else's who has it. Everyone else sees stand-ins.
 - **Only what is worn.** The wearer's PC sends the pieces of the items being worn, never a pack.
   A pack of thousands of items costs the viewer the few the wearer has on.
 - **Any mod.** The files come from the wearer's PC, so a mod not on Thunderstore (made by the
-  player, passed around privately) shares like any other.
+  player, passed around privately) shares like any other. Plugin code is never sent: a look that
+  needs a plugin the viewer lacks (a shader plugin's deck) shows as it does without it.
 - **Seen, never owned.** A received item dresses the player it came from, on this PC. It is not
   in the wardrobe, cannot be worn, and is not saved to the profile.
 
 ## Who an outfit is shared with
 
-A wearer shares with a peer when *Share my outfit* is on and either
+`Extension/Multiplayer/Synchros/sharing_rules.h`. A wearer sends its outfit to a viewer when
+*Share my outfit* is on, the viewer is not blocked, and in this session the viewer proved either
 
-- the peer is a Steam friend (`k_EFriendRelationshipFriend`) and *Friends* is ticked, or
-- the peer has this player's current share code.
+- the wearer's current **personal code** (the viewer is then paired for good, until removed), or
+- a **group code** both hold (let in for this session only, so leaving a group takes effect at once).
 
-A viewer asks a peer for its outfit when *Show shared outfits* is on, the peer is not blocked,
-and the peer is a friend or a player whose code the viewer entered.
+### Codes
 
-### Share codes
+`share_code.h`. A personal code is `RSK-7Q4M-K2XD-9PW3`, a group code `RSG-...`: twelve Crockford
+base32 characters, eleven random (55 bits) and a check character that catches a mistyped or two
+swapped characters. Made on the PC and kept in the profile; no SteamID in them.
 
-A code is the player's own, shown on the settings page: `RSK-7Q4M-K2XD-9PW3` (Crockford base32,
-60 bits of randomness, no SteamID in it). It is made on this PC and kept in the profile.
+- **The code never crosses the wire.** A code says nothing about whose it is, so a viewer with codes
+  offers a proof of each to every player in the session: HMAC-SHA256 under the code's key of the
+  session id and both SteamIDs. A proof is good only for that pair in that session, so it cannot be
+  replayed by another player or later, and it reveals nothing about the code.
+- **Personal:** one way. Giving someone your code lets them see your outfit, not theirs. *New code*
+  replaces it: nobody new can pair with the old one; players already paired stay until removed.
+- **Groups**, like Mare's Syncshells but with no server: a name (the player's own label, never
+  sent) and a code. Whoever makes one gives the code out; whoever enters it is in. Leaving is
+  removing it. Without a server nobody can be thrown out of a code they hold, so the PC that made
+  the group offers *New group code*, to give to everyone still meant to be in it; whoever keeps
+  only the old one no longer matches anyone who moved. (That button is a courtesy, not a lock:
+  anyone with the code could make a group of their own with it.)
+- **Blocking** wins over codes and groups, both ways, at once.
 
-- Entering a code stores it against nobody yet. When the viewer meets a player in a session, it
-  asks with a keyed proof of each code it holds (HMAC-SHA256 of the code over the session id and
-  both SteamIDs), so the code itself never crosses the wire and a proof cannot be replayed in
-  another session or by another player. The wearer answers only to a proof of its own current
-  code, and then remembers that SteamID as paired.
-- *New code* replaces the code: nobody new can pair with the old one. Players already paired
-  stay paired until removed from the list on the same page.
-- A code shares one way: giving someone your code lets them see your outfit, not theirs.
-
-No server is involved; the check is between the two PCs, over the session's connection.
+No server is involved: the checks are between the two PCs, on their own Steam connection.
 
 ## Only what is worn
 
@@ -124,14 +130,17 @@ the player installed.
 ## Settings page
 
 ```
-Outfit sharing
+Skate Synchros
   [ ] Share my outfit
-        [x] with Steam friends
-        My code  RSK-7Q4M-K2XD-9PW3   [Copy] [New code]
+        My code   RSK-7Q4M-K2XD-9PW3   [Copy] [New code]
+        Paired    Sandos, azzie                         [Remove]
   [ ] Show shared outfits
-        Codes I entered   [ RSK-____-____-____ ] [Add]
-        Paired players    Sandos (code), azzie (friend)   [Remove]
-  Cache  412 MB of 2 GB   [Empty]
+        Codes     [ RSK-____-____-____ ] [Add]    Sandos's code   [Remove]
+  Groups
+        Sk8 Crew  RSG-4K2M-...   [Copy] [New group code] [Leave]
+        [ Create a group ]   [ RSG-____-____-____ ] [Join]
+  Blocked   (none)
+  Cache     412 MB of 2 GB   [Empty]
 ```
 
 ## Work, in order
@@ -142,7 +151,7 @@ Outfit sharing
    out of the local catalogue.
 3. **Transfer** (Extension/Multiplayer): ask, have-list, send in pieces on a low-priority lane,
    resume, limits.
-4. **Who** (Extension/Multiplayer): friends, share codes and their proofs, the paired list, block.
+4. **Who** (Extension/Multiplayer/Synchros, done): personal and group codes, their proofs, pairing, block.
 5. **Settings page** and the remote skater dressing again when an item arrives.
 
 ## Open questions for the maintainers
