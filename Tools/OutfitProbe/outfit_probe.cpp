@@ -77,6 +77,7 @@ struct Mod {
     std::unordered_map<std::string, std::size_t> by_guid;      // ebx file guid / chunk guid
     std::unordered_map<std::uint64_t, std::size_t> by_resource;
     std::unordered_map<std::string, std::vector<std::size_t>> res_by_name;
+    std::unordered_map<std::string, std::vector<std::size_t>> by_name; // every asset, by lower-case name
     std::unordered_map<std::uint64_t, std::vector<std::size_t>> chunk_by_prefix; // a chunk guid's first 8 bytes
     std::uint64_t own_bytes{};
     std::size_t errors{};
@@ -86,22 +87,23 @@ std::uint64_t placement_key(const fb::BundleFileInfo& f) {
     return (static_cast<std::uint64_t>(f.location.archive) << 48) ^ (static_cast<std::uint64_t>(f.location.installChunk) << 32) ^ f.offset;
 }
 
-void walk(const ebx::Value& value, const ebx::Document& doc, std::vector<std::uint64_t>& resources, std::vector<std::string>& guids);
-void walk(const ebx::Object& object, const ebx::Document& doc, std::vector<std::uint64_t>& resources, std::vector<std::string>& guids) {
-    for (const auto& field : object.fields) walk(field.value, doc, resources, guids);
+void walk(const ebx::Value& value, const ebx::Document& doc, std::vector<std::uint64_t>& resources, std::vector<std::string>& guids, std::vector<std::string>& strings);
+void walk(const ebx::Object& object, const ebx::Document& doc, std::vector<std::uint64_t>& resources, std::vector<std::string>& guids, std::vector<std::string>& strings) {
+    for (const auto& field : object.fields) walk(field.value, doc, resources, guids, strings);
 }
-void walk(const ebx::Value& value, const ebx::Document& doc, std::vector<std::uint64_t>& resources, std::vector<std::string>& guids) {
+void walk(const ebx::Value& value, const ebx::Document& doc, std::vector<std::uint64_t>& resources, std::vector<std::string>& guids, std::vector<std::string>& strings) {
     std::visit([&](const auto& v) {
         using T = std::decay_t<decltype(v)>;
         if constexpr (std::is_same_v<T, fb::ebx::ResourceReference>) resources.push_back(v.id);
         else if constexpr (std::is_same_v<T, fb::Guid>) guids.push_back(guid_key(v));
+        else if constexpr (std::is_same_v<T, std::string>) { if (!v.empty()) strings.push_back(lower(v)); }
         else if constexpr (std::is_same_v<T, fb::ebx::PointerReference>) {
             if (v.kind == fb::ebx::PointerKind::external && v.index >= 0 && static_cast<std::size_t>(v.index) < doc.imports.size())
                 guids.push_back(guid_key(doc.imports[static_cast<std::size_t>(v.index)].fileGuid));
         } else if constexpr (std::is_same_v<T, std::shared_ptr<fb::ebx::Object>>) {
-            if (v) walk(*v, doc, resources, guids);
+            if (v) walk(*v, doc, resources, guids, strings);
         } else if constexpr (std::is_same_v<T, fb::ebx::Value::Array>) {
-            for (const auto& item : v) walk(item, doc, resources, guids);
+            for (const auto& item : v) walk(item, doc, resources, guids, strings);
         }
     }, value.data);
 }
@@ -125,6 +127,7 @@ void probe(const fs::path& mod_dir, const fs::path& game, dingosdk::vfs::GameArc
     const auto started = std::chrono::steady_clock::now();
     Mod mod;
     std::set<std::uint64_t> counted;
+    std::unordered_map<std::string, std::vector<std::size_t>> bundle_assets; // bundle name (no win32/) -> its own assets
     std::vector<fs::path> tocs;
     std::error_code error;
     for (auto it = fs::recursive_directory_iterator(mod_dir / "Win32", error); !error && it != fs::recursive_directory_iterator(); it.increment(error))
@@ -183,12 +186,17 @@ void probe(const fs::path& mod_dir, const fs::path& game, dingosdk::vfs::GameArc
                     if (kind == Node::resource) { mod.by_resource.emplace(n.resource_id, index); mod.res_by_name[n.name].push_back(index); }
                     if (kind == Node::chunk) mod.by_guid.emplace(n.guid, index);
                     if (counted.insert(placement_key(n.file)).second) mod.own_bytes += n.file.size;
+                    if (!n.name.empty()) mod.by_name[n.name].push_back(index);
                     mod.nodes.push_back(std::move(n));
                 };
+                const auto before = mod.nodes.size();
                 for (std::size_t i = 0; i < manifest.ebx.size(); ++i) add(Node::ebx_asset, manifest.ebx[i], first + i);
                 for (std::size_t i = 0; i < manifest.resources.size(); ++i) add(Node::resource, manifest.resources[i], first + manifest.ebx.size() + i);
                 for (std::size_t i = 0; i < manifest.chunks.size(); ++i)
                     add(Node::chunk, manifest.chunks[i], first + manifest.ebx.size() + manifest.resources.size() + i);
+                auto bname = lower(bundle.name);
+                if (bname.starts_with("win32/")) bname = bname.substr(6);
+                for (auto k = before; k < mod.nodes.size(); ++k) bundle_assets[bname].push_back(k);
             } catch (const std::exception& e) {
                 say("  ! " + bundle.name + ": " + e.what()); ++mod.errors;
             }
@@ -239,15 +247,24 @@ void probe(const fs::path& mod_dir, const fs::path& game, dingosdk::vfs::GameArc
         const auto& doc = docs[i];
         for (const auto& imp : doc.imports)
             if (auto f = mod.by_guid.find(guid_key(imp.fileGuid)); f != mod.by_guid.end()) n.edges.push_back(f->second);
-        std::vector<std::uint64_t> resources; std::vector<std::string> guids;
-        for (const auto& inst : doc.instances) if (inst.object) walk(*inst.object, doc, resources, guids);
+        std::vector<std::uint64_t> resources; std::vector<std::string> guids, strings;
+        for (const auto& inst : doc.instances) if (inst.object) walk(*inst.object, doc, resources, guids, strings);
+        // Items name their looks and bundles by path: "characters/.../preset_x", "win32/.../bundle".
+        for (auto name : strings) {
+            if (name.starts_with("win32/")) name = name.substr(6);
+            for (const std::string& candidate : {name, name + "_ap", name.substr(0, name.rfind('/') == std::string::npos ? name.size() : name.rfind('/') + 1) + name.substr(name.rfind('/') + 1)})
+                if (auto f = mod.by_name.find(candidate); f != mod.by_name.end()) n.edges.insert(n.edges.end(), f->second.begin(), f->second.end());
+            // The shared bundle holds every item's definition: naming it is not naming its contents.
+            if (name.find("sharedbundle") == std::string::npos)
+                if (auto b = bundle_assets.find(name); b != bundle_assets.end()) n.edges.insert(n.edges.end(), b->second.begin(), b->second.end());
+        }
         for (auto id : resources) if (auto f = mod.by_resource.find(id); f != mod.by_resource.end()) n.edges.push_back(f->second);
         for (const auto& g : guids) if (auto f = mod.by_guid.find(g); f != mod.by_guid.end()) n.edges.push_back(f->second);
         if (auto f = mod.res_by_name.find(n.name); f != mod.res_by_name.end()) n.edges.insert(n.edges.end(), f->second.begin(), f->second.end());
     };
 
     // Each item's closure.
-    struct ItemCost { std::string name; std::uint64_t bytes{}; std::size_t files{}; };
+    struct ItemCost { std::string name; std::uint64_t bytes{}; std::size_t files{}; std::vector<std::size_t> members; };
     std::vector<ItemCost> items;
     for (std::size_t i = 0; i < mod.nodes.size(); ++i) {
         if (!mod.nodes[i].item) continue;
@@ -260,7 +277,7 @@ void probe(const fs::path& mod_dir, const fs::path& game, dingosdk::vfs::GameArc
             const auto at = queue.front(); queue.pop_front();
             link(at);
             const auto& n = mod.nodes[at];
-            if (placed.insert(placement_key(n.file)).second) { cost.bytes += n.file.size; ++cost.files; }
+            if (placed.insert(placement_key(n.file)).second) { cost.bytes += n.file.size; ++cost.files; cost.members.push_back(at); }
             for (auto next : n.edges) if (!seen[next]) { seen[next] = 1; queue.push_back(next); }
         }
         items.push_back(std::move(cost));
@@ -280,6 +297,14 @@ void probe(const fs::path& mod_dir, const fs::path& game, dingosdk::vfs::GameArc
         for (std::size_t k = 0; k < items.size() && k < 8; ++k)
             say("     " + mb(items[k].bytes) + "  " + std::to_string(items[k].files) + " files  " + items[k].name);
         if (items.size() > 8) say("     ... and " + std::to_string(items.size() - 8) + " more");
+        auto members = items.front().members;
+        std::sort(members.begin(), members.end(), [&](auto a, auto b) { return mod.nodes[a].file.size > mod.nodes[b].file.size; });
+        say("   largest item's files:");
+        for (std::size_t k = 0; k < members.size() && k < 10; ++k) {
+            const auto& n = mod.nodes[members[k]];
+            const char* kind = n.kind == Node::ebx_asset ? "ebx" : n.kind == Node::resource ? "res" : n.toc_chunk ? "chunk(toc)" : "chunk";
+            say("     " + mb(n.file.size) + "  " + kind + "  " + (n.name.empty() ? std::string("(unnamed)") : n.name) + (n.root_type.empty() ? "" : "  [" + n.root_type + "]"));
+        }
     } else {
         std::string types;
         for (const auto& [t, c] : root_types) if (types.size() < 300) types += t + " x" + std::to_string(c) + ", ";
