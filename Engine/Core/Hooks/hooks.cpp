@@ -265,6 +265,8 @@ const char* WINAPI hook_status_string(HookStatus value) {
     case HookDisabled: return "hook already detached";
     case HookNotFound: return "target not registered";
     case HookNotExecutable: return "target or replacement is not executable";
+    case HookBytesDiffer: return "patch target does not hold the expected bytes";
+    case HookOutOfReach: return "jump destination is out of rel32 reach";
     case HookOutOfMemory: return "out of memory";
     case HookProtectionFailed: return "memory protection or thread access denied";
     case HookUnsupportedFunction: return "Detours cannot relocate target";

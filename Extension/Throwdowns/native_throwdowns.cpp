@@ -11,6 +11,7 @@
 #include "throwdown_relay.h"
 #include "virtual_player_names.h"
 #include "Engine/Core/Hooks/hooks.h"
+#include "Engine/Core/Hooks/patches.h"
 #include "Engine/Core/Log/logging.h"
 #include "Extension/Customization/local_player_card_runtime.h"
 #include "Extension/Localization/text_overrides.h"
@@ -1017,13 +1018,11 @@ void initialize_native_throwdowns(Address base) noexcept {
             // A table row, not a function: the stub it points at is shared, so
             // rebind this one native instead of hooking the stub.
             constexpr Address row = throwdowns::debug_variable_row, stub = throwdowns::debug_variable_stub;
-            DWORD protect{};
-            if (read<std::uint32_t>(base + row) == 0xbc999b66 && read<Address>(base + row + 8) == base + stub &&
-                VirtualProtect(reinterpret_cast<void*>(base + row + 8), sizeof(Address), PAGE_READWRITE, &protect)) {
-                *reinterpret_cast<Address*>(base + row + 8) = reinterpret_cast<Address>(&debug_variable);
-                VirtualProtect(reinterpret_cast<void*>(base + row + 8), sizeof(Address), protect, &protect);
-            } else logging::write(logging::Level::warning, logging::Channel::progression,
-                "Throwdown queue: developer-variable binding differs; single-player queue unavailable.");
+            if (read<std::uint32_t>(base + row) != 0xbc999b66 ||
+                patch_table_slot("developer-variable native row", reinterpret_cast<void**>(base + row + 8),
+                    reinterpret_cast<void*>(base + stub), reinterpret_cast<void*>(&debug_variable)) != HookOk)
+                logging::write(logging::Level::warning, logging::Channel::progression,
+                    "Throwdown queue: developer-variable binding differs; single-player queue unavailable.");
         }
         s.installed.store(true, std::memory_order_release);
     } catch (const std::exception& e) { logging::write(logging::Level::warning, logging::Channel::progression, e.what()); }

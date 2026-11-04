@@ -1,6 +1,7 @@
 if(WIN32)
     add_library(dingosdk_hooks STATIC
-        Engine/Core/Hooks/hooks.cpp)
+        Engine/Core/Hooks/hooks.cpp
+        Engine/Core/Hooks/patches.cpp)
     target_link_libraries(dingosdk_hooks PRIVATE dingosdk_detours)
 endif()
 

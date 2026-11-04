@@ -12,6 +12,10 @@ enum HookStatus : LONG {
     HookDisabled = -4,
     HookNotFound = -5,
     HookNotExecutable = -6,
+    // The patch helpers (patches.h): the place does not hold what the caller expected, so nothing
+    // was written; a rel32 jump cannot reach its destination.
+    HookBytesDiffer = -7,
+    HookOutOfReach = -8,
     HookOutOfMemory = ERROR_NOT_ENOUGH_MEMORY,
     HookProtectionFailed = ERROR_ACCESS_DENIED,
     HookUnsupportedFunction = ERROR_INVALID_BLOCK,

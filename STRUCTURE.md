@@ -84,7 +84,7 @@ Loosely follows Frostbite's own layout.
 |---|---|
 | `Console/` | command registry and console core |
 | `Debug/` | crash reports: minidumps, report envelope, trace, upload |
-| `Hooks/` | Detours hook helpers |
+| `Hooks/` | Detours hook helpers, and patches.h for table slots, import slots and code patches |
 | `Json/` | JSON helpers over RapidJSON |
 | `Log/` | spdlog-based logger, log paths, crash/event logging |
 | `Platform/` | process injection, PE helpers, memory and path utilities |

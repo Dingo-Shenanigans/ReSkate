@@ -61,7 +61,9 @@ can only be checked in the game, say so, and say what you did and did not verify
   or patched has a `<name>_prefix` byte array beside it, and the feature checks those bytes before
   touching it, so wrong bytes are refused rather than patched. Follow an existing header.
 - **Hooks go through [Engine/Core/Hooks](Engine/Core/Hooks/hooks.h)** (Microsoft Detours): `hook_prepare`,
-  then `hook_enable`. Hooks installed while the game is running go inside a `HookBatch`.
+  then `hook_enable`. Hooks installed while the game is running go inside a `HookBatch`. Patches
+  Detours does not make go through [patches.h](Engine/Core/Hooks/patches.h) beside it: `patch_table_slot`,
+  `patch_import_slot`, `patch_code_jump` / `patch_code` and `patch_breakpoint`.
 - **The SDK offers general APIs, not modes.** No C++ that knows one particular game mode, menu or
   feature that a plugin could provide. Add the general building block to the SDK and build the feature
   on it as a Luau plugin mod (a mod folder with a `reskate-plugin.json`). The goal is that
