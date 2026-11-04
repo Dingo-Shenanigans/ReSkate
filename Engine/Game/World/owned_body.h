@@ -1,5 +1,6 @@
 #pragma once
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -22,6 +23,35 @@ struct Definition {
     Vec inertia{}, position{};
     Quaternion rotation{};
 };
+// What a parked body keeps from its definition: the capsules, mass and inertia, compared bit for
+// bit, so a re-activated body is exactly the body that was asked for. Position and rotation say
+// only where it starts, and may differ.
+inline bool same_shape(const Definition& a, const Definition& b) noexcept {
+    const auto same = [](float x, float y) { return std::bit_cast<std::uint32_t>(x) == std::bit_cast<std::uint32_t>(y); };
+    const auto same_vec = [&](const Vec& x, const Vec& y) { return same(x[0], y[0]) && same(x[1], y[1]) && same(x[2], y[2]); };
+    if (a.count != b.count || a.count > maximum_capsules || !same(a.mass, b.mass) || !same_vec(a.inertia, b.inertia)) return false;
+    for (std::size_t i = 0; i < a.count; ++i)
+        if (!same_vec(a.capsules[i].a, b.capsules[i].a) || !same_vec(a.capsules[i].b, b.capsules[i].b) ||
+            !same(a.capsules[i].radius, b.capsules[i].radius)) return false;
+    return true;
+}
+// How a create asked to reuse a parked body ended: with that body re-activated, or with a new
+// allocation and the reason none of the caller's own parked bodies could be used.
+enum class Origin { allocated, reused };
+inline const char* name(Origin value) noexcept { return value == Origin::reused ? "reused" : "allocated"; }
+enum class ReuseMiss { none, none_parked, definition_differs, world_changed, quarantined, parked_body_changed };
+inline const char* name(ReuseMiss value) noexcept {
+    switch (value) {
+    case ReuseMiss::none: return "none";
+    case ReuseMiss::none_parked: return "none_parked";
+    case ReuseMiss::definition_differs: return "definition_differs";
+    case ReuseMiss::world_changed: return "world_changed";
+    case ReuseMiss::quarantined: return "quarantined";
+    case ReuseMiss::parked_body_changed: return "parked_body_changed";
+    }
+    return "none";
+}
+struct CreateReport { Origin origin{}; ReuseMiss miss{}; };
 // SDK-generated identifiers. The Lua binding wraps these in locked userdata.
 struct Handle { std::uint64_t generation{}; std::uint32_t slot{}; bool operator==(const Handle&) const = default; };
 struct Epoch {

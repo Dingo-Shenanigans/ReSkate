@@ -495,7 +495,7 @@ void measured_contact_host_fixture_v1() {
         Host host(environment, Side::client);
         f::ready(environment, id);
         auto& game = environment.fake;
-        game.test_body_create_refusal = "waiting for a fresh qualified 60 Hz physics step";
+        game.test_body_create_refusal = "body_preallocation_unavailable";
         host.apply({package(id, files)});
         f::show(host, environment, id);
         f::start(host, environment, id);

@@ -161,12 +161,38 @@ struct PhysicsApi {
         }
         lua_pop(L, 1);
         if (!valid(d)) luaL_error(L, "invalid native body: mass 1..1000, inertia .01..10000, unit XYZW rotation, capsule endpoints +/-10m and radius .01..2m");
+        // Without options this is exactly the original call, with its single return value.
+        const bool options = !lua_isnoneornil(L, 2);
+        bool reuse{};
+        if (options) {
+            fields(L, 2, {"reuse"});
+            lua_getfield(L, 2, "reuse");
+            if (!lua_isnil(L, -1)) { luaL_checktype(L, -1, LUA_TBOOLEAN); reuse = lua_toboolean(L, -1) != 0; }
+            lua_pop(L, 1);
+        }
+        // The owner is always this VM instance, so only bodies it parked itself can come back.
+        // The plugin names no slot, generation or native identity.
+        if (reuse) {
+            need(L, p, "world.physics.reuse", "reskate.world.physics.create reuse");
+            if (p.body_reuses_ >= 1) return fail(L, "asked to reuse a native body more than once in one tick");
+            ++p.body_reuses_;
+        }
         Handle h;
-        const auto why = p.services_.game().body_create(p.instance(), d, h);
+        CreateReport report;
+        const auto why = options ? p.services_.game().body_create_reusing(p.instance(), d, h, reuse, report) :
+            p.services_.game().body_create(p.instance(), d, h);
         if (!why.empty()) return fail(L, why);
         if (!h.generation || h.slot >= retained_capacity) return fail(L, "native body did not return an owned generation");
         opaque(L, BodyValue{p.instance(), h}, handle_type);
-        return 1;
+        if (!options) return 1;
+        // body, nil, origin[, miss], as submit returns true, nil, sequence. Nothing was reused
+        // unless it was asked for, and a miss is only said for a reuse that allocated instead.
+        const bool reused = reuse && report.origin == Origin::reused;
+        lua_pushnil(L);
+        lua_pushstring(L, name(reused ? Origin::reused : Origin::allocated));
+        if (!reuse || reused || report.miss == ReuseMiss::none) return 3;
+        lua_pushstring(L, name(report.miss));
+        return 4;
     }
     static int read(lua_State* L) {
         auto& p = plugin(L);

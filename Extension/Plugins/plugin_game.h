@@ -299,6 +299,11 @@ public:
     // Generic deferred producer setup and readiness only; no owner or definition is kept.
     virtual std::string body_prepare() { return unavailable; }
     virtual std::string body_create(std::uint64_t, const owned_body::Definition&, owned_body::Handle&) { return unavailable; }
+    // create with options: true asks to re-activate one of this owner's own parked bodies before
+    // allocating, and the report says which happened (owned_bodies::create).
+    virtual std::string body_create_reusing(std::uint64_t, const owned_body::Definition&, owned_body::Handle&, bool, owned_body::CreateReport&) {
+        return unavailable;
+    }
     virtual std::string body_read(std::uint64_t, const owned_body::Handle&, owned_body::Sample&) { return unavailable; }
     // allowed is the VM's remaining native cast budget; the result counts every native call made.
     virtual body_query::Result body_probe_batch(std::uint64_t, const owned_body::Handle&, const body_query::Request&, unsigned) { return {}; }
@@ -412,6 +417,20 @@ public:
     // any plugin hides them (at most 256 between them).
     virtual std::string hide_player(std::string_view /*plugin*/, std::uint64_t, bool /*hidden*/) { return unavailable; }
     virtual std::vector<std::uint64_t> hidden_players(std::string_view /*plugin*/) { return {}; }
+    // What another player wears, as their game sent it: the item names of their skater and of their
+    // board. Nothing until their outfit has arrived.
+    struct PlayerOutfit {
+        std::vector<std::string> skater, board;
+    };
+    virtual std::optional<PlayerOutfit> player_outfit(std::uint64_t) { return std::nullopt; }
+    // Items shown on other players, on this screen, as items this PC does not have are (a stand-in,
+    // the default or nothing): the plugin's whole list, on everyone and on some players, which
+    // replaces the one before. Empty lists take it away. Any case matches.
+    struct HiddenItems {
+        std::vector<std::string> everyone;
+        std::vector<std::pair<std::uint64_t, std::vector<std::string>>> players;
+    };
+    virtual std::string hide_items(std::string_view /*plugin*/, HiddenItems) { return unavailable; }
     // A short tag beside a player's nametag, the plugin's own (empty text takes it away).
     virtual void set_nametag(std::string_view /*plugin*/, std::uint64_t, std::string, std::uint32_t) {}
     // The names over the other players held off while any plugin asks (chat bubbles still show).
@@ -502,6 +521,17 @@ public:
         bool known{}; // The native screen model was resolved; false is not a known closed menu.
     };
     virtual GameMenu game_menu() { return {}; }
+    // What is up over the game (reskate.menu.state and the menu_changed event): the game's own
+    // pause menu, on any of its pages; ReSkate's menu, its window or one of its pages in the pause
+    // menu (`page`: "multiplayer", "mod_options" or "mod_manager", empty for none); and the replay
+    // editor. Read every tick while a plugin has the menu permission, so it should be cheap.
+    struct MenuState {
+        bool pause{}, reskate{}, replay_editor{};
+        std::string page;
+        bool known{}; // The native screen model was resolved, as for GameMenu; false is not a known closed pause menu.
+        bool operator==(const MenuState&) const = default;
+    };
+    virtual MenuState menu_state() { return {}; }
     // The customization grid that has the focus (Extension/Customization/item_browser.h), when one does.
     struct MenuGrid {
         std::string focused, title, category; // the highlighted item: key, title, catalog category

@@ -1,6 +1,7 @@
 #include "plugin_api.h"
 #include "plugin_game.h"
 #include "plugin_bodies.h"
+#include "plugin_session_feed.h"
 #include "Extension/Multiplayer/Remote/cosmetics.h"
 #include "Extension/Multiplayer/Remote/stand_ins.h"
 #include "lua.h"
@@ -1744,6 +1745,81 @@ struct WorldApi {
         const auto player = player_of(L, 1);
         return result(L, game(plugin).hide_player(plugin.id(), player, lua_isnone(L, 2) || lua_toboolean(L, 2)));
     }
+    // session.outfit(player): {skater = {names}, board = {names}}, the items that player wears as their
+    // game sent them; nil before their outfit arrives, or for a player not in the session.
+    static int session_outfit(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "session.read", "reskate.session.outfit");
+        const auto player = player_of(L, 1);
+        const auto& session = plugin.services_.session();
+        const auto present = std::ranges::any_of(session.players, [&](const SessionPlayer& p) { return p.id == player && !p.me; });
+        const auto outfit = present ? game(plugin).player_outfit(player) : std::nullopt;
+        if (!outfit) {
+            lua_pushnil(L);
+            return 1;
+        }
+        const auto list = [&](const std::vector<std::string>& names, const char* field) {
+            lua_createtable(L, static_cast<int>(names.size()), 0);
+            for (std::size_t i = 0; i < names.size(); ++i) {
+                lua_pushlstring(L, names[i].data(), names[i].size());
+                lua_rawseti(L, -2, static_cast<int>(i + 1));
+            }
+            lua_setfield(L, -2, field);
+        };
+        lua_createtable(L, 0, 2);
+        list(outfit->skater, "skater");
+        list(outfit->board, "board");
+        return 1;
+    }
+    // session.hide_items({items = {names}, players = {[player] = {names}}}): those items shown on other
+    // players (on everyone, or on the players named) as items this PC does not have are: a stand-in
+    // (reskate.outfit.stand_ins), the default or nothing. The plugin's whole list, replacing the one
+    // before; hide_items(nil) shows them again. Only this screen changes. true, or false and why not.
+    static int session_hide_items(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "session.skaters", "reskate.session.hide_items");
+        Game::HiddenItems wanted;
+        std::size_t total = 0;
+        // A list of item names at the top of the stack, into `out`.
+        const auto names = [&](const char* what, std::vector<std::string>& out) {
+            if (!lua_istable(L, -1)) luaL_error(L, "%s is a list of item names", what);
+            const int count = lua_objlen(L, -1);
+            for (int i = 1; i <= count; ++i) {
+                lua_rawgeti(L, -1, i);
+                std::size_t length = 0;
+                const char* item = lua_type(L, -1) == LUA_TSTRING ? lua_tolstring(L, -1, &length) : nullptr;
+                if (!item || !length || length > multiplayer::max_cosmetic_asset) luaL_error(L, "%s is a list of item names", what);
+                if (++total > plugin_feed::max_hidden_items) luaL_error(L, "at most %d item names", static_cast<int>(plugin_feed::max_hidden_items));
+                out.emplace_back(item, length);
+                lua_pop(L, 1);
+            }
+        };
+        if (!lua_isnoneornil(L, 1)) {
+            luaL_checktype(L, 1, LUA_TTABLE);
+            lua_getfield(L, 1, "items");
+            if (!lua_isnil(L, -1)) names("items", wanted.everyone);
+            lua_pop(L, 1);
+            lua_getfield(L, 1, "players");
+            if (!lua_isnil(L, -1)) {
+                if (!lua_istable(L, -1)) luaL_error(L, "players is a table of players' items");
+                lua_pushnil(L);
+                while (lua_next(L, -2)) {
+                    if (lua_type(L, -2) != LUA_TSTRING) luaL_error(L, "players is keyed by player ids");
+                    lua_pushvalue(L, -2);
+                    const auto player = player_of(L, lua_gettop(L));
+                    lua_pop(L, 1);
+                    if (wanted.players.size() >= plugin_feed::max_hidden_item_players)
+                        luaL_error(L, "items of at most %d players", static_cast<int>(plugin_feed::max_hidden_item_players));
+                    names("a player's items", wanted.players.emplace_back(player, std::vector<std::string>{}).second);
+                    lua_pop(L, 1);
+                }
+            }
+            lua_pop(L, 1);
+        }
+        // Every change dresses the players you see again, which is heavy: not every frame.
+        if (!within(plugin.services_.now_ms(), plugin.control_second_, plugin.controls_, 4)) return result(L, "asked more than 4 times in a second");
+        return result(L, game(plugin).hide_items(plugin.id(), std::move(wanted)));
+    }
     static int session_hidden(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "session.skaters", "reskate.session.hidden");
@@ -3413,6 +3489,7 @@ void WorldApi::install(Plugin& plugin, lua_State* L) {
     add_functions(L, "ai", {{"spawn", ai_spawn}, {"clear", ai_clear}, {"count", ai_count}});
     add_functions(L, "session", {{"skaters", skaters}, {"tag", tag}, {"nametags", nametags}, {"joint", session_joint}, {"touch", session_touch},
                                  {"touching", session_touching}, {"hide", session_hide}, {"hidden", session_hidden},
+                                 {"outfit", session_outfit}, {"hide_items", session_hide_items},
                                  {"raycast", session_raycast}});
     add_functions(L, "voice", {{"set_volume", voice_volume}});
     add_functions(L, "chat", {{"send", chat_send}, {"notice", chat_local}, {"command", chat_command}});

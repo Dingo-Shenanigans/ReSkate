@@ -460,6 +460,7 @@ void Plugin::tick(double dt_ms) {
     raycasts_ = 0;
     native_casts_ = {};
     body_prepares_ = 0;
+    body_reuses_ = 0;
     effect_calls_ = 0;
     prune_effects();
     deliver_preloads(*this);
@@ -681,6 +682,15 @@ void Plugin::skater_changed(const char* state, const char* previous) {
     fire_with("skater_state", [&](lua_State* L) {
         lua_pushstring(L, state);
         lua_pushstring(L, previous);
+        return 2;
+    });
+}
+
+void Plugin::menu_changed(const Game::MenuState& state, const Game::MenuState& previous) {
+    if (state_ != State::running || !has("menu")) return;
+    fire_with("menu_changed", [&](lua_State* L) {
+        push_menu_state(L, state);
+        push_menu_state(L, previous);
         return 2;
     });
 }

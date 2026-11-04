@@ -14,6 +14,7 @@
 #include "Engine/Game/World/world_layer_catalog.h"
 #include "Engine/Game/World/world_layer_types.h"
 #include "Extension/Multiplayer/Hud/game_ui_state.h"
+#include "Extension/UI/NativeMenu/native_menu.h"
 #include "Extension/Multiplayer/Hud/native_party.h"
 #include "Extension/Skater/client_source_spawn.h"
 #include "Extension/Skater/skater_animation.h"
@@ -188,6 +189,10 @@ public:
     }
     std::string body_prepare() override { return owned_bodies::prepare(); }
     std::string body_create(std::uint64_t owner, const owned_body::Definition& d, owned_body::Handle& h) override { return owned_bodies::create(owner, d, h); }
+    std::string body_create_reusing(std::uint64_t owner, const owned_body::Definition& d, owned_body::Handle& h, bool reuse,
+                                    owned_body::CreateReport& report) override {
+        return owned_bodies::create(owner, d, h, reuse, report);
+    }
     std::string body_read(std::uint64_t owner, const owned_body::Handle& h, owned_body::Sample& s) override { return owned_bodies::read(owner, h, s); }
     body_query::Result body_probe_batch(std::uint64_t owner, const owned_body::Handle& h, const body_query::Request& request, unsigned allowed) override {
         return owned_bodies::probe_batch(owner, h, request, allowed);
@@ -425,6 +430,23 @@ public:
         return plugin_feed::hide(std::string(plugin), player, hidden) ? std::string{} : "at most 256 players are hidden";
     }
     std::vector<std::uint64_t> hidden_players(std::string_view plugin) override { return plugin_feed::hidden_by(std::string(plugin)); }
+    std::optional<PlayerOutfit> player_outfit(std::uint64_t player) override {
+        auto outfit = plugin_feed::outfit_of(player);
+        if (!outfit) return std::nullopt;
+        return PlayerOutfit{std::move(outfit->skater), std::move(outfit->board)};
+    }
+    std::string hide_items(std::string_view plugin, HiddenItems items) override {
+        const auto lower = [](std::string name) {
+            for (auto& c : name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            return name;
+        };
+        plugin_feed::HiddenItems hidden;
+        for (auto& name : items.everyone) hidden.everyone.insert(lower(std::move(name)));
+        for (auto& [player, names] : items.players)
+            for (auto& name : names) hidden.players[player].insert(lower(std::move(name)));
+        plugin_feed::hide_items(std::string(plugin), std::move(hidden));
+        return {};
+    }
     void set_nametag(std::string_view plugin, std::uint64_t player, std::string text, std::uint32_t colour) override {
         plugin_feed::set_tag(std::string(plugin), player, std::move(text), colour);
     }
@@ -1517,6 +1539,22 @@ public:
         }
         return menu;
     }
+    MenuState menu_state() override {
+        MenuState state;
+        if (!base_) return state;
+        // The native menu's tick reads the game's own flag (none while a level loads); ReSkate's pages
+        // in it are seen while drawn, in the order of overlay::HubPage's sections. A page counts only
+        // while the pause menu is up: the page is sampled every 50 ms and taken as current for up to
+        // 200 ms, so closing the menu on one would otherwise report the page a moment after the menu.
+        state.pause = multiplayer::native_pause_menu_open();
+        state.known = multiplayer::sample_game_ui_state(base_).available;
+        if (const auto page = multiplayer::native_menu_page();
+            state.pause && page.visible && page.section >= 0 && page.section < 3) // (Enums.MenuPage's order)
+            state.page = std::array{"multiplayer", "mod_options", "mod_manager"}[page.section];
+        state.reskate = overlay::menu_visible() || !state.page.empty();
+        state.replay_editor = multiplayer::replay_editor_open(base_);
+        return state;
+    }
     std::optional<MenuGrid> menu_grid() override {
         const auto view = item_browser::view();
         if (!view.open) return std::nullopt;
@@ -1886,6 +1924,7 @@ public:
         }
         if (hold_owner_ == plugin) (void)skater_hold(plugin, false);
         plugin_feed::release_hidden(std::string(plugin));
+        plugin_feed::release_hidden_items(std::string(plugin));
         world_entities::clear(plugin);
         throwdown_flag_leave(plugin);
         dialog_close(plugin, {});

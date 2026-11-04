@@ -187,6 +187,8 @@ The Luau plugin host. A plugin is a folder in `Mods/` with a `reskate-plugin.jso
   owns their native references, surface attachments and world lifetime.
 - [Item origins and favorites](contrib/plugin-item-origins.md) — `reskate.mods.item_origins` and
   `reskate.menu.favorites`, read-only, for plugins that filter the item grids.
+- [Other players' items](https://docs.reskate.dev/plugins/api/session#other-players-items) — `reskate.session.outfit` and
+  `reskate.session.hide_items`, for plugins that choose what of other players' outfits shows.
 
 ## `Runtime/`
 

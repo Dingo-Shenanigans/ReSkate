@@ -40,21 +40,27 @@ std::string map_name(std::string destination) {
     if (const auto slash = destination.find_last_of('/'); slash != std::string::npos) destination.erase(0, slash + 1);
     return destination;
 }
-// The folder the crashed game ran from (its Mods folder beside it), or empty.
-std::filesystem::path game_folder(HANDLE process) {
-    std::array<wchar_t, 32768> image{};
-    DWORD length = static_cast<DWORD>(image.size());
-    if (!QueryFullProcessImageNameW(process, 0, image.data(), &length)) return {};
-    return std::filesystem::path(std::wstring(image.data(), length)).parent_path();
+// The folder the game runs from (its Mods folder beside it), or empty. Read while the game runs:
+// a native crash is collected only after the game has exited, and Windows may refuse to name an
+// exited process's image (error 31, seen on Windows 11 build 26200). (Never throws: a report goes
+// without its mods list rather than this helper not starting.)
+std::filesystem::path game_folder(HANDLE process) noexcept {
+    try {
+        std::array<wchar_t, 32768> image{};
+        DWORD length = static_cast<DWORD>(image.size());
+        if (!QueryFullProcessImageNameW(process, 0, image.data(), &length)) return {};
+        return std::filesystem::path(std::wstring(image.data(), length)).parent_path();
+    } catch (...) { return {}; }
 }
 // The event fields a report carries besides its tags (report_details.h): the log's last lines,
 // the mods the game ran with, an anonymous ID for this install and how long the game had run.
-Json event_details(HANDLE process, const SharedReport& report, const std::filesystem::path& dump, std::size_t& mod_count) {
+Json event_details(HANDLE process, const std::filesystem::path& game_root, const SharedReport& report,
+        const std::filesystem::path& dump, std::size_t& mod_count) {
     Json details = Json::object();
     if (auto crumbs = log_breadcrumbs(log_attachment_path(dump)); crumbs.is_object()) details["breadcrumbs"] = std::move(crumbs);
     Json context = Json::object();
-    if (const auto root = game_folder(process); !root.empty()) {
-        const auto list = mods::scan_mods(root);
+    if (!game_root.empty()) {
+        const auto list = mods::scan_mods(game_root);
         Json enabled = Json::array(), outdated = Json::array(), excluded = Json::array();
         for (const auto& entry : list.entries) {
             if (!entry.enabled) continue;
@@ -84,7 +90,8 @@ Json event_details(HANDLE process, const SharedReport& report, const std::filesy
     }
     return details;
 }
-bool publish_dump(HANDLE process, const std::filesystem::path& temporary, const SharedReport& report, const char* source) {
+bool publish_dump(HANDLE process, const std::filesystem::path& game_root, const std::filesystem::path& temporary,
+        const SharedReport& report, const char* source) {
     auto dump = temporary; dump.replace_extension(L".dmp");
     Json attributes = Json::object();
     attributes["application"] = "ReSkate";
@@ -133,7 +140,7 @@ bool publish_dump(HANDLE process, const std::filesystem::path& temporary, const 
     // (Best effort: a report goes without its details rather than not at all.)
     try {
         std::size_t mod_count{};
-        auto details = event_details(process, report, dump, mod_count);
+        auto details = event_details(process, game_root, report, dump, mod_count);
         // A stuck load is a warning, one issue for each stage and map: its exception is the same
         // ReSkate thread every time, which Sentry would otherwise group them all by.
         if (stuck) {
@@ -159,7 +166,8 @@ bool publish_dump(HANDLE process, const std::filesystem::path& temporary, const 
     }
     return true;
 }
-bool save_dump(HANDLE process, const SharedReport& report, const std::filesystem::path& directory) {
+bool save_dump(HANDLE process, const std::filesystem::path& game_root, const SharedReport& report,
+        const std::filesystem::path& directory) {
     const auto id = std::format(L"{}-{}-{}", GetCurrentProcessId(), GetTickCount64(), report.thread_id);
     const auto temporary = directory / (id + L".tmp");
     Handle file(CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr));
@@ -173,16 +181,17 @@ bool save_dump(HANDLE process, const SharedReport& report, const std::filesystem
     const auto durable = written && FlushFileBuffers(file.value);
     CloseHandle(file.release());
     if (!durable) { DeleteFileW(temporary.c_str()); return false; }
-    return publish_dump(process, temporary, report,
+    return publish_dump(process, game_root, temporary, report,
         report.source == CaptureSource::game_fatal_handler ? "game-fatal-handler" :
         report.source == CaptureSource::stuck_load ? "stuck-load" : "unhandled-exception");
 }
-bool collect_native_dump(HANDLE process, const SharedReport& report, const std::filesystem::path& directory) {
+bool collect_native_dump(HANDLE process, const std::filesystem::path& game_root, const SharedReport& report,
+        const std::filesystem::path& directory) {
     const auto native = find_native_dump(report.native_directory.data(), GetProcessId(process), process_creation_seconds(process));
     if (!native) return false;
     const auto temporary = directory / std::format(L"native-{}-{}-{}.tmp", native->process_id, native->process_created, native->thread_id);
     if (!CopyFileW(native->path.c_str(), temporary.c_str(), TRUE)) return false;
-    return publish_dump(process, temporary, report, "game-native");
+    return publish_dump(process, game_root, temporary, report, "game-native");
 }
 int run(int argc, wchar_t** argv) {
     if (argc != handle_count + 2 || std::wstring_view(argv[1]) != L"--reskate-crash-helper") return 2;
@@ -214,13 +223,15 @@ int run(int argc, wchar_t** argv) {
     const auto upload = [&] { std::lock_guard lock(uploading); upload_pending(url, directory); };
     std::jthread uploader(upload);
     std::vector<std::jthread> stuck_uploads;
+    // (Before the game hears this helper is ready: it waits for that, so it has not exited yet.)
+    const auto game_root = game_folder(handles[parent].value);
     SetEvent(handles[ready].value);
     const HANDLE wait_for[]{handles[requested].value, handles[stopping].value, handles[parent].value};
     auto reason = WaitForMultipleObjects(3, wait_for, FALSE, INFINITE);
     // A stuck load: the game goes on, so after its dump this goes back to waiting for the end.
     while (reason == WAIT_OBJECT_0 && shared->source == CaptureSource::stuck_load) {
         bool stuck_saved{};
-        try { stuck_saved = save_dump(handles[parent].value, *shared, directory); } catch (...) {}
+        try { stuck_saved = save_dump(handles[parent].value, game_root, *shared, directory); } catch (...) {}
         // (Down before the answer: the game may ask again, or crash, as soon as it has it.)
         ResetEvent(handles[requested].value);
         SetEvent(handles[captured].value);
@@ -229,7 +240,7 @@ int run(int argc, wchar_t** argv) {
     }
     bool saved{};
     if (reason == WAIT_OBJECT_0) {
-        try { saved = save_dump(handles[parent].value, *shared, directory); } catch (...) {}
+        try { saved = save_dump(handles[parent].value, game_root, *shared, directory); } catch (...) {}
         // Release the crashed process before any network activity or uploader join.
         SetEvent(handles[captured].value);
         std::ofstream(directory / L"capture-status.txt") << (saved ? "Captured unhandled exception.\n" : "Could not capture minidump; local crash log retained.\n");
@@ -237,7 +248,7 @@ int run(int argc, wchar_t** argv) {
         // The game's native fatal handler may replace/bypass our Windows filter.
         // After exit all native dump writers are closed. Preserve their original
         // exception context rather than taking a context-free termination dump.
-        try { saved = collect_native_dump(handles[parent].value, *shared, directory); } catch (...) {}
+        try { saved = collect_native_dump(handles[parent].value, game_root, *shared, directory); } catch (...) {}
         DWORD exit_code{}; GetExitCodeProcess(handles[parent].value, &exit_code);
         std::ofstream(directory / L"capture-status.txt") << std::format(
             "Game process {} exited (0x{:08x}); {}\n", GetProcessId(handles[parent].value), exit_code,

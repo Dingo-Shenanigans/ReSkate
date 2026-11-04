@@ -19,7 +19,7 @@ contact must lie below the capsule; the first two points must agree within 25 mm
 height within 0.15 m. The script never makes up a floor or normal, flips a normal or assumes a
 zero surface velocity.
 
-Only the refusal "waiting for a fresh qualified 60 Hz physics step" allows one more press to retry
+Only the refusal `body_preallocation_unavailable` allows one more press to retry
 creation; any other failure stops it for good. It makes at most two create calls and one batch,
 and stops on watchdogs (120 s or 36,000 callbacks overall, 6 s or 1,800 with a body), a focus or
 menu change while it holds a body, a changed sample, a missing or malformed measurement, or 0.35 m

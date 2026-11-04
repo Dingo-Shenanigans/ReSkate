@@ -109,6 +109,20 @@ struct FakeGame final : Game {
         b.sample.inertia = definition.inertia;
         return {};
     }
+    // create with options, as the fake answers it: it records who asked and whether reuse was
+    // asked for, then makes a body and returns the scripted origin and miss. It never chooses
+    // a parked body itself; that rule is the service's, tested in owned_body_source_tests.cpp.
+    std::vector<std::pair<std::uint64_t, bool>> body_reuse_requests;
+    owned_body::CreateReport test_reuse_report{owned_body::Origin::reused, owned_body::ReuseMiss::none};
+    std::string test_reuse_refusal;
+    std::string body_create_reusing(std::uint64_t owner, const owned_body::Definition& definition, owned_body::Handle& handle, bool reuse,
+                                    owned_body::CreateReport& report) override {
+        body_reuse_requests.emplace_back(owner, reuse);
+        if (!test_reuse_refusal.empty()) return test_reuse_refusal;
+        const auto why = body_create(owner, definition, handle);
+        if (why.empty()) report = reuse ? test_reuse_report : owned_body::CreateReport{};
+        return why;
+    }
     OwnedBody* body_of(std::uint64_t owner, const owned_body::Handle& h) {
         const auto at = owned.find(h.generation);
         return at != owned.end() && at->second.owner == owner && at->second.handle == h ? &at->second : nullptr;
@@ -825,6 +839,20 @@ struct FakeGame final : Game {
             if (owner == plugin) out.push_back(who);
         return out;
     }
+    std::map<std::uint64_t, PlayerOutfit> outfits; // what player_outfit() reads
+    std::optional<PlayerOutfit> player_outfit(std::uint64_t player) override {
+        const auto found = outfits.find(player);
+        if (found == outfits.end()) return std::nullopt;
+        return found->second;
+    }
+    std::string hide_items(std::string_view plugin, HiddenItems items) override {
+        std::string line = std::format("hide-items {}", plugin);
+        for (const auto& name : items.everyone) line += " " + name;
+        for (const auto& [player, names] : items.players)
+            for (const auto& name : names) line += std::format(" {}:{}", player, name);
+        calls.push_back(line);
+        return {};
+    }
     void set_nametag(std::string_view plugin, std::uint64_t player, std::string text, std::uint32_t colour) override {
         calls.push_back(std::format("tag {} {} {} {:08x}", plugin, player, text, colour));
     }
@@ -1170,6 +1198,8 @@ struct FakeGame final : Game {
         return {};
     }
     GameMenu game_menu() override { ++menu_reads; return menu_now; }
+    MenuState menu_state_now; // what is up over the game (menu.state, menu_changed)
+    MenuState menu_state() override { return menu_state_now; }
     std::optional<MenuGrid> menu_grid() override { return grid_now; }
     std::vector<WornItem> board_parts() override { return board_now; }
     std::vector<WornItem> outfit_worn() override { return outfit_now; }
@@ -1454,6 +1484,10 @@ void effects_require_resident_roots() {
     try { (void)parse_manifest(manifest(R"("events.physics.geometry")")); }
     catch (const std::exception&) { denied = true; }
     check(denied, "Geometry does not bypass the base physics permission");
+    denied = false;
+    try { (void)parse_manifest(manifest(R"("world.physics.reuse")")); }
+    catch (const std::exception&) { denied = true; }
+    check(denied, "Body reuse does not come without the world physics permission");
 }
 
 void expired_effects_return_their_quota() {
@@ -1846,6 +1880,7 @@ void plugin_approval_follows_the_plugins_own_files() {
     for (const auto name : known_permissions()) {
         auto requested = std::string("\"") + std::string(name) + "\"";
         if (name == "events.physics.geometry") requested = R"("events.physics", "events.physics.geometry")";
+        if (name == "world.physics.reuse") requested = R"("world.physics", "world.physics.reuse")";
         const auto requested_prompt = approval_prompt(permission_groups(parse_manifest(manifest(requested))));
         check(requested_prompt.find("\n- ") != std::string::npos && requested_prompt.find("No special permissions") == std::string::npos,
               "A request for " + std::string(name) + " has a capability summary");
@@ -2122,6 +2157,92 @@ void plugins_can_inspect_later_partial_failure_without_acknowledging_unmeasured_
     check(environment.fake.body_submissions == 2 && environment.fake.owned.at(1).mailbox.failed, "partial command was replayed or failed mailbox reopened");
 }
 
+// create(definition, {reuse = true}) through the binding: it forwards this VM's own instance and
+// the flag, parses its options strictly, counts one reuse request a tick, and returns the
+// origin and miss the game reports. Which parked body qualifies is the service's rule.
+void plugins_reuse_their_own_parked_bodies() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    const auto reuser = [](const std::string& id) {
+        return script(id, R"(
+            local P, v = reskate.world.physics, vector.create
+            local d = {mass = 12, inertia = v(2, 3, 4), position = v(0, 2, 0), rotation = {0, 0, 0, 1}, capsules = {{a = v(0, 0, 0), b = v(0, .5, 0), radius = .1}}}
+            assert(select("#", P.create(d)) == 1, "plain create grew a return value")
+            local body, why, origin, miss = P.create(d, {reuse = true})
+            assert(type(body) == "userdata" and getmetatable(body) == "locked" and why == nil and origin == "reused" and miss == nil,
+                "reuse did not return body, nil, origin")
+            assert(P.read(body), "a reused body is not this VM's body")
+            local again, refused = P.create(d, {reuse = true})
+            assert(again == nil and refused == "asked to reuse a native body more than once in one tick", tostring(refused))
+            local plain, none, allocated, extra = P.create(d, {reuse = false})
+            assert(type(plain) == "userdata" and none == nil and allocated == "allocated" and extra == nil, "reuse = false")
+            for _, options in {{reuse = 1}, {reuse = "true"}, {bogus = true}, {reuse = true, slot = 1}, {reuse = true, owner = 1}} do
+                assert(not pcall(P.create, d, options), "malformed options were accepted")
+            end
+            assert(not pcall(P.create, d, true), "options that are not a table were accepted")
+            local ticks = 0
+            reskate.on("tick", function()
+                ticks += 1
+                if ticks == 1 then
+                    local b, w, o, m = P.create(d, {reuse = true})
+                    assert(type(b) == "userdata" and w == nil and o == "allocated" and m == "definition_differs", tostring(o) .. " " .. tostring(m))
+                elseif ticks == 2 then
+                    local b, w, o = P.create(d, {reuse = true})
+                    assert(b == nil and w == "body_reuse_pending" and o == nil, tostring(w))
+                    -- A refused reuse still uses this tick's one request: the retry waits a tick.
+                    local again, refused = P.create(d, {reuse = true})
+                    assert(again == nil and refused == "asked to reuse a native body more than once in one tick", tostring(refused))
+                    reskate.log("reuse options answered")
+                end
+            end)
+        )", R"("world.physics", "world.physics.reuse")");
+    };
+    auto& fake = environment.fake;
+    const auto by_owner = [&](std::size_t from) {
+        std::map<std::uint64_t, std::pair<unsigned, unsigned>> owners; // reuse = true, reuse = false
+        for (std::size_t i = from; i < fake.body_reuse_requests.size(); ++i) {
+            const auto& [owner, reuse] = fake.body_reuse_requests[i];
+            ++(reuse ? owners[owner].first : owners[owner].second);
+        }
+        return owners;
+    };
+    host.apply({reuser("reuse-a"), reuser("reuse-b")});
+    running(host, "reuse-a", environment);
+    running(host, "reuse-b", environment);
+    // Each: one reuse, the refused second one never forwarded, and reuse = false.
+    auto owners = by_owner(0);
+    check(fake.body_reuse_requests.size() == 4 && owners.size() == 2, "the quota or the options did not reach the game as asked");
+    for (const auto& [owner, counts] : owners)
+        check(owner && counts.first == 1 && counts.second == 1, "a plugin's own instance or reuse flag was not forwarded");
+    fake.test_reuse_report = {owned_body::Origin::allocated, owned_body::ReuseMiss::definition_differs};
+    ticks(host, environment, 1);
+    running(host, "reuse-a", environment);
+    running(host, "reuse-b", environment);
+    check(fake.body_reuse_requests.size() == 6 && by_owner(4) == decltype(owners){{owners.begin()->first, {1, 0}}, {std::next(owners.begin())->first, {1, 0}}},
+        "a new tick did not allow one more reuse request for each plugin");
+    fake.test_reuse_refusal = "body_reuse_pending";
+    const auto refused_from = fake.body_reuse_requests.size();
+    ticks(host, environment, 1);
+    running(host, "reuse-a", environment);
+    running(host, "reuse-b", environment);
+    check(environment.logged("reuse options answered"), environment.all());
+    check(fake.body_reuse_requests.size() == refused_from + 2 &&
+        by_owner(refused_from) == decltype(owners){{owners.begin()->first, {1, 0}}, {std::next(owners.begin())->first, {1, 0}}},
+        "a refused reuse did not use up its tick's one request for each plugin");
+    // A reloaded VM is a new instance, so it cannot name the old one's parked bodies.
+    fake.test_reuse_refusal.clear();
+    fake.test_reuse_report = {owned_body::Origin::reused, owned_body::ReuseMiss::none};
+    const auto before = fake.body_reuse_requests.size();
+    host.apply({});
+    // The fake's handles name at most eight slots; the reloaded VM's bodies start afresh.
+    fake.owned.clear();
+    fake.body_creates = 0;
+    host.apply({reuser("reuse-a")});
+    running(host, "reuse-a", environment);
+    const auto reloaded = by_owner(before);
+    check(reloaded.size() == 1 && !owners.contains(reloaded.begin()->first), "a reloaded VM forwarded an old instance as the owner");
+}
+
 void native_body_permission_and_client_boundary_are_enforced() {
     TestEnvironment environment;
     Host host(environment, Side::client);
@@ -2131,20 +2252,43 @@ void native_body_permission_and_client_boundary_are_enforced() {
             local ok, why = pcall(P[name], {})
             assert(not ok and string.find(why, "world.physics"), name)
         end
+        local ok, why = pcall(P.create, {}, {reuse = true})
+        assert(not ok and string.find(why, "world.physics"), "create with options")
     )")});
     running(host, "no-body-permission", environment);
     check(environment.fake.body_creates == 0 && environment.fake.body_submissions == 0, "missing permission reached Game");
+    // world.physics alone allocates but cannot ask to reuse: that needs world.physics.reuse.
+    TestEnvironment reuse_environment;
+    Host reuse_host(reuse_environment, Side::client);
+    reuse_host.apply({script("no-reuse-permission", R"(
+        local P, v = reskate.world.physics, vector.create
+        local d = {mass = 12, inertia = v(2, 3, 4), position = v(0, 2, 0), rotation = {0, 0, 0, 1}, capsules = {{a = v(0, 0, 0), b = v(0, .5, 0), radius = .1}}}
+        local ok, why = pcall(P.create, d, {reuse = true})
+        assert(not ok and string.find(why, "world.physics.reuse", 1, true), tostring(why))
+        assert(type(P.create(d)) == "userdata", "plain create needs only world.physics")
+        assert(select("#", P.create(d, nil)) == 1, "a nil options argument changed plain create")
+        local body, none, origin = P.create(d, {reuse = false})
+        assert(type(body) == "userdata" and none == nil and origin == "allocated", "reuse = false needs only world.physics")
+        assert(select("#", P.create(d, {})) == 3, "empty options did not return the origin")
+        reskate.log("reuse needs its own permission")
+    )", R"("world.physics")")});
+    running(reuse_host, "no-reuse-permission", reuse_environment);
+    const auto& asked = reuse_environment.fake.body_reuse_requests;
+    check(reuse_environment.logged("reuse needs its own permission") && reuse_environment.fake.body_creates == 4 && asked.size() == 2 &&
+        !asked[0].second && !asked[1].second, "a plugin without world.physics.reuse reached the game with a reuse request");
     TestEnvironment server_environment;
     Host server(server_environment, Side::server);
-    auto server_plugin = package("server-body", {{manifest_file, manifest(R"("world.physics","world.raycast")", "server")}, {"plugin/main.lua", R"(
+    auto server_plugin = package("server-body", {{manifest_file, manifest(R"("world.physics","world.raycast","world.physics.reuse")", "server")}, {"plugin/main.lua", R"(
         local ok, why = pcall(reskate.world.physics.create, {})
+        assert(not ok and string.find(why, "client phase only"))
+        ok, why = pcall(reskate.world.physics.create, {}, {reuse = true})
         assert(not ok and string.find(why, "client phase only"))
         ok, why = pcall(reskate.world.physics.probe_batch, {}, {}, {})
         assert(not ok and string.find(why, "client phase only"))
     )"}});
     server.apply({server_plugin});
     running(server, "server-body", server_environment);
-    check(server_environment.fake.body_creates == 0, "server reached native body creation");
+    check(server_environment.fake.body_creates == 0 && server_environment.fake.body_reuse_requests.empty(), "server reached native body creation");
 }
 
 std::string batch_main(std::string body) {
@@ -2913,6 +3057,90 @@ void a_plugin_loads_ticks_runs_its_commands_and_unloads() {
     check(environment.logged("[hello] bye after 3"), "Unloading runs its unload handler");
     check(host.status().empty(), "and it is gone");
     check(!host.run_console("hello there"), "with its command");
+}
+
+// Another player's outfit read, and items hidden on everyone or on one player: the calls, their
+// checks and both permissions; and the list the session reads, with each plugin's going when it does.
+void plugins_read_and_hide_other_players_items() {
+    namespace feed = dingosdk::plugin_feed;
+    feed::hide_items("a", {{"own_skull_mask"}, {{7, {"own_nolan_tee"}}}});
+    const auto before = feed::hidden_items_revision();
+    feed::hide_items("b", {{"own_hat"}, {}});
+    check(feed::hidden_items_revision() != before, "A plugin's new list changes the revision, so outfits are put on again");
+    const auto same = feed::hidden_items_revision();
+    feed::hide_items("b", {{"own_hat"}, {}});
+    check(feed::hidden_items_revision() == same, "The same list again changes nothing: no player is dressed again for it");
+    check(feed::item_hidden(7, "own_skull_mask") && feed::item_hidden(9, "own_skull_mask") && feed::item_hidden(7, "own_nolan_tee") &&
+              !feed::item_hidden(9, "own_nolan_tee") && feed::item_hidden(9, "own_hat"),
+          "An item hidden on everyone, one hidden on one player only, and every plugin's list together");
+    feed::release_hidden_items("a");
+    check(!feed::item_hidden(7, "own_skull_mask") && feed::item_hidden(7, "own_hat"), "A plugin's list goes when it does");
+    feed::hide_items("b", {});
+    check(!feed::item_hidden(7, "own_hat"), "Empty lists take a plugin's away");
+
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    environment.session_now = {true, false, {{1, "Me", true, true}, {7, "Ann", false, false}, {8, "Bob", false, false}}};
+    game.outfits[7] = {{"Own_Nolan_Tee", "Own_Skull_Mask"}, {"Own_Deck_X"}};
+    game.outfits[1] = {{"Own_Mine"}, {}};
+    Host host(environment, Side::client);
+    host.apply({script("filter", R"(
+      reskate.console.command("go", "x", function()
+        local ann = reskate.session.outfit("7")
+        assert(ann and ann.skater[1] == "Own_Nolan_Tee" and ann.skater[2] == "Own_Skull_Mask" and ann.board[1] == "Own_Deck_X")
+        assert(reskate.session.outfit({id = "7"}).board[1] == "Own_Deck_X", "a player table works too")
+        assert(reskate.session.outfit("8") == nil, "no outfit yet")
+        assert(reskate.session.outfit("9") == nil, "not in the session")
+        assert(reskate.session.outfit("1") == nil, "not this player's own")
+        assert(not pcall(reskate.session.outfit, "nobody"), "a player")
+        assert(reskate.session.hide_items({items = {"Own_Skull_Mask"}, players = {["7"] = {"Own_Nolan_Tee"}}}))
+        assert(reskate.session.hide_items(nil))
+        assert(not pcall(reskate.session.hide_items, {items = {""}}), "an item has a name")
+        assert(not pcall(reskate.session.hide_items, {items = {12}}), "an item is a name")
+        assert(not pcall(reskate.session.hide_items, {items = "Own_Hat"}), "items is a list")
+        assert(not pcall(reskate.session.hide_items, {players = {[7] = {"Own_Hat"}}}), "players is keyed by ids")
+        assert(not pcall(reskate.session.hide_items, {players = {["x"] = {"Own_Hat"}}}), "an id is a player's")
+        local many = {}
+        for i = 1, 4097 do many[i] = "Own_" .. i end
+        assert(not pcall(reskate.session.hide_items, {items = many}), "at most 4096 names")
+        local crowd = {}
+        for i = 1, 65 do crowd[tostring(100 + i)] = {"Own_Hat"} end
+        assert(not pcall(reskate.session.hide_items, {players = crowd}), "items of at most 64 players")
+        crowd[tostring(101)] = nil
+        assert(reskate.session.hide_items({players = crowd}), "64 players is fine")
+        assert(reskate.session.hide_items({items = {"Own_A"}}))
+        local ok, why = reskate.session.hide_items({items = {"Own_B"}})
+        assert(ok == false and why == "asked more than 4 times in a second", why)
+        reskate.log("hid")
+      end)
+      reskate.console.command("again", "x", function()
+        assert(reskate.session.hide_items({items = {"Own_B"}}), "a second later it can change again")
+        reskate.log("again")
+      end)
+    )", R"("console", "session.read", "session.skaters")"), script("reader", R"(
+        local ok, err = pcall(reskate.session.hide_items, {items = {"Own_Hat"}})
+        assert(not ok and err:find("needs the \"session.skaters\" permission"), err)
+        reskate.log("refused hiding")
+    )", R"("session.read")"), script("hider", R"(
+        local ok, err = pcall(reskate.session.outfit, "7")
+        assert(not ok and err:find("needs the \"session.read\" permission"), err)
+        reskate.log("refused reading")
+    )", R"("session.skaters")")});
+    ticks(host, environment, 1); // the session reaches the plugins at a tick
+    host.run_console("go");
+    environment.now += 1000;
+    host.run_console("again");
+    running(host, "filter", environment);
+    running(host, "reader", environment);
+    running(host, "hider", environment);
+    check(environment.logged("[filter] hid") && environment.logged("[filter] again") && environment.logged("[reader] refused hiding") && environment.logged("[hider] refused reading"),
+          "The calls ran\n" + environment.all());
+    check(game.called("hide-items filter Own_Skull_Mask 7:Own_Nolan_Tee") && std::ranges::count(game.calls, std::string("hide-items filter")) == 1,
+          "A list on everyone and on one player, then none\n" + environment.all());
+    check(game.called("hide-items filter Own_A") && game.called("hide-items filter Own_B") &&
+              std::ranges::count(game.calls, std::string("hide-items filter Own_B")) == 1,
+          "The fifth change in a second is refused and reaches nothing; a second later it goes through\n" + environment.all());
+    check(!game.called("hide-items reader") && !game.called("hide-items hider Own_Hat"), "A plugin without the permission hides nothing");
 }
 
 // What this PC shows in place of other players' items it does not have: asked with
@@ -5881,6 +6109,63 @@ void level_events_reach_plugins() {
           environment.logged("loaded park / park") && environment.logged("leaving park"), "Level events in order\n" + environment.all());
 }
 
+// The pause menu, ReSkate's menu (its window or one of its pages in the pause menu) and the replay
+// editor: read with menu.state, and heard as they come and go, once each change. A plugin without
+// the menu permission gets neither.
+void plugins_know_what_menu_is_up() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    game.menu_state_now = {.pause = true, .known = true}; // already up when the plugin loads
+    Host host(environment, Side::client);
+    host.apply({script("menus", R"(
+        local now = reskate.menu.state()
+        reskate.log(string.format("at load known %s pause %s reskate %s replay %s page %s", tostring(now.known), tostring(now.pause),
+            tostring(now.reskate), tostring(now.replay_editor), tostring(now.page)))
+        assert(reskate.Enums.MenuPage.mod_manager == "mod_manager")
+        local function shown(s)
+            local up = {}
+            if not s.known then table.insert(up, "unknown") end
+            if s.pause then table.insert(up, "pause") end
+            if s.reskate then table.insert(up, "reskate") end
+            if s.replay_editor then table.insert(up, "replay") end
+            if s.page then table.insert(up, s.page) end
+            return #up > 0 and table.concat(up, "+") or "nothing"
+        end
+        reskate.on("menu_changed", function(state, previous) reskate.log("menu " .. shown(previous) .. " to " .. shown(state)) end)
+    )", R"("menu")"), script("blind", R"(
+        local ok, err = pcall(reskate.menu.state)
+        assert(not ok and err:find("needs the \"menu\" permission"), err)
+        ok, err = pcall(reskate.on, "menu_changed", function() end)
+        assert(not ok and err:find("needs the \"menu\" permission"), err)
+        reskate.log("blind refused")
+    )")});
+    running(host, "menus", environment);
+    running(host, "blind", environment);
+    check(environment.logged("at load known true pause true reskate false replay false page nil") && environment.logged("blind refused"),
+          "The state reads at load, and not without the permission\n" + environment.all());
+    ticks(host, environment, 3);
+    check(!environment.logged("[menus] menu "), "What was up before is not news\n" + environment.all());
+
+    game.menu_state_now = {.pause = true, .reskate = true, .page = "mod_manager", .known = true};
+    ticks(host, environment, 3);
+    game.menu_state_now = {.known = true};
+    ticks(host, environment, 1);
+    game.menu_state_now.reskate = true; // the windowed menu, over the game
+    ticks(host, environment, 1);
+    game.menu_state_now = {.replay_editor = true, .known = true};
+    ticks(host, environment, 2);
+    game.menu_state_now.known = false; // the game's screen model is lost: a closed pause menu is no longer known
+    ticks(host, environment, 1);
+    check(environment.logged("[menus] menu pause to pause+reskate+mod_manager") &&
+              environment.logged("[menus] menu pause+reskate+mod_manager to nothing") &&
+              environment.logged("[menus] menu nothing to reskate") && environment.logged("[menus] menu reskate to replay") &&
+              environment.logged("[menus] menu replay to unknown+replay"),
+          "Each change is heard with what was up before\n" + environment.all());
+    const auto heard = std::count_if(environment.logs.begin(), environment.logs.end(),
+                                     [](const std::string& line) { return line.find("[menus] menu ") != std::string::npos; });
+    check(heard == 5, std::format("Once each, not every tick ({} heard)\n", heard) + environment.all());
+}
+
 void timers_run_when_due() {
     TestEnvironment environment;
     Host host(environment, Side::client);
@@ -6452,6 +6737,7 @@ int main() {
         run(plugins_own_typed_bodies_and_acknowledge_measured_results);
         run(plugins_pipeline_native_steps_and_select_owned_receipts);
         run(plugins_can_inspect_later_partial_failure_without_acknowledging_unmeasured_head);
+        run(plugins_reuse_their_own_parked_bodies);
         run(native_body_permission_and_client_boundary_are_enforced);
         run(body_prepare_host_fixture_v1);
         run(owned_body_batches_are_permissioned_opaque_and_transactional);
@@ -6474,6 +6760,7 @@ int main() {
         run(a_plugin_loads_ticks_runs_its_commands_and_unloads);
         run(a_permission_must_be_declared);
         run(plugins_choose_stand_ins);
+        run(plugins_read_and_hide_other_players_items);
         run(plugins_add_chat_commands);
         run(thunderstore_says_which_packages_run_plugins);
         run(command_names_are_checked);
@@ -6533,6 +6820,7 @@ int main() {
         run(declared_board_colours_through_the_api);
         run(key_names_become_binds);
         run(level_events_reach_plugins);
+        run(plugins_know_what_menu_is_up);
         run(timers_run_when_due);
         run(a_package_with_a_program_or_on_the_wrong_side_is_not_loaded);
         run(discovery_finds_the_plugins_among_the_mods_left_on);
