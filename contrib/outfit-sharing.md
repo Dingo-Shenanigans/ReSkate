@@ -1,4 +1,4 @@
-# Outfit sharing
+# Skate Synchros: outfit sharing
 
 Players see each other's modded outfits in multiplayer, as the wearer sees them, without
 installing the wearer's mods. Today a peer's item this PC does not have becomes a stand-in
@@ -65,22 +65,36 @@ a mod rather than the game.
 - Sent over the session's Steam connection on a low-priority lane, so play and voice are not
   held up. A player who leaves stops the transfer.
 
-### Measured so far
+### Measured
 
-From the TOC of a real deck pack (`snowgrave-azzie_Community_Decks_Pack` 0.5.5: 18 decks, grip
-tapes and stickers, a 64.6 MB cas):
+`Tools/OutfitProbe` follows each item a mod ships to the files of the mod's own it is made of
+(EBX imports, the looks and bundles it names by path, resources, and the chunks they name) and
+adds up what would be sent. Run on 45 installed mods, 2026-11-04 (sizes as stored, compressed):
 
-| Part | Size | Sent for one worn deck |
-|---|---|---|
-| Shared bundle, the mod's own files | 2.75 MB (180 files) | the deck's definition, preset and collection entry |
-| Item bundles, the mod's own files | 0.66–14.24 MB each (5 bundles) | the files the deck's closure names |
-| TOC chunks (texture and mesh data) | 67 MB (157 chunks) | the chunks its textures and meshes name |
-| Game files the bundles refer to | over 100 MB | none |
+| Mod | Items | Mod's own files | One worn item: median | largest |
+|---|---|---|---|---|
+| Soulworker Character Pack (costumes) | 10 | 120.3 MB | 9.5 MB | 23.9 MB |
+| Suisei and Rukia (costumes, deck, grip) | 7 | 72.4 MB | 8.9 MB | 24.4 MB |
+| Cony Hawk player model | 3 | 37.0 MB | 5.8 MB | 25.0 MB |
+| Varous IdolRiot Decks | 16 | 131.3 MB | 7.4 MB | 23.9 MB |
+| azzie Community Decks Pack (decks, grips, stickers) | 25 | 68.0 MB | 3.1 MB | 5.8 MB |
+| IdolRiot Live Evil Twins Pack | 11 | 19.4 MB | 1.4 MB | 2.9 MB |
+| Kichi Aura Wheels | 88 | 23.8 MB | 0.13 MB | 0.55 MB |
+| Road Rash (tattoos) | 45 | 34.8 MB | 0.64 MB | 0.94 MB |
+| Animated Skulls Croptop | 1 | 3.2 MB | 0.58 MB | 0.58 MB |
 
-Mods do not keep one bundle per item: this one puts many decks in one 14 MB bundle, under a game
-item's bundle name. So the closure has to be cut per file inside the bundles, not per bundle,
-and following it needs the cas contents (EBX references, resource chunk ids), not only the TOC.
-The per-item size is the next thing to measure.
+A whole worn outfit (a costume or clothes, a deck, grip and wheels) comes to about 5 to 35 MB,
+against hundreds of MB for the packs it comes from. Files are named by content, so an item two
+packs share (the Soulworker costumes are in three of the installed packs) is sent once.
+
+Mods do not keep one bundle per item (one deck pack puts many decks in one 14 MB bundle under a
+game item's name), so the closure is cut per file, never per bundle. An item names its looks by
+path (`AssetName`, `nabi_ap`, `<guid>_ap`), not by import, so those names have to be followed.
+
+Still to check: some items come out very small (most SDEC decks about 0.05 MB, the PSDEC glow
+tests 0.02 MB). Either they really are only an item and a shader preset over the game's own deck
+textures, or something they name is not followed yet. A costume item names every variant preset
+it has (`nabi_role21_ap` and more), so its closure may be larger than what one look needs.
 
 ## Showing a received item
 

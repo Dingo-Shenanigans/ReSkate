@@ -70,6 +70,7 @@ struct Node {
     std::vector<std::size_t> edges;
     bool item{};
     std::string root_type;
+    std::vector<std::string> names; // the names it holds, and what each led to (largest item only)
 };
 
 struct Mod {
@@ -78,6 +79,7 @@ struct Mod {
     std::unordered_map<std::uint64_t, std::size_t> by_resource;
     std::unordered_map<std::string, std::vector<std::size_t>> res_by_name;
     std::unordered_map<std::string, std::vector<std::size_t>> by_name; // every asset, by lower-case name
+    std::unordered_map<std::string, std::vector<std::size_t>> by_leaf; // ...and by the last part of it
     std::unordered_map<std::uint64_t, std::vector<std::size_t>> chunk_by_prefix; // a chunk guid's first 8 bytes
     std::uint64_t own_bytes{};
     std::size_t errors{};
@@ -186,7 +188,10 @@ void probe(const fs::path& mod_dir, const fs::path& game, dingosdk::vfs::GameArc
                     if (kind == Node::resource) { mod.by_resource.emplace(n.resource_id, index); mod.res_by_name[n.name].push_back(index); }
                     if (kind == Node::chunk) mod.by_guid.emplace(n.guid, index);
                     if (counted.insert(placement_key(n.file)).second) mod.own_bytes += n.file.size;
-                    if (!n.name.empty()) mod.by_name[n.name].push_back(index);
+                    if (!n.name.empty()) {
+                        mod.by_name[n.name].push_back(index);
+                        mod.by_leaf[n.name.substr(n.name.rfind('/') + 1)].push_back(index);
+                    }
                     mod.nodes.push_back(std::move(n));
                 };
                 const auto before = mod.nodes.size();
@@ -252,11 +257,19 @@ void probe(const fs::path& mod_dir, const fs::path& game, dingosdk::vfs::GameArc
         // Items name their looks and bundles by path: "characters/.../preset_x", "win32/.../bundle".
         for (auto name : strings) {
             if (name.starts_with("win32/")) name = name.substr(6);
+            const auto edges_before = n.edges.size();
+            // A name may be only the asset's last part ("own_x_ap"), found wherever the mod put it.
+            if (name.size() >= 6 && name.find(' ') == std::string::npos) {
+                const auto leaf = name.substr(name.rfind('/') + 1);
+                for (const std::string& candidate : {leaf, leaf + "_ap", leaf + "_c"})
+                    if (auto f = mod.by_leaf.find(candidate); f != mod.by_leaf.end()) n.edges.insert(n.edges.end(), f->second.begin(), f->second.end());
+            }
             for (const std::string& candidate : {name, name + "_ap", name.substr(0, name.rfind('/') == std::string::npos ? name.size() : name.rfind('/') + 1) + name.substr(name.rfind('/') + 1)})
                 if (auto f = mod.by_name.find(candidate); f != mod.by_name.end()) n.edges.insert(n.edges.end(), f->second.begin(), f->second.end());
             // The shared bundle holds every item's definition: naming it is not naming its contents.
             if (name.find("sharedbundle") == std::string::npos)
                 if (auto b = bundle_assets.find(name); b != bundle_assets.end()) n.edges.insert(n.edges.end(), b->second.begin(), b->second.end());
+            if (n.item && n.names.size() < 24) n.names.push_back(name + (n.edges.size() > edges_before ? "  -> " + std::to_string(n.edges.size() - edges_before) + " files" : "  -> nothing"));
         }
         for (auto id : resources) if (auto f = mod.by_resource.find(id); f != mod.by_resource.end()) n.edges.push_back(f->second);
         for (const auto& g : guids) if (auto f = mod.by_guid.find(g); f != mod.by_guid.end()) n.edges.push_back(f->second);
@@ -299,6 +312,11 @@ void probe(const fs::path& mod_dir, const fs::path& game, dingosdk::vfs::GameArc
         if (items.size() > 8) say("     ... and " + std::to_string(items.size() - 8) + " more");
         auto members = items.front().members;
         std::sort(members.begin(), members.end(), [&](auto a, auto b) { return mod.nodes[a].file.size > mod.nodes[b].file.size; });
+        for (std::size_t i = 0; i < mod.nodes.size(); ++i)
+            if (mod.nodes[i].item && mod.nodes[i].name == items.front().name) {
+                say("   names in it:");
+                for (const auto& line : mod.nodes[i].names) say("     " + line);
+            }
         say("   largest item's files:");
         for (std::size_t k = 0; k < members.size() && k < 10; ++k) {
             const auto& n = mod.nodes[members[k]];
