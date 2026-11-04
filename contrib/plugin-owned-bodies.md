@@ -188,5 +188,8 @@ the permission and server refusals.
 None of that runs the game, and this code has not been run in the game. Creation, measured reads,
 commands produced on the next step, torque, several compounds, a whole session of control, and the
 cleanup of an active body during unload, a world change or a partial failure are checked only
-against constructed worlds and values. So is re-activation: whether the game treats a body that
-was dynamic, parked and made dynamic again exactly like a new one is unproven.
+against constructed worlds and values. Re-activation has been run in the game by one mod, a bike
+that creates one compound with `reuse` on each mount and releases it on each return: in five
+launches, every create made while its body was parked got that body back (5 of 5, no refusal), and
+the bike rode on it, fell and was returned again. Whether the game treats a body that was dynamic,
+parked and made dynamic again exactly like a new one has not been measured.
