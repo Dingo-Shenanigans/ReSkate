@@ -4,9 +4,12 @@ Players see each other's modded outfits in multiplayer, as the wearer sees them,
 installing the wearer's mods. Today a peer's item this PC does not have becomes a stand-in
 (`Extension/Multiplayer/Remote/stand_ins.h`), so a modded outfit is only ever seen by its wearer.
 
-Status: the parts that need no game running are built and tested (codes, groups, who sees whom,
-the messages, the item cutter, preset rows, receiving files in pieces and the cache). The merge layer over the cache, the Steam
-connection, the settings page and dressing remote skaters are not built yet.
+Status: built end to end, not yet tried in the game. Codes, groups and who sees whom; the
+messages and the exchange between two players on Steam side connections of their own; the item
+cutter; the cache; received outfits made into a mod per wearer and merged after everything else
+(read back on 29 real items, one of each of 29 mods); settings in `Mods/.synchros/settings.json`
+and a `synchros` console command. Still to come: the settings page in the menu, and showing a
+received item without waiting for the next level load.
 
 ## What it does
 
