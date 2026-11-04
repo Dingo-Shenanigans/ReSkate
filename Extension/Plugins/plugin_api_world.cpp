@@ -10,9 +10,11 @@
 #include <charconv>
 #include <cmath>
 #include <cstring>
+#include <format>
 #include <initializer_list>
 #include <optional>
 #include <span>
+#include <thread>
 
 // The wider set's game parts of the reskate API: the skater's state, control and save points, the
 // HUD, park editor objects, the environment, travel, AI skaters, other players' skaters, nametags,
@@ -929,16 +931,41 @@ struct WorldApi {
             if (std::uint64_t{joints + 1} * frames * 40 + plugin.clip_bytes_ > plugin.limits_.clip_bytes)
                 luaL_error(L, "a plugin's clips hold at most %d MB of poses", static_cast<int>(plugin.limits_.clip_bytes >> 20));
         }
+        auto clip = decode_clip(bytes, plugin.limits_.clip_bytes, error);
+        if (!clip) luaL_error(L, "the clip %s %s", name.c_str(), error.c_str());
+        plugin.clip_bytes_ += pose_bytes(*clip);
+        return plugin.clips_.emplace(name, std::move(clip)).first->second;
+    }
+    // A clip file's bytes made a clip, or empty and why ("is not one: ...", to follow "the clip
+    // <name> "). Its size as poses, from the header (magic, joints, frames), is held to `most`
+    // before anything is made of it. Any thread: a preload decodes on its own.
+    static std::shared_ptr<const anim_studio::Clip> decode_clip(const std::string& bytes, std::size_t most, std::string& error) {
+        if (bytes.size() >= 12) {
+            std::uint32_t joints{}, frames{};
+            std::memcpy(&joints, bytes.data() + 4, 4);
+            std::memcpy(&frames, bytes.data() + 8, 4);
+            if (joints > anim_studio::skeleton_joints) {
+                error = "has more joints than the skater";
+                return nullptr;
+            }
+            if (std::uint64_t{joints + 1} * frames * 40 > most) {
+                error = std::format("holds more than {} MB of poses", most >> 20);
+                return nullptr;
+            }
+        }
         std::shared_ptr<const anim_studio::Clip> clip;
         try {
             clip = std::make_shared<const anim_studio::Clip>(anim_studio::clip_from_bytes(
                 std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size())));
         } catch (const std::exception& e) {
-            luaL_error(L, "the clip %s is not one: %s", name.c_str(), e.what());
+            error = std::string("is not one: ") + e.what();
+            return nullptr;
         }
-        if (clip->empty()) luaL_error(L, "the clip %s has no frames", name.c_str());
-        plugin.clip_bytes_ += pose_bytes(*clip);
-        return plugin.clips_.emplace(name, std::move(clip)).first->second;
+        if (clip->empty()) {
+            error = "has no frames";
+            return nullptr;
+        }
+        return clip;
     }
     static float number_field(lua_State* L, int table, const char* name, float fallback, float least, float most) {
         if (lua_isnoneornil(L, table)) return fallback;
@@ -2203,19 +2230,116 @@ struct WorldApi {
         if (bytes.empty()) luaL_error(L, "the sound %s cannot be read: %s", path.c_str(), error.empty() ? "it is empty" : error.c_str());
         auto wave = decode_wave(std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size()), 30, error);
         if (!wave) luaL_error(L, "the sound %s cannot be played: %s", path.c_str(), error.c_str());
+        if (const auto why = hold_wave(plugin, path, wave); !why.empty()) luaL_error(L, "%s", why.c_str());
+        return wave;
+    }
+    // The wave into the plugin's own, letting go of others as wave_at says; empty, or why not.
+    static std::string hold_wave(Plugin& plugin, const std::string& path, const std::shared_ptr<const Wave>& wave) {
         const auto size = wave_bytes(*wave);
         while (plugin.waves_.size() >= plugin.limits_.sounds || plugin.wave_bytes_ + size > plugin.limits_.sound_bytes) {
             auto oldest = plugin.waves_.end();
             for (auto it = plugin.waves_.begin(); it != plugin.waves_.end(); ++it)
                 if (it->second.wave.use_count() == 1 && (oldest == plugin.waves_.end() || it->second.played < oldest->second.played)) oldest = it;
             if (oldest == plugin.waves_.end())
-                luaL_error(L, "a plugin holds at most %d different sounds (%d MB) at once, and all it holds are playing",
-                           static_cast<int>(plugin.limits_.sounds), static_cast<int>(plugin.limits_.sound_bytes >> 20));
+                return std::format("a plugin holds at most {} different sounds ({} MB) at once, and all it holds are playing", plugin.limits_.sounds,
+                                   plugin.limits_.sound_bytes >> 20);
             plugin.wave_bytes_ -= std::min(plugin.wave_bytes_, wave_bytes(*oldest->second.wave));
             plugin.waves_.erase(oldest);
         }
         plugin.wave_bytes_ += size;
-        return plugin.waves_.emplace(path, Plugin::CachedWave{std::move(wave), ++plugin.wave_plays_}).first->second.wave;
+        plugin.waves_.emplace(path, Plugin::CachedWave{wave, ++plugin.wave_plays_});
+        return {};
+    }
+    // ---- preloads ----------------------------------------------------------------------------------------
+    // preload(path, fn): a clip (animation) or sound (audio) in the plugin's own package read and
+    // decoded on a thread of its own, so play, sample and info find it held instead of reading it
+    // in the call that wants it (on a hard disk that read can take longer than a tick allows).
+    // fn(ok, why) comes in a later tick, once it's held or can't be. One held already is not read
+    // again (fn still comes, next tick), and a path being read is read once. False and why with
+    // limits_.preloads reads going on.
+    static int preload(lua_State* L, Plugin& plugin, bool sound) {
+        const auto path = checked_text(L, 1, 200, sound ? "a sound" : "a clip");
+        if (!lua_isnoneornil(L, 2)) luaL_checktype(L, 2, LUA_TFUNCTION);
+        if (sound ? path == "motor" : (path.starts_with("game:") || path.starts_with("data:") || path.starts_with("rec:") ||
+                                       path.starts_with("clip:") || path.starts_with("edit:")))
+            luaL_error(L, "%s: only a file in the plugin's own package is preloaded", path.c_str());
+        const auto file = package_file(L, plugin, path);
+        if (plugin.preloads_.size() >= plugin.limits_.preloads)
+            return result(L, std::format("it reads {} clips and sounds already", plugin.limits_.preloads));
+        std::shared_ptr<Plugin::Preloaded> job;
+        for (const auto& going : plugin.preloads_)
+            if (going.sound == sound && going.path == path) job = going.result;
+        if (!job) {
+            job = std::make_shared<Plugin::Preloaded>();
+            if (sound ? plugin.waves_.contains(path) : plugin.clips_.contains(path)) {
+                job->done = true;
+            } else {
+                // Each on a thread of its own, as net.http's requests are: it holds only the job.
+                std::thread([file, sound, most = plugin.limits_.clip_bytes, job] {
+                    std::string error;
+                    const auto bytes = read_package_file(file, 8u << 20, error);
+                    if (bytes.empty()) {
+                        job->error = "it cannot be read: " + (error.empty() ? std::string("it is empty") : error);
+                    } else if (sound) {
+                        job->wave = decode_wave(std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size()), 30, error);
+                        if (!job->wave) job->error = "it cannot be played: " + error;
+                    } else {
+                        job->clip = decode_clip(bytes, most, error);
+                        if (!job->clip) job->error = "it " + error;
+                    }
+                    job->done.store(true, std::memory_order_release);
+                }).detach();
+            }
+        }
+        int callback = 0;
+        if (!lua_isnoneornil(L, 2)) {
+            lua_pushvalue(L, 2);
+            callback = lua_ref(L, -1);
+            lua_pop(L, 1);
+        }
+        plugin.preloads_.push_back({path, sound, callback, std::move(job)});
+        lua_pushboolean(L, 1);
+        return 1;
+    }
+    static int animation_preload(lua_State* L) { return preload(L, animating(L, "reskate.animation.preload"), false); }
+    static int audio_preload(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "audio", "reskate.audio.preload");
+        return preload(L, plugin, true);
+    }
+    // The reads that are done, in the order they were asked for: into clips_ or waves_ (under their
+    // limits), then each one's fn(ok, why).
+    static void deliver(Plugin& plugin) {
+        while (plugin.state_ == State::running) {
+            const auto done = std::find_if(plugin.preloads_.begin(), plugin.preloads_.end(),
+                                           [](const Plugin::Preload& p) { return p.result->done.load(std::memory_order_acquire); });
+            if (done == plugin.preloads_.end()) return;
+            const auto taken = std::move(*done);
+            plugin.preloads_.erase(done);
+            auto& job = *taken.result;
+            std::string why;
+            if (taken.sound ? plugin.waves_.contains(taken.path) : plugin.clips_.contains(taken.path)) {
+                // Held already: read in the meantime, or by an earlier preload of the same path.
+            } else if (!job.error.empty()) {
+                why = job.error;
+            } else if (taken.sound && job.wave) {
+                why = hold_wave(plugin, taken.path, std::exchange(job.wave, nullptr)); // (only the cache holds it now)
+            } else if (!taken.sound && job.clip) {
+                if (plugin.clip_bytes_ + pose_bytes(*job.clip) > plugin.limits_.clip_bytes) {
+                    why = std::format("a plugin's clips hold at most {} MB of poses", plugin.limits_.clip_bytes >> 20);
+                } else {
+                    plugin.clip_bytes_ += pose_bytes(*job.clip);
+                    plugin.clips_.emplace(taken.path, std::exchange(job.clip, nullptr));
+                }
+            }
+            if (!taken.callback) continue;
+            lua_getref(plugin.L_, taken.callback);
+            lua_unref(plugin.L_, taken.callback);
+            lua_pushboolean(plugin.L_, why.empty());
+            if (why.empty()) lua_pushnil(plugin.L_);
+            else lua_pushlstring(plugin.L_, why.data(), why.size());
+            plugin.call(2, "its preload callback", plugin.limits_.call_ms);
+        }
     }
     // volume, pitch, range, throttle, speed, loop, position (a vector, or "skater").
     static void sound_options(lua_State* L, int index, SoundStart* start, SoundChange* change) {
@@ -3246,6 +3370,7 @@ struct WorldApi {
 };
 
 void install_world_api(Plugin& plugin, lua_State* L) { WorldApi::install(plugin, L); }
+void deliver_preloads(Plugin& plugin) { WorldApi::deliver(plugin); }
 
 void WorldApi::install(Plugin& plugin, lua_State* L) {
     (void)plugin;
@@ -3291,9 +3416,9 @@ void WorldApi::install(Plugin& plugin, lua_State* L) {
                                    {"seek", animation_seek}, {"pause", animation_pause}, {"time", animation_time}, {"info", animation_info},
                                    {"sample", animation_sample}, {"joints", animation_joints}, {"trim", animation_trim}, {"edit", animation_edit},
                                    {"save", animation_save}, {"game_clips", animation_game_clips},
-                                   {"mirror", animation_mirror}});
+                                   {"mirror", animation_mirror}, {"preload", animation_preload}});
     add_functions(L, "outfit", {{"set", outfit_set}, {"clear", outfit_clear}, {"find", outfit_find}, {"slots", outfit_slots}, {"status", outfit_status}, {"stand_ins", outfit_stand_ins}});
-    add_functions(L, "audio", {{"play", audio_play}, {"set", audio_set}, {"stop", audio_stop}, {"playing", audio_playing}});
+    add_functions(L, "audio", {{"play", audio_play}, {"set", audio_set}, {"stop", audio_stop}, {"playing", audio_playing}, {"preload", audio_preload}});
     add_functions(L, "server", {{"kick", server_kick}, {"say", server_say}, {"tell", server_tell}, {"move", server_move},
                                 {"ban", server_ban}, {"unban", server_unban}, {"parks", server_parks}, {"park_spawn", server_park_spawn},
                                 {"park_remove", server_park_remove}, {"card", server_card}, {"poll", server_poll}, {"poll_close", server_poll_close},

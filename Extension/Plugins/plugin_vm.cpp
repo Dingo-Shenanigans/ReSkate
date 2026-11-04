@@ -294,6 +294,7 @@ void Plugin::close() {
     exposed_.clear();
     listeners_.clear();
     http_pending_.clear();
+    preloads_.clear(); // (a read still going hands its result to nobody)
     screens_.clear();
     open_screen_.clear();
     binds_.clear();
@@ -414,6 +415,7 @@ void Plugin::tick(double dt_ms) {
     body_prepares_ = 0;
     effect_calls_ = 0;
     prune_effects();
+    deliver_preloads(*this);
     const double now = services_.now_ms();
     std::vector<int> due;
     for (const auto& [id, timer] : timers_)

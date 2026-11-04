@@ -4,6 +4,7 @@
 #include "plugin_game.h"
 #include "Engine/Core/Json/json.h"
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <filesystem>
@@ -57,6 +58,7 @@ struct Limits {
     // and 32 waves of 30 s keep a plugin's samples near 30 MB, well inside sound_bytes.
     std::size_t sounds = 32;
     std::size_t sound_bytes = 64u << 20;
+    std::size_t preloads = 8;           // clips and sounds being read at once (reskate.animation.preload, reskate.audio.preload)
     int toasts = 3;                     // in 5 s
     int sounds_per_second = 10;
     std::size_t message_bytes = 4096 - 14; // a plugin message's payload (plugin_wire.h's header is 14)
@@ -402,6 +404,22 @@ private:
     std::map<std::string, CachedWave, std::less<>> waves_;
     std::size_t wave_bytes_{};
     std::uint64_t wave_plays_{};
+    // reskate.animation.preload and reskate.audio.preload: a package file read and decoded on a
+    // thread of its own, which fills in `result` and then sets `done`. A tick hands what it made
+    // into clips_ or waves_ and calls back (deliver_preloads, plugin_api_world.cpp).
+    struct Preloaded {
+        std::atomic<bool> done{};
+        std::shared_ptr<const anim_studio::Clip> clip;
+        std::shared_ptr<const Wave> wave;
+        std::string error;
+    };
+    struct Preload {
+        std::string path;
+        bool sound{};
+        int callback{}; // a ref, or 0
+        std::shared_ptr<Preloaded> result;
+    };
+    std::vector<Preload> preloads_;
     double wave_second_{};
     int wave_starts_{};
     int draw_table_{}, ui_table_{};

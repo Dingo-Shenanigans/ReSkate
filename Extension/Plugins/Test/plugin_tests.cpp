@@ -23,6 +23,7 @@
 #include "Extension/Localization/text_overrides.h"
 #include <algorithm>
 #include <chrono>
+#include <thread>
 #include <cmath>
 #include <format>
 #include <fstream>
@@ -5486,6 +5487,79 @@ void plugins_animate_the_skater() {
     running(host, "dancer", environment);
 }
 
+// Clips and sounds read off the plugin's thread (reskate.animation.preload, reskate.audio.preload):
+// fn comes in a later tick, and once it says they're held, play finds them with their files gone. One
+// that can't be read or isn't one says why, at most limits_.preloads go at once, only the plugin's
+// own package is preloaded, and without its permission a plugin can't preload at all.
+void plugins_preload_clips_and_sounds() {
+    TestEnvironment environment;
+    Limits limits;
+    limits.preloads = 5;
+    Host host(environment, Side::client, limits);
+    dingosdk::anim_studio::Clip clip;
+    clip.joints = dingosdk::anim_studio::skeleton_joints;
+    clip.times = {0, 0.5f};
+    clip.frames.resize(clip.times.size() * clip.joints);
+    const auto bytes = dingosdk::anim_studio::clip_bytes(clip);
+    const std::string main = R"(
+        local function told(what) return function(ok, why) reskate.log(what .. " " .. tostring(ok) .. " " .. tostring(why)) end end
+        reskate.console.command("warm", "x", function()
+            assert(reskate.animation.preload("clips/spin.fas", told("spin")))
+            assert(reskate.audio.preload("sounds/beep.wav", told("beep")))
+            assert(reskate.animation.preload("clips/spin.fas", told("again")))
+            assert(reskate.animation.preload("notes.txt", told("notes")))
+            assert(reskate.audio.preload("sounds/missing.wav", told("missing")))
+            local ok, why = reskate.animation.preload("clips/other.fas")
+            assert(not ok and why:find("5 clips and sounds"), tostring(why))
+            assert(not pcall(reskate.animation.preload, "game:kickflip"), "a game clip isn't preloaded")
+            assert(not pcall(reskate.audio.preload, "motor"), "nor the motor")
+            assert(not pcall(reskate.animation.preload, "../other/spin.fas"), "its own package only")
+            reskate.log("asked")
+        end)
+        reskate.console.command("use", "x", function()
+            assert(reskate.animation.play("clips/spin.fas"))
+            assert(reskate.audio.play("sounds/beep.wav"))
+            reskate.log("used")
+        end)
+    )";
+    host.apply({package("preloader", {{manifest_file, manifest(R"("console", "skater.animation", "audio")")}, {"plugin/main.lua", main},
+                                      {"clips/spin.fas", std::string(bytes.begin(), bytes.end())}, {"sounds/beep.wav", wave_file(16000, 1000)},
+                                      {"notes.txt", "x"}})});
+    running(host, "preloader", environment);
+    host.run_console("warm");
+    check(environment.logged("[preloader] asked") && !environment.logged("spin "), "Nothing is called back in the call that asks\n" + environment.all());
+    const auto start = std::chrono::steady_clock::now();
+    const auto all_told = [&] {
+        for (const auto* line : {"spin ", "beep ", "again ", "notes ", "missing "})
+            if (!environment.logged(line)) return false;
+        return true;
+    };
+    while (!all_told() && std::chrono::steady_clock::now() - start < std::chrono::seconds(10)) {
+        ticks(host, environment, 1);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    check(environment.logged("spin true nil") && environment.logged("beep true nil") && environment.logged("again true nil"),
+          "Preloads are called back once held\n" + environment.all());
+    check(environment.logged("notes false it is not one") && environment.logged("missing false it cannot be read"),
+          "A preload that can't be held says why\n" + environment.all());
+    const auto directory = scratch / "mods" / "preloader";
+    std::filesystem::remove(directory / "clips" / "spin.fas");
+    std::filesystem::remove(directory / "sounds" / "beep.wav");
+    host.run_console("use");
+    check(environment.logged("[preloader] used"), "Preloaded clips and sounds play without their files\n" + environment.all());
+    running(host, "preloader", environment);
+
+    host.apply({script("no-preload", R"(
+        local ok, why = pcall(reskate.animation.preload, "clips/spin.fas")
+        assert(not ok and why:find("skater.animation"), tostring(why))
+        ok, why = pcall(reskate.audio.preload, "sounds/beep.wav")
+        assert(not ok and why:find("\"audio\""), tostring(why))
+        reskate.log("preloads refused")
+    )")});
+    running(host, "no-preload", environment);
+    check(environment.logged("preloads refused"), "Without the permission a plugin can't preload\n" + environment.all());
+}
+
 void plugins_call_and_hear_each_other() {
     TestEnvironment environment;
     Host host(environment, Side::client);
@@ -7847,6 +7921,7 @@ int main() {
         run(plugins_server_copies_see_roles);
         run(plugins_server_copies_show_cards_and_polls);
         run(plugins_animate_the_skater);
+        run(plugins_preload_clips_and_sounds);
         run(plugins_play_their_own_sounds);
         run(plugins_play_ima_adpcm_sounds);
         run(plugins_play_any_number_of_different_sounds);
