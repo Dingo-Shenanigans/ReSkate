@@ -41,9 +41,17 @@ struct Piece {
     frostbite::BundleAsset asset;     // what the manifest says of it (resource type, meta, chunk range)
 };
 
+// A preset the item uses, as a mod's bundle-reference table lists it (bundle_ref_table.h).
+struct PresetRow {
+    std::string table;                // the table resource
+    std::string path;
+    std::uint32_t bundle{};
+};
+
 struct Cut {
     std::string item;                 // the item's asset name
-    std::vector<Piece> pieces;
+    std::vector<Piece> pieces;        // the tables themselves are never pieces: rows say what they add
+    std::vector<PresetRow> rows;
     std::uint64_t bytes{};            // encoded, every piece once
 };
 

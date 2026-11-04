@@ -1,4 +1,5 @@
 #include "synchros_closure.h"
+#include "Engine/Resource/bundle_ref_table.h"
 #include "Engine/Resource/cas_codec.h"
 #include "Engine/Resource/ebx_document.h"
 #include "Engine/Resource/toc.h"
@@ -84,6 +85,27 @@ struct Index::State {
     std::unordered_map<std::uint64_t, std::size_t> by_resource;
     std::unordered_map<std::uint64_t, std::vector<std::size_t>> chunk_by_prefix;
     std::size_t unreadable{};
+    // Each mod's bundle-reference table copies, read when a cut first needs them: per source,
+    // table name -> its presets (lower-case path -> bundle index).
+    std::vector<std::size_t> tables;  // nodes that are tables
+    std::map<std::pair<std::size_t, std::string>, std::map<std::string, std::uint32_t>> presets;
+    bool presets_read{};
+
+    void read_presets() {
+        if (presets_read) return;
+        presets_read = true;
+        for (const auto i : tables) {
+            const auto& p = nodes[i].piece;
+            try {
+                const auto bytes = fb::decode_cas(encoded(p), {game});
+                const fb::bundle_ref::Table table{bytes, p.asset.resourceMeta};
+                auto& held = presets[{p.source, p.name}];
+                for (const auto& [path, bundle] : fb::bundle_ref::presets(table)) held.emplace(lower(path), bundle);
+            } catch (const std::exception&) {
+                ++unreadable;
+            }
+        }
+    }
 
     std::vector<std::byte> encoded(const Piece& p) const {
         return archives->read(sources.at(p.source).directory, p.file.location, p.file.offset, p.file.size);
@@ -225,6 +247,7 @@ struct Index::State {
                             if (kind == Piece::resource) res_by_name.emplace(name, index);
                             by_leaf[leaf(name)].push_back(index);
                             if (kind == Piece::resource) by_resource.emplace(asset.resourceId, index);
+                            if (kind == Piece::resource && fb::bundle_ref::is_table(name)) tables.push_back(index);
                         }
                         in_bundle.push_back(index);
                         nodes.push_back(std::move(n));
@@ -302,7 +325,7 @@ std::optional<Cut> Index::cut(std::string_view item) {
     else if (const auto k = s.by_key.find(name); k != s.by_key.end()) start = k->second;
     else return std::nullopt;
 
-    Cut cut{s.nodes[start].piece.name, {}, 0};
+    Cut cut{s.nodes[start].piece.name, {}, {}, 0};
     std::vector<char> seen(s.nodes.size());
     std::set<std::uint64_t> placed;
     std::deque<std::size_t> queue{start};
@@ -312,14 +335,33 @@ std::optional<Cut> Index::cut(std::string_view item) {
         queue.pop_front();
         s.link(at);
         const auto& n = s.nodes[at];
-        // Another item reached by name (a collection, a variant's own item) is not part of this one.
+        // Another item reached by name (a collection, a variant's own item) is not part of this one,
+        // and a whole table is not either: the rows below say what it adds for this item.
         if (at != start && n.item) continue;
+        if (n.piece.kind == Piece::resource && fb::bundle_ref::is_table(n.piece.name)) continue;
         if (placed.insert(placement(n.piece.source, n.piece.file)).second) {
             cut.pieces.push_back(n.piece);
             cut.bytes += n.piece.file.size;
         }
         for (const auto next : n.edges)
             if (!seen[next]) { seen[next] = 1; queue.push_back(next); }
+    }
+    // The presets among the pieces, as the mods' tables list them: the item's own mod first, then
+    // the others in priority order.
+    s.read_presets();
+    const auto home = s.nodes[start].piece.source;
+    std::set<std::string> done;
+    for (const auto& piece : cut.pieces) {
+        if (piece.kind != Piece::ebx || done.contains(piece.name)) continue;
+        for (int pass = 0; pass < 2 && !done.contains(piece.name); ++pass)
+            for (const auto& [where, held] : s.presets) {
+                if ((pass == 0) != (where.first == home)) continue;
+                if (const auto f = held.find(piece.name); f != held.end()) {
+                    cut.rows.push_back({where.second, piece.name, f->second});
+                    done.insert(piece.name);
+                    break;
+                }
+            }
     }
     return cut;
 }

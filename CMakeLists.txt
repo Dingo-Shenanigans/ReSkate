@@ -77,7 +77,8 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS)
     add_test(NAME map_fetch_policy COMMAND dingosdk_map_fetch_policy_tests)
     # Skate Synchros: share codes, their proofs, and who sees whose outfit (Extension/Multiplayer/Synchros).
     add_executable(dingosdk_synchros_tests Extension/Multiplayer/Synchros/Test/synchros_tests.cpp
-        Extension/Multiplayer/Synchros/share_code.cpp Extension/Multiplayer/Synchros/synchros_wire.cpp)
+        Extension/Multiplayer/Synchros/share_code.cpp Extension/Multiplayer/Synchros/synchros_wire.cpp
+        Engine/Resource/bundle_ref_table.cpp)
     target_include_directories(dingosdk_synchros_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     if(WIN32)
         target_link_libraries(dingosdk_synchros_tests PRIVATE bcrypt)

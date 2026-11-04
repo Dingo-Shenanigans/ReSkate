@@ -79,10 +79,20 @@ enum class Withheld : std::uint8_t {
     game_item = 4,      // the game's own: the viewer has it
     unreadable = 5,
 };
+// A preset of the item and the bundle that loads it, for the viewer's bundle-reference table
+// (Engine/Resource/bundle_ref_table.h: with_presets). The bundle is an index into the game's own
+// bundle list, the same on every PC with this build.
+struct TableRow {
+    std::string table;   // the table resource ("characters/customization/configs/cas_main_bundlereftable")
+    std::string path;    // the preset
+    std::uint32_t bundle{};
+    bool operator==(const TableRow&) const = default;
+};
 struct ItemContents {
     std::string item;
     Withheld withheld{};
-    std::vector<File> files;  // empty when withheld
+    std::vector<File> files;      // empty when withheld
+    std::vector<TableRow> rows;   // empty when withheld
 };
 struct Contents {
     std::vector<ItemContents> items;

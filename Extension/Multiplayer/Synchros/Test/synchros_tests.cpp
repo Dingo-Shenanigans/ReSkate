@@ -1,6 +1,8 @@
 #include "Extension/Multiplayer/Synchros/sharing_rules.h"
 #include "Extension/Multiplayer/Synchros/share_code.h"
 #include "Extension/Multiplayer/Synchros/synchros_wire.h"
+#include "Engine/Resource/bundle_ref_table.h"
+#include <cstring>
 #include <iostream>
 #include <set>
 #include <stdexcept>
@@ -154,10 +156,11 @@ void every_message_round_trips() {
     check(round_trip(Welcome{true}).allowed && !round_trip(Welcome{false}).allowed, "welcome");
     check(round_trip(Want{{"items/board_bottomart/own_x", "items/cust_tops/own_y"}}).items.size() == 2, "want");
     Contents contents{{ItemContents{"items/board_bottomart/own_x", Withheld::none, {sample_file(1), sample_file(2, FileKind::resource),
-                                                                                 sample_file(3, FileKind::chunk), sample_file(4, FileKind::toc_chunk)}},
-                       ItemContents{"items/cust_tops/own_store_copy", Withheld::store_item, {}}}};
+                                                                                 sample_file(3, FileKind::chunk), sample_file(4, FileKind::toc_chunk)},
+                                    {TableRow{"characters/customization/configs/cas_main_bundlereftable", "characters/x/own_x_ap", 812}}},
+                       ItemContents{"items/cust_tops/own_store_copy", Withheld::store_item, {}, {}}}};
     const auto c = round_trip(contents);
-    check(c.items.size() == 2 && c.items[0].files == contents.items[0].files && c.items[1].withheld == Withheld::store_item, "contents");
+    check(c.items.size() == 2 && c.items[0].files == contents.items[0].files && c.items[0].rows == contents.items[0].rows && c.items[1].withheld == Withheld::store_item, "contents");
     Fetch fetch{{sample_file(1).id, sample_file(2).id}};
     check(round_trip(fetch).files == fetch.files, "fetch");
     Piece piece{sample_file(1).id, 0, 3, {7, 8, 9}};
@@ -184,19 +187,21 @@ void malformed_messages_are_refused() {
     for (std::size_t i = 0; i <= max_items; ++i) many.items.push_back("items/x" + std::to_string(i));
     check(!decode(encode(Message{many})), "over max_items");
     // A withheld item that still carries files.
-    Contents liar{{ItemContents{"items/x", Withheld::store_item, {sample_file(1)}}}};
+    Contents liar{{ItemContents{"items/x", Withheld::store_item, {sample_file(1)}, {}}}};
     check(!decode(encode(Message{liar})), "withheld with files");
+    Contents rows_liar{{ItemContents{"items/x", Withheld::store_item, {}, {TableRow{"t_bundlereftable", "p_ap", 1}}}}};
+    check(!decode(encode(Message{rows_liar})), "withheld with table rows");
     // A file that says it is bigger than a file may be, or empty.
     auto big = sample_file(1); big.size = max_file + 1;
-    check(!decode(encode(Message{Contents{{ItemContents{"items/x", Withheld::none, {big}}}}})), "a file over max_file");
+    check(!decode(encode(Message{Contents{{ItemContents{"items/x", Withheld::none, {big}, {}}}}})), "a file over max_file");
     auto empty = sample_file(1); empty.size = 0;
-    check(!decode(encode(Message{Contents{{ItemContents{"items/x", Withheld::none, {empty}}}}})), "an empty file");
+    check(!decode(encode(Message{Contents{{ItemContents{"items/x", Withheld::none, {empty}, {}}}}})), "an empty file");
     // A bundled asset without its bundle.
     auto loose = sample_file(1); loose.bundle.clear();
-    check(!decode(encode(Message{Contents{{ItemContents{"items/x", Withheld::none, {loose}}}}})), "an asset with no bundle");
+    check(!decode(encode(Message{Contents{{ItemContents{"items/x", Withheld::none, {loose}, {}}}}})), "an asset with no bundle");
     // A whole outfit over max_outfit.
     Contents huge;
-    ItemContents item{"items/x", Withheld::none, {}};
+    ItemContents item{"items/x", Withheld::none, {}, {}};
     for (int i = 0; i < 3; ++i) { auto f = sample_file(static_cast<std::uint8_t>(i)); f.size = max_file; item.files.push_back(f); }
     huge.items.push_back(item);
     check(!decode(encode(Message{huge})), "over max_outfit");
@@ -211,13 +216,69 @@ void malformed_messages_are_refused() {
 void a_message_never_exceeds_steams_limit() {
     Contents full;
     for (std::size_t i = 0; i < max_items; ++i) {
-        ItemContents item{"items/board_bottomart/own_" + std::to_string(i), Withheld::none, {}};
+        ItemContents item{"items/board_bottomart/own_" + std::to_string(i), Withheld::none, {}, {}};
         for (int k = 0; k < 100; ++k) item.files.push_back(sample_file(static_cast<std::uint8_t>(k)));
         full.items.push_back(item);
     }
     bool threw = false;
     try { (void)encode(Message{full}); } catch (const std::length_error&) { threw = true; }
     check(threw, "a Contents over 512 KB is refused at encode, so the sender splits it");
+}
+
+// The smallest table the game's layout allows (bundle_ref_table.cpp): two bundles (index 0 the
+// sentinel), one preset of the base's own, a pool padded so the table is 256 bytes or more.
+struct TableBytes { std::vector<std::byte> data, meta; };
+constexpr std::string_view base_preset = "base/existing_ap";
+TableBytes empty_table() {
+    constexpr std::size_t pool = 128, bundles = 224, lookups = 240, payload = 256;
+    std::vector<std::byte> d(payload + 20);
+    auto p32 = [&](std::size_t at, std::uint32_t v) { std::memcpy(d.data() + at, &v, 4); };
+    auto p64 = [&](std::size_t at, std::uint64_t v) { std::memcpy(d.data() + at, &v, 8); };
+    p64(0, pool); p64(8, lookups); p64(16, pool); p64(24, bundles); p64(32, pool);
+    p32(72, 1); p32(76, 2); p32(92, 1);
+    // Path descriptors, inline: parent none, then the text. A bundle "b", and the base's preset.
+    p32(pool, 0xffffffffu);
+    d[pool + 4] = std::byte{'b'};
+    const std::uint32_t bundle_token = 0u | 0x800000u | (1u << 24);
+    p32(pool + 16, 0xffffffffu);
+    std::memcpy(d.data() + pool + 20, base_preset.data(), base_preset.size());
+    const std::uint32_t preset_token = 16u | 0x800000u | (static_cast<std::uint32_t>(base_preset.size()) << 24);
+    p32(bundles, 0xffffffffu); p32(bundles + 4, 0);  // the sentinel
+    p32(bundles + 8, bundle_token); p32(bundles + 12, 0);
+    std::uint64_t h = 0xCBF29CE484222325ULL;
+    for (const char c : base_preset) h = h * 0x100000001B3ULL ^ static_cast<unsigned char>(c);
+    p64(lookups, h); p32(lookups + 8, 1); p32(lookups + 12, preset_token);
+    for (std::uint32_t i = 0; i < 5; ++i) p32(payload + i * 4, i * 8);
+    std::vector<std::byte> meta(16);
+    std::uint32_t size = payload, trailer = 20;
+    std::memcpy(meta.data(), &size, 4);
+    std::memcpy(meta.data() + 4, &trailer, 4);
+    return {d, meta};
+}
+
+void received_presets_go_into_the_table() {
+    namespace br = dingosdk::frostbite::bundle_ref;
+    const auto base = empty_table();
+    const br::Table table{base.data, base.meta};
+    check(br::presets(table).size() == 1 && br::presets(table).at(std::string(base_preset)) == 1, "the base table reads, with its one preset");
+    const std::vector<br::Preset> rows{{"characters/customization/reskate/textureedits/abc_ap", 1},
+                                       {"characters/customization/own_nabi/nabi_ap", 1}};
+    const auto merged = br::with_presets(table, rows);
+    check(merged.added == 2 && !merged.conflicts, "both presets go in");
+    const br::Table after{merged.resource, merged.resourceMeta};
+    const auto held = br::presets(after);
+    check(held.size() == 3 && held.at(rows[0].path) == 1 && held.at(rows[1].path) == 1, "and read back where they were put");
+    const auto again = br::with_presets(after, rows);
+    check(again.added == 0 && !again.conflicts && again.resource == merged.resource, "the same presets again change nothing");
+    const std::vector<br::Preset> moved{{rows[0].path, 0}};
+    check(br::with_presets(after, moved).conflicts == 1, "a preset the table has in another bundle is a conflict, not a move");
+    bool threw = false;
+    try { (void)br::with_presets(table, std::vector<br::Preset>{{"x/y_ap", 9}}); } catch (const std::exception&) { threw = true; }
+    check(threw, "a bundle index past the list is refused");
+    // What merge makes of a mod's copy is the same as adding its presets.
+    const br::Table copy{merged.resource, merged.resourceMeta};
+    const auto via_merge = br::merge(table, std::span(&copy, 1));
+    check(via_merge.resource == merged.resource, "with_presets and merge agree");
 }
 } // namespace
 
@@ -232,6 +293,7 @@ int main() {
         every_message_round_trips();
         malformed_messages_are_refused();
         a_message_never_exceeds_steams_limit();
+        received_presets_go_into_the_table();
     } catch (const std::exception& e) {
         std::cerr << "synchros: " << e.what() << '\n';
         return 1;

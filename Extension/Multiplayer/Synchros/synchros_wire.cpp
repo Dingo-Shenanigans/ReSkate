@@ -117,6 +117,8 @@ std::vector<std::uint8_t> encode(const Message& message) {
                 w.u8(static_cast<std::uint8_t>(item.withheld));
                 w.u32(static_cast<std::uint32_t>(item.files.size()));
                 for (const auto& f : item.files) write_file(w, f);
+                w.u32(static_cast<std::uint32_t>(item.rows.size()));
+                for (const auto& row : item.rows) { w.text(row.table); w.text(row.path); w.u32(row.bundle); }
             }
         } else if constexpr (std::is_same_v<T, Fetch>) {
             w.u8(static_cast<std::uint8_t>(Kind::fetch)); w.u8(wire_version);
@@ -183,6 +185,16 @@ std::optional<Message> decode(std::span<const std::uint8_t> bytes) {
             const auto files = r.count(max_files_per_item);
             if (item.withheld != Withheld::none && files) r.ok = false;  // a withheld item carries nothing
             for (std::size_t k = 0; k < files && r.ok; ++k) item.files.push_back(read_file(r));
+            const auto rows = r.count(max_files_per_item);
+            if (item.withheld != Withheld::none && rows) r.ok = false;
+            for (std::size_t k = 0; k < rows && r.ok; ++k) {
+                TableRow row;
+                row.table = r.text(max_name);
+                row.path = r.text(max_name);
+                row.bundle = r.u32();
+                if (row.table.empty() || row.path.empty()) r.ok = false;
+                item.rows.push_back(std::move(row));
+            }
             m.items.push_back(std::move(item));
         }
         if (r.ok && contents_bytes(m) > max_outfit) r.ok = false;
