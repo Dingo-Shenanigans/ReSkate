@@ -2167,6 +2167,9 @@ void plugins_reuse_their_own_parked_bodies() {
                 elseif ticks == 2 then
                     local b, w, o = P.create(d, {reuse = true})
                     assert(b == nil and w == "body_reuse_pending" and o == nil, tostring(w))
+                    -- A refused reuse still uses this tick's one request: the retry waits a tick.
+                    local again, refused = P.create(d, {reuse = true})
+                    assert(again == nil and refused == "asked to reuse a native body more than once in one tick", tostring(refused))
                     reskate.log("reuse options answered")
                 end
             end)
@@ -2196,10 +2199,14 @@ void plugins_reuse_their_own_parked_bodies() {
     check(fake.body_reuse_requests.size() == 6 && by_owner(4) == decltype(owners){{owners.begin()->first, {1, 0}}, {std::next(owners.begin())->first, {1, 0}}},
         "a new tick did not allow one more reuse request for each plugin");
     fake.test_reuse_refusal = "body_reuse_pending";
+    const auto refused_from = fake.body_reuse_requests.size();
     ticks(host, environment, 1);
     running(host, "reuse-a", environment);
     running(host, "reuse-b", environment);
     check(environment.logged("reuse options answered"), environment.all());
+    check(fake.body_reuse_requests.size() == refused_from + 2 &&
+        by_owner(refused_from) == decltype(owners){{owners.begin()->first, {1, 0}}, {std::next(owners.begin())->first, {1, 0}}},
+        "a refused reuse did not use up its tick's one request for each plugin");
     // A reloaded VM is a new instance, so it cannot name the old one's parked bodies.
     fake.test_reuse_refusal.clear();
     fake.test_reuse_report = {owned_body::Origin::reused, owned_body::ReuseMiss::none};

@@ -132,10 +132,15 @@ NativeHandle* reuse_capsule(std::uintptr_t world, NativeHandle* shape, const Nat
     return shape;
 }
 
-// What one re-activation of the seeded body (index 3, shape 5) writes: park() again, then the end
-// of a creation. No allocate, capsule, inverse mass, inertia, clear, centre of mass or owner call.
-const std::vector<std::string> reactivation_writes{"categories 5 0", "collides 5 0", "linear 3", "angular 3", "motion 3 2",
-    "transform 3", "collides 5 257", "motion 3 3", "wake 3"};
+// What one re-activation of a body with one capsule writes: park() again, then the end of a
+// creation. No allocate, capsule, inverse mass, inertia, clear, centre of mass or owner call.
+std::vector<std::string> reactivation_writes_of(std::uint32_t body, std::uint32_t shape) {
+    const auto b = std::to_string(body), s = std::to_string(shape);
+    return {"categories " + s + " 0", "collides " + s + " 0", "linear " + b, "angular " + b, "motion " + b + " 2",
+        "transform " + b, "collides " + s + " 257", "motion " + b + " 3", "wake " + b};
+}
+// The seeded body is index 3 with shape 5.
+const std::vector<std::string> reactivation_writes = reactivation_writes_of(body_index, shape_index);
 // What a creation of one capsule writes, in create_native's order.
 std::vector<std::string> allocation_writes(std::uint32_t body, std::uint32_t shape) {
     const auto b = std::to_string(body), s = std::to_string(shape);
@@ -500,6 +505,29 @@ void reactivated_body_parks_and_returns_again() {
     check(f.reuse(second, report).empty() && report.origin == Origin::reused && second.slot == 0 && second.generation > first.generation,
         "a body parked twice did not come back under a third generation");
     check_calls(reactivation_writes, "a second re-activation wrote differently");
+}
+
+// T2 g, for a body the actual create() made: the seeded body's world generation is set by the
+// fixture, so this is the case that shows create() stamps the generation a clean park needs.
+// Without it every allocated body parks unusable and each reuse falls back to a new slot.
+void an_allocated_body_parks_and_comes_back() {
+    ReuseFixture f;
+    Handle first, again;
+    check(create(owner, f.definition, first).empty() && first.slot == 1, "a plain create did not allocate the next slot");
+    check_calls(allocation_writes(0, 0), "a creation no longer writes in create_native's order");
+    const auto& s = service.slots[1];
+    check(s.active && s.active_world == service.world_generation, "create() did not stamp its body's world generation");
+    check(release(owner, first).empty() && s.retained && !s.quarantined && !s.reuse_barred && s.parked_world == service.world_generation,
+        "a body create() allocated did not park cleanly");
+    f.step();
+    f.step();
+    reuse_native.calls.clear();
+    CreateReport report;
+    check(create(owner, f.definition, again, true, report).empty() && report.origin == Origin::reused && report.miss == ReuseMiss::none &&
+        again.slot == 1 && again.generation > first.generation, "a body create() allocated and release() parked did not come back");
+    check_calls(reactivation_writes_of(0, 0), "re-activating an allocated body wrote other than park() and the end of a creation");
+    check(no_slot_beyond(2) && !reuse_touched_seeded() && f.slot().active && f.slot().handle == f.handle,
+        "re-activating an allocated body reserved a slot or touched the seeded body");
 }
 
 // T2 h: a lapse in readiness between the park and the request is a new world generation.

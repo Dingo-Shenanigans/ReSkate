@@ -983,6 +983,7 @@ int main() {
         run("witness_failures_bar_the_body_and_allocate", witness_failures_bar_the_body_and_allocate);
         run("failed_reactivation_quarantines_and_prohibits_allocation", failed_reactivation_quarantines_and_prohibits_allocation);
         run("reactivated_body_parks_and_returns_again", reactivated_body_parks_and_returns_again);
+        run("an_allocated_body_parks_and_comes_back", an_allocated_body_parks_and_comes_back);
         run("a_world_generation_change_prevents_reuse", a_world_generation_change_prevents_reuse);
         run("a_failed_setter_bars_reuse_after_a_clean_park", a_failed_setter_bars_reuse_after_a_clean_park);
         run("a_body_parked_too_recently_is_pending_not_allocated", a_body_parked_too_recently_is_pending_not_allocated);
