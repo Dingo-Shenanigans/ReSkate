@@ -70,7 +70,7 @@ struct Shared {
 };
 Shared shared_in(const CasStore& store, const fs::path& root, const fs::path& baseRoot, const fs::path& gameRoot) {
     for (const auto& bundle : fb::read_toc(read_file(root / L"Win32" / L"items.toc")).bundles) {
-        if (lower(bundle.name) != shared_bundle) continue;
+        if (ascii_lower(bundle.name) != shared_bundle) continue;
         if (auto listing = list_bundle(store, root, baseRoot, bundle, gameRoot)) return {bundle, std::move(*listing)};
         break;
     }
@@ -78,7 +78,7 @@ Shared shared_in(const CasStore& store, const fs::path& root, const fs::path& ba
 }
 
 bool list_name(std::string_view name) {
-    const auto text = lower(name);
+    const auto text = ascii_lower(name);
     return text.starts_with("items/") && text.find("collection") != std::string::npos;
 }
 
@@ -158,10 +158,10 @@ Game read_game(const fs::path& root, const CasStore& store) {
     const auto& assets = game.shared.listing.manifest.ebx;
     bool list{}, item{};
     for (std::size_t index = 0; index < assets.size(); ++index) {
-        const auto name = lower(assets[index].name);
+        const auto name = ascii_lower(assets[index].name);
         if (!name.starts_with("items/") || (item && !list_name(name))) continue;
         auto document = fb::ebx::read_document(read_asset(store, game.base, game.base, game.shared.listing, index, root));
-        const auto type = lower(document.rootType);
+        const auto type = ascii_lower(document.rootType);
         if (type == list_type) {
             const auto count = listed(document).size();
             if (list && count >= game.listed) continue;
@@ -272,7 +272,7 @@ Merged read_merged(const Merge& merge, const Game& game) {
         const auto& name = shared.listing.manifest.ebx[index].name;
         if (!list_name(name)) continue;
         const auto document = fb::ebx::read_document(bytes);
-        if (lower(document.rootType) == list_type) merged.lists.emplace(name, listed(document));
+        if (ascii_lower(document.rootType) == list_type) merged.lists.emplace(name, listed(document));
     }
     return merged;
 }
@@ -530,7 +530,7 @@ void the_list_other_copies_are_given(const Game& game, const CasStore& store) {
     }
     mods::MergeReport report;
     const auto overrides = collect_asset_overrides(order, files, store, game.base, game.root, report);
-    const auto versions = overrides.changed.find(lower(game.listName));
+    const auto versions = overrides.changed.find(ascii_lower(game.listName));
     expect(versions != overrides.changed.end() && versions->second.size() == 1,
            "carried list: there is one changed list for other mods' copies\n" + describe(report));
     if (versions == overrides.changed.end() || versions->second.empty()) return;

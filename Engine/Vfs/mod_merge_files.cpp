@@ -3,6 +3,7 @@
 #include "Engine/Core/Platform/path_text.h"
 #include "Engine/Resource/cas_codec.h"
 #include "Engine/Resource/ebx_fixup_repair.h"
+#include "Engine/Core/Text/ascii.h"
 
 #include <Windows.h>
 #include <bcrypt.h>
@@ -15,12 +16,6 @@ namespace dingosdk::mods::detail {
 namespace {
 constexpr std::size_t maximumTocBytes = 64 * 1024 * 1024;
 } // namespace
-
-std::string lower(std::string_view text) {
-    std::string result(text);
-    for (auto& ch : result) if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch + ('a' - 'A'));
-    return result;
-}
 
 std::vector<std::byte> read_file(const fs::path& path) {
     std::ifstream input(path, std::ios::binary | std::ios::ate);
@@ -130,7 +125,7 @@ RelativeFiles scan(const fs::path& directory) {
         // then reads the game's TOC from and writes its own copies to outside the patch folder.
         const auto relative = ascii_path(it->path().lexically_relative(directory));
         if (relative.empty() || relative.starts_with("../")) continue;
-        const auto extension = lower(ascii_path(it->path().extension()));
+        const auto extension = ascii_lower(ascii_path(it->path().extension()));
         if (extension == ".toc") result.tocs.push_back(relative);
         else if (extension == ".cas") result.archives.push_back(relative);
     }

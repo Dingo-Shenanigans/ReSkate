@@ -1,6 +1,7 @@
 #include "Extension/Console/memory_ledger.h"
 #include "Engine/Core/Hooks/hooks.h"
 #include "Engine/Core/Log/logging.h"
+#include "Engine/Core/Text/ascii.h"
 #include <Windows.h>
 #include <Psapi.h>
 #include <dxgi1_4.h>
@@ -282,10 +283,6 @@ std::string place(void* address) {
     if (module.name.empty()) return std::format("{:#x}", reinterpret_cast<std::uintptr_t>(address));
     return std::format("{}+{:#x}", module.name, reinterpret_cast<std::uintptr_t>(address) - module.base);
 }
-std::string lower(std::string text) {
-    for (auto& c : text) c = static_cast<char>(c >= 'A' && c <= 'Z' ? c + 32 : c);
-    return text;
-}
 // Who a caller's memory belongs to: the first module on its stack that is not Windows' or the
 // C runtime's way to memory. Through a heap when Windows' heap asked (the heap grew for
 // whoever was allocating when it ran out).
@@ -295,7 +292,7 @@ std::string owner_of(const Caller& caller) {
     bool heap{};
     for (unsigned i = 0; i < caller.frame_count; ++i) {
         const auto module = module_at(caller.frames[i]);
-        const auto name = lower(module.name);
+        const auto name = ascii_lower(module.name);
         if (i == 0 && name == "ntdll.dll") heap = true;
         if (name.empty() || std::ranges::find(passing, name) != passing.end()) continue;
         return heap ? module.name + " (through a heap)" : module.name;

@@ -1,6 +1,7 @@
 #include "viewmodel.h"
 #include "viewmodel_hlsl.h" // generated from viewmodel.hlsl (cmake/UI.cmake)
 #include "Engine/Core/Log/logging.h"
+#include "Engine/Core/Platform/clock.h"
 #include <Windows.h>
 #include <d3dcompiler.h>
 #include <wincodec.h>
@@ -28,7 +29,6 @@ constexpr std::size_t frame_header_floats = 9 * 4, frame_floats = frame_header_f
 constexpr std::size_t constants_stride = (frame_floats * 4 + 255) / 256 * 256; // root CBVs are 256-byte aligned
 constexpr std::size_t constants_ring = 8;
 
-double now() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 
 // A picture as the GPU takes it: RGBA8, its mip levels one after another, largest first.
 struct Picture {
@@ -618,7 +618,7 @@ void show(const Look& look) noexcept {
     auto& s = shared();
     std::lock_guard lock(s.mutex);
     s.look = look;
-    s.until = now() + 0.3;
+    s.until = steady_seconds() + 0.3;
 }
 void hide() noexcept {
     auto& s = shared();
@@ -634,7 +634,7 @@ std::string play(std::string_view clip, const Animator::Play& play) {
     if (index < 0) return "the viewmodel has no clip \"" + std::string(clip) + "\"";
     auto asked = play;
     asked.clip = index;
-    s.animator.play(s.loaded->model, asked, now());
+    s.animator.play(s.loaded->model, asked, steady_seconds());
     return {};
 }
 void stop() noexcept {
@@ -647,7 +647,7 @@ State state() {
     auto& s = shared();
     std::lock_guard lock(s.mutex);
     if (!s.loaded) return {};
-    const auto now_state = s.animator.state(s.loaded->model, now());
+    const auto now_state = s.animator.state(s.loaded->model, steady_seconds());
     if (now_state.clip < 0) return {};
     const auto& clip = s.loaded->model.clips[static_cast<std::size_t>(now_state.clip)];
     return {clip.name, now_state.time, clip.duration(), now_state.done};
@@ -668,7 +668,7 @@ std::optional<BonePose> bone(std::string_view name) {
     const int index = loaded->model.bone(name);
     if (index < 0) return std::nullopt;
     std::array<Affine, max_bones> skin;
-    animator.pose(loaded->model, now(), std::span(skin).first(loaded->model.bones.size()));
+    animator.pose(loaded->model, steady_seconds(), std::span(skin).first(loaded->model.bones.size()));
     const auto pose = multiply(placement(look.offset, look.yaw, look.pitch, look.roll),
                                multiply(skin[static_cast<std::size_t>(index)], loaded->model.bones[static_cast<std::size_t>(index)].bind));
     BonePose out;
@@ -685,7 +685,7 @@ bool pending() noexcept {
     auto& s = shared();
     std::lock_guard lock(s.mutex);
     if (gpu().failed || !s.loaded) return false;
-    return now() < s.until || gpu().model != s.loaded || gpu().next_texture < gpu().textures.size();
+    return steady_seconds() < s.until || gpu().model != s.loaded || gpu().next_texture < gpu().textures.size();
 }
 
 bool record(const Target& t) noexcept {
@@ -696,7 +696,7 @@ bool record(const Target& t) noexcept {
         Animator animator;
         Look look;
         bool shown{};
-        const double at = now();
+        const double at = steady_seconds();
         {
             auto& s = shared();
             std::lock_guard lock(s.mutex);

@@ -23,7 +23,6 @@
 namespace dingosdk::outfit_overlay {
 namespace {
 using skater_items::SkaterItems;
-using skater_items::lower;
 constexpr std::string_view allowed[] = {"tattoo", "moles", "eyewear", "hand"};
 
 struct Wanted {
@@ -79,7 +78,7 @@ State& state() {
     static auto* s = new State;
     return *s;
 }
-bool blank(const std::string& asset) { return asset.empty() || lower(asset).ends_with("_empty"); }
+bool blank(const std::string& asset) { return asset.empty() || ascii_lower(asset).ends_with("_empty"); }
 int slot_of(State& s, const SkaterItems& m, std::uintptr_t resource, const std::string& wanted) {
     if (s.slots_of != resource) {
         s.slot_index.clear();
@@ -88,7 +87,7 @@ int slot_of(State& s, const SkaterItems& m, std::uintptr_t resource, const std::
         const auto count = m.count(table, 24, multiplayer::max_cosmetic_slots);
         for (std::size_t i = 0; i < count; ++i) {
             const auto slot = m.ptr(table, i * 24 + 8) & ~std::uintptr_t{4};
-            s.slot_index.emplace(lower(m.text(m.ptr(slot, 0x20))), static_cast<int>(i));
+            s.slot_index.emplace(ascii_lower(m.text(m.ptr(slot, 0x20))), static_cast<int>(i));
         }
     }
     for (const auto& [name, index] : s.slot_index)
@@ -118,7 +117,7 @@ void read_memory(State& s) {
         std::ifstream in(memory_file());
         for (std::string line; std::getline(in, line) && s.good.size() + s.bad.size() < 65536;) {
             if (line.size() < 4 || (line[0] != '+' && line[0] != '-')) continue;
-            (line[0] == '+' ? s.good : s.bad).insert(lower(line.substr(1)));
+            (line[0] == '+' ? s.good : s.bad).insert(ascii_lower(line.substr(1)));
         }
     } catch (...) {}
 }
@@ -129,7 +128,7 @@ void remember(State& s, bool loads, const std::string& key) {
         out << (loads ? '+' : '-') << key << '\n';
     } catch (...) {}
 }
-std::string pair_key(std::string_view slot, std::string_view item) { return lower(slot) + "|" + lower(item); }
+std::string pair_key(std::string_view slot, std::string_view item) { return ascii_lower(slot) + "|" + ascii_lower(item); }
 
 std::vector<SlotInfo> slot_infos(const SkaterItems& m, std::uintptr_t resource) {
     std::vector<SlotInfo> out;
@@ -206,7 +205,7 @@ std::vector<std::string> all_layers(const State& s) {
     std::vector<std::string> out;
     for (const auto& [owner, items] : s.layers)
         for (const auto& item : items)
-            if (std::none_of(out.begin(), out.end(), [&](const std::string& o) { return lower(o) == lower(item); })) out.push_back(item);
+            if (std::none_of(out.begin(), out.end(), [&](const std::string& o) { return ascii_lower(o) == ascii_lower(item); })) out.push_back(item);
     return out;
 }
 
@@ -272,7 +271,7 @@ void wear(State& s, const SkaterItems& m, std::uintptr_t skater, std::uint64_t n
     // Layers no longer wanted come off (their slots were empty in the outfit); the rest keep theirs.
     const auto wanted = all_layers(s);
     const auto is_wanted = [&](const std::string& item) {
-        return std::any_of(wanted.begin(), wanted.end(), [&](const std::string& w) { return lower(w) == lower(item); });
+        return std::any_of(wanted.begin(), wanted.end(), [&](const std::string& w) { return ascii_lower(w) == ascii_lower(item); });
     };
     std::erase_if(s.placed, [&](const Placement& p) {
         if (is_wanted(p.second) && !used.contains(p.first)) return false;
@@ -287,8 +286,8 @@ void wear(State& s, const SkaterItems& m, std::uintptr_t skater, std::uint64_t n
     std::vector<std::string> left;
     unsigned waiting{};
     for (const auto& name : wanted) {
-        if (std::any_of(s.placed.begin(), s.placed.end(), [&](const Placement& p) { return lower(p.second) == lower(name); })) continue;
-        if (std::any_of(recipe.items.begin(), recipe.items.end(), [&](const auto& item) { return lower(item.asset) == lower(name); }))
+        if (std::any_of(s.placed.begin(), s.placed.end(), [&](const Placement& p) { return ascii_lower(p.second) == ascii_lower(name); })) continue;
+        if (std::any_of(recipe.items.begin(), recipe.items.end(), [&](const auto& item) { return ascii_lower(item.asset) == ascii_lower(name); }))
             continue; // the outfit wears it already
         const auto asset = catalog_asset(m, name);
         if (!asset) {
@@ -308,10 +307,10 @@ void wear(State& s, const SkaterItems& m, std::uintptr_t skater, std::uint64_t n
                 candidates.push_back(i);
         };
         for (std::size_t i = 0; i < slots.size(); ++i)
-            if (own_kind(i) && std::find(spare_slots.begin(), spare_slots.end(), lower(slots[i].name)) != spare_slots.end()) consider(i);
+            if (own_kind(i) && std::find(spare_slots.begin(), spare_slots.end(), ascii_lower(slots[i].name)) != spare_slots.end()) consider(i);
         for (const auto spare : spare_slots)
             for (std::size_t i = 0; i < slots.size(); ++i)
-                if (lower(slots[i].name) == spare) consider(i);
+                if (ascii_lower(slots[i].name) == spare) consider(i);
         if (candidates.empty()) {
             left.push_back(name + " (no free slot)");
             continue;
@@ -405,13 +404,13 @@ void give_back(State& s, const SkaterItems& m, std::uintptr_t skater, std::uint6
 }
 
 bool allowed_slot(std::string_view slot) noexcept {
-    const auto name = lower(slot);
+    const auto name = ascii_lower(slot);
     return std::any_of(std::begin(allowed), std::end(allowed), [&](std::string_view a) { return name.find(a) != std::string::npos; });
 }
 
 std::string set(std::string owner, std::string slot, std::string item, std::vector<float> placement, bool covers) {
     auto& s = state();
-    slot = lower(slot);
+    slot = ascii_lower(slot);
     if (!allowed_slot(slot)) return "only tattoo, moles, eyewear and hand wear slots";
     if (const auto taken = s.wanted.find(slot); taken != s.wanted.end() && taken->second.owner != owner) return taken->second.owner + " has that slot";
     if (!content_cache::catalogs().available) return "the paid items are not known yet; try again in a moment";
@@ -444,19 +443,19 @@ Layers layers(std::string_view owner) {
     Layers out;
     if (const auto found = s.layers.find(std::string(owner)); found != s.layers.end()) out.items = found->second;
     for (const auto& item : out.items)
-        if (std::any_of(s.placed.begin(), s.placed.end(), [&](const Placement& p) { return lower(p.second) == lower(item); }))
+        if (std::any_of(s.placed.begin(), s.placed.end(), [&](const Placement& p) { return ascii_lower(p.second) == ascii_lower(item); }))
             out.worn.push_back(item);
     if (!out.items.empty()) out.note = s.layer_note;
     return out;
 }
 void clear(std::string_view owner, std::string_view slot) {
     auto& s = state();
-    const auto name = lower(slot);
+    const auto name = ascii_lower(slot);
     if (std::erase_if(s.wanted, [&](const auto& w) { return w.second.owner == owner && (name.empty() || w.first == name); })) s.dirty = true;
 }
 std::string find_item(std::string_view ending) {
     auto& s = state();
-    const auto key = lower(ending);
+    const auto key = ascii_lower(ending);
     if (const auto known = s.found.find(key); known != s.found.end()) return known->second;
     NoBailSkater skater;
     if (!no_bail_skater(skater)) return {};

@@ -1,6 +1,7 @@
 #include "game_clips.h"
 #include "Engine/Resource/ebx_document.h"
 #include "Engine/Vfs/game_bundles.h"
+#include "Engine/Core/Text/ascii.h"
 #include <Windows.h>
 #include <algorithm>
 #include <atomic>
@@ -25,12 +26,6 @@ constexpr std::string_view config_toc = "Win32/globals.toc";
 constexpr std::string_view config_bundle = "win32/configurations/gameconfigurations/delmargameconfiguration";
 constexpr std::string_view rig_name = "animation/dingo/animbase_default_rig";
 constexpr std::uint32_t eclipse_resource_type = 0x4088BF7E;
-
-std::string lower(std::string_view text) {
-    std::string out(text);
-    for (auto& c : out) c = static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
-    return out;
-}
 
 // ---- EBX values ------------------------------------------------------------------------------------
 const ebx::Value& field(const ebx::Object& object, std::string_view name) {
@@ -288,7 +283,7 @@ struct Library::Data {
 };
 
 void Library::Data::read_rig() {
-    const auto found = std::find_if(config.manifest.ebx.begin(), config.manifest.ebx.end(), [](const auto& a) { return lower(a.name) == rig_name; });
+    const auto found = std::find_if(config.manifest.ebx.begin(), config.manifest.ebx.end(), [](const auto& a) { return ascii_lower(a.name) == rig_name; });
     if (found == config.manifest.ebx.end()) throw std::runtime_error("the skater's rig is not in the game's data");
     const auto doc = document(config, static_cast<std::size_t>(found - config.manifest.ebx.begin()));
     const auto* root_instance = doc->root();
@@ -402,7 +397,7 @@ Library::Library(const std::filesystem::path& game_root) : data_(std::make_uniqu
     if (!config) throw std::runtime_error("the game configuration's bundle is missing");
     d.config = std::move(*config);
     for (std::size_t i = 0; i < d.level.manifest.ebx.size(); ++i) {
-        auto name = lower(d.level.manifest.ebx[i].name);
+        auto name = ascii_lower(d.level.manifest.ebx[i].name);
         if (name.starts_with("_af/") && name.size() > 22 && name[22] == '/') d.channel_maps.emplace(name.substr(4, 18), i);
         else if (name.starts_with("animation/")) d.level_names.emplace(std::move(name), i);
     }
@@ -572,7 +567,7 @@ std::string_view Library::joint_name(std::uint16_t joint) const {
 }
 
 std::vector<std::string> Library::names(std::string_view containing, std::size_t most) const {
-    const auto wanted = lower(containing);
+    const auto wanted = ascii_lower(containing);
     std::vector<std::pair<std::size_t, std::string>> found;
     for (const auto& [name, index] : data_->level_names)
         if (wanted.empty() || name.find(wanted) != std::string::npos) found.emplace_back(index, name);
@@ -587,7 +582,7 @@ std::vector<std::string> Library::names(std::string_view containing, std::size_t
 
 Clip Library::load(std::string_view asked) const {
     const auto& d = *data_;
-    const auto name = lower(asked);
+    const auto name = ascii_lower(asked);
     const auto at = d.level_names.find(name);
     if (at == d.level_names.end()) throw std::runtime_error("the game has no animation " + name);
     const auto doc = d.document(d.level, at->second);

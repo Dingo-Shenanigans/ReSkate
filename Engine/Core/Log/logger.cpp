@@ -2,6 +2,7 @@
 #include "Engine/Core/Debug/crash_report.h"
 #include "Engine/Core/Debug/trace.h"
 #include "Engine/Core/Console/console_core.h"
+#include "Engine/Core/Platform/wide_text.h"
 #include <spdlog/logger.h>
 #include <spdlog/sinks/base_sink.h>
 #include <spdlog/sinks/msvc_sink.h>
@@ -248,7 +249,7 @@ void write(Level level, Channel channel, std::wstring_view message) noexcept {
 }
 void write(Level level, Context context, Channel channel, std::wstring_view message) noexcept {
     detail::PreserveError preserve;
-    try { write(level, context, channel, detail::utf8(message)); } catch (...) {}
+    try { write(level, context, channel, wide_to_utf8(message)); } catch (...) {}
 }
 void vprintf(Level level, Channel channel, const char* format, va_list args) noexcept {
     vprintf(level, default_context(channel), channel, format, args);

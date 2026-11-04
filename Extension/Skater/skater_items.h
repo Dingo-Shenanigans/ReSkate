@@ -4,6 +4,7 @@
 #include "Engine/Game/Build/20260929/engine.h"
 #include "Engine/Game/Build/20260929/native_cosmetics.h"
 #include "Extension/Multiplayer/Remote/native_cosmetics_layout.h"
+#include "Engine/Core/Text/ascii.h"
 #include <Windows.h>
 #include <algorithm>
 #include <array>
@@ -23,12 +24,6 @@ inline bool readable(std::uintptr_t address, void* out, std::size_t size) {
 }
 using SkaterItems = multiplayer::CosmeticMemory<bool (*)(std::uintptr_t, void*, std::size_t)>;
 
-inline std::string lower(std::string_view text) {
-    std::string out(text);
-    for (auto& c : out)
-        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
-    return out;
-}
 // The installed cosmetic whose name ends in `ending` (lower case), or nothing.
 inline std::string installed_item(const SkaterItems& m, std::string_view ending) {
     const auto manager = m.ptr(m.base, addr::engine::cosmetics_manager);
@@ -44,7 +39,7 @@ inline std::string installed_item(const SkaterItems& m, std::string_view ending)
             const auto asset = m.ptr(node, 8) & ~std::uintptr_t{4};
             if (!asset) continue;
             auto name = m.text(m.ptr(asset, 0x38));
-            if (lower(name).ends_with(ending)) return name;
+            if (ascii_lower(name).ends_with(ending)) return name;
         }
     }
     return {};

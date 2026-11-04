@@ -36,15 +36,15 @@ std::vector<MergeReport::LoadScreen> read_load_screens(const std::vector<const M
     for (const auto* mod : mods) {
         const auto modName = path_utf8(mod->directory.filename());
         for (const auto& relative : modFiles.at(mod).tocs) {
-            if (lower(relative) != configurationToc) continue;
+            if (ascii_lower(relative) != configurationToc) continue;
             try {
                 const auto toc = fb::read_toc(read_file(mod->directory / fs::path(relative)));
                 for (const auto& bundle : toc.bundles) {
-                    if (lower(bundle.name) != configurationBundle) continue;
+                    if (ascii_lower(bundle.name) != configurationBundle) continue;
                     const auto listing = list_bundle(store, mod->directory, baseRoot, bundle, gameRoot);
                     if (!listing) break;
                     for (std::size_t index = 0; index < listing->manifest.ebx.size(); ++index) {
-                        if (lower(listing->manifest.ebx[index].name) != configuration) continue;
+                        if (ascii_lower(listing->manifest.ebx[index].name) != configuration) continue;
                         const auto document =
                             fb::ebx::read_document(read_asset(store, mod->directory, baseRoot, *listing, index, gameRoot));
                         const auto* root = document.root();

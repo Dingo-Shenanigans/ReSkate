@@ -1,4 +1,5 @@
 #include "mod_store_view.h"
+#include "Engine/Core/Text/ascii.h"
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -7,11 +8,6 @@
 
 namespace dingosdk::mod_store {
 namespace {
-std::string lower(std::string_view text) {
-    std::string result(text);
-    for (auto& c : result) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + 32);
-    return result;
-}
 bool installed_here(const ts::Package& package, const ts::Installed& installed) {
     return installed.contains(ts::folder_for(package.full_name));
 }
@@ -35,7 +31,7 @@ bool before(const ts::Package& a, const ts::Package& b, Sort sort) {
     case Sort::rated: if (a.rating != b.rating) return a.rating > b.rating; break;
     case Sort::name: break;
     }
-    return lower(a.title()) < lower(b.title());
+    return ascii_lower(a.title()) < ascii_lower(b.title());
 }
 // The date `days` before "YYYY-MM-DD", in the same form (months taken as 30 days: close enough for
 // what counts as recent).
@@ -57,18 +53,18 @@ const char* sort_label(Sort sort) {
 
 bool nsfw(const ts::Package& package) {
     return package.nsfw || std::any_of(package.categories.begin(), package.categories.end(),
-                                       [](const std::string& category) { return lower(category) == "nsfw"; });
+                                       [](const std::string& category) { return ascii_lower(category) == "nsfw"; });
 }
 
 std::vector<const ts::Package*> search(std::span<const ts::Package> packages, const Query& query, const ts::Installed& installed) {
-    const auto wanted = lower(query.search);
+    const auto wanted = ascii_lower(query.search);
     std::vector<const ts::Package*> result;
     for (const auto& package : packages) {
         if (!listed(package, installed)) continue;
         if (!ts::shown_by(package, ts::CategoryFilter{query.only, query.hidden})) continue;
-        if (!wanted.empty() && lower(package.title()).find(wanted) == std::string::npos &&
-            lower(package.owner).find(wanted) == std::string::npos &&
-            lower(package.latest().description).find(wanted) == std::string::npos)
+        if (!wanted.empty() && ascii_lower(package.title()).find(wanted) == std::string::npos &&
+            ascii_lower(package.owner).find(wanted) == std::string::npos &&
+            ascii_lower(package.latest().description).find(wanted) == std::string::npos)
             continue;
         result.push_back(&package);
     }
@@ -132,7 +128,7 @@ Front front(std::span<const ts::Package> packages, const ts::Installed& installe
     // browse for (packs of other mods, what mods need, tools, AI-made), which are still a search away.
     constexpr std::array<std::string_view, 4> unshelved{"modpacks", "libraries", "ai generated", "tools"};
     for (const auto& [category, count] : categories(packages))
-        if (std::find(unshelved.begin(), unshelved.end(), lower(category)) == unshelved.end())
+        if (std::find(unshelved.begin(), unshelved.end(), ascii_lower(category)) == unshelved.end())
             shelf([&] { std::string title = category; for (auto& c : title) if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 32); return title; }(),
               sorted(Sort::popular, [&](const ts::Package& p) { return p.in_category(category); }));
     return result;

@@ -107,7 +107,7 @@ const grid::SlotMap* GridPlan::remap_for(const std::string& mod, std::string_vie
     } else {
         // A mod carrying several maps: each map's collision lives under its
         // own folder, world/custom/<map>/...
-        const auto name = lower(resource);
+        const auto name = ascii_lower(resource);
         for (const auto& remap : found->second)
             if (!remap.map.empty() && name.find('/' + remap.map + '/') != std::string::npos) { chosen = &remap; break; }
         if (!chosen)
@@ -140,15 +140,15 @@ GridPlan plan_material_grid(const std::vector<const Mod*>& mods,
             try {
                 const auto toc = fb::read_toc(read_file(mod->directory / fs::path(relative)));
                 for (const auto& bundle : toc.bundles) {
-                    const auto bundleName = lower(bundle.name);
+                    const auto bundleName = ascii_lower(bundle.name);
                     const auto rootBundle = bundleName == gridBundle;
                     if (!rootBundle && !level_bundle(bundleName)) continue;
-                    if (rootBundle && plan.superbundle.empty()) plan.superbundle = lower(relative);
+                    if (rootBundle && plan.superbundle.empty()) plan.superbundle = ascii_lower(relative);
                     const auto listing = list_bundle(store, mod->directory, baseRoot, bundle, gameRoot);
                     if (!listing) continue;
                     for (std::size_t index = 0; index < listing->manifest.ebx.size(); ++index) {
                         const auto& asset = listing->manifest.ebx[index];
-                        const auto name = lower(asset.name);
+                        const auto name = ascii_lower(asset.name);
                         auto owner = grid_owner(name);
                         if (!owner) continue;
                         auto document = fb::ebx::read_document(
@@ -171,11 +171,11 @@ GridPlan plan_material_grid(const std::vector<const Mod*>& mods,
         const auto baseToc = baseRoot / fs::path(plan.superbundle);
         const auto toc = fb::read_toc(read_file(baseToc));
         for (const auto& bundle : toc.bundles) {
-            if (lower(bundle.name) != gridBundle) continue;
+            if (ascii_lower(bundle.name) != gridBundle) continue;
             const auto listing = list_bundle(store, baseRoot, baseRoot, bundle, gameRoot);
             if (!listing) break;
             for (std::size_t index = 0; index < listing->manifest.ebx.size(); ++index)
-                if (lower(listing->manifest.ebx[index].name) == liveGrid) {
+                if (ascii_lower(listing->manifest.ebx[index].name) == liveGrid) {
                     base = fb::ebx::read_document(read_asset(store, baseRoot, baseRoot, *listing, index, gameRoot));
                     baseSha = listing->manifest.ebx[index].sha1;
                 }

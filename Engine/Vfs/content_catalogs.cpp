@@ -1,6 +1,7 @@
 #include "content_catalogs.h"
 #include "content_cache.h"
 #include "Engine/Resource/protobuf_wire.h"
+#include "Engine/Core/Text/ascii.h"
 #include <algorithm>
 #include <fstream>
 #include <map>
@@ -30,10 +31,6 @@ std::optional<Fields> message(const Fields& fields, std::uint32_t number) {
     const auto* field = protobuf::first(fields, number, Wire::bytes);
     return field ? protobuf::parse(field->bytes) : std::nullopt;
 }
-std::string lower(std::string value) {
-    for (auto& c : value) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
-    return value;
-}
 
 // Owned items: the presentation message (6) names the owned asset (6.10), the
 // title (6.2) and description (6.3); the rarity is field 23. First record wins.
@@ -44,8 +41,8 @@ void add_item(Catalogs& out, const Fields& record) {
     const auto presentation = message(record, 6);
     if (!presentation) return;
     const auto asset = text(*presentation, 10);
-    if (!asset || lower(asset->substr(0, 4)) != "own_") return;
-    const auto key = lower(*asset);
+    if (!asset || ascii_lower(asset->substr(0, 4)) != "own_") return;
+    const auto key = ascii_lower(*asset);
     if (out.items.contains(key)) return;
     if (const auto* flag = protobuf::first(record, 10, Wire::varint); flag && flag->integer == 1)
         out.open_items.insert(key);
@@ -125,7 +122,7 @@ bool free_offer(const Fields& offer) {
         })) return false;
     const auto prerequisites = grants(offer, 8);
     return std::none_of(prerequisites.begin(), prerequisites.end(), [](const Grant& prerequisite) {
-        return lower(prerequisite.id).find("premium") != std::string::npos;
+        return ascii_lower(prerequisite.id).find("premium") != std::string::npos;
     });
 }
 // Every own-create grant in any of the record's grant lists. Deliberately broad:
@@ -138,12 +135,12 @@ void add_granted(std::set<std::string>& granted, const Fields& record) {
         if (field.wire == Wire::bytes) numbers.insert(field.number);
     for (const auto number : numbers)
         for (const auto& grant : grants(record, number))
-            if (grant.kind == "own-create" && lower(grant.id.substr(0, 4)) == "own_") granted.insert(lower(grant.id));
+            if (grant.kind == "own-create" && ascii_lower(grant.id.substr(0, 4)) == "own_") granted.insert(ascii_lower(grant.id));
 }
 void add_source(std::set<std::string>& open, const std::string& id, const Fields& record) {
     const auto open_grants = [&](std::uint32_t number) {
         for (const auto& grant : grants(record, number))
-            if (grant.kind == "own-create" && lower(grant.id.substr(0, 4)) == "own_") open.insert(lower(grant.id));
+            if (grant.kind == "own-create" && ascii_lower(grant.id.substr(0, 4)) == "own_") open.insert(ascii_lower(grant.id));
     };
     if (id.ends_with("Price")) {
         if (free_offer(record)) open_grants(11);
@@ -219,7 +216,7 @@ void add_challenge(Catalogs& out, const std::string& id, const Fields& record) {
     if (goals.empty() || !type) return;
     std::stable_sort(goals.begin(), goals.end(), [](const Goal& a, const Goal& b) { return a.order < b.order; });
     Json entry{{"type", *type}, {"available", true},
-        {"asset", "activities/challenges/prefabs/" + lower(*type) + "/" + lower(id) + "_ecsprefab"}};
+        {"asset", "activities/challenges/prefabs/" + ascii_lower(*type) + "/" + ascii_lower(id) + "_ecsprefab"}};
     auto list = Json::array();
     for (auto& goal : goals) list.push_back(std::move(goal.value));
     entry["goals"] = std::move(list);
@@ -380,11 +377,11 @@ std::vector<std::string> add_mod_objects(Catalogs& out, const std::string& json)
     for (std::size_t i = 0; i < objects.size() && i < 8192; ++i) {
         const auto& entry = objects.at(i);
         const auto key = mod_text(entry, "key");
-        if (!key || lower(key->substr(0, 4)) != "own_") {
+        if (!key || ascii_lower(key->substr(0, 4)) != "own_") {
             refused.push_back("an object without an own_ key was left out");
             continue;
         }
-        const auto id = lower(*key);
+        const auto id = ascii_lower(*key);
         // The game's own items keep their names and families, and the first mod to name an object wins.
         if (out.items.contains(id)) { refused.push_back("object " + id + " was left out: it is the game's"); continue; }
         if (out.mod_objects.contains(id)) { refused.push_back("object " + id + " was left out: it is already named"); continue; }

@@ -10,6 +10,7 @@
 #include "Engine/Core/Platform/launcher_support.h"
 #include "Engine/Core/Text/word_filter.h"
 #include "Engine/Game/Multiplayer/session_tools.h"
+#include "Engine/Core/Text/ascii.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -98,11 +99,6 @@ std::optional<bool> parse_switch(std::string_view argument, bool current) {
     return {};
 }
 // ---- teleports ----
-std::string lowered(std::string_view text) {
-    std::string result(text);
-    for (auto &c : result) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return result;
-}
 std::string peer_name(Session &s, const Peer &p) {
     return p.member.name.empty() ? s.transport.name(p.member.id) : p.member.name;
 }
@@ -114,7 +110,7 @@ Peer *find_player(Session &s, std::string_view who, std::string &error) {
     Peer *match{};
     for (auto &p : active_peers(s)) {
         if (!p.handshaken || !p.member.id || (dedicated_host(s) && p.member.id == s.host_id)) continue;
-        if (numeric ? p.member.id == id : lowered(peer_name(s, p)).starts_with(lowered(who))) {
+        if (numeric ? p.member.id == id : ascii_lower(peer_name(s, p)).starts_with(ascii_lower(who))) {
             if (match) { error = "More than one player matches \"" + std::string(who) + "\"."; return nullptr; }
             match = &p;
         }
@@ -148,7 +144,7 @@ std::string session_detail::ignore_command(Session &s, std::string_view verb, st
     const bool numeric = parsed.ec == std::errc{} && parsed.ptr == who.data() + who.size();
     std::uint64_t match{};
     for (const auto &[listed, name] : s.ignored_players) {
-        if (numeric ? listed == id : lowered(name).starts_with(lowered(who))) {
+        if (numeric ? listed == id : ascii_lower(name).starts_with(ascii_lower(who))) {
             if (match) return "More than one ignored player matches \"" + std::string(who) + "\".";
             match = listed;
         }
@@ -164,7 +160,7 @@ namespace {
 std::string party_command(Session &s, std::string_view argument) {
     while (!argument.empty() && argument.front() == ' ') argument.remove_prefix(1);
     const auto space = argument.find(' ');
-    const auto verb = lowered(argument.substr(0, space));
+    const auto verb = ascii_lower(argument.substr(0, space));
     auto who = space == std::string_view::npos ? std::string_view{} : argument.substr(space + 1);
     while (!who.empty() && who.front() == ' ') who.remove_prefix(1);
     if (s.mode != Mode::host && s.mode != Mode::join) return "Parties need a multiplayer session.";
@@ -739,7 +735,7 @@ std::string command(std::string_view action, std::string_view argument, std::str
             // dedicated server, which answers in chat.
             const auto line = argument.substr(1);
             const auto space = line.find(' ');
-            const auto verb = lowered(line.substr(0, space));
+            const auto verb = ascii_lower(line.substr(0, space));
             const auto rest = space == std::string_view::npos ? std::string_view{} : line.substr(space + 1);
             std::string result;
             if (verb.empty() || verb == "help" || verb == "?") {

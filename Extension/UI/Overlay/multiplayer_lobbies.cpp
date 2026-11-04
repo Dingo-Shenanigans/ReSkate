@@ -1,5 +1,6 @@
 #include "multiplayer_menu_internal.h"
 #include "Extension/UI/skate_theme.h"
+#include "Engine/Core/Text/ascii.h"
 #include <algorithm>
 #include <array>
 #include <cctype>
@@ -7,11 +8,6 @@
 
 namespace dingosdk::overlay::menu::multiplayer_detail {
 namespace {
-std::string lowercase(std::string value) {
-    for (auto &c : value)
-        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return value;
-}
 bool same_map(std::string_view a, std::string_view b) {
     return a.size() == b.size() &&
            std::equal(a.begin(), a.end(), b.begin(), [](unsigned char x, unsigned char y) {
@@ -81,19 +77,19 @@ const std::vector<Row> &lobby_list(const SkateMenu &menu, const Model &model) {
     cache.dedicated_only = menu.multiplayer_dedicated_only;
     auto &rows = cache.rows;
     rows.clear();
-    const auto filter = lowercase(menu.multiplayer_lobby_search.data());
+    const auto filter = ascii_lower(menu.multiplayer_lobby_search.data());
     for (std::size_t index = 0; index < mp.lobbies.size(); ++index) {
         const auto &lobby = mp.lobbies[index];
-        Row row{index, lowercase(lobby.name), map_label(model, lobby.map), {}, same_map(lobby.map, mp.map),
+        Row row{index, ascii_lower(lobby.name), map_label(model, lobby.map), {}, same_map(lobby.map, mp.map),
                 lobby.owner == mp.local_id, lobby.players >= lobby.capacity};
         // Servers advertise their map's name rather than its destination.
         if (lobby.dedicated && !mp.map.empty()) row.same_map = row.map == map_label(model, mp.map);
-        row.map_key = lowercase(row.map);
+        row.map_key = ascii_lower(row.map);
         if (menu.multiplayer_same_map_only && !row.same_map) continue;
         if (menu.multiplayer_dedicated_only && !lobby.dedicated) continue;
         if (!filter.empty()) {
-            auto text = row.host_key + " " + row.map_key + " " + lowercase(lobby.map);
-            for (const auto &name : lobby.friends) text += " " + lowercase(name);
+            auto text = row.host_key + " " + row.map_key + " " + ascii_lower(lobby.map);
+            for (const auto &name : lobby.friends) text += " " + ascii_lower(name);
             if (text.find(filter) == std::string::npos) continue;
         }
         rows.push_back(std::move(row));
@@ -174,7 +170,7 @@ void direct_join(SkateMenu &menu, const MultiplayerModel &mp) {
             feedback(menu, "Paste the complete join code from the host.");
         else {
             const auto known = std::find_if(mp.lobbies.begin(), mp.lobbies.end(), [&](const auto &row) {
-                return lowercase(row.code) == lowercase(code) && row.password_required;
+                return ascii_lower(row.code) == ascii_lower(code) && row.password_required;
             });
             if (password_pressed || known != mp.lobbies.end())
                 prompt_password(menu, nullptr, std::move(code));

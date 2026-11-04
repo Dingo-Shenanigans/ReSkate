@@ -87,10 +87,10 @@ Loosely follows Frostbite's own layout.
 | `Hooks/` | Detours hook helpers, and patches.h for table slots, import slots and code patches |
 | `Json/` | JSON helpers over RapidJSON |
 | `Log/` | spdlog-based logger, log paths, crash/event logging |
-| `Platform/` | process injection, PE helpers, memory and path utilities |
+| `Platform/` | process injection, PE helpers, memory and path utilities, UTF-8/wide text, clocks |
 | `Profiling/` | profiler and sampler |
 | `Storage/` | SQLite save database |
-| `Text/` | chat word filter |
+| `Text/` | chat word filter; shared text helpers: ASCII case folding, hex, URL escaping |
 
 ### `Engine/Resource/`
 Frostbite data formats: binary bundles, TOC, CAS codec (Oodle/zstd/LZ4), EBX documents (read, write, merge,

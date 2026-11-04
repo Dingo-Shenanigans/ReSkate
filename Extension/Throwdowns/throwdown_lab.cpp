@@ -23,6 +23,7 @@
 #include "virtual_player_names.h"
 #include "native_flag_preview.h"
 #include "Extension/UI/NativeMenu/native_menu_data.h"
+#include "Engine/Core/Platform/clock.h"
 #include <array>
 #include <atomic>
 #include <charconv>
@@ -846,7 +847,6 @@ void fill_native_array(Address wrapper, const std::uint8_t* bytes, std::uint32_t
     *reinterpret_cast<Address*>(wrapper) = block + 8;
 }
 
-std::uint64_t now_ms();
 // The graph whose natives are running now (the hooks below run inside it).
 std::uint32_t executing_graph() {
     const auto vm = profile_runtime::executing_expression;
@@ -871,7 +871,7 @@ void note_sent(std::uint32_t event, std::uint32_t sender) {
     if (!handled(event)) return;
     auto& l = lab();
     std::lock_guard lock(l.sent_mutex);
-    const auto now = now_ms();
+    const auto now = steady_ms();
     // An event nobody handled within a few seconds (no such activity running) is dropped.
     while (!l.sent.empty() && now - l.sent.front().ms > 5000) l.sent.pop_front();
     if (l.sent.size() < 256) l.sent.push_back({event, sender, now});
@@ -1188,7 +1188,7 @@ std::string run_job(const Job& job) {
                 if (const auto f = find_field(p->type, field_series); f && f->kind == kind_string) l.series = read_string(at + f->offset);
                 l.mmid = 0; // read back from the server graph (pump_throwdown_lab)
             }
-            l.spawns.push_back({job.token, player_limit, now_ms()});
+            l.spawns.push_back({job.token, player_limit, steady_ms()});
         }
         l.spawn_outstanding.store(true, std::memory_order_release);
         e.send();
@@ -1877,14 +1877,10 @@ bool native_solo_throwdown_waiting() noexcept { return native_solo_queue.load()!
 std::uint64_t native_throwdown_queue_revision() noexcept {return native_queue_revision.load(std::memory_order_acquire);}
 
 namespace {
-std::uint64_t now_ms() {
-    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count());
-}
 #if defined(DINGOSDK_DEV_TOOLS)
 void trace_expression(Address vm) {
     auto& l = lab();
-    const auto now = now_ms();
+    const auto now = steady_ms();
     if (now >= l.trace_end_ms) {
         if (!l.tracing.exchange(false)) return;
         std::vector<std::pair<std::uint64_t, Lab::Seen>> rows;
@@ -2171,7 +2167,7 @@ void pump_throwdown_lab(Address vm) noexcept {
         std::optional<Lab::Spawn> expired;
         {
             std::unique_lock lock(l.mutex, std::try_to_lock);
-            if (lock && !l.spawns.empty() && now_ms() - l.spawns.front().ms > 5000) {
+            if (lock && !l.spawns.empty() && steady_ms() - l.spawns.front().ms > 5000) {
                 expired = l.spawns.front();
                 l.spawns.pop_front();
                 if (l.spawns.empty()) l.spawn_outstanding.store(false, std::memory_order_release);
@@ -2274,14 +2270,14 @@ constexpr std::array relay_events{event_debug_spawn, event_add_ai, event_force_s
 bool beacon_types_ready() {
     auto& l = lab();
     if (type_of(event_beacon_move) && type_of(event_beacon_despawn)) return true;
-    if (now_ms() < l.beacon_scan_retry.load(std::memory_order_acquire) || l.type_scan_running.exchange(true)) return false;
+    if (steady_ms() < l.beacon_scan_retry.load(std::memory_order_acquire) || l.type_scan_running.exchange(true)) return false;
     try {
         std::thread([] {
             auto& l = lab();
             try {
                 if (!ensure_types({event_beacon_move, event_beacon_despawn}, true).empty())
-                    l.beacon_scan_retry.store(now_ms() + 10000, std::memory_order_release);
-            } catch (...) { l.beacon_scan_retry.store(now_ms() + 10000, std::memory_order_release); }
+                    l.beacon_scan_retry.store(steady_ms() + 10000, std::memory_order_release);
+            } catch (...) { l.beacon_scan_retry.store(steady_ms() + 10000, std::memory_order_release); }
             l.type_scan_running.store(false, std::memory_order_release);
         }).detach();
     } catch (...) { l.type_scan_running.store(false, std::memory_order_release); }
@@ -2308,7 +2304,7 @@ bool prepare_throwdown_injection() noexcept {
     if (std::ranges::all_of(relay_events, [](std::uint32_t hash) { return type_of(hash) != 0; })) return true;
     // The heap scan takes a few hundred milliseconds: on the game thread it stalled the frame a
     // drop appeared in. A worker runs it and the caller polls until the types are cached.
-    if (now_ms() < l.type_scan_retry.load(std::memory_order_acquire) || l.type_scan_running.exchange(true)) return false;
+    if (steady_ms() < l.type_scan_retry.load(std::memory_order_acquire) || l.type_scan_running.exchange(true)) return false;
     try {
         std::thread([] {
             auto& l = lab();
@@ -2318,10 +2314,10 @@ bool prepare_throwdown_injection() noexcept {
                                                  event_skate_submit, event_force_destroy, event_criteria_attempt,
                                                  event_slam_hit, event_leave_in_progress, event_onboarding_complete}, true);
                 if (!error.empty()) {
-                    l.type_scan_retry.store(now_ms() + 5000, std::memory_order_release);
+                    l.type_scan_retry.store(steady_ms() + 5000, std::memory_order_release);
                     logging::log(logging::Level::warning, logging::Channel::progression, "Throwdowns: {}", error);
                 }
-            } catch (...) { l.type_scan_retry.store(now_ms() + 5000, std::memory_order_release); }
+            } catch (...) { l.type_scan_retry.store(steady_ms() + 5000, std::memory_order_release); }
             l.type_scan_running.store(false, std::memory_order_release);
         }).detach();
     } catch (...) { l.type_scan_running.store(false, std::memory_order_release); }
@@ -2504,7 +2500,7 @@ std::string throwdown_lab_command(std::string_view arguments, std::optional<std:
         {
             std::lock_guard lock(l.trace_mutex);
             l.trace.clear();
-            l.trace_start_ms = now_ms();
+            l.trace_start_ms = steady_ms();
             l.trace_end_ms = l.trace_start_ms + std::uint64_t{std::min(seconds, 900U)} * 1000;
         }
         l.tracing.store(true, std::memory_order_release);

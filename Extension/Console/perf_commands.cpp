@@ -12,6 +12,7 @@
 #include "Extension/UI/ui_pointer_skip.h"
 #include "Extension/World/texture_handle_limit.h"
 #include "Engine/Core/Hooks/hooks.h"
+#include "Engine/Core/Platform/path_text.h"
 #include <Windows.h>
 #include <Psapi.h>
 #include <algorithm>
@@ -26,11 +27,6 @@
 // the saved HUD switch runs on the overlay's thread: the profiler is thread-safe.
 namespace dingosdk::console {
 namespace {
-std::string narrow(const std::filesystem::path& path) {
-    std::string result;
-    for (const auto c : path.wstring()) result.push_back(c < 128 ? static_cast<char>(c) : '?');
-    return result;
-}
 void print_summary(const Output& out) {
     if (!profiler::active()) {
         out("The profiler is off: `perf hud on` or `perf window on` starts it (figures follow a second later).");
@@ -76,8 +72,8 @@ void print_report(const Output& out) {
         if (shown++ == 20) break;
         out(std::format("{:5.1f}% {:5.1f}%  {}", 100.0 * f.self / r->samples, 100.0 * f.total / r->samples, f.name));
     }
-    out("Report: " + narrow(r->report));
-    out("Flame graph (open at speedscope.app): " + narrow(r->folded));
+    out("Report: " + path_utf8(r->report));
+    out("Flame graph (open at speedscope.app): " + path_utf8(r->folded));
 }
 }
 
@@ -449,7 +445,7 @@ void register_perf_commands(Commands& registry) {
         if (equal(word, "gpu")) return memory_ledger::gpu_report(line);
         if (equal(word, "report")) {
             const auto path = memory_ledger::write_report();
-            out(path.empty() ? std::string("error: the report could not be written") : "Memory report: " + narrow(path));
+            out(path.empty() ? std::string("error: the report could not be written") : "Memory report: " + path_utf8(path));
             return;
         }
         std::lock_guard lock(mutex);

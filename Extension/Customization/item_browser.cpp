@@ -12,6 +12,7 @@
 #include "Extension/UI/NativeMenu/native_menu_data.h"
 #include "Extension/UI/NativeMenu/native_menu_lifetime.h"
 #include "Extension/UI/Overlay/overlay.h"
+#include "Engine/Core/Text/hex.h"
 #include <Windows.h>
 #include <algorithm>
 #include <array>
@@ -559,13 +560,6 @@ md::Value deref(const md::Context& context, md::Value value) {
     return {handle, context.type_of(handle)};
 }
 
-std::string hex(std::uint64_t value, int width) {
-    static constexpr char digits[] = "0123456789abcdef";
-    std::string out(static_cast<std::size_t>(width), '0');
-    for (int i = width - 1; i >= 0; --i, value >>= 4) out[static_cast<std::size_t>(i)] = digits[value & 15];
-    return "0x" + out;
-}
-
 // Research aid: "peek <root> [path]" and "poke <root> <path> <kind>:<value>" on live models.
 // root: grid | row | item | data (of the focused tile) or a model handle; path: field hashes, [n] and
 // ">" (follow a reference), separated by dots.
@@ -622,14 +616,14 @@ std::string poke(State& s, const md::Context& context, const std::string& argume
         else if (how == "tex") md::require(md::publish_texture(context, value, text), "That texture is not loaded.");
         else throw std::runtime_error("kinds: u8, u32, f32, text, ref, tex");
     }
-    std::string out = (write ? "poked " : "peek ") + hex(value.handle, 16) + " <" + hex(schema_of(value.type), 8) + " k" +
+    std::string out = (write ? "poked " : "peek ") + hex_number(value.handle, 16) + " <" + hex_number(schema_of(value.type), 8) + " k" +
         std::to_string(kind) + ' ' + std::to_string(size) + ">";
     const auto at = context.address(value);
     if (kind == 7) out += " = \"" + md::string(md::read<md::Address>(at), 255) + '"';
     else if (kind == 4) {
         const auto pointer = md::read<md::Address>(at);
         out += " [" + std::to_string(pointer ? md::read<std::uint32_t>(pointer - 4) & 0x7fffffff : 0) + "] of <" +
-            hex(schema_of(md::read<md::Address>(md::read<md::Address>(value.type) + 0x30)), 8) + ">";
+            hex_number(schema_of(md::read<md::Address>(md::read<md::Address>(value.type) + 0x30)), 8) + ">";
     } else if (kind == 2) {
         const auto meta = md::read<md::Address>(value.type), fields = md::read<md::Address>(meta + 0x60);
         const auto count = md::read<std::uint16_t>(meta + 0x2a);
@@ -637,17 +631,17 @@ std::string poke(State& s, const md::Context& context, const std::string& argume
             const auto entry = fields + i * 24;
             const auto type = md::read<md::Address>(entry + 16);
             const auto offset = md::read<std::uint16_t>(entry + 8);
-            out += "\n    " + hex(md::read<std::uint32_t>(entry), 8) + '@' + std::to_string(offset) + " <" +
-                hex(schema_of(type), 8) + " k" + std::to_string(md::kind(type)) + ' ' + std::to_string(md::size(type)) + ">";
+            out += "\n    " + hex_number(md::read<std::uint32_t>(entry), 8) + '@' + std::to_string(offset) + " <" +
+                hex_number(schema_of(type), 8) + " k" + std::to_string(md::kind(type)) + ' ' + std::to_string(md::size(type)) + ">";
             if (md::kind(type) == 7) out += " \"" + md::string(md::read<md::Address>(at + offset), 96) + '"';
             else if (md::kind(type) != 2 && md::size(type) <= 16) {
                 out += " ";
-                for (unsigned b = 0; b < md::size(type); ++b) out += hex(md::read<std::uint8_t>(at + offset + b), 2).substr(2);
+                for (unsigned b = 0; b < md::size(type); ++b) out += hex_number(md::read<std::uint8_t>(at + offset + b), 2).substr(2);
             }
         }
     } else {
         out += " = ";
-        for (unsigned b = 0; b < std::min(size, 32U); ++b) out += hex(md::read<std::uint8_t>(at + b), 2).substr(2);
+        for (unsigned b = 0; b < std::min(size, 32U); ++b) out += hex_number(md::read<std::uint8_t>(at + b), 2).substr(2);
     }
     return out;
 }
@@ -656,11 +650,11 @@ std::string poke(State& s, const md::Context& context, const std::string& argume
 // first tiles show. Says why a menu's grid was passed over.
 void log_roots(State& s, const md::Context& context) {
     for (const auto& root : context.roots({grid_list.hash})) {
-        std::string line = "  root " + hex(root.model.handle, 16) + ": size " + std::to_string(md::size(root.model.type));
+        std::string line = "  root " + hex_number(root.model.handle, 16) + ": size " + std::to_string(md::size(root.model.type));
         try {
             const auto items = context.field(root.model, owned_items);
             const auto row_type = md::read<md::Address>(md::read<md::Address>(items.type) + 0x30);
-            line += ", rows of " + hex(schema_of(row_type), 8);
+            line += ", rows of " + hex_number(schema_of(row_type), 8);
             if (schema_of(row_type) == tile_row) {
                 if (!s.layout.row_type) s.layout = layout_of(context, items);
                 const auto rows = read_rows(context, items, s.layout);
@@ -668,7 +662,7 @@ void log_roots(State& s, const md::Context& context) {
                 for (unsigned i = 0; i < rows.count && i < 4; ++i) {
                     const auto content = rows.content[i];
                     const auto item = resolve(context, content);
-                    line += "; [" + std::to_string(i) + "] " + (content ? hex(schema_of(context.type_of(content)), 8) : std::string("-")) +
+                    line += "; [" + std::to_string(i) + "] " + (content ? hex_number(schema_of(context.type_of(content)), 8) : std::string("-")) +
                             " \"" + item.key + "\" in \"" + item.category + "\"" + (cosmetic(item) ? "" : " (no cosmetic)");
                 }
             }
@@ -686,7 +680,7 @@ void log_status(const State& s) {
             for (const auto& item : grid.native)
                 if (item.content == grid.shown[static_cast<std::size_t>(grid.focused)]) focus = std::to_string(grid.focused) + " " + item.key;
         logging::log(Level::info, Channel::customization, "  grid {}: {} of {} shown, first \"{}\", focus {}{}.",
-            hex(grid.list.handle, 16), grid.shown.size(), grid.native.size(),
+            hex_number(grid.list.handle, 16), grid.shown.size(), grid.native.size(),
             grid.native.empty() ? std::string{} : grid.native.front().title, focus, grid.failed ? ", FAILED" : "");
     }
 }

@@ -2,6 +2,7 @@
 #include "Engine/Game/Build/20260929/physics_tuning.h"
 #include "Engine/Resource/ebx_document.h"
 #include "Engine/Vfs/game_bundles.h"
+#include "Engine/Core/Text/ascii.h"
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -19,11 +20,6 @@ constexpr std::string_view bundle_toc = "Win32/levels/game/bam_levelroot/bam_lev
 constexpr std::string_view asset_name = "gameplay/skatephysicstuning";
 constexpr std::size_t max_curve_points = 256;
 
-std::string lower(std::string_view text) {
-    std::string result(text);
-    std::transform(result.begin(), result.end(), result.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return result;
-}
 std::uint16_t value_size(ebx::FieldType type) noexcept {
     switch (type) {
     case ebx::FieldType::boolean: case ebx::FieldType::int8: case ebx::FieldType::uint8: return 1;
@@ -169,7 +165,7 @@ Model read_game_tuning(const std::filesystem::path &game_root) {
     if (!bundle) throw std::runtime_error("the game's level root bundle was not found");
     std::size_t index = bundle->manifest.ebx.size();
     for (std::size_t i = 0; i < bundle->manifest.ebx.size(); ++i)
-        if (lower(bundle->manifest.ebx[i].name) == asset_name) { index = i; break; }
+        if (ascii_lower(bundle->manifest.ebx[i].name) == asset_name) { index = i; break; }
     const auto *payload = bundle->payload(fb::AssetKind::ebx, index);
     if (!payload) throw std::runtime_error("Gameplay/SkatePhysicsTuning is not in the level root bundle");
     const auto bytes = data.read(*payload);

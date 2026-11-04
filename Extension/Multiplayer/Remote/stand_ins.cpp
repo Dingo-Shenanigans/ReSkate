@@ -20,7 +20,7 @@ std::string set(Policy next) {
     // Plain names go to the set, rules with a "*" stay in the list; at most the limit of each.
     std::vector<std::string> rules;
     for (auto &rule : next.exclude) {
-        auto lowered = lower(rule);
+        auto lowered = ascii_lower(rule);
         if (lowered.find('*') != std::string::npos) {
             if (rules.size() < max_exclude) rules.push_back(std::move(lowered));
         } else if (next.exclude_names.size() < max_exclude_names) {

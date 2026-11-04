@@ -30,6 +30,7 @@
 #include "Engine/Resource/shader_lookup.h"
 #include "Engine/Vfs/mod_catalog.h"
 #include "Engine/Vfs/mod_merge_internal.h"
+#include "Engine/Core/Text/hex.h"
 
 #include <algorithm>
 #include <array>
@@ -66,18 +67,9 @@ void fail(const std::string& kind, const std::string& text) {
 }
 void section(const std::string& title) { std::cout << "\n=== " << title << '\n'; }
 
-std::string hex(const fb::Sha1& sha) {
-    static constexpr char digits[] = "0123456789abcdef";
-    std::string text;
-    for (const auto value : sha.bytes) {
-        text += digits[static_cast<unsigned>(value) >> 4];
-        text += digits[static_cast<unsigned>(value) & 15];
-    }
-    return text;
-}
 std::string key_of(const fb::BundleAsset& asset) {
     return std::to_string(static_cast<int>(asset.kind)) + ':' +
-        (asset.kind == fb::AssetKind::chunk ? asset.guid.string() : lower(asset.name));
+        (asset.kind == fb::AssetKind::chunk ? asset.guid.string() : ascii_lower(asset.name));
 }
 const char* kind_name(fb::AssetKind kind) {
     return kind == fb::AssetKind::ebx ? "ebx" : kind == fb::AssetKind::resource ? "res" : "chunk";
@@ -185,7 +177,7 @@ void flatten(const fb::ebx::Document& document, const std::vector<std::string>& 
     else if (const auto* real = std::get_if<double>(&data)) out.values[path] = "d" + std::to_string(std::bit_cast<std::uint64_t>(*real));
     else if (const auto* text = std::get_if<std::string>(&data)) out.values[path] = "s" + *text;
     else if (const auto* guid = std::get_if<fb::Guid>(&data)) out.values[path] = "g" + guid->string();
-    else if (const auto* sha = std::get_if<fb::Sha1>(&data)) out.values[path] = "h" + hex(*sha);
+    else if (const auto* sha = std::get_if<fb::Sha1>(&data)) out.values[path] = "h" + hex_bytes(sha->bytes);
     else if (const auto* resource = std::get_if<fb::ebx::ResourceReference>(&data)) out.values[path] = "r" + std::to_string(resource->id);
     else if (const auto* pointer = std::get_if<fb::ebx::PointerReference>(&data)) {
         const auto index = pointer->index < 0 ? std::size_t{} : static_cast<std::size_t>(pointer->index);
@@ -301,7 +293,7 @@ struct Audit {
         return result;
     }
     const Bundle* game_bundle(const std::string& name) {
-        const auto key = lower(name);
+        const auto key = ascii_lower(name);
         if (const auto found = gameListings.find(key); found != gameListings.end()) return found->second ? &*found->second : nullptr;
         auto& slot = gameListings[key];
         if (const auto shipped = gameBundles.find(key); shipped != gameBundles.end())
@@ -436,7 +428,7 @@ struct Audit {
             std::vector<fs::path> files;
             std::error_code error;
             for (fs::recursive_directory_iterator it(under / L"Win32", error), end; it != end && !error; it.increment(error))
-                if (it->is_regular_file(error) && lower(it->path().extension().string()) == ".toc") files.push_back(it->path());
+                if (it->is_regular_file(error) && ascii_lower(it->path().extension().string()) == ".toc") files.push_back(it->path());
             std::ranges::sort(files);
             return files;
         };
@@ -454,7 +446,7 @@ struct Audit {
             }
             toc.bundles.reserve(toc.document.bundles.size());
             for (const auto& bundle : toc.document.bundles) {
-                if (!toc.bundleAt.emplace(lower(bundle.name), toc.bundles.size()).second)
+                if (!toc.bundleAt.emplace(ascii_lower(bundle.name), toc.bundles.size()).second)
                     fail("toc", toc.relative + " lists " + bundle.name + " twice");
                 toc.bundles.push_back(read_bundle(1, bundle));
                 unreadable += !toc.bundles.back().listing;
@@ -463,7 +455,7 @@ struct Audit {
             for (const auto& chunk : toc.document.chunks)
                 if (!chunk.removed) toc.chunks.insert(chunk.guid);
             chunks += toc.document.chunks.size();
-            tocAt.emplace(lower(toc.relative), tocs.size());
+            tocAt.emplace(ascii_lower(toc.relative), tocs.size());
             tocs.push_back(std::move(toc));
         }
         std::cout << "the patch: " << tocs.size() << " superbundle TOC(s), " << bundles << " bundle(s) (" << unreadable
@@ -472,7 +464,7 @@ struct Audit {
         for (const auto& file : toc_files(base)) {
             ++shipped;
             try {
-                for (auto& bundle : fb::read_toc(read_file(file)).bundles) gameBundles.try_emplace(lower(bundle.name), std::move(bundle));
+                for (auto& bundle : fb::read_toc(read_file(file)).bundles) gameBundles.try_emplace(ascii_lower(bundle.name), std::move(bundle));
             } catch (const std::exception&) {}
         }
         std::cout << "the game: " << shipped << " superbundle TOC(s), " << gameBundles.size() << " bundle name(s)\n";
@@ -536,7 +528,7 @@ struct Audit {
             std::vector<std::string> result;
             if (const auto* list = layout.field("superBundles"))
                 for (const auto& row : list->children)
-                    if (const auto* name = row.field("name"); name && name->type == 7) result.push_back(lower(name->text));
+                    if (const auto* name = row.field("name"); name && name->type == 7) result.push_back(ascii_lower(name->text));
             return result;
         };
         const auto merged = names(mergedLayout.root), game = names(baseLayout.root);
@@ -549,7 +541,7 @@ struct Audit {
                 for (const auto& chunk : chunks->children)
                     if (const auto* list = chunk.field("superbundles"))
                         for (const auto& entry : list->children)
-                            if (entry.type == 7) placed.insert(lower(entry.text));
+                            if (entry.type == 7) placed.insert(ascii_lower(entry.text));
         std::size_t own{};
         for (const auto& mod : catalog.mods) {
             if (!mod.provides_layout) continue;
@@ -626,7 +618,7 @@ struct Audit {
                     if (!result.parsed) { ++unparsed; fail("payload", from + ": " + name_of(*entry->asset) + " is not a document the merge can read"); }
                     facts.emplace(where, std::move(result));
                 }
-                if (written.is_open()) written << from << '\t' << name_of(*entry->asset) << '\t' << bytes.size() << '\t' << hex(sha1_of(bytes)) << '\n';
+                if (written.is_open()) written << from << '\t' << name_of(*entry->asset) << '\t' << bytes.size() << '\t' << hex_bytes(sha1_of(bytes).bytes) << '\n';
             } catch (const std::exception& failure) {
                 fail("payload", from + ": " + name_of(*entry->asset) + " at " + store->describe({true, where.chunk, where.archive}) + "+" +
                      std::to_string(where.offset) + " cannot be decoded (" + failure.what() + ")");
@@ -675,7 +667,7 @@ struct Audit {
             if (!mod.provides_layout) continue;
             if (index % 20 == 0) progress("mod " + std::to_string(index + 1) + " of " + std::to_string(catalog.mods.size()));
             for (const auto& relative : scan(mod.directory).tocs) {
-                const auto merged = tocAt.find(lower(relative));
+                const auto merged = tocAt.find(ascii_lower(relative));
                 if (merged == tocAt.end()) { fail("mod content", mod.name + ": the patch has no " + relative); continue; }
                 const auto& toc = tocs[merged->second];
                 fb::TocDocument own;
@@ -689,7 +681,7 @@ struct Audit {
                 }
                 for (const auto& bundle : own.bundles) {
                     ++bundles;
-                    const auto at = toc.bundleAt.find(lower(bundle.name));
+                    const auto at = toc.bundleAt.find(ascii_lower(bundle.name));
                     if (at == toc.bundleAt.end()) { fail("mod content", mod.name + ": " + relative + ": its bundle " + bundle.name + " is not in the patch"); continue; }
                     const auto& patched = toc.bundles[at->second];
                     const auto mine = read_bundle(static_cast<int>(index + 2), bundle);
@@ -728,7 +720,7 @@ struct Audit {
                         }
                         // The game's copy carried along is not this mod's content.
                         if (shipped && shipped->asset->sha1 == entry.asset->sha1) continue;
-                        auto& record = found[lower(bundle.name) + '|' + key + '|' + hex(kept.asset->sha1)];
+                        auto& record = found[ascii_lower(bundle.name) + '|' + key + '|' + hex_bytes(kept.asset->sha1.bytes)];
                         if (record.copies.empty()) {
                             record.bundle = bundle.name;
                             record.name = entry.asset->name;
@@ -981,7 +973,7 @@ struct Audit {
                     const auto key = key_of(*entry.asset);
                     const auto original = game->at.find(key);
                     if (where.layer != 1 || original == game->at.end()) continue;
-                    auto& known = shipped[lower(bundle.name) + '|' + key];
+                    auto& known = shipped[ascii_lower(bundle.name) + '|' + key];
                     if (!known) {
                         Shipped value;
                         try { value.document = fb::ebx::read_document(payload(place(0, game->assets[original->second].file))); } catch (const std::exception&) {}

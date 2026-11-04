@@ -5,6 +5,7 @@
 #include "game_archives.h"
 #include "Engine/Resource/material_grid.h"
 #include "Engine/Resource/toc.h"
+#include "Engine/Core/Text/ascii.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -24,8 +25,6 @@
 namespace dingosdk::mods::detail {
 namespace fs = std::filesystem;
 namespace fb = frostbite;
-
-std::string lower(std::string_view text);
 
 std::vector<std::byte> read_file(const fs::path& path);
 // A hash of `name` that ignores case (ASCII), to rule a name out before a lower-case copy of

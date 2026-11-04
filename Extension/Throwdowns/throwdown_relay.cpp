@@ -11,6 +11,7 @@
 #include "Engine/Game/Build/20260929/engine.h"
 #include "Extension/Multiplayer/Hud/native_party.h"
 #include "Extension/Settings/named_settings.h"
+#include "Engine/Core/Platform/clock.h"
 #include <algorithm>
 #include <cmath>
 #include <array>
@@ -267,10 +268,6 @@ Relay &relay() {
 std::atomic<bool> waiting_offboard{}, offboard_enabled{true}, challenge_invites_enabled{true};
 std::string describe(const Relay &r);
 
-std::uint64_t now_ms() {
-    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count());
-}
 template <class... Args> void note(std::format_string<Args...> text, Args &&...args) {
     logging::log(logging::Level::info, logging::Channel::progression, "Throwdowns: {}",
                  std::format(text, std::forward<Args>(args)...));
@@ -1608,7 +1605,7 @@ std::vector<std::vector<std::uint8_t>> tick_throwdown_relay(std::uintptr_t base,
     published_world.store(input.world, std::memory_order_release);
     published_barred.store(input.barred, std::memory_order_release);
     auto &r = relay();
-    const auto now = now_ms();
+    const auto now = steady_ms();
     std::deque<ThrowdownLocalAction> actions;
     std::deque<std::pair<std::uint64_t, std::vector<std::uint8_t>>> inbox;
     std::deque<std::tuple<std::uint64_t, std::uint32_t, std::uint32_t>> spawned;

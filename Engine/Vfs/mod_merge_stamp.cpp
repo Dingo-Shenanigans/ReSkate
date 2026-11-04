@@ -90,7 +90,7 @@ std::string merge_fingerprint(const Catalog& catalog, const std::vector<const Mo
         std::ranges::sort(files);
         for (const auto& file : files)
             describe(utf8(file.lexically_relative(mod->directory)), file);
-        for (const auto& toc : modFiles.at(mod).tocs) tocs.insert(lower(toc));
+        for (const auto& toc : modFiles.at(mod).tocs) tocs.insert(ascii_lower(toc));
     }
     for (const auto& toc : tocs) {
         auto base = baseRoot / from_utf8(toc);

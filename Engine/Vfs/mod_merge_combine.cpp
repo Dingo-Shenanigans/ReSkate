@@ -82,7 +82,7 @@ std::vector<Asset> flatten(const fb::BundleRegion& region, const fb::BinaryBundl
 
 std::string asset_key(const fb::BundleAsset& asset) {
     return std::to_string(static_cast<int>(asset.kind)) + ':' +
-        (asset.kind == fb::AssetKind::chunk ? asset.guid.string() : lower(asset.name));
+        (asset.kind == fb::AssetKind::chunk ? asset.guid.string() : ascii_lower(asset.name));
 }
 
 // The game's item lists (items/itemmastercollection, a season's
@@ -90,7 +90,7 @@ std::string asset_key(const fb::BundleAsset& asset) {
 // reads each entry of one at startup without checking it, so an entry naming an
 // item that is not loaded is a crash on every launch, not a missing item.
 bool item_list_name(std::string_view name) {
-    const auto text = lower(name);
+    const auto text = ascii_lower(name);
     return text.starts_with("items/") && text.find("collection") != std::string::npos;
 }
 constexpr std::string_view item_list_type = "delmaritemcollectionasset";
@@ -408,7 +408,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
     // pass through as they arrived, which keeps the risky path narrow.
     std::map<std::string, std::size_t, std::less<>> providers;
     for (const auto& source : sources)
-        for (const auto& bundle : source.toc.bundles) ++providers[lower(bundle.name)];
+        for (const auto& bundle : source.toc.bundles) ++providers[ascii_lower(bundle.name)];
 
     // Bundle order follows the base, then anything a mod introduces.
     std::vector<std::string> order;
@@ -438,7 +438,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
             if (addition.asset.kind == fb::AssetKind::ebx)
                 addedByGuid.emplace(addition.file, std::pair{&bundleName, &addition});
             else if (addition.asset.kind == fb::AssetKind::resource)
-                companions.emplace(std::tuple{bundleName, addition.mod, lower(addition.asset.name)}, &addition);
+                companions.emplace(std::tuple{bundleName, addition.mod, ascii_lower(addition.asset.name)}, &addition);
             else if (addition.asset.kind == fb::AssetKind::chunk)
                 bundleChunks.emplace(std::tuple{bundleName,addition.mod,addition.asset.guid},&addition);
         }
@@ -454,7 +454,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
     // `tocChunks`: the chunks the copy's own TOC lists, which a texture streams its mips from.
     const auto absorb = [&](const fb::TocBundle& bundle, const ArchivePlacement* placement,
                             bool isBase, const fs::path& root, const std::set<fb::Guid>* tocChunks, const Mod* contributor) {
-        const auto key = lower(bundle.name);
+        const auto key = ascii_lower(bundle.name);
         auto region = fb::read_bundle_region(bundle.region);
         const auto provider = providers.find(key);
         const auto shared = provider != providers.end() && provider->second > 1;
@@ -614,7 +614,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                 for (std::size_t index = 0; index < assets.size(); ++index) {
                     auto& asset = assets[index];
                     if (!names.contains(name_hash(asset.name))) continue;
-                    const auto named = changes.find(lower(asset.name));
+                    const auto named = changes.find(ascii_lower(asset.name));
                     if (named == changes.end()) continue;
                     const auto change = named->second.find(asset.sha1);
                     const auto at = (casBacked ? 1 : 0) + first + index;
@@ -660,7 +660,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
             // What reading this copy found last time, while the mod's files are as they were
             // (ScanCache): then only what it found is read again. Else all of it, and what it finds
             // is kept for the next merge, unless something could not be read.
-            const auto scanKey = lower(relative) + '|' + key;
+            const auto scanKey = ascii_lower(relative) + '|' + key;
             const auto known = scans.find(modName, scanKey);
             ScanCache::Bundle found;
             bool whole = true;
@@ -767,7 +767,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
             std::set<const AssetAddition*> taking;
             // A copy in the TOC the adder ships itself merges with the adder's bundle and has
             // its assets already; only copies in other superbundles (maps) need them carried.
-            const auto here = lower(relative);
+            const auto here = ascii_lower(relative);
             if (const auto found = overrides.added.find(key); found != overrides.added.end())
                 for (const auto& addition : found->second) {
                     if (addition.mod == modName || addition.asset.kind == fb::AssetKind::chunk ||
@@ -790,7 +790,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                     for (const auto& name : addition->names)
                         if (wanted.insert(name).second) open.push_back(name);
                     // The resource added under the same name goes where the asset goes.
-                    if (const auto companion = companions.find({*from, addition->mod, lower(addition->asset.name)});
+                    if (const auto companion = companions.find({*from, addition->mod, ascii_lower(addition->asset.name)});
                         companion != companions.end() && taking.insert(companion->second).second)
                         take.push_back(companion->second);
                 }
@@ -1108,7 +1108,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
     }
 
     for (const auto& name : order) {
-        auto& state = states.at(lower(name));
+        auto& state = states.at(ascii_lower(name));
         std::vector<std::byte> region;
         if (state.opaque) {
             region = fb::write_bundle_region(state.files, {});
@@ -1267,7 +1267,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                     } else {
                         const auto baseDocument = fb::ebx::read_document(baseBytes);
                         content = content_type(baseDocument.rootType);
-                        const auto itemList = lower(baseDocument.rootType) == item_list_type;
+                        const auto itemList = ascii_lower(baseDocument.rootType) == item_list_type;
                         if (edits.size() < 2 && !itemList) continue;
                         // A material grid is a square interaction matrix whose rows are
                         // addressed by slot numbers baked into each map's collision.
@@ -1275,7 +1275,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                         // slots, so a plain merge would hand one map's triangles the
                         // other map's materials. The grid plan combines them instead
                         // and renumbers the collision (mod_merge_grid.cpp).
-                        if (lower(baseDocument.rootType).find("materialgrid") != std::string::npos) {
+                        if (ascii_lower(baseDocument.rootType).find("materialgrid") != std::string::npos) {
                             if (grid.payload.empty())
                                 report.notes.push_back(entry.asset.name + ": " + std::to_string(edits.size()) +
                                     " mods edit the shared material grid; kept the highest-priority copy");
@@ -1395,7 +1395,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                 }
             }
 
-            if (!grid.payload.empty() && lower(name) == grid.bundle) {
+            if (!grid.payload.empty() && ascii_lower(name) == grid.bundle) {
                 const auto found = state.seen.find(std::to_string(static_cast<int>(fb::AssetKind::ebx)) + ':' + grid.asset);
                 if (found == state.seen.end()) {
                     report.notes.push_back("material grid: " + grid.asset + " is not in " + name +

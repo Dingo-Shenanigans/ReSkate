@@ -1,6 +1,7 @@
 #include "chat_emotes.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Core/Log/logging.h"
+#include "Engine/Core/Text/ascii.h"
 #include <Windows.h>
 #include <wincodec.h>
 #include <wrl/client.h>
@@ -55,11 +56,6 @@ struct Loaded {
 Loaded &loaded() {
     static Loaded state;
     return state;
-}
-std::string lowered(std::string_view text) {
-    std::string result(text);
-    for (auto &c : result) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return result;
 }
 bool valid_name(std::string_view name) {
     return !name.empty() && name.size() <= 32 &&
@@ -191,7 +187,7 @@ std::size_t reserve_chat_emotes(ImFontAtlas &atlas, std::chrono::milliseconds wa
             auto &placed = l.emotes[name];
             placed.emote = &emote;
             for (const auto &frame : emote.frames) placed.rects.push_back(atlas.AddCustomRectRegular(frame.width, frame.height));
-            l.by_lower.emplace(lowered(name), name);
+            l.by_lower.emplace(ascii_lower(name), name);
         }
         l.atlas = &atlas;
         return l.emotes.size();
@@ -236,7 +232,7 @@ bool chat_emote(std::string_view name, ChatEmote &image) {
     if (!l.filled || !l.atlas || !ImGui::GetCurrentContext() || ImGui::GetIO().Fonts != l.atlas || !l.atlas->TexID) return false;
     auto it = l.emotes.find(name);
     if (it == l.emotes.end()) {
-        const auto alias = l.by_lower.find(lowered(name));
+        const auto alias = l.by_lower.find(ascii_lower(name));
         if (alias == l.by_lower.end()) return false;
         it = l.emotes.find(alias->second);
         if (it == l.emotes.end()) return false;
@@ -265,7 +261,7 @@ std::vector<std::string> chat_emote_names(std::string_view prefix, std::size_t l
     std::vector<std::string> names;
     const auto &l = loaded();
     if (!l.filled) return names;
-    const auto wanted = lowered(prefix);
+    const auto wanted = ascii_lower(prefix);
     for (auto it = l.by_lower.lower_bound(wanted); it != l.by_lower.end() && names.size() < limit; ++it) {
         if (!it->first.starts_with(wanted)) break;
         names.push_back(it->second);
