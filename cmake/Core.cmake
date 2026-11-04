@@ -90,7 +90,9 @@ endif()
 
 # Read access to the installed game's cas archives.
 add_library(dingosdk_game_archives STATIC Engine/Vfs/game_archives.cpp Engine/Vfs/game_bundles.cpp
-    Engine/Vfs/item_thumbnails.cpp Engine/Vfs/game_textures.cpp)
+    Engine/Vfs/item_thumbnails.cpp Engine/Vfs/game_textures.cpp
+    # Skate Synchros' item cutter: what one worn item needs from the enabled mods.
+    Engine/Vfs/synchros_closure.cpp)
 target_link_libraries(dingosdk_game_archives PUBLIC dingosdk_native_db dingosdk_frostbite)
 
 if(WIN32)
