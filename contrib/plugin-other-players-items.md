@@ -54,4 +54,6 @@ than 4 times in a second: each change dresses every player shown again, one at a
 - Tests: `plugins_read_and_hide_other_players_items` (the calls, their checks, both permissions,
   and the hidden list as the session reads it).
 
-Not verified in the game yet: a hidden item on a real player.
+Verified in the game, on a public server of 65 players: `session.outfit` read every player's items,
+`mods.item_origins` named the mod of each; an item hidden on everyone (a game item and mod items)
+no longer showed on those players, and showed again once the list was cleared.
