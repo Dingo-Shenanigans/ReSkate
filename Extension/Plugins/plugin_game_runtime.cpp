@@ -14,6 +14,7 @@
 #include "Engine/Game/World/world_layer_catalog.h"
 #include "Engine/Game/World/world_layer_types.h"
 #include "Extension/Multiplayer/Hud/game_ui_state.h"
+#include "Extension/UI/NativeMenu/native_menu.h"
 #include "Extension/Multiplayer/Hud/native_party.h"
 #include "Extension/Skater/client_source_spawn.h"
 #include "Extension/Skater/skater_animation.h"
@@ -1516,6 +1517,19 @@ public:
             start = end + 1;
         }
         return menu;
+    }
+    MenuState menu_state() override {
+        MenuState state;
+        if (!base_) return state;
+        // The native menu's tick reads the game's own flag (none while a level loads); ReSkate's pages
+        // in it are seen while drawn, in the order of overlay::HubPage's sections.
+        state.pause = multiplayer::native_pause_menu_open();
+        state.known = multiplayer::sample_game_ui_state(base_).available;
+        if (const auto page = multiplayer::native_menu_page(); page.visible && page.section >= 0 && page.section < 3)
+            state.page = std::array{"multiplayer", "mod_options", "mod_manager"}[page.section];
+        state.reskate = overlay::menu_visible() || !state.page.empty();
+        state.replay_editor = multiplayer::replay_editor_open(base_);
+        return state;
     }
     std::optional<MenuGrid> menu_grid() override {
         const auto view = item_browser::view();

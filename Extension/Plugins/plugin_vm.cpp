@@ -685,6 +685,15 @@ void Plugin::skater_changed(const char* state, const char* previous) {
     });
 }
 
+void Plugin::menu_changed(const Game::MenuState& state, const Game::MenuState& previous) {
+    if (state_ != State::running || !has("menu")) return;
+    fire_with("menu_changed", [&](lua_State* L) {
+        push_menu_state(L, state);
+        push_menu_state(L, previous);
+        return 2;
+    });
+}
+
 // A launch into the air (events.skater), with its velocities as vectors.
 void Plugin::launched(const LaunchNews& launch) {
     if (state_ != State::running || !has("events.skater")) return;

@@ -244,6 +244,8 @@ public:
     void http_done(const HttpResponse& response);
     // The wider set's events, each to a plugin with its permission and a handler for it.
     void skater_changed(const char* state, const char* previous);
+    // menu: the pause menu, ReSkate's menu or the replay editor came up or went (menu_changed).
+    void menu_changed(const Game::MenuState& state, const Game::MenuState& previous);
     void bailed(std::uint64_t wipeouts, std::optional<SlamNews> slam);
     void launched(const LaunchNews& launch);
     // A game event with plain data (board_landed, body_hit, bail_end), to a plugin with `permission`.

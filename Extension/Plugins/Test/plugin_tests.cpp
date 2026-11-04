@@ -1169,6 +1169,8 @@ struct FakeGame final : Game {
         return {};
     }
     GameMenu game_menu() override { ++menu_reads; return menu_now; }
+    MenuState menu_state_now; // what is up over the game (menu.state, menu_changed)
+    MenuState menu_state() override { return menu_state_now; }
     std::optional<MenuGrid> menu_grid() override { return grid_now; }
     std::vector<WornItem> board_parts() override { return board_now; }
     std::vector<WornItem> outfit_worn() override { return outfit_now; }
@@ -6025,6 +6027,63 @@ void level_events_reach_plugins() {
           environment.logged("loaded park / park") && environment.logged("leaving park"), "Level events in order\n" + environment.all());
 }
 
+// The pause menu, ReSkate's menu (its window or one of its pages in the pause menu) and the replay
+// editor: read with menu.state, and heard as they come and go, once each change. A plugin without
+// the menu permission gets neither.
+void plugins_know_what_menu_is_up() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    game.menu_state_now = {.pause = true, .known = true}; // already up when the plugin loads
+    Host host(environment, Side::client);
+    host.apply({script("menus", R"(
+        local now = reskate.menu.state()
+        reskate.log(string.format("at load known %s pause %s reskate %s replay %s page %s", tostring(now.known), tostring(now.pause),
+            tostring(now.reskate), tostring(now.replay_editor), tostring(now.page)))
+        assert(reskate.Enums.MenuPage.mod_manager == "mod_manager")
+        local function shown(s)
+            local up = {}
+            if not s.known then table.insert(up, "unknown") end
+            if s.pause then table.insert(up, "pause") end
+            if s.reskate then table.insert(up, "reskate") end
+            if s.replay_editor then table.insert(up, "replay") end
+            if s.page then table.insert(up, s.page) end
+            return #up > 0 and table.concat(up, "+") or "nothing"
+        end
+        reskate.on("menu_changed", function(state, previous) reskate.log("menu " .. shown(previous) .. " to " .. shown(state)) end)
+    )", R"("menu")"), script("blind", R"(
+        local ok, err = pcall(reskate.menu.state)
+        assert(not ok and err:find("needs the \"menu\" permission"), err)
+        ok, err = pcall(reskate.on, "menu_changed", function() end)
+        assert(not ok and err:find("needs the \"menu\" permission"), err)
+        reskate.log("blind refused")
+    )")});
+    running(host, "menus", environment);
+    running(host, "blind", environment);
+    check(environment.logged("at load known true pause true reskate false replay false page nil") && environment.logged("blind refused"),
+          "The state reads at load, and not without the permission\n" + environment.all());
+    ticks(host, environment, 3);
+    check(!environment.logged("[menus] menu "), "What was up before is not news\n" + environment.all());
+
+    game.menu_state_now = {.pause = true, .reskate = true, .page = "mod_manager", .known = true};
+    ticks(host, environment, 3);
+    game.menu_state_now = {.known = true};
+    ticks(host, environment, 1);
+    game.menu_state_now.reskate = true; // the windowed menu, over the game
+    ticks(host, environment, 1);
+    game.menu_state_now = {.replay_editor = true, .known = true};
+    ticks(host, environment, 2);
+    game.menu_state_now.known = false; // the game's screen model is lost: a closed pause menu is no longer known
+    ticks(host, environment, 1);
+    check(environment.logged("[menus] menu pause to pause+reskate+mod_manager") &&
+              environment.logged("[menus] menu pause+reskate+mod_manager to nothing") &&
+              environment.logged("[menus] menu nothing to reskate") && environment.logged("[menus] menu reskate to replay") &&
+              environment.logged("[menus] menu replay to unknown+replay"),
+          "Each change is heard with what was up before\n" + environment.all());
+    const auto heard = std::count_if(environment.logs.begin(), environment.logs.end(),
+                                     [](const std::string& line) { return line.find("[menus] menu ") != std::string::npos; });
+    check(heard == 5, std::format("Once each, not every tick ({} heard)\n", heard) + environment.all());
+}
+
 void timers_run_when_due() {
     TestEnvironment environment;
     Host host(environment, Side::client);
@@ -7970,6 +8029,7 @@ int main() {
         run(declared_board_colours_through_the_api);
         run(key_names_become_binds);
         run(level_events_reach_plugins);
+        run(plugins_know_what_menu_is_up);
         run(timers_run_when_due);
         run(a_package_with_a_program_or_on_the_wrong_side_is_not_loaded);
         run(discovery_finds_the_plugins_among_the_mods_left_on);
