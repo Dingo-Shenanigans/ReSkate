@@ -222,8 +222,7 @@ on (it is by default), the crash details have already been sent; see
   and the game's own items are left out and logged, so a mod cannot rename or regroup the game's objects.
   The file is read when the game starts.
 
-Only install mods you trust. Mods change game data. Custom Lua scripts (`scripts/Custom`) are
-switched off in this version: nothing in that folder is read or run.
+Only install mods you trust. Mods change game data.
 
 ## Dedicated servers
 
@@ -334,7 +333,6 @@ The source tree loosely follows Frostbite's own layout.
 | `Engine/Core/` | logging, console, JSON, storage, platform helpers, Detours hooks, crash reporting (`Debug/`) |
 | `Engine/Resource/` | Frostbite data formats: EBX, TOC, CAS, bundles, shader lookup |
 | `Engine/Vfs/` | InitFS, the Mods folder, mod merging, the content cache |
-| `Engine/Scripting/` | custom Lua scripts |
 | `Engine/Game/` | the game's native ABI and data models |
 | `Engine/Game/Build/<build>/` | every address, fingerprint and patch tied to one `Skate.exe` build, as `addr::<area>::<name>` |
 | `Extension/` | ReSkate's features, the in-game UI and diagnostics |

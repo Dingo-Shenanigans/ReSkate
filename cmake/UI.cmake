@@ -58,7 +58,7 @@ add_library(dingosdk_overlay STATIC
     Extension/UI/Overlay/viewmodel.cpp
     Extension/UI/Overlay/viewmodel_model.cpp
 )
-target_link_libraries(dingosdk_overlay PUBLIC dingosdk_logging dingosdk_profiler dingosdk_imgui dingosdk_hooks dingosdk_console_core dxguid PRIVATE dingosdk_playstation_input shell32 dingosdk_initfs dingosdk_custom_scripts dingosdk_game_archives dingosdk_mods dingosdk_json windowscodecs ole32)
+target_link_libraries(dingosdk_overlay PUBLIC dingosdk_logging dingosdk_profiler dingosdk_imgui dingosdk_hooks dingosdk_console_core dxguid PRIVATE dingosdk_playstation_input shell32 dingosdk_game_archives dingosdk_mods dingosdk_json windowscodecs ole32)
 
 # The screen look's shader (reskate.screen.look) is built into the DLL as text and compiled when it is
 # first drawn. The build checks it with the Windows SDK's fxc when there is one, so a shader that would

@@ -2,7 +2,6 @@
 #include "skate_menu.h"
 #include "skate_menu_internal.h"
 #include "Engine/Vfs/builtin_packs.h"
-#include "Engine/Vfs/initfs.h"
 #include "Engine/Vfs/mod_catalog.h"
 #include "Engine/Vfs/mod_conflicts.h"
 #include "Extension/Assets/live_mods.h"
@@ -13,7 +12,6 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
-#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -63,12 +61,6 @@ private:
 };
 }
 namespace {
-std::filesystem::path game_directory() {
-    std::array<wchar_t, 32768> executable{};
-    const auto length = GetModuleFileNameW(nullptr, executable.data(), static_cast<DWORD>(executable.size()));
-    if (!length || length >= executable.size()) throw std::runtime_error("Cannot locate the game directory.");
-    return std::filesystem::path(std::wstring(executable.data(), length)).parent_path();
-}
 // What a mod brings, as the native Mods page words it.
 std::string contents_text(const mods::Mod& mod) {
     std::string text;
@@ -283,84 +275,8 @@ void draw_installed_mods(SkateMenu& menu) {
                "other changes to game settings or the UI take effect after a restart.");
     menu::end_card();
 }
-void draw_custom_scripts(SkateMenu& menu) {
-    menu::begin_card(menu, "custom-scripts", "CUSTOM SCRIPTS");
-    menu::note("Drop .lua files or folders with init.lua into scripts/Custom/. Scripts and saved changes load on the next launch.");
-    if (ImGui::Button("Refresh script list", ImVec2(-FLT_MIN, 0))) menu.custom_scripts_scanned = false;
-    if (!menu.custom_scripts_scanned) {
-        menu.custom_scripts_scanned = true;
-        menu.custom_script_rows.clear();
-        menu.custom_script_error.clear();
-        try { menu.custom_script_rows = custom_scripts::discover(game_directory()); }
-        catch (const std::exception& error) { menu.custom_script_error = error.what(); }
-    }
-    if (!menu.loose_files_saved) menu::warn("Turn on loose Lua / config files in the launcher to load custom scripts.");
-    menu::note(custom_scripts::status("").c_str());
-    if (!menu.custom_script_error.empty()) menu::warn(("Script settings error: " + menu.custom_script_error).c_str());
-    if (menu.custom_script_rows.empty()) {
-        menu::note("No custom scripts found. Names starting with _ or . are skipped.");
-        menu::end_card();
-        return;
-    }
-    std::optional<std::pair<std::size_t, std::size_t>> move;
-    if (ImGui::BeginTable("custom_scripts", 4, ImGuiTableFlags_RowBg)) {
-        ImGui::TableSetupColumn("On", ImGuiTableColumnFlags_WidthFixed, menu::px(32));
-        ImGui::TableSetupColumn("Script", ImGuiTableColumnFlags_WidthStretch, 1.0f);
-        ImGui::TableSetupColumn("Order", ImGuiTableColumnFlags_WidthFixed, menu::px(100));
-        ImGui::TableSetupColumn("This session", ImGuiTableColumnFlags_WidthStretch, 1.0f);
-        ImGui::TableHeadersRow();
-        for (std::size_t index = 0; index < menu.custom_script_rows.size(); ++index) {
-            auto& script = menu.custom_script_rows[index];
-            ImGui::PushID(script.id.c_str());
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn();
-            bool enabled = script.enabled;
-            if (ImGui::Checkbox("##enabled", &enabled)) {
-                try {
-                    custom_scripts::save_enabled(game_directory(), script.id, enabled);
-                    script.enabled = enabled;
-                    menu.custom_script_error.clear();
-                    menu::feedback(menu, "Script selection saved for the next launch.");
-                } catch (const std::exception& error) { menu.custom_script_error = error.what(); }
-            }
-            ImGui::TableNextColumn();
-            ImGui::TextWrapped("%s", script.id.c_str());
-            ImGui::TableNextColumn();
-            ImGui::BeginDisabled(index == 0);
-            if (ImGui::SmallButton("Up")) move = {{index, index - 1}};
-            ImGui::EndDisabled();
-            ImGui::SameLine();
-            ImGui::BeginDisabled(index + 1 == menu.custom_script_rows.size());
-            if (ImGui::SmallButton("Down")) move = {{index, index + 1}};
-            ImGui::EndDisabled();
-            ImGui::TableNextColumn();
-            ImGui::TextWrapped("%s", custom_scripts::status(script.id).c_str());
-            ImGui::PopID();
-        }
-        ImGui::EndTable();
-    }
-    if (move) {
-        try {
-            auto ordered = menu.custom_script_rows;
-            std::swap(ordered[move->first], ordered[move->second]);
-            custom_scripts::save_order(game_directory(), ordered);
-            menu.custom_script_rows = std::move(ordered);
-            menu.custom_script_error.clear();
-            menu::feedback(menu, "Script order saved for the next launch.");
-        } catch (const std::exception& error) { menu.custom_script_error = error.what(); }
-    }
-    menu::end_card();
 }
-}
-void draw_modding_menu(SkateMenu& menu, int tab, const Model&, const CallbacksV3&) {
-    // Loose files are switched in the launcher; custom scripts only need to know
-    // whether they are on.
-    if (!menu.loose_files_settings_loaded) {
-        menu.loose_files_settings_loaded = true;
-        try { menu.loose_files_saved = initfs::loose_files_preference(game_directory()); }
-        catch (const std::exception&) {}
-    }
-    if (tab == 1) draw_custom_scripts(menu);
-    else draw_installed_mods(menu);
+void draw_modding_menu(SkateMenu& menu, const Model&, const CallbacksV3&) {
+    draw_installed_mods(menu);
 }
 }

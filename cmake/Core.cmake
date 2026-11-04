@@ -116,9 +116,6 @@ if(WIN32)
         Engine/Vfs/builtin_packs.cpp)
     target_link_libraries(dingosdk_mods PUBLIC dingosdk_json dingosdk_mod_list PRIVATE dingosdk_game_archives dingosdk_native_db dingosdk_frostbite dingosdk_content_cache dingosdk_miniz dingosdk_zstd shell32 bcrypt)
 
-    add_library(dingosdk_custom_scripts STATIC Engine/Scripting/custom_scripts.cpp)
-    target_link_libraries(dingosdk_custom_scripts PUBLIC dingosdk_json PRIVATE dingosdk_initfs)
-
     # HTTPS downloads shared by the park preview and content cache packs.
     add_library(dingosdk_https STATIC Engine/Vfs/https_download.cpp)
     target_link_libraries(dingosdk_https PUBLIC winhttp)

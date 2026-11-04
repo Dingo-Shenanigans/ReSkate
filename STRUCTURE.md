@@ -72,7 +72,7 @@ ReSkate/
 | `Runtime.cmake` | `ReSkate.dll` (`dingosdk_runtime`), including the cargo build of `SpotifyHelper/` |
 | `Apps.cmake` | launcher, server, packer tools, and most test executables |
 | `CrashReport.cmake` | Sentry crash report client/upload, wired into the DLL, launcher and server |
-| `ProfileData.cmake`, `CustomScriptData.cmake` | embed `config/defaults/` and the custom Lua entry |
+| `ProfileData.cmake` | embed `config/defaults/` |
 | `templates/` | generated headers: version, `version.rc`, crash/update config, profile defaults |
 
 ## `Engine/`
@@ -105,9 +105,6 @@ The virtual file system and modding pipeline:
 - `content_cache*`, `content_catalogs` — the merged-content cache and its install.
 - `thunderstore_package`, `https_download` — Thunderstore packages.
 - `mod_music`, `item_thumbnails`, `world_layer_scan`, `builtin_packs`.
-
-### `Engine/Scripting/`
-Custom Lua script support (currently switched off for users).
 
 ### `Engine/Game/`
 The game's native ABI and plain data models, no hooks:
@@ -147,7 +144,7 @@ commands and a `Test/` folder.
 | `Progression/` | challenges, entitlements, neighborhood unlocks, fast travel unlock, rip score, board wear |
 | `Rendering/` | graphics controls and labels, display startup, replay export, plugin particles and surface decals |
 | `ReplayKeyframes/` | replay keyframe curves and settings |
-| `Scripting/` | Lua startup, custom script loader, native blocking |
+| `Scripting/` | Lua startup, native blocking |
 | `Settings/` | gameplay/native/user settings, input bindings, engine tweaks, replay drafts |
 | `Skater/` | first person, noclip, free flight, physics tuning, no-bail, AI skaters, x-ray, breakable deck, launches and pad hiding for plugins, trick watch, pose offsets on the drawn pose, rail target choice and movement reads for plugins |
 | `Throwdowns/` | native throwdowns, custom (plugin) modes, relay and wire format |

@@ -312,7 +312,7 @@ void configure_environment(const fs::path& logs) {
     set_environment(L"SteamAppId", app_id);
     set_environment(L"SteamGameId", app_id);
     set_environment(L"RESKATE_LOG_DIRECTORY", logs.c_str());
-    set_environment(L"RESKATE_DEBUG_TEST_GLOBAL_OFFLINE", L"1");
+    set_environment(L"RESKATE_GLOBAL_OFFLINE", L"1");
 }
 
 template<class T>
@@ -874,7 +874,6 @@ DWORD start_game(const Session& session, const launcher::LaunchOptions& options,
     bool loose_files = options.loose_files && initfs::loose_files_preference(paths.directory);
     if (loose_files) {
         try {
-            fs::create_directories(paths.directory / L"scripts" / L"Custom");
             const auto exported = initfs::export_files(paths.game,
                 initfs::data_directory(paths.directory, options.game_arguments), paths.directory, true);
             if (exported.already_exported) {

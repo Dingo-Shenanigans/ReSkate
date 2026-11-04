@@ -993,11 +993,11 @@ ImFont* embedded_font(const wchar_t* name, float size, const ImWchar* ranges) {
 }
 
 constexpr std::array<const char*, page_count> page_names{
-    "HOME", "MAP", "BUILD", "SKATER", "SANDBOX", "ADDONS", "PLUGINS", "ONLINE", "PROGRESS", "MODS", "SETTINGS", "DEVELOPER"};
+    "HOME", "MAP", "BUILD", "SKATER", "SANDBOX", "ADDONS", "PLUGINS", "ONLINE", "PROGRESS", "MODS", "SETTINGS"};
 constexpr std::array<const char*, page_count> page_subtitles{
     "Everything, a button away.", "Pick your spot. Set the vibe.", "Make the park yours.", "Ride it your way.",
     "Tune it. Drill it.", "What ReSkate adds to skate.", "What your plugins add.", "Bring your crew.", "Pick up where you want.",
-    "Bring your own.", "Your controls, your screen.", "Under the hood."};
+    "Bring your own.", "Your controls, your screen."};
 constexpr std::array<const char*, addon_count> addon_names{"ADDONS", "MUSIC"};
 constexpr std::array<const char*, addon_count> addon_subtitles{"What ReSkate adds to skate.", "Your sound, in the game."};
 // The side rail's groups: the heading above the page that starts each.
@@ -1073,9 +1073,8 @@ void open_page(SkateMenu& menu, int page, int addon) {
 
 namespace {
 bool page_hidden(const SkateMenu& menu, const Model& model, int page) {
-    // Developer (the network view) is hidden for now; offline there is no Online. HOME is the
-    // full screen menu's: a window has its side rail instead.
-    return page == page_developer || (page == page_home && !menu.fullscreen_drawn) || (model.steam_offline && page == page_online);
+    // Offline there is no Online. HOME is the full screen menu's: a window has its side rail instead.
+    return (page == page_home && !menu.fullscreen_drawn) || (model.steam_offline && page == page_online);
 }
 // A plugin's page is titled with its name, and says whose it is.
 const char* page_title(SkateMenu& menu) {
@@ -1193,17 +1192,11 @@ void draw_page_body(SkateMenu& menu, const Model& model, const CallbacksV3& call
         break;
     case page_progress: progression_page(menu, model, callbacks); break;
     case page_mods:
-        // The SCRIPTS tab (custom Lua scripts, modding_menu.cpp) is not offered for now:
-        // nothing uses them. The page is the installed mods.
-        menu.mods_tab = 0;
-        ImGui::PushID(menu.mods_tab);
         ImGui::BeginChild("mods-tab", ImVec2(0, page_body_height(menu)), ImGuiChildFlags_NavFlattened);
-        draw_modding_menu(menu, menu.mods_tab, model, callbacks);
+        draw_modding_menu(menu, model, callbacks);
         ImGui::EndChild();
-        ImGui::PopID();
         break;
     case page_settings: settings_page(menu, model, callbacks); break;
-    case page_developer: developer_page(menu, model, callbacks); break;
     }
     if (menu.rail_indent > 0) {
         ImGui::Unindent(menu.rail_indent);

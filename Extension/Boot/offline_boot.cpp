@@ -36,7 +36,9 @@ constexpr std::uintptr_t flow_adapter_return_rva = offline::flow_adapter_return;
 constexpr std::uintptr_t post_spawn_progression_return_rva =
     offline::post_spawn_progression_return;
 constexpr std::uintptr_t image_size = supported_build::game_image_size;
-constexpr wchar_t opt_in_name[] = L"RESKATE_DEBUG_TEST_GLOBAL_OFFLINE";
+// The launcher's switch, and the name older launchers set (offline_boot.h).
+constexpr wchar_t opt_in_name[] = L"RESKATE_GLOBAL_OFFLINE";
+constexpr wchar_t old_opt_in_name[] = L"RESKATE_DEBUG_TEST_GLOBAL_OFFLINE";
 
 static_assert(function_rva + 16 <= image_size,
     "Shared OnlineEnabled fingerprint must remain inside the inspected image");
@@ -106,11 +108,15 @@ OfflineBootState& offline_boot_state() {
     return *value;
 }
 
-bool environment_opted_in() noexcept {
+bool environment_one(const wchar_t* name) noexcept {
     std::array<wchar_t, 2> value{};
-    const auto length = GetEnvironmentVariableW(opt_in_name, value.data(),
+    const auto length = GetEnvironmentVariableW(name, value.data(),
         static_cast<DWORD>(value.size()));
     return length == 1 && value[0] == L'1';
+}
+
+bool environment_opted_in() noexcept {
+    return environment_one(opt_in_name) || environment_one(old_opt_in_name);
 }
 
 bool fingerprint_matches(std::uintptr_t base) noexcept {
@@ -228,6 +234,11 @@ void set_local_object_browser_provider(std::uintptr_t base, LocalObjectBrowserRe
     auto& state = offline_boot_state();
     if (state.base == base && state.gate.load(std::memory_order_acquire) == GateStatus::active)
         state.local_object_browser.store(ready, std::memory_order_release);
+}
+
+bool offline_boot_requested() noexcept {
+    PreserveError preserve;
+    return environment_opted_in();
 }
 
 bool start_offline_boot(std::uintptr_t base) noexcept {
@@ -354,7 +365,7 @@ OfflineBootObservation offline_boot_observation() {
         state.backend_present_after_enable.load(std::memory_order_relaxed);
 
     std::ostringstream json;
-    json << "{\"event\":\"global_offline_experiment_observation\",\"gate\":\""
+    json << "{\"event\":\"global_offline_observation\",\"gate\":\""
          << gate_name(gate) << "\",\"opted_in\":"
          << (gate != GateStatus::not_attempted && gate != GateStatus::opted_out ? "true" : "false")
          << ",\"function_rva\":\"0x" << std::hex << function_rva << std::dec

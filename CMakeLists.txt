@@ -17,7 +17,6 @@ endif()
 
 include(cmake/ProjectOptions.cmake)
 include(cmake/Dependencies.cmake)
-include(cmake/CustomScriptData.cmake)
 include(cmake/Core.cmake)
 if(WIN32)
     include(cmake/Features.cmake)
