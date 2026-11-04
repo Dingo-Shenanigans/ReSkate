@@ -1,4 +1,5 @@
 #include "plugin_joystick.h"
+#include "plugin_joystick_policy.h"
 #ifndef DIRECTINPUT_VERSION
 #define DIRECTINPUT_VERSION 0x0800
 #endif
@@ -126,7 +127,7 @@ void run() {
     ULONGLONG looked_at{};
     for (;;) {
         const auto now = GetTickCount64();
-        if (now - asked_at.load() > asked_for_ms) {
+        if (!detail::request_is_recent(now, asked_at.load(), asked_for_ms)) {
             // Nobody is asking: nothing is read, and what was read is forgotten.
             {
                 std::lock_guard lock(mutex);
