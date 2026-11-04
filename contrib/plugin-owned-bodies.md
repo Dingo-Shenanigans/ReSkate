@@ -39,9 +39,10 @@ producer hook and return `waiting for a fresh qualified 60 Hz physics step` befo
 a later explicit `create` can then use the observed clock. Allocation itself is never retried.
 
 `create` also takes an options table, whose only field is `reuse` (a boolean); any other field,
-or a value that is not a table, is an error. With options it returns `body, nil, origin` and, for
-a reuse that allocated instead, `miss`. `origin` is `"reused"` or `"allocated"`. Without options
-it returns exactly the one value above. See [re-activating a parked body](#re-activating-a-parked-body).
+or a value other than a table or `nil`, is an error. With options it returns `body, nil, origin`
+and, for a reuse that allocated instead, `miss`. `origin` is `"reused"` or `"allocated"`. Without
+options, or with `nil` in their place, it returns exactly the one value above. See
+[re-activating a parked body](#re-activating-a-parked-body).
 
 ```lua
 local body, why, origin, miss = P.create(definition, {reuse = true})
