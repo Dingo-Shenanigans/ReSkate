@@ -117,7 +117,7 @@ ItemContents Outfit::answer_one(const std::string& item) {
         offered_.insert_or_assign(file.id, Offered{piece, file.size});
         answer.files.push_back(std::move(file));
     }
-    for (const auto& row : cut->rows) answer.rows.push_back({row.table, row.path, row.bundle});
+    for (const auto& row : cut->rows) answer.rows.push_back({row.table, row.path, row.bundle, row.table_bundle, row.table_superbundle});
     return answer;
 }
 

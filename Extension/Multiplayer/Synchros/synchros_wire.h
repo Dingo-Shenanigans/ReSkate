@@ -92,6 +92,8 @@ struct TableRow {
     std::string table;   // the table resource ("characters/customization/configs/cas_main_bundlereftable")
     std::string path;    // the preset
     std::uint32_t bundle{};
+    std::string table_bundle;       // the bundle the table is in ("win32/...")
+    std::string table_superbundle;  // and that bundle's superbundle
     bool operator==(const TableRow&) const = default;
 };
 struct ItemContents {

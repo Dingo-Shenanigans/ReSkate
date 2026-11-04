@@ -211,7 +211,7 @@ void every_message_round_trips() {
     check(round_trip(Want{{"items/board_bottomart/own_x", "items/cust_tops/own_y"}}).items.size() == 2, "want");
     Contents contents{{ItemContents{"items/board_bottomart/own_x", Withheld::none, {sample_file(1), sample_file(2, FileKind::resource),
                                                                                  sample_file(3, FileKind::chunk), sample_file(4, FileKind::toc_chunk)},
-                                    {TableRow{"characters/customization/configs/cas_main_bundlereftable", "characters/x/own_x_ap", 812}}},
+                                    {TableRow{"characters/customization/configs/cas_main_bundlereftable", "characters/x/own_x_ap", 812, "win32/characters/customization/configs", "win32/items"}}},
                        ItemContents{"items/cust_tops/own_store_copy", Withheld::store_item, {}, {}}}};
     const auto c = round_trip(contents);
     check(c.items.size() == 2 && c.items[0].files == contents.items[0].files && c.items[0].rows == contents.items[0].rows && c.items[1].withheld == Withheld::store_item, "contents");
@@ -243,7 +243,7 @@ void malformed_messages_are_refused() {
     // A withheld item that still carries files.
     Contents liar{{ItemContents{"items/x", Withheld::store_item, {sample_file(1)}, {}}}};
     check(!decode(encode(Message{liar})), "withheld with files");
-    Contents rows_liar{{ItemContents{"items/x", Withheld::store_item, {}, {TableRow{"t_bundlereftable", "p_ap", 1}}}}};
+    Contents rows_liar{{ItemContents{"items/x", Withheld::store_item, {}, {TableRow{"t_bundlereftable", "p_ap", 1, "win32/b", "win32/items"}}}}};
     check(!decode(encode(Message{rows_liar})), "withheld with table rows");
     // A file that says it is bigger than a file may be, or empty.
     auto big = sample_file(1); big.size = max_file + 1;
@@ -478,7 +478,7 @@ public:
 void the_wearer_sends_only_what_is_worn_and_offered() {
     FakeCloset closet;
     const auto a = closet.add(1, max_piece * 2 + 5), b = closet.add(2, 100), c = closet.add(3, 300, dingosdk::synchros::Piece::chunk);
-    closet.cuts["own_hat"] = {"items/own_hat", {a, b}, {{"characters/customization/configs/cas_main_bundlereftable", "characters/own/hat_ap", 7}}, 0};
+    closet.cuts["own_hat"] = {"items/own_hat", {a, b}, {{"characters/customization/configs/cas_main_bundlereftable", "characters/own/hat_ap", 7, "win32/characters/customization/configs", "win32/items"}}, 0};
     closet.cuts["own_deck"] = {"items/own_deck", {b, c}, {}, 0};
     closet.cuts["own_shoes"] = {"items/own_shoes", {a}, {}, 0};
     Outfit outfit(closet, {"own_hat", "Own_Deck", "cust_tee"}, [](std::string_view key) { return key == "cust_tee"; });

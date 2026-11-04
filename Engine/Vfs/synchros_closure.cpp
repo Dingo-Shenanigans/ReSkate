@@ -108,6 +108,8 @@ struct Index::State {
     // table name -> its presets (lower-case path -> bundle index).
     std::vector<Piece> tables;        // every mod's copy: each holds that mod's own presets
     std::map<std::pair<std::size_t, std::string>, std::map<std::string, std::uint32_t>> presets;
+    // Where each table is: (source, table name) -> (bundle, superbundle).
+    std::map<std::pair<std::size_t, std::string>, std::pair<std::string, std::string>> table_homes;
     bool presets_read{};
 
     void read_presets() {
@@ -118,6 +120,7 @@ struct Index::State {
                 const auto bytes = fb::decode_cas(encoded(p), {game});
                 const fb::bundle_ref::Table table{bytes, p.asset.resourceMeta};
                 auto& held = presets[{p.source, p.name}];
+                table_homes[{p.source, p.name}] = {p.bundle, p.superbundle};
                 for (const auto& [path, bundle] : fb::bundle_ref::presets(table)) held.emplace(lower(path), bundle);
             } catch (const std::exception&) {
                 ++unreadable;
@@ -390,7 +393,8 @@ std::optional<Cut> Index::cut(std::string_view item) {
             for (const auto& [where, held] : s.presets) {
                 if ((pass == 0) != (where.first == home)) continue;
                 if (const auto f = held.find(piece.name); f != held.end()) {
-                    cut.rows.push_back({where.second, piece.name, f->second});
+                    const auto& home_of = s.table_homes[where];
+                    cut.rows.push_back({where.second, piece.name, f->second, home_of.first, home_of.second});
                     done.insert(piece.name);
                     break;
                 }

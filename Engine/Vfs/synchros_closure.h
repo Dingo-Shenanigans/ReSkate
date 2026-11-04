@@ -50,6 +50,8 @@ struct PresetRow {
     std::string table;                // the table resource
     std::string path;
     std::uint32_t bundle{};
+    std::string table_bundle;         // the bundle the table is in, and its superbundle
+    std::string table_superbundle;
 };
 
 struct Cut {

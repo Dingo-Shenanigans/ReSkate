@@ -125,7 +125,7 @@ std::vector<std::uint8_t> encode(const Message& message) {
                 w.u32(static_cast<std::uint32_t>(item.files.size()));
                 for (const auto& f : item.files) write_file(w, f);
                 w.u32(static_cast<std::uint32_t>(item.rows.size()));
-                for (const auto& row : item.rows) { w.text(row.table); w.text(row.path); w.u32(row.bundle); }
+                for (const auto& row : item.rows) { w.text(row.table); w.text(row.path); w.u32(row.bundle); w.text(row.table_bundle); w.text(row.table_superbundle); }
             }
         } else if constexpr (std::is_same_v<T, Fetch>) {
             w.u8(static_cast<std::uint8_t>(Kind::fetch)); w.u8(wire_version);
@@ -201,7 +201,9 @@ std::optional<Message> decode(std::span<const std::uint8_t> bytes) {
                 row.table = r.text(max_name);
                 row.path = r.text(max_name);
                 row.bundle = r.u32();
-                if (row.table.empty() || row.path.empty()) r.ok = false;
+                row.table_bundle = r.text(max_name);
+                row.table_superbundle = r.text(max_name);
+                if (row.table.empty() || row.path.empty() || row.table_bundle.empty() || row.table_superbundle.empty()) r.ok = false;
                 item.rows.push_back(std::move(row));
             }
             m.items.push_back(std::move(item));
