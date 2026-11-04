@@ -109,6 +109,20 @@ struct FakeGame final : Game {
         b.sample.inertia = definition.inertia;
         return {};
     }
+    // create with options, as the fake answers it: it records who asked and whether reuse was
+    // asked for, then makes a body and returns the scripted origin and miss. It never chooses
+    // a parked body itself; that rule is the service's, tested in owned_body_source_tests.cpp.
+    std::vector<std::pair<std::uint64_t, bool>> body_reuse_requests;
+    owned_body::CreateReport test_reuse_report{owned_body::Origin::reused, owned_body::ReuseMiss::none};
+    std::string test_reuse_refusal;
+    std::string body_create_reusing(std::uint64_t owner, const owned_body::Definition& definition, owned_body::Handle& handle, bool reuse,
+                                    owned_body::CreateReport& report) override {
+        body_reuse_requests.emplace_back(owner, reuse);
+        if (!test_reuse_refusal.empty()) return test_reuse_refusal;
+        const auto why = body_create(owner, definition, handle);
+        if (why.empty()) report = reuse ? test_reuse_report : owned_body::CreateReport{};
+        return why;
+    }
     OwnedBody* body_of(std::uint64_t owner, const owned_body::Handle& h) {
         const auto at = owned.find(h.generation);
         return at != owned.end() && at->second.owner == owner && at->second.handle == h ? &at->second : nullptr;
@@ -2137,6 +2151,92 @@ void plugins_can_inspect_later_partial_failure_without_acknowledging_unmeasured_
     check(environment.fake.body_submissions == 2 && environment.fake.owned.at(1).mailbox.failed, "partial command was replayed or failed mailbox reopened");
 }
 
+// create(definition, {reuse = true}) through the binding: it forwards this VM's own instance and
+// the flag, parses its options strictly, counts one reuse request a tick, and returns the
+// origin and miss the game reports. Which parked body qualifies is the service's rule.
+void plugins_reuse_their_own_parked_bodies() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    const auto reuser = [](const std::string& id) {
+        return script(id, R"(
+            local P, v = reskate.world.physics, vector.create
+            local d = {mass = 12, inertia = v(2, 3, 4), position = v(0, 2, 0), rotation = {0, 0, 0, 1}, capsules = {{a = v(0, 0, 0), b = v(0, .5, 0), radius = .1}}}
+            assert(select("#", P.create(d)) == 1, "plain create grew a return value")
+            local body, why, origin, miss = P.create(d, {reuse = true})
+            assert(type(body) == "userdata" and getmetatable(body) == "locked" and why == nil and origin == "reused" and miss == nil,
+                "reuse did not return body, nil, origin")
+            assert(P.read(body), "a reused body is not this VM's body")
+            local again, refused = P.create(d, {reuse = true})
+            assert(again == nil and refused == "asked to reuse a native body more than once in one tick", tostring(refused))
+            local plain, none, allocated, extra = P.create(d, {reuse = false})
+            assert(type(plain) == "userdata" and none == nil and allocated == "allocated" and extra == nil, "reuse = false")
+            for _, options in {{reuse = 1}, {reuse = "true"}, {bogus = true}, {reuse = true, slot = 1}, {reuse = true, owner = 1}} do
+                assert(not pcall(P.create, d, options), "malformed options were accepted")
+            end
+            assert(not pcall(P.create, d, true), "options that are not a table were accepted")
+            local ticks = 0
+            reskate.on("tick", function()
+                ticks += 1
+                if ticks == 1 then
+                    local b, w, o, m = P.create(d, {reuse = true})
+                    assert(type(b) == "userdata" and w == nil and o == "allocated" and m == "definition_differs", tostring(o) .. " " .. tostring(m))
+                elseif ticks == 2 then
+                    local b, w, o = P.create(d, {reuse = true})
+                    assert(b == nil and w == "body_reuse_pending" and o == nil, tostring(w))
+                    -- A refused reuse still uses this tick's one request: the retry waits a tick.
+                    local again, refused = P.create(d, {reuse = true})
+                    assert(again == nil and refused == "asked to reuse a native body more than once in one tick", tostring(refused))
+                    reskate.log("reuse options answered")
+                end
+            end)
+        )", R"("world.physics", "world.physics.reuse")");
+    };
+    auto& fake = environment.fake;
+    const auto by_owner = [&](std::size_t from) {
+        std::map<std::uint64_t, std::pair<unsigned, unsigned>> owners; // reuse = true, reuse = false
+        for (std::size_t i = from; i < fake.body_reuse_requests.size(); ++i) {
+            const auto& [owner, reuse] = fake.body_reuse_requests[i];
+            ++(reuse ? owners[owner].first : owners[owner].second);
+        }
+        return owners;
+    };
+    host.apply({reuser("reuse-a"), reuser("reuse-b")});
+    running(host, "reuse-a", environment);
+    running(host, "reuse-b", environment);
+    // Each: one reuse, the refused second one never forwarded, and reuse = false.
+    auto owners = by_owner(0);
+    check(fake.body_reuse_requests.size() == 4 && owners.size() == 2, "the quota or the options did not reach the game as asked");
+    for (const auto& [owner, counts] : owners)
+        check(owner && counts.first == 1 && counts.second == 1, "a plugin's own instance or reuse flag was not forwarded");
+    fake.test_reuse_report = {owned_body::Origin::allocated, owned_body::ReuseMiss::definition_differs};
+    ticks(host, environment, 1);
+    running(host, "reuse-a", environment);
+    running(host, "reuse-b", environment);
+    check(fake.body_reuse_requests.size() == 6 && by_owner(4) == decltype(owners){{owners.begin()->first, {1, 0}}, {std::next(owners.begin())->first, {1, 0}}},
+        "a new tick did not allow one more reuse request for each plugin");
+    fake.test_reuse_refusal = "body_reuse_pending";
+    const auto refused_from = fake.body_reuse_requests.size();
+    ticks(host, environment, 1);
+    running(host, "reuse-a", environment);
+    running(host, "reuse-b", environment);
+    check(environment.logged("reuse options answered"), environment.all());
+    check(fake.body_reuse_requests.size() == refused_from + 2 &&
+        by_owner(refused_from) == decltype(owners){{owners.begin()->first, {1, 0}}, {std::next(owners.begin())->first, {1, 0}}},
+        "a refused reuse did not use up its tick's one request for each plugin");
+    // A reloaded VM is a new instance, so it cannot name the old one's parked bodies.
+    fake.test_reuse_refusal.clear();
+    fake.test_reuse_report = {owned_body::Origin::reused, owned_body::ReuseMiss::none};
+    const auto before = fake.body_reuse_requests.size();
+    host.apply({});
+    // The fake's handles name at most eight slots; the reloaded VM's bodies start afresh.
+    fake.owned.clear();
+    fake.body_creates = 0;
+    host.apply({reuser("reuse-a")});
+    running(host, "reuse-a", environment);
+    const auto reloaded = by_owner(before);
+    check(reloaded.size() == 1 && !owners.contains(reloaded.begin()->first), "a reloaded VM forwarded an old instance as the owner");
+}
+
 void native_body_permission_and_client_boundary_are_enforced() {
     TestEnvironment environment;
     Host host(environment, Side::client);
@@ -2146,20 +2246,43 @@ void native_body_permission_and_client_boundary_are_enforced() {
             local ok, why = pcall(P[name], {})
             assert(not ok and string.find(why, "world.physics"), name)
         end
+        local ok, why = pcall(P.create, {}, {reuse = true})
+        assert(not ok and string.find(why, "world.physics"), "create with options")
     )")});
     running(host, "no-body-permission", environment);
     check(environment.fake.body_creates == 0 && environment.fake.body_submissions == 0, "missing permission reached Game");
+    // world.physics alone allocates but cannot ask to reuse: that needs world.physics.reuse.
+    TestEnvironment reuse_environment;
+    Host reuse_host(reuse_environment, Side::client);
+    reuse_host.apply({script("no-reuse-permission", R"(
+        local P, v = reskate.world.physics, vector.create
+        local d = {mass = 12, inertia = v(2, 3, 4), position = v(0, 2, 0), rotation = {0, 0, 0, 1}, capsules = {{a = v(0, 0, 0), b = v(0, .5, 0), radius = .1}}}
+        local ok, why = pcall(P.create, d, {reuse = true})
+        assert(not ok and string.find(why, "world.physics.reuse", 1, true), tostring(why))
+        assert(type(P.create(d)) == "userdata", "plain create needs only world.physics")
+        assert(select("#", P.create(d, nil)) == 1, "a nil options argument changed plain create")
+        local body, none, origin = P.create(d, {reuse = false})
+        assert(type(body) == "userdata" and none == nil and origin == "allocated", "reuse = false needs only world.physics")
+        assert(select("#", P.create(d, {})) == 3, "empty options did not return the origin")
+        reskate.log("reuse needs its own permission")
+    )", R"("world.physics")")});
+    running(reuse_host, "no-reuse-permission", reuse_environment);
+    const auto& asked = reuse_environment.fake.body_reuse_requests;
+    check(reuse_environment.logged("reuse needs its own permission") && reuse_environment.fake.body_creates == 4 && asked.size() == 2 &&
+        !asked[0].second && !asked[1].second, "a plugin without world.physics.reuse reached the game with a reuse request");
     TestEnvironment server_environment;
     Host server(server_environment, Side::server);
-    auto server_plugin = package("server-body", {{manifest_file, manifest(R"("world.physics","world.raycast")", "server")}, {"plugin/main.lua", R"(
+    auto server_plugin = package("server-body", {{manifest_file, manifest(R"("world.physics","world.raycast","world.physics.reuse")", "server")}, {"plugin/main.lua", R"(
         local ok, why = pcall(reskate.world.physics.create, {})
+        assert(not ok and string.find(why, "client phase only"))
+        ok, why = pcall(reskate.world.physics.create, {}, {reuse = true})
         assert(not ok and string.find(why, "client phase only"))
         ok, why = pcall(reskate.world.physics.probe_batch, {}, {}, {})
         assert(not ok and string.find(why, "client phase only"))
     )"}});
     server.apply({server_plugin});
     running(server, "server-body", server_environment);
-    check(server_environment.fake.body_creates == 0, "server reached native body creation");
+    check(server_environment.fake.body_creates == 0 && server_environment.fake.body_reuse_requests.empty(), "server reached native body creation");
 }
 
 std::string batch_main(std::string body) {
@@ -8037,6 +8160,7 @@ int main() {
         run(plugins_own_typed_bodies_and_acknowledge_measured_results);
         run(plugins_pipeline_native_steps_and_select_owned_receipts);
         run(plugins_can_inspect_later_partial_failure_without_acknowledging_unmeasured_head);
+        run(plugins_reuse_their_own_parked_bodies);
         run(native_body_permission_and_client_boundary_are_enforced);
         run(body_prepare_host_fixture_v1);
         run(owned_body_batches_are_permissioned_opaque_and_transactional);

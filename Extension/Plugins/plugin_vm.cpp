@@ -460,6 +460,7 @@ void Plugin::tick(double dt_ms) {
     raycasts_ = 0;
     native_casts_ = {};
     body_prepares_ = 0;
+    body_reuses_ = 0;
     effect_calls_ = 0;
     prune_effects();
     deliver_preloads(*this);

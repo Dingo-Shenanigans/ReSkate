@@ -505,8 +505,8 @@ if(DINGOSDK_BUILD_PLUGIN_TESTS)
 endif()
 if(DINGOSDK_BUILD_PLUGIN_TESTS AND WIN32)
     # The owned-body service itself (Extension/World/owned_bodies.cpp), over a constructed local
-    # client, physics world and TLS: ray batches, measured contact, presets, categories and
-    # preparation. The test includes owned_bodies.cpp once and defines the hook, No Bail, session
+    # client, physics world and TLS: ray batches, measured contact, presets, categories,
+    # preparation and re-activating a parked body. The test includes owned_bodies.cpp once and defines the hook, No Bail, session
     # and ray functions it calls; do not add a second object for any of them.
     add_executable(dingosdk_owned_body_source_tests Extension/World/Test/owned_body_source_tests.cpp)
     target_include_directories(dingosdk_owned_body_source_tests PRIVATE "${PROJECT_SOURCE_DIR}")

@@ -1,5 +1,6 @@
 // Includes the actual owned_bodies.cpp translation unit. Wall time is substituted and
-// named native ABI stand-ins read constructed arrays or return a counted query.
+// named native ABI stand-ins read constructed arrays or return a counted query; the
+// re-activation cases (body_reuse_source_fixture.inc) record setters that write them.
 // The actual Service/Slot/Clock, capture/observe/query implementation,
 // memory::peek and SRW locks execute below; no retail native code executes.
 #include <Windows.h>
@@ -1044,6 +1045,7 @@ void submit_refusal_codes_preserve_command_state() {
 }
 
 #include "body_prepare_source_fixture.inc"
+#include "body_reuse_source_fixture.inc"
 
 template<class F> void run(const char* name, F function, unsigned expected_links = 0) {
     function();
@@ -1069,6 +1071,18 @@ int main() {
         run("prepare_deferred_failure_is_terminal_without_retry", prepare_deferred_failure_is_terminal_without_retry, 1);
         run("prepare_warm_readiness_needs_fresh_capture_and_clock", prepare_warm_readiness_needs_fresh_capture_and_clock);
         run("prepare_does_not_reconcile_world_or_touch_existing_slots", prepare_does_not_reconcile_world_or_touch_existing_slots);
+        run("reuse_reactivates_with_park_and_arm_writes_only", reuse_reactivates_with_park_and_arm_writes_only);
+        run("reuse_never_crosses_owners_and_keeps_the_eight_slot_cap", reuse_never_crosses_owners_and_keeps_the_eight_slot_cap);
+        run("reuse_disqualifiers_write_nothing_and_name_the_miss", reuse_disqualifiers_write_nothing_and_name_the_miss);
+        run("plain_create_never_reuses", plain_create_never_reuses);
+        run("witness_failures_bar_the_body_and_allocate", witness_failures_bar_the_body_and_allocate);
+        run("failed_reactivation_quarantines_and_prohibits_allocation", failed_reactivation_quarantines_and_prohibits_allocation);
+        run("reactivated_body_parks_and_returns_again", reactivated_body_parks_and_returns_again);
+        run("an_allocated_body_parks_and_comes_back", an_allocated_body_parks_and_comes_back);
+        run("a_world_generation_change_prevents_reuse", a_world_generation_change_prevents_reuse);
+        run("a_failed_setter_bars_reuse_after_a_clean_park", a_failed_setter_bars_reuse_after_a_clean_park);
+        run("a_body_parked_too_recently_is_pending_not_allocated", a_body_parked_too_recently_is_pending_not_allocated);
+        run("reactivation_writes_hold_the_service_lock", reactivation_writes_hold_the_service_lock);
         std::cout << cases << " actual-Service cases, " << checks << " checks passed; native mutations "
                   << test_facts::mutations.load() << '\n';
         return 0;

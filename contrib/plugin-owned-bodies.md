@@ -38,6 +38,16 @@ supply masks.
 producer hook and return `body_preallocation_unavailable` before any allocation; a later explicit
 `create` can then use the observed clock. Allocation itself is never retried.
 
+`create` also takes an options table, whose only field is `reuse` (a boolean); any other field,
+or a value other than a table or `nil`, is an error. With options it returns `body, nil, origin`
+and, for a reuse that allocated instead, `miss`. `origin` is `"reused"` or `"allocated"`. Without
+options, or with `nil` in their place, it returns exactly the one value above. See
+[re-activating a parked body](#re-activating-a-parked-body).
+
+```lua
+local body, why, origin, miss = P.create(definition, {reuse = true})
+```
+
 `P.read(body)` returns a measured sample or `nil, why`:
 
 ```
@@ -100,7 +110,36 @@ back every shape mask, then parks the body keyframed. Closing the VM (an unload,
 plugin stopped for an error) releases all of its bodies: every plugin's close asks for that, and
 for a VM that never created a body it finds none and touches nothing native. A successful release
 means **retained and parked**, not destroyed. Without fresh ownership no old native handle is
-touched and the body is quarantined; such a body is not claimed to be stopped.
+touched and the body is quarantined; such a body is not claimed to be stopped. A body parked
+cleanly can come back under a new handle for the same VM; see below.
+
+### Re-activating a parked body
+
+`create(definition, {reuse = true})` needs `"world.physics.reuse"` as well as `"world.physics"`.
+It first looks among the bodies this VM instance parked itself, never another plugin's or another
+VM's, so a plugin reloaded since cannot reach them. A body qualifies when it was parked cleanly
+in the same world generation it was active in, was never quarantined or failed by a setter, and
+has exactly the requested capsules, mass and inertia, compared bit for bit; position and rotation
+may differ. Before writing anything, the service reads the body to prove it is still as `release`
+left it: allocated in its generation, keyframed, configured, with no pending force, velocity or
+spin, and every shape still its own, unowned, in no category and colliding with nothing. If that
+holds, the body is parked again and given its pose, world collisions, dynamic motion and a wake,
+the same writes that end a creation; mass, inertia, centre of mass and the shape owner are not set
+again. The plugin gets a new handle, and every handle, epoch and receipt of the old one is gone.
+
+When none qualifies, `create` allocates as it would without options, and `miss` says why, from
+the caller's own bodies only: `none_parked`, `definition_differs`, `world_changed`, `quarantined`
+(which also covers a body barred by an earlier failure) or `parked_body_changed` (the read above
+failed, and that body is barred from re-activation for good). Two refusals are fixed codes:
+
+| Code | Meaning |
+| --- | --- |
+| `body_reuse_pending` | A body that would qualify was parked fewer than two native steps ago. Nothing was reserved, written or allocated; ask again on a later tick. |
+| `body_reactivation_failed` | A write while re-activating did not hold. The body stays retained in quarantine, no handle is returned, and that world allows no more allocation, as after a partial creation. |
+
+A VM may ask to reuse once per tick; a second request that tick returns `nil, "asked to reuse a
+native body more than once in one tick"` without reaching the game. Plain `create` never reuses,
+so it is how a plugin asks for a new allocation.
 
 ### Refusal codes
 
@@ -136,12 +175,15 @@ a world-wide phase guarantee.
 
 Native callbacks use fixed process-lifetime storage and try-locks only: no Lua, JSON, allocation,
 formatting, logging or blocking lock. Eight allocation attempts are kept for the process lifetime,
-failed and partial ones included, and no slot or old-world handle is reused. The eight are shared
-by every plugin, every reload and every level: once they are used, `create` refuses until the game
-restarts, so a mod iterated with hot reload runs out after eight bodies. A native destructor is
-not known, so running out of slots is an explicit refusal, never a hidden allocation or a fake
+failed and partial ones included; no slot is given to another owner and no old-world handle is
+reused. The eight are shared by every plugin, every reload and every level: once they are used,
+`create` refuses until the game restarts, so a mod iterated with hot reload runs out after eight
+bodies. Eight native allocations stay the process cap, but a VM that asks for `reuse` can
+re-activate its own parked body in the same world instead of spending another. A native destructor
+is not known, so running out of slots is an explicit refusal, never a hidden allocation or a fake
 deletion. An uncertain constructor result stays quarantined even when the confirmed part can be
-parked, and a partial creation prohibits another allocation in that world.
+parked, and a partial creation or a failed re-activation prohibits another allocation in that
+world.
 
 Until a plugin calls `prepare` or `create`, the service's client tick only notes the client phase:
 it installs no hook, reads no multiplayer state and calls nothing native.
@@ -149,12 +191,22 @@ it installs no hook, reads no multiplayer state and calls nothing native.
 ## What is tested, and what is not
 
 `Engine/Game/World/Test/owned_body_tests.cpp` covers the definitions, the command mailbox and its
-receipts. `Extension/World/Test/owned_body_source_tests.cpp` runs the service itself over a
-constructed client, physics world and TLS. `Extension/Plugins/Test/plugin_tests.cpp` covers the Lua
-binding against a constructed game: opaque handles and epochs, bounds, pipelining, receipts,
-acknowledgement order, release on close, reload and the permission and server refusals.
+receipts, and which definitions count as the same body for reuse.
+`Extension/World/Test/owned_body_source_tests.cpp` runs the service itself over a constructed
+client, physics world and TLS. For reuse its setters are stand-ins that record each call and write
+its effect to the constructed arrays, so it pins which writes a re-activation makes and in what
+order, that another owner never gets the body, each rule and read that refuses one, a failure that
+blocks the world, the two-step wait and the eight-slot cap. `Extension/Plugins/Test/plugin_tests.cpp`
+covers the Lua binding against a constructed game: opaque handles and epochs, bounds, pipelining,
+receipts, acknowledgement order, release on close, reload, the reuse options, owner and quota, and
+the permission and server refusals.
 
 None of that runs the game, and this code has not been run in the game. Creation, measured reads,
 commands produced on the next step, torque, several compounds, a whole session of control, and the
 cleanup of an active body during unload, a world change or a partial failure are checked only
-against constructed worlds and values.
+against constructed worlds and values. Re-activation has been run in the game by one mod, a bike
+that creates one compound with `reuse` on each mount and releases it on each return: in five
+launches, every create made while its body was parked got that body back (5 of 5, no refusal), and
+the bike rode on it, fell and was returned again. In a sixth, twelve Mount and Return cycles made one
+allocation and eleven re-activations of the same body, with no refusal. Whether the game treats a
+body that was dynamic, parked and made dynamic again exactly like a new one has not been measured.
