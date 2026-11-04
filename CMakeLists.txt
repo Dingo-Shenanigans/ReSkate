@@ -494,7 +494,7 @@ if(DINGOSDK_BUILD_PLUGIN_TESTS)
         # The Linux plugins library leaves out finding plugins among the mods; the tests need it.
         target_sources(dingosdk_plugin_tests PRIVATE Extension/Plugins/plugin_discovery.cpp Engine/Vfs/mod_list.cpp)
     endif()
-    # It also runs the test plugins in contrib/plugins.
+    # Where its fixtures are (Extension/Plugins/Test/fixtures).
     target_compile_definitions(dingosdk_plugin_tests PRIVATE "RESKATE_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\"")
     add_test(NAME plugins COMMAND dingosdk_plugin_tests)
     # The item grids' search and order (Extension/Customization/item_browser_order.h), pure, so it

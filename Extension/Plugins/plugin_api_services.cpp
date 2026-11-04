@@ -25,8 +25,14 @@ Plugin& allowed(lua_State* L, const char* permission, const char* what) {
     return plugin;
 }
 std::uint64_t id_at(lua_State* L, int index) {
-    if (lua_isnumber(L, index)) return static_cast<std::uint64_t>(lua_tonumber(L, index));
-    // Steam IDs come as strings: a Lua number cannot hold one exactly.
+    // Steam IDs come as strings: a Lua number cannot hold one exactly (they are past 2^53), and one
+    // passed as a number came out as another player's. A number is taken only while it is exact.
+    if (lua_type(L, index) == LUA_TNUMBER) {
+        const double value = lua_tonumber(L, index);
+        if (!(value >= 0 && value <= 9007199254740992.0) || value != std::floor(value))
+            luaL_argerror(L, index, "a Steam ID is a string: a number cannot hold one exactly");
+        return static_cast<std::uint64_t>(value);
+    }
     const std::string text = luaL_checkstring(L, index);
     std::uint64_t out{};
     for (const char c : text) {

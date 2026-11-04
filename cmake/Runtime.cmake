@@ -301,10 +301,12 @@ find_program(DINGOSDK_CARGO cargo HINTS "$ENV{USERPROFILE}/.cargo/bin")
 set(dingosdk_spotify_dir "${PROJECT_SOURCE_DIR}/SpotifyHelper")
 if(WIN32 AND DINGOSDK_CARGO AND EXISTS "${dingosdk_spotify_dir}/Cargo.toml")
     set(dingosdk_spotify_lib "${dingosdk_spotify_dir}/target/release/reskate_spotify.lib")
+    # Every module of the library (stream.rs changed alone did not rebuild it when only lib.rs was named).
+    file(GLOB dingosdk_spotify_sources CONFIGURE_DEPENDS "${dingosdk_spotify_dir}/src/*.rs")
     add_custom_command(OUTPUT "${dingosdk_spotify_lib}"
         COMMAND "${DINGOSDK_CARGO}" build --release --lib
         WORKING_DIRECTORY "${dingosdk_spotify_dir}"
-        DEPENDS "${dingosdk_spotify_dir}/src/lib.rs" "${dingosdk_spotify_dir}/Cargo.toml" "${dingosdk_spotify_dir}/Cargo.lock"
+        DEPENDS ${dingosdk_spotify_sources} "${dingosdk_spotify_dir}/Cargo.toml" "${dingosdk_spotify_dir}/Cargo.lock"
         COMMENT "Building the Spotify device (cargo)"
         VERBATIM)
     add_custom_target(dingosdk_spotify_device DEPENDS "${dingosdk_spotify_lib}")
