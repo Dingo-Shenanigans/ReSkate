@@ -3350,7 +3350,7 @@ void reskates_own_reading_is_not_a_plugins_time() {
     {
         TestEnvironment environment;
         Limits limits;
-        limits.call_ms = 5;
+        limits.call_ms = limits.hang_ms = 5;
         Host host(environment, Side::client, limits);
         host.apply({package("big-module", {{manifest_file, manifest()}, {"plugin/main.lua", main}, {"plugin/big.lua", big}})});
         running(host, "big-module", environment);
@@ -3359,7 +3359,7 @@ void reskates_own_reading_is_not_a_plugins_time() {
     {
         TestEnvironment environment;
         Limits limits;
-        limits.call_ms = 5;
+        limits.call_ms = limits.hang_ms = 5;
         limits.io_ms = 0;
         Host host(environment, Side::client, limits);
         host.apply({package("big-module-counted", {{manifest_file, manifest()}, {"plugin/main.lua", main}, {"plugin/big.lua", big}})});
@@ -3368,7 +3368,7 @@ void reskates_own_reading_is_not_a_plugins_time() {
     {
         TestEnvironment environment;
         Limits limits;
-        limits.call_ms = 5;
+        limits.call_ms = limits.hang_ms = 5;
         limits.io_ms = 20;
         Host host(environment, Side::client, limits);
         host.apply({package("read-loop", {{manifest_file, manifest()}, {"plugin/main.lua", R"(while true do reskate.package.read("plugin/big.lua") end)"},
@@ -3377,9 +3377,40 @@ void reskates_own_reading_is_not_a_plugins_time() {
     }
 }
 
+// A call past call_ms is said, with where the script was, and goes on: one slow call (a hard disk,
+// Windows holding the game's thread) is no reason to stop a plugin. One past hang_ms is stopped,
+// saying where it was, and unload's own share of time still cuts its handlers off.
+void a_slow_call_is_said_and_a_hung_one_stopped() {
+    TestEnvironment environment;
+    Limits limits;
+    limits.call_ms = 5;
+    limits.hang_ms = 300;
+    Host host(environment, Side::client, limits);
+    host.apply({script("slow", R"(
+        local function spin(s) local t = os.clock() while os.clock() - t < s do end end
+        local n = 0
+        reskate.on("tick", function()
+            n += 1
+            if n == 1 then spin(0.03) end
+            if n == 3 then reskate.log("slow went on") end
+        end)
+    )"),
+                script("hung", R"(reskate.on("tick", function() while true do end end))")});
+    running(host, "slow", environment);
+    ticks(host, environment, 3);
+    running(host, "slow", environment);
+    check(environment.logged("[slow] the tick handler took") && environment.logged("over its 5 ms (at plugin/main.lua:") &&
+              environment.logged("ReSkate stops a plugin past 300 ms"),
+          "A slow call is said, with where it was\n" + environment.all());
+    check(environment.logged("slow went on"), "and the plugin goes on\n" + environment.all());
+    stopped(host, "hung", "the tick handler ran longer than 300 ms (at plugin/main.lua:1");
+}
+
 void a_runaway_plugin_is_stopped_and_the_rest_go_on() {
     TestEnvironment environment;
-    Host host(environment, Side::client);
+    Limits limits;
+    limits.hang_ms = limits.call_ms; // (a_slow_call_is_said_and_a_hung_one_stopped has the two apart)
+    Host host(environment, Side::client, limits);
     const auto start = std::chrono::steady_clock::now();
     host.apply({
         script("bystander", R"(local n = 0 reskate.on("tick", function() n += 1 if n == 30 then reskate.log("bystander ticked 30") end end))"),
@@ -3409,7 +3440,7 @@ void a_runaway_plugin_is_stopped_and_the_rest_go_on() {
     check(!environment.logged("survived the memory bomb"), "A memory bomb cannot be caught and carried on from");
     running(host, "tick_loop", environment);
     ticks(host, environment, 1);
-    stopped(host, "tick_loop", "the tick handler ran longer than 50 ms");
+    stopped(host, "tick_loop", "the tick handler ran longer than 50 ms (at plugin/main.lua:1");
     check(environment.logged("[tick_loop] stopped: the tick handler"), "A stop is logged, which the console shows");
     ticks(host, environment, 4); // five errors, with the tick above
     running(host, "errors", environment);
@@ -7884,6 +7915,7 @@ int main() {
         run(packages_json_and_modules);
         run(the_sandbox_holds);
         run(a_runaway_plugin_is_stopped_and_the_rest_go_on);
+        run(a_slow_call_is_said_and_a_hung_one_stopped);
         run(reskates_own_reading_is_not_a_plugins_time);
         run(a_plugin_over_its_time_budget_is_stopped);
         run(a_plugin_reloads_when_its_files_change);

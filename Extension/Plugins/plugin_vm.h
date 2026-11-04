@@ -29,7 +29,8 @@ enum class LogLevel { info, warn, error };
 
 struct Limits {
     std::size_t memory = 64u << 20;     // the VM's heap
-    double call_ms = 50;                // one call into the plugin (load, a handler, a command)
+    double call_ms = 50;                // one call into the plugin (load, a handler, a command): past it, said...
+    double hang_ms = 1000;              // ...and past this, stopped as a hang
     double io_ms = 250;                 // ReSkate's own reading and compiling in one call, kept out of call_ms up to this
     double unload_ms = 20;              // its unload handlers, together
     double tick_ms = 6;                 // the average time a tick, over a window of 1 s...
@@ -332,7 +333,9 @@ private:
     // Calls the function under the `count` arguments on top of the main stack; false (and the
     // error reported) when it raised one. Stops the plugin past its limits.
     // With `results`, those are left on the main stack when it returns true.
-    bool call(int count, std::string_view what, double limit_ms, int results = 0);
+    // A call past limit_ms is said, with where the script was, and goes on; one past
+    // limits_.hang_ms is stopped. With `strict` (unload's share of its time) limit_ms stops it.
+    bool call(int count, std::string_view what, double limit_ms, int results = 0, bool strict = false);
     void report(std::string_view what, std::string_view message);
     // reskate.log and console.print: at most limits_.log_lines_per_second lines between them.
     bool count_line();
@@ -360,7 +363,10 @@ private:
     std::size_t memory_{};
     Halt halt_{Halt::none};
     bool memory_exceeded_{};
-    Clock::time_point deadline_{};
+    Clock::time_point deadline_{};  // past it, the call is stopped
+    Clock::time_point slow_after_{}; // past it, the call is said (Plugin::call)
+    std::optional<std::string> slow_at_; // where the script was when it passed slow_after_
+    double slow_told_{-1e9};          // a slow call is said at most every 10 s
     Clock::duration untimed_{}; // of limits_.io_ms, used by this call
     bool timed_{};
     unsigned interrupts_{};
