@@ -73,7 +73,7 @@ Status status(std::string_view owner, std::uint32_t id);
 bool ready(std::string_view owner);
 // The names of the world object blueprints the game has loaded now (what `set` can make), those
 // starting with `prefix` (ASCII case ignored), sorted, at most `most`. Read from every asset
-// domain's named-asset table; kept for two seconds.
+// domain's named-asset table, only in an active level; kept for 30 s or until the level changes.
 std::vector<std::string> blueprints(std::uintptr_t base, std::string_view prefix, std::size_t most, bool meshes_only = false);
 // A world object blueprint's mesh box in its own frame (min, max), when it has a mesh and the mesh
 // is loaded; empty for one that shows nothing, or that is not loaded. Answers are kept a few seconds
