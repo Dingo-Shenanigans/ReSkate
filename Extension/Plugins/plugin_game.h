@@ -890,7 +890,7 @@ public:
     struct JointOffset {
         std::uint16_t joint{};
         std::array<float, 4> rotation{0, 0, 0, 1};
-        float scale{1};
+        Vec3 scale{1, 1, 1}; // each of its own axes
         Vec3 offset{}; // added to its position, in its parent's frame
         std::optional<pose_place::Place> place; // set instead of added, after the above
         bool keep_children{};                   // its children stay where they were in the world

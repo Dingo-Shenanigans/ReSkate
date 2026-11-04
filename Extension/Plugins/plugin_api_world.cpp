@@ -1623,11 +1623,16 @@ struct WorldApi {
                     o.rotation = anim_studio::from_euler({a[0], a[1], a[2]});
                 }
                 lua_pop(L, 1);
+                // A number for every axis alike, or a vector: each of the joint's own axes.
                 lua_getfield(L, at, "scale");
-                if (!lua_isnil(L, -1)) {
-                    const double s = luaL_checknumber(L, -1);
+                if (lua_isnumber(L, -1)) {
+                    const double s = lua_tonumber(L, -1);
                     if (!(s >= 0 && s <= 10)) luaL_error(L, "a joint's scale is 0 to 10");
-                    o.scale = static_cast<float>(s);
+                    o.scale = {static_cast<float>(s), static_cast<float>(s), static_cast<float>(s)};
+                } else if (!lua_isnil(L, -1)) {
+                    o.scale = position_of(L, lua_gettop(L), "a joint's scale");
+                    for (const auto v : o.scale)
+                        if (!(v >= 0 && v <= 10)) luaL_error(L, "a joint's scale is 0 to 10 on each axis");
                 }
                 lua_pop(L, 1);
                 lua_getfield(L, at, "offset");

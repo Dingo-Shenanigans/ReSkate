@@ -806,8 +806,7 @@ void on_animation(std::uintptr_t component) noexcept {
                 auto& j = pose[o.joint];
                 j.rotation = normalised(multiply(j.rotation, slerp(Quat{0, 0, 0, 1}, o.rotation, w)));
                 // Never quite 0: a joint at scale 0 has no inverse. This small, it is as good as gone.
-                const float s = std::max(1.0f + (o.scale - 1.0f) * w, smallest_scale);
-                for (auto& k : j.scale) k *= s;
+                for (std::size_t a = 0; a < 3; ++a) j.scale[a] *= std::max(1.0f + (o.scale[a] - 1.0f) * w, smallest_scale);
                 for (std::size_t a = 0; a < 3; ++a) j.position[a] += o.offset[a] * w;
                 if (o.place) pose_place::apply(pose, o.joint, *o.place, w);
                 if (o.keep_children) {
