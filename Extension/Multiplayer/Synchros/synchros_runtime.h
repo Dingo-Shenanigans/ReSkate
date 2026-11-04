@@ -45,4 +45,9 @@ void block_player(std::uint64_t player);
 void empty_cache();
 [[nodiscard]] std::uint64_t cache_bytes();
 
+// The "synchros" console command: status, share on|off, show on|off, code, new-code, add <code>,
+// remove <code>, codes, group create <name> | join <code> [name] | leave <n> | new-code <n>, groups,
+// paired, unpair <SteamID>, block <SteamID>, unblock <SteamID>, cache, empty-cache.
+[[nodiscard]] std::string console_command(std::string_view text);
+
 } // namespace dingosdk::multiplayer::synchros

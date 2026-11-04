@@ -12,7 +12,7 @@
 #include <set>
 
 // Skate Synchros runs on side connections, which the in-memory transport does not have.
-namespace dingosdk::multiplayer {
+namespace dingosdk::multiplayer::session_detail {
 void update_synchros(Session &, std::uint64_t) {}
 }
 

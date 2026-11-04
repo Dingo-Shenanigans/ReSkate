@@ -339,4 +339,153 @@ std::uint64_t cache_bytes() {
     return s.cache->size();
 }
 
+namespace {
+std::vector<std::string> words(std::string_view text) {
+    std::vector<std::string> out;
+    std::string word;
+    for (const char c : text) {
+        if (c == ' ' || c == '\t') {
+            if (!word.empty()) out.push_back(std::move(word));
+            word.clear();
+        } else {
+            word += c;
+        }
+    }
+    if (!word.empty()) out.push_back(std::move(word));
+    return out;
+}
+std::optional<std::uint64_t> steam_id(const std::string& text) {
+    try {
+        std::size_t used = 0;
+        const auto id = std::stoull(text, &used);
+        if (used == text.size() && id) return id;
+    } catch (...) {}
+    return std::nullopt;
+}
+std::string join_lines(const std::vector<std::string>& lines) {
+    std::string out;
+    for (const auto& line : lines) out += (out.empty() ? "" : "\n") + line;
+    return out;
+}
+} // namespace
+
+std::string console_command(std::string_view text) {
+    const auto w = words(text);
+    const auto verb = w.empty() ? std::string("status") : w[0];
+    const auto arg = [&](std::size_t i) { return i < w.size() ? w[i] : std::string(); };
+    const auto rest = [&](std::size_t from) {
+        std::string out;
+        for (auto i = from; i < w.size(); ++i) out += (out.empty() ? "" : " ") + w[i];
+        return out;
+    };
+    const auto on_off = [&](bool Settings::*flag, const char* what) {
+        const auto value = arg(1);
+        if (value != "on" && value != "off") return std::string("Say on or off.");
+        return change([&](Settings& s) {
+            s.*flag = value == "on";
+            return std::string(what) + " " + value + ".";
+        });
+    };
+    if (verb == "status") return join_lines(report());
+    if (verb == "share") return on_off(&Settings::share, "Share my outfit");
+    if (verb == "show") return on_off(&Settings::show, "Show shared outfits");
+    if (verb == "code") {
+        const auto s = settings();
+        if (s.own_code.empty()) return "No code yet: turn sharing on (synchros share on) to get one.";
+        return "Your code: " + show_code(s.own_code, CodeKind::personal) + " (give it to whoever may see your outfit).";
+    }
+    if (verb == "new-code")
+        return change([](Settings& s) {
+            return "Your new code: " + renew_code(s) + ". Players already paired stay until you remove them.";
+        });
+    if (verb == "add")
+        return change([&](Settings& s) {
+            const auto why = enter_code(s, rest(1));
+            return why.empty() ? std::string("Code added: you will see that player's outfit when you are in a session together.") : why;
+        });
+    if (verb == "remove")
+        return change([&](Settings& s) {
+            const auto symbols = read_code(rest(1), CodeKind::personal);
+            const auto before = s.entered.size();
+            if (symbols) std::erase(s.entered, *symbols);
+            return before != s.entered.size() ? std::string("Code removed.") : std::string("You have no such code.");
+        });
+    if (verb == "codes") {
+        const auto s = settings();
+        std::vector<std::string> lines{std::to_string(s.entered.size()) + " codes entered:"};
+        for (const auto& code : s.entered) lines.push_back("  " + show_code(code, CodeKind::personal));
+        return join_lines(lines);
+    }
+    if (verb == "group") {
+        const auto what = arg(1);
+        if (what == "create")
+            return change([&](Settings& s) {
+                const auto shown = create_group(s, rest(2));
+                return shown.empty() ? std::string("You are in as many groups as there can be.")
+                                     : "Group made. Its code: " + shown + " (everyone who enters it sees everyone else's outfit).";
+            });
+        if (what == "join")
+            return change([&](Settings& s) {
+                const auto why = join_group(s, arg(2), rest(3));
+                return why.empty() ? std::string("Joined the group.") : why;
+            });
+        const auto index = [&]() -> std::optional<std::size_t> {
+            try {
+                const auto n = std::stoul(arg(2));
+                if (n >= 1) return n - 1;
+            } catch (...) {}
+            return std::nullopt;
+        }();
+        if (what == "leave" || what == "new-code") {
+            if (!index) return "Say which group, by its number in synchros groups.";
+            return change([&](Settings& s) {
+                if (*index >= s.groups.size()) return std::string("There is no such group.");
+                if (what == "leave") {
+                    leave_group(s, *index);
+                    return std::string("Left the group.");
+                }
+                const auto shown = renew_group_code(s, *index);
+                return shown.empty() ? std::string("Only the PC that made a group can give it a new code.")
+                                     : "The group's new code: " + shown + ". Give it to everyone still meant to be in it.";
+            });
+        }
+        return "synchros group create <name> | join <code> [name] | leave <n> | new-code <n>";
+    }
+    if (verb == "groups") {
+        const auto s = settings();
+        std::vector<std::string> lines{std::to_string(s.groups.size()) + " groups:"};
+        for (std::size_t i = 0; i < s.groups.size(); ++i)
+            lines.push_back("  " + std::to_string(i + 1) + ". " + s.groups[i].name + "  " + show_code(s.groups[i].code, CodeKind::group) +
+                            (s.groups[i].created ? "  (made here)" : ""));
+        return join_lines(lines);
+    }
+    if (verb == "paired") {
+        const auto s = settings();
+        std::vector<std::string> lines{std::to_string(s.paired.size()) + " players have your code:"};
+        for (const auto id : s.paired) lines.push_back("  " + std::to_string(id));
+        return join_lines(lines);
+    }
+    if (verb == "unpair" || verb == "unblock") {
+        const auto id = steam_id(arg(1));
+        if (!id) return "Say the player's SteamID64.";
+        return change([&](Settings& s) {
+            auto& list = verb == "unpair" ? s.paired : s.blocked;
+            return list.erase(*id) ? std::string("Done.") : std::string("That player is not on the list.");
+        });
+    }
+    if (verb == "block") {
+        const auto id = steam_id(arg(1));
+        if (!id) return "Say the player's SteamID64.";
+        block_player(*id);
+        return "Blocked: they neither see your outfit nor show theirs, and what you had of theirs is gone.";
+    }
+    if (verb == "cache") return "Received outfits take " + std::to_string(cache_bytes() / 1000000) + " MB.";
+    if (verb == "empty-cache") {
+        empty_cache();
+        return "Emptied: shared outfits show as stand-ins again from the next level load.";
+    }
+    return "synchros status | share on|off | show on|off | code | new-code | add <code> | remove <code> | codes | "
+           "group ... | groups | paired | unpair <id> | block <id> | unblock <id> | cache | empty-cache";
+}
+
 } // namespace dingosdk::multiplayer::synchros

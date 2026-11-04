@@ -1,7 +1,7 @@
 #include "session_internal.h"
 #include "Extension/Multiplayer/Synchros/synchros_runtime.h"
 
-namespace dingosdk::multiplayer {
+namespace dingosdk::multiplayer::session_detail {
 namespace {
 std::set<std::string> worn_items(const Appearance& appearance) {
     std::set<std::string> keys;
@@ -15,6 +15,7 @@ std::set<std::string> worn_items(const Appearance& appearance) {
 // Skate Synchros (Extension/Multiplayer/Synchros): who is in the session and what they wear, each
 // update. It runs on its own side connections, never on the session's links.
 void update_synchros(Session& s, std::uint64_t) {
+    namespace synchros = dingosdk::multiplayer::synchros;
     synchros::SessionView view;
     view.playing = s.mode == Mode::host || s.mode == Mode::join;
     view.session = s.secret;
@@ -38,4 +39,4 @@ void update_synchros(Session& s, std::uint64_t) {
     }
     synchros::tick(s.transport, view);
 }
-} // namespace dingosdk::multiplayer
+} // namespace dingosdk::multiplayer::session_detail
