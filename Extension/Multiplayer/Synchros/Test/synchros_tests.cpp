@@ -4,6 +4,7 @@
 #include "Extension/Multiplayer/Synchros/received.h"
 #include "Extension/Multiplayer/Synchros/wearer.h"
 #include "Extension/Multiplayer/Synchros/exchange.h"
+#include "Extension/Multiplayer/Synchros/settings_file.h"
 #include <deque>
 #include "Engine/Resource/bundle_ref_table.h"
 #include <cstring>
@@ -624,6 +625,25 @@ void two_players_exchange_an_outfit_end_to_end() {
     std::filesystem::remove_all(root);
 }
 
+void settings_survive_a_restart() {
+    Settings s;
+    s.share = true;
+    s.own_code = *read_code(make_code(CodeKind::personal), CodeKind::personal);
+    s.paired = {them, other};
+    s.entered.push_back(*read_code(make_code(CodeKind::personal), CodeKind::personal));
+    check(!create_group(s, "Sk8 Crew").empty(), "a group");
+    s.blocked = {76561198000000009ULL};
+    const auto file = std::filesystem::temp_directory_path() / "synchros-settings-test" / "settings.json";
+    check(save_settings(file, s), "saved");
+    const auto back = load_settings(file);
+    check(back.share == s.share && back.show == s.show && back.own_code == s.own_code && back.paired == s.paired &&
+          back.entered == s.entered && back.groups == s.groups && back.blocked == s.blocked, "read back as saved");
+    check(!settings_from_json("not json").share, "an unreadable file is the defaults");
+    const auto bad = settings_from_json(R"({"share":true,"own_code":"XXXX","codes":["nope", 5],"groups":[{"code":"bad"}],"paired":["0","x"]})");
+    check(bad.share && bad.own_code.empty() && bad.entered.empty() && bad.groups.empty() && bad.paired.empty(), "bad entries are left out");
+    std::filesystem::remove_all(file.parent_path());
+}
+
 int main() {
     try {
         codes_look_right_and_read_back();
@@ -642,6 +662,7 @@ int main() {
         the_cache_keeps_files_by_content_and_wearer();
         the_wearer_sends_only_what_is_worn_and_offered();
         two_players_exchange_an_outfit_end_to_end();
+        settings_survive_a_restart();
     } catch (const std::exception& e) {
         std::cerr << "synchros: " << e.what() << '\n';
         return 1;

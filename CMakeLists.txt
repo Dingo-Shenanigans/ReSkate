@@ -79,9 +79,10 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS)
     add_executable(dingosdk_synchros_tests Extension/Multiplayer/Synchros/Test/synchros_tests.cpp
         Extension/Multiplayer/Synchros/share_code.cpp Extension/Multiplayer/Synchros/synchros_wire.cpp
         Extension/Multiplayer/Synchros/received.cpp Extension/Multiplayer/Synchros/wearer.cpp
-        Extension/Multiplayer/Synchros/exchange.cpp
+        Extension/Multiplayer/Synchros/exchange.cpp Extension/Multiplayer/Synchros/settings_file.cpp
         Engine/Resource/bundle_ref_table.cpp)
     target_include_directories(dingosdk_synchros_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_link_libraries(dingosdk_synchros_tests PRIVATE dingosdk_json)
     if(WIN32)
         target_link_libraries(dingosdk_synchros_tests PRIVATE bcrypt)
     else()
