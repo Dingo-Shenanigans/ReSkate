@@ -2275,8 +2275,8 @@ void trainer_page(SkateMenu &menu, const Model &model, const CallbacksV3 &callba
         ImGui::EndChild();
         ImGui::PopStyleColor(2);
     }
-    // Everything that changes how the game plays, said in words. The first parts are the trainer's own; the cheats,
-    // grind exits, Board Break and the game speed are ReSkate's and count all the same.
+    // Everything that changes how the game plays, said in words. The first parts are the trainer's own; the cheats
+    // and the game speed are ReSkate's and count all the same.
     const double speed = game_speed(model);
     std::string what;
     const auto add = [&](const std::string &part) { what += (what.empty() ? "" : ", ") + part; };
@@ -2300,13 +2300,13 @@ void trainer_page(SkateMenu &menu, const Model &model, const CallbacksV3 &callba
     if (ImGui::Button("RESET EVERYTHING")) {
         clear_edits(p);
         trainer_command(menu, callbacks, "reset everything");
-        // The cheats, grind exits, Board Break and the game speed change how the game plays too: off with the rest.
+        // The cheats and the game speed change how the game plays too: off with the rest.
         for (const auto &line : cheats) cheat_off(menu, callbacks, line);
         if (callbacks.queue_debug && model.debug.probe) debug_request(menu, callbacks, {DebugAction::set_probe_enabled, false});
         if (std::abs(speed - 1.0) > 1e-3) send_console(menu, callbacks, "reset SimulationTime.TimeScale");
     }
-    tip("Puts back every value, lock, preset, dial, trick, grind, transition and bending setting, turns No Bail, Noclip, Dark Pop, Revert Boost, "
-        "grind exit triggers and Board Break off, puts the boosts back to 0 (off), sets the "
+    tip("Puts back every value, lock, preset, dial, trick, grind, transition and bending setting, turns No Bail, Noclip, Dark Pop and "
+        "Revert Boost off, puts the boosts back to 0 (off), sets the "
         "game speed to normal and stops loading a preset on this map: the game exactly as it shipped. Your saved presets are kept, and so are your "
         "game's own settings.");
     ImGui::EndDisabled();

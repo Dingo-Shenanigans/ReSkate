@@ -11,7 +11,7 @@
 #include <string>
 #include <vector>
 
-// Research aid for screen captures (`capture depth`; Fit Check's `fitcheck depth`), in development
+// Research aid for screen captures (`capture depth`), in development
 // builds only (DINGOSDK_DEV_TOOLS): where the game keeps its depth while it draws a
 // frame, for cutting the board or skater out exactly. Each time a depth buffer the size of the
 // screen (or near it) stops being written to over the next two frames (a transition barrier out of
@@ -152,7 +152,7 @@ void write_snapshots(detail::State& s) {
         std::lock_guard lock(p.mutex);
         p.spare.clear();
     }
-    logging::printf(logging::Level::info, logging::Channel::graphics, "Fit Check depth probe: %zu depth picture(s) and depth-probe.txt written.",
+    logging::printf(logging::Level::info, logging::Channel::graphics, "Depth probe: %zu depth picture(s) and depth-probe.txt written.",
                     snapshots.size());
 }
 } // namespace
@@ -274,7 +274,7 @@ void depth_probe_present(State& s, std::uint32_t width, std::uint32_t height) {
     auto& p = probe();
     if (!depth_barrier_hooked()) {
         if (p.requested.exchange(false))
-            logging::printf(logging::Level::warning, logging::Channel::graphics, "Fit Check depth probe: no barrier hook, nothing to probe.");
+            logging::printf(logging::Level::warning, logging::Channel::graphics, "Depth probe: no barrier hook, nothing to probe.");
         return;
     }
     if (p.requested.exchange(false)) {
@@ -304,7 +304,7 @@ void depth_probe_present(State& s, std::uint32_t width, std::uint32_t height) {
             p.spare.push_back(std::move(buffer));
         }
         if (p.spare.empty()) {
-            logging::printf(logging::Level::warning, logging::Channel::graphics, "Fit Check depth probe: no readback buffer could be made (0x%08lx).",
+            logging::printf(logging::Level::warning, logging::Channel::graphics, "Depth probe: no readback buffer could be made (0x%08lx).",
                             static_cast<unsigned long>(made));
             return;
         }
