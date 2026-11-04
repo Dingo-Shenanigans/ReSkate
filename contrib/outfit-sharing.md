@@ -4,7 +4,9 @@ Players see each other's modded outfits in multiplayer, as the wearer sees them,
 installing the wearer's mods. Today a peer's item this PC does not have becomes a stand-in
 (`Extension/Multiplayer/Remote/stand_ins.h`), so a modded outfit is only ever seen by its wearer.
 
-Status: design, with the first measurements. Nothing here is built yet.
+Status: the parts that need no game running are built and tested (codes, groups, who sees whom,
+the messages, the item cutter, preset rows). The cache layer, the Steam
+connection, the settings page and dressing remote skaters are not built yet.
 
 ## What it does
 
@@ -116,16 +118,33 @@ the player installed.
   skips every key from the layer, so a received item is never owned, listed or wearable.
 - The layer is used to dress remote skaters only. Nothing in it is sent on, saved, or counted.
 
-## What is refused
+## What is refused, and why it stays refused
 
-- **Store items.** The wearer runs the store-copy check on each worn item before sending, and the
-  viewer runs it again on what it receives (`StoreItems::original`, `StoreMeshes`). A copy of a
-  store item is neither sent nor shown, and the viewer drops the whole closure.
-- **Anything but cosmetics.** A closure holds item definitions, presets, textures, meshes and
-  their chunks. Scripts, plugins, settings, levels and UI are not part of any closure, and a
-  received file of any other kind drops the closure.
-- **Blocked players.** Blocking a player on the session list stops their outfit at once and
-  drops what was received from them.
+ReSkate keeps other players' cosmetics out today for reasons that still hold. Each one, and what
+keeps it true here:
+
+- **Paid store items stay locked** (AGENTS.md, "Nothing that unlocks what the game sells").
+  - The wearer only has items that passed its own merge, which leaves out any mod with a copy of
+    a store item (merge check 0x5343, `Engine/Vfs/mod_store_copies.h`).
+  - The viewer trusts none of that. What it receives becomes a layer of its own merge and goes
+    through the **same store-copy check as an installed mod**, items and meshes alike. A copy of
+    a store item is not shown; the whole outfit from that player is dropped.
+  - Received items are never the viewer's: the local catalogue skips every key from the layer,
+    so they are not in the wardrobe, cannot be worn, equipped, saved or sent on.
+  - The game's own items are never sent (`Withheld::game_item`): the viewer has them already,
+    and what the viewer owns of them is untouched.
+- **Only from people you chose.** Off by default, both ends: nobody's outfit is shown without a
+  code they gave you, and blocking a player drops their outfit at once and empties what was
+  cached from them. Plugins are never sent.
+- **The plugin sandbox is untouched.** No `reskate.*` API is added; plugins cannot read the cache,
+  send files or dress other players, exactly as today.
+- **The host and the server carry nothing.** Outfits go on a Steam connection of their own between
+  the two players, relayed by Steam (no IP addresses exchanged), with size limits per file, per
+  outfit and per message. A session's host sees no difference.
+- **Mods are not handed out as packs.** Only the pieces of the items worn are sent, only to players
+  holding the wearer's code, into a content-addressed cache that is not a mod folder and is
+  trimmed to its size limit. (What a PC displays can always be pulled out by someone determined;
+  that is as true of an installed mod.)
 
 ## Settings page
 
