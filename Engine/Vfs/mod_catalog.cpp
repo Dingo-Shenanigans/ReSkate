@@ -372,7 +372,7 @@ Catalog load_catalog(const std::filesystem::path& data_root, const MergeObserver
         // everything else, so they never win over anything installed. They are merged and checked
         // for store copies like any mod, each wearer's on its own.
         for (const auto& folder : synchros::outfit_folders(data_root / mods_folder / synchros::synchros_folder / "mods")) {
-            auto mod = describe_mod(folder.directory, synchros::outfit_mod_prefix + std::to_string(folder.wearer), result.notes);
+            auto mod = describe_mod(folder.directory, folder.mod_name(), result.notes);
             mod.title = "Skate Synchros: shared outfit";
             list.entries.push_back({std::move(mod), true});
         }

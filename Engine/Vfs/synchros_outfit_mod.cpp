@@ -422,32 +422,84 @@ OutfitMod write_outfit_mod(const fs::path& directory, std::uint64_t wearer, cons
     return result;
 }
 
+namespace {
+// "<id>.<n>" -> (id, n)
+std::optional<std::pair<std::uint64_t, std::uint32_t>> folder_name(const std::string& name) {
+    const auto dot = name.find('.');
+    if (dot == std::string::npos || dot == 0 || dot + 1 >= name.size()) return std::nullopt;
+    const auto digits = [](std::string_view text) {
+        return !text.empty() && text.size() <= 20 && std::all_of(text.begin(), text.end(), [](char c) { return c >= '0' && c <= '9'; });
+    };
+    const auto id = std::string_view(name).substr(0, dot), n = std::string_view(name).substr(dot + 1);
+    if (!digits(id) || !digits(n) || n.size() > 9) return std::nullopt;
+    try {
+        return std::pair{std::stoull(std::string(id)), static_cast<std::uint32_t>(std::stoul(std::string(n)))};
+    } catch (...) {
+        return std::nullopt;
+    }
+}
+} // namespace
+
+std::string OutfitFolder::mod_name() const {
+    return std::string(outfit_mod_prefix) + std::to_string(wearer) + "." + std::to_string(version);
+}
+
 std::vector<OutfitFolder> outfit_folders(const fs::path& root) {
-    std::vector<OutfitFolder> out;
+    std::map<std::uint64_t, OutfitFolder> newest;
+    std::vector<fs::path> older;
     std::error_code ec;
-    if (!fs::is_directory(root, ec)) return out;
+    if (!fs::is_directory(root, ec)) return {};
     for (auto it = fs::directory_iterator(root, ec); !ec && it != fs::directory_iterator(); it.increment(ec)) {
         if (!it->is_directory(ec)) continue;
-        const auto name = it->path().filename().string();
-        if (name.empty() || !std::all_of(name.begin(), name.end(), [](char c) { return c >= '0' && c <= '9'; })) continue;
+        const auto parsed = folder_name(it->path().filename().string());
+        if (!parsed) continue;   // (a version still being written ends in ".building")
         std::ifstream in(it->path() / outfit_marker_file);
         if (!in) continue;
-        OutfitFolder folder;
-        try {
-            folder.wearer = std::stoull(name);
-        } catch (...) {
-            continue;
-        }
-        folder.directory = it->path();
+        OutfitFolder folder{parsed->first, parsed->second, it->path(), {}};
         std::string line;
         while (std::getline(in, line)) {
             if (!line.empty() && line.back() == '\r') line.pop_back();
             if (line.starts_with("item=")) folder.items.push_back(lower(line.substr(5)));
         }
-        out.push_back(std::move(folder));
+        auto [at, fresh] = newest.try_emplace(folder.wearer, folder);
+        if (fresh) continue;
+        if (at->second.version < folder.version) {
+            older.push_back(at->second.directory);
+            at->second = std::move(folder);
+        } else {
+            older.push_back(folder.directory);
+        }
     }
-    std::sort(out.begin(), out.end(), [](const OutfitFolder& a, const OutfitFolder& b) { return a.wearer < b.wearer; });
+    for (const auto& path : older) fs::remove_all(path, ec);
+    std::vector<OutfitFolder> out;
+    for (auto& [wearer, folder] : newest) out.push_back(std::move(folder));
     return out;
+}
+
+fs::path next_outfit_folder(const fs::path& root, std::uint64_t wearer) {
+    std::uint32_t next = 1;
+    std::error_code ec;
+    if (fs::is_directory(root, ec))
+        for (auto it = fs::directory_iterator(root, ec); !ec && it != fs::directory_iterator(); it.increment(ec)) {
+            auto name = it->path().filename().string();
+            if (name.ends_with(".building")) name.resize(name.size() - 9);
+            const auto parsed = folder_name(name);
+            if (parsed && parsed->first == wearer) next = std::max(next, parsed->second + 1);
+        }
+    return root / (std::to_string(wearer) + "." + std::to_string(next));
+}
+
+void remove_outfit_folders(const fs::path& root, std::uint64_t wearer) {
+    std::error_code ec;
+    if (!fs::is_directory(root, ec)) return;
+    std::vector<fs::path> gone;
+    for (auto it = fs::directory_iterator(root, ec); !ec && it != fs::directory_iterator(); it.increment(ec)) {
+        auto name = it->path().filename().string();
+        if (name.ends_with(".building")) name.resize(name.size() - 9);
+        const auto parsed = folder_name(name);
+        if (parsed && parsed->first == wearer) gone.push_back(it->path());
+    }
+    for (const auto& path : gone) fs::remove_all(path, ec);
 }
 
 } // namespace dingosdk::synchros

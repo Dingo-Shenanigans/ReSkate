@@ -16,7 +16,11 @@
 // Everything Skate Synchros keeps is under Mods/.synchros: not Mods/.reskate, which every merge
 // empties, and a dot folder, which is never listed as a mod.
 //   Mods/.synchros/cache/        the received files (Extension/Multiplayer/Synchros/received.h)
-//   Mods/.synchros/mods/<id>/    one mod per wearer
+//   Mods/.synchros/mods/<id>.<n>/  one mod per wearer, a new folder for each version
+//
+// A version is never rewritten in place: a merge while the game runs keeps where it put a mod's
+// archives by the mod's name (mod_merge.cpp), so a changed mod under the same name would be read
+// at the old places. Each version is a mod of its own (synchros-<id>.<n>); the older ones go.
 //
 // One mod per wearer, so a wearer whose files
 // cannot be merged (or that the store-copy check refuses) loses only their own outfit. The mods are
@@ -83,13 +87,20 @@ struct OutfitMod {
                                          const std::filesystem::path& game, const std::vector<OutfitItem>& items,
                                          const ReadReceived& read);
 
-// The received outfits' mod folders under `root` (Mods/.synchros/mods), by wearer.
+// The received outfits' mod folders under `root` (Mods/.synchros/mods): the newest version of
+// each wearer's, by wearer. Older versions are removed.
 struct OutfitFolder {
     std::uint64_t wearer{};
+    std::uint32_t version{};
     std::filesystem::path directory;
     std::vector<std::string> items;   // from its marker
+    [[nodiscard]] std::string mod_name() const;
 };
 [[nodiscard]] std::vector<OutfitFolder> outfit_folders(const std::filesystem::path& root);
+// Where the next version of `wearer`'s mod goes.
+[[nodiscard]] std::filesystem::path next_outfit_folder(const std::filesystem::path& root, std::uint64_t wearer);
+// Removes every version of `wearer`'s mod (blocked, or the cache emptied).
+void remove_outfit_folders(const std::filesystem::path& root, std::uint64_t wearer);
 
 // SHA-1, as the bundle manifests list a payload's (of its decoded bytes).
 [[nodiscard]] std::array<std::uint8_t, 20> sha1(std::span<const std::byte> bytes);
