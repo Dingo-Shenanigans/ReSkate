@@ -19,6 +19,7 @@ std::string settings_json(const Settings& s) {
     auto root = Json::object();
     root["share"] = s.share;
     root["show"] = s.show;
+    root["reload_on_arrival"] = s.reload_on_arrival;
     root["own_code"] = s.own_code;
     auto paired = Json::array();
     for (const auto id : s.paired) paired.push_back(std::to_string(id));
@@ -65,6 +66,7 @@ Settings settings_from_json(std::string_view text) {
     };
     s.share = flag("share");
     s.show = flag("show");
+    s.reload_on_arrival = !root.contains("reload_on_arrival") || flag("reload_on_arrival");
     if (root.contains("own_code") && root.at("own_code").is_string() && valid_symbols(root.at("own_code").string(), CodeKind::personal))
         s.own_code = root.at("own_code").string();
     ids("paired", s.paired);

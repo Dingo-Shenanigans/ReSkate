@@ -129,6 +129,9 @@ struct State {
     // from the next level load).
     std::atomic<int> writing{};
     std::atomic<bool> apply_wanted{};
+    // An outfit arrived (not only one removed): with reload_on_arrival the map is loaded again.
+    std::atomic<bool> arrived{};
+    std::uint64_t last_ready{}, last_reload{};
 
     void load() {
         if (loaded) return;
@@ -160,6 +163,7 @@ void write_outfit(std::uint64_t wearer) {
             if (made.written) {
                 log("Skate Synchros: " + std::to_string(made.items.size()) + " of " + std::to_string(wearer) +
                     "'s items made into a mod; they show from the next level load");
+                s.arrived = true;
                 s.apply_wanted = true;
             } else {
                 log("Skate Synchros: " + std::to_string(wearer) + "'s outfit could not be made into a mod: " + made.problem);
@@ -259,9 +263,17 @@ void tick(SteamTransport& transport, const SessionView& view) {
     for (const auto& message : transport.side_receive()) s.exchange->received(message.peer, message.bytes);
     s.exchange->tick();
     if (s.exchange->take_settings_changed()) s.save();
-    if (s.apply_wanted && !s.writing && !live_mods::busy()) {
+    // Outfits are applied together: a few seconds after the last was made into a mod, and with a
+    // reload at most once a minute, so a lobby full of arrivals is not a string of loading screens.
+    if (s.arrived && !s.last_ready) s.last_ready = now;
+    if (s.apply_wanted && !s.writing && !live_mods::busy() && (!s.last_ready || now - s.last_ready > 3000)) {
+        const bool reload = s.arrived && s.settings.reload_on_arrival && (!s.last_reload || now - s.last_reload > 60000);
         s.apply_wanted = false;
-        log("Skate Synchros: applying received outfits: " + live_mods::apply(false));
+        s.arrived = false;
+        s.last_ready = 0;
+        if (reload) s.last_reload = now;
+        log("Skate Synchros: applying received outfits" + std::string(reload ? ", and loading the map again to show them: " : ": ") +
+            live_mods::apply(reload));
     }
 }
 

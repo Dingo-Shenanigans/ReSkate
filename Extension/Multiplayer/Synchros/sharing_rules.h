@@ -35,6 +35,9 @@ struct Settings {
     std::vector<std::string> entered;   // personal codes others gave this player, twelve symbols each
     std::vector<Group> groups;
     std::set<std::uint64_t> blocked;    // neither sent to nor shown, whatever else says
+    // Show an outfit as soon as it has arrived, by loading the map again for this player alone (a
+    // few seconds); otherwise it shows from the next map.
+    bool reload_on_arrival{true};
 };
 
 // What one session knows of who proved a group code to this player: only for that session, so

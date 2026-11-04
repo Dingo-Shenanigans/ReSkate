@@ -96,6 +96,13 @@ void outfits_page(SkateMenu& menu, const Model& model) {
         said(synchros::change([&](synchros::Settings& x) { x.share = share; return std::string(share ? "Sharing your outfit." : "Not sharing your outfit."); }));
     if (toggle_row(menu, "Show shared outfits", "See the modded items of players whose code you have, or who are in a group with you.", show))
         said(synchros::change([&](synchros::Settings& x) { x.show = show; return std::string(show ? "Showing shared outfits." : "Not showing shared outfits."); }));
+    bool straight_away = s.reload_on_arrival;
+    ImGui::BeginDisabled(!s.show);
+    if (toggle_row(menu, "Show arrivals straight away",
+                   "Loads the map again for you alone, for a few seconds, as soon as a player's outfit has arrived "
+                   "(at most once a minute). Off: it shows from the next map.", straight_away))
+        said(synchros::change([&](synchros::Settings& x) { x.reload_on_arrival = straight_away; return std::string(); }));
+    ImGui::EndDisabled();
     end_card();
 
     const auto paired_count = std::to_string(s.paired.size()) + " paired";
