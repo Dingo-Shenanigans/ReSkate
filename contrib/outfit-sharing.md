@@ -7,9 +7,11 @@ installing the wearer's mods. Today a peer's item this PC does not have becomes 
 Status: built end to end, not yet tried in the game. Codes, groups and who sees whom; the
 messages and the exchange between two players on Steam side connections of their own; the item
 cutter; the cache; received outfits made into a mod per wearer and merged after everything else
-(read back on 29 real items, one of each of 29 mods); settings in `Mods/.synchros/settings.json`
-and a `synchros` console command. Still to come: the settings page in the menu, and showing a
-received item without waiting for the next level load.
+(read back on 29 real items, one of each of 29 mods); settings in `Mods/.synchros/settings.json`,
+an OUTFITS tab on the Multiplayer page and a `synchros` console command. An outfit shows as soon as
+it has arrived by loading the map again for that player alone (*Show arrivals straight away*);
+showing it with no load at all needs the research in `live-apply-without-reload.md` (how the
+cosmetics manager takes in a new item's definition) finished first.
 
 ## What it does
 
