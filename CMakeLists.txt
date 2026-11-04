@@ -537,10 +537,10 @@ if(DINGOSDK_BUILD_PLUGIN_TESTS AND WIN32)
     add_executable(dingosdk_trick_watch_tests Extension/Skater/Test/trick_watch_tests.cpp Extension/Skater/trick_watch.cpp)
     target_include_directories(dingosdk_trick_watch_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME trick_watch COMMAND dingosdk_trick_watch_tests)
-    # Which trick list writes are a trick's (Extension/Skater/trick_feed_gate.h): never the song's title.
-    add_executable(dingosdk_trick_feed_gate_tests Extension/Skater/Test/trick_feed_gate_tests.cpp)
-    target_include_directories(dingosdk_trick_feed_gate_tests PRIVATE "${PROJECT_SOURCE_DIR}")
-    add_test(NAME trick_feed_gate COMMAND dingosdk_trick_feed_gate_tests)
+    # The songs' titles the trick feed leaves out (Extension/Skater/trick_feed_songs.h): never a trick's name.
+    add_executable(dingosdk_trick_feed_songs_tests Extension/Skater/Test/trick_feed_songs_tests.cpp)
+    target_include_directories(dingosdk_trick_feed_songs_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME trick_feed_songs COMMAND dingosdk_trick_feed_songs_tests)
     # The board's shader parameters (Extension/Customization/board_material.h): the walk over a board
     # laid out as the game holds it, what plugins may set, and holding and putting back.
     add_executable(dingosdk_board_material_tests Extension/Customization/Test/board_material_tests.cpp)
