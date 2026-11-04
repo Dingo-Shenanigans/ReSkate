@@ -19,7 +19,8 @@ NativeFrame capture_local(std::uintptr_t base, std::uintptr_t client);
 bool show_remote(std::uintptr_t base, std::uintptr_t client, const NativeFrame &, const Pose &,
                  std::string &detail);
 void remove_remote(std::uintptr_t base) noexcept;
-void update_remote_cosmetics(std::uintptr_t base, const NativeFrame &, const Appearance &,
+// `player` is whose outfit it is, for the items plugins hide on some players.
+void update_remote_cosmetics(std::uintptr_t base, const NativeFrame &, const Appearance &, std::uint64_t player,
                              std::string &detail);
 std::uint64_t remote_pose_updates() noexcept;
 std::uint64_t remote_board_pose_updates() noexcept;

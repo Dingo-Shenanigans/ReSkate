@@ -146,7 +146,7 @@ std::optional<Appearance> capture_cosmetics(std::uintptr_t base, const NativeFra
     }
 }
 void apply_cosmetic_recipe(std::uintptr_t base, std::uintptr_t entity, std::uintptr_t local_entity,
-                           const CosmeticRecipe &recipe) {
+                           const CosmeticRecipe &recipe, const std::function<bool(const std::string &)> &hidden) {
     const CosmeticMemory memory{readable, base};
     const auto c = memory.component(entity), local = memory.component(local_entity);
     memory.check(entity != local_entity && c != local && memory.ptr(entity) == memory.ptr(local_entity) &&
@@ -193,6 +193,8 @@ void apply_cosmetic_recipe(std::uintptr_t base, std::uintptr_t entity, std::uint
     // A plugin's stand-ins (stand_ins.h), then the game's default, then nothing. Only while the
     // content catalogs that name the paid store copies are there: without them no item can be
     // told apart from one the store sells, so only the defaults stand in.
+    // Store items and the items plugins hide are taken for missing ones.
+    const auto blocked = [&](const std::string &asset) { return reserved(asset) || (hidden && hidden(asset)); };
     std::vector<std::pair<std::string, std::string>> swaps;
     const auto policy = stand_ins::current();
     if (policy && stand_ins::covers(*policy, recipe.key == board_recipe_key) && content_cache::catalogs().available) {
@@ -202,16 +204,16 @@ void apply_cosmetic_recipe(std::uintptr_t base, std::uintptr_t entity, std::uint
             [&](std::size_t index, const CosmeticSlot &missing) {
                 return stand_ins_for(memory, base, policy, resource, index, outfit, missing);
             },
-            reserved);
+            blocked);
     } else {
-        swaps = memory.substitute_missing(resource, usable, default_cosmetic_items, reserved);
+        swaps = memory.substitute_missing(resource, usable, default_cosmetic_items, blocked);
     }
     for (const auto &[missing, replacement] : swaps) {
         static std::mutex logged_mutex;
         static std::set<std::string> logged;
         std::lock_guard lock(logged_mutex);
         // Peers choose these names: remember (and log) a bounded number.
-        if (!reserved(missing) && logged.size() < 256 && logged.insert(missing).second)
+        if (!blocked(missing) && logged.size() < 256 && logged.insert(missing).second)
             logging::log(logging::Level::info, logging::Channel::runtime,
                          "Multiplayer: a player wears \"{}\", which is not installed here; showing {} instead.",
                          missing, replacement.empty() ? "nothing" : replacement);

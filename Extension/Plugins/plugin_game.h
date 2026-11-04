@@ -412,6 +412,20 @@ public:
     // any plugin hides them (at most 256 between them).
     virtual std::string hide_player(std::string_view /*plugin*/, std::uint64_t, bool /*hidden*/) { return unavailable; }
     virtual std::vector<std::uint64_t> hidden_players(std::string_view /*plugin*/) { return {}; }
+    // What another player wears, as their game sent it: the item names of their skater and of their
+    // board. Nothing until their outfit has arrived.
+    struct PlayerOutfit {
+        std::vector<std::string> skater, board;
+    };
+    virtual std::optional<PlayerOutfit> player_outfit(std::uint64_t) { return std::nullopt; }
+    // Items shown on other players, on this screen, as items this PC does not have are (a stand-in,
+    // the default or nothing): the plugin's whole list, on everyone and on some players, which
+    // replaces the one before. Empty lists take it away. Any case matches.
+    struct HiddenItems {
+        std::vector<std::string> everyone;
+        std::vector<std::pair<std::uint64_t, std::vector<std::string>>> players;
+    };
+    virtual std::string hide_items(std::string_view /*plugin*/, HiddenItems) { return unavailable; }
     // A short tag beside a player's nametag, the plugin's own (empty text takes it away).
     virtual void set_nametag(std::string_view /*plugin*/, std::uint64_t, std::string, std::uint32_t) {}
     // The names over the other players held off while any plugin asks (chat bubbles still show).

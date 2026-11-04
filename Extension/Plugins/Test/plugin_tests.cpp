@@ -824,6 +824,20 @@ struct FakeGame final : Game {
             if (owner == plugin) out.push_back(who);
         return out;
     }
+    std::map<std::uint64_t, PlayerOutfit> outfits; // what player_outfit() reads
+    std::optional<PlayerOutfit> player_outfit(std::uint64_t player) override {
+        const auto found = outfits.find(player);
+        if (found == outfits.end()) return std::nullopt;
+        return found->second;
+    }
+    std::string hide_items(std::string_view plugin, HiddenItems items) override {
+        std::string line = std::format("hide-items {}", plugin);
+        for (const auto& name : items.everyone) line += " " + name;
+        for (const auto& [player, names] : items.players)
+            for (const auto& name : names) line += std::format(" {}:{}", player, name);
+        calls.push_back(line);
+        return {};
+    }
     void set_nametag(std::string_view plugin, std::uint64_t player, std::string text, std::uint32_t colour) override {
         calls.push_back(std::format("tag {} {} {} {:08x}", plugin, player, text, colour));
     }
@@ -3067,6 +3081,87 @@ void a_plugin_loads_ticks_runs_its_commands_and_unloads() {
 
 // What this PC shows in place of other players' items it does not have: asked with
 // "outfit.stand_ins", the options checked, and refused without the permission.
+// Another player's outfit read, and items hidden on everyone or on one player: the calls, their
+// checks and both permissions; and the list the session reads, with each plugin's going when it does.
+void plugins_read_and_hide_other_players_items() {
+    namespace feed = dingosdk::plugin_feed;
+    feed::hide_items("a", {{"own_skull_mask"}, {{7, {"own_nolan_tee"}}}});
+    const auto before = feed::hidden_items_revision();
+    feed::hide_items("b", {{"own_hat"}, {}});
+    check(feed::hidden_items_revision() != before, "A plugin's new list changes the revision, so outfits are put on again");
+    check(feed::item_hidden(7, "own_skull_mask") && feed::item_hidden(9, "own_skull_mask") && feed::item_hidden(7, "own_nolan_tee") &&
+              !feed::item_hidden(9, "own_nolan_tee") && feed::item_hidden(9, "own_hat"),
+          "An item hidden on everyone, one hidden on one player only, and every plugin's list together");
+    feed::release_hidden_items("a");
+    check(!feed::item_hidden(7, "own_skull_mask") && feed::item_hidden(7, "own_hat"), "A plugin's list goes when it does");
+    feed::hide_items("b", {});
+    check(!feed::item_hidden(7, "own_hat"), "Empty lists take a plugin's away");
+
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    environment.session_now = {true, false, {{1, "Me", true, true}, {7, "Ann", false, false}, {8, "Bob", false, false}}};
+    game.outfits[7] = {{"Own_Nolan_Tee", "Own_Skull_Mask"}, {"Own_Deck_X"}};
+    game.outfits[1] = {{"Own_Mine"}, {}};
+    Host host(environment, Side::client);
+    host.apply({script("filter", R"(
+      reskate.console.command("go", "x", function()
+        local ann = reskate.session.outfit("7")
+        assert(ann and ann.skater[1] == "Own_Nolan_Tee" and ann.skater[2] == "Own_Skull_Mask" and ann.board[1] == "Own_Deck_X")
+        assert(reskate.session.outfit({id = "7"}).board[1] == "Own_Deck_X", "a player table works too")
+        assert(reskate.session.outfit("8") == nil, "no outfit yet")
+        assert(reskate.session.outfit("9") == nil, "not in the session")
+        assert(reskate.session.outfit("1") == nil, "not this player's own")
+        assert(not pcall(reskate.session.outfit, "nobody"), "a player")
+        assert(reskate.session.hide_items({items = {"Own_Skull_Mask"}, players = {["7"] = {"Own_Nolan_Tee"}}}))
+        assert(reskate.session.hide_items(nil))
+        assert(not pcall(reskate.session.hide_items, {items = {""}}), "an item has a name")
+        assert(not pcall(reskate.session.hide_items, {items = {12}}), "an item is a name")
+        assert(not pcall(reskate.session.hide_items, {items = "Own_Hat"}), "items is a list")
+        assert(not pcall(reskate.session.hide_items, {players = {[7] = {"Own_Hat"}}}), "players is keyed by ids")
+        assert(not pcall(reskate.session.hide_items, {players = {["x"] = {"Own_Hat"}}}), "an id is a player's")
+        local many = {}
+        for i = 1, 4097 do many[i] = "Own_" .. i end
+        assert(not pcall(reskate.session.hide_items, {items = many}), "at most 4096 names")
+        local crowd = {}
+        for i = 1, 65 do crowd[tostring(100 + i)] = {"Own_Hat"} end
+        assert(not pcall(reskate.session.hide_items, {players = crowd}), "items of at most 64 players")
+        crowd[tostring(101)] = nil
+        assert(reskate.session.hide_items({players = crowd}), "64 players is fine")
+        assert(reskate.session.hide_items({items = {"Own_A"}}))
+        local ok, why = reskate.session.hide_items({items = {"Own_B"}})
+        assert(ok == false and why == "asked more than 4 times in a second", why)
+        reskate.log("hid")
+      end)
+      reskate.console.command("again", "x", function()
+        assert(reskate.session.hide_items({items = {"Own_B"}}), "a second later it can change again")
+        reskate.log("again")
+      end)
+    )", R"("console", "session.read", "session.skaters")"), script("reader", R"(
+        local ok, err = pcall(reskate.session.hide_items, {items = {"Own_Hat"}})
+        assert(not ok and err:find("needs the \"session.skaters\" permission"), err)
+        reskate.log("refused hiding")
+    )", R"("session.read")"), script("hider", R"(
+        local ok, err = pcall(reskate.session.outfit, "7")
+        assert(not ok and err:find("needs the \"session.read\" permission"), err)
+        reskate.log("refused reading")
+    )", R"("session.skaters")")});
+    ticks(host, environment, 1); // the session reaches the plugins at a tick
+    host.run_console("go");
+    environment.now += 1000;
+    host.run_console("again");
+    running(host, "filter", environment);
+    running(host, "reader", environment);
+    running(host, "hider", environment);
+    check(environment.logged("[filter] hid") && environment.logged("[filter] again") && environment.logged("[reader] refused hiding") && environment.logged("[hider] refused reading"),
+          "The calls ran\n" + environment.all());
+    check(game.called("hide-items filter Own_Skull_Mask 7:Own_Nolan_Tee") && std::ranges::count(game.calls, std::string("hide-items filter")) == 1,
+          "A list on everyone and on one player, then none\n" + environment.all());
+    check(game.called("hide-items filter Own_A") && game.called("hide-items filter Own_B") &&
+              std::ranges::count(game.calls, std::string("hide-items filter Own_B")) == 1,
+          "The fifth change in a second is refused and reaches nothing; a second later it goes through\n" + environment.all());
+    check(!game.called("hide-items reader") && !game.called("hide-items hider Own_Hat"), "A plugin without the permission hides nothing");
+}
+
 void plugins_choose_stand_ins() {
     TestEnvironment environment;
     auto& game = environment.fake;
@@ -7967,6 +8062,7 @@ int main() {
         run(a_plugin_loads_ticks_runs_its_commands_and_unloads);
         run(a_permission_must_be_declared);
         run(plugins_choose_stand_ins);
+        run(plugins_read_and_hide_other_players_items);
         run(plugins_add_chat_commands);
         run(thunderstore_says_which_packages_run_plugins);
         run(command_names_are_checked);
