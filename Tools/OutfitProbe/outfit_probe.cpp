@@ -70,7 +70,7 @@ int main(int argc, char** argv) {
     const fs::path game = argc > 1 ? fs::path(argv[1]) : self.parent_path();
     const fs::path out = argc > 2 ? fs::path(argv[2]) : self / "outfit-probe-report.txt";
     report.open(out);
-    say("outfit-probe 5: game " + game.string());
+    say("outfit-probe 6: game " + game.string());
     const auto sources = enabled_mods(game / "Mods");
     say(std::to_string(sources.size()) + " enabled mods; reading their cosmetics...");
     const auto started = std::chrono::steady_clock::now();
@@ -86,6 +86,8 @@ int main(int argc, char** argv) {
         std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count()) +
         " ms" + (index->unreadable() ? ", " + std::to_string(index->unreadable()) + " files unreadable" : ""));
 
+    const auto [table_copies, table_presets] = index->tables();
+    say(std::to_string(table_copies) + " bundle-reference table copies, " + std::to_string(table_presets) + " presets in them");
     struct Row { std::string item; std::uint64_t bytes{}, borrowed{}; std::size_t files{}, rows{}; std::set<std::string> lenders; };
     std::map<std::size_t, std::vector<Row>> by_mod;
     for (const auto& item : items) {

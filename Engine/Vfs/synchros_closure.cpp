@@ -87,15 +87,14 @@ struct Index::State {
     std::size_t unreadable{};
     // Each mod's bundle-reference table copies, read when a cut first needs them: per source,
     // table name -> its presets (lower-case path -> bundle index).
-    std::vector<std::size_t> tables;  // nodes that are tables
+    std::vector<Piece> tables;        // every mod's copy: each holds that mod's own presets
     std::map<std::pair<std::size_t, std::string>, std::map<std::string, std::uint32_t>> presets;
     bool presets_read{};
 
     void read_presets() {
         if (presets_read) return;
         presets_read = true;
-        for (const auto i : tables) {
-            const auto& p = nodes[i].piece;
+        for (const auto& p : tables) {
             try {
                 const auto bytes = fb::decode_cas(encoded(p), {game});
                 const fb::bundle_ref::Table table{bytes, p.asset.resourceMeta};
@@ -223,6 +222,21 @@ struct Index::State {
                     auto add = [&](Piece::Kind kind, const fb::BundleAsset& asset, std::size_t at) {
                         if (at >= region.files.size() || !region.files[at].location.patch) return;  // the game's own
                         const auto name = lower(asset.name);
+                        // Every mod ships its own copy of a bundle-reference table under the
+                        // game's name, with its own presets added: all of them are read, whichever
+                        // wins the name, and none is ever a piece of an item.
+                        if (kind == Piece::resource && fb::bundle_ref::is_table(name)) {
+                            Piece table;
+                            table.kind = Piece::resource;
+                            table.source = s;
+                            table.file = region.files[at];
+                            table.name = name;
+                            table.bundle = bundle_name;
+                            table.superbundle = superbundle;
+                            table.asset = asset;
+                            tables.push_back(std::move(table));
+                            return;
+                        }
                         if (kind == Piece::chunk) {
                             if (by_guid.contains(guid_key(asset.guid))) return;
                         } else if (kind == Piece::resource ? res_by_name.contains(name)
@@ -247,7 +261,6 @@ struct Index::State {
                             if (kind == Piece::resource) res_by_name.emplace(name, index);
                             by_leaf[leaf(name)].push_back(index);
                             if (kind == Piece::resource) by_resource.emplace(asset.resourceId, index);
-                            if (kind == Piece::resource && fb::bundle_ref::is_table(name)) tables.push_back(index);
                         }
                         in_bundle.push_back(index);
                         nodes.push_back(std::move(n));
@@ -368,5 +381,11 @@ std::optional<Cut> Index::cut(std::string_view item) {
 
 std::vector<std::byte> Index::read(const Piece& piece) const { return state_->encoded(piece); }
 std::size_t Index::unreadable() const noexcept { return state_->unreadable; }
+std::pair<std::size_t, std::size_t> Index::tables() {
+    state_->read_presets();
+    std::size_t presets = 0;
+    for (const auto& [where, held] : state_->presets) presets += held.size();
+    return {state_->presets.size(), presets};
+}
 const std::vector<Source>& Index::sources() const noexcept { return state_->sources; }
 } // namespace dingosdk::synchros

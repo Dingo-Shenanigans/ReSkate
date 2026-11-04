@@ -7,6 +7,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 // Skate Synchros' item cutter (contrib/outfit-sharing.md): the files one cosmetic item needs that
@@ -75,6 +76,8 @@ public:
 
     // Files that could not be read while indexing, for the log.
     [[nodiscard]] std::size_t unreadable() const noexcept;
+    // How many bundle-reference table copies were read, and the presets in them all.
+    [[nodiscard]] std::pair<std::size_t, std::size_t> tables();
     [[nodiscard]] const std::vector<Source>& sources() const noexcept;
 
 private:
