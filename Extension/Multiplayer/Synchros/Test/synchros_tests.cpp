@@ -1,5 +1,6 @@
 #include "Extension/Multiplayer/Synchros/sharing_rules.h"
 #include "Extension/Multiplayer/Synchros/share_code.h"
+#include "Extension/Multiplayer/Synchros/synchros_wire.h"
 #include <iostream>
 #include <set>
 #include <stdexcept>
@@ -118,6 +119,106 @@ void blocking_wins() {
     block(viewer, me);
     check(!may_ask(viewer, {me, true}), "a blocked player is not asked");
 }
+
+File sample_file(std::uint8_t seed, FileKind kind = FileKind::ebx) {
+    File f;
+    f.id.fill(seed);
+    f.size = 1000u + seed;
+    f.kind = kind;
+    f.name = kind == FileKind::ebx || kind == FileKind::resource ? "characters/customization/own_x_ap" : "";
+    f.bundle = kind == FileKind::toc_chunk ? "" : "win32/characters/skateboard/deck_x_ap_cas_main_bundlereftable";
+    f.superbundle = "win32/items";
+    f.original_size = 5000;
+    f.resource_type = 0x6bde20ba;
+    f.resource_id = 0x1122334455667788ULL;
+    f.resource_meta = {1, 2, 3};
+    f.chunk_guid.fill(static_cast<std::uint8_t>(seed + 1));
+    f.logical_offset = 4;
+    f.logical_size = 8;
+    return f;
+}
+
+template<class T> T round_trip(const T& message) {
+    const auto bytes = encode(Message{message});
+    const auto back = decode(bytes);
+    check(back.has_value(), "a message decodes");
+    const auto* typed = std::get_if<T>(&*back);
+    check(typed != nullptr, "as the kind it was");
+    return *typed;
+}
+
+void every_message_round_trips() {
+    Hello hello{session, {code_proof(code_key(*read_code(make_code())), session, me, them)}};
+    const auto h = round_trip(hello);
+    check(h.session == session && h.proofs == hello.proofs, "hello");
+    check(round_trip(Welcome{true}).allowed && !round_trip(Welcome{false}).allowed, "welcome");
+    check(round_trip(Want{{"items/board_bottomart/own_x", "items/cust_tops/own_y"}}).items.size() == 2, "want");
+    Contents contents{{ItemContents{"items/board_bottomart/own_x", Withheld::none, {sample_file(1), sample_file(2, FileKind::resource),
+                                                                                 sample_file(3, FileKind::chunk), sample_file(4, FileKind::toc_chunk)}},
+                       ItemContents{"items/cust_tops/own_store_copy", Withheld::store_item, {}}}};
+    const auto c = round_trip(contents);
+    check(c.items.size() == 2 && c.items[0].files == contents.items[0].files && c.items[1].withheld == Withheld::store_item, "contents");
+    Fetch fetch{{sample_file(1).id, sample_file(2).id}};
+    check(round_trip(fetch).files == fetch.files, "fetch");
+    Piece piece{sample_file(1).id, 0, 3, {7, 8, 9}};
+    const auto p = round_trip(piece);
+    check(p.bytes == piece.bytes && p.total == 3, "piece");
+    check(round_trip(Refuse{"Sharing is off."}).reason == "Sharing is off.", "refuse");
+}
+
+void malformed_messages_are_refused() {
+    auto bytes = encode(Message{Want{{"items/x"}}});
+    check(!decode(std::span(bytes).first(bytes.size() - 1)), "truncated");
+    auto longer = bytes; longer.push_back(0);
+    check(!decode(longer), "trailing bytes");
+    auto version = bytes; version[1] = 2;
+    check(!decode(version), "another version");
+    auto kind = bytes; kind[0] = 99;
+    check(!decode(kind), "an unknown kind");
+    check(!decode(encode(Message{Want{}})), "a want of nothing");
+    check(!decode(encode(Message{Hello{0, {}}})), "a hello without a session");
+    // A name with a control character is not a name the game has.
+    check(!decode(encode(Message{Want{{std::string("items/x\n")}}})), "control characters");
+    // Too many items.
+    Want many;
+    for (std::size_t i = 0; i <= max_items; ++i) many.items.push_back("items/x" + std::to_string(i));
+    check(!decode(encode(Message{many})), "over max_items");
+    // A withheld item that still carries files.
+    Contents liar{{ItemContents{"items/x", Withheld::store_item, {sample_file(1)}}}};
+    check(!decode(encode(Message{liar})), "withheld with files");
+    // A file that says it is bigger than a file may be, or empty.
+    auto big = sample_file(1); big.size = max_file + 1;
+    check(!decode(encode(Message{Contents{{ItemContents{"items/x", Withheld::none, {big}}}}})), "a file over max_file");
+    auto empty = sample_file(1); empty.size = 0;
+    check(!decode(encode(Message{Contents{{ItemContents{"items/x", Withheld::none, {empty}}}}})), "an empty file");
+    // A bundled asset without its bundle.
+    auto loose = sample_file(1); loose.bundle.clear();
+    check(!decode(encode(Message{Contents{{ItemContents{"items/x", Withheld::none, {loose}}}}})), "an asset with no bundle");
+    // A whole outfit over max_outfit.
+    Contents huge;
+    ItemContents item{"items/x", Withheld::none, {}};
+    for (int i = 0; i < 3; ++i) { auto f = sample_file(static_cast<std::uint8_t>(i)); f.size = max_file; item.files.push_back(f); }
+    huge.items.push_back(item);
+    check(!decode(encode(Message{huge})), "over max_outfit");
+    // Pieces must lie inside their file.
+    check(!decode(encode(Message{Piece{sample_file(1).id, 2, 3, {1, 2}}})), "a piece past the end");
+    check(!decode(encode(Message{Piece{sample_file(1).id, 4, 3, {1}}})), "an offset past the end");
+    check(!decode(encode(Message{Piece{sample_file(1).id, 0, 3, {}}})), "an empty piece");
+    std::vector<std::uint8_t> too_much(max_piece + 1, 1);
+    check(!decode(encode(Message{Piece{sample_file(1).id, 0, max_file, too_much}})), "a piece over max_piece");
+}
+
+void a_message_never_exceeds_steams_limit() {
+    Contents full;
+    for (std::size_t i = 0; i < max_items; ++i) {
+        ItemContents item{"items/board_bottomart/own_" + std::to_string(i), Withheld::none, {}};
+        for (int k = 0; k < 100; ++k) item.files.push_back(sample_file(static_cast<std::uint8_t>(k)));
+        full.items.push_back(item);
+    }
+    bool threw = false;
+    try { (void)encode(Message{full}); } catch (const std::length_error&) { threw = true; }
+    check(threw, "a Contents over 512 KB is refused at encode, so the sender splits it");
+}
 } // namespace
 
 int main() {
@@ -128,6 +229,9 @@ int main() {
         both_ends_opt_in();
         a_code_pairs_a_stranger();
         blocking_wins();
+        every_message_round_trips();
+        malformed_messages_are_refused();
+        a_message_never_exceeds_steams_limit();
     } catch (const std::exception& e) {
         std::cerr << "synchros: " << e.what() << '\n';
         return 1;
