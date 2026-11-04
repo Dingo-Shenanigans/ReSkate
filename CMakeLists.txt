@@ -62,6 +62,11 @@ if(DINGOSDK_BUILD_PARK_EDITOR_TESTS AND WIN32)
     add_executable(dingosdk_object_categories_tests Extension/Objects/Test/object_categories_tests.cpp)
     target_link_libraries(dingosdk_object_categories_tests PRIVATE dingosdk_local_profile)
     add_test(NAME object_categories COMMAND dingosdk_object_categories_tests)
+    # reskate.objects.physics motion rules on a placement's client replica and server copy
+    # (Extension/Objects/placement_motion.h).
+    add_executable(dingosdk_placement_motion_tests Extension/Objects/Test/placement_motion_tests.cpp)
+    target_include_directories(dingosdk_placement_motion_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME placement_motion COMMAND dingosdk_placement_motion_tests)
     # The park editor's native ray (Extension/Objects/ParkEditor/park_editor_surface.h) over a
     # constructed result: the editor's own rules and exclusions, and the counted cast behind
     # reskate.world.probe and the ray batches (clear, hit and malformed results, presets and
