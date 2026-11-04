@@ -498,6 +498,7 @@ struct FakeGame final : Game {
         return {};
     }
     void competition(std::string_view plugin, bool on) override { calls.push_back(std::format("competition {} {}", plugin, on)); }
+    void spectate(std::uint64_t player) override { calls.push_back(std::format("spectate {}", player)); }
     bool stock_physics_ready() override { return true; }
     void prepare_physics() override { calls.push_back("prepare physics"); }
     void trick_feed(std::string_view plugin, bool on) override { calls.push_back(std::format("trick feed {} {}", plugin, on)); }
@@ -3460,6 +3461,24 @@ void reskates_own_reading_is_not_a_plugins_time() {
 // A call past call_ms is said, with where the script was, and goes on: one slow call (a hard disk,
 // Windows holding the game's thread) is no reason to stop a plugin. One past hang_ms is stopped,
 // saying where it was, and unload's own share of time still cuts its handlers off.
+// A Steam ID reaches the game exactly: as a string (which Lua also takes for a number, and which
+// went through a number and came out as another player), never as a number that cannot hold it.
+void a_steam_id_reaches_the_game_exactly() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({script("watcher", R"(
+        reskate.session.spectate("76561198000000001")
+        assert(not pcall(reskate.session.spectate, 76561198000000001), "a Steam ID as a number")
+        assert(not pcall(reskate.session.spectate, 1.5), "a whole number")
+        reskate.session.spectate()
+        reskate.log("watched")
+    )", R"("session.read")")});
+    running(host, "watcher", environment);
+    check(environment.logged("watched"), "The plugin ran\n" + environment.all());
+    check(environment.fake.called("spectate 76561198000000001"), "The Steam ID arrives exactly\n" + environment.all());
+    check(environment.fake.called("spectate 0"), "and nothing stops spectating");
+}
+
 void a_slow_call_is_said_and_a_hung_one_stopped() {
     TestEnvironment environment;
     Limits limits;
@@ -6769,6 +6788,7 @@ int main() {
         run(the_sandbox_holds);
         run(a_runaway_plugin_is_stopped_and_the_rest_go_on);
         run(a_slow_call_is_said_and_a_hung_one_stopped);
+        run(a_steam_id_reaches_the_game_exactly);
         run(reskates_own_reading_is_not_a_plugins_time);
         run(a_plugin_over_its_time_budget_is_stopped);
         run(a_plugin_reloads_when_its_files_change);
