@@ -386,6 +386,7 @@ private:
     int raycasts_{};                    // since the last tick
     body_query::Budget native_casts_{}; // world.probe's and probe_batch's native casts, failed ones included
     unsigned body_prepares_{};          // explicit native body preparation calls since the last tick
+    unsigned body_reuses_{};            // creates that asked to reuse a parked native body since the last tick
     std::optional<float> touch_reach_;
     std::map<std::uint64_t, Contact> contacts_;
     double teleport_second_{};
