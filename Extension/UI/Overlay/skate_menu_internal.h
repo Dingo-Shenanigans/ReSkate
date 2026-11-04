@@ -114,6 +114,18 @@ float page_body_height(const SkateMenu& menu);
 // Runs a console command and shows its reply as feedback.
 void send_console(SkateMenu& menu, const CallbacksV3& callbacks, const std::string& command);
 void debug_request(SkateMenu& menu, const CallbacksV3& callbacks, DebugRequest request);
+// One thing of a list (a park mod, a saved object) as a row that opens: A or a click opens its
+// actions under it, and again, or B, closes them. `open` is the id of the list's open row (empty for
+// none), kept by the page. `detail` is a muted line under the title, `side` sits at the right end and
+// `current` marks the row with a blue edge. Returns whether the row is open: the page then draws
+// what goes under it, its actions as row_actions.
+bool expand_row(SkateMenu& menu, const char* id, const std::string& title, const std::string& detail, const std::string& side,
+                std::string& open, bool current = false);
+// The actions of an open row: chips under its title, as many to a row as fit; `on` draws the main
+// one in blue. Returns the one pressed, or -1.
+int row_actions(SkateMenu& menu, const char* id, std::initializer_list<RowButton> actions);
+// Whether a page had a row open last frame, so B is that row's to close and not the menu's Back.
+bool page_holds_back();
 // HOST shows the host form until a session exists, then that session (SESSION).
 inline constexpr int multiplayer_session_tab = 1, multiplayer_voice_tab = 2, multiplayer_bans_tab = 3, multiplayer_chat_tab = 4;
 void multiplayer_display_settings(SkateMenu&, const Model&);

@@ -165,14 +165,12 @@ void binds_page(SkateMenu& menu, const Model& model, const CallbacksV3& callback
     const auto record = [&](int action) {
         menu.bind_capture = {};
         menu.recording_bind = action;
-        menu.bind_capture_until = ImGui::GetTime() + (console_style() ? 10 : 30);
+        menu.bind_capture_until = ImGui::GetTime() + 10;
         menu.feedback.clear();
     };
-    const bool console = console_style();
     if (menu.recording_bind) {
-        warn(!menu.bind_capture.ready ? "Release controller buttons and keyboard keys first." :
-             console ? "Hold up to five buttons together, then let go. Nothing for 10 seconds cancels." :
-             "Hold up to five keys together, then release them. A-Z, 0-9, Space, F1-F12, Ctrl, Shift and Alt work; controller combos work too.");
+        warn(!menu.bind_capture.ready ? "Release controller buttons and keyboard keys first."
+                                      : "Hold up to five buttons or keys together, then let go. Nothing for 10 seconds cancels.");
     }
     struct Row {
         int action;
@@ -199,86 +197,39 @@ void binds_page(SkateMenu& menu, const Model& model, const CallbacksV3& callback
     for (const auto& group : cards) {
         begin_card(menu, group.title, group.title);
         ImGui::PushID(group.title);
-        if (console) {
-            // Full screen: a row a bind, its combo at the right end. A records, Y clears.
-            auto* draw = ImGui::GetWindowDrawList();
-            for (const auto& row : group.rows) {
-                const int action = row.action;
-                const std::uint32_t combo = row.combo;
-                const bool recording = menu.recording_bind == action;
-                ImGui::PushID(action);
-                const auto at = ImGui::GetCursorScreenPos();
-                const float width = ImGui::GetContentRegionAvail().x, height = px(54);
-                ImGui::BeginDisabled(!available || (menu.recording_bind && !recording));
-                const bool pressed = ImGui::InvisibleButton("##bind", ImVec2(width, height), ImGuiButtonFlags_EnableNav);
-                ImGui::EndDisabled();
-                const bool focused = ImGui::IsItemFocused() && ImGui::GetIO().NavVisible, hovered = ImGui::IsItemHovered();
-                if (pressed && !menu.recording_bind) record(action);
-                if (focused && !menu.recording_bind && combo && ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp, false)) save(action, 0);
-                if (focused || hovered)
-                    set_console_hint(recording ? "Hold the buttons together, then let go."
-                                               : combo ? "A records a new bind. Y clears this one." : "A records a bind.");
-                const ImVec2 end(at.x + width, at.y + height);
-                const bool lit = focused || hovered;
-                skate_theme::rough_rect(draw, at, end, recording ? paper : lit ? blue : IM_COL32(26, 26, 26, 235),
-                                        static_cast<unsigned>(ImGui::GetItemID()) & 0xfff, px(1));
-                const ImU32 text = recording ? skate_theme::black : available ? paper : muted;
-                const auto name = menu.bold->CalcTextSizeA(px(17), FLT_MAX, 0, row.name.c_str());
-                draw->AddText(menu.bold, px(17), ImVec2(at.x + px(18), at.y + (height - name.y) * .5f), text, row.name.c_str());
-                const auto label = recording ? std::string(menu.bind_capture.ready ? "Press the buttons..." : "Let go first...")
-                                             : controller_combo_label(combo, controller.style);
-                const auto size = menu.bold->CalcTextSizeA(px(17), FLT_MAX, 0, label.c_str());
-                draw->AddText(menu.bold, px(17), ImVec2(end.x - px(24) - size.x, at.y + (height - size.y) * .5f),
-                              recording ? skate_theme::black : lit ? paper : combo ? blue : muted, label.c_str());
-                ImGui::PopID();
-            }
-        } else {
-            ImGui::BeginDisabled(!available);
-            if (ImGui::BeginTable("binds", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
-                ImGui::TableSetupColumn("Action", ImGuiTableColumnFlags_WidthFixed, px(150));
-                ImGui::TableSetupColumn("Controller combo / key", ImGuiTableColumnFlags_WidthStretch);
-                ImGui::TableSetupColumn("##controls", ImGuiTableColumnFlags_WidthFixed, px(170));
-                for (const auto& row : group.rows) {
-                    const int action = row.action;
-                    const std::uint32_t combo = row.combo;
-                    ImGui::PushID(action);
-                    ImGui::TableNextRow(); ImGui::TableNextColumn();
-                    ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted(row.name.c_str());
-                    ImGui::TableNextColumn(); ImGui::AlignTextToFramePadding();
-                    const auto label = menu.recording_bind == action ? "Recording..." : controller_combo_label(combo, controller.style);
-                    ImGui::TextWrapped("%s", label.c_str());
-                    ImGui::TableNextColumn();
-                    if (menu.recording_bind == action) {
-                        if (ImGui::Button("Cancel", ImVec2(-1, 0))) menu.recording_bind = 0;
-                    } else {
-                        ImGui::BeginDisabled(menu.recording_bind != 0);
-                        if (ImGui::Button("Record", ImVec2(px(90), 0))) record(action);
-                        ImGui::SameLine(); ImGui::BeginDisabled(!combo);
-                        if (ImGui::Button("Clear", ImVec2(-1, 0))) save(action, 0);
-                        ImGui::EndDisabled();
-                        ImGui::EndDisabled();
-                    }
-                    ImGui::PopID();
-                }
-                ImGui::EndTable();
-            }
-            ImGui::EndDisabled();
+        // A row a bind, its combo at the right end. A records, Y clears; the row being recorded is blue
+        // while the pad belongs to the recording (menu_page_owns_pad), and the others wait.
+        for (const auto& row : group.rows) {
+            const int action = row.action;
+            const std::uint32_t combo = row.combo;
+            const bool recording = menu.recording_bind == action;
+            const auto side = recording ? std::string(menu.bind_capture.ready ? "Press the buttons..." : "Let go first...")
+                                        : controller_combo_label(combo, controller.style);
+            ImGui::PushID(action);
+            const bool pressed = list_row(menu, "##bind", row.name, side, recording, available && (!menu.recording_bind || recording));
+            const bool focused = ImGui::IsItemFocused() && ImGui::GetIO().NavVisible;
+            if (pressed && !menu.recording_bind) record(action);
+            if (focused && !menu.recording_bind && combo && ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp, false)) save(action, 0);
+            if (focused || ImGui::IsItemHovered())
+                set_console_hint(recording ? "Hold the buttons together, then let go."
+                                           : combo ? "A records a new bind. Y clears this one." : "A records a bind.");
+            ImGui::PopID();
         }
         if (std::string_view(group.title) == "PLUGINS") {
             const bool changed = std::any_of(plugin_binds->begin(), plugin_binds->end(), [](const auto& b) { return b.combo != b.own; });
-            ImGui::BeginDisabled(!changed || menu.recording_bind != 0);
-            if (ImGui::Button("Plugins' own binds", ImVec2(console ? -FLT_MIN : px(200), 0))) {
+            if (button_row(menu, "plugin-binds-reset", {{"PLUGINS' OWN BINDS", changed && menu.recording_bind == 0, false,
+                                                         "Every plugin's action back on the bind the plugin gave it."}}) == 0) {
                 for (const auto& bind : *plugin_binds) plugin_ui::rebind({bind.plugin, bind.action, std::nullopt});
                 feedback(menu, "Every plugin's action is on the plugin's own bind again.");
             }
-            ImGui::EndDisabled();
         }
         ImGui::PopID();
         end_card();
     }
     if (!menu.recording_bind) {
-        note(("Record a key, keyboard chord or controller combo, such as Ctrl + F5 or " + controller_combo_label(0x300, controller.style) +
-              ". Freecam, Freecam Controller, and Noclip toggle; boosts add velocity once per press. Off-board Up Boost also works while falling or gliding; release and press again to repeat. On-board and off-board boosts can share a combo. Give toggles different combos.").c_str());
+        note(("A key, a chord such as Ctrl + F5, or a controller combo such as " + controller_combo_label(0x300, controller.style) +
+              ". Freecam, Freecam Controller and Noclip toggle: give them different combos. Boosts add speed once a press; "
+              "Off-board Up Boost also works falling or gliding, and on- and off-board boosts can share a combo.").c_str());
         note("Saved to your profile.");
         if (!model.bindings.status.empty()) note(model.bindings.status.c_str());
         if (!model.bindings.available) warn("Waiting for the local profile.");

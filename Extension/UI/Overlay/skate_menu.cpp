@@ -1049,6 +1049,84 @@ bool close_open_row() {
     state.open = 0;
     return true;
 }
+
+// ---------------------------------------------------------------- rows that open
+namespace {
+// The last frame a page had a row open (expand_row): B then closes the row instead of leaving the page.
+int back_held_frame = -10;
+}
+bool page_holds_back() { return back_held_frame >= ImGui::GetFrameCount() - 1; }
+
+bool expand_row(SkateMenu& menu, const char* id, const std::string& title, const std::string& detail, const std::string& side,
+                std::string& open, bool current) {
+    ImGui::PushID(id);
+    bool is_open = !open.empty() && open == id;
+    const auto at = ImGui::GetCursorScreenPos();
+    const float width = ImGui::GetContentRegionAvail().x;
+    const float side_width = side.empty() ? 0.0f : menu.body->CalcTextSizeA(px(15), FLT_MAX, 0, side.c_str()).x + px(16);
+    const float text_left = px(40), wrap = std::max(px(80), width - text_left - side_width - px(16));
+    const float detail_height = detail.empty() ? 0.0f : menu.body->CalcTextSizeA(px(15), FLT_MAX, wrap, detail.c_str()).y + px(4);
+    const float height = detail.empty() ? row_height() : std::max(row_height(), px(26) + px(text_size) + detail_height);
+    const bool clicked = ImGui::InvisibleButton("##open", ImVec2(width, height), ImGuiButtonFlags_EnableNav);
+    const bool lit = nav_lit(), hovered = ImGui::IsItemHovered();
+    if (clicked) {
+        is_open = !is_open;
+        open = is_open ? std::string(id) : std::string();
+    } else if (is_open && ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) && !ImGui::GetIO().WantTextInput) {
+        // B closes it, and the focus comes back to the row from the actions that are going away.
+        is_open = false;
+        open.clear();
+        ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
+    }
+    if (is_open) back_held_frame = ImGui::GetFrameCount();
+    if (lit || hovered) focus_hint = is_open ? "A or B closes it." : "A shows what you can do with it.";
+    auto* draw = ImGui::GetWindowDrawList();
+    const ImVec2 end(at.x + width, at.y + height);
+    skate_theme::rough_rect(draw, at, end, lit ? paper : is_open || hovered ? row_hover : row_fill, static_cast<unsigned>(ImGui::GetItemID()) & 0xfff,
+                            ui_scale);
+    if (current) draw->AddRectFilled(at, ImVec2(at.x + px(4), end.y), lit ? focus_ink : blue);
+    const float title_y = detail.empty() ? at.y + (height - px(text_size)) * .5f : at.y + px(12);
+    fold_arrow(ImVec2(at.x + px(14), title_y - (row_height() - px(text_size)) * .5f), row_height(), is_open, lit ? focus_ink : muted);
+    draw->PushClipRect(at, ImVec2(end.x - side_width - px(8), end.y), true);
+    draw->AddText(menu.bold, px(text_size), ImVec2(at.x + text_left, title_y), lit ? focus_ink : paper, title.c_str());
+    if (!detail.empty())
+        draw->AddText(menu.body, px(15), ImVec2(at.x + text_left, title_y + px(text_size) + px(4)), lit ? IM_COL32(70, 70, 74, 255) : muted,
+                      detail.c_str(), nullptr, wrap);
+    draw->PopClipRect();
+    if (!side.empty())
+        draw->AddText(menu.body, px(15), ImVec2(end.x - side_width, title_y + (px(text_size) - px(15)) * .5f),
+                      lit ? IM_COL32(70, 70, 74, 255) : current ? paper : muted, side.c_str());
+    ImGui::PopID();
+    return is_open;
+}
+
+int row_actions(SkateMenu& menu, const char* id, std::initializer_list<RowButton> actions) {
+    int pressed = -1;
+    const int count = static_cast<int>(actions.size());
+    if (count == 0) return pressed;
+    ImGui::PushID(id);
+    // Under the row's title, past its arrow; smaller tiles than button_row's, as many to a row as fit.
+    const float indent = px(40), gap = px(6);
+    ImGui::Indent(indent);
+    const float room = ImGui::GetContentRegionAvail().x;
+    float widest = 0;
+    for (const auto& action : actions)
+        widest = std::max(widest, menu.bold->CalcTextSizeA(px(16), FLT_MAX, 0, action.label, ImGui::FindRenderedTextEnd(action.label)).x);
+    const int across = std::clamp(static_cast<int>((room + gap) / (widest + px(28) + gap)), 1, count);
+    const float width = (room - gap * static_cast<float>(across - 1)) / static_cast<float>(across);
+    int i = 0;
+    for (const auto& action : actions) {
+        if (i % across) ImGui::SameLine(0, gap);
+        ImGui::PushID(i);
+        if (button_tile(menu, action.label, ImVec2(width, px(38)), action.enabled, action.on, action.hint)) pressed = i;
+        ImGui::PopID();
+        ++i;
+    }
+    ImGui::Unindent(indent);
+    ImGui::Dummy(ImVec2(0, px(4)));
+    ImGui::PopID();
+    return pressed;
+}
 }
 
 namespace {
@@ -1693,8 +1771,8 @@ void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& cal
     shown_layout = layout;
     if (visible && idle && was_drawn) {
         if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) visible = false;
-        // (B closes a list row's actions first, when the focus is in them.)
-        if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) && !close_open_row()) {
+        // (B closes an open row first: one whose actions have the focus, or a page's expand_row.)
+        if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) && !close_open_row() && !page_holds_back()) {
             if (menu.page != page_home) open_page(menu, page_home);
             else visible = false;
         }

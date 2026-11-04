@@ -157,69 +157,19 @@ void draw_installed_mods(SkateMenu& menu) {
         // maps only just need applying; anything the level shows needs it
         // reloaded; taking away the map being played sends the player to San Van.
         const auto effect = live_mods::preview(list);
-        if (ImGui::Button(live_mods::apply_label(effect), ImVec2(-FLT_MIN, 0))) {
+        if (menu::primary_button(menu, live_mods::apply_label(effect))) {
             action_error.clear();
             menu::feedback(menu, live_mods::apply(effect == live_mods::ApplyEffect::reload_level).c_str());
         }
     }
     if (const auto last = live_mods::status(); !last.empty()) menu::note(("Last apply: " + last).c_str());
 
-    auto* draw = ImGui::GetWindowDrawList();
-    // A mod's tile; the button on its right enables or disables it.
-    const auto tile = [&](int index, const std::string& title, const std::string& byline, const char* status,
-                          ImU32 colour, const std::string& contents, const std::string& hover, const char* action) {
-        bool clicked{};
-        ImGui::PushID(index);
-        const float button_width = action ? menu::px(96) : 0.f;
-        const auto top = ImGui::GetCursorScreenPos();
-        const float width = ImGui::GetContentRegionAvail().x - (action ? button_width + menu::px(8) : 0.f);
-        const float height = menu::px(54), pad = menu::px(14);
-        skate_theme::rough_rect(draw, top, ImVec2(top.x + width, top.y + height), skate_theme::tile_grey,
-                                static_cast<unsigned>(index + 151), menu::px(1));
-        float right = top.x + width - pad;
-        const auto contents_size = menu.body->CalcTextSizeA(menu::px(14), FLT_MAX, 0, contents.c_str());
-        right -= contents_size.x;
-        draw->AddText(menu.body, menu::px(14), ImVec2(right, top.y + (height - contents_size.y) * .5f),
-                      skate_theme::grey_text, contents.c_str());
-        right -= menu::px(14);
-        const float status_width = menu.bold->CalcTextSizeA(menu::px(12), FLT_MAX, 0, status).x + menu::px(14);
-        right -= status_width;
-        ImGui::SetCursorScreenPos(ImVec2(right, top.y + (height - ImGui::GetFrameHeight()) * .5f));
-        menu::tag(menu, status, colour);
-        right -= menu::px(14);
-        ImGui::SetCursorScreenPos(ImVec2(top.x + pad, top.y + menu::px(8)));
-        ImGui::PushClipRect(ImGui::GetCursorScreenPos(), ImVec2(right, top.y + height), true);
-        ImGui::BeginGroup();
-        ImGui::PushFont(menu.bold);
-        ImGui::TextUnformatted(title.c_str());
-        ImGui::PopFont();
-        ImGui::PushStyleColor(ImGuiCol_Text, skate_theme::grey_text);
-        ImGui::TextUnformatted(byline.c_str());
-        ImGui::PopStyleColor();
-        ImGui::EndGroup();
-        ImGui::PopClipRect();
-        ImGui::SetCursorScreenPos(top);
-        ImGui::Dummy(ImVec2(width, height));
-        if (!hover.empty() && ImGui::IsItemHovered()) {
-            ImGui::BeginTooltip();
-            ImGui::PushTextWrapPos(ImGui::GetFontSize() * 28);
-            ImGui::TextUnformatted(hover.c_str());
-            ImGui::PopTextWrapPos();
-            ImGui::EndTooltip();
-        }
-        if (action) {
-            ImGui::SameLine(0, menu::px(8));
-            ImGui::SetCursorScreenPos(ImVec2(top.x + width + menu::px(8), top.y + (height - ImGui::GetFrameHeight()) * .5f));
-            clicked = ImGui::Button(action, ImVec2(button_width, 0));
-            ImGui::SetCursorScreenPos(ImVec2(top.x, top.y + height + ImGui::GetStyle().ItemSpacing.y));
-            ImGui::Dummy(ImVec2(0, 0));
-        }
-        ImGui::PopID();
-        return clicked;
-    };
+    // A row a mod: its name, who made it and what it brings, its state at the right end and a blue
+    // edge while it is loaded. A opens why it is in that state and ENABLE or DISABLE under it.
+    static std::string open_mod;
     const auto byline = [](const mods::Mod& mod) {
         std::string text = mod.author.empty() ? "Unknown author" : "by " + mod.author;
-        if (!mod.version.empty()) text += "  -  v" + mod.version;
+        if (!mod.version.empty()) text += "  /  v" + mod.version;
         return text;
     };
     std::optional<std::size_t> toggle;
@@ -229,41 +179,59 @@ void draw_installed_mods(SkateMenu& menu) {
         const auto& mod = entry.mod;
         const bool effect = in_effect(mod.name);
         const char* status = "DISABLED";
-        ImU32 colour = skate_theme::tile_light;
-        std::string hover = mod.description;
+        bool loaded_now = false, trouble = false;
+        std::string why; // what its state means, when it needs saying
         if (const auto winner = lost_to(mod.name); !winner.empty()) {
             status = "LEFT OUT";
-            hover = "Left out: it changes the same parts of the game as " + title_of(winner) + ", which is higher in "
-                    "the load order, so only that one loads.\n\nChoose which loads in the launcher's Mod Manager.";
+            why = "Left out: it changes the same parts of the game as " + title_of(winner) + ", which is higher in "
+                  "the load order, so only that one loads. Choose which loads in the launcher's Mod Manager.";
         } else if (excluded(mod.name)) {
             status = "NOT LOADED";
-            colour = skate_theme::danger;
-            hover = "Not loaded: it could not be merged cleanly, so none of it is used.\n\n"
-                    "Reinstall the whole mod folder, or rebuild it with a current ReSkate Studio.";
+            trouble = true;
+            why = "Not loaded: it could not be merged cleanly, so none of it is used. "
+                  "Reinstall the whole mod folder, or rebuild it with a current ReSkate Studio.";
         } else if (set_aside(entry)) {
             status = "SET ASIDE";
-            hover = "Set aside: it changes what another mod's chosen variant replaces (a deck pack's deck, say), and "
-                    "only one of them can be in the game. Pick another variant on that mod's own page, or disable that mod.";
+            why = "Set aside: it changes what another mod's chosen variant replaces (a deck pack's deck, say), and "
+                  "only one of them can be in the game. Pick another variant on that mod's own page, or disable that mod.";
         } else if (entry.enabled && (effect || mods::plugin_only(mod))) {
             // (A mod that is only a plugin runs as soon as it is on: nothing of it is applied.)
             status = "LOADED";
-            colour = skate_theme::good;
+            loaded_now = true;
         } else if (mods::plugin_only(mod)) {
             // (and stops as soon as it is off)
         } else if (entry.enabled) {
             status = "APPLY TO LOAD";
-            colour = skate_theme::danger;
+            why = "Apply the changes above to load it.";
+            trouble = true;
         } else if (effect) {
             status = "APPLY TO UNLOAD";
-            colour = skate_theme::danger;
+            why = "Apply the changes above to unload it.";
+            trouble = true;
         }
-        if (tile(index++, mod.title.empty() ? mod.name : mod.title, byline(mod), status, colour, contents_text(mod), hover,
-                 entry.enabled ? "Disable" : "Enable"))
-            toggle = i;
+        ImGui::PushID(index++);
+        if (menu::expand_row(menu, mod.name.c_str(), mod.title.empty() ? mod.name : mod.title, byline(mod) + "  /  " + contents_text(mod),
+                             status, open_mod, loaded_now)) {
+            ImGui::Indent(menu::px(40));
+            if (!mod.description.empty()) menu::note(mod.description.c_str());
+            if (trouble) menu::warn(why.c_str());
+            else if (!why.empty()) menu::note(why.c_str());
+            ImGui::Unindent(menu::px(40));
+            if (menu::row_actions(menu, "actions", {{entry.enabled ? "DISABLE" : "ENABLE", list.issue.empty(), !entry.enabled,
+                                                     entry.enabled ? "Turn it off in mods.json." : "Turn it on in mods.json."}}) == 0)
+                toggle = i;
+        }
+        ImGui::PopID();
     }
-    for (const auto& name : removed)
-        tile(index++, name, "Folder deleted", "APPLY TO UNLOAD", skate_theme::danger, "",
-             "This mod's folder is gone, but it stays loaded until you apply.", nullptr);
+    for (const auto& name : removed) {
+        ImGui::PushID(index++);
+        if (menu::expand_row(menu, ("removed\n" + name).c_str(), name, "Folder deleted", "APPLY TO UNLOAD", open_mod)) {
+            ImGui::Indent(menu::px(40));
+            menu::warn("This mod's folder is gone, but it stays loaded until you apply.");
+            ImGui::Unindent(menu::px(40));
+        }
+        ImGui::PopID();
+    }
     if (toggle && list.issue.empty()) {
         try {
             auto entries = list.entries;
