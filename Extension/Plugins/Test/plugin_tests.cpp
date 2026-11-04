@@ -591,7 +591,8 @@ struct FakeGame final : Game {
         auto sorted = offsets;
         std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.joint < b.joint; });
         for (const auto& o : sorted) {
-            text += std::format(" {}:{:.2f},{:.2f},{:.2f},{:.2f}x{:.2f}", o.joint, o.rotation[0], o.rotation[1], o.rotation[2], o.rotation[3], o.scale);
+            text += std::format(" {}:{:.2f},{:.2f},{:.2f},{:.2f}x{:.2f}", o.joint, o.rotation[0], o.rotation[1], o.rotation[2], o.rotation[3], o.scale[0]);
+            if (o.scale[1] != o.scale[0] || o.scale[2] != o.scale[0]) text += std::format(",{:.2f},{:.2f}", o.scale[1], o.scale[2]);
             if (o.place) {
                 const auto& pl = *o.place;
                 text += pl.frame == dingosdk::pose_place::Frame::joint ? std::format(" place@{}", pl.joint)
@@ -4296,6 +4297,9 @@ void plugins_read_joints_and_tune_physics() {
         assert(reskate.skater.pose(nil))
         assert(not pcall(reskate.skater.pose, {[1] = {scale = 0}}), "the skater's placement")
         assert(not pcall(reskate.skater.pose, {head = {scale = 11}}), "scale 0 to 10")
+        assert(reskate.skater.pose({head = {scale = vector.create(1, 2, 0.5)}}, 0.25), "a scale for each axis")
+        assert(not pcall(reskate.skater.pose, {head = {scale = vector.create(1, 11, 1)}}), "0 to 10 on each axis")
+        assert(not pcall(reskate.skater.pose, {head = {scale = "big"}}), "a number or a vector")
         assert(not pcall(reskate.skater.pose, {head = {}}, 2), "weight 0 to 1")
         assert(not pcall(reskate.skater.pose, {head = {}, [103] = {}}), "a joint once")
         local many = {}
@@ -4334,6 +4338,7 @@ void plugins_read_joints_and_tune_physics() {
     check(game.called("tune tuner PhysicsMode.JumpMaxHeight 2.50") && game.called("tune tuner PhysicsMode.AutoPushEnabled 1.00") &&
               game.called("tune tuner PhysicsMode.JumpMaxHeight none"),
           "A value set, a flag set, and let go\n" + environment.all());
+    check(game.called("pose tuner 0.25 103:0.00,0.00,0.00,1.00x1.00,2.00,0.50"), "A joint is scaled on each axis\n" + environment.all());
     check(game.called("pose tuner 0.50 8:0.00,0.00,0.00,1.00x1.00 44:0.00,0.00,0.71,0.71x1.00 103:0.00,0.00,0.00,1.00x0.00") &&
               game.called("pose tuner 1.00"),
           "Joints posed: a head shrunk, one turned 90 degrees about Z, and off\n" + environment.all());
