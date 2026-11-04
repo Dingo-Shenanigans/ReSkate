@@ -2,8 +2,10 @@
 #include "Extension/Multiplayer/Synchros/share_code.h"
 #include "Extension/Multiplayer/Synchros/synchros_wire.h"
 #include "Extension/Multiplayer/Synchros/received.h"
+#include "Extension/Multiplayer/Synchros/wearer.h"
 #include "Engine/Resource/bundle_ref_table.h"
 #include <cstring>
+#include <map>
 #include <filesystem>
 #include <iostream>
 #include <set>
@@ -445,6 +447,77 @@ void the_cache_keeps_files_by_content_and_wearer() {
     std::filesystem::remove_all(root);
 }
 
+// A wearer's mods, without a game: two items, one sharing a file with the other.
+class FakeCloset final : public Closet {
+public:
+    std::map<std::string, dingosdk::synchros::Cut> cuts;
+    std::map<std::uint32_t, std::vector<std::byte>> stored;   // by piece offset
+    std::optional<dingosdk::synchros::Cut> cut(std::string_view item) override {
+        const auto f = cuts.find(std::string(item));
+        if (f == cuts.end()) return std::nullopt;
+        return f->second;
+    }
+    std::vector<std::byte> read(const dingosdk::synchros::Piece& piece) override { return stored.at(piece.file.offset); }
+    dingosdk::synchros::Piece add(std::uint32_t slot, std::size_t size, dingosdk::synchros::Piece::Kind kind = dingosdk::synchros::Piece::ebx) {
+        std::vector<std::byte> bytes(size);
+        for (std::size_t i = 0; i < size; ++i) bytes[i] = static_cast<std::byte>(slot * 31 + i);
+        stored[slot] = bytes;
+        dingosdk::synchros::Piece piece;
+        piece.kind = kind;
+        piece.file.offset = slot;
+        piece.name = kind == dingosdk::synchros::Piece::chunk ? "" : "characters/own/x" + std::to_string(slot);
+        piece.bundle = "win32/characters/own";
+        piece.superbundle = "win32/items";
+        piece.asset.originalSize = size * 2;
+        piece.asset.sha1.bytes[0] = static_cast<std::byte>(slot);
+        if (kind == dingosdk::synchros::Piece::chunk) piece.chunk_record = {std::byte{0x82}, std::byte{0}};
+        return piece;
+    }
+};
+
+void the_wearer_sends_only_what_is_worn_and_offered() {
+    FakeCloset closet;
+    const auto a = closet.add(1, max_piece * 2 + 5), b = closet.add(2, 100), c = closet.add(3, 300, dingosdk::synchros::Piece::chunk);
+    closet.cuts["own_hat"] = {"items/own_hat", {a, b}, {{"characters/customization/configs/cas_main_bundlereftable", "characters/own/hat_ap", 7}}, 0};
+    closet.cuts["own_deck"] = {"items/own_deck", {b, c}, {}, 0};
+    closet.cuts["own_shoes"] = {"items/own_shoes", {a}, {}, 0};
+    Outfit outfit(closet, {"own_hat", "Own_Deck", "cust_tee"}, [](std::string_view key) { return key == "cust_tee"; });
+
+    const auto answers = outfit.answer(Want{{"own_hat", "own_deck", "own_shoes", "cust_tee", "own_missing"}});
+    check(answers.size() == 1 && answers[0].items.size() == 5, "one answer for five items");
+    const auto& items = answers[0].items;
+    check(items[0].withheld == Withheld::none && items[0].files.size() == 2 && items[0].rows.size() == 1, "a worn item comes whole");
+    check(items[0].files[0].id == content_id(std::span(reinterpret_cast<const std::uint8_t*>(closet.stored[1].data()), closet.stored[1].size())),
+          "a file is named by the hash of its bytes");
+    check(items[0].files[0].original_size == a.asset.originalSize && items[0].files[0].sha1[0] == 1, "with what its manifest says");
+    check(items[1].withheld == Withheld::none && items[1].files[1].kind == FileKind::chunk && items[1].files[1].chunk_record.size() == 2,
+          "keys are not case-sensitive, and a chunk brings its record");
+    check(items[2].withheld == Withheld::not_worn, "an item not worn is not sent");
+    check(items[3].withheld == Withheld::game_item, "the game's own item is not sent");
+    check(items[4].withheld == Withheld::not_worn, "nor one that is not on");
+    check(decode(encode(Message{answers[0]})).has_value(), "the answer is a message a viewer accepts");
+
+    Fetch stray;
+    stray.files.push_back(content_id(std::span(reinterpret_cast<const std::uint8_t*>(closet.stored[3].data()), 10)));
+    check(!outfit.fetch(stray), "a file never offered is refused");
+
+    check(outfit.fetch(Fetch{{items[0].files[0].id, items[1].files[1].id, items[0].files[0].id}}), "offered files are fetched");
+    Arriving first(items[0].files[0]), second(items[1].files[1]);
+    std::size_t whole = 0, pieces = 0;
+    while (const auto piece = outfit.next()) {
+        ++pieces;
+        auto& arriving = piece->id == first.id() ? first : second;
+        const auto took = arriving.take(*piece);
+        check(took != Arriving::Took::refused, "every piece is taken");
+        if (took == Arriving::Took::whole) ++whole;
+    }
+    check(whole == 2 && pieces == 4, "both files arrive, each once, in pieces");
+    check(!outfit.sending(), "and then nothing is left");
+
+    outfit.wearing({"own_deck"});
+    check(outfit.answer(Want{{"own_hat"}})[0].items[0].withheld == Withheld::not_worn, "an item taken off is not offered any more");
+}
+
 int main() {
     try {
         codes_look_right_and_read_back();
@@ -461,6 +534,7 @@ int main() {
         sha1_is_sha1();
         a_file_arrives_in_order_and_whole();
         the_cache_keeps_files_by_content_and_wearer();
+        the_wearer_sends_only_what_is_worn_and_offered();
     } catch (const std::exception& e) {
         std::cerr << "synchros: " << e.what() << '\n';
         return 1;
