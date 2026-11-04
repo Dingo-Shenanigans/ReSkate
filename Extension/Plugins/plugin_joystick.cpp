@@ -1,4 +1,5 @@
 #include "plugin_joystick.h"
+#include "plugin_joystick_policy.h"
 #ifndef DIRECTINPUT_VERSION
 #define DIRECTINPUT_VERSION 0x0800
 #endif
@@ -20,6 +21,10 @@ constexpr LONG range = 1000;                               // each axis reads -r
 constexpr auto read_every = std::chrono::milliseconds(4);  // 250 a second while asked
 constexpr ULONGLONG look_every_ms = 2000;                  // the device list, while asked
 constexpr ULONGLONG asked_for_ms = 2000;                   // reads go on this long after a call
+// The plugin tests check axis_configuration_applied with these values written out; here they are
+// dinput.h's own.
+static_assert(detail::axis_configuration_applied(DI_OK, DI_PROPNOEFFECT) && detail::axis_configuration_applied(DI_PROPNOEFFECT, DI_OK));
+static_assert(!detail::axis_configuration_applied(DIERR_UNSUPPORTED, DI_OK) && !detail::axis_configuration_applied(DI_OK, DIERR_INVALIDPARAM));
 
 std::mutex mutex;
 std::vector<Sample> latest;        // under mutex: what the thread read last
@@ -61,10 +66,15 @@ ComPtr<IDirectInputDevice8W> open(IDirectInput8W& input, const GUID& instance) {
     axes.diph = {sizeof(axes), sizeof(axes.diph), 0, DIPH_DEVICE};
     axes.lMin = -range;
     axes.lMax = range;
-    device->SetProperty(DIPROP_RANGE, &axes.diph);
+    const auto range_result = device->SetProperty(DIPROP_RANGE, &axes.diph);
     DIPROPDWORD dead{};
     dead.diph = {sizeof(dead), sizeof(dead.diph), 0, DIPH_DEVICE};
-    device->SetProperty(DIPROP_DEADZONE, &dead.diph);
+    const auto dead_zone_result = device->SetProperty(DIPROP_DEADZONE, &dead.diph);
+    // read() divides by `range` and expects no dead zone. A controller that refused the range would
+    // give plugins axes on its own scale, and one that kept a dead zone would read 0 for small
+    // movements, so either is left out rather than listed. A success that changed nothing
+    // (DI_PROPNOEFFECT) is not a refusal.
+    if (!detail::axis_configuration_applied(range_result, dead_zone_result)) return nullptr;
     device->Acquire();
     return device;
 }
@@ -126,7 +136,7 @@ void run() {
     ULONGLONG looked_at{};
     for (;;) {
         const auto now = GetTickCount64();
-        if (now - asked_at.load() > asked_for_ms) {
+        if (!detail::request_is_recent(now, asked_at.load(), asked_for_ms)) {
             // Nobody is asking: nothing is read, and what was read is forgotten.
             {
                 std::lock_guard lock(mutex);
