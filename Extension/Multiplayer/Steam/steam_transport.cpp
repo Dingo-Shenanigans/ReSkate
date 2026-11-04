@@ -97,6 +97,38 @@ struct SteamTransport::Impl {
         bool direct{};  // straight to or from an address, not through Steam's relays
     };
     std::map<std::uint64_t, Link> links;
+    // Side connections (open_side): their own listener, links and closings.
+    HSteamListenSocket side_listener{};
+    int side_port{};
+    struct SideLink {
+        HSteamNetConnection handle{};
+        ULONGLONG since{};
+        bool connected{}, recheck{};
+    };
+    std::map<std::uint64_t, SideLink> side_links;
+    std::vector<std::uint64_t> side_closed;
+    // A player who may have a side connection: one in this session.
+    bool session_member(std::uint64_t id) const {
+        return id && id != state.local_id && (links.contains(id) || allowed.contains(id));
+    }
+    void close_side_link(std::uint64_t id, const char *why) {
+        const auto found = side_links.find(id);
+        if (found == side_links.end()) return;
+        if (found->second.handle && close) close(sockets, found->second.handle, 0, why, false);
+        side_links.erase(found);
+        if (side_closed.size() < 256) side_closed.push_back(id);
+    }
+    // As options(), at the side connections' own rate and with less room.
+    std::array<SteamNetworkingConfigValue_t, 5> side_options() {
+        std::array<SteamNetworkingConfigValue_t, 5> out{};
+        out[0] = callback_option();
+        out[1].SetInt32(k_ESteamNetworkingConfig_SendRateMax, side_send_rate);
+        out[2].SetInt32(k_ESteamNetworkingConfig_SendRateMin, side_send_rate);
+        out[3].SetInt32(k_ESteamNetworkingConfig_SendBufferSize, 2 * 1024 * 1024);
+        out[4].SetInt32(k_ESteamNetworkingConfig_P2P_Transport_ICE_Enable,
+                        k_nSteamNetworkingConfig_P2P_Transport_ICE_Enable_Disable);
+        return out;
+    }
     // How the connections Steam closed ended (take_closed). A handful at most wait here.
     std::map<std::uint64_t, std::string> closed;
     // What each connection may send a second, and Steam's call that changes an open one.
@@ -537,6 +569,7 @@ void SteamTransport::disconnect(std::uint64_t id, const char *reason) {
 }
 void SteamTransport::stop() {
     auto &p = *impl_;
+    close_side();
     const auto listener = p.listener;
     p.listener = 0;
     if (p.direct_listener && p.close_listener) p.close_listener(p.sockets, p.direct_listener);
@@ -703,10 +736,35 @@ void SteamTransport::poll() {
         events.swap(p.events);
     }
     for (const auto &event : events) {
+        if (p.side_listener && event.m_info.m_hListenSocket == p.side_listener &&
+            event.m_info.m_eState == k_ESteamNetworkingConnectionState_Connecting) {
+            // Someone in the session opening a side connection to this game.
+            const auto id = event.m_info.m_identityRemote.GetSteamID64();
+            const auto existing = p.side_links.find(id);
+            if (existing != p.side_links.end() && existing->second.handle == event.m_hConn) continue;
+            if (event.m_info.m_identityRemote.m_eType != k_ESteamNetworkingIdentityType_SteamID || !p.session_member(id) ||
+                p.side_links.size() >= p.capacity || p.accept(p.sockets, event.m_hConn) != k_EResultOK) {
+                p.close(p.sockets, event.m_hConn, 4002, "ReSkate side connection unavailable", false);
+                continue;
+            }
+            // Both ends dialled at once: keep the one the lower SteamID opened, so both keep the same.
+            if (existing != p.side_links.end()) {
+                if (p.state.local_id < id) {
+                    p.close(p.sockets, event.m_hConn, 0, "ReSkate side connection already open", false);
+                    continue;
+                }
+                p.close(p.sockets, existing->second.handle, 0, "ReSkate side connection replaced", false);
+            }
+            p.side_links[id] = Impl::SideLink{event.m_hConn, now, false, true};
+            continue;
+        }
         if (event.m_info.m_eState != k_ESteamNetworkingConnectionState_Connecting ||
             !event.m_info.m_hListenSocket) {
             // A tracked connection changed state: read it below in this poll.
             for (auto &entry : p.links)
+                if (entry.second.handle == event.m_hConn)
+                    entry.second.recheck = true;
+            for (auto &entry : p.side_links)
                 if (entry.second.handle == event.m_hConn)
                     entry.second.recheck = true;
             continue;
@@ -808,11 +866,116 @@ void SteamTransport::poll() {
         } else if (now - link.connecting_since > 20000)
             disconnect(id, "Steam connection timed out.");
     }
+    // Side connections: up, gone, or no longer with someone in the session.
+    for (auto it = p.side_links.begin(); it != p.side_links.end();) {
+        const auto id = it->first;
+        auto &side = (it++)->second;
+        if (!p.session_member(id)) {
+            p.close_side_link(id, "Player left the session.");
+            continue;
+        }
+        if (side.connected && !side.recheck && !sweep) continue;
+        side.recheck = false;
+        SteamNetConnectionInfo_t info{};
+        if (!p.get_info(p.sockets, side.handle, &info)) {
+            p.close_side_link(id, "Steam connection disappeared.");
+            continue;
+        }
+        if (info.m_eState == k_ESteamNetworkingConnectionState_Connected) side.connected = true;
+        else if (info.m_eState == k_ESteamNetworkingConnectionState_ClosedByPeer ||
+                 info.m_eState == k_ESteamNetworkingConnectionState_ProblemDetectedLocally)
+            p.close_side_link(id, "Side connection closed.");
+        else if (!side.connected && now - side.since > 20000)
+            p.close_side_link(id, "Side connection timed out.");
+    }
     if (now >= p.next_measure) {
         p.next_measure = now + 250;
         p.measure();
     }
     p.publish_links();
+}
+
+bool SteamTransport::open_side(int port) {
+    auto &p = *impl_;
+    if (!p.state.ready || !p.listen || port <= 0 || port == virtual_port) return false;
+    if (p.side_listener) return p.side_port == port;
+    auto options = p.side_options();
+    p.side_listener = p.listen(p.sockets, port, static_cast<int>(options.size()), options.data());
+    p.side_port = p.side_listener ? port : 0;
+    return p.side_listener != 0;
+}
+void SteamTransport::close_side() {
+    auto &p = *impl_;
+    while (!p.side_links.empty()) p.close_side_link(p.side_links.begin()->first, "Closed.");
+    if (p.side_listener && p.close_listener) p.close_listener(p.sockets, p.side_listener);
+    p.side_listener = 0;
+    p.side_port = 0;
+    p.side_closed.clear();
+}
+bool SteamTransport::side_connect(std::uint64_t id) {
+    auto &p = *impl_;
+    if (!p.side_listener || !p.session_member(id)) return false;
+    if (p.side_links.contains(id)) return true;
+    SteamNetworkingIdentity identity{};
+    identity.SetSteamID64(id);
+    auto options = p.side_options();
+    const auto connection = p.connect(p.sockets, &identity, p.side_port, static_cast<int>(options.size()), options.data());
+    if (!connection) return false;
+    p.side_links[id] = Impl::SideLink{connection, GetTickCount64(), false, true};
+    return true;
+}
+void SteamTransport::side_disconnect(std::uint64_t id) { impl_->close_side_link(id, "Closed."); }
+bool SteamTransport::side_send(std::uint64_t id, std::span<const std::uint8_t> bytes) {
+    auto &p = *impl_;
+    const auto found = p.side_links.find(id);
+    if (found == p.side_links.end() || !found->second.connected || bytes.empty() || bytes.size() > max_side_message ||
+        !p.send_message)
+        return false;
+    return p.send_message(p.sockets, found->second.handle, bytes.data(), static_cast<uint32>(bytes.size()),
+                          k_nSteamNetworkingSend_Reliable, nullptr) == k_EResultOK;
+}
+std::vector<TransportMessage> SteamTransport::side_receive() {
+    auto &p = *impl_;
+    std::vector<TransportMessage> result;
+    for (const auto &[id, side] : p.side_links) {
+        if (!side.connected) continue;
+        for (unsigned batch = 0; batch < 8; ++batch) {
+            SteamNetworkingMessage_t *messages[32]{};
+            const int count = p.receive_messages(p.sockets, side.handle, messages, 32);
+            if (count <= 0) break;
+            for (int i = 0; i < count; ++i) {
+                auto *message = messages[i];
+                if (!message) continue;
+                if (message->m_cbSize > 0 && static_cast<std::size_t>(message->m_cbSize) <= max_side_message && message->m_pData) {
+                    const auto *data = static_cast<const std::uint8_t *>(message->m_pData);
+                    result.push_back({id, {data, data + message->m_cbSize},
+                                      message->m_usecTimeReceived > 0 ? static_cast<std::uint64_t>(message->m_usecTimeReceived) : 0});
+                }
+                p.release_message(message);
+            }
+            if (count < 32) break;
+        }
+    }
+    return result;
+}
+std::vector<std::uint64_t> SteamTransport::side_peers() const {
+    std::vector<std::uint64_t> out;
+    for (const auto &[id, side] : impl_->side_links)
+        if (side.connected) out.push_back(id);
+    return out;
+}
+std::vector<std::uint64_t> SteamTransport::take_side_closed() {
+    std::vector<std::uint64_t> out;
+    out.swap(impl_->side_closed);
+    return out;
+}
+std::int64_t SteamTransport::side_pending(std::uint64_t id) const {
+    auto &p = *impl_;
+    const auto found = p.side_links.find(id);
+    if (found == p.side_links.end() || !found->second.connected || !p.real_time) return -1;
+    SteamNetConnectionRealTimeStatus_t status{};
+    if (p.real_time(p.sockets, found->second.handle, &status, 0, nullptr) != k_EResultOK) return -1;
+    return static_cast<std::int64_t>(status.m_cbPendingReliable) + status.m_cbPendingUnreliable;
 }
 std::string SteamTransport::take_closed(std::uint64_t id) {
     auto &p = *impl_;
