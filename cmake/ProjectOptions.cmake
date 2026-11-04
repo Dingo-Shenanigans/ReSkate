@@ -19,6 +19,13 @@ endif()
 if(DINGOSDK_MOD_VERSION AND NOT DINGOSDK_MOD_VERSION MATCHES "^[0-9A-Za-z._+-]+$")
     message(FATAL_ERROR "DINGOSDK_MOD_VERSION may only use letters, digits and . _ + -")
 endif()
+# Research tools (the throwdown lab's console verbs, `ui dump`, `capture depth`, the memory
+# ledger's owner tracing, the trainer's self test, dumps and telemetry) are compiled in only
+# when this is on: releases leave it off, so ReSkate.dll does not carry them.
+option(DINGOSDK_DEV_TOOLS "Compile ReSkate's research tools into ReSkate.dll (development builds only)" OFF)
+if(DINGOSDK_DEV_TOOLS)
+    add_compile_definitions(DINGOSDK_DEV_TOOLS)
+endif()
 # The same version for code to show (generated/reskate_version.h).
 string(REPLACE "\\" "\\\\" reskate_version_escaped "${DINGOSDK_VERSION}")
 string(REPLACE "\"" "\\\"" reskate_version_escaped "${reskate_version_escaped}")

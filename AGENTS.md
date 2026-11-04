@@ -24,6 +24,11 @@ Output is in `build/vs2022-x64/Release/`. One target at a time:
 
 Warnings are errors (`/W4 /WX`). A change is not done until it builds clean.
 
+Research tools (the throwdown lab's verbs, `ui dump`, `capture depth`, memory owner tracing, the
+trainer's self test, dumps and telemetry) are only in dev builds: `cmake --preset vs2022-x64-dev` and
+`cmake --build --preset dev-release` (option `DINGOSDK_DEV_TOOLS`, output in `build/vs2022-x64-dev/`).
+A new research tool goes behind `#if defined(DINGOSDK_DEV_TOOLS)` too; releases leave it off.
+
 The Linux dedicated server builds with `cmake --preset linux-x64` and
 `cmake --build build/linux --target dingosdk_server`. Only the server builds on Linux.
 

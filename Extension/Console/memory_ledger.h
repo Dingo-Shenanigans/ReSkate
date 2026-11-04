@@ -10,9 +10,12 @@
 // with who made it: what is committed, what of that is in RAM, and what is in RAM but all zero.
 // A minute at a time it also looks for an owner whose memory only grows, and says so in the log.
 // It is a research aid and off until asked for: every allocation in the process passes it.
+// The owner tracing is in development builds only (DINGOSDK_DEV_TOOLS); the heap and GPU
+// reports and the "Memory:" log line's GPU part are in every build.
 namespace dingosdk::memory_ledger {
 using Line = std::function<void(const std::string&)>;
 
+#if defined(DINGOSDK_DEV_TOOLS)
 // Starts noting reservations. What was made before is reported as not seen being made.
 bool start(std::string& error);
 bool on() noexcept;
@@ -26,16 +29,17 @@ void asked_report(const Line& out);
 // What the process holds by owner and by caller (the ledger is started if it is off).
 // `most` callers are listed, each with its stack.
 void owners_report(const Line& out, std::size_t most = 12);
+#endif
 // The process's heaps: what each holds and has free inside it, and its blocks by size; with
 // `mark`, the sizes are remembered and the next report says what was added since.
 void heap_report(const Line& out, bool mark, std::size_t most = 20);
 // Video memory and the system memory the GPU uses for this process, one line per adapter.
 void gpu_report(const Line& out);
-// Everything above at length, into memory-<time>.txt beside ReSkate.log.
+// Everything above at length (what this build has of it), into memory-<time>.txt beside ReSkate.log.
 std::filesystem::path write_report();
 
 // For the periodic "Memory:" log line: the largest owners, as the leak watcher last saw them
-// (empty while the ledger is off), and the GPU's use.
+// (empty while the ledger is off, and always outside development builds), and the GPU's use.
 std::string owners_line();
 std::string gpu_line();
 }

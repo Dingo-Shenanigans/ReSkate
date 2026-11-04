@@ -42,7 +42,7 @@ Feature code never holds game addresses: everything tied to one `Skate.exe` buil
 
 ```
 ReSkate/
-├── CMakeLists.txt, CMakePresets.json   build entry; presets vs2022-x64, linux-x64, release, linux-release
+├── CMakeLists.txt, CMakePresets.json   build entry; presets vs2022-x64, vs2022-x64-dev, linux-x64, release, dev-release, linux-release
 ├── cmake/                 the build, split by area
 ├── Engine/                engine-level code shared by the DLL, launcher and server
 ├── Extension/             ReSkate's features (in ReSkate.dll)

@@ -43,6 +43,9 @@
 // Research tools for multiplayer throwdowns. See analysis/throwdowns-native-mp.md §8
 // for the experiments they serve. Console commands opt into event injection;
 // participant/ending diagnostics and the GetPlayerName null fix run automatically.
+// The console verbs (`throwdown`, `challenge`), what only they reach and the condition probe
+// are compiled in development builds only (DINGOSDK_DEV_TOOLS); the injection the relay and
+// plugin modes use is in every build.
 namespace dingosdk::multiplayer {
 namespace {
 using Address = std::uintptr_t;
@@ -196,7 +199,9 @@ struct Lab {
     // Coop challenge lab (`challenge`): virtual participants for the next challenge start, the
     // ids that answer GetPlayerName with a virtual EID (virtual_player_names.h), the last start
     // seen, and the local client's last finished attempt (replayed as a virtual player).
+#if defined(DINGOSDK_DEV_TOOLS)
     std::atomic<unsigned> challenge_armed{};
+#endif
     std::array<std::atomic<std::uint32_t>, 4> challenge_named{};
     std::string challenge_start;                 // under `mutex`
     struct CriteriaAttempt { std::vector<std::uint8_t> data; std::vector<std::uint8_t> indexes; std::uint32_t count{}, index_count{}; };
@@ -245,12 +250,14 @@ struct Lab {
     std::atomic<Address> local_entered_activity{}; // candidate until QueueFilled confirms it
     std::atomic<std::uint32_t> server_active{}; // turn-based: whose turn the local server started last
     std::array<std::atomic<std::uint32_t>, 16> players{};
+#if defined(DINGOSDK_DEV_TOOLS)
     // `throwdown trace`: every authored graph run in the window, per realm.
     struct Seen { std::uint32_t count{}; std::uint64_t first_ms{}, last_ms{}; };
     std::atomic<bool> tracing{};
     std::mutex trace_mutex;
     std::unordered_map<std::uint64_t, Seen> trace; // (realm << 32 | graph hash)
     std::uint64_t trace_start_ms{}, trace_end_ms{};
+#endif
     std::atomic<unsigned> participant_logs{};
 };
 Lab& lab() { static auto* value = new Lab; return *value; }
@@ -746,7 +753,9 @@ std::vector<std::uint32_t> native_u32s(Address wrapper) {
     for (std::uint32_t i = 0; i < count && i < 64; ++i) values.push_back(read<std::uint32_t>(data + 4 * i));
     return values;
 }
+#if defined(DINGOSDK_DEV_TOOLS)
 void remember_player(std::uint32_t id);
+#endif
 // Every challenge start, solo or coop (StartChallenge): logged, and with `challenge virtual <n>`
 // armed, given n virtual participants and made coop, the way a linked copy would start.
 void start_challenge_hook(Address coordinator, Address series, Address* participants, Address id, bool coop,
@@ -763,19 +772,26 @@ void start_challenge_hook(Address coordinator, Address series, Address* particip
                 if (!first.empty()) host = first.front();
             }
             // Armed before a multiplayer session: a linked challenge has only real players.
-            const auto armed = multiplayer_session_active() ? 0U : l.challenge_armed.exchange(0);
+            // (`challenge virtual` is in development builds only.)
+            unsigned armed = 0;
+#if defined(DINGOSDK_DEV_TOOLS)
+            armed = multiplayer_session_active() ? 0U : l.challenge_armed.exchange(0);
+#endif
             for (auto& slot : l.challenge_named) slot.store(0, std::memory_order_relaxed);
             const auto before = native_u32s(reinterpret_cast<Address>(participants));
             const auto series_text = series ? read_string(series) : std::string{};
             const auto id_text = id ? read_string(id) : std::string{};
             // The other players of a linked coop challenge (throwdown_relay.cpp), or the lab's.
             std::vector<std::uint32_t> others;
+#if defined(DINGOSDK_DEV_TOOLS)
             if (armed) {
                 for (unsigned k = 0; k < armed && k < l.challenge_named.size(); ++k) {
                     others.push_back(challenge_virtual_base + 1 + k);
                     remember_player(challenge_virtual_base + 1 + k); // UI lookups answer it with the local record
                 }
-            } else if (const auto plan = throwdown_relay_challenge_players(series_text, id_text)) {
+            } else
+#endif
+            if (const auto plan = throwdown_relay_challenge_players(series_text, id_text)) {
                 others = *plan;
             }
             if (!others.empty() && participants) {
@@ -959,6 +975,7 @@ void leaderboard_score_hook(Address leaderboard, bool flag, std::uint32_t player
     }
     lab().leaderboard_score(leaderboard, flag, player, score);
 }
+#if defined(DINGOSDK_DEV_TOOLS)
 // Condition probe: the operands and result of every AND / OR / NOT evaluated while a
 // throwdown registration graph runs (in order), so a false term in the chain that
 // decides whether a drop is shown and joinable can be read off the log.
@@ -988,6 +1005,7 @@ void probe(const char* op, int a, int b, bool result) {
 void and_probe(const bool* a, const bool* b, bool* out) { *out = *a && *b; probe("AND", *a, *b, *out); }
 void or_probe(const bool* a, const bool* b, bool* out) { *out = *a || *b; probe("OR", *a, *b, *out); }
 void not_probe(const bool* a, bool* out) { *out = !*a; probe("NOT", *a, -1, *out); }
+#endif
 std::uint32_t player_id_hook(const Address* player) {
     {
         profile_runtime::PreserveError preserve;
@@ -1261,6 +1279,7 @@ std::string run_job(const Job& job) {
         e.send();
         return std::format("ForceStartThrowdown sent for {} MMID {:#x}", series, mmid);
     }
+#if defined(DINGOSDK_DEV_TOOLS)
     case Job::Kind::join: {
         // What the details page's Join button sends; the server takes the local
         // player (the sender) as the joiner.
@@ -1270,6 +1289,7 @@ std::string run_job(const Job& job) {
         e.send();
         return std::format("AddParticipantToCommunityEvent sent: local player joins {} queue MMID {:#x}", series, mmid);
     }
+#endif
     case Job::Kind::end_turn: {
         const auto handle = job.mmid ? job.mmid : live_event_handle(); // mmid: an explicit handle
         if (!handle) throw std::runtime_error("Throwdown lab: no running event handle");
@@ -1279,6 +1299,7 @@ std::string run_job(const Job& job) {
         e.send(5, job.uid);
         return std::format("RequestTurnEnd sent as player {:#x} for event {:#x} ({})", job.uid, handle, note);
     }
+#if defined(DINGOSDK_DEV_TOOLS)
     case Job::Kind::score: {
         Address leaderboard{};
         { std::lock_guard lock(l.mutex); leaderboard = l.leaderboards[job.max_players]; }
@@ -1286,6 +1307,7 @@ std::string run_job(const Job& job) {
         l.leaderboard_score(leaderboard, job.flag, job.uid, job.score);
         return std::format("leaderboard {:#x}: player {:#x} score {} (flag {})", leaderboard, job.uid, job.score, job.flag);
     }
+#endif
     case Job::Kind::criteria_attempt: {
         // The local client's last AttemptFinishedForCriteria, replayed as `uid`: its server merges
         // it into that player's criteria and the team total (ActivityBaseCriteria 0x4bc91cfd).
@@ -1372,6 +1394,7 @@ std::string run_job(const Job& job) {
     return {};
 }
 
+#if defined(DINGOSDK_DEV_TOOLS)
 std::optional<std::uint32_t> parse_u32(std::string_view text) {
     int radix = 10;
     if (text.starts_with("0x") || text.starts_with("0X")) { text.remove_prefix(2); radix = 16; }
@@ -1380,6 +1403,7 @@ std::optional<std::uint32_t> parse_u32(std::string_view text) {
     if (error != std::errc{} || end != text.data() + text.size()) return {};
     return value;
 }
+// Ids the lab's verbs put into a throwdown (throwdown_lab_player).
 void remember_player(std::uint32_t id) {
     for (auto& slot : lab().players) {
         auto current = slot.load();
@@ -1387,6 +1411,7 @@ void remember_player(std::uint32_t id) {
         if (!current && slot.compare_exchange_strong(current, id)) return;
     }
 }
+#endif
 // Type objects of the injected events; found on the heap and kept until the level is left.
 // `worker`: called on a thread of its own, which scans as the party focus's does (background
 // priority, only memory the game has in RAM). The full scan read every committed page and paged
@@ -1402,6 +1427,8 @@ std::string ensure_types(std::initializer_list<std::uint32_t> hashes, bool worke
     for (const auto& q : queries) if (q.object) lab().types[q.hash] = q.object;
     return missing ? std::format("{} event type(s) not found on the heap; is the game in the world?", missing) : std::string{};
 }
+#if defined(DINGOSDK_DEV_TOOLS)
+// A console verb's job, on the lab's current queue.
 std::string queue(Job job, std::initializer_list<std::uint32_t> hashes) {
     if (auto error = ensure_types(hashes); !error.empty()) return error;
     {
@@ -1411,6 +1438,7 @@ std::string queue(Job job, std::initializer_list<std::uint32_t> hashes) {
     lab().pending.store(true, std::memory_order_release);
     return {};
 }
+#endif
 } // namespace
 
 void initialize_throwdown_lab(Address base) noexcept {
@@ -1469,8 +1497,9 @@ void initialize_throwdown_lab(Address base) noexcept {
             throw std::runtime_error("Throwdown lab: cannot enable hooks");
         l.installed.store(true, std::memory_order_release);
     } catch (const std::exception& e) { logging::write(logging::Level::warning, logging::Channel::progression, e.what()); }
+#if defined(DINGOSDK_DEV_TOOLS)
     // The condition probe replaces the game's AND / OR / NOT, which every authored
-    // condition runs through; opt in with RESKATE_THROWDOWN_PROBE=1.
+    // condition runs through; opt in with RESKATE_THROWDOWN_PROBE=1 (development builds).
     if (!GetEnvironmentVariableW(L"RESKATE_THROWDOWN_PROBE", nullptr, 0)) return;
     try {
         struct Op { Address rva; std::array<unsigned char, 9> prefix; void* replacement; };
@@ -1484,6 +1513,7 @@ void initialize_throwdown_lab(Address base) noexcept {
                 hook_enable(reinterpret_cast<void*>(base + op.rva)) == HookOk) ++count;
         logging::log(logging::Level::info, logging::Channel::progression, "Throwdown lab: condition probe on {} of 3 boolean ops.", count);
     } catch (...) {}
+#endif
 }
 
 void observe_throwdown_send(std::uint32_t hash, Address type, Address payload) noexcept {
@@ -1851,6 +1881,7 @@ std::uint64_t now_ms() {
     return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count());
 }
+#if defined(DINGOSDK_DEV_TOOLS)
 void trace_expression(Address vm) {
     auto& l = lab();
     const auto now = now_ms();
@@ -1886,6 +1917,7 @@ void trace_expression(Address vm) {
     if (!seen.count++) seen.first_ms = now;
     seen.last_ms = now;
 }
+#endif
 
 // The pump runs after every expression the game executes, thousands a frame, and almost all
 // are none of the graphs it watches: one sorted lookup of the running graph decides
@@ -2151,10 +2183,12 @@ void pump_throwdown_lab(Address vm) noexcept {
             if (expired->token) throwdown_relay_spawned(expired->token, 0, 0);
         }
     }
+#if defined(DINGOSDK_DEV_TOOLS)
     if (l.tracing.load(std::memory_order_acquire) && vm) {
         profile_runtime::PreserveError preserve;
         try { trace_expression(vm); } catch (...) {}
     }
+#endif
     if (l.spawn_outstanding.load(std::memory_order_acquire) && vm) {
         profile_runtime::PreserveError preserve;
         try {
@@ -2433,6 +2467,7 @@ bool queue_throwdown_score(std::uint32_t player, std::int32_t score) noexcept {
     return queue_relay_job(std::move(job), event_player_score);
 }
 
+#if defined(DINGOSDK_DEV_TOOLS)
 std::string throwdown_lab_command(std::string_view arguments, std::optional<std::array<float, 3>> skater) {
     auto& l = lab();
     if (!l.installed.load(std::memory_order_acquire)) return "Throwdown lab is not installed (see ReSkate.log).";
@@ -2628,4 +2663,5 @@ std::string challenge_lab_command(std::string_view arguments) {
                        l.challenge_armed.load(), named.empty() ? " none" : named,
                        l.challenge_start.empty() ? "none yet" : l.challenge_start, attempt, l.criteria_runs.load());
 }
+#endif
 } // namespace dingosdk::multiplayer

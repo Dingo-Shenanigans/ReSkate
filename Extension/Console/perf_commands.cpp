@@ -140,10 +140,11 @@ void print_by_size(const std::vector<std::uint64_t>& sizes, const Output& out, s
         out(std::format("  {} x {} = {}", order[i].second.first, megabytes(order[i].first), megabytes(order[i].second.second)));
 }
 
+#if defined(DINGOSDK_DEV_TOOLS)
 // RESKATE_MEMORY_TRACE=<megabytes>: from the start of the game, who asks for each block of at
 // least that size (`perf memory` then lists them), and the memory ledger from then on, so
 // `perf memory owners` can say who made nearly everything. A research aid for what a map's
-// load commits.
+// load commits (development builds only).
 void start_memory_trace_from_environment() noexcept {
     wchar_t value[16]{};
     const auto length = GetEnvironmentVariableW(L"RESKATE_MEMORY_TRACE", value, 16);
@@ -157,6 +158,7 @@ void start_memory_trace_from_environment() noexcept {
         (void)memory_ledger::start_asking(all ? 1 : static_cast<std::uint64_t>(megabytes_least) << 20, UINT64_MAX, error);
     } catch (...) {}
 }
+#endif
 
 void register_perf_commands(Commands& registry) {
     // The music sources in the music screen (Spotify, YouTube Music, the player's files, radio,
@@ -415,13 +417,21 @@ void register_perf_commands(Commands& registry) {
 
     auto what = argument("mark", Type::text, true);
     what.complete = [](const Model&, auto) {
+#if defined(DINGOSDK_DEV_TOOLS)
         return std::vector<std::string>{"mark", "trace", "stop", "big", "owners", "heap", "gpu", "report"};
+#else
+        return std::vector<std::string>{"mark", "big", "heap", "gpu", "report"};
+#endif
     };
     auto heap_mark = argument("mark", Type::text, true);
     heap_mark.complete = [](const Model&, auto) { return std::vector<std::string>{"mark"}; };
     auto memory = action("perf memory", "The game's memory by allocation; `perf memory mark` remembers it and the next `perf memory` says what was added since; "
+#if defined(DINGOSDK_DEV_TOOLS)
         "`perf memory trace` then also says who asked for the middle-sized blocks, until `perf memory stop`; `perf memory big` lists the largest blocks and how much of each is in use; "
         "`perf memory owners` says who made what is held and how much of it is used (it starts the memory ledger, which then also says in the log what keeps growing); "
+#else
+        "`perf memory big` lists the largest blocks and how much of each is in use; "
+#endif
         "`perf memory heap [mark]` lists the heaps' blocks by size and what was added since a mark; `perf memory gpu` the video memory; "
         "`perf memory report` writes all of it to a file beside ReSkate.log",
         Group::console, {std::move(what), std::move(heap_mark)});
@@ -432,7 +442,9 @@ void register_perf_commands(Commands& registry) {
         static bool has_mark{};
         const memory_ledger::Line line = [&](const std::string& text) { out(text); };
         const auto word = args.empty() ? std::string() : std::get<std::string>(args[0]);
+#if defined(DINGOSDK_DEV_TOOLS)
         if (equal(word, "owners")) return memory_ledger::owners_report(line);
+#endif
         if (equal(word, "heap")) return memory_ledger::heap_report(line, args.size() > 1 && equal(std::get<std::string>(args[1]), "mark"));
         if (equal(word, "gpu")) return memory_ledger::gpu_report(line);
         if (equal(word, "report")) {
@@ -490,6 +502,7 @@ void register_perf_commands(Commands& registry) {
             }
             return;
         }
+#if defined(DINGOSDK_DEV_TOOLS)
         const bool tracing = !args.empty() && equal(std::get<std::string>(args[0]), "trace");
         if (!args.empty() && equal(std::get<std::string>(args[0]), "stop")) {
             // (The memory ledger stays on: what it missed being given back would be wrong.)
@@ -502,6 +515,9 @@ void register_perf_commands(Commands& registry) {
             // Every size: a large block is often set aside whole and filled a page at a time.
             if (!memory_ledger::start_asking(1, UINT64_MAX, error)) { out("error: " + error); return; }
         }
+#else
+        const bool tracing = false; // `perf memory trace` is in development builds only
+#endif
         if (tracing || (!args.empty() && equal(std::get<std::string>(args[0]), "mark"))) {
             marked = now;
             has_mark = true;
@@ -514,7 +530,9 @@ void register_perf_commands(Commands& registry) {
             for (const auto& [base, size] : now.allocations) sizes.push_back(size);
             out("The allocation sizes that add up to most:");
             print_by_size(sizes, out, 20);
+#if defined(DINGOSDK_DEV_TOOLS)
             if (memory_ledger::asking()) memory_ledger::asked_report(line);
+#endif
             return;
         }
         std::vector<std::uint64_t> added, grown;
@@ -535,7 +553,9 @@ void register_perf_commands(Commands& registry) {
         out(std::format("Growth of allocations that were there: {} in {}. By how much each grew:", megabytes(grown_bytes), grown.size()));
         print_by_size(grown, out, 12);
         out(std::format("Given back: {}.", megabytes(freed_bytes)));
+#if defined(DINGOSDK_DEV_TOOLS)
         if (memory_ledger::asking()) memory_ledger::asked_report(line);
+#endif
     };
     registry.add(std::move(memory));
 

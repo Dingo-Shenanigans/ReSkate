@@ -100,6 +100,8 @@ struct Saved {
     double value{};
     bool frozen{};
 };
+#if defined(DINGOSDK_DEV_TOOLS)
+// `trainer selftest` (development builds only, DINGOSDK_DEV_TOOLS).
 struct SelfTest {
     int step{}; // 0: idle
     std::uint64_t until{};
@@ -108,6 +110,7 @@ struct SelfTest {
     Vec3 origin{};
     int failures{};
 };
+#endif
 struct Motion {
     bool valid{};
     Vec3 position{}, velocity{};
@@ -343,8 +346,10 @@ struct State {
     Telemetry telemetry;
     std::ofstream log;
     std::int64_t log_start{};
-    std::map<std::uint32_t, std::uint64_t> states; // physics state -> ticks seen
+#if defined(DINGOSDK_DEV_TOOLS)
+    std::map<std::uint32_t, std::uint64_t> states; // physics state -> ticks seen (`trainer states`)
     SelfTest test;
+#endif
 };
 State &state() {
     static auto *value = new State;
@@ -1986,7 +1991,9 @@ void observe(std::uintptr_t base, std::uintptr_t client, std::uint64_t now) {
     t.heading = std::atan2(matrix[8], matrix[10]) * 180.0f / std::numbers::pi_v<float>;
     if (t.heading < 0) t.heading += 360.0f;
     t.physics_state = watch.valid ? watch.state : 0;
+#if defined(DINGOSDK_DEV_TOOLS)
     if (watch.valid) ++s.states[watch.state];
+#endif
     // A hippy jump leaves the board (504) straight from riding (100): measured. A plain
     // dismount does the same but is not rising, so it is left alone.
     if (watch.valid && watch.state != s.last_state) {
@@ -2112,10 +2119,12 @@ void observe(std::uintptr_t base, std::uintptr_t client, std::uint64_t now) {
         if (m.airborne) m.board_turn = std::max(m.board_turn, board_turn);
     }
     if (!m.airborne) s.board_spin = {};
+#if defined(DINGOSDK_DEV_TOOLS)
     if (s.logging && s.log) {
         s.log << std::format("{:.4f},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f},{:.1f},{},{},{:.0f}\n", clock_seconds(stamp - s.log_start), position[0],
                              position[1], position[2], t.speed, t.vertical, t.heading, t.airborne ? 1 : 0, t.physics_state, board_turn);
     }
+#endif
     // A bail: back to the selected marker once the skater has had time to fall.
     if (watch.valid && (!s.wipeouts_known || watch.wipeouts != s.seen_wipeouts)) {
         if (s.wipeouts_known && s.auto_return && !match_blocks_markers()) {
@@ -2128,6 +2137,8 @@ void observe(std::uintptr_t base, std::uintptr_t client, std::uint64_t now) {
         s.seen_wipeouts = watch.wipeouts;
     }
 }
+#if defined(DINGOSDK_DEV_TOOLS)
+// `trainer option log`: telemetry to a CSV file (development builds only).
 void set_logging(bool on) {
     auto &s = state();
     if (s.log.is_open()) s.log.close();
@@ -2149,6 +2160,7 @@ void set_logging(bool on) {
     s.log_start = clock_now();
     s.logging = true;
 }
+#endif
 void shortcuts() {
     auto &s = state();
     ControllerInput input;
@@ -2166,6 +2178,7 @@ void shortcuts() {
 }
 
 // ---- self test -------------------------------------------------------------------------
+#if defined(DINGOSDK_DEV_TOOLS)
 void test_line(bool ok, const std::string &text) {
     auto &s = state();
     if (!ok) ++s.test.failures;
@@ -2254,6 +2267,7 @@ void run_selftest(std::uint64_t now) {
         break;
     }
 }
+#endif
 
 // ---- transition skating ------------------------------------------------------------------------
 // Bowls, quarter pipes, vert and spines: the trainer's own help back into the ramp, and Skate 3's numbers for it.
@@ -3026,7 +3040,9 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool playing, const std::s
                                                       launch.trick == Trick::boneless ? "boneless" : "no comply", launch.up_speed, launch.factor));
         hold(now);
         if (s.extras_due) publish_extras();
+#if defined(DINGOSDK_DEV_TOOLS)
         run_selftest(now);
+#endif
         publish(s.telemetry);
         if (s.view_due) build_view();
         if (s.save_due && now >= s.next_save) save_store();
@@ -3594,7 +3610,11 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
             if (!value) return "error: return_delay needs seconds.";
             s.return_delay = std::clamp(static_cast<float>(*value), 0.0f, 3600.0f);
         } else if (!flag(arg(1), on)) {
-            return "error: usage: trainer option hud|hud_jump|auto_return|pad|flip_advanced|flip_pop|flip_flick|flip_limit|underflip_split|gravity_landing_own|log 0|1";
+            return "error: usage: trainer option hud|hud_jump|auto_return|pad|flip_advanced|flip_pop|flip_flick|flip_limit|underflip_split|gravity_landing_own"
+#if defined(DINGOSDK_DEV_TOOLS)
+                   "|log"
+#endif
+                   " 0|1";
         } else if (name == "hud") s.hud = on;
         else if (name == "hud_jump") s.hud_jump = on;
         else if (name == "auto_return") s.auto_return = on;
@@ -3621,10 +3641,13 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
             if (on && !editable(&why)) return "error: " + why;
             s.gravity_landing_own = on;
         }
+#if defined(DINGOSDK_DEV_TOOLS)
         else if (name == "log") {
             set_logging(on);
             if (on && !s.logging) return "error: the telemetry file could not be created.";
-        } else return "error: no option is called \"" + name + "\".";
+        }
+#endif
+        else return "error: no option is called \"" + name + "\".";
         changed();
         return name + " = " + arg(1);
     }
@@ -3695,11 +3718,13 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
         return "Copies found: " + classes_summary();
     }
     if (v == "refresh") return tuning::refresh_skater(s.base, s.entity) ? "Skater copy refreshed." : "error: the skater has no cached copy right now.";
+#if defined(DINGOSDK_DEV_TOOLS)
     if (v == "states") {
         std::string result;
         for (const auto &[id, ticks] : s.states) result += std::format("{}{}: {}", result.empty() ? "" : ", ", id, ticks);
         return result.empty() ? "No physics state seen yet." : "Physics states seen (id: ticks): " + result;
     }
+#endif
     if (v == "livedump") {
         // Diagnostic: what the game itself holds right now (its live tuning, and the first copy of each class value), not the
         // trainer's own numbers: `trainer livedump <name>` before and after changing one of the game's settings shows what
@@ -3735,6 +3760,7 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
             if (const auto held = profile_runtime::local_game_option(key)) file << std::format("setting:{}\t{:.6g}\n", key, *held);
         return std::format("Wrote {} live values to {}.", count, path_utf8(directory / std::filesystem::path("tuning-live-" + name + ".txt")));
     }
+#if defined(DINGOSDK_DEV_TOOLS)
     if (v == "dump") {
         const auto directory = data_directory();
         std::error_code error;
@@ -3755,6 +3781,9 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
         return "Self test started; see the log for \"trainer selftest:\" lines.";
     }
     return "error: trainer status|open|set|freeze|reset|find|preset|slot|marker|tp|ground|waypoint|spot|option|profile|jumps|where|states|dump|selftest";
+#else
+    return "error: trainer status|open|set|freeze|reset|find|preset|slot|marker|tp|ground|waypoint|spot|option|profile|jumps|where";
+#endif
 }
 } // namespace
 

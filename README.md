@@ -276,6 +276,10 @@ The files are written to `build/vs2022-x64/Release/`:
 To work in Visual Studio, open `build/vs2022-x64/DingoSDK.sln` after configuring and select
 **Release | x64**.
 
+For a development build with the research tools in it (the throwdown lab's console verbs, `ui dump`,
+`capture depth` and the like), use `cmake --preset vs2022-x64-dev` and
+`cmake --build --preset dev-release --parallel 4`; it builds into `build/vs2022-x64-dev/`.
+
 ### Running your build
 
 Close the game. Copy `ReSkateLauncher.exe` and `ReSkate.dll` into your ReSkate folder (the one the
@@ -309,6 +313,7 @@ Useful launcher flags:
 | `DINGOSDK_RELEASE_REPO` | `Dingo-Shenanigans/ReSkate` | public GitHub repository whose latest release carries `launcher.json` and the files it pins |
 | `DINGOSDK_CRASH_REPORT_URL` | the project's endpoint | Sentry minidump endpoint URL; empty turns crash uploads off |
 | `DINGOSDK_TEST_GAME_ROOT` | empty | a Skate folder, for the tests that read real game data |
+| `DINGOSDK_DEV_TOOLS` | `OFF` | compile the research tools into `ReSkate.dll` (development builds; the `vs2022-x64-dev` preset) |
 
 ### Tests
 

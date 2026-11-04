@@ -2128,14 +2128,18 @@ void transition_section(SkateMenu &menu, const CallbacksV3 &callbacks, Page &p, 
 void map_tab(SkateMenu &menu, const CallbacksV3 &callbacks, Page &p, const trainer::View &view) {
     const auto telemetry = trainer::telemetry();
     if (card(menu, p, "hud", "HUD")) {
-    bool hud = view.hud, jump = view.hud_jump, logging = view.logging;
+    bool hud = view.hud, jump = view.hud_jump;
     if (toggle_row(menu, "Speed and air HUD", "Speed, air time and height in the corner while you skate.", hud))
         trainer_command(menu, callbacks, std::format("option hud {}", hud ? 1 : 0));
     if (toggle_row(menu, "Jump read-out", "After each landing: takeoff speed and angle, height, distance, landing speed.", jump))
         trainer_command(menu, callbacks, std::format("option hud_jump {}", jump ? 1 : 0));
+#if defined(DINGOSDK_DEV_TOOLS)
+    // (`trainer option log`, a research aid: development builds only.)
+    bool logging = view.logging;
     if (toggle_row(menu, "Record telemetry", "Write position and speed every frame to a CSV in %LOCALAPPDATA%\\ReSkate\\trainer\\telemetry.",
             logging))
         trainer_command(menu, callbacks, std::format("option log {}", logging ? 1 : 0));
+#endif
     }
     card_end(p);
 
