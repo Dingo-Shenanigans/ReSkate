@@ -923,6 +923,9 @@ struct FakeGame final : Game {
     std::string hold_gameplay_option(std::string_view, std::string_view name, std::optional<bool>) override { return name == "example" ? "" : "unknown option"; }
     std::optional<RailTarget> rail_target() override { return RailTarget{true, true, {0, 0, 1}}; }
     std::string select_rail_target(std::string_view, std::optional<int>, bool) override { return {}; }
+    std::optional<FlipState> flip_state_result;
+    unsigned flip_state_reads{};
+    std::optional<FlipState> flip_state() override { ++flip_state_reads; return flip_state_result; }
     std::optional<SkaterFrame> skater_frame() override { return SkaterFrame{{1, 2, 3}, {0, 0, 1}, false, true, false, false, 42}; }
     std::vector<AnimationValue> animation_values() override { return {{"Animation/Dingo/Bool.Anim.DoingTrick", 1, true, false}, {"Animation/Dingo/Float.Physics.Example", 0.5, false, true}}; }
     std::string set_animation_value(std::string_view name, double) override { return name == "Animation/Dingo/Float.Physics.Example" ? "" : "not a live numeric physics output"; }
@@ -4093,6 +4096,51 @@ void animation_values_require_occupied_typed_local_pages() {
     check(av::read(base, address(core)).empty(), "wrong descriptor types are refused");
 }
 #endif
+
+void plugins_read_flip_state() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({script("missing_flip", R"(
+        assert(reskate.skater.flip_state() == nil, "no local state is not a false underflip")
+    )", R"("skater.read")")});
+    running(host, "missing_flip", environment);
+
+    environment.fake.flip_state_result = Game::FlipState{2, false, true, std::nullopt};
+    host.apply({script("known_flip", R"(
+        local f = reskate.skater.flip_state()
+        assert(f.trick == 2 and f.underflip_anim == false and f.underflip_state == true)
+        assert(f.underflip_window == nil, "an unavailable flag is not false")
+        local count = 0
+        for key in pairs(f) do
+            assert(key == "trick" or key == "underflip_anim" or key == "underflip_state")
+            count = count + 1
+        end
+        assert(count == 3, "only public values, never native addresses")
+    )", R"("skater.read")")});
+    running(host, "known_flip", environment);
+
+    environment.fake.flip_state_result = Game::FlipState{0, true, false, false};
+    host.apply({script("idle_flip", R"(
+        local f = reskate.skater.flip_state()
+        assert(f.trick == 0 and f.underflip_anim == true)
+        assert(f.underflip_state == false and f.underflip_window == false)
+    )", R"("skater.read")")});
+    running(host, "idle_flip", environment);
+
+    environment.fake.flip_state_result = Game::FlipState{2, std::nullopt, std::nullopt, std::nullopt};
+    host.apply({script("unknown_flags", R"(
+        local f = reskate.skater.flip_state()
+        assert(f.trick == 2 and f.underflip_anim == nil and f.underflip_state == nil and f.underflip_window == nil)
+    )", R"("skater.read")")});
+    running(host, "unknown_flags", environment);
+
+    const auto reads = environment.fake.flip_state_reads;
+    host.apply({script("denied_flip", R"(
+        assert(not pcall(reskate.skater.flip_state), "skater.read is required")
+    )")});
+    running(host, "denied_flip", environment);
+    check(environment.fake.flip_state_reads == reads, "permission denial happens before reading native state");
+}
 
 void plugins_read_frames_and_hold_gameplay_options() {
     TestEnvironment environment;
@@ -7934,6 +7982,7 @@ int main() {
         run(plugins_have_what_a_prop_hunt_needs);
         run(plugins_write_normalized_controllers);
         run(controller_reports_preserve_non_controls);
+        run(plugins_read_flip_state);
         run(plugins_read_frames_and_hold_gameplay_options);
 #ifdef _WIN32
         run(animation_values_require_occupied_typed_local_pages);

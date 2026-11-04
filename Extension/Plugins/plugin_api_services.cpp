@@ -109,6 +109,18 @@ int skater_frame(lua_State* L) {
     field_number(L, "serial", static_cast<double>(frame->serial));
     return 1;
 }
+// Direct trainer states are not necessarily present in the animation graph's property list.
+int flip_state(lua_State* L) {
+    auto& p = allowed(L, "skater.read", "reskate.skater.flip_state");
+    const auto state = game_of(p).flip_state();
+    if (!state) { lua_pushnil(L); return 1; }
+    lua_createtable(L, 0, 4);
+    field_number(L, "trick", state->trick);
+    if (state->underflip_anim.has_value()) field_bool(L, "underflip_anim", *state->underflip_anim);
+    if (state->underflip_state.has_value()) field_bool(L, "underflip_state", *state->underflip_state);
+    if (state->underflip_window.has_value()) field_bool(L, "underflip_window", *state->underflip_window);
+    return 1;
+}
 int animation_values(lua_State* L) {
     auto& p = allowed(L, "skater.read", "reskate.skater.animation_values");
     const auto values = game_of(p).animation_values();
@@ -696,7 +708,7 @@ int strings_hash(lua_State* L) {
 
 void install_services_api(Plugin&, lua_State* L) {
     add_functions(L, "settings", {{"gameplay", gameplay_option}, {"hold_gameplay", hold_gameplay}});
-    add_functions(L, "skater", {{"rail_target", rail_target}, {"select_rail_target", select_rail_target}, {"frame", skater_frame}, {"animation_values", animation_values}, {"set_animation_value", set_animation_value}, {"telemetry", telemetry}, {"movement", movement}, {"goofy", goofy}, {"bone_cam", bone_cam}});
+    add_functions(L, "skater", {{"rail_target", rail_target}, {"select_rail_target", select_rail_target}, {"frame", skater_frame}, {"animation_values", animation_values}, {"flip_state", flip_state}, {"set_animation_value", set_animation_value}, {"telemetry", telemetry}, {"movement", movement}, {"goofy", goofy}, {"bone_cam", bone_cam}});
     add_functions(L, "input", {{"pad_bits", pad_bits}, {"key", key}, {"wheel", wheel}, {"mouse", mouse}, {"game_buttons", game_buttons}, {"game_keys", game_keys}, {"allowed", input_allowed}, {"focus", focus}});
     add_functions(L, "session", {{"spectate", spectate}, {"world", world}});
     add_functions(L, "camera", {{"free", free_camera}, {"pad_flight", pad_flight}});
