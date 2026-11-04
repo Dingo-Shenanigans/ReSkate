@@ -49,6 +49,9 @@ inline void category_tabs(SkateMenu& menu, int& selected, std::initializer_list<
 //   tag                    a small coloured badge, e.g. HOST or IN GAME
 //   primary_button         a card's main action: blue, full width
 void begin_card(SkateMenu& menu, const char* id, const char* title = nullptr, const char* subtitle = nullptr);
+// A card across the whole page even in a wide window, never in the two columns: for a list that reads
+// down one column (the installed plugins). end_card() closes it as any card.
+void begin_full_card(SkateMenu& menu, const char* id, const char* title = nullptr, const char* subtitle = nullptr);
 void end_card();
 // A card that folds: a click on its title row (or A on the controller) closes it down to that row and opens it again.
 // Returns whether the body is to be drawn; end_card() follows either way:
@@ -118,9 +121,15 @@ void debug_request(SkateMenu& menu, const CallbacksV3& callbacks, DebugRequest r
 // actions under it, and again, or B, closes them. `open` is the id of the list's open row (empty for
 // none), kept by the page. `detail` is a muted line under the title, `side` sits at the right end and
 // `current` marks the row with a blue edge. Returns whether the row is open: the page then draws
-// what goes under it, its actions as row_actions.
+// what goes under it, its actions as row_actions. `reserve` keeps that much of the row's right end free
+// for a control drawn beside it on the same line (ImGui::SameLine), such as a switch_tile.
 bool expand_row(SkateMenu& menu, const char* id, const std::string& title, const std::string& detail, const std::string& side,
-                std::string& open, bool current = false);
+                std::string& open, bool current = false, float reserve = 0.0f);
+// An ON / OFF switch as a tile of its own, `size` big, for a switch beside a row (a plugin's beside its
+// expand_row, which keeps `reserve` free for it): A or a click flips `value` and returns true. Disabled,
+// it shows `unavailable` in place of ON / OFF.
+bool switch_tile(SkateMenu& menu, const char* id, bool& value, ImVec2 size, bool enabled = true, const char* hint = nullptr,
+                 const char* unavailable = nullptr);
 // The actions of an open row: chips under its title, as many to a row as fit; `on` draws the main
 // one in blue. Returns the one pressed, or -1.
 int row_actions(SkateMenu& menu, const char* id, std::initializer_list<RowButton> actions);
@@ -143,16 +152,16 @@ void settings_page(SkateMenu&, const Model&, const CallbacksV3&);
 // Settings > Post FX (skate_menu_world.cpp).
 void graphics_page(SkateMenu&, const Model&, const CallbacksV3&);
 void developer_page(SkateMenu&, const Model&, const CallbacksV3&);
-// Extension/Music/music_page.cpp
+// Settings > MUSIC (Extension/Music/music_page.cpp): the player, the sound and the sources.
 void music_page(SkateMenu&, const Model&, const CallbacksV3&);
+// Settings > REPLAYS (skate_menu_settings.cpp): the replay editor's keyframe smoothing and export quality.
+void replays_page(SkateMenu&, const Model&, const CallbacksV3&);
 // Extension/Trainer/trainer_page.cpp: the SANDBOX page (once the Trainer).
 void trainer_page(SkateMenu&, const Model&, const CallbacksV3&);
 bool trainer_page_wanted();
 bool trainer_cheats_wanted(); // `trainer open movement`: Skater > Cheats
 // Skater > CHEATS: noclip, No Bail and the boosts (skate_menu_skater.cpp).
 void cheats_tab(SkateMenu&, const Model&, const CallbacksV3&);
-// The addons' own pages (skate_menu_skater.cpp), and the ADDONS page itself (skate_menu_addons.cpp).
-void addons_page(SkateMenu&, const Model&, const CallbacksV3&);
 // The time of day the menu shows: the one last asked for while the game is still changing to it
 // (skate_menu_world.cpp). Setting it from a menu control goes through set_time_of_day, `quiet`
 // leaving the game's reply off the page.
@@ -168,7 +177,7 @@ const plugin_ui::PageEntry* shown_plugin_page(SkateMenu& menu);
 void plugins_page(SkateMenu& menu);
 // The menu's first page: a tile for each part of the menu (skate_menu_addons.cpp).
 void home_page(SkateMenu&, const Model&, const CallbacksV3&);
-// Shuffle, on the Music addon (skate_menu_settings.cpp).
+// Shuffle, on Settings > MUSIC (skate_menu_settings.cpp).
 void music_playback_card(SkateMenu&);
 // How the menu is laid out (Settings > Screen > Menu layout: menu_layout_sheet or menu_layout_hub),
 // and changing it: saved with the profile (`ui layout`), shown at once.
@@ -176,11 +185,18 @@ int menu_layout(const SkateMenu&, const Model&);
 void set_menu_layout(SkateMenu&, const CallbacksV3&, int layout);
 // The pages, for the shells and the home tiles (skate_menu.cpp).
 enum Page {
-    page_home, page_map, page_build, page_skater, page_sandbox, page_addons, page_plugins, page_online, page_progress, page_mods,
+    page_home, page_map, page_build, page_skater, page_sandbox, page_plugins, page_online, page_progress, page_mods,
     page_settings, page_developer, page_count
 };
-enum Addon { addon_all, addon_music, addon_count, addon_first = addon_music };
-void open_page(SkateMenu&, int page, int addon = -1);
+// Settings' tabs, in the order they show.
+inline constexpr int settings_controls_tab = 0, settings_screen_tab = 1, settings_performance_tab = 2, settings_music_tab = 3,
+                     settings_replays_tab = 4;
+// Opens a page, and with `tab` (0 and up) that tab of it, for a page with tabs (Map, Build, Skater, Settings).
+void open_page(SkateMenu&, int page, int tab = -1);
+// The ADDONS page is gone: MUSIC, its only addon, is Settings > MUSIC. The SANDBOX page (trainer_page.cpp,
+// being redesigned elsewhere) still names it in a "Go to" no row of it reaches; this keeps that building and
+// leads to Settings. Remove it with that line.
+inline constexpr int page_addons = page_settings;
 
 // A list of things (players, servers, bans) as rows whose actions open inline under them: A or a click
 // on a row opens them, closing any other row's; A on the row again, or B while the focus is in it,

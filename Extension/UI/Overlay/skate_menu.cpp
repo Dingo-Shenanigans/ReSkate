@@ -353,6 +353,11 @@ struct CardFlow {
     std::array<float, 2> bottom{};
 };
 CardFlow card_flow;
+bool next_card_full = false; // begin_full_card: the card about to begin takes the whole row
+}
+void begin_full_card(SkateMenu& menu, const char* id, const char* title, const char* subtitle) {
+    next_card_full = true;
+    begin_card(menu, id, title, subtitle);
 }
 void begin_card(SkateMenu& menu, const char* id, const char* title, const char* subtitle) {
     ImGui::PushID(id);
@@ -361,7 +366,8 @@ void begin_card(SkateMenu& menu, const char* id, const char* title, const char* 
     const float avail = ImGui::GetContentRegionAvail().x;
     float left = cursor.x, right = cursor.x + avail, top = cursor.y;
     int column = -1;
-    if (card_depth == 0 && shown_layout == menu_layout_hub && avail >= px(two_column_width)) {
+    const bool full = std::exchange(next_card_full, false);
+    if (!full && card_depth == 0 && shown_layout == menu_layout_hub && avail >= px(two_column_width)) {
         auto& flow = card_flow;
         const bool carries_on = flow.window == window && flow.frame == ImGui::GetFrameCount() && std::abs(cursor.x - flow.next.x) < 0.5f &&
                                 std::abs(cursor.y - flow.next.y) < 0.5f;
@@ -1058,11 +1064,11 @@ int back_held_frame = -10;
 bool page_holds_back() { return back_held_frame >= ImGui::GetFrameCount() - 1; }
 
 bool expand_row(SkateMenu& menu, const char* id, const std::string& title, const std::string& detail, const std::string& side,
-                std::string& open, bool current) {
+                std::string& open, bool current, float reserve) {
     ImGui::PushID(id);
     bool is_open = !open.empty() && open == id;
     const auto at = ImGui::GetCursorScreenPos();
-    const float width = ImGui::GetContentRegionAvail().x;
+    const float width = std::max(px(120), ImGui::GetContentRegionAvail().x - std::max(0.0f, reserve));
     const float side_width = side.empty() ? 0.0f : menu.body->CalcTextSizeA(px(15), FLT_MAX, 0, side.c_str()).x + px(16);
     const float text_left = px(40), wrap = std::max(px(80), width - text_left - side_width - px(16));
     const float detail_height = detail.empty() ? 0.0f : menu.body->CalcTextSizeA(px(15), FLT_MAX, wrap, detail.c_str()).y + px(4);
@@ -1098,6 +1104,32 @@ bool expand_row(SkateMenu& menu, const char* id, const std::string& title, const
                       lit ? IM_COL32(70, 70, 74, 255) : current ? paper : muted, side.c_str());
     ImGui::PopID();
     return is_open;
+}
+
+bool switch_tile(SkateMenu& menu, const char* id, bool& value, ImVec2 size, bool enabled, const char* hint, const char* unavailable) {
+    // toggle_row's ON / OFF block on a tile of its own: blue for ON, white under the focus.
+    ImGui::PushID(id);
+    const auto at = ImGui::GetCursorScreenPos();
+    ImGui::BeginDisabled(!enabled);
+    const bool clicked = ImGui::InvisibleButton("##switch", size, ImGuiButtonFlags_EnableNav) && enabled;
+    ImGui::EndDisabled();
+    const bool lit = nav_lit(), hovered = enabled && ImGui::IsItemHovered();
+    if (clicked) value = !value;
+    if ((lit || hovered) && hint) focus_hint = hint;
+    if (hint && *hint && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", hint);
+    auto* draw = ImGui::GetWindowDrawList();
+    const ImVec2 end(at.x + size.x, at.y + size.y);
+    const bool on = enabled && value;
+    const ImU32 fill = lit ? paper : !enabled ? IM_COL32(40, 40, 43, 130) : on ? blue : hovered ? row_hover : row_fill;
+    skate_theme::rough_rect(draw, at, end, fill, static_cast<unsigned>(ImGui::GetItemID()) & 0xfff, ui_scale);
+    const char* state = enabled ? (value ? "ON" : "OFF") : unavailable ? unavailable : (value ? "ON" : "OFF");
+    const auto text = menu.bold->CalcTextSizeA(px(14), FLT_MAX, 0, state);
+    draw->PushClipRect(at, end, true);
+    draw->AddText(menu.bold, px(14), ImVec2(at.x + std::max(px(6), (size.x - text.x) * .5f), at.y + (size.y - text.y) * .5f),
+                  lit ? focus_ink : on ? paper : muted, state);
+    draw->PopClipRect();
+    ImGui::PopID();
+    return clicked;
 }
 
 int row_actions(SkateMenu& menu, const char* id, std::initializer_list<RowButton> actions) {
@@ -1148,13 +1180,11 @@ ImFont* embedded_font(const wchar_t* name, float size, const ImWchar* ranges) {
 }
 
 constexpr std::array<const char*, page_count> page_names{
-    "HOME", "MAP", "BUILD", "SKATER", "SANDBOX", "ADDONS", "PLUGINS", "ONLINE", "PROGRESS", "MODS", "SETTINGS", "DEVELOPER"};
+    "HOME", "MAP", "BUILD", "SKATER", "SANDBOX", "PLUGINS", "ONLINE", "PROGRESS", "MODS", "SETTINGS", "DEVELOPER"};
 constexpr std::array<const char*, page_count> page_subtitles{
     "Everything, a button away.", "Pick your spot. Set the vibe.", "Make the park yours.", "Ride it your way.",
-    "Tune it. Drill it.", "What ReSkate adds to skate.", "What your plugins add.", "Bring your crew.", "Pick up where you want.",
-    "Bring your own.", "Your controls, your screen.", "Under the hood."};
-constexpr std::array<const char*, addon_count> addon_names{"ADDONS", "MUSIC"};
-constexpr std::array<const char*, addon_count> addon_subtitles{"What ReSkate adds to skate.", "Your sound, in the game."};
+    "Tune it. Drill it.", "What your plugins add.", "Bring your crew.", "Pick up where you want.",
+    "Bring your own.", "Your controls, your screen, your sound.", "Under the hood."};
 }
 
 void load_skate_fonts(SkateMenu& menu) {
@@ -1214,15 +1244,18 @@ void set_menu_layout(SkateMenu& menu, const CallbacksV3& callbacks, int layout) 
     menu.layout_until = ImGui::GetTime() + 3.0;
     quietly(callbacks, layout == menu_layout_hub ? "ui layout hub" : "ui layout sheet");
 }
-void open_page(SkateMenu& menu, int page, int addon) {
-    if (menu.page != page || (addon >= 0 && addon != menu.addon)) tab_switched = true;
+void open_page(SkateMenu& menu, int page, int tab) {
+    int* tabs = page == page_map ? &menu.map_tab : page == page_build ? &menu.build_tab : page == page_skater ? &menu.skater_tab
+              : page == page_settings ? &menu.settings_tab : nullptr;
+    if (!tabs) tab = -1;
+    if (menu.page != page || (tab >= 0 && tab != *tabs)) tab_switched = true;
     if (menu.page != page) {
         menu.recording_bind = 0;
         menu.voice_bind_capture = 0;
         menu.feedback.clear();
     }
     menu.page = page;
-    if (addon >= 0) menu.addon = addon;
+    if (tab >= 0) *tabs = tab;
 }
 }
 
@@ -1231,13 +1264,8 @@ bool page_hidden(const Model& model, int page) {
     // Developer (the network view) is hidden for now; offline there is no Online.
     return page == page_developer || (model.steam_offline && page == page_online);
 }
-const char* page_title(const SkateMenu& menu) {
-    return menu.page == page_addons && menu.addon > addon_all ? addon_names[static_cast<std::size_t>(menu.addon)]
-                                                              : page_names[static_cast<std::size_t>(menu.page)];
-}
-const char* page_subtitle(const SkateMenu& menu) {
-    return menu.page == page_addons ? addon_subtitles[static_cast<std::size_t>(menu.addon)] : page_subtitles[static_cast<std::size_t>(menu.page)];
-}
+const char* page_title(const SkateMenu& menu) { return page_names[static_cast<std::size_t>(menu.page)]; }
+const char* page_subtitle(const SkateMenu& menu) { return page_subtitles[static_cast<std::size_t>(menu.page)]; }
 void step_page(SkateMenu& menu, const Model& model, int step) {
     int page = menu.page;
     for (int tries = 0; tries < page_count; ++tries) {
@@ -1330,7 +1358,6 @@ void draw_page_body(SkateMenu& menu, const Model& model, const CallbacksV3& call
     case page_build: build_page(menu, model, callbacks); break;
     case page_skater: skater_page(menu, model, callbacks); break;
     case page_sandbox: trainer_page(menu, model, callbacks); break;
-    case page_addons: addons_page(menu, model, callbacks); break;
     case page_plugins: plugins_page(menu); break;
     case page_online: multiplayer_page(menu, model, callbacks); break;
     case page_progress: progression_page(menu, model, callbacks); break;
@@ -1578,7 +1605,7 @@ void draw_sheet(SkateMenu& menu, const Model& model, const CallbacksV3& callback
                 ImGui::PushItemFlag(ImGuiItemFlags_NoNav, true);
                 const bool visible_name = x + w > left && x < right;
                 if (visible_name && ImGui::InvisibleButton("##page-name", ImVec2(w + spacing, px(24))))
-                    open_page(menu, i, i == page_addons ? addon_all : -1);
+                    open_page(menu, i);
                 const bool hovered = visible_name && ImGui::IsItemHovered();
                 ImGui::PopItemFlag();
                 ImGui::PopID();
@@ -1672,7 +1699,7 @@ void draw_hub(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks,
                 if (page_hidden(model, i)) continue;
                 const auto at = ImGui::GetCursorScreenPos();
                 ImGui::PushID(i);
-                if (ImGui::InvisibleButton("##page", ImVec2(rail - px(36), row), ImGuiButtonFlags_EnableNav)) open_page(menu, i, i == page_addons ? addon_all : -1);
+                if (ImGui::InvisibleButton("##page", ImVec2(rail - px(36), row), ImGuiButtonFlags_EnableNav)) open_page(menu, i);
                 const bool lit = nav_lit(), hovered = ImGui::IsItemHovered();
                 ImGui::PopID();
                 const bool on = menu.page == i;

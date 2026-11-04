@@ -1,5 +1,6 @@
 #include "Engine/Core/Log/logging.h"
 #include "runtime_internal.h"
+#include "Extension/Rendering/replay_export.h"
 #include <condition_variable>
 #include <deque>
 #include <map>
@@ -356,6 +357,7 @@ std::atomic<float>& menu_layout_cache() noexcept { static std::atomic<float> val
 std::atomic<float>& menu_sheet_width_cache() noexcept { static std::atomic<float> value{-1}; return value; }
 std::atomic<float>& menu_hub_width_cache() noexcept { static std::atomic<float> value{-1}; return value; }
 std::atomic<float>& menu_hub_height_cache() noexcept { static std::atomic<float> value{-1}; return value; }
+std::atomic<float>& replay_export_quality_cache() noexcept { static std::atomic<float> value{-1}; return value; }
 }
 
 int local_menu_layout() noexcept {
@@ -393,6 +395,18 @@ bool set_local_menu_hub_size(float width, float height) noexcept {
         return false;
     set_menu_number(menu_hub_width_cache(), "ReSkate.MenuHubWidth", width);
     set_menu_number(menu_hub_height_cache(), "ReSkate.MenuHubHeight", height);
+    return true;
+}
+
+// Saved as a number like the menu's: the setting's place in replay_export::Quality.
+int local_replay_export_quality() noexcept {
+    constexpr auto none = static_cast<float>(replay_export::quality_game), best = static_cast<float>(replay_export::quality_count - 1);
+    return static_cast<int>(menu_number(replay_export_quality_cache(), "ReSkate.ReplayExportQuality", none, none, best));
+}
+
+bool set_local_replay_export_quality(int quality) noexcept {
+    if (quality < replay_export::quality_game || quality >= replay_export::quality_count) return false;
+    set_menu_number(replay_export_quality_cache(), "ReSkate.ReplayExportQuality", static_cast<float>(quality));
     return true;
 }
 } // namespace profile_runtime

@@ -163,6 +163,10 @@ float local_menu_sheet_width() noexcept;
 bool set_local_menu_sheet_width(float width) noexcept;
 std::pair<float, float> local_menu_hub_size() noexcept;
 bool set_local_menu_hub_size(float width, float height) noexcept;
+// The replay editor's MP4 export quality (replay_export::Quality, Extension/Rendering/replay_export.h),
+// ReSkate.ReplayExportQuality; 0 is the game's own bitrate. One out of range is refused. Cached likewise.
+int local_replay_export_quality() noexcept;
+bool set_local_replay_export_quality(int quality) noexcept;
 // The game's camera height option (UseHighCam, true is the high camera) as the game writes it,
 // which its camera height button does: the listener returns the height to keep instead. Runs on
 // the thread that writes the option.

@@ -6,6 +6,24 @@
 
 // The SKATER page.
 namespace dingosdk::overlay::menu {
+namespace {
+// The flight speed Freecam and Noclip share, on both of their cards. It can be set with neither on, so it
+// is ready before either is: the speed is kept and saved by itself, and both read it as they fly.
+void flight_speed_row(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks, const char* tooltip) {
+    const auto& debug = model.debug;
+    field(menu, "Flight speed", tooltip);
+    ImGui::BeginDisabled(!callbacks.queue_debug);
+    constexpr std::array<float, 7> speeds{0.6f, 3, 5, 15, 60, 300, 1500};
+    constexpr std::array<const char*, 7> labels{"Precise", "Slow", "Cruise", "Default", "Fast", "Travel", "Maximum"};
+    int selected = 3;
+    for (int i = 0; i < static_cast<int>(speeds.size()); ++i)
+        if (std::abs(debug.camera_speed - speeds[i]) < .01f) selected = i;
+    if (slider_int("##flight-speed", &selected, 0, 6, labels[selected], ImGuiSliderFlags_NoInput))
+        debug_request(menu, callbacks, {DebugAction::set_camera_speed, false, speeds[selected]});
+    ImGui::EndDisabled();
+}
+}
+
 void camera_controls(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
     const auto& debug = model.debug;
     begin_card(menu, "freecam", "FREECAM");
@@ -19,16 +37,7 @@ void camera_controls(SkateMenu& menu, const Model& model, const CallbacksV3& cal
         std::array<char, 512> result{};
         callbacks.queue_console_command(callbacks.user, freecam_controller ? "freecam_controller true" : "freecam_controller false", result.data(), result.size());
     }
-    field(menu, "Flight speed", "Also used by Noclip.");
-    ImGui::BeginDisabled((!debug.free_camera && !debug.noclip) || !debug.camera_available || !callbacks.queue_debug);
-    constexpr std::array<float, 7> speeds{0.6f, 3, 5, 15, 60, 300, 1500};
-    constexpr std::array<const char*, 7> labels{"Precise", "Slow", "Cruise", "Default", "Fast", "Travel", "Maximum"};
-    int selected = 3;
-    for (int i = 0; i < static_cast<int>(speeds.size()); ++i)
-        if (std::abs(debug.camera_speed - speeds[i]) < .01f) selected = i;
-    if (slider_int("##flight-speed", &selected, 0, 6, labels[selected], ImGuiSliderFlags_NoInput))
-        debug_request(menu, callbacks, {DebugAction::set_camera_speed, false, speeds[selected]});
-    ImGui::EndDisabled();
+    flight_speed_row(menu, model, callbacks, "Also used by Noclip. Set it before or while flying.");
     const bool custom_fov = debug.free_camera_fov > 0;
     field(menu, "Field of view");
     int free_fov = static_cast<int>(std::lround(custom_fov ? debug.free_camera_fov : debug.camera_fov));
@@ -48,26 +57,7 @@ void camera_controls(SkateMenu& menu, const Model& model, const CallbacksV3& cal
     if (pressed == 1) debug_request(menu, callbacks, {DebugAction::set_free_camera_fov, false, 0.0f});
     if (debug.free_camera) note("Close the menu to fly. WASD / Q E move; hold the right mouse button to look.");
     if (!debug.camera_available) warn(debug.camera_unavailable.c_str());
-    end_card();
-
-    // Keyframe smoothing (Extension/ReplayKeyframes/replay_keyframes.h).
-    begin_card(menu, "replay-editor", "REPLAY EDITOR");
-    bool keysmooth = model.keyframe_smoothing.enabled;
-    if (toggle_row(menu, "Keyframe smoothing",
-            "The free camera glides through its keys instead of changing speed at each one. Every key is still met, at its time.",
-            keysmooth, model.keyframe_smoothing.available && callbacks.queue_console_command))
-        send_console(menu, callbacks, keysmooth ? "keysmooth on" : "keysmooth off");
-    field(menu, "Smoothness", "100% is the smoothest that still meets every key; 0% the game's own curve.");
-    // Sent once it is let go: every change rebuilds the open replay's camera.
-    static int dragged = -1;
-    int smoothness = dragged >= 0 ? dragged : keyframe_smoothness_percent(model.keyframe_smoothing);
-    ImGui::BeginDisabled(!model.keyframe_smoothing.available || !model.keyframe_smoothing.enabled || !callbacks.queue_console_command);
-    if (slider_int("##keyframe-smoothness", &smoothness, 0, 100, "%d%%", ImGuiSliderFlags_AlwaysClamp))
-        dragged = smoothness;
-    if (ImGui::IsItemDeactivatedAfterEdit() && dragged >= 0)
-        send_console(menu, callbacks, "keysmooth amount " + std::to_string(dragged / 100.0));
-    if (!ImGui::IsItemActive()) dragged = -1;
-    ImGui::EndDisabled();
+    note("The replay editor's keyframe smoothing is in Settings > Replays.");
     end_card();
 }
 
@@ -171,6 +161,7 @@ void cheats_tab(SkateMenu& menu, const Model& model, const CallbacksV3& callback
     if (toggle_row(menu, "No Bail", bail_help, no_bail,
             (debug.no_bail_available || debug.no_bail) && callbacks.queue_debug))
         debug_request(menu, callbacks, {DebugAction::set_no_bail, no_bail});
+    flight_speed_row(menu, model, callbacks, "Noclip's speed, shared with the Freecam. Set it before or while flying.");
     note("Close the menu to fly. Controller: left stick moves, right stick looks, RT / LT rise and fall, click the left stick to boost. "
          "Keyboard: WASD / Q E, Shift to boost.");
     end_card();

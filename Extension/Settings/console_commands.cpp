@@ -2,6 +2,8 @@
 #include "named_settings.h"
 #include "gameplay_settings_override.h"
 #include "Extension/Profile/local_profile_runtime.h"
+#include "Extension/Rendering/replay_export.h"
+#include <algorithm>
 #include <charconv>
 #include <format>
 namespace dingosdk::console {
@@ -195,5 +197,36 @@ void register_settings_commands(Commands &registry) {
         out("Menu window size reset.");
     };
     registry.add(std::move(hub));
+
+    // Read by the exporter as each MP4 export begins (replay_export.cpp), so a change applies to the next.
+    auto quality_choice = argument("game|low|medium|high|veryhigh");
+    for (const auto name : replay_export::quality_names) quality_choice.choices.emplace_back(name);
+    auto quality = variable("replay quality", "Quality of the replay editor's MP4 export: game keeps the game's own bitrate; low, "
+                            "medium, high and veryhigh set it from the video's size and frame rate (about 6, 12, 25 and 45 Mbit/s "
+                            "at 1080p60)",
+                            Group::graphics, std::move(quality_choice));
+    quality.execution = Execution::local;
+    quality.inspect = [](const Model &m) {
+        const auto index = static_cast<std::size_t>(std::clamp(m.replay_export_quality, 0, replay_export::quality_count - 1));
+        return State{true, std::string(replay_export::quality_names[index]), {}, "Saved with your profile.",
+                     m.replay_export_quality != replay_export::quality_game};
+    };
+    quality.run = [](const Model &, const Values &args, const Output &out) {
+        const auto chosen = lower(std::get<std::string>(args[0]));
+        const auto found = std::find(replay_export::quality_names.begin(), replay_export::quality_names.end(), chosen);
+        if (found == replay_export::quality_names.end()) {
+            out("error: Choose game, low, medium, high or veryhigh.");
+            return;
+        }
+        const int index = static_cast<int>(found - replay_export::quality_names.begin());
+        profile_runtime::set_local_replay_export_quality(index);
+        out(index == replay_export::quality_game ? std::string("Replay exports keep the game's own bitrate.")
+                                                 : std::format("Replay exports are encoded at {} quality.", chosen));
+    };
+    quality.reset = [](const Model &, const Output &out) {
+        profile_runtime::set_local_replay_export_quality(replay_export::quality_game);
+        out("Replay exports keep the game's own bitrate.");
+    };
+    registry.add(std::move(quality));
 }
 } // namespace dingosdk::console

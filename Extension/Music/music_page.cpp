@@ -17,7 +17,7 @@
 #include <string>
 #include <vector>
 
-// The MUSIC page of the menu: what is playing from the music sources (Spotify, YouTube Music,
+// Settings > MUSIC in the menu: what is playing from the music sources (Spotify, YouTube Music,
 // the player's files, radio, another application) with play, pause and next, what is lined up,
 // and how it sounds (loudness, levelling, the equaliser). Setting a source up is done in the
 // browser (spotify_dashboard.h), which this opens. Presentation thread: it reads what the
@@ -25,7 +25,6 @@
 namespace dingosdk::overlay::menu {
 namespace {
 struct Page {
-    int tab{};
     double read_at{-1};
     youtube_music::State streams;
     std::vector<spotify_web::Queued> spotify;
@@ -77,7 +76,7 @@ bool found(const std::array<char, 96>& find, const std::string& artist, const st
     return lower(title + " " + artist).find(lower(find.data())) != std::string::npos;
 }
 
-void player_tab(SkateMenu& menu, Page& p) {
+void player_cards(SkateMenu& menu, Page& p) {
     begin_card(menu, "music-now", "NOW PLAYING");
     if (!p.available || p.title.empty()) {
         note(p.station ? "Waiting for the first song." : "Nothing is playing. Pick a tile in the game's music screen: Spotify, YouTube Music, Local Files, Online Radio or External Audio.");
@@ -150,12 +149,12 @@ void player_tab(SkateMenu& menu, Page& p) {
             ImGui::PopStyleColor();
         }
     } else {
-        note(p.source == "SPOTIFY" ? "To see Spotify's queue, sign in under \"Show your own playlists\" on the setup page (SOURCES tab)." : "Nothing is lined up.");
+        note(p.source == "SPOTIFY" ? "To see Spotify's queue, sign in under \"Show your own playlists\" on the setup page (SOURCES, below)." : "Nothing is lined up.");
     }
     end_card();
 }
 
-void sound_tab(SkateMenu& menu, Page& p) {
+void sound_cards(SkateMenu& menu, Page& p) {
     bool editing{}, changed{};
     begin_card(menu, "music-loudness", "LOUDNESS");
     field(menu, "Music loudness", "How loud the music you play through ReSkate is in the game.");
@@ -207,7 +206,7 @@ void sound_tab(SkateMenu& menu, Page& p) {
     if (changed) spotify_dashboard::save_settings();
 }
 
-void sources_tab(SkateMenu& menu, Page& p) {
+void sources_cards(SkateMenu& menu, Page& p) {
     begin_card(menu, "music-setup", "SET UP", "Sign in, add playlists, folders and stations.");
     note("Sources are set up on a page in your browser. It only works on this PC, while the game is running.");
     if (primary_button(menu, "OPEN THE SETUP PAGE IN YOUR BROWSER"))
@@ -216,7 +215,7 @@ void sources_tab(SkateMenu& menu, Page& p) {
 
     using youtube_music::Kind;
     const auto count = [&](Kind kind) { return std::count_if(p.streams.playlists.begin(), p.streams.playlists.end(), [&](const youtube_music::Playlist& playlist) { return playlist.kind == kind; }); };
-    begin_card(menu, "music-sources", "SOURCES");
+    begin_card(menu, "music-sources", "STATUS");
     info(menu, "Spotify", spotify_device::connected() ? "Connected" : spotify_device::in_use() ? "Remembered, connects by itself" : "Pick \"ReSkate\" in Spotify's device list");
     info(menu, "YouTube Music", !p.streams.tools ? "Not set up" : std::format("{} playlist(s)", count(Kind::youtube)));
     info(menu, "Local files", count(Kind::files) ? std::format("{} folder(s)", count(Kind::files)) : std::string("No folder added"));
@@ -245,19 +244,16 @@ void sources_tab(SkateMenu& menu, Page& p) {
 }
 }
 
+// One tab of Settings, which scrolls it: the player, the sound and the sources, each under its heading.
 void music_page(SkateMenu& menu, const Model&, const CallbacksV3&) {
     auto& p = page();
     read(p);
-    category_tabs(menu, p.tab, {"PLAYER", "SOUND", "SOURCES"}, "music-tabs");
-    ImGui::PushID(p.tab);
-    ImGui::BeginChild("music-tab", ImVec2(0, page_body_height(menu)), ImGuiChildFlags_NavFlattened);
-    if (p.tab == 0) {
-        player_tab(menu, p);
-        music_playback_card(menu);
-    }
-    else if (p.tab == 1) sound_tab(menu, p);
-    else sources_tab(menu, p);
-    ImGui::EndChild();
-    ImGui::PopID();
+    section(menu, "PLAYER");
+    player_cards(menu, p);
+    music_playback_card(menu);
+    section(menu, "SOUND");
+    sound_cards(menu, p);
+    section(menu, "SOURCES");
+    sources_cards(menu, p);
 }
 }

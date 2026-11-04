@@ -73,7 +73,6 @@ struct SkateMenu {
     bool scale_editing{};
     // Selected tab on each page; see the Page list in skate_menu_internal.h.
     int map_tab = 0, build_tab = 0, skater_tab = 0, settings_tab = 0, mods_tab = 0;
-    int addon = 0; // the ADDONS page's addon (menu::Addon)
     std::string plugin_page; // the PLUGINS section's plugin, by its id
     // The layout, the side sheet's width and the window's size as just chosen or dragged (the last two in
     // pixels at 1080 lines and scale 1), until the saved setting comes back through the model.

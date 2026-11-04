@@ -356,6 +356,8 @@ struct Model {
     // scale of 1; 0 for the default (`ui sheetwidth`, `ui hubsize`).
     float menu_sheet_width = 0;
     float menu_hub_width = 0, menu_hub_height = 0;
+    // The replay editor's MP4 export quality (`replay quality`): a replay_export::Quality, 0 the game's own.
+    int replay_export_quality = 0;
     // Offline mode: no Steam, so every multiplayer page and control is hidden.
     bool steam_offline = false;
     ControllerBindingsModel bindings;

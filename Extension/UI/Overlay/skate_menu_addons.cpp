@@ -8,44 +8,10 @@
 #include <imgui_internal.h>
 #include <string>
 
-// The ADDONS page (what ReSkate adds to skate.: music; what plugins add has its own section)
-// and the menu's HOME page.
+// The menu's HOME page. (The ADDONS page that shared this file is gone: MUSIC, its only addon, is
+// Settings > MUSIC.)
 namespace dingosdk::overlay::menu {
 using namespace theme;
-namespace {
-// An addon on ALL ADDONS: a card with what it is and the way in.
-void addon_card(SkateMenu& menu, const char* id, const char* title, const char* about, int addon) {
-    begin_card(menu, id, title);
-    note(about);
-    const auto open = std::string("OPEN ") + title;
-    if (primary_button(menu, open.c_str())) open_page(menu, page_addons, addon);
-    end_card();
-}
-
-void all_addons(SkateMenu& menu) {
-    addon_card(menu, "addon-music", "MUSIC", "Spotify, YouTube Music, your own files and online radio through the game's music player.",
-               addon_music);
-}
-}
-
-void addons_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
-    // The addons are this page's tabs (LT / RT on a controller), ALL ADDONS first.
-    static constexpr std::array<const char*, addon_count> names{"ALL ADDONS", "MUSIC"};
-    menu.addon = std::clamp(menu.addon, 0, static_cast<int>(addon_count) - 1);
-    category_tabs(menu, menu.addon, names, "addon-tabs");
-    menu.addon = std::clamp(menu.addon, 0, static_cast<int>(addon_count) - 1);
-    ImGui::PushID(menu.addon);
-    switch (menu.addon) {
-    case addon_music: music_page(menu, model, callbacks); break;
-    default:
-        ImGui::BeginChild("addon", ImVec2(0, page_body_height(menu)), ImGuiChildFlags_NavFlattened);
-        all_addons(menu);
-        ImGui::EndChild();
-        break;
-    }
-    ImGui::PopID();
-}
-
 namespace {
 // A HOME tile, in the menu kit's look: rough-cut, white with dark text under the focus, a lighter
 // grey under the pointer. Its name at the top; what it is now (ON, OFF, the time of day) under it,
@@ -199,11 +165,9 @@ void home_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks
             open_page(menu, page_online);
         if (home_tile(menu, "##go-map", "MAP", "Travel, parks, time and weather", cell(1), true, false, false, "Pick a map and load it.", false) == 1)
             open_page(menu, page_map);
-        if (home_tile(menu, "##go-addons", "ADDONS", "Music", cell(1), true, false, false,
-                      "What ReSkate adds to skate.", false) == 1)
-            open_page(menu, page_addons, addon_all);
-        if (home_tile(menu, "##go-music", "MUSIC", "Now playing, queue, sources", cell(1), true, false, false, "Your music in the game's player.", false) == 1)
-            open_page(menu, page_addons, addon_music);
+        if (home_tile(menu, "##go-music", "MUSIC", "Now playing, queue, sources", cell(1), true, false, false,
+                      "Your music in the game's player: Settings > Music.", false) == 1)
+            open_page(menu, page_settings, settings_music_tab);
         if (home_tile(menu, "##go-skater", "SKATER", "Freecam, first person, cheats", cell(1), true, false, false, "The free camera, first person, noclip and the boosts.", false) == 1)
             open_page(menu, page_skater);
         if (home_tile(menu, "##go-sandbox", "SANDBOX", "Tuning, practice, HUD", cell(1), true, false, false, "Tune the game's feel and drill your lines.", false) == 1)
@@ -212,8 +176,8 @@ void home_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks
             open_page(menu, page_build);
         if (home_tile(menu, "##go-mods", "MODS", "Yours and the official ones", cell(1), true, false, false, "The mods the game has loaded.", false) == 1)
             open_page(menu, page_mods);
-        if (home_tile(menu, "##go-settings", "SETTINGS", "Controls, screen, performance", cell(1), true, false, false,
-                      "Your binds, how the menu looks, the performance HUD.", false) == 1)
+        if (home_tile(menu, "##go-settings", "SETTINGS", "Controls, screen, music, replays", cell(1), true, false, false,
+                      "Your binds, how the menu looks, the performance HUD, your music and the replay editor.", false) == 1)
             open_page(menu, page_settings);
     }
     ImGui::EndChild();

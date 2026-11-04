@@ -281,8 +281,10 @@ ImU32 risk_colour(plugins::Risk risk) {
 }
 
 // One plugin as a row: its name, then its author and the kinds of thing it can do (the riskiest
-// first), ON, OFF or waiting at the right end and a blue edge while it runs. A opens the plain list of
-// what it can do, each kind in its risk's colour (red, amber, grey), and the buttons that answer it.
+// first), and a blue edge while it runs. Its ON / OFF switch sits beside the row, so a plugin is turned
+// on or off without opening it (right on the D-pad from the row reaches it). A opens the plain list of
+// what it can do, each kind in its risk's colour (red, amber, grey). One waiting for an answer has no
+// switch to flip: it is answered in the open row, under the list of what it may do.
 void plugin_row(SkateMenu& menu, const plugins::Installed& plugin) {
     namespace st = skate_theme;
     const bool waiting = plugin.approval == plugins::Approval::asking;
@@ -301,8 +303,16 @@ void plugin_row(SkateMenu& menu, const plugins::Installed& plugin) {
     std::string kinds;
     for (const auto& group : plugin.can) kinds += (kinds.empty() ? "" : ", ") + group.category;
     if (!kinds.empty()) detail += (detail.empty() ? "" : "  /  ") + kinds;
-    const char* side = waiting ? "WAITING FOR YOUR OK" : on ? "ON" : "OFF";
-    if (!expand_row(menu, plugin.id.c_str(), plugin.title, detail, side, open, on)) return;
+    const char* side = waiting ? "WAITING FOR YOUR OK" : "";
+    const float gap = px(6), switch_width = px(84);
+    const bool is_open = expand_row(menu, plugin.id.c_str(), plugin.title, detail, side, open, on, switch_width + gap);
+    const float row = ImGui::GetItemRectSize().y;
+    ImGui::SameLine(0, gap);
+    bool switched = on;
+    if (switch_tile(menu, "switch", switched, ImVec2(switch_width, row), !waiting,
+                    waiting ? "Open the plugin to see what it may do and answer it." : on ? "A turns it off." : "A lets it run.", "ASK"))
+        plugins::set_enabled(plugin.id, switched);
+    if (!is_open) return;
     ImGui::Indent(px(40));
     for (const auto& group : plugin.can) {
         ImGui::PushStyleColor(ImGuiCol_Text, group.risk == plugins::Risk::grey ? st::grey_text : risk_colour(group.risk));
@@ -316,16 +326,14 @@ void plugin_row(SkateMenu& menu, const plugins::Installed& plugin) {
     if (waiting) {
         const int pressed = row_actions(menu, "answer", {{"TURN ON", true, true, "Let it run."}, {"KEEP OFF", true, false, "It stays off."}});
         if (pressed >= 0) plugins::set_enabled(plugin.id, pressed == 0);
-    } else if (row_actions(menu, "switch", {{on ? "TURN OFF" : "TURN ON", true, !on, on ? "Stop it." : "Let it run."}}) == 0) {
-        plugins::set_enabled(plugin.id, !on);
     }
 }
 }
 
-// Every plugin that may load. One that has no answer yet says so, so a prompt that was missed is not
-// the only way to answer.
+// Every plugin that may load, down one column even in a wide window. One that has no answer yet says
+// so, so a prompt that was missed is not the only way to answer.
 void installed_plugins(SkateMenu& menu) {
-    begin_card(menu, "plugins-installed", "INSTALLED PLUGINS");
+    begin_full_card(menu, "plugins-installed", "INSTALLED PLUGINS");
     const auto list = plugins::installed();
     if (list.empty())
         note("No plugin is installed. A plugin is a mod with a reskate-plugin.json: a script that runs inside the game and can add "
@@ -341,22 +349,23 @@ void installed_plugins(SkateMenu& menu) {
     end_card();
 }
 
-// The first entry of PLUGINS: every installed plugin and whether it may run.
+// The first entry of PLUGINS: plugin developer mode, then every installed plugin and whether it may run,
+// in one column.
 void plugin_manager_page(SkateMenu& menu, bool no_pages) {
     ImGui::BeginChild("plugin-manager", ImVec2(0, page_body_height(menu)), ImGuiChildFlags_NavFlattened);
-    installed_plugins(menu);
-    if (no_pages) {
-        begin_card(menu, "plugins-none", "PLUGIN PAGES");
-        note("No plugin has a page of its own. A plugin adds one with reskate.menu.page (it needs the \"menu\" permission). "
-             "plugin list in the console lists every plugin too.");
-        end_card();
-    }
-    begin_card(menu, "plugin-developer", "PLUGIN DEVELOPMENT");
+    begin_full_card(menu, "plugin-developer", "PLUGIN DEVELOPMENT");
     bool developer = plugins::developer_mode();
     if (toggle_row(menu, "Plugin developer mode", "Updates to plugins you already approved won't ask again.", developer))
         plugins::set_developer_mode(developer);
     note("Updates to plugins you already approved won't ask again while this is on.");
     end_card();
+    installed_plugins(menu);
+    if (no_pages) {
+        begin_full_card(menu, "plugins-none", "PLUGIN PAGES");
+        note("No plugin has a page of its own. A plugin adds one with reskate.menu.page (it needs the \"menu\" permission). "
+             "plugin list in the console lists every plugin too.");
+        end_card();
+    }
     ImGui::EndChild();
 }
 

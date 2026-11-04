@@ -5,10 +5,16 @@
 #include "Engine/Core/Profiling/profiler.h"
 #include "Extension/Music/local_music_playback.h"
 #include "Extension/Profile/local_profile_runtime.h"
+#include "Extension/Plugins/plugin_runtime.h"
 #include "Extension/Plugins/plugin_ui.h"
+#include "Extension/Rendering/replay_export.h"
 
 #include <algorithm>
 #include <array>
+#include <iterator>
+#include <map>
+#include <string>
+#include <vector>
 
 // The SETTINGS and DEVELOPER pages.
 namespace dingosdk::overlay::menu {
@@ -178,25 +184,38 @@ void binds_page(SkateMenu& menu, const Model& model, const CallbacksV3& callback
         std::uint32_t combo;
     };
     struct Card {
-        const char* title;
+        std::string id, title;
         std::vector<Row> rows;
+        bool plugin = false; // one plugin's binds, titled with its name
     };
     std::vector<Card> cards;
     for (const auto& group : bind_groups) {
         if (std::string_view(group.title) == "ONLINE" && model.steam_offline) continue;
-        auto& card = cards.emplace_back(Card{group.title, {}});
+        auto& card = cards.emplace_back(Card{group.title, group.title, {}});
         for (const int action : group.actions) card.rows.push_back({action, bind_name(action), bind_combo(model.bindings, action)});
     }
     if (!plugin_binds->empty()) {
-        auto& card = cards.emplace_back(Card{"PLUGINS", {}});
+        // A card for each plugin, titled with the name its manifest gives (its id while it has none), its
+        // binds under it by their own names, in the order the plugins' list gives them.
+        std::map<std::string, std::string> titles;
+        for (const auto& plugin : plugins::installed())
+            if (!plugin.title.empty()) titles[plugin.id] = plugin.title;
         for (std::size_t i = 0; i < plugin_binds->size(); ++i) {
             const auto& bind = (*plugin_binds)[i];
-            card.rows.push_back({plugin_bind_row + static_cast<int>(i), bind.plugin + ": " + bind.action, bind.combo});
+            auto card = std::find_if(cards.begin(), cards.end(), [&](const Card& c) { return c.plugin && c.id == "plugin-binds-" + bind.plugin; });
+            if (card == cards.end()) {
+                const auto title = titles.find(bind.plugin);
+                cards.push_back(Card{"plugin-binds-" + bind.plugin, title != titles.end() ? title->second : bind.plugin, {}, true});
+                card = std::prev(cards.end());
+            }
+            card->rows.push_back({plugin_bind_row + static_cast<int>(i), bind.action, bind.combo});
         }
     }
+    const auto last_plugin = std::find_if(cards.rbegin(), cards.rend(), [](const Card& c) { return c.plugin; });
+    const Card* reset_under = last_plugin != cards.rend() ? &*last_plugin : nullptr;
     for (const auto& group : cards) {
-        begin_card(menu, group.title, group.title);
-        ImGui::PushID(group.title);
+        begin_card(menu, group.id.c_str(), group.title.c_str());
+        ImGui::PushID(group.id.c_str());
         // A row a bind, its combo at the right end. A records, Y clears; the row being recorded is blue
         // while the pad belongs to the recording (menu_page_owns_pad), and the others wait.
         for (const auto& row : group.rows) {
@@ -215,7 +234,8 @@ void binds_page(SkateMenu& menu, const Model& model, const CallbacksV3& callback
                                            : combo ? "A records a new bind. Y clears this one." : "A records a bind.");
             ImGui::PopID();
         }
-        if (std::string_view(group.title) == "PLUGINS") {
+        // Every plugin's binds back on their own: once, under the last plugin's card.
+        if (&group == reset_under) {
             const bool changed = std::any_of(plugin_binds->begin(), plugin_binds->end(), [](const auto& b) { return b.combo != b.own; });
             if (button_row(menu, "plugin-binds-reset", {{"PLUGINS' OWN BINDS", changed && menu.recording_bind == 0, false,
                                                          "Every plugin's action back on the bind the plugin gave it."}}) == 0) {
@@ -237,14 +257,58 @@ void binds_page(SkateMenu& menu, const Model& model, const CallbacksV3& callback
     if (!model.steam_offline) note("The push-to-talk button is set in Online > Voice.");
 }
 
+// Settings > REPLAYS: the game's replay editor, as ReSkate changes it.
+void replays_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
+    // Keyframe smoothing (Extension/ReplayKeyframes/replay_keyframes.h).
+    begin_card(menu, "replay-editor", "REPLAY EDITOR");
+    bool keysmooth = model.keyframe_smoothing.enabled;
+    if (toggle_row(menu, "Keyframe smoothing",
+            "The free camera glides through its keys instead of changing speed at each one. Every key is still met, at its time.",
+            keysmooth, model.keyframe_smoothing.available && callbacks.queue_console_command))
+        send_console(menu, callbacks, keysmooth ? "keysmooth on" : "keysmooth off");
+    field(menu, "Smoothness", "100% is the smoothest that still meets every key; 0% the game's own curve.");
+    // Sent once it is let go: every change rebuilds the open replay's camera.
+    static int dragged = -1;
+    int smoothness = dragged >= 0 ? dragged : keyframe_smoothness_percent(model.keyframe_smoothing);
+    ImGui::BeginDisabled(!model.keyframe_smoothing.available || !model.keyframe_smoothing.enabled || !callbacks.queue_console_command);
+    if (slider_int("##keyframe-smoothness", &smoothness, 0, 100, "%d%%", ImGuiSliderFlags_AlwaysClamp))
+        dragged = smoothness;
+    if (ImGui::IsItemDeactivatedAfterEdit() && dragged >= 0)
+        send_console(menu, callbacks, "keysmooth amount " + std::to_string(dragged / 100.0));
+    if (!ImGui::IsItemActive()) dragged = -1;
+    ImGui::EndDisabled();
+    end_card();
+
+    // The export's bitrate (Extension/Rendering/replay_export.h): saved with the profile (`replay quality`)
+    // and read as each export begins. What was just chosen shows until the saved value comes back.
+    begin_card(menu, "replay-export", "EXPORT");
+    static int chosen = -1;
+    static double chosen_until = 0;
+    if (chosen >= 0 && (chosen == model.replay_export_quality || ImGui::GetTime() > chosen_until)) chosen = -1;
+    int quality = chosen >= 0 ? chosen : std::clamp(model.replay_export_quality, 0, replay_export::quality_count - 1);
+    static const std::vector<std::string> qualities{"Game's own", "Low", "Medium", "High", "Very high"};
+    if (option_row(menu, "Export quality",
+            "The MP4 export's bitrate. Game's own keeps the game's; Low to Very high set it from the video's size and frame rate.",
+            quality, qualities, callbacks.queue_console_command != nullptr)) {
+        chosen = quality;
+        chosen_until = ImGui::GetTime() + 3.0;
+        send_console(menu, callbacks, "replay quality " + std::string(replay_export::quality_names[static_cast<std::size_t>(quality)]));
+    }
+    note("At 1080p60: Low about 6 Mbit/s, Medium 12, High 25, Very high 45. Higher is sharper in fast motion, and a bigger file. "
+         "MP4 exports only; the next export uses it.");
+    end_card();
+}
+
 void settings_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
-    category_tabs(menu, menu.settings_tab, {"CONTROLS", "SCREEN", "PERFORMANCE"}, "settings-tabs");
+    category_tabs(menu, menu.settings_tab, {"CONTROLS", "SCREEN", "PERFORMANCE", "MUSIC", "REPLAYS"}, "settings-tabs");
     ImGui::PushID(menu.settings_tab);
     ImGui::BeginChild("settings-tab", ImVec2(0, page_body_height(menu)), ImGuiChildFlags_NavFlattened);
     switch (menu.settings_tab) {
-    case 0: binds_page(menu, model, callbacks); break;
-    case 1: screen_page(menu, model, callbacks); break;
-    case 2: performance_page(menu, model, callbacks); break;
+    case settings_controls_tab: binds_page(menu, model, callbacks); break;
+    case settings_screen_tab: screen_page(menu, model, callbacks); break;
+    case settings_performance_tab: performance_page(menu, model, callbacks); break;
+    case settings_music_tab: music_page(menu, model, callbacks); break;
+    case settings_replays_tab: replays_page(menu, model, callbacks); break;
     }
     ImGui::EndChild();
     ImGui::PopID();
