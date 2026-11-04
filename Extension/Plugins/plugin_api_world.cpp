@@ -3013,7 +3013,8 @@ struct WorldApi {
         lua_setfield(L, -2, "device");
         return 1;
     }
-    // joysticks(): {{device = n, name = "..."}, ...}, every controller plugged in.
+    // joysticks(): {{device = n, name = "..."}, ...}, every controller plugged in that took the
+    // axis range and dead zone (plugin_joystick.h).
     static int input_joysticks(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "input", "reskate.input.joysticks");
