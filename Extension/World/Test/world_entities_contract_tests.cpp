@@ -2,8 +2,12 @@
 // search every asset domain for a name.
 #include "Extension/World/world_entities_contract.h"
 
+#include <array>
 #include <iostream>
+#include <optional>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace {
 int failures = 0;
@@ -103,6 +107,35 @@ int main() {
             check(all_moved, "all changed non-solid parts advance on each 15/16 ms client frame");
         }
         check(moves == 40u, "eight changed visual parts move once on each of five client frames");
+    }
+    {
+        // Bodies are plain numbers here: 1-99 another owner's, 100 and up the object's own.
+        using dingosdk::world_entities::detail::own_bodies;
+        const std::array<std::pair<int, int>, 3> rays{{{0, 0}, {1, 0}, {2, 0}}};
+        const auto mine = [](int body) { return body >= 100; };
+        unsigned asked{};
+        const auto owned = [&](int body) { ++asked; return std::vector<int>{body, body + 1}; };
+        const auto meeting = [](std::array<std::optional<int>, 3> met) {
+            return [met](int from, int) { return met[static_cast<std::size_t>(from)]; };
+        };
+        check(own_bodies(rays, meeting({42, 42, 42}), mine, owned).empty() && asked == 0,
+              "another owner's bodies in the box are never taken, however many rays meet them");
+        check(own_bodies(rays, meeting({std::nullopt, std::nullopt, std::nullopt}), mine, owned).empty(),
+              "an object nothing is met in has no bodies");
+        check(own_bodies(rays, meeting({42, 200, 300}), mine, owned) == std::vector<int>({200, 201}) && asked == 1,
+              "a ray past another owner's body can still find the object's own, and the first found stands");
+        check(own_bodies(rays, meeting({std::nullopt, 200, 42}), mine, owned) == std::vector<int>({200, 201}),
+              "a ray that meets nothing does not end the search");
+        const auto none_for_first = [](int body) { return body == 200 ? std::vector<int>{} : std::vector<int>{body}; };
+        check(own_bodies(rays, meeting({200, 300, 42}), mine, none_for_first) == std::vector<int>({300}),
+              "an owner whose bodies could not be listed is passed over");
+    }
+    {
+        using dingosdk::world_entities::detail::own_body;
+        check(own_body(0x1000, 0x1000), "a body whose owner keeps the entity's own component is the object's");
+        check(!own_body(0x1000, 0x2000), "another object's component is not, a second of the same blueprint included");
+        check(!own_body(0x1000, 0), "an owner that keeps no component is not, whatever the entity holds");
+        check(!own_body(0, 0), "an object with no component owns nothing, even when the owner keeps none either");
     }
     if (failures) return 1;
     std::cout << "world entities contract tests passed\n";

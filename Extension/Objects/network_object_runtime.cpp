@@ -597,6 +597,13 @@ void set_remote_network_objects(std::string_view map, std::span<const NetworkObj
     s.desired = std::move(desired);
     network_objects_detail::refresh_budget();
 }
+std::vector<RemoteNetworkObject> remote_network_objects_of(std::string_view item) {
+    std::vector<RemoteNetworkObject> result;
+    std::lock_guard lock(profile_runtime::local_runtime().native_mutex);
+    for (const auto &[key, object] : profile_runtime::network_objects_detail::state().desired)
+        if (object.item == item) result.push_back({std::get<0>(key), std::get<1>(key), std::get<2>(key), object.position});
+    return result;
+}
 void clear_remote_network_objects() {
     std::lock_guard lock(profile_runtime::local_runtime().native_mutex);
     auto &s = profile_runtime::network_objects_detail::state();

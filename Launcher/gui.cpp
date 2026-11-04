@@ -447,16 +447,19 @@ int run(const launcher_app::Session& session, const std::vector<std::wstring>& a
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     RECT work{};
     SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
-    g_scale = std::max(1.0f, static_cast<float>(GetDpiForSystem()) / 96.0f);
+    // The player's interface size (Settings, LAUNCHER) on top of Windows' display scale: a big
+    // screen at 100% otherwise shows the launcher at its design size, which reads small.
+    g_interface_size = saved_interface_size(session);
+    g_scale = std::max(1.0f, static_cast<float>(GetDpiForSystem()) / 96.0f) * static_cast<float>(g_interface_size) / 100.0f;
     // The window opens at the design size, which is also the smallest it can be
     // made, so that has to fit the screen: scale down for a small laptop, or a
-    // high DPI that would push the window past the taskbar. Fonts and the style
-    // are built from the final scale.
+    // high DPI or interface size that would push the window past the taskbar.
+    // Fonts and the style are built from the final scale.
     const auto work_width = static_cast<float>(work.right - work.left);
     const auto work_height = static_cast<float>(work.bottom - work.top);
     if (work_width > 0 && work_height > 0)
         g_scale = std::clamp(std::min(work_width * 0.98f / design_width, work_height * 0.96f / design_height),
-            0.62f, g_scale);
+            0.62f, std::max(0.62f, g_scale));
 
     const auto instance = GetModuleHandleW(nullptr);
     WNDCLASSEXW window_class{sizeof(window_class)};
@@ -473,8 +476,8 @@ int run(const launcher_app::Session& session, const std::vector<std::wstring>& a
     const int width = static_cast<int>(S(design_width));
     const int height = static_cast<int>(S(design_height));
     logging::log(logging::Level::info, logging::Channel::launcher,
-        "Launcher window: {}x{} at scale {:.2f} (system DPI {}), work area {}x{}.", width, height, g_scale,
-        GetDpiForSystem(), work.right - work.left, work.bottom - work.top);
+        "Launcher window: {}x{} at scale {:.2f} (system DPI {}, interface size {}%), work area {}x{}.", width, height, g_scale,
+        GetDpiForSystem(), g_interface_size, work.right - work.left, work.bottom - work.top);
     const HWND window = CreateWindowExW(WS_EX_APPWINDOW, window_class.lpszClassName, L"ReSkate",
         WS_POPUP | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU, work.left + (work.right - work.left - width) / 2,
         work.top + (work.bottom - work.top - height) / 2, width, height, nullptr, nullptr, instance, nullptr);

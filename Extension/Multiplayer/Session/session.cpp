@@ -342,6 +342,7 @@ void publish_party(Session &s) {
             s.chat_bubbles_duration = std::clamp(saved->get<float>(), 1.f, 30.f);
         if (const auto saved = profile_runtime::local_value("ChatBubblesHistory"); saved && saved->is_number())
             s.chat_bubbles_history = std::clamp(static_cast<int>(saved->get<double>()), 1, 8);
+        load_ignored(s);
         show_own_tag(profile_runtime::local_preference("IdentityTag").value_or(true));
         show_own_items(profile_runtime::local_preference("IdentityItems").value_or(true));
         if (const auto saved = profile_runtime::local_value("IdentityStyles"); saved && saved->is_string())
@@ -432,7 +433,8 @@ void relay_throwdowns(Session &s, bool in_world, const NativeFrame* /*offline_sk
             // The authority's words (a plugin's server copy) come from the lobby's host or the
             // server only; a host hears none from its guests.
             if (plugins::wire::from_authority(message) && (s.mode == Mode::host || sender != s.host_id)) continue;
-            plugins::receive_message(sender, message);
+            // An ignored player's reach this PC's plugins no more (a lobby host's server copies still hear them).
+            plugins::receive_message(sender, message, !ignored(s, sender));
         }
         else receive_throwdown_relay(sender, message);
     }
@@ -632,8 +634,9 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
                              nearest_distance(p, local, view) <= s.player_distance * (p.visible ? 1.15f : 1.f);
         }
     }
-    // Hidden on this screen: by the running throwdown's match, or by a plugin (reskate.session.hide).
-    const auto hidden_here = [](std::uint64_t id) { return throwdowns::kit::hidden(id) || plugin_feed::hidden(id); };
+    // Hidden on this screen: by the running throwdown's match, by a plugin (reskate.session.hide), or
+    // because the local player ignores them.
+    const auto hidden_here = [&s](std::uint64_t id) { return throwdowns::kit::hidden(id) || plugin_feed::hidden(id) || ignored(s, id); };
     each_active_peer(s, [&](Peer &p) {
         // A dedicated server has no skater to show.
         if (!p.member.id || (dedicated_host(s) && p.member.id == s.host_id))

@@ -292,6 +292,16 @@ std::uint32_t physics_body_owner(const world_entities::Body &b) noexcept {
     if (store) memory::read(pointer_at(store + pb::body_owner_offset) + std::uintptr_t{static_cast<std::uint32_t>(b[1])} * 4, owner);
     return owner;
 }
+// What a body's owner keeps (+0x8b8), when that is the physics component of a world object: an owner
+// with its bit in +0x8b0 set. For an ECS owner the same slot is an entity id, not an address.
+std::uintptr_t physics_body_component(const world_entities::Body &b) noexcept {
+    const auto store = pointer_at(static_cast<std::uintptr_t>(b[0]) + pb::store_offset);
+    const auto owner = physics_body_owner(b);
+    std::uint8_t bits{};
+    if (!store || owner == UINT32_MAX || !memory::read(pointer_at(store + pb::owner_kind_offset) + (owner >> 3), bits) || !((bits >> (owner & 7)) & 1))
+        return 0;
+    return pointer_at(pointer_at(store + pb::owner_value_offset) + std::uintptr_t{owner} * 8);
+}
 bool physics_body_ghost(const world_entities::Body &b, bool ghost) noexcept {
     const auto base = local_runtime().base;
     static const bool known = [&] {
@@ -421,7 +431,7 @@ void register_world_physics() noexcept {
     std::call_once(once, [] {
         world_entities::set_physics(
             {&physics_world, &physics_body_valid, &physics_body_owner, &physics_body_ghost, &physics_floor, &physics_hit, &physics_owned,
-             &physics_test});
+             &physics_body_component, &physics_test});
     });
 }
 }

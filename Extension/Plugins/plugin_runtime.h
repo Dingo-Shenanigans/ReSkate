@@ -23,7 +23,9 @@ void set_level(std::string_view level) noexcept;
 bool run_console(const std::string& text) noexcept;
 // The session's throwdown packets that are plugin messages (plugin_wire.h), and those plugins send.
 // Client thread, from the session's tick.
-void receive_message(std::uint64_t sender, const std::vector<std::uint8_t>& bytes) noexcept;
+// `to_client`: false keeps it from this PC's client copies (the player ignores the sender); a lobby
+// host's server copies still hear it.
+void receive_message(std::uint64_t sender, const std::vector<std::uint8_t>& bytes, bool to_client = true) noexcept;
 std::vector<std::vector<std::uint8_t>> take_outgoing() noexcept;
 // The `plugin` console commands.
 std::string describe();

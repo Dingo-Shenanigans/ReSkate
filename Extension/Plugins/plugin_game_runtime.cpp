@@ -1,6 +1,7 @@
 #include "plugin_game_runtime.h"
 #include "Extension/Input/native_input_source.h"
 #include "Extension/Input/native_input_capture.h"
+#include "plugin_ui_values.h"
 #include "Extension/Rendering/plugin_effects.h"
 #include "Extension/Objects/placement_physics.h"
 #include "Extension/Skater/skater_movement.h"
@@ -195,6 +196,9 @@ public:
     bool input_lease_capture_state(std::uint64_t owner, input_lease::Handle h, input_lease_capture::Receipt& r) noexcept override { return native_input_source::capture_state(owner, h, r); }
     bool input_lease_capture_release(std::uint64_t owner, input_lease::Handle h) noexcept override { return native_input_source::capture_release(owner, h); }
     bool input_lease_capture_acknowledge(std::uint64_t owner, input_lease::Handle h) noexcept override { return native_input_source::capture_acknowledge(owner, h); }
+    std::string publish_ui_values(std::string_view plugin, const ui_values::Values& values) override {
+        return ui_values::publish(base_, plugin, values);
+    }
     std::string body_prepare() override { return owned_bodies::prepare(); }
     std::string body_create(std::uint64_t owner, const owned_body::Definition& d, owned_body::Handle& h) override { return owned_bodies::create(owner, d, h); }
     std::string body_read(std::uint64_t owner, const owned_body::Handle& h, owned_body::Sample& s) override { return owned_bodies::read(owner, h, s); }
@@ -1888,6 +1892,7 @@ public:
         grind_target::release(plugin);
         input::gameplay_options().release(plugin);
         placement_physics::release(plugin);
+        ui_values::release(base_, plugin);
         if (capture_owner_ == plugin) {
             capture::recorder().discard();
             capture_owner_.clear();

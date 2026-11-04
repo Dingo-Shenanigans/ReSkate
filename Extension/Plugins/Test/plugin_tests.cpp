@@ -48,6 +48,18 @@ std::filesystem::path scratch;
 
 // The wider set's game, faked: it records what plugins asked of it and answers as told.
 struct FakeGame final : Game {
+    std::map<std::string, ui_values::Values> ui_models;
+    ui_values::Reservations ui_reservations;
+    std::string ui_error;
+    std::string publish_ui_values(std::string_view plugin, const ui_values::Values& values) override {
+        if (!ui_error.empty()) return ui_error;
+        if (const auto error = ui_reservations.reserve(plugin, values); !error.empty()) return error;
+        if (values.empty()) return {};
+        auto& models = ui_models[std::string(plugin)];
+        for (const auto& [name, value] : values) models.insert_or_assign(name, value);
+        return {};
+    }
+
     // Native bodies a plugin owns, as the fake keeps them: one sample per body, advanced by
     // body_producer_step, which also produces a pending command the way the game's synchronizer would.
     struct OwnedBody {
@@ -1129,6 +1141,8 @@ struct FakeGame final : Game {
         for (const auto& [id, owner] : physics_owners) if (owner == plugin) ids.push_back(id);
         for (auto id : ids) (void)object_physics(plugin, id, std::nullopt);
         marker_feed.erase(std::string(plugin));
+        if (auto it = ui_models.find(std::string(plugin)); it != ui_models.end())
+            for (auto& [name, value] : it->second) { (void)name; value = 0; }
     }
     // The game menu, its item grid, what is worn, and a screen capture of something turning once
     // every `turning` frames (reskate.capture, room.turn, menu.game/grid, outfit.board).
@@ -2902,6 +2916,114 @@ void quickdrop_gameplay_policy_is_a_sandboxed_module() {
     running(host, "quickdrop-policy", environment);
 }
 
+void ui_value_reservations_enforce_limits_and_collisions() {
+    ui_values::Reservations registry;
+    ui_values::Values first, rest;
+    for (int i = 0; i < 20; ++i) first.emplace("v" + std::to_string(i), static_cast<float>(i));
+    for (int i = 20; i < 32; ++i) rest.emplace("v" + std::to_string(i), static_cast<float>(i));
+    check(registry.reserve("quota", first).empty() && registry.reserve("quota", rest).empty(),
+          "Different partial calls merge into 32 lifetime reservations");
+    check(registry.records().size() == 32, "The quota counts the union, not the last batch");
+    check(registry.reserve("quota", {{"v0", 200.f}}).empty() && registry.records().size() == 32,
+          "Re-publishing an existing name does not consume quota");
+    check(registry.reserve("quota", {{"v32", 1.f}}) == "UI value limit reached",
+          "The 33rd lifetime name is refused");
+    const auto before = registry.records().size();
+    check(registry.reserve("new", {{"good", 1.f}, {"bad", std::numeric_limits<float>::infinity()}}) == "invalid UI value" &&
+          registry.records().size() == before, "Invalid batches are rejected without partial reservation");
+    check(ui_values::symbol("layout", "sHaG9mdHCM") == ui_values::symbol("layout", "yX391OQUvL"),
+          "Same-batch collision fixture hashes match");
+    check(registry.reserve("layout", {{"sHaG9mdHCM", 1.f}, {"yX391OQUvL", 2.f}}) ==
+              "UI symbol collision or reserved symbol", "Same-batch hash collisions fail closed");
+    // Known collision across distinct plugin namespaces, not merely within one batch.
+    check(ui_values::symbol("alpha", "enfwbtm118vb") == ui_values::symbol("bravo", "aixvpnvhxvhq"),
+          "The cross-plugin collision fixture is real");
+    check(registry.reserve("alpha", {{"enfwbtm118vb", 1.f}}).empty(), "First claimant reserves a symbol");
+    check(registry.reserve("bravo", {{"aixvpnvhxvhq", 2.f}}) == "UI symbol collision",
+          "A different plugin cannot claim the same symbol");
+    check(registry.records().size() == before + 1, "Collisions do not leak reservations");
+
+    ui_values::Reservations process;
+    for (int plugin = 0; plugin < 8; ++plugin) {
+        ui_values::Values batch;
+        for (int name = 0; name < 32; ++name) batch.emplace("v" + std::to_string(name), static_cast<float>(name));
+        check(process.reserve("process" + std::to_string(plugin), batch).empty(), "Eight plugins fill the process quota");
+    }
+    check(process.records().size() == ui_values::maximum_process_values, "Exactly 256 names were reserved");
+    check(process.reserve("ninth", {{"one", 1.f}}) == "UI value limit reached" &&
+          process.records().size() == ui_values::maximum_process_values, "257th name is refused atomically");
+
+    const auto id = ui_values::symbol("quota", "v0");
+    check(!registry.unchanged("quota", {{"v0", 0.f}}, 0x1234), "A reservation alone is not published");
+    registry.mark_published(id, 0x1234, 0x5678, 0.f);
+    check(registry.unchanged("quota", {{"v0", 0.f}}, 0x1234), "Identical value in the same manager is a no-op");
+    check(!registry.unchanged("quota", {{"v0", 1.f}}, 0x1234), "A changed float must publish");
+    check(!registry.unchanged("quota", {{"v0", 0.f}}, 0x2222), "A new manager must re-register");
+    check(!registry.unchanged("quota", {{"v0", 0.f}, {"v1", 1.f}}, 0x1234),
+          "An unregistered name forces publication");
+}
+
+void plugins_publish_only_their_own_ui_values() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({script("layout", R"(
+        assert(type(reskate.ui.symbol("left")) == "number")
+        assert(reskate.ui.symbol("left") ~= reskate.ui.symbol("top"))
+        assert(reskate.ui.values({left = 100, top = 165, width = 620}))
+        assert(reskate.ui.values({width = 625}))
+        assert(not pcall(reskate.ui.values, {width = 0/0}))
+        assert(not pcall(reskate.ui.values, {width = math.huge}))
+        assert(not pcall(reskate.ui.values, {width = 100001}))
+        assert(not pcall(reskate.ui.values, {width = "620"}))
+        assert(not pcall(reskate.ui.values, {[1] = 2}))
+        assert(not pcall(reskate.ui.values, {["other.left"] = 2}))
+        assert(not pcall(reskate.ui.values, {["left\0tail"] = 2}))
+        assert(not pcall(reskate.ui.symbol, ""))
+        assert(not pcall(reskate.ui.symbol, "../stock"))
+        local many = {}
+        for i = 1, 33 do many["v" .. i] = i end
+        assert(not pcall(reskate.ui.values, many))
+        local ok, why = reskate.ui.values({sHaG9mdHCM = 1, yX391OQUvL = 2})
+        assert(not ok and why == "UI symbol collision or reserved symbol")
+    )", R"("ui.models")")});
+    running(host, "layout", environment);
+    check(environment.fake.ui_models.at("layout").at("width") == 625 &&
+          environment.fake.ui_models.at("layout").at("left") == 100 &&
+          environment.fake.ui_models.at("layout").at("top") == 165,
+          "Partial UI updates merge instead of replacing prior fields");
+    check(ui_values::symbol("layout", "left") != ui_values::symbol("other", "left"), "UI values are namespaced by plugin");
+    environment.fake.ui_error = "unavailable here";
+    host.apply({script("notready", R"(
+        local ok, why = reskate.ui.values({width = 620})
+        assert(not ok and why == "unavailable here")
+    )", R"("ui.models")")});
+    running(host, "notready", environment);
+    host.apply({script("sneaky", R"(
+        assert(not pcall(reskate.ui.values, {left = 1}))
+        assert(not pcall(reskate.ui.symbol, "left"))
+    )")});
+    running(host, "sneaky", environment);
+    check(!environment.fake.ui_models.contains("sneaky"), "No permission means no UI model write");
+    // A listen host has a real game provider, so refusing server copies must
+    // happen at the API layer, not rely on Game's default provider.
+    TestEnvironment server_environment;
+    Host server(server_environment, Side::server, {}, "@server");
+    server.apply({package("server-layout", {
+        {manifest_file, manifest(R"("ui.models")", "both")},
+        {"plugin/main.lua", R"(
+            local ok, why = reskate.ui.values({left = 8})
+            assert(not ok and why == "ui.models is client-only")
+            assert(not pcall(reskate.ui.symbol, "left"))
+        )"}
+    })});
+    running(server, "server-layout", server_environment);
+    check(server_environment.fake.ui_models.empty() && server_environment.fake.ui_reservations.records().empty(),
+          "Listen-server copies never reserve or publish native UI values");
+    Game absent;
+    check(absent.publish_ui_values("layout", {{"left", 1.f}}) == unavailable,
+          "Dedicated-server Game provider is unavailable");
+}
+
 void a_plugin_loads_ticks_runs_its_commands_and_unloads() {
     TestEnvironment environment;
     Host host(environment, Side::client);
@@ -2958,8 +3080,18 @@ void plugins_choose_stand_ins() {
         local rules = {"Own_Costume*", "Own_TopShirt_Gen_Hoodie_00003"}
         for i = 3, 64 do rules[i] = "*Rule" .. i .. "*" end
         assert(reskate.outfit.stand_ins({pick = "random", exclude = rules}))
-        rules[65] = "*Rule65*"
-        assert(not pcall(reskate.outfit.stand_ins, {exclude = rules}), "at most 64 exclude rules")
+        rules[65], rules[66] = "*Rule65*", "*Rule66*" -- 65 with a star, beside the plain name
+        local ok, err = pcall(reskate.outfit.stand_ins, {exclude = rules})
+        assert(not ok and tostring(err):find("at most 64 names with"), "at most 64 exclude rules with a star")
+        -- A second on (at most 4 changes a second): plain names go far past 64.
+        reskate.time.after(1100, function()
+            local names = {}
+            for i = 1, 4096 do names[i] = "Own_Item_" .. i end
+            assert(reskate.outfit.stand_ins({pick = "random", exclude = names}), "4096 plain names")
+            names[4097] = "Own_Item_4097"
+            assert(not pcall(reskate.outfit.stand_ins, {exclude = names}), "and no more")
+            reskate.log("many names")
+        end)
         assert(not pcall(reskate.outfit.stand_ins, {exclude = {"*"}}), "excluding everything is not a name")
         assert(not pcall(reskate.outfit.stand_ins, {exclude = "Own_Hat"}), "exclude is a list")
         reskate.log("dressed")
@@ -2977,6 +3109,10 @@ void plugins_choose_stand_ins() {
               game.called("stand-ins dresser exclude *Rule64*") && !game.called("stand-ins dresser exclude *Rule65*"),
           "Random from every installed item, the first of a list on the board, and the defaults again\n" + environment.all());
     check(!game.called("stand-ins plain"), "A plugin without the permission chooses no stand-ins");
+    ticks(host, environment, 80);
+    check(environment.logged("[dresser] many names") && game.called("stand-ins dresser exclude Own_Item_4096") &&
+              !game.called("stand-ins dresser exclude Own_Item_4097"),
+          "4096 plain names may be left out, and no more\n" + environment.all());
 }
 
 // reskate.chat.command: "/name" typed in chat runs the plugin's function with the rest of the line,
@@ -3198,6 +3334,46 @@ void the_sandbox_holds() {
     )")});
     running(host, "escape", environment);
     check(environment.logged("sandbox fine"), "Every way out is closed\n" + environment.all());
+}
+
+// ReSkate's own reading and compiling is not a plugin's running time (Limits::io_ms): a module that
+// takes far longer to compile than a call may run still loads, the time is let off only up to the
+// allowance, and a plugin that reads a file in a loop is stopped all the same.
+void reskates_own_reading_is_not_a_plugins_time() {
+    // About 1 MB of code in a function that never runs: it compiles for tens of milliseconds.
+    std::string big = "local function never()\n";
+    while (big.size() < 1'000'000 - 64) big += "    do local a = {1, 2, 3, x = 'y'} if a.x == 'z' then a[1] = a[2] + a[3] end end\n";
+    big += "end\nreturn {}\n";
+    // The loop after it gives the interrupt its safe points, where it looks at the clock.
+    const std::string main = R"(require("big") for i = 1, 1000 do end reskate.log("big loaded"))";
+    {
+        TestEnvironment environment;
+        Limits limits;
+        limits.call_ms = 5;
+        Host host(environment, Side::client, limits);
+        host.apply({package("big-module", {{manifest_file, manifest()}, {"plugin/main.lua", main}, {"plugin/big.lua", big}})});
+        running(host, "big-module", environment);
+        check(environment.logged("big loaded"), "A module's compile is not counted against the load's 5 ms");
+    }
+    {
+        TestEnvironment environment;
+        Limits limits;
+        limits.call_ms = 5;
+        limits.io_ms = 0;
+        Host host(environment, Side::client, limits);
+        host.apply({package("big-module-counted", {{manifest_file, manifest()}, {"plugin/main.lua", main}, {"plugin/big.lua", big}})});
+        stopped(host, "big-module-counted", "ran longer than 5 ms");
+    }
+    {
+        TestEnvironment environment;
+        Limits limits;
+        limits.call_ms = 5;
+        limits.io_ms = 20;
+        Host host(environment, Side::client, limits);
+        host.apply({package("read-loop", {{manifest_file, manifest()}, {"plugin/main.lua", R"(while true do reskate.package.read("plugin/big.lua") end)"},
+                                          {"plugin/big.lua", big}})});
+        stopped(host, "read-loop", "ran longer than 5 ms");
+    }
 }
 
 void a_runaway_plugin_is_stopped_and_the_rest_go_on() {
@@ -5967,6 +6143,46 @@ void blood_renders_an_impact_through_the_host() {
     std::cout << "Blood package: model checks and host-delivered impact passed\n";
 }
 
+void live_controller_edits_geometry_not_recorded_input() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    game.focus_now.focused = true;
+    game.pad = PadInput{};
+    Host host(environment, Side::client);
+    const std::string id = "Live_Controller_Layout";
+    // External mod sources are intentionally not committed to this repository.
+    // The existing test runner skips this test if contrib/plugins lacks the mod.
+    host.apply({contributed(id)});
+    host.set_level("sanvan");
+    ticks(host, environment, 1);
+    running(host, id, environment);
+    const auto left = [&] { return game.ui_models.at(id).at("left"); };
+    check(left() == 100, "Default layout is published");
+    game.presses = {{id, "edit_layout"}};
+    ticks(host, environment, 2); // enter and release the save/cancel buttons
+    game.pad->left_x = 1;
+    ticks(host, environment, 2);
+    check(left() > 100, "The stick moves the live geometry");
+    game.focus_now.focused = false;
+    ticks(host, environment, 1);
+    check(left() == 100, "Focus loss restores the saved layout");
+    game.focus_now.focused = true;
+    game.pad->left_x = 0;
+    game.presses = {{id, "edit_layout"}};
+    ticks(host, environment, 2);
+    game.pad->left_x = 1;
+    ticks(host, environment, 1);
+    const auto moved = left();
+    game.pad->buttons = 0x1000;
+    ticks(host, environment, 1);
+    check(left() == moved && game.files.contains(id + "/layout.json"), "Save persists the live geometry");
+    host.reload(id);
+    ticks(host, environment, 1);
+    check(left() == moved, "Reload restores saved geometry");
+    host.switch_off(id);
+    check(left() == 0, "The host releases a stopped plugin's UI values");
+}
+
 void reskate_test_passes_its_own_checks() {
     TestEnvironment environment;
     std::filesystem::remove_all(scratch / "storage" / "reskate-test");
@@ -7555,6 +7771,9 @@ int main() {
         scratch = std::filesystem::temp_directory_path() / "reskate-plugin-tests";
         std::filesystem::remove_all(scratch);
         run(a_manifest_says_what_a_plugin_is);
+        run(ui_value_reservations_enforce_limits_and_collisions);
+        run(plugins_publish_only_their_own_ui_values);
+        run(live_controller_edits_geometry_not_recorded_input);
         run(plugin_approval_follows_the_plugins_own_files);
         run(an_approved_plugin_runs_only_the_source_snapshot_it_was_shown);
         run(measured_contact_host_fixture_v1);
@@ -7595,6 +7814,7 @@ int main() {
         run(packages_json_and_modules);
         run(the_sandbox_holds);
         run(a_runaway_plugin_is_stopped_and_the_rest_go_on);
+        run(reskates_own_reading_is_not_a_plugins_time);
         run(a_plugin_over_its_time_budget_is_stopped);
         run(a_plugin_reloads_when_its_files_change);
         run(the_skater_can_be_read_moved_and_the_world_probed);

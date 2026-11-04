@@ -1,4 +1,5 @@
 #pragma once
+#include "plugin_ui_values.h"
 #include "plugin_effects.h"
 #include "plugin_wave.h"
 #include "Engine/Game/Input/input_lease.h"
@@ -306,6 +307,8 @@ public:
     virtual bool input_lease_capture_state(std::uint64_t, input_lease::Handle, input_lease_capture::Receipt&) noexcept { return false; }
     virtual bool input_lease_capture_release(std::uint64_t, input_lease::Handle) noexcept { return false; }
     virtual bool input_lease_capture_acknowledge(std::uint64_t, input_lease::Handle) noexcept { return false; }
+    // Publish incremental, plugin-owned float models for authored game UI; unavailable on dedicated servers.
+    virtual std::string publish_ui_values(std::string_view, const ui_values::Values&) { return unavailable; }
     // ---- native bodies a plugin owns (reskate.world.physics; Extension/World/owned_bodies.h) ------
     // Owned by one VM instance, not by a reloadable plugin name. Client phase only; the typed
     // handles and epochs reach Lua only inside opaque userdata.

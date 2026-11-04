@@ -66,6 +66,9 @@ Settings load_settings(const fs::path& path) {
         for (std::size_t index = 0; index < log_levels.size(); ++index)
             if (level == log_levels[index]) settings.log_level = static_cast<int>(index);
         settings.arguments = json.value("arguments", std::string());
+        if (const int size = json.value("interface_size", settings.interface_size);
+            std::ranges::find(interface_sizes, size) != interface_sizes.end())
+            settings.interface_size = size;
         // Keep the original settings key so existing launcher preferences survive.
         settings.keep_open_after_launch = !json.value("close_on_launch", !settings.keep_open_after_launch);
         settings.updates = json.value("updates", settings.updates);
@@ -112,6 +115,7 @@ void save_settings(const fs::path& path, const Settings& settings) {
     json["console_key"] = settings.console_key;
     json["log_level"] = log_levels[static_cast<std::size_t>(settings.log_level)];
     json["arguments"] = settings.arguments;
+    json["interface_size"] = settings.interface_size;
     json["close_on_launch"] = !settings.keep_open_after_launch;
     json["updates"] = settings.updates;
     json["crash_reports"] = settings.crash_reports;
@@ -273,7 +277,7 @@ void Launcher::answer(std::optional<std::string> value) {
 
 void Launcher::restart() {
     auto arguments = arguments_;
-    if (std::find(arguments.begin(), arguments.end(), L"--reskate-updated") == arguments.end())
+    if (!settings_restart_ && std::find(arguments.begin(), arguments.end(), L"--reskate-updated") == arguments.end())
         arguments.emplace_back(L"--reskate-updated");
     launcher_app::relaunch(session_.self, arguments);
 }
@@ -630,6 +634,10 @@ void Launcher::run_play() {
         "Offline mode: playing without Steam as Unknown Player; multiplayer is hidden." :
         settings_.keep_open_after_launch ? "The launcher hides while you play and returns when Skate closes." :
         "The launcher closes now; Skate keeps starting on its own.");
+}
+
+int saved_interface_size(const launcher_app::Session& session) {
+    return load_settings(settings_path(session)).interface_size;
 }
 
 } // namespace dingosdk::launcher_gui::detail

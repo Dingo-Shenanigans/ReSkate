@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 // The checks behind world_entities.cpp, as SmokeyDawg58 wrote them for his fork's gates (its source
 // and asset contracts): pure over the reads they are given, so they test.
@@ -84,6 +85,27 @@ public:
 // Unattached solid objects keep their 16 ms throttle; unchanged matrices never move.
 constexpr bool movement_due(bool changed, bool solid, bool attached, std::uint64_t now, std::uint64_t moved) noexcept {
     return changed && (!solid || attached || now >= moved + 16);
+}
+
+// A body is an object's own when its owner keeps the physics component the object's entity holds.
+// An exact instance, so a second object of the same blueprint in the box is not taken for it. An
+// object with no component owns nothing, and neither does an owner that keeps none.
+constexpr bool own_body(std::uintptr_t entity_component, std::uintptr_t owner_component) noexcept {
+    return entity_component && entity_component == owner_component;
+}
+
+// An object's bodies when its entity does not keep them: the first body a ray into its box meets
+// that is the object's own, and the rest of that body's owner's. A ray also meets whatever else is
+// in the box, and an object with no collision meets nothing else. The floor is one of those: a piece
+// of generated road under a skater, read in game, has five bodies, so how few an owner has does not
+// tell it from an object. What `mine` refuses is passed over and the next ray tried. Those bodies are
+// not the object's to ghost, and nothing would make them solid again.
+template<class Rays, class Hit, class Mine, class Owned>
+auto own_bodies(const Rays& rays, Hit hit, Mine mine, Owned owned) -> decltype(owned(*hit(rays[0].first, rays[0].second))) {
+    for (const auto& [from, to] : rays)
+        if (const auto body = hit(from, to); body && mine(*body))
+            if (auto bodies = owned(*body); !bodies.empty()) return bodies;
+    return {};
 }
 
 // A world object blueprint (ObjectBlueprint, or a type derived from it): never a skater's blueprint.

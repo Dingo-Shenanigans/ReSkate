@@ -6,6 +6,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
 
 // What stands in for a peer's cosmetic this PC does not have (a player's cosmetics mod).
@@ -17,8 +18,10 @@ namespace dingosdk::multiplayer::stand_ins {
 enum class Pick : std::uint8_t { first, random };
 enum class Parts : std::uint8_t { both, skater, board };
 inline constexpr std::size_t max_items = 4096;
-// Every candidate is matched against every rule, so the rules are few.
+// Every candidate is matched against every rule with a "*", so those are few. A plain name is one
+// lookup in a set however many there are, so a plugin can leave out as many as it lists.
 inline constexpr std::size_t max_exclude = 64;
+inline constexpr std::size_t max_exclude_names = max_items;
 struct Policy {
     std::string owner; // the plugin holding it
     Pick pick{Pick::first};
@@ -27,8 +30,10 @@ struct Policy {
     std::vector<std::string> items;
     // Items never to stand in: names, in which "*" is any run of characters ("Own_Costume*",
     // "*GhostSkater*"). Any case (set() keeps them lower case). Only the candidates: an item a player
-    // really wears still shows.
+    // really wears still shows. set() keeps the rules with a "*" here and moves plain names to
+    // `exclude_names`.
     std::vector<std::string> exclude;
+    std::unordered_set<std::string> exclude_names;
     std::uint32_t seed{};
     // Whether each of `items` is left after `exclude`. set() works it out on the plugin's thread, so
     // the engine thread matches none of them when it dresses a player.
@@ -94,8 +99,9 @@ inline bool fits(std::string_view name, std::string_view rule) {
 }
 // Whether `asset` is in the policy's exclude list (which set() keeps lower case).
 inline bool excluded(const Policy &policy, std::string_view asset) {
-    if (policy.exclude.empty() || asset.empty()) return false;
+    if ((policy.exclude.empty() && policy.exclude_names.empty()) || asset.empty()) return false;
     const auto name = lower(asset);
+    if (policy.exclude_names.contains(name)) return true;
     for (const auto &rule : policy.exclude)
         if (fits(name, rule)) return true;
     return false;

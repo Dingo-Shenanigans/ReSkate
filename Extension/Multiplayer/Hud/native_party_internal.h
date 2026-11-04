@@ -10,6 +10,7 @@
 #include <atomic>
 #include <cstdint>
 #include <map>
+#include <tuple>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -102,6 +103,16 @@ struct MapMarker {
     // The transform last published; unchanged positions are not published again.
     std::optional<Transform> placed;
 };
+// A QuickDrop fast travel flag another player placed, on this player's pause map as the game shows
+// their own: a PersonalFastTravel POI (DingoMapPOIType 16) with the game's flag widget, details
+// and card, copied from one of the local player's own flags (native_party_hooks.cpp).
+struct FlagMarker {
+    Handle poi{}, view{}, icon{}, frame{}, tint{}, details{};
+    bool registered{};
+    bool card{};          // built with the flag card's commands
+    std::uint32_t key{};  // MapObjectData.ElementKey, unique while registered
+    std::string title;    // the name last published
+};
 // A registered model type found by its hash (native_party.cpp, type_with_hash),
 // reused while the manager's type registry is unchanged and the entry still holds it.
 struct TypeEntry { Address manager{}, begin{}, end{}, entry{}, type{}; ULONGLONG retry_at{}; };
@@ -162,6 +173,17 @@ struct State {
     Handle map_prototype{};
     std::array<MapMarker, max_remote_players> markers;
     ULONGLONG next_map_update{};
+    // Other players' fast travel flags, by (owner, epoch, object id); owner 0 for the test copies.
+    std::map<std::tuple<std::uint64_t, std::uint64_t, std::uint64_t>, FlagMarker> flag_markers;
+    Address flag_map{}, flag_models{};
+    ULONGLONG next_flag_update{};
+    bool flag_donor_logged{};
+    // The flag card's command (OnPersonalFastTravelPointFocus), kept from a flag of the player's own for
+    // when there is none (it is loaded only once one is placed); level-resident, checked before use.
+    Address flag_card{};
+    // `mp flag-markers test on`: a copy of each of the local player's own flags 6 m east, as if another
+    // player had placed it, to try the markers without a second player.
+    std::atomic<bool> flag_markers_test{};
     std::atomic<unsigned> map_count{};
     // One bit per remote slot: the slot has a party marker (native_party_map_icon_visible).
     std::array<std::atomic<std::uint64_t>, (max_remote_players + 63) / 64> map_slots{};

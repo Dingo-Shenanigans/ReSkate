@@ -116,6 +116,24 @@ void register_multiplayer_commands(Commands &registry) {
                                                    : "Map player markers: the game's plain player dots.");
     };
     registry.add(std::move(markers));
+    // Other players' QuickDrop fast travel flags on the pause map (native_party_hooks.cpp).
+    auto flags_mode = argument("test", Type::text, true);
+    auto flags_choice = argument("on|off", Type::text, true);
+    auto flags = action("mp flag-markers",
+                        "Other players' fast travel flags on the pause map, to fast travel to. \"test on\" adds a copy of "
+                        "each of your own flags 6 m east, as if another player had placed it (or one 6 m from you when you have none)",
+                        Group::gameplay, {std::move(flags_mode), std::move(flags_choice)});
+    flags.run = [](const Model &, const Values &values, const Output &out) {
+        const auto word = [&](std::size_t i) { return values.size() > i ? std::get<std::string>(values[i]) : std::string{}; };
+        if (word(0) == "test" && (word(1) == "on" || word(1) == "off")) multiplayer::set_native_party_flag_marker_test(word(1) == "on");
+        else if (!word(0).empty()) {
+            out("error: mp flag-markers [test on|off]");
+            return;
+        }
+        out(std::format("Fast travel flags of other players on the map: {}{}.", multiplayer::native_party_flag_markers(),
+                        multiplayer::native_party_flag_marker_test() ? " (test copies of your own flags on)" : ""));
+    };
+    registry.add(std::move(flags));
     // Other players as solid capsules for your skater (remote_collision.cpp).
     auto collision_choice = argument("on|off", Type::text, true);
     collision_choice.complete = [](const Model &, auto) { return std::vector<std::string>{"on", "off"}; };

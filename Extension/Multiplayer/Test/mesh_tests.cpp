@@ -131,7 +131,7 @@ Match match() noexcept { return {}; }
 bool hidden(std::uint64_t) noexcept { return false; }
 }
 namespace dingosdk::plugins {
-void receive_message(std::uint64_t, const std::vector<std::uint8_t>&) noexcept {}
+void receive_message(std::uint64_t, const std::vector<std::uint8_t>&, bool) noexcept {}
 std::vector<std::vector<std::uint8_t>> take_outgoing() noexcept { return {}; }
 }
 
@@ -2442,6 +2442,48 @@ void plugin_chat_command_checks() {
     check(!queue_plugin_chat_command(first, "emote", ""), "A command was kept after its plugin let it go");
     std::cout << "Plugin chat commands: listed, kept here and refused for the chat's own passed.\n";
 }
+
+// Ignoring a player (/ignore): their chat lines and typing dots stop on the PC that ignores them
+// only, their voice is muted there, they show as ignored in its roster, and /unignore by a name
+// start brings them back.
+void ignore_checks() {
+    Simulation sim;
+    for (unsigned i = 0; i < 3; ++i) sim.add();
+    sim.run(60); sim.fresh(3);
+    auto &host = *sim.nodes[0], &first = *sim.nodes[1], &second = *sim.nodes[2];
+    const auto id = [](const Session &s) { return s.transport.status().local_id; };
+    const auto heard = [](const Session &s, std::string_view text) {
+        return std::any_of(s.chat.begin(), s.chat.end(), [&](const auto &line) { return line.text == text; });
+    };
+    const auto name = peer_name(second, *find_peer(second, id(first)));
+    check(ignore_command(second, "ignore", "") == "/ignore <player>", "/ignore without a player did not say how");
+    const auto said = ignore_command(second, "ignore", std::to_string(id(first)));
+    check(ignored(second, id(first)) && said.starts_with("You ignore " + name), "/ignore by SteamID64 did not ignore the player");
+    check(ignore_command(second, "ignore", name).find("already") != std::string::npos, "Ignoring twice was not noticed");
+    check(!ignored(host, id(first)), "Ignoring a player changed another PC");
+    check(send_chat(first, "can you see this").empty(), "The ignored player's chat was refused");
+    sim.run(20);
+    check(heard(host, "can you see this") && !heard(second, "can you see this"), "An ignored player's chat line showed, or was lost for others");
+    send_typing(first, true);
+    sim.run(4);
+    check(find_peer(host, id(first))->typing_until > sim.now && find_peer(second, id(first))->typing_until == 0,
+          "An ignored player's typing dots showed, or stopped for others");
+    send_typing(first, false);
+    publish(second);
+    const auto roster = second.view.roster;
+    const auto row = std::find_if(roster.begin(), roster.end(), [&](const auto &p) { return p.id == id(first); });
+    check(row != roster.end() && row->ignored, "The roster does not show the player as ignored");
+    check(second.view.ignored.size() == 1 && second.view.ignored[0].id == id(first) && second.view.ignored[0].name == name,
+          "The menus' ignored list does not have the player and their name");
+    check(ignore_command(second, "ignored", "").find(name) != std::string::npos, "/ignored does not list the player");
+    check(ignore_command(second, "unignore", "zz-nobody").starts_with("You don't ignore"), "/unignore matched nobody's name");
+    check(ignore_command(second, "unignore", name).starts_with("You no longer ignore") && !ignored(second, id(first)),
+          "/unignore by name did not stop ignoring");
+    check(send_chat(first, "and now").empty(), "The player's chat was refused");
+    sim.run(20);
+    check(heard(second, "and now"), "A player no longer ignored is still not heard");
+    std::cout << "Ignoring: chat, typing, roster and unignore on one PC only passed.\n";
+}
 } // namespace
 } // namespace dingosdk::multiplayer
 int main(int argc, char **argv) {
@@ -2494,6 +2536,7 @@ int main(int argc, char **argv) {
         dingosdk::multiplayer::throwdown_routing_checks();
         dingosdk::multiplayer::typing_checks();
         dingosdk::multiplayer::plugin_chat_command_checks();
+        dingosdk::multiplayer::ignore_checks();
         dingosdk::multiplayer::party_checks();
         dingosdk::multiplayer::role_checks();
         dingosdk::multiplayer::global_ban_checks();

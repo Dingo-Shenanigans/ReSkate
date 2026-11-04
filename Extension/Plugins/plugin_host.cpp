@@ -694,7 +694,7 @@ std::string Host::claim_command(std::string_view plugin, std::string_view name) 
 std::string Host::claim_chat_command(std::string_view plugin, std::string_view name) {
     // The chat's own commands and a dedicated server's (a session also keeps the ones it lists first).
     static constexpr std::string_view reserved[] = {
-        "help", "tp", "p", "party", "w", "whisper", "tell", "msg", "msg-party", "msg-admins", "vote", "votes", "vote-cancel",
+        "help", "tp", "p", "party", "ignore", "unignore", "ignored", "w", "whisper", "tell", "msg", "msg-party", "msg-admins", "vote", "votes", "vote-cancel",
         "yes", "no", "y", "n", "poll", "kick", "ban", "unban", "map", "map-pool", "rotation", "tod", "tpall", "tphere",
         "teleport", "announce", "announce-to", "announcements", "role", "roles", "park-mod", "bone-scale"};
     if (std::find(std::begin(reserved), std::end(reserved), name) != std::end(reserved))

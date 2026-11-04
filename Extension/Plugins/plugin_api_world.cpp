@@ -899,6 +899,7 @@ struct WorldApi {
         const auto name = checked_text(L, index, 200, "a clip");
         if (const auto found = plugin.clips_.find(name); found != plugin.clips_.end()) return found->second;
         if (name.starts_with("rec:") || name.starts_with("clip:") || name.starts_with("edit:")) luaL_error(L, "there is no clip %s", name.c_str());
+        const Plugin::Untimed untimed{plugin}; // reading and decoding it (Plugin::Untimed)
         std::string error, bytes;
         // The game's own: read out of its data, not a file.
         if (name.starts_with("game:")) {
@@ -2110,7 +2111,7 @@ struct WorldApi {
     // stand_ins({pick = "first" | "random", parts = "both" | "skater" | "board", items = {...}, exclude = {...}, seed = n}):
     // what this PC shows in place of other players' items it does not have (their cosmetics mods).
     // No items: every installed item that fits the slot. exclude: never these (names, "*" for any run
-    // of characters), though a player who really wears one still shows it. Never a paid store item. stand_ins(nil): the
+    // of characters; up to 4096 names, 64 of them with a "*"), though a player who really wears one still shows it. Never a paid store item. stand_ins(nil): the
     // game's defaults again. Only what you see changes. true, or false and why not.
     static int outfit_stand_ins(lua_State* L) {
         auto& plugin = plugin_of(L);
@@ -2166,7 +2167,12 @@ struct WorldApi {
                 lua_pop(L, 1);
             };
             names("items", multiplayer::stand_ins::max_items, s.items);
-            names("exclude", multiplayer::stand_ins::max_exclude, s.exclude);
+            names("exclude", multiplayer::stand_ins::max_exclude_names, s.exclude);
+            // Rules with a "*" are matched against every candidate, so few of them; plain names are looked up.
+            if (const auto stars = std::count_if(s.exclude.begin(), s.exclude.end(),
+                                                 [](const std::string& rule) { return rule.find('*') != std::string::npos; });
+                stars > static_cast<std::ptrdiff_t>(multiplayer::stand_ins::max_exclude))
+                luaL_error(L, "exclude has at most %d names with \"*\"", static_cast<int>(multiplayer::stand_ins::max_exclude));
             wanted = std::move(s);
         }
         // Every change dresses the players you see again, which is heavy: not every frame.
@@ -2191,6 +2197,7 @@ struct WorldApi {
             found->second.played = ++plugin.wave_plays_;
             return found->second.wave;
         }
+        const Plugin::Untimed untimed{plugin}; // reading and decoding it (Plugin::Untimed)
         std::string error;
         const auto bytes = read_package_file(package_file(L, plugin, path), 8u << 20, error);
         if (bytes.empty()) luaL_error(L, "the sound %s cannot be read: %s", path.c_str(), error.empty() ? "it is empty" : error.c_str());

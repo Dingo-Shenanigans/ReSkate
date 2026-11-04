@@ -65,6 +65,11 @@ bool native_party_map_icon_visible(std::size_t slot) noexcept;
 // Selectable party markers on the pause map (off by default; see native_party_internal.h).
 void set_native_party_map_markers(bool enabled) noexcept;
 bool native_party_map_markers() noexcept;
+// Other players' QuickDrop fast travel flags on the pause map. Test: a copy of each of your own
+// flags 6 m east, as if another player had placed it.
+void set_native_party_flag_marker_test(bool enabled) noexcept;
+bool native_party_flag_marker_test() noexcept;
+unsigned native_party_flag_markers() noexcept;
 // Every challenge start (StartChallenge, any thread): whether this copy runs coop. A coop copy
 // shows its coop objective ("all players complete the base challenge") on the objective list and
 // finish screen even when no Coop button was pressed here (a guest's copy, or a leader's Solo).
