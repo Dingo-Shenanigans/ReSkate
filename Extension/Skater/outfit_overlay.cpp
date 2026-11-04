@@ -70,6 +70,7 @@ struct State {
     std::uintptr_t skater{}, component{}, slots_of{};
     std::map<std::string, int> slot_index; // by slot name, for slots_of
     std::optional<skater_items::Feed> feed; // how the game fed the skater before a recipe of ours
+    std::optional<skater_items::Feed> follows; // a skater's feed while it follows its outfit, kept across respawns
     std::set<std::string> ours;          // items we put on
     std::uint64_t given_back{}, menu_seen{}, checked{}, applied{}, last_error{};
     std::string status{"nothing worn"};
@@ -95,6 +96,14 @@ int slot_of(State& s, const SkaterItems& m, std::uintptr_t resource, const std::
     return -1;
 }
 void give_back(State& s, const SkaterItems& m, std::uintptr_t skater, std::uint64_t now);
+// Whether this skater wears every layer we placed, in the slots we placed them in.
+bool still_ours(const State& s, const SkaterItems& m, std::uintptr_t skater) {
+    if (s.placed.empty()) return false;
+    const auto recipe = m.capture(skater);
+    for (const auto& [i, item] : s.placed)
+        if (i >= recipe.items.size() || recipe.items[i].asset != item) return false;
+    return true;
+}
 // Which items load from which slots, kept between runs beside Skate.exe: a line each, "+slot|item"
 // or "-slot|item".
 std::filesystem::path memory_file() {
@@ -214,6 +223,7 @@ void wear(State& s, const SkaterItems& m, std::uintptr_t skater, std::uint64_t n
     if (const auto fed = skater_items::feed(m, component); fed.follows_outfit()) {
         SkaterItems::check(!marked || now - s.given_back > 3000, "Waiting for the game to put the outfit back.");
         s.feed = fed;
+        s.follows = fed;
         // A new skater, or one given back that still holds layers until the game has put the
         // outfit's own items back: what is left of them comes off here.
         for (std::size_t i = 0; i < recipe.items.size(); ++i)
@@ -221,6 +231,21 @@ void wear(State& s, const SkaterItems& m, std::uintptr_t skater, std::uint64_t n
         s.placed.clear();
         s.trial.reset();
     } else {
+        // A respawn in a multiplayer session (a reset, a fast travel, going back to a session marker)
+        // leaves a moment with no skater, so tick() forgets the feed; the new skater is then built
+        // from the recipe we last applied: it still wears our layers and does not follow the outfit.
+        // That skater is ours: take it back, with how a skater follows its outfit, so its layers can
+        // change and come off again. (Without this it is left alone until a level load.)
+        if (!s.feed && marked && s.follows) {
+            s.feed = s.follows;
+            s.own = true;
+            s.component = component;
+            s.placed.clear();
+            for (std::size_t i = 0; i < recipe.items.size(); ++i)
+                if (s.ours.contains(recipe.items[i].asset)) s.placed.emplace_back(i, recipe.items[i].asset);
+            logging::log(logging::Level::info, logging::Channel::skater,
+                         "Outfit layers: a respawned skater kept {} layer(s) of ours; taken back.", s.placed.size());
+        }
         SkaterItems::check(s.feed && (marked || component == s.component), "The skater does not follow its outfit: left alone.");
         for (const auto& [i, item] : s.placed)
             if (i >= recipe.items.size() || recipe.items[i].asset != item) {
@@ -485,16 +510,24 @@ void tick() noexcept {
             s.dirty = true;
             return;
         }
+        const auto now = GetTickCount64();
+        const SkaterItems m{skater_items::readable, skater.base};
         if (skater.entity != s.skater) {
+            // The game sometimes swaps in a new skater entity that keeps the recipe we applied
+            // (it rebuilds the skater without feeding it its outfit again). If the new one still
+            // wears every layer we placed, it is still ours: keep the feed and the placements, so
+            // the layers can still be taken off (otherwise wear() leaves the skater alone and the
+            // layers stay on until a respawn or a level load).
+            const bool inherited = s.skater && s.feed && still_ours(s, m, skater.entity);
             s.skater = skater.entity;
-            s.own = false;
-            s.feed.reset();
-            s.placed.clear();
+            if (!inherited) {
+                s.own = false;
+                s.feed.reset();
+                s.placed.clear();
+            }
             s.trial.reset();
             s.dirty = true;
         }
-        const auto now = GetTickCount64();
-        const SkaterItems m{skater_items::readable, skater.base};
         const bool menu = multiplayer::sample_game_ui_state(skater.base).in_menu;
         if (menu) s.menu_seen = now;
         const bool nothing = s.wanted.empty() && s.layers.empty();
