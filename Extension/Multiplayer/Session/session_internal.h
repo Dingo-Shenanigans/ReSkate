@@ -579,6 +579,8 @@ void update_scoring(Session &s, std::uint64_t now);
 // Guest of a dedicated server: tells it the player is at their game while they work the controls
 // (note_player_input), every present_interval_us at most.
 void update_presence(Session &s, std::uint64_t now);
+// Skate Synchros, each update (session_synchros.cpp).
+void update_synchros(Session &s, std::uint64_t now);
 void note_input() noexcept; // (note_player_input)
 // Host: flags or clears a guest from its report and the host's choice.
 void judge_scoring(Session &s, Peer &peer);
