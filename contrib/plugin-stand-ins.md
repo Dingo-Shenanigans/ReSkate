@@ -39,9 +39,10 @@ more than 4 times in a second (each change dresses every player shown again).
 - `exclude` only removes candidates: an item a player really wears, and this PC has, still shows.
   It is applied after the shuffle, so blocking an item changes the stand-in only of the players
   who were shown it.
-- "random" is seeded by everything the peer wears, the slot, the missing item and `seed`: a
-  player keeps the same stand-ins for as long as they wear the same outfit, two players in
-  different outfits get different ones, and every PC with the same items and seed shows the same.
+- "random" is seeded by the player (their session id), the slot, the missing item and `seed`: a
+  player keeps a stand-in for as long as they wear that item, whatever else they change, two
+  players get different ones for the same item, and every PC with the same items and seed shows
+  the same.
 - A change re-dresses the players already shown one at a time, 100 ms apart
   (`update_remote_cosmetics`), not the whole server in one frame.
 - Dressing runs on the engine thread, so it does little per missing item however long the lists

@@ -146,7 +146,8 @@ std::optional<Appearance> capture_cosmetics(std::uintptr_t base, const NativeFra
     }
 }
 void apply_cosmetic_recipe(std::uintptr_t base, std::uintptr_t entity, std::uintptr_t local_entity,
-                           const CosmeticRecipe &recipe, const std::function<bool(const std::string &)> &hidden) {
+                           const CosmeticRecipe &recipe, const std::function<bool(const std::string &)> &hidden,
+                           std::uint64_t player) {
     const CosmeticMemory memory{readable, base};
     const auto c = memory.component(entity), local = memory.component(local_entity);
     memory.check(entity != local_entity && c != local && memory.ptr(entity) == memory.ptr(local_entity) &&
@@ -198,7 +199,8 @@ void apply_cosmetic_recipe(std::uintptr_t base, std::uintptr_t entity, std::uint
     std::vector<std::pair<std::string, std::string>> swaps;
     const auto policy = stand_ins::current();
     if (policy && stand_ins::covers(*policy, recipe.key == board_recipe_key) && content_cache::catalogs().available) {
-        const auto outfit = outfit_hash(recipe);
+        // Seeded by the player, not their whole outfit: changing one item keeps the others' stand-ins.
+        const auto outfit = stand_ins::who(player, outfit_hash(recipe));
         swaps = memory.substitute_missing_each(
             resource, usable,
             [&](std::size_t index, const CosmeticSlot &missing) {
