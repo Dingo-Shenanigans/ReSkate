@@ -584,25 +584,24 @@ void my_presets_card(SkateMenu &menu, const CallbacksV3 &callbacks, Page &p, con
 // turned back by RESET EVERYTHING like the trainer's own values.
 struct CheatLine {
     std::string name, value; // value: what it is set to, empty for a plain switch
-    int addon{-1};           // where it lives: an Addons page, else Skater > Cheats
     DebugRequest off{};      // how Reset puts it back: a debug request, or (with `console`) a command
     std::string console;
 };
 std::vector<CheatLine> cheat_lines(const Model &model) {
     std::vector<CheatLine> lines;
     const auto &debug = model.debug;
-    if (debug.noclip) lines.push_back({"Noclip", {}, -1, {DebugAction::set_noclip, false}});
-    if (debug.no_bail) lines.push_back({"No Bail", {}, -1, {DebugAction::set_no_bail, false}});
-    if (debug.dark_pop) lines.push_back({"Dark Pop", {}, -1, {DebugAction::set_dark_pop_enabled, false}});
+    if (debug.noclip) lines.push_back({"Noclip", {}, {DebugAction::set_noclip, false}});
+    if (debug.no_bail) lines.push_back({"No Bail", {}, {DebugAction::set_no_bail, false}});
+    if (debug.dark_pop) lines.push_back({"Dark Pop", {}, {DebugAction::set_dark_pop_enabled, false}});
     // A boost's stock speed is 0: off (InteractiveDebug).
     const auto boost = [&](const char *name, float speed, DebugAction action) {
-        if (speed > 1e-3f) lines.push_back({name, std::format("+{:.1f}", speed), -1, {action, false, 0.0f}});
+        if (speed > 1e-3f) lines.push_back({name, std::format("+{:.1f}", speed), {action, false, 0.0f}});
     };
     boost("Forward boost", debug.forward_velocity_speed, DebugAction::set_forward_velocity_speed);
     boost("Up boost", debug.up_velocity_speed, DebugAction::set_up_velocity_speed);
     boost("Off-board up boost", debug.offboard_up_velocity_speed, DebugAction::set_offboard_up_velocity_speed);
     if (debug.revert_boost)
-        lines.push_back({"Revert Boost", std::format("x{:.1f}", debug.revert_boost_speed), -1, {DebugAction::set_revert_boost_enabled, false}});
+        lines.push_back({"Revert Boost", std::format("x{:.1f}", debug.revert_boost_speed), {DebugAction::set_revert_boost_enabled, false}});
     // (Grind exits and Board Break are plugins now: their own pages say what they are set to.)
     return lines;
 }
@@ -623,14 +622,11 @@ void cheat_rows(SkateMenu &menu, const CallbacksV3 &callbacks, Page &p, const st
             const bool boost = line.off.action == DebugAction::set_forward_velocity_speed || line.off.action == DebugAction::set_up_velocity_speed ||
                                line.off.action == DebugAction::set_offboard_up_velocity_speed;
             const bool can = line.console.empty() ? callbacks.queue_debug != nullptr : callbacks.queue_console_command != nullptr;
-            const int pressed = row_actions(menu, "actions", {{"GO TO", true, false, line.addon >= 0 ? "Opens the addon's page." : "Opens Skater > Cheats."},
+            const int pressed = row_actions(menu, "actions", {{"GO TO", true, false, "Opens Skater > Cheats."},
                                                               {boost ? "BACK TO 0" : "TURN OFF", can, false, boost ? "Back to 0: off, as the game shipped." : "Turns it off."}});
             if (pressed == 0) {
-                if (line.addon >= 0) open_page(menu, page_addons, line.addon);
-                else {
-                    open_page(menu, page_skater);
-                    menu.skater_tab = 2;
-                }
+                open_page(menu, page_skater);
+                menu.skater_tab = 2;
             }
             if (pressed == 1) cheat_off(menu, callbacks, line);
         }

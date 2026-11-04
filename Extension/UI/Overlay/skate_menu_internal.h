@@ -193,10 +193,6 @@ inline constexpr int settings_controls_tab = 0, settings_screen_tab = 1, setting
                      settings_replays_tab = 4;
 // Opens a page, and with `tab` (0 and up) that tab of it, for a page with tabs (Map, Build, Skater, Settings).
 void open_page(SkateMenu&, int page, int tab = -1);
-// The ADDONS page is gone: MUSIC, its only addon, is Settings > MUSIC. The SANDBOX page (trainer_page.cpp,
-// being redesigned elsewhere) still names it in a "Go to" no row of it reaches; this keeps that building and
-// leads to Settings. Remove it with that line.
-inline constexpr int page_addons = page_settings;
 
 // A list of things (players, servers, bans) as rows whose actions open inline under them: A or a click
 // on a row opens them, closing any other row's; A on the row again, or B while the focus is in it,
