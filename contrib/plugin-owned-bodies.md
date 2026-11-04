@@ -35,8 +35,8 @@ fixed: the capsules have no category of their own and collide with the world onl
 supply masks.
 
 `create` returns opaque userdata or `nil, why`. The first call in a session may only request the
-producer hook and return `waiting for a fresh qualified 60 Hz physics step` before any allocation;
-a later explicit `create` can then use the observed clock. Allocation itself is never retried.
+producer hook and return `body_preallocation_unavailable` before any allocation; a later explicit
+`create` can then use the observed clock. Allocation itself is never retried.
 
 `P.read(body)` returns a measured sample or `nil, why`:
 
@@ -58,6 +58,7 @@ and `impulse` vectors (zero when left out) and, for a nonzero one-shot impulse, 
 for `force + impulse / h` together: safety limits, not tuning. Each body has one pending inbox and
 a ring of four receipts. Publishing reserves a ring slot before any native setter; a pending
 inbox is never replaced, and a full ring refuses without spending the caller's serial or impulse.
+Two of `submit`'s refusals are fixed codes; see [refusal codes](#refusal-codes).
 
 A command computed from sample epoch **N** targets only native step **N+1**, with the same step
 length and time `sample.time + h`. A step still at N waits; a missed N+1 or 100 ms of wall time
@@ -100,6 +101,21 @@ plugin stopped for an error) releases all of its bodies: every plugin's close as
 for a VM that never created a body it finds none and touches nothing native. A successful release
 means **retained and parked**, not destroyed. Without fresh ownership no old native handle is
 touched and the body is quarantined; such a body is not claimed to be stopped.
+
+### Refusal codes
+
+Three refusals are fixed codes rather than sentences, so a plugin can compare `why` with them and
+decide whether to try again. The other refusals of the calls on this page are sentences meant for
+logs. `probe_batch` has its own codes in `batch.reason`; see [ray batches](plugin-body-query.md).
+
+| Code | From | Meaning |
+| --- | --- | --- |
+| `body_preallocation_unavailable` | `create` | The producer setup is still pending, or the local skater, world or 60 Hz step clock cannot be captured now. No slot was reserved and nothing was allocated, so a later `create` may succeed. |
+| `body_clock_unavailable` | `submit` | The body's step clock cannot be qualified now: no step in the last 250 ms, the latest step did not publish or was another skater's or world's, the step is not 1/60 s, or the clock was being written at that moment. |
+| `body_epoch_expired` | `submit` | The clock is qualified but has moved past the latest sample, or a later `read` or `receipt` published a newer sample than the epoch passed in. Read again and compute from the new sample. |
+
+Neither `submit` refusal assigns a sequence, reserves the inbox or changes a receipt. With a
+current epoch, an invalid, repeated or blocked command keeps the mailbox's own refusal.
 
 ## Native boundary
 
