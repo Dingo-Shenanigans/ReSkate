@@ -489,8 +489,6 @@ struct FakeGame final : Game {
         return static_cast<std::size_t>(std::count_if(declared_holds.begin(), declared_holds.end(), [&](const auto& h) { return h.owner == plugin; }));
     }
     // The general services a game layer in Lua reads and drives (plugin_api_services.cpp).
-    std::optional<SkaterTelemetry> telemetry;
-    std::optional<SkaterTelemetry> skater_telemetry(std::string_view) override { return telemetry; }
     std::uint64_t world_id() override { return 77; }
     std::string world_map() override { return "test_map"; }
     std::string pad_flight(std::string_view plugin, bool on) override {
@@ -1051,14 +1049,10 @@ struct FakeGame final : Game {
         dialog = spec;
         return {};
     }
-    // SmokeyDawg58's editor reads the pad and the window's focus.
-    std::optional<std::uint32_t> pad_bits_now;
+    // The window's focus (reskate.input.focus), and how often it was read.
     InputFocus focus_now{};
-    std::optional<std::uint32_t> pad_bits(bool) override { return pad_bits_now; }
     unsigned focus_reads{};
     InputFocus input_focus() override { ++focus_reads; return focus_now; }
-    std::optional<Cursor> cursor_now;
-    std::optional<Cursor> cursor() override { return cursor_now; }
     void dialog_close(std::string_view plugin, std::string_view id) override { calls.push_back(std::format("dialog close {} {}", plugin, id)); }
     std::string skater_push(std::string_view plugin, const Vec3& v) override {
         calls.push_back(std::format("push {} {:.0f} {:.0f} {:.0f}", plugin, v[0], v[1], v[2]));
@@ -1175,17 +1169,14 @@ struct FakeGame final : Game {
         if (auto it = ui_models.find(std::string(plugin)); it != ui_models.end())
             for (auto& [name, value] : it->second) { (void)name; value = 0; }
     }
-    // The game menu, its item grid, what is worn, and a screen capture of something turning once
-    // every `turning` frames (reskate.capture, room.turn, menu.game/grid, outfit.board).
+    // The game menu, and a screen capture of something turning once every `turning` frames
+    // (reskate.capture, room.turn, menu.game).
     GameMenu menu_now;
     unsigned menu_reads{};
-    std::optional<MenuGrid> grid_now;
-    std::vector<WornItem> board_now, outfit_now;
     std::vector<std::string> render_settings; // more settings, each on
     CaptureStatus capture_now{"idle"};
     double turning = 100;
     std::vector<CaptureStart> capture_starts;
-    std::vector<CaptureSave> capture_saves;
     float turned{};
     std::optional<RoomPose> preview;
     std::optional<RoomPose> room_pose(bool skater) override {
@@ -1201,9 +1192,6 @@ struct FakeGame final : Game {
     GameMenu game_menu() override { ++menu_reads; return menu_now; }
     MenuState menu_state_now; // what is up over the game (menu.state, menu_changed)
     MenuState menu_state() override { return menu_state_now; }
-    std::optional<MenuGrid> menu_grid() override { return grid_now; }
-    std::vector<WornItem> board_parts() override { return board_now; }
-    std::vector<WornItem> outfit_worn() override { return outfit_now; }
     std::string capture_start(std::string_view plugin, const CaptureStart& request) override {
         capture_starts.push_back(request);
         capture_now = {"recording"};
@@ -1227,8 +1215,7 @@ struct FakeGame final : Game {
         for (std::uint32_t n = 0; n < capture_now.taken; ++n) out.push_back(n);
         return out;
     }
-    std::string capture_save(std::string_view, const CaptureSave& request) override {
-        capture_saves.push_back(request);
+    std::string capture_save(std::string_view, const CaptureSave&) override {
         capture_now = {"saving", capture_now.taken, capture_now.taken};
         return {};
     }
@@ -1236,17 +1223,7 @@ struct FakeGame final : Game {
         calls.push_back(std::format("reveal {} {}", plugin, folder));
         return {};
     }
-    // Keys held, the keys and pad buttons kept from the game, the items worn on top and what the item
-    // grid was asked to show and mark (Item Tabs).
-    std::set<int> keys_held;
-    bool key_down(int virtual_key) override { return keys_held.contains(virtual_key); }
-    // The game window has the focus and nothing is in the way (reskate.input.allowed): off unless a test says so.
-    bool input_open{};
-    bool input_allowed() override { return input_open; }
-    std::vector<std::uint8_t> kept_keys;
-    std::uint16_t kept_buttons{};
-    void game_keys(std::string_view, std::vector<std::uint8_t> keys) override { kept_keys = std::move(keys); }
-    void game_buttons(std::string_view, std::uint16_t hidden, std::uint16_t, bool) override { kept_buttons = hidden; }
+    // The items worn on top, and what the item grid was asked to show.
     std::vector<std::string> on_top_now;
     static std::string joined(const std::vector<std::string>& list) {
         std::string out;
@@ -1259,14 +1236,10 @@ struct FakeGame final : Game {
         return {};
     }
     OnTop outfit_on_top_state(std::string_view) override { return {on_top_now, on_top_now, {}}; }
-    std::optional<std::vector<std::string>> grid_shown;
-    std::vector<std::string> grid_marked;
     std::string grid_show(std::string_view plugin, std::optional<std::vector<std::string>> keys) override {
         calls.push_back(keys ? std::format("show {} [{}]", plugin, joined(*keys)) : std::format("show {} none", plugin));
-        grid_shown = std::move(keys);
         return {};
     }
-    void grid_mark(std::string_view, std::vector<std::string> keys) override { grid_marked = std::move(keys); }
     // Item origins and the player's starred keys, as reskate.mods.item_origins and reskate.menu.favorites read them.
     struct OriginRow {
         std::string key;

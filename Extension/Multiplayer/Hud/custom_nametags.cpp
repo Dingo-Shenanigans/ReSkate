@@ -96,7 +96,6 @@ void set_custom_nametags_enabled(bool enabled) noexcept {
     }
 }
 
-bool custom_nametags_enabled() noexcept { return state().enabled.load(std::memory_order_acquire); }
 
 namespace {
 // The camera as it is now: the game updates its own camera after the client update the view

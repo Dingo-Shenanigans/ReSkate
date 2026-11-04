@@ -260,7 +260,6 @@ public:
         Vec3 at{};
     };
     std::optional<float> touch_reach() const noexcept { return touch_reach_; }
-    const std::map<std::uint64_t, Contact>& contacts() const noexcept { return contacts_; }
     void touch_tick(const std::vector<Body>& bodies);
     void track_changed(const Track& track);
     void throwdown_phase(const char* phase);
@@ -288,7 +287,6 @@ public:
     const std::string& reason() const noexcept { return reason_; }
     std::size_t memory() const noexcept { return memory_; }
     double tick_ms() const noexcept { return last_window_ms_; }
-    // Its console commands and their help.
     // Its console commands, and the subcommands each declared ("prop random", run by "prop"'s
     // function): the name, its arguments as help shows them, and its help.
     std::vector<CommandInfo> commands() const;

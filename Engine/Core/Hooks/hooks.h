@@ -1,6 +1,5 @@
 #pragma once
 #include <Windows.h>
-#include <cstddef>
 
 namespace dingosdk {
 // Win32 failures from Detours are preserved; negative values describe the
@@ -43,13 +42,9 @@ public:
     HookBatch(const HookBatch&) = delete;
     HookBatch& operator=(const HookBatch&) = delete;
 };
-HookStatus WINAPI hook_shutdown();
 const char* WINAPI hook_status_string(HookStatus status);
 // Captured on the calling thread; formatting/logging happens only after Detours
 // has resumed enlisted threads. Read before issuing another hook operation.
 struct HookFailure { const char* operation{"none"}; LONG error{}; DWORD thread_id{}; };
 HookFailure hook_last_failure() noexcept;
-
-struct HookStatistics { std::size_t prepared{}, attached{}, retired{}; };
-HookStatistics hook_statistics();
 }

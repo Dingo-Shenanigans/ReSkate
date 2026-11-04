@@ -45,7 +45,6 @@ inline constexpr std::uintptr_t chunk_name = 0x100;       // install chunk -> na
 // disk can be handed to the game by swapping these pointers.
 inline constexpr std::uintptr_t superbundle_mounts = 0x30;
 inline constexpr std::uintptr_t mount_tocs = 0x50;
-inline constexpr std::size_t toc_entry_size = 0x28;
 inline constexpr std::uintptr_t toc_entry_file = 0x10;
 inline constexpr std::uintptr_t toc_entry_data = 0x18;
 inline constexpr std::uintptr_t toc_file_bytes = 0x28;

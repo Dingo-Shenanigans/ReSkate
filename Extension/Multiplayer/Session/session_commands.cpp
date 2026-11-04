@@ -468,10 +468,6 @@ std::string edit_player_distance(Session &s, std::string_view argument) {
                                               : "Players within " + std::to_string(static_cast<int>(value)) + " m are shown as skaters.";
 }
 std::string start_pose_dump(Session &s, std::string_view argument) {
-#if defined(DINGOSDK_LEAN_PLAYTEST)
-    (void)s; (void)argument;
-    return "Pose recording is not included in this playtest build.";
-#else
     int seconds{};
     const auto parsed = std::from_chars(argument.data(), argument.data() + argument.size(), seconds);
     if (parsed.ec != std::errc{} || parsed.ptr != argument.data() + argument.size() || seconds < 1 || seconds > 600)
@@ -488,7 +484,6 @@ std::string start_pose_dump(Session &s, std::string_view argument) {
     s.pose_dump_until = now_us() + static_cast<std::uint64_t>(seconds) * 1000000;
     s.pose_dump_count = 0;
     return "Recording your poses for " + std::to_string(seconds) + " s to " + path_utf8(file) + ". Skate as you normally would.";
-#endif
 }
 std::string edit_direct_connections(Session &s, std::string_view argument) {
     const auto enabled = parse_switch(argument, s.prefer_direct);

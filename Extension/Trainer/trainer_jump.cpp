@@ -57,7 +57,6 @@ struct Hooked {
     std::array<float, 256> flight_parameters{};
     bool flight_kept{};
     std::atomic<float> raise_to{};
-    std::atomic<int> raised{}; // 1 done, -1 failed; taken by the trainer
     bool attempted{}, ready{};
     // The pop out of a grind: the sideways multiplier, the travel on the grind, and the newest pop as the game made it.
     std::atomic<float> grind_side{1}, travel_x{}, travel_z{};
@@ -103,14 +102,9 @@ void raise_step() noexcept {
     if (!(up > 0)) return;
     const auto original = h.original.load(std::memory_order_acquire);
     const auto object = h.flight_object.load(std::memory_order_relaxed);
-    if (!original || !object || !h.flight_kept || GetTickCount64() - h.flight_tick.load(std::memory_order_relaxed) > 400) {
-        h.raised.store(-1, std::memory_order_release);
-        return;
-    }
+    if (!original || !object || !h.flight_kept || GetTickCount64() - h.flight_tick.load(std::memory_order_relaxed) > 400) return;
     h.flight_parameters[velocity_y] = up;
-    const bool done = call_guarded(original, object, h.flight_parameters.data());
-    if (done) h.flight_up.store(up, std::memory_order_relaxed);
-    h.raised.store(done ? 1 : -1, std::memory_order_release);
+    if (call_guarded(original, object, h.flight_parameters.data())) h.flight_up.store(up, std::memory_order_relaxed);
 }
 void set_trajectory_hook(std::uintptr_t trajectory, float *parameters) {
     auto &h = hooked();
@@ -297,7 +291,6 @@ bool set_foot_gravity(float factor) noexcept {
     gravity_now.store(factor, std::memory_order_relaxed);
     return true;
 }
-float foot_gravity_in_force() noexcept { return gravity_now.load(std::memory_order_relaxed); }
 // The speed limit on foot. The game cuts a walking skater's speed along the ground to one number of its own (10 m/s),
 // read by that code alone (FollowGround, 0x48318a0); the walkable slope angles 60, 55 and 75 follow it, which is how it
 // is recognised. Measured (2026-10-13): sprint speed 13 ran at 10.0 m/s with the game's own limit.
@@ -350,7 +343,6 @@ bool raise_flight(float up, float &was, float &time) noexcept {
     h.raise_to.store(up, std::memory_order_release);
     return true;
 }
-int take_flight_raise() noexcept { return hooked().raised.exchange(0, std::memory_order_acq_rel); }
 void set_flip_launch(std::uint32_t trick, float up) noexcept {
     auto &h = hooked();
     if (trick < h.flip_launch.size()) h.flip_launch[trick].store(std::isfinite(up) && up > 0 ? up : 0.0f, std::memory_order_relaxed);

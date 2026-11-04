@@ -15,15 +15,12 @@ inline constexpr int command_play = 4;
 inline constexpr std::size_t command_play_name = 0x18;
 
 // The player.
-inline constexpr std::size_t player_block_frames = 0x318; // u16: the most frames of one block
 inline constexpr std::size_t player_voices = 0x31c;       // u16: where its voices begin
 inline constexpr std::size_t player_voice = 0x321;        // u8: the voice being played
-inline constexpr std::size_t player_voice_count = 0x322;  // u8
 inline constexpr std::size_t voice_size = 0x168;
 inline constexpr std::size_t voice_rate = 0x14;           // float, Hz
 inline constexpr std::size_t voice_frames = 0x18;         // u32: the length of the file
 inline constexpr std::size_t voice_state = 0x2e;          // u8: 0 and 5 are not playing
-inline constexpr std::size_t voice_channels = 0x2f;       // u8
 
 // The mixer. A block is written to the buffer at mixer_write, and the two are then exchanged:
 // after the routine, what it wrote is the buffer at mixer_written.

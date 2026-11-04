@@ -56,6 +56,5 @@ consteval std::array<unsigned char, 32> sha256_bytes(std::string_view text) {
 }
 
 inline constexpr auto game_sha256_bytes = sha256_bytes(game_sha256);
-inline constexpr auto steam_api_sha256_bytes = sha256_bytes(steam_api_sha256);
 
 } // namespace dingosdk::supported_build

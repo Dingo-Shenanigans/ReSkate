@@ -32,29 +32,6 @@ using SlotSettingsLookup = std::uintptr_t (*)(std::uintptr_t, const void*);
 using SlotNativeResize = void (*)(std::uintptr_t, std::uint32_t);
 using SlotNativeSelected = std::int32_t (*)(std::uintptr_t);
 
-#ifndef DINGOSDK_SKATER_SLOT_SETTINGS_LOOKUP
-#define DINGOSDK_SKATER_SLOT_SETTINGS_LOOKUP(base) \
-    reinterpret_cast<SlotSettingsLookup>((base) + addr::engine::settings_lookup)
-#endif
-
-#ifndef DINGOSDK_SKATER_SLOT_SELECTED
-#define DINGOSDK_SKATER_SLOT_SELECTED(base, manager) \
-    reinterpret_cast<SlotNativeSelected>((base) + slot_addr::native_selected)(manager)
-#endif
-#ifndef DINGOSDK_SKATER_SLOT_SELECT
-#define DINGOSDK_SKATER_SLOT_SELECT(base, manager, index) \
-    reinterpret_cast<SlotNativeResize>((base) + slot_addr::native_select)((manager), (index))
-#endif
-
-#ifndef DINGOSDK_SKATER_SLOT_WRITE
-#define DINGOSDK_SKATER_SLOT_WRITE WriteProcessMemory
-#endif
-
-#ifndef DINGOSDK_SKATER_SLOT_RESIZE
-#define DINGOSDK_SKATER_SLOT_RESIZE(base, manager, count) \
-    reinterpret_cast<SlotNativeResize>((base) + slot_addr::native_resize)((manager), (count))
-#endif
-
 enum class SlotSettingsType : std::size_t {
     loadout,
     game,
@@ -238,7 +215,7 @@ std::uintptr_t resolve_slot_type(SlotOverrideState& state, SlotSettingsType id,
         !slot_range(registry, 0xd8) || !memory::read(registry + 0xc8, buckets) ||
         !memory::read(registry + 0xd0, bucket_count) || !slot_range(buckets, 8) ||
         !bucket_count || bucket_count > 0x100000) return 0;
-    const auto lookup = DINGOSDK_SKATER_SLOT_SETTINGS_LOOKUP(state.base);
+    const auto lookup = reinterpret_cast<SlotSettingsLookup>(state.base + addr::engine::settings_lookup);
     const auto object = lookup(registry,
         reinterpret_cast<const void*>(state.base + type.handle_rva));
     std::uintptr_t vtable{}, object_type{}, registry_after{};
@@ -273,7 +250,7 @@ bool write_slot_scalar(SlotOverrideState& state, const SlotSnapshot& snapshot,
     SIZE_T count{};
     const auto source = field.size == 1 ? static_cast<const void*>(
         reinterpret_cast<const std::uint8_t*>(&value)) : static_cast<const void*>(&value);
-    if (!DINGOSDK_SKATER_SLOT_WRITE(GetCurrentProcess(), reinterpret_cast<void*>(address),
+    if (!WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(address),
             source, field.size, &count) || count != field.size) return false;
     const auto actual = read_slot_scalar(field, snapshot.object);
     if (actual != value) return false;
@@ -447,7 +424,7 @@ void maintain_slot_count(SlotOverrideState& state) {
         state.observation.status = "Ten process-local skater preset slots are available.";
         return;
     }
-    DINGOSDK_SKATER_SLOT_RESIZE(state.base, manager.manager, slot_target_count);
+    reinterpret_cast<SlotNativeResize>(state.base + slot_addr::native_resize)(manager.manager, slot_target_count);
     ++state.observation.native_resizes;
     auto after = read_slot_manager(state);
     slot_require(after.available && after.manager == manager.manager &&
@@ -468,7 +445,7 @@ void maintain_initial_selection(SlotOverrideState& state, std::uint32_t preferre
     std::uint32_t category_count{};
     if (!memory::read(manager.manager + 0x1b0, selected_binding) || !selected_binding) return;
     observation.initial_binding_ready = true;
-    const auto selected = DINGOSDK_SKATER_SLOT_SELECTED(state.base, manager.manager);
+    const auto selected = reinterpret_cast<SlotNativeSelected>(state.base + slot_addr::native_selected)(manager.manager);
     state.observation.selected_slot = selected;
     if (selected != -1) return; // Never replace a user's selected/edited preset.
     observation.initial_appearance_ready = memory::read(state.base + addr::engine::appearance_manager, appearance) && slot_range(appearance, 8);
@@ -498,8 +475,8 @@ void maintain_initial_selection(SlotOverrideState& state, std::uint32_t preferre
     // categories. With previous index -1, it does not save a previous preset or
     // send the selection to Profile/telemetry. It publishes the selector binding.
     const auto index = preferred < manager.count ? preferred : 0;
-    DINGOSDK_SKATER_SLOT_SELECT(state.base, manager.manager, index);
-    state.observation.selected_slot = DINGOSDK_SKATER_SLOT_SELECTED(state.base, manager.manager);
+    reinterpret_cast<SlotNativeResize>(state.base + slot_addr::native_select)(manager.manager, index);
+    state.observation.selected_slot = reinterpret_cast<SlotNativeSelected>(state.base + slot_addr::native_selected)(manager.manager);
     if (state.observation.selected_slot == static_cast<std::int32_t>(index)) ++state.observation.initial_selections;
 }
 

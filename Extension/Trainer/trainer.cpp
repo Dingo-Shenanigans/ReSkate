@@ -2132,9 +2132,6 @@ void set_logging(bool on) {
     auto &s = state();
     if (s.log.is_open()) s.log.close();
     s.logging = false;
-#if defined(DINGOSDK_LEAN_PLAYTEST)
-    (void)on;
-#else
     if (!on) return;
     const auto directory = data_directory() / L"telemetry";
     std::error_code error;
@@ -2151,7 +2148,6 @@ void set_logging(bool on) {
     s.log << "seconds,x,y,z,speed_mps,vertical_mps,heading_deg,airborne,physics_state,board_turn_dps\n";
     s.log_start = clock_now();
     s.logging = true;
-#endif
 }
 void shortcuts() {
     auto &s = state();
@@ -2924,11 +2920,11 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool playing, const std::s
                 s.pump_live = pump.found;
                 s.view_due = true;
             }
-            bool measure = false, searching = false;
+            bool searching = false;
             const bool grind_held = std::ranges::any_of(s.grind_mode, [](std::int8_t mode) { return mode >= 0; });
             keep_holds_alive();
             for (std::size_t i = 0; i < grind_settings.size(); ++i) force_grind_setting(i, extras_blocked() ? -1 : s.grind_setting[i]);
-            states_in_use(s.pump_power != 1.0f || s.manual_height != 1.0f || grind_held || s.grind_watch || s.grind_push != 0.0f || s.grind_range != 0.0f || measure || searching);
+            states_in_use(s.pump_power != 1.0f || s.manual_height != 1.0f || grind_held || s.grind_watch || s.grind_push != 0.0f || s.grind_range != 0.0f || searching);
             {
                 const auto watch = watched_physics_state();
                 const bool grinding = watch.valid && watch.state >= 400 && watch.state < 500;
@@ -2991,7 +2987,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool playing, const std::s
                     s.view_due = true;
                 }
             }
-            set_pump_power(client, s.entity, extras_blocked() ? 1.0f : s.pump_power, pump.found && pump.pumping, measure);
+            set_pump_power(client, s.entity, extras_blocked() ? 1.0f : s.pump_power, pump.found && pump.pumping);
         }
         {
             // Gravity: the game's own under a host's physics or with boosts off. Both levers let go by themselves.

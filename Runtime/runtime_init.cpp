@@ -406,10 +406,8 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
         (void)dingosdk::streaming_copy_guard::install(r.base);
         (void)dingosdk::load_error_guard::install(r.base);
         (void)dingosdk::texture_handle_limit::install(r.base);
-#if !defined(DINGOSDK_LEAN_PLAYTEST)
         (void)dingosdk::stack_check_report::install(r.base);
         dingosdk::console::start_memory_trace_from_environment();
-#endif
         (void)dingosdk::music_inject::install(r.base);
         (void)dingosdk::spotify_rows::install(r.base);
         dingosdk::spotify_device::start(); // (the game as a device in the player's Spotify app)

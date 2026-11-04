@@ -1469,7 +1469,6 @@ void initialize_throwdown_lab(Address base) noexcept {
             throw std::runtime_error("Throwdown lab: cannot enable hooks");
         l.installed.store(true, std::memory_order_release);
     } catch (const std::exception& e) { logging::write(logging::Level::warning, logging::Channel::progression, e.what()); }
-#if !defined(DINGOSDK_LEAN_PLAYTEST)
     // The condition probe replaces the game's AND / OR / NOT, which every authored
     // condition runs through; opt in with RESKATE_THROWDOWN_PROBE=1.
     if (!GetEnvironmentVariableW(L"RESKATE_THROWDOWN_PROBE", nullptr, 0)) return;
@@ -1485,7 +1484,6 @@ void initialize_throwdown_lab(Address base) noexcept {
                 hook_enable(reinterpret_cast<void*>(base + op.rva)) == HookOk) ++count;
         logging::log(logging::Level::info, logging::Channel::progression, "Throwdown lab: condition probe on {} of 3 boolean ops.", count);
     } catch (...) {}
-#endif
 }
 
 void observe_throwdown_send(std::uint32_t hash, Address type, Address payload) noexcept {
@@ -1854,9 +1852,6 @@ std::uint64_t now_ms() {
         std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 void trace_expression(Address vm) {
-#if defined(DINGOSDK_LEAN_PLAYTEST)
-    (void)vm;
-#else
     auto& l = lab();
     const auto now = now_ms();
     if (now >= l.trace_end_ms) {
@@ -1890,7 +1885,6 @@ void trace_expression(Address vm) {
     auto& seen = l.trace[key];
     if (!seen.count++) seen.first_ms = now;
     seen.last_ms = now;
-#endif
 }
 
 // The pump runs after every expression the game executes, thousands a frame, and almost all

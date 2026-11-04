@@ -96,31 +96,10 @@ StateObject pump_strength_object{{0x54, 0xc6, 0x59, 0x6a, 0xbb, 0xad, 0xfc, 0x05
                                  "Animation/Dingo/Float.Intent.UserTriggeredPumpStrength"};
 StateObject pump_assist_object{{0xcb, 0xdf, 0x5b, 0x53, 0x14, 0x53, 0xc8, 0x29, 0x53, 0x5b, 0xdf, 0xcb, 0x53, 0x14, 0x29, 0xc8},
                                "Animation/Dingo/Float.Anim.PumpingAssistAmount"};
-// Off the board: how fast a flip in the air (jump, then RB and the left stick) turns, and how quickly it gets there.
-StateObject body_flip_speed_object{{0xbc, 0x5b, 0x7b, 0x1d, 0x12, 0xd8, 0xa1, 0x2a, 0x1d, 0x7b, 0x5b, 0xbc, 0xd8, 0x12, 0x2a, 0xa1},
-                                   "Animation/Dingo/Float.Intent.BodyFlipSpeedMod"};
-StateObject body_flip_rate_object{{0x74, 0x34, 0x08, 0x3f, 0x5e, 0x6f, 0xb4, 0xfa, 0x3f, 0x08, 0x34, 0x74, 0x6f, 0x5e, 0xfa, 0xb4},
-                                  "Animation/Dingo/Float.Intent.BodyFlipAccelerationRate"};
 // Which manual the player is asking for (0: none).
 StateObject manual_object{{0x77, 0x52, 0xaa, 0x61, 0x87, 0xb9, 0xfb, 0xaa, 0x61, 0xaa, 0x52, 0x77, 0xb9, 0x87, 0xaa, 0xfb}, "Animation/Dingo/Enum.Intent.Manual"};
-StateObject grind_nudge_object{{0x68, 0xa1, 0x85, 0xe5, 0x51, 0x0c, 0x22, 0x2f, 0xe5, 0x85, 0xa1, 0x68, 0x0c, 0x51, 0x2f, 0x22},
-                               "Animation/Dingo/Float.Intent.GrindStabilityNudge"};
-StateObject grind_control_objects[]{
-    {{0x7b, 0x19, 0x3e, 0x26, 0xbb, 0xd0, 0xda, 0x97, 0x26, 0x3e, 0x19, 0x7b, 0xd0, 0xbb, 0x97, 0xda}, "Animation/Dingo/Float.Intent.GrindControlLR"},
-    {{0xa6, 0x4e, 0xb2, 0xa5, 0x2b, 0x0d, 0x8a, 0x6d, 0xa5, 0xb2, 0x4e, 0xa6, 0x0d, 0x2b, 0x6d, 0x8a}, "Animation/Dingo/Float.Intent.GrindControlUD"},
-    {{0x63, 0x68, 0x2d, 0xaa, 0x47, 0xdf, 0x36, 0x3a, 0xaa, 0x2d, 0x68, 0x63, 0xdf, 0x47, 0x3a, 0x36}, "Animation/Dingo/Float.Intent.GrindControlHeading"},
-    {{0x19, 0xa9, 0xd6, 0xa6, 0xa1, 0xfc, 0x03, 0xa1, 0xa6, 0xd6, 0xa9, 0x19, 0xfc, 0xa1, 0xa1, 0x03}, "Animation/Dingo/Float.Intent.GrindControlPitch"},
-    {{0xd3, 0x1e, 0x65, 0x0c, 0xa2, 0xb6, 0xac, 0xe0, 0x0c, 0x65, 0x1e, 0xd3, 0xb6, 0xa2, 0xe0, 0xac}, "Animation/Dingo/Float.Intent.GrindHeadingControlMultiplier"},
-    {{0xc9, 0xc1, 0xeb, 0xed, 0xe1, 0xd0, 0xfa, 0xd3, 0xed, 0xeb, 0xc1, 0xc9, 0xd0, 0xe1, 0xd3, 0xfa}, "Animation/Dingo/Float.Intent.GrindPitchControlMultiplier"},
-    {{0xc4, 0x16, 0x23, 0xba, 0x53, 0x14, 0x47, 0x92, 0xba, 0x23, 0x16, 0xc4, 0x14, 0x53, 0x92, 0x47}, "Animation/Dingo/Float.Intent.GrindBaseHeading"},
-    {{0xff, 0x4b, 0xa6, 0xad, 0xeb, 0xf7, 0x7b, 0x65, 0xad, 0xa6, 0x4b, 0xff, 0xf7, 0xeb, 0x65, 0x7b}, "Animation/Dingo/Float.Intent.GrindBasePitch"},
-    {{0x85, 0xc4, 0x26, 0x2b, 0xd5, 0x4e, 0x37, 0x04, 0x2b, 0x26, 0xc4, 0x85, 0x4e, 0xd5, 0x04, 0x37}, "Animation/Dingo/Enum.GS.Anim.CurrentGrindType"},
-    {{0x7f, 0xf7, 0xde, 0xa2, 0x14, 0xd2, 0x6b, 0x3b, 0xa2, 0xde, 0xf7, 0x7f, 0xd2, 0x14, 0x3b, 0x6b}, "Animation/Dingo/Enum.GS.Anim.CurrentSkateGrindType"},
-    {{0xef, 0xb2, 0xb6, 0x2b, 0x9a, 0xee, 0xc0, 0x5d, 0x2b, 0xb6, 0xb2, 0xef, 0xee, 0x9a, 0x5d, 0xc0}, "Animation/Dingo/Bool.Intent.GrindControlHasActiveInput"},
-};
 StateObject *const objects[]{&manual_object, &flip_speed_object, &flip_trick_object, &pumping_object, &pump_strength_object, &pump_assist_object,
-                             &body_flip_speed_object, &body_flip_rate_object, &flip_clamped_object, &grind_nudge_object,
-                             &underflip_anim_object, &underflip_state_object, &underflip_window_object, &underflip_timescale_object};
+                             &flip_clamped_object, &underflip_anim_object, &underflip_state_object, &underflip_window_object, &underflip_timescale_object};
 
 StateObject grind_objects[]{
     {{0xda, 0x09, 0x5b, 0x51, 0xf4, 0xff, 0x36, 0x3e, 0x51, 0x5b, 0x09, 0xda, 0xff, 0xf4, 0x3e, 0x36}, "Animation/Dingo/Bool.Intent.NoPopGrindExit"},
@@ -134,19 +113,6 @@ StateObject grind_objects[]{
     {{0x41, 0x6b, 0x36, 0x87, 0xd4, 0x0d, 0x92, 0x1b, 0x87, 0x36, 0x6b, 0x41, 0x0d, 0xd4, 0x1b, 0x92}, "Animation/Dingo/Bool.Intent.GrindToBoardslide"},
     {{0x5a, 0xf8, 0x53, 0xe2, 0x2f, 0x5b, 0x89, 0x02, 0xe2, 0x53, 0xf8, 0x5a, 0x5b, 0x2f, 0x02, 0x89}, "Animation/Dingo/Bool.Intent.DisableLegacyCopingGrinds"},
     {{0x8c, 0x0f, 0xfd, 0x43, 0x45, 0x81, 0xa8, 0xc4, 0x43, 0xfd, 0x0f, 0x8c, 0x81, 0x45, 0xc4, 0xa8}, "Animation/Dingo/Bool.Intent.AllowAirToGrind"},
-};
-// Transition skating: what the physics says about the lip, in the order of TransitionState (four flags, a number, an
-// enumeration, three vectors).
-StateObject transition_objects[]{
-    {{0x7d, 0xbc, 0xc5, 0x80, 0xd7, 0xd9, 0xb2, 0xed, 0x80, 0xc5, 0xbc, 0x7d, 0xd9, 0xd7, 0xed, 0xb2}, "Animation/Dingo/Bool.Physics.FoundLipTrick"},
-    {{0xf7, 0x40, 0x6e, 0xeb, 0x30, 0x84, 0x8a, 0x2f, 0xeb, 0x6e, 0x40, 0xf7, 0x84, 0x30, 0x2f, 0x8a}, "Animation/Dingo/Bool.Physics.IsLipTricking"},
-    {{0xf4, 0xe2, 0x75, 0xd3, 0x3a, 0xb6, 0x36, 0x20, 0xd3, 0x75, 0xe2, 0xf4, 0xb6, 0x3a, 0x20, 0x36}, "Animation/Dingo/Bool.Physics.IsHandplanting"},
-    {{0xa0, 0x93, 0xef, 0x64, 0xcd, 0xf1, 0xd7, 0xfc, 0x64, 0xef, 0x93, 0xa0, 0xf1, 0xcd, 0xfc, 0xd7}, "Animation/Dingo/Bool.Physics.IsTrajectoryTargetingVert"},
-    {{0x4d, 0x51, 0x11, 0xcd, 0x2f, 0xad, 0x80, 0x9c, 0xcd, 0x11, 0x51, 0x4d, 0xad, 0x2f, 0x9c, 0x80}, "Animation/Dingo/Float.Intent.TransitionInput"},
-    {{0x00, 0xdf, 0x0d, 0x4f, 0xfa, 0x34, 0x89, 0x81, 0x4f, 0x0d, 0xdf, 0x00, 0x34, 0xfa, 0x81, 0x89}, "Animation/Dingo/EnumGS.Physics.LipDropInType"},
-    {{0x91, 0x7e, 0x62, 0x00, 0xa7, 0xe0, 0x4d, 0x9c, 0x00, 0x62, 0x7e, 0x91, 0xe0, 0xa7, 0x9c, 0x4d}, "Animation/Dingo/Vec3.Physics.LipDirection"},
-    {{0x09, 0xda, 0x55, 0x9c, 0xe0, 0x97, 0x4a, 0xa8, 0x9c, 0x55, 0xda, 0x09, 0x97, 0xe0, 0xa8, 0x4a}, "Animation/Dingo/Vec3.Physics.LipNearestPoint"},
-    {{0x27, 0x56, 0x8a, 0xee, 0x40, 0x00, 0x61, 0xce, 0xee, 0x8a, 0x56, 0x27, 0x00, 0x40, 0xce, 0x61}, "Animation/Dingo/Vec3.Prediction.ReckoningGroundNormal"},
 };
 bool put_flag(std::uintptr_t address, bool value) noexcept {
     __try {
@@ -239,8 +205,6 @@ const std::array<std::uint64_t, 64> &state_id_filter() noexcept {
         };
         for (const auto *object : objects) mark(*object);
         for (const auto &object : grind_objects) mark(object);
-        for (const auto &object : grind_control_objects) mark(object);
-        for (const auto &object : transition_objects) mark(object);
         for (const auto &band : underflip_bands) {
             std::uint32_t first;
             std::memcpy(&first, band.id, 4);
@@ -274,8 +238,6 @@ void find_state_objects(std::uintptr_t start, std::size_t size) noexcept {
             if (const auto h = (words[i] * 0x9e3779b1u) >> 20; !((filter[h >> 6] >> (h & 63)) & 1)) continue;
             for (auto *object : objects) look(*object, i);
             for (auto &object : grind_objects) look(object, i);
-            for (auto &object : grind_control_objects) look(object, i);
-            for (auto &object : transition_objects) look(object, i);
             for (auto &band : underflip_bands) {
                 std::uint32_t first;
                 std::memcpy(&first, band.id, 4);
@@ -365,58 +327,6 @@ PumpState read_pump_state(std::uintptr_t base, std::uintptr_t entity) noexcept {
     if (const auto at = value_address(pump_strength_object, block); at && peek(at, number) && std::isfinite(number)) state.strength = number;
     if (const auto at = value_address(pump_assist_object, block); at && peek(at, number) && std::isfinite(number)) state.assist = number;
     return state;
-}
-BodyFlipState read_body_flip_state(std::uintptr_t base, std::uintptr_t entity) noexcept {
-    BodyFlipState state;
-    if (!body_flip_speed_object.at.load(std::memory_order_relaxed) && !body_flip_rate_object.at.load(std::memory_order_relaxed)) return state;
-    const auto block = states_block(base, entity);
-    if (!block) return state;
-    float number{};
-    if (const auto at = value_address(body_flip_speed_object, block); at && peek(at, number) && std::isfinite(number)) {
-        state.speed_at = at;
-        state.speed = number;
-    }
-    if (const auto at = value_address(body_flip_rate_object, block); at && peek(at, number) && std::isfinite(number)) {
-        state.rate_at = at;
-        state.rate = number;
-    }
-    return state;
-}
-GrindControl read_grind_control(std::uintptr_t base, std::uintptr_t entity) noexcept {
-    GrindControl control;
-    const auto block = states_block(base, entity);
-    if (!block) return control;
-    float *const numbers[]{&control.lr, &control.ud, &control.heading, &control.pitch, &control.heading_multiplier, &control.pitch_multiplier,
-                           &control.base_heading, &control.base_pitch};
-    std::uint32_t *const words[]{&control.grind_type, &control.skate_grind_type, &control.active_input};
-    for (std::size_t i = 0; i < std::size(grind_control_objects); ++i) {
-        const auto at = value_address(grind_control_objects[i], block);
-        if (!at) continue;
-        if (i < std::size(numbers)) {
-            float value{};
-            if (!peek(at, value) || !std::isfinite(value)) continue;
-            *numbers[i] = value;
-        } else if (i + 1 < std::size(grind_control_objects)) {
-            std::uint32_t value{};
-            if (!peek(at, value)) continue;
-            *words[i - std::size(numbers)] = value;
-        } else {
-            std::uint8_t value{};
-            if (!peek(at, value)) continue;
-            control.active_input = value;
-        }
-        control.found |= 1u << i;
-    }
-    return control;
-}
-bool read_grind_nudge(std::uintptr_t base, std::uintptr_t entity, float &nudge) noexcept {
-    if (!grind_nudge_object.at.load(std::memory_order_relaxed)) return false;
-    const auto block = states_block(base, entity);
-    const auto at = block ? value_address(grind_nudge_object, block) : 0;
-    float value{};
-    if (!at || !peek(at, value) || !std::isfinite(value)) return false;
-    nudge = value;
-    return true;
 }
 std::int32_t read_manual_intent(std::uintptr_t base, std::uintptr_t entity) noexcept {
     if (!manual_object.at.load(std::memory_order_relaxed)) return -1;
@@ -750,13 +660,6 @@ std::string underflip_timescale_callers() noexcept {
     return text;
 }
 void keep_holds_alive() noexcept { holds_until.store(GetTickCount64() + 500, std::memory_order_relaxed); }
-int holds_in_force() noexcept {
-    if (!holds_alive()) return 0;
-    int count = 0;
-    for (const auto &forced : forced_settings) count += forced.mode.load(std::memory_order_relaxed) >= 0;
-    for (const auto &held : held_switches) count += held.mode.load(std::memory_order_relaxed) >= 0;
-    return count;
-}
 void force_grind_setting(std::size_t index, int mode) noexcept {
     if (index < grind_settings.size()) forced_settings[index].mode.store(mode, std::memory_order_relaxed);
 }
@@ -774,34 +677,6 @@ void force_foot_setting(std::size_t index, int mode) noexcept {
 }
 std::uint32_t foot_setting_asked(std::size_t index) noexcept {
     return index < foot_settings.size() ? forced_settings[foot_first + index].asked.exchange(0, std::memory_order_relaxed) : 0;
-}
-TransitionState read_transition_state(std::uintptr_t base, std::uintptr_t entity) noexcept {
-    TransitionState state;
-    const auto block = states_block(base, entity);
-    if (!block) return state;
-    bool *const flags[]{&state.lip_found, &state.lip_tricking, &state.handplanting, &state.targeting_vert};
-    std::array<float, 3> *const vectors[]{&state.lip_direction, &state.lip_nearest, &state.ground_normal};
-    for (std::size_t i = 0; i < std::size(transition_objects); ++i) {
-        const auto at = value_address(transition_objects[i], block);
-        if (!at) continue;
-        if (i < 4) {
-            std::uint8_t value{};
-            if (!peek(at, value)) continue;
-            *flags[i] = value != 0;
-        } else if (i == 4) {
-            float value{};
-            if (!peek(at, value) || !std::isfinite(value)) continue;
-            state.transition_input = value;
-        } else if (i == 5) {
-            if (!peek(at, state.drop_in_type)) continue;
-        } else {
-            std::array<float, 3> value{};
-            if (!peek(at, value) || !std::isfinite(value[0]) || !std::isfinite(value[1]) || !std::isfinite(value[2])) continue;
-            *vectors[i - 6] = value;
-        }
-        state.found |= 1u << i;
-    }
-    return state;
 }
 std::optional<bool> forced_gameplay_bool(const void *reference) noexcept {
     std::uintptr_t asset{};
@@ -853,13 +728,6 @@ void hold_grind_switches(std::uintptr_t base, std::uintptr_t entity, const std::
     }
 }
 bool write_state_number(std::uintptr_t at, float value) noexcept { return at && std::isfinite(value) && put(at, value); }
-std::array<std::uintptr_t, 6> state_pages(std::uintptr_t base, std::uintptr_t entity) noexcept {
-    std::array<std::uintptr_t, 6> pages{};
-    if (const auto block = states_block(base, entity))
-        for (std::size_t k = 0; k < pages.size(); ++k)
-            if (!peek(block + block_pages + k * 8, pages[k]) || !pointer(pages[k])) pages[k] = 0;
-    return pages;
-}
 bool write_flip_speed(const FlipState &state, float speed) noexcept {
     if (!state || !std::isfinite(speed)) return false;
     if (state.clamped_at) (void)put(state.clamped_at, speed);

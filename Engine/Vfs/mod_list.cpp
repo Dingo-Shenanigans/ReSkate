@@ -611,17 +611,6 @@ ModList scan_mods(const std::filesystem::path& data_root) noexcept {
     return result;
 }
 
-bool mod_disabled(const std::filesystem::path& mods_root, std::string_view name) noexcept {
-    try {
-        std::error_code error;
-        const auto path = mods_root / order_file;
-        if (!fs::is_regular_file(path, error)) return false;
-        for (const auto& [listed, enabled] : read_order(path))
-            if (lower(listed) == lower(name)) return !enabled;
-    } catch (...) {}
-    return false;
-}
-
 bool set_mod_enabled(const std::filesystem::path& mods_root, std::string_view name, bool enabled) noexcept {
     try {
         if (!valid_mod_name(name)) return false;

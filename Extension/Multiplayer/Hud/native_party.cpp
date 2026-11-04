@@ -512,15 +512,6 @@ std::string native_party_status() {
     auto &s = state(); std::lock_guard lock(s.status_mutex);
     return s.status + " Map party markers: " + std::to_string(s.map_count.load()) + ".";
 }
-std::uint64_t native_party_player_info_by_id(std::uintptr_t manager, std::uint64_t id) noexcept {
-    try {
-        const auto published=state().published.load(std::memory_order_acquire);
-        if(!published || published->manager!=manager)return 0;
-        const auto record=published->record(id);
-        if(record && game::native_data().models.value(manager,record->handle,0,0))return record->handle;
-    } catch(...) {}
-    return 0;
-}
 void set_native_party_map_markers(bool enabled) noexcept { state().map_markers.store(enabled, std::memory_order_release); }
 bool native_party_map_markers() noexcept { return state().map_markers.load(std::memory_order_acquire); }
 void set_native_party_flag_marker_test(bool enabled) noexcept { state().flag_markers_test.store(enabled, std::memory_order_release); }

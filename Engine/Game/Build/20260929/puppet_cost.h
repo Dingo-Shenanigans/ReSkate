@@ -53,7 +53,6 @@ inline constexpr std::uintptr_t ant_driven_vtable = 0x63aaee8;
 inline constexpr std::uintptr_t ant_driven_hooks_vtable = 0x63aae90;
 inline constexpr std::uintptr_t ant_driven_item = 0x50;
 inline constexpr std::uintptr_t ant_driven_manager = 0x58;
-inline constexpr std::uintptr_t ant_driven_animatable = 0x68;
 inline constexpr std::uintptr_t manager_hooks = 0x40;
 inline constexpr std::uintptr_t manager_hooks_storage = 0x98;
 inline constexpr std::uintptr_t manager_kind = 0x90;

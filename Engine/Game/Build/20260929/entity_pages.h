@@ -25,10 +25,6 @@ inline constexpr std::size_t render_instance_page_bytes = (std::size_t{1} << ren
 // (Left at eight times the game's: its pages are its own, by its own shift.)
 static_assert((512u << render_instance_page_shift) >= capacity);
 static_assert(render_instance_page_bytes == 0xe8000);
-// The cull-ID list and this separate monotonic bounds arena must both fit the
-// city. Retail config can override GridSize after Game.cfg has been processed.
-// Preserve native allocation/reset ownership and any larger configured value.
-inline constexpr std::size_t spatial_arena_min_bytes = 128 * 1024 * 1024;
 static_assert(capacity == 262'144 && page_bytes == 16'384);
 
 enum class Kind {

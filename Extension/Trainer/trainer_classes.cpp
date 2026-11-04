@@ -739,11 +739,6 @@ std::size_t flip_gates() noexcept {
     std::lock_guard lock(f.mutex);
     return f.gates.size();
 }
-std::size_t flip_curves() noexcept {
-    auto &f = found();
-    std::lock_guard lock(f.mutex);
-    return f.flip.size();
-}
 std::size_t class_field_copies(std::size_t field, FieldCopy *out, std::size_t capacity) noexcept {
     auto &f = found();
     std::lock_guard lock(f.mutex);

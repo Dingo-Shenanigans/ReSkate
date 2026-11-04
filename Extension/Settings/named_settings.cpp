@@ -29,12 +29,6 @@ namespace contract = addr::named_settings;
 using Scalar = std::variant<bool, std::int32_t, std::uint32_t, float, std::string>;
 using Getter = std::uintptr_t (*)(std::uintptr_t, const char *, std::uintptr_t *, bool);
 using Setter = bool (*)(std::uintptr_t, const char *, std::uintptr_t, const void *);
-#ifndef DINGOSDK_NAMED_GET
-#define DINGOSDK_NAMED_GET(base) reinterpret_cast<Getter>((base) + contract::named_settings_get)
-#endif
-#ifndef DINGOSDK_NAMED_SET
-#define DINGOSDK_NAMED_SET(base) reinterpret_cast<Setter>((base) + contract::named_settings_set)
-#endif
 struct Observation {
     std::uintptr_t manager{}, address{}, type{};
     Scalar value{};
@@ -96,7 +90,7 @@ bool in_image(std::uintptr_t at, std::size_t size) {
 }
 bool native_get(std::uintptr_t manager, const char *name, std::uintptr_t &address, std::uintptr_t &type) {
     __try {
-        address = DINGOSDK_NAMED_GET(runtime().base)(manager, name, &type, false);
+        address = reinterpret_cast<Getter>(runtime().base + contract::named_settings_get)(manager, name, &type, false);
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
@@ -106,7 +100,7 @@ bool native_set(const Observation &before, const char *name, const void *value, 
     __try {
         // Null override type: the engine must copy using its freshly resolved
         // field type. Never allow console input to supply an address/type.
-        accepted = DINGOSDK_NAMED_SET(runtime().base)(before.manager, name, 0, value);
+        accepted = reinterpret_cast<Setter>(runtime().base + contract::named_settings_set)(before.manager, name, 0, value);
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;

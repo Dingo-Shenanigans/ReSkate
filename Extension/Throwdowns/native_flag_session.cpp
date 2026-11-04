@@ -200,19 +200,6 @@ void set_setup_limits(unsigned seconds, unsigned players) noexcept {
     auto& p = placement(); std::lock_guard lock(p.mutex);
     if (p.step == Step::setup && seconds >= 1 && seconds <= 3600 && players >= 1 && players <= 10) { p.seconds = seconds; p.players = players; }
 }
-void retire_unconfirmed_setup() noexcept {
-    {
-        auto& p = placement(); std::lock_guard lock(p.mutex);
-        // Called by a verified fresh picker callback, after returning to Throwdowns. A
-        // cancelled setup with no registered flag cannot keep an unacknowledged Exit alive and
-        // close or block the next page.
-        if ((p.step != Step::open && p.step != Step::setup && p.step != Step::cleanup) ||
-            !p.native_entry || p.flag_seen || p.mmid || p.handed_off) return;
-        if (p.created) release_native_flag_placeholder();
-        retire(p); p.pending.reset(); p.status.clear();
-    }
-    flush();
-}
 bool start() noexcept {
     std::string mode; std::uint32_t game{};
     {

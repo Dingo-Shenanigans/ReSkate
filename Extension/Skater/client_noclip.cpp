@@ -483,23 +483,19 @@ constexpr float pump_rate = 0.03f;    // m/s each physics step
 constexpr float pump_step = 3.0f;     // m/s the trainer may add or take in one physics step
 struct PumpPower {
     std::atomic<float> factor{1};
-    std::atomic<bool> pumping{}, measure{};
+    std::atomic<bool> pumping{};
     std::uintptr_t client{}, entity{};
     std::atomic<ULONGLONG> expires{};
-    std::atomic<std::uint32_t> pumps{};
-    std::atomic<float> gained{}, given{}, speed{};
-    std::atomic<std::uint32_t> steps{};
     // Physics thread only.
-    std::uint32_t count{};
-    bool primed{}, running{};
-    float energy{}, sum{}, credit{};
+    bool primed{};
+    float energy{};
 };
 PumpPower& pump_power() { static auto* value = new PumpPower; return *value; }
 void trainer_pump_power(std::uintptr_t core) noexcept {
     auto& p = pump_power();
     const float factor = p.factor.load(std::memory_order_relaxed);
-    const auto stop = [&] { p.primed = p.running = false; };
-    if ((factor == 1 && !p.measure.load(std::memory_order_relaxed)) || GetTickCount64() >= p.expires.load(std::memory_order_acquire)) return stop();
+    const auto stop = [&] { p.primed = false; };
+    if (factor == 1 || GetTickCount64() >= p.expires.load(std::memory_order_acquire)) return stop();
     const auto watch = watched_physics_state();
     if (!watch.valid || (watch.state != 100 && watch.state != 103)) return stop(); // riding, standing or crouched
     SourceLastError error;
@@ -525,24 +521,14 @@ void trainer_pump_power(std::uintptr_t core) noexcept {
         const float energy = 0.5f * squared + pump_gravity * height;
         if (!p.primed || !p.pumping.load(std::memory_order_relaxed)) { // coasting: only keep up
             p.primed = true;
-            p.running = false;
             p.energy = energy;
             return;
-        }
-        if (!p.running) {
-            p.running = true;
-            p.sum = p.credit = 0;
-            p.count = 0;
-            p.pumps.fetch_add(1, std::memory_order_relaxed);
         }
         const float step = energy - p.energy;
         p.energy = energy;
         if (std::abs(step) > speed * 2.0f + 2.0f) return; // a teleport or a hit, not a pump
-        p.sum += step;
-        float change = 0;
-        if (factor != 1) change = std::clamp((factor - 1) * pump_rate, -pump_step, pump_step);
+        float change = std::clamp((factor - 1) * pump_rate, -pump_step, pump_step);
         if (speed + change < 1.0f || speed + change > 300.0f) change = 0;
-        ++p.count;
         if (std::abs(change) >= 0.002f) {
             const float scale = (speed + change) / speed;
             // Like the native velocity writers: XYZ at +70 and the dirty bit 8 at +60.
@@ -551,14 +537,8 @@ void trainer_pump_power(std::uintptr_t core) noexcept {
                 body_write(bodies.parts[i] + 0x70, velocities[i]);
                 body_write(bodies.parts[i] + 0x60, flags[i] | 8u);
             }
-            const float given = 0.5f * ((speed + change) * (speed + change) - squared);
-            p.credit += given;
-            p.energy += given; // the trainer's own share is not the game's gain
+            p.energy += 0.5f * ((speed + change) * (speed + change) - squared); // the trainer's own share is not the game's gain
         }
-        p.gained.store(p.sum, std::memory_order_relaxed);
-        p.given.store(p.credit, std::memory_order_relaxed);
-        p.speed.store(speed, std::memory_order_relaxed);
-        p.steps.store(p.count, std::memory_order_relaxed);
     } catch (...) {}
 }
 // ---- gravity -----------------------------------------------------------------------------------
@@ -1286,19 +1266,13 @@ void note_flight_record(std::uintptr_t trajectory) noexcept {
         if (slot.load(std::memory_order_relaxed) == trajectory) return;
     g.records[g.noted.fetch_add(1, std::memory_order_relaxed) % g.records.size()].store(trajectory, std::memory_order_relaxed);
 }
-void set_pump_power(std::uintptr_t client, std::uintptr_t entity, float factor, bool pumping, bool measure) noexcept {
+void set_pump_power(std::uintptr_t client, std::uintptr_t entity, float factor, bool pumping) noexcept {
     auto& p = pump_power();
     p.client = client;
     p.entity = entity;
     p.factor.store(factor >= 0 && factor <= 1.0e6f ? factor : 1.0f, std::memory_order_relaxed);
     p.pumping.store(pumping, std::memory_order_relaxed);
-    p.measure.store(measure, std::memory_order_relaxed);
     p.expires.store(GetTickCount64() + 500, std::memory_order_release);
-}
-PumpPowerReport pump_power_report() noexcept {
-    auto& p = pump_power();
-    return {p.pumps.load(std::memory_order_relaxed), p.gained.load(std::memory_order_relaxed), p.given.load(std::memory_order_relaxed),
-            p.speed.load(std::memory_order_relaxed), p.steps.load(std::memory_order_relaxed)};
 }
 void set_revert_boost(std::uintptr_t client, std::uintptr_t entity, float strength, const RevertTuning &tuning) noexcept {
     auto& r = revert_boost();

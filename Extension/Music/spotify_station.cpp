@@ -153,12 +153,6 @@ void set_stations(std::vector<Station> next, std::uintptr_t table) {
     metadata_table = table;
     station_count.store(stations.size(), std::memory_order_release);
 }
-std::vector<std::string> playlist_ids() {
-    std::lock_guard lock(mutex);
-    std::vector<std::string> ids;
-    for (const auto& station : stations) ids.push_back(station.id);
-    return ids;
-}
 bool has_stations() noexcept { return station_count.load(std::memory_order_acquire) != 0; }
 int station_of(const unsigned char* members, std::uint32_t count, unsigned char* carrier, bool& add) noexcept {
     std::lock_guard lock(mutex);

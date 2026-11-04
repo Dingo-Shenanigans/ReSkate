@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <filesystem>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -148,13 +149,6 @@ void prepare_trick_gestures() noexcept {
             }).detach();
         });
     } catch (...) {}
-}
-
-std::size_t load_trick_gestures(const std::filesystem::path &game_root) {
-    auto read = std::make_shared<const Gestures>(read_gestures(game_root));
-    const auto count = read->size();
-    loader().gestures.store(std::move(read));
-    return count;
 }
 
 StickPath trick_gesture(std::string_view trick) {

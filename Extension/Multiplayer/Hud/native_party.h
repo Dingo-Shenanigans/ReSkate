@@ -42,8 +42,6 @@ void spectate_party_member(std::uint64_t id) noexcept;
 bool party_spectating() noexcept;
 // Returns only a record owned by this adapter, validated against this manager.
 std::uint64_t native_party_player_info(std::uintptr_t manager, std::size_t slot) noexcept;
-// Lookup by session identity for native activity leaderboard rows.
-std::uint64_t native_party_player_info_by_id(std::uintptr_t manager, std::uint64_t id) noexcept;
 std::string native_party_status();
 // Whether players can form parties: in a session, a lobby or a dedicated server. Outside one
 // the game's party buttons are refused.
