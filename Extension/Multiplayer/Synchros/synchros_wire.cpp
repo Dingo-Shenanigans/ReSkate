@@ -66,6 +66,8 @@ void write_file(Writer& w, const File& f) {
     w.raw(f.chunk_guid);
     w.u32(f.logical_offset);
     w.u32(f.logical_size);
+    w.raw(f.sha1);
+    w.bytes(f.chunk_record);
 }
 File read_file(Reader& r) {
     File f;
@@ -84,6 +86,9 @@ File read_file(Reader& r) {
     r.raw(f.chunk_guid);
     f.logical_offset = r.u32();
     f.logical_size = r.u32();
+    r.raw(f.sha1);
+    f.chunk_record = r.bytes(max_chunk_record);
+    if (f.kind != FileKind::chunk && !f.chunk_record.empty()) r.ok = false;
     if (!f.size || f.size > max_file) r.ok = false;
     // What a kind needs: assets their names, bundled ones their bundle.
     if ((f.kind == FileKind::ebx || f.kind == FileKind::resource) && f.name.empty()) r.ok = false;

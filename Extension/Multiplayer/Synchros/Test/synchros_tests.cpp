@@ -183,6 +183,8 @@ File sample_file(std::uint8_t seed, FileKind kind = FileKind::ebx) {
     f.chunk_guid.fill(static_cast<std::uint8_t>(seed + 1));
     f.logical_offset = 4;
     f.logical_size = 8;
+    f.sha1.fill(static_cast<std::uint8_t>(seed + 2));
+    if (kind == FileKind::chunk) f.chunk_record = {0x82, 0x01, 0x00};
     return f;
 }
 
@@ -249,6 +251,11 @@ void malformed_messages_are_refused() {
     // A bundled asset without its bundle.
     auto loose = sample_file(1); loose.bundle.clear();
     check(!decode(encode(Message{Contents{{ItemContents{"items/x", Withheld::none, {loose}, {}}}}})), "an asset with no bundle");
+    // Only a chunk has a chunk-metadata record.
+    auto recorded = sample_file(1); recorded.chunk_record = {1, 2};
+    check(!decode(encode(Message{Contents{{ItemContents{"items/x", Withheld::none, {recorded}, {}}}}})), "a record on an ebx");
+    auto long_record = sample_file(1, FileKind::chunk); long_record.chunk_record.assign(max_chunk_record + 1, 1);
+    check(!decode(encode(Message{Contents{{ItemContents{"items/x", Withheld::none, {long_record}, {}}}}})), "a record over max_chunk_record");
     // A whole outfit over max_outfit.
     Contents huge;
     ItemContents item{"items/x", Withheld::none, {}, {}};

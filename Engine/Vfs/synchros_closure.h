@@ -40,6 +40,9 @@ struct Piece {
     std::string bundle;               // the bundle it is in; empty for a toc chunk
     std::string superbundle;          // "win32/items", "win32/globals"
     frostbite::BundleAsset asset;     // what the manifest says of it (resource type, meta, chunk range)
+    // A chunk's record in its bundle's chunk metadata, as a list of that one record (the record at
+    // the place the bundle lists the chunk, as Studio writes a mod's copy); empty when there is none.
+    std::vector<std::byte> chunk_record;
 };
 
 // A preset the item uses, as a mod's bundle-reference table lists it (bundle_ref_table.h).

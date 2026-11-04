@@ -28,6 +28,7 @@ inline constexpr std::size_t max_items = 64;              // worn items asked fo
 inline constexpr std::size_t max_files_per_item = 4096;
 inline constexpr std::size_t max_name = 255;
 inline constexpr std::size_t max_resource_meta = 64;
+inline constexpr std::size_t max_chunk_record = 1024;      // one chunk's chunk-metadata record
 inline constexpr std::size_t max_fetch = 8192;            // files asked for at once
 inline constexpr std::size_t max_piece = 16 * 1024;       // bytes of a file per Piece
 inline constexpr std::uint32_t max_file = 32u << 20;      // one file
@@ -69,6 +70,10 @@ struct File {
     std::vector<std::uint8_t> resource_meta;
     std::array<std::uint8_t, 16> chunk_guid{};
     std::uint32_t logical_offset{}, logical_size{};
+    std::array<std::uint8_t, 20> sha1{};   // as the bundle's manifest lists it
+    // A chunk's record from its bundle's chunk metadata (a texture's first mip, whose resource it
+    // is), as a list of that one record; empty when its bundle has none.
+    std::vector<std::uint8_t> chunk_record;
     bool operator==(const File&) const = default;
 };
 // Why an item is not sent.

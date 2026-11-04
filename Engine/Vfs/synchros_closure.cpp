@@ -3,6 +3,7 @@
 #include "Engine/Resource/cas_codec.h"
 #include "Engine/Resource/ebx_document.h"
 #include "Engine/Resource/toc.h"
+#include "Engine/Vfs/native_db.h"
 
 #include <algorithm>
 #include <cstring>
@@ -63,6 +64,24 @@ void walk(const ebx::Value& value, const ebx::Document& doc, std::vector<std::ui
         }
     }, value.data);
 }
+// The record at `index` of a chunk-metadata list, as a list of its own; empty when there is none.
+std::vector<std::byte> one_record(const std::vector<std::byte>& list, std::size_t index) {
+    if (list.empty()) return {};
+    try {
+        const std::span<const unsigned char> bytes(reinterpret_cast<const unsigned char*>(list.data()), list.size());
+        auto root = native_db::read(bytes, "chunk metadata", nullptr, {.unique_fields = false, .max_entries = bytes.size()});
+        if (index >= root.children.size()) return {};
+        auto row = std::move(root.children[index]);
+        root.children.clear();
+        root.children.push_back(std::move(row));
+        const auto written = native_db::write(root);
+        const auto* first = reinterpret_cast<const std::byte*>(written.data());
+        return {first, first + written.size()};
+    } catch (const std::exception&) {
+        return {};
+    }
+}
+
 } // namespace
 
 struct Index::State {
@@ -251,6 +270,7 @@ struct Index::State {
                         n.piece.bundle = bundle_name;
                         n.piece.superbundle = superbundle;
                         n.piece.asset = asset;
+                        if (kind == Piece::chunk) n.piece.chunk_record = one_record(manifest.chunkMetadata, at - first - manifest.ebx.size() - manifest.resources.size());
                         const auto index = nodes.size();
                         if (kind == Piece::chunk) {
                             n.guid = guid_key(asset.guid);
