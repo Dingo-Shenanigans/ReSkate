@@ -523,6 +523,9 @@ std::uint64_t native_party_player_info_by_id(std::uintptr_t manager, std::uint64
 }
 void set_native_party_map_markers(bool enabled) noexcept { state().map_markers.store(enabled, std::memory_order_release); }
 bool native_party_map_markers() noexcept { return state().map_markers.load(std::memory_order_acquire); }
+void set_native_party_flag_marker_test(bool enabled) noexcept { state().flag_markers_test.store(enabled, std::memory_order_release); }
+bool native_party_flag_marker_test() noexcept { return state().flag_markers_test.load(std::memory_order_acquire); }
+unsigned native_party_flag_markers() noexcept { return static_cast<unsigned>(state().flag_markers.size()); }
 bool native_party_map_icon_visible(std::size_t slot) noexcept {
     return slot < max_remote_players && ((state().map_slots[slot / 64].load() >> (slot % 64)) & 1) != 0;
 }

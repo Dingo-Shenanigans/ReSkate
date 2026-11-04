@@ -6,6 +6,7 @@
 #include "Extension/Throwdowns/throwdown_relay.h"
 #include "Extension/Throwdowns/throwdown_kit.h"
 #include "Engine/Core/Platform/memory.h"
+#include "Extension/UI/NativeMenu/native_menu_data.h"
 #include "follow_camera.h"
 #include "Extension/Customization/local_player_card_runtime.h"
 #include "Extension/Objects/network_object_runtime.h"
@@ -22,6 +23,7 @@
 #include <cstring>
 #include <optional>
 #include <thread>
+#include <type_traits>
 
 namespace dingosdk::multiplayer {
 using namespace native_party_detail;
@@ -426,6 +428,311 @@ void update_map_markers() {
     }
     s.map_count = active;
     for (std::size_t i = 0; i < slots.size(); ++i) s.map_slots[i].store(slots[i]);
+}
+// Other players' QuickDrop fast travel flags (Extension/Objects/network_object_runtime.h). Their flag
+// objects are made here like any placed object, but the flag's map component registers a map point
+// only for the local player's own flags, so each one gets a PersonalFastTravel POI (kind 16) of
+// ReSkate's own, read off the game's own in a running game on 2026-11-03:
+// - widget: MapObjectViewModel (0xf88f43c6, 240 bytes) on DecoratedIcon_Widget, its view model at
+//   +16 a DecoratedIcon model (0xf12b24a5, 208 bytes: the icon texture img_Icon_Shape_FastTravel_256
+//   at +0, references to a frame model (0x19770b6a, 208) at +24 and a tint model (0x26d4c4e0, 288)
+//   at +40). A flag's frame is img_Frame_Shape_Location_256 filled with Fillstyle_PremiumGradient
+//   (the gold) and its tints are plain white; a bus stop (kind 5) has the same widget, icon and
+//   texture with its own frame and the location colours.
+// - details: PersonalFastTravel data (0x7b558c03, 80 bytes): a 3x4 rotation, the flag's place at
+//   +48, the flag's id at +64 and a 1 at +72 on the player's own. With those two the card's Remove
+//   deleted the player's own flag; without them it does nothing.
+// - card: OnFocus 0xbd83711c (ui/features/map/OnPersonalFastTravelPointFocus: Set Waypoint, Fast
+//   Travel to the point, Remove), OnUnFocus HideMapCursorPanel.
+// With a flag of the player's own on the map, a remote flag's models are copies of its; without
+// one, they are made from a bus stop's, with the flag's frame and tints, and the card command is
+// found on the heap (as the party card's is). Titled with the owner's name; Entity stays empty.
+constexpr std::string_view fast_travel_flag_item = "own_bkinteractive_generic_fasttravelflag_00001";
+constexpr std::uint32_t personal_fast_travel = 16, bus_stop = 5;
+constexpr std::uint32_t flag_card_focus = 0xbd83711c; // ui/features/map/OnPersonalFastTravelPointFocus
+constexpr std::uint32_t bus_card_focus = 0xac5c80a0;  // a bus stop's OnFocus
+// The model of a type of `hash` and `size`: whether `type` is it.
+bool model_schema(Address type, std::uint32_t hash, std::uint16_t size) {
+    return type && read<std::uint32_t>(read<Address>(type)) == hash && read<std::uint16_t>(read<Address>(type) + 6) == size;
+}
+template <std::size_t N> std::array<std::byte, N> model_bytes(Address manager, Handle handle) {
+    std::array<std::byte, N> bytes{};
+    const auto at = game::native_data().models.value(manager, handle, 0, 0);
+    require(at && memory::read_bytes(at, bytes.data(), bytes.size()), "Native map flag model unavailable.");
+    return bytes;
+}
+template <std::size_t N, class T> void put_at(std::array<std::byte, N> &bytes, std::size_t offset, T value) {
+    static_assert(std::is_trivially_copyable_v<T>);
+    require(offset + sizeof(value) <= N, "Native map flag model bounds differ.");
+    std::memcpy(bytes.data() + offset, &value, sizeof(value));
+}
+void update_flag_markers() {
+    auto &s = state(); auto &n = game::native_data().models;
+    const auto now = GetTickCount64();
+    if (now < s.next_flag_update) return;
+    s.next_flag_update = now + 250;
+    using Key = std::tuple<std::uint64_t, std::uint64_t, std::uint64_t>;
+    const auto map = read<Address>(s.base + party::map_manager);
+    if (!map || read<Address>(map) != s.base + party::map_manager_vtable) { s.flag_markers.clear(); s.flag_map = 0; return; }
+    const auto manager = read<Address>(map + 0x18);
+    if (!manager || !n.value || !n.create || !n.publish) return;
+    // A new map screen holds none of the old registrations: never unregister through it.
+    if (map != s.flag_map || manager != s.flag_models) { s.flag_map = map; s.flag_models = manager; s.flag_markers.clear(); }
+    // Where each flag is and who placed it, read before the model lock.
+    std::map<Key, std::array<float, 3>> wanted;
+    for (const auto &flag : remote_network_objects_of(fast_travel_flag_item)) wanted[{flag.owner, flag.epoch, flag.id}] = flag.position;
+    const bool test = s.flag_markers_test.load(std::memory_order_acquire);
+    const auto published = s.published.load(std::memory_order_acquire);
+    game::ModelWriteLock lock(manager);
+    auto remove = [&](FlagMarker &marker) {
+        if (marker.registered && n.value(manager, marker.poi, 0, 0))
+            reinterpret_cast<void (*)(Address, Handle)>(s.base + party::map_unregister)(map, marker.poi);
+        marker = {};
+    };
+    // A flag of the local player's own (and, testing, where to put the copies), or else a bus stop.
+    std::set<Handle> ours;
+    for (const auto &[key, marker] : s.flag_markers) ours.insert(marker.poi);
+    const auto table = read<Address>(map + 0x48);
+    const auto buckets = read<std::uint32_t>(map + 0x50), count = read<std::uint32_t>(map + 0x54);
+    require(table && buckets <= 65536 && count <= 20000, "Native map POI registry exceeds bound.");
+    Handle donor{}, stop{};
+    // HideMapCursorPanel, which a card's POI needs as its OnUnFocus: a bus stop's may be another
+    // command, so it is taken from any POI that has it, as party markers do.
+    Address hide_cursor{};
+    std::uint64_t test_id{};
+    std::optional<std::array<float, 3>> me; // the player's own marker (kind 1), for a test flag when they have none
+    unsigned visited{};
+    for (unsigned i = 0; i < buckets; ++i)
+        for (auto node = read<Address>(table + i * 8); node && visited++ < count; node = read<Address>(node + 8)) {
+            const auto handle = read<Handle>(node);
+            if (ours.contains(handle) || model_type(manager, handle) != s.base + party::map_poi_type) continue;
+            const auto value = n.value(manager, handle, 0, 0);
+            const auto kind = value ? read<std::uint32_t>(value + 404) : 0u;
+            if (!hide_cursor && (kind == bus_stop || kind == 13 || kind == personal_fast_travel) &&
+                function_delegate(read<Address>(value + 264), hide_map_cursor_panel))
+                hide_cursor = read<Address>(value + 264);
+            if (kind == personal_fast_travel) {
+                if (!donor) donor = handle;
+                if (test) wanted[{0, 0, ++test_id}] = {read<float>(value + 48) + 6, read<float>(value + 52), read<float>(value + 56)};
+            } else if (kind == 1 && !me) {
+                me = std::array<float, 3>{read<float>(value + 48) + 6, read<float>(value + 52), read<float>(value + 56)};
+            } else if (kind == bus_stop && !stop) {
+                // Only one on the flag's widget, with its icon model.
+                const auto view = read<Handle>(value + 344);
+                const auto view_value = view && model_schema(model_type(manager, view), 0xf88f43c6, 240) ? n.value(manager, view, 0, 0) : 0;
+                if (view_value && model_schema(model_type(manager, read<Handle>(view_value + 16)), 0xf12b24a5, 208)) stop = handle;
+            }
+        }
+    // Testing without a flag of the player's own: one 6 m from them, made from a bus stop.
+    if (test && !test_id && me) wanted[{0, 0, 1}] = *me;
+    for (auto it = s.flag_markers.begin(); it != s.flag_markers.end();) {
+        if (wanted.contains(it->first) && it->second.poi && n.value(manager, it->second.poi, 0, 0)) { ++it; continue; }
+        remove(it->second);
+        it = s.flag_markers.erase(it);
+    }
+    if (wanted.empty()) return;
+    const auto source = donor ? donor : stop;
+    if (!source) {
+        if (!std::exchange(s.flag_donor_logged, true))
+            logging::log(logging::Level::info, logging::Channel::ui,
+                "Map: {} fast travel flag(s) of other players are not shown yet: the map has no flag or bus stop to make them from.", wanted.size());
+        return;
+    }
+    s.flag_donor_logged = false;
+    const auto source_value = n.value(manager, source, 0, 0);
+    const auto view_source = read<Handle>(source_value + 344);
+    const auto view_type = model_type(manager, view_source);
+    require(model_schema(view_type, 0xf88f43c6, 240), "Native map flag widget schema differs.");
+    const auto icon_source = read<Handle>(n.value(manager, view_source, 0, 0) + 16);
+    const auto icon_type = model_type(manager, icon_source);
+    require(model_schema(icon_type, 0xf12b24a5, 208), "Native map flag icon schema differs.");
+    // The card: a flag of the player's own lends its command, which is kept for when there is none.
+    auto on_unfocus = read<Address>(source_value + 264);
+    if (!function_delegate(on_unfocus, hide_map_cursor_panel)) on_unfocus = hide_cursor;
+    const bool unfocus = function_delegate(on_unfocus, hide_map_cursor_panel);
+    if (donor) {
+        const auto focus = read<Address>(source_value + 272);
+        if (function_delegate(focus, flag_card_focus)) s.flag_card = focus;
+    }
+    auto on_focus = s.flag_card;
+    if (on_focus && !function_delegate(on_focus, flag_card_focus)) { // an unloaded level's
+        s.flag_card = 0;
+        on_focus = 0;
+    }
+    const bool card = on_focus && unfocus;
+    // Before the player has placed a flag this session the flag card is not loaded: a bus stop's card
+    // then, with a copy of its data at the flag's place (see below). Tested 2026-11-03: its Fast Travel
+    // goes to the place in that data, so to the flag.
+    const auto stop_focus = !donor ? read<Address>(source_value + 272) : 0;
+    const auto stop_data = !donor ? read<std::uint64_t>(source_value + 352) : 0;
+    const auto stop_data_type = stop_data ? model_type(manager, stop_data) : 0;
+    const bool bus_card = !card && unfocus && function_delegate(stop_focus, bus_card_focus) &&
+                          model_schema(stop_data_type, 0xb92656e0, 80);
+    for (const auto &[key, at] : wanted) {
+        auto &marker = s.flag_markers[key];
+        const auto owner = std::get<0>(key);
+        if (marker.poi && card && !marker.card) remove(marker); // rebuilt with the card once its command is known
+        if (!marker.poi) {
+            struct BuildGuard { FlagMarker &marker; bool done{}; ~BuildGuard() { if (!done) marker = {}; } } guard{marker};
+            // What was being made when something failed, for the log.
+            const char *step = "its models";
+            try {
+            const auto ns = game::native_name_hash("ReSkate.FlagMap") ^ static_cast<std::uint32_t>(owner) ^
+                            static_cast<std::uint32_t>(owner >> 32) ^ static_cast<std::uint32_t>(std::get<1>(key));
+            auto create = [&](Address type) {
+                const auto h = n.create(manager, type, std::get<2>(key), ns, false, 2);
+                require(h, "Cannot create native flag map model."); return h;
+            };
+            const auto icon_value = n.value(manager, icon_source, 0, 0);
+            const auto frame_source = read<Handle>(icon_value + 32), tint_source = read<Handle>(icon_value + 48);
+            const auto frame_type = model_type(manager, frame_source), tint_type = model_type(manager, tint_source);
+            require(model_schema(frame_type, 0x19770b6a, 208) && model_schema(tint_type, 0x26d4c4e0, 288), "Native map flag icon parts differ.");
+            // The details' type is registered only while a flag's data is loaded: without any, the POI goes
+            // without details. Neither it nor the card's command is loaded before the player has placed a flag in
+            // this session; afterwards both stay (tested 2026-11-03: a copy kept its card and Fast Travel once
+            // the player's own flag was removed).
+            auto details_type = donor ? model_type(manager, read<Handle>(source_value + 352)) : registered_model_type(manager, 0x7b558c03);
+            if (!model_schema(details_type, 0x7b558c03, 80)) details_type = 0;
+            // With the bus stop's card, a copy of its data (0xb92656e0, laid out as a flag's: a 3x4
+            // rotation, the place at +48): its Fast Travel goes to the place in it.
+            const bool bus_details = !details_type && bus_card;
+            if (bus_details) details_type = stop_data_type;
+            marker.poi = create(s.base + party::map_poi_type);
+            marker.view = create(view_type);
+            marker.icon = create(icon_type);
+            marker.frame = create(frame_type);
+            marker.tint = create(tint_type);
+            if (details_type) marker.details = create(details_type);
+            // Re-read borrowed sources after creation, which can move model storage.
+            auto frame = model_bytes<208>(manager, frame_source);
+            auto tint = model_bytes<288>(manager, tint_source);
+            auto view = model_bytes<240>(manager, view_source);
+            if (!donor) {
+                // A bus stop's, made a flag's: the flag's frame (its gold fill) and plain white tints.
+                const menu_data::Context context(s.base, manager);
+                const auto anchor = read<Address>(n.value(manager, icon_source, 0, 0));
+                const auto shape = menu_data::named_asset(context, anchor, "UI/Textures/Icons/Locations/FrameShape/img_Frame_Shape_Location_256");
+                const auto gold = menu_data::named_asset(context, anchor, "UI/Features/Rarity/FillStyle/Fillstyle_PremiumGradient");
+                if (shape) {
+                    put_at(frame, 40, std::uint64_t{0});
+                    put_at(frame, 48, shape);
+                    put_at(frame, 72, std::uint64_t{0x200000002});
+                }
+                if (gold) put_at(frame, 80, gold);
+                put_at(frame, 112, std::uint64_t{0x3f80000000000000});
+                const auto empty = read<std::uint64_t>(n.value(manager, tint_source, 0, 0) + 24); // the engine's empty text
+                // Six tints of 48 bytes: white, no colour list, empty names, as the game's own flag has
+                // them (its last 32 bytes were not read, so they stay the bus stop's).
+                for (std::size_t entry = 0; entry < 6; ++entry) {
+                    const auto base = entry * 48;
+                    put_at(tint, base, std::uint64_t{0x3f8000003f800000});
+                    put_at(tint, base + 8, std::uint64_t{0x3f800000});
+                    if (entry == 5) break;
+                    put_at(tint, base + 16, std::uint64_t{0});
+                    put_at(tint, base + 24, empty);
+                    put_at(tint, base + 32, std::uint64_t{0});
+                    put_at(tint, base + 40, entry == 0 ? std::uint64_t{0x130} : entry % 2 ? empty : std::uint64_t{0});
+                }
+                // The view's fields the game's own flag leaves empty.
+                put_at(view, 64, std::uint64_t{0});
+                put_at(view, 72, std::uint64_t{0});
+                put_at(view, 136, std::uint64_t{0});
+                put_at(view, 160, std::uint32_t{0});
+                put_at(view, 168, std::uint64_t{0});
+                put_at(view, 220, std::uint32_t{1});
+                logging::log(logging::Level::info, logging::Channel::ui, "Map flags: made from a bus stop's widget (frame shape {}, gold fill {}).",
+                    shape ? "found" : "missing", gold ? "found" : "missing");
+            }
+            step = "the frame";
+            n.publish(manager, marker.frame, frame_type, frame.data());
+            n.publish(manager, marker.tint, tint_type, tint.data());
+            // The icon: the source's, linked to this marker's own frame and tint. Their {type, handle}
+            // references sit at +24 and +40; the engine's typed copy takes them with the rest.
+            step = "the icon";
+            auto icon = model_bytes<208>(manager, icon_source);
+            put_at(icon, 32, marker.frame);
+            put_at(icon, 48, marker.tint);
+            n.publish(manager, marker.icon, icon_type, icon.data());
+            // Publication also returns false for a value it already has, so what it holds is checked instead.
+            const auto icon_now = n.value(manager, marker.icon, 0, 0);
+            if (!icon_now || read<Handle>(icon_now + 32) != marker.frame || read<Handle>(icon_now + 48) != marker.tint)
+                throw std::runtime_error(std::format("Native map flag icon links were not kept (frame {:#x} tint {:#x}).",
+                    icon_now ? read<Handle>(icon_now + 32) : 0, icon_now ? read<Handle>(icon_now + 48) : 0));
+            step = "the widget";
+            n.publish(manager, marker.view, view_type, view.data());
+            // The widget's view model: this marker's own icon model, by the same reference walk as a party marker's.
+            step = "the widget's view model link";
+            const auto content = field(manager, marker.view, 0, 0x85321504, 0);
+            const auto normal = field(manager, content, 0, 0x716496c8, 0);
+            const auto meta = read<Address>(model_type(manager, normal));
+            require(read<std::uint16_t>(meta + 6) == 24 && read<std::uint16_t>(meta + 0x2a) <= 8, "Native map flag widget reference size differs.");
+            const auto fields = read<Address>(meta + 0x60);
+            Handle context{};
+            for (unsigned i = 0; i < read<std::uint16_t>(meta + 0x2a); ++i) {
+                const auto f = fields + i * 24;
+                if (read<std::uint16_t>(f + 8) == 8 && read<Address>(f + 16) == s.base + engine::reference_type)
+                    context = n.field(manager, normal, i, UINT32_MAX, false);
+            }
+            struct Ref { Address value{}; Handle handle{}; };
+            publish_value(manager, context, s.base + engine::reference_type, Ref{0, marker.icon});
+            // The details: a level 3x4 rotation and the flag's place; no flag id, no "yours".
+            std::array<std::byte, 80> details{};
+            step = "the details";
+            if (bus_details) { // the stop's own fields after the place stay; its rotation is made level
+                details = model_bytes<80>(manager, stop_data);
+                std::memset(details.data(), 0, 48);
+            }
+            put_at(details, 0, 1.f);
+            put_at(details, 20, 1.f);
+            put_at(details, 40, 1.f);
+            put_at(details, 48, at);
+            if (details_type) n.publish(manager, marker.details, details_type, details.data());
+            step = "the map point";
+            alignas(16) std::array<std::byte, 416> poi{};
+            reinterpret_cast<void (*)(void *)>(s.base + party::poi_construct)(poi.data());
+            if (card || bus_card) {
+                const auto focus = card ? on_focus : stop_focus;
+                std::memcpy(poi.data() + 264, &on_unfocus, sizeof on_unfocus);
+                std::memcpy(poi.data() + 272, &focus, sizeof focus);
+            }
+            n.publish(manager, marker.poi, s.base + party::map_poi_type, poi.data());
+            std::memset(poi.data() + 264, 0, 16);
+            reinterpret_cast<void (*)(void *)>(s.base + party::poi_destroy)(poi.data());
+            marker.card = card;
+            publish_value(manager, field(manager, marker.poi, 0, 0xc1d9bffe, 404), s.base + party::map_poi_kind_type, personal_fast_travel);
+            // A unique ElementKey from a private range below the game's (see update_map_markers).
+            static std::uint32_t next_key = 0x5e530000;
+            if (++next_key >= 0x7fffffffU) next_key = 0x5e530001;
+            marker.key = next_key;
+            publish_value(manager, field(manager, marker.poi, 8, 0x0fc37633, 400), s.base + engine::uint32_type, marker.key);
+            if (marker.details) publish_value(manager, field(manager, marker.poi, 5, 0x9df3c20e, 352), s.base + engine::uint64_type, marker.details);
+            publish_value(manager, field(manager, marker.poi, 6, 0x5e7ee0fd, 336), s.base + engine::reference_type, Ref{0, marker.view});
+            publish_value(manager, field(manager, marker.poi, 4, 0x19ff199a, 392), s.base + party::vec2_type, std::array<float, 2>{160, 160});
+            publish_value(manager, field(manager, marker.poi, 11, 0x86c837b9, 412), s.base + engine::bool_type, false);
+            const std::array<float, 16> world{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, at[0], at[1], at[2], 1};
+            publish_value(manager, field(manager, marker.poi, 9, 0x24939145, 0), s.base + party::matrix_type, world);
+            } catch (const std::exception &e) {
+                throw std::runtime_error(std::format("Map flag: making {} failed: {}", step, e.what()));
+            }
+            guard.done = true;
+            logging::log(logging::Level::info, logging::Channel::ui, "Map: a fast travel flag of {} at ({:.1f}, {:.1f}, {:.1f}), from {}{}{}.",
+                owner ? std::to_string(owner) : std::string("the test"), at[0], at[1], at[2], donor ? "a flag of yours" : "a bus stop",
+                card ? "" : bus_card ? " (with a bus stop's card: no flag placed yet)" : " (no card)", marker.details ? "" : ", without details (none loaded)");
+        }
+        // Titled with whoever placed it, as the session names them.
+        std::string title = owner ? "Fast Travel Flag" : "Test flag";
+        if (const auto record = owner && published ? published->record(owner) : nullptr; record && !record->player.name.empty())
+            title = record->player.name;
+        if (marker.title != title) {
+            const NativeText name(title);
+            publish_value(manager, field(manager, marker.poi, 1, 0x44688629, 368), s.base + engine::string_type, name.value);
+            marker.title = title;
+        }
+        if (!marker.registered) {
+            reinterpret_cast<void (*)(Address, Handle)>(s.base + party::map_register)(map, marker.poi);
+            marker.registered = true;
+        }
+    }
 }
 struct VmScope {
     std::uint32_t hash{};
@@ -890,6 +1197,11 @@ void tick_native_party_actions(std::uintptr_t base, std::uintptr_t client, bool 
     auto &s = state();
     if (!s.installed.load(std::memory_order_acquire)) return;
     try { update_map_markers(); } catch (const std::exception &e) { status(e.what()); }
+    try { update_flag_markers(); } catch (const std::exception &e) {
+        // A marker that could not be made is tried again in a while, not every pass: each try makes models.
+        state().next_flag_update = GetTickCount64() + 5000;
+        status(e.what());
+    }
     try { clear_stale_cooldowns(); } catch (const std::exception &e) { status(e.what()); }
     try {
         auto id = s.spectating.load(std::memory_order_acquire);
