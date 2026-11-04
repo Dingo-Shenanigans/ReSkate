@@ -1,5 +1,6 @@
 #include "mod_merge_internal.h"
 #include "mod_conflicts.h"
+#include "mod_store_copies.h"
 #include "Engine/Resource/cas_codec.h"
 #include "Engine/Resource/ebx_document.h"
 #include "Engine/Resource/ebx_fixup_repair.h"
@@ -132,6 +133,10 @@ struct BundleState {
     }
 };
 
+// The items the player left out of each mod (Mod::items_off), by the folder its copies are read
+// from (Contribution::root).
+using ItemsOffBy = std::map<const fs::path*, const std::set<std::string>*>;
+
 // The guids of the EBX a merged bundle ends up holding, to tell whether what a
 // list entry names is in it. Read on first use: the assets mods added, which is
 // where a mod's entry nearly always points, and the game's own thousands only
@@ -139,7 +144,8 @@ struct BundleState {
 class HeldAssets final {
 public:
     using Decode = std::function<std::vector<std::byte>(const Contribution&)>;
-    HeldAssets(const BundleState& state, Decode decode) : state_(state), decode_(std::move(decode)) {}
+    HeldAssets(const BundleState& state, Decode decode, const ItemsOffBy& off)
+        : state_(state), decode_(std::move(decode)), offBy_(off) {}
 
     [[nodiscard]] bool holds(const fb::Guid& guid) {
         if (!added_) { read(false); added_ = true; }
@@ -147,6 +153,13 @@ public:
         if (!shipped_ && !unsure_) { read(true); shipped_ = true; }
         // A copy that could not be read may be the very one asked about.
         return unsure_ || guids_.contains(guid);
+    }
+
+    // Whether the document with this guid is an item a mod added that the player left out of every
+    // mod that adds it. One another mod also adds, and the player kept there, stays.
+    [[nodiscard]] bool left_out(const fb::Guid& guid) {
+        if (!added_) { read(false); added_ = true; }
+        return off_.contains(guid);
     }
 
     // The asset that took the place of the one with this guid, when it was a
@@ -185,18 +198,46 @@ private:
                     if (copy.sha1 == asset.asset.sha1) { kept = &copy; break; }
                     if (copy.base) kept = &copy;
                 }
+            std::vector<std::byte> bytes;
+            fb::Guid guid;
             try {
                 if (!kept) throw std::runtime_error("no copy to read");
-                guids_.insert(fb::ebx::read_file_guid(decode_(*kept)));
+                bytes = decode_(*kept);
+                guid = fb::ebx::read_file_guid(bytes);
+                guids_.insert(guid);
             } catch (const std::exception&) {
                 unsure_ = true;
+                continue;
             }
+            if (!shipped && !offBy_.empty()) leave_out(key, asset, bytes, guid);
         }
+    }
+
+    // An added asset is left out when it is an item, and every mod whose copy of the bundle adds this
+    // very copy of it has the player's choice to leave its key out. The document is only read when
+    // one of them has any choice at all.
+    void leave_out(const std::string& key, const Asset& asset, std::span<const std::byte> bytes, const fb::Guid& guid) {
+        const auto copies = state_.history.find(key);
+        if (copies == state_.history.end()) return;
+        std::vector<const std::set<std::string>*> shippers;
+        for (const auto& copy : copies->second) {
+            if (copy.base || copy.sha1 != asset.asset.sha1) continue;
+            const auto found = offBy_.find(copy.root);
+            shippers.push_back(found == offBy_.end() ? nullptr : found->second);
+        }
+        if (shippers.empty() || std::ranges::any_of(shippers, [](const auto* off) { return !off; })) return;
+        try {
+            const auto item = item_content(fb::ebx::read_document(bytes));
+            if (!item) return;
+            const auto itemKey = ascii_lower(item->key);
+            if (std::ranges::all_of(shippers, [&](const auto* off) { return off->contains(itemKey); })) off_.insert(guid);
+        } catch (const std::exception&) {}   // a document that cannot be read is no item to leave out
     }
 
     const BundleState& state_;
     Decode decode_;
-    std::set<fb::Guid> guids_;
+    const ItemsOffBy& offBy_;
+    std::set<fb::Guid> guids_, off_;
     std::map<fb::Guid, const Asset*> displaced_;
     bool added_{}, shipped_{}, unsure_{}, displacedRead_{};
 };
@@ -401,6 +442,15 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
     std::map<std::string, std::size_t, std::less<>> providers;
     for (const auto& source : sources)
         for (const auto& bundle : source.toc.bundles) ++providers[ascii_lower(bundle.name)];
+    // A mod with items the player left out (Mod::items_off) has its bundles merged even where it
+    // alone ships them, as if shared: its item lists are where those items are taken out.
+    ItemsOffBy itemsOff;
+    std::set<std::string, std::less<>> choosing;
+    for (const auto& source : sources) {
+        if (!source.mod || source.mod->items_off.empty()) continue;
+        itemsOff.emplace(&source.root, &source.mod->items_off);
+        for (const auto& bundle : source.toc.bundles) choosing.insert(ascii_lower(bundle.name));
+    }
 
     // Bundle order follows the base, then anything a mod introduces.
     std::vector<std::string> order;
@@ -449,7 +499,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
         const auto key = ascii_lower(bundle.name);
         auto region = fb::read_bundle_region(bundle.region);
         const auto provider = providers.find(key);
-        const auto shared = provider != providers.end() && provider->second > 1;
+        const auto shared = (provider != providers.end() && provider->second > 1) || choosing.contains(key);
         const auto modName = isBase ? std::string("base") : path_utf8(root.filename());
         // The bundle holding the live material grid is rebuilt to carry the
         // combined one, and a mod whose surfaces moved has its collision
@@ -1139,7 +1189,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                                from.file.location, from.file.offset, from.file.size),
                     {gameRoot});
             };
-            HeldAssets held(state, decode);
+            HeldAssets held(state, decode, itemsOff);
             // Two mods rewriting one EBX asset is the case layering can never
             // answer: whichever copy wins, the other mod's additions are gone.
             // Combining the documents is the only shape that keeps both.
@@ -1309,11 +1359,20 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                         // under its name, or the mod was built on top of a mod that
                         // is not installed) the entry goes: the mod loses that item,
                         // which it had already lost, and the game still starts.
+                        // An item the player left out of the mod that adds it (Mod::items_off)
+                        // goes the same way, and only from what mods added: the game's
+                        // own items stay.
+                        std::set<fb::Guid> chosenOut;
                         const fb::ebx::CarryImport inBundle = [&](const fb::ebx::ImportReference& item) {
                             // What the game's own list names is the game's to answer for.
-                            return std::ranges::any_of(baseDocument.imports, [&](const fb::ebx::ImportReference& known) {
-                                       return known.fileGuid == item.fileGuid; }) ||
-                                   held.holds(item.fileGuid);
+                            if (std::ranges::any_of(baseDocument.imports, [&](const fb::ebx::ImportReference& known) {
+                                    return known.fileGuid == item.fileGuid; }))
+                                return true;
+                            if (held.left_out(item.fileGuid)) {
+                                chosenOut.insert(item.fileGuid);
+                                return false;
+                            }
+                            return held.holds(item.fileGuid);
                         };
                         // Any other list loses an entry only when what it names was in
                         // this bundle and another mod's asset of the same name took its
@@ -1366,8 +1425,12 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                             report.notes.push_back(mod_of(index) + ": " + entry.asset.name +
                                 ": the merged copy has what this mod added to it, but not its changes to what "
                                 "the game's copy already held");
-                        std::map<std::size_t, std::vector<fb::Guid>> left;   // by edit
-                        for (const auto& gone : summary.dropped) left[gone.edit].push_back(gone.target.fileGuid);
+                        std::map<std::size_t, std::vector<fb::Guid>> left, chosen;   // by edit
+                        for (const auto& gone : summary.dropped)
+                            (chosenOut.contains(gone.target.fileGuid) ? chosen : left)[gone.edit].push_back(gone.target.fileGuid);
+                        for (const auto& [index, guids] : chosen)
+                            report.notes.push_back(mod_of(index) + ": " + entry.asset.name + ": " + std::to_string(guids.size()) +
+                                " item(s) left out of the list, as the player chose");
                         for (const auto& [index, guids] : left) {
                             // Name the mod whose asset took the item's name, when that is why.
                             const Asset* taken{};

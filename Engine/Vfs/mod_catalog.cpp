@@ -111,6 +111,17 @@ fs::path variants_file() {
     if (!size || size >= text.size()) return {};
     return fs::path(std::wstring(text.data(), size)) / L"ReSkate" / L"variants.json";
 }
+// The items left out of each pack (items_left_out), beside the variant choices for the same reason.
+fs::path items_off_file() {
+    const auto variants = variants_file();
+    return variants.empty() ? fs::path{} : variants.parent_path() / L"items-off.json";
+}
+// An item's key as a choice keeps it: what the game's item Key holds, which is ASCII, in small letters.
+bool item_key_text(std::string_view key) {
+    return !key.empty() && key.size() <= 256 &&
+           std::all_of(key.begin(), key.end(), [](char c) { return c > ' ' && c < 0x7f && !(c >= 'A' && c <= 'Z'); });
+}
+std::mutex items_off_mutex;
 // A variant's name is its folder's: letters, digits, '_' and '-', in small letters.
 bool variant_name(std::string_view name) {
     return !name.empty() && name.size() <= maximum_mod_name &&
@@ -220,6 +231,74 @@ bool save_variant(std::string_view mod, std::string_view variant) noexcept {
         file << root.dump(2) << '\n';
         if (!file) return false;
         chosen_variants = std::move(choices);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+ItemsOff items_left_out() noexcept {
+    ItemsOff out;
+    try {
+        std::lock_guard lock(items_off_mutex);
+        const auto path = items_off_file();
+        std::error_code error;
+        if (path.empty() || !fs::is_regular_file(path, error)) return out;
+        std::ifstream file(path, std::ios::binary);
+        const std::string text{std::istreambuf_iterator<char>(file), {}};
+        const auto root = Json::parse(text, {8u << 20, 4, 1u << 20});
+        if (!root.is_object()) return out;
+        for (const auto& [mod, keys] : root.items()) {
+            if (!keys.is_array()) continue;
+            std::set<std::string> chosen;
+            for (std::size_t index = 0; index < keys.size(); ++index)
+                if (const auto& key = keys.at(index); key.is_string() && item_key_text(ascii_lower(key.string())))
+                    chosen.insert(ascii_lower(key.string()));
+            if (!chosen.empty()) out[ascii_lower(mod)] = std::move(chosen);
+        }
+    } catch (...) {
+        out.clear();   // an unreadable file leaves nothing out
+    }
+    return out;
+}
+std::set<std::string> items_left_out(std::string_view mod) noexcept {
+    try {
+        auto all = items_left_out();
+        const auto found = all.find(ascii_lower(mod));
+        return found == all.end() ? std::set<std::string>{} : std::move(found->second);
+    } catch (...) {
+        return {};
+    }
+}
+bool save_items_left_out(std::string_view mod, const std::set<std::string>& keys) noexcept {
+    try {
+        if (mod.empty()) return false;
+        const auto path = items_off_file();
+        if (path.empty()) return false;
+        auto all = items_left_out();
+        std::set<std::string> chosen;
+        for (const auto& key : keys)
+            if (item_key_text(ascii_lower(key))) chosen.insert(ascii_lower(key));
+        if (chosen.empty()) all.erase(ascii_lower(mod));
+        else all[ascii_lower(mod)] = std::move(chosen);
+        auto root = Json::object();
+        for (const auto& [owner, left] : all) root[owner] = Json(std::vector<std::string>(left.begin(), left.end()));
+        const auto text = root.dump(1) + '\n';
+        std::lock_guard lock(items_off_mutex);
+        std::error_code error;
+        fs::create_directories(path.parent_path(), error);
+        // Whole or not at all: the launcher's merge may read it while the game's starts.
+        auto temporary = path;
+        temporary += L".new";
+        {
+            std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
+            file << text;
+            if (!file.flush()) return false;
+        }
+        fs::rename(temporary, path, error);
+        if (error) {
+            fs::remove(temporary, error);
+            return false;
+        }
         return true;
     } catch (...) {
         return false;
@@ -564,6 +643,16 @@ Catalog load_catalog(const std::filesystem::path& data_root, const MergeObserver
                                    build + ", the installed game is " + game_build);
             result.inactive.erase(result.inactive.begin() + static_cast<std::ptrdiff_t>(i));
         }
+        // The items the player left out of each pack, a variant taking its pack's choices.
+        if (const auto chosen = items_left_out(); !chosen.empty()) {
+            const auto apply = [&](Mod& mod) {
+                const auto owner = variant_owner(mod.name);
+                if (const auto found = chosen.find(ascii_lower(owner.empty() ? mod.name : owner)); found != chosen.end())
+                    mod.items_off = found->second;
+            };
+            for (auto& mod : result.mods) apply(mod);
+            for (auto& mod : result.inactive) apply(mod);
+        }
         // Any Mods folder gets a patch, even an empty one or one of disabled
         // mods only: a mod enabled or dropped in while the game runs needs it
         // mounted from launch.
@@ -741,6 +830,7 @@ std::string describe(const Mod& mod) {
     else if (mod.provides_levels)
         text += "; registers no level";
     if (!mod.provides_layout) return text;
+    if (!mod.items_off.empty()) text += "; the player leaves " + std::to_string(mod.items_off.size()) + " item(s) out";
     text += mod.problems.empty() ? "; no merge problem recorded"
                                  : "; " + std::to_string(mod.problems.size()) + " merge problem(s), see the warning";
     return text;

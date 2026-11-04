@@ -1,4 +1,5 @@
 #include "mod_merge_internal.h"
+#include "mod_store_copies.h"
 #include "Engine/Resource/cas_codec.h"
 #include "Engine/Resource/ebx_document.h"
 #include "Engine/Resource/ebx_merge.h"
@@ -97,12 +98,13 @@ struct ModRead {
     std::vector<Script> scripts;
     std::vector<std::string> notes;
     std::exception_ptr failure;
+    std::set<fb::Guid> leftOut;   // the items it adds that the player left out of it (Mod::items_off)
 };
 
 ModRead read_mod(const Mod& mod, const RelativeFiles& files, const CasStore& store, const fs::path& baseRoot,
                  const fs::path& gameRoot, Shared<GameToc>& gameTocs, Shared<GameBundle>& gameBundles) {
     ModRead read;
-    auto& [candidates, companions, bundleChunks, chunkDefaults, unreadable, addedIn, newChunks, imported, changes, scripts, notes, failure] = read;
+    auto& [candidates, companions, bundleChunks, chunkDefaults, unreadable, addedIn, newChunks, imported, changes, scripts, notes, failure, leftOut] = read;
     const auto decoded = [&](std::span<const std::byte> encoded) {
         return fb::ebx::read_document(fb::decode_cas(encoded, {gameRoot}));
     };
@@ -250,6 +252,9 @@ ModRead read_mod(const Mod& mod, const RelativeFiles& files, const CasStore& sto
             addition.file = document.fileGuid;
             for (const auto& reference : document.imports) addition.names.push_back(reference.fileGuid);
             addedIn[candidates[index].first].insert(addition.file);
+            if (!mod.items_off.empty())
+                if (const auto item = item_content(document); item && mod.items_off.contains(ascii_lower(item->key)))
+                    leftOut.insert(addition.file);
             // Assets the mod's plugin selects at run time (its world objects, HUD variants picked
             // by size) have no import naming them: its resident list keeps them, as imported
             // additions are kept, when a map replaces their bundle.
@@ -315,7 +320,7 @@ AssetOverrides collect_asset_overrides(const std::vector<const Mod*>& mods,
         const auto* mod = asked[slot].first;
         auto& read = reads[slot];
         if (read.failure) std::rethrow_exception(read.failure);
-        auto& [candidates, companions, bundleChunks, chunkDefaults, unreadable, addedIn, newChunks, imported, changes, scripts, notes, failure] = read;
+        auto& [candidates, companions, bundleChunks, chunkDefaults, unreadable, addedIn, newChunks, imported, changes, scripts, notes, failure, leftOut] = read;
         for (auto& [bundle,defaults]:chunkDefaults) out.bundle_chunk_defaults.try_emplace(bundle,std::move(defaults));
         std::size_t changed{};
         // A higher mod's version of an asset, which this mod's change is combined with
@@ -455,18 +460,29 @@ AssetOverrides collect_asset_overrides(const std::vector<const Mod*>& mods,
             const auto beside = addedIn.find(change.bundle);
             try {
                 auto document = decoded(change.encoded);
-                const auto stays = [&](const fb::ebx::ImportReference& reference) {
+                // The items the player left out of this mod go from the copies too.
+                const auto chosen = [&](const fb::ebx::ImportReference& reference) {
+                    return !leftOut.contains(reference.fileGuid); };
+                const auto kept = [&](const fb::ebx::ImportReference& reference) {
                     return !lost.contains(reference.fileGuid); };
-                if (!std::ranges::all_of(document.imports, stays))
-                    if (const auto gone = fb::ebx::drop_root_references(document, stays)) {
+                const auto stays = [&](const fb::ebx::ImportReference& reference) { return chosen(reference) && kept(reference); };
+                if (!std::ranges::all_of(document.imports, stays)) {
+                    const auto left = std::ranges::all_of(document.imports, chosen) ? std::size_t{0} : fb::ebx::drop_root_references(document, chosen);
+                    const auto gone = std::ranges::all_of(document.imports, kept) ? std::size_t{0} : fb::ebx::drop_root_references(document, kept);
+                    if (left || gone) {
                         const auto rebuilt = fb::ebx::write_document(document);
                         change.sha1 = sha1_of(rebuilt);
                         change.originalSize = rebuilt.size();
                         change.encoded = fb::encode_cas(rebuilt, {gameRoot});
+                    }
+                    if (left)
+                        report.notes.push_back(mod->name + ": " + change.asset + ": " + std::to_string(left) +
+                            " item(s) left out of the copies other mods carry, as the player chose");
+                    if (gone)
                         report.notes.push_back(mod->name + ": " + change.asset + ": " + std::to_string(gone) +
                             " entry(ies) left out of the copies other mods carry, where another mod's asset of "
                             "the same name stands in for what they name");
-                    }
+                }
                 if (beside != addedIn.end())
                     for (const auto& reference : document.imports)
                         if (beside->second.contains(reference.fileGuid) && stays(reference))

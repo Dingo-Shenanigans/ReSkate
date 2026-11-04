@@ -641,6 +641,18 @@ struct ModsPanel {
     std::vector<char> remove_extras_picked;   // per entry of remove_extras: ticked to go too
     fs::path conflict_source;            // install waiting for "Replace" confirmation
     std::string conflict_name;
+    // A mod overview's Choose items (gui_mods.cpp): a pack's items as the last merge read them
+    // (Mods/.reskate/reskate-items.json), and the ones the player leaves out (mods::items_left_out).
+    struct ItemChoice {
+        std::string mod;                     // the folder they are chosen for; empty while not choosing
+        std::vector<std::string> keys;       // every item the pack adds, sorted
+        std::size_t prefix{};                // what every key begins with, not shown
+        std::set<std::string> off;           // left out; may hold keys the pack's other variants add
+        std::array<char, 96> search{};
+        std::string error;                   // why the choice could not be saved
+    } items;
+    // How many items the player leaves out of each pack, by lower-case folder name; read with the folder.
+    std::map<std::string, std::size_t, std::less<>> items_off;
 
     std::thread worker;
     std::atomic<bool> installing{};

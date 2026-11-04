@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <set>
 #include <string>
 
 // Variants (Engine/Vfs/mod_list.h): a mod that brings several takes on the same game data, one of
@@ -110,6 +111,22 @@ int main() {
         check(permitted.variant_additions.accept.empty() && permitted.variant_additions.contribute.empty(),
               "Malformed cooperation grants neither side, even after a valid first field");
     }
+    // Items left out of a pack (mods::items_left_out): kept beside the variant choices, by the pack's
+    // folder, and taken by its variants too. Taking every item back removes the pack's entry.
+    write(mods_root / "mods.json", R"({"schema":1,"mods":[{"name":"Pack","enabled":true}]})");
+    check(mods::items_left_out("Pack").empty(), "A pack had items left out before any was chosen");
+    check(mods::save_items_left_out("Pack", {"Own_Deck_B", "own_deck_a", "not a key"}), "The items left out were not saved");
+    check(fs::is_regular_file(root / "appdata" / "ReSkate" / "items-off.json"), "The items left out are not in their file");
+    check(mods::items_left_out("pack") == std::set<std::string>{"own_deck_a", "own_deck_b"},
+          "The items left out are not the keys given, in small letters, less the one that is no key");
+    catalog = mods::load_catalog(root, {}, false);
+    // (Whichever of its variants plays: the cooperation checks above left the pack with no "order".)
+    const auto played = std::ranges::find_if(catalog.mods, [](const mods::Mod &mod) { return mods::variant_owner(mod.name) == "Pack"; });
+    check(played != catalog.mods.end() && played->items_off == std::set<std::string>{"own_deck_a", "own_deck_b"},
+          "The pack's variant does not leave out the items left out of the pack");
+    const auto plain = std::ranges::find(catalog.mods, std::string("Plain"), &mods::Mod::name);
+    check(plain != catalog.mods.end() && plain->items_off.empty(), "A mod with nothing chosen leaves items out");
+    check(mods::save_items_left_out("Pack", {}) && mods::items_left_out().empty(), "Taking every item back left the pack's entry");
     fs::remove_all(root);
-    std::cout << "Mod variants: order, choice, fallback, set aside, disabled and malformed passed.\n";
+    std::cout << "Mod variants: order, choice, fallback, set aside, disabled, malformed and items left out passed.\n";
 }
