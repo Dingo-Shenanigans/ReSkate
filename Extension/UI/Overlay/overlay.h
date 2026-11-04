@@ -350,9 +350,12 @@ struct Model {
     };
     std::vector<PluginCommand> plugin_commands;
     float menu_scale = default_menu_scale;
-    float menu_scale_fullscreen = default_menu_scale; // the full screen menu's own size (`ui scalefull`)
-    // The ReSkate menu fills the screen, made for a controller, instead of a window (`ui fullscreen`).
-    bool menu_fullscreen = false;
+    // How the ReSkate menu is laid out (`ui layout`): menu_layout_sheet or menu_layout_hub (menu_scale.h).
+    int menu_layout = menu_layout_sheet;
+    // The side sheet's width and the window's size as last dragged, in pixels at 1080 lines and a menu
+    // scale of 1; 0 for the default (`ui sheetwidth`, `ui hubsize`).
+    float menu_sheet_width = 0;
+    float menu_hub_width = 0, menu_hub_height = 0;
     // Offline mode: no Steam, so every multiplayer page and control is hidden.
     bool steam_offline = false;
     ControllerBindingsModel bindings;
@@ -675,7 +678,7 @@ struct Status {
     std::uint64_t rendered_frames = 0;
 };
 bool keyboard_shortcuts_allowed() noexcept;
-// Whether the ReSkate menu is open, windowed or full screen (not the console, the park editor or a
+// Whether the ReSkate menu is open, as a side sheet or a window (not the console, the park editor or a
 // plugin's screen). Any thread, without the render lock DingoSDKOverlayGetStatus takes.
 bool menu_visible() noexcept;
 
@@ -709,20 +712,16 @@ struct Gamepad {
     unsigned buttons = 0;
 };
 Gamepad read_gamepad(int controller = -1);
-// The full screen menu's page draws its own controls with their own focus (ONLINE: the pause
-// menu's pages): the controller then drives that, not ImGui's navigation.
+// The ReSkate menu's page reads the controller itself (recording a controller bind): the pad and the
+// arrow keys then go to it, not to ImGui's navigation.
 inline std::atomic<bool>& menu_page_owns_pad() {
     static std::atomic<bool> value{false};
     return value;
 }
-// The controller is in charge of the full screen menu: the pointer is hidden (and points at
-// nothing) until the mouse moves or clicks (overlay_render.cpp sets it, cursor.cpp clears it).
+// The controller is in charge of the ReSkate menu: the pointer is hidden (and points at nothing) and
+// the menu shows the pad's button prompts, until the mouse moves or clicks (overlay_render.cpp sets
+// it, cursor.cpp clears it).
 inline std::atomic<bool>& menu_pad_in_charge() {
-    static std::atomic<bool> value{false};
-    return value;
-}
-// The menu was last drawn full screen (its controller pace, overlay_render.cpp).
-inline std::atomic<bool>& menu_fullscreen_shown() {
     static std::atomic<bool> value{false};
     return value;
 }

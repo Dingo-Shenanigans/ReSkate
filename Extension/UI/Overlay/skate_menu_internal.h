@@ -9,9 +9,10 @@
 #include <vector>
 
 namespace dingosdk::overlay::detail {
-// The game's pause menu Multiplayer pages (hub_page.cpp), drawn into the full screen menu's ONLINE
-// page: in `a`..`z` of `draw`, their own focus taking the D-pad, A and LT / RT. And whether one of
-// their text boxes has the keyboard.
+// The game's pause menu Multiplayer pages (hub_page.cpp), drawn into a rectangle of another menu:
+// in `a`..`z` of `draw`, their own focus taking the D-pad, A and LT / RT. And whether one of their
+// text boxes has the keyboard. (The ReSkate menu's ONLINE page no longer draws them, as they are
+// laid out for the whole screen, not a side sheet; a text box of theirs still holds B and Esc.)
 void draw_online_embedded(ImDrawList* draw, ImVec2 a, ImVec2 z, const Model& model, const CallbacksV3& callbacks, bool input);
 bool online_embedded_typing();
 }
@@ -36,14 +37,18 @@ inline void category_tabs(SkateMenu& menu, int& selected, std::initializer_list<
     category_tabs(menu, selected, std::span<const char* const>(tabs.begin(), tabs.size()), id);
 }
 
-// Page layout kit, so every page reads the same way:
-//   begin_card / end_card  a titled tile grouping related controls, sized to its
-//                          content (always pair them)
-//   field                  a label in the left column; the next widget fills the
-//                          rest of the row (stacked under the label when narrow)
+// Page layout kit, so every page reads the same way in both layouts (the side sheet and the window),
+// with a mouse or a controller. A control under the controller's or the keyboard's focus is white
+// with dark text.
+//   begin_card / end_card  a titled dark tile grouping related controls, sized to its content
+//                          (always pair them). In a wide window a page's cards flow into two
+//                          columns, each under the shorter one, while nothing comes between them.
+//   field                  a label, then the next widget beside it filling the rest of the row
+//                          (stacked under the label when the page is narrow)
 //   info                   a status line: muted label column, value beside it
 //   note / warn            muted help text / a warning, wrapped
-//   choice                 one of a few options as a strip of tiles (not radio buttons)
+//   choice                 one of a few options as "< option >": left / right, A or a click on
+//                          either half steps it
 //   tag                    a small coloured badge, e.g. HOST or IN GAME
 //   primary_button         a card's main action: blue, full width
 void begin_card(SkateMenu& menu, const char* id, const char* title = nullptr, const char* subtitle = nullptr);
@@ -69,19 +74,20 @@ void warn(const char* text);
 bool choice(SkateMenu& menu, const char* id, int& selected, std::initializer_list<const char*> options,
             bool enabled = true, float width = 0.0f, std::initializer_list<const char*> tooltips = {});
 void tag(SkateMenu& menu, const char* text, ImU32 colour);
-// Whether the menu is drawing full screen this frame: its shared controls (toggle_row, choice, the
-// sliders, cards) draw for a controller then. console_hint is what the focused one does.
+// Whether the shared controls draw for a controller. Always now: the menu has one look in both
+// layouts. Pages still ask, and their window-only branches behind it wait for their redesign.
+// console_hint is what the focused control does (a controller has no hover tooltips).
 bool console_style();
 const std::string& console_hint();
-// For a full screen control drawn by hand: left / right while it has the focus (-1, 0, 1), which
-// then never moves the focus; and the line the bottom bar shows for it.
+// For a control drawn by hand: left / right while it has the focus (-1, 0, 1), which then never
+// moves the focus; and the line the menu shows for it.
 int console_step(bool focused);
 void set_console_hint(const char* hint);
-// The step the next full screen slider takes (left / right), in place of a fortieth of its range:
-// for a value with no sensible range (nudged where it is), or one that moves in whole units.
+// The step the next slider takes (left / right), in place of a fortieth of its range: for a value
+// with no sensible range (nudged where it is), or one that moves in whole units.
 void set_console_step(double step);
-// A row of buttons. In a window, ImGui's own side by side; full screen, equal tiles across the
-// row, the pause menu's look (`on` draws one as chosen). Returns the one pressed, or -1.
+// A row of buttons: equal tiles across the row, wrapping onto more rows when their names would not
+// fit (`on` draws one as chosen, in blue). Returns the one pressed, or -1.
 struct RowButton {
     const char* label;
     bool enabled = true;
@@ -89,20 +95,19 @@ struct RowButton {
     const char* hint = nullptr;
 };
 int button_row(SkateMenu& menu, const char* id, std::initializer_list<RowButton> buttons);
-// Many small buttons in rows, each as wide as its name, wrapping as the row runs out; full screen,
-// tiles as button_row's, as many to a row as fit. `lit` (from 0, -1 for none) draws as chosen.
-// Returns the one pressed, or -1.
+// Many buttons as tiles like button_row's, at least 150 px wide, as many to a row as fit. `lit`
+// (from 0, -1 for none) draws as chosen. Returns the one pressed, or -1.
 int button_grid(SkateMenu& menu, const char* id, const std::vector<std::string>& names, int lit);
-// One of a list, under a label. In a window, a drop-down after a field() label; full screen, one
-// row: the label, then "< option >" that left / right change. With `pressed`, A on the row sets it
-// (for a choice applied by A, such as a park layout) instead of stepping on.
+// One of a list on one row: the label, then "< option >" that left / right (or a click on either
+// half) change. With `pressed`, A on the row sets it (for a choice applied by A, such as a park
+// layout) instead of stepping on.
 bool option_row(SkateMenu& menu, const char* label, const char* hint, int& selected, const std::vector<std::string>& options,
                 bool enabled = true, bool* pressed = nullptr);
-// Full screen: one entry of a list (a song) as a tall row, `side` at its right end; true on A.
+// One entry of a list (a song) as a row, `side` at its right end; true on A or a click.
 bool list_row(SkateMenu& menu, const char* id, const std::string& text, const std::string& side, bool current, bool enabled = true);
-// ImGui's sliders with a number box beside them for an exact value (none with NoInput, which
-// picks from named steps). Same arguments; IsItemActive / IsItemDeactivatedAfterEdit afterwards
-// cover the slider and the box together.
+// A value as a bar that left / right (or the mouse) nudge, with a number box beside it for an exact
+// value (none with NoInput, which picks from named steps). ImGui's slider arguments;
+// IsItemActive / IsItemDeactivatedAfterEdit afterwards cover the bar and the box together.
 bool slider_float(const char* id, float* value, float low, float high, const char* format = "%.3f", ImGuiSliderFlags flags = 0);
 bool slider_int(const char* id, int* value, int low, int high, const char* format = "%d", ImGuiSliderFlags flags = 0);
 bool slider_double(const char* id, double* value, double low, double high, const char* format = "%.3f", ImGuiSliderFlags flags = 0);
@@ -152,14 +157,14 @@ inline constexpr const char* plugin_manager_entry = "" "plugin-manager";
 // The plugin page shown, or null while that is the PLUGIN MANAGER (also when the page chosen is gone).
 const plugin_ui::PageEntry* shown_plugin_page(SkateMenu& menu);
 void plugins_page(SkateMenu& menu);
-// The fullscreen menu's first page: a tile for each part of the menu (skate_menu_addons.cpp).
+// The menu's first page: a tile for each part of the menu (skate_menu_addons.cpp).
 void home_page(SkateMenu&, const Model&, const CallbacksV3&);
 // Shuffle, on the Music addon (skate_menu_settings.cpp).
 void music_playback_card(SkateMenu&);
-// Whether the menu fills the screen (Settings > Screen > Menu style), and changing it: saved
-// with the profile (`ui fullscreen`), shown at once.
-bool menu_fullscreen(const SkateMenu&, const Model&);
-void set_menu_fullscreen(SkateMenu&, const CallbacksV3&, bool fullscreen);
+// How the menu is laid out (Settings > Screen > Menu layout: menu_layout_sheet or menu_layout_hub),
+// and changing it: saved with the profile (`ui layout`), shown at once.
+int menu_layout(const SkateMenu&, const Model&);
+void set_menu_layout(SkateMenu&, const CallbacksV3&, int layout);
 // The pages, for the shells and the home tiles (skate_menu.cpp).
 enum Page {
     page_home, page_map, page_build, page_skater, page_sandbox, page_addons, page_plugins, page_online, page_progress, page_mods,

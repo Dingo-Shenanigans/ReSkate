@@ -2,6 +2,7 @@
 #include "named_settings.h"
 #include "gameplay_settings_override.h"
 #include "Extension/Profile/local_profile_runtime.h"
+#include <charconv>
 #include <format>
 namespace dingosdk::console {
 namespace {
@@ -122,39 +123,77 @@ void register_settings_commands(Commands &registry) {
     };
     registry.add(std::move(menu));
 
-    auto full_scale = argument("scale", Type::number);
-    full_scale.minimum = min_menu_scale;
-    full_scale.maximum = max_menu_scale;
-    auto menu_full = variable("ui scalefull", "Scale the full screen ReSkate menu and its text", Group::console, std::move(full_scale));
-    menu_full.execution = Execution::local;
-    menu_full.inspect = [](const Model &m) {
-        return State{true, std::format("{:.2f}", m.menu_scale_fullscreen), {}, "Saved with your profile.", false};
+    auto layout_choice = argument("sheet|hub");
+    layout_choice.choices = {"sheet", "hub"};
+    auto layout = variable("ui layout", "Lay the ReSkate menu out as a sheet on the right edge or as a window (hub)", Group::console,
+                           std::move(layout_choice));
+    layout.execution = Execution::local;
+    layout.inspect = [](const Model &m) {
+        return State{true, std::string(m.menu_layout == menu_layout_hub ? "hub" : "sheet"), {}, "Saved with your profile.", false};
     };
-    menu_full.run = [](const Model &, const Values &args, const Output &out) {
-        const auto value = static_cast<float>(std::get<double>(args[0]));
-        out(profile_runtime::set_local_menu_scale(value, true)
-                ? std::format("Full screen menu scale set to {:.2f}.", value)
-                : std::format("error: Choose a scale from {:.2f} to {:.2f}.", min_menu_scale, max_menu_scale));
+    layout.run = [](const Model &, const Values &args, const Output &out) {
+        const bool hub = lower(std::get<std::string>(args[0])) == "hub";
+        profile_runtime::set_local_menu_layout(hub ? menu_layout_hub : menu_layout_sheet);
+        out(hub ? "The ReSkate menu is a window." : "The ReSkate menu is a sheet on the right edge.");
     };
-    menu_full.reset = [](const Model &, const Output &out) {
-        profile_runtime::set_local_menu_scale(default_menu_scale, true);
-        out("Full screen menu scale reset.");
+    layout.reset = [](const Model &, const Output &out) {
+        profile_runtime::set_local_menu_layout(menu_layout_sheet);
+        out("The ReSkate menu is a sheet on the right edge.");
     };
-    registry.add(std::move(menu_full));
+    registry.add(std::move(layout));
 
-    auto fullscreen = variable("ui fullscreen", "Show the ReSkate menu full screen, made for a controller (0: a window)",
-                               Group::console, argument("0|1", Type::boolean));
-    fullscreen.execution = Execution::local;
-    fullscreen.inspect = [](const Model &m) { return boolean_state(true, m.menu_fullscreen, {}); };
-    fullscreen.run = [](const Model &, const Values &args, const Output &out) {
-        const bool on = std::get<bool>(args[0]);
-        profile_runtime::set_local_menu_fullscreen(on);
-        out(on ? "The ReSkate menu fills the screen." : "The ReSkate menu is a window.");
+    // The menu saves these itself when its edge or corner is dragged; they are commands so that goes the
+    // way the scale does, and so a size that went wrong can be put back.
+    auto width = argument("width", Type::number);
+    width.minimum = min_menu_sheet_width;
+    width.maximum = max_menu_sheet_width;
+    auto sheet = variable("ui sheetwidth", "Width of the ReSkate menu's side sheet, in pixels at 1080 lines and scale 1", Group::console,
+                          std::move(width));
+    sheet.execution = Execution::local;
+    sheet.inspect = [](const Model &m) {
+        return State{true, m.menu_sheet_width > 0 ? std::format("{:.0f}", m.menu_sheet_width) : std::string("default"), {},
+                     "Saved with your profile.", m.menu_sheet_width > 0};
     };
-    fullscreen.reset = [](const Model &, const Output &out) {
-        profile_runtime::set_local_menu_fullscreen(false);
-        out("The ReSkate menu is a window.");
+    sheet.run = [](const Model &, const Values &args, const Output &out) {
+        const auto value = static_cast<float>(std::get<double>(args[0]));
+        out(profile_runtime::set_local_menu_sheet_width(value)
+                ? std::format("Side sheet width set to {:.0f}.", value)
+                : std::format("error: Choose a width from {:.0f} to {:.0f}.", min_menu_sheet_width, max_menu_sheet_width));
     };
-    registry.add(std::move(fullscreen));
+    sheet.reset = [](const Model &, const Output &out) {
+        profile_runtime::set_local_menu_sheet_width(0);
+        out("Side sheet width reset.");
+    };
+    registry.add(std::move(sheet));
+
+    auto hub = variable("ui hubsize", "Size of the ReSkate menu's window, WIDTHxHEIGHT in pixels at 1080 lines and scale 1", Group::console,
+                        argument("WIDTHxHEIGHT"));
+    hub.execution = Execution::local;
+    hub.inspect = [](const Model &m) {
+        const bool saved = m.menu_hub_width > 0 && m.menu_hub_height > 0;
+        return State{true, saved ? std::format("{:.0f}x{:.0f}", m.menu_hub_width, m.menu_hub_height) : std::string("default"), {},
+                     "Saved with your profile.", saved};
+    };
+    hub.run = [](const Model &, const Values &args, const Output &out) {
+        // "1120x720": two whole or decimal numbers either side of an x.
+        float w = 0, h = 0;
+        const auto &text = std::get<std::string>(args[0]);
+        const auto x = text.find_first_of("xX");
+        const auto number = [](std::string_view part, float &into) {
+            const auto [end, error] = std::from_chars(part.data(), part.data() + part.size(), into);
+            return error == std::errc{} && end == part.data() + part.size();
+        };
+        const bool parsed = x != std::string::npos && number(std::string_view(text).substr(0, x), w) &&
+                            number(std::string_view(text).substr(x + 1), h);
+        out(parsed && profile_runtime::set_local_menu_hub_size(w, h)
+                ? std::format("Menu window size set to {:.0f}x{:.0f}.", w, h)
+                : std::format("error: Give a size such as 1120x720, from {:.0f}x{:.0f} to {:.0f}x{:.0f}.", min_menu_hub_width,
+                              min_menu_hub_height, max_menu_hub_side, max_menu_hub_side));
+    };
+    hub.reset = [](const Model &, const Output &out) {
+        profile_runtime::set_local_menu_hub_size(0, 0);
+        out("Menu window size reset.");
+    };
+    registry.add(std::move(hub));
 }
 } // namespace dingosdk::console

@@ -443,9 +443,9 @@ void plugin_manager_page(SkateMenu& menu, bool no_pages) {
 void plugins_page(SkateMenu& menu) {
     const auto pages = plugin_pages();
     const auto* shown = shown_plugin_page(menu);
-    // The PLUGIN MANAGER is the first entry, then each plugin with a page. A window lists them in its side
-    // rail; full screen has no rail, so they are tabs here (tab 0 is the manager, tab n is pages[n - 1]).
-    if (menu.fullscreen_drawn) {
+    // The PLUGIN MANAGER is the first entry, then each plugin with a page: this page's tabs (tab 0 is the
+    // manager, tab n is pages[n - 1]).
+    {
         std::vector<const char*> names{"PLUGIN MANAGER"};
         int selected = 0;
         for (std::size_t i = 0; i < pages->size(); ++i) {

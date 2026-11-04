@@ -9,7 +9,7 @@
 #include <string>
 
 // The ADDONS page (what ReSkate adds to skate.: music; what plugins add has its own section)
-// and the full screen menu's HOME page.
+// and the menu's HOME page.
 namespace dingosdk::overlay::menu {
 using namespace theme;
 namespace {
@@ -59,16 +59,11 @@ void all_addons(SkateMenu& menu) {
 }
 
 void addons_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
+    // The addons are this page's tabs (LT / RT on a controller), ALL ADDONS first.
+    static constexpr std::array<const char*, addon_count> names{"ALL ADDONS", "MUSIC"};
     menu.addon = std::clamp(menu.addon, 0, static_cast<int>(addon_count) - 1);
-    if (menu.addon == addon_all && !menu.fullscreen_drawn) menu.addon = addon_first; // (a window has no overview)
-    // A window lists the addons in its side rail; full screen has no rail, so they are tabs here
-    // (LT / RT on a controller).
-    if (menu.fullscreen_drawn) {
-        static constexpr std::array<const char*, addon_count> names{"ALL ADDONS", "MUSIC"};
-        std::vector<const char*> labels(names.begin(), names.end());
-        category_tabs(menu, menu.addon, labels, "addon-tabs");
-        menu.addon = std::clamp(menu.addon, 0, static_cast<int>(addon_count) - 1);
-    }
+    category_tabs(menu, menu.addon, names, "addon-tabs");
+    menu.addon = std::clamp(menu.addon, 0, static_cast<int>(addon_count) - 1);
     ImGui::PushID(menu.addon);
     switch (menu.addon) {
     case addon_music: music_page(menu, model, callbacks); break;
@@ -153,12 +148,25 @@ void quietly(const CallbacksV3& callbacks, const std::string& command) {
 
 void home_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
     ImGui::BeginChild("home", ImVec2(0, page_body_height(menu)), ImGuiChildFlags_NavFlattened);
-    const float gap = px(12);
-    const auto grid = [&](int columns) {
-        return (ImGui::GetContentRegionAvail().x - gap * static_cast<float>(columns - 1)) / static_cast<float>(columns);
-    };
+    // As many tiles to a row as fit at 150 px or wider: two in the side sheet, five in a wide window.
+    const float gap = px(12), room = ImGui::GetContentRegionAvail().x;
+    const int columns = std::clamp(static_cast<int>((room + gap) / (px(150) + gap)), 2, 5);
+    const float width = (room - gap * static_cast<float>(columns - 1)) / static_cast<float>(columns);
     const float left = ImGui::GetCursorPosX();
-    const auto place = [&](float width, int column) { ImGui::SameLine(left + (width + gap) * static_cast<float>(column)); };
+    int column = 0;
+    // The next tile's size, `span` columns wide, with the cursor put where it goes: beside the last
+    // one while the row has room, else at the start of the next row.
+    const auto cell = [&](int span) {
+        span = std::min(span, columns);
+        if (column > 0 && column + span <= columns) {
+            ImGui::SameLine(left + (width + gap) * static_cast<float>(column));
+        } else if (column > 0) {
+            ImGui::Dummy(ImVec2(0, gap - ImGui::GetStyle().ItemSpacing.y));
+            column = 0;
+        }
+        column += span;
+        return ImVec2(width * static_cast<float>(span) + gap * static_cast<float>(span - 1), px(96));
+    };
     const auto& debug = model.debug;
     const auto on_off = [](bool value) { return std::string(value ? "ON" : "OFF"); };
     const auto request = [&](DebugAction action, bool value) {
@@ -170,79 +178,60 @@ void home_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks
     // ---- the switches people reach for while skating
     heading(menu, "QUICK");
     {
-        constexpr int columns = 5;
-        const float width = grid(columns);
-        const ImVec2 size(width, px(96));
         namespace tod = dingosdk::native_tools;
         static constexpr std::array<const char*, 8> times{"Default", "Morning", "Noon", "Afternoon", "Evening", "Night", "Weather day", "Weather night"};
         const bool tod_available = tod::time_of_day_available(model, callbacks);
         const int now = time_of_day_shown(model);
-        const int step = home_tile(menu, "##time", "TIME OF DAY", times[static_cast<std::size_t>(std::clamp(now, 0, 7))], size, tod_available, now != 0,
+        const int step = home_tile(menu, "##time", "TIME OF DAY", times[static_cast<std::size_t>(std::clamp(now, 0, 7))], cell(1), tod_available, now != 0,
                                    true, "Press A to change the time of day. Default follows the level's own.");
         // One time a press, on from the one last asked for.
         if (step) set_time_of_day(menu, model, callbacks, (now + step + 8) % 8, true);
-        place(width, 1);
-        if (home_tile(menu, "##noclip", "NOCLIP", on_off(debug.noclip), size, (debug.noclip_available || debug.noclip) && callbacks.queue_debug,
+        if (home_tile(menu, "##noclip", "NOCLIP", on_off(debug.noclip), cell(1), (debug.noclip_available || debug.noclip) && callbacks.queue_debug,
                       debug.noclip, false, "Fly with the normal player camera, through anything. Includes No Bail.") == 1)
             request(DebugAction::set_noclip, !debug.noclip);
-        place(width, 2);
-        if (home_tile(menu, "##no-bail", "NO BAIL", on_off(debug.no_bail), size, (debug.no_bail_available || debug.no_bail) && callbacks.queue_debug,
+        if (home_tile(menu, "##no-bail", "NO BAIL", on_off(debug.no_bail), cell(1), (debug.no_bail_available || debug.no_bail) && callbacks.queue_debug,
                       debug.no_bail, false, "Never wipe out.") == 1)
             request(DebugAction::set_no_bail, !debug.no_bail);
-        place(width, 3);
-        if (home_tile(menu, "##hide-hud", "HIDE HUD", on_off(debug.game_ui_hidden), size, debug.available && debug.ui_available && callbacks.queue_debug,
+        if (home_tile(menu, "##hide-hud", "HIDE HUD", on_off(debug.game_ui_hidden), cell(1), debug.available && debug.ui_available && callbacks.queue_debug,
                       debug.game_ui_hidden, false, "Keep the view clear for riding and captures.") == 1)
             request(DebugAction::set_game_ui_hidden, !debug.game_ui_hidden);
-        place(width, 4);
-        if (home_tile(menu, "##first-person", "FIRST PERSON", on_off(debug.first_person), size, debug.available && callbacks.queue_debug,
+        if (home_tile(menu, "##first-person", "FIRST PERSON", on_off(debug.first_person), cell(1), debug.available && callbacks.queue_debug,
                       debug.first_person, false, "See it through your skater's eyes.") == 1)
             request(DebugAction::set_first_person, !debug.first_person);
-        ImGui::Dummy(ImVec2(0, gap - ImGui::GetStyle().ItemSpacing.y));
-
-        if (home_tile(menu, "##freecam", "FREECAM", on_off(debug.free_camera), size, debug.camera_available && callbacks.queue_debug,
+        if (home_tile(menu, "##freecam", "FREECAM", on_off(debug.free_camera), cell(1), debug.camera_available && callbacks.queue_debug,
                       debug.free_camera, false, "Leave your skater and fly the camera.") == 1)
             request(DebugAction::set_free_camera, !debug.free_camera);
     }
     ImGui::Dummy(ImVec2(0, px(18)));
+    column = 0;
 
     // ---- the rest of the menu
     heading(menu, "GO TO");
     {
-        constexpr int columns = 5;
-        const float width = grid(columns);
-        const ImVec2 size(width, px(96));
         const auto& mp = model.multiplayer;
         const std::string session = model.steam_offline ? "Offline: no multiplayer"
             : mp.active ? (mp.lobby_name.empty() ? std::string("In a session") : mp.lobby_name) + "  -  " + std::to_string(mp.players) + " / " +
                               std::to_string(mp.capacity)
                         : "Servers, hosting, voice";
-        if (home_tile(menu, "##go-online", "ONLINE", session, ImVec2(width * 2 + gap, size.y), !model.steam_offline, mp.active, false,
+        if (home_tile(menu, "##go-online", "ONLINE", session, cell(2), !model.steam_offline, mp.active, false,
                       "Join a server or a friend's lobby, host your own, voice chat.", false) == 1)
             open_page(menu, page_online);
-        place(width, 2);
-        if (home_tile(menu, "##go-map", "MAP", "Travel, parks, time and weather", size, true, false, false, "Pick a map and load it.", false) == 1)
+        if (home_tile(menu, "##go-map", "MAP", "Travel, parks, time and weather", cell(1), true, false, false, "Pick a map and load it.", false) == 1)
             open_page(menu, page_map);
-        place(width, 3);
-        if (home_tile(menu, "##go-addons", "ADDONS", "Music", size, true, false, false,
+        if (home_tile(menu, "##go-addons", "ADDONS", "Music", cell(1), true, false, false,
                       "What ReSkate adds to skate.", false) == 1)
             open_page(menu, page_addons, addon_all);
-        place(width, 4);
-        if (home_tile(menu, "##go-music", "MUSIC", "Now playing, queue, sources", size, true, false, false, "Your music in the game's player.", false) == 1)
+        if (home_tile(menu, "##go-music", "MUSIC", "Now playing, queue, sources", cell(1), true, false, false, "Your music in the game's player.", false) == 1)
             open_page(menu, page_addons, addon_music);
-        ImGui::Dummy(ImVec2(0, gap - ImGui::GetStyle().ItemSpacing.y));
-        if (home_tile(menu, "##go-skater", "SKATER", "Freecam, first person, cheats", size, true, false, false, "The free camera, first person, noclip and the boosts.", false) == 1)
+        if (home_tile(menu, "##go-skater", "SKATER", "Freecam, first person, cheats", cell(1), true, false, false, "The free camera, first person, noclip and the boosts.", false) == 1)
             open_page(menu, page_skater);
-        place(width, 1);
-        if (home_tile(menu, "##go-sandbox", "SANDBOX", "Tuning, practice, HUD", size, true, false, false, "Tune the game's feel and drill your lines.", false) == 1)
+        if (home_tile(menu, "##go-sandbox", "SANDBOX", "Tuning, practice, HUD", cell(1), true, false, false, "Tune the game's feel and drill your lines.", false) == 1)
             open_page(menu, page_sandbox);
-        place(width, 2);
-        if (home_tile(menu, "##go-build", "BUILD", "Park editor, park mods", size, true, false, false, "Make the park yours.", false) == 1)
+        if (home_tile(menu, "##go-build", "BUILD", "Park editor, park mods", cell(1), true, false, false, "Make the park yours.", false) == 1)
             open_page(menu, page_build);
-        place(width, 3);
-        if (home_tile(menu, "##go-mods", "MODS", "Yours and the official ones", size, true, false, false, "The mods the game has loaded.", false) == 1)
+        if (home_tile(menu, "##go-mods", "MODS", "Yours and the official ones", cell(1), true, false, false, "The mods the game has loaded.", false) == 1)
             open_page(menu, page_mods);
-        place(width, 4);
-        if (home_tile(menu, "##go-settings", "SETTINGS", "Controls, screen, performance", size, true, false, false,
+        if (home_tile(menu, "##go-settings", "SETTINGS", "Controls, screen, performance", cell(1), true, false, false,
                       "Your binds, how the menu looks, the performance HUD.", false) == 1)
             open_page(menu, page_settings);
     }

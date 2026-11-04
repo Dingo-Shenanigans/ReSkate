@@ -58,9 +58,9 @@ void level_picker(SkateMenu& menu, const Model& model, const CallbacksV3& callba
         warn(reason.empty() ? "Level loading is unavailable." : reason.c_str());
     }
 
-    // A window has a keyboard: a box to find a map by name. (Full screen shows them all.)
+    // A box to find a map by name, for a keyboard; a controller passes over it to the list.
     const bool console = console_style();
-    if (!console) {
+    {
         static std::array<char, 64> search{};
         ImGui::SetNextItemWidth(-FLT_MIN);
         ImGui::InputTextWithHint("##map-search", "Search maps...", search.data(), search.size());
@@ -500,16 +500,26 @@ void world_layers_page(SkateMenu& menu, const Model& model, const CallbacksV3& c
         return;
     }
     if (console_style()) {
-        // Full screen: which kind, then a switch a layer (no search box: that wants a keyboard).
+        // Which kind, a search box, then a switch for each layer.
         static const std::vector<std::string> kinds{"All categories", "Seasonal", "Activities", "World", "Lighting", "Structure", "Debug", "Parks"};
         begin_card(menu, "world-layers", "WORLD LAYERS");
         option_row(menu, "Show", "Left / right for one kind of layer.", menu.world_layer_category, kinds);
+        // A box to find a layer by name, for a keyboard; a controller passes over it.
+        ImGui::SetNextItemWidth(-FLT_MIN);
+        ImGui::InputTextWithHint("##layer-search", "Search layers...", menu.world_layer_search.data(), menu.world_layer_search.size());
+        const std::string_view query(menu.world_layer_search.data());
+        const auto found = [&](std::string_view text) {
+            return query.empty() || std::search(text.begin(), text.end(), query.begin(), query.end(), [](unsigned char a, unsigned char b) {
+                return std::tolower(a) == std::tolower(b);
+            }) != text.end();
+        };
         const bool can = !dingosdk::native_tools::layers_locked(model) && model.world.available && model.world.ready && callbacks.queue_console_command;
         unsigned shown{};
         for (unsigned i = 0; i < world_layers().size(); ++i) {
             const auto& layer = world_layers()[i];
             if (layer.map != model.world.map || !model.world.supported[i] || world_layer_kept_off(layer.key)) continue;
             if (menu.world_layer_category && layer.category != kinds[static_cast<std::size_t>(menu.world_layer_category)]) continue;
+            if (!found(world_layer_title(layer.label)) && !found(layer.key)) continue;
             ++shown;
             const bool follows_game = model.world.choices[i] == "default";
             bool enabled = follows_game ? model.world.enabled[i].value_or(false) : model.world.choices[i] == "on";

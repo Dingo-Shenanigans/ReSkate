@@ -35,38 +35,32 @@ void screen_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbac
     note(back.c_str());
     end_card();
 
-    // The size of the style this is drawn in: the window and full screen keep their own.
-    const bool full = console_style();
-    const char* command = full ? "ui scalefull " : "ui scale ";
-    begin_card(menu, "menu-scale", "MENU SIZE", full ? "Full screen" : "Window");
-    // Drag locally for an immediate preview, then save once on release: the
+    begin_card(menu, "menu-layout", "MENU LAYOUT");
+    int layout = menu_layout(menu, model);
+    if (choice(menu, "menu-layout", layout, {"SIDE SHEET", "WINDOW"}, callbacks.queue_console_command != nullptr, 0.0f,
+            {"Docked to the right edge, the game in view beside it. Drag its left edge to make it wider.",
+             "A window in the middle of the screen, the pages down its left side. Drag an edge or a corner to resize it."}))
+        set_menu_layout(menu, callbacks, layout);
+    note("Also F11, or View on a controller. Saved with your profile, with the size you drag either to.");
+    end_card();
+
+    // One size for both layouts.
+    begin_card(menu, "menu-scale", "MENU SIZE");
+    // Step locally for an immediate preview, then save once let go: the
     // saved value only returns through the model on a later frame.
-    if (!menu.scale_editing) menu.scale = full ? model.menu_scale_fullscreen : model.menu_scale;
-    field(menu, full ? "Full screen menu size" : "Window menu size");
-    const bool resettable = menu.scale != default_menu_scale;
-    const float reset = ImGui::CalcTextSize("Reset").x + ImGui::GetStyle().FramePadding.x * 2;
-    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - reset - ImGui::GetStyle().ItemSpacing.x);
+    if (!menu.scale_editing) menu.scale = model.menu_scale;
+    field(menu, "Menu size", "Left / right to change it.");
     ::dingosdk::overlay::menu::slider_float("##menu-scale", &menu.scale, min_menu_scale, max_menu_scale, "%.2fx",
         ImGuiSliderFlags_AlwaysClamp);
     menu.scale_editing = ImGui::IsItemActive();
     if (ImGui::IsItemDeactivatedAfterEdit())
-        send_console(menu, callbacks, command + std::to_string(menu.scale));
-    if (!full) ImGui::SameLine();
-    if (button_row(menu, "scale-reset", {{full ? "RESET SIZE" : "Reset", resettable}}) == 0) {
+        send_console(menu, callbacks, "ui scale " + std::to_string(menu.scale));
+    if (button_row(menu, "scale-reset", {{"RESET SIZE", menu.scale != default_menu_scale}}) == 0) {
         menu.scale = default_menu_scale;
-        send_console(menu, callbacks, command + std::to_string(default_menu_scale));
+        send_console(menu, callbacks, "ui scale " + std::to_string(default_menu_scale));
     }
-    note(full ? "Scales the full screen menu and its text; the window keeps its own size. Saved with your profile."
-              : "Scales this window and its text; the full screen menu keeps its own size. Saved with your profile.");
-    end_card();
-
-    begin_card(menu, "menu-style", "MENU STYLE");
-    int style = menu_fullscreen(menu, model) ? 1 : 0;
-    if (choice(menu, "menu-style", style, {"Window", "Full screen"}, callbacks.queue_console_command != nullptr, 0.0f,
-            {"A window over the game you can move and resize: made for a mouse.",
-             "Fills the screen, with bigger rows and button prompts: made for a controller."}))
-        set_menu_fullscreen(menu, callbacks, style == 1);
-    note("Also the button beside the menu's close button, F11, or View on a controller. Saved with your profile.");
+    note("Scales the menu and its text in both layouts. It grows with the screen too, so a size reads the same at 1080p and 4K. "
+         "Saved with your profile.");
     end_card();
     graphics_page(menu, model, callbacks);
 }
