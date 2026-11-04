@@ -21,6 +21,7 @@
 #include "Extension/Progression/script_natives.h"
 #include "Extension/Multiplayer/Steam/steam_social.h"
 #include "Extension/Profile/local_profile_runtime.h"
+#include "Extension/Customization/local_customization_runtime.h"
 #include "Extension/Objects/network_object_runtime.h"
 #include "Extension/Objects/ParkEditor/park_editor_runtime.h"
 #include "Extension/Multiplayer/Remote/native_audio.h"
@@ -791,11 +792,13 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
             present.insert(p.member.id);
             const auto &look = p.appearance.value();
             if (!look || p.published_outfit == p.cosmetic_revision) continue;
+            // Paid store items are left out: this PC never shows them on another player (their stand-ins
+            // do), and the party HUD blanks their card parts the same way.
             plugin_feed::Outfit outfit;
             for (const auto &item : look->skater.items)
-                if (!item.asset.empty()) outfit.skater.push_back(item.asset);
+                if (!item.asset.empty() && !profile_runtime::reserved_cosmetic(item.asset)) outfit.skater.push_back(item.asset);
             for (const auto &item : look->board.items)
-                if (!item.asset.empty()) outfit.board.push_back(item.asset);
+                if (!item.asset.empty() && !profile_runtime::reserved_cosmetic(item.asset)) outfit.board.push_back(item.asset);
             plugin_feed::publish_outfit(p.member.id, std::move(outfit));
             p.published_outfit = p.cosmetic_revision;
         }

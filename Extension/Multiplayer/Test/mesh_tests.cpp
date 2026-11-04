@@ -80,6 +80,8 @@ std::string status() { return {}; }
 namespace dingosdk::profile_runtime {
 void install_script_error_log(std::uintptr_t) noexcept {}
 void install_board_wear_hold(std::uintptr_t) noexcept {}
+// No paid store items in the mesh's outfits (session.cpp leaves them out of reskate.session.outfit).
+bool reserved_cosmetic(std::string_view) { return false; }
 bool simulated_profile_store_ready = true;
 std::map<std::string, Json, std::less<>> simulated_profile;
 bool local_profile_store_ready() noexcept { return simulated_profile_store_ready; }

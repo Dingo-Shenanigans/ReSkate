@@ -211,16 +211,24 @@ inline std::optional<Outfit> outfit_of(std::uint64_t player) {
 struct HiddenItems {
     std::set<std::string, std::less<>> everyone;
     std::map<std::uint64_t, std::set<std::string, std::less<>>> players;
+    bool operator==(const HiddenItems&) const = default;
 };
 inline constexpr std::size_t max_hidden_items = 4096, max_hidden_item_players = 64;
 namespace detail {
 inline std::map<std::string, HiddenItems, std::less<>> hidden_items; // by plugin
 inline std::uint64_t hidden_items_revision{1};
 }
+// A list the same as the plugin's last one changes nothing: every change dresses the players shown again.
 inline void hide_items(const std::string& plugin, HiddenItems items) {
     std::lock_guard lock(detail::mutex);
-    if (items.everyone.empty() && items.players.empty()) detail::hidden_items.erase(plugin);
-    else detail::hidden_items[plugin] = std::move(items);
+    const auto found = detail::hidden_items.find(plugin);
+    if (items.everyone.empty() && items.players.empty()) {
+        if (found == detail::hidden_items.end()) return;
+        detail::hidden_items.erase(found);
+    } else {
+        if (found != detail::hidden_items.end() && found->second == items) return;
+        detail::hidden_items[plugin] = std::move(items);
+    }
     ++detail::hidden_items_revision;
 }
 inline void release_hidden_items(const std::string& plugin) {

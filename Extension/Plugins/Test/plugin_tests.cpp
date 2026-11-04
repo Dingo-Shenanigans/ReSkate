@@ -3202,8 +3202,6 @@ void a_plugin_loads_ticks_runs_its_commands_and_unloads() {
     check(!host.run_console("hello there"), "with its command");
 }
 
-// What this PC shows in place of other players' items it does not have: asked with
-// "outfit.stand_ins", the options checked, and refused without the permission.
 // Another player's outfit read, and items hidden on everyone or on one player: the calls, their
 // checks and both permissions; and the list the session reads, with each plugin's going when it does.
 void plugins_read_and_hide_other_players_items() {
@@ -3212,6 +3210,9 @@ void plugins_read_and_hide_other_players_items() {
     const auto before = feed::hidden_items_revision();
     feed::hide_items("b", {{"own_hat"}, {}});
     check(feed::hidden_items_revision() != before, "A plugin's new list changes the revision, so outfits are put on again");
+    const auto same = feed::hidden_items_revision();
+    feed::hide_items("b", {{"own_hat"}, {}});
+    check(feed::hidden_items_revision() == same, "The same list again changes nothing: no player is dressed again for it");
     check(feed::item_hidden(7, "own_skull_mask") && feed::item_hidden(9, "own_skull_mask") && feed::item_hidden(7, "own_nolan_tee") &&
               !feed::item_hidden(9, "own_nolan_tee") && feed::item_hidden(9, "own_hat"),
           "An item hidden on everyone, one hidden on one player only, and every plugin's list together");
@@ -3285,6 +3286,8 @@ void plugins_read_and_hide_other_players_items() {
     check(!game.called("hide-items reader") && !game.called("hide-items hider Own_Hat"), "A plugin without the permission hides nothing");
 }
 
+// What this PC shows in place of other players' items it does not have: asked with
+// "outfit.stand_ins", the options checked, and refused without the permission.
 void plugins_choose_stand_ins() {
     TestEnvironment environment;
     auto& game = environment.fake;
