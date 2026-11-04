@@ -126,6 +126,8 @@ Manifest parse_manifest(std::string_view text) {
     }
     if (result.permissions.contains("events.physics.geometry") && !result.permissions.contains("events.physics"))
         throw std::runtime_error("events.physics.geometry also needs the events.physics permission");
+    if (result.permissions.contains("world.physics.reuse") && !result.permissions.contains("world.physics"))
+        throw std::runtime_error("world.physics.reuse also needs the world.physics permission");
     if (json.contains("effects")) {
         const auto& list = json.at("effects");
         if (!result.permissions.contains("effects") || !list.is_array() || list.size() > 128)

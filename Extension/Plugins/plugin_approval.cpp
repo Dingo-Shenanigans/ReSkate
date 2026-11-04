@@ -53,8 +53,9 @@ constexpr Capability capabilities[] = {
     // Red: real bodies in your game's physics world, pushed with forces, which the game cannot free until it restarts.
     {"world.physics", "WORLD", Risk::red, "Create physical bodies in your world and push them around"},
     {"world.physics.observe", "WORLD", Risk::red, "See what its rays hit, other skaters' shapes included"},
-    // Grey: it adds no authority to world.physics, only a way to bring back its own parked body.
-    {"world.physics.reuse", "WORLD", Risk::grey, "Reuse its own parked bodies"},
+    // Amber: only its own parked bodies, but each comes back at any place it asks, every few ticks,
+    // where world.physics alone sets a body's place once, at one of eight creations.
+    {"world.physics.reuse", "WORLD", Risk::amber, "Bring its own physical bodies back, anywhere in your world"},
     {"objects.physics", "WORLD", Risk::red, "Make your own park's objects fall, roll and get knocked over (offline)"},
     {"travel", "WORLD", Risk::red, "Travel to locations and levels"},
     {"world.environment", "WORLD", Risk::red, "Change the time of day, world controls and parks"},

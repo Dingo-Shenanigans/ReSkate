@@ -1483,6 +1483,10 @@ void effects_require_resident_roots() {
     try { (void)parse_manifest(manifest(R"("events.physics.geometry")")); }
     catch (const std::exception&) { denied = true; }
     check(denied, "Geometry does not bypass the base physics permission");
+    denied = false;
+    try { (void)parse_manifest(manifest(R"("world.physics.reuse")")); }
+    catch (const std::exception&) { denied = true; }
+    check(denied, "Body reuse does not come without the world physics permission");
 }
 
 void expired_effects_return_their_quota() {
@@ -1875,6 +1879,7 @@ void plugin_approval_follows_the_plugins_own_files() {
     for (const auto name : known_permissions()) {
         auto requested = std::string("\"") + std::string(name) + "\"";
         if (name == "events.physics.geometry") requested = R"("events.physics", "events.physics.geometry")";
+        if (name == "world.physics.reuse") requested = R"("world.physics", "world.physics.reuse")";
         const auto requested_prompt = approval_prompt(permission_groups(parse_manifest(manifest(requested))));
         check(requested_prompt.find("\n- ") != std::string::npos && requested_prompt.find("No special permissions") == std::string::npos,
               "A request for " + std::string(name) + " has a capability summary");

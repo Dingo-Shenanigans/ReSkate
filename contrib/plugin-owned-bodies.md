@@ -118,7 +118,9 @@ cleanly can come back under a new handle for the same VM; see below.
 `create(definition, {reuse = true})` needs `"world.physics.reuse"` as well as `"world.physics"`.
 It first looks among the bodies this VM instance parked itself, never another plugin's or another
 VM's, so a plugin reloaded since cannot reach them. A body qualifies when it was parked cleanly
-in the same world generation it was active in, was never quarantined or failed by a setter, and
+in the same world generation it was active in (any tick on which the world is not ready, such as
+a level load or the game leaving its playable state, starts a new generation, and every body parked
+before it stays parked, still counted against the process's eight, and is never re-activated), was never quarantined or failed by a setter, and
 has exactly the requested capsules, mass and inertia, compared bit for bit; position and rotation
 may differ. Before writing anything, the service reads the body to prove it is still as `release`
 left it: allocated in its generation, keyframed, configured, with no pending force, velocity or
@@ -143,8 +145,9 @@ so it is how a plugin asks for a new allocation.
 
 ### Refusal codes
 
-Three refusals are fixed codes rather than sentences, so a plugin can compare `why` with them and
-decide whether to try again. The other refusals of the calls on this page are sentences meant for
+Five refusals are fixed codes rather than sentences, so a plugin can compare `why` with them and
+decide whether to try again: the three below and reuse's two (see
+[re-activating a parked body](#re-activating-a-parked-body)). The other refusals of the calls on this page are sentences meant for
 logs. `probe_batch` has its own codes in `batch.reason`; see [ray batches](plugin-body-query.md).
 
 | Code | From | Meaning |
@@ -201,10 +204,10 @@ covers the Lua binding against a constructed game: opaque handles and epochs, bo
 receipts, acknowledgement order, release on close, reload, the reuse options, owner and quota, and
 the permission and server refusals.
 
-None of that runs the game, and this code has not been run in the game. Creation, measured reads,
-commands produced on the next step, torque, several compounds, a whole session of control, and the
-cleanup of an active body during unload, a world change or a partial failure are checked only
-against constructed worlds and values. Re-activation has been run in the game by one mod, a bike
+None of that runs the game. Creation, measured reads, commands produced on the next step, torque,
+several compounds, a whole session of control, and the cleanup of an active body during unload, a
+world change or a partial failure are checked only against constructed worlds and values.
+Re-activation has been run in the game by one mod, a bike
 that creates one compound with `reuse` on each mount and releases it on each return: in five
 launches, every create made while its body was parked got that body back (5 of 5, no refusal), and
 the bike rode on it, fell and was returned again. In a sixth, twelve Mount and Return cycles made one
