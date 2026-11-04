@@ -307,6 +307,20 @@ std::vector<std::string> report() {
     return lines;
 }
 
+std::vector<PlayerStatus> players() {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    std::vector<PlayerStatus> out;
+    if (!s.exchange) return out;
+    std::set<std::uint64_t> ids(s.connected.begin(), s.connected.end());
+    for (const auto& [id, worn] : s.worn) ids.insert(id);
+    for (const auto id : ids) {
+        const auto st = s.exchange->status(id);
+        out.push_back({id, s.connected.contains(id), st.sharing, st.welcomed, st.items, st.files_missing, st.bytes_received, st.refused});
+    }
+    return out;
+}
+
 void block_player(std::uint64_t player) {
     auto& s = state();
     std::lock_guard lock(s.mutex);

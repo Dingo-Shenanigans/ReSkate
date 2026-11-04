@@ -113,7 +113,7 @@ float page_body_height(const SkateMenu& menu);
 void send_console(SkateMenu& menu, const CallbacksV3& callbacks, const std::string& command);
 void debug_request(SkateMenu& menu, const CallbacksV3& callbacks, DebugRequest request);
 // HOST shows the host form until a session exists, then that session (SESSION).
-inline constexpr int multiplayer_session_tab = 1, multiplayer_voice_tab = 2, multiplayer_bans_tab = 3, multiplayer_chat_tab = 4;
+inline constexpr int multiplayer_session_tab = 1, multiplayer_voice_tab = 2, multiplayer_bans_tab = 3, multiplayer_chat_tab = 4, multiplayer_outfits_tab = 5;
 void multiplayer_display_settings(SkateMenu&, const Model&);
 void special_page(SkateMenu&, const Model&, const CallbacksV3&);
 void multiplayer_network_page(SkateMenu&, const Model&, const CallbacksV3&);

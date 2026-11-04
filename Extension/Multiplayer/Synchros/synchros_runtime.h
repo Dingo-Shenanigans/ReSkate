@@ -39,6 +39,17 @@ void stop(SteamTransport& transport);
 std::string change(const std::function<std::string(Settings&)>& change);
 // How it is going with each player in the session now, one line each.
 [[nodiscard]] std::vector<std::string> report();
+// The same, for the settings page.
+struct PlayerStatus {
+    std::uint64_t id{};
+    bool connected{};      // a side connection is up (they run a ReSkate with Skate Synchros)
+    bool sharing{};        // this player lets them see their outfit
+    bool welcomed{};       // they let this player see theirs
+    std::size_t items{}, files_missing{};
+    std::uint64_t bytes_received{};
+    std::string refused;
+};
+[[nodiscard]] std::vector<PlayerStatus> players();
 // Blocks a player: neither sent to nor shown, and what was received from them is removed.
 void block_player(std::uint64_t player);
 // Empties the cache and every received outfit (they show again as stand-ins after the next load).
