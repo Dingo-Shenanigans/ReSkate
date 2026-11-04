@@ -3,6 +3,8 @@
 #include "Extension/Multiplayer/Synchros/synchros_wire.h"
 #include "Extension/Multiplayer/Synchros/received.h"
 #include "Extension/Multiplayer/Synchros/wearer.h"
+#include "Extension/Multiplayer/Synchros/exchange.h"
+#include <deque>
 #include "Engine/Resource/bundle_ref_table.h"
 #include <cstring>
 #include <map>
@@ -518,6 +520,110 @@ void the_wearer_sends_only_what_is_worn_and_offered() {
     check(outfit.answer(Want{{"own_hat"}})[0].items[0].withheld == Withheld::not_worn, "an item taken off is not offered any more");
 }
 
+// Two games' side connection, in memory: what one sends the other receives on deliver().
+struct Wire final : Channel {
+    std::uint64_t self{};
+    std::deque<std::pair<std::uint64_t, std::vector<std::uint8_t>>>* outbox{};
+    std::set<std::uint64_t> closed;
+    bool send(std::uint64_t peer, std::span<const std::uint8_t> bytes) override {
+        if (closed.contains(peer)) return false;
+        outbox->push_back({peer, {bytes.begin(), bytes.end()}});
+        return true;
+    }
+    std::int64_t pending(std::uint64_t) const override { return 0; }
+    void close(std::uint64_t peer) override { closed.insert(peer); }
+};
+
+void two_players_exchange_an_outfit_end_to_end() {
+    const auto root = std::filesystem::temp_directory_path() / "synchros-exchange-test";
+    std::filesystem::remove_all(root);
+    // `me` wears two modded items and one of the game's; `them` holds my code.
+    FakeCloset my_mods, their_mods;
+    const auto a = my_mods.add(1, max_piece * 3 + 9), b = my_mods.add(2, 500), c = my_mods.add(3, 200, dingosdk::synchros::Piece::chunk);
+    my_mods.cuts["own_hat"] = {"items/own_hat", {a, b}, {{"characters/customization/configs/cas_main_bundlereftable", "characters/own/hat_ap", 7, "win32/characters/customization/configs", "win32/items"}}, 0};
+    my_mods.cuts["own_deck"] = {"items/own_deck", {b, c}, {}, 0};
+    Cache my_cache(root / "mine"), their_cache(root / "theirs");
+    Settings mine, theirs;
+    mine.share = true;
+    mine.own_code = *read_code(make_code(CodeKind::personal), CodeKind::personal);
+    theirs.show = true;
+    check(enter_code(theirs, show_code(mine.own_code, CodeKind::personal)).empty(), "they enter my code");
+
+    std::deque<std::pair<std::uint64_t, std::vector<std::uint8_t>>> to_them, to_me;
+    Wire my_wire, their_wire;
+    my_wire.self = me; my_wire.outbox = &to_them;
+    their_wire.self = them; their_wire.outbox = &to_me;
+    std::vector<std::uint64_t> ready;
+    std::vector<std::string> log;
+    Game my_game{[](std::uint64_t) { return std::set<std::string>{}; }, [](std::string_view) { return true; },
+                 [] { return std::set<std::string>{"own_hat", "own_deck", "cust_tee"}; },
+                 [](std::string_view key) { return key == "cust_tee"; }, nullptr, [&](const std::string& l) { log.push_back(l); }};
+    Game their_game{[](std::uint64_t) { return std::set<std::string>{"own_hat", "own_deck", "cust_tee"}; },
+                    [](std::string_view key) { return key == "cust_tee"; },   // they have the game's own item
+                    [] { return std::set<std::string>{}; }, [](std::string_view key) { return key == "cust_tee"; },
+                    [&](std::uint64_t wearer) { ready.push_back(wearer); }, [&](const std::string& l) { log.push_back(l); }};
+    Exchange my_side(mine, my_cache, my_mods, my_wire, my_game, me);
+    Exchange their_side(theirs, their_cache, their_mods, their_wire, their_game, them);
+    my_side.begin(session);
+    their_side.begin(session);
+    my_side.connected(them);
+    their_side.connected(me);
+    for (int round = 0; round < 50; ++round) {
+        my_side.tick();
+        their_side.tick();
+        while (!to_them.empty()) { auto m = std::move(to_them.front()); to_them.pop_front(); their_side.received(me, m.second); }
+        while (!to_me.empty()) { auto m = std::move(to_me.front()); to_me.pop_front(); my_side.received(them, m.second); }
+    }
+    std::string said;
+    for (const auto& l : log) said += "\n  " + l;
+    check(ready == std::vector<std::uint64_t>{me}, ("they are told my outfit is here, once" + said).c_str());
+    check(mine.paired.contains(them) && my_side.take_settings_changed(), "my code paired them, and my settings changed");
+    check(their_side.status(me).welcomed && my_side.status(them).sharing, "both ends agree I share with them");
+    check(!their_side.status(them).welcomed, "I asked them nothing back: I hold no code of theirs");
+    const auto listing = their_cache.listing(me);
+    check(listing.size() == 2 && their_cache.missing(me).empty(), "both items and every file are in their cache");
+    check(their_cache.has(content_id(std::span(reinterpret_cast<const std::uint8_t*>(my_mods.stored[1].data()), my_mods.stored[1].size()))),
+          "the large file arrived whole");
+
+    // Without my code nobody gets anything.
+    Settings stranger;
+    stranger.show = true;
+    stranger.groups.push_back({"crew", *read_code(make_code(CodeKind::group), CodeKind::group), false});
+    Cache stranger_cache(root / "stranger");
+    std::deque<std::pair<std::uint64_t, std::vector<std::uint8_t>>> to_stranger, from_stranger;
+    Wire w1, w2;
+    w1.outbox = &to_stranger; w2.outbox = &from_stranger;
+    std::vector<std::uint64_t> stranger_ready;
+    Game stranger_game = their_game;
+    stranger_game.outfit_ready = [&](std::uint64_t wearer) { stranger_ready.push_back(wearer); };
+    Exchange my_side_again(mine, my_cache, my_mods, w1, my_game, me);
+    Exchange stranger_side(stranger, stranger_cache, their_mods, w2, stranger_game, other);
+    my_side_again.begin(session);
+    stranger_side.begin(session);
+    stranger_side.connected(me);
+    for (int round = 0; round < 20; ++round) {
+        my_side_again.tick();
+        while (!from_stranger.empty()) { auto m = std::move(from_stranger.front()); from_stranger.pop_front(); my_side_again.received(other, m.second); }
+        while (!to_stranger.empty()) { auto m = std::move(to_stranger.front()); to_stranger.pop_front(); stranger_side.received(me, m.second); }
+    }
+    check(stranger_ready.empty() && stranger_cache.listing(me).empty(), "a stranger with no code of mine gets nothing");
+    check(!my_side_again.status(other).sharing && !mine.paired.contains(other), "and is not let in");
+
+    // A viewer that asks for a file it was not offered is cut off.
+    std::deque<std::pair<std::uint64_t, std::vector<std::uint8_t>>> sink;
+    Wire w3;
+    w3.outbox = &sink;
+    Exchange wearer(mine, my_cache, my_mods, w3, my_game, me);
+    wearer.begin(session);
+    const auto proofs = proofs_for(theirs, session, me, them);
+    wearer.received(them, encode(Message{Hello{session, proofs.personal, proofs.group}}));
+    Fetch stray;
+    stray.files.push_back(ContentId{});
+    wearer.received(them, encode(Message{stray}));
+    check(!wearer.status(them).refused.empty() && w3.closed.contains(them), "fetching what was not offered ends it");
+    std::filesystem::remove_all(root);
+}
+
 int main() {
     try {
         codes_look_right_and_read_back();
@@ -535,6 +641,7 @@ int main() {
         a_file_arrives_in_order_and_whole();
         the_cache_keeps_files_by_content_and_wearer();
         the_wearer_sends_only_what_is_worn_and_offered();
+        two_players_exchange_an_outfit_end_to_end();
     } catch (const std::exception& e) {
         std::cerr << "synchros: " << e.what() << '\n';
         return 1;

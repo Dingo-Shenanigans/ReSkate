@@ -79,6 +79,7 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS)
     add_executable(dingosdk_synchros_tests Extension/Multiplayer/Synchros/Test/synchros_tests.cpp
         Extension/Multiplayer/Synchros/share_code.cpp Extension/Multiplayer/Synchros/synchros_wire.cpp
         Extension/Multiplayer/Synchros/received.cpp Extension/Multiplayer/Synchros/wearer.cpp
+        Extension/Multiplayer/Synchros/exchange.cpp
         Engine/Resource/bundle_ref_table.cpp)
     target_include_directories(dingosdk_synchros_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     if(WIN32)
