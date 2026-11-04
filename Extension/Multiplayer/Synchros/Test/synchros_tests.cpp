@@ -1,8 +1,10 @@
 #include "Extension/Multiplayer/Synchros/sharing_rules.h"
 #include "Extension/Multiplayer/Synchros/share_code.h"
 #include "Extension/Multiplayer/Synchros/synchros_wire.h"
+#include "Extension/Multiplayer/Synchros/received.h"
 #include "Engine/Resource/bundle_ref_table.h"
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 #include <set>
 #include <stdexcept>
@@ -330,6 +332,112 @@ void received_presets_go_into_the_table() {
 }
 } // namespace
 
+std::vector<std::uint8_t> made_bytes(std::size_t size, std::uint8_t seed) {
+    std::vector<std::uint8_t> out(size);
+    for (std::size_t i = 0; i < size; ++i) out[i] = static_cast<std::uint8_t>(seed + i * 7);
+    return out;
+}
+
+File file_of(const std::vector<std::uint8_t>& bytes) {
+    File f = sample_file(1);
+    f.id = content_id(bytes);
+    f.size = static_cast<std::uint32_t>(bytes.size());
+    return f;
+}
+
+std::vector<Piece> pieces_of(const std::vector<std::uint8_t>& bytes) {
+    std::vector<Piece> out;
+    for (std::size_t at = 0; at < bytes.size(); at += max_piece) {
+        const auto end = std::min(bytes.size(), at + max_piece);
+        out.push_back({content_id(bytes), static_cast<std::uint32_t>(at), static_cast<std::uint32_t>(bytes.size()),
+                       {bytes.begin() + static_cast<std::ptrdiff_t>(at), bytes.begin() + static_cast<std::ptrdiff_t>(end)}});
+    }
+    return out;
+}
+
+void sha1_is_sha1() {
+    const std::string abc = "abc";
+    const auto id = content_id({reinterpret_cast<const std::uint8_t*>(abc.data()), abc.size()});
+    check(hex(id) == "a9993e364706816aba3e25717850c26c9cd0d89d", "SHA-1 of abc");
+}
+
+void a_file_arrives_in_order_and_whole() {
+    const auto bytes = made_bytes(max_piece * 2 + 100, 3);
+    const auto pieces = pieces_of(bytes);
+    {
+        Arriving arriving(file_of(bytes));
+        check(arriving.take(pieces[0]) == Arriving::Took::more, "first piece");
+        check(arriving.take(pieces[1]) == Arriving::Took::more, "second piece");
+        check(arriving.take(pieces[2]) == Arriving::Took::whole, "last piece");
+        check(arriving.release() == bytes, "the bytes sent");
+    }
+    {
+        Arriving arriving(file_of(bytes));
+        check(arriving.take(pieces[1]) == Arriving::Took::refused, "out of order");
+    }
+    {
+        Arriving arriving(file_of(bytes));
+        (void)arriving.take(pieces[0]);
+        check(arriving.take(pieces[0]) == Arriving::Took::refused, "the same piece twice");
+    }
+    {
+        auto bad = pieces;
+        bad[2].bytes[0] ^= 1;
+        Arriving arriving(file_of(bytes));
+        (void)arriving.take(bad[0]);
+        (void)arriving.take(bad[1]);
+        check(arriving.take(bad[2]) == Arriving::Took::refused, "bytes that do not hash to the id");
+    }
+    {
+        auto short_first = pieces[0];
+        short_first.bytes.resize(100);
+        Arriving arriving(file_of(bytes));
+        check(arriving.take(short_first) == Arriving::Took::refused, "only the last piece is short");
+    }
+    {
+        auto other_total = pieces[0];
+        other_total.total += 1;
+        Arriving arriving(file_of(bytes));
+        check(arriving.take(other_total) == Arriving::Took::refused, "another total");
+    }
+}
+
+void the_cache_keeps_files_by_content_and_wearer() {
+    const auto root = std::filesystem::temp_directory_path() / "synchros-cache-test";
+    std::filesystem::remove_all(root);
+    Cache cache(root, 1u << 20);
+    const auto a = made_bytes(300000, 1), b = made_bytes(300000, 2), c = made_bytes(300000, 3);
+    check(!cache.put(content_id(a), b), "bytes must hash to their id");
+    check(cache.put(content_id(a), a) && cache.put(content_id(b), b) && cache.put(content_id(c), c), "kept");
+    check(cache.has(content_id(a)) && cache.read(content_id(b)) == b, "read back");
+
+    ItemContents worn{"own_x", Withheld::none, {file_of(a), file_of(b)}, {}};
+    ItemContents theirs{"own_y", Withheld::none, {file_of(b), file_of(c)}, {}};
+    cache.remember(them, {worn});
+    cache.remember(other, {theirs});
+    const auto back = cache.listing(them);
+    check(back.size() == 1 && back[0].item == "own_x" && back[0].files.size() == 2 && back[0].files[0].id == content_id(a),
+          "a wearer's listing reads back");
+    check(cache.wearers() == std::vector<std::uint64_t>{them, other}, "both wearers");
+    check(cache.missing(them).empty(), "nothing missing");
+
+    cache.forget(them);
+    check(!cache.has(content_id(a)), "forgetting a wearer drops their files");
+    check(cache.has(content_id(b)) && cache.has(content_id(c)), "but not files another wearer's items need");
+    check(cache.missing(other).empty(), "the other wearer still has everything");
+
+    const auto d = made_bytes(600000, 4);
+    check(cache.put(content_id(d), d), "kept");
+    check(cache.size() > cache.limit(), "over the limit");
+    cache.trim({other});
+    check(cache.has(content_id(b)) && cache.has(content_id(c)), "trimming keeps what players in the session wear");
+    check(!cache.has(content_id(d)) && cache.size() <= cache.limit(), "and drops the rest to fit");
+
+    cache.empty();
+    check(cache.size() == 0 && cache.wearers().empty(), "emptied");
+    std::filesystem::remove_all(root);
+}
+
 int main() {
     try {
         codes_look_right_and_read_back();
@@ -343,6 +451,9 @@ int main() {
         malformed_messages_are_refused();
         a_message_never_exceeds_steams_limit();
         received_presets_go_into_the_table();
+        sha1_is_sha1();
+        a_file_arrives_in_order_and_whole();
+        the_cache_keeps_files_by_content_and_wearer();
     } catch (const std::exception& e) {
         std::cerr << "synchros: " << e.what() << '\n';
         return 1;

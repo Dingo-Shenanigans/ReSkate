@@ -5,7 +5,7 @@ installing the wearer's mods. Today a peer's item this PC does not have becomes 
 (`Extension/Multiplayer/Remote/stand_ins.h`), so a modded outfit is only ever seen by its wearer.
 
 Status: the parts that need no game running are built and tested (codes, groups, who sees whom,
-the messages, the item cutter, preset rows). The cache layer, the Steam
+the messages, the item cutter, preset rows, receiving files in pieces and the cache). The merge layer over the cache, the Steam
 connection, the settings page and dressing remote skaters are not built yet.
 
 ## What it does
