@@ -253,8 +253,7 @@ Valve's Steam networking headers, and fonts (Montserrat, Permanent Marker).
 | `Test/` | tests for contrib scripts |
 
 Plugin mods (the ports of former built-in features, the test plugins, Fit Check, Animator Studio) are not
-in the repository. Maintainers keep them in `contrib/plugins/`, which is ignored, and
-`dingosdk_plugin_tests` runs the test plugins from there when they are present.
+in the repository. Maintainers keep them in `contrib/plugins/`, which is ignored.
 
 A plugin mod's folder looks like:
 
