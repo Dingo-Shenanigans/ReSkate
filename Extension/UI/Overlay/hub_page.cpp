@@ -167,8 +167,6 @@ struct Hub {
     ULONGLONG join_asked{};
     std::string failed, failed_name; // why the last join did not get in, and where to; empty: nothing to say
     ULONGLONG notice_until{};
-    // The frame the ReSkate menu last drew these pages itself (draw_online_embedded).
-    int embedded_frame{-10};
 };
 Hub &hub() {
     static Hub value;
@@ -1558,10 +1556,8 @@ bool hub_page_pending() {
     return shown;
 }
 
-// One frame of the pages, in `a`..`z` with their tabs at `tabs_y`: in the game's pause menu
-// (draw_hub_page), or on the ReSkate menu's full screen ONLINE page (draw_online_embedded), which
-// keeps B for itself.
-void hub_frame(Hub &h, ImDrawList *draw, float u, ImVec2 a, ImVec2 z, float tabs_y, bool input, bool embedded) {
+// One frame of the pages, in `a`..`z` with their tabs at `tabs_y`, in the game's pause menu (draw_hub_page).
+void hub_frame(Hub &h, ImDrawList *draw, float u, ImVec2 a, ImVec2 z, float tabs_y, bool input) {
     auto &s = state();
     auto &io = ImGui::GetIO();
     Ui ui{h, draw, s.menu.bold ? s.menu.bold : ImGui::GetFont(), s.menu.body ? s.menu.body : ImGui::GetFont(), nullptr, u, io.MousePos,
@@ -1634,11 +1630,11 @@ void hub_frame(Hub &h, ImDrawList *draw, float u, ImVec2 a, ImVec2 z, float tabs
     // On the Mod Manager, a mod's page holds the menu's Back (hold_native_menu_back): B and Escape go
     // back to the list there, and keep holding it until they are let go.
     auto &mods_page = mod_page();
-    const bool on_mods = !embedded && h.page.section == 2;
+    const bool on_mods = h.page.section == 2;
     const bool back_down = keys[7] || (ui.pad.buttons & 0x2000);
     if (ui.input && !typing_before) {
         // Back closes the game's menu, which takes a moment to say so: this goes at once.
-        if (!embedded && (key_new(7) || (pressed & 0x2000))) {
+        if (key_new(7) || (pressed & 0x2000)) {
             if (on_mods && mods_hold_back(mods_page)) mods_back(h, mods_page), mods_page.hold_back_until = GetTickCount64() + 300, h.sound = sound_select;
             else if (on_mods && guard_leave(mods_page)) offer_leave(mods_page), h.sound = sound_select;
             else if (!on_mods || GetTickCount64() >= mods_page.hold_back_until) h.dismissed = true;
@@ -1648,10 +1644,10 @@ void hub_frame(Hub &h, ImDrawList *draw, float u, ImVec2 a, ImVec2 z, float tabs
         const auto tick = GetTickCount64();
         int direction = -1;
         for (int i = 0; i < 4; ++i)
-            if (fresh[static_cast<std::size_t>(i)]) direction = i, h.repeat_at = tick + (embedded ? 420 : 380); // (the full screen menu's pace inside it)
+            if (fresh[static_cast<std::size_t>(i)]) direction = i, h.repeat_at = tick + 380;
         if (direction < 0 && tick >= h.repeat_at)
             for (int i = 0; i < 4; ++i)
-                if (held[static_cast<std::size_t>(i)]) direction = i, h.repeat_at = tick + (embedded ? 160 : 70);
+                if (held[static_cast<std::size_t>(i)]) direction = i, h.repeat_at = tick + 70;
         if (direction >= 0 && on_mods && h.ring && h.focus == featured_card && (direction == 2 || direction == 3)) {
             // Left and right on the Mod Manager's carousel turn it, at a pace to see each card go by.
             mods_page.carousel_turn = direction == 3 ? 1 : -1;
@@ -1687,8 +1683,7 @@ void hub_frame(Hub &h, ImDrawList *draw, float u, ImVec2 a, ImVec2 z, float tabs
             overlay::play_pad({{0, back}, {6, neutral}, {12, neutral}});
         }
     }
-    if (!embedded)
-        dingosdk::multiplayer::hold_native_menu_back(on_mods && (mods_hold_back(mods_page) || guard_leave(mods_page) || GetTickCount64() < mods_page.hold_back_until));
+    dingosdk::multiplayer::hold_native_menu_back(on_mods && (mods_hold_back(mods_page) || guard_leave(mods_page) || GetTickCount64() < mods_page.hold_back_until));
     h.keys_before = keys;
     // A key that ended the typing (Enter, Escape) is still down: it is not a fresh press of anything.
     // And so is one held while the game was not the window in front.
@@ -1697,8 +1692,8 @@ void hub_frame(Hub &h, ImDrawList *draw, float u, ImVec2 a, ImVec2 z, float tabs
     h.items.clear();
 
     // ---- the page's tabs
-    const bool tools = !embedded && h.page.section == 1;
-    const bool mods = !embedded && h.page.section == 2;
+    const bool tools = h.page.section == 1;
+    const bool mods = h.page.section == 2;
     {
         // (Each page keeps the tab it was left on.)
         std::vector<std::pair<int, const char *>> tabs;
@@ -1801,8 +1796,6 @@ void hub_frame(Hub &h, ImDrawList *draw, float u, ImVec2 a, ImVec2 z, float tabs
 void draw_hub_page() {
     auto &h = hub();
     if (!h.shown) return;
-    // (The ReSkate menu drew these pages over this one this frame: once is enough.)
-    if (h.embedded_frame == ImGui::GetFrameCount()) return;
     auto &s = state();
     const auto display = ImGui::GetIO().DisplaySize;
     // One unit of the game's menu in pixels, and where its page sits in this window.
@@ -1815,34 +1808,9 @@ void draw_hub_page() {
     const ImVec2 z(std::min(page_right, a.x + body_most * u), (down - (layout_height - body_bottom) - lower) * u);
     // (A card that asks something over the page has the input while it asks.)
     hub_frame(h, ImGui::GetBackgroundDrawList(), u, a, z, (tabs_top + lower) * u,
-              !others && !s.prompt_input_active.load(std::memory_order_relaxed) && game_window_foreground(s.window.load()), false);
+              !others && !s.prompt_input_active.load(std::memory_order_relaxed) && game_window_foreground(s.window.load()));
 }
 
-void draw_online_embedded(ImDrawList *draw, ImVec2 a, ImVec2 z, const Model &model, const CallbacksV3 &callbacks, bool input) {
-    auto &h = hub();
-    const int frame = ImGui::GetFrameCount();
-    const bool fresh = h.embedded_frame != frame - 1;
-    h.embedded_frame = frame;
-    const auto now = Clock::now();
-    if (fresh) {
-        // What is held as the page comes up is not a press on it.
-        h.last.clear();
-        h.focus = 0;
-        h.searched = false;
-        h.keys_before.fill(true);
-        h.pad_before = ~0U;
-    }
-    if (fresh || now >= h.next_model) {
-        h.next_model = now + 200ms;
-        h.full = model;
-        h.model = model.multiplayer;
-        h.callbacks = callbacks;
-        h.rows_stale = true;
-    }
-    const auto display = ImGui::GetIO().DisplaySize;
-    const float u = std::min(display.x / layout_width, display.y / layout_height);
-    hub_frame(h, draw, u, ImVec2(a.x, a.y + (tabs_height + 64) * u), z, a.y, input, true);
-}
 bool online_embedded_typing() { return hub().typing != 0; }
 
 // Mods being applied with the pause menu closed (most often after the Mod Manager's question): a

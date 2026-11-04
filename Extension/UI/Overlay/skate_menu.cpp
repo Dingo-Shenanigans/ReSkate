@@ -913,6 +913,142 @@ void category_tabs(SkateMenu& menu, int& selected, std::span<const char* const> 
     ImGui::Dummy(ImVec2(0, px(4)));
     ImGui::PopID();
 }
+
+// ---------------------------------------------------------------- rows whose actions open under them
+namespace {
+// One row of the whole menu is open at a time (a list's rows are looked at one by one), so its state
+// is kept here rather than by each page. `refocus` is a row B closed with the focus inside it, which
+// takes the focus back as it draws; `to_actions` asks for the focus on the first action, as A opens it.
+struct OpenRowState {
+    ImGuiID open{}, refocus{};
+    int drawn = -10;          // the frame the open row last drew: one not drawn is gone (another tab, a list that changed)
+    bool to_actions{}, focus_inside{};
+    ImVec2 top_left{};
+    float right{};
+};
+OpenRowState open_rows;
+}
+bool open_row(SkateMenu& menu, const char* id, const OpenRow& row) {
+    ImGui::PushID(id);
+    auto& state = open_rows;
+    const ImGuiID self = ImGui::GetID("##open-row");
+    const int frame = ImGui::GetFrameCount();
+    if (state.open == self && state.drawn < frame - 1) state.open = 0;
+    const auto at = ImGui::GetCursorScreenPos();
+    const float width = ImGui::GetContentRegionAvail().x, height = row.detail.empty() ? row_height() : px(62);
+    bool clicked = false;
+    if (row.openable) clicked = ImGui::InvisibleButton("##open-row", ImVec2(width, height), ImGuiButtonFlags_EnableNav);
+    else ImGui::Dummy(ImVec2(width, height));
+    const bool lit = row.openable && nav_lit(), hovered = row.openable && ImGui::IsItemHovered();
+    if (clicked) {
+        state.to_actions = state.open != self && lit; // lit: A on the controller or the keyboard, not a click
+        state.open = state.open == self ? 0 : self;
+    }
+    if (state.refocus == self) {
+        ImGui::FocusItem();
+        state.refocus = 0;
+    }
+    const bool open = state.open == self;
+    if (lit || hovered) focus_hint = row.hint ? row.hint : open ? "A or B closes this." : "A opens this.";
+    // Off screen (a long list scrolled away) it only takes its place.
+    if (ImGui::IsItemVisible()) {
+        auto* draw = ImGui::GetWindowDrawList();
+        const ImVec2 end(at.x + width, at.y + height);
+        skate_theme::rough_rect(draw, at, end, lit ? paper : open || hovered ? row_hover : row_fill, static_cast<unsigned>(self) & 0xfff, ui_scale);
+        if (row.edge && !open) draw->AddRectFilled(at, ImVec2(at.x + px(4), end.y), row.edge);
+        float x = at.x + px(16);
+        if (row.swatch) {
+            const float s = px(26), y = at.y + (height - s) * .5f;
+            skate_theme::rough_rect(draw, ImVec2(x, y), ImVec2(x + s, y + s), row.swatch, static_cast<unsigned>(self >> 12) & 0xfff, ui_scale);
+            x += s + px(12);
+        }
+        // Right to left: the side text, then the tags after the name, then the name in what is left.
+        float right = end.x - px(16);
+        if (!row.side.empty()) {
+            const auto size = menu.bold->CalcTextSizeA(px(16), FLT_MAX, 0, row.side.c_str());
+            right -= size.x;
+            draw->AddText(menu.bold, px(16), ImVec2(right, at.y + (height - size.y) * .5f),
+                          lit ? focus_ink : row.side_colour ? row.side_colour : muted, row.side.c_str());
+            right -= px(14);
+        }
+        float tags = 0;
+        for (const auto& tag_shown : row.tags) tags += menu.bold->CalcTextSizeA(px(12), FLT_MAX, 0, tag_shown.text).x + px(14) + px(6);
+        const float line = row.detail.empty() ? at.y + (height - px(text_size)) * .5f : at.y + px(10);
+        const auto name = menu.bold->CalcTextSizeA(px(text_size), FLT_MAX, 0, row.name.c_str());
+        const float name_right = std::max(x + px(40), right - tags);
+        draw->PushClipRect(ImVec2(x, at.y), ImVec2(name_right, end.y), true);
+        draw->AddText(menu.bold, px(text_size), ImVec2(x, line), lit ? focus_ink : row.name_colour ? row.name_colour : paper, row.name.c_str());
+        draw->PopClipRect();
+        float tag_x = std::min(x + name.x, name_right) + px(10);
+        draw->PushClipRect(ImVec2(x, at.y), ImVec2(right, end.y), true);
+        for (const auto& tag_shown : row.tags) {
+            const auto size = menu.bold->CalcTextSizeA(px(12), FLT_MAX, 0, tag_shown.text);
+            const float top = line + (px(text_size) - size.y - px(6)) * .5f;
+            draw->AddRectFilled(ImVec2(tag_x, top), ImVec2(tag_x + size.x + px(14), top + size.y + px(6)), tag_shown.colour);
+            draw->AddText(menu.bold, px(12), ImVec2(tag_x + px(7), top + px(3)), skate_theme::black, tag_shown.text);
+            tag_x += size.x + px(14) + px(6);
+        }
+        if (!row.detail.empty())
+            draw->AddText(menu.body, px(15), ImVec2(x, line + px(text_size) + px(6)), lit ? IM_COL32(70, 70, 74, 255) : muted, row.detail.c_str());
+        draw->PopClipRect();
+    }
+    if (!open) {
+        ImGui::PopID();
+        return false;
+    }
+    state.drawn = frame;
+    state.top_left = at;
+    state.right = at.x + width;
+    ImGui::Indent(px(18));
+    ImGui::Dummy(ImVec2(0, px(2)));
+    if (std::exchange(state.to_actions, false)) ImGui::SetKeyboardFocusHere();
+    return true;
+}
+void end_open_row() {
+    auto& state = open_rows;
+    ImGui::Dummy(ImVec2(0, px(4)));
+    ImGui::Unindent(px(18));
+    // A blue stripe down the open row and its actions, so they read as one.
+    const float bottom = ImGui::GetCursorScreenPos().y - ImGui::GetStyle().ItemSpacing.y;
+    ImGui::GetWindowDrawList()->AddRectFilled(state.top_left, ImVec2(state.top_left.x + px(4), bottom), blue);
+    // Whether the focus is on the row or one of its actions, for B (close_open_row).
+    ImGuiContext& g = *GImGui;
+    state.focus_inside = false;
+    if (g.NavWindow && g.NavId && g.NavWindow->RootWindow == ImGui::GetCurrentWindow()->RootWindow) {
+        const ImRect focus = ImGui::WindowRectRelToAbs(g.NavWindow, g.NavWindow->NavRectRel[g.NavLayer]);
+        state.focus_inside = ImRect(state.top_left, ImVec2(state.right, bottom)).Contains(focus.GetCenter());
+    }
+    ImGui::PopID();
+}
+int action_chips(SkateMenu& menu, const char* id, std::initializer_list<RowButton> chips) {
+    int pressed = -1;
+    const int count = static_cast<int>(chips.size());
+    if (count == 0) return pressed;
+    ImGui::PushID(id);
+    const float gap = px(6), room = ImGui::GetContentRegionAvail().x;
+    float widest = 0;
+    for (const auto& chip : chips)
+        widest = std::max(widest, menu.bold->CalcTextSizeA(px(16), FLT_MAX, 0, chip.label, ImGui::FindRenderedTextEnd(chip.label)).x);
+    const int across = std::clamp(static_cast<int>((room + gap) / (widest + px(24) + gap)), 1, count);
+    const float width = (room - gap * static_cast<float>(across - 1)) / static_cast<float>(across);
+    int i = 0;
+    for (const auto& chip : chips) {
+        if (i % across) ImGui::SameLine(0, gap);
+        ImGui::PushID(i);
+        if (button_tile(menu, chip.label, ImVec2(width, px(40)), chip.enabled, chip.on, chip.hint)) pressed = i;
+        ImGui::PopID();
+        ++i;
+    }
+    ImGui::PopID();
+    return pressed;
+}
+bool close_open_row() {
+    auto& state = open_rows;
+    if (!state.open || state.drawn < ImGui::GetFrameCount() - 1 || !state.focus_inside) return false;
+    state.refocus = state.open;
+    state.open = 0;
+    return true;
+}
 }
 
 namespace {
@@ -1118,8 +1254,6 @@ void draw_page_body(SkateMenu& menu, const Model& model, const CallbacksV3& call
     case page_sandbox: trainer_page(menu, model, callbacks); break;
     case page_addons: addons_page(menu, model, callbacks); break;
     case page_plugins: plugins_page(menu); break;
-    // The menu's own ONLINE page in both layouts: the pause menu's pages it drew full screen are laid
-    // out for the whole screen, not a side sheet.
     case page_online: multiplayer_page(menu, model, callbacks); break;
     case page_progress: progression_page(menu, model, callbacks); break;
     case page_mods:
@@ -1559,7 +1693,8 @@ void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& cal
     shown_layout = layout;
     if (visible && idle && was_drawn) {
         if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) visible = false;
-        if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) {
+        // (B closes a list row's actions first, when the focus is in them.)
+        if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) && !close_open_row()) {
             if (menu.page != page_home) open_page(menu, page_home);
             else visible = false;
         }

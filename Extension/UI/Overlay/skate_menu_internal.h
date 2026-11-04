@@ -9,11 +9,8 @@
 #include <vector>
 
 namespace dingosdk::overlay::detail {
-// The game's pause menu Multiplayer pages (hub_page.cpp), drawn into a rectangle of another menu:
-// in `a`..`z` of `draw`, their own focus taking the D-pad, A and LT / RT. And whether one of their
-// text boxes has the keyboard. (The ReSkate menu's ONLINE page no longer draws them, as they are
-// laid out for the whole screen, not a side sheet; a text box of theirs still holds B and Esc.)
-void draw_online_embedded(ImDrawList* draw, ImVec2 a, ImVec2 z, const Model& model, const CallbacksV3& callbacks, bool input);
+// Whether a text box of the game's pause menu Multiplayer pages (hub_page.cpp) has the keyboard: it
+// holds B and Esc, so the ReSkate menu leaves them alone meanwhile.
 bool online_embedded_typing();
 }
 
@@ -172,4 +169,30 @@ enum Page {
 };
 enum Addon { addon_all, addon_music, addon_count, addon_first = addon_music };
 void open_page(SkateMenu&, int page, int addon = -1);
+
+// A list of things (players, servers, bans) as rows whose actions open inline under them: A or a click
+// on a row opens them, closing any other row's; A on the row again, or B while the focus is in it,
+// closes them. A controller's A moves the focus onto the first action; B puts it back on the row.
+// While open_row returns true its id stays pushed: draw the actions (action_chips, sliders, notes),
+// then end_open_row(), only then:
+//     if (open_row(menu, "id", row)) { action_chips(...); end_open_row(); }
+struct RowTag {
+    const char* text;
+    ImU32 colour;
+};
+struct OpenRow {
+    std::string name, detail, side; // detail: a muted second line (none: a one-line row); side: at the right end
+    std::vector<RowTag> tags;       // badges after the name
+    ImU32 swatch = 0;               // a small square before the name (0: none)
+    ImU32 name_colour = 0, side_colour = 0, edge = 0; // 0: the usual; edge: a stripe down the left side
+    bool openable = true;           // false: shown, with nothing to open (and not focusable)
+    const char* hint = nullptr;     // what A does here, for the controller's hint line
+};
+bool open_row(SkateMenu& menu, const char* id, const OpenRow& row);
+void end_open_row();
+// The actions of an open row: compact tiles like button_row's, as many to a line as fit. Returns the
+// one pressed, or -1.
+int action_chips(SkateMenu& menu, const char* id, std::initializer_list<RowButton> chips);
+// B on the controller: closes the open row when the focus is in it. The menu asks before B goes back.
+bool close_open_row();
 }

@@ -16,40 +16,28 @@ namespace {
 // A tile for an addon on ALL ADDONS: what it is, whether it is on, and a way in.
 void addon_tile(SkateMenu& menu, const char* id, const char* title, const char* about, const char* state, ImU32 state_colour,
                 int addon) {
-    if (console_style()) {
-        // Full screen: a tile as the pause menu's, A opens the addon.
-        const auto at = ImGui::GetCursorScreenPos();
-        const ImVec2 size((ImGui::GetContentRegionAvail().x - px(12)) * .5f, px(168));
-        ImGui::PushID(id);
-        const bool pressed = ImGui::InvisibleButton("##addon", size, ImGuiButtonFlags_EnableNav);
-        const bool lit = (ImGui::IsItemFocused() && ImGui::GetIO().NavVisible) || ImGui::IsItemHovered();
-        if (lit) set_console_hint((std::string("Open ") + title + ".").c_str());
-        auto* draw = ImGui::GetWindowDrawList();
-        const ImVec2 end(at.x + size.x, at.y + size.y);
-        skate_theme::rough_rect(draw, at, end, lit ? blue : IM_COL32(26, 26, 26, 235), static_cast<unsigned>(ImGui::GetItemID()) & 0xfff, px(1));
-        draw->PushClipRect(at, end, true);
-        draw->AddText(menu.heading, px(26), ImVec2(at.x + px(20), at.y + px(18)), paper, title);
-        if (state) {
-            const auto text = menu.bold->CalcTextSizeA(px(13), FLT_MAX, 0, state);
-            const ImVec2 tag_at(end.x - px(20) - text.x - px(14), at.y + px(22));
-            draw->AddRectFilled(tag_at, ImVec2(tag_at.x + text.x + px(14), tag_at.y + text.y + px(8)), lit ? paper : state_colour);
-            draw->AddText(menu.bold, px(13), ImVec2(tag_at.x + px(7), tag_at.y + px(4)), skate_theme::black, state);
-        }
-        draw->AddText(menu.body, px(16), ImVec2(at.x + px(20), at.y + px(66)), lit ? paper : muted, about, nullptr, size.x - px(40));
-        draw->PopClipRect();
-        ImGui::PopID();
-        if (pressed) open_page(menu, page_addons, addon);
-        return;
-    }
-    begin_card(menu, id, title);
+    // A tile as the pause menu's; A opens the addon.
+    const auto at = ImGui::GetCursorScreenPos();
+    const ImVec2 size((ImGui::GetContentRegionAvail().x - px(12)) * .5f, px(168));
+    ImGui::PushID(id);
+    const bool pressed = ImGui::InvisibleButton("##addon", size, ImGuiButtonFlags_EnableNav);
+    const bool lit = (ImGui::IsItemFocused() && ImGui::GetIO().NavVisible) || ImGui::IsItemHovered();
+    if (lit) set_console_hint((std::string("Open ") + title + ".").c_str());
+    auto* draw = ImGui::GetWindowDrawList();
+    const ImVec2 end(at.x + size.x, at.y + size.y);
+    skate_theme::rough_rect(draw, at, end, lit ? blue : IM_COL32(26, 26, 26, 235), static_cast<unsigned>(ImGui::GetItemID()) & 0xfff, px(1));
+    draw->PushClipRect(at, end, true);
+    draw->AddText(menu.heading, px(26), ImVec2(at.x + px(20), at.y + px(18)), paper, title);
     if (state) {
-        ImGui::SameLine();
-        tag(menu, state, state_colour);
+        const auto text = menu.bold->CalcTextSizeA(px(13), FLT_MAX, 0, state);
+        const ImVec2 tag_at(end.x - px(20) - text.x - px(14), at.y + px(22));
+        draw->AddRectFilled(tag_at, ImVec2(tag_at.x + text.x + px(14), tag_at.y + text.y + px(8)), lit ? paper : state_colour);
+        draw->AddText(menu.bold, px(13), ImVec2(tag_at.x + px(7), tag_at.y + px(4)), skate_theme::black, state);
     }
-    note(about);
-    ImGui::Dummy(ImVec2(0, px(2)));
-    if (ImGui::Button((std::string("OPEN ") + title + "##" + id).c_str(), ImVec2(-FLT_MIN, px(34)))) open_page(menu, page_addons, addon);
-    end_card();
+    draw->AddText(menu.body, px(16), ImVec2(at.x + px(20), at.y + px(66)), lit ? paper : muted, about, nullptr, size.x - px(40));
+    draw->PopClipRect();
+    ImGui::PopID();
+    if (pressed) open_page(menu, page_addons, addon);
 }
 
 void all_addons(SkateMenu& menu) {
@@ -77,9 +65,10 @@ void addons_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbac
 }
 
 namespace {
-// A HOME tile, in the pause menu's look: rough-cut, blue under the focus or the pointer. Its name
-// at the top; what it is now (ON, OFF, the time of day) under it, or a line about the page it
-// opens. Returns 1 when pressed (A, a click), -1 / 1 for left / right on a tile that `steps`.
+// A HOME tile, in the menu kit's look: rough-cut, white with dark text under the focus, a lighter
+// grey under the pointer. Its name at the top; what it is now (ON, OFF, the time of day) under it,
+// or a line about the page it opens. Returns 1 when pressed (A, a click), -1 / 1 for left / right on
+// a tile that `steps`.
 int home_tile(SkateMenu& menu, const char* id, const char* name, const std::string& value, ImVec2 size, bool enabled, bool on,
               bool steps, const char* hint, bool big_value = true) {
     ImGui::BeginDisabled(!enabled);
@@ -114,18 +103,28 @@ int home_tile(SkateMenu& menu, const char* id, const char* name, const std::stri
     if (focused || hovered) set_console_hint(changing ? "Left / right to change it. A or B when done." : hint);
     auto* draw = ImGui::GetWindowDrawList();
     const ImVec2 end(at.x + size.x, at.y + size.y);
-    const bool lit = enabled && (focused || hovered);
-    skate_theme::rough_rect(draw, at, end, changing ? paper : lit ? blue : enabled ? IM_COL32(26, 26, 26, 235) : IM_COL32(26, 26, 26, 140), seed, px(1));
+    // The kit's greys (skate_menu.cpp): a row's fill, and a step lighter under the pointer. Being
+    // changed it stays white, with a blue bar along its foot.
+    const bool lit = enabled && (focused || changing);
+    const ImU32 fill = lit ? paper : !enabled ? IM_COL32(40, 40, 43, 130) : hovered ? IM_COL32(56, 57, 61, 255) : IM_COL32(40, 40, 43, 255);
+    skate_theme::rough_rect(draw, at, end, fill, seed, px(1));
+    if (changing) draw->AddRectFilled(ImVec2(at.x, end.y - px(4)), end, blue);
+    const ImU32 focus_text = IM_COL32(11, 11, 11, 255);
     draw->PushClipRect(at, end, true);
-    draw->AddText(menu.bold, px(14), ImVec2(at.x + px(18), at.y + px(14)), changing ? skate_theme::black : lit ? paper : muted, name);
-    const float value_size = big_value ? px(24) : px(15);
-    const ImU32 value_ink = changing ? skate_theme::black : !enabled ? muted : lit ? paper : on ? blue : paper;
-    draw->AddText(big_value ? menu.heading : menu.body, value_size, ImVec2(at.x + px(18), end.y - px(16) - value_size), value_ink, value.c_str(),
-                  nullptr, size.x - px(36));
+    draw->AddText(menu.bold, px(14), ImVec2(at.x + px(18), at.y + px(14)), lit ? IM_COL32(70, 70, 74, 255) : muted, name);
+    // The value on one line: a size smaller when the tile is too narrow for it (the side sheet).
+    const float room = size.x - px(36) - (steps && enabled ? px(40) : 0.0f);
+    ImFont* value_font = big_value ? menu.heading : menu.body;
+    float value_size = big_value ? px(24) : px(15);
+    if (big_value && value_font->CalcTextSizeA(value_size, FLT_MAX, 0, value.c_str()).x > room) value_size = px(18);
+    const ImU32 value_ink = lit ? focus_text : !enabled ? muted : on ? blue : paper;
+    draw->PushClipRect(at, ImVec2(at.x + px(18) + room, end.y), true);
+    draw->AddText(value_font, value_size, ImVec2(at.x + px(18), end.y - px(16) - value_size), value_ink, value.c_str());
+    draw->PopClipRect();
     if (steps && enabled) {
         // Left / right change it.
         const float s = px(6), mid = end.y - px(16) - value_size * .5f;
-        const ImU32 arrow = changing ? skate_theme::black : lit ? paper : muted;
+        const ImU32 arrow = lit ? focus_text : hovered ? paper : muted;
         draw->AddTriangleFilled(ImVec2(end.x - px(40), mid), ImVec2(end.x - px(40) + s, mid - s), ImVec2(end.x - px(40) + s, mid + s), arrow);
         draw->AddTriangleFilled(ImVec2(end.x - px(16), mid), ImVec2(end.x - px(16) - s, mid - s), ImVec2(end.x - px(16) - s, mid + s), arrow);
     }
@@ -148,9 +147,9 @@ void quietly(const CallbacksV3& callbacks, const std::string& command) {
 
 void home_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
     ImGui::BeginChild("home", ImVec2(0, page_body_height(menu)), ImGuiChildFlags_NavFlattened);
-    // As many tiles to a row as fit at 150 px or wider: two in the side sheet, five in a wide window.
-    const float gap = px(12), room = ImGui::GetContentRegionAvail().x;
-    const int columns = std::clamp(static_cast<int>((room + gap) / (px(150) + gap)), 2, 5);
+    // As many tiles to a row as fit at 170 px or wider: three in the side sheet, up to five in a wide window.
+    const float gap = px(10), room = ImGui::GetContentRegionAvail().x;
+    const int columns = std::clamp(static_cast<int>((room + gap) / (px(170) + gap)), 2, 5);
     const float width = (room - gap * static_cast<float>(columns - 1)) / static_cast<float>(columns);
     const float left = ImGui::GetCursorPosX();
     int column = 0;

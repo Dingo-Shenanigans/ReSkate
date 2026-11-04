@@ -50,23 +50,6 @@ bool send_private(SkateMenu &menu, const char *action, const std::string &argume
 std::string map_label(const Model &model, std::string_view path) {
     return world_destination_name(path, model.levels);
 }
-void cell_text(const std::string &text) {
-    const float width = std::max(1.f, ImGui::GetContentRegionAvail().x);
-    const char *first = text.data(), *last = first + text.size();
-    const bool clipped = ImGui::CalcTextSize(first, last).x > width;
-    if (clipped) {
-        const float dots = ImGui::CalcTextSize("...").x;
-        while (last > first && ImGui::CalcTextSize(first, last).x + dots > width) {
-            --last;
-            while (last > first && (static_cast<unsigned char>(*last) & 0xc0) == 0x80)
-                --last;
-        }
-        ImGui::Text("%.*s...", static_cast<int>(last - first), first);
-    } else
-        ImGui::TextUnformatted(first, last);
-    if (clipped && ImGui::IsItemHovered())
-        ImGui::SetTooltip("%s", text.c_str());
-}
 } // namespace dingosdk::overlay::menu::multiplayer_detail
 
 namespace dingosdk::overlay::menu {
@@ -95,8 +78,7 @@ void host_page(SkateMenu &menu, const Model &model, const CallbacksV3 &) {
     begin_card(menu, "host-access", "WHO CAN JOIN");
     choice(menu, "visibility", visibility, {"Join code only", "Public lobby"}, editable);
     menu.multiplayer_visibility = visibility;
-    note(visibility == 0 ? "Unlisted. Friends join with the code you share from Session."
-                         : "Listed in the Servers browser. Anyone on a compatible build can join.");
+    note(visibility == 0 ? "Unlisted: friends join with the code you share from Session." : "Listed in Servers: anyone on a compatible build can join.");
     end_card();
 
     begin_card(menu, "host-settings", "LOBBY SETTINGS");
@@ -109,17 +91,20 @@ void host_page(SkateMenu &menu, const Model &model, const CallbacksV3 &) {
     field(menu, "Player limit", "Includes you.");
     ::dingosdk::overlay::menu::slider_int("##player-limit", &capacity, 2, multiplayer_lobby_player_limit, "%d players");
     menu.multiplayer_capacity = capacity;
-    field(menu, "Update rate",
-          "How often nearby skaters update. Higher is smoother but uses more upload bandwidth.");
-    if (ImGui::BeginCombo("##tps", (std::to_string(tps) + " TPS").c_str())) {
-        for (const auto rate : multiplayer_tick_rates) {
-            if (ImGui::Selectable((std::to_string(rate) + " TPS").c_str(), rate == tps)) tps = rate;
-            if (rate == tps) ImGui::SetItemDefaultFocus();
+    ImGui::EndDisabled();
+    {
+        // The tick rates offered, one per step of left / right.
+        std::vector<std::string> rates;
+        int rate = 0;
+        for (const auto offered : multiplayer_tick_rates) {
+            if (offered == tps) rate = static_cast<int>(rates.size());
+            rates.push_back(std::to_string(offered) + " TPS");
         }
-        ImGui::EndCombo();
+        if (option_row(menu, "Update rate", "How often nearby skaters update. Higher is smoother but uses more upload bandwidth.", rate, rates,
+                       editable))
+            tps = multiplayer_tick_rates[static_cast<std::size_t>(rate)];
     }
     menu.multiplayer_tps = tps;
-    ImGui::EndDisabled();
     ImGui::Dummy(ImVec2(0, px(2)));
     toggle_row(menu, "Require password", "Players must enter a password to join.", locked, editable, locked ? "ON" : "OFF");
     menu.multiplayer_password_enabled = locked;
@@ -128,7 +113,7 @@ void host_page(SkateMenu &menu, const Model &model, const CallbacksV3 &) {
         ImGui::InputTextWithHint("##host-password", "Choose a lobby password", menu.multiplayer_host_password.data(),
                                  menu.multiplayer_host_password.size(), ImGuiInputTextFlags_Password);
     }
-    const auto rates = "Nearby players update at " + std::to_string(tps) + " TPS; distant players at 10 and 5 TPS.";
+    const auto rates = "Nearby players update at " + std::to_string(tps) + " TPS, distant ones at 10 and 5.";
     note(rates.c_str());
     end_card();
 
@@ -385,7 +370,6 @@ void multiplayer_network_page(SkateMenu &menu, const Model &model, const Callbac
 void special_page(SkateMenu &menu, const Model &model, const CallbacksV3 &) {
     const auto &mp = model.multiplayer;
     std::array<char, 65> unused{};
-    ImGui::BeginChild("special", ImVec2(0, page_body_height(menu)), ImGuiChildFlags_NavFlattened);
     begin_card(menu, "special-tag", "YOUR TAG");
     {
         // Drawn the way chat and nametags draw it (role_badge.h), and faint while it is off.
@@ -510,7 +494,6 @@ void special_page(SkateMenu &menu, const Model &model, const CallbacksV3 &) {
         end_card();
         ImGui::PopID();
     }
-    ImGui::EndChild();
 }
 void multiplayer_page(SkateMenu &menu, const Model &model, const CallbacksV3 &callbacks) {
     const auto &mp = model.multiplayer;

@@ -22,7 +22,7 @@ bool same_map(std::string_view a, std::string_view b) {
                return std::tolower(x) == std::tolower(y);
            });
 }
-// A tile of the list: its lobby (an index into the model's list) and what it is sorted and
+// A row of the list: its lobby (an index into the model's list) and what it is sorted and
 // filtered by.
 struct Row {
     std::size_t lobby{};
@@ -141,31 +141,22 @@ void prompt_password(SkateMenu &menu, const MultiplayerLobby *lobby, std::string
     menu.multiplayer_password_code = std::move(code);
     menu.multiplayer_password_popup_requested = true;
 }
-// Height the join-by-code card takes below the lobby table.
+// Height the join-by-code card takes below the list, before it has been drawn once.
 float direct_join_height() {
-    return ImGui::GetFrameHeightWithSpacing() + ImGui::GetTextLineHeightWithSpacing() * 2 + px(40);
+    return ImGui::GetFrameHeightWithSpacing() * 2 + ImGui::GetTextLineHeightWithSpacing() * 2 + px(40);
 }
 void direct_join(SkateMenu &menu, const MultiplayerModel &mp) {
     begin_card(menu, "join-code", "JOIN WITH A CODE");
     const bool available = !mp.active && !mp.lobby_joining;
-    const auto &style = ImGui::GetStyle();
-    const float join = ImGui::CalcTextSize("Join").x + style.FramePadding.x * 2 + px(16);
-    const float password = ImGui::CalcTextSize("With password...").x + style.FramePadding.x * 2;
-    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - join - password - style.ItemSpacing.x * 2);
+    ImGui::SetNextItemWidth(-FLT_MIN);
     const bool enter = ImGui::InputTextWithHint(
         "##join-code", "Paste a friend's join code", menu.multiplayer_join_code.data(),
         menu.multiplayer_join_code.size(), ImGuiInputTextFlags_EnterReturnsTrue);
-    ImGui::SameLine();
-    ImGui::BeginDisabled(!available);
-    skate_theme::push_primary_button();
-    const bool join_pressed = ImGui::Button("Join", ImVec2(join, 0));
-    skate_theme::pop_primary_button();
-    ImGui::SameLine();
-    const bool password_pressed = ImGui::Button("With password...", ImVec2(password, 0));
-    ImGui::EndDisabled();
+    const int pressed = button_row(menu, "join-code-actions", {{"JOIN", available, true}, {"WITH PASSWORD", available}});
     note("Joining loads the host's map for you.");
     end_card();
-    if (available && (join_pressed || enter || password_pressed)) {
+    const bool password_pressed = pressed == 1;
+    if (available && (pressed == 0 || enter || password_pressed)) {
         std::string code(menu.multiplayer_join_code.data());
         const auto first = code.find_first_not_of(" \t\r\n"), last = code.find_last_not_of(" \t\r\n");
         code = first == std::string::npos ? std::string{} : code.substr(first, last - first + 1);
@@ -198,10 +189,13 @@ void password_popup(SkateMenu &menu, const Model &model) {
     }
     const auto *viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Appearing, ImVec2(.5f, .5f));
-    ImGui::SetNextWindowSize(ImVec2(std::min(420.f, viewport->WorkSize.x - 24.f), 0), ImGuiCond_Always);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(18, 16));
+    ImGui::SetNextWindowSize(ImVec2(std::min(px(460), viewport->WorkSize.x - 24.f), 0), ImGuiCond_Always);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(px(18), px(16)));
     bool open = true;
+    // B on the controller cancels, but not the press that only ended typing in the password box.
+    static bool typing_before{};
     if (ImGui::BeginPopupModal(title, &open, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize)) {
+        if (ImGui::IsWindowAppearing()) typing_before = false;
         const auto &mp = model.multiplayer;
         const bool by_code = !menu.multiplayer_password_code.empty();
         std::string unavailable;
@@ -214,7 +208,7 @@ void password_popup(SkateMenu &menu, const Model &model) {
             ImGui::PushFont(menu.bold);
             ImGui::TextWrapped("%s", target.name.c_str());
             ImGui::PopFont();
-            ImGui::TextWrapped("%s", map_label(model, target.map).c_str());
+            note(map_label(model, target.map).c_str());
             const auto current = std::find_if(mp.lobbies.begin(), mp.lobbies.end(), [&](const auto &row) {
                 return row.id == target.id && row.owner == target.owner && row.code == target.code &&
                        same_map(row.map, target.map);
@@ -224,31 +218,29 @@ void password_popup(SkateMenu &menu, const Model &model) {
             else if (current->players >= current->capacity)
                 unavailable = "This lobby is now full.";
             if (!same_map(target.map, mp.map))
-                ImGui::TextWrapped("Joining will load this host's map automatically.");
+                note("Joining will load this host's map automatically.");
         } else
-            ImGui::TextWrapped("Join the session using your code and password.");
+            note("Join the session using your code and password.");
         ImGui::Spacing();
-        ImGui::TextUnformatted("Password");
+        field(menu, "Password");
         if (ImGui::IsWindowAppearing())
             ImGui::SetKeyboardFocusHere();
-        ImGui::SetNextItemWidth(-1);
         const bool enter = ImGui::InputText(
             "##lobby-password", menu.multiplayer_join_password.data(), menu.multiplayer_join_password.size(),
             ImGuiInputTextFlags_EnterReturnsTrue |
                 (menu.multiplayer_password_show ? 0 : ImGuiInputTextFlags_Password));
-        ImGui::Checkbox("Show password", &menu.multiplayer_password_show);
+        toggle_row(menu, "Show password", nullptr, menu.multiplayer_password_show);
         if (!unavailable.empty())
-            ImGui::TextWrapped("%s", unavailable.c_str());
+            warn(unavailable.c_str());
         else if (!menu.multiplayer_password_error.empty())
-            ImGui::TextWrapped("%s", menu.multiplayer_password_error.c_str());
+            warn(menu.multiplayer_password_error.c_str());
         ImGui::Spacing();
-        const float button_width = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * .5f;
-        ImGui::BeginDisabled(!unavailable.empty() || !menu.multiplayer_join_password[0]);
-        const bool join = ImGui::Button("Join lobby", ImVec2(button_width, 0));
-        ImGui::EndDisabled();
-        ImGui::SameLine();
-        const bool cancel =
-            ImGui::Button("Cancel", ImVec2(button_width, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape);
+        const int pressed = button_row(menu, "password-actions",
+                                       {{"JOIN LOBBY", unavailable.empty() && menu.multiplayer_join_password[0] != 0, true}, {"CANCEL"}});
+        const bool join = pressed == 0;
+        const bool cancel = pressed == 1 || ImGui::IsKeyPressed(ImGuiKey_Escape) ||
+                            (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) && !typing_before);
+        typing_before = ImGui::IsAnyItemActive();
         if (cancel) {
             clear_password_prompt(menu);
             ImGui::CloseCurrentPopup();
@@ -281,144 +273,76 @@ void join_page(SkateMenu &menu, const Model &model, const CallbacksV3 &callbacks
     const int wait = browse_wait(mp);
     if (menu.multiplayer_lobbies_frame != frame - 1 && !wait) send_console(menu, callbacks, "mp browse");
     menu.multiplayer_lobbies_frame = frame;
-    // Toolbar: search, sort, same-map filter and refresh on one row.
-    const auto &style = ImGui::GetStyle();
-    constexpr std::array<const char *, 4> sorts{"Best match", "Most players", "Name", "Map"};
+    // Search, then the order, the filters and refresh as one row of tiles.
+    constexpr std::array<const char *, 4> sorts{"BEST MATCH", "MOST PLAYERS", "BY NAME", "BY MAP"};
     menu.multiplayer_lobby_sort = std::clamp(menu.multiplayer_lobby_sort, 0, static_cast<int>(sorts.size()) - 1);
-    const auto refresh_label = (wait ? "Refresh in " + std::to_string(wait) : std::string(mp.lobby_searching ? "Refreshing..." : "Refresh")) + "###refresh";
-    const float refresh_width = ImGui::CalcTextSize("Refreshing...").x + style.FramePadding.x * 2;
-    const float sort_width = ImGui::CalcTextSize("Most players").x + style.FramePadding.x * 2 + ImGui::GetFrameHeight();
-    const float same_map_width = ImGui::GetFrameHeight() + style.ItemInnerSpacing.x + ImGui::CalcTextSize("Same map only").x;
-    const float dedicated_width = ImGui::GetFrameHeight() + style.ItemInnerSpacing.x + ImGui::CalcTextSize("Dedicated only").x;
-    ImGui::SetNextItemWidth(std::max(px(120), ImGui::GetContentRegionAvail().x - refresh_width - sort_width -
-                                                  same_map_width - dedicated_width - style.ItemSpacing.x * 4 - px(8)));
-    ImGui::InputTextWithHint("##lobby-filter", "Search servers or maps", menu.multiplayer_lobby_search.data(),
+    ImGui::SetNextItemWidth(-FLT_MIN);
+    ImGui::InputTextWithHint("##lobby-filter", "Search servers, maps or friends", menu.multiplayer_lobby_search.data(),
                              menu.multiplayer_lobby_search.size());
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(sort_width);
-    ImGui::Combo("##lobby-sort", &menu.multiplayer_lobby_sort, sorts.data(), static_cast<int>(sorts.size()));
-    ImGui::SameLine(0, style.ItemSpacing.x + px(8));
-    ImGui::Checkbox("Same map only", &menu.multiplayer_same_map_only);
-    ImGui::SameLine();
-    ImGui::Checkbox("Dedicated only", &menu.multiplayer_dedicated_only);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Dedicated servers are always up and are not someone's own game.");
-    ImGui::SameLine();
-    ImGui::BeginDisabled(wait || mp.lobby_joining);
-    if (ImGui::Button(refresh_label.c_str(), ImVec2(refresh_width, 0)))
-        send_console(menu, callbacks, "mp browse");
-    ImGui::EndDisabled();
+    const auto refresh_label = wait ? "REFRESH IN " + std::to_string(wait) : std::string(mp.lobby_searching ? "REFRESHING..." : "REFRESH");
+    const int tool = button_row(menu, "lobby-tools",
+        {{sorts[static_cast<std::size_t>(menu.multiplayer_lobby_sort)], true, false, "A changes the order: best match, most players, name or map."},
+         {"SAME MAP", true, menu.multiplayer_same_map_only, "Only servers on the map you are on."},
+         {"DEDICATED", true, menu.multiplayer_dedicated_only, "Only dedicated servers: always up, not someone's own game."},
+         {refresh_label.c_str(), !wait && !mp.lobby_joining, false, "Look for servers again."}});
+    if (tool == 0) menu.multiplayer_lobby_sort = (menu.multiplayer_lobby_sort + 1) % static_cast<int>(sorts.size());
+    if (tool == 1) menu.multiplayer_same_map_only = !menu.multiplayer_same_map_only;
+    if (tool == 2) menu.multiplayer_dedicated_only = !menu.multiplayer_dedicated_only;
+    if (tool == 3) send_console(menu, callbacks, "mp browse");
 
     const auto &rows = lobby_list(menu, model);
     const auto shown = std::to_string(rows.size()) + " of " + std::to_string(mp.lobbies.size()) + " servers" +
         (mp.browser_status.empty() ? std::string{} : "  -  " + mp.browser_status);
     note(shown.c_str());
 
-    // One tile per lobby in a list that scrolls on its own, so the code card
-    // below always stays in view.
-    // The card's real height from the last frame; the estimate only covers the first.
+    // A row per server in a list that scrolls on its own, so the code card below always stays in
+    // view. The card's real height from the last frame; the estimate only covers the first.
     const float code_space = menu.multiplayer_code_height > 0 ? menu.multiplayer_code_height : direct_join_height() + px(8);
     const float height = std::max(px(120), ImGui::GetContentRegionAvail().y - code_space);
     ImGui::BeginChild("lobby-list", ImVec2(0, height), ImGuiChildFlags_NavFlattened);
-    auto *draw = ImGui::GetWindowDrawList();
-    const float tile_height = px(66), pad = px(14), gap = px(6);
-    const float join_width = px(110);
-    // Only the tiles in view are drawn; every tile is the same height.
-    ImGuiListClipper clipper;
-    clipper.Begin(static_cast<int>(rows.size()));
-    while (clipper.Step()) {
-        for (auto i = static_cast<std::size_t>(clipper.DisplayStart); i < static_cast<std::size_t>(clipper.DisplayEnd); ++i) {
-            const auto &row = rows[i];
-            const auto &lobby = mp.lobbies[row.lobby];
-            const auto id = std::to_string(lobby.id);
-            ImGui::PushID(id.c_str());
-            const auto top = ImGui::GetCursorScreenPos();
-            const float width = ImGui::GetContentRegionAvail().x;
-            // From a session they joined a player can hop straight to another; a host ends theirs first.
-            const bool here = mp.active && lobby.id == mp.public_lobby;
-            const bool hop = mp.active && !mp.hosting && !mp.echo && !here;
-            const bool joinable = (!mp.active || hop) && !mp.lobby_joining && !row.self && !row.full;
-            // The team's own servers are ReSkate blue, and the ones friends are skating in green.
-            const bool with_friends = !lobby.friends.empty() && !lobby.official;
-            skate_theme::rough_rect(draw, top, ImVec2(top.x + width, top.y + tile_height),
-                                    lobby.official ? skate_theme::official_tile : with_friends ? skate_theme::friends_tile : skate_theme::tile,
-                                    static_cast<unsigned>(i + 41), px(1));
-            if (lobby.official || with_friends)
-                draw->AddRect(top, ImVec2(top.x + width, top.y + tile_height), lobby.official ? skate_theme::official : skate_theme::good, 0, 0,
-                              px(1.5f));
-            if (row.same_map) draw->AddRectFilled(top, ImVec2(top.x + px(4), top.y + tile_height), skate_theme::blue);
-
-            // Right: Join, then the player count and tags leading into it.
-            const float join_x = top.x + width - pad - join_width;
-            ImGui::SetCursorScreenPos(ImVec2(join_x, top.y + (tile_height - ImGui::GetFrameHeight()) * .5f));
-            ImGui::BeginDisabled(!joinable);
-            skate_theme::push_primary_button();
-            ImGui::PushFont(menu.bold);
-            if (ImGui::Button(row.self ? "YOURS" : here ? "HERE" : row.full ? "FULL" : "JOIN", ImVec2(join_width, 0))) {
-                if (lobby.password_required) prompt_password(menu, &lobby);
-                else send_private(menu, "join-lobby", id, menu.multiplayer_join_password, false);
-            }
-            ImGui::PopFont();
-            skate_theme::pop_primary_button();
-            ImGui::EndDisabled();
-            if (!joinable && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
-                ImGui::SetTooltip("%s", row.self ? "This is your lobby." : here ? "You are skating here."
-                                        : row.full ? "This server is full."
-                                        : mp.lobby_joining ? "A lobby join is in progress."
-                                                           : "End your session before joining another.");
-            } else if (joinable && ImGui::IsItemHovered()) {
-                if (hop && row.same_map) ImGui::SetTooltip("Leaves your current session and joins this one.");
-                else if (hop) ImGui::SetTooltip("Leaves your current session, loads %s and joins this one.", row.map.c_str());
-                else if (!row.same_map) ImGui::SetTooltip("Joining loads %s for you.", row.map.c_str());
-            }
-            const auto players = std::to_string(lobby.players) + " / " + std::to_string(lobby.capacity);
-            const auto players_size = menu.bold->CalcTextSizeA(px(18), FLT_MAX, 0, players.c_str());
-            float right = join_x - px(18) - players_size.x;
-            draw->AddText(menu.bold, px(18), ImVec2(right, top.y + (tile_height - players_size.y) * .5f),
-                          row.full ? skate_theme::danger : skate_theme::white, players.c_str());
-            if (lobby.password_required) {
-                const auto size = menu.bold->CalcTextSizeA(px(12), FLT_MAX, 0, "PASSWORD");
-                right -= size.x + px(14) + px(12);
-                ImGui::SetCursorScreenPos(ImVec2(right, top.y + (tile_height - ImGui::GetFrameHeight()) * .5f));
-                tag(menu, "PASSWORD", skate_theme::warning);
-            }
-            {
-                const char *kind = lobby.official ? "OFFICIAL" : lobby.dedicated ? "DEDICATED" : "PLAYER";
-                const auto size = menu.bold->CalcTextSizeA(px(12), FLT_MAX, 0, kind);
-                right -= size.x + px(14) + px(12);
-                ImGui::SetCursorScreenPos(ImVec2(right, top.y + (tile_height - ImGui::GetFrameHeight()) * .5f));
-                tag(menu, kind, lobby.official ? skate_theme::official : lobby.dedicated ? skate_theme::blue : skate_theme::tile_light);
-            }
-
-            // Left: lobby name over its map.
-            const float text_width = std::max(px(60), right - top.x - pad * 2);
-            ImGui::SetCursorScreenPos(ImVec2(top.x + pad + px(4), top.y + px(12)));
-            ImGui::BeginGroup();
-            ImGui::PushFont(menu.bold);
-            ImGui::PushClipRect(ImGui::GetCursorScreenPos(),
-                                ImVec2(ImGui::GetCursorScreenPos().x + text_width, top.y + tile_height), true);
-            if (lobby.official || with_friends)
-                ImGui::PushStyleColor(ImGuiCol_Text, lobby.official ? skate_theme::official_text : skate_theme::friends_text);
-            ImGui::TextUnformatted(lobby.name.c_str());
-            if (lobby.official || with_friends) ImGui::PopStyleColor();
-            ImGui::PopFont();
-            ImGui::PushStyleColor(ImGuiCol_Text, skate_theme::grey_text);
-            ImGui::TextUnformatted((row.map + (row.same_map ? "  -  your map" : "") +
-                                    (lobby.ping >= 0 ? "  -  " + std::to_string(lobby.ping) + " ms" : std::string{})).c_str());
-            ImGui::PopStyleColor();
-            if (!lobby.friends.empty()) {
-                ImGui::SameLine(0, 0);
-                ImGui::PushStyleColor(ImGuiCol_Text, skate_theme::good);
-                ImGui::TextUnformatted(("  -  with " + lobby_friends_text(lobby)).c_str());
-                ImGui::PopStyleColor();
-            }
-            ImGui::PopClipRect();
-            ImGui::EndGroup();
-
-            ImGui::SetCursorScreenPos(ImVec2(top.x, top.y + tile_height + gap));
-            ImGui::Dummy(ImVec2(0, 0));
-            ImGui::PopID();
+    for (const auto &row : rows) {
+        const auto &lobby = mp.lobbies[row.lobby];
+        const auto id = std::to_string(lobby.id);
+        // From a session they joined a player can hop straight to another; a host ends theirs first.
+        const bool here = mp.active && lobby.id == mp.public_lobby;
+        const bool hop = mp.active && !mp.hosting && !mp.echo && !here;
+        const bool joinable = (!mp.active || hop) && !mp.lobby_joining && !row.self && !row.full;
+        // The team's own servers are ReSkate blue, and the ones friends are skating in green; a blue
+        // edge marks the ones on your map.
+        const bool with_friends = !lobby.friends.empty() && !lobby.official;
+        OpenRow entry;
+        entry.name = lobby.name;
+        entry.detail = row.map + (row.same_map ? "  -  your map" : "") +
+                       (lobby.ping >= 0 ? "  -  " + std::to_string(lobby.ping) + " ms" : std::string{}) +
+                       (lobby.friends.empty() ? std::string{} : "  -  with " + lobby_friends_text(lobby));
+        entry.side = std::to_string(lobby.players) + " / " + std::to_string(lobby.capacity);
+        entry.side_colour = row.full ? skate_theme::danger : skate_theme::white;
+        entry.name_colour = lobby.official ? skate_theme::official_text : with_friends ? skate_theme::friends_text : 0;
+        entry.edge = row.same_map ? skate_theme::blue : 0;
+        entry.tags.push_back({lobby.official ? "OFFICIAL" : lobby.dedicated ? "DEDICATED" : "PLAYER",
+                              lobby.official ? skate_theme::official : lobby.dedicated ? skate_theme::blue : skate_theme::grey_text});
+        if (lobby.password_required) entry.tags.push_back({"PASSWORD", skate_theme::warning});
+        entry.hint = "A to join, or for more about this server.";
+        if (!open_row(menu, id.c_str(), entry)) continue;
+        // What joining does from here, or why it cannot (a controller has no tooltips).
+        const auto about = row.self ? std::string("This is your lobby.") : here ? std::string("You are skating here.")
+                         : row.full ? std::string("This server is full.")
+                         : mp.lobby_joining ? std::string("A lobby join is in progress.")
+                         : !joinable ? std::string("End your session before joining another.")
+                         : hop && row.same_map ? std::string("Leaves your current session and joins this one.")
+                         : hop ? "Leaves your current session, loads " + row.map + " and joins this one."
+                         : !row.same_map ? "Joining loads " + row.map + " for you." : std::string{};
+        if (!about.empty()) note(about.c_str());
+        if (!lobby.friends.empty()) info(menu, "Friends here", lobby_friends_text(lobby, lobby.friends.size()));
+        const int pressed = action_chips(menu, "join",
+            {{row.self ? "YOURS" : here ? "HERE" : row.full ? "FULL" : "JOIN", joinable, true},
+             {"WITH PASSWORD", joinable, false, "Type the server's password before joining."}});
+        if (pressed == 0) {
+            if (lobby.password_required) prompt_password(menu, &lobby);
+            else send_private(menu, "join-lobby", id, menu.multiplayer_join_password, false);
         }
+        if (pressed == 1) prompt_password(menu, &lobby);
+        end_open_row();
     }
     if (rows.empty()) {
         ImGui::Dummy(ImVec2(0, px(18)));
