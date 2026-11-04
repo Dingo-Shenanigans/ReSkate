@@ -58,7 +58,7 @@ and `impulse` vectors (zero when left out) and, for a nonzero one-shot impulse, 
 for `force + impulse / h` together: safety limits, not tuning. Each body has one pending inbox and
 a ring of four receipts. Publishing reserves a ring slot before any native setter; a pending
 inbox is never replaced, and a full ring refuses without spending the caller's serial or impulse.
-Two of its refusals are fixed codes; see [refusal codes](#refusal-codes).
+Two of `submit`'s refusals are fixed codes; see [refusal codes](#refusal-codes).
 
 A command computed from sample epoch **N** targets only native step **N+1**, with the same step
 length and time `sample.time + h`. A step still at N waits; a missed N+1 or 100 ms of wall time
@@ -105,11 +105,12 @@ touched and the body is quarantined; such a body is not claimed to be stopped.
 ### Refusal codes
 
 Three refusals are fixed codes rather than sentences, so a plugin can compare `why` with them and
-decide whether to try again. The other refusals are sentences meant for logs.
+decide whether to try again. The other refusals of the calls on this page are sentences meant for
+logs. `probe_batch` has its own codes in `batch.reason`; see [ray batches](plugin-body-query.md).
 
 | Code | From | Meaning |
 | --- | --- | --- |
-| `body_preallocation_unavailable` | `create` | The producer setup is still pending, or no fresh 60 Hz step of the local skater could be captured. No slot was reserved and nothing was allocated, so a later `create` may succeed. |
+| `body_preallocation_unavailable` | `create` | The producer setup is still pending, or the local skater, world or 60 Hz step clock cannot be captured now. No slot was reserved and nothing was allocated, so a later `create` may succeed. |
 | `body_clock_unavailable` | `submit` | The body's step clock cannot be qualified now: no step in the last 250 ms, the latest step did not publish or was another skater's or world's, the step is not 1/60 s, or the clock was being written at that moment. |
 | `body_epoch_expired` | `submit` | The clock is qualified but has moved past the latest sample, or a later `read` or `receipt` published a newer sample than the epoch passed in. Read again and compute from the new sample. |
 

@@ -40,8 +40,9 @@ and calls no native allocator, setter or force.
 
 A one-shot body mod should prepare explicitly, wait for a later tick after a pending answer, call
 `prepare` again, and only after `true` make its single `create`. Failed `create` calls are not a
-readiness probe; the API retries nothing for the caller. `create` reports a pending setup and a
-missing fresh step alike, as `body_preallocation_unavailable`; `prepare` tells them apart.
+readiness probe; the API retries nothing for the caller. `create` reports a pending setup and an
+uncapturable skater, world or clock alike, as `body_preallocation_unavailable`; `prepare` tells
+them apart.
 
 ## Tests
 
