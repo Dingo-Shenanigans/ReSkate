@@ -1,6 +1,8 @@
 #include "trainer_gamestate.h"
 #include "Engine/Core/Hooks/hooks.h"
 #include "Extension/Skater/client_source_spawn.h"
+#include "Engine/Game/Build/addresses.h"
+#include "Engine/Game/Build/20260929/game_states.h"
 #include <windows.h>
 #include <atomic>
 #include <cmath>
@@ -11,6 +13,7 @@
 
 namespace dingosdk::trainer {
 namespace {
+namespace states = addr::game_states;
 // Game build 20260929.
 //
 // A game state is an asset object in memory: its 16-byte asset id, then the object, with its
@@ -23,7 +26,6 @@ namespace {
 // The skater's pages hang off its AntDrivenComponent: + 0x68 is the animatable, which leads to
 // the block of pages (known by its vtable) two ways, + 0xe8 -> + 0x8 and + 0x1d8 -> + 0x248;
 // page n is at block + 0x60 + n * 8.
-constexpr std::uintptr_t ant_driven_vtable = 0x63aaee8, states_block_vtable = 0x61a8bd8;
 constexpr std::uintptr_t component_collection = 0x70, collection_count = 0x8, collection_first = 0x20, collection_step = 0x20;
 constexpr std::uintptr_t driven_animatable = 0x68, block_pages = 0x60, page_map = 0x71c;
 constexpr std::uintptr_t block_ways[2][2]{{0xe8, 0x8}, {0x1d8, 0x248}};
@@ -158,13 +160,13 @@ std::uintptr_t states_block(std::uintptr_t base, std::uintptr_t entity) noexcept
     for (unsigned i = 0; i < count; ++i) {
         std::uintptr_t component{}, type{}, animatable{};
         if (!peek(collection + collection_first + i * collection_step, component) || !pointer(component) || !peek(component, type) ||
-            type != base + ant_driven_vtable)
+            type != base + states::ant_driven_vtable)
             continue;
         if (!peek(component + driven_animatable, animatable) || !pointer(animatable)) return 0;
         for (const auto &way : block_ways) {
             std::uintptr_t holder{}, block{};
             if (peek(animatable + way[0], holder) && pointer(holder) && peek(holder + way[1], block) && pointer(block) && peek(block, type) &&
-                type == base + states_block_vtable)
+                type == base + states::states_block_vtable)
                 return block;
         }
         return 0;
@@ -365,8 +367,6 @@ int grind_setting_of(std::uintptr_t asset) noexcept {
 
 // The game's lookup of a state's value: (state object, context with the pages) -> where the value is, 0 when the
 // context has none. All of it is 0x79 bytes; these are its first.
-constexpr std::uintptr_t state_lookup = 0x11dcdd0;
-constexpr unsigned char state_lookup_bytes[]{0x48, 0x83, 0xec, 0x28, 0x80, 0x79, 0x2b, 0x00, 0x4c, 0x8b, 0xd2, 0x4c, 0x8b, 0xc9};
 using StateLookup = std::uintptr_t (*)(std::uintptr_t object, std::uintptr_t context);
 struct HeldSwitch {
     std::atomic<std::uintptr_t> object{};
@@ -420,8 +420,6 @@ void scale_timescale(std::uintptr_t at) noexcept {
 // it finds the value with 0x11dcff0 and stores it. The underflip's clips take their rate as they start, in the tick the
 // game sets UnderflipTimeScale, so scaling on later lookups came too late (owner's round of 2026-10-19: the one reader
 // through the lookup got the scaled number, the underflip still turned at full speed). Scaled as the game sets it.
-constexpr std::uintptr_t float_setter = 0x11dd7d0;
-constexpr unsigned char float_setter_bytes[]{0x48, 0x83, 0xec, 0x38, 0x48, 0x8b, 0xc2, 0x41, 0xb0, 0x01, 0x48, 0x8d, 0x51, 0xa0};
 using FloatSetter = void (*)(std::uintptr_t self, std::uintptr_t context, float value);
 std::atomic<FloatSetter> setter_original{};
 std::atomic<std::uint32_t> timescale_sets{}, timescale_sets_scaled{};
@@ -461,8 +459,6 @@ void float_setter_hook(std::uintptr_t self, std::uintptr_t context, float value)
 // The game's lookup of a state's value for writing (context, object, create) -> where to write. Hooked only to see who
 // writes TrickFlipSpeed: the underflip's fresh 1.000 did not come through the number setter (owner's round of
 // 2026-10-19: armed, nothing scaled). Two tables: writes while the trainer is armed for an underflip, and the others.
-constexpr std::uintptr_t state_write_lookup = 0x11dcff0;
-constexpr unsigned char state_write_lookup_bytes[]{0x48, 0x89, 0x6c, 0x24, 0x18, 0x48, 0x89, 0x74, 0x24, 0x20, 0x57, 0x41, 0x56, 0x41, 0x57};
 using StateWriteLookup = std::uintptr_t (*)(std::uintptr_t context, std::uintptr_t object, bool create);
 std::atomic<StateWriteLookup> write_lookup_original{};
 struct CallerTable {
@@ -500,8 +496,6 @@ std::uintptr_t state_write_lookup_hook(std::uintptr_t context, std::uintptr_t ob
 // destination's own): it finds both values and has the destination's type copy them. This is how TrickFlipSpeed is set,
 // at the flick and again as an underflip starts (the only writer of it, owner's round of 2026-10-19: 0x11d9a7b is its
 // call of the write lookup). Underflip speed scales the copy right after it, before anything reads it.
-constexpr std::uintptr_t state_copy = 0x11d9a40;
-constexpr unsigned char state_copy_bytes[]{0x40, 0x53, 0x55, 0x56, 0x57, 0x48, 0x83, 0xec, 0x28, 0x4d, 0x85, 0xc9, 0x48, 0x8b, 0xd9};
 using StateCopy = void (*)(std::uintptr_t object, std::uintptr_t context, std::uintptr_t source_context, std::uintptr_t source_object);
 std::atomic<StateCopy> copy_original{};
 void state_copy_hook(std::uintptr_t object, std::uintptr_t context, std::uintptr_t source_context, std::uintptr_t source_object) {
@@ -521,8 +515,6 @@ void state_copy_hook(std::uintptr_t object, std::uintptr_t context, std::uintptr
 // "Underflip part only" scales the rate of every controller asked during it (measured 2026-10-19: one to three, the
 // underflip's own among them; the owner saw the under part turn at Underflip speed). In the air with another gravity
 // "Animation timing" (Advanced gravity) scales them too (air_animation_rate, client_noclip.cpp).
-constexpr std::uintptr_t rate_compute = 0x10dd2f0;
-constexpr unsigned char rate_compute_bytes[]{0x40, 0x53, 0x48, 0x83, 0xec, 0x30, 0x83, 0xb9, 0xac, 0x00, 0x00, 0x00, 0x00};
 using RateCompute = float (*)(std::uintptr_t self);
 std::atomic<RateCompute> rate_original{};
 std::atomic<float> under_part_rate{0};
@@ -555,13 +547,13 @@ std::uintptr_t state_lookup_hook(std::uintptr_t object, std::uintptr_t context) 
 }
 bool lookup_code_known(std::uintptr_t base) noexcept {
     __try {
-        return std::memcmp(reinterpret_cast<const void *>(base + state_lookup), state_lookup_bytes, sizeof(state_lookup_bytes)) == 0;
+        return std::memcmp(reinterpret_cast<const void *>(base + states::state_lookup), states::state_lookup_prefix.data(), states::state_lookup_prefix.size()) == 0;
     } __except (1) { return false; }
 }
 bool start_state_holds(std::uintptr_t base) noexcept {
     if (!base || lookup_attempted.exchange(true)) return lookup_ready.load(std::memory_order_relaxed);
     if (!lookup_code_known(base)) return false;
-    auto *target = reinterpret_cast<void *>(base + state_lookup);
+    auto *target = reinterpret_cast<void *>(base + states::state_lookup);
     void *original{};
     if (hook_prepare(target, reinterpret_cast<void *>(&state_lookup_hook), &original) != HookOk || !original) return false;
     lookup_original.store(reinterpret_cast<StateLookup>(original), std::memory_order_release);
@@ -571,49 +563,49 @@ bool start_state_holds(std::uintptr_t base) noexcept {
     // The state copy: Underflip speed acts there.
     bool copy_known{};
     __try {
-        copy_known = std::memcmp(reinterpret_cast<const void *>(base + state_copy), state_copy_bytes, sizeof(state_copy_bytes)) == 0;
+        copy_known = std::memcmp(reinterpret_cast<const void *>(base + states::state_copy), states::state_copy_prefix.data(), states::state_copy_prefix.size()) == 0;
     } __except (1) {}
     if (copy_known) {
         void *copy{};
-        if (hook_prepare(reinterpret_cast<void *>(base + state_copy), reinterpret_cast<void *>(&state_copy_hook), &copy) == HookOk && copy) {
+        if (hook_prepare(reinterpret_cast<void *>(base + states::state_copy), reinterpret_cast<void *>(&state_copy_hook), &copy) == HookOk && copy) {
             copy_original.store(reinterpret_cast<StateCopy>(copy), std::memory_order_release);
-            (void)hook_enable(reinterpret_cast<void *>(base + state_copy));
+            (void)hook_enable(reinterpret_cast<void *>(base + states::state_copy));
         }
     }
     // The rate controllers' rate: "Underflip part only" acts there.
     bool rate_known{};
     __try {
-        rate_known = std::memcmp(reinterpret_cast<const void *>(base + rate_compute), rate_compute_bytes, sizeof(rate_compute_bytes)) == 0;
+        rate_known = std::memcmp(reinterpret_cast<const void *>(base + states::rate_compute), states::rate_compute_prefix.data(), states::rate_compute_prefix.size()) == 0;
     } __except (1) {}
     if (rate_known) {
         void *rate{};
-        if (hook_prepare(reinterpret_cast<void *>(base + rate_compute), reinterpret_cast<void *>(&rate_compute_hook), &rate) == HookOk && rate) {
+        if (hook_prepare(reinterpret_cast<void *>(base + states::rate_compute), reinterpret_cast<void *>(&rate_compute_hook), &rate) == HookOk && rate) {
             rate_original.store(reinterpret_cast<RateCompute>(rate), std::memory_order_release);
-            (void)hook_enable(reinterpret_cast<void *>(base + rate_compute));
+            (void)hook_enable(reinterpret_cast<void *>(base + states::rate_compute));
         }
     }
     // Who writes TrickFlipSpeed (for the log).
     bool write_lookup_known{};
     __try {
-        write_lookup_known = std::memcmp(reinterpret_cast<const void *>(base + state_write_lookup), state_write_lookup_bytes, sizeof(state_write_lookup_bytes)) == 0;
+        write_lookup_known = std::memcmp(reinterpret_cast<const void *>(base + states::state_write_lookup), states::state_write_lookup_prefix.data(), states::state_write_lookup_prefix.size()) == 0;
     } __except (1) {}
     if (write_lookup_known) {
         void *writer{};
-        if (hook_prepare(reinterpret_cast<void *>(base + state_write_lookup), reinterpret_cast<void *>(&state_write_lookup_hook), &writer) == HookOk && writer) {
+        if (hook_prepare(reinterpret_cast<void *>(base + states::state_write_lookup), reinterpret_cast<void *>(&state_write_lookup_hook), &writer) == HookOk && writer) {
             write_lookup_original.store(reinterpret_cast<StateWriteLookup>(writer), std::memory_order_release);
-            (void)hook_enable(reinterpret_cast<void *>(base + state_write_lookup));
+            (void)hook_enable(reinterpret_cast<void *>(base + states::state_write_lookup));
         }
     }
     // The number setter: only Underflip speed needs it, so the holds work without it.
     bool setter_known{};
     __try {
-        setter_known = std::memcmp(reinterpret_cast<const void *>(base + float_setter), float_setter_bytes, sizeof(float_setter_bytes)) == 0;
+        setter_known = std::memcmp(reinterpret_cast<const void *>(base + states::float_setter), states::float_setter_prefix.data(), states::float_setter_prefix.size()) == 0;
     } __except (1) {}
     if (setter_known) {
         void *setter{};
-        if (hook_prepare(reinterpret_cast<void *>(base + float_setter), reinterpret_cast<void *>(&float_setter_hook), &setter) == HookOk && setter) {
+        if (hook_prepare(reinterpret_cast<void *>(base + states::float_setter), reinterpret_cast<void *>(&float_setter_hook), &setter) == HookOk && setter) {
             setter_original.store(reinterpret_cast<FloatSetter>(setter), std::memory_order_release);
-            (void)hook_enable(reinterpret_cast<void *>(base + float_setter));
+            (void)hook_enable(reinterpret_cast<void *>(base + states::float_setter));
         }
     }
     return true;

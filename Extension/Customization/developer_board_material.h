@@ -1,5 +1,6 @@
 #pragma once
 #include "developer_hoodie_material.h"
+#include "Engine/Game/Build/supported_build.h"
 #include <cstddef>
 
 namespace dingosdk {
@@ -78,7 +79,7 @@ template<class Read> Materials materials(Read &read, std::uintptr_t base, std::u
     out.pending = m.template get<std::uint8_t>(out.component, 0x10a) || m.template get<std::uint8_t>(out.component, 0x10d);
     const auto type = base + addr::native_cosmetics::color_rgb_type;
     const auto info = m.ptr(type);
-    m.check(info >= base && info < base + 0x09144000 && m.template get<std::uint32_t>(info) == 0x885eff59 &&
+    m.check(info >= base && info < base + supported_build::game_image_size && m.template get<std::uint32_t>(info) == 0x885eff59 &&
                 m.template get<std::uint16_t>(info, 6) == sizeof(Color), "Board ColorRgb descriptor differs.");
     const auto type_index = m.template get<std::uint16_t>(type, 8);
     out.appearance = read_native_component(read, entity, base + addr::engine::skater_appearance_vtable);

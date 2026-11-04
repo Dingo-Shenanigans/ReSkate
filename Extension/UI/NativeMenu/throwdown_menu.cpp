@@ -20,6 +20,8 @@
 #include "Engine/Game/UI/game_view.h"
 #include "Extension/Trainer/trainer.h"
 #include "Extension/Multiplayer/Net/protocol.h"
+#include "Engine/Game/Build/addresses.h"
+#include "Engine/Game/Build/20260929/client_source_spawn.h"
 #include "Engine/Game/Build/20260929/engine.h"
 #include "Engine/Game/Build/20260929/native_menu.h"
 #include "Engine/Game/Build/20260929/native_party.h"

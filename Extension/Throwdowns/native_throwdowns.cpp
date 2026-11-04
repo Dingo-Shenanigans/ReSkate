@@ -99,11 +99,11 @@ NativeActivityPlayerIds sole_offline_player_ids() {
     const auto identity = static_cast<std::int64_t>(read<std::uint32_t>(base + throwdowns::player_identity_offset)) - parent;
     if (player < 0x100000 || identity < -0x10000 || identity > 0x10000 ||
         read<Address>(player)!=base+engine::server_player_vtable ||
-        read<Address>(base+engine::server_player_vtable+0x10)!=base+0x7ff930)return {};
+        read<Address>(base+engine::server_player_vtable+0x10)!=base+throwdowns::player_id_virtual)return {};
     // Native virtual GetPlayerId is mov eax,[rcx+48]; ret (IDA/Ghidra and
     // both live client/server vtables agree). Read it without a virtual call.
-    static const bool id_verified=read<std::array<unsigned char,4>>(base+0x7ff930)==
-        std::array<unsigned char,4>{0x8b,0x41,0x48,0xc3};
+    static const bool id_verified=read<std::array<unsigned char,4>>(base+throwdowns::player_id_virtual)==
+        throwdowns::player_id_virtual_prefix;
     if(!id_verified)return {};
     return {read<std::uint32_t>(static_cast<Address>(static_cast<std::int64_t>(player) + identity) + 0x68),
         read<std::uint32_t>(player+0x48)};
@@ -120,12 +120,11 @@ Address client_activity_variables(std::uint32_t participant,std::uint32_t* menu_
     // Native GetPlayerIsInActivity selects the client realm explicitly with
     // GetContextForRealm, not the caller's TLS context. Our UI tick runs AFTER
     // original_tick returns, when that temporary TLS scope may already be gone.
-    constexpr std::array<unsigned char,19> context_prefix{
-        0x89,0x54,0x24,0x10,0x53,0x48,0x83,0xec,0x30,0x4c,0x8b,0x05,0xe8,0xb7,0x70,0x05,0x48,0x8b,0xd9};
-    static const bool verified=read<std::array<unsigned char,19>>(base+0x18b6e40)==context_prefix;
+    static const bool verified=read<std::array<unsigned char,19>>(base+throwdowns::realm_context)==
+        throwdowns::realm_context_prefix;
     if(!verified)throw std::runtime_error("Native client context lookup fingerprint differs");
     Address context{};
-    reinterpret_cast<Address (*)(Address*,std::uint32_t)>(base+0x18b6e40)(&context,client_realm);
+    reinterpret_cast<Address (*)(Address*,std::uint32_t)>(base+throwdowns::realm_context)(&context,client_realm);
     const auto realm_offset=read<std::uint32_t>(base+engine::context_type_offset);
     if(!context || realm_offset>0x1000000 || read<std::uint32_t>(context+realm_offset)!=client_realm)return 0;
     const auto offset=read<std::uint32_t>(base+engine::context_player_manager_offset);
@@ -134,14 +133,14 @@ Address client_activity_variables(std::uint32_t participant,std::uint32_t* menu_
     if(!manager || read<Address>(manager)!=base+engine::local_player_manager_vtable)return 0;
     const auto first=read<Address>(manager+0x78),last=read<Address>(manager+0x80);
     if(!first || last<first || last-first>64*8 || (last-first)%8)return 0;
-    const auto delta=static_cast<std::int64_t>(read<std::uint32_t>(base+0x6f7bae0))-
-        static_cast<std::int64_t>(read<std::uint32_t>(base+0x75c3588));
+    const auto delta=static_cast<std::int64_t>(read<std::uint32_t>(base+throwdowns::client_player_vars_offset))-
+        static_cast<std::int64_t>(read<std::uint32_t>(base+throwdowns::local_player_base_offset));
     if(delta < -0x10000 || delta > 0x10000)return 0;
     for(auto at=first;at<last;at+=8) {
         const auto player=read<Address>(at);
         if(!player || read<Address>(player)!=base+engine::local_player_vtable)continue;
         const auto id_function=read<Address>(read<Address>(player)+0x10);
-        if(id_function!=base+0x7ff930)continue;
+        if(id_function!=base+throwdowns::player_id_virtual)continue;
         if(ids.matches_menu_player(read<std::uint32_t>(player+0x48))) {
             if(menu_player)*menu_player=ids.menu_player;
             return static_cast<Address>(static_cast<std::int64_t>(player)+delta);

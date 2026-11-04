@@ -410,28 +410,63 @@ std::vector<world_entities::Body> physics_owned(const world_entities::Body &b, s
         return {};
     }
 }
-// Test only (objbody): the store's per-body bit setters next to the ghost ones (each sets, or
-// with "off" clears, one bit per body and some tell the world), to learn which one takes a body
-// out of the skater's collision.
+#if defined(DINGOSDK_DEV_TOOLS)
+// Test only (objbody, development builds): the store's per-body bit setters next to the ghost ones
+// (each sets, or with "off" clears, one bit per body and some tell the world), to learn which one
+// takes a body out of the skater's collision. Each one's code is checked before it is called.
 bool physics_test(std::string_view name, const world_entities::Body &b) noexcept {
-    static constexpr std::pair<std::string_view, std::uintptr_t> setters[]{
-        {"a70", 0x25d38a0}, {"a70off", 0x25d3250}, {"f88", 0x25d3930}, {"4c0", 0x25d33d0}, {"4c0off", 0x25d2ec0},
-        {"310", 0x25d3560},  {"310off", 0x25d3090}, {"830", 0x25d3590}, {"830off", 0x25d30c0}, {"8d0", 0x25d36a0},
-        {"8d8", 0x25d3900},  {"aa0", 0x25d3670},    {"aa0off", 0x25d31d0}, {"1598", 0x25d3400}, {"40", 0x25d3330},
-        {"40off", 0x25d2e60}, {"1680", 0x25d3530}};
-    const auto found = std::find_if(std::begin(setters), std::end(setters), [&](const auto &s) { return s.first == name; });
+    struct Setter {
+        std::string_view name;
+        std::uintptr_t rva;
+        const std::array<unsigned char, 32> *prefix;
+    };
+    static constexpr Setter setters[]{
+        {"a70", pb::body_bit_a70_set, &pb::body_bit_a70_set_prefix},
+        {"a70off", pb::body_bit_a70_clear, &pb::body_bit_a70_clear_prefix},
+        {"f88", pb::body_bit_f88_set, &pb::body_bit_f88_set_prefix},
+        {"4c0", pb::body_bit_4c0_set, &pb::body_bit_4c0_set_prefix},
+        {"4c0off", pb::body_bit_4c0_clear, &pb::body_bit_4c0_clear_prefix},
+        {"310", pb::body_bit_310_set, &pb::body_bit_310_set_prefix},
+        {"310off", pb::body_bit_310_clear, &pb::body_bit_310_clear_prefix},
+        {"830", pb::body_bit_830_set, &pb::body_bit_830_set_prefix},
+        {"830off", pb::body_bit_830_clear, &pb::body_bit_830_clear_prefix},
+        {"8d0", pb::body_bit_8d0_set, &pb::body_bit_8d0_set_prefix},
+        {"8d8", pb::body_bit_8d8_set, &pb::body_bit_8d8_set_prefix},
+        {"aa0", pb::body_bit_aa0_set, &pb::body_bit_aa0_set_prefix},
+        {"aa0off", pb::body_bit_aa0_clear, &pb::body_bit_aa0_clear_prefix},
+        {"1598", pb::body_bit_1598_set, &pb::body_bit_1598_set_prefix},
+        {"40", pb::body_bit_40_set, &pb::body_bit_40_set_prefix},
+        {"40off", pb::body_bit_40_clear, &pb::body_bit_40_clear_prefix},
+        {"1680", pb::body_bit_1680_set, &pb::body_bit_1680_set_prefix}};
+    const auto found = std::find_if(std::begin(setters), std::end(setters), [&](const auto &s) { return s.name == name; });
     if (found == std::end(setters) || !physics_body_valid(b)) return false;
+    const auto at = local_runtime().base + found->rva;
+    std::array<unsigned char, 32> code{};
+    if (!memory::read(at, code) || code != *found->prefix) {
+        static std::atomic<unsigned> refused_logged{};
+        if (refused_logged.fetch_add(1) < 8)
+            logging::log(logging::Level::warning, logging::Channel::runtime,
+                         "World objects: the {} setter at {:#x} is not the code this build expects; it was not run.", name, found->rva);
+        return false;
+    }
     alignas(16) std::array<std::uint64_t, 2> body{b[0], b[1]};
-    reinterpret_cast<void (*)(std::uint64_t *)>(local_runtime().base + found->second)(body.data());
+    reinterpret_cast<void (*)(std::uint64_t *)>(at)(body.data());
     return true;
 }
+#endif
 } // namespace
 void register_world_physics() noexcept {
     static std::once_flag once;
     std::call_once(once, [] {
         world_entities::set_physics(
             {&physics_world, &physics_body_valid, &physics_body_owner, &physics_body_ghost, &physics_floor, &physics_hit, &physics_owned,
-             &physics_body_component, &physics_test});
+             &physics_body_component,
+#if defined(DINGOSDK_DEV_TOOLS)
+             &physics_test
+#else
+             nullptr
+#endif
+            });
     });
 }
 }

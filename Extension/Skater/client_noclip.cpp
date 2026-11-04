@@ -7,6 +7,7 @@
 #include "Engine/Core/Hooks/hooks.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Game/Build/20260929/engine.h"
+#include "Engine/Game/Build/20260929/launches.h"
 #include "Engine/Game/Build/20260929/no_bail.h"
 #include "Engine/Game/Build/20260929/offboard_flight.h"
 #include "free_flight.h"
@@ -578,16 +579,15 @@ AirGravity& air_gravity() {
 // down to it (TimeToLand). 0.8.1 set only that countdown again, for flat ground; on a real jump the record the skater
 // followed was still planned at 9.8, so the landing stayed late (a player at x1.25, 2026-10-21). So the manager's gravity
 // is the trainer's while it holds one, and goes back to the game's when it lets go: every search then plans with it.
-constexpr std::uintptr_t query_manager = 0x7785da8, query_manager_gravity = 0x30;
-// mov rcx, [rip + query_manager] in the reckoning's query launch (0x473e280): this build's manager.
-constexpr std::uintptr_t query_manager_load = 0x473e312;
-constexpr unsigned char query_manager_load_bytes[]{0x48, 0x8b, 0x0d, 0x8f, 0x7a, 0x04, 0x03};
+// The manager and the instruction that shows it is this build's: launches.h.
+constexpr std::uintptr_t query_manager_gravity = 0x30;
 void air_gravity_searches(AirGravity& g, std::uintptr_t base, float wanted) {
-    static const bool known = std::memcmp(reinterpret_cast<const void*>(base + query_manager_load), query_manager_load_bytes,
-                                          sizeof(query_manager_load_bytes)) == 0;
+    static const bool known = std::memcmp(reinterpret_cast<const void*>(base + addr::launches::query_manager_load),
+                                          addr::launches::query_manager_load_prefix.data(),
+                                          addr::launches::query_manager_load_prefix.size()) == 0;
     if (!known) return;
     SourceReader reader;
-    const auto manager = reader.pointer(base + query_manager);
+    const auto manager = reader.pointer(base + addr::launches::query_manager);
     reader.verify();
     if (!manager) return;
     const auto now = reader.value<std::array<float, 3>>(manager, query_manager_gravity);

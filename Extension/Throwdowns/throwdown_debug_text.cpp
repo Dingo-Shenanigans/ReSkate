@@ -247,8 +247,10 @@ bool patch(Address base, Address resource) {
 // S0 (self), payload, port offset, payload type and the frame count K1c8c (1). Every few frames
 // is plenty for a HUD the overlay keeps for 300 ms, so that one call passes hud_frames instead.
 // Kept apart from patch(): if it does not match, the HUD still works, redrawn every frame.
-constexpr std::uint32_t repost_hash = 0x9967fc07, repost_pc = 0xad2c, repost_word = 0xad6004,
-                        repost_frames_constant = 0x1c8c;
+constexpr std::uint32_t repost_hash = addr::throwdown_debug_text::repost_hash,
+                        repost_pc = addr::throwdown_debug_text::repost_pc,
+                        repost_word = addr::throwdown_debug_text::repost_word,
+                        repost_frames_constant = addr::throwdown_debug_text::repost_frames_constant;
 constexpr Address post_frames_fast = addr::throwdown_debug_text::post_frames_fast;
 constexpr std::int32_t hud_frames = 3;
 void repost_hud(const void* self, const void* payload, const void* port, const void* type, const std::int32_t*) {
