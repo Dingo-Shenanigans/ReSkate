@@ -140,7 +140,7 @@ local function tick(dt_ms)
         if not ok then finish("create raised: " .. tostring(created), false); return end
         body = created
         if not body then
-            local known = why == "waiting for a fresh qualified 60 Hz physics step"
+            local known = why == "body_preallocation_unavailable"
             unreturned_allocation_unknown = not known
             retry_clock = known and #creates == 1 and retries == 0
             phase, detail = "refused", tostring(why)

@@ -905,11 +905,11 @@ void deferred_initialization_stays_outside_create_and_service_lock() {
     check(!create(owner, definition, out).empty() && !service.initialization_requested, "multiplayer queued producer preparation");
     test_facts::multiplayer_active = false;
     SetLastError(0x1234);
-    check(create(owner, definition, out) == "waiting for a fresh qualified 60 Hz physics step" && !out.generation &&
+    check(create(owner, definition, out) == "body_preallocation_unavailable" && !out.generation &&
         service.initialization_requested && !service.hook_attempted && test_facts::forbidden_links == 0 && no_allocation(),
         "cold create initialized hooks or reserved a body rather than only requesting setup");
     check(GetLastError() == 0x1234, "cold preparation request changed LastError");
-    check(create(owner + 1, definition, out) == "waiting for a fresh qualified 60 Hz physics step" &&
+    check(create(owner + 1, definition, out) == "body_preallocation_unavailable" &&
         service.initialization_requested && test_facts::forbidden_links == 0 && no_allocation(),
         "a second generic preparation request performed native work");
     tick(f.base, f.client, false);
@@ -917,7 +917,7 @@ void deferred_initialization_stays_outside_create_and_service_lock() {
         "ineligible tick retained or executed a stale preparation request");
     tick(f.base, f.client, true);
     check(!service.hook_attempted && test_facts::forbidden_links == 0, "eligibility restoration automatically prepared without a new request");
-    check(create(owner, definition, out) == "waiting for a fresh qualified 60 Hz physics step", "fresh explicit preparation request refused");
+    check(create(owner, definition, out) == "body_preallocation_unavailable", "fresh explicit preparation request refused");
     test_facts::inspect_initializer_lock = true;
     test_facts::initializer_unlocked = false;
     test_facts::initializer_elapsed = 251;
@@ -944,9 +944,103 @@ void deferred_initialization_stays_outside_create_and_service_lock() {
     clock_feed.serial = 0;
     clock_feed.sequence = 0;
     tick(f.base, f.client, true);
-    check(create(owner, definition, out) == "waiting for a fresh qualified 60 Hz physics step" && no_allocation() &&
+    check(create(owner, definition, out) == "body_preallocation_unavailable" && no_allocation() &&
         !service.initialization_requested && test_facts::mutations == 0,
         "constructed producer readiness bypassed the original fresh clock or allocated automatically");
+}
+
+// A refused submit names a lost clock and a stale epoch with fixed codes, and neither
+// refusal assigns a sequence, touches the mailbox or reaches a native setter.
+void submit_refusal_codes_preserve_command_state() {
+    Fixture f;
+    Sample issued_sample;
+    check(read(owner, f.handle, issued_sample).empty(), "submit fixture could not publish its first sample");
+    // The fixture seeds an applied receipt. This case starts with an empty inbox.
+    f.slot().mailbox = {};
+    const auto saved_command_sequence = service.command_sequence;
+    service.command_sequence = 42;
+    const auto native_mutations_before = test_facts::mutations.load();
+    Command request_command{};
+    request_command.epoch = issued_sample.epoch;
+    request_command.force = {1, 0, 0};
+    const auto check_refusal = [&](std::uint64_t requested_owner, const char* expected) {
+        std::array<unsigned char, sizeof(Mailbox)> mailbox_before{};
+        std::memcpy(mailbox_before.data(), &f.slot().mailbox, mailbox_before.size());
+        const auto latest_before = f.slot().latest;
+        const auto sequence_before = service.command_sequence;
+        std::uint64_t assigned_sequence = 999;
+        SetLastError(0x1234);
+        const auto refusal = submit(requested_owner, f.handle, request_command, assigned_sequence);
+        const auto last_error_after = GetLastError();
+        const auto wrong = std::string("submit did not return ") + expected + "; it returned " + refusal;
+        check(refusal == expected, wrong.c_str());
+        check(assigned_sequence == 0, "refused submit published a sequence");
+        check(service.command_sequence == sequence_before, "refused submit spent a global command sequence");
+        // The byte comparison also covers an applied receipt awaiting acknowledgement.
+        check(std::memcmp(mailbox_before.data(), &f.slot().mailbox, mailbox_before.size()) == 0,
+            "refused submit changed the mailbox");
+        check(body_query::same_sample(f.slot().latest, latest_before), "refused submit changed the latest issued sample");
+        check(test_facts::mutations.load() == native_mutations_before, "refused submit reached a native setter");
+        check(last_error_after == 0x1234, "refused submit changed LastError");
+    };
+    // A feed sequence past its published serial is a step that never published: no clock.
+    const auto feed_sequence_before = clock_feed.sequence.load();
+    clock_feed.sequence = feed_sequence_before + 1;
+    check_refusal(owner + 1, "body owner or generation changed");
+    check_refusal(owner, "body_clock_unavailable");
+    clock_feed.sequence = feed_sequence_before;
+    f.step(); // The actual feed moves on without another body read.
+    check_refusal(owner, "body_epoch_expired");
+    Sample newer_sample;
+    check(read(owner, f.handle, newer_sample).empty() && newer_sample.epoch.serial > issued_sample.epoch.serial,
+        "submit fixture could not publish its later sample");
+    // A newer read makes the earlier epoch stale even though the clock matches the latest sample.
+    check_refusal(owner, "body_epoch_expired");
+    request_command.epoch = newer_sample.epoch;
+    std::uint64_t accepted_sequence = 0;
+    SetLastError(0x5678);
+    const auto accepted = submit(owner, f.handle, request_command, accepted_sequence);
+    const auto accepted_last_error = GetLastError();
+    check(accepted.empty() && accepted_sequence == 43 && service.command_sequence == 43,
+        "current measured command was refused");
+    check(f.slot().mailbox.pending && f.slot().mailbox.count == 1 && f.slot().mailbox.command.epoch == newer_sample.epoch,
+        "accepted command did not reserve exactly one measured packet");
+    check(test_facts::mutations.load() == native_mutations_before, "submit applied native effects instead of only queuing");
+    check(accepted_last_error == 0x5678, "accepted submit changed LastError");
+    // Only the producer's outcome is constructed; the actual receipt() must read the
+    // successor. No native setter or producer wrapper runs in this fixture.
+    f.step();
+    Epoch produced_epoch{};
+    Command consumed{};
+    check(command_clock(f.slot(), produced_epoch) &&
+        f.slot().mailbox.consume(produced_epoch, test_clock::now.load(), consumed) &&
+        f.slot().mailbox.finish(true, true, true), "could not construct the applied command receipt");
+    check(f.slot().mailbox.needs_successor(), "constructed receipt already had a successor");
+    f.step();
+    Receipt completed{};
+    check(receipt(owner, f.handle, accepted_sequence, completed).empty() &&
+        completed.outcome == Outcome::applied && completed.successor_available &&
+        completed.successor.epoch.serial > produced_epoch.serial && completed.successor.epoch.time > produced_epoch.time &&
+        body_query::same_sample(f.slot().latest, completed.successor),
+        "receipt did not publish its separately measured successor");
+    Epoch current_after_receipt{};
+    check(command_clock(f.slot(), current_after_receipt) && current_after_receipt == f.slot().latest.epoch,
+        "this case needs the clock to match the sample the receipt published");
+    // The receipt's successor makes the earlier epoch stale too, before and after acknowledgement.
+    check_refusal(owner, "body_epoch_expired");
+    check(acknowledge(owner, f.handle, accepted_sequence).empty(), "completed receipt could not be acknowledged");
+    check_refusal(owner, "body_epoch_expired");
+    // With a current epoch, a bad packet keeps the mailbox's own refusal.
+    request_command.epoch = completed.successor.epoch;
+    request_command.force = {40001, 0, 0};
+    check_refusal(owner, "body command invalid, repeated, stopped, pending or receipt ring full");
+    request_command.force = {1, 0, 0};
+    check(submit(owner, f.handle, request_command, accepted_sequence).empty() && accepted_sequence == 44 &&
+        service.command_sequence == 44 && f.slot().mailbox.pending && f.slot().mailbox.count == 1 &&
+        f.slot().mailbox.command.epoch == completed.successor.epoch,
+        "the successor's command did not reserve exactly one packet after acknowledgement");
+    check(test_facts::mutations.load() == native_mutations_before, "the successor path reached a native setter");
+    service.command_sequence = saved_command_sequence;
 }
 
 #include "body_prepare_source_fixture.inc"
@@ -969,6 +1063,7 @@ int main() {
         run("service_forwards_query_preset_without_relaxing_refusals", service_forwards_query_preset_without_relaxing_refusals);
         run("service_shape_categories_opt_in_shape_bound_and_fenced", service_shape_categories_are_opt_in_shape_bound_and_fenced);
         run("service_named_actor_categories_reasons_and_hit_owners", service_named_actor_categories_reasons_and_hit_owners);
+        run("submit_refusal_codes_preserve_command_state", submit_refusal_codes_preserve_command_state);
         run("deferred_producer_initialization_without_allocation", deferred_initialization_stays_outside_create_and_service_lock, 1);
         run("prepare_cold_queues_only_deferred_setup", prepare_cold_queues_only_deferred_setup);
         run("prepare_deferred_failure_is_terminal_without_retry", prepare_deferred_failure_is_terminal_without_retry, 1);
