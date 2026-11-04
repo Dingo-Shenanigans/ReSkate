@@ -7,6 +7,7 @@
 #include <array>
 #include <cmath>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -127,7 +128,8 @@ void draw_widgets(SkateMenu& menu, const plugin_ui::Panel& panel, double now) {
         case Kind::info: info(menu, w.text.c_str(), w.help); break;
         case Kind::separator: ImGui::Separator(); break;
         case Kind::button:
-            if (w.on ? primary_button(menu, w.text.c_str()) : ImGui::Button(w.text.c_str(), ImVec2(-FLT_MIN, px(34)))) send({}, {});
+            if (w.on ? primary_button(menu, w.text.c_str()) : button_row(menu, "##button", {{w.text.c_str(), true, false, w.help.empty() ? nullptr : help}}) == 0)
+                send({}, {});
             break;
         case Kind::buttons: {
             const int pressed = button_grid(menu, "##buttons", w.choices, w.chosen - 1);
@@ -179,16 +181,9 @@ void draw_widgets(SkateMenu& menu, const plugin_ui::Panel& panel, double now) {
             if (edit != all.end() && edit->second.value == w.value) all.erase(edit);
             const char* format = w.format.empty() ? "%.2f" : w.format.c_str();
             field(menu, w.text.c_str());
-            bool changed = false;
-            // A window: - value + (ImGui's own buttons, the value typed in between). Full screen: left /
-            // right step it.
-            if (console_style()) {
-                set_console_step(w.step);
-                changed = slider_float("##stepper", &value, w.minimum, w.maximum, format, ImGuiSliderFlags_AlwaysClamp);
-            } else {
-                changed = ImGui::InputFloat("##stepper", &value, w.step, w.step * 10, format);
-            }
-            if (changed) {
+            // Left / right a step at a time; the box beside it takes a typed value.
+            set_console_step(w.step);
+            if (slider_float("##stepper", &value, w.minimum, w.maximum, format, ImGuiSliderFlags_AlwaysClamp)) {
                 const float steps = std::round((std::clamp(value, w.minimum, w.maximum) - w.minimum) / w.step);
                 value = std::clamp(w.minimum + steps * w.step, w.minimum, w.maximum);
                 plugin_ui::Action action;
@@ -201,23 +196,10 @@ void draw_widgets(SkateMenu& menu, const plugin_ui::Panel& panel, double now) {
             int chosen = edit != all.end() ? edit->second.chosen : w.chosen;
             if (edit != all.end() && edit->second.chosen == w.chosen) all.erase(edit);
             int picked = -1;
-            if (console_style()) {
-                // Full screen: a row for each, as the music page's songs; A picks one.
-                section(menu, w.text.c_str());
-                for (int i = 0; i < static_cast<int>(w.choices.size()); ++i)
-                    if (list_row(menu, ("##row" + std::to_string(i)).c_str(), w.choices[static_cast<std::size_t>(i)], "", i + 1 == chosen)) picked = i;
-            } else {
-                field(menu, w.text.c_str());
-                const float height = static_cast<float>(w.rows) * ImGui::GetTextLineHeightWithSpacing() + ImGui::GetStyle().FramePadding.y * 2;
-                if (ImGui::BeginListBox("##list", ImVec2(-FLT_MIN, height))) {
-                    for (int i = 0; i < static_cast<int>(w.choices.size()); ++i) {
-                        ImGui::PushID(i);
-                        if (ImGui::Selectable(w.choices[static_cast<std::size_t>(i)].c_str(), i + 1 == chosen)) picked = i;
-                        ImGui::PopID();
-                    }
-                    ImGui::EndListBox();
-                }
-            }
+            // A row for each, as the music page's songs; A picks one.
+            section(menu, w.text.c_str());
+            for (int i = 0; i < static_cast<int>(w.choices.size()); ++i)
+                if (list_row(menu, ("##row" + std::to_string(i)).c_str(), w.choices[static_cast<std::size_t>(i)], "", i + 1 == chosen)) picked = i;
             if (picked >= 0 && picked + 1 != chosen) {
                 plugin_ui::Action action;
                 action.chosen = picked + 1;
@@ -282,9 +264,15 @@ const plugin_ui::PageEntry* shown_plugin_page(SkateMenu& menu) {
 }
 
 namespace {
-// Which plugins are open in the manager, by id: in memory only. One waiting for an answer starts open.
-std::map<std::string, bool>& opened() {
-    static auto* value = new std::map<std::string, bool>;
+// The manager's open row (one at a time, by plugin id), and the plugins seen waiting for an answer:
+// one opens by itself the first time it is seen waiting, so a prompt that was missed is not the only
+// way to answer it. In memory only.
+std::string& open_plugin() {
+    static auto* value = new std::string;
+    return *value;
+}
+std::set<std::string>& seen_waiting() {
+    static auto* value = new std::set<std::string>;
     return *value;
 }
 
@@ -292,116 +280,45 @@ ImU32 risk_colour(plugins::Risk risk) {
     return risk == plugins::Risk::red ? skate_theme::danger : risk == plugins::Risk::amber ? skate_theme::warning : IM_COL32(88, 90, 96, 255);
 }
 
-// One plugin: its name, its author and its switch on a line, then a chip for each kind of thing it can do
-// (the riskiest first, red then amber then grey). A click anywhere but the switch opens the plugin to
-// the plain list; one that is waiting for an answer starts open, with its buttons under the list.
+// One plugin as a row: its name, then its author and the kinds of thing it can do (the riskiest
+// first), ON, OFF or waiting at the right end and a blue edge while it runs. A opens the plain list of
+// what it can do, each kind in its risk's colour (red, amber, grey), and the buttons that answer it.
 void plugin_row(SkateMenu& menu, const plugins::Installed& plugin) {
     namespace st = skate_theme;
     const bool waiting = plugin.approval == plugins::Approval::asking;
-    auto& open = opened();
-    const auto found = open.find(plugin.id);
-    const bool expanded = found != open.end() ? found->second : waiting;
-    auto* draw = ImGui::GetWindowDrawList();
-    auto* bold = menu.bold ? menu.bold : ImGui::GetFont();
-    auto* body = menu.body ? menu.body : ImGui::GetFont();
-    const float width = ImGui::GetContentRegionAvail().x;
-    const float head = px(30), chips_height = px(24), gap = px(8);
-    const char* answer = waiting ? "Waiting for your OK" : plugin.approval == plugins::Approval::on ? "ON" : "OFF";
-    const float answer_width = waiting ? bold->CalcTextSizeA(px(14), FLT_MAX, 0, answer).x : px(64);
-    const ImVec2 origin = ImGui::GetCursorScreenPos();
-    const float right = origin.x + width;
-    auto& io = ImGui::GetIO();
-
-    // Two stops for the pad and keys: the row (opens and closes it), and the switch on top of it.
-    ImGui::SetNextItemAllowOverlap();
-    const bool toggled = ImGui::InvisibleButton("##expand", ImVec2(width, head + chips_height), ImGuiButtonFlags_EnableNav);
-    const bool row_focused = ImGui::IsItemFocused() && io.NavVisible;
-    bool hovered = ImGui::IsItemHovered(), over_switch = false, switch_focused = false;
-    const ImVec2 switch_min(right - answer_width, origin.y + px(3)), switch_max(right, origin.y + head - px(3));
-    if (!waiting) {
-        ImGui::SetCursorScreenPos(switch_min);
-        if (ImGui::InvisibleButton("##switch", ImVec2(answer_width, switch_max.y - switch_min.y), ImGuiButtonFlags_EnableNav))
-            plugins::set_enabled(plugin.id, plugin.approval != plugins::Approval::on);
-        over_switch = ImGui::IsItemHovered();
-        switch_focused = ImGui::IsItemFocused() && io.NavVisible;
-    }
-    ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + head + chips_height));
-
-    if (hovered) draw->AddRectFilled(origin, ImVec2(right, origin.y + head + chips_height), IM_COL32(255, 255, 255, 12), px(4));
-    if (row_focused) draw->AddRect(origin, ImVec2(right, origin.y + head + chips_height), st::white, px(4), 0, px(2));
-    // The name takes what the author and the switch leave. The author (whoever wrote the manifest) gets at
-    // most a third of the row, cut with "...", and the name always keeps room: it is what the player trusts.
-    const float title_room_min = std::min(px(150), width * 0.4f);
-    const float by_size = px(13);
-    std::string by = plugin.author.empty() ? std::string{} : "by " + plugin.author;
-    const float by_max = std::max(0.0f, std::min(width * 0.35f, width - answer_width - gap * 3 - title_room_min));
-    const auto by_fits = [&] { return body->CalcTextSizeA(by_size, FLT_MAX, 0, by.c_str()).x <= by_max; };
-    if (!by.empty() && !by_fits()) {
-        while (by.size() > 3 && !by_fits()) {
-            by.pop_back();
-            while (!by.empty() && (static_cast<unsigned char>(by.back()) & 0xC0) == 0x80) by.pop_back(); // not mid-character
-            if (!by.empty() && (static_cast<unsigned char>(by.back()) & 0xC0) == 0xC0) by.pop_back();
-        }
+    const bool on = plugin.approval == plugins::Approval::on;
+    auto& open = open_plugin();
+    if (waiting && seen_waiting().insert(plugin.id).second && open.empty()) open = plugin.id;
+    // The author is whoever wrote the manifest: cut short, so a long one cannot crowd out the rest.
+    std::string by = plugin.author;
+    if (by.size() > 40) {
+        by.resize(40);
+        while (!by.empty() && (static_cast<unsigned char>(by.back()) & 0xC0) == 0x80) by.pop_back(); // not mid-character
+        if (!by.empty() && (static_cast<unsigned char>(by.back()) & 0xC0) == 0xC0) by.pop_back();
         by += "...";
-        if (!by_fits()) by.clear();
     }
-    const float by_width = by.empty() ? 0.0f : body->CalcTextSizeA(by_size, FLT_MAX, 0, by.c_str()).x;
-    const float by_x = right - answer_width - gap * 2 - by_width;
-    if (!by.empty()) draw->AddText(body, by_size, ImVec2(by_x, origin.y + (head - by_size) * 0.5f), st::grey_text, by.c_str());
-    draw->PushClipRect(origin, ImVec2(by.empty() ? right - answer_width - gap : by_x - gap, origin.y + head), true);
-    draw->AddText(bold, px(17), ImVec2(origin.x + px(6), origin.y + (head - px(17)) * 0.5f), st::white, plugin.title.c_str());
-    draw->PopClipRect();
-    if (waiting) {
-        draw->AddText(bold, px(14), ImVec2(right - answer_width, origin.y + (head - px(14)) * 0.5f), st::warning, answer);
-    } else {
-        const bool on = plugin.approval == plugins::Approval::on;
-        draw->AddRectFilled(switch_min, switch_max, on ? (over_switch ? st::blue_hover : st::blue) : (over_switch ? IM_COL32(72, 73, 78, 255) : st::tile_light), px(4));
-        if (switch_focused) draw->AddRect(switch_min, switch_max, st::white, px(4), 0, px(2));
-        const auto size = bold->CalcTextSizeA(px(14), FLT_MAX, 0, answer);
-        draw->AddText(bold, px(14), ImVec2(switch_min.x + (answer_width - size.x) * 0.5f, switch_min.y + (switch_max.y - switch_min.y - size.y) * 0.5f),
-                      on ? st::black : st::white, answer);
-    }
-    // The chips, as many as fit before "+N" and the open marker.
-    const float chip_size = px(11), chip_height = px(18), chip_y = origin.y + head + (chips_height - chip_height) * 0.5f;
-    float x = origin.x + px(6);
-    std::size_t shown = 0;
+    std::string detail = by.empty() ? std::string() : "by " + by;
+    std::string kinds;
+    for (const auto& group : plugin.can) kinds += (kinds.empty() ? "" : ", ") + group.category;
+    if (!kinds.empty()) detail += (detail.empty() ? "" : "  /  ") + kinds;
+    const char* side = waiting ? "WAITING FOR YOUR OK" : on ? "ON" : "OFF";
+    if (!expand_row(menu, plugin.id.c_str(), plugin.title, detail, side, open, on)) return;
+    ImGui::Indent(px(40));
     for (const auto& group : plugin.can) {
-        const float chip_width = bold->CalcTextSizeA(chip_size, FLT_MAX, 0, group.category.c_str()).x + px(14);
-        if (shown > 0 && x + chip_width > right - px(60)) break;
-        draw->AddRectFilled(ImVec2(x, chip_y), ImVec2(x + chip_width, chip_y + chip_height), risk_colour(group.risk), px(9));
-        draw->AddText(bold, chip_size, ImVec2(x + px(7), chip_y + (chip_height - chip_size) * 0.5f),
-                      group.risk == plugins::Risk::grey ? st::white : st::black, group.category.c_str());
-        x += chip_width + px(6);
-        ++shown;
+        ImGui::PushStyleColor(ImGuiCol_Text, group.risk == plugins::Risk::grey ? st::grey_text : risk_colour(group.risk));
+        ImGui::PushFont(menu.bold ? menu.bold : ImGui::GetFont());
+        ImGui::TextUnformatted(group.category.c_str());
+        ImGui::PopFont();
+        ImGui::PopStyleColor();
+        for (const auto& phrase : group.phrases) note(("\xe2\x80\xa2 " + phrase).c_str());
     }
-    if (shown < plugin.can.size()) {
-        const auto more = "+" + std::to_string(plugin.can.size() - shown);
-        draw->AddText(bold, chip_size + px(1), ImVec2(x, chip_y + (chip_height - chip_size) * 0.5f), st::grey_text, more.c_str());
+    ImGui::Unindent(px(40));
+    if (waiting) {
+        const int pressed = row_actions(menu, "answer", {{"TURN ON", true, true, "Let it run."}, {"KEEP OFF", true, false, "It stays off."}});
+        if (pressed >= 0) plugins::set_enabled(plugin.id, pressed == 0);
+    } else if (row_actions(menu, "switch", {{on ? "TURN OFF" : "TURN ON", true, !on, on ? "Stop it." : "Let it run."}}) == 0) {
+        plugins::set_enabled(plugin.id, !on);
     }
-    const ImVec2 mark(right - px(14), origin.y + head + chips_height * 0.5f);
-    const float arm = px(5);
-    if (expanded) draw->AddTriangleFilled(ImVec2(mark.x - arm, mark.y - arm * 0.5f), ImVec2(mark.x + arm, mark.y - arm * 0.5f), ImVec2(mark.x, mark.y + arm * 0.7f), st::grey_text);
-    else draw->AddTriangleFilled(ImVec2(mark.x - arm * 0.5f, mark.y - arm), ImVec2(mark.x - arm * 0.5f, mark.y + arm), ImVec2(mark.x + arm * 0.7f, mark.y), st::grey_text);
-
-    if (expanded) {
-        ImGui::Indent(px(14));
-        for (const auto& group : plugin.can) {
-            ImGui::PushStyleColor(ImGuiCol_Text, group.risk == plugins::Risk::grey ? st::grey_text : risk_colour(group.risk));
-            ImGui::PushFont(bold);
-            ImGui::TextUnformatted(group.category.c_str());
-            ImGui::PopFont();
-            ImGui::PopStyleColor();
-            for (const auto& phrase : group.phrases) note(("\xe2\x80\xa2 " + phrase).c_str());
-        }
-        ImGui::Unindent(px(14));
-        if (waiting) {
-            ImGui::Spacing();
-            if (primary_button(menu, "Turn on")) plugins::set_enabled(plugin.id, true);
-            if (ImGui::Button("Keep off", ImVec2(-FLT_MIN, px(34)))) plugins::set_enabled(plugin.id, false);
-        }
-    }
-    if (toggled) open[plugin.id] = !expanded;
-    ImGui::Dummy(ImVec2(0, px(6)));
 }
 }
 
@@ -413,6 +330,9 @@ void installed_plugins(SkateMenu& menu) {
     if (list.empty())
         note("No plugin is installed. A plugin is a mod with a reskate-plugin.json: a script that runs inside the game and can add "
              "pages, modes and tools.");
+    const auto asking = std::ranges::count_if(list, [](const plugins::Installed& p) { return p.approval == plugins::Approval::asking; });
+    if (asking == 1) warn("A plugin is waiting for your OK. Open it to answer.");
+    else if (asking > 1) warn((std::to_string(asking) + " plugins are waiting for your OK. Open one to answer.").c_str());
     for (const auto& plugin : list) {
         ImGui::PushID(plugin.id.c_str());
         plugin_row(menu, plugin);
@@ -433,7 +353,7 @@ void plugin_manager_page(SkateMenu& menu, bool no_pages) {
     }
     begin_card(menu, "plugin-developer", "PLUGIN DEVELOPMENT");
     bool developer = plugins::developer_mode();
-    if (toggle_row(menu, "Plugin developer mode", "", developer))
+    if (toggle_row(menu, "Plugin developer mode", "Updates to plugins you already approved won't ask again.", developer))
         plugins::set_developer_mode(developer);
     note("Updates to plugins you already approved won't ask again while this is on.");
     end_card();

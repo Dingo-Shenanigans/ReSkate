@@ -496,15 +496,13 @@ void graphics_page(SkateMenu& menu, const Model& model, const CallbacksV3& callb
             pending = value; menu.graphics_pending_until[i] = ImGui::GetTime() + 3;
         }
     }
-    ImGui::Dummy(ImVec2(0, px(2)));
-    ImGui::BeginDisabled(!graphics.available || !callbacks.queue_console_command);
-    if (ImGui::Button("Restore defaults", ImVec2(-FLT_MIN, 0))) {
+    if (button_row(menu, "post-fx-defaults", {{"RESTORE DEFAULTS", graphics.available && callbacks.queue_console_command, false,
+                                               "Every effect back to what the scene asks for."}}) == 0) {
         command(menu, callbacks, "graphics reset -1");
         for (unsigned i = 0; i < labels.size(); ++i) {
             menu.graphics_pending[i] = -1; menu.graphics_pending_until[i] = ImGui::GetTime() + 3;
         }
     }
-    ImGui::EndDisabled();
     note("Changes save automatically.");
     if (!graphics.status.empty()) note(graphics.status.c_str());
     end_card();

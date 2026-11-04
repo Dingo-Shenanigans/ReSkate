@@ -13,48 +13,18 @@
 namespace dingosdk::overlay::menu {
 using namespace theme;
 namespace {
-// A tile for an addon on ALL ADDONS: what it is, whether it is on, and a way in.
-void addon_tile(SkateMenu& menu, const char* id, const char* title, const char* about, const char* state, ImU32 state_colour,
-                int addon) {
-    if (console_style()) {
-        // Full screen: a tile as the pause menu's, A opens the addon.
-        const auto at = ImGui::GetCursorScreenPos();
-        const ImVec2 size((ImGui::GetContentRegionAvail().x - px(12)) * .5f, px(168));
-        ImGui::PushID(id);
-        const bool pressed = ImGui::InvisibleButton("##addon", size, ImGuiButtonFlags_EnableNav);
-        const bool lit = (ImGui::IsItemFocused() && ImGui::GetIO().NavVisible) || ImGui::IsItemHovered();
-        if (lit) set_console_hint((std::string("Open ") + title + ".").c_str());
-        auto* draw = ImGui::GetWindowDrawList();
-        const ImVec2 end(at.x + size.x, at.y + size.y);
-        skate_theme::rough_rect(draw, at, end, lit ? blue : IM_COL32(26, 26, 26, 235), static_cast<unsigned>(ImGui::GetItemID()) & 0xfff, px(1));
-        draw->PushClipRect(at, end, true);
-        draw->AddText(menu.heading, px(26), ImVec2(at.x + px(20), at.y + px(18)), paper, title);
-        if (state) {
-            const auto text = menu.bold->CalcTextSizeA(px(13), FLT_MAX, 0, state);
-            const ImVec2 tag_at(end.x - px(20) - text.x - px(14), at.y + px(22));
-            draw->AddRectFilled(tag_at, ImVec2(tag_at.x + text.x + px(14), tag_at.y + text.y + px(8)), lit ? paper : state_colour);
-            draw->AddText(menu.bold, px(13), ImVec2(tag_at.x + px(7), tag_at.y + px(4)), skate_theme::black, state);
-        }
-        draw->AddText(menu.body, px(16), ImVec2(at.x + px(20), at.y + px(66)), lit ? paper : muted, about, nullptr, size.x - px(40));
-        draw->PopClipRect();
-        ImGui::PopID();
-        if (pressed) open_page(menu, page_addons, addon);
-        return;
-    }
+// An addon on ALL ADDONS: a card with what it is and the way in.
+void addon_card(SkateMenu& menu, const char* id, const char* title, const char* about, int addon) {
     begin_card(menu, id, title);
-    if (state) {
-        ImGui::SameLine();
-        tag(menu, state, state_colour);
-    }
     note(about);
-    ImGui::Dummy(ImVec2(0, px(2)));
-    if (ImGui::Button((std::string("OPEN ") + title + "##" + id).c_str(), ImVec2(-FLT_MIN, px(34)))) open_page(menu, page_addons, addon);
+    const auto open = std::string("OPEN ") + title;
+    if (primary_button(menu, open.c_str())) open_page(menu, page_addons, addon);
     end_card();
 }
 
 void all_addons(SkateMenu& menu) {
-    addon_tile(menu, "addon-music", "MUSIC", "Spotify, YouTube Music, your own files and online radio through the game's music player.",
-               nullptr, 0, addon_music);
+    addon_card(menu, "addon-music", "MUSIC", "Spotify, YouTube Music, your own files and online radio through the game's music player.",
+               addon_music);
 }
 }
 
