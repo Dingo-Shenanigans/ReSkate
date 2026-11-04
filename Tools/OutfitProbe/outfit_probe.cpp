@@ -77,6 +77,7 @@ struct Mod {
     std::unordered_map<std::string, std::size_t> by_guid;      // ebx file guid / chunk guid
     std::unordered_map<std::uint64_t, std::size_t> by_resource;
     std::unordered_map<std::string, std::vector<std::size_t>> res_by_name;
+    std::unordered_map<std::uint64_t, std::vector<std::size_t>> chunk_by_prefix; // a chunk guid's first 8 bytes
     std::uint64_t own_bytes{};
     std::size_t errors{};
 };
@@ -111,12 +112,12 @@ void scan(std::span<const std::byte> bytes, const Mod& mod, std::vector<std::siz
     for (std::size_t at = 0; at + 8 <= bytes.size(); ++at) {
         std::uint64_t id;
         std::memcpy(&id, bytes.data() + at, 8);
-        if (const auto found = mod.by_resource.find(id); found != mod.by_resource.end() && id) out.push_back(found->second);
-        if (at + 16 <= bytes.size()) {
-            const std::string key(reinterpret_cast<const char*>(bytes.data() + at), 16);
-            if (const auto found = mod.by_guid.find(key); found != mod.by_guid.end() && mod.nodes[found->second].kind == Node::chunk)
-                out.push_back(found->second);
-        }
+        if (!id) continue;
+        if (const auto found = mod.by_resource.find(id); found != mod.by_resource.end()) out.push_back(found->second);
+        if (at + 16 > bytes.size()) continue;
+        if (const auto found = mod.chunk_by_prefix.find(id); found != mod.chunk_by_prefix.end())
+            for (const auto index : found->second)
+                if (std::memcmp(mod.nodes[index].guid.data(), bytes.data() + at, 16) == 0) out.push_back(index);
     }
 }
 
@@ -127,8 +128,13 @@ void probe(const fs::path& mod_dir, const fs::path& game, dingosdk::vfs::GameArc
     std::vector<fs::path> tocs;
     std::error_code error;
     for (auto it = fs::recursive_directory_iterator(mod_dir / "Win32", error); !error && it != fs::recursive_directory_iterator(); it.increment(error))
-        if (it->is_regular_file(error) && lower(it->path().extension().string()) == ".toc") tocs.push_back(it->path());
-    if (tocs.empty()) return;  // a plugin or a map-less folder: nothing to wear
+        if (it->is_regular_file(error)) {
+            // Cosmetics are in the items and globals superbundles; levels hold maps.
+            const auto name = lower(it->path().filename().string());
+            if (name == "items.toc" || name == "globals.toc") tocs.push_back(it->path());
+        }
+    if (tocs.empty()) return;  // a plugin or a map: nothing to wear
+    say("-- reading " + mod_dir.filename().string());
 
     const fs::path data = game / "Data";
     for (const auto& toc_path : tocs) {
@@ -189,42 +195,56 @@ void probe(const fs::path& mod_dir, const fs::path& game, dingosdk::vfs::GameArc
         }
     }
 
-    // Decode the mod's own EBX and resources and link each to what it names.
+    for (std::size_t i = 0; i < mod.nodes.size(); ++i)
+        if (mod.nodes[i].kind == Node::chunk && mod.nodes[i].guid.size() == 16) {
+            std::uint64_t prefix;
+            std::memcpy(&prefix, mod.nodes[i].guid.data(), 8);
+            mod.chunk_by_prefix[prefix].push_back(i);
+        }
+    say("   " + std::to_string(mod.nodes.size()) + " files of its own, " + mb(mod.own_bytes));
+
+    // EBX are small: read every one, to know the items and the guid each is imported by.
     std::map<std::string, std::size_t> root_types;
-    std::vector<std::vector<std::byte>> decoded(mod.nodes.size());
+    std::vector<char> linked(mod.nodes.size());
+    std::vector<ebx::Document> docs(mod.nodes.size());
+    std::vector<char> has_doc(mod.nodes.size());
     for (std::size_t i = 0; i < mod.nodes.size(); ++i) {
         auto& n = mod.nodes[i];
-        if (n.kind == Node::chunk) continue;
+        if (n.kind != Node::ebx_asset) continue;
         try {
-            decoded[i] = fb::decode_cas(archives.read(mod_dir, n.file.location, n.file.offset, n.file.size), {game});
-            if (n.kind == Node::ebx_asset) n.guid = guid_key(fb::ebx::read_file_guid(decoded[i]));
+            const auto bytes = fb::decode_cas(archives.read(mod_dir, n.file.location, n.file.offset, n.file.size), {game});
+            docs[i] = fb::ebx::read_document(bytes);
+            has_doc[i] = 1;
+            n.guid = guid_key(docs[i].fileGuid);
+            n.root_type = docs[i].rootType;
+            ++root_types[n.root_type];
+            if (const auto* root = docs[i].root(); root && root->object)
+                n.item = root->object->find("Key") && root->object->find("ItemData");
+            mod.by_guid.emplace(n.guid, i);
+            scan(bytes, mod, n.edges);
         } catch (const std::exception&) { ++mod.errors; }
     }
-    for (std::size_t i = 0; i < mod.nodes.size(); ++i)
-        if (mod.nodes[i].kind == Node::ebx_asset && !mod.nodes[i].guid.empty()) mod.by_guid.emplace(mod.nodes[i].guid, i);
-    for (std::size_t i = 0; i < mod.nodes.size(); ++i) {
+    // What a file names, worked out when an item first reaches it (resources are read only then).
+    auto link = [&](std::size_t i) {
+        if (linked[i]) return;
+        linked[i] = 1;
         auto& n = mod.nodes[i];
-        if (decoded[i].empty()) continue;
-        if (n.kind == Node::ebx_asset) {
-            try {
-                const auto doc = fb::ebx::read_document(decoded[i]);
-                n.root_type = doc.rootType;
-                ++root_types[doc.rootType];
-                for (const auto& imp : doc.imports)
-                    if (auto f = mod.by_guid.find(guid_key(imp.fileGuid)); f != mod.by_guid.end()) n.edges.push_back(f->second);
-                std::vector<std::uint64_t> resources; std::vector<std::string> guids;
-                if (const auto* root = doc.root(); root && root->object) {
-                    walk(*root->object, doc, resources, guids);
-                    n.item = root->object->find("Key") && root->object->find("ItemData");
-                }
-                for (const auto& inst : doc.instances) if (inst.object) walk(*inst.object, doc, resources, guids);
-                for (auto id : resources) if (auto f = mod.by_resource.find(id); f != mod.by_resource.end()) n.edges.push_back(f->second);
-                for (const auto& g : guids) if (auto f = mod.by_guid.find(g); f != mod.by_guid.end()) n.edges.push_back(f->second);
-                if (auto f = mod.res_by_name.find(n.name); f != mod.res_by_name.end()) n.edges.insert(n.edges.end(), f->second.begin(), f->second.end());
-            } catch (const std::exception&) { ++mod.errors; }
+        if (n.kind == Node::chunk) return;
+        if (n.kind == Node::resource) {
+            try { scan(fb::decode_cas(archives.read(mod_dir, n.file.location, n.file.offset, n.file.size), {game}), mod, n.edges); }
+            catch (const std::exception&) { ++mod.errors; }
+            return;
         }
-        scan(decoded[i], mod, n.edges);
-    }
+        if (!has_doc[i]) return;
+        const auto& doc = docs[i];
+        for (const auto& imp : doc.imports)
+            if (auto f = mod.by_guid.find(guid_key(imp.fileGuid)); f != mod.by_guid.end()) n.edges.push_back(f->second);
+        std::vector<std::uint64_t> resources; std::vector<std::string> guids;
+        for (const auto& inst : doc.instances) if (inst.object) walk(*inst.object, doc, resources, guids);
+        for (auto id : resources) if (auto f = mod.by_resource.find(id); f != mod.by_resource.end()) n.edges.push_back(f->second);
+        for (const auto& g : guids) if (auto f = mod.by_guid.find(g); f != mod.by_guid.end()) n.edges.push_back(f->second);
+        if (auto f = mod.res_by_name.find(n.name); f != mod.res_by_name.end()) n.edges.insert(n.edges.end(), f->second.begin(), f->second.end());
+    };
 
     // Each item's closure.
     struct ItemCost { std::string name; std::uint64_t bytes{}; std::size_t files{}; };
@@ -238,6 +258,7 @@ void probe(const fs::path& mod_dir, const fs::path& game, dingosdk::vfs::GameArc
         ItemCost cost{mod.nodes[i].name};
         while (!queue.empty()) {
             const auto at = queue.front(); queue.pop_front();
+            link(at);
             const auto& n = mod.nodes[at];
             if (placed.insert(placement_key(n.file)).second) { cost.bytes += n.file.size; ++cost.files; }
             for (auto next : n.edges) if (!seen[next]) { seen[next] = 1; queue.push_back(next); }
