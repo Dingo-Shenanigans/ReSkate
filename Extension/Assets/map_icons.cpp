@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -21,6 +22,7 @@
 #include <thread>
 #include <utility>
 #include <vector>
+#include <Windows.h>
 
 namespace dingosdk::map_icons {
 namespace {
@@ -140,14 +142,31 @@ void fetch(unsigned serial, std::vector<multiplayer::NextMapWanted> maps) {
     fetching.store(false);
 }
 
-// The menu's map grid: each level's picture, a custom map's mod icon (its path found on the client
-// thread) or an official map's loading screen.
+// When a mod was installed: its folder's creation time, in seconds since 1970, or 0 when it cannot
+// be read. The launcher and the in-game map download (launcher_mods::install) unpack a mod into a new
+// staging folder and move it into Mods whole, a new folder on every install and update, so the
+// folder is born when the mod arrives. Its files keep the times the archive or the copied folder gave
+// them, and its last-write time moves whenever something inside it changes, so neither says it.
+std::int64_t installed_at(const fs::path& directory) {
+    WIN32_FILE_ATTRIBUTE_DATA data{};
+    if (!GetFileAttributesExW(directory.c_str(), GetFileExInfoStandard, &data)) return 0;
+    const auto ticks = (static_cast<std::uint64_t>(data.ftCreationTime.dwHighDateTime) << 32) | data.ftCreationTime.dwLowDateTime;
+    constexpr std::uint64_t unix_epoch = 116444736000000000ULL; // 1601 to 1970, in the FILETIME's 100 ns
+    return ticks > unix_epoch ? static_cast<std::int64_t>((ticks - unix_epoch) / 10000000ULL) : 0;
+}
+
+// The menu's map grid: each level's picture, a custom map's mod icon (its mod folder found on the
+// client thread) or an official map's loading screen; and when each custom map's mod was installed.
 std::atomic<bool> menu_fetching{};
 void fetch_menu(std::vector<std::pair<overlay::MenuMapWanted, fs::path>> maps) {
     std::vector<overlay::MapVoteIcon> icons;
-    for (auto& [map, icon_path] : maps) {
+    std::vector<overlay::MenuMapInstalled> installed;
+    for (auto& [map, directory] : maps) {
+        if (!directory.empty())
+            if (const auto when = installed_at(directory)) installed.push_back({map.asset, when});
+        if (icons.size() >= overlay::menu_map_picture_limit) continue;
         overlay::MapVoteIcon icon;
-        if (!icon_path.empty()) icon.png = read_bytes(icon_path);
+        if (!directory.empty()) icon.png = read_bytes(directory / L"icon.png");
         if (icon.png.empty()) {
             icon.rgba = game_picture(map.name);
             if (!icon.rgba.empty()) icon.side = picture_side;
@@ -156,6 +175,7 @@ void fetch_menu(std::vector<std::pair<overlay::MenuMapWanted, fs::path>> maps) {
         icon.name = std::move(map.asset);
         icons.push_back(std::move(icon));
     }
+    overlay::set_menu_map_install_times(installed);
     overlay::set_menu_map_pictures(icons);
     try {
         logging::log(logging::Level::info, logging::Channel::assets, "Menu map grid: {} of {} map(s) with a picture.", icons.size(), maps.size());
@@ -169,8 +189,8 @@ void menu_tick() {
     std::vector<std::pair<overlay::MenuMapWanted, fs::path>> maps;
     for (auto& map : wanted) {
         // The mods in effect now: a map a live apply added is in no list the launch made.
-        const auto directory = live_mods::level_mod_directory(map.asset);
-        maps.emplace_back(std::move(map), directory.empty() ? fs::path() : directory / L"icon.png");
+        auto directory = live_mods::level_mod_directory(map.asset);
+        maps.emplace_back(std::move(map), std::move(directory));
     }
     menu_fetching.store(true);
     std::thread(fetch_menu, std::move(maps)).detach();

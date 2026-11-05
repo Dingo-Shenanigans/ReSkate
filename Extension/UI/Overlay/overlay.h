@@ -442,12 +442,22 @@ struct MapVoteIcon {
 };
 void set_map_vote_icons(const std::vector<MapVoteIcon>& icons) noexcept;
 // The menu's map grid (Map > Travel): the levels it shows ask for their pictures, which
-// Assets/map_icons.cpp finds off the game's thread (MapVoteIcon::name is then the level's asset).
+// Assets/map_icons.cpp finds off the game's thread (MapVoteIcon::name is then the level's asset),
+// at most menu_map_picture_limit of them.
 struct MenuMapWanted {
     std::string asset, name;
 };
+inline constexpr std::size_t menu_map_picture_limit = 64;
 std::vector<MenuMapWanted> take_menu_map_request() noexcept;
 void set_menu_map_pictures(const std::vector<MapVoteIcon>& pictures) noexcept;
+// When each custom map's mod was installed, found with the pictures for every level asked for, so the
+// grid can put the newest first without reading the disk while it draws. Seconds since 1970; added
+// to what is known already, by asset. Any thread.
+struct MenuMapInstalled {
+    std::string asset;
+    std::int64_t installed{};
+};
+void set_menu_map_install_times(const std::vector<MenuMapInstalled>& times) noexcept;
 // That vote's popup (map_download_card.cpp), for the runtime, which reads the controller and
 // holds the game's input while it is up: whether it is, moving the pick, voting for the pick
 // (the popup then closes), and closing it without a vote. Any thread.

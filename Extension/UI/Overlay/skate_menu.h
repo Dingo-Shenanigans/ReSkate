@@ -102,6 +102,8 @@ struct SkateMenu {
     std::array<std::optional<int>, 3> graphics_pending{};
     std::array<double, 3> graphics_pending_until{};
     std::array<char, 128> object_search{};
+    // Map > Travel: which maps it shows (all, stock, custom) and how they are ordered (A to Z, newest installed).
+    int map_show = 0, map_sort = 0;
     int world_layer_category = 0;
     std::array<char, 128> world_layer_search{};
     int progression_tab = 0;

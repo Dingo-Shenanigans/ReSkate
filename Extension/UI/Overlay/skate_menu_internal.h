@@ -1,6 +1,7 @@
 #pragma once
 #include "skate_menu.h"
 #include "Extension/Plugins/plugin_ui.h"
+#include <cstdint>
 #include <memory>
 #include <initializer_list>
 #include <span>
@@ -19,6 +20,8 @@ namespace dingosdk::overlay {
 // level's square, once it is on the GPU.
 void want_menu_map_pictures(std::vector<MenuMapWanted> levels);
 bool menu_map_picture(const std::string& asset, ImTextureID& texture, ImVec2& uv0, ImVec2& uv1);
+// When a custom map's mod was installed (seconds since 1970), or 0 while not known.
+std::int64_t menu_map_installed(const std::string& asset);
 }
 
 namespace dingosdk::overlay::menu {

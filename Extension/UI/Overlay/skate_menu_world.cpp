@@ -8,6 +8,9 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cstdint>
+#include <ctime>
+#include <utility>
 
 // The MAP, WORLD and BUILD pages.
 namespace dingosdk::overlay::menu {
@@ -96,6 +99,28 @@ void level_picker(SkateMenu& menu, const Model& model, const CallbacksV3& callba
         }
     }
 
+    // Which maps, and in what order. Newest installed puts the custom maps first, the mod installed
+    // last on top, so a map just downloaded is found among many; the stock maps follow by name. When
+    // each mod was installed comes with the pictures (map_icons.cpp), so nothing here reads the disk.
+    static const std::vector<std::string> shows{"All", "Stock", "Custom"}, sorts{"A to Z", "Newest installed"};
+    option_row(menu, "Show", "Left / right: every map, only the game's own, or only custom maps from mods.", menu.map_show, shows);
+    option_row(menu, "Sort", "Left / right: by name, or custom maps by when their mod was installed, newest first.", menu.map_sort,
+               sorts);
+    const bool show_stock = menu.map_show != 2, show_custom = menu.map_show != 1, newest = menu.map_sort == 1;
+    const auto installed = [](const Level* level) { return level->custom ? menu_map_installed(level->asset) : std::int64_t{}; };
+    if (newest) {
+        // (Stable, so maps whose time is not known yet, and the stock maps, keep their order by name.)
+        std::vector<std::pair<std::int64_t, const Level*>> ordered;
+        for (const auto* level : destinations) ordered.emplace_back(installed(level), level);
+        std::stable_sort(ordered.begin(), ordered.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+        for (std::size_t i = 0; i < ordered.size(); ++i) destinations[i] = ordered[i].second;
+    }
+    // A custom map installed in the last week gets a NEW tag while they are sorted that way.
+    const auto now = static_cast<std::int64_t>(std::time(nullptr));
+    constexpr std::int64_t new_for = 7 * 24 * 60 * 60;
+    if (!destinations.empty() && std::ranges::none_of(destinations, [&](const Level* level) { return level->custom ? show_custom : show_stock; }))
+        note(show_custom ? "No custom maps to show." : "No stock maps to show.");
+
     // A card per map with its picture, as many to a row as fit; A (or a click) loads it. A map that
     // cannot load stays in reach, so a controller can still read why.
     auto* draw = ImGui::GetWindowDrawList();
@@ -152,6 +177,14 @@ void level_picker(SkateMenu& menu, const Model& model, const CallbacksV3& callba
                 draw->AddRectFilled(badge_at, ImVec2(badge_at.x + size.x + px(14), badge_at.y + size.y + px(6)), blue);
                 draw->AddText(menu.bold, px(12), ImVec2(badge_at.x + px(7), badge_at.y + px(3)), paper, badge);
             }
+            if (const auto when = newest && custom ? installed(level) : 0; when && now - when < new_for) {
+                // Installed in the last week: a badge in the picture's other corner, clear of LOADED.
+                const char* badge = "NEW";
+                const auto size = menu.bold->CalcTextSizeA(px(12), FLT_MAX, 0, badge);
+                const ImVec2 badge_at(end.x - px(8) - size.x - px(14), at.y + px(8));
+                draw->AddRectFilled(badge_at, ImVec2(badge_at.x + size.x + px(14), badge_at.y + size.y + px(6)), skate_theme::bar);
+                draw->AddText(menu.bold, px(12), ImVec2(badge_at.x + px(7), badge_at.y + px(3)), skate_theme::black, badge);
+            }
             draw->PushClipRect(at, end, true);
             draw->AddText(menu.bold, px(15), ImVec2(at.x + px(12), at.y + picture + px(12)),
                 focused ? skate_theme::black : level->can_load ? paper : muted, level_name(*level).c_str());
@@ -160,8 +193,13 @@ void level_picker(SkateMenu& menu, const Model& model, const CallbacksV3& callba
             ImGui::PopID();
         }
     };
-    grid("OFFICIAL MAPS", false);
-    grid("CUSTOM MAPS", true);
+    if (newest) {
+        if (show_custom) grid("CUSTOM MAPS", true);
+        if (show_stock) grid("OFFICIAL MAPS", false);
+    } else {
+        if (show_stock) grid("OFFICIAL MAPS", false);
+        if (show_custom) grid("CUSTOM MAPS", true);
+    }
     if (destinations.empty()) note("Waiting for levels...");
 }
 
