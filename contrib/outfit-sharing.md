@@ -4,14 +4,26 @@ Players see each other's modded outfits in multiplayer, as the wearer sees them,
 installing the wearer's mods. Today a peer's item this PC does not have becomes a stand-in
 (`Extension/Multiplayer/Remote/stand_ins.h`), so a modded outfit is only ever seen by its wearer.
 
-Status: built end to end, not yet tried in the game. Codes, groups and who sees whom; the
-messages and the exchange between two players on Steam side connections of their own; the item
-cutter; the cache; received outfits made into a mod per wearer and merged after everything else
-(read back on 29 real items, one of each of 29 mods); settings in `Mods/.synchros/settings.json`,
-an OUTFITS tab on the Multiplayer page and a `synchros` console command. An outfit shows as soon as
-it has arrived by loading the map again for that player alone (*Show arrivals straight away*);
-showing it with no load at all needs a received item's files loaded into the running game first
-(see the notes at the end).
+Status: built end to end and tried between two players (2026-11-05). Codes, groups and who sees
+whom; the messages and the exchange between two players on Steam side connections of their own;
+the item cutter; the cache; received outfits made into a mod per wearer and merged after
+everything else; settings in `Mods/.synchros/settings.json`, an OUTFITS tab on the Multiplayer
+page and a `synchros` console command. An outfit shows as soon as it has arrived by loading the
+map again for that player alone (*Show arrivals straight away*); showing it with no load at all
+needs a received item's files loaded into the running game first (see the notes at the end).
+
+What the first two-player tests found, and what changed:
+
+- A code entered after connecting did not count until the next session: the viewer now asks again
+  whenever its codes change, and the wearer judges again.
+- A received item showed nowhere: the cutter kept only the highest mod's copy of an item list, so
+  the list naming the item was not sent. Every mod's copy is now indexed for the lists it names.
+- A viewer's game crashed drawing a received outfit (Skate.exe+0x3f3b423, a mesh's parts walked
+  with one missing). Two causes: chunks a bundle lists were sent only as TOC chunks, so the
+  bundle's own chunk table lacked them (the GUID table guard logged them); and a Deck Tool / SDEC
+  deck is drawn with rows of the game's shader lookup tables that no piece carries. Chunks now go
+  with their bundle entry; items whose mod adds shaders are held back (`Withheld::custom_shaders`)
+  and show as the default until shader rows can be sent.
 
 ## What it does
 
@@ -24,7 +36,8 @@ showing it with no load at all needs a received item's files loaded into the run
   A pack of thousands of items costs the viewer the few the wearer has on.
 - **Any mod.** The files come from the wearer's PC, so a mod not on Thunderstore (made by the
   player, passed around privately) shares like any other. Plugin code is never sent: a look that
-  needs a plugin the viewer lacks (a shader plugin's deck) shows as it does without it.
+  needs a plugin the viewer lacks shows as it does without it. Items drawn with custom shaders are
+  not sent yet (see Status).
 - **Seen, never owned.** A received item dresses the player it came from, on this PC. It is not
   in the wardrobe, cannot be worn, and is not saved to the profile.
 
@@ -104,9 +117,11 @@ Mods do not keep one bundle per item (one deck pack puts many decks in one 14 MB
 game item's name), so the closure is cut per file, never per bundle. An item names its looks by
 path (`AssetName`, `nabi_ap`, `<guid>_ap`), not by import, so those names have to be followed.
 
-Still to check: some items come out very small (most SDEC decks about 0.05 MB, the PSDEC glow
-tests 0.02 MB). Either they really are only an item and a shader preset over the game's own deck
-textures, or something they name is not followed yet. A costume item names every variant preset
+Small items explained: most SDEC decks are about 0.05 MB because a Deck Tool deck is an item, its
+preset and artwork, and rows in the game's shader lookup tables
+(`delmargameconfiguration_win32_shaderstate_db` and its texture-set table) that alias a program the
+game or SDEC ships. Those rows are shared by every mod and are not pieces, so such decks are held
+back for now (above). A costume item names every variant preset
 it has (`nabi_role21_ap` and more), so its closure may be larger than what one look needs.
 
 ## Showing a received item
