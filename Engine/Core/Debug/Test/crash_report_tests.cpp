@@ -273,6 +273,9 @@ void crash_check(const std::filesystem::path& root, Mode mode) {
         child_path = root / L"Skate.exe";
         std::filesystem::copy_file(executable.data(), child_path);
         std::filesystem::copy_file(std::filesystem::path(executable.data()).parent_path() / L"ReSkateLauncher.exe", root / L"ReSkateLauncher.exe");
+        // One mod beside the fixture game, which its report must list.
+        std::filesystem::create_directories(root / L"Mods" / L"Fixture");
+        std::ofstream(root / L"Mods" / L"Fixture" / L"manifest.json") << R"({"name":"Fixture","version_number":"1.0.0"})";
     }
     auto command = std::format(L"\"{}\" {} \"{}\"", child_path.wstring(),
         mode == Mode::fatal ? L"--fatal-crash" : native ? L"--native-crash" : L"--crash", root.wstring());
@@ -315,9 +318,15 @@ void crash_check(const std::filesystem::path& root, Mode mode) {
     // (The fixture raises its exception, so it happens in RaiseException.)
     check(site.starts_with("KERNELBASE.dll+0x") && site.size() > 17, "Crash site not tagged");
     const auto details = Json::parse(read(event_details_path(dump)));
-    check(details.at("user").at("id").string().size() == 32 && details.at("breadcrumbs").at("values").size() > 0 &&
-        details.at("contexts").at("reskate").at("mods").is_array() && tags.at("mods.count").string() == "0",
+    check(details.at("user").at("id").string().size() == 32 && details.at("breadcrumbs").at("values").size() > 0,
         "Crash did not carry its event details");
+    // A native crash is collected after the game has exited, when Windows may no longer say where
+    // it ran from, so its mods come from the folder read while it ran.
+    const auto& context = details.at("contexts").at("reskate");
+    check(context.contains("mods") && context.at("mods").is_array(), "Crash report has no mods list");
+    const auto& mods = context.at("mods");
+    check(native ? mods.size() == 1 && mods[0].string() == "Fixture 1.0.0" && tags.at("mods.count").string() == "1" :
+        mods.empty() && tags.at("mods.count").string() == "0", "Crash report did not list the mods beside the game");
     check(tags.at("game.map").string() == "dingolevel_reskate_lsc_b2" &&
         tags.at("game.destination").string() == "Levels/Game/DingoLevel_Root/DingoLevel_Root + levels/game/dingolevel_reskate_lsc_b2/dingolevel_reskate_lsc_b2 @ DefaultStartPoint" &&
         tags.at("gpu.name").string() == "Fixture GPU" && tags.at("gpu.driver").string() == "32.0.21025.1",

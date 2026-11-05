@@ -74,7 +74,7 @@ void carry(std::optional<carry::Goal> goal, bool push_straightens = false, Shown
 struct PoseOffset {
     std::uint16_t joint{};
     anim_studio::Quat rotation{0, 0, 0, 1};
-    float scale{1};
+    anim_studio::Vec3 scale{1, 1, 1}; // each of its own axes
     anim_studio::Vec3 offset{}; // added to its position, in its parent's frame
     std::optional<pose_place::Place> place; // set instead of added, after the above
     bool keep_children{};                   // its children stay where they were in the world
@@ -92,6 +92,14 @@ std::optional<arm_reach::Placed> hand(arm_reach::Hand side);
 // the room's floor, facing as the menu's skater did, as high above the floor as he is above his own
 // ground; the room's own skater and board are hidden meanwhile and come back after. Only what is
 // drawn moves: the skater stays where he is, and other players are not sent the room. Any thread.
+// Read-only observation of the native menu rig, before any plugin pose writes.
+// Asking renews a short observation window; no board/camera ownership is taken.
+struct PreviewPose {
+    anim_studio::Joint place;
+    double age{};
+    std::uint64_t sequence{};
+};
+std::optional<PreviewPose> preview_pose(bool skater);
 void watch_room(bool on) noexcept;
 bool room_skater_seen() noexcept;
 void show_in_room(bool on) noexcept;

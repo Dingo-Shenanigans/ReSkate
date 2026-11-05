@@ -25,6 +25,7 @@
 #include "Extension/Throwdowns/throwdown_kit.h"
 #include "Extension/Skater/skater_observer.h"
 #include "Extension/UI/Overlay/overlay.h"
+#include "Engine/Core/Text/ascii.h"
 #include <mutex>
 #include <thread>
 #include <windows.h>
@@ -54,6 +55,15 @@ extern "C" std::uint64_t DingoSDKOverlayGrindStickLeaned() noexcept;
 namespace dingosdk::trainer {
 namespace {
 namespace tuning = dingosdk::physics_tuning;
+// A float the game holds at `at`, or false where that memory is gone (diagnostics only).
+bool peek_float(std::uintptr_t at, float &value) noexcept {
+    __try {
+        value = *reinterpret_cast<const float *>(at);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
 namespace kit = dingosdk::throwdowns::kit;
 // A plugin match blocks markers and returns, unless it lets teleports through (its own).
 bool match_blocks_markers() noexcept {
@@ -92,6 +102,8 @@ struct Saved {
     double value{};
     bool frozen{};
 };
+#if defined(DINGOSDK_DEV_TOOLS)
+// `trainer selftest` (development builds only, DINGOSDK_DEV_TOOLS).
 struct SelfTest {
     int step{}; // 0: idle
     std::uint64_t until{};
@@ -100,6 +112,7 @@ struct SelfTest {
     Vec3 origin{};
     int failures{};
 };
+#endif
 struct Motion {
     bool valid{};
     Vec3 position{}, velocity{};
@@ -141,6 +154,12 @@ struct State {
         double before{};
     };
     std::map<std::string, PluginTune, std::less<>> plugin_tunes;
+    // Plugins' flip speeds (plugin_flip_speed), by owner: the factor and when it runs out (GetTickCount64).
+    struct PluginFlip {
+        float factor{1.0f};
+        std::uint64_t until{};
+    };
+    std::map<std::string, PluginFlip, std::less<>> plugin_flips;
     UserPresets user;                                                                   // presets
     std::vector<std::string> active;                                                    // presets applied since Stock
     std::map<std::string, MapData, std::less<>> maps;
@@ -164,6 +183,8 @@ struct State {
     bool flip_advanced{};
     bool flip_pop{}; // a slowed flip trick pops higher, so it has the air time it needs
     bool flip_flick{}; // a slow flick of the stick turns the board as fast as a full one
+    bool flip_limit{true}; // the game's flip landing limit: a flip still turning near the landing is hurried round
+    bool air_reach_fixed{}; // the turned-up reach from the air that Sticky Grinds saved before 2026-10-24 is cleared (once)
     bool grind_watch{}; // the grind card is asking what the game's switches read (`trainer grind watch`)
     std::map<std::string, bool, std::less<>> folds; // the menu's sections and cards the player has opened or closed
     std::array<float, flip_tricks.size()> flip_trick = [] {
@@ -244,6 +265,7 @@ struct State {
         return a;
     }();
     std::uint64_t tr_option_at{};
+    int grind_assist{-1}; // the game's own Grind Assist (grind_assist_setting), read with the options above
     // What the player's own game settings hold for the settings the trainer can force (read with the options above):
     // a row that is not forced shows this, not the game's default.
     std::array<std::int8_t, grind_settings.size()> grind_own = [] {
@@ -326,19 +348,16 @@ struct State {
     Telemetry telemetry;
     std::ofstream log;
     std::int64_t log_start{};
-    std::map<std::uint32_t, std::uint64_t> states; // physics state -> ticks seen
+#if defined(DINGOSDK_DEV_TOOLS)
+    std::map<std::uint32_t, std::uint64_t> states; // physics state -> ticks seen (`trainer states`)
     SelfTest test;
+#endif
 };
 State &state() {
     static auto *value = new State;
     return *value;
 }
 
-std::string lower(std::string_view text) {
-    std::string result(text);
-    std::ranges::transform(result, result.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return result;
-}
 // "MaxPushSpeed" -> "Max Push Speed"
 std::string spaced(std::string_view text) {
     std::string result;
@@ -468,6 +487,8 @@ void load_store() {
             s.flip_advanced = o.value("flip_advanced", false);
             s.flip_pop = o.value("flip_pop", false);
             s.flip_flick = o.value("flip_flick", false);
+            s.flip_limit = o.value("flip_landing_limit", true);
+            s.air_reach_fixed = o.value("air_reach_fixed", false);
             for (std::size_t i = 0; i < flip_tricks.size(); ++i)
                 s.flip_trick[i] = std::clamp(o.value(std::string(flip_tricks[i].key), 1.0f), flip_low, flip_high);
             s.boneless_height = std::clamp(o.value("boneless_height", 1.0f), height_low, height_high);
@@ -481,13 +502,13 @@ void load_store() {
         if (json->contains("values") && json->at("values").is_object())
             for (const auto &[key, row] : json->at("values").items())
                 if (row.is_object() && row.contains("value") && row.at("value").is_number())
-                    s.saved[lower(key)] = {row.at("value").get<double>(), row.value("frozen", false)};
+                    s.saved[ascii_lower(key)] = {row.at("value").get<double>(), row.value("frozen", false)};
         if (json->contains("presets") && json->at("presets").is_object())
             for (const auto &[name, values] : json->at("presets").items()) {
                 if (!values.is_object() || name.empty() || name.size() > max_preset_name) continue;
                 auto &preset = s.user[name];
                 for (const auto &[key, value] : values.items())
-                    if (value.is_number()) preset[lower(key)] = value.get<double>();
+                    if (value.is_number()) preset[ascii_lower(key)] = value.get<double>();
             }
         if (json->contains("active") && json->at("active").is_array())
             for (const auto &name : json->at("active"))
@@ -506,7 +527,7 @@ void load_store() {
         if (json->contains("maps") && json->at("maps").is_object())
             for (const auto &[level, row] : json->at("maps").items()) {
                 if (!row.is_object()) continue;
-                auto &map = s.maps[lower(level)];
+                auto &map = s.maps[ascii_lower(level)];
                 map.preset = row.value("preset", "");
                 if (row.contains("markers") && row.at("markers").is_array())
                     for (std::size_t i = 0; i < marker_slots && i < row.at("markers").size(); ++i)
@@ -519,9 +540,9 @@ void load_store() {
     // built-in. It keeps its values under a new name, and what named it follows.
     for (const auto &[from, to] : rename_reserved_presets(s.user)) {
         for (auto &name : s.active)
-            if (lower(name) == lower(from)) name = to;
+            if (ascii_lower(name) == ascii_lower(from)) name = to;
         for (auto &entry : s.maps)
-            if (lower(entry.second.preset) == lower(from)) entry.second.preset = to;
+            if (ascii_lower(entry.second.preset) == ascii_lower(from)) entry.second.preset = to;
         s.save_due = true;
         say(logging::Level::info, std::format("Trainer: your preset \"{}\" is now \"{}\": a built-in preset has that name.", from, to));
     }
@@ -570,6 +591,8 @@ void save_store() {
         options["flip_advanced"] = s.flip_advanced;
         options["flip_pop"] = s.flip_pop;
         options["flip_flick"] = s.flip_flick;
+        options["flip_landing_limit"] = s.flip_limit;
+        options["air_reach_fixed"] = s.air_reach_fixed;
         for (std::size_t i = 0; i < flip_tricks.size(); ++i)
             if (s.flip_trick[i] != 1.0f) options[std::string(flip_tricks[i].key)] = s.flip_trick[i];
         options["boneless_height"] = s.boneless_height;
@@ -798,7 +821,7 @@ bool is_locked(const Entry &e) {
 }
 Entry *find_entry(std::string_view id) {
     auto &s = state();
-    const auto found = s.index.find(lower(id));
+    const auto found = s.index.find(ascii_lower(id));
     return found == s.index.end() ? nullptr : &s.entries[found->second];
 }
 void build_entries() {
@@ -812,10 +835,10 @@ void build_entries() {
         if (name.empty()) name = std::format("Unnamed.0x{:x}", offset);
         Entry e;
         e.id = kind == Kind::curve || kind == Kind::graph ? name + " x" : name;
-        e.key = lower(e.id);
+        e.key = ascii_lower(e.id);
         if (s.index.contains(e.key)) { // arrays of structures repeat names
             e.id += std::format(" @0x{:x}", offset);
-            e.key = lower(e.id);
+            e.key = ascii_lower(e.id);
         }
         const auto dot = name.find('.');
         auto group = dot == std::string::npos ? std::string("General") : name.substr(0, dot);
@@ -870,7 +893,7 @@ void build_entries() {
             if (std::string_view(field.name).starts_with("Code")) continue;
             Entry e;
             e.id = std::format("{}.{}", class_specs[c].key, field.name);
-            e.key = lower(e.id);
+            e.key = ascii_lower(e.id);
             if (s.index.contains(e.key)) continue;
             e.group = class_specs[c].group;
             e.label = spaced(field.name);
@@ -910,6 +933,24 @@ void adopt(const tuning::Values &live) {
             e.value = e.stock;
         }
         if (e.touched) apply_entry(e);
+    }
+    // Grind lock-on turned up (0.8.4 to 0.8.6) doubled the reach from the air too, which steered pops near rails onto them.
+    // The dial moves only the lock-on distance now; the reach it saved turned up goes back to the game's own, once.
+    if (!s.air_reach_fixed) {
+        std::size_t cleared{};
+        constexpr std::string_view reach[]{"physicstrajectory.scoregrind", "physicsgrindsair.maxdist50_50", "physicsgrindsair.maxdist5_0",
+                                           "physicsgrindsair.maxdisttipslide", "physicsgrindsair.maxdistboardslide"};
+        for (const auto key : reach) {
+            auto *e = find_entry(key);
+            if (!e || e->frozen || !(e->value > e->stock)) continue;
+            for (auto &[name, preset] : s.user)
+                if (const auto held = preset.find(e->key); held != preset.end() && held->second > e->stock) preset.erase(held);
+            set_entry(*e, e->stock);
+            ++cleared;
+        }
+        s.air_reach_fixed = true;
+        s.save_due = true;
+        if (cleared) say(logging::Level::info, std::format("Trainer: {} turned-up grind reach values from the air are the game's own again.", cleared));
     }
     // A linked value saved by itself (before links existed, or edited in the file) still
     // drives its graphs.
@@ -1119,9 +1160,9 @@ const std::vector<std::vector<std::pair<std::size_t, std::size_t>>> &preset_targ
 std::string apply_dial(std::string_view name, double factor) {
     auto &s = state();
     const auto &presets = builtin_presets();
-    const auto wanted = lower(name);
+    const auto wanted = ascii_lower(name);
     std::size_t p = 0;
-    while (p < presets.size() && lower(presets[p].name) != wanted) ++p;
+    while (p < presets.size() && ascii_lower(presets[p].name) != wanted) ++p;
     if (p == presets.size()) return "error: no built-in preset is called \"" + std::string(name) + "\".";
     const auto &rules = presets[p].rules;
     if (rules.empty() || !rules[0].multiply || rules[0].amount <= 0 || rules[0].amount == 1)
@@ -1206,6 +1247,8 @@ const std::vector<Setup> &setups() {
         toggle("trick.flip_advanced", topic_pop, &s.flip_advanced);
         toggle("trick.flip_pop", topic_pop, &s.flip_pop);
         toggle("trick.flip_flick", topic_pop, &s.flip_flick);
+        toggle("trick.flip_limit", topic_pop, &s.flip_limit);
+        all->back().stock = 1; // the game's own: on
         toggle("trick.underflip_split", topic_pop, &s.underflip_split);
         toggle("trick.gravity_landing_own", topic_pop, &s.gravity_landing_own);
         real("trick.gravity_landing", topic_pop, &s.gravity_landing, 1.0f, gravity_low, gravity_high);
@@ -1260,7 +1303,7 @@ const std::vector<Setup> &setups() {
             {"trick.gravity_timing", "Animation timing"},
             {"trick.nocomply_height", "No comply height"}, {"trick.boneless_height", "Boneless height"}, {"trick.hippy_height", "Hippy jump height"},
             {"trick.offboard_height", "Off-board jump height"}, {"trick.pump_power", "Pump power"}, {"trick.revert_boost", "Board bending boost"},
-            {"trick.flip_advanced", "Advanced trick speed"}, {"trick.flip_pop", "Slow flips pop higher"}, {"trick.flip_flick", "Flick tricks at full speed"},
+            {"trick.flip_advanced", "Advanced trick speed"}, {"trick.flip_pop", "Slow flips pop higher"}, {"trick.flip_flick", "Flick tricks at full speed"}, {"trick.flip_limit", "Flip landing limit"},
             {"trick.underflip_split", "Underflip speed: under part only"},
             {"grind.side", "Grind pop: side force"}, {"grind.push", "Grind pop: push with stick (m/s)"}, {"grind.range", "Grinds: left stick turn range (deg)"},
             {"transition.lean", "Transition: lean into the ramp"}, {"transition.carry", "Transition: roll off at your angle"},
@@ -1312,7 +1355,7 @@ bool builtin_on(std::size_t p);
 // value the player has since set themselves).
 std::string remove_preset(std::string_view name, bool matching = false) {
     auto &s = state();
-    const auto wanted = lower(name);
+    const auto wanted = ascii_lower(name);
     std::size_t count{};
     std::string removed;
     const auto put_back = [&](Entry &e) {
@@ -1330,7 +1373,7 @@ std::string remove_preset(std::string_view name, bool matching = false) {
             }
     };
     for (const auto &[user_name, values] : s.user) {
-        if (lower(user_name) != wanted) continue;
+        if (ascii_lower(user_name) != wanted) continue;
         for (const auto &saved : values) {
             if (const auto *one = find_setup(saved.first)) {
                 one->set(one->stock);
@@ -1343,7 +1386,7 @@ std::string remove_preset(std::string_view name, bool matching = false) {
     }
     if (removed.empty())
         for (const auto &preset : builtin_presets()) {
-            if (lower(preset.name) != wanted) continue;
+            if (ascii_lower(preset.name) != wanted) continue;
             for (const auto &rule : preset.rules)
                 for (auto &e : s.entries) {
                     const bool scale = e.kind == Kind::curve || e.kind == Kind::graph;
@@ -1375,7 +1418,7 @@ std::size_t reset_all() {
 }
 std::string apply_preset(std::string_view name) {
     auto &s = state();
-    const auto wanted = lower(name);
+    const auto wanted = ascii_lower(name);
     if (wanted == "stock") {
         const auto count = reset_all();
         changed();
@@ -1391,7 +1434,7 @@ std::string apply_preset(std::string_view name) {
     }
     if (applied.empty())
         for (const auto &[user_name, values] : s.user) {
-            if (lower(user_name) != wanted) continue;
+            if (ascii_lower(user_name) != wanted) continue;
             for (const auto &[key, value] : values) {
                 if (set_setup_key(key, value)) ++count;
                 else if (auto *e = find_entry(key); e && !is_locked(*e)) { set_entry(*e, value); ++count; }
@@ -1401,7 +1444,7 @@ std::string apply_preset(std::string_view name) {
         }
     if (applied.empty())
         for (const auto &preset : builtin_presets()) {
-            if (lower(preset.name) != wanted) continue;
+            if (ascii_lower(preset.name) != wanted) continue;
             for (const auto &rule : preset.rules)
                 for (auto &e : s.entries) {
                     const bool scale = e.kind == Kind::curve || e.kind == Kind::graph;
@@ -1436,10 +1479,10 @@ MapFile read_map_file(const std::string &level) {
         try {
             // The file names its level, or it stands for every level its mod adds.
             bool mine = false;
-            if (json->contains("level") && json->at("level").is_string()) mine = lower(json->at("level").string()) == level;
+            if (json->contains("level") && json->at("level").is_string()) mine = ascii_lower(json->at("level").string()) == level;
             else if (const auto levels = read_json(it->path() / L"reskate-levels.json"); levels && levels->contains("levels"))
                 for (const auto &row : levels->at("levels"))
-                    if (row.is_object() && lower(row.value("asset", "")) == level) mine = true;
+                    if (row.is_object() && ascii_lower(row.value("asset", "")) == level) mine = true;
             if (!mine) continue;
             result.note = json->value("note", "");
             if (json->contains("preset") && json->at("preset").is_object()) {
@@ -1762,6 +1805,16 @@ constexpr bool plain_pop(std::uint32_t trick) { return trick <= 1 || trick == 16
 // The ollies among those (ollie, nollie, their pops, the boned ollie). With "Slow flips pop higher" they are slowed and
 // popped like a flip trick (the owner's ask of 2026-10-11): the pop gives them the air a slowed clip hangs for.
 constexpr bool ollie_pop(std::uint32_t trick) { return trick == 1 || trick == 16 || trick == 31 || trick == 32 || trick == 42; }
+// Every plugin's flip speed that has not run out, multiplied together (1: none), held to the range one plugin
+// may ask for: three plugins at 10 would otherwise turn flips at 1000 times.
+float plugin_flip_factor() {
+    auto &s = state();
+    const auto now = GetTickCount64();
+    float factor = 1.0f;
+    for (const auto &[owner, flip] : s.plugin_flips)
+        if (now < flip.until) factor *= flip.factor;
+    return std::clamp(factor, flip_low, 10.0f);
+}
 void drive_flip_speed(std::uintptr_t base, bool airborne, float to_landing) {
     auto &s = state();
     auto &drive = s.flip_drive;
@@ -1804,7 +1857,7 @@ void drive_flip_speed(std::uintptr_t base, bool airborne, float to_landing) {
     }
     if (now.trick) s.flip_trick_seen = now.trick;
     float factor = s.boosts.flip;
-    if (!extras_blocked()) factor *= own_trick_speed(flip_trick_index(now.trick));
+    if (!extras_blocked()) factor *= own_trick_speed(flip_trick_index(now.trick)) * plugin_flip_factor();
     if (s.logging && (now.underflip_anim != drive.underflip_anim || now.underflip_state != drive.underflip_state ||
                       now.underflip_window != drive.underflip_window))
         say(logging::Level::info, std::format("Trainer underflip states: trick {} ({}), Is.Underflip anim {} state {}, window {}, game's speed {:.3f}, "
@@ -1931,7 +1984,9 @@ void observe(std::uintptr_t base, std::uintptr_t client, std::uint64_t now) {
     t.heading = std::atan2(matrix[8], matrix[10]) * 180.0f / std::numbers::pi_v<float>;
     if (t.heading < 0) t.heading += 360.0f;
     t.physics_state = watch.valid ? watch.state : 0;
+#if defined(DINGOSDK_DEV_TOOLS)
     if (watch.valid) ++s.states[watch.state];
+#endif
     // A hippy jump leaves the board (504) straight from riding (100): measured. A plain
     // dismount does the same but is not rising, so it is left alone.
     if (watch.valid && watch.state != s.last_state) {
@@ -2057,10 +2112,12 @@ void observe(std::uintptr_t base, std::uintptr_t client, std::uint64_t now) {
         if (m.airborne) m.board_turn = std::max(m.board_turn, board_turn);
     }
     if (!m.airborne) s.board_spin = {};
+#if defined(DINGOSDK_DEV_TOOLS)
     if (s.logging && s.log) {
         s.log << std::format("{:.4f},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f},{:.1f},{},{},{:.0f}\n", clock_seconds(stamp - s.log_start), position[0],
                              position[1], position[2], t.speed, t.vertical, t.heading, t.airborne ? 1 : 0, t.physics_state, board_turn);
     }
+#endif
     // A bail: back to the selected marker once the skater has had time to fall.
     if (watch.valid && (!s.wipeouts_known || watch.wipeouts != s.seen_wipeouts)) {
         if (s.wipeouts_known && s.auto_return && !match_blocks_markers()) {
@@ -2073,13 +2130,12 @@ void observe(std::uintptr_t base, std::uintptr_t client, std::uint64_t now) {
         s.seen_wipeouts = watch.wipeouts;
     }
 }
+#if defined(DINGOSDK_DEV_TOOLS)
+// `trainer option log`: telemetry to a CSV file (development builds only).
 void set_logging(bool on) {
     auto &s = state();
     if (s.log.is_open()) s.log.close();
     s.logging = false;
-#if defined(DINGOSDK_LEAN_PLAYTEST)
-    (void)on;
-#else
     if (!on) return;
     const auto directory = data_directory() / L"telemetry";
     std::error_code error;
@@ -2096,8 +2152,8 @@ void set_logging(bool on) {
     s.log << "seconds,x,y,z,speed_mps,vertical_mps,heading_deg,airborne,physics_state,board_turn_dps\n";
     s.log_start = clock_now();
     s.logging = true;
-#endif
 }
+#endif
 void shortcuts() {
     auto &s = state();
     ControllerInput input;
@@ -2115,6 +2171,7 @@ void shortcuts() {
 }
 
 // ---- self test -------------------------------------------------------------------------
+#if defined(DINGOSDK_DEV_TOOLS)
 void test_line(bool ok, const std::string &text) {
     auto &s = state();
     if (!ok) ++s.test.failures;
@@ -2203,6 +2260,7 @@ void run_selftest(std::uint64_t now) {
         break;
     }
 }
+#endif
 
 // ---- transition skating ------------------------------------------------------------------------
 // Bowls, quarter pipes, vert and spines: the trainer's own help back into the ramp, and Skate 3's numbers for it.
@@ -2260,6 +2318,10 @@ void drive_transition(std::uintptr_t base, std::uintptr_t client, std::uint64_t 
     if (now >= s.tr_option_at) {
         // The game's own options: whatever its Settings menu (or the trainer) last set.
         s.tr_option_at = now + 500;
+        if (const auto held = profile_runtime::local_game_option(grind_assist_setting); (held ? static_cast<int>(std::lround(*held)) : -1) != s.grind_assist) {
+            s.grind_assist = held ? static_cast<int>(std::lround(*held)) : -1;
+            s.view_due = true;
+        }
         for (std::size_t i = 0; i < transition_options.size(); ++i) {
             const auto held = profile_runtime::local_game_option(transition_options[i].setting);
             const int value = held ? static_cast<int>(std::lround(*held)) : transition_options[i].stock;
@@ -2431,6 +2493,7 @@ void build_view() {
     next->last = s.last;
     next->editable = editable(&next->blocked);
     next->session_enforced = s.enforced;
+    next->session_stock = s.competition;
     next->boosts_blocked = !s.enforced && multiplayer_session_active() && !session_boosts_allowed();
     next->rows.reserve(s.entries.size());
     for (const auto &e : s.entries) {
@@ -2441,6 +2504,16 @@ void build_view() {
         next->rows.push_back({e.id, e.label, e.group, e.kind, e.value, e.stock, e.touched, e.frozen, e.detail, std::string(friendly), rank, topic,
                               trial, e.used});
         next->rows.back().help = essential_help(e.key);
+        // Grind Assist (the game's own setting, the first row of GRINDS) works in the game's grind code on top of these: at 0, 50
+        // and 100 every tuning and class value read the same (trainer livedump, 2026-10-24), so it changes none of them.
+        static constexpr std::string_view assisted[]{"physicsmode.grindlockdist", "physicsgrindsair.maxdist50_50", "physicsgrindsair.maxdist5_0",
+                                                     "physicsgrindsair.maxdisttipslide", "physicsgrindsair.maxdistboardslide",
+                                                     "physicstrajectory.grindlandingmaxangle", "physicstrajectory.grindmaxspeedsqr",
+                                                     "physicstrajectory.grindmaxspeeddownontogrind", "physicstrajectory.scoregrind"};
+        if (std::ranges::find(assisted, e.key) != std::end(assisted))
+            next->rows.back().help += std::string(next->rows.back().help.empty() ? "" : " ") +
+                "Your game's Grind Assist setting (Grind lock-on, the first row of GRINDS) also helps grinds lock on: it works on top of "
+                "this value and does not change it.";
         if (e.touched) {
             ++next->touched;
             ++next->changed[topic];
@@ -2501,6 +2574,7 @@ void build_view() {
     next->grind_own = s.grind_own;
     next->tr_own = s.tr_own;
     next->tr_option = s.tr_option;
+    next->grind_assist = s.grind_assist;
     next->offboard_height = s.offboard_height;
     next->flip_speed = s.flip_speed;
     next->underflip_speed = s.underflip_speed;
@@ -2508,6 +2582,7 @@ void build_view() {
     next->flip_advanced = s.flip_advanced;
     next->flip_pop = s.flip_pop;
     next->flip_flick = s.flip_flick;
+    next->flip_limit = s.flip_limit;
     next->flip_trick = s.flip_trick;
     next->flip_advanced_blocked = s.flip_advanced && extras_blocked();
     next->flip_live = s.flip_live;
@@ -2590,7 +2665,7 @@ std::string export_preset(const std::string &name) {
     auto &s = state();
     Json values = Json::object();
     std::string title;
-    if (lower(name) == "current") {
+    if (ascii_lower(name) == "current") {
         for (const auto &e : s.entries)
             if (e.touched) values[e.key] = e.value;
         for (const auto &one : setups())
@@ -2598,7 +2673,7 @@ std::string export_preset(const std::string &name) {
         title = "My setup";
     } else {
         for (const auto &[user_name, saved] : s.user)
-            if (lower(user_name) == lower(name)) {
+            if (ascii_lower(user_name) == ascii_lower(name)) {
                 for (const auto &[key, value] : saved) values[key] = value;
                 title = user_name;
             }
@@ -2651,7 +2726,7 @@ std::string import_preset(const std::string &file_name) {
         std::size_t unknown{};
         for (const auto &[key, value] : json.at("values").items()) {
             if (!value.is_number() || values.size() >= 512) continue;
-            const auto id = lower(key);
+            const auto id = ascii_lower(key);
             const bool setting = find_setup(id) || id == "trick.flip_gate" || id == "trick.catch_at" || id == "trick.catch_percent";
             if (!setting && !find_entry(id)) ++unknown; // kept: another build of the game may have it
             values[id] = value.get<double>();
@@ -2660,8 +2735,8 @@ std::string import_preset(const std::string &file_name) {
         auto name = json.value("name", "Imported");
         if (name.empty() || name.size() > 40) name = "Imported";
         const auto taken = [&](const std::string &candidate) {
-            if (lower(candidate) == "stock" || lower(candidate) == "map" || s.user.contains(candidate)) return true;
-            return std::ranges::any_of(builtin_presets(), [&](const auto &preset) { return lower(preset.name) == lower(candidate); });
+            if (ascii_lower(candidate) == "stock" || ascii_lower(candidate) == "map" || s.user.contains(candidate)) return true;
+            return std::ranges::any_of(builtin_presets(), [&](const auto &preset) { return ascii_lower(preset.name) == ascii_lower(candidate); });
         };
         auto unique = name;
         for (int n = 2; taken(unique); ++n) unique = std::format("{} {}", name, n);
@@ -2675,7 +2750,7 @@ std::string import_preset(const std::string &file_name) {
     }
 }
 bool flag(const std::string &text, bool &out) {
-    const auto value = lower(text);
+    const auto value = ascii_lower(text);
     if (value == "1" || value == "on" || value == "true") { out = true; return true; }
     if (value == "0" || value == "off" || value == "false") { out = false; return true; }
     return false;
@@ -2697,9 +2772,9 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool playing, const std::s
         s.base = base;
         sync_session();
         s.boosts = boosts_in_force();
-        if (const auto key = lower(playing ? level : std::string{}); key != s.map) enter_map(key);
+        if (const auto key = ascii_lower(playing ? level : std::string{}); key != s.map) enter_map(key);
         take_map_file();
-        if (const auto key = lower(level); !key.empty() && key != s.waypoint_level) {
+        if (const auto key = ascii_lower(level); !key.empty() && key != s.waypoint_level) {
             s.waypoint_level = key;
             s.waypoint.reset();
             s.view_due = true;
@@ -2744,17 +2819,17 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool playing, const std::s
                 find_classes();
             }
         }
-        flip_speed_in_use(s.boosts.flip != 1.0f || s.flip_advanced || s.flip_trick[late_flip_slot] != 1.0f || s.flip_flick || underflip_in_force() != 1.0f ||
-                          underflip_split_in_force());
+        flip_speed_in_use(s.boosts.flip != 1.0f || s.flip_advanced || s.flip_trick[late_flip_slot] != 1.0f || s.flip_flick || !s.flip_limit || underflip_in_force() != 1.0f ||
+                          underflip_split_in_force() || plugin_flip_factor() != 1.0f);
         // The speed itself goes straight to the trick in the air (drive_flip_speed); the flip curves
         // are only scaled where that number cannot be reached.
         want_flip_speed(s.flip_live ? 1.0f : s.boosts.flip);
         // The player's own choice, and only where their own trick settings count: not under a
         // host's enforced physics or in a session that has turned boosts off.
-        // A flip asked to be slow is slow from the start: the game's rule would hurry it round before
-        // the landing, so it is held off for as long as the speed in force is under the game's own.
-        const bool slow = (s.flip_drive.active ? s.flip_drive.factor : s.boosts.flip) < 1.0f;
-        want_flip_gate(extras_blocked() || !slow ? flip_gate_stock : flip_gate_off);
+        // The game's flip landing limit hurries a flip that is still turning round before the landing. It stays the
+        // game's own unless the player unticks it (Flip landing limit): it was once dropped whenever a flip was slowed
+        // at all, and a flip speed of 0.99 then left the slow-turning shuvits half way round (reported 2026-10-24).
+        want_flip_gate(extras_blocked() || s.flip_limit ? flip_gate_stock : flip_gate_off);
         if (s.boosts.flip != s.flip_applied) {
             // The catch times follow the flip speed (want_class).
             s.flip_applied = s.boosts.flip;
@@ -2852,11 +2927,11 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool playing, const std::s
                 s.pump_live = pump.found;
                 s.view_due = true;
             }
-            bool measure = false, searching = false;
+            bool searching = false;
             const bool grind_held = std::ranges::any_of(s.grind_mode, [](std::int8_t mode) { return mode >= 0; });
             keep_holds_alive();
             for (std::size_t i = 0; i < grind_settings.size(); ++i) force_grind_setting(i, extras_blocked() ? -1 : s.grind_setting[i]);
-            states_in_use(s.pump_power != 1.0f || s.manual_height != 1.0f || grind_held || s.grind_watch || s.grind_push != 0.0f || s.grind_range != 0.0f || measure || searching);
+            states_in_use(s.pump_power != 1.0f || s.manual_height != 1.0f || grind_held || s.grind_watch || s.grind_push != 0.0f || s.grind_range != 0.0f || searching);
             {
                 const auto watch = watched_physics_state();
                 const bool grinding = watch.valid && watch.state >= 400 && watch.state < 500;
@@ -2919,7 +2994,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool playing, const std::s
                     s.view_due = true;
                 }
             }
-            set_pump_power(client, s.entity, extras_blocked() ? 1.0f : s.pump_power, pump.found && pump.pumping, measure);
+            set_pump_power(client, s.entity, extras_blocked() ? 1.0f : s.pump_power, pump.found && pump.pumping);
         }
         {
             // Gravity: the game's own under a host's physics or with boosts off. Both levers let go by themselves.
@@ -2958,7 +3033,9 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool playing, const std::s
                                                       launch.trick == Trick::boneless ? "boneless" : "no comply", launch.up_speed, launch.factor));
         hold(now);
         if (s.extras_due) publish_extras();
+#if defined(DINGOSDK_DEV_TOOLS)
         run_selftest(now);
+#endif
         publish(s.telemetry);
         if (s.view_due) build_view();
         if (s.save_due && now >= s.next_save) save_store();
@@ -2970,7 +3047,7 @@ namespace {
 // trainer revert <field> <number> | reset: what counts as a revert and what it is worth.
 std::string revert_command(const std::vector<std::string> &a) {
     auto &s = state();
-    const auto name = a.empty() ? std::string{} : lower(a[0]);
+    const auto name = a.empty() ? std::string{} : ascii_lower(a[0]);
     std::string why;
     if (!editable(&why)) return "error: " + why;
     if (name == "reset") {
@@ -2996,7 +3073,7 @@ constexpr std::pair<std::string_view, double> trickline_friction[]{
 // choices are its difficulty settings (the built-in presets of those names); only one is on.
 constexpr std::pair<std::string_view, std::string_view> feels[]{{"easy", "Skate 3 Easy"}, {"normal", "Skate 3"}, {"hardcore", "Skate 3 Hardcore"}};
 std::string feel_command(const std::vector<std::string> &a) {
-    const auto which = a.empty() ? std::string{} : lower(a[0]);
+    const auto which = a.empty() ? std::string{} : ascii_lower(a[0]);
     std::string why;
     if (!editable(&why)) return "error: " + why;
     const auto found = std::ranges::find(feels, which, [](const auto &feel) { return feel.first; });
@@ -3018,7 +3095,7 @@ std::string trickline_command(const std::vector<std::string> &a) {
     std::string why;
     if (!editable(&why)) return "error: " + why;
     bool on{};
-    if (a.size() < 2 || lower(a[0]) != "extras" || !flag(a[1], on)) return "error: usage: trainer trickline extras on|off";
+    if (a.size() < 2 || ascii_lower(a[0]) != "extras" || !flag(a[1], on)) return "error: usage: trainer trickline extras on|off";
     // Off puts back only what still holds the extras' own numbers: a value the player has since moved is theirs.
     for (const auto &[key, factor] : trickline_friction)
         if (auto *e = find_entry(key); e && !is_locked(*e) && (on || std::abs(e->value - sane(*e, e->stock * factor)) < 1e-6 * std::max(1.0, std::abs(e->value))))
@@ -3035,7 +3112,7 @@ std::string trickline_command(const std::vector<std::string> &a) {
 std::string transition_command(const std::vector<std::string> &a) {
     auto &s = state();
     const auto arg = [&](std::size_t i) { return i < a.size() ? a[i] : std::string{}; };
-    const auto what = lower(arg(0)), to = lower(arg(1));
+    const auto what = ascii_lower(arg(0)), to = ascii_lower(arg(1));
     std::string why;
     if (what.empty()) {
         const auto now = GetTickCount64();
@@ -3141,7 +3218,7 @@ std::string transition_command(const std::vector<std::string> &a) {
 // trainer foot (lists the switches and how often the game asked for each) | foot <setting>|all game|off|on
 std::string foot_command(const std::vector<std::string> &a) {
     auto &s = state();
-    const auto what = a.empty() ? std::string{} : lower(a[0]), to = a.size() > 1 ? lower(a[1]) : std::string{};
+    const auto what = a.empty() ? std::string{} : ascii_lower(a[0]), to = a.size() > 1 ? ascii_lower(a[1]) : std::string{};
     if (what.empty()) {
         std::string out = "The game's own hidden on-foot switches:";
         for (std::size_t i = 0; i < foot_settings.size(); ++i)
@@ -3166,7 +3243,7 @@ std::string foot_command(const std::vector<std::string> &a) {
 }
 std::string run(std::string_view verb, const std::vector<std::string> &a) {
     auto &s = state();
-    const auto v = lower(verb);
+    const auto v = ascii_lower(verb);
     const auto arg = [&](std::size_t i) { return i < a.size() ? a[i] : std::string{}; };
     if (v == "status") {
         std::size_t touched{}, frozen{};
@@ -3178,7 +3255,7 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
                            frozen, s.map.empty() ? "none" : s.map, s.active.empty() ? "stock" : std::to_string(s.active.size()) + " applied", own.empty() ? " none" : own);
     }
     if (v == "set" || v == "freeze" || v == "reset") {
-        if (v == "reset" && lower(arg(0)) == "all") {
+        if (v == "reset" && ascii_lower(arg(0)) == "all") {
             const auto count = reset_all();
             std::size_t locked{};
             for (const auto &e : s.entries) locked += e.touched;
@@ -3186,11 +3263,11 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
             return locked ? std::format("{} values put back; {} locked values kept (Reset everything clears those too).", count, locked)
                           : std::format("{} values put back.", count);
         }
-        if (v == "reset" && (lower(arg(0)) == "tricks" || lower(arg(0)).starts_with("section"))) {
+        if (v == "reset" && (ascii_lower(arg(0)) == "tricks" || ascii_lower(arg(0)).starts_with("section"))) {
             // reset tricks: the sliders and switches of POP AND TRICKS. reset section <name>: everything one section of
             // the Tune tab shows, its tuning values too (locked ones stay).
             // (The console hands `reset` its words as one: "section grinds".)
-            const auto words = lower(arg(0)) + (a.size() > 1 ? " " + lower(arg(1)) : std::string{});
+            const auto words = ascii_lower(arg(0)) + (a.size() > 1 ? " " + ascii_lower(arg(1)) : std::string{});
             const bool section = words.starts_with("section");
             const auto named = section && words.size() > 8 ? words.substr(8) : std::string{};
             const auto topic = section ? topic_named(named) : topic_pop;
@@ -3208,14 +3285,14 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
             changed();
             return std::format("{}: {} put back to the game's own.", section ? std::string(topics[topic].title) : std::string("Tricks"), count);
         }
-        if (v == "reset" && lower(arg(0)) == "presets") {
+        if (v == "reset" && ascii_lower(arg(0)) == "presets") {
             const auto on = s.active;
             for (const auto &name : on) (void)remove_preset(name);
             s.active.clear();
             changed();
             return std::format("{} presets switched off.", on.size());
         }
-        if (v == "reset" && lower(arg(0)) == "everything") {
+        if (v == "reset" && ascii_lower(arg(0)) == "everything") {
             // The game as it shipped: no lock survives, no preset stays on, nothing of the trainer's stays set.
             // (Under a host's physics the player's own setup is kept for when they leave.)
             if (s.enforced) return "error: the host controls physics in this multiplayer game; your own setup is kept for when you leave.";
@@ -3260,7 +3337,7 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
         return std::format("{} = {:.6g}{}{}", e->id, e->value, e->touched ? std::format(" (stock {:.6g})", e->stock) : "", e->frozen ? ", frozen" : "");
     }
     if (v == "find") {
-        const auto pattern = lower(arg(0));
+        const auto pattern = ascii_lower(arg(0));
         std::string result;
         std::size_t count{};
         for (const auto &e : s.entries)
@@ -3278,7 +3355,7 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
         return apply_dial(name, *factor);
     }
     if (v == "preset") {
-        const auto action = lower(arg(0));
+        const auto action = ascii_lower(arg(0));
         std::string name;
         for (std::size_t i = 1; i < a.size(); ++i) name += (i > 1 ? " " : "") + a[i];
         if (action == "import") return import_preset(name);
@@ -3327,7 +3404,7 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
         return std::format("Marker slot {}{}.", s.slot + 1, current_map().markers[static_cast<std::size_t>(s.slot)].set ? "" : " (empty)");
     }
     if (v == "marker") {
-        const auto action = lower(arg(0));
+        const auto action = ascii_lower(arg(0));
         if ((action == "save" || action == "go") && match_blocks_markers())
             return "error: markers are disabled during this match.";
         const auto slot = slot_argument(a, 1);
@@ -3358,7 +3435,7 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
     }
     if (v == "waypoint") {
         refresh_waypoint();
-        if (lower(arg(0)) == "info")
+        if (ascii_lower(arg(0)) == "info")
             return "Map waypoint: " + (s.waypoint ? std::format("{:.1f}, {:.1f}, {:.1f}", (*s.waypoint)[0], (*s.waypoint)[1], (*s.waypoint)[2]) : std::string("none")) +
                    " (" + s.waypoint_detail + ").";
         if (!s.waypoint) return "error: no waypoint on the map. Open the pause map and place one first.";
@@ -3367,8 +3444,18 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
     if (v == "transition") return transition_command(a);
     if (v == "foot") return foot_command(a);
     if (v == "grind") {
-        // trainer grind | grind watch 0|1 | grind side <x> | grind <key>|all game|off|on
-        const auto what = lower(arg(0)), to = lower(arg(1));
+        // trainer grind | grind watch 0|1 | grind side <x> | grind assist <0-100> | grind <key>|all game|off|on
+        const auto what = ascii_lower(arg(0)), to = ascii_lower(arg(1));
+        if (what == "assist") {
+            // The player's own game setting, as its Settings menu sets it: in any session, never part of presets or resets.
+            const auto value = number(to);
+            if (!value || !(*value >= 0 && *value <= 100)) return "error: usage: trainer grind assist <0 to 100> (the game's own Grind Assist)";
+            if (!profile_runtime::set_local_game_option(grind_assist_setting, std::round(*value), false)) return "error: the game's settings are not ready yet.";
+            s.grind_assist = static_cast<int>(std::lround(*value));
+            s.tr_option_at = 0; // read back from the game on the next tick
+            s.view_due = true;
+            return std::format("Grind Assist (the game's own setting) is {}.", s.grind_assist);
+        }
         const auto word = [](std::int8_t value) { return value < 0 ? "-" : value ? "on" : "off"; };
         if (what.empty()) {
             std::string out = std::format("Side force off grinds x {:.2f}.", s.grind_side);
@@ -3467,7 +3554,7 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
         return go_to(spot.position, spot.name);
     }
     if (v == "option") {
-        const auto name = lower(arg(0));
+        const auto name = ascii_lower(arg(0));
         bool on{};
         std::string why;
         if (name == "flip_speed" || name == "underflip_speed" || name.starts_with("flip.")) {
@@ -3516,13 +3603,17 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
             if (!value) return "error: return_delay needs seconds.";
             s.return_delay = std::clamp(static_cast<float>(*value), 0.0f, 3600.0f);
         } else if (!flag(arg(1), on)) {
-            return "error: usage: trainer option hud|hud_jump|auto_return|pad|flip_advanced|flip_pop|flip_flick|underflip_split|gravity_landing_own|log 0|1";
+            return "error: usage: trainer option hud|hud_jump|auto_return|pad|flip_advanced|flip_pop|flip_flick|flip_limit|underflip_split|gravity_landing_own"
+#if defined(DINGOSDK_DEV_TOOLS)
+                   "|log"
+#endif
+                   " 0|1";
         } else if (name == "hud") s.hud = on;
         else if (name == "hud_jump") s.hud_jump = on;
         else if (name == "auto_return") s.auto_return = on;
         else if (name == "pad") s.pad_shortcuts = on;
         else if (name == "pad_menu") return "That switch is gone: LB + RB + R3 is the game's bail. Open the menu with Insert.";
-        else if (name == "flip_gate") return "That switch is gone: a flip set slower than the game's own stays slow by itself.";
+        else if (name == "flip_gate") return "That switch is now option flip_limit (Flip landing limit).";
         else if (name == "catch_at") return "That switch is gone: it did not work reliably. Use the flip trick speed.";
         else if (name == "flip_pop") {
             if (on && !editable(&why)) return "error: " + why;
@@ -3530,6 +3621,9 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
         } else if (name == "flip_flick") {
             if (on && !editable(&why)) return "error: " + why;
             s.flip_flick = on;
+        } else if (name == "flip_limit") {
+            if (!on && !editable(&why)) return "error: " + why;
+            s.flip_limit = on;
         } else if (name == "flip_advanced") {
             if (on && !editable(&why)) return "error: " + why;
             s.flip_advanced = on;
@@ -3540,15 +3634,18 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
             if (on && !editable(&why)) return "error: " + why;
             s.gravity_landing_own = on;
         }
+#if defined(DINGOSDK_DEV_TOOLS)
         else if (name == "log") {
             set_logging(on);
             if (on && !s.logging) return "error: the telemetry file could not be created.";
-        } else return "error: no option is called \"" + name + "\".";
+        }
+#endif
+        else return "error: no option is called \"" + name + "\".";
         changed();
         return name + " = " + arg(1);
     }
     if (v == "profile") {
-        const auto action = lower(arg(0));
+        const auto action = ascii_lower(arg(0));
         if (s.map.empty()) return "error: load a level first.";
         if (action == "clear") {
             current_map().preset.clear();
@@ -3564,7 +3661,7 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
     }
     if (v == "setup") {
         // Any one of the trainer's own settings by its preset key (the menu's quick settings): trainer setup grind.push 1.8
-        const auto *one = find_setup(lower(arg(0)));
+        const auto *one = find_setup(ascii_lower(arg(0)));
         const auto value = number(arg(1));
         if (!one || !value) return "error: usage: trainer setup <key> <value> (the keys are the ones presets use: trick.flip_speed, grind.push, transition.lean ...)";
         std::string why;
@@ -3582,7 +3679,7 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
         return std::string{};
     }
     if (v == "open") {
-        const auto tab = lower(arg(0));
+        const auto tab = ascii_lower(arg(0));
         // After "movement": a section of the Tune tab, opened and scrolled to (realistic, fun: lists of earlier versions).
         const std::array<std::string_view, 19> tabs{"tune", "presets", "practice", "map", "realistic", "fun", "everything", "movement", "trickline", "transition",
                                                     "pop", "speed", "bails", "grinds", "pumping", "foot", "tricklining", "tricks", "game"};
@@ -3607,18 +3704,56 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
                            s.telemetry.heading, s.telemetry.speed * 3.6f, p[0], -p[2], p[1]);
     }
     if (v == "classes") {
-        if (lower(arg(0)) == "find") {
+        if (ascii_lower(arg(0)) == "find") {
             find_classes();
             return "Looking for the game's tuning classes.";
         }
         return "Copies found: " + classes_summary();
     }
     if (v == "refresh") return tuning::refresh_skater(s.base, s.entity) ? "Skater copy refreshed." : "error: the skater has no cached copy right now.";
+#if defined(DINGOSDK_DEV_TOOLS)
     if (v == "states") {
         std::string result;
         for (const auto &[id, ticks] : s.states) result += std::format("{}{}: {}", result.empty() ? "" : ", ", id, ticks);
         return result.empty() ? "No physics state seen yet." : "Physics states seen (id: ticks): " + result;
     }
+#endif
+    if (v == "livedump") {
+        // Diagnostic: what the game itself holds right now (its live tuning, and the first copy of each class value), not the
+        // trainer's own numbers: `trainer livedump <name>` before and after changing one of the game's settings shows what
+        // that setting changes. Writes tuning-live-<name>.txt.
+        const auto name = arg(0).empty() ? std::string("now") : arg(0);
+        if (std::ranges::any_of(name, [](char c) { return !std::isalnum(static_cast<unsigned char>(c)) && c != '-' && c != '_'; }))
+            return "error: a name of letters, digits, - and _.";
+        tuning::Values live;
+        if (!tuning::read_live(s.base, live)) return "error: the game's tuning is not loaded.";
+        const auto directory = data_directory();
+        std::error_code error;
+        std::filesystem::create_directories(directory, error);
+        std::ofstream file(directory / std::filesystem::path("tuning-live-" + name + ".txt"), std::ios::binary | std::ios::trunc);
+        if (!file) return "error: could not write the list.";
+        std::size_t count{};
+        for (const auto &e : s.entries) {
+            double now{};
+            if (e.class_field >= 0) {
+                FieldCopy copy{};
+                if (class_field_copies(static_cast<std::size_t>(e.class_field), &copy, 1) == 0 || !copy.address) continue;
+                float value{};
+                if (!peek_float(copy.address, value)) continue;
+                now = value;
+            } else if (e.kind == Kind::curve || e.kind == Kind::graph || static_cast<std::size_t>(e.offset) + e.size > live.image.size()) {
+                continue;
+            } else {
+                now = read_field(live.image, e);
+            }
+            file << std::format("{}\t{:.6g}\n", e.id, now);
+            ++count;
+        }
+        for (const auto key : {grind_assist_setting, std::string_view("egf_intentpumpingassistamount")})
+            if (const auto held = profile_runtime::local_game_option(key)) file << std::format("setting:{}\t{:.6g}\n", key, *held);
+        return std::format("Wrote {} live values to {}.", count, path_utf8(directory / std::filesystem::path("tuning-live-" + name + ".txt")));
+    }
+#if defined(DINGOSDK_DEV_TOOLS)
     if (v == "dump") {
         const auto directory = data_directory();
         std::error_code error;
@@ -3639,6 +3774,9 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
         return "Self test started; see the log for \"trainer selftest:\" lines.";
     }
     return "error: trainer status|open|set|freeze|reset|find|preset|slot|marker|tp|ground|waypoint|spot|option|profile|jumps|where|states|dump|selftest";
+#else
+    return "error: trainer status|open|set|freeze|reset|find|preset|slot|marker|tp|ground|waypoint|spot|option|profile|jumps|where";
+#endif
 }
 } // namespace
 
@@ -3651,7 +3789,8 @@ TuningValue tuning_of(const Entry &e) {
 } // namespace
 
 std::optional<TuningValue> tuning_value(std::string_view id, std::string *why) {
-    if (!state().model) {
+    // Before a level's copy is read (the splash screen) every entry holds 0.
+    if (!state().model || !state().ready) {
         if (why) *why = "the game's physics tuning is not read yet";
         return std::nullopt;
     }
@@ -3664,7 +3803,8 @@ std::optional<TuningValue> tuning_value(std::string_view id, std::string *why) {
 }
 std::vector<TuningValue> find_tuning(std::string_view text, std::size_t most) {
     std::vector<TuningValue> found;
-    const auto pattern = lower(text);
+    if (!state().ready) return found;
+    const auto pattern = ascii_lower(text);
     for (const auto &e : state().entries)
         if (found.size() < most && matches(e.key, pattern)) found.push_back(tuning_of(e));
     return found;
@@ -3685,6 +3825,9 @@ std::string plugin_tune(std::string_view owner, std::string_view id, std::option
         }
         return {};
     }
+    // A value set before the level's copy is read would keep 0 as what was there, and put it back on
+    // letting go: a plugin that scaled the steering then left the board unable to turn.
+    if (!s.ready) return "the game's physics tuning is not read yet";
     std::string why;
     if (!editable(&why)) return why;
     if (is_locked(*e)) return "the player has locked " + e->id + " in the trainer";
@@ -3694,8 +3837,21 @@ std::string plugin_tune(std::string_view owner, std::string_view id, std::option
     changed(false);
     return {};
 }
+std::string plugin_flip_speed(std::string_view owner, float factor, unsigned hold_ms) {
+    auto &s = state();
+    const auto now = GetTickCount64();
+    std::erase_if(s.plugin_flips, [&](const auto &entry) { return entry.second.until <= now; });
+    if (!std::isfinite(factor) || factor == 1.0f || hold_ms == 0) {
+        if (const auto found = s.plugin_flips.find(owner); found != s.plugin_flips.end()) s.plugin_flips.erase(found);
+        return {};
+    }
+    if (extras_blocked()) return "the host sets the physics";
+    s.plugin_flips.insert_or_assign(std::string(owner), State::PluginFlip{std::clamp(factor, flip_low, 10.0f), now + hold_ms});
+    return {};
+}
 void release_plugin_tunes(std::string_view owner) {
     auto &s = state();
+    if (const auto found = s.plugin_flips.find(owner); found != s.plugin_flips.end()) s.plugin_flips.erase(found);
     std::vector<std::string> mine;
     for (const auto &[key, tune] : s.plugin_tunes)
         if (tune.owner == owner) mine.push_back(key);

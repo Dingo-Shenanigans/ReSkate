@@ -89,6 +89,10 @@ struct RowButton {
     const char* hint = nullptr;
 };
 int button_row(SkateMenu& menu, const char* id, std::initializer_list<RowButton> buttons);
+// Many small buttons in rows, each as wide as its name, wrapping as the row runs out; full screen,
+// tiles as button_row's, as many to a row as fit. `lit` (from 0, -1 for none) draws as chosen.
+// Returns the one pressed, or -1.
+int button_grid(SkateMenu& menu, const char* id, const std::vector<std::string>& names, int lit);
 // One of a list, under a label. In a window, a drop-down after a field() label; full screen, one
 // row: the label, then "< option >" that left / right change. With `pressed`, A on the row sets it
 // (for a choice applied by A, such as a park layout) instead of stepping on.
@@ -112,7 +116,6 @@ void debug_request(SkateMenu& menu, const CallbacksV3& callbacks, DebugRequest r
 inline constexpr int multiplayer_session_tab = 1, multiplayer_voice_tab = 2, multiplayer_bans_tab = 3, multiplayer_chat_tab = 4;
 void multiplayer_display_settings(SkateMenu&, const Model&);
 void special_page(SkateMenu&, const Model&, const CallbacksV3&);
-void multiplayer_network_page(SkateMenu&, const Model&, const CallbacksV3&);
 void atmosphere_menu(SkateMenu&, const Model&, const CallbacksV3&);
 void progression_page(SkateMenu&, const Model&, const CallbacksV3&);
 void multiplayer_page(SkateMenu&, const Model&, const CallbacksV3&);
@@ -124,7 +127,6 @@ void dark_pop_controls(SkateMenu&, const Model&, const CallbacksV3&); // shown o
 void settings_page(SkateMenu&, const Model&, const CallbacksV3&);
 // Settings > Post FX (skate_menu_world.cpp).
 void graphics_page(SkateMenu&, const Model&, const CallbacksV3&);
-void developer_page(SkateMenu&, const Model&, const CallbacksV3&);
 // Extension/Music/music_page.cpp
 void music_page(SkateMenu&, const Model&, const CallbacksV3&);
 // Extension/Trainer/trainer_page.cpp: the SANDBOX page (once the Trainer).
@@ -143,6 +145,9 @@ void set_time_of_day(SkateMenu&, const Model&, const CallbacksV3&, int next, boo
 // The PLUGINS section (plugins_page.cpp): the plugins with a page, as last published (held for the
 // frame); the one the menu shows (the first when its choice is gone; nullptr for none); and its page.
 std::shared_ptr<const std::vector<plugin_ui::PageEntry>> plugin_pages();
+// What menu.plugin_page holds while the PLUGIN MANAGER, the first entry of PLUGINS, is shown: no mod id can start with this.
+inline constexpr const char* plugin_manager_entry = "" "plugin-manager";
+// The plugin page shown, or null while that is the PLUGIN MANAGER (also when the page chosen is gone).
 const plugin_ui::PageEntry* shown_plugin_page(SkateMenu& menu);
 void plugins_page(SkateMenu& menu);
 // The fullscreen menu's first page: a tile for each part of the menu (skate_menu_addons.cpp).
@@ -156,7 +161,7 @@ void set_menu_fullscreen(SkateMenu&, const CallbacksV3&, bool fullscreen);
 // The pages, for the shells and the home tiles (skate_menu.cpp).
 enum Page {
     page_home, page_map, page_build, page_skater, page_sandbox, page_addons, page_plugins, page_online, page_progress, page_mods,
-    page_settings, page_developer, page_count
+    page_settings, page_count
 };
 enum Addon { addon_all, addon_music, addon_count, addon_first = addon_music };
 void open_page(SkateMenu&, int page, int addon = -1);

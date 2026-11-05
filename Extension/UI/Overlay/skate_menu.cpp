@@ -283,7 +283,7 @@ bool toggle_row(SkateMenu& menu, const char* label, const char* hint, bool& valu
         const auto size = menu.bold->CalcTextSizeA(px(17), FLT_MAX, 0, state);
         const ImU32 state_ink = !available ? muted : focused || hovered ? paper : value ? blue : muted;
         draw->AddText(menu.bold, px(17), ImVec2(end.x - px(24) - size.x, at.y + (height - size.y) * .5f), state_ink, state);
-        if (hovered) ImGui::SetTooltip("%s", hint);
+        if (hovered && *hint) ImGui::SetTooltip("%s", hint);
         ImGui::EndDisabled();
         ImGui::PopID();
         return clicked;
@@ -316,7 +316,7 @@ bool toggle_row(SkateMenu& menu, const char* label, const char* hint, bool& valu
     const auto text = menu.bold->CalcTextSizeA(px(14), FLT_MAX, 0, state);
     draw->AddText(menu.bold, px(14), ImVec2(box.x + (block - text.x) * 0.5f, box.y + (height - px(15) - text.y) * 0.5f),
         on ? skate_theme::black : muted, state);
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", hint);
+    if (*hint && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", hint);
     ImGui::EndDisabled();
     ImGui::PopID();
     return clicked;
@@ -724,6 +724,54 @@ int button_row(SkateMenu& menu, const char* id, std::initializer_list<RowButton>
     return pressed;
 }
 
+int button_grid(SkateMenu& menu, const char* id, const std::vector<std::string>& names, int lit) {
+    int pressed = -1;
+    ImGui::PushID(id);
+    const int count = static_cast<int>(names.size());
+    if (!console_mode) {
+        const float right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+        for (int i = 0; i < count; ++i) {
+            const auto& name = names[static_cast<std::size_t>(i)];
+            const float width = ImGui::CalcTextSize(name.c_str()).x + ImGui::GetStyle().FramePadding.x * 2 + px(8);
+            if (i) {
+                ImGui::SameLine();
+                if (ImGui::GetCursorScreenPos().x + width > right) ImGui::NewLine();
+            }
+            ImGui::PushID(i);
+            if (i == lit) ImGui::PushStyleColor(ImGuiCol_Button, blue);
+            if (ImGui::Button(name.c_str(), ImVec2(width, px(30)))) pressed = i;
+            if (i == lit) ImGui::PopStyleColor();
+            ImGui::PopID();
+        }
+        ImGui::PopID();
+        return pressed;
+    }
+    // Full screen: tiles as button_row's, at least 150 px wide, as many to a row as fit.
+    const float gap = px(10), height = px(46), room = ImGui::GetContentRegionAvail().x;
+    const int across = std::max(1, std::min(count, static_cast<int>((room + gap) / (px(150) + gap))));
+    const float width = (room - gap * static_cast<float>(across - 1)) / static_cast<float>(across);
+    auto* draw = ImGui::GetWindowDrawList();
+    for (int i = 0; i < count; ++i) {
+        if (i % across) ImGui::SameLine(0, gap);
+        ImGui::PushID(i);
+        const auto at = ImGui::GetCursorScreenPos();
+        if (ImGui::InvisibleButton("##tile", ImVec2(width, height), ImGuiButtonFlags_EnableNav)) pressed = i;
+        const bool hot = (ImGui::IsItemFocused() && ImGui::GetIO().NavVisible) || ImGui::IsItemHovered();
+        const ImVec2 end(at.x + width, at.y + height);
+        skate_theme::rough_rect(draw, at, end, hot ? blue : i == lit ? paper : IM_COL32(26, 26, 26, 235), static_cast<unsigned>(ImGui::GetItemID()) & 0xfff,
+                                ui_scale);
+        const auto& name = names[static_cast<std::size_t>(i)];
+        const auto size = menu.bold->CalcTextSizeA(px(16), FLT_MAX, 0, name.c_str());
+        draw->PushClipRect(at, end, true);
+        draw->AddText(menu.bold, px(16), ImVec2(at.x + std::max(px(10), (width - size.x) * .5f), at.y + (height - size.y) * .5f),
+                      i == lit && !hot ? skate_theme::black : paper, name.c_str());
+        draw->PopClipRect();
+        ImGui::PopID();
+    }
+    ImGui::PopID();
+    return pressed;
+}
+
 bool option_row(SkateMenu& menu, const char* label, const char* hint, int& selected, const std::vector<std::string>& options, bool enabled,
                 bool* pressed) {
     const int count = static_cast<int>(options.size());
@@ -880,11 +928,25 @@ void category_tabs(SkateMenu& menu, int& selected, std::span<const char* const> 
     }
     ImGui::PushID(id);
     const float gap = px(6);
-    const float tab_width = (ImGui::GetContentRegionAvail().x - gap * (tabs.size() - 1)) / tabs.size();
     const float height = px(34);
+    // As many rows as it takes for every label to fit (two rows of three, say), the tabs of
+    // each row as wide as each other.
+    const int count = static_cast<int>(tabs.size());
+    const float avail = ImGui::GetContentRegionAvail().x;
+    float widest = 0;
+    for (const char* label : tabs) widest = std::max(widest, menu.bold->CalcTextSizeA(px(15), FLT_MAX, 0, label).x);
+    int columns = count;
+    for (int rows = 1; rows <= count; ++rows) {
+        columns = (count + rows - 1) / rows;
+        if ((avail - gap * static_cast<float>(columns - 1)) / static_cast<float>(columns) >= widest + px(16)) break;
+    }
+    const int rows = (count + columns - 1) / columns;
+    const float tab_width = (avail - gap * static_cast<float>(columns - 1)) / static_cast<float>(columns);
+    const auto start = ImGui::GetCursorScreenPos();
     auto* draw = ImGui::GetWindowDrawList();
-    for (int i = 0; i < static_cast<int>(tabs.size()); ++i) {
-        if (i) ImGui::SameLine(0, gap);
+    for (int i = 0; i < count; ++i) {
+        ImGui::SetCursorScreenPos(ImVec2(start.x + static_cast<float>(i % columns) * (tab_width + gap),
+                                         start.y + static_cast<float>(i / columns) * (height + gap)));
         const auto at = ImGui::GetCursorScreenPos();
         ImGui::PushID(i);
         if (ImGui::InvisibleButton("##tab", ImVec2(tab_width, height), ImGuiButtonFlags_EnableNav) && selected != i) {
@@ -905,6 +967,8 @@ void category_tabs(SkateMenu& menu, int& selected, std::span<const char* const> 
             on ? skate_theme::black : paper, label);
         draw->PopClipRect();
     }
+    ImGui::SetCursorScreenPos(ImVec2(start.x, start.y + static_cast<float>(rows) * height + static_cast<float>(rows - 1) * gap));
+    ImGui::Dummy(ImVec2(0, 0));
     ImGui::PopID();
     ImGui::Dummy(ImVec2(0, px(6)));
 }
@@ -929,11 +993,11 @@ ImFont* embedded_font(const wchar_t* name, float size, const ImWchar* ranges) {
 }
 
 constexpr std::array<const char*, page_count> page_names{
-    "HOME", "MAP", "BUILD", "SKATER", "SANDBOX", "ADDONS", "PLUGINS", "ONLINE", "PROGRESS", "MODS", "SETTINGS", "DEVELOPER"};
+    "HOME", "MAP", "BUILD", "SKATER", "SANDBOX", "ADDONS", "PLUGINS", "ONLINE", "PROGRESS", "MODS", "SETTINGS"};
 constexpr std::array<const char*, page_count> page_subtitles{
     "Everything, a button away.", "Pick your spot. Set the vibe.", "Make the park yours.", "Ride it your way.",
     "Tune it. Drill it.", "What ReSkate adds to skate.", "What your plugins add.", "Bring your crew.", "Pick up where you want.",
-    "Bring your own.", "Your controls, your screen.", "Under the hood."};
+    "Bring your own.", "Your controls, your screen."};
 constexpr std::array<const char*, addon_count> addon_names{"ADDONS", "MUSIC"};
 constexpr std::array<const char*, addon_count> addon_subtitles{"What ReSkate adds to skate.", "Your sound, in the game."};
 // The side rail's groups: the heading above the page that starts each.
@@ -1009,17 +1073,12 @@ void open_page(SkateMenu& menu, int page, int addon) {
 
 namespace {
 bool page_hidden(const SkateMenu& menu, const Model& model, int page) {
-    // Developer (the network view) is hidden for now; offline there is no Online. HOME is the
-    // full screen menu's: a window has its side rail instead.
-    // PLUGINS shows while a plugin has a page.
-    if (page == page_plugins) {
-        const auto pages = plugin_pages();
-        if (!pages || pages->empty()) return true;
-    }
-    return page == page_developer || (page == page_home && !menu.fullscreen_drawn) || (model.steam_offline && page == page_online);
+    // Offline there is no Online. HOME is the full screen menu's: a window has its side rail instead.
+    return (page == page_home && !menu.fullscreen_drawn) || (model.steam_offline && page == page_online);
 }
 // A plugin's page is titled with its name, and says whose it is.
 const char* page_title(SkateMenu& menu) {
+    if (menu.page == page_plugins && !menu.fullscreen_drawn && !shown_plugin_page(menu)) return "PLUGIN MANAGER";
     if (menu.page == page_plugins && !menu.fullscreen_drawn)
         if (const auto* shown = shown_plugin_page(menu)) {
             static std::string title;
@@ -1030,6 +1089,7 @@ const char* page_title(SkateMenu& menu) {
     return menu.page == page_addons && menu.addon > addon_all ? addon_names[static_cast<std::size_t>(menu.addon)] : page_names[static_cast<std::size_t>(menu.page)];
 }
 const char* page_subtitle(SkateMenu& menu) {
+    if (menu.page == page_plugins && !menu.fullscreen_drawn && !shown_plugin_page(menu)) return "Which plugins may run.";
     if (menu.page == page_plugins && !menu.fullscreen_drawn)
         if (const auto* shown = shown_plugin_page(menu)) {
             static std::string subtitle;
@@ -1132,17 +1192,11 @@ void draw_page_body(SkateMenu& menu, const Model& model, const CallbacksV3& call
         break;
     case page_progress: progression_page(menu, model, callbacks); break;
     case page_mods:
-        // The SCRIPTS tab (custom Lua scripts, modding_menu.cpp) is not offered for now:
-        // nothing uses them. The page is the installed mods.
-        menu.mods_tab = 0;
-        ImGui::PushID(menu.mods_tab);
         ImGui::BeginChild("mods-tab", ImVec2(0, page_body_height(menu)), ImGuiChildFlags_NavFlattened);
-        draw_modding_menu(menu, menu.mods_tab, model, callbacks);
+        draw_modding_menu(menu, model, callbacks);
         ImGui::EndChild();
-        ImGui::PopID();
         break;
     case page_settings: settings_page(menu, model, callbacks); break;
-    case page_developer: developer_page(menu, model, callbacks); break;
     }
     if (menu.rail_indent > 0) {
         ImGui::Unindent(menu.rail_indent);
@@ -1211,7 +1265,7 @@ void draw_windowed(SkateMenu& menu, const Model& model, const CallbacksV3& callb
             for (int i = 0; i < page_count; ++i) {
                 if (page_hidden(menu, model, i)) continue;
                 if (i == page_addons) rows += addon_count - addon_first;
-                else if (i == page_plugins) rows += static_cast<int>(plugin_pages()->size());
+                else if (i == page_plugins) rows += static_cast<int>(plugin_pages()->size()) + 1;
                 else ++rows;
                 if (group_of(i)) ++groups;
             }
@@ -1256,8 +1310,15 @@ void draw_windowed(SkateMenu& menu, const Model& model, const CallbacksV3& callb
                     ImGui::PopID();
                 }
             } else if (i == page_plugins) {
-                // A row for each plugin with a page, by its name.
+                // The PLUGIN MANAGER first, then a row for each plugin with a page, by its name.
                 const auto pages = plugin_pages();
+                const bool manager = menu.page == page_plugins && !shown_plugin_page(menu);
+                ImGui::PushID("plugin-manager");
+                if (row("##plugin", "PLUGIN MANAGER", manager, row_height, 0, menu.bold, px(16))) {
+                    open_page(menu, page_plugins);
+                    menu.plugin_page = plugin_manager_entry;
+                }
+                ImGui::PopID();
                 for (const auto& entry : *pages) {
                     ImGui::PushID(entry.plugin.c_str());
                     std::string name = entry.title;

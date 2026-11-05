@@ -4,7 +4,11 @@
 #include "Engine/Game/Build/20260929/skater_entities.h"
 #include <cstdint>
 #include <limits>
+#include <map>
+#include <optional>
+#include <string>
 #include <string_view>
+#include <vector>
 
 // The checks behind world_entities.cpp, as SmokeyDawg58 wrote them for his fork's gates (its source
 // and asset contracts): pure over the reads they are given, so they test.
@@ -77,6 +81,33 @@ public:
     }
 };
 
+// Resident non-solid visuals and joint attachments follow every eligible client tick.
+// Unattached solid objects keep their 16 ms throttle; unchanged matrices never move.
+constexpr bool movement_due(bool changed, bool solid, bool attached, std::uint64_t now, std::uint64_t moved) noexcept {
+    return changed && (!solid || attached || now >= moved + 16);
+}
+
+// A body is an object's own when its owner keeps the physics component the object's entity holds.
+// An exact instance, so a second object of the same blueprint in the box is not taken for it. An
+// object with no component owns nothing, and neither does an owner that keeps none.
+constexpr bool own_body(std::uintptr_t entity_component, std::uintptr_t owner_component) noexcept {
+    return entity_component && entity_component == owner_component;
+}
+
+// An object's bodies when its entity does not keep them: the first body a ray into its box meets
+// that is the object's own, and the rest of that body's owner's. A ray also meets whatever else is
+// in the box, and an object with no collision meets nothing else. The floor is one of those: a piece
+// of generated road under a skater, read in game, has five bodies, so how few an owner has does not
+// tell it from an object. What `mine` refuses is passed over and the next ray tried. Those bodies are
+// not the object's to ghost, and nothing would make them solid again.
+template<class Rays, class Hit, class Mine, class Owned>
+auto own_bodies(const Rays& rays, Hit hit, Mine mine, Owned owned) -> decltype(owned(*hit(rays[0].first, rays[0].second))) {
+    for (const auto& [from, to] : rays)
+        if (const auto body = hit(from, to); body && mine(*body))
+            if (auto bodies = owned(*body); !bodies.empty()) return bodies;
+    return {};
+}
+
 // A world object blueprint (ObjectBlueprint, or a type derived from it): never a skater's blueprint.
 template<class ReadPointer>
 bool object_blueprint(std::uintptr_t asset, std::uintptr_t base, ReadPointer read) {
@@ -96,4 +127,40 @@ template<class ReadPointer>
 bool object_resident(std::uintptr_t cached, std::uintptr_t resolved, std::uintptr_t base, ReadPointer read) {
     return cached && resolved == cached && object_blueprint(resolved, base, read);
 }
+
+// What blueprint_bounds answered per name. Each search asks all 0xbbf asset domains, entering each
+// one's named-asset lock. A plugin asking every frame (build 55a7342, baked_core on Skate 2 Improved)
+// kept doing that while the game freed a streamed sublevel's registry, and woke in a lock whose memory
+// was gone (Skate.exe+0x3db7939 writing 0x24, the lock's debug record at null). A found box is kept for
+// five seconds, a miss for one, and at most `scans_per_second` searches run each second; past that a
+// name keeps its last answer, or has none yet.
+// The rationing did not end it: in 2.1.3 (Sentry, 2026-11-02, ntdll+0x1a12d) 12 of 30 sampled reports
+// still came through here, 14 of them while the game quit. A search is only allowed (`may_search`) in an
+// active level; while a level loads, unloads or the game shuts down, every name keeps its last answer.
+template<class Value>
+class LookupCache {
+public:
+    static constexpr std::uint64_t found_for = 5000, missed_for = 1000;
+    static constexpr unsigned scans_per_second = 8;
+    static constexpr std::size_t most_names = 1024;
+    template<class Search>
+    std::optional<Value> get(const std::string& name, std::uint64_t now, Search search, bool may_search = true) {
+        auto entry = entries_.find(name);
+        if (entry != entries_.end() && now < entry->second.at + (entry->second.value ? found_for : missed_for)) return entry->second.value;
+        if (now >= window_ + 1000) window_ = now, scans_ = 0;
+        if (!may_search || scans_ >= scans_per_second) return entry == entries_.end() ? std::nullopt : entry->second.value;
+        ++scans_;
+        if (entry == entries_.end()) {
+            if (entries_.size() >= most_names) entries_.clear();
+            entry = entries_.emplace(name, Entry{}).first;
+        }
+        entry->second = {search(), now};
+        return entry->second.value;
+    }
+private:
+    struct Entry { std::optional<Value> value; std::uint64_t at{}; };
+    std::map<std::string, Entry> entries_;
+    std::uint64_t window_{};
+    unsigned scans_{};
+};
 } // namespace dingosdk::world_entities::detail

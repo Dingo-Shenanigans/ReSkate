@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <format>
 
@@ -93,6 +94,137 @@ bool replace(std::uint64_t reader, std::uintptr_t buffer, std::uint32_t frames, 
     }
 }
 
+std::atomic<bool> sp_active{false}, sp_mute_loops{true};
+std::atomic<float> sp_left{1.0f}, sp_right{1.0f}, sp_lpf_l{1.0f}, sp_lpf_r{1.0f}, sp_env{0.0f};
+std::atomic<int> sp_itd{0};
+std::atomic<std::uint64_t> sp_expires_at{0};
+// Counted up each time the speaker is turned on after being off (or lapsed), so the audio thread
+// starts every stream's filters afresh instead of playing what was left in them from before.
+std::atomic<std::uint32_t> sp_generation{1};
+// GetTickCount64 of the last block of the station's own song put through the speaker.
+std::atomic<std::uint64_t> station_heard{};
+
+// The speaker's filters for one stream (a reader: a player's file in one mix). Every song of 45 s
+// or more goes through the speaker, both files of a crossfade among them: with one set of filters
+// between them, each stream's delay and reverb played the others' sound, with clicks.
+// Only the audio thread touches one, and only while it holds `busy`, so set_spatial never does.
+// (All zero until first used, where it is reset, so the table costs the DLL nothing on disk.)
+struct Speaker {
+    std::atomic<std::uint64_t> key{}, used{}; // whose it is (0: nobody's), and when it last ran
+    std::atomic<bool> busy{};
+    std::uint32_t generation{}, ring_wp{};
+    float cur_left{}, cur_right{}, lpf_l_state{}, lpf_r_state{};
+    float hpf_in_l{}, hpf_in_r{}, hpf_out_l{}, hpf_out_r{}, mid_l{}, mid_r{}, rev_lp{};
+    std::array<float, 4096> delay_l{}, delay_r{}, rev_buf{};
+};
+std::array<Speaker, 8> speakers{};
+
+void reset(Speaker& speaker, std::uint32_t generation) noexcept {
+    speaker.generation = generation;
+    speaker.ring_wp = 0;
+    // From the stream as it was before the speaker, ramped to the speaker's gain over a block.
+    speaker.cur_left = speaker.cur_right = 1.0f;
+    speaker.lpf_l_state = speaker.lpf_r_state = 0.0f;
+    speaker.hpf_in_l = speaker.hpf_in_r = speaker.hpf_out_l = speaker.hpf_out_r = 0.0f;
+    speaker.mid_l = speaker.mid_r = speaker.rev_lp = 0.0f;
+    speaker.delay_l.fill(0.0f);
+    speaker.delay_r.fill(0.0f);
+    speaker.rev_buf.fill(0.0f);
+}
+
+// The stream's own filters, held (busy) until the caller lets them go; a stream not seen before
+// takes the ones used longest ago. Null when another thread holds them, and the block is left as
+// it is. The audio thread: no locks, no allocation.
+Speaker* speaker_of(std::uint64_t reader, std::uint64_t now) noexcept {
+    const std::uint64_t key = reader ? reader : 1;
+    const auto generation = sp_generation.load(std::memory_order_acquire);
+    Speaker* found{};
+    for (auto& speaker : speakers)
+        if (speaker.key.load(std::memory_order_relaxed) == key) {
+            found = &speaker;
+            break;
+        }
+    if (!found) {
+        found = &speakers[0];
+        for (auto& speaker : speakers)
+            if (speaker.used.load(std::memory_order_relaxed) < found->used.load(std::memory_order_relaxed)) found = &speaker;
+    }
+    if (found->busy.exchange(true, std::memory_order_acquire)) return nullptr;
+    if (found->key.load(std::memory_order_relaxed) != key || found->generation != generation) {
+        reset(*found, generation);
+        found->key.store(key, std::memory_order_relaxed);
+    }
+    found->used.store(now, std::memory_order_relaxed);
+    return found;
+}
+
+void silence_block(std::uintptr_t buffer, std::uint32_t frames, std::uint32_t channels) noexcept {
+    __try {
+        const auto data = at<std::uintptr_t>(buffer + ac::buffer_data);
+        const bool together = at<std::uint8_t>(buffer + ac::buffer_together) != 0;
+        const auto stride = at<std::uint16_t>(buffer + ac::buffer_stride);
+        if (!data || (together && stride < frames) || !frames) return;
+        for (std::uint32_t c = 0; c < channels; ++c)
+            if (float* const ptr = together ? reinterpret_cast<float*>(data + std::size_t{stride} * c * 4) : at<float*>(data + std::size_t{c} * 8))
+                std::memset(ptr, 0, std::size_t{frames} * 4);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
+void spatialize_block(Speaker& speaker, std::uintptr_t buffer, std::uint32_t frames, std::uint32_t channels) noexcept {
+    __try {
+        const auto data = at<std::uintptr_t>(buffer + ac::buffer_data);
+        const bool together = at<std::uint8_t>(buffer + ac::buffer_together) != 0;
+        const auto stride = at<std::uint16_t>(buffer + ac::buffer_stride);
+        if (!data || (together && stride < frames) || !frames) return;
+        const auto channel = [&](std::uint32_t index) {
+            return together ? reinterpret_cast<float*>(data + std::size_t{stride} * index * 4) : at<float*>(data + index * 8);
+        };
+        float* const left = channel(0);
+        float* const right = channel(1);
+        if (!left || !right) return;
+        const float target_l = sp_left.load(std::memory_order_relaxed), target_r = sp_right.load(std::memory_order_relaxed);
+        const float al = sp_lpf_l.load(std::memory_order_relaxed), ar = sp_lpf_r.load(std::memory_order_relaxed);
+        const float env_wet = sp_env.load(std::memory_order_relaxed);
+        const int itd = sp_itd.load(std::memory_order_relaxed);
+        const std::uint32_t dl = itd < 0 ? static_cast<std::uint32_t>(-itd) : 0u;
+        const std::uint32_t dr = itd > 0 ? static_cast<std::uint32_t>(itd) : 0u;
+        const float step_l = (target_l - speaker.cur_left) / static_cast<float>(frames);
+        const float step_r = (target_r - speaker.cur_right) / static_cast<float>(frames);
+        const float cab_mix = std::clamp(0.45f + 0.55f * env_wet, 0.0f, 0.90f);
+        auto& delay_l = speaker.delay_l;
+        auto& delay_r = speaker.delay_r;
+        auto& rev_buf = speaker.rev_buf;
+        for (std::uint32_t i = 0; i < frames; ++i) {
+            const std::uint32_t wp = speaker.ring_wp;
+            speaker.cur_left += step_l;
+            speaker.cur_right += step_r;
+            const float mid = 0.5f * (left[i] + right[i]);
+            float sl = left[i] + 0.65f * (mid - left[i]), sr = right[i] + 0.65f * (mid - right[i]);
+            speaker.hpf_out_l = sl - speaker.hpf_in_l + 0.985f * speaker.hpf_out_l; speaker.hpf_in_l = sl;
+            speaker.hpf_out_r = sr - speaker.hpf_in_r + 0.985f * speaker.hpf_out_r; speaker.hpf_in_r = sr;
+            speaker.mid_l += 0.032f * (speaker.hpf_out_l - speaker.mid_l); speaker.mid_r += 0.032f * (speaker.hpf_out_r - speaker.mid_r);
+            sl += cab_mix * ((speaker.hpf_out_l + 0.28f * speaker.mid_l) - sl);
+            sr += cab_mix * ((speaker.hpf_out_r + 0.28f * speaker.mid_r) - sr);
+            delay_l[wp & 4095] = sl; delay_r[wp & 4095] = sr;
+            speaker.lpf_l_state += al * (delay_l[(wp - dl) & 4095] - speaker.lpf_l_state);
+            speaker.lpf_r_state += ar * (delay_r[(wp - dr) & 4095] - speaker.lpf_r_state);
+            const float t1 = rev_buf[(wp - 624u) & 4095], t2 = rev_buf[(wp - 1392u) & 4095];
+            const float t3 = rev_buf[(wp - 2256u) & 4095], t4 = rev_buf[(wp - 3264u) & 4095];
+            const float rl = 0.42f * t1 - 0.30f * t2 + 0.24f * t3 - 0.16f * t4;
+            const float rr = 0.38f * t2 - 0.32f * t1 + 0.22f * t4 - 0.18f * t3;
+            speaker.rev_lp += 0.30f * (0.5f * (speaker.lpf_l_state * speaker.cur_left + speaker.lpf_r_state * speaker.cur_right) + 0.22f * t4 - speaker.rev_lp);
+            rev_buf[wp & 4095] = speaker.rev_lp;
+            left[i] = speaker.lpf_l_state * speaker.cur_left + env_wet * rl;
+            right[i] = speaker.lpf_r_state * speaker.cur_right + env_wet * rr;
+            speaker.ring_wp = wp + 1;
+        }
+        speaker.cur_left = target_l; speaker.cur_right = target_r;
+        for (std::uint32_t c = 2; c < channels; ++c)
+            if (float* const other = channel(c)) std::memset(other, 0, std::size_t{frames} * 4);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {}
+}
+
+
 std::uint64_t process_hook(std::uintptr_t player, std::uintptr_t mixer) {
     // What it is playing, read before it moves on to its next file.
     std::uint32_t length{};
@@ -128,21 +260,39 @@ std::uint64_t process_hook(std::uintptr_t player, std::uintptr_t mixer) {
             if (seconds) seen->seconds.store(seconds, std::memory_order_relaxed);
         }
         const int mode = which.load(std::memory_order_relaxed);
-        if (!mode || channels < 2 || rate < 8000.0f || !spotify_station::active()) return result;
-        // (A song's length is kept from its last block that had one: the blocks of its fade
-        // out are of a file it has already left.)
-        // (A song's length is kept from its last block that had one: the blocks of its fade
-        // out are of a file it has already left.)
-        // The station's own song is replaced whatever its length (one a station was given was
-        // half a minute long, and was heard in the place of what the station plays, 2026-10-12).
+        const bool sp = spatial_active();
+        if ((!mode || !spotify_station::active()) && !sp) return result;
+        if (channels < 2 || rate < 8000.0f) return result;
+
+        // The station's own carrier was captured on the first process_hook after song_begun
+        // (via station_song_begins -> capture_next). Every other reader is a world emitter or
+        // short loop; mode 1 skips < 60s readers that aren't the station, mode 3 skips all
+        // non-station readers.
         const bool stations_own = seen && station_file[0] && std::strncmp(seen->name, station_file, sizeof(station_file)) == 0;
-        if (mode == 1 && !stations_own && (seen ? seen->seconds.load(std::memory_order_relaxed) : seconds) < 60) return result;
-        if (mode == 3 && !stations_own) return result;
-        if (replace(reader, buffer, frames, channels, rate)) {
-            last_replaced.store(GetTickCount64(), std::memory_order_relaxed);
-            replaced_blocks.fetch_add(1, std::memory_order_relaxed);
-            replaced_frames.fetch_add(frames, std::memory_order_relaxed);
-            if (seen) seen->replaced.fetch_add(1, std::memory_order_relaxed);
+        const std::uint32_t dur = seen ? seen->seconds.load(std::memory_order_relaxed) : seconds;
+        if (mode && spotify_station::active() && !(mode == 1 && !stations_own && dur < 60) && !(mode == 3 && !stations_own)) {
+            if (replace(reader, buffer, frames, channels, rate)) {
+                last_replaced.store(GetTickCount64(), std::memory_order_relaxed);
+                replaced_blocks.fetch_add(1, std::memory_order_relaxed);
+                replaced_frames.fetch_add(frames, std::memory_order_relaxed);
+                if (seen) seen->replaced.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+        if (sp) {
+            // The world's short loops are silenced only while the station's own song is going
+            // through the speaker; without it they are the only sound there is. A few blocks of
+            // grace, so a loop mixed just before the song in the same round is silenced too.
+            const auto now = GetTickCount64();
+            if (stations_own) station_heard.store(now, std::memory_order_relaxed);
+            const bool short_loop = !stations_own && dur > 0 && dur < 45;
+            if (short_loop) {
+                if (sp_mute_loops.load(std::memory_order_relaxed) && now < station_heard.load(std::memory_order_relaxed) + 300) silence_block(buffer, frames, channels);
+            } else if (stations_own || dur >= 45) {
+                if (auto* const speaker = speaker_of(reader, now)) {
+                    spatialize_block(*speaker, buffer, frames, channels);
+                    speaker->busy.store(false, std::memory_order_release);
+                }
+            }
         }
     } __except (EXCEPTION_EXECUTE_HANDLER) {
     }
@@ -229,6 +379,31 @@ int mode() noexcept { return which.load(std::memory_order_relaxed); }
 void set_mode(int mode) noexcept { which.store(std::clamp(mode, 0, 3), std::memory_order_relaxed); }
 float gain() noexcept { return loudness.load(std::memory_order_relaxed); }
 void set_gain(float gain) noexcept { loudness.store(std::clamp(gain, 0.0f, 16.0f), std::memory_order_relaxed); }
+
+void set_spatial(bool active, float left, float right, float lpf_l, float lpf_r, int itd, float env, bool mute_loops) noexcept {
+    // Only the audio thread touches the filters: off is only said here, and on again after
+    // being off (or lapsed) moves the generation on, for the audio thread to start them afresh.
+    if (!active) {
+        sp_active.store(false, std::memory_order_relaxed);
+        sp_expires_at.store(0, std::memory_order_relaxed);
+        return;
+    }
+    if (!spatial_active()) sp_generation.fetch_add(1, std::memory_order_relaxed);
+    sp_left.store(std::clamp(left, 0.0f, 4.0f), std::memory_order_relaxed);
+    sp_right.store(std::clamp(right, 0.0f, 4.0f), std::memory_order_relaxed);
+    sp_lpf_l.store(std::clamp(lpf_l, 0.04f, 1.0f), std::memory_order_relaxed);
+    sp_lpf_r.store(std::clamp(lpf_r, 0.04f, 1.0f), std::memory_order_relaxed);
+    sp_itd.store(std::clamp(itd, -32, 32), std::memory_order_relaxed);
+    sp_env.store(std::clamp(env, 0.0f, 0.65f), std::memory_order_relaxed);
+    sp_mute_loops.store(mute_loops, std::memory_order_relaxed);
+    sp_expires_at.store(GetTickCount64() + 2000, std::memory_order_relaxed);
+    // (Release, so the audio thread that sees it on also sees the generation moved on.)
+    sp_active.store(true, std::memory_order_release);
+}
+bool spatial_active() noexcept {
+    return sp_active.load(std::memory_order_acquire) && GetTickCount64() <= sp_expires_at.load(std::memory_order_relaxed);
+}
+
 
 void tick() noexcept {
     if (!hooked.load(std::memory_order_relaxed)) return;

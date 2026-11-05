@@ -8,8 +8,6 @@ namespace dingosdk::profile_runtime {
 
 // Boolean expression wrappers. Keep its native error/callback ownership contract.
 
-// See analysis/native-game-settings.md.
-
 UserValueFunctions& user_values() { static UserValueFunctions f; return f; }
 
 void* user_get_bool(std::uintptr_t s, void* e, const void* k, void* o) { return user_value_get<bool>(s,e,k,o,user_values().get_bool); }

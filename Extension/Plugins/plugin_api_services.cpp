@@ -1,5 +1,6 @@
 #include "plugin_api.h"
 #include "plugin_game.h"
+#include "Extension/Localization/text_overrides.h"
 #include "lua.h"
 #include "lualib.h"
 #include <algorithm>
@@ -9,53 +10,115 @@
 
 // General services a game layer in Lua reads and drives each tick: the skater's telemetry, stance
 // and Bone Cam, the pad and keys, the free and pad-flown cameras, spectating, the session's world,
-// the competition's stock physics, and skate.'s trick list and flick diagrams. None of them knows a
-// throwdown mode; each checks its permission and the game (plugin_game.h) does the rest.
+// the competition's stock physics, skate.'s trick list and flick diagrams, and the text the game
+// shows for its ids. None of them knows a throwdown mode; each checks its permission and the game
+// (plugin_game.h) does the rest.
 namespace dingosdk::plugins {
-struct ServicesApi {
-    static Game& game(Plugin& plugin) { return plugin.services_.game(); }
-};
 namespace {
-Game& game_of(Plugin& plugin) { return ServicesApi::game(plugin); }
-Plugin& allowed(lua_State* L, const char* permission, const char* what) {
-    auto& plugin = plugin_of(L);
-    if (!plugin.has(permission)) luaL_error(L, "%s needs the \"%s\" permission in reskate-plugin.json", what, permission);
-    return plugin;
+// Boolean gameplay preferences, observed from the game's own getter. Temporary holds never save.
+std::string gameplay_name(lua_State* L) {
+    luaL_checktype(L, 1, LUA_TSTRING);
+    std::size_t length{}; const auto* text = luaL_checklstring(L, 1, &length);
+    if (!length || length > 120 || std::string_view(text, length).find('\0') != std::string_view::npos)
+        luaL_argerror(L, 1, "a gameplay option name, 1 to 120 characters");
+    return std::string(text, length);
 }
-std::uint64_t id_at(lua_State* L, int index) {
-    if (lua_isnumber(L, index)) return static_cast<std::uint64_t>(lua_tonumber(L, index));
-    // Steam IDs come as strings: a Lua number cannot hold one exactly.
-    const std::string text = luaL_checkstring(L, index);
-    std::uint64_t out{};
-    for (const char c : text) {
-        if (c < '0' || c > '9' || out > (~0ULL - 9) / 10) luaL_argerror(L, index, "a Steam ID");
-        out = out * 10 + static_cast<std::uint64_t>(c - '0');
+int gameplay_option(lua_State* L) {
+    auto& p = permitted(L, "settings.read", "reskate.settings.gameplay");
+    const auto value = game_of(p).gameplay_option(gameplay_name(L));
+    if (value) lua_pushboolean(L, *value); else lua_pushnil(L);
+    return 1;
+}
+int hold_gameplay(lua_State* L) {
+    auto& p = permitted(L, "settings.write", "reskate.settings.hold_gameplay");
+    const auto name = gameplay_name(L);
+    std::optional<bool> value;
+    if (!lua_isnoneornil(L, 2)) {
+        luaL_checktype(L, 2, LUA_TBOOLEAN);
+        value = lua_toboolean(L, 2) != 0;
     }
-    return out;
+    return result(L, game_of(p).hold_gameplay_option(p.id(), name, value));
 }
-int result(lua_State* L, const std::string& why) {
-    lua_pushboolean(L, why.empty());
-    if (why.empty()) return 1;
-    lua_pushlstring(L, why.data(), why.size());
-    return 2;
+
+// The local rider's occupied, named animation values. No native addresses leave the host.
+int rail_target(lua_State* L) {
+    auto& p = permitted(L, "skater.read", "reskate.skater.rail_target");
+    const auto value = game_of(p).rail_target();
+    if (!value) { lua_pushnil(L); return 1; }
+    lua_createtable(L, 0, 3);
+    field_bool(L, "available", value->available); field_bool(L, "targeting", value->targeting); field_vec(L, "direction", value->direction);
+    return 1;
 }
-void field_number(lua_State* L, const char* name, double value) {
-    lua_pushnumber(L, value);
-    lua_setfield(L, -2, name);
+int select_rail_target(lua_State* L) {
+    auto& p = permitted(L, "skater.control", "reskate.skater.select_rail_target");
+    std::optional<int> type;
+    if (!lua_isnoneornil(L, 1)) {
+        luaL_checktype(L, 1, LUA_TNUMBER); const auto value = lua_tonumber(L, 1);
+        if (!std::isfinite(value) || value < 0 || value > 6 || value != std::floor(value)) luaL_argerror(L, 1, "a native rail target class, 0 to 6");
+        type = static_cast<int>(value);
+    }
+    if (!lua_isnoneornil(L, 2)) luaL_checktype(L, 2, LUA_TBOOLEAN);
+    return result(L, game_of(p).select_rail_target(p.id(), type, lua_toboolean(L, 2) != 0));
 }
-void field_bool(lua_State* L, const char* name, bool value) {
-    lua_pushboolean(L, value);
-    lua_setfield(L, -2, name);
+int skater_frame(lua_State* L) {
+    auto& p = permitted(L, "skater.read", "reskate.skater.frame");
+    const auto frame = game_of(p).skater_frame();
+    if (!frame) { lua_pushnil(L); return 1; }
+    lua_createtable(L, 0, 6);
+    field_vec(L, "position", frame->position); field_vec(L, "forward", frame->forward);
+    field_bool(L, "backwards", frame->backwards); field_bool(L, "mirrored", frame->mirrored); field_bool(L, "fakie", frame->fakie); field_bool(L, "basis", frame->basis);
+    field_number(L, "serial", static_cast<double>(frame->serial));
+    return 1;
 }
-void field_vec(lua_State* L, const char* name, const Vec3& v) {
-    lua_pushvector(L, v[0], v[1], v[2]);
-    lua_setfield(L, -2, name);
+int animation_values(lua_State* L) {
+    auto& p = permitted(L, "skater.read", "reskate.skater.animation_values");
+    const auto values = game_of(p).animation_values();
+    lua_createtable(L, 0, static_cast<int>(values.size()));
+    for (const auto& value : values) {
+        lua_createtable(L, 0, 2);
+        if (value.boolean) lua_pushboolean(L, value.value != 0); else lua_pushnumber(L, value.value);
+        lua_setfield(L, -2, "value");
+        field_bool(L, "output", value.output);
+        lua_setfield(L, -2, value.name.c_str());
+    }
+    return 1;
+}
+int set_animation_value(lua_State* L) {
+    auto& p = permitted(L, "skater.animation", "reskate.skater.set_animation_value");
+    const auto name = gameplay_name(L);
+    luaL_checktype(L, 2, LUA_TNUMBER);
+    const auto value = lua_tonumber(L, 2);
+    if (!std::isfinite(value) || std::abs(value) > 1e6) luaL_argerror(L, 2, "a finite number within a million");
+    return result(L, game_of(p).set_animation_value(name, value));
 }
 
 // ---- skater --------------------------------------------------------------------------------------
 // skater.telemetry(): the trainer's telemetry, its last jump, the physics watch and the bail's body.
+// movement(): the local skater's velocity, physics state, whether it is on foot and grounded, and its
+// walking velocity; with "input" also the movement stick in the camera's frame, the controller it came
+// from and whether the game has focus. Nil without a local skater.
+int movement(lua_State* L) {
+    auto& plugin = permitted(L, "skater.read", "reskate.skater.movement");
+    const auto m = game_of(plugin).skater_movement();
+    if (!m) {
+        lua_pushnil(L);
+        return 1;
+    }
+    lua_createtable(L, 0, 9);
+    field_vec(L, "velocity", m->velocity);
+    field_number(L, "physics_state", m->physics_state);
+    field_bool(L, "on_foot", m->on_foot);
+    field_bool(L, "grounded", m->grounded);
+    field_vec(L, "walking_velocity", m->walking_velocity);
+    if (plugin.has("input")) {
+        field_vec(L, "stick", m->stick);
+        field_number(L, "device", m->device);
+        field_bool(L, "focused", m->focused);
+    }
+    return 1;
+}
 int telemetry(lua_State* L) {
-    auto& plugin = allowed(L, "skater.read", "reskate.skater.telemetry");
+    auto& plugin = permitted(L, "skater.read", "reskate.skater.telemetry");
     const auto t = game_of(plugin).skater_telemetry(plugin.id());
     if (!t) {
         lua_pushnil(L);
@@ -109,7 +172,7 @@ int telemetry(lua_State* L) {
     return 1;
 }
 int goofy(lua_State* L) {
-    auto& plugin = allowed(L, "skater.read", "reskate.skater.goofy");
+    auto& plugin = permitted(L, "skater.read", "reskate.skater.goofy");
     if (const auto g = game_of(plugin).stance_goofy()) lua_pushboolean(L, *g);
     else lua_pushnil(L);
     return 1;
@@ -118,7 +181,7 @@ int goofy(lua_State* L) {
 // status line, "bail" a bail to show, "ringing" "1" or "0", "game" "on"/"off" (a plugin's game
 // wants it), or the `bonecam` console words.
 int bone_cam(lua_State* L) {
-    auto& plugin = allowed(L, "camera", "reskate.skater.bone_cam");
+    auto& plugin = permitted(L, "camera", "reskate.skater.bone_cam");
     std::vector<std::string> words;
     for (int i = 1, n = std::min(lua_gettop(L), 8); i <= n; ++i) {
         std::size_t length = 0;
@@ -134,7 +197,7 @@ int bone_cam(lua_State* L) {
 // input.pad_bits(menu): XInput's button bits with LT 0x10000 and RT 0x20000, or nil without a pad;
 // with `menu`, read while ReSkate's menu is open too.
 int pad_bits(lua_State* L) {
-    auto& plugin = allowed(L, "input", "reskate.input.pad_bits");
+    auto& plugin = permitted(L, "input", "reskate.input.pad_bits");
     if (const auto bits = game_of(plugin).pad_bits(lua_toboolean(L, 1) != 0)) lua_pushnumber(L, *bits);
     else lua_pushnil(L);
     return 1;
@@ -146,23 +209,19 @@ int key_code(lua_State* L, int index) {
         return vk;
     }
     const std::string name = luaL_checkstring(L, index);
-    static const std::pair<const char*, int> names[] = {
-        {"Enter", 13}, {"Backspace", 8}, {"Escape", 27}, {"End", 35}, {"Home", 36}, {"PageUp", 33}, {"PageDown", 34}, {"Space", 32},
-        {"Shift", 16}, {"Ctrl", 17}, {"Alt", 18}, {"Tab", 9}, {"Left", 37}, {"Up", 38}, {"Right", 39}, {"Down", 40},
-        {"[", 0xDB}, {"]", 0xDD}, {"Delete", 46}, {"LeftMouse", 1}, {"RightMouse", 2}, {"MiddleMouse", 4}};
-    for (const auto& [n, vk] : names)
+    for (const auto& [n, vk] : key_names)
         if (name == n) return vk;
     if (name.size() == 1 && ((name[0] >= 'A' && name[0] <= 'Z') || (name[0] >= '0' && name[0] <= '9'))) return name[0];
     luaL_argerror(L, index, "a key name (A-Z, 0-9, Enter, Backspace, Escape, End, PageUp, PageDown, [, ], ...) or a virtual key");
     return 0;
 }
 int key(lua_State* L) {
-    auto& plugin = allowed(L, "input", "reskate.input.key");
+    auto& plugin = permitted(L, "input", "reskate.input.key");
     lua_pushboolean(L, game_of(plugin).key_down(key_code(L, 1)));
     return 1;
 }
 int wheel(lua_State* L) {
-    auto& plugin = allowed(L, "input", "reskate.input.wheel");
+    auto& plugin = permitted(L, "input", "reskate.input.wheel");
     lua_pushnumber(L, game_of(plugin).mouse_wheel());
     return 1;
 }
@@ -170,7 +229,7 @@ int wheel(lua_State* L) {
 // (raw counts right and down), wheel (notches, away from you positive)}; nil while the game is not in
 // front or a menu is open.
 int mouse(lua_State* L) {
-    auto& plugin = allowed(L, "input", "reskate.input.mouse");
+    auto& plugin = permitted(L, "input", "reskate.input.mouse");
     const auto motion = game_of(plugin).mouse_motion(plugin.id());
     if (!motion) {
         lua_pushnil(L);
@@ -188,7 +247,7 @@ int mouse(lua_State* L) {
 // input.game_buttons(hidden, held, pause): the game buttons (XInput bits) kept from the game while
 // asked, those held down for it, and all game input paused for half a second.
 int game_buttons(lua_State* L) {
-    auto& plugin = allowed(L, "input", "reskate.input.game_buttons");
+    auto& plugin = permitted(L, "input", "reskate.input.game_buttons");
     const auto mask = [&](int index) {
         const double v = luaL_optnumber(L, index, 0);
         if (!(v >= 0 && v <= 0xffff)) luaL_argerror(L, index, "a 16-bit button mask");
@@ -200,7 +259,7 @@ int game_buttons(lua_State* L) {
 // input.game_keys(keys): the keys (names, as key() takes them, or virtual keys) whose presses the game
 // does not see until the next call; nil or {} gives them back. Not Escape, nor the mouse's buttons.
 int game_keys(lua_State* L) {
-    auto& plugin = allowed(L, "input", "reskate.input.game_keys");
+    auto& plugin = permitted(L, "input", "reskate.input.game_keys");
     std::vector<std::uint8_t> keys;
     if (!lua_isnoneornil(L, 1)) {
         luaL_checktype(L, 1, LUA_TTABLE);
@@ -219,12 +278,12 @@ int game_keys(lua_State* L) {
     return 0;
 }
 int input_allowed(lua_State* L) {
-    auto& plugin = allowed(L, "input", "reskate.input.allowed");
+    auto& plugin = permitted(L, "input", "reskate.input.allowed");
     lua_pushboolean(L, game_of(plugin).input_allowed());
     return 1;
 }
 int focus(lua_State* L) {
-    auto& plugin = allowed(L, "input", "reskate.input.focus");
+    auto& plugin = permitted(L, "input", "reskate.input.focus");
     const auto f = game_of(plugin).input_focus();
     lua_createtable(L, 0, 3);
     field_bool(L, "focused", f.focused);
@@ -235,26 +294,29 @@ int focus(lua_State* L) {
 
 // ---- camera --------------------------------------------------------------------------------------
 int free_camera(lua_State* L) {
-    auto& plugin = allowed(L, "camera", "reskate.camera.free");
+    auto& plugin = permitted(L, "camera", "reskate.camera.free");
     return result(L, game_of(plugin).free_camera(plugin.id(), lua_toboolean(L, 1) != 0));
 }
 // camera.pad_flight(on): the free camera flown from the pad while placing things from the air (the
 // bumpers or Q/E its height; the triggers stay the plugin's). Held by one plugin; released with it.
 int pad_flight(lua_State* L) {
-    auto& plugin = allowed(L, "camera", "reskate.camera.pad_flight");
+    auto& plugin = permitted(L, "camera", "reskate.camera.pad_flight");
     return result(L, game_of(plugin).pad_flight(plugin.id(), lua_toboolean(L, 1) != 0));
 }
 
 // ---- session -------------------------------------------------------------------------------------
 int spectate(lua_State* L) {
-    auto& plugin = allowed(L, "session.read", "reskate.session.spectate");
-    game_of(plugin).spectate(lua_isnoneornil(L, 1) ? 0 : id_at(L, 1));
+    auto& plugin = permitted(L, "session.read", "reskate.session.spectate");
+    // nil, nothing or "0" stops it, as the docs say; every other player is read as everywhere else.
+    const bool stop = lua_isnoneornil(L, 1) || (lua_type(L, 1) == LUA_TSTRING && std::string_view(lua_tostring(L, 1)) == "0") ||
+                      (lua_type(L, 1) == LUA_TNUMBER && lua_tonumber(L, 1) == 0);
+    game_of(plugin).spectate(stop ? 0 : player_id(L, 1, "a Steam ID"));
     return 0;
 }
 // session.world(): {world = id (a string; it changes with the map or session), barred = the local
 // player's mods change scoring, map = the map's name}.
 int world(lua_State* L) {
-    auto& plugin = allowed(L, "session.read", "reskate.session.world");
+    auto& plugin = permitted(L, "session.read", "reskate.session.world");
     auto& g = game_of(plugin);
     lua_createtable(L, 0, 3);
     const auto id = std::to_string(g.world_id());
@@ -272,17 +334,17 @@ int world(lua_State* L) {
 // own tuning comes back after); stock_ready(): the stock tuning has been read; prepare(): read it
 // now, switching nothing.
 int competition(lua_State* L) {
-    auto& plugin = allowed(L, "skater.control", "reskate.physics.competition");
+    auto& plugin = permitted(L, "skater.control", "reskate.physics.competition");
     game_of(plugin).competition(plugin.id(), lua_toboolean(L, 1) != 0);
     return 0;
 }
 int stock_ready(lua_State* L) {
-    auto& plugin = allowed(L, "skater.control", "reskate.physics.stock_ready");
+    auto& plugin = permitted(L, "skater.control", "reskate.physics.stock_ready");
     lua_pushboolean(L, game_of(plugin).stock_physics_ready());
     return 1;
 }
 int prepare(lua_State* L) {
-    auto& plugin = allowed(L, "skater.control", "reskate.physics.prepare");
+    auto& plugin = permitted(L, "skater.control", "reskate.physics.prepare");
     game_of(plugin).prepare_physics();
     return 0;
 }
@@ -290,19 +352,13 @@ int prepare(lua_State* L) {
 // physics.tuning(id): one tuning value, {id, label, group, kind, value, stock, tuner}, or nil and why.
 void push_tuning(lua_State* L, const Game::Tuning& t) {
     lua_createtable(L, 0, 7);
-    const auto text = [&](const char* field, const std::string& value) {
-        lua_pushlstring(L, value.data(), value.size());
-        lua_setfield(L, -2, field);
-    };
-    text("id", t.id);
-    text("label", t.label);
-    text("group", t.group);
-    text("kind", t.kind);
-    lua_pushnumber(L, t.value);
-    lua_setfield(L, -2, "value");
-    lua_pushnumber(L, t.stock);
-    lua_setfield(L, -2, "stock");
-    if (!t.tuner.empty()) text("tuner", t.tuner);
+    field_text(L, "id", t.id);
+    field_text(L, "label", t.label);
+    field_text(L, "group", t.group);
+    field_text(L, "kind", t.kind);
+    field_number(L, "value", t.value);
+    field_number(L, "stock", t.stock);
+    if (!t.tuner.empty()) field_text(L, "tuner", t.tuner);
 }
 std::string tuning_id(lua_State* L, int index) {
     std::size_t length{};
@@ -311,20 +367,16 @@ std::string tuning_id(lua_State* L, int index) {
     return {id, length};
 }
 int tuning(lua_State* L) {
-    auto& plugin = allowed(L, "skater.read", "reskate.physics.tuning");
+    auto& plugin = permitted(L, "skater.read", "reskate.physics.tuning");
     std::string why;
     const auto t = game_of(plugin).tuning(tuning_id(L, 1), why);
-    if (!t) {
-        lua_pushnil(L);
-        lua_pushlstring(L, why.data(), why.size());
-        return 2;
-    }
+    if (!t) return failed(L, why);
     push_tuning(L, *t);
     return 1;
 }
 // physics.find(text): the values whose id has every word of `text`, at most 64.
 int find_tuning(lua_State* L) {
-    auto& plugin = allowed(L, "skater.read", "reskate.physics.find");
+    auto& plugin = permitted(L, "skater.read", "reskate.physics.find");
     std::size_t length{};
     const char* text = luaL_checklstring(L, 1, &length);
     if (length > 200) luaL_argerror(L, 1, "at most 200 characters");
@@ -338,7 +390,7 @@ int find_tuning(lua_State* L) {
 }
 // physics.tune(id, value): the value over the player's own while the plugin keeps it; nil lets go.
 int tune(lua_State* L) {
-    auto& plugin = allowed(L, "skater.control", "reskate.physics.tune");
+    auto& plugin = permitted(L, "skater.control", "reskate.physics.tune");
     const auto id = tuning_id(L, 1);
     std::optional<double> value;
     if (lua_type(L, 2) == LUA_TBOOLEAN) value = lua_toboolean(L, 2) ? 1.0 : 0.0;
@@ -352,7 +404,7 @@ int tune(lua_State* L) {
 // ---- tricks --------------------------------------------------------------------------------------
 // tricks.feed(on): skate.'s trick list, entry by entry, as trick_notes events while on.
 int trick_feed(lua_State* L) {
-    auto& plugin = allowed(L, "events.tricks", "reskate.tricks.feed");
+    auto& plugin = permitted(L, "events.tricks", "reskate.tricks.feed");
     game_of(plugin).trick_feed(plugin.id(), lua_toboolean(L, 1) != 0);
     return 0;
 }
@@ -360,7 +412,7 @@ int trick_feed(lua_State* L) {
 // left, y pulled back, the stick's gate the unit circle, a regular stance); empty until the game's
 // gestures are read (the first call starts that) or for a trick without one.
 int gesture(lua_State* L) {
-    auto& plugin = allowed(L, "events.tricks", "reskate.tricks.gesture");
+    auto& plugin = permitted(L, "events.tricks", "reskate.tricks.gesture");
     std::size_t length = 0;
     const char* name = luaL_checklstring(L, 1, &length);
     const auto path = game_of(plugin).trick_gesture(std::string_view(name, std::min<std::size_t>(length, 96)));
@@ -379,7 +431,7 @@ int gesture(lua_State* L) {
 // tricks.label(from, to): the trick ticker shows `to` where the game's label is exactly `from`
 // ("Board Stall"); to nil, that label is the game's again. 1 to 63 characters each, 16 labels a plugin.
 int label(lua_State* L) {
-    auto& plugin = allowed(L, "hud", "reskate.tricks.label");
+    auto& plugin = permitted(L, "hud", "reskate.tricks.label");
     std::size_t from_length = 0, to_length = 0;
     const char* from = luaL_checklstring(L, 1, &from_length);
     const char* to = lua_isnoneornil(L, 2) ? "" : luaL_checklstring(L, 2, &to_length);
@@ -390,7 +442,7 @@ int label(lua_State* L) {
 // (a list of 1 to 16 ids, or one id), within `within_ms` (1 to 2000), is recorded as the id `to`.
 // The game's trick ids, 0 to 336. One pending record a plugin: a new one replaces it.
 int record_as(lua_State* L) {
-    auto& plugin = allowed(L, "skater.control", "reskate.tricks.record_as");
+    auto& plugin = permitted(L, "skater.control", "reskate.tricks.record_as");
     const auto id_at = [&](int index) {
         const double value = luaL_checknumber(L, index);
         if (!(value >= 0 && value <= 336) || value != std::floor(value)) luaL_error(L, "a trick id is a whole number, 0 to 336");
@@ -425,32 +477,24 @@ std::string content_folder(lua_State* L, Plugin& plugin, int index, const char* 
     return folder;
 }
 int content(lua_State* L) {
-    auto& plugin = allowed(L, "mods.read", "reskate.mods.content");
+    auto& plugin = permitted(L, "mods.read", "reskate.mods.content");
     const auto folder = content_folder(L, plugin, 1, "reskate.mods.content");
     std::vector<Game::ContentFile> files;
-    if (const auto why = game_of(plugin).content_list(folder, files); !why.empty()) {
-        lua_pushnil(L);
-        lua_pushlstring(L, why.data(), why.size());
-        return 2;
-    }
+    if (const auto why = game_of(plugin).content_list(folder, files); !why.empty()) return failed(L, why);
     lua_createtable(L, static_cast<int>(files.size()), 0);
     for (std::size_t i = 0; i < files.size(); ++i) {
         lua_createtable(L, 0, 4);
-        lua_pushlstring(L, files[i].mod.data(), files[i].mod.size());
-        lua_setfield(L, -2, "mod");
-        lua_pushlstring(L, files[i].title.data(), files[i].title.size());
-        lua_setfield(L, -2, "title");
-        lua_pushlstring(L, files[i].path.data(), files[i].path.size());
-        lua_setfield(L, -2, "path");
-        lua_pushnumber(L, static_cast<double>(files[i].size));
-        lua_setfield(L, -2, "size");
+        field_text(L, "mod", files[i].mod);
+        field_text(L, "title", files[i].title);
+        field_text(L, "path", files[i].path);
+        field_number(L, "size", static_cast<double>(files[i].size));
         lua_rawseti(L, -2, static_cast<int>(i + 1));
     }
     return 1;
 }
 // mods.read_content(mod, folder, path): that file's text, at most 1 MB; nil, why ("not found" for none).
 int read_content(lua_State* L) {
-    auto& plugin = allowed(L, "mods.read", "reskate.mods.read_content");
+    auto& plugin = permitted(L, "mods.read", "reskate.mods.read_content");
     std::size_t mod_length = 0;
     const char* mod = luaL_checklstring(L, 1, &mod_length);
     if (!mod_length || mod_length > 64) luaL_argerror(L, 1, "a mod's folder name, 1 to 64 characters");
@@ -458,19 +502,139 @@ int read_content(lua_State* L) {
     const auto path = safe_relative_path(luaL_checkstring(L, 3));
     if (path.empty()) luaL_argerror(L, 3, "a path inside the mod's folder (use / between folders, no ..)");
     std::string text;
-    if (const auto why = game_of(plugin).content_read(std::string_view(mod, mod_length), folder, path, text); !why.empty()) {
-        lua_pushnil(L);
-        lua_pushlstring(L, why.data(), why.size());
-        return 2;
-    }
+    if (const auto why = game_of(plugin).content_read(std::string_view(mod, mod_length), folder, path, text); !why.empty()) return failed(L, why);
     lua_pushlstring(L, text.data(), text.size());
+    return 1;
+}
+
+// ---- strings: the text the game shows for its ids -------------------------------------------------
+// Why a key is not one strings.set takes, or null: an id ("ID_MENU_PLAY"), 1 to 255 printable ASCII
+// characters not starting with #, or "#" and 1 to 8 hex digits for a string known only by its hash.
+const char* key_problem(std::string_view key) {
+    if (key.starts_with('#')) {
+        const auto digits = key.substr(1);
+        const bool hex = !digits.empty() && digits.size() <= 8 && std::all_of(digits.begin(), digits.end(), [](char c) {
+            return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+        });
+        return hex ? nullptr : "a #hash is # and 1 to 8 hex digits";
+    }
+    if (key.empty() || key.size() > 255) return "an id is 1 to 255 characters";
+    for (const unsigned char c : key)
+        if (c <= 0x20 || c > 0x7e) return "an id is printable ASCII, without spaces";
+    return nullptr;
+}
+// Why a text is not one the game's store takes, or null: UTF-8 (no overlong form, surrogate or NUL)
+// of at most 511 UTF-16 units, as the store's conversion holds (text_overrides.h).
+const char* text_problem(std::string_view text) {
+    std::size_t units = 0;
+    for (std::size_t at = 0; at < text.size();) {
+        const auto byte = [&](std::size_t i) { return static_cast<unsigned char>(text[i]); };
+        const unsigned lead = byte(at);
+        std::size_t size = 1;
+        char32_t c = lead;
+        if (lead >= 0xc2 && lead <= 0xdf) { size = 2; c = lead & 0x1f; }
+        else if (lead >= 0xe0 && lead <= 0xef) { size = 3; c = lead & 0x0f; }
+        else if (lead >= 0xf0 && lead <= 0xf4) { size = 4; c = lead & 0x07; }
+        else if (lead >= 0x80) return "a text must be UTF-8";
+        if (!lead) return "a text cannot hold a NUL character";
+        if (at + size > text.size()) return "a text must be UTF-8";
+        for (std::size_t i = 1; i < size; ++i) {
+            if ((byte(at + i) & 0xc0) != 0x80) return "a text must be UTF-8";
+            c = c << 6 | (byte(at + i) & 0x3f);
+        }
+        if ((size == 3 && (c < 0x800 || (c >= 0xd800 && c <= 0xdfff))) || (size == 4 && (c < 0x10000 || c > 0x10ffff)))
+            return "a text must be UTF-8";
+        units += size == 4 ? 2 : 1;
+        at += size;
+    }
+    return units > text_overrides::most_units ? "a text is at most 511 characters (UTF-16 units)" : nullptr;
+}
+std::string string_key(lua_State* L, int index, const char* what) {
+    std::size_t length = 0;
+    const char* key = luaL_checklstring(L, index, &length);
+    if (const auto why = key_problem(std::string_view(key, length))) luaL_error(L, "%s: %s", what, why);
+    return std::string(key, length);
+}
+// strings.set(key, text): the game shows `text` wherever it shows the id's text, from the next ticks
+// on. True, or false and why not.
+int strings_set(lua_State* L) {
+    auto& plugin = permitted(L, "strings", "reskate.strings.set");
+    auto key = string_key(L, 1, "reskate.strings.set");
+    std::size_t length = 0;
+    const char* text = luaL_checklstring(L, 2, &length);
+    if (const auto why = text_problem(std::string_view(text, length))) luaL_error(L, "reskate.strings.set: %s", why);
+    return result(L, game_of(plugin).strings_set(plugin.id(), {{std::move(key), std::string(text, length)}}));
+}
+// strings.set_many({[key] = text, ...}): set for each pair, keys starting with _ left out (notes in a
+// data file). How many it took, or nil and why not; nothing is taken when one pair is refused.
+int strings_set_many(lua_State* L) {
+    auto& plugin = permitted(L, "strings", "reskate.strings.set_many");
+    luaL_checktype(L, 1, LUA_TTABLE);
+    std::vector<std::pair<std::string, std::string>> texts;
+    lua_pushnil(L);
+    while (lua_next(L, 1)) {
+        if (lua_type(L, -2) != LUA_TSTRING) luaL_error(L, "reskate.strings.set_many takes a table of ids and texts");
+        std::size_t key_length = 0, text_length = 0;
+        const char* key = lua_tolstring(L, -2, &key_length);
+        const std::string_view name(key, key_length);
+        if (name.starts_with('_')) {
+            lua_pop(L, 1);
+            continue;
+        }
+        const std::string shown(name.substr(0, 64));
+        if (const auto why = key_problem(name)) luaL_error(L, "reskate.strings.set_many: \"%s\": %s", shown.c_str(), why);
+        if (lua_type(L, -1) != LUA_TSTRING) luaL_error(L, "reskate.strings.set_many: \"%s\": a text is a string", shown.c_str());
+        const char* text = lua_tolstring(L, -1, &text_length);
+        if (const auto why = text_problem(std::string_view(text, text_length)))
+            luaL_error(L, "reskate.strings.set_many: \"%s\": %s", shown.c_str(), why);
+        if (texts.size() >= text_overrides::most_texts) luaL_error(L, "reskate.strings.set_many: at most 65536 strings");
+        texts.emplace_back(std::string(name), std::string(text, text_length));
+        lua_pop(L, 1);
+    }
+    if (const auto why = game_of(plugin).strings_set(plugin.id(), texts); !why.empty()) return failed(L, why);
+    lua_pushnumber(L, static_cast<double>(texts.size()));
+    return 1;
+}
+// strings.exists(key): whether the game has text for the id, its own or a plugin's stored already;
+// nil while it cannot say (before the game's text is up, or on a server).
+int strings_exists(lua_State* L) {
+    auto& plugin = permitted(L, "strings", "reskate.strings.exists");
+    const auto key = string_key(L, 1, "reskate.strings.exists");
+    const auto has = game_of(plugin).string_exists(key);
+    if (has) lua_pushboolean(L, *has);
+    else lua_pushnil(L);
+    return 1;
+}
+// strings.set_case_rules(rules): "tr" makes the text the game capitalizes itself (an upper-case
+// heading) follow Turkish rules, i to U+0130 and I to U+0131, while the plugin is loaded; "" or nil gives the
+// game's rules back. True, or false and why not.
+int strings_set_case_rules(lua_State* L) {
+    auto& plugin = permitted(L, "strings", "reskate.strings.set_case_rules");
+    std::size_t length = 0;
+    const char* rules = luaL_optlstring(L, 1, "", &length);
+    const std::string_view name(rules, length);
+    if (name != "tr" && !name.empty()) luaL_error(L, "reskate.strings.set_case_rules: the rules are \"tr\" or \"\"");
+    return result(L, game_of(plugin).strings_case_rules(plugin.id(), name));
+}
+// strings.hash(id): the id's "#xxxxxxxx" key, as a dump of the game's text names the strings whose
+// id it does not know. Needs no permission: it only computes.
+int strings_hash(lua_State* L) {
+    std::size_t length = 0;
+    const char* id = luaL_checklstring(L, 1, &length);
+    if (!length || length > 255) luaL_argerror(L, 1, "an id, 1 to 255 characters");
+    const auto hash = text_overrides::string_hash(std::string_view(id, length));
+    char key[10]{'#'};
+    constexpr char digits[] = "0123456789abcdef";
+    for (int i = 0; i < 8; ++i) key[1 + i] = digits[(hash >> (28 - 4 * i)) & 0xf];
+    lua_pushlstring(L, key, 9);
     return 1;
 }
 
 } // namespace
 
 void install_services_api(Plugin&, lua_State* L) {
-    add_functions(L, "skater", {{"telemetry", telemetry}, {"goofy", goofy}, {"bone_cam", bone_cam}});
+    add_functions(L, "settings", {{"gameplay", gameplay_option}, {"hold_gameplay", hold_gameplay}});
+    add_functions(L, "skater", {{"rail_target", rail_target}, {"select_rail_target", select_rail_target}, {"frame", skater_frame}, {"animation_values", animation_values}, {"set_animation_value", set_animation_value}, {"telemetry", telemetry}, {"movement", movement}, {"goofy", goofy}, {"bone_cam", bone_cam}});
     add_functions(L, "input", {{"pad_bits", pad_bits}, {"key", key}, {"wheel", wheel}, {"mouse", mouse}, {"game_buttons", game_buttons}, {"game_keys", game_keys}, {"allowed", input_allowed}, {"focus", focus}});
     add_functions(L, "session", {{"spectate", spectate}, {"world", world}});
     add_functions(L, "camera", {{"free", free_camera}, {"pad_flight", pad_flight}});
@@ -478,5 +642,7 @@ void install_services_api(Plugin&, lua_State* L) {
                                  {"find", find_tuning}, {"tune", tune}});
     add_functions(L, "tricks", {{"feed", trick_feed}, {"gesture", gesture}, {"label", label}, {"record_as", record_as}});
     add_functions(L, "mods", {{"content", content}, {"read_content", read_content}});
+    add_functions(L, "strings", {{"set", strings_set}, {"set_many", strings_set_many}, {"exists", strings_exists}, {"hash", strings_hash},
+                                {"set_case_rules", strings_set_case_rules}});
 }
 } // namespace dingosdk::plugins

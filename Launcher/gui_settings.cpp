@@ -1,6 +1,8 @@
 #include "gui_internal.h"
 
 #include "Engine/Game/World/world_names.h"
+#include "Engine/Core/Log/logging.h"
+#include "Engine/Vfs/initfs.h"
 
 #include <cmath>
 #include <format>
@@ -438,6 +440,18 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
         setting_check("Discord status", "Show on your Discord profile where you are skating: the map, the server or lobby "
                       "and how many are in it. Off, the game does not talk to Discord at all.", settings.discord_status);
         if (start_map_choice(settings, launcher.session(), ui)) launcher.save();
+        if (!ui.plugin_developer) {
+            try { ui.plugin_developer = initfs::plugin_developer_mode(paths.directory); } catch (const std::exception&) { ui.plugin_developer = false; }
+        }
+        bool developer = *ui.plugin_developer;
+        setting_check("Plugin developer mode", "Updates to plugins you already approved won't ask again while this is on. "
+                      "A plugin you have not approved is still held until you answer.", developer);
+        if (developer != *ui.plugin_developer) {
+            try { initfs::set_plugin_developer_mode(paths.directory, developer); } catch (const std::exception& error) {
+                logging::log(logging::Level::warning, logging::Channel::launcher, "Plugin developer mode was not saved: {}", error.what());
+            }
+            ui.plugin_developer = developer;
+        }
         ImGui::Spacing();
         section_caption(fonts, "EXTRA GAME ARGUMENTS");
         std::array<char, 1024> arguments{};
@@ -477,8 +491,31 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
         if (page == "GRAPHICS") graphics_options(fonts, ui, running);
         break;
     }
-    case 3:
+    case 3: {
         section_caption(fonts, "LAUNCHER");
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Interface size");
+        ImGui::SameLine(S(200));
+        ImGui::SetNextItemWidth(S(160));
+        const auto chosen = std::ranges::find(interface_sizes, settings.interface_size);
+        int size_index = static_cast<int>(chosen - interface_sizes.begin());
+        if (ImGui::Combo("##interface_size", &size_index, interface_size_names.data(), static_cast<int>(interface_size_names.size()))) {
+            settings.interface_size = interface_sizes[static_cast<std::size_t>(size_index)];
+            launcher.save();
+        }
+        // Fonts and the window's smallest size are made at startup, so the new size needs a new window.
+        if (settings.interface_size != g_interface_size) {
+            ImGui::SameLine();
+            ImGui::BeginDisabled(busy);
+            if (ImGui::Button("Restart launcher")) {
+                launcher.save();
+                launcher.request_restart();
+            }
+            ImGui::EndDisabled();
+        }
+        setting_note("Makes the launcher's text and layout bigger or smaller. A size too big for this screen is cut to "
+                     "the largest that fits. Applies when the launcher starts again.");
+        ImGui::Spacing();
         setting_check("Keep the launcher open after launch",
                       "Hide while you play and return when Skate closes. Turn off to close after a successful launch.",
                       settings.keep_open_after_launch);
@@ -531,6 +568,7 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
         setting_note("What ReSkate collects and sends, and the rules for using it and its servers.");
         break;
     }
+    }
     ImGui::EndChild();
     store_game_settings(ui);
 
@@ -551,6 +589,7 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
         // Read again the next time: the game may have run in between, and mods may have changed.
         ui.game.loaded = false;
         ui.start_maps.reset();
+        ui.plugin_developer.reset();
     }
 }
 

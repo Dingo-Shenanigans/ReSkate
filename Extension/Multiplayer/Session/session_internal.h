@@ -116,6 +116,8 @@ struct Peer {
     // Bumped per accepted outfit; render compares it with the one its actor wears
     // (0 after a spawn) to spread native recipe applies over frames.
     std::uint64_t cosmetic_revision{}, applied_cosmetics{};
+    std::uint64_t applied_hidden{};   // plugin_feed::hidden_items_revision() it was last put on under
+    std::uint64_t published_outfit{}; // the cosmetic_revision plugins were last told of
     DeveloperHoodieState developer_hoodie;
     DeveloperBoardState developer_board;
     AudioBuffer audio;
@@ -357,6 +359,9 @@ struct Session {
     std::uint32_t sequence{}, roster_sequence{};
     // Whose placed objects are solid for this player (the rest are ghosts): see objects_solid().
     std::map<std::uint64_t, bool> objects_solid;
+    // The players this PC ignores (/ignore, the Voice page), by SteamID64, with the name each
+    // last had: saved in the local profile and kept for every session. Read with ignored().
+    std::map<std::uint64_t, std::string> ignored_players;
     std::uint64_t local_pose_count{}, logged_local_pose_count{};
     std::size_t last_skater_bones{}, last_board_bones{};
     std::optional<Appearance> sent_appearance;
@@ -527,8 +532,23 @@ inline void set_next_maps(std::vector<NextMapWanted> maps) {
 }
 // "/p <message>" in a lobby: one line for the local player's party only, relayed by the host.
 std::string send_party_chat(Session &s, std::string_view typed);
-// The "/" commands this session offers (the chat overlay lists them as the player types "/").
+// Ignoring a player: their skater, board, nametag, map marker and sound are hidden here, their
+// voice is muted, their chat lines, typing dots and party invites are dropped, and their plugin
+// messages never reach this PC's plugins (a lobby host's server copies still hear them). Only this
+// PC changes; they are not told.
+bool ignored(const Session &s, std::uint64_t id);
+// Ignores (on) or stops ignoring a player and saves the list. `name`: theirs, kept for /ignored.
+void set_ignored(Session &s, std::uint64_t id, std::string name, bool on);
+// The saved list, read once the local profile can be read (with the other display preferences).
+void load_ignored(Session &s);
+// "/ignore <player>", "/unignore <player>", "/ignored": what to tell the player.
+std::string ignore_command(Session &s, std::string_view verb, std::string_view who);
+// The "/" commands this session offers (the chat overlay lists them as the player types "/"):
+// its own, then the plugins' (set_plugin_chat_commands).
 std::vector<MultiplayerChatCommand> chat_commands(const Session &s);
+// A "/" line for a plugin's command: kept for take_plugin_chat_commands when `verb` is one of the
+// plugins' and not one of the session's own. False when it is not a plugin's.
+bool queue_plugin_chat_command(const Session &s, std::string_view verb, std::string_view arguments);
 // One encoded throwdown message from this player to everyone else (through the host).
 void send_throwdown(Session &s, std::vector<std::uint8_t> message);
 // Tell the session this player is typing (`on`) or has stopped. Relayed like chat.

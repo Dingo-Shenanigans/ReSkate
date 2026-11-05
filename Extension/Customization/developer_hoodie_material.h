@@ -2,6 +2,7 @@
 #include "Extension/Multiplayer/developer_identity.h"
 #include "Extension/Multiplayer/Remote/cosmetics.h"
 #include "Extension/Multiplayer/Remote/native_cosmetics_layout.h"
+#include "Engine/Game/Build/supported_build.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -234,7 +235,7 @@ std::uintptr_t color_parameter(Memory &m, std::uintptr_t base, const ParameterMa
         if (m.template get<std::uint64_t>(node, 8) != key) continue;
         native = m.template get<ParameterKey>(node);
         const auto type = m.ptr(node, 0x20);
-        if (type < base || type >= base + 0x09144000 || native.size != sizeof(Color) || native.count != 1 ||
+        if (type < base || type >= base + supported_build::game_image_size || native.size != sizeof(Color) || native.count != 1 ||
             !(m.template get<std::uint32_t>(node, 0x28) & 1) || m.template get<std::uint16_t>(type, 8) != native.type)
             return 0;
         const auto info = m.ptr(type);

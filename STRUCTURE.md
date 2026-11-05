@@ -42,7 +42,7 @@ Feature code never holds game addresses: everything tied to one `Skate.exe` buil
 
 ```
 ReSkate/
-├── CMakeLists.txt, CMakePresets.json   build entry; presets vs2022-x64, linux-x64, release, linux-release
+├── CMakeLists.txt, CMakePresets.json   build entry; presets vs2022-x64, vs2022-x64-dev, linux-x64, release, dev-release, linux-release
 ├── cmake/                 the build, split by area
 ├── Engine/                engine-level code shared by the DLL, launcher and server
 ├── Extension/             ReSkate's features (in ReSkate.dll)
@@ -57,14 +57,14 @@ ReSkate/
 ├── config/defaults/       default profile/settings JSON embedded into ReSkate.dll
 ├── contrib/               server hosting files, design notes, release script
 ├── README.md, LICENSE
-└── .clangd, .gitattributes, .gitignore
+└── .gitattributes, .gitignore
 ```
 
 ## `cmake/`
 
 | File | Covers |
 |---|---|
-| `ProjectOptions.cmake` | `DINGOSDK_*` options, version stamping (`reskate_version.h`, `version.rc`) |
+| `ProjectOptions.cmake` | `DINGOSDK_*` cache settings and `DINGOSDK_DEV_TOOLS`, version stamping (`reskate_version.h`, `version.rc`); the test options are in `CMakeLists.txt`, `Apps.cmake` and `CrashReport.cmake` |
 | `Dependencies.cmake` | the `External/` libraries as static targets |
 | `Core.cmake` | `Engine/` libraries: hooks, console core, launcher support, supported build |
 | `Features.cmake` | `Extension/` feature libraries |
@@ -72,7 +72,7 @@ ReSkate/
 | `Runtime.cmake` | `ReSkate.dll` (`dingosdk_runtime`), including the cargo build of `SpotifyHelper/` |
 | `Apps.cmake` | launcher, server, packer tools, and most test executables |
 | `CrashReport.cmake` | Sentry crash report client/upload, wired into the DLL, launcher and server |
-| `ProfileData.cmake`, `CustomScriptData.cmake` | embed `config/defaults/` and the custom Lua entry |
+| `ProfileData.cmake` | embed `config/defaults/` |
 | `templates/` | generated headers: version, `version.rc`, crash/update config, profile defaults |
 
 ## `Engine/`
@@ -84,13 +84,13 @@ Loosely follows Frostbite's own layout.
 |---|---|
 | `Console/` | command registry and console core |
 | `Debug/` | crash reports: minidumps, report envelope, trace, upload |
-| `Hooks/` | Detours hook helpers |
+| `Hooks/` | Detours hook helpers, and patches.h for table slots, import slots and code patches |
 | `Json/` | JSON helpers over RapidJSON |
 | `Log/` | spdlog-based logger, log paths, crash/event logging |
-| `Platform/` | process injection, PE helpers, memory and path utilities |
+| `Platform/` | process injection, PE helpers, memory and path utilities, UTF-8/wide text, clocks |
 | `Profiling/` | profiler and sampler |
 | `Storage/` | SQLite save database |
-| `Text/` | chat word filter |
+| `Text/` | chat word filter; shared text helpers: ASCII case folding, hex, URL escaping |
 
 ### `Engine/Resource/`
 Frostbite data formats: binary bundles, TOC, CAS codec (Oodle/zstd/LZ4), EBX documents (read, write, merge,
@@ -106,9 +106,6 @@ The virtual file system and modding pipeline:
 - `thunderstore_package`, `https_download` — Thunderstore packages.
 - `mod_music`, `item_thumbnails`, `world_layer_scan`, `builtin_packs`.
 
-### `Engine/Scripting/`
-Custom Lua script support (currently switched off for users).
-
 ### `Engine/Game/`
 The game's native ABI and plain data models, no hooks:
 
@@ -117,14 +114,14 @@ The game's native ABI and plain data models, no hooks:
 | `Abi/` | native strings, data layouts, transforms, callback queue |
 | `Build/` | `supported_build.h` (hashes, Steam depot/manifest pins), `fingerprint.h`, `image_identity`, `addresses.h` |
 | `Build/20260929/` | one header per area with every address, fingerprint and patch for this `Skate.exe` build, as `addr::<area>::<name>` |
-| `Input/` | controller bindings, PlayStation reports, voice input |
+| `Input/` | controller bindings, PlayStation reports, voice input, a plugin's replacement pad output (`pad_output.h`), held gameplay options |
 | `Multiplayer/` | session model and limits, tick/voice/distance settings, role commands, chat rate |
 | `Profile/` | progression, player card, object persistence models |
 | `Rendering/` | draw packets, graphics controls |
 | `Settings/` | named settings, simulation time, multiplayer settings lock |
-| `Skater/` | first person, velocity boost, skater body |
+| `Skater/` | first person, velocity boost, skater body, the rider's animation values |
 | `UI/` | game view, menu entries and scale, loading screen selection |
-| `World/` | world model, layers, parks (rotation, randomization, editor), travel, custom level manifest |
+| `World/` | world model, layers, parks (rotation, randomization, editor), travel, custom level manifest, owned native bodies and their ray batches |
 
 ## `Extension/`
 
@@ -138,22 +135,23 @@ commands and a `Test/` folder.
 | `Console/` | built-in console commands, perf commands, memory ledger |
 | `Customization/` | cosmetics catalog, item browser, local customization, player card |
 | `Multiplayer/` | Steam lobbies, sessions, parties, voice and text chat (see below) |
+| `Localization/` | the game's text as plugins change it (`reskate.strings`): the string-override store |
 | `Music/` | local music, playlists and artwork, external players: Spotify, YouTube Music, Plex |
 | `News/` | launcher/game news feed |
-| `Objects/` | object placement and the Park Editor (`ParkEditor/`), park object sets, park mods |
+| `Objects/` | object placement and the Park Editor (`ParkEditor/`), park object sets, park mods, placement physics for plugins (`placement_physics`, `placement_adapters`: placed objects that move, and surfaces that move with them) |
 | `Plugins/` | the Luau plugin host and its `reskate.*` API (see below) |
 | `Profile/` | offline profile storage: skater, progress, missions, objects, preferences |
 | `Progression/` | challenges, entitlements, neighborhood unlocks, fast travel unlock, rip score, board wear |
-| `Rendering/` | graphics controls and labels, display startup, replay export |
+| `Rendering/` | graphics controls and labels, display startup, replay export, plugin particles and surface decals |
 | `ReplayKeyframes/` | replay keyframe curves and settings |
-| `Scripting/` | Lua startup, custom script loader, native blocking |
+| `Scripting/` | Lua startup, native blocking |
 | `Settings/` | gameplay/native/user settings, input bindings, engine tweaks, replay drafts |
-| `Skater/` | first person, noclip, free flight, physics tuning, no-bail, AI skaters, x-ray, breakable deck, launches and pad hiding for plugins, trick watch |
+| `Skater/` | first person, noclip, free flight, physics tuning, no-bail, AI skaters, x-ray, breakable deck, launches and pad hiding for plugins, trick watch, pose offsets on the drawn pose, rail target choice and movement reads for plugins |
 | `Throwdowns/` | native throwdowns, custom (plugin) modes, relay and wire format |
 | `Trainer/` | trick trainer: waypoints, jumps, landings, presets |
 | `Travel/` | location travel |
 | `UI/` | the in-game UI (see below) |
-| `World/` | level loading, loading screens, time/atmosphere, population, park rotation, world layers, engine guards |
+| `World/` | level loading, loading screens, time/atmosphere, population, park rotation, world layers, engine guards, native bodies plugins own |
 | `AnimationStudio/` | animation core |
 
 ### `Extension/Multiplayer/`
@@ -162,7 +160,7 @@ commands and a `Test/` folder.
 | `Net/` | protocol, wire/delta/pose/sound codecs |
 | `Steam/` | lobbies, server browser, transport and lanes, friend join, social |
 | `Session/` | session state, send/receive, parties, commands, rooms, passwords |
-| `Remote/` | remote skaters: native skater spawn, cosmetics, poses, audio, VFX, collision |
+| `Remote/` | remote skaters: native skater spawn, cosmetics, stand-ins for items this PC lacks (`stand_ins`), poses, audio, VFX, collision |
 | `Hud/` | nametags, indicators, player UI |
 | `Voice/` | voice capture and playback |
 
@@ -177,9 +175,17 @@ commands and a `Test/` folder.
 The Luau plugin host. A plugin is a folder in `Mods/` with a `reskate-plugin.json`.
 - `plugin_discovery`, `plugin_manifest` — find and read plugins.
 - `plugin_vm`, `plugin_runtime`, `plugin_host` — the sandboxed Luau VM and plugin lifecycle.
-- `plugin_api*.cpp` — the `reskate.*` API (game, world, UI, more); `plugin_game*`, `plugin_camera`, `plugin_joystick`.
+- `plugin_api*.cpp` — the `reskate.*` API (game, world, physics, UI, more); `plugin_game*`, `plugin_camera`, `plugin_joystick`.
+- `Test/` — the host tests, and in `Test/fixtures/` the plugins they load.
 - `plugin_ui`, `plugin_sound`, `plugin_wave`, `plugin_http`, `plugin_session_feed`, `plugin_wire` — pages, audio, HTTP, multiplayer messages.
 - `plugin_commands` — the `plugin` console command.
+- `plugin_effects`, `plugin_api_effects` — the permission, asset declarations and Lua calls for
+  [plugin particles and decals](https://docs.reskate.dev/plugins/api/effects). `Extension/Rendering/plugin_effects`
+  owns their native references, surface attachments and world lifetime.
+- [Item origins and favorites](https://docs.reskate.dev/plugins/api/mods) — `reskate.mods.item_origins` and
+  `reskate.menu.favorites`, read-only, for plugins that filter the item grids.
+- [Other players' items](https://docs.reskate.dev/plugins/api/session#other-players-items) — `reskate.session.outfit` and
+  `reskate.session.hide_items`, for plugins that choose what of other players' outfits shows.
 
 ## `Runtime/`
 
@@ -230,7 +236,6 @@ Valve's Steam networking headers, and fonts (Montserrat, Permanent Marker).
 - `assets/launcher/` — launcher background and icons.
 - `assets/emotes/` — chat emotes (`emotes.json`, `emotes.png`).
 - `assets/builtin/` — built-in packs (`throwdown_menu.zip`).
-- `assets/models/fpv/` — FPV drone model.
 - `assets/*.jpg|png` — splash, music artwork.
 - `config/defaults/` — default `profile.json`, `progress.json`, `settings.json`, `options.json`,
   `challenges.json`, `location-travel.json`, `object-dropper.json`, `news.json`, `manifest.json`.
@@ -246,8 +251,7 @@ Valve's Steam networking headers, and fonts (Montserrat, Permanent Marker).
 | `Test/` | tests for contrib scripts |
 
 Plugin mods (the ports of former built-in features, the test plugins, Fit Check, Animator Studio) are not
-in the repository. Maintainers keep them in `contrib/plugins/`, which is ignored, and
-`dingosdk_plugin_tests` runs the test plugins from there when they are present.
+in the repository. Maintainers keep them in `contrib/plugins/`, which is ignored.
 
 A plugin mod's folder looks like:
 
@@ -261,7 +265,7 @@ A plugin mod's folder looks like:
 
 ## Tests
 
-Tests live in a `Test/` folder beside the code they cover (about 115 files) and build as
+Tests live in a `Test/` folder beside the code they cover (about 135 files) and build as
 `dingosdk_*_tests` executables. Turn groups on with `DINGOSDK_BUILD_MULTIPLAYER_TESTS`,
 `DINGOSDK_BUILD_LAUNCHER_TESTS`, `DINGOSDK_BUILD_PARK_EDITOR_TESTS`, `DINGOSDK_BUILD_CRASH_REPORT_TESTS`
 and `DINGOSDK_BUILD_PLUGIN_TESTS`, then run `ctest --test-dir build/vs2022-x64 -C Release`.

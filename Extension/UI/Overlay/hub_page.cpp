@@ -81,7 +81,7 @@ constexpr ImU32 sticky = IM_COL32(236, 215, 108, 255), sticky_hover = IM_COL32(2
                 sticky_off = IM_COL32(120, 114, 80, 255), row_hover = IM_COL32(52, 53, 57, 240),
                 hint_ink = IM_COL32(110, 110, 110, 255), soft = IM_COL32(210, 210, 214, 255);
 
-enum class Tab { browser, host, session, voice, settings };
+enum class Tab { browser, host, session, voice, settings, ignored };
 // The game's own menu sounds, by their numbers in its list (UI/NativeMenu/ui_sound.h).
 constexpr std::uint32_t sound_navigate = 3, sound_select = 7, sound_tab = 56;
 enum class Kind { all, servers, lobbies };
@@ -856,14 +856,19 @@ void voice_page(Ui &ui, ImVec2 a, ImVec2 z) {
             const auto voice = found == mp.voice.players.end() ? VoicePlayer{player.id} : *found;
             bool drawn{};
             const float top = list.next(row, row_gap, drawn);
-            const float right = a.x + list_width - 20 * u, volume_x = right - 330 * u, mute_x = volume_x - 12 * u - 260 * u;
-            const auto mute = hash("mute", player.id), volume = hash("volume", player.id);
-            list.reveal(mute, top, row), list.reveal(volume, top, row);
+            const float right = a.x + list_width - 20 * u, volume_x = right - 330 * u, mute_x = volume_x - 12 * u - 260 * u,
+                        ignore_x = mute_x - 12 * u - 260 * u;
+            const auto mute = hash("mute", player.id), volume = hash("volume", player.id), ignore = hash("ignore", player.id);
+            list.reveal(mute, top, row), list.reveal(volume, top, row), list.reveal(ignore, top, row);
             if (drawn) {
-                skate_theme::rough_rect(draw, ImVec2(a.x, top), ImVec2(mute_x - 12 * u, top + row), skate_theme::tile, mute & 0xfff, u * 2);
-                label(draw, ui.bold, 40 * u, ImVec2(a.x + 30 * u, top + (row - 40 * u) * .5f), mute_x - 40 * u,
-                      mp.voice.allowed && voice.speaking && !voice.muted ? skate_theme::good : theme::paper, view::caption(player.name, 40));
+                skate_theme::rough_rect(draw, ImVec2(a.x, top), ImVec2(ignore_x - 12 * u, top + row), skate_theme::tile, mute & 0xfff, u * 2);
+                label(draw, ui.bold, 40 * u, ImVec2(a.x + 30 * u, top + (row - 40 * u) * .5f), ignore_x - 40 * u,
+                      player.ignored ? theme::muted : mp.voice.allowed && voice.speaking && !voice.muted ? skate_theme::good : theme::paper,
+                      view::caption(player.name, 40));
             }
+            // Ignore: their skater, voice, chat and everything else of theirs, on this screen only.
+            if (button(ui, ignore, ImVec2(ignore_x, top), ImVec2(mute_x - 12 * u, top + row), player.ignored ? "IGNORED" : "IGNORE", Look::plain, true, {}, &list.box))
+                send(h, "ignore", id + (player.ignored ? " off" : " on"));
             if (button(ui, mute, ImVec2(mute_x, top), ImVec2(volume_x - 12 * u, top + row), voice.muted ? "MUTED" : "MUTE", Look::plain, true, {}, &list.box))
                 send(h, "voice-mute", id + (voice.muted ? " off" : " on"));
             if (button(ui, volume, ImVec2(volume_x, top), ImVec2(right, top + row), "Volume", Look::plain, true, volume_label(voice.volume), &list.box))
@@ -1424,6 +1429,31 @@ void settings_page(Ui &ui, ImVec2 a, ImVec2 z) {
     list.end();
 }
 
+// ---------------------------------------------------------------- ignored players
+
+// Everyone the player ignores, here or not, to stop ignoring; then the players here, to ignore one.
+void ignored_page(Ui &ui, ImVec2 a, ImVec2 z) {
+    auto &h = ui.h;
+    const auto &mp = ui.mp;
+    Column list(ui, hash("ignored-players"), a, ImVec2(a.x + std::min(z.x - a.x, 2100 * ui.u), z.y));
+    list.heading("IGNORED PLAYERS");
+    list.note("Only for you: their skater, voice, chat, invites and plugins never show or are heard on your game, in any session. They are not told.");
+    if (mp.ignored.empty()) list.note("You ignore nobody.");
+    for (const auto &player : mp.ignored) {
+        const bool here = std::any_of(mp.roster.begin(), mp.roster.end(), [&](const auto &p) { return p.id == player.id && p.connected; });
+        const auto name = player.name.empty() ? std::to_string(player.id) : player.name;
+        if (list.setting(view::caption(name, 40) + (here ? "  (here)" : ""), "UNIGNORE", true)) send(h, "ignore", std::to_string(player.id) + " off");
+    }
+    bool titled{};
+    for (const auto &peer : mp.roster) {
+        if (peer.id == mp.local_id || !peer.connected || peer.ignored || (mp.dedicated && peer.id == mp.host_id)) continue;
+        if (!std::exchange(titled, true)) list.title("SKATERS HERE");
+        if (list.setting(view::caption(peer.name, 40), "IGNORE", true)) send(h, "ignore", std::to_string(peer.id) + " on");
+    }
+    list.note(!h.notice.empty() ? h.notice : "/ignore <player> and /unignore <player> in chat do the same.");
+    list.end();
+}
+
 // ---------------------------------------------------------------- focus
 
 // Moves the focus one control over, by where the controls were drawn last frame.
@@ -1686,6 +1716,7 @@ void hub_frame(Hub &h, ImDrawList *draw, float u, ImVec2 a, ImVec2 z, float tabs
             if (in_session) tabs.emplace_back(static_cast<int>(Tab::session), "CURRENT SESSION"), tabs.emplace_back(static_cast<int>(Tab::voice), "VOICE CHAT");
             // And its settings only for whoever runs it.
             if (runs_session) tabs.emplace_back(static_cast<int>(Tab::settings), "SESSION SETTINGS");
+            tabs.emplace_back(static_cast<int>(Tab::ignored), "IGNORED PLAYERS");
         }
         if (previous_tab || next_tab) {
             std::size_t at = 0;
@@ -1732,6 +1763,7 @@ void hub_frame(Hub &h, ImDrawList *draw, float u, ImVec2 a, ImVec2 z, float tabs
     case Tab::session: session_page(ui, a, z); break;
     case Tab::voice: voice_page(ui, a, z); break;
     case Tab::settings: settings_page(ui, a, z); break;
+    case Tab::ignored: ignored_page(ui, a, z); break;
     }
     if ((connecting || failed) && !tools && !mods) {
         ui.input = page_input, ui.clicked = page_clicked, ui.doubled = page_doubled;

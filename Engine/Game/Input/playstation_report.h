@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cmath>
 #include <optional>
 
 namespace dingosdk {
@@ -79,4 +80,103 @@ inline std::optional<PlayStationGamepad> parse_playstation_report(PlayStationPad
         return detail::playstation_common(report + 3, report + 7, report[10], report[11]);
     return {};
 }
+
+// Replace only controls in a validated report. System, sequence, sensors and touch data stay
+// untouched; the caller refreshes the transport checksum when this returns true.
+inline bool replace_playstation_report(PlayStationPad kind, bool bluetooth, std::uint8_t* bytes,
+    std::size_t size, const PlayStationGamepad& pad) noexcept {
+    const auto parsed = parse_playstation_report(kind, bluetooth, bytes, size);
+    if (!parsed) return false;
+    const auto& before = *parsed;
+    if (pad.left_trigger == before.left_trigger && pad.right_trigger == before.right_trigger &&
+        pad.left_x == before.left_x && pad.left_y == before.left_y && pad.right_x == before.right_x &&
+        pad.right_y == before.right_y && pad.buttons == before.buttons) return false;
+    // Where parse_playstation_report found them: sticks (left X first), the shoulder byte (L2 0x04,
+    // R2 0x08 digital bits) and the two analog triggers.
+    std::uint8_t *sticks{}, *shoulder{}, *left{}, *right{};
+    const auto id = bytes[0];
+    if (kind == PlayStationPad::dualsense && ((id == 0x01 && !bluetooth) || id == 0x31)) {
+        auto* data = bytes + (id == 0x31 ? 2 : 1);
+        sticks = data; left = data + 4; right = data + 5; shoulder = data + 8;
+    } else if (id == 0x01) {
+        sticks = bytes + 1; shoulder = bytes + 6; left = bytes + 8; right = bytes + 9;
+    } else if (kind == PlayStationPad::dualshock4 && id == 0x11) {
+        sticks = bytes + 3; shoulder = bytes + 8; left = bytes + 10; right = bytes + 11;
+    } else {
+        return false;
+    }
+    if (pad.left_trigger != before.left_trigger) {
+        *left = pad.left_trigger;
+        if (pad.left_trigger <= 8) *shoulder = static_cast<std::uint8_t>(*shoulder & ~0x04u);
+    }
+    if (pad.right_trigger != before.right_trigger) {
+        *right = pad.right_trigger;
+        if (pad.right_trigger <= 8) *shoulder = static_cast<std::uint8_t>(*shoulder & ~0x08u);
+    }
+    const auto axis = [](std::int16_t v, bool invert) {
+        const int step = v == -32768 ? -128 : static_cast<int>(std::lround(static_cast<float>(v) / 258.0f));
+        return static_cast<std::uint8_t>(std::clamp(invert ? 127 - step : 128 + step, 0, 255));
+    };
+    if (pad.left_x != before.left_x) sticks[0] = axis(pad.left_x, false);
+    if (pad.left_y != before.left_y) sticks[1] = axis(pad.left_y, true);
+    if (pad.right_x != before.right_x) sticks[2] = axis(pad.right_x, false);
+    if (pad.right_y != before.right_y) sticks[3] = axis(pad.right_y, true);
+    if (pad.left_trigger != before.left_trigger && pad.left_trigger > 8) *shoulder |= 0x04;
+    if (pad.right_trigger != before.right_trigger && pad.right_trigger > 8) *shoulder |= 0x08;
+    if (pad.buttons != before.buttons) {
+        const auto buttons = pad.buttons;
+        std::uint8_t hat = 8;
+        if (buttons & 1) hat = (buttons & 8) ? 1 : (buttons & 4) ? 7 : 0;
+        else if (buttons & 2) hat = (buttons & 8) ? 3 : (buttons & 4) ? 5 : 4;
+        else if (buttons & 8) hat = 2;
+        else if (buttons & 4) hat = 6;
+        auto& face = shoulder[-1];
+        face = static_cast<std::uint8_t>(hat | ((buttons & 0x4000) ? 0x10 : 0) | ((buttons & 0x1000) ? 0x20 : 0) |
+            ((buttons & 0x2000) ? 0x40 : 0) | ((buttons & 0x8000) ? 0x80 : 0));
+        *shoulder = static_cast<std::uint8_t>((*shoulder & 0x0c) | ((buttons & 0x100) ? 1 : 0) | ((buttons & 0x200) ? 2 : 0) |
+            ((buttons & 0x20) ? 0x10 : 0) | ((buttons & 0x10) ? 0x20 : 0) |
+            ((buttons & 0x40) ? 0x40 : 0) | ((buttons & 0x80) ? 0x80 : 0));
+    }
+    return true;
+}
+// A full Bluetooth input report (DualShock 4 0x11, DualSense 0x31) is 78 bytes as the pad sends
+// it, and its last four bytes are a CRC-32 over the 0xA1 input prefix and the 74 bytes before them.
+inline constexpr std::size_t playstation_bluetooth_report_length = 78;
+// Windows pads every DualShock 4 read over Bluetooth to that pad's longest input report, 547
+// bytes, so a full report read from it is 547 bytes long. Its CRC is still at offset 74: the
+// padding is not part of the report the pad sent. A DualSense's longest is the 78-byte report.
+inline constexpr std::size_t dualshock4_bluetooth_read_length = 547;
+// Writes a new CRC into a full Bluetooth report that was changed. A stale CRC makes the game's
+// reader discard the report, so the change never reaches it. Returns false, and leaves the bytes
+// alone, for a report that has no CRC: USB reports and the Bluetooth simple report (0x01).
+inline bool refresh_playstation_bluetooth_crc(std::uint8_t* report, std::size_t size) noexcept {
+    if (!report || (size != playstation_bluetooth_report_length && size != dualshock4_bluetooth_read_length)) return false;
+    const auto id = report[0];
+    if (id != 0x11 && (id != 0x31 || size != playstation_bluetooth_report_length)) return false;
+    std::uint32_t crc = 0xffffffffu;
+    const auto feed = [&crc](std::uint8_t byte) {
+        crc ^= byte;
+        for (unsigned bit = 0; bit < 8; ++bit) crc = (crc >> 1) ^ (0xedb88320u & (0u - (crc & 1u)));
+    };
+    feed(0xa1);
+    constexpr std::size_t covered = playstation_bluetooth_report_length - 4;
+    for (std::size_t i = 0; i < covered; ++i) feed(report[i]);
+    crc = ~crc;
+    for (std::size_t i = 0; i < 4; ++i) report[covered + i] = static_cast<std::uint8_t>(crc >> (8 * i));
+    return true;
+}
+// Change one menu-preview stick in an already identified report. Other input,
+// sensors, sequence counters and Windows padding stay intact.
+inline bool set_playstation_stick(PlayStationPad kind, bool bluetooth, std::uint8_t* report,
+    std::size_t size, int stick, std::int16_t value) noexcept {
+    if (stick < 0 || stick > 3 || !parse_playstation_report(kind, bluetooth, report, size)) return false;
+    const unsigned offset = report[0] == 0x31 ? 2 : report[0] == 0x11 ? 3 : 1;
+    const bool invert = (stick & 1) != 0;
+    const int centred = static_cast<int>(value) / 258;
+    report[offset + static_cast<unsigned>(stick)] = static_cast<std::uint8_t>(
+        std::clamp(invert ? 127 - centred : 128 + centred, 0, 255));
+    refresh_playstation_bluetooth_crc(report, size);
+    return true;
+}
+
 }

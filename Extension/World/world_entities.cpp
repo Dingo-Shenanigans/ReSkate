@@ -1,11 +1,13 @@
 #include "world_entities.h"
 #include "world_entities_contract.h"
+#include "level_loading.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/memory.h"
 #include "Engine/Game/Abi/native_data.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/ai_skaters.h"
 #include "Engine/Game/Build/20260929/engine.h"
+#include "Engine/Game/Build/20260929/physics_bodies.h"
 #include "Engine/Game/Build/20260929/skater_entities.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
 #include <Windows.h>
@@ -322,21 +324,33 @@ void walk_registry(std::uintptr_t base, std::uintptr_t registry, std::string_vie
         }
     }
 }
+// What blueprints answered, by prefix and meshes_only. Walking every domain's table took 66 ms on a
+// player's PC (PoseBox's boombox, 2026-11-03), on the game's thread, and kept for two seconds a
+// plugin asking now and then paid that each time. A list is now kept for 30 s, or until the level
+// changes, and read only in an active level (as blueprint_bounds searches, for the same reason).
 struct Listing {
     std::mutex mutex;
-    std::uint64_t at{};
-    std::string prefix;
-    bool meshes_only{};
-    std::vector<std::string> names;
+    std::string level; // the destination the lists were read in
+    struct List { std::uint64_t at{}; std::vector<std::string> names; };
+    std::map<std::pair<std::string, bool>, List> lists;
 };
 Listing& listing() { static auto* value = new Listing; return *value; }
+constexpr std::uint64_t listing_for = 30000;
+constexpr std::size_t most_listings = 32;
 } // namespace
 
 std::vector<std::string> blueprints(std::uintptr_t base, std::string_view prefix, std::size_t most, bool meshes_only) {
     auto& l = listing();
     std::lock_guard lock(l.mutex);
     const auto now = GetTickCount64();
-    if (!l.at || now >= l.at + 2000 || l.prefix != prefix || l.meshes_only != meshes_only) {
+    if (auto level = last_level_destination(); level != l.level) {
+        l.lists.clear();
+        l.level = std::move(level);
+    }
+    const std::pair<std::string, bool> key{std::string(prefix), meshes_only};
+    if (!l.lists.contains(key) && l.lists.size() >= most_listings) l.lists.clear();
+    auto& list = l.lists[key];
+    if ((!list.at || now >= list.at + listing_for) && level_content_active()) {
         std::set<std::string> found;
         std::set<std::uintptr_t> walked;
         try {
@@ -346,24 +360,27 @@ std::vector<std::string> blueprints(std::uintptr_t base, std::string_view prefix
             }
         } catch (...) {
         }
-        l.names.assign(found.begin(), found.end());
-        l.prefix = std::string(prefix);
-        l.meshes_only = meshes_only;
-        l.at = now;
+        list.names.assign(found.begin(), found.end());
+        list.at = now;
     }
-    return {l.names.begin(), l.names.begin() + static_cast<std::ptrdiff_t>(std::min(most, l.names.size()))};
+    return {list.names.begin(), list.names.begin() + static_cast<std::ptrdiff_t>(std::min(most, list.names.size()))};
 }
 
 std::optional<Box> blueprint_bounds(std::uintptr_t base, std::string_view blueprint) {
     const auto find = game::native_data().find_asset;
     if (!find || blueprint.empty() || blueprint.size() > 200) return std::nullopt;
     const std::string name(blueprint);
-    const auto read = [](auto at) { return ptr(at); };
-    for (std::uint16_t domain = 0; domain < 0xbbf; ++domain) {
-        if (!ptr(base + addr::engine::domain_owners, std::uintptr_t(domain) * 8)) continue;
-        if (const auto asset = find(domain, name.c_str()); detail::object_blueprint(asset, base, read)) return asset_bounds(base, asset);
-    }
-    return std::nullopt;
+    static std::mutex mutex;
+    static auto* cache = new detail::LookupCache<Box>;
+    std::lock_guard lock(mutex);
+    return cache->get(name, GetTickCount64(), [&]() -> std::optional<Box> {
+        const auto read = [](auto at) { return ptr(at); };
+        for (std::uint16_t domain = 0; domain < 0xbbf; ++domain) {
+            if (!ptr(base + addr::engine::domain_owners, std::uintptr_t(domain) * 8)) continue;
+            if (const auto asset = find(domain, name.c_str()); detail::object_blueprint(asset, base, read)) return asset_bounds(base, asset);
+        }
+        return std::nullopt;
+    }, level_content_active());
 }
 
 void set_joint_source(JointSource source) noexcept { joint_source.store(source, std::memory_order_release); }
@@ -459,8 +476,8 @@ void bodies_for(std::uintptr_t base, const Key& key, Live& l, const Wanted& w, s
         l.next_look = now + 250;
         if (const auto world = p.world()) l.bodies = find_bodies(base, l.entity, world);
         // Not kept in the entity where they were looked for: rays into the object's own box, the
-        // first body they meet, and the rest of that body's owner's.
-        if (l.bodies.empty() && p.hit && p.owned)
+        // first body they meet that is the object's, and the rest of that body's owner's.
+        if (l.bodies.empty() && p.hit && p.owned && p.component)
             if (const auto box = blueprint_bounds(base, l.asset)) {
                 const auto& m = l.matrix;
                 const auto at = [&](float x, float y, float z) {
@@ -475,11 +492,9 @@ void bodies_for(std::uintptr_t base, const Key& key, Live& l, const Wanted& w, s
                     {at(lo[0] - 0.5f, cy, cz), at(hi[0], cy, cz)},
                     {at(cx, cy, lo[2] - 0.5f), at(cx, cy, hi[2])},
                 }};
-                for (const auto& [from, to] : rays)
-                    if (const auto body = p.hit(from, to)) {
-                        l.bodies = p.owned(*body, 16);
-                        if (!l.bodies.empty()) break;
-                    }
+                const auto own = ptr(l.entity, addr::physics_bodies::entity_physics_component);
+                l.bodies = detail::own_bodies(rays, p.hit, [&](const Body& body) { return detail::own_body(own, p.component(body)); },
+                                              [&](const Body& body) { return p.owned(body, 16); });
             }
         if (!l.bodies.empty() || now >= l.made + 5000) {
             l.looked = true;
@@ -605,8 +620,9 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
             if (const auto l = live.find(key); l != live.end()) {
                 bodies_for(base, key, l->second, w, now);
                 // Move a resident object in place: recreating restarts its effects and makes it jump.
-                // One on a joint follows it every frame.
-                if (l->second.matrix != w.matrix && (w.attach || now >= l->second.moved + 16)) {
+                // Joint attachments and non-solid visuals follow changed transforms every client tick.
+                if (detail::movement_due(l->second.matrix != w.matrix, w.solid, w.attach.has_value(),
+                    now, l->second.moved)) {
                     move(base, l->second, w.matrix);
                     std::lock_guard lock(s.mutex);
                     if (const auto at = s.live.find(key); at != s.live.end()) at->second.matrix = w.matrix, at->second.moved = now;

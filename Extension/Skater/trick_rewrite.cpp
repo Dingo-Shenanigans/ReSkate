@@ -4,6 +4,7 @@
 #include "Engine/Core/Platform/memory.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/trick_rewrite.h"
+#include "Engine/Core/Platform/performance_counter.h"
 #include <Windows.h>
 #include <algorithm>
 #include <array>
@@ -45,11 +46,6 @@ struct PreserveError {
     DWORD value = GetLastError();
     ~PreserveError() { SetLastError(value); }
 };
-std::int64_t qpc_now() noexcept {
-    LARGE_INTEGER value{};
-    QueryPerformanceCounter(&value);
-    return value.QuadPart;
-}
 std::int64_t qpc_ms(int ms) noexcept {
     static const std::int64_t frequency = [] {
         LARGE_INTEGER value{};

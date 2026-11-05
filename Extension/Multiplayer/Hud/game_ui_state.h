@@ -10,9 +10,15 @@ struct GameUiState {
     bool ui_hidden{};         // the game's UI is hidden (captures)
     bool nametags_hidden{};   // the game's nametag setting is off
     bool indicators_hidden{}; // the game's player indicator setting is off
+    bool available{};         // false until the native screen model was actually resolved
 };
 
 // Client thread only (it takes the UI model lock): reads the state at most every 100 ms and
 // returns the latest. Before the model is found it reports no menu and nothing hidden.
 GameUiState sample_game_ui_state(std::uintptr_t base) noexcept;
+
+// Whether the replay editor is open: the game's replay session holds its lease on the session
+// manager (Engine/Game/Build/<build>/replay_activity.h), the same check plugin effects stop on
+// (Extension/Rendering/plugin_effects.cpp). Any thread; reads a few pointers, no lock.
+bool replay_editor_open(std::uintptr_t base) noexcept;
 } // namespace dingosdk::multiplayer

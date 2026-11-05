@@ -1,8 +1,10 @@
 #include "mod_list.h"
+#include "resident_assets.h"
 #include "Engine/Game/Build/supported_build.h"
 
 #include "Engine/Core/Json/json.h"
 #include "Engine/Core/Platform/path_text.h"
+#include "Engine/Core/Text/ascii.h"
 
 #ifdef _WIN32
 #include <Windows.h>
@@ -34,12 +36,6 @@ constexpr std::size_t maximum_build_bytes = 16 * 1024;
 constexpr std::size_t maximum_info_bytes = 32 * 1024;
 constexpr std::size_t maximum_levels_bytes = 64 * 1024;
 constexpr std::size_t maximum_plugin_bytes = 64 * 1024;
-
-std::string lower(std::string_view text) {
-    std::string result(text);
-    for (auto& ch : result) if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch + ('a' - 'A'));
-    return result;
-}
 
 std::vector<unsigned char> read_file(const fs::path& path, std::size_t maximum) {
     std::ifstream input(path, std::ios::binary | std::ios::ate);
@@ -153,40 +149,7 @@ void read_resident(Mod& mod, std::vector<std::string>& notes) {
     try {
         const auto root = parse(path, maximum_plugin_bytes);
         if (!root.is_object() || !root.contains("resident")) return;
-        const auto name_of = [](const Json& value) {
-            if (!value.is_string() || value.string().empty() || value.string().size() > 260) throw std::runtime_error("a name is 1 to 260 characters");
-            for (const auto c : value.string())
-                if (static_cast<unsigned char>(c) < 0x20 || static_cast<unsigned char>(c) > 0x7e || c == '\\')
-                    throw std::runtime_error("names are printable ASCII with / between folders");
-            return lower(value.string());
-        };
-        const auto names_of = [&](const Json& list, std::size_t most) {
-            if (!list.is_array() || list.size() > most) throw std::runtime_error("roots is a list of at most " + std::to_string(most) + " names");
-            std::vector<std::string> out;
-            for (const auto& item : list) out.push_back(name_of(item));
-            return out;
-        };
-        const auto& list = root.at("resident");
-        if (!list.is_array() || list.size() > 16) throw std::runtime_error("resident is a list of at most 16 bundles");
-        std::vector<ResidentAssets> result;
-        for (const auto& row : list) {
-            if (!row.is_object() || !row.contains("bundle")) throw std::runtime_error("each resident entry names its bundle");
-            ResidentAssets entry;
-            entry.bundle = name_of(row.at("bundle"));
-            if (row.contains("roots")) entry.roots = names_of(row.at("roots"), 512);
-            if (row.contains("shaders")) {
-                const auto& shaders = row.at("shaders");
-                if (!shaders.is_array() || shaders.size() > 32) throw std::runtime_error("shaders is a list of at most 32 depots");
-                for (const auto& shader : shaders) {
-                    if (!shader.is_object() || !shader.contains("name") || !shader.contains("roots"))
-                        throw std::runtime_error("each shader names its depot and its roots");
-                    entry.shaders.push_back({name_of(shader.at("name")), names_of(shader.at("roots"), 64)});
-                    if (entry.shaders.back().roots.empty()) throw std::runtime_error("a shader needs its roots");
-                }
-            }
-            result.push_back(std::move(entry));
-        }
-        mod.resident = std::move(result);
+        mod.resident = parse_resident_assets(root.at("resident"));
     } catch (const std::exception& failure) {
         notes.push_back("Mod " + mod.name + ": " + plugin_manifest_file + "'s resident list could not be read (" + failure.what() + ")");
     }
@@ -206,7 +169,7 @@ void read_variants(Mod& mod, std::vector<std::string>& notes) {
         const auto text = [](const Json& value, std::size_t most, bool name) {
             if (!value.is_string() || value.string().empty() || value.string().size() > most)
                 throw std::runtime_error("a name is 1 to " + std::to_string(most) + " characters");
-            auto out = lower(value.string());
+            auto out = ascii_lower(value.string());
             for (const auto c : out)
                 if (name ? !((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-')
                          : static_cast<unsigned char>(c) < 0x20 || static_cast<unsigned char>(c) > 0x7e || c == '\\')
@@ -250,7 +213,7 @@ void read_variant_additions(Mod& mod, std::vector<std::string>& notes) {
             if (!values.is_array() || values.size() > 16) throw std::runtime_error("at most 16 exact bundle names per side");
             for (const auto& value : values) {
                 if (!value.is_string() || value.string().size() > 260) throw std::runtime_error("bundle name must be a string of at most 260 characters");
-                auto name = lower(value.string());
+                auto name = ascii_lower(value.string());
                 if (!name.starts_with("win32/") || name.find("..") != std::string::npos ||
                     name.find("//") != std::string::npos || name.back() == '/' ||
                     std::ranges::any_of(name, [](unsigned char c) { return c <= 0x20 || c >= 0x7f || c == '\\' || c == '*' || c == '?'; }))
@@ -298,7 +261,7 @@ void read_studio_marker(Mod& mod) {
                 auto line = text.substr(at, end == std::string_view::npos ? std::string_view::npos : end - at);
                 if (!line.empty() && line.back() == '\r') line.remove_suffix(1);
                 if (line.starts_with("skate_sha256=")) {
-                    auto value = lower(line.substr(13));
+                    auto value = ascii_lower(line.substr(13));
                     const bool hex = value.size() == 64 && std::all_of(value.begin(), value.end(), [](char c) {
                         return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
                     });
@@ -331,13 +294,13 @@ std::vector<std::string> folders_on_disk(const fs::path& root) {
         // top, and a park editor mod its parks folder.
         bool content{};
         for (fs::directory_iterator inner(entry.path(), error), end; !error && inner != end && !content; inner.increment(error))
-            content = inner->is_regular_file(error) || (inner->is_directory(error) && lower(ascii_path(inner->path().filename())) == "parks");
+            content = inner->is_regular_file(error) || (inner->is_directory(error) && ascii_lower(ascii_path(inner->path().filename())) == "parks");
         error.clear();
         if (!content) continue;
         if (valid_mod_name(name)) names.push_back(name);
     }
     std::sort(names.begin(), names.end(), [](const std::string& a, const std::string& b) {
-        return lower(a) < lower(b);
+        return ascii_lower(a) < ascii_lower(b);
     });
     return names;
 }
@@ -363,7 +326,7 @@ std::vector<std::pair<std::string, bool>> read_order(const fs::path& path) {
         if (!name.is_string() || !valid_mod_name(name.string()))
             throw std::runtime_error("mods.json name is not a plain folder name");
         if (!enabled.is_boolean()) throw std::runtime_error("mods.json enabled must be true or false");
-        if (!seen.emplace(lower(name.string())).second)
+        if (!seen.emplace(ascii_lower(name.string())).second)
             throw std::runtime_error("mods.json lists " + name.string() + " twice");
         order.emplace_back(name.string(), enabled.get<bool>());
     }
@@ -413,7 +376,7 @@ std::string mod_fingerprint(const std::filesystem::path& directory) {
             if (ch < 0x80) name.push_back(static_cast<char>(ch));
             else name += '#' + std::to_string(static_cast<unsigned>(ch));
         }
-        files.push_back(lower(name) + '|' +
+        files.push_back(ascii_lower(name) + '|' +
                         std::to_string(size) + '|' + std::to_string(written));
         error.clear();
     }
@@ -554,9 +517,18 @@ std::vector<std::string> mod_contents(const Mod& mod) {
     return parts;
 }
 
+bool plugin_only(const Mod& mod) {
+    return mod.provides_plugin && !mod.provides_layout && !mod.provides_levels && mod.park_maps.empty() && !mod.provides_objects &&
+           !mod.provides_music && !mod.variants.has_value();
+}
+
+bool has_content(const Mod& mod) {
+    return !mod_contents(mod).empty() || mod.variants.has_value();
+}
+
 bool resident_root(const Mod& mod, std::string_view bundle, std::string_view name) noexcept {
     try {
-        const auto b = lower(bundle), n = lower(name);
+        const auto b = ascii_lower(bundle), n = ascii_lower(name);
         for (const auto& entry : mod.resident) {
             if (entry.bundle != b) continue;
             for (const auto& root : entry.roots)
@@ -567,7 +539,7 @@ bool resident_root(const Mod& mod, std::string_view bundle, std::string_view nam
 }
 const ResidentAssets::Shader* resident_shader(const Mod& mod, std::string_view bundle, std::string_view name) noexcept {
     try {
-        const auto b = lower(bundle), n = lower(name);
+        const auto b = ascii_lower(bundle), n = ascii_lower(name);
         for (const auto& entry : mod.resident) {
             if (entry.bundle != b) continue;
             for (const auto& shader : entry.shaders)
@@ -591,7 +563,7 @@ ModList scan_mods(const std::filesystem::path& data_root) noexcept {
 
         const auto names = folders_on_disk(result.root);
         std::map<std::string, std::string, std::less<>> present;
-        for (const auto& name : names) present.emplace(lower(name), name);
+        for (const auto& name : names) present.emplace(ascii_lower(name), name);
 
         std::vector<std::pair<std::string, bool>> order;
         const auto order_path = result.root / order_file;
@@ -606,12 +578,12 @@ ModList scan_mods(const std::filesystem::path& data_root) noexcept {
         // Folders nobody listed still load, after the listed ones, so dropping
         // a mod in works without editing mods.json.
         std::set<std::string, std::less<>> listed;
-        for (const auto& [name, enabled] : order) listed.emplace(lower(name));
+        for (const auto& [name, enabled] : order) listed.emplace(ascii_lower(name));
         for (const auto& name : names)
-            if (!listed.contains(lower(name))) order.emplace_back(name, true);
+            if (!listed.contains(ascii_lower(name))) order.emplace_back(name, true);
 
         for (const auto& [name, enabled] : order) {
-            const auto found = present.find(lower(name));
+            const auto found = present.find(ascii_lower(name));
             if (found == present.end()) {
                 result.missing.push_back(name);
                 continue;
@@ -634,24 +606,13 @@ ModList scan_mods(const std::filesystem::path& data_root) noexcept {
     return result;
 }
 
-bool mod_disabled(const std::filesystem::path& mods_root, std::string_view name) noexcept {
-    try {
-        std::error_code error;
-        const auto path = mods_root / order_file;
-        if (!fs::is_regular_file(path, error)) return false;
-        for (const auto& [listed, enabled] : read_order(path))
-            if (lower(listed) == lower(name)) return !enabled;
-    } catch (...) {}
-    return false;
-}
-
 bool set_mod_enabled(const std::filesystem::path& mods_root, std::string_view name, bool enabled) noexcept {
     try {
         if (!valid_mod_name(name)) return false;
         std::error_code error;
         const auto path = mods_root / order_file;
         auto order = fs::is_regular_file(path, error) ? read_order(path) : std::vector<std::pair<std::string, bool>>{};
-        const auto found = std::ranges::find_if(order, [&](const auto& row) { return lower(row.first) == lower(name); });
+        const auto found = std::ranges::find_if(order, [&](const auto& row) { return ascii_lower(row.first) == ascii_lower(name); });
         if (found != order.end()) found->second = enabled;
         else order.emplace_back(std::string(name), enabled);
         std::vector<ModEntry> entries;

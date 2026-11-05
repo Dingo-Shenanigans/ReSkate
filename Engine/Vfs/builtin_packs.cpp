@@ -2,6 +2,7 @@
 #include "builtin_pack_format.h"
 #include "mod_list.h"
 #include "Engine/Core/Platform/path_text.h"
+#include "Engine/Core/Text/ascii.h"
 #include <Windows.h>
 #include <miniz.h>
 #include <zstd.h>
@@ -27,11 +28,6 @@ struct Embedded {
 constexpr Embedded embedded[]{{L"BUILTIN_PACK_THROWDOWN_MENU", "throwdown_menu"}};
 // Retired mods (builtin_packs.h), in small letters.
 constexpr std::string_view retired[]{"fourth_studio-board_break"};
-std::string lower_text(std::string_view text) {
-    std::string out(text);
-    std::transform(out.begin(), out.end(), out.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return out;
-}
 constexpr std::uint64_t max_pack_bytes = builtin_pack::max_bytes;
 constexpr std::string_view version_file = ".builtin-version";
 
@@ -223,7 +219,7 @@ bool unpack_builtin_pack(std::span<const unsigned char> bytes, const fs::path& t
 
 bool retired_mod(std::string_view folder) noexcept {
     try {
-        return std::find(std::begin(retired), std::end(retired), lower_text(folder)) != std::end(retired);
+        return std::find(std::begin(retired), std::end(retired), ascii_lower(folder)) != std::end(retired);
     } catch (...) {
         return false;
     }

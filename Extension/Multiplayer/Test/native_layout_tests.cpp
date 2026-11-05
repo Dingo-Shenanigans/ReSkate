@@ -3,6 +3,7 @@
 #include "Extension/Multiplayer/Hud/native_indicator_slots.h"
 #include "Extension/Multiplayer/Hud/native_nametag_context.h"
 #include "Extension/Multiplayer/Remote/native_cosmetics_layout.h"
+#include "Extension/Multiplayer/Remote/stand_ins.h"
 #include "Extension/Multiplayer/Remote/native_audio_layout.h"
 #include "Extension/Multiplayer/Remote/native_audio_binding.h"
 #include "Extension/Multiplayer/Net/protocol.h"
@@ -15,6 +16,7 @@
 #include <cstring>
 #include <iostream>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -636,6 +638,185 @@ void cosmetic_layout_regression() {
     check(fake.fit_slots(res, modded, own) == std::pair<std::size_t, std::size_t>{} &&
               modded.items[0] == CosmeticSlot{11, "Own_Shirt", {7}} && !reject(m, modded),
           "An item whose slot takes other parameters here must keep its place");
+    {
+        // A plugin's stand-ins (stand_ins.h): the whole catalog walked, the items that fit the slot
+        // tried in the policy's order, a blocked (paid) item never taken.
+        auto cat = m;
+        constexpr std::uintptr_t node2 = 0x220000, asset2 = 0x230000, name2 = 0x240000, node3 = 0x250000,
+                                 asset3 = 0x260000, name3 = 0x270000, categories3 = 0x280000, category3 = 0x290000;
+        const auto add = [&](std::uintptr_t n, std::uintptr_t a, std::uintptr_t t, std::uintptr_t cats, std::uintptr_t next,
+                             const std::string &key) {
+            cat.put(n, cosmetic_asset_hash(key));
+            cat.put(n + 8, a | 4);
+            cat.put(n + 0x10, next);
+            cat.put(a + 0x38, t);
+            cat.put(a + 0x48, cosmetic_asset_hash(key));
+            cat.put(a + 0x20, cats);
+            for (std::size_t i = 0; i <= key.size(); ++i) cat.put(t + i, key.c_str()[i]);
+        };
+        cat.put(manager + 0x3c, std::uint32_t{3});
+        cat.put(node + 0x10, node2);
+        add(node2, asset2, name2, categories, node3, "Own_Hoodie"); // the shirt's category (77)
+        cat.put(categories3 - 4, std::uint32_t{1});
+        cat.put(categories3, category3 | 4);
+        cat.put(category3 + 0x38, std::uint32_t{78});
+        add(node3, asset3, name3, categories3, 0, "Own_Cap"); // another category
+        const CosmeticMemory memory{std::cref(cat), fixture_base};
+        const auto catalog = memory.catalog();
+        check(catalog.size() == 3 && catalog[1].name == "Own_Hoodie" && catalog[2].categories == std::vector<std::uint32_t>{78},
+              "The catalog walk must find every installed item and its categories");
+        check(memory.slot_category(res, 0) == 77, "A slot's category must be read");
+        std::vector<std::string> fits;
+        for (const auto &item : catalog)
+            if (std::find(item.categories.begin(), item.categories.end(), 77U) != item.categories.end()) fits.push_back(item.name);
+        check(fits == std::vector<std::string>{"Own_Shirt", "Own_Hoodie"}, "Only the slot's items are candidates");
+        const auto dress = [&](const stand_ins::Policy &policy, std::uint64_t outfit, auto blocked) {
+            auto r = wrong; // wears "Unknown", which is not installed
+            memory.substitute_missing_each(
+                res, r,
+                [&](std::size_t, const CosmeticSlot &missing) {
+                    auto c = stand_ins::order(policy, fits, outfit, missing.slot, missing.asset);
+                    c.push_back("Own_Shirt"); // the game's default after them
+                    return c;
+                },
+                blocked);
+            check(!reject(cat, r), "A stand-in must pass native validation");
+            return r.items[0].asset;
+        };
+        const auto nothing_blocked = [](const std::string &) { return false; };
+        stand_ins::Policy first;
+        check(dress(first, 1, nothing_blocked) == "Own_Shirt", "\"first\" takes the first that fits");
+        stand_ins::Policy random;
+        random.pick = stand_ins::Pick::random;
+        std::set<std::string> seen;
+        for (std::uint32_t seed = 0; seed < 64; ++seed) {
+            random.seed = seed;
+            const auto picked = dress(random, 42, nothing_blocked);
+            check(picked == dress(random, 42, nothing_blocked), "One outfit must get the same stand-in every time");
+            seen.insert(picked);
+        }
+        check(seen == std::set<std::string>{"Own_Shirt", "Own_Hoodie"}, "\"random\" must pick among every item that fits");
+        const auto paid = [](const std::string &asset) { return asset == "Own_Hoodie"; };
+        for (std::uint32_t seed = 0; seed < 64; ++seed) {
+            random.seed = seed;
+            check(dress(random, 42, paid) == "Own_Shirt", "A paid store item must never stand in");
+        }
+        std::vector<std::string> many;
+        for (int i = 0; i < 50; ++i) many.push_back("Item" + std::to_string(i));
+        auto shuffled = stand_ins::order(random, many, 7, 11, "Unknown");
+        check(shuffled != many, "\"random\" must change the order");
+        std::sort(shuffled.begin(), shuffled.end());
+        auto sorted = many;
+        std::sort(sorted.begin(), sorted.end());
+        check(shuffled == sorted, "\"random\" must keep every candidate once");
+        check(stand_ins::order(first, many, 7, 11, "Unknown") == many, "\"first\" must keep the order given");
+        // Excluded items: names with "*" for any run of characters, any case, taken out after the shuffle.
+        stand_ins::Policy blocked;
+        blocked.exclude = {"own_hoodie", "item1*"}; // set() keeps them lower case
+        check(stand_ins::excluded(blocked, "Own_Hoodie") && stand_ins::excluded(blocked, "ITEM12") &&
+                  !stand_ins::excluded(blocked, "Own_Shirt") && !stand_ins::excluded(blocked, "Item2") && !stand_ins::excluded(blocked, ""),
+              "An exclude list matches whole names and starts, in any case");
+        const auto star = [](std::string_view n, std::string_view r) { return stand_ins::fits(n, r); };
+        check(star("own_costume_gen_ghostskater_00001", "*costume_gen_ghostskater_00001") &&
+                  star("costume_gen_ghostskater_00001", "*costume_gen_ghostskater_00001") &&
+                  star("own_costume_gen_ghostskater_00001", "*ghostskater*") && star("abcabd", "*abd") &&
+                  star("own_hat", "own*hat") && star("own_hat", "own_hat*") && star("x", "*") &&
+                  !star("own_costume_gen_ghostskater_00002", "*ghostskater_00001") && !star("own_hat", "own*cap") &&
+                  !star("own_hat_", "own_hat") && !star("hat", "*hat*x"),
+              "A star stands for any run of characters, anywhere in a rule");
+        // The matcher agrees with a plain one on every short name and rule of a small alphabet, and
+        // rules made to be slow against long names still give the right answer.
+        const auto plain = [](std::string_view n, std::string_view r) {
+            std::vector<std::vector<bool>> can(n.size() + 1, std::vector<bool>(r.size() + 1));
+            can[0][0] = true;
+            for (std::size_t j = 1; j <= r.size(); ++j) can[0][j] = r[j - 1] == '*' && can[0][j - 1];
+            for (std::size_t i = 1; i <= n.size(); ++i)
+                for (std::size_t j = 1; j <= r.size(); ++j)
+                    can[i][j] = r[j - 1] == '*' ? can[i - 1][j] || can[i][j - 1] : r[j - 1] == n[i - 1] && can[i - 1][j - 1];
+            return static_cast<bool>(can[n.size()][r.size()]);
+        };
+        const auto words = [](std::string_view letters, std::size_t longest) {
+            std::vector<std::string> out{""};
+            for (std::size_t from = 0; from < out.size(); ++from)
+                if (out[from].size() < longest)
+                    for (const auto c : letters) out.push_back(out[from] + c);
+            return out;
+        };
+        const auto names = words("ab", 7), rules = words("ab*", 5);
+        std::size_t disagree = 0;
+        for (const auto &n : names)
+            for (const auto &r : rules) disagree += star(n, r) != plain(n, r);
+        check(disagree == 0, "The star matcher must agree with a plain one");
+        const std::string long_name(255, 'a');
+        std::string many_stars;
+        for (int i = 0; i < 127; ++i) many_stars += "*a";
+        check(!star(long_name, "*" + std::string(253, 'a') + "b") && star(long_name, "*" + std::string(254, 'a')) &&
+                  star(long_name, many_stars + "*") && !star(long_name, many_stars + "*b") &&
+                  star(std::string(254, 'a'), "a*" + std::string(253, 'a')) &&
+                  !star(std::string(253, 'a'), "a*" + std::string(253, 'a')),
+              "Long names and rules made to be slow must still match right");
+        blocked.pick = stand_ins::Pick::random;
+        for (std::uint32_t seed = 0; seed < 64; ++seed) {
+            blocked.seed = random.seed = seed;
+            auto full = stand_ins::order(random, many, 7, 11, "Unknown");
+            auto kept = stand_ins::order(blocked, many, 7, 11, "Unknown");
+            std::erase_if(full, [&](const std::string &c) { return stand_ins::excluded(blocked, c); });
+            std::erase_if(kept, [&](const std::string &c) { return stand_ins::excluded(blocked, c); });
+            check(full == kept && full.size() == 39, "Blocking items must not move the others' order");
+            // The engine thread orders positions in its lists, not the names: the same order.
+            std::vector<std::uint32_t> positions;
+            for (std::uint32_t i = 0; i < many.size(); ++i) positions.push_back(i);
+            const auto ordered = stand_ins::order(random, positions, 7, 11, "Unknown");
+            const auto shuffled_names = stand_ins::order(random, many, 7, 11, "Unknown");
+            bool same = ordered.size() == many.size();
+            for (std::size_t i = 0; same && i < ordered.size(); ++i) same = shuffled_names[i] == many[ordered[i]];
+            check(same, "Positions and names must be ordered alike");
+        }
+        // The store: one owner at a time, the exclude list kept lower case, cleared only by its owner.
+        stand_ins::Policy mine;
+        mine.owner = "mine";
+        const auto before = stand_ins::generation();
+        check(stand_ins::set(mine).empty() && stand_ins::generation() > before, "A policy is set and counted");
+        stand_ins::Policy theirs;
+        theirs.owner = "theirs";
+        check(!stand_ins::set(theirs).empty(), "Another plugin's is refused while one holds it");
+        mine.exclude = {"OWN_HOODIE"};
+        check(stand_ins::set(mine).empty() && stand_ins::current()->exclude_names.contains("own_hoodie") &&
+                  stand_ins::current()->exclude.empty(),
+              "The exclude list is kept lower case");
+        mine.items = {"Own_Hoodie", "Own_Shirt", "OWN_HOODIE_2"};
+        mine.exclude = {"Own_Hoodie*"};
+        check(stand_ins::set(mine).empty() && stand_ins::current()->kept == std::vector<bool>{false, true, false},
+              "set() works out which items the exclude list leaves");
+        mine.exclude.assign(stand_ins::max_exclude + 1, "own_hat*");
+        check(stand_ins::set(mine).empty() && stand_ins::current()->exclude.size() == stand_ins::max_exclude,
+              "No more exclude rules with a star are kept than the limit");
+        // Plain names: many more, looked up in a set, and matched in any case.
+        mine.items.clear();
+        mine.exclude.clear();
+        for (std::size_t i = 0; i < 500; ++i) mine.exclude.push_back("Own_Item_" + std::to_string(i));
+        mine.exclude.push_back("Own_Cap*");
+        check(stand_ins::set(mine).empty() && stand_ins::current()->exclude_names.size() == 500 &&
+                  stand_ins::current()->exclude == std::vector<std::string>{"own_cap*"},
+              "Plain names go to the set, rules with a star to the list");
+        const auto named = stand_ins::current();
+        check(stand_ins::excluded(*named, "OWN_ITEM_499") && stand_ins::excluded(*named, "own_item_0") &&
+                  stand_ins::excluded(*named, "Own_Cap_Red") && !stand_ins::excluded(*named, "Own_Item_500") &&
+                  !stand_ins::excluded(*named, "Own_Item_49x"),
+              "A plain name leaves out that item only, in any case, beside the star rules");
+        mine.exclude.assign(stand_ins::max_exclude_names + 10, "");
+        for (std::size_t i = 0; i < mine.exclude.size(); ++i) mine.exclude[i] = "n" + std::to_string(i);
+        check(stand_ins::set(mine).empty() && stand_ins::current()->exclude_names.size() == stand_ins::max_exclude_names,
+              "No more plain names are kept than their limit");
+        stand_ins::clear("theirs");
+        check(stand_ins::current() != nullptr, "Only the owner clears it");
+        stand_ins::clear("mine");
+        check(!stand_ins::current(), "Cleared, the defaults are back");
+        stand_ins::Policy board_only;
+        board_only.parts = stand_ins::Parts::board;
+        check(!stand_ins::covers(board_only, false) && stand_ins::covers(board_only, true) && stand_ins::covers(first, false),
+              "A policy covers the parts it names");
+    }
     auto bad = m;
     bad.put(categories, category + 0x100);
     bad.put(category + 0x138, std::uint32_t{88});

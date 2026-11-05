@@ -2,6 +2,7 @@
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/user_data_paths.h"
 #include "Engine/Vfs/https_download.h"
+#include "Engine/Core/Platform/clock.h"
 
 #include <algorithm>
 #include <array>
@@ -48,9 +49,6 @@ Cache& cache() {
     static auto* value = new Cache;
     return *value;
 }
-double seconds_now() {
-    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-}
 // The launcher's folder (gui_mods_browse.cpp icon_cache), also under a separate user-data root.
 // Empty when that cannot be used: the workers run outside any try.
 fs::path icon_folder() {
@@ -88,7 +86,7 @@ void decode_loop() {
             // Asked for long enough ago that it went out of view again: let it wait for the next ask.
             const auto found = c.entries.find(url);
             if (found == c.entries.end()) continue;
-            if (seconds_now() - found->second.drawn > idle_seconds) {
+            if (steady_seconds() - found->second.drawn > idle_seconds) {
                 c.entries.erase(found);
                 continue;
             }
@@ -120,7 +118,7 @@ void decode_loop() {
         std::lock_guard lock(c.mutex);
         const auto found = c.entries.find(url);
         if (found == c.entries.end()) continue;
-        if (!ok) found->second.stage = Entry::Stage::failed, found->second.failed = seconds_now();
+        if (!ok) found->second.stage = Entry::Stage::failed, found->second.failed = steady_seconds();
         else {
             found->second.pixels = std::move(pixels);
             found->second.stage = Entry::Stage::decoded;
@@ -133,7 +131,7 @@ ImTextureID store_icon(const std::string& url) {
     if (url.empty()) return {};
     auto& c = cache();
     std::lock_guard lock(c.mutex);
-    const double now = seconds_now();
+    const double now = steady_seconds();
     auto found = c.entries.find(url);
     if (found == c.entries.end()) {
         if (c.entries.size() >= most_icons) {
@@ -182,7 +180,7 @@ std::optional<StoreIconUpload> take_store_icon() {
     if (slot < 0) {
         // Every slot is in use: the icon drawn longest ago gives it up, if it is idle. Its pixels
         // are gone, so drawn again it is read again.
-        const double now = seconds_now();
+        const double now = steady_seconds();
         auto oldest = c.entries.end();
         for (auto it = c.entries.begin(); it != c.entries.end(); ++it)
             if (it->second.slot >= 0 && now - it->second.drawn >= idle_seconds &&

@@ -3,6 +3,8 @@
 #include "input_capture.h"
 #include "held_input.h"
 #include "scripted_pad.h"
+#include "Engine/Game/Input/pad_output.h"
+#include "Extension/UI/NativeMenu/throwdown_menu.h"
 #include "Extension/Throwdowns/throwdown_kit.h"
 #include "Engine/Game/Input/playstation_report.h"
 #include "Engine/Game/Input/owned_menu_input.h"
@@ -117,20 +119,6 @@ std::atomic<dingosdk::overlay::GamepadFilter>& gamepad_filter() {
     static std::atomic<dingosdk::overlay::GamepadFilter> value{};
     return value;
 }
-// Full Bluetooth reports have a CRC over the 0xA1 input prefix and payload.
-// A stale checksum makes the native reader discard a changed report.
-void refresh_bluetooth_crc(std::uint8_t* bytes, DWORD size) noexcept {
-    if (size != 78 || (bytes[0] != 0x31 && bytes[0] != 0x11)) return;
-    std::uint32_t crc = 0xffffffffu;
-    const auto feed = [&](std::uint8_t byte) {
-        crc ^= byte;
-        for (unsigned bit = 0; bit < 8; ++bit) crc = (crc >> 1) ^ (0xedb88320u & (0u - (crc & 1u)));
-    };
-    feed(0xa1);
-    for (DWORD i = 0; i < size - 4; ++i) feed(bytes[i]);
-    crc = ~crc;
-    std::memcpy(bytes + size - 4, &crc, sizeof(crc));
-}
 void neutral_hid(const InputCaptureHooks::HidRead& read, DWORD size) {
     const bool capture=block_polled_input();
     const bool menu=suppress_challenge_menu();
@@ -161,7 +149,7 @@ void neutral_hid(const InputCaptureHooks::HidRead& read, DWORD size) {
         data[4] = 8; data[5] = 0; data[6] &= 0xfc; // retain DS4 sequence bits
         data[7] = data[8] = 0;
     }
-    refresh_bluetooth_crc(bytes, size);
+    refresh_playstation_bluetooth_crc(bytes, size);
     static std::atomic<bool> reported{};
     if (capture && !reported.exchange(true)) logging::printf(logging::Level::info, logging::Channel::input,
         "Native PlayStation HID report neutralized; overlay retains its independent input stream. (%s over %s, report 0x%02x of %lu bytes, "
@@ -182,26 +170,32 @@ void hide_hid_dpad(const InputCaptureHooks::HidRead& read, DWORD size) {
     const auto before = hat;
     dark_pop_hide_hat(hat);
     if (hat == before) return;
-    if (size == 78 && (bytes[0] == 0x31 || bytes[0] == 0x11)) {
-        std::uint32_t crc = 0xffffffffu;
-        const auto feed = [&](std::uint8_t byte) {
-            crc ^= byte;
-            for (unsigned bit = 0; bit < 8; ++bit) crc = (crc >> 1) ^ (0xedb88320u & (0u - (crc & 1u)));
-        };
-        feed(0xa1);
-        for (DWORD i = 0; i < size - 4; ++i) feed(bytes[i]);
-        crc = ~crc;
-        std::memcpy(bytes + size - 4, &crc, sizeof(crc));
-    }
+    refresh_playstation_bluetooth_crc(bytes, size);
 }
 // The gamepad filter (DingoSDKOverlaySetGamepadFilter) on the game's own native PlayStation
 // reads, as filter_pad applies it to XInput: a DualShock 4 or DualSense read without Steam Input
 // never goes through XInput. The report is parsed into XInput's layout, filtered, and what the
 // filter changed (triggers, left stick X) is written back in the report's own layout.
 inline constexpr unsigned hid_filter_slot = 3; // the filter's pad slot for native PlayStation pads
+// Input replacements have lower priority than every menu/camera capture. A menu observation
+// discards the lease, so returning to play always needs a fresh publication from the plugin.
+bool output_allowed() noexcept {
+    DWORD process{};
+    const auto window = GetForegroundWindow();
+    return window && GetWindowThreadProcessId(window, &process) && process == GetCurrentProcessId() &&
+        !block_polled_input() && !owns_menu_cursor(state()) && multiplayer::native_throwdown_gameplay_input_allowed();
+}
+void replace_pad(unsigned controller, dingosdk::overlay::GamepadValues& pad) noexcept {
+    if (overlay_input_access) return;
+    const auto saved_error = GetLastError();
+    const auto output = input::pad_outputs().read(controller, GetTickCount64(), output_allowed());
+    SetLastError(saved_error);
+    if (output) pad = {output->buttons, output->left_trigger, output->right_trigger,
+        output->left_x, output->left_y, output->right_x, output->right_y};
+}
 void filter_hid(const InputCaptureHooks::HidRead& read, DWORD size) noexcept {
     const auto filter = gamepad_filter().load(std::memory_order_acquire);
-    if (!filter || !read.buffer || !size || size > read.capacity) return;
+    if (overlay_input_access || !read.buffer || !size || size > read.capacity) return;
     auto* bytes = static_cast<std::uint8_t*>(read.buffer);
     const bool bluetooth = playstation_bluetooth(size);
     const auto parsed = parse_playstation_report(read.kind, bluetooth, bytes, size);
@@ -209,39 +203,28 @@ void filter_hid(const InputCaptureHooks::HidRead& read, DWORD size) noexcept {
     const dingosdk::overlay::GamepadValues before{parsed->buttons, parsed->left_trigger, parsed->right_trigger,
         parsed->left_x, parsed->left_y, parsed->right_x, parsed->right_y};
     auto pad = before;
-    filter(hid_filter_slot, pad);
-    if (pad.left_trigger == before.left_trigger && pad.right_trigger == before.right_trigger && pad.left_x == before.left_x) return;
-    // Where parse_playstation_report found them: sticks (left X first), the shoulder byte (L2 0x04,
-    // R2 0x08 digital bits) and the two analog triggers.
-    std::uint8_t *sticks{}, *shoulder{}, *left{}, *right{};
-    const auto id = bytes[0];
-    if (read.kind == PlayStationPad::dualsense && ((id == 0x01 && !bluetooth) || id == 0x31)) {
-        auto* data = bytes + (id == 0x31 ? 2 : 1);
-        sticks = data; left = data + 4; right = data + 5; shoulder = data + 8;
-    } else if (id == 0x01) {
-        sticks = bytes + 1; shoulder = bytes + 6; left = bytes + 8; right = bytes + 9;
-    } else if (read.kind == PlayStationPad::dualshock4 && id == 0x11) {
-        sticks = bytes + 3; shoulder = bytes + 8; left = bytes + 10; right = bytes + 11;
-    } else {
-        return;
-    }
-    if (pad.left_trigger != before.left_trigger) {
-        *left = pad.left_trigger;
-        if (!pad.left_trigger) *shoulder = static_cast<std::uint8_t>(*shoulder & ~0x04u);
-    }
-    if (pad.right_trigger != before.right_trigger) {
-        *right = pad.right_trigger;
-        if (!pad.right_trigger) *shoulder = static_cast<std::uint8_t>(*shoulder & ~0x08u);
-    }
-    if (pad.left_x != before.left_x)
-        sticks[0] = static_cast<std::uint8_t>(std::clamp(static_cast<int>(pad.left_x) / 258 + 128, 0, 255));
-    refresh_bluetooth_crc(bytes, size);
+    replace_pad(input::PadOutputs::playstation, pad);
+    if (filter) filter(hid_filter_slot, pad);
+    const PlayStationGamepad replacement{pad.buttons, pad.left_trigger, pad.right_trigger, pad.left_x, pad.left_y, pad.right_x, pad.right_y};
+    if (replace_playstation_report(read.kind, bluetooth, bytes, size, replacement)) refresh_playstation_bluetooth_crc(bytes, size);
 }
 // A finished native PlayStation read of the game's: neutral while a menu holds the input, else
 // through the gamepad filter.
 void handle_hid(const InputCaptureHooks::HidRead& read, DWORD size) noexcept {
-    if (block_polled_input()) neutral_hid(read, size);
-    else filter_hid(read, size);
+    if (block_polled_input()) { (void)input::pad_outputs().read(4, GetTickCount64(), false); neutral_hid(read, size); }
+    else {
+        filter_hid(read, size);
+        int stick{};
+        SHORT value{};
+        if (!overlay_input_access && read.buffer && size <= read.capacity && held_stick(stick, value)) {
+            auto* bytes = static_cast<std::uint8_t*>(read.buffer);
+            if (set_playstation_stick(read.kind, playstation_bluetooth(size), bytes, size, stick, value)) {
+                static std::atomic<bool> reported{};
+                if (!reported.exchange(true)) logging::write(logging::Level::info, logging::Channel::input,
+                    "Menu preview stick hold reached a native PlayStation HID read.");
+            }
+        }
+    }
 }
 void complete_hid(OVERLAPPED* request, DWORD bytes, bool success, bool finished) {
     auto& h = input_hooks();
@@ -261,13 +244,15 @@ BOOL WINAPI captured_read_file(HANDLE file, LPVOID buffer, DWORD size, LPDWORD b
     InputCaptureHooks::HidRead read{file, buffer, size, PlayStationPad::none};
     if (!overlay_input_access) {
         // Some readers inspect a temporary enumeration handle, then open a
-        // second handle for reports. Identify that handle as well.
+        // second handle for reports. Identify that handle as well, by a read
+        // the size of a Sony pad's reports: up to a DualShock 4's over
+        // Bluetooth, which Windows pads to 547 bytes.
         bool known{};
         {
             std::lock_guard lock(h.hid_mutex);
             known = h.hid_devices.contains(file);
         }
-        if (!known && size >= 10 && size <= 512) {
+        if (!known && size >= 10 && size <= dualshock4_bluetooth_read_length) {
             const auto error = GetLastError();
             HIDD_ATTRIBUTES attributes{sizeof(attributes)};
             const auto okay = original<decltype(&HidD_GetAttributes)>(h.hid_attributes)(file, &attributes);
@@ -396,10 +381,10 @@ std::string xinput_entry_owners() {
 void filter_pad(bool outer, DWORD user, XINPUT_STATE* output) noexcept {
     if (!outer || !output) return;
     const auto filter = gamepad_filter().load(std::memory_order_acquire);
-    if (!filter) return;
     auto& g = output->Gamepad;
     dingosdk::overlay::GamepadValues pad{g.wButtons, g.bLeftTrigger, g.bRightTrigger, g.sThumbLX, g.sThumbLY, g.sThumbRX, g.sThumbRY};
-    filter(static_cast<unsigned>(user), pad);
+    replace_pad(static_cast<unsigned>(user), pad);
+    if (filter) filter(static_cast<unsigned>(user), pad);
     g.wButtons = pad.buttons;
     g.bLeftTrigger = pad.left_trigger;
     g.bRightTrigger = pad.right_trigger;
@@ -407,6 +392,10 @@ void filter_pad(bool outer, DWORD user, XINPUT_STATE* output) noexcept {
     g.sThumbLY = pad.left_y;
     g.sThumbRX = pad.right_x;
     g.sThumbRY = pad.right_y;
+    // Synthetic changes must be noticed even when the physical packet stays unchanged.
+    // Keep physical packet numbers when no replacement is active.
+    if (input::pad_outputs().read(static_cast<unsigned>(user), GetTickCount64(), true))
+        output->dwPacketNumber = static_cast<DWORD>(GetTickCount64());
 }
 // Another program's hook on XInput that was put in front of the capture's own after it was
 // installed (Steam's overlay does, for Steam Input, and answers the game with its own pad
@@ -430,6 +419,7 @@ DWORD WINAPI captured_front(DWORD user, XINPUT_STATE* output) {
     // Only the game gets a scripted pad (the character room's walk): ReSkate's own reads get the real one.
     if (outer && output && scripted_pad(user, *output)) return ERROR_SUCCESS;
     if (result == ERROR_SUCCESS && output && capture) {
+        (void)input::pad_outputs().read(0, GetTickCount64(), false);
         output->Gamepad = {};
         output->dwPacketNumber ^= 0x80000000u;
     } else if (result == ERROR_SUCCESS && output) {
@@ -898,6 +888,7 @@ DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
     // Only the game gets a scripted pad (the character room's walk): ReSkate's own reads get the real one.
     if (game_poll && output && scripted_pad(user, *output)) return ERROR_SUCCESS;
     if (result == ERROR_SUCCESS && output && capture) {
+        (void)input::pad_outputs().read(0, GetTickCount64(), false);
         output->Gamepad = {};
         // The game must notice a neutral state even if the physical packet did
         // not change between opening the menu and its next controller poll.

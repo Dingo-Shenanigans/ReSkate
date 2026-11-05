@@ -39,9 +39,10 @@ struct Switch {
     std::size_t size;
     Value down;
 };
-constexpr std::array<Switch, 2> score_switches{{
+constexpr std::array<Switch, 3> score_switches{{
     {corner::hud_widget_active, 1, 0},
     {corner::extra_info_style, 4, static_cast<std::uint32_t>(corner::extra_info_none)},
+    {corner::sequence_state, 4, static_cast<std::uint32_t>(corner::sequence_down)},
 }};
 
 // A score HUD field as the model write hook sees it, on whichever thread the game writes from.
@@ -62,12 +63,17 @@ Hook& hook() {
     return *value;
 }
 
+// Set while hold_score publishes: the publish goes through the model write hook too, which would
+// otherwise keep our own value as what the game meant. ExtraInfoStyle is rarely written again, so
+// the LINE label then stayed hidden after the corner was given back (#318).
+thread_local bool publishing{};
+
 // The game's write of a taken field writes ours instead and keeps the game's.
 std::uint64_t model_write(Address manager, std::uint64_t handle, Address type, const void* value, std::uint8_t flag) {
     auto& h = hook();
     // SmokeyDawg58's trick feed reads the score HUD's trick list off the same writes.
-    if (handle && value && tricks::feed::wanted()) tricks::feed::tap(handle, type, value);
-    if (handle && value) {
+    if (handle && value && tricks::feed::wanted()) tricks::feed::tap(manager, handle, type, value, flag);
+    if (handle && value && !publishing) {
         for (std::size_t index = 0; index < score_switches.size(); ++index) {
             auto& field = h.fields[index];
             if (!field.taken.load(std::memory_order_acquire) || handle != field.handle.load(std::memory_order_acquire)) continue;
@@ -194,6 +200,7 @@ bool find_stack(Corner& c, const menu_data::Context& context) {
 // Puts our item into the d-pad's stack, or takes it out; the game's items stay as they are. Our
 // item: empty content, our key, the stack's transition as a push gives it.
 void hide_dpad(Corner& c, const menu_data::Context& context, bool hidden) {
+    if (c.cover.handle && context.type_of(c.cover.handle) != c.cover.type) c.cover = {}; // a level load took it with the HUD's models
     const auto field = items_of(context, c.stack);
     unsigned count{}, stride{};
     auto items = context.array(field, 16, count, stride);
@@ -250,6 +257,7 @@ bool find_score(Corner& c, const menu_data::Context& context) {
 
 // Holds the score HUD down (each switch taken at its value that does), or gives it back.
 void hold_score(Corner& c, const menu_data::Context& context, bool held) {
+    struct Publishing { Publishing() { publishing = true; } ~Publishing() { publishing = false; } } ours; // a publish may throw
     for (std::size_t index = 0; index < score_switches.size(); ++index) {
         const auto& sw = score_switches[index];
         auto& field = hook().fields[index];

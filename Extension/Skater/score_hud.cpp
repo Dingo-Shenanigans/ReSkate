@@ -28,8 +28,8 @@ struct Watched {
     const char* name;
     std::uint32_t hash;
 };
-enum : std::size_t { line_score, is_slam, multiplier, action_active, sequence_header, sequence_descriptor, sequence_state };
-constexpr std::array<Watched, 7> watched{{
+enum : std::size_t { line_score, is_slam, multiplier, action_active, sequence_header, sequence_descriptor, sequence_state, line_timer };
+constexpr std::array<Watched, 8> watched{{
     {"LineScore", 1086322279u},
     {"IsSlam", 2943226809u},
     {"Multiplier", 1782700230u},
@@ -38,6 +38,7 @@ constexpr std::array<Watched, 7> watched{{
     {"SequenceHeader", 3018447676u},
     {"SequenceDescriptor", 3894822438u},
     {"SequenceState", 2134799591u},
+    {"LineTimer", 3181226295u}, // 0xbd9da937, found by a ui dump mid-line
 }};
 constexpr std::size_t value_bytes = 16; // read per field
 
@@ -58,13 +59,16 @@ struct Hud {
 Hud hud; // client thread
 
 // A score field's value: the game's widget logic keeps scores as floats (kind 19, as LineTimer
-// and Multiplier); an integer reading is taken if the float one is not sensible.
+// and Multiplier). A field known to be one is read as one, so a timer counting down through tiny
+// values does not read as the integer of its bits; for another kind, an integer reading is taken
+// if the float one is not sensible.
 float score_of(const Bound& field) {
     if (!field.present || !field.read || field.size != 4) return 0;
     float f{};
     std::int32_t i{};
     std::memcpy(&f, field.now.data(), 4);
     std::memcpy(&i, field.now.data(), 4);
+    if (field.kind == 19) return std::isfinite(f) ? f : 0;
     if (std::isfinite(f) && (f == 0 || (std::abs(f) > 1e-3f && std::abs(f) < 1e9f))) return f;
     return static_cast<float>(i);
 }
@@ -170,7 +174,7 @@ std::optional<ScoreHud> read_score_hud(std::uintptr_t image_base) noexcept {
     if (!ok) return std::nullopt;
     const auto& f = h.fields;
     ScoreHud result{flag_of(f[action_active]), flag_of(f[is_slam]), score_of(f[line_score]), score_of(f[multiplier]),
-                    text_of(f[sequence_header]), text_of(f[sequence_descriptor]), enum_of(f[sequence_state])};
+                    text_of(f[sequence_header]), text_of(f[sequence_descriptor]), enum_of(f[sequence_state]), score_of(f[line_timer])};
     trace_sequence(result);
     return result;
 }

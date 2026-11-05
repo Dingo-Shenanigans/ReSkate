@@ -62,6 +62,7 @@ struct Protection {
     std::uintptr_t base{};
     bool mount_test{}; // the selector's mount request test is the known one
     BoardLock board;
+    bool board_rearm{}; // protected by lock; pending arrival-preference restoration
     RecordCause cause_original{};
     ChooseState choose_original{};
     SkeletonResponse skeleton_original{};
@@ -70,7 +71,6 @@ struct Protection {
     std::atomic<bool> ready{};
     SRWLOCK lock = SRWLOCK_INIT;
     Lease lease;
-    std::atomic<NoBailStepObserver> step_observer{};
     std::array<std::atomic<NoBailStepObserver>, no_bail_step_listener_slots> listeners{};
 };
 Protection& protection() { static auto* value = new Protection; return *value; }
@@ -2050,9 +2050,8 @@ void skeleton_response(std::uintptr_t rig, float seconds, bool wipeout) {
     // The state post-update can raise another request after the selector ran.
     // Filter at this consumer, then let native constraints and recovery run.
     if (filter_requests(rig, &Owner::rig)) wipeout = false;
-    const auto observer = protection().step_observer.load(std::memory_order_acquire);
     std::array<NoBailStepObserver, no_bail_step_listener_slots> listeners{};
-    bool any = observer != nullptr;
+    bool any = false;
     for (std::size_t i = 0; i < listeners.size(); ++i) {
         listeners[i] = protection().listeners[i].load(std::memory_order_acquire);
         any = any || listeners[i];
@@ -2061,7 +2060,6 @@ void skeleton_response(std::uintptr_t rig, float seconds, bool wipeout) {
         LastError error;
         NoBailSkater skater;
         if (published_skater(rig, skater)) {
-            if (observer) observer(skater, seconds, wipeout);
             for (const auto listener : listeners)
                 if (listener) listener(skater, seconds, wipeout);
         }
@@ -2223,48 +2221,76 @@ bool update_no_bail(std::uintptr_t client, std::uintptr_t entity, bool manual,
     ReleaseSRWLockExclusive(&p.lock);
     return available;
 }
-bool set_teleport_on_board(std::uintptr_t component) noexcept {
+bool set_teleport_equipment(std::uintptr_t component, bool on_board) noexcept {
     __try {
-        *reinterpret_cast<volatile std::uint8_t*>(component + 0xc0) = 1;
+        *reinterpret_cast<volatile std::uint8_t*>(component + addr::no_bail::teleport_on_board_option) = on_board ? 1 : 0;
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+bool set_teleport_on_board(std::uintptr_t component) noexcept {
+    return set_teleport_equipment(component, true);
 }
 bool prepare_on_board_teleport(std::uintptr_t client, std::uintptr_t entity) noexcept {
     LastError error;
     Owner owner;
     if(!protection().ready.load(std::memory_order_acquire) || !resolve(client,entity,owner))return false;
     std::uint8_t board{};
-    if(!read(owner.component+0xc0,board))return false;
+    if(!read(owner.component+addr::no_bail::teleport_on_board_option,board))return false;
     if(board==1)return true;
     if(!set_teleport_on_board(owner.component))return false;
     logging::write(logging::Level::info,logging::Channel::skater,"Match countdown: native on-board spawn option prepared.");
     return true;
 }
+bool prepare_teleport_equipment(const NoBailSkater& expected, bool on_board) noexcept {
+    LastError error;
+    auto& p = protection();
+    if (!p.ready.load(std::memory_order_acquire) || !TryAcquireSRWLockShared(&p.lock)) return false;
+    struct Unlock { SRWLOCK& lock; ~Unlock() { ReleaseSRWLockShared(&lock); } } unlock{p.lock};
+    const auto published = p.lease.owner;
+    Owner opening, closing;
+    if (!p.ready.load(std::memory_order_acquire) || expected.base != p.base ||
+        !resolve(published.client, published.entity, opening) || opening != published ||
+        opening.entity != expected.entity || opening.core != expected.core ||
+        opening.context != expected.context || opening.rig != expected.rig) return false;
+    const auto now = GetTickCount64();
+    // Retain this baseline's independent protection and board-lock precedence.
+    if (p.lease.active(now) || dark_pop_protecting(now) || p.board_rearm ||
+        (p.board.owner == opening && now < p.board.until) ||
+        !resolve(published.client, published.entity, closing) || closing != opening) return false;
+    std::uint8_t board{};
+    if (!read(opening.component + addr::no_bail::teleport_on_board_option, board) || board > 1) return false;
+    const std::uint8_t wanted = on_board ? 1 : 0;
+    if (board != wanted && !set_teleport_equipment(opening.component, on_board)) return false;
+    return resolve(published.client, published.entity, closing) && closing == opening;
+}
 void update_board_lock(std::uintptr_t client, std::uintptr_t entity, bool locked) noexcept {
     LastError error;
     auto& p = protection();
     if (!p.ready.load(std::memory_order_acquire)) return;
-    static bool rearm{}; // client tick only
     if (locked) {
         // The owner does not resolve while a teleport is under way: the last one stands
         // until it expires.
         BoardLock next;
-        if (resolve(client, entity, next.owner)) {
-            next.until = GetTickCount64() + 500;
-            AcquireSRWLockExclusive(&p.lock);
-            p.board = next;
-            ReleaseSRWLockExclusive(&p.lock);
-        }
-        rearm = true;
+        const bool resolved = resolve(client, entity, next.owner);
+        if (resolved) next.until = GetTickCount64() + 500;
+        AcquireSRWLockExclusive(&p.lock);
+        if (resolved) p.board = next;
+        p.board_rearm = true;
+        ReleaseSRWLockExclusive(&p.lock);
         return;
     }
     AcquireSRWLockExclusive(&p.lock);
     p.board = {};
+    const bool rearm = p.board_rearm;
     ReleaseSRWLockExclusive(&p.lock);
     // Released: teleports that keep the skater's own choice (the SDK's /tp) put it on the
     // board again. Once the skater resolves, outside a teleport.
     Owner owner;
-    if (rearm && resolve(client, entity, owner) && set_teleport_on_board(owner.component)) rearm = false;
+    if (rearm && resolve(client, entity, owner) && set_teleport_on_board(owner.component)) {
+        AcquireSRWLockExclusive(&p.lock);
+        p.board_rearm = false;
+        ReleaseSRWLockExclusive(&p.lock);
+    }
 }
 void clear_no_bail() noexcept {
     auto& p = protection();
@@ -2273,9 +2299,6 @@ void clear_no_bail() noexcept {
     ReleaseSRWLockExclusive(&p.lock);
 }
 bool no_bail_skater(NoBailSkater& skater) noexcept { return published_skater(0, skater); }
-void set_no_bail_step_observer(NoBailStepObserver observer) noexcept {
-    protection().step_observer.store(observer, std::memory_order_release);
-}
 void dark_pop_update(bool enabled, std::uintptr_t board, bool unpatch, bool hold, bool one_press,
     unsigned route_stay, unsigned route_guard, bool keep_speed, bool catch_dismount, bool feet, bool adaptive, bool catch_timeout, float pop_strength, bool hold_landing, bool dark_exit, bool full_flight, bool hold_flight, unsigned stay_physical, bool early_physics, bool reaim, bool hide_dpad) noexcept {
     auto& d = dark_pop();
@@ -2454,13 +2477,6 @@ bool add_no_bail_step_listener(NoBailStepObserver listener) noexcept {
         if (slot.compare_exchange_strong(empty, listener, std::memory_order_acq_rel)) return true;
     }
     return false;
-}
-void remove_no_bail_step_listener(NoBailStepObserver listener) noexcept {
-    if (!listener) return;
-    for (auto& slot : protection().listeners) {
-        auto expected = listener;
-        slot.compare_exchange_strong(expected, nullptr, std::memory_order_acq_rel);
-    }
 }
 void watch_physics_state(std::uintptr_t client, std::uintptr_t entity) noexcept {
     auto& w = state_watch();

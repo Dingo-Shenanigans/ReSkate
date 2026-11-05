@@ -133,11 +133,16 @@ std::optional<std::string> relative_in_mod(const Root& root, const std::vector<s
 }
 
 // "Team-Map-1.2.3" (a zip downloaded from Thunderstore) installs as Team-Map,
-// the folder the launcher's own Thunderstore installs use.
+// the folder the launcher's own Thunderstore installs use. So does
+// "Team-Map-1.2.3 (1)", the name a browser gives the same zip saved again.
 std::string without_version(std::string name) {
-    const auto dash = name.rfind('-');
+    auto end = name.size();
+    if (const auto open = name.rfind('('); open != std::string::npos && end - open > 2 && name.back() == ')' &&
+        name.find_first_not_of("0123456789", open + 1) == end - 1)
+        end = open && name[open - 1] == ' ' ? open - 1 : open;
+    const auto dash = name.rfind('-', end);
     if (dash == std::string::npos || dash == 0) return name;
-    const std::string_view version(name.data() + dash + 1, name.size() - dash - 1);
+    const std::string_view version(name.data() + dash + 1, end - dash - 1);
     if (std::count(version.begin(), version.end(), '.') != 2 || version.empty() || version.front() == '.' ||
         version.back() == '.' || version.find("..") != std::string_view::npos ||
         version.find_first_not_of("0123456789.") != std::string_view::npos) return name;

@@ -6,6 +6,7 @@
 #include "Engine/Core/Hooks/hooks.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/memory.h"
+#include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/local_music.h"
 #include "Engine/Game/Build/supported_build.h"
 
@@ -699,7 +700,7 @@ std::uintptr_t __fastcall music_channel_playlist_bind_hook(std::uintptr_t channe
     // (the return address below is in every such binding traced, and in none the world made);
     // anything else that takes the player's channel off its station is the world's doing.
     if (have_binding && station < 0 && playlist_id != 0 && channel < bound_playlist.size() && spotify_station::active() && channel == spotify_station::channel()) {
-        constexpr std::uintptr_t music_screen_return = 0x3df0b6e;
+        constexpr std::uintptr_t music_screen_return = addr::local_music::music_screen_return;
         void* frames[16]{};
         const auto count = CaptureStackBackTrace(0, 16, frames, nullptr);
         const auto image = image_base.load(std::memory_order_acquire);

@@ -97,6 +97,7 @@ struct View {
     bool editable{};     // false while a session's host sets everyone's physics (the host's apply)
     std::string blocked; // the reason shown on locked rows
     bool session_enforced{}; // a guest where the host (or the server) sets everyone's physics
+    bool session_stock{};    // a match that skates on the game's own physics (competition_stock_physics)
     bool boosts_blocked{};   // a session whose host turned boosts off: the trick extras are the game's own
     std::vector<Row> rows;
     std::vector<std::string> groups;
@@ -136,6 +137,7 @@ struct View {
     bool tr_spine{};
     std::array<std::int8_t, transition_settings.size()> tr_setting{};
     std::array<int, transition_options.size()> tr_option{}; // the game's own options, as the game holds them now
+    int grind_assist{-1}; // the game's own Grind Assist as the game holds it (-1: not saved in the profile yet)
     // What the player's own game settings hold for the settings the trainer can force (0 off / 1 on).
     std::array<std::int8_t, grind_settings.size()> grind_own{};
     std::array<std::int8_t, transition_settings.size()> tr_own{};
@@ -151,6 +153,7 @@ struct View {
     bool flip_advanced{};     // each flip trick also has a speed of its own
     bool flip_pop{};          // a slowed flip trick pops higher
     bool flip_flick{};        // a slow flick turns the board as fast as a full one
+    bool flip_limit{true};    // the game's flip landing limit (unticked: a flip near the landing is not hurried round)
     std::array<float, flip_tricks.size()> flip_trick{}; // those, in the order of flip_tricks
     bool flip_advanced_blocked{};       // ticked, but this session's rules keep the game's own flips
     bool flip_live{};                   // the game's flip states are found: the speeds act
@@ -224,11 +227,17 @@ struct TuningValue {
     double value{}, stock{};
     std::string tuner; // the plugin whose value it is, if any
 };
-// Empty, and why, while the game's tuning is not read or there is no such value.
+// Empty, and why, while the game's tuning is not read (no level's copy yet) or there is no such value.
 std::optional<TuningValue> tuning_value(std::string_view id, std::string *why = nullptr);
-// Values whose id has every word of `text` (a word starting with ! must not be in it), at most `most`.
+// Values whose id has every word of `text` (a word starting with ! must not be in it), at most `most`;
+// none while the game's tuning is not read.
 std::vector<TuningValue> find_tuning(std::string_view text, std::size_t most);
-// Empty when done, else why not. No value: lets go of this plugin's.
+// Empty when done, else why not (a value is refused while the game's tuning is not read). No value:
+// lets go of this plugin's.
 std::string plugin_tune(std::string_view owner, std::string_view id, std::optional<double> value);
+// Flip tricks in the air turn at `factor` times their speed (with the player's own flip speed) for the next
+// `hold_ms`, so a plugin calls it every tick; 1 lets go. Every plugin's factors multiply. Empty when done, else why not.
+std::string plugin_flip_speed(std::string_view owner, float factor, unsigned hold_ms);
+// Lets go of this plugin's values and flip speed.
 void release_plugin_tunes(std::string_view owner);
 } // namespace dingosdk::trainer

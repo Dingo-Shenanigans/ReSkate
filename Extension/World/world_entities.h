@@ -36,7 +36,8 @@ struct Attach {
 // The client physics world, as the runtime gives it (Extension/Objects/ParkEditor/world_pick.cpp;
 // Engine/Game/Build/20260929/physics_bodies.h): a body is {world, index | generation << 32}. A
 // world object made not `solid` has its bodies ghosted (skaters go through them), found in its
-// entity, a few levels down, as the world followed by a body the world says is valid.
+// entity, a few levels down, as the world followed by a body the world says is valid, or by rays
+// into its box, which take only the bodies whose owner is that object (detail::own_body).
 using Body = std::array<std::uint64_t, 2>;
 struct Physics {
     std::uintptr_t (*world)() noexcept{};
@@ -49,6 +50,8 @@ struct Physics {
     // when it has more than `most`: the level's, or another shared owner's).
     std::optional<Body> (*hit)(const std::array<float, 3>& from, const std::array<float, 3>& to) noexcept{};
     std::vector<Body> (*owned)(const Body& body, std::size_t most) noexcept{};
+    // The physics component a body's owner keeps, or 0 when it keeps none: an ECS owner keeps an id.
+    std::uintptr_t (*component)(const Body& body) noexcept{};
     // Test only (objbody): one of the store's per-body setters by name, on a body.
     bool (*test)(std::string_view name, const Body& body) noexcept{};
 };
@@ -70,10 +73,11 @@ Status status(std::string_view owner, std::uint32_t id);
 bool ready(std::string_view owner);
 // The names of the world object blueprints the game has loaded now (what `set` can make), those
 // starting with `prefix` (ASCII case ignored), sorted, at most `most`. Read from every asset
-// domain's named-asset table; kept for two seconds.
+// domain's named-asset table, only in an active level; kept for 30 s or until the level changes.
 std::vector<std::string> blueprints(std::uintptr_t base, std::string_view prefix, std::size_t most, bool meshes_only = false);
 // A world object blueprint's mesh box in its own frame (min, max), when it has a mesh and the mesh
-// is loaded; empty for one that shows nothing, or that is not loaded.
+// is loaded; empty for one that shows nothing, or that is not loaded. Answers are kept a few seconds
+// and searches are rationed (detail::LookupCache), so a box can outlive its blueprint briefly.
 using Box = std::array<std::array<float, 3>, 2>;
 std::optional<Box> blueprint_bounds(std::uintptr_t base, std::string_view blueprint);
 std::size_t count(std::string_view owner);

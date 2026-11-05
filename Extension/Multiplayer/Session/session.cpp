@@ -21,6 +21,7 @@
 #include "Extension/Progression/script_natives.h"
 #include "Extension/Multiplayer/Steam/steam_social.h"
 #include "Extension/Profile/local_profile_runtime.h"
+#include "Extension/Customization/local_customization_runtime.h"
 #include "Extension/Objects/network_object_runtime.h"
 #include "Extension/Objects/ParkEditor/park_editor_runtime.h"
 #include "Extension/Multiplayer/Remote/native_audio.h"
@@ -342,6 +343,7 @@ void publish_party(Session &s) {
             s.chat_bubbles_duration = std::clamp(saved->get<float>(), 1.f, 30.f);
         if (const auto saved = profile_runtime::local_value("ChatBubblesHistory"); saved && saved->is_number())
             s.chat_bubbles_history = std::clamp(static_cast<int>(saved->get<double>()), 1, 8);
+        load_ignored(s);
         show_own_tag(profile_runtime::local_preference("IdentityTag").value_or(true));
         show_own_items(profile_runtime::local_preference("IdentityItems").value_or(true));
         if (const auto saved = profile_runtime::local_value("IdentityStyles"); saved && saved->is_string())
@@ -432,7 +434,8 @@ void relay_throwdowns(Session &s, bool in_world, const NativeFrame* /*offline_sk
             // The authority's words (a plugin's server copy) come from the lobby's host or the
             // server only; a host hears none from its guests.
             if (plugins::wire::from_authority(message) && (s.mode == Mode::host || sender != s.host_id)) continue;
-            plugins::receive_message(sender, message);
+            // An ignored player's reach this PC's plugins no more (a lobby host's server copies still hear them).
+            plugins::receive_message(sender, message, !ignored(s, sender));
         }
         else receive_throwdown_relay(sender, message);
     }
@@ -462,8 +465,9 @@ Pose out_of_sight(Pose pose) {
 // as it stood each frame and their camera looks wherever it likes afterwards: a player who had
 // been behind the camera moved at 20 Hz in the replay.
 constexpr int far_full_rate_return = 190, far_half_rate_start = 200, far_low_rate_start = 350;
-// Metres from a player to the nearer of the local skater and the camera (infinite if neither
-// is known).
+// Metres from a player to the nearer of the local skater and a detached camera (spectating,
+// replay or a drone; the follow camera orbits a few metres around the skater, which would
+// otherwise shift the distance edge as the camera turns). Infinite if neither is known.
 float nearest_distance(const Peer &p, const NativeFrame &local, const std::optional<GameView> &view) {
     const auto &at = p.render_pose.root.position;
     float nearest = std::numeric_limits<float>::infinity();
@@ -472,7 +476,17 @@ float nearest_distance(const Peer &p, const NativeFrame &local, const std::optio
         nearest = std::min(nearest, dx * dx + dy * dy + dz * dz);
     };
     if (local.ready) consider(local.pose.root.position[0], local.pose.root.position[1], local.pose.root.position[2]);
-    if (view) consider(view->world[12], view->world[13], view->world[14]);
+    if (view) {
+        const float cx = view->world[12], cy = view->world[13], cz = view->world[14];
+        if (!local.ready) {
+            consider(cx, cy, cz);
+        } else {
+            const float lx = cx - local.pose.root.position[0];
+            const float ly = cy - local.pose.root.position[1];
+            const float lz = cz - local.pose.root.position[2];
+            if (lx * lx + ly * ly + lz * lz > 12.0f * 12.0f) consider(cx, cy, cz);
+        }
+    }
     return std::sqrt(nearest);
 }
 std::uint64_t far_sample_interval(const Peer &p, float distance) {
@@ -561,11 +575,14 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
     bool native_pass{};
     const auto apply_cosmetics = [&](Peer &p, bool spawned) {
         if (now - p.last_cosmetic_apply < 500000) return;
-        if (p.applied_cosmetics != p.cosmetic_revision && !spawned) {
+        // Plugins hiding other items puts every outfit on again, one player per frame too.
+        const auto hidden = plugin_feed::hidden_items_revision();
+        if ((p.applied_cosmetics != p.cosmetic_revision || p.applied_hidden != hidden) && !spawned) {
             if (native_pass) return;
             native_pass = true;
         }
-        update_remote_cosmetics(s.base, local, *p.appearance.value(), p.cosmetic_status);
+        update_remote_cosmetics(s.base, local, *p.appearance.value(), p.member.id, p.cosmetic_status);
+        p.applied_hidden = hidden;
         // The effects their costume and board items come with follow the outfit.
         if (p.applied_cosmetics != p.cosmetic_revision && s.sync_effects) note_remote_outfit(now);
         p.last_cosmetic_apply = now;
@@ -621,8 +638,9 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
                              nearest_distance(p, local, view) <= s.player_distance * (p.visible ? 1.15f : 1.f);
         }
     }
-    // Hidden on this screen: by the running throwdown's match, or by a plugin (reskate.session.hide).
-    const auto hidden_here = [](std::uint64_t id) { return throwdowns::kit::hidden(id) || plugin_feed::hidden(id); };
+    // Hidden on this screen: by the running throwdown's match, by a plugin (reskate.session.hide), or
+    // because the local player ignores them.
+    const auto hidden_here = [&s](std::uint64_t id) { return throwdowns::kit::hidden(id) || plugin_feed::hidden(id) || ignored(s, id); };
     each_active_peer(s, [&](Peer &p) {
         // A dedicated server has no skater to show.
         if (!p.member.id || (dedicated_host(s) && p.member.id == s.host_id))
@@ -652,7 +670,11 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
             // the next frames slower still.
             const bool held = !sampled && was_visible && p.poses.heard_within(now, 8000000);
             // Showing a player without an actor spawns one (native_skater_spawn.cpp).
-            if (sampled) p.placed = true;
+            // Before a pose placed them, shown_wanted stayed true so their status read "Waiting for
+            // player poses."; check their distance now that render_pose is known.
+            if (sampled && !std::exchange(p.placed, true))
+                p.shown_wanted = s.player_distance >= player_distance_unlimited ||
+                                 nearest_distance(p, local, view) <= s.player_distance;
             const bool spawning = sampled && p.shown_wanted && p.appearance.value() && !was_visible && !remote_skater_entity();
             if (spawning && now < p.next_spawn) {
                 p.native_status = "Waiting to show the player again.";
@@ -763,6 +785,24 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
                 peers.push_back({p.member.id, p.latest_root->position, p.latest_root->rotation,
                                  now > p.pose_arrival ? static_cast<double>(now - p.pose_arrival) / 1000.0 : 0.0});
         plugin_feed::publish_peers(std::move(peers));
+        // And what they wear (reskate.session.outfit), each time it changes.
+        std::set<std::uint64_t> present;
+        for (auto &p : active_peers(s)) {
+            if (!p.member.id) continue;
+            present.insert(p.member.id);
+            const auto &look = p.appearance.value();
+            if (!look || p.published_outfit == p.cosmetic_revision) continue;
+            // Paid store items are left out: this PC never shows them on another player (their stand-ins
+            // do), and the party HUD blanks their card parts the same way.
+            plugin_feed::Outfit outfit;
+            for (const auto &item : look->skater.items)
+                if (!item.asset.empty() && !profile_runtime::reserved_cosmetic(item.asset)) outfit.skater.push_back(item.asset);
+            for (const auto &item : look->board.items)
+                if (!item.asset.empty() && !profile_runtime::reserved_cosmetic(item.asset)) outfit.board.push_back(item.asset);
+            plugin_feed::publish_outfit(p.member.id, std::move(outfit));
+            p.published_outfit = p.cosmetic_revision;
+        }
+        plugin_feed::keep_outfits(present);
         // And the joints of theirs that plugins asked for (reskate.entities.set's attach).
         std::map<std::pair<std::uint64_t, std::uint16_t>, plugin_feed::JointPlace> joints;
         if (const auto wanted = plugin_feed::joints_wanted(); !wanted.empty()) {

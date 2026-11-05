@@ -1,3 +1,4 @@
+#include "capture_parallel.h"
 #include "capture_image.h"
 #include <cmath>
 
@@ -109,37 +110,50 @@ Image cropped(const Image& image, Rect rect) {
 }
 
 Image resized(const Image& image, std::uint32_t w, std::uint32_t h) {
-    if (image.empty() || !w || !h) return {};
+    if (image.empty() || !w || !h)
+        return {};
     const auto columns = area_taps(image.width, w), rows = area_taps(image.height, h);
     // Horizontal pass into premultiplied floats, then vertical.
     std::vector<float> wide(std::size_t{w} * image.height * 4);
-    for (std::uint32_t y = 0; y < image.height; ++y)
-        for (std::uint32_t x = 0; x < w; ++x) {
-            const auto& tap = columns[x];
-            float sum[4]{};
-            for (std::size_t k = 0; k < tap.weights.size(); ++k) {
-                const auto* p = image.at(tap.first + static_cast<std::uint32_t>(k), y);
-                const float a = p[3] / 255.0f, weight = tap.weights[k];
-                for (int c = 0; c < 3; ++c) sum[c] += p[c] * a * weight;
-                sum[3] += p[3] * weight;
+    parallel_rows(image.height, w, [&](std::uint32_t first, std::uint32_t last) {
+        for (std::uint32_t y = first; y < last; ++y)
+            for (std::uint32_t x = 0; x < w; ++x) {
+                const auto& tap = columns[x];
+                float sum[4]{};
+                for (std::size_t k = 0; k < tap.weights.size(); ++k) {
+                    const auto* p = image.at(tap.first + static_cast<std::uint32_t>(k), y);
+                    if (!p[3])
+                        continue; // Transparent backdrop contributes no premultiplied colour.
+                    const float a = p[3] / 255.0f, weight = tap.weights[k];
+                    for (int c = 0; c < 3; ++c)
+                        sum[c] += p[c] * a * weight;
+                    sum[3] += p[3] * weight;
+                }
+                std::copy_n(sum, 4, wide.data() + (std::size_t{y} * w + x) * 4);
             }
-            std::copy_n(sum, 4, wide.data() + (std::size_t{y} * w + x) * 4);
-        }
+    });
     Image out(w, h);
-    for (std::uint32_t y = 0; y < h; ++y)
-        for (std::uint32_t x = 0; x < w; ++x) {
-            const auto& tap = rows[y];
-            float sum[4]{};
-            for (std::size_t k = 0; k < tap.weights.size(); ++k) {
-                const auto* p = wide.data() + ((tap.first + k) * w + x) * 4;
-                for (int c = 0; c < 4; ++c) sum[c] += p[c] * tap.weights[k];
+    parallel_rows(h, w, [&](std::uint32_t first, std::uint32_t last) {
+        for (std::uint32_t y = first; y < last; ++y)
+            for (std::uint32_t x = 0; x < w; ++x) {
+                const auto& tap = rows[y];
+                float sum[4]{};
+                for (std::size_t k = 0; k < tap.weights.size(); ++k) {
+                    const auto* p = wide.data() + ((tap.first + k) * w + x) * 4;
+                    if (p[3] == 0)
+                        continue;
+                    for (int c = 0; c < 4; ++c)
+                        sum[c] += p[c] * tap.weights[k];
+                }
+                if (sum[3] == 0)
+                    continue; // Image construction already cleared this pixel.
+                auto* d = out.at(x, y);
+                const float alpha = std::clamp(sum[3], 0.0f, 255.0f);
+                d[3] = static_cast<std::uint8_t>(std::lround(alpha));
+                for (int c = 0; c < 3; ++c)
+                    d[c] = d[3] ? static_cast<std::uint8_t>(std::clamp(std::lround(sum[c] * 255.0f / alpha), 0L, 255L)) : 0;
             }
-            auto* d = out.at(x, y);
-            const float alpha = std::clamp(sum[3], 0.0f, 255.0f);
-            d[3] = static_cast<std::uint8_t>(std::lround(alpha));
-            for (int c = 0; c < 3; ++c)
-                d[c] = d[3] ? static_cast<std::uint8_t>(std::clamp(std::lround(sum[c] * 255.0f / alpha), 0L, 255L)) : 0;
-        }
+    });
     return out;
 }
 

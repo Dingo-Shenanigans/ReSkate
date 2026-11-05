@@ -1092,6 +1092,7 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
                 if (!sender->typing_until) continue;
                 sender->typing_until = 0;
             }
+            if (ignored(s, sender->member.id)) sender->typing_until = 0; // (no dots over someone ignored; still relayed)
             sender->last_packet = now;
             if (s.mode == Mode::host) broadcast(s, p, true, false, now, p.source);
             continue;

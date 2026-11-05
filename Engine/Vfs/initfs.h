@@ -21,6 +21,11 @@ std::filesystem::path export_manifest(const std::filesystem::path& root);
 // Stored outside config/ so this preference also works while overrides are off.
 bool loose_files_preference(const std::filesystem::path& game_directory);
 bool loose_files_session_enabled(const std::filesystem::path& game_directory);
+// Plugin developer mode, in the same file: a plugin the player already approved keeps its approval
+// when its files change. Read by the launcher and the game, and set from either. Throws when
+// ReSkate.settings.json cannot be read or written.
+bool plugin_developer_mode(const std::filesystem::path& game_directory);
+void set_plugin_developer_mode(const std::filesystem::path& game_directory, bool on);
 std::filesystem::path data_directory(const std::filesystem::path& game_directory,
     const std::vector<std::wstring>& game_arguments);
 

@@ -44,7 +44,7 @@ bool is_input(UINT message) {
 
 bool interactive_visible(const State& s) {
     return s.visible.load() || s.console_visible.load() || s.editor_visible.load() || s.chat_visible.load() ||
-           s.hub_typing.load() || s.prompt_pointer.load() || s.item_search_visible.load() || s.plugin_screen_visible.load() || s.plugin_dialog_visible.load();
+           s.hub_typing.load() || s.prompt_pointer.load() || s.item_search_visible.load() || s.item_filters_visible.load() || s.plugin_screen_visible.load() || s.plugin_dialog_visible.load();
 }
 
 void restore_input(bool hide_menu) {
@@ -55,6 +55,7 @@ void restore_input(bool hide_menu) {
         s.chat_visible.store(false);
         s.hub_typing.store(false);
         s.item_search_visible.store(false);
+        s.item_filters_visible.store(false);
         s.editor_visible.store(false);
         s.editor_flight.store(false);
     }
@@ -518,6 +519,11 @@ extern "C" void DingoSDKOverlayRequestStop() {
 bool dingosdk::overlay::keyboard_shortcuts_allowed() noexcept {
     auto &s = state();
     return s.started.load() && !s.stop.load() && !interactive_visible(s);
+}
+
+bool dingosdk::overlay::menu_visible() noexcept {
+    auto &s = state();
+    return s.started.load() && !s.stop.load() && s.visible.load();
 }
 
 extern "C" void DingoSDKOverlayGetStatus(dingosdk::overlay::Status* output) {

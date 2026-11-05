@@ -18,8 +18,6 @@ __pycache__/
 *.pcapng
 *.pdml
 *.mitm
-analysis/raw/**/*.ebx
-analysis/raw/**/*.res
 
 # Optional developer utilities stay local. CMake is self-contained.
 /tools/
@@ -30,11 +28,7 @@ analysis/raw/**/*.res
 /docs/
 /release
 
-# Drone model sources (assets/models/fpv/CREDITS.md): large; only the prepared drone.glb is kept.
-/assets/models/fpv/dji_avata2.glb
-/assets/models/fpv/fpv_drone.glb
-# The plugins are kept on this machine, out of the repository (dingosdk_plugin_tests runs them
-# from here when they are present).
+# Plugin mods are kept on this machine, out of the repository.
 /contrib/plugins/
 
 # vtf's linux development configuration

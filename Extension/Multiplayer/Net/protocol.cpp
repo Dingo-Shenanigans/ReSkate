@@ -346,33 +346,41 @@ void coarsen(Transform &t, unsigned bits) noexcept {
     t.rotation[largest] = std::sqrt(std::max(0.f, 1.f - sum));
 }
 } // namespace
-void limit_bone_scale(Pose &pose, float limit) noexcept {
-    if (!(limit >= 1.f)) return;
-    const auto hold = [](Transform &t, float most) {
-        for (float &axis : t.scale) axis = std::isfinite(axis) ? std::clamp(axis, 1.f / most, most) : 1.f;
-    };
-    hold(pose.root, limit);
-    for (auto &t : pose.skater) hold(t, limit);
-    for (auto &t : pose.board) hold(t, std::min(limit, board_scale_limit));
-    // A bone shows at its own size times its parents' (and the whole skater's): each held to the
-    // limit, a chain of them grew past it (four neck bones at 2x made a neck 16 times as long,
-    // seen 2026-10-15). So each bone is held to what is left of the limit after its parents: the
-    // size it shows stays within 1/limit to limit, on its largest axis and its smallest.
-    const auto largest = [](const Transform &t) { return std::max({t.scale[0], t.scale[1], t.scale[2]}); };
-    const auto smallest = [](const Transform &t) { return std::min({t.scale[0], t.scale[1], t.scale[2]}); };
-    const float root_grow = largest(pose.root), root_shrink = smallest(pose.root);
-    std::array<float, skater_bone_parents.size()> grown{}, shrunk{};
-    for (std::size_t i = 0; i < pose.skater.size(); ++i) {
-        const auto parent = i < skater_bone_parents.size() ? skater_bone_parents[i] : std::int16_t{-1};
+namespace {
+float largest(const Transform &t) noexcept { return std::max({t.scale[0], t.scale[1], t.scale[2]}); }
+float smallest(const Transform &t) noexcept { return std::min({t.scale[0], t.scale[1], t.scale[2]}); }
+// A bone shows at its own size times its parents' (and the whole skater's): each held to the
+// limit, a chain of them grew past it (four neck bones at 2x made a neck 16 times as long,
+// seen 2026-10-15). So each bone is held to what is left of the limit after its parents: the
+// size it shows stays within 1/limit to limit, on its largest axis and its smallest.
+template <std::size_t N>
+void hold_chain(std::vector<Transform> &bones, const std::array<std::int16_t, N> &parents, float limit, float root_grow, float root_shrink) noexcept {
+    std::array<float, N> grown{}, shrunk{};
+    for (std::size_t i = 0; i < bones.size(); ++i) {
+        const auto parent = i < parents.size() ? parents[i] : std::int16_t{-1};
         const float up = parent >= 0 ? grown[static_cast<std::size_t>(parent)] : root_grow;
         const float down = parent >= 0 ? shrunk[static_cast<std::size_t>(parent)] : root_shrink;
-        auto &t = pose.skater[i];
+        auto &t = bones[i];
         for (float &axis : t.scale) axis = std::clamp(axis, 1.f / (limit * down), limit / up);
         if (i < grown.size()) {
             grown[i] = up * largest(t);
             shrunk[i] = down * smallest(t);
         }
     }
+}
+} // namespace
+void limit_bone_scale(Pose &pose, float limit) noexcept {
+    if (!(limit >= 1.f)) return;
+    const auto hold = [](Transform &t, float most) {
+        for (float &axis : t.scale) axis = std::isfinite(axis) ? std::clamp(axis, 1.f / most, most) : 1.f;
+    };
+    const float board_limit = std::min(limit, board_scale_limit);
+    hold(pose.root, limit);
+    for (auto &t : pose.skater) hold(t, limit);
+    for (auto &t : pose.board) hold(t, board_limit);
+    hold_chain(pose.skater, skater_bone_parents, limit, largest(pose.root), smallest(pose.root));
+    // The board is its own actor, so the skater's size is not its parent's.
+    hold_chain(pose.board, board_bone_parents, board_limit, 1.f, 1.f);
 }
 void limit_bone_reach(Pose &pose, float limit) noexcept {
     if (!(limit > 0.f)) return;

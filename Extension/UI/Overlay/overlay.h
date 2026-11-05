@@ -454,11 +454,13 @@ void show_message(std::string title, std::string text) noexcept;
 bool message_asking() noexcept;
 void message_dismiss() noexcept;
 // A question with two answers, in the message's look (message_card.cpp), held and answered by the
-// runtime as the message is: left and right pick, A takes the pick, B is the second answer. `label`
+// runtime as the message is: left and right pick, A takes the pick, B goes back. `label`
 // says what is asking ("MOD MANAGER"); `answer` is called once, with true for the first answer, on
-// whichever thread answers it. A message to say OK to goes over it. Any thread.
+// whichever thread answers it. Esc or B (going back) gives the second
+// answer, or the first when `back_is_yes`. A message to say OK to goes over it. Any thread.
 void ask_question(std::string label, std::string title, std::string text, std::string yes, std::string no,
-                  std::function<void(bool)> answer) noexcept;
+                  std::function<void(bool)> answer, bool back_is_yes = false) noexcept;
+bool question_back() noexcept;
 bool question_asking() noexcept;
 void question_pick(bool yes) noexcept;
 bool question_picked() noexcept;
@@ -567,12 +569,23 @@ struct ItemBrowserView {
     std::string mod_title, mod_author, mod_version, mod_icon;
     unsigned mod_items{};
     bool mod_changed{};
+    unsigned filter_index{};            // into `filters`, every filter's name
+    std::vector<std::string> filters;
+    // The grid is a picker (clothing, board, tattoos, gestures, appearance): its Author (a name), Mod pack (a mod's folder),
+    // each empty for any, and Sort (into `sorts`); and the mods with items in it (folder, name, author).
+    bool picker{};
+    std::string author, pack;
+    unsigned sort{};
+    std::vector<std::string> sorts;
+    std::vector<std::array<std::string, 3>> packs;
 };
 struct ItemBrowserHost {
     ItemBrowserView (*view)(){};
     void (*toggle_favorite)(){};
     void (*set_search)(const char *text){};
     void (*cycle_filter)(){};
+    void (*set_filter)(unsigned filter){};
+    void (*narrow)(const char *author, const char *pack, unsigned sort){};
 };
 // `host` must stay valid for the life of the process.
 void set_item_browser(const ItemBrowserHost *host) noexcept;
@@ -586,13 +599,18 @@ ItemPrompts item_browser_prompts() noexcept;
 // A presented frame as the game drew it, before ReSkate's own UI goes on top: 8-bit RGBA rows
 // (BGRA when `bgra`), `pitch` bytes apart. Valid only during the call it is handed to.
 struct GrabbedFrame {
-    const std::uint8_t *data{};
+    const std::uint8_t* data{};
     std::uint32_t width{}, height{}, pitch{};
     bool bgra{};
-    // The game's depth for the same frame, when it was found (depth_probe.cpp): 32-bit floats,
+    // The game's depth for the same frame, when it was found (depth_tap.cpp): 32-bit floats,
     // reversed (1 near, 0 at the far plane), `depth_pitch` bytes a row, the size of the frame.
-    const std::uint8_t *depth{};
+    const std::uint8_t* depth{};
     std::uint32_t depth_pitch{};
+    // Optional cropped colour rectangle; depth still addresses the full source.
+    std::uint32_t origin_x{}, origin_y{}, source_width{}, source_height{};
+};
+struct GrabRegion {
+    std::uint32_t x{}, y{}, width{}, height{};
 };
 // Screen captures (Extension/Rendering/Capture, reskate.capture): asked on every presented frame, on
 // the render thread, whether they want its pixels, and handed them when they do. While `active` says
@@ -600,13 +618,17 @@ struct GrabbedFrame {
 struct FrameGrabHost {
     bool (*active)() noexcept {};
     bool (*wants_frame)() noexcept {};
-    void (*take_frame)(const GrabbedFrame &frame) noexcept {};
+    void (*take_frame)(const GrabbedFrame& frame) noexcept {};
+    // Optional screen-space colour region. Without it the whole frame is copied.
+    GrabRegion (*region)(std::uint32_t width, std::uint32_t height) noexcept {};
 };
 // `host` must stay valid for the life of the process.
 void set_frame_grab(const FrameGrabHost *host) noexcept;
-// Research aid for captures (`capture depth`): the game's depth buffers over the next two frames are
-// copied and written to `folder` as pictures, with depth-probe.txt (depth_probe.cpp).
+#if defined(DINGOSDK_DEV_TOOLS)
+// Research aid for captures (`capture depth`, development builds): the game's depth buffers over the
+// next two frames are copied and written to `folder` as pictures, with depth-probe.txt (depth_probe.cpp).
 void request_depth_probe(const wchar_t *folder) noexcept;
+#endif
 using ParkSurfaceQueue = bool (*)(const EditorSurfaceRequest &);
 void set_park_surface_queue(ParkSurfaceQueue) noexcept;
 using ParkPreviewQueue = bool (*)(const EditorPreviewRequest &);
@@ -655,6 +677,9 @@ struct Status {
     std::uint64_t rendered_frames = 0;
 };
 bool keyboard_shortcuts_allowed() noexcept;
+// Whether the ReSkate menu is open, windowed or full screen (not the console, the park editor or a
+// plugin's screen). Any thread, without the render lock DingoSDKOverlayGetStatus takes.
+bool menu_visible() noexcept;
 
 // A short message in the top-left corner of the game window: a title line and
 // optional detail, stacked under earlier ones and fading out on their own
@@ -685,7 +710,7 @@ struct Gamepad {
     float left_trigger = 0, right_trigger = 0;
     unsigned buttons = 0;
 };
-Gamepad read_gamepad();
+Gamepad read_gamepad(int controller = -1);
 // The full screen menu's page draws its own controls with their own focus (ONLINE: the pause
 // menu's pages): the controller then drives that, not ImGui's navigation.
 inline std::atomic<bool>& menu_page_owns_pad() {

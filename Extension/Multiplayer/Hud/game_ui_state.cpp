@@ -3,6 +3,8 @@
 #include "Engine/Game/Abi/native_data.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/engine.h"
+#include "Engine/Game/Build/20260929/replay_activity.h"
+#include "Engine/Core/Platform/memory.h"
 #include "Extension/UI/NativeMenu/native_menu_data.h"
 #include <chrono>
 #include <mutex>
@@ -57,7 +59,7 @@ GameUiState read(Address base, State &s) {
     const auto at = context.address(s.screen);
     if (!at) return {};
     const auto flag = [&](std::uint32_t offset) { return menu_data::read<std::uint8_t>(at + offset) != 0; };
-    return {flag(in_menu_offset), flag(hide_ui_offset), flag(hide_nametags_offset), flag(hide_indicators_offset)};
+    return {flag(in_menu_offset), flag(hide_ui_offset), flag(hide_nametags_offset), flag(hide_indicators_offset), true};
 }
 } // namespace
 
@@ -70,5 +72,15 @@ GameUiState sample_game_ui_state(std::uintptr_t base) noexcept {
         try { s.latest = read(base, s); } catch (...) { s.screen = {}; s.latest = {}; }
     }
     return s.latest;
+}
+
+bool replay_editor_open(std::uintptr_t base) noexcept {
+    namespace r = addr::replay_activity;
+    if (!base) return false;
+    const auto pointer = [](Address at) { Address value{}; memory::peek(at, value); return value; };
+    const auto client = pointer(base + r::client);
+    const auto manager = client ? pointer(client + r::manager) : 0;
+    const auto lease = manager ? pointer(manager + r::lease) : 0;
+    return lease && pointer(lease) == base + r::lease_vtable && pointer(lease + r::lease_manager) == manager;
 }
 } // namespace dingosdk::multiplayer

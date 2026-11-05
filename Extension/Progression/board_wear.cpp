@@ -1,4 +1,5 @@
 #include "script_natives.h"
+#include "Engine/Core/Hooks/patches.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/script_natives.h"
@@ -77,10 +78,10 @@ void install_board_wear_hold(std::uintptr_t base) noexcept {
         std::uint32_t hash{};
         if (!read(base + entry, hash) || hash != 0xbdc6524d) return;
         set_fields_original = reinterpret_cast<SetFields>(base + addr::script_natives::set_fields);
-        DWORD protect{};
-        if (!VirtualProtect(reinterpret_cast<void*>(base + entry + 8), 8, PAGE_READWRITE, &protect)) return;
-        *reinterpret_cast<std::uintptr_t*>(base + entry + 8) = reinterpret_cast<std::uintptr_t>(&set_fields_hook);
-        VirtualProtect(reinterpret_cast<void*>(base + entry + 8), 8, protect, &protect);
+        // The row's slot holds SetFields itself in Skate.exe's data (read from the file,
+        // 2026-11-04); a slot bound to anything else is left alone.
+        (void)patch_table_slot("SetFields native row", reinterpret_cast<void**>(base + entry + 8),
+            reinterpret_cast<void*>(set_fields_original), reinterpret_cast<void*>(&set_fields_hook));
     } catch (...) {}
 }
 

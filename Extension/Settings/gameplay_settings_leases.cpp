@@ -19,15 +19,6 @@ constexpr std::uintptr_t settings_highest = memory::highest_user_address;
 
 using SettingsLookup = std::uintptr_t (*)(std::uintptr_t, const void*);
 
-#ifndef DINGOSDK_GAMEPLAY_SETTINGS_LOOKUP
-#define DINGOSDK_GAMEPLAY_SETTINGS_LOOKUP(base) \
-    reinterpret_cast<SettingsLookup>((base) + addr::engine::settings_lookup)
-#endif
-
-#ifndef DINGOSDK_GAMEPLAY_SETTINGS_WRITE
-#define DINGOSDK_GAMEPLAY_SETTINGS_WRITE WriteProcessMemory
-#endif
-
 bool settings_range(std::uintptr_t address, std::size_t size) {
     return address >= 0x10000 && size && size <= settings_highest && address <= settings_highest - size;
 }
@@ -77,7 +68,7 @@ std::uintptr_t resolve_type(SettingsState& state, SettingsType type_id,
         !memory::read(manager + 0xc8, buckets) || !memory::read(manager + 0xd0, bucket_count) ||
         !settings_range(buckets, 8) || !bucket_count || bucket_count > 0x100000) return 0;
     ++state.lookups;
-    const auto lookup = DINGOSDK_GAMEPLAY_SETTINGS_LOOKUP(state.base);
+    const auto lookup = reinterpret_cast<SettingsLookup>(state.base + addr::engine::settings_lookup);
     const auto object = lookup(manager, reinterpret_cast<const void*>(state.base + type.handle_rva));
     std::uintptr_t vtable{}, object_type{}, manager_after{};
     if (!settings_range(object, type.object_size) || !memory::read(object, vtable) ||
@@ -103,7 +94,7 @@ bool write_field(SettingsState& state, const FieldSnapshot& snapshot, std::uint8
     const auto address = snapshot.object + field_specs[snapshot.index].offset;
     if (!settings_writable(address, 1)) return false;
     SIZE_T count{};
-    if (!DINGOSDK_GAMEPLAY_SETTINGS_WRITE(GetCurrentProcess(),
+    if (!WriteProcessMemory(GetCurrentProcess(),
             reinterpret_cast<void*>(address), &value, 1, &count) || count != 1)
         return false;
     std::uint8_t actual{};

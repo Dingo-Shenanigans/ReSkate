@@ -63,7 +63,4 @@ bool install(std::uintptr_t base) noexcept {
     }
     return true;
 }
-
-std::uint64_t without_settings() noexcept { return missing.load(std::memory_order_relaxed); }
-std::uint64_t would_have_freed() noexcept { return stale.load(std::memory_order_relaxed); }
 } // namespace dingosdk::mesh_settings_guard

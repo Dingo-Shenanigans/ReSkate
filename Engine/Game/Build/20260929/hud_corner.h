@@ -34,8 +34,12 @@ inline constexpr std::uint32_t content_blueprint = 0x8d1441c7;
 // own thread (expression functions on score events: no native code names the fields).
 // HudWidgetActive shows the HUD (its multiplier ring and trick list); the line label shows only
 // while ExtraInfoStyle is LineScore (0; 1 ScoreInfo shows the extra info instead, 2 None neither).
+// The sequence banner (a trick's name, and the scoring tier as a line ends) shows by SequenceState
+// alone, 0 while it is down.
 inline constexpr std::uint32_t score_view_schema = 0x9b74fc7c; // ScoringHUDViewModel
 inline constexpr std::uint32_t hud_widget_active = 0x3aa2f739; // bool HudWidgetActive
 inline constexpr std::uint32_t extra_info_style = 0x0426783f;  // int32 ScoringWidgetExtraInfoStyle
 inline constexpr std::int32_t extra_info_none = 2;
+inline constexpr std::uint32_t sequence_state = 0x7f3e74e7; // int32 SequenceState
+inline constexpr std::int32_t sequence_down = 0;
 }

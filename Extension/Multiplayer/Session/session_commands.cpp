@@ -10,6 +10,7 @@
 #include "Engine/Core/Platform/launcher_support.h"
 #include "Engine/Core/Text/word_filter.h"
 #include "Engine/Game/Multiplayer/session_tools.h"
+#include "Engine/Core/Text/ascii.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -98,11 +99,6 @@ std::optional<bool> parse_switch(std::string_view argument, bool current) {
     return {};
 }
 // ---- teleports ----
-std::string lowered(std::string_view text) {
-    std::string result(text);
-    for (auto &c : result) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return result;
-}
 std::string peer_name(Session &s, const Peer &p) {
     return p.member.name.empty() ? s.transport.name(p.member.id) : p.member.name;
 }
@@ -114,7 +110,7 @@ Peer *find_player(Session &s, std::string_view who, std::string &error) {
     Peer *match{};
     for (auto &p : active_peers(s)) {
         if (!p.handshaken || !p.member.id || (dedicated_host(s) && p.member.id == s.host_id)) continue;
-        if (numeric ? p.member.id == id : lowered(peer_name(s, p)).starts_with(lowered(who))) {
+        if (numeric ? p.member.id == id : ascii_lower(peer_name(s, p)).starts_with(ascii_lower(who))) {
             if (match) { error = "More than one player matches \"" + std::string(who) + "\"."; return nullptr; }
             match = &p;
         }
@@ -122,12 +118,49 @@ Peer *find_player(Session &s, std::string_view who, std::string &error) {
     if (!match) error = "No player matches \"" + std::string(who) + "\".";
     return match;
 }
+} // namespace
+std::string session_detail::ignore_command(Session &s, std::string_view verb, std::string_view who) {
+    while (!who.empty() && who.front() == ' ') who.remove_prefix(1);
+    while (!who.empty() && who.back() == ' ') who.remove_suffix(1);
+    if (verb == "ignored") {
+        if (s.ignored_players.empty()) return "You ignore nobody.";
+        std::string names;
+        for (const auto &[id, name] : s.ignored_players) names += (names.empty() ? "" : ", ") + (name.empty() ? std::to_string(id) : name);
+        return "You ignore " + names + ". /unignore <player> stops it.";
+    }
+    if (who.empty()) return verb == "ignore" ? "/ignore <player>" : "/unignore <player>";
+    if (verb == "ignore") {
+        std::string error;
+        auto *p = find_player(s, who, error);
+        if (!p) return error;
+        const auto name = peer_name(s, *p);
+        if (ignored(s, p->member.id)) return "You ignore " + name + " already.";
+        set_ignored(s, p->member.id, name, true);
+        return "You ignore " + name + ": nothing of theirs shows or is heard here, in any session. /unignore " + name + " stops it.";
+    }
+    // Unignore: anyone on the list, here or not, by the start of their name or their SteamID64.
+    std::uint64_t id{};
+    const auto parsed = std::from_chars(who.data(), who.data() + who.size(), id);
+    const bool numeric = parsed.ec == std::errc{} && parsed.ptr == who.data() + who.size();
+    std::uint64_t match{};
+    for (const auto &[listed, name] : s.ignored_players) {
+        if (numeric ? listed == id : ascii_lower(name).starts_with(ascii_lower(who))) {
+            if (match) return "More than one ignored player matches \"" + std::string(who) + "\".";
+            match = listed;
+        }
+    }
+    if (!match) return "You don't ignore anyone matching \"" + std::string(who) + "\".";
+    const auto name = s.ignored_players[match];
+    set_ignored(s, match, name, false);
+    return "You no longer ignore " + (name.empty() ? std::to_string(match) : name) + ".";
+}
+namespace {
 // party: "invite|join|kick|promote <player>", "accept|decline [player]", "leave", "open",
 // "close" or "status". Menus pass SteamID64s; people type the start of a name.
 std::string party_command(Session &s, std::string_view argument) {
     while (!argument.empty() && argument.front() == ' ') argument.remove_prefix(1);
     const auto space = argument.find(' ');
-    const auto verb = lowered(argument.substr(0, space));
+    const auto verb = ascii_lower(argument.substr(0, space));
     auto who = space == std::string_view::npos ? std::string_view{} : argument.substr(space + 1);
     while (!who.empty() && who.front() == ' ') who.remove_prefix(1);
     if (s.mode != Mode::host && s.mode != Mode::join) return "Parties need a multiplayer session.";
@@ -431,10 +464,6 @@ std::string edit_player_distance(Session &s, std::string_view argument) {
                                               : "Players within " + std::to_string(static_cast<int>(value)) + " m are shown as skaters.";
 }
 std::string start_pose_dump(Session &s, std::string_view argument) {
-#if defined(DINGOSDK_LEAN_PLAYTEST)
-    (void)s; (void)argument;
-    return "Pose recording is not included in this playtest build.";
-#else
     int seconds{};
     const auto parsed = std::from_chars(argument.data(), argument.data() + argument.size(), seconds);
     if (parsed.ec != std::errc{} || parsed.ptr != argument.data() + argument.size() || seconds < 1 || seconds > 600)
@@ -451,7 +480,6 @@ std::string start_pose_dump(Session &s, std::string_view argument) {
     s.pose_dump_until = now_us() + static_cast<std::uint64_t>(seconds) * 1000000;
     s.pose_dump_count = 0;
     return "Recording your poses for " + std::to_string(seconds) + " s to " + path_utf8(file) + ". Skate as you normally would.";
-#endif
 }
 std::string edit_direct_connections(Session &s, std::string_view argument) {
     const auto enabled = parse_switch(argument, s.prefer_direct);
@@ -641,7 +669,7 @@ bool queue_command(std::string_view action, std::string_view argument, std::stri
          action != "chat-bubbles" && action != "chat-bubbles-own" && action != "chat-bubbles-distance" &&
          action != "chat-bubbles-duration" && action != "chat-bubbles-history" &&
          !own_mark_command(action) &&
-         action != "voice" && action != "voice-mute" && action != "objects-solid" &&
+         action != "voice" && action != "voice-mute" && action != "ignore" && action != "objects-solid" &&
          action != "voice-volume" && action != "voice-allow" && action != "voice-range" && action != "chat" && action != "typing" && action != "ban" && action != "unban" &&
          action != "world-layer-sync" && action != "noclip-allow" && action != "nobail-allow" && action != "boosts-allow" &&
          action != "tuning-enforce" && action != "tp" &&
@@ -707,7 +735,7 @@ std::string command(std::string_view action, std::string_view argument, std::str
             // dedicated server, which answers in chat.
             const auto line = argument.substr(1);
             const auto space = line.find(' ');
-            const auto verb = lowered(line.substr(0, space));
+            const auto verb = ascii_lower(line.substr(0, space));
             const auto rest = space == std::string_view::npos ? std::string_view{} : line.substr(space + 1);
             std::string result;
             if (verb.empty() || verb == "help" || verb == "?") {
@@ -723,6 +751,11 @@ std::string command(std::string_view action, std::string_view argument, std::str
                 return refused.empty() ? "Message sent." : refused;
             } else if (!dedicated_host(s) && verb == "party") {
                 result = party_command(s, rest);
+            } else if (verb == "ignore" || verb == "unignore" || verb == "ignored") {
+                result = ignore_command(s, verb, rest);
+            } else if (queue_plugin_chat_command(s, verb, rest)) {
+                // A plugin's: it runs on this PC at the plugins' next tick, and answers itself.
+                return "Command sent.";
             } else {
                 result = send_chat_command(s, argument);
             }
@@ -828,6 +861,23 @@ std::string command(std::string_view action, std::string_view argument, std::str
             s.voice.volume(id, volume);
             publish(s);
             return "Player voice volume updated.";
+        }
+        // ignore <SteamID64> on|off: the menus' Ignore button.
+        if (action == "ignore") {
+            const auto split = argument.find(' ');
+            std::uint64_t id{};
+            const auto result = std::from_chars(argument.data(), argument.data() + (split == std::string_view::npos ? argument.size() : split), id);
+            const auto enabled = split == std::string_view::npos ? std::string_view{} : argument.substr(split + 1);
+            if (result.ec != std::errc{} || (enabled != "on" && enabled != "off")) return "ignore <SteamID64> on|off";
+            if (enabled == "off") {
+                if (!ignored(s, id)) return "You don't ignore that player.";
+                set_ignored(s, id, s.ignored_players[id], false);
+                return "Player no longer ignored.";
+            }
+            const auto *p = find_peer(s, id);
+            if (!p || id == s.transport.status().local_id || (dedicated_host(s) && id == s.host_id)) return "Choose a connected player to ignore.";
+            set_ignored(s, id, peer_name(s, *p), true);
+            return "Player ignored.";
         }
         if (action == "voice-mute") {
             const auto split = argument.find(' ');

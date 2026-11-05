@@ -11,8 +11,10 @@
 #include <array>
 #include <atomic>
 #include <bit>
+#include <cstring>
 #include <format>
 #include <mutex>
+#include <string_view>
 
 #pragma intrinsic(_ReturnAddress)
 
@@ -21,12 +23,57 @@ namespace {
 namespace et = addr::engine_tweaks;
 using Fingerprint = game::build::Fingerprint;
 constexpr std::size_t tweak_count = 5;
+constexpr double macos_wine_default_job_wake_us = 50.0;
 std::uintptr_t base{};
 std::atomic<bool> installed{};
 std::array<std::atomic<bool>, tweak_count> ready{};
 std::mutex toggling;
 
 std::size_t slot(Tweak tweak) noexcept { return static_cast<std::size_t>(tweak); }
+
+// Running under Wine on macOS (CrossOver), where x86_64 runs under Rosetta 2 across hybrid P/E
+// cores and worker semaphore wakeups go through wineserver.
+bool under_macos_wine() noexcept {
+    static const bool macos = []() noexcept {
+        using HostVersion = void(__cdecl*)(const char**, const char**);
+        const auto ntdll = GetModuleHandleW(L"ntdll.dll");
+        const auto host = ntdll ? reinterpret_cast<HostVersion>(GetProcAddress(ntdll, "wine_get_host_version")) : nullptr;
+        const char* sysname{};
+        if (host) host(&sysname, nullptr);
+        return sysname && std::string_view(sysname) == "Darwin";
+    }();
+    return macos;
+}
+
+template<std::size_t ContractSize, std::size_t PatchSize>
+bool apply_inline_guard(std::uintptr_t contract_rva, const std::array<unsigned char, ContractSize>& contract,
+    std::uintptr_t patch_offset, const std::array<unsigned char, PatchSize>& patch) noexcept {
+    static_assert(PatchSize <= ContractSize);
+    std::array<unsigned char, ContractSize> current{};
+    if (!memory::peek(base + contract_rva, current)) return false;
+    auto expected_patched = contract;
+    std::memcpy(expected_patched.data() + patch_offset, patch.data(), PatchSize);
+    if (current == expected_patched) return true;
+    if (current != contract) return false;
+    auto* const destination = reinterpret_cast<void*>(base + contract_rva + patch_offset);
+    DWORD previous{}, discarded{};
+    if (!VirtualProtect(destination, PatchSize, PAGE_EXECUTE_READWRITE, &previous)) return false;
+    std::memcpy(destination, patch.data(), PatchSize);
+    const bool flushed = FlushInstructionCache(GetCurrentProcess(), destination, PatchSize) != FALSE;
+    return VirtualProtect(destination, PatchSize, previous, &discarded) != FALSE && flushed;
+}
+
+void install_macos_wine_stall_guards() noexcept {
+    if (!under_macos_wine()) return;
+    const bool runner_ok = apply_inline_guard(et::task_queue_runner_exit_rva, et::task_queue_runner_exit_contract,
+        et::task_queue_runner_exit_patch_offset, et::task_queue_runner_exit_patch);
+    const bool server_ok = apply_inline_guard(et::server_step_reader_lock_rva, et::server_step_reader_lock_contract,
+        et::server_step_reader_lock_patch_offset, et::server_step_reader_lock_patch);
+    if (!runner_ok || !server_ok)
+        logging::log(logging::Level::warning, logging::Channel::runtime,
+            "Engine tweaks: macOS Wine simulation stall guards differ for this build (TaskQueue runner {}, Server reader lock {}).",
+            runner_ok ? "patched" : "skipped", server_ok ? "patched" : "skipped");
+}
 
 // Counting on hot paths: a per-thread tally folded into the shared total every 256 counts, so
 // it never touches a shared cache line per call (totals lag by up to 255 a thread).
@@ -301,6 +348,7 @@ bool install(std::uintptr_t b) noexcept {
     if (installed.load()) return true;
     base = b;
     if (!base) return false;
+    install_macos_wine_stall_guards();
     struct Hook { Tweak tweak; const Fingerprint* contract; void* detour; void** original; };
     const std::array hooks{
         Hook{Tweak::gi, &et::gi_update, reinterpret_cast<void*>(&gi_hook), reinterpret_cast<void**>(&original_gi)},
@@ -327,16 +375,20 @@ bool install(std::uintptr_t b) noexcept {
     if (!missing.empty())
         logging::log(logging::Level::warning, logging::Channel::runtime,
             "Engine tweaks: this build's functions differ for {}; those stay stock.", missing);
-    for (const auto tweak : {Tweak::main_sleep, Tweak::dirty_skip}) {
+    for (const auto tweak : {Tweak::job_wake, Tweak::main_sleep, Tweak::dirty_skip}) {
+        const auto wanted = default_value(tweak);
+        if (wanted <= 0) continue;
         std::string error;
-        if (available(tweak) && !set(tweak, default_value(tweak), error))
+        if (available(tweak) && !set(tweak, wanted, error))
             logging::log(logging::Level::warning, logging::Channel::runtime, "Engine tweaks: {} left off: {}", name(tweak), error);
     }
     return missing.empty();
 }
 
 double default_value(Tweak tweak) noexcept {
-    return tweak == Tweak::main_sleep || tweak == Tweak::dirty_skip ? 1 : 0;
+    if (tweak == Tweak::dirty_skip) return 1;
+    if (under_macos_wine()) return tweak == Tweak::job_wake ? macos_wine_default_job_wake_us : 0;
+    return tweak == Tweak::main_sleep ? 1 : 0;
 }
 
 bool available(Tweak tweak) noexcept { return installed.load() && ready[slot(tweak)].load(); }

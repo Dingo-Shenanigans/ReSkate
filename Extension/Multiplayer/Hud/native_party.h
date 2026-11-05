@@ -42,8 +42,6 @@ void spectate_party_member(std::uint64_t id) noexcept;
 bool party_spectating() noexcept;
 // Returns only a record owned by this adapter, validated against this manager.
 std::uint64_t native_party_player_info(std::uintptr_t manager, std::size_t slot) noexcept;
-// Lookup by session identity for native activity leaderboard rows.
-std::uint64_t native_party_player_info_by_id(std::uintptr_t manager, std::uint64_t id) noexcept;
 std::string native_party_status();
 // Whether players can form parties: in a session, a lobby or a dedicated server. Outside one
 // the game's party buttons are refused.
@@ -65,6 +63,11 @@ bool native_party_map_icon_visible(std::size_t slot) noexcept;
 // Selectable party markers on the pause map (off by default; see native_party_internal.h).
 void set_native_party_map_markers(bool enabled) noexcept;
 bool native_party_map_markers() noexcept;
+// Other players' QuickDrop fast travel flags on the pause map. Test: a copy of each of your own
+// flags 6 m east, as if another player had placed it.
+void set_native_party_flag_marker_test(bool enabled) noexcept;
+bool native_party_flag_marker_test() noexcept;
+unsigned native_party_flag_markers() noexcept;
 // Every challenge start (StartChallenge, any thread): whether this copy runs coop. A coop copy
 // shows its coop objective ("all players complete the base challenge") on the objective list and
 // finish screen even when no Coop button was pressed here (a guest's copy, or a leader's Solo).

@@ -17,7 +17,12 @@ struct Candidate {
     std::filesystem::path directory; // the mod folder
     std::string fingerprint;         // changes when any of its files does
     std::string refusal;             // why it may not load, from its files alone, or empty
-    bool operator==(const Candidate&) const = default;
+    std::string plugin_fingerprint;  // changes when a file of the plugin itself does (plugin_approval.h)
+    std::shared_ptr<const PluginSources> sources; // the approved manifest and code, captured off the game thread
+    bool operator==(const Candidate& other) const {
+        return id == other.id && directory == other.directory && fingerprint == other.fingerprint && refusal == other.refusal &&
+               plugin_fingerprint == other.plugin_fingerprint;
+    }
 };
 
 // What the host needs from where it runs: the game, or the test runner.
@@ -27,13 +32,19 @@ public:
     virtual void log(LogLevel level, std::string_view text) = 0;
     virtual void console(std::string_view text) = 0;
     virtual double now_ms() = 0;
+    // Whether the player has this plugin turned on (plugin_approval.h); one they have not is held, not
+    // loaded. Nothing: there is no player to ask here, and the host only remembers `plugin off`. Every
+    // environment says so itself: none loads plugins by default.
+    virtual std::optional<bool> approved(const Candidate&) = 0;
+    // `plugin on` and `plugin off`: the player's answer for the plugin as it is now.
+    virtual void approve(const Candidate&, bool /*on*/) {}
     // <root>/<plugin id>/storage.json holds each plugin's storage.
     virtual std::filesystem::path storage_root() = 0;
     // Whether ReSkate has a console command starting with this word.
     virtual bool builtin_command(std::string_view word) = 0;
     // The game (Services, plugin_vm.h). Where there is none, there is no skater and nothing to hit.
     virtual std::optional<SkaterState> skater() { return std::nullopt; }
-    virtual Teleport teleport(std::string_view /*plugin*/, const Vec3&, float) { return Teleport::unavailable; }
+    virtual Teleport teleport(std::string_view /*plugin*/, const Vec3&, float, std::optional<bool> = std::nullopt) { return Teleport::unavailable; }
     virtual std::optional<Vec3> raycast(const Vec3&, const Vec3&) { return std::nullopt; }
     virtual std::optional<ScoreState> score() { return std::nullopt; }
     virtual void toast(std::string_view /*plugin*/, LogLevel, std::string_view) {}
@@ -113,13 +124,16 @@ private:
         Candidate candidate;
         std::unique_ptr<Plugin> plugin;
         std::string failure; // why it is not running
-        bool held{};         // switched off with `plugin off` until `plugin on` or the game restarts
+        bool held{};         // not turned on by the player: waiting for an answer, or switched off
     };
     void load(Entry& entry);
     void unload(Entry& entry);
     // A plugin that stopped itself (a limit, its errors) is closed and its commands released.
     void collect(Entry& entry);
     void release_commands(std::string_view id);
+    // The chat "/" commands the player typed, to their plugins; and the list to the chat when it changed.
+    void run_chat_commands();
+    void publish_chat_commands();
     Entry* find(std::string_view id);
 
     void log(std::string_view plugin, LogLevel level, std::string_view text) override;
@@ -128,9 +142,10 @@ private:
     std::string level() override;
     std::filesystem::path storage_file(std::string_view plugin) override;
     std::string claim_command(std::string_view plugin, std::string_view name) override;
+    std::string claim_chat_command(std::string_view plugin, std::string_view name) override;
     std::optional<SkaterState> skater() override { return environment_.skater(); }
-    Teleport teleport(std::string_view plugin, const Vec3& position, float heading) override {
-        return environment_.teleport(plugin, position, heading);
+    Teleport teleport(std::string_view plugin, const Vec3& position, float heading, std::optional<bool> on_board = std::nullopt) override {
+        return environment_.teleport(plugin, position, heading, on_board);
     }
     std::optional<Vec3> raycast(const Vec3& from, const Vec3& to) override { return environment_.raycast(from, to); }
     std::optional<ScoreState> score() override { return environment_.score(); }
@@ -166,6 +181,8 @@ private:
     std::string suffix_;
     std::map<std::string, Entry, std::less<>> entries_;
     std::map<std::string, std::string, std::less<>> commands_; // command name: plugin id
+    std::map<std::string, std::string, std::less<>> chat_commands_; // chat "/" command name: plugin id
+    bool chat_commands_changed_{};
     std::string level_;
     double next_save_{};
     SessionState session_;
@@ -178,12 +195,15 @@ private:
     };
     std::vector<Emitted> events_; // emitted since the last tick
     std::optional<std::uint32_t> skater_state_;
+    std::optional<Game::MenuState> menu_state_; // as last read, while a plugin has the menu permission
     std::uint64_t wipeouts_{};
     bool wipeouts_known_{};
     std::uint64_t chat_seen_{};
     bool chat_started_{};
     std::uint64_t track_revision_{};
     double next_track_{};
+    std::uint64_t favorites_generation_{};
+    bool favorites_known_{};
     bool throwdown_active_{};
 };
 }

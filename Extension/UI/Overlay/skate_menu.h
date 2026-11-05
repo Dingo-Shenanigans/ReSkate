@@ -2,7 +2,6 @@
 
 #include "overlay.h"
 #include "park_editor.h"
-#include "Engine/Scripting/custom_scripts.h"
 #include <imgui.h>
 #include <optional>
 #include <map>
@@ -72,17 +71,13 @@ struct SkateMenu {
     float scale = default_menu_scale;
     bool scale_editing{};
     // Selected tab on each page; see the Page list in skate_menu_internal.h.
-    int map_tab = 0, build_tab = 0, skater_tab = 0, settings_tab = 0, mods_tab = 0;
+    int map_tab = 0, build_tab = 0, skater_tab = 0, settings_tab = 0;
     int addon = 0; // the ADDONS page's addon (menu::Addon)
     std::string plugin_page; // the PLUGINS section's plugin, by its id
     // Window or full screen, as just chosen, until the saved setting comes back through the model.
     std::optional<bool> fullscreen_pending;
     double fullscreen_until = 0;
     bool fullscreen_drawn = false; // the last frame was drawn full screen
-    bool loose_files_settings_loaded{}, loose_files_saved{true};
-    bool custom_scripts_scanned{};
-    std::vector<custom_scripts::Script> custom_script_rows;
-    std::string custom_script_error;
     std::array<std::optional<int>, 3> graphics_pending{};
     std::array<double, 3> graphics_pending_until{};
     std::array<char, 128> object_search{};

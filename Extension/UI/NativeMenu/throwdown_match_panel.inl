@@ -350,13 +350,14 @@ bool pending_match_panel_request(const Context&,std::uint64_t now) {
     return p.requested_until && now<p.requested_until;
 }
 std::optional<float> native_activity_camera_fov(const Context& c) {
-    const auto manager=read<Address>(c.base+0x75cbc48);
-    if(!manager || read<Address>(manager)!=c.base+0x63ece68)return {};
+    namespace views=addr::client_source_spawn;
+    const auto manager=read<Address>(c.base+views::view_manager);
+    if(!manager || read<Address>(manager)!=c.base+views::view_manager_vtable)return {};
     const auto first=read<Address>(manager+8),last=read<Address>(manager+16);
     if(last<first || last-first>32*8 || (last-first)%8)return {};
     for(auto at=first;at<last;at+=8) {
         const auto view=read<Address>(at);
-        if(!view || read<Address>(view)!=c.base+0x63ed0a0 || read<unsigned>(view+0x148) || read<unsigned>(view+0x14c))continue;
+        if(!view || read<Address>(view)!=c.base+views::camera_view_vtable || read<unsigned>(view+0x148) || read<unsigned>(view+0x14c))continue;
         const auto camera=read<Address>(view+0x2b0);
         if(!camera)return {};
         const auto fov=read<float>(camera+0xac);

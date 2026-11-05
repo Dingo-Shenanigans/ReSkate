@@ -260,6 +260,25 @@ std::string sha256_file(const fs::path& path) {
 #endif
 }
 
+std::string sha256_bytes(std::string_view data) {
+    std::array<unsigned char, 32> digest{};
+#ifdef _WIN32
+    if (BCryptHash(BCRYPT_SHA256_ALG_HANDLE, nullptr, 0, reinterpret_cast<PUCHAR>(const_cast<char*>(data.data())),
+            static_cast<ULONG>(data.size()), digest.data(), static_cast<ULONG>(digest.size())) < 0)
+        detail::fail("Cannot compute SHA-256");
+#else
+    SHA256(reinterpret_cast<const unsigned char*>(data.data()), data.size(), digest.data());
+#endif
+    constexpr char digits[] = "0123456789abcdef";
+    std::string output;
+    output.reserve(digest.size() * 2);
+    for (const auto byte : digest) {
+        output.push_back(digits[byte >> 4]);
+        output.push_back(digits[byte & 15]);
+    }
+    return output;
+}
+
 #ifdef _WIN32
 
 PeFileInfo inspect_pe_file(const fs::path& path) {

@@ -39,10 +39,16 @@ void Host::load(Entry& entry) {
     }
     Manifest manifest;
     try {
-        std::string error;
-        const auto text = read_package_file(entry.candidate.directory / manifest_file, maximum_manifest_bytes, error);
-        if (!error.empty()) throw std::runtime_error(std::string(manifest_file) + " " + error);
-        manifest = parse_manifest(text);
+        if (entry.candidate.sources) {
+            const auto found = entry.candidate.sources->find(plugin_source_key(manifest_file));
+            if (found == entry.candidate.sources->end()) throw std::runtime_error("reskate-plugin.json is missing from the approved source snapshot");
+            manifest = parse_manifest(found->second);
+        } else {
+            std::string error;
+            const auto text = read_package_file(entry.candidate.directory / manifest_file, maximum_manifest_bytes, error);
+            if (!error.empty()) throw std::runtime_error(std::string(manifest_file) + " " + error);
+            manifest = parse_manifest(text);
+        }
     } catch (const std::exception& error) {
         entry.failure = error.what();
         environment_.log(LogLevel::warn, std::format("Plugin {} was not loaded: {}", id, entry.failure));
@@ -57,7 +63,7 @@ void Host::load(Entry& entry) {
     std::string permissions;
     for (const auto& permission : manifest.permissions) permissions += (permissions.empty() ? "" : ", ") + permission;
     Services& services = *this;
-    entry.plugin = std::make_unique<Plugin>(id + suffix_, entry.candidate.directory, std::move(manifest), services, limits_);
+    entry.plugin = std::make_unique<Plugin>(id + suffix_, entry.candidate.directory, std::move(manifest), services, limits_, entry.candidate.sources);
     // Its messages go under the name its manifest.json gives it, the same on every player's game
     // whatever its folder is called; the folder's name when it has none.
     std::string channel = id;
@@ -72,9 +78,8 @@ void Host::load(Entry& entry) {
     } catch (const std::exception&) {}
     entry.plugin->set_channel(channel);
     if (!entry.plugin->load()) {
-        entry.failure = entry.plugin->reason();
-        entry.plugin.reset();
-        release_commands(id); // its own log says why it stopped
+        // Startup can own native resources already, even though no tick ran.
+        collect(entry);
         return;
     }
     environment_.log(LogLevel::info, std::format("Plugin {} loaded ({}).", id, permissions.empty() ? "no permissions" : permissions));
@@ -102,6 +107,29 @@ void Host::collect(Entry& entry) {
 
 void Host::release_commands(std::string_view id) {
     std::erase_if(commands_, [&](const auto& item) { return item.second == id; });
+    if (std::erase_if(chat_commands_, [&](const auto& item) { return item.second == id; }) > 0) chat_commands_changed_ = true;
+}
+
+void Host::run_chat_commands() {
+    if (side_ != Side::client) return; // (a lobby host's server copies share its game: they leave these alone)
+    for (const auto& call : environment_.game().take_chat_commands()) {
+        const auto owner = chat_commands_.find(call.name);
+        if (owner == chat_commands_.end()) continue;
+        auto* entry = find(owner->second);
+        if (!entry || !entry->plugin) continue;
+        entry->plugin->run_chat_command(call.name, call.arguments);
+        collect(*entry);
+    }
+}
+
+void Host::publish_chat_commands() {
+    if (side_ != Side::client || !chat_commands_changed_) return;
+    chat_commands_changed_ = false;
+    std::vector<ChatCommandInfo> list;
+    for (const auto& [id, entry] : entries_)
+        if (entry.plugin)
+            for (auto& info : entry.plugin->chat_commands()) list.push_back(std::move(info));
+    environment_.game().set_chat_commands(std::move(list));
 }
 
 void Host::apply(const std::vector<Candidate>& found) {
@@ -119,15 +147,20 @@ void Host::apply(const std::vector<Candidate>& found) {
     for (const auto& [id, candidate] : wanted) {
         auto* entry = find(id);
         if (!entry) {
-            entry = &entries_.emplace(id, Entry{*candidate, {}, {}, false}).first->second;
-            load(*entry);
+            entry = &entries_.emplace(id, Entry{*candidate, {}, {}, environment_.approved(*candidate) == false}).first->second;
+            if (!entry->held) load(*entry);
             continue;
         }
-        if (entry->candidate == *candidate) continue;
+        // The player's answer is read each time, so turning a plugin on or off applies here too.
+        const auto answer = environment_.approved(*candidate);
+        const bool held = answer ? !*answer : entry->held;
+        if (entry->candidate == *candidate && entry->held == held) continue;
+        const bool changed = entry->candidate != *candidate;
         entry->candidate = *candidate;
-        if (entry->held) continue;
-        environment_.log(LogLevel::info, std::format("Plugin {} reloading: its files changed.", id));
+        entry->held = held;
         unload(*entry);
+        if (held) continue;
+        if (changed) environment_.log(LogLevel::info, std::format("Plugin {} reloading: its files changed.", id));
         load(*entry);
     }
 }
@@ -141,6 +174,7 @@ void Host::tick(double dt_ms) {
     deliver_events();
     deliver_http();
     follow_game();
+    run_chat_commands();
     for (auto& [id, entry] : entries_) {
         if (!entry.plugin) continue;
         entry.plugin->tick(dt_ms);
@@ -148,6 +182,7 @@ void Host::tick(double dt_ms) {
         if (save && entry.plugin) entry.plugin->save_storage();
     }
     draw_and_build();
+    publish_chat_commands();
 }
 
 void Host::follow_session() {
@@ -291,6 +326,19 @@ void Host::follow_game() {
             each([&](Plugin& plugin, const std::string&) { plugin.game_event("bail_end", "events.skater", data); });
         }
     }
+    // The pause menu, ReSkate's menu and the replay editor coming up and going. A plugin that loads
+    // with one already up reads it (menu.state); what was up before anyone listened is not news.
+    if (wants("menu")) {
+        const auto now = game.menu_state();
+        if (menu_state_ && now != *menu_state_) {
+            const auto previous = *menu_state_;
+            each([&](Plugin& plugin, const std::string&) { plugin.menu_changed(now, previous); });
+        }
+        menu_state_ = now;
+    } else {
+        menu_state_.reset();
+    }
+    const bool geometry = wants("events.physics.geometry");
     if (wants("events.physics"))
         for (const auto& step : game.take_physics_steps()) {
             auto data = Json::object();
@@ -312,7 +360,28 @@ void Host::follow_game() {
                 bodies[b.name] = std::move(body);
             }
             data["bodies"] = std::move(bodies);
-            each([&](Plugin& plugin, const std::string&) { plugin.game_event("physics_step", "events.physics", data); });
+            auto detailed = Json::object();
+            if (geometry) {
+                detailed = data;
+                if (step.state) detailed["state"] = *step.state;
+                for (const auto& b : step.bodies) {
+                    auto& body = detailed["bodies"][b.name];
+                    if (b.point) body["point"] = Json::array({(*b.point)[0], (*b.point)[1], (*b.point)[2]});
+                    if (b.normal) body["normal"] = Json::array({(*b.normal)[0], (*b.normal)[1], (*b.normal)[2]});
+                }
+                auto poses = Json::object();
+                for (const auto& [name, p] : step.poses) {
+                    auto pose = Json::object(), matrix = Json::array();
+                    for (const float v : p.transform) matrix.push_back(v);
+                    pose["transform"] = std::move(matrix);
+                    pose["velocity"] = Json::array({p.velocity[0], p.velocity[1], p.velocity[2]});
+                    poses[name] = std::move(pose);
+                }
+                detailed["poses"] = std::move(poses);
+            }
+            each([&](Plugin& plugin, const std::string&) {
+                plugin.game_event("physics_step", "events.physics", plugin.has("events.physics.geometry") ? detailed : data);
+            });
         }
     if (wants("events.skater"))
         for (const auto& launch : game.take_launches()) each([&](Plugin& plugin, const std::string&) { plugin.launched(launch); });
@@ -382,6 +451,15 @@ void Host::follow_game() {
             throwdown_active_ = active;
             each([&](Plugin& plugin, const std::string&) { plugin.throwdown_phase(active ? "started" : "ended"); });
         }
+    }
+    // Starred items (reskate.menu.favorites). The first look is the baseline: a plugin that starts
+    // after the file was read calls favorites() rather than hearing a change that already happened.
+    if (wants("menu")) {
+        const auto generation = game.favorites_generation();
+        if (favorites_known_ && generation != favorites_generation_)
+            each([&](Plugin& plugin, const std::string&) { plugin.favorites_changed(); });
+        favorites_generation_ = generation;
+        favorites_known_ = true;
     }
     // Answers to a server copy's polls (server.poll), and polls that closed unanswered, to the
     // plugin that asked.
@@ -564,7 +642,13 @@ std::vector<Status> Host::status() const {
 std::string Host::reload(std::string_view id) {
     auto* entry = find(id);
     if (!entry) return std::format("error: There is no plugin {}.", id);
-    entry->held = false;
+    if (entry->held) return std::format("error: Plugin {} is switched off: plugin on {} turns it on.", id, id);
+    // (Its files are asked about again: what loads is what the player answered for.)
+    if (environment_.approved(entry->candidate) == false) {
+        entry->held = true;
+        unload(*entry);
+        return std::format("error: Plugin {} is not turned on: plugin on {} turns it on.", id, id);
+    }
     unload(*entry);
     load(*entry);
     return entry->plugin ? std::format("Plugin {} reloaded.", id) : std::format("error: Plugin {} did not start: {}", id, entry->failure);
@@ -573,15 +657,19 @@ std::string Host::reload(std::string_view id) {
 std::string Host::switch_off(std::string_view id) {
     auto* entry = find(id);
     if (!entry) return std::format("error: There is no plugin {}.", id);
+    environment_.approve(entry->candidate, false);
     entry->held = true;
     unload(*entry);
-    return std::format("Plugin {} switched off until plugin on {}, or the next launch.", std::string(id) + suffix_, std::string(id) + suffix_);
+    return std::format("Plugin {} switched off until plugin on {}.", std::string(id) + suffix_, std::string(id) + suffix_);
 }
 
 std::string Host::switch_on(std::string_view id) {
     auto* entry = find(id);
     if (!entry) return std::format("error: There is no plugin {}.", id);
     if (entry->plugin) return std::format("Plugin {} is running.", id);
+    environment_.approve(entry->candidate, true);
+    // Where the files still have to be checked, it starts when they have been (apply loads it then).
+    if (environment_.approved(entry->candidate) == false) return std::format("Plugin {} is turned on and starts once its files are checked.", id);
     entry->held = false;
     load(*entry);
     return entry->plugin ? std::format("Plugin {} started.", id) : std::format("error: Plugin {} did not start: {}", id, entry->failure);
@@ -612,6 +700,21 @@ std::string Host::claim_command(std::string_view plugin, std::string_view name) 
         if (overlaps) return std::format("the plugin {} has the console command \"{}\"", owner, taken);
     }
     commands_.emplace(std::string(name), std::string(plugin));
+    return {};
+}
+
+std::string Host::claim_chat_command(std::string_view plugin, std::string_view name) {
+    // The chat's own commands and a dedicated server's (a session also keeps the ones it lists first).
+    static constexpr std::string_view reserved[] = {
+        "help", "tp", "p", "party", "ignore", "unignore", "ignored", "w", "whisper", "tell", "msg", "msg-party", "msg-admins", "vote", "votes", "vote-cancel",
+        "yes", "no", "y", "n", "poll", "kick", "ban", "unban", "map", "map-pool", "rotation", "tod", "tpall", "tphere",
+        "teleport", "announce", "announce-to", "announcements", "role", "roles", "park-mod", "bone-scale"};
+    if (std::find(std::begin(reserved), std::end(reserved), name) != std::end(reserved))
+        return std::format("the chat has a command \"/{}\": pick another name", name);
+    if (const auto taken = chat_commands_.find(name); taken != chat_commands_.end() && taken->second != plugin)
+        return std::format("the plugin {} has the chat command \"/{}\"", taken->second, name);
+    chat_commands_.insert_or_assign(std::string(name), std::string(plugin));
+    chat_commands_changed_ = true;
     return {};
 }
 }

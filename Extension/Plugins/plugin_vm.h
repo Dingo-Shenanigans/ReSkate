@@ -4,11 +4,13 @@
 #include "plugin_game.h"
 #include "Engine/Core/Json/json.h"
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <filesystem>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -27,10 +29,12 @@ enum class LogLevel { info, warn, error };
 
 struct Limits {
     std::size_t memory = 64u << 20;     // the VM's heap
-    double call_ms = 50;                // one call into the plugin (load, a handler, a command)
+    double call_ms = 50;                // one call into the plugin (load, a handler, a command): past it, said...
+    double hang_ms = 1000;              // ...and past this, stopped as a hang
+    double io_ms = 250;                 // ReSkate's own reading and compiling in one call, kept out of call_ms up to this
     double unload_ms = 20;              // its unload handlers, together
-    double tick_ms = 2;                 // the average time a tick, over a window of 1 s...
-    int over_windows = 3;               // ...over it this many windows in a row stops it
+    double tick_ms = 6;                 // the average time a tick, over a window of 1 s...
+    int over_windows = 5;               // ...over it this many windows in a row stops it
     int errors = 5;                     // more errors than this...
     double error_window_ms = 10'000;    // ...in this long stops it
     int log_lines_per_second = 50;
@@ -40,6 +44,7 @@ struct Limits {
     std::size_t handlers = 256;         // per event
     std::size_t timers = 1024;
     std::size_t commands = 64;
+    std::size_t chat_commands = 8;      // "/" commands in chat
     int raycasts_per_tick = 64;
     float raycast_metres = 1000;        // the longest ray
     int teleports_per_second = 2;
@@ -47,7 +52,14 @@ struct Limits {
     std::size_t shape_text_bytes = 64u << 10;
     std::size_t images = 32; // different pictures a plugin draws
     std::size_t clip_bytes = 48u << 20; // the clips a plugin holds, as poses (40 bytes a joint a frame)
-    std::size_t sounds = 32;            // different waves a plugin plays, each at most 30 s
+    // Different waves a plugin holds at once, each at most 30 s, and their decoded samples together
+    // (16 kHz mono 16-bit, so 30 s is about 0.9 MB). Past either, the wave played longest ago that
+    // no sound still plays is let go; only when every one is still playing is a new one refused.
+    // A plugin plays at most 8 sounds at once (plugin_sound.cpp), so 32 always leaves one to let go,
+    // and 32 waves of 30 s keep a plugin's samples near 30 MB, well inside sound_bytes.
+    std::size_t sounds = 32;
+    std::size_t sound_bytes = 64u << 20;
+    std::size_t preloads = 8;           // clips and sounds being read at once (reskate.animation.preload, reskate.audio.preload)
     int toasts = 3;                     // in 5 s
     int sounds_per_second = 10;
     std::size_t message_bytes = 4096 - 14; // a plugin message's payload (plugin_wire.h's header is 14)
@@ -99,6 +111,7 @@ struct ScoreState {
     bool in_trick{};
     std::string trick, detail; // the HUD's sequence header and descriptor ("Manual", "Kickflip"...)
     bool manual{};             // a manual is going on, as the HUD names it
+    float timer{};             // the HUD's line timer: what is left before the multiplier ends
 };
 // The multiplayer session as plugins see it: who is in it (the local player too).
 struct SessionPlayer {
@@ -123,10 +136,12 @@ struct HttpResponse {
     int status{};          // 0 when it failed
     std::string body, error;
 };
-// A mod in the Mods folder: its folder, the name it gives itself, whether it is on.
+// A mod in the Mods folder: its folder, the name it gives itself, whether it is on, and the author
+// and version its manifest declares (empty when it names none).
 struct ModInfo {
     std::string folder, title;
     bool on{};
+    std::string author, version;
 };
 
 // What a plugin's VM can reach outside itself. The host implements it.
@@ -140,10 +155,14 @@ public:
     virtual std::filesystem::path storage_file(std::string_view plugin) = 0;
     // Empty when the plugin may have the console command; otherwise why not.
     virtual std::string claim_command(std::string_view plugin, std::string_view name) = 0;
+    // Empty when the plugin may have the chat's "/name"; otherwise why not.
+    virtual std::string claim_chat_command(std::string_view plugin, std::string_view name) = 0;
     // The local skater, or empty without one (the menu, a load).
     virtual std::optional<SkaterState> skater() = 0;
     // `plugin`: whose call it is (a throwdown match of its own may let it through, kit::allows_teleports).
-    virtual Teleport teleport(std::string_view plugin, const Vec3& position, float heading) = 0;
+    // An empty on_board leaves the native spawn preference unchanged. An explicit value sets it
+    // at dispatch; native code may retain it for later teleports rather than automatically restoring it.
+    virtual Teleport teleport(std::string_view plugin, const Vec3& position, float heading, std::optional<bool> on_board = std::nullopt) = 0;
     // Where the line first meets the world's collision, or empty when it is clear (or not loaded).
     virtual std::optional<Vec3> raycast(const Vec3& from, const Vec3& to) = 0;
     // The score HUD now, or empty without one.
@@ -177,9 +196,11 @@ public:
 enum class State { loading, running, stopped };
 
 class Plugin {
+    friend struct ObjectPhysicsApi;
 public:
     // `directory` is the mod folder; `id` its folder name.
-    Plugin(std::string id, std::filesystem::path directory, Manifest manifest, Services& services, Limits limits);
+    Plugin(std::string id, std::filesystem::path directory, Manifest manifest, Services& services, Limits limits,
+           std::shared_ptr<const PluginSources> sources = {});
     ~Plugin();
     Plugin(const Plugin&) = delete;
     Plugin& operator=(const Plugin&) = delete;
@@ -223,6 +244,8 @@ public:
     void http_done(const HttpResponse& response);
     // The wider set's events, each to a plugin with its permission and a handler for it.
     void skater_changed(const char* state, const char* previous);
+    // menu: the pause menu, ReSkate's menu or the replay editor came up or went (menu_changed).
+    void menu_changed(const Game::MenuState& state, const Game::MenuState& previous);
     void bailed(std::uint64_t wipeouts, std::optional<SlamNews> slam);
     void launched(const LaunchNews& launch);
     // A game event with plain data (board_landed, body_hit, bail_end), to a plugin with `permission`.
@@ -237,27 +260,33 @@ public:
         Vec3 at{};
     };
     std::optional<float> touch_reach() const noexcept { return touch_reach_; }
-    const std::map<std::uint64_t, Contact>& contacts() const noexcept { return contacts_; }
     void touch_tick(const std::vector<Body>& bodies);
     void track_changed(const Track& track);
     void throwdown_phase(const char* phase);
     void action(const std::string& name);
+    // menu: the player's starred items changed (reskate.menu.favorites). No arguments.
+    void favorites_changed();
     // ui.screen: the screen it has open, built; and closed (by Esc), which it hears.
     std::optional<plugin_ui::Panel> build_screen(const std::vector<plugin_ui::Action>& actions);
     void close_screen();
     std::uint32_t channel() const noexcept { return channel_hash_; }
     // A console command it registered: the words after the command's name.
     void run_command(const std::string& name, const std::vector<std::string>& arguments);
+    // A chat "/" command it registered: the rest of the line the player typed.
+    void run_chat_command(const std::string& name, const std::string& arguments);
+    // Its chat "/" commands: the name, its arguments as help shows them, and its help.
+    std::vector<ChatCommandInfo> chat_commands() const;
     void save_storage();
 
     const std::string& id() const noexcept { return id_; }
+    // This VM's instance, new at each load: what owns its native bodies, never its plugin name.
+    std::uint64_t instance() const noexcept { return instance_; }
     const std::filesystem::path& directory() const noexcept { return directory_; }
     const Manifest& manifest() const noexcept { return manifest_; }
     State state() const noexcept { return state_; }
     const std::string& reason() const noexcept { return reason_; }
     std::size_t memory() const noexcept { return memory_; }
     double tick_ms() const noexcept { return last_window_ms_; }
-    // Its console commands and their help.
     // Its console commands, and the subcommands each declared ("prop random", run by "prop"'s
     // function): the name, its arguments as help shows them, and its help.
     std::vector<CommandInfo> commands() const;
@@ -271,21 +300,42 @@ private:
     friend struct UiApi;
     friend struct MoreApi;
     friend struct WorldApi;
-    friend struct ServicesApi;
     friend struct KitApi;
     friend struct CaptureApi;
+    friend struct ValuesApi;
+    friend struct PhysicsApi;
+    friend struct EffectsApi;
+    friend struct ViewmodelApi;
+    friend Game& game_of(Plugin& plugin); // plugin_api.h
+    std::uint64_t instance_{};
     struct Subcommand { std::string name, args, help; };
     struct Command { std::string help; int function{}; std::vector<Subcommand> subcommands; };
     struct Timer { double due{}, every{}; int function{}; };
     using Clock = std::chrono::steady_clock;
     enum class Halt { none, time, memory, stopped };
 
+    // ReSkate's own work for a call (reading a package file, decoding a clip or a sound, compiling
+    // a module): the call's deadline moves on by the time it took, up to limits_.io_ms a call. A
+    // slow disk, or a game still starting, no longer stops a plugin for what ReSkate did, and a
+    // plugin that reads in a loop is still stopped once the allowance is spent.
+    struct Untimed {
+        Plugin& plugin;
+        Clock::time_point start = Clock::now();
+        explicit Untimed(Plugin& of) : plugin(of) {}
+        Untimed(const Untimed&) = delete;
+        Untimed& operator=(const Untimed&) = delete;
+        ~Untimed() { plugin.untime(Clock::now() - start); }
+    };
+    void untime(Clock::duration took);
+
     static void* allocate(void* ud, void* ptr, std::size_t old_size, std::size_t new_size);
     static void interrupt(lua_State* L, int gc);
     // Calls the function under the `count` arguments on top of the main stack; false (and the
     // error reported) when it raised one. Stops the plugin past its limits.
     // With `results`, those are left on the main stack when it returns true.
-    bool call(int count, std::string_view what, double limit_ms, int results = 0);
+    // A call past limit_ms is said, with where the script was, and goes on; one past
+    // limits_.hang_ms is stopped. With `strict` (unload's share of its time) limit_ms stops it.
+    bool call(int count, std::string_view what, double limit_ms, int results = 0, bool strict = false);
     void report(std::string_view what, std::string_view message);
     // reskate.log and console.print: at most limits_.log_lines_per_second lines between them.
     bool count_line();
@@ -301,6 +351,7 @@ private:
     std::string id_;
     std::filesystem::path directory_;
     std::string code_root_; // the entry's folder in the package: where require looks
+    std::shared_ptr<const PluginSources> sources_; // absent only for direct test/legacy candidates
     Manifest manifest_;
     Services& services_;
     Limits limits_;
@@ -312,7 +363,11 @@ private:
     std::size_t memory_{};
     Halt halt_{Halt::none};
     bool memory_exceeded_{};
-    Clock::time_point deadline_{};
+    Clock::time_point deadline_{};  // past it, the call is stopped
+    Clock::time_point slow_after_{}; // past it, the call is said (Plugin::call)
+    std::optional<std::string> slow_at_; // where the script was when it passed slow_after_
+    double slow_told_{-1e9};          // a slow call is said at most every 10 s
+    Clock::duration untimed_{}; // of limits_.io_ms, used by this call
     bool timed_{};
     unsigned interrupts_{};
     double spent_ms_{};
@@ -325,7 +380,13 @@ private:
     std::vector<double> errors_;
     double log_second_{};
     int log_lines_{};
+    std::map<std::uint64_t, bool> effect_handles_; // bool: decal
+    void prune_effects();
+    int effect_calls_{};
     int raycasts_{};                    // since the last tick
+    body_query::Budget native_casts_{}; // world.probe's and probe_batch's native casts, failed ones included
+    unsigned body_prepares_{};          // explicit native body preparation calls since the last tick
+    unsigned body_reuses_{};            // creates that asked to reuse a parked native body since the last tick
     std::optional<float> touch_reach_;
     std::map<std::uint64_t, Contact> contacts_;
     double teleport_second_{};
@@ -340,8 +401,32 @@ private:
     std::map<std::string, std::shared_ptr<const anim_studio::Clip>, std::less<>> clips_;
     std::size_t clip_bytes_{};
     int recordings_{};
-    // reskate.audio: waves by their path in the package, and how many sounds began this second.
-    std::map<std::string, std::shared_ptr<const Wave>, std::less<>> waves_;
+    // reskate.audio: waves by their path in the package, each with when it was last played (a count
+    // of plays, for letting go of the oldest), the bytes they hold (at most limits_.sound_bytes),
+    // and how many sounds began this second.
+    struct CachedWave {
+        std::shared_ptr<const Wave> wave;
+        std::uint64_t played{};
+    };
+    std::map<std::string, CachedWave, std::less<>> waves_;
+    std::size_t wave_bytes_{};
+    std::uint64_t wave_plays_{};
+    // reskate.animation.preload and reskate.audio.preload: a package file read and decoded on a
+    // thread of its own, which fills in `result` and then sets `done`. A tick hands what it made
+    // into clips_ or waves_ and calls back (deliver_preloads, plugin_api_world.cpp).
+    struct Preloaded {
+        std::atomic<bool> done{};
+        std::shared_ptr<const anim_studio::Clip> clip;
+        std::shared_ptr<const Wave> wave;
+        std::string error;
+    };
+    struct Preload {
+        std::string path;
+        bool sound{};
+        int callback{}; // a ref, or 0
+        std::shared_ptr<Preloaded> result;
+    };
+    std::vector<Preload> preloads_;
     double wave_second_{};
     int wave_starts_{};
     int draw_table_{}, ui_table_{};
@@ -384,6 +469,8 @@ private:
     std::map<int, Timer> timers_;
     int next_timer_{1};
     std::map<std::string, Command, std::less<>> commands_;
+    struct ChatCommand { std::string args, help; int function{}; };
+    std::map<std::string, ChatCommand, std::less<>> chat_commands_;
     std::set<std::string, std::less<>> loading_modules_;
 
     Json storage_ = Json::object();

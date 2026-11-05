@@ -15,6 +15,7 @@
 #include "Engine/Resource/ebx_document.h"
 #include "Engine/Resource/toc.h"
 #include "Engine/Resource/shader_lookup.h"
+#include "Engine/Resource/texture.h"
 #include "Engine/Vfs/game_archives.h"
 #include "Engine/Vfs/mod_catalog.h"
 #include "Engine/Vfs/mod_merge_internal.h"
@@ -27,6 +28,7 @@
 #include <algorithm>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -316,10 +318,13 @@ struct Fixture {
     }
 
     // A mod with its own copy of a bundle: the manifest first (raw), then every payload.
+    // `retouch` changes the asset list as the mod's tool wrote it, wrongly or not.
     void add(const std::string& name, bool levels, const std::string& toc, const std::vector<std::string>& superbundles,
              const std::vector<Ebx>& assets, const std::vector<Resource>& resources = {}, const char* bundle = bundle_name,
-             const std::vector<Chunk>& chunks = {}) {
-        const auto listing = fb::write_binary_bundle(manifest_of(assets, resources, chunks));
+             const std::vector<Chunk>& chunks = {}, const std::function<void(fb::BinaryBundle&)>& retouch = {}) {
+        auto manifest = manifest_of(assets, resources, chunks);
+        if (retouch) retouch(manifest);
+        const auto listing = fb::write_binary_bundle(manifest);
         Bytes archive(listing);
         std::vector<fb::BundleFileInfo> files{{{true, package, 1}, 0, static_cast<std::uint32_t>(listing.size())}};
         const auto store = [&](const Bytes& payload) {
@@ -869,6 +874,54 @@ void two_merges_write_the_same_bytes() {
     expect(read(patch / "Win32" / fs::path(second_map_toc)) == toc, "same bytes: the second map's TOC differs");
 }
 
+// A map whose tool put a document of the map's own in place of the game's and kept the game's
+// asset list entry for it, its size and all (333-Skate_3_Improved's lighting descriptions in its
+// copy of the game's lighting bundles, 2026-11-04). The merged copy lists the size the payload
+// decodes to, as every entry of the game's own does, and says so; and it still does when the
+// merge goes by what the first one found in the map (ScanCache) rather than reading it again.
+void a_listed_size_the_payload_does_not_have() {
+    Fixture fixture("listed-size");
+    auto assets = game_copy();
+    const auto listed = assets[1].payload.size();
+    assets[1].payload = ebx_document(guid(2), {guid(20), guid(21)});
+    const auto decoded = assets[1].payload.size();
+    fixture.add("map", true, map_toc, {map_superbundle}, assets, {}, bundle_name, {},
+                [&](fb::BinaryBundle& manifest) { manifest.ebx[1].originalSize = listed; });
+    const auto patch = fixture.catalog.root / mods::generated_folder;
+    for (const std::string pass : {"first merge", "merge from what the first found"}) {
+        if (pass != "first merge") fs::remove(patch / mods::detail::stamp_file);
+        const auto report = mods::merge_mods(fixture.catalog);
+        expect(report.issue.empty() && report.built && !report.reused, "listed size, " + pass + ": the merge builds the patch\n" + describe(report));
+        if (!report.built) return;
+        expect(noted(report, std::string("map: ") + bundle_name + ": 1 asset(s) listed another size than their payload decodes to; "
+                             "the merged copy lists the payload's, e.g. test/other (" + std::to_string(listed) + " bytes listed, " +
+                             std::to_string(decoded) + " decoded)"),
+               "listed size, " + pass + ": the merge says what it repaired\n" + describe(report));
+        if (pass == "first merge") {
+            const auto scan = read(fixture.catalog.root / mods::detail::scan_cache_file);
+            expect(std::string(reinterpret_cast<const char*>(scan.data()), scan.size()).find("\nr\t") != std::string::npos,
+                   "listed size: what the first merge found in the map is kept for the next");
+        }
+        Patch merged(fixture);
+        std::optional<fb::BundleAsset> entry;
+        std::optional<fb::BundleFileInfo> file;
+        for (const auto& bundle : fb::read_toc(read(patch / "Win32" / fs::path(map_toc))).bundles)
+            if (const auto listing = mods::detail::list_bundle(merged.store, merged.root, merged.base, bundle, merged.game))
+                for (std::size_t index = 0; index < listing->manifest.ebx.size(); ++index)
+                    if (listing->manifest.ebx[index].name == "test/other") {
+                        entry = listing->manifest.ebx[index];
+                        file = listing->files.at(listing->first + index);
+                    }
+        expect(entry && file, "listed size, " + pass + ": the map's copy still holds test/other");
+        if (!entry || !file) return;
+        const auto bytes = merged.bytes(file->location, file->offset, file->size, "listed size: test/other");
+        expect(bytes == encoded(assets[1].payload), "listed size, " + pass + ": test/other is the map's own document as it ships it");
+        expect(entry->originalSize == decoded, "listed size, " + pass + ": the merged entry lists " + std::to_string(entry->originalSize) +
+               " bytes, the payload decodes to " + std::to_string(decoded));
+        expect(entry->sha1 == mods::detail::sha1_of(assets[1].payload), "listed size, " + pass + ": the merged entry's sha1 is the payload's");
+    }
+}
+
 void a_manifest_after_the_first_payload_keeps_asset_order() {
     Fixture fixture("manifest-order");
     const auto assets = game_copy();
@@ -1157,6 +1210,77 @@ void shader_selection_checks_the_winner(bool delivered, bool changed_heap, bool 
     expect(keys.contains(9) == private_graph, "unproved graphs cannot leak private program indices into stock");
     expect(keys.contains(5) == !changed_heap, "a non-retained custom contributor still contributes a proven stock alias");
 }
+
+void streamed_world_texture_chunk_gets_its_logical_offset() {
+    Fixture fixture("streamed-world-texture-offset");
+    const auto chunk_guid = guid(0x11); // low bit of byte 15 is 1 (compressed blocks)
+    Bytes header(180, std::byte{0});
+    const auto set_u32 = [&](std::size_t at, std::uint32_t v) { std::memcpy(header.data() + at, &v, 4); };
+    set_u32(8, 0);                      // type = 0 (2D)
+    set_u32(12, 54);                    // format = BC1
+    header[20] = std::byte{1};          // flags = texture_streams (0x1)
+    header[22] = std::byte{0}; header[23] = std::byte{8}; // width = 2048
+    header[24] = std::byte{0}; header[25] = std::byte{8}; // height = 2048
+    header[26] = std::byte{1};          // depth = 1
+    header[28] = std::byte{1};          // slices = 1
+    header[30] = std::byte{3};          // mip_count = 3
+    header[31] = std::byte{2};          // first_mip = 2 (already streamed by early Studio)
+    header[32] = std::byte{2};
+    std::memcpy(header.data() + 40, chunk_guid.bytes.data(), 16);
+    set_u32(56, 0x200000);              // mip 0: 2,097,152 bytes
+    set_u32(60, 0x80000);               // mip 1: 524,288 bytes (streamedBytes = 2,621,440)
+    set_u32(64, 0x20000);               // mip 2: 131,072 bytes (resident tail)
+    set_u32(116, 0x2a0000);             // chunk_size = 2,752,512
+    constexpr std::string_view group = "Worlds_Test";
+    std::memcpy(header.data() + 0x80, group.data(), group.size());
+
+    constexpr char level_toc[] = "levels/game/dingolevel_reskate_park/dingolevel_reskate_park.toc";
+    constexpr char level_sb[] = "Win32/levels/game/dingolevel_reskate_park/dingolevel_reskate_park";
+    const Bytes tail(0x20000, std::byte{0x5a});
+    fixture.add("park", true, level_toc, {level_sb}, game_copy(),
+                {{"content/worlds_test/worlds_test_0_0_static_sky_c", header}}, level_sb,
+                {{chunk_guid, tail, {1, 2}}});
+
+    // Mark the resource as a version-12 TextureAsset and list the streamed chunk in the level TOC,
+    // while leaving the bundle chunk entry at logicalOffset = 0, logicalSize = 131,072.
+    {
+        const auto mod_dir = fixture.catalog.root / "park";
+        const auto toc_path = mod_dir / "Win32" / fs::path(level_toc);
+        const auto cas_path = mod_dir / "Win32" / "pkg" / "cas_01.cas";
+        auto toc = fb::read_toc(read(toc_path));
+        auto region = fb::read_bundle_region(toc.bundles.front().region);
+        auto archive = read(cas_path);
+        auto manifest = fb::read_binary_bundle(
+            std::span<const std::byte>(archive.data() + region.files[0].offset, region.files[0].size));
+        manifest.resources[0].resourceType = fb::texture_resource_type;
+        manifest.resources[0].resourceMeta.assign(16, std::byte{0});
+        manifest.resources[0].resourceMeta[0] = std::byte{12};
+        manifest.chunks[0].logicalOffset = 0;
+        manifest.chunks[0].logicalSize = 0x20000;
+        const auto rewritten = fb::write_binary_bundle(manifest);
+        region.files[0].offset = static_cast<std::uint32_t>(archive.size());
+        region.files[0].size = static_cast<std::uint32_t>(rewritten.size());
+        archive.insert(archive.end(), rewritten.begin(), rewritten.end());
+        toc.bundles.front().region = fb::write_bundle_region(region.files);
+        toc.chunks.push_back({chunk_guid, {true, package, 1}, region.files.back().offset, region.files.back().size});
+        write(cas_path, archive);
+        write(toc_path, fb::write_patch_toc(toc.bundles, toc.chunks, toc.flags));
+    }
+
+    const auto report = mods::merge_mods(fixture.catalog);
+    expect(report.issue.empty() && report.built, "streamed world texture offset: merge builds\n" + describe(report));
+    Patch patch(fixture);
+    const auto merged_toc = fb::read_toc(read(patch.root / "Win32" / fs::path(level_toc)));
+    const auto listing = mods::detail::list_bundle(patch.store, patch.root, patch.base, merged_toc.bundles.front(), patch.game);
+    expect(listing && listing->manifest.chunks.size() == 1, "streamed world texture offset: merged bundle has its chunk");
+    if (listing && !listing->manifest.chunks.empty()) {
+        expect(listing->manifest.chunks[0].logicalOffset == 0x280000 &&
+                   listing->manifest.chunks[0].logicalSize == 0x20000,
+               "streamed world texture offset: bundle chunk gets logicalOffset 2,621,440 (got " +
+                   std::to_string(listing->manifest.chunks[0].logicalOffset) + ")");
+    }
+}
+
 } // namespace
 
 int main(int argc, char** argv) try {
@@ -1196,7 +1320,9 @@ int main(int argc, char** argv) try {
     every_placement_lands_in_an_archive();
     a_mod_archive_numbered_like_a_placeholder();
     two_merges_write_the_same_bytes();
+    a_listed_size_the_payload_does_not_have();
     carried_chunk_keeps_the_records_in_step();
+    streamed_world_texture_chunk_gets_its_logical_offset();
     if (failures) {
         std::cerr << failures << " failure(s)\n";
         return 1;

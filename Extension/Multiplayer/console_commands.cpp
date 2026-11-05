@@ -7,7 +7,9 @@
 #include "Extension/Throwdowns/throwdown_lab.h"
 #include "Extension/Throwdowns/throwdown_debug_text.h"
 #include "Extension/Throwdowns/throwdown_relay.h"
+#if defined(DINGOSDK_DEV_TOOLS)
 #include "Extension/UI/NativeMenu/native_menu_dump.h"
+#endif
 #include "Extension/Assets/live_mods.h"
 #include "Engine/Game/Multiplayer/session_tools.h"
 #include <algorithm>
@@ -116,6 +118,24 @@ void register_multiplayer_commands(Commands &registry) {
                                                    : "Map player markers: the game's plain player dots.");
     };
     registry.add(std::move(markers));
+    // Other players' QuickDrop fast travel flags on the pause map (native_party_hooks.cpp).
+    auto flags_mode = argument("test", Type::text, true);
+    auto flags_choice = argument("on|off", Type::text, true);
+    auto flags = action("mp flag-markers",
+                        "Other players' fast travel flags on the pause map, to fast travel to. \"test on\" adds a copy of "
+                        "each of your own flags 6 m east, as if another player had placed it (or one 6 m from you when you have none)",
+                        Group::gameplay, {std::move(flags_mode), std::move(flags_choice)});
+    flags.run = [](const Model &, const Values &values, const Output &out) {
+        const auto word = [&](std::size_t i) { return values.size() > i ? std::get<std::string>(values[i]) : std::string{}; };
+        if (word(0) == "test" && (word(1) == "on" || word(1) == "off")) multiplayer::set_native_party_flag_marker_test(word(1) == "on");
+        else if (!word(0).empty()) {
+            out("error: mp flag-markers [test on|off]");
+            return;
+        }
+        out(std::format("Fast travel flags of other players on the map: {}{}.", multiplayer::native_party_flag_markers(),
+                        multiplayer::native_party_flag_marker_test() ? " (test copies of your own flags on)" : ""));
+    };
+    registry.add(std::move(flags));
     // Other players as solid capsules for your skater (remote_collision.cpp).
     auto collision_choice = argument("on|off", Type::text, true);
     collision_choice.complete = [](const Model &, auto) { return std::vector<std::string>{"on", "off"}; };
@@ -219,6 +239,8 @@ void register_multiplayer_commands(Commands &registry) {
                                              : "Coop challenges: off (every challenge is your own).");
     };
     registry.add(std::move(invite));
+#if defined(DINGOSDK_DEV_TOOLS)
+    // Research aids, in development builds only (DINGOSDK_DEV_TOOLS).
     // Research aid for multiplayer throwdowns (analysis/throwdowns-native-mp.md).
     auto lab_args = argument("verb_and_arguments", Type::text, true);
     lab_args.rest = true;
@@ -259,6 +281,7 @@ void register_multiplayer_commands(Commands &registry) {
         out(multiplayer::request_ui_dump(text, static_cast<unsigned>(seconds)));
     };
     registry.add(std::move(dump));
+#endif
     auto then = argument("reload", Type::text, true);
     auto apply = action("mods apply", "Apply Mods/ and mods.json now; takes effect at the next level load, "
                         "or straight away with 'reload'", Group::console, {std::move(then)});

@@ -6,6 +6,7 @@
 #include "Extension/UI/Overlay/game_images.h"
 #include "plugin_overlay.h"
 #include "screen_look.h"
+#include "viewmodel.h"
 #include "park_previews.h"
 #include "chat_emotes.h"
 #include "input_capture.h"
@@ -18,9 +19,15 @@
 namespace dingosdk::overlay::detail {
 void draw_plugin_dialog(); // reskate.ui.dialog (plugin_dialog.cpp)
 namespace {
-// The overlay's output transfer (setup_graphics), for the screen look: it grades colour in SDR only.
+// The overlay's output transfer (setup_graphics), for the screen look (it grades colour in SDR only)
+// and the viewmodel, with white's brightness in nits.
 int output_transfer{};
+float output_white_nits{80};
+// The window-to-buffer scale fit_display_to_buffer last applied, for the mouse positions the item
+// browser takes from the window's own messages (item_browser_overlay.cpp). Render thread only.
+ImVec2 window_scale{1.0f, 1.0f};
 }
+ImVec2 window_to_buffer_scale() { return window_scale; }
 
 // ImGui draws into the swapchain's back buffer, so its display is the buffer, in the buffer's
 // pixels. The Win32 backend sizes the display by the window's client area and places the mouse in
@@ -36,6 +43,7 @@ void fit_display_to_buffer(State& s, ID3D12Resource* buffer) {
     if (client.x <= 0 || client.y <= 0 || pixels.x <= 0 || pixels.y <= 0) return;
     io.DisplaySize = pixels;
     const ImVec2 scale(pixels.x / client.x, pixels.y / client.y);
+    window_scale = scale;
     for (auto& event : ImGui::GetCurrentContext()->InputEventsQueue) {
         if (event.Type != ImGuiInputEventType_MousePos || event.EventId <= s.mapped_mouse_event) continue;
         s.mapped_mouse_event = event.EventId;
@@ -95,6 +103,7 @@ void destroy_graphics() {
     for (auto& upload : s.store_uploads) upload.Reset();
     store_icons_lost();
     screen_look::release();
+    viewmodel::release();
     s.commands.Reset(); s.rtvs.Reset(); s.srvs.Reset(); s.fence.Reset(); s.device.Reset();
     if (s.fence_event) CloseHandle(s.fence_event);
     s.fence_event = nullptr;
@@ -303,8 +312,8 @@ bool setup_graphics() {
     }
     heap.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
     // ImGui's atlas, the map download card's icon, the menu's map pictures, an item's mod icon,
-    // plugins' pictures (upload_image), the screen look's, and the Mod Manager's icons
-    heap.NumDescriptors = store_icon_first_slot + store_icon_slots;
+    // plugins' pictures (upload_image), the screen look's, the Mod Manager's icons and a viewmodel's pictures
+    heap.NumDescriptors = viewmodel_first_slot + viewmodel_slots;
     heap.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
     graphics_result = s.device->CreateDescriptorHeap(&heap, IID_PPV_ARGS(&s.srvs));
     if (FAILED(graphics_result)) {
@@ -371,7 +380,7 @@ bool setup_graphics() {
     s.commands->SetName(L"ReSkate overlay draw");
     dingosdk::overlay::watch_draws(s.commands.Get());
     dingosdk::overlay::watch_addresses(s.commands.Get());
-    install_depth_probe(s.commands.Get());
+    install_depth_tap(s.commands.Get());
     s.fence->SetName(L"ReSkate overlay fence");
     s.fence_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     if (!s.fence_event) return false;
@@ -430,6 +439,7 @@ bool setup_graphics() {
                            : format == DXGI_FORMAT_R10G10B10A2_UNORM && hdr_display ? 2 : 0;
         ImGui_ImplDX12_SetOutputTransfer(transfer, hdr_display ? hdr_white_nits : 80.0f);
         output_transfer = transfer;
+        output_white_nits = hdr_display ? hdr_white_nits : 80.0f;
         dingosdk::logging::printf(dingosdk::logging::Level::info, dingosdk::logging::Channel::graphics,
             "Overlay output: %s (buffer format %d, display %s).",
             transfer == 1 ? "scRGB" : transfer == 2 ? "HDR10" : "SDR", static_cast<int>(format), hdr_display ? "in HDR" : "in SDR");
@@ -791,9 +801,11 @@ void render(IDXGISwapChain* presented, UINT flags) {
     const bool item_browser_frame = item_browser_pending();
     const bool perf_frame = perf_hud_pending() || trainer_hud_pending();
     const bool hub_frame = hub_page_pending();
-    const bool grab_frame = frame_grab_pending() || depth_probe_pending();
+    const bool grab_frame = frame_grab_pending() || depth_tap_pending() || depth_probe_pending();
     // A plugin's screen look is drawn under every frame it asks for (reskate.screen.look).
     const bool look_frame = screen_look::pending();
+    // And a plugin's viewmodel (reskate.viewmodel), or its pictures still going up to the GPU.
+    const bool viewmodel_frame = viewmodel::pending();
     if (trainer_open_requested()) s.visible.store(true);
     if (dingosdk::overlay::menu_open_flag().exchange(false)) s.visible.store(true); // `menu`, or its controller bind
     const bool menu_frame = interactive_visible(s);
@@ -813,7 +825,7 @@ void render(IDXGISwapChain* presented, UINT flags) {
         // Hidden, the overlay still draws while a notice or chat line is on screen.
         if (s.loaded_notice_posted && !notices_pending() && !chat_frame && !game_text_frame && !skate_hud_frame &&
             !nametag_frame && !plugins_frame && !item_browser_frame && !perf_frame && !hub_frame && !map_download_frame && !mod_apply_frame && !look_frame &&
-            !grab_frame) return;
+            !viewmodel_frame && !grab_frame) return;
     } else if (!s.ui_was_interactive) {
         s.ui_was_interactive = true;
         s.last_model = {}; // Reopening immediately reads fresh state.
@@ -889,7 +901,7 @@ void render(IDXGISwapChain* presented, UINT flags) {
     draw_map_download();
     sync_menu_cursor(); // close buttons also change visibility, without a key message
     ImGui::Render();
-    if (ImGui::GetDrawData()->TotalVtxCount == 0 && !look_frame) { ImGui::SetCurrentContext(previous); return; }
+    if (ImGui::GetDrawData()->TotalVtxCount == 0 && !look_frame && !viewmodel_frame) { ImGui::SetCurrentContext(previous); return; }
     const auto upload_slot = static_cast<std::size_t>(s.submitted_draws % s.upload_fences.size());
     // The ImGui backend rotates upload buffers by submitted draw count, while
     // command allocators rotate by swapchain index. Wait for both exact owners
@@ -910,6 +922,28 @@ void render(IDXGISwapChain* presented, UINT flags) {
     upload_mod_icon(s);
     upload_plugin_image(s);
     upload_store_icon(s);
+    if (viewmodel_frame) {
+        // Under the screen look (a camcorder films the gun too) and ImGui. Left in PRESENT, as found.
+        ID3D12DescriptorHeap* viewmodel_heaps[] = {s.srvs.Get()};
+        s.commands->SetDescriptorHeaps(1, viewmodel_heaps);
+        viewmodel::Target target;
+        target.device = s.device.Get();
+        target.commands = s.commands.Get();
+        target.buffer = frame.buffer.Get();
+        target.rtv = frame.rtv;
+        target.srvs = s.srvs.Get();
+        target.slot = viewmodel_first_slot;
+        target.slots = viewmodel_slots;
+        target.format = frame.buffer->GetDesc().Format;
+        target.transfer = output_transfer;
+        target.white_nits = output_white_nits;
+        target.fence = s.next_fence + 1; // what this frame's commands signal (below)
+        target.gpu_done = [] {
+            const auto& fence = state().fence;
+            return fence ? fence->GetCompletedValue() : std::uint64_t{0};
+        };
+        (void)viewmodel::record(target);
+    }
     if (look_frame) {
         // Drawn first, so ImGui draws over it. It leaves the back buffer in PRESENT, as it found it.
         ID3D12DescriptorHeap* look_heaps[] = {s.srvs.Get()};

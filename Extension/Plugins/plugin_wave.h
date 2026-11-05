@@ -6,8 +6,9 @@
 #include <vector>
 
 // Sounds plugins ship (reskate.audio): a RIFF WAVE file read whole and made into what the game's
-// positioned sound takes, 16 kHz mono 16-bit (as Board Break's sounds are). 8, 16, 24 or 32-bit PCM
-// or 32-bit float, any rate and channels; at most `most_seconds` long. Portable: no game here.
+// positioned sound takes, 16 kHz mono 16-bit (as Board Break's sounds are). 8, 16, 24 or 32-bit PCM,
+// 32-bit float or IMA ADPCM (a quarter of 16-bit's size), any rate and channels; at most `most_seconds`
+// long. Portable: no game here.
 namespace dingosdk::plugins {
 inline constexpr unsigned wave_rate = 16000;
 struct Wave {

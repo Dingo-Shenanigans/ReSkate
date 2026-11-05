@@ -3,6 +3,7 @@
 #include "Engine/Core/Platform/path_text.h"
 #include "Engine/Resource/cas_codec.h"
 #include "Engine/Resource/ebx_fixup_repair.h"
+#include "Engine/Core/Text/ascii.h"
 
 #include <Windows.h>
 #include <bcrypt.h>
@@ -15,12 +16,6 @@ namespace dingosdk::mods::detail {
 namespace {
 constexpr std::size_t maximumTocBytes = 64 * 1024 * 1024;
 } // namespace
-
-std::string lower(std::string_view text) {
-    std::string result(text);
-    for (auto& ch : result) if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch + ('a' - 'A'));
-    return result;
-}
 
 std::vector<std::byte> read_file(const fs::path& path) {
     std::ifstream input(path, std::ios::binary | std::ios::ate);
@@ -130,7 +125,7 @@ RelativeFiles scan(const fs::path& directory) {
         // then reads the game's TOC from and writes its own copies to outside the patch folder.
         const auto relative = ascii_path(it->path().lexically_relative(directory));
         if (relative.empty() || relative.starts_with("../")) continue;
-        const auto extension = lower(ascii_path(it->path().extension()));
+        const auto extension = ascii_lower(ascii_path(it->path().extension()));
         if (extension == ".toc") result.tocs.push_back(relative);
         else if (extension == ".cas") result.archives.push_back(relative);
     }
@@ -154,18 +149,27 @@ fb::Sha1 sha1_of(std::span<const std::byte> bytes) {
     return digest;
 }
 
-std::size_t repair_ebx_payload(std::vector<std::byte>& encoded, fb::BundleAsset& asset, const fs::path& gameRoot) {
+EbxRepair repair_ebx_payload(std::vector<std::byte>& encoded, fb::BundleAsset& asset, const fs::path& gameRoot) {
+    std::vector<std::byte> decoded;
     std::optional<fb::ebx::FixupRepair> repaired;
     try {
-        repaired = fb::ebx::repair_type_fixups(fb::decode_cas(encoded, {gameRoot}));
+        decoded = fb::decode_cas(encoded, {gameRoot});
+        repaired = fb::ebx::repair_type_fixups(decoded);
     } catch (const std::exception&) {
-        return 0;
+        if (decoded.empty()) return {};
     }
-    if (!repaired) return 0;
-    encoded = fb::encode_cas(repaired->bytes, {gameRoot});
-    asset.sha1 = sha1_of(repaired->bytes);
-    asset.originalSize = repaired->bytes.size();
-    return repaired->removed;
+    EbxRepair result;
+    if (asset.originalSize != decoded.size()) result.listed = asset.originalSize;
+    if (repaired) {
+        encoded = fb::encode_cas(repaired->bytes, {gameRoot});
+        asset.sha1 = sha1_of(repaired->bytes);
+        asset.originalSize = repaired->bytes.size();
+        result.removed = repaired->removed;
+    } else if (result.listed) {
+        asset.sha1 = sha1_of(decoded);
+        asset.originalSize = decoded.size();
+    }
+    return result;
 }
 
 PlacementRecord read_placements(const fs::path& file) {

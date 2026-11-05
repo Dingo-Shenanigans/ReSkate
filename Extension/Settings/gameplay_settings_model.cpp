@@ -1,5 +1,6 @@
 #include "gameplay_settings_override.h"
 #include "gameplay_settings_internal.h"
+#include "Engine/Core/Json/json.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -42,19 +43,6 @@ bool any_lease(const SettingsState& state) {
         [](const Lease& lease) { return lease.owned; });
 }
 
-std::string json_string(const std::string& value) {
-    constexpr char digits[] = "0123456789abcdef";
-    std::string result{"\""};
-    for (const unsigned char ch : value) {
-        if (ch == '\"' || ch == '\\') { result += '\\'; result += static_cast<char>(ch); }
-        else if (ch < 0x20) {
-            result += "\\u00";
-            result += digits[ch >> 4];
-            result += digits[ch & 15];
-        } else result += static_cast<char>(ch);
-    }
-    return result + '\"';
-}
 
 const char* json_bool(bool value) { return value ? "true" : "false"; }
 
@@ -148,13 +136,13 @@ GameplaySettingsOverrideObservation observation_locked(const SettingsState& stat
     for (std::size_t i = 0; i < state.model.variables.size(); ++i) {
         const auto& variable = state.model.variables[i];
         if (i) json << ',';
-        json << "{\"name\":" << json_string(variable.name)
+        json << "{\"name\":" << json::quoted(variable.name)
              << ",\"available\":" << json_bool(variable.available)
              << ",\"value\":" << json_bool(variable.value)
              << ",\"override_active\":" << json_bool(variable.override_active) << '}';
     }
     json << ']';
-    json << ",\"status\":" << json_string(state.model.status) << '}';
+    json << ",\"status\":" << json::quoted(state.model.status) << '}';
     return {state.model, json.str(), state.detail};
 }
 } // namespace gameplay_settings_detail

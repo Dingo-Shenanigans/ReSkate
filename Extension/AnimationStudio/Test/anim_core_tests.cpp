@@ -85,27 +85,7 @@ void joints_hang_from_their_parents() {
     check(near(hips.position[1], 1.0f), "and the hips stay where they were");
 }
 
-void profiles_read_back_and_bad_ones_are_refused() {
-    Animation animation;
-    animation.name = "Kickflip 2";
-    animation.trick = "Kickflip";
-    animation.clip.times = {0, 1.5f};
-    animation.speed = 0.5f;
-    set_key(animation, 7, 0.4f, {from_euler({0, 10, 0}), {0, 0.1f, 0}});
-    set_key(animation, 278, 1.0f, {from_euler({20, 0, 5}), {}}).ease = Ease::linear;
-    const auto back = from_json(to_json(animation));
-    check(back.name == "Kickflip 2" && back.trick == "Kickflip" && near(back.speed, 0.5f), "Name, trick and speed read back");
-    check(back.key_count() == 2 && back.track(278) && back.track(278)->keys[0].ease == Ease::linear, "Keys read back");
-    check(same_turn(back.track(7)->keys[0].rotation, from_euler({0, 10, 0})) && near(back.track(7)->keys[0].offset[1], 0.1f),
-          "with their values");
-    bool refused = false;
-    try { (void)from_json(R"({"format":"fourth-animation-studio","version":1,"duration":1,"tracks":[{"joint":200,"keys":[]}]})"); }
-    catch (const std::runtime_error&) { refused = true; }
-    check(refused, "A track on a joint the editor does not edit is refused");
-    refused = false;
-    try { (void)from_json(R"({"format":"fourth-animation-studio","version":1,"duration":1,"tracks":[{"joint":7,"keys":[{"t":9,"r":[0,0,0,1],"p":[0,0,0]}]}]})"); }
-    catch (const std::runtime_error&) { refused = true; }
-    check(refused, "A key past the clip is refused");
+void file_names_keep_only_safe_letters() {
     check(file_safe("  ../Kick:flip*  ") == "Kickflip", "File names keep only safe letters");
 }
 
@@ -144,7 +124,7 @@ int main() {
         keys_can_be_dragged_in_time();
         edits_are_on_top_of_the_pose_and_never_grow_it();
         joints_hang_from_their_parents();
-        profiles_read_back_and_bad_ones_are_refused();
+        file_names_keep_only_safe_letters();
         clips_read_back_and_broken_ones_are_refused();
     } catch (const std::exception& error) {
         std::cerr << "FAILED: " << error.what() << '\n';

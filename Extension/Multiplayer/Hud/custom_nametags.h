@@ -68,7 +68,6 @@ void set_custom_nametags_enabled(bool enabled) noexcept;
 // Held off for now (a plugin's reskate.session.nametags(false), filming): no names drawn over the
 // players while it lasts, whatever the nametag setting is; chat bubbles still show.
 inline std::atomic<bool> nametags_held_off{false};
-bool custom_nametags_enabled() noexcept;
 // The overlay's feed (any thread): nothing while off, stale, or while the game hides nametags.
 overlay::Nametags custom_nametags();
 } // namespace dingosdk::multiplayer

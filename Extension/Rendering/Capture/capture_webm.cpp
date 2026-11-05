@@ -123,8 +123,8 @@ std::vector<std::uint8_t> encode_webm(const Animation& animation, const WebmOpti
         std::vector<std::uint8_t> info;
         uint_element(info, 0x2ad7b1, 1000000); // TimestampScale: milliseconds
         float_element(info, 0x4489, 1000.0 * static_cast<double>(animation.frames.size()) / fps); // Duration
-        string_element(info, 0x4d80, "ReSkate Fit Check");
-        string_element(info, 0x5741, "ReSkate Fit Check");
+        string_element(info, 0x4d80, "ReSkate");
+        string_element(info, 0x5741, "ReSkate");
         element(segment, 0x1549a966, info);
     }
     {

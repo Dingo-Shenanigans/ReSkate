@@ -83,6 +83,9 @@ struct Fonts {
 
 inline float g_scale = 1.0f;
 inline float S(float value) { return value * g_scale; }
+// The interface size (Settings::interface_size) the window was built with: fonts and the
+// window's smallest size come from it at startup, so a new one takes a restart.
+inline int g_interface_size = 100;
 
 // Optional photo behind the launcher; zero id means the drawn background.
 struct Background {
@@ -201,6 +204,9 @@ struct Settings {
     int console_key{static_cast<int>(launcher::default_console_key)};
     int log_level{2};
     std::string arguments;
+    // The launcher's own text and layout, in percent of the size Windows' display scale gives
+    // (interface_sizes). A size that would not fit the screen is cut to the largest that does.
+    int interface_size{100};
     bool keep_open_after_launch{};
     // Off: never replace ReSkate.dll or the launcher (keeps a test build someone handed out).
     bool updates{true};
@@ -227,6 +233,11 @@ struct Settings {
     // launch with other mods empties the game's shader cache first.
     std::string shader_cache_mods;
 };
+
+inline constexpr std::array<int, 7> interface_sizes{75, 90, 100, 115, 125, 150, 175};
+inline constexpr std::array<const char*, 7> interface_size_names{"75%", "90%", "100%", "115%", "125%", "150%", "175%"};
+// The interface size saved for this launcher, read before its window is made.
+int saved_interface_size(const launcher_app::Session& session);
 
 inline constexpr std::array<const char*, 7> log_levels{"trace", "debug", "info", "warning", "error", "critical", "off"};
 
@@ -298,6 +309,9 @@ public:
     void answer(std::optional<std::string> value);
 
     void restart();
+    // Starts the launcher again from the main loop, as a launcher update does, for a setting
+    // that only applies at startup.
+    void request_restart() { settings_restart_ = true; restart_ = true; }
 
 private:
     launcher_app::Session session_;
@@ -320,6 +334,8 @@ private:
     std::atomic<bool> busy_{};
     std::atomic<bool> cancel_{};
     std::atomic<bool> restart_{};
+    // The restart is for a setting, not a launcher update: the new launcher checks for updates as usual.
+    std::atomic<bool> settings_restart_{};
     std::atomic<bool> ignore_mod_problems_{};
     std::atomic<DWORD> game_{};
     std::atomic<bool> launched_{};
@@ -447,6 +463,8 @@ struct Ui {
     // The maps Settings offers to start in, read from the Mods folder when GAME is first drawn
     // after Settings opens.
     std::optional<std::vector<launcher_start_maps::StartMap>> start_maps;
+    // Plugin developer mode (initfs.h), read when the settings open and again after a launch.
+    std::optional<bool> plugin_developer;
     int binding{};              // 1 = menu key, 2 = console key, while waiting for a press
     std::string key_error;
     bool mods{};
@@ -709,9 +727,12 @@ std::vector<const thunderstore::Package*> updates(const Store& store, const thun
 void start_store_install(ModsPanel& panel, std::vector<thunderstore::Package> packages);
 // The package's icon texture, or empty while it loads; uploads finished icons.
 ImTextureID package_icon(ModsPanel& panel, const thunderstore::Package& package);
-// That icon drawn at `position`, or a placeholder square while it loads or
-// when the mod never came from Thunderstore.
-void mod_icon(ModsPanel& panel, const thunderstore::Package* package, ImVec2 position, float size);
+// The icon.png in an installed mod's folder, for a mod the listing does not have.
+ImTextureID folder_icon(ModsPanel& panel, const std::filesystem::path& folder);
+// That icon drawn at `position` (else the one in `folder`, when given), or a placeholder
+// square while it loads or when there is none.
+void mod_icon(ModsPanel& panel, const thunderstore::Package* package, ImVec2 position, float size,
+    const std::filesystem::path& folder = {});
 void pump_icons(ModsPanel& panel);
 // A category menu for a list of mods (GET MODS, MY MODS): each category shown only, hidden, or either,
 // a click going round them, with how many mods are in each (category_count adds to that). One chosen

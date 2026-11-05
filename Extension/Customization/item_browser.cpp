@@ -13,6 +13,7 @@
 #include "Extension/UI/NativeMenu/native_menu_data.h"
 #include "Extension/UI/NativeMenu/native_menu_lifetime.h"
 #include "Extension/UI/Overlay/overlay.h"
+#include "Engine/Core/Text/hex.h"
 #include <Windows.h>
 #include <algorithm>
 #include <array>
@@ -153,6 +154,10 @@ struct Grid {
     int focused{-1};                     // row in `shown`
     bool failed{};
     bool held{};                         // it shows a plugin's list with nothing in it: one tile, for the highlight
+    Picker picker{};                     // which picker (clothing, board, tattoos...), as its items have it
+    std::optional<Picker> logged_picker; // and its main category, as last logged
+    std::string logged_category;
+    std::vector<Pack> packs;             // the mods with items in it, for the picker's Author and Mod pack
 };
 
 struct State {
@@ -172,6 +177,13 @@ struct State {
     Favorites favorites;
     std::string search;
     Filter filter{};
+    // The clothing and the board picker each keep their own Author, Mod pack, Sort and Show (the
+    // filter) for the session; other grids have the filter above.
+    struct Choices {
+        Narrow narrow;
+        Filter filter{};
+    };
+    std::array<Choices, picker_count> pickers; // by Picker
     ULONGLONG next_sync{}, next_scan{}, last_open{};
     std::uint64_t active_list{};  // the grid list that had the focus at the last full pass
     std::vector<std::uint64_t> notices;  // the game's notice models, as of the last scan
@@ -193,12 +205,35 @@ struct Shared {
     std::string show_owner;
     std::optional<std::vector<std::string>> show;
     std::map<std::string, std::vector<std::string>, std::less<>> marks; // by owner
+    std::vector<std::string> favorite_keys;
+    bool favorites_ready{};
+    // Bumped after favorite_keys, so a reader that sees the new generation also sees the new keys.
+    std::atomic<std::uint64_t> favorites_generation{};
     std::atomic<bool> asked{}; // a plugin's request waits: the next tick acts on it
     std::atomic<unsigned> toggles{}, cycles{};
     std::atomic<int> filter{-1};
+    // Asked for the picker the overlay showed then (narrow_for). The focus may have moved on by
+    // the next tick, so it is only taken while that picker still has it.
+    std::optional<Narrow> narrow;
+    Picker narrow_for{};
     std::atomic<bool> status{};
 };
 Shared& shared() { static auto* value = new Shared; return *value; }
+
+// The filter a grid has, and its Author, Mod pack and Sort (none outside the pickers).
+Filter filter_of(const State& s, const Grid& grid) {
+    return grid.picker == Picker::none ? s.filter : s.pickers[static_cast<std::size_t>(grid.picker)].filter;
+}
+const Narrow& narrow_of(const State& s, const Grid& grid) {
+    static const Narrow any;
+    return grid.picker == Picker::none ? any : s.pickers[static_cast<std::size_t>(grid.picker)].narrow;
+}
+// Those of the grid that had the focus at the last full pass, for what the player asks for now.
+State::Choices* focused_picker(State& s) {
+    for (const auto& grid : s.grids)
+        if (grid.list.handle == s.active_list && grid.picker != Picker::none) return &s.pickers[static_cast<std::size_t>(grid.picker)];
+    return nullptr;
+}
 
 void report(State& s, const std::string& what) {
     if (what == s.last_error) return;
@@ -420,7 +455,7 @@ std::vector<Pick> picks_for(const State& s, Grid& grid) {
     std::vector<Pick> out;
     grid.held = false;
     if (!s.show) {
-        for (const auto index : arrange(grid.native, s.favorites.keys, s.search, s.filter)) out.push_back({&grid, index});
+        for (const auto index : arrange(grid.native, s.favorites.keys, s.search, filter_of(s, grid), narrow_of(s, grid))) out.push_back({&grid, index});
         return out;
     }
     Keys seen;
@@ -469,6 +504,26 @@ void sync(State& s, const md::Context& context, Grid& grid, bool verify) {
             if (!grid.backing.handle)
                 grid.backing = context.create(grid_list, (GetTickCount64() << 12) | (++s.serial & 0xfff));
             context.array(context.field(grid.backing, owned_items), rows.bytes, rows.count);
+            // Each item's mod for the search and the picker's filters, looked up once here and not on
+            // every keystroke or check.
+            for (auto& item : items)
+                if (const auto origin = item.key.empty() ? nullptr : item_origins::find(item.key)) {
+                    item.mod = mod_words(origin->author, origin->title, origin->folder);
+                    item.author = origin->author;
+                    item.pack = origin->folder;
+                    item.pack_title = origin->title;
+                    // From a mod, as reskate.mods.item_origins has it (a game item a mod changes too).
+                    item.modded = true;
+                }
+            grid.picker = picker_of(items);
+            // Once per new list, so the log shows which grids get the filters.
+            if (auto category = main_category(items); grid.picker != grid.logged_picker || category != grid.logged_category) {
+                logging::log(Level::info, Channel::customization, "Item browser: picker {} for category {} ({} items).",
+                             picker_names[static_cast<std::size_t>(grid.picker)], category.empty() ? "(none)" : category, items.size());
+                grid.logged_picker = grid.picker;
+                grid.logged_category = std::move(category);
+            }
+            grid.packs = packs_in(items);
             grid.native = std::move(items);
             grid.shown = rows.content;
         }
@@ -510,13 +565,6 @@ md::Value deref(const md::Context& context, md::Value value) {
     const auto handle = md::read<md::Ref>(context.address(value)).handle & ~std::uint64_t{1};
     md::require(handle != 0, "The reference is empty.");
     return {handle, context.type_of(handle)};
-}
-
-std::string hex(std::uint64_t value, int width) {
-    static constexpr char digits[] = "0123456789abcdef";
-    std::string out(static_cast<std::size_t>(width), '0');
-    for (int i = width - 1; i >= 0; --i, value >>= 4) out[static_cast<std::size_t>(i)] = digits[value & 15];
-    return "0x" + out;
 }
 
 // Research aid: "peek <root> [path]" and "poke <root> <path> <kind>:<value>" on live models.
@@ -575,14 +623,14 @@ std::string poke(State& s, const md::Context& context, const std::string& argume
         else if (how == "tex") md::require(md::publish_texture(context, value, text), "That texture is not loaded.");
         else throw std::runtime_error("kinds: u8, u32, f32, text, ref, tex");
     }
-    std::string out = (write ? "poked " : "peek ") + hex(value.handle, 16) + " <" + hex(schema_of(value.type), 8) + " k" +
+    std::string out = (write ? "poked " : "peek ") + hex_number(value.handle, 16) + " <" + hex_number(schema_of(value.type), 8) + " k" +
         std::to_string(kind) + ' ' + std::to_string(size) + ">";
     const auto at = context.address(value);
     if (kind == 7) out += " = \"" + md::string(md::read<md::Address>(at), 255) + '"';
     else if (kind == 4) {
         const auto pointer = md::read<md::Address>(at);
         out += " [" + std::to_string(pointer ? md::read<std::uint32_t>(pointer - 4) & 0x7fffffff : 0) + "] of <" +
-            hex(schema_of(md::read<md::Address>(md::read<md::Address>(value.type) + 0x30)), 8) + ">";
+            hex_number(schema_of(md::read<md::Address>(md::read<md::Address>(value.type) + 0x30)), 8) + ">";
     } else if (kind == 2) {
         const auto meta = md::read<md::Address>(value.type), fields = md::read<md::Address>(meta + 0x60);
         const auto count = md::read<std::uint16_t>(meta + 0x2a);
@@ -590,17 +638,17 @@ std::string poke(State& s, const md::Context& context, const std::string& argume
             const auto entry = fields + i * 24;
             const auto type = md::read<md::Address>(entry + 16);
             const auto offset = md::read<std::uint16_t>(entry + 8);
-            out += "\n    " + hex(md::read<std::uint32_t>(entry), 8) + '@' + std::to_string(offset) + " <" +
-                hex(schema_of(type), 8) + " k" + std::to_string(md::kind(type)) + ' ' + std::to_string(md::size(type)) + ">";
+            out += "\n    " + hex_number(md::read<std::uint32_t>(entry), 8) + '@' + std::to_string(offset) + " <" +
+                hex_number(schema_of(type), 8) + " k" + std::to_string(md::kind(type)) + ' ' + std::to_string(md::size(type)) + ">";
             if (md::kind(type) == 7) out += " \"" + md::string(md::read<md::Address>(at + offset), 96) + '"';
             else if (md::kind(type) != 2 && md::size(type) <= 16) {
                 out += " ";
-                for (unsigned b = 0; b < md::size(type); ++b) out += hex(md::read<std::uint8_t>(at + offset + b), 2).substr(2);
+                for (unsigned b = 0; b < md::size(type); ++b) out += hex_number(md::read<std::uint8_t>(at + offset + b), 2).substr(2);
             }
         }
     } else {
         out += " = ";
-        for (unsigned b = 0; b < std::min(size, 32U); ++b) out += hex(md::read<std::uint8_t>(at + b), 2).substr(2);
+        for (unsigned b = 0; b < std::min(size, 32U); ++b) out += hex_number(md::read<std::uint8_t>(at + b), 2).substr(2);
     }
     return out;
 }
@@ -609,11 +657,11 @@ std::string poke(State& s, const md::Context& context, const std::string& argume
 // first tiles show. Says why a menu's grid was passed over.
 void log_roots(State& s, const md::Context& context) {
     for (const auto& root : context.roots({grid_list.hash})) {
-        std::string line = "  root " + hex(root.model.handle, 16) + ": size " + std::to_string(md::size(root.model.type));
+        std::string line = "  root " + hex_number(root.model.handle, 16) + ": size " + std::to_string(md::size(root.model.type));
         try {
             const auto items = context.field(root.model, owned_items);
             const auto row_type = md::read<md::Address>(md::read<md::Address>(items.type) + 0x30);
-            line += ", rows of " + hex(schema_of(row_type), 8);
+            line += ", rows of " + hex_number(schema_of(row_type), 8);
             if (schema_of(row_type) == tile_row) {
                 if (!s.layout.row_type) s.layout = layout_of(context, items);
                 const auto rows = read_rows(context, items, s.layout);
@@ -621,7 +669,7 @@ void log_roots(State& s, const md::Context& context) {
                 for (unsigned i = 0; i < rows.count && i < 4; ++i) {
                     const auto content = rows.content[i];
                     const auto item = resolve(context, content);
-                    line += "; [" + std::to_string(i) + "] " + (content ? hex(schema_of(context.type_of(content)), 8) : std::string("-")) +
+                    line += "; [" + std::to_string(i) + "] " + (content ? hex_number(schema_of(context.type_of(content)), 8) : std::string("-")) +
                             " \"" + item.key + "\" in \"" + item.category + "\"" + (cosmetic(item) ? "" : " (no cosmetic)");
                 }
             }
@@ -639,9 +687,19 @@ void log_status(const State& s) {
             for (const auto& item : grid.native)
                 if (item.content == grid.shown[static_cast<std::size_t>(grid.focused)]) focus = std::to_string(grid.focused) + " " + item.key;
         logging::log(Level::info, Channel::customization, "  grid {}: {} of {} shown, first \"{}\", focus {}{}.",
-            hex(grid.list.handle, 16), grid.shown.size(), grid.native.size(),
+            hex_number(grid.list.handle, 16), grid.shown.size(), grid.native.size(),
             grid.native.empty() ? std::string{} : grid.native.front().title, focus, grid.failed ? ", FAILED" : "");
     }
+}
+// The plugin host reads the set off the client tick. The keys are published before the generation,
+// under this mutex, so the handler of favorites_changed sees the set that changed.
+void publish_favorites(const Favorites& favorites, Shared& sh) {
+    std::vector<std::string> keys(favorites.keys.begin(), favorites.keys.end());
+    std::lock_guard lock(sh.mutex);
+    if (sh.favorites_ready == favorites.loaded && sh.favorite_keys == keys) return;
+    sh.favorite_keys = std::move(keys);
+    sh.favorites_ready = favorites.loaded;
+    if (favorites.loaded) sh.favorites_generation.fetch_add(1, std::memory_order_release);
 }
 } // namespace
 
@@ -649,6 +707,20 @@ View view() {
     auto& sh = shared();
     std::lock_guard lock(sh.mutex);
     return sh.view;
+}
+FavoritesView favorites() noexcept {
+    FavoritesView out;
+    try {
+        auto& sh = shared();
+        std::lock_guard lock(sh.mutex);
+        out.ready = sh.favorites_ready;
+        out.keys = sh.favorite_keys;
+        out.generation = sh.favorites_generation.load(std::memory_order_relaxed);
+    } catch (...) {}
+    return out;
+}
+std::uint64_t favorites_generation() noexcept {
+    return shared().favorites_generation.load(std::memory_order_acquire);
 }
 void toggle_focused_favorite() noexcept { shared().toggles.fetch_add(1); }
 std::string show_items(std::string owner, std::optional<std::vector<std::string>> keys) {
@@ -687,20 +759,44 @@ void set_search(std::string text) {
     sh.search_pending = true;
 }
 void set_filter(Filter filter) noexcept { shared().filter.store(static_cast<int>(filter)); }
+void set_narrow(Picker picker, Narrow narrow) {
+    auto& sh = shared();
+    std::lock_guard lock(sh.mutex);
+    sh.narrow = std::move(narrow);
+    sh.narrow_for = picker;
+    sh.asked.store(true);
+}
 std::string known_title(std::string_view key) {
     auto& t = titles();
     std::lock_guard lock(t.mutex);
     const auto found = t.by_key.find(key);
     return found == t.by_key.end() ? std::string() : found->second;
 }
+namespace {
+// The picker in the view last handed to this thread. The overlay reads the view and then asks for
+// an Author, Mod pack and Sort built from it on its render thread, so this is the picker that set
+// was made for, whatever has the focus by now.
+thread_local Picker overlay_picker{};
+}
 const overlay::ItemBrowserHost* overlay_host() noexcept {
     static const overlay::ItemBrowserHost host{
         [] {
             const auto current = view();
+            overlay_picker = current.picker;
             overlay::ItemBrowserView out;
             out.open = current.open;
             out.search = current.search;
             out.filter = std::string(filter_names[static_cast<std::size_t>(current.filter)]);
+            out.filter_index = static_cast<unsigned>(current.filter);
+            for (const auto name : filter_names) out.filters.emplace_back(name);
+            if (current.picker != Picker::none) {
+                out.picker = true;
+                out.author = current.narrow.author;
+                out.pack = current.narrow.pack;
+                out.sort = static_cast<unsigned>(current.narrow.sort);
+                for (const auto name : sort_names) out.sorts.emplace_back(name);
+                for (const auto& pack : current.packs) out.packs.push_back({pack.folder, pack.title, pack.author});
+            }
             out.shown = current.shown;
             out.total = current.total;
             out.focused_favorite = current.focused_favorite;
@@ -717,7 +813,15 @@ const overlay::ItemBrowserHost* overlay_host() noexcept {
         },
         [] { toggle_focused_favorite(); },
         [](const char* text) { set_search(text ? text : ""); },
-        [] { cycle_filter(); }};
+        [] { cycle_filter(); },
+        [](unsigned filter) { if (filter < std::size(filter_names)) set_filter(static_cast<Filter>(filter)); },
+        [](const char* author, const char* pack, unsigned sort) {
+            Narrow narrow;
+            narrow.author = author ? author : "";
+            narrow.pack = pack ? pack : "";
+            narrow.sort = sort < std::size(sort_names) ? static_cast<Sort>(sort) : Sort::game;
+            set_narrow(overlay_picker, std::move(narrow));
+        }};
     return &host;
 }
 void cycle_filter() noexcept { shared().cycles.fetch_add(1); }
@@ -837,7 +941,9 @@ void update(std::uintptr_t base) noexcept {
             return;
         }
         s.next_sync = now + (s.open ? 40 : 200);
+        const bool first_favorites = !s.favorites.loaded;
         s.favorites.load();
+        if (first_favorites) publish_favorites(s.favorites, sh);
         const bool in_menu = multiplayer::sample_game_ui_state(base).in_menu;
         md::Address ui{}, manager{};
         if (!memory::read(base + addr::engine::ui_manager, ui) || !ui || !memory::read(ui + 0x140, manager) || !manager) return;
@@ -865,14 +971,19 @@ void update(std::uintptr_t base) noexcept {
             std::lock_guard shared_lock(sh.mutex);
             if (std::exchange(sh.search_pending, false)) s.search = sh.search;
             pokes.swap(sh.pokes);
+            if (auto* picker = focused_picker(s); picker && sh.narrow && sh.narrow_for != Picker::none &&
+                picker == &s.pickers[static_cast<std::size_t>(sh.narrow_for)])
+                picker->narrow = std::move(*sh.narrow);
+            sh.narrow.reset();
             s.show = sh.show;
             s.marked.clear();
             for (const auto& [owner, keys] : sh.marks) s.marked.insert(keys.begin(), keys.end());
         }
-        if (const auto filter = sh.filter.exchange(-1); filter >= 0 && filter <= static_cast<int>(Filter::game))
-            s.filter = static_cast<Filter>(filter);
+        auto& filter = focused_picker(s) ? focused_picker(s)->filter : s.filter;
+        if (const auto asked = sh.filter.exchange(-1); asked >= 0 && asked <= static_cast<int>(Filter::game))
+            filter = static_cast<Filter>(asked);
         for (auto cycles = sh.cycles.exchange(0); cycles; --cycles)
-            s.filter = static_cast<Filter>((static_cast<unsigned>(s.filter) + 1) % std::size(filter_names));
+            filter = static_cast<Filter>((static_cast<unsigned>(filter) + 1) % std::size(filter_names));
         const Grid* active = nullptr;
         const Item* focused = nullptr;
         const auto find_focus = [&] {
@@ -893,6 +1004,7 @@ void update(std::uintptr_t base) noexcept {
             s.favorites.save();
             logging::log(Level::info, Channel::customization, "Item favorites: {} {}.", key,
                 s.favorites.keys.contains(key) ? "added" : "removed");
+            publish_favorites(s.favorites, sh);
         }
         ++s.tick;
         // While a plugin's list is shown only the grid that has the focus shows it: the others are out of
@@ -937,8 +1049,13 @@ void update(std::uintptr_t base) noexcept {
         View next;
         next.open = s.open;
         next.search = s.search;
-        next.filter = s.filter;
+        next.filter = active ? filter_of(s, *active) : s.filter;
         next.showing = s.show.has_value();
+        if (active && !s.show && active->picker != Picker::none) {
+            next.picker = active->picker;
+            next.narrow = narrow_of(s, *active);
+            next.packs = active->packs;
+        }
         if (active && s.show) {
             next.held = active->held;
             next.shown = active->held ? 0 : static_cast<unsigned>(active->shown.size());

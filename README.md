@@ -16,7 +16,7 @@ the launcher, the runtime that loads into the game, and the dedicated server.
   - Proximity voice chat, and text chat with emotes and an optional bad-word filter.
   - Parties in lobbies and on dedicated servers: invite, join, leave, promote.
   - Throwdowns with other players (Jam, Spot Battle and S.K.A.T.E.), and co-op challenges. Plugins add
-    throwdown modes of their own to the Throwdowns page ([contrib/throwdown-kit.md](contrib/throwdown-kit.md)).
+    throwdown modes of their own to the Throwdowns page ([Throwdowns](https://docs.reskate.dev/plugins/api/throwdowns) in the docs).
 - **In-game menu and console.**
   - Map and fast travel.
   - World: time of day, population, district levels, rotating parks.
@@ -169,7 +169,8 @@ on (it is by default), the crash details have already been sent; see
 ## Mods
 
 - Install mods from the launcher's **MODS** page: browse Thunderstore, or drag a `.zip` or folder onto the
-  window.
+  window. A Thunderstore zip of a mod you already have asks to replace it, even when the browser saved a
+  second copy as `Team-Name-1.2.3 (1).zip`, so one mod never ends up installed twice.
 - **PROFILES** on that page saves which mods are on, and in what order, under a name. Loading a profile
   switches to it and downloads any of its mods you do not have; every mod stays installed once. **COPY CODE**
   and **SAVE FILE** share a profile, and **IMPORT CODE** and **IMPORT FILE** take one in. The codes and
@@ -225,8 +226,7 @@ on (it is by default), the crash details have already been sent; see
   and the game's own items are left out and logged, so a mod cannot rename or regroup the game's objects.
   The file is read when the game starts.
 
-Only install mods you trust. Mods change game data. Custom Lua scripts (`scripts/Custom`) are
-switched off in this version: nothing in that folder is read or run.
+Only install mods you trust. Mods change game data.
 
 ## Dedicated servers
 
@@ -280,6 +280,10 @@ The files are written to `build/vs2022-x64/Release/`:
 To work in Visual Studio, open `build/vs2022-x64/DingoSDK.sln` after configuring and select
 **Release | x64**.
 
+For a development build with the research tools in it (the throwdown lab's console verbs, `ui dump`,
+`capture depth` and the like), use `cmake --preset vs2022-x64-dev` and
+`cmake --build --preset dev-release --parallel 4`; it builds into `build/vs2022-x64-dev/`.
+
 ### Running your build
 
 Close the game. Copy `ReSkateLauncher.exe` and `ReSkate.dll` into your ReSkate folder (the one the
@@ -314,12 +318,13 @@ Useful launcher flags:
 | `DINGOSDK_RELEASE_REPO` | `Dingo-Shenanigans/ReSkate` | public GitHub repository whose latest release carries `launcher.json` and the files it pins |
 | `DINGOSDK_CRASH_REPORT_URL` | the project's endpoint | Sentry minidump endpoint URL; empty turns crash uploads off |
 | `DINGOSDK_TEST_GAME_ROOT` | empty | a Skate folder, for the tests that read real game data |
+| `DINGOSDK_DEV_TOOLS` | `OFF` | compile the research tools into `ReSkate.dll` (development builds; the `vs2022-x64-dev` preset) |
 
 ### Tests
 
 Each module keeps its regression tests in a `Test/` folder. Turn them on with any of
-`DINGOSDK_BUILD_MULTIPLAYER_TESTS`, `DINGOSDK_BUILD_LAUNCHER_TESTS`, `DINGOSDK_BUILD_PARK_EDITOR_TESTS`
-and `DINGOSDK_BUILD_CRASH_REPORT_TESTS`, then run CTest:
+`DINGOSDK_BUILD_MULTIPLAYER_TESTS`, `DINGOSDK_BUILD_LAUNCHER_TESTS`, `DINGOSDK_BUILD_PARK_EDITOR_TESTS`,
+`DINGOSDK_BUILD_CRASH_REPORT_TESTS` and `DINGOSDK_BUILD_PLUGIN_TESTS`, then run CTest:
 
 ```powershell
 cmake --preset vs2022-x64 -DDINGOSDK_BUILD_MULTIPLAYER_TESTS=ON -DDINGOSDK_BUILD_LAUNCHER_TESTS=ON
@@ -338,7 +343,6 @@ The source tree loosely follows Frostbite's own layout.
 | `Engine/Core/` | logging, console, JSON, storage, platform helpers, Detours hooks, crash reporting (`Debug/`) |
 | `Engine/Resource/` | Frostbite data formats: EBX, TOC, CAS, bundles, shader lookup |
 | `Engine/Vfs/` | InitFS, the Mods folder, mod merging, the content cache |
-| `Engine/Scripting/` | custom Lua scripts |
 | `Engine/Game/` | the game's native ABI and data models |
 | `Engine/Game/Build/<build>/` | every address, fingerprint and patch tied to one `Skate.exe` build, as `addr::<area>::<name>` |
 | `Extension/` | ReSkate's features, the in-game UI and diagnostics |

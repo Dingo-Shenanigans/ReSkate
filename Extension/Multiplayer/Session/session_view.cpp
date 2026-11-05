@@ -306,6 +306,7 @@ void publish(Session &s, const NativeFrame *local) {
         }
     view.status = s.status;
     view.native_status = s.native_status;
+    for (const auto &[id, name] : s.ignored_players) view.ignored.push_back({id, name});
     view.audio_captured = captured_audio_frames();
     each_peer([&] {
         auto &p = s.peers[peer_slot];
@@ -341,6 +342,7 @@ void publish(Session &s, const NativeFrame *local) {
         view.roster.back().party_leader = p.member.party_leader;
         view.roster.back().party_member = party_member(s, p.member.id);
         view.roster.back().objects_solid = objects_solid(s, p.member.id);
+        view.roster.back().ignored = ignored(s, p.member.id);
         if (!p.rate_at) {
             p.rate_at = now;
             p.native_rate_count = native_count;
@@ -463,11 +465,15 @@ void publish(Session &s, const NativeFrame *local) {
     std::lock_guard lock(s.mutex);
     s.view = std::move(view);
 }
-std::vector<MultiplayerChatCommand> chat_commands(const Session &s) {
+namespace {
+std::vector<MultiplayerChatCommand> own_chat_commands(const Session &s) {
     std::vector<MultiplayerChatCommand> list{
         {"/help", "/help", "List these commands"},
         {"/tp", "/tp <player>", "Teleport beside a player (or /tp <x> <y> <z>)", "player"},
         {"/p", "/p <message>", "Talk to your party only"},
+        {"/ignore", "/ignore <player>", "Hide a player and everything they do, on your screen, in every session", "player"},
+        {"/unignore", "/unignore <player>", "Stop ignoring a player"},
+        {"/ignored", "/ignored", "The players you ignore"},
     };
     if (s.mode == Mode::host || s.mode == Mode::join) {
         list.push_back({"/party invite", "/party invite <player>", "Invite a player to your party", "player"});
@@ -550,7 +556,42 @@ std::vector<MultiplayerChatCommand> chat_commands(const Session &s) {
             }), list.end());
         }
     }
+    return list;
+}
+
+// The plugins' "/" commands (set_plugin_chat_commands, from the plugin host's thread) and the lines
+// typed for them, waiting for take_plugin_chat_commands. The serial goes into the chat view's
+// signature, so the "/" list follows the plugins.
+std::mutex plugin_commands_mutex;
+std::vector<PluginChatCommand> plugin_commands;
+std::vector<PluginChatCall> plugin_calls;
+std::atomic<std::uint64_t> plugin_commands_serial{};
+} // namespace
+std::vector<MultiplayerChatCommand> chat_commands(const Session &s) {
+    auto list = own_chat_commands(s);
+    std::lock_guard lock(plugin_commands_mutex);
+    for (const auto &command : plugin_commands)
+        list.push_back({"/" + command.name, "/" + command.name + (command.args.empty() ? "" : " " + command.args),
+                        command.help + " (" + command.plugin + ")"});
     return list;
+}
+bool queue_plugin_chat_command(const Session &s, std::string_view verb, std::string_view arguments) {
+    // The session's own commands come first: a plugin cannot take /vote or an admin's /kick.
+    for (const auto &own : own_chat_commands(s)) {
+        std::string_view name = own.name;
+        name.remove_prefix(1);
+        if (name.substr(0, name.find(' ')) == verb) return false;
+    }
+    while (!arguments.empty() && arguments.front() == ' ') arguments.remove_prefix(1);
+    while (!arguments.empty() && arguments.back() == ' ') arguments.remove_suffix(1);
+    std::lock_guard lock(plugin_commands_mutex);
+    for (const auto &command : plugin_commands) {
+        if (command.name != verb) continue;
+        // (A plugin host that stopped taking them does not let them pile up.)
+        if (plugin_calls.size() < 32) plugin_calls.push_back({command.name, std::string(arguments)});
+        return true;
+    }
+    return false;
 }
 namespace {
 // FNV-1a over the values a view is built from, to skip rebuilding an unchanged one.
@@ -600,6 +641,7 @@ void publish_chat(Session &s) {
     signature.add(static_cast<std::uint64_t>(s.vote.outcome) << 40 | static_cast<std::uint64_t>(s.vote_mine) << 32 | vote_seconds);
     for (const auto count : s.vote.counts) signature.add(static_cast<std::uint64_t>(count));
     signature.add(static_cast<std::uint64_t>(s.server_polls));
+    signature.add(plugin_commands_serial.load(std::memory_order_relaxed));
     for (const auto &vote : s.server_custom_votes) signature.add(vote.name);
     // The announcement card, and the seconds it still shows.
     const unsigned announcement_seconds = s.announcement.id && s.announcement_ends > now
@@ -703,7 +745,37 @@ std::pair<std::uint32_t, std::string> player_role(Session &s, std::uint64_t send
     }
     return {nametag_white, {}};
 }
+bool ignored(const Session &s, std::uint64_t id) { return id && s.ignored_players.contains(id); }
+void set_ignored(Session &s, std::uint64_t id, std::string name, bool on) {
+    if (!id) return;
+    if (on) s.ignored_players[id] = name.substr(0, 64);
+    else s.ignored_players.erase(id);
+    s.voice.mute(id, on);
+    // Saved as JSON text ({"<SteamID64>": "<name>"}): the profile store keeps plain values.
+    auto list = Json::object();
+    for (const auto &[who, last] : s.ignored_players) list[std::to_string(who)] = last;
+    profile_runtime::set_local_values({{"IgnoredPlayers", Json(list.dump())}});
+    ++s.party_revision; // (the roster shows who is ignored)
+    publish(s);
+}
+void load_ignored(Session &s) {
+    const auto saved = profile_runtime::local_value("IgnoredPlayers");
+    if (!saved || !saved->is_string()) return;
+    try {
+        const auto list = Json::parse(saved->string());
+        if (!list.is_object()) return;
+        for (const auto &[key, value] : list.items()) {
+            std::uint64_t id{};
+            const auto parsed = std::from_chars(key.data(), key.data() + key.size(), id);
+            if (parsed.ec != std::errc{} || parsed.ptr != key.data() + key.size() || !id) continue;
+            s.ignored_players[id] = value.is_string() ? value.string().substr(0, 64) : std::string{};
+            s.voice.mute(id, true);
+        }
+    } catch (const std::exception &) { /* An unreadable list is an empty one. */ }
+}
 void add_chat(Session &s, std::uint64_t sender, std::string name, std::string text, bool local, bool marks) {
+    // An ignored player's lines (and so their chat bubbles) never show, and no plugin hears them.
+    if (!local && !(dedicated_host(s) && sender == s.host_id) && ignored(s, sender)) return;
     if (name.empty()) name = sender ? "Player" : "ReSkate";
     auto [color, tag] = player_role(s, sender, local, marks);
     // The dedicated server's own lines (its chat, and its answers sent to this player alone) stand out.
@@ -718,3 +790,14 @@ void add_chat(Session &s, std::uint64_t sender, std::string name, std::string te
     publish_chat(s);
 }
 } // namespace dingosdk::multiplayer::session_detail
+namespace dingosdk::multiplayer {
+void set_plugin_chat_commands(std::vector<PluginChatCommand> commands) {
+    std::lock_guard lock(session_detail::plugin_commands_mutex);
+    session_detail::plugin_commands = std::move(commands);
+    session_detail::plugin_commands_serial.fetch_add(1, std::memory_order_relaxed);
+}
+std::vector<PluginChatCall> take_plugin_chat_commands() {
+    std::lock_guard lock(session_detail::plugin_commands_mutex);
+    return std::exchange(session_detail::plugin_calls, {});
+}
+} // namespace dingosdk::multiplayer

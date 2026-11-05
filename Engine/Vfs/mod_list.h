@@ -174,6 +174,12 @@ const ResidentAssets::Shader* resident_shader(const Mod& mod, std::string_view b
 // "Parks", "Plugin", "Game data", "Objects", "Music". Empty when it holds none of these. A plugin
 // that also ships game data reads as a plugin first, since its code is what it is for.
 std::vector<std::string> mod_contents(const Mod& mod);
+// Whether a mod holds a plugin and nothing a merge puts in the game (no game data, maps, parks,
+// objects, music or variants). Such a mod is switched on or off without applying the mods: the
+// plugin host loads and unloads its plugin from the Mods folder by itself (plugin_runtime.h).
+bool plugin_only(const Mod& mod);
+// Whether the game finds anything in the mod to load: what mod_contents lists, or variants.
+bool has_content(const Mod& mod);
 
 // Folder names travel into engine paths, so only plain ASCII is accepted:
 // letters, digits, space, '_', '-' and '.', not starting with '.'.
@@ -196,9 +202,6 @@ Mod describe_mod(const std::filesystem::path& directory, std::string name, std::
 // Throws with a readable message on failure.
 void save_mod_order(const std::filesystem::path& mods_root, const std::vector<ModEntry>& entries);
 
-// Whether mods.json lists the mod folder `name` switched off. A folder it does not list loads.
-// Reads mods.json alone, not the mods. Never throws: false when it cannot be read.
-bool mod_disabled(const std::filesystem::path& mods_root, std::string_view name) noexcept;
 // Switches the mod folder `name` on or off in mods.json, every other row as it was; one it does
 // not list yet is added at its end, the bottom of the load order. False when mods.json could not
 // be read (malformed: left for the player to see) or written. Never throws.

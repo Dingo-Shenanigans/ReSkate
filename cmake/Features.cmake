@@ -5,6 +5,7 @@ add_library(dingosdk_steam_restart_guard STATIC
 target_link_libraries(dingosdk_steam_restart_guard PUBLIC dingosdk_launcher_support dingosdk_hooks dingosdk_logging)
 add_library(dingosdk_startup_interventions STATIC
     Extension/Boot/startup_interventions.cpp)
+target_link_libraries(dingosdk_startup_interventions PUBLIC dingosdk_hooks)
 
 add_library(dingosdk_fast_travel_unlock STATIC
     Extension/Progression/fast_travel_unlock.cpp)

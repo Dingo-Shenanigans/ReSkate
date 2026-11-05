@@ -9,7 +9,8 @@ namespace dingosdk::mods::detail {
 namespace {
 // The file's first line: its format, and the ReSkate that wrote it (sdk_stamp). Another ReSkate
 // may read a mod differently, so what this one found is not taken on.
-constexpr std::string_view scan_header = "ReSkate scan 1";
+// 2: an EBX to repair is also one whose asset list entry gives another size than its payload.
+constexpr std::string_view scan_header = "ReSkate scan 2";
 
 std::vector<std::uint32_t> numbers(const std::string& text) {
     std::vector<std::uint32_t> list;

@@ -17,7 +17,6 @@ endif()
 
 include(cmake/ProjectOptions.cmake)
 include(cmake/Dependencies.cmake)
-include(cmake/CustomScriptData.cmake)
 include(cmake/Core.cmake)
 if(WIN32)
     include(cmake/Features.cmake)
@@ -29,7 +28,6 @@ if(WIN32)
     include(cmake/CrashReport.cmake)
 endif()
 
-option(DINGOSDK_BUILD_TESTS "Build logging regression tests" OFF)
 option(DINGOSDK_BUILD_PARK_EDITOR_TESTS "Build park editor regression tests" OFF)
 option(DINGOSDK_BUILD_TRAINER_TESTS "Build the trainer's tools and regression tests" OFF)
 if(DINGOSDK_BUILD_PARK_EDITOR_TESTS)
@@ -62,6 +60,17 @@ if(DINGOSDK_BUILD_PARK_EDITOR_TESTS AND WIN32)
     add_executable(dingosdk_object_categories_tests Extension/Objects/Test/object_categories_tests.cpp)
     target_link_libraries(dingosdk_object_categories_tests PRIVATE dingosdk_local_profile)
     add_test(NAME object_categories COMMAND dingosdk_object_categories_tests)
+    # reskate.objects.physics motion rules on a placement's client replica and server copy
+    # (Extension/Objects/placement_motion.h).
+    add_executable(dingosdk_placement_motion_tests Extension/Objects/Test/placement_motion_tests.cpp)
+    target_include_directories(dingosdk_placement_motion_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME placement_motion COMMAND dingosdk_placement_motion_tests)
+    # The park editor's native ray (Extension/Objects/ParkEditor/park_editor_surface.h) over a
+    # constructed result: the editor's own rules and exclusions, and the counted cast behind
+    # reskate.world.probe and the ray batches (clear, hit and malformed results, presets and
+    # measured contact normals).
+    add_executable(dingosdk_surface_probe_tests Extension/Objects/ParkEditor/Test/surface_probe_tests.cpp)
+    add_test(NAME surface_probe COMMAND dingosdk_surface_probe_tests)
 endif()
 option(DINGOSDK_BUILD_MULTIPLAYER_TESTS "Build multiplayer protocol regression tests" OFF)
 if(DINGOSDK_BUILD_MULTIPLAYER_TESTS)
@@ -193,9 +202,11 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS)
     add_test(NAME server_map_update COMMAND dingosdk_server_map_update_tests)
     if(WIN32)
         # By hand: what the music player outside the game is playing (Extension/Music/external_player.h).
-        add_executable(dingosdk_external_player_probe Extension/Music/Test/external_player_probe.cpp Extension/Music/external_player.cpp)
+        add_executable(dingosdk_external_player_probe Extension/Music/Test/external_player_probe.cpp Extension/Music/external_player.cpp
+            Extension/Music/Test/external_player_probe_stubs.cpp)
         target_include_directories(dingosdk_external_player_probe PRIVATE "${PROJECT_SOURCE_DIR}")
-        add_executable(dingosdk_app_audio_probe Extension/Music/Test/app_audio_probe.cpp Extension/Music/app_audio_capture.cpp)
+        add_executable(dingosdk_app_audio_probe Extension/Music/Test/app_audio_probe.cpp Extension/Music/app_audio_capture.cpp
+            Extension/Music/audio_dsp.cpp)
         target_include_directories(dingosdk_app_audio_probe PRIVATE "${PROJECT_SOURCE_DIR}")
     endif()
     add_executable(dingosdk_word_filter_tests Engine/Core/Text/Test/word_filter_tests.cpp)
@@ -222,11 +233,6 @@ endif()
 if(DINGOSDK_BUILD_MULTIPLAYER_TESTS AND WIN32)
     add_executable(dingosdk_velocity_boost_tests Engine/Game/Skater/Test/velocity_boost_tests.cpp)
     add_test(NAME velocity_boost COMMAND dingosdk_velocity_boost_tests)
-    if(EXISTS "${PROJECT_SOURCE_DIR}/tests/first_person_spring_tests.cpp")
-        add_executable(dingosdk_first_person_spring_tests tests/first_person_spring_tests.cpp)
-        target_include_directories(dingosdk_first_person_spring_tests PRIVATE "${PROJECT_SOURCE_DIR}")
-        add_test(NAME first_person_spring COMMAND dingosdk_first_person_spring_tests)
-    endif()
     add_executable(dingosdk_first_person_stabilize_tests Engine/Game/Skater/Test/first_person_stabilize_tests.cpp)
     target_include_directories(dingosdk_first_person_stabilize_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME first_person_stabilize COMMAND dingosdk_first_person_stabilize_tests)
@@ -236,6 +242,10 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS AND WIN32)
     add_executable(dingosdk_playstation_report_tests Engine/Game/Input/Test/playstation_report_tests.cpp)
     target_include_directories(dingosdk_playstation_report_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME playstation_report COMMAND dingosdk_playstation_report_tests)
+    add_executable(dingosdk_scripted_pad_tests Extension/UI/Overlay/Test/scripted_pad_tests.cpp
+        Extension/UI/Overlay/scripted_pad.cpp)
+    target_include_directories(dingosdk_scripted_pad_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME scripted_pad COMMAND dingosdk_scripted_pad_tests)
     add_executable(dingosdk_physics_tuning_tests Extension/Skater/Test/physics_tuning_tests.cpp
         Extension/Skater/physics_tuning_model.cpp)
     target_include_directories(dingosdk_physics_tuning_tests PRIVATE "${PROJECT_SOURCE_DIR}")
@@ -288,7 +298,8 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS AND WIN32)
     target_include_directories(dingosdk_custom_throwdown_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME custom_throwdowns COMMAND dingosdk_custom_throwdown_tests)
     add_executable(dingosdk_multiplayer_native_tests
-        Extension/Multiplayer/Test/native_layout_tests.cpp Extension/Multiplayer/Net/protocol.cpp)
+        Extension/Multiplayer/Test/native_layout_tests.cpp Extension/Multiplayer/Net/protocol.cpp
+        Extension/Multiplayer/Remote/stand_ins.cpp)
     add_test(NAME multiplayer_native_layout COMMAND dingosdk_multiplayer_native_tests)
     add_executable(dingosdk_multiplayer_lobby_tests
         Extension/Multiplayer/Test/lobby_tests.cpp Extension/Multiplayer/Steam/steam_lobbies.cpp
@@ -333,28 +344,13 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS AND WIN32)
         Extension/Multiplayer/Net/protocol.cpp
         Extension/Multiplayer/Net/delta_codec.cpp Extension/Multiplayer/Net/wire_codec.cpp
         Extension/Multiplayer/Remote/playback_buffers.cpp Extension/Multiplayer/Session/password.cpp
-        Server/server_activity.cpp Server/server_votes.cpp Server/server_commands.cpp Server/server_parks.cpp Extension/Throwdowns/throwdown_wire.cpp)
+        Server/server_activity.cpp Server/server_votes.cpp Server/server_commands.cpp Server/server_parks.cpp Extension/Throwdowns/throwdown_wire.cpp
+        Server/server_plugins.cpp)
     target_include_directories(dingosdk_server_load_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     target_include_directories(dingosdk_server_load_tests SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/External/steam_networking")
     target_link_libraries(dingosdk_server_load_tests PRIVATE dingosdk_launcher_support dingosdk_world_layer_scan dingosdk_json
-        dingosdk_lz4 dingosdk_zstd dingosdk_logging dingosdk_miniz dingosdk_word_filter dingosdk_https winhttp bcrypt winmm)
-endif()
-# The route and logging tests live in the local, untracked tests/ folder.
-option(DINGOSDK_BUILD_ROUTE_TESTS "Build native route cycle regression tests" OFF)
-if(DINGOSDK_BUILD_ROUTE_TESTS AND EXISTS "${PROJECT_SOURCE_DIR}/tests/route_cycle_tests.cpp")
-    enable_testing()
-    add_executable(dingosdk_route_cycle_tests tests/route_cycle_tests.cpp)
-    target_include_directories(dingosdk_route_cycle_tests PRIVATE "${PROJECT_SOURCE_DIR}")
-    add_test(NAME route_cycle_guard COMMAND dingosdk_route_cycle_tests)
-    add_executable(dingosdk_route_endpoint_tests tests/route_endpoint_tests.cpp)
-    target_link_libraries(dingosdk_route_endpoint_tests PRIVATE dingosdk_hooks)
-    add_test(NAME route_endpoint_guard COMMAND dingosdk_route_endpoint_tests)
-endif()
-if(DINGOSDK_BUILD_TESTS AND EXISTS "${PROJECT_SOURCE_DIR}/tests/logging_tests.cpp")
-    enable_testing()
-    add_executable(dingosdk_logging_tests tests/logging_tests.cpp)
-    target_link_libraries(dingosdk_logging_tests PRIVATE dingosdk_logging)
-    add_test(NAME logging_regressions COMMAND dingosdk_logging_tests)
+        dingosdk_lz4 dingosdk_zstd dingosdk_logging dingosdk_miniz dingosdk_word_filter dingosdk_https winhttp bcrypt winmm
+        dingosdk_plugins)
 endif()
 
 # Header-only game contracts belong to the runtime's subsystem tree.
@@ -418,6 +414,12 @@ if(DINGOSDK_BUILD_ANIMATION_STUDIO_TESTS)
     target_include_directories(dingosdk_pose_place_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     target_link_libraries(dingosdk_pose_place_tests PRIVATE dingosdk_json)
     add_test(NAME pose_place COMMAND dingosdk_pose_place_tests)
+    # A joint moved on top of the pose as it is drawn (reskate.skater.pose's offsets), not the animation's.
+    add_executable(dingosdk_pose_offset_tests Extension/Skater/Test/pose_offset_tests.cpp Extension/Skater/pose_offset.cpp
+        Extension/AnimationStudio/anim_core.cpp)
+    target_include_directories(dingosdk_pose_offset_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_link_libraries(dingosdk_pose_offset_tests PRIVATE dingosdk_json)
+    add_test(NAME pose_offset COMMAND dingosdk_pose_offset_tests)
 endif()
 option(DINGOSDK_BUILD_REPLAY_KEYFRAMES_TESTS "Build replay keyframe smoothing regression tests" OFF)
 if(DINGOSDK_BUILD_REPLAY_KEYFRAMES_TESTS)
@@ -438,6 +440,16 @@ if(DINGOSDK_BUILD_XRAY_TESTS)
     target_link_libraries(dingosdk_xray_skeleton_tests PRIVATE dingosdk_game_archives dingosdk_logging)
     add_test(NAME xray_skeleton COMMAND dingosdk_xray_skeleton_tests "${DINGOSDK_TEST_GAME_ROOT}")
 endif()
+option(DINGOSDK_BUILD_HOOKS_TESTS "Build the hook service's patch helper tests" OFF)
+if(DINGOSDK_BUILD_HOOKS_TESTS AND WIN32)
+    enable_testing()
+    # Table and import slots swapped and put back, and jumps, bytes and breakpoints written into an
+    # executable page the test owns and run (Engine/Core/Hooks/patches.h).
+    add_executable(dingosdk_hooks_tests Engine/Core/Hooks/Test/patches_tests.cpp)
+    target_include_directories(dingosdk_hooks_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_link_libraries(dingosdk_hooks_tests PRIVATE dingosdk_hooks)
+    add_test(NAME hooks_patches COMMAND dingosdk_hooks_tests)
+endif()
 option(DINGOSDK_BUILD_CAPTURE_TESTS "Build screen capture regression tests" OFF)
 if(DINGOSDK_BUILD_CAPTURE_TESTS AND TARGET dingosdk_capture)
     enable_testing()
@@ -450,6 +462,14 @@ endif()
 option(DINGOSDK_BUILD_PLUGIN_TESTS "Build plugin host regression tests" OFF)
 if(DINGOSDK_BUILD_PLUGIN_TESTS)
     enable_testing()
+    # The owned-body contracts behind reskate.world.physics (Engine/Game/World): definitions, the
+    # command mailbox, ray batches and their budget, hit identity, measured contact and shape
+    # categories, over constructed values and fake memory.
+    foreach(test owned_body body_query body_contact_read body_shape_categories)
+        add_executable(dingosdk_${test}_tests Engine/Game/World/Test/${test}_tests.cpp)
+        target_include_directories(dingosdk_${test}_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+        add_test(NAME ${test} COMMAND dingosdk_${test}_tests)
+    endforeach()
     # The plugin host apart from the game: manifests, the reskate API, storage, modules, hot reload,
     # and the sandbox against plugins written to break it. These build on Linux too, so they can be
     # run without Windows.
@@ -460,15 +480,53 @@ if(DINGOSDK_BUILD_PLUGIN_TESTS)
         # The Linux plugins library leaves out finding plugins among the mods; the tests need it.
         target_sources(dingosdk_plugin_tests PRIVATE Extension/Plugins/plugin_discovery.cpp Engine/Vfs/mod_list.cpp)
     endif()
-    # It also runs the test plugins in contrib/plugins.
+    # Where its fixtures are (Extension/Plugins/Test/fixtures).
     target_compile_definitions(dingosdk_plugin_tests PRIVATE "RESKATE_SOURCE_DIR=\"${PROJECT_SOURCE_DIR}\"")
     add_test(NAME plugins COMMAND dingosdk_plugin_tests)
+    # The item grids' search and order (Extension/Customization/item_browser_order.h), pure, so it
+    # runs on Linux too.
+    add_executable(dingosdk_item_browser_order_tests Extension/Customization/Test/item_browser_order_tests.cpp)
+    target_include_directories(dingosdk_item_browser_order_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME item_browser_order COMMAND dingosdk_item_browser_order_tests)
+    # reskate.viewmodel's file and clips (Extension/UI/Overlay/viewmodel_model.h), and the FPS plugin's
+    # exported pistol when contrib/plugins has it.
+    add_executable(dingosdk_viewmodel_tests Extension/UI/Overlay/Test/viewmodel_model_tests.cpp Extension/UI/Overlay/viewmodel_model.cpp)
+    target_include_directories(dingosdk_viewmodel_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME viewmodel COMMAND dingosdk_viewmodel_tests "${PROJECT_SOURCE_DIR}/contrib/plugins/fps/viewmodel/pistol.rsvm")
 endif()
 if(DINGOSDK_BUILD_PLUGIN_TESTS AND WIN32)
+    # The owned-body service itself (Extension/World/owned_bodies.cpp), over a constructed local
+    # client, physics world and TLS: ray batches, measured contact, presets, categories,
+    # preparation and re-activating a parked body. The test includes owned_bodies.cpp once and defines the hook, No Bail, session
+    # and ray functions it calls; do not add a second object for any of them.
+    add_executable(dingosdk_owned_body_source_tests Extension/World/Test/owned_body_source_tests.cpp)
+    target_include_directories(dingosdk_owned_body_source_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_compile_options(dingosdk_owned_body_source_tests PRIVATE /Gy /Gw)
+    target_link_options(dingosdk_owned_body_source_tests PRIVATE /OPT:REF)
+    add_test(NAME owned_body_source COMMAND dingosdk_owned_body_source_tests)
+    # How often reskate.entities.bounds may search every asset domain (world_entities_contract.h).
+    add_executable(dingosdk_world_entities_contract_tests Extension/World/Test/world_entities_contract_tests.cpp)
+    target_include_directories(dingosdk_world_entities_contract_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME world_entities_contract COMMAND dingosdk_world_entities_contract_tests)
+    set_tests_properties(owned_body_source PROPERTIES TIMEOUT 15)
+    add_executable(dingosdk_effect_geometry_tests Extension/Rendering/Test/effect_geometry_tests.cpp
+        Extension/Skater/skater_physics.cpp Extension/Plugins/plugin_effects.cpp)
+    target_include_directories(dingosdk_effect_geometry_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_link_libraries(dingosdk_effect_geometry_tests PRIVATE dingosdk_logging)
+    add_test(NAME effect_geometry COMMAND dingosdk_effect_geometry_tests)
+    add_executable(dingosdk_effect_lifetime_tests Extension/Rendering/Test/effect_lifetime_tests.cpp
+        Extension/Plugins/plugin_effects.cpp)
+    target_include_directories(dingosdk_effect_lifetime_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_link_libraries(dingosdk_effect_lifetime_tests PRIVATE dingosdk_logging)
+    add_test(NAME effect_lifetime COMMAND dingosdk_effect_lifetime_tests)
     # Tricks read from the score HUD's values (Extension/Skater/trick_watch.h), what plugins hear.
     add_executable(dingosdk_trick_watch_tests Extension/Skater/Test/trick_watch_tests.cpp Extension/Skater/trick_watch.cpp)
     target_include_directories(dingosdk_trick_watch_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME trick_watch COMMAND dingosdk_trick_watch_tests)
+    # Which trick list writes are a trick's (Extension/Skater/trick_feed_gate.h): never the song's title.
+    add_executable(dingosdk_trick_feed_gate_tests Extension/Skater/Test/trick_feed_gate_tests.cpp)
+    target_include_directories(dingosdk_trick_feed_gate_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME trick_feed_gate COMMAND dingosdk_trick_feed_gate_tests)
     # The board's shader parameters (Extension/Customization/board_material.h): the walk over a board
     # laid out as the game holds it, what plugins may set, and holding and putting back.
     add_executable(dingosdk_board_material_tests Extension/Customization/Test/board_material_tests.cpp)
@@ -486,7 +544,7 @@ foreach(target IN LISTS project_targets)
     if(target_kind STREQUAL "UTILITY")
         continue()
     endif()
-    if(NOT target MATCHES "^(dingosdk_imgui|dingosdk_detours|dingosdk_sqlite|dingosdk_lz4|dingosdk_zstd|dingosdk_miniz|dingosdk_luau|dingosdk_spotify_device)$")
+    if(NOT target MATCHES "^(dingosdk_imgui|dingosdk_detours|dingosdk_sqlite|dingosdk_lz4|dingosdk_zstd|dingosdk_miniz|dingosdk_luau)$")
         dingosdk_configure_target(${target})
     endif()
 endforeach()

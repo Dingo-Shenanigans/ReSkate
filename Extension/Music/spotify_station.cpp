@@ -1,4 +1,5 @@
 #include "spotify_station.h"
+#include "music_inject.h"
 #include "external_player.h"
 #include "spotify_cover.h"
 #include "spotify_web.h"
@@ -152,12 +153,6 @@ void set_stations(std::vector<Station> next, std::uintptr_t table) {
     metadata_table = table;
     station_count.store(stations.size(), std::memory_order_release);
 }
-std::vector<std::string> playlist_ids() {
-    std::lock_guard lock(mutex);
-    std::vector<std::string> ids;
-    for (const auto& station : stations) ids.push_back(station.id);
-    return ids;
-}
 bool has_stations() noexcept { return station_count.load(std::memory_order_acquire) != 0; }
 int station_of(const unsigned char* members, std::uint32_t count, unsigned char* carrier, bool& add) noexcept {
     std::lock_guard lock(mutex);
@@ -188,6 +183,8 @@ int station_of(const unsigned char* members, std::uint32_t count, unsigned char*
 void song_begun(std::uint32_t channel, std::uintptr_t metadata) noexcept {
     std::lock_guard lock(mutex);
     if (channel < channel_song.size()) channel_song[channel] = metadata;
+    if (music_inject::spatial_active() && (channel == station_channel.load(std::memory_order_relaxed) || channel == plain_channel.load(std::memory_order_relaxed)))
+        music_inject::station_song_begins();
 }
 void song_started(std::uintptr_t metadata) noexcept {
     if (!active()) return;

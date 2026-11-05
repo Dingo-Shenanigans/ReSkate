@@ -5,7 +5,7 @@
 #include "Engine/Game/Build/20260929/world_layers.h"
 
 namespace dingosdk::profile_runtime {
-// Exact-build SubWorldReference adapter; analysis/seasonal-world-layers.md.
+// Exact-build SubWorldReference adapter.
 
 // Parent first, then the populated leaf. Never dispatch from ImGui/Present.
 

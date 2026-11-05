@@ -45,20 +45,12 @@ struct WorldPick {
     std::string blueprint;
 };
 std::optional<WorldPick> local_world_pick(const std::array<float, 3> &from, const std::array<float, 3> &to);
+// The park editor's picking reader (park_editor_selection.cpp), for a native surface ray cast
+// outside the editor: the physics body that hit `index` of the ray's result met. False when the
+// picking calls did not match their bytes or the body is not valid in `world`.
+bool local_surface_hit_body(std::uintptr_t world, std::uint32_t index, std::uintptr_t data, std::array<std::uint64_t, 2> &body);
 // Gives world_entities the physics world (its objects made not solid, and those standing on the floor).
 void register_world_physics() noexcept;
-struct WorldRayHit {
-    bool cast{}, hit{};
-    std::array<float, 3> at{};
-    std::uint64_t when{}; // GetTickCount64 of the cast
-    bool available{}; // Native client collision API and world were ready.
-};
-void queue_world_ray(std::uint32_t id, const std::array<float, 3> &origin, const std::array<float, 3> &direction, float length);
-WorldRayHit world_ray(std::uint32_t id);
-// Client collision queries used by mode placement do not require the park
-// editor, its placement store, or the server object manager to be enabled.
-// Runs only on the verified local client update thread.
-void tick_local_world_rays() noexcept;
 
 // Invoked through the console's verified game-thread dispatcher. `texts`
 // carries a park mod's name, author, version and description (mod-create:

@@ -25,7 +25,7 @@ std::string hex(std::span<const std::byte> bytes) {
 }
 std::string key(const fb::BundleAsset& asset) {
     return std::to_string(static_cast<int>(asset.kind)) + ':' +
-        (asset.kind == fb::AssetKind::chunk ? asset.guid.string() : lower(asset.name));
+        (asset.kind == fb::AssetKind::chunk ? asset.guid.string() : ascii_lower(asset.name));
 }
 std::vector<VariantAsset> inventory(const fs::path& game, const fs::path& root, const fb::TocBundle& bundle) {
     const auto layout = vfs::read_layout(root / "layout.toc");
@@ -72,7 +72,7 @@ std::vector<VariantAsset> inventory(const fs::path& game, const fs::path& root, 
     return result;
 }
 const fb::TocBundle& named(const fb::TocDocument& toc, const std::string& name) {
-    const auto at = std::ranges::find_if(toc.bundles, [&](const auto& b) { return lower(b.name) == name; });
+    const auto at = std::ranges::find_if(toc.bundles, [&](const auto& b) { return ascii_lower(b.name) == name; });
     if (at == toc.bundles.end()) throw std::runtime_error("selected variant or game does not deliver the requested bundle");
     return *at;
 }
@@ -87,7 +87,7 @@ std::map<std::string, std::set<std::string>, std::less<>> admit_variant_addition
         if (!file.is_regular_file() || file.path().extension() != ".toc") continue;
         const auto toc = fb::read_toc(bounded_toc(file.path()));
         for (const auto& bundle : toc.bundles) {
-            const auto name = lower(bundle.name);
+            const auto name = ascii_lower(bundle.name);
             if (std::ranges::none_of(owner.variants->displaces, [&](const auto& part) { return name.find(part) != std::string::npos; })) continue;
             if (std::ranges::find(owner.variant_additions.accept, name) == owner.variant_additions.accept.end() ||
                 std::ranges::find(donor.variant_additions.contribute, name) == donor.variant_additions.contribute.end())
@@ -111,7 +111,7 @@ std::map<std::string, std::set<std::string>, std::less<>> admit_variant_addition
                 std::vector<VariantAsset> reserved;
                 try {
                     const auto other_toc = fb::read_toc(bounded_toc(path));
-                    const auto found = std::ranges::find_if(other_toc.bundles, [&](const auto& b) { return lower(b.name) == name; });
+                    const auto found = std::ranges::find_if(other_toc.bundles, [&](const auto& b) { return ascii_lower(b.name) == name; });
                     if (found == other_toc.bundles.end()) continue;
                     reserved = inventory(game, other.mod.directory, *found);
                 } catch (const std::exception& failure) {

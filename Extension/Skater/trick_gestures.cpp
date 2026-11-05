@@ -2,10 +2,12 @@
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Resource/ebx_document.h"
 #include "Engine/Vfs/game_bundles.h"
+#include "Engine/Core/Text/ascii.h"
 #include <Windows.h>
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <filesystem>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -30,11 +32,6 @@ Loader &loader() {
     return *value;
 }
 
-std::string lower(std::string_view text) {
-    std::string out;
-    for (const char c : text) out += static_cast<char>(c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c);
-    return out;
-}
 double number(const ebx::Value &value) {
     return std::visit([](const auto &v) -> double {
         using T = std::decay_t<decltype(v)>;
@@ -97,7 +94,7 @@ Gestures read_gestures(const std::filesystem::path &game_root) {
     if (!bundle) throw std::runtime_error("the gestures' bundle is missing");
     Gestures gestures;
     for (std::size_t i = 0; i < bundle->manifest.ebx.size(); ++i) {
-        const auto name = lower(bundle->manifest.ebx[i].name);
+        const auto name = ascii_lower(bundle->manifest.ebx[i].name);
         if (!name.starts_with(gesture_prefix)) continue;
         const auto key = name.substr(gesture_prefix.size());
         // The variants out of a grind or an underflip are the same flick done from elsewhere.
@@ -118,7 +115,7 @@ Gestures read_gestures(const std::filesystem::path &game_root) {
 // "FS 360 Pop Shove-it" fs360popshuvit.
 std::string gesture_key(std::string_view trick) {
     std::string text;
-    for (const char c : lower(trick))
+    for (const char c : ascii_lower(trick))
         if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) text += c;
     for (const auto &[from, to] : {std::pair{"frontside", "fs"}, std::pair{"backside", ""}, std::pair{"shoveit", "shuvit"},
                                    std::pair{"shuveit", "shuvit"}}) {
@@ -148,13 +145,6 @@ void prepare_trick_gestures() noexcept {
             }).detach();
         });
     } catch (...) {}
-}
-
-std::size_t load_trick_gestures(const std::filesystem::path &game_root) {
-    auto read = std::make_shared<const Gestures>(read_gestures(game_root));
-    const auto count = read->size();
-    loader().gestures.store(std::move(read));
-    return count;
 }
 
 StickPath trick_gesture(std::string_view trick) {

@@ -3,6 +3,8 @@
 #include "lualib.h"
 #include <algorithm>
 #include <array>
+#include <cctype>
+#include <charconv>
 #include <cmath>
 #include <format>
 #include <optional>
@@ -17,7 +19,7 @@ namespace {
 struct Event {
     std::string_view name, permission;
 };
-constexpr std::array<Event, 31> events{{
+constexpr std::array<Event, 33> events{{
     {"load", {}}, {"unload", {}}, {"tick", {}}, {"level_loaded", {}}, {"level_unloading", {}},
     {"trick_started", "events.tricks"}, {"trick_landed", "events.tricks"}, {"line_broken", "events.tricks"},
     {"draw", "overlay"}, {"player_joined", "session.read"}, {"player_left", "session.read"}, {"message", "net.session"},
@@ -26,7 +28,7 @@ constexpr std::array<Event, 31> events{{
     {"board_landed", "events.skater"}, {"body_hit", "events.skater"}, {"bail_end", "events.skater"},
     {"physics_step", "events.physics"}, {"launch", "events.skater"}, {"trick_notes", "events.tricks"},
     {"throwdown_ui", "throwdowns"}, {"touch", "session.skaters"}, {"touch_end", "session.skaters"}, {"camera_cycle", "camera"},
-    {"poll_answer", "server"}, {"poll_closed", "server"},
+    {"poll_answer", "server"}, {"poll_closed", "server"}, {"favorites_changed", "menu"}, {"menu_changed", "menu"},
 }};
 constexpr std::size_t maximum_key = 128;
 constexpr std::size_t maximum_command = 48;
@@ -210,11 +212,55 @@ void need(lua_State* L, Plugin& plugin, const char* permission, const char* what
     if (!plugin.has(permission))
         luaL_error(L, "%s needs the \"%s\" permission in reskate-plugin.json", what, permission);
 }
+Plugin& permitted(lua_State* L, const char* permission, const char* what) {
+    auto& plugin = plugin_of(L);
+    need(L, plugin, permission, what);
+    return plugin;
+}
+Game& game_of(Plugin& plugin) { return plugin.services_.game(); }
+bool within(double now, double& second, int& count, int most) {
+    if (now - second >= 1000) {
+        second = now;
+        count = 0;
+    }
+    return ++count <= most;
+}
+
+int result(lua_State* L, std::string_view why) {
+    lua_pushboolean(L, why.empty());
+    if (why.empty()) return 1;
+    lua_pushlstring(L, why.data(), why.size());
+    return 2;
+}
+int failed(lua_State* L, std::string_view why) {
+    lua_pushnil(L);
+    lua_pushlstring(L, why.data(), why.size());
+    return 2;
+}
+
 std::string checked_text(lua_State* L, int index, std::size_t most, const char* what) {
     std::size_t length = 0;
     const char* text = luaL_checklstring(L, index, &length);
     if (length > most) luaL_error(L, "%s is longer than %d characters", what, static_cast<int>(most));
     return std::string(text, length);
+}
+std::string data_path(lua_State* L, int index, bool folder) {
+    if (folder && lua_isnoneornil(L, index)) return {};
+    auto path = checked_text(L, index, 200, "a data path");
+    while (folder && path.ends_with('/')) path.pop_back();
+    if (folder && path.empty()) return {};
+    if (safe_relative_path(path).empty()) luaL_argerror(L, index, "a path inside the plugin's data folder (no .., no drive, / between folders)");
+    std::size_t start = 0;
+    while (start <= path.size()) {
+        const auto end = std::min(path.find('/', start), path.size());
+        std::string base(path.substr(start, std::min(path.find('.', start), end) - start));
+        for (auto& c : base) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        static constexpr std::array<std::string_view, 4> devices{"con", "prn", "aux", "nul"};
+        const bool numbered = base.size() == 4 && (base.starts_with("com") || base.starts_with("lpt")) && base[3] >= '0' && base[3] <= '9';
+        if (numbered || std::find(devices.begin(), devices.end(), base) != devices.end()) luaL_argerror(L, index, "a name Windows keeps for a device");
+        start = end + 1;
+    }
+    return path;
 }
 Vec3 position_of(lua_State* L, int index, const char* what) {
     const float* v = luaL_checkvector(L, index);
@@ -222,7 +268,121 @@ Vec3 position_of(lua_State* L, int index, const char* what) {
         if (!std::isfinite(v[i]) || std::fabs(v[i]) > 1e5f) luaL_error(L, "%s must be a finite position within 100 km", what);
     return {v[0], v[1], v[2]};
 }
+std::uint64_t player_id(lua_State* L, int index, const char* problem) {
+    index = lua_absindex(L, index);
+    const bool table = lua_istable(L, index);
+    if (table) lua_getfield(L, index, "id");
+    const int at = table ? lua_gettop(L) : index;
+    std::uint64_t id = 0;
+    bool valid = false;
+    if (lua_type(L, at) == LUA_TNUMBER) {
+        const double value = lua_tonumber(L, at);
+        if (!(value >= 0 && value < 9007199254740992.0) || value != std::floor(value))
+            luaL_argerror(L, index, "a Steam ID is a string: a number cannot hold one exactly");
+        id = static_cast<std::uint64_t>(value);
+        valid = id != 0;
+    } else if (lua_type(L, at) == LUA_TSTRING) {
+        std::size_t length = 0;
+        const char* text = lua_tolstring(L, at, &length);
+        const auto [end, error] = std::from_chars(text, text + length, id);
+        valid = error == std::errc{} && end == text + length && id != 0;
+    }
+    if (table) lua_pop(L, 1);
+    if (!valid) luaL_argerror(L, index, problem);
+    return id;
+}
+std::uint64_t object_id(lua_State* L, int index) {
+    if (lua_type(L, index) != LUA_TSTRING) luaL_argerror(L, index, "an object's decimal string ID");
+    const auto text = checked_text(L, index, 20, "an object ID");
+    std::uint64_t id = 0;
+    const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), id);
+    if (error != std::errc{} || end != text.data() + text.size() || !id) luaL_argerror(L, index, "an object's decimal string ID");
+    return id;
+}
+// The same bound as menu.grid_show: a picker asks about the keys a grid already showed it.
+std::vector<std::string> item_keys(lua_State* L, int index) {
+    luaL_checktype(L, index, LUA_TTABLE);
+    const int count = lua_objlen(L, index);
+    if (count > 4000) luaL_argerror(L, index, "at most 4000 items");
+    std::vector<std::string> keys;
+    keys.reserve(static_cast<std::size_t>(count));
+    for (int i = 1; i <= count; ++i) {
+        lua_rawgeti(L, index, i);
+        keys.push_back(checked_text(L, lua_gettop(L), 255, "an item's key"));
+        lua_pop(L, 1);
+    }
+    return keys;
+}
+
+double number_option(lua_State* L, int table, const char* name, double fallback, double low, double high, const char* message) {
+    if (lua_isnoneornil(L, table)) return fallback;
+    luaL_checktype(L, table, LUA_TTABLE);
+    lua_getfield(L, table, name);
+    double value = fallback;
+    if (!lua_isnil(L, -1)) {
+        value = luaL_checknumber(L, -1);
+        if (!(value >= low && value <= high)) {
+            if (message) luaL_error(L, "%s", message);
+            luaL_error(L, "%s is %g to %g", name, low, high);
+        }
+    }
+    lua_pop(L, 1);
+    return value;
+}
+bool flag_option(lua_State* L, int table, const char* name, bool fallback) {
+    if (lua_isnoneornil(L, table)) return fallback;
+    luaL_checktype(L, table, LUA_TTABLE);
+    lua_getfield(L, table, name);
+    const bool value = lua_isnil(L, -1) ? fallback : lua_toboolean(L, -1) != 0;
+    lua_pop(L, 1);
+    return value;
+}
+std::string text_field(lua_State* L, int table, const char* name, std::size_t most) {
+    lua_getfield(L, table, name);
+    std::string value;
+    if (!lua_isnil(L, -1)) {
+        if (!lua_isstring(L, -1)) luaL_error(L, "%s is a string", name);
+        std::size_t length = 0;
+        const char* text = lua_tolstring(L, -1, &length);
+        if (length > most) luaL_error(L, "%s is longer than %d characters", name, static_cast<int>(most));
+        value.assign(text, length);
+    }
+    lua_pop(L, 1);
+    return value;
+}
+
 void push_position(lua_State* L, const Vec3& v) { lua_pushvector(L, v[0], v[1], v[2]); }
+void push_quaternion(lua_State* L, const std::array<float, 4>& q) {
+    lua_createtable(L, 4, 0);
+    for (int i = 0; i < 4; ++i) {
+        lua_pushnumber(L, q[static_cast<std::size_t>(i)]);
+        lua_rawseti(L, -2, i + 1);
+    }
+}
+void push_texts(lua_State* L, std::span<const std::string> texts, std::size_t most) {
+    const std::size_t count = std::min(texts.size(), most);
+    lua_createtable(L, static_cast<int>(count), 0);
+    for (std::size_t i = 0; i < count; ++i) {
+        lua_pushlstring(L, texts[i].data(), texts[i].size());
+        lua_rawseti(L, -2, static_cast<int>(i + 1));
+    }
+}
+void field_number(lua_State* L, const char* name, double value) {
+    lua_pushnumber(L, value);
+    lua_setfield(L, -2, name);
+}
+void field_bool(lua_State* L, const char* name, bool value) {
+    lua_pushboolean(L, value);
+    lua_setfield(L, -2, name);
+}
+void field_vec(lua_State* L, const char* name, const Vec3& v) {
+    push_position(L, v);
+    lua_setfield(L, -2, name);
+}
+void field_text(lua_State* L, const char* name, std::string_view text) {
+    lua_pushlstring(L, text.data(), text.size());
+    lua_setfield(L, -2, name);
+}
 
 std::filesystem::path package_file(lua_State* L, Plugin& plugin, std::string_view path) { return package_path(L, plugin, path, false); }
 
@@ -231,7 +391,7 @@ struct ApiFunctions {
         auto& plugin = plugin_of(L);
         const auto message = text_of(L, 1);
         const std::string level = luaL_optstring(L, 2, "info");
-        if (level != "info" && level != "warn" && level != "error") luaL_argerror(L, 2, "the level must be \"info\", \"warn\" or \"error\"");
+        if (!one_of(log_levels, level)) luaL_argerror(L, 2, "the level must be \"info\", \"warn\" or \"error\"");
         plugin.log(level == "error" ? LogLevel::error : level == "warn" ? LogLevel::warn : LogLevel::info, message);
         return 0;
     }
@@ -300,30 +460,32 @@ struct ApiFunctions {
         lua_setfield(L, -2, "name");
         return 1;
     }
-    static int read(lua_State* L) {
-        auto& plugin = plugin_of(L);
+    // The package file argument 1 names, read as ReSkate's own time (it is not the plugin's); none
+    // when there is no such file, and a Lua error for one that cannot be read.
+    static std::optional<std::string> package_text(lua_State* L, Plugin& plugin) {
         const auto file = package_path(L, plugin, luaL_checkstring(L, 1), false);
         std::string error;
-        const auto text = read_package_file(file, plugin.limits_.file_bytes, error);
-        if (error == "not found") {
-            lua_pushnil(L);
-            return 1;
+        std::string text;
+        {
+            const Plugin::Untimed untimed{plugin};
+            text = read_package_file(file, plugin.limits_.file_bytes, error);
         }
+        if (error == "not found") return std::nullopt;
         if (!error.empty()) luaL_error(L, "%s %s", luaL_checkstring(L, 1), error.c_str());
-        lua_pushlstring(L, text.data(), text.size());
+        return text;
+    }
+    static int read(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        const auto text = package_text(L, plugin);
+        if (text) lua_pushlstring(L, text->data(), text->size());
+        else lua_pushnil(L);
         return 1;
     }
     static int read_json(lua_State* L) {
         auto& plugin = plugin_of(L);
-        const auto file = package_path(L, plugin, luaL_checkstring(L, 1), false);
-        std::string error;
-        const auto text = read_package_file(file, plugin.limits_.file_bytes, error);
-        if (error == "not found") {
-            lua_pushnil(L);
-            return 1;
-        }
-        if (!error.empty()) luaL_error(L, "%s %s", luaL_checkstring(L, 1), error.c_str());
-        push_json(L, Json::parse(text, {plugin.limits_.file_bytes, 64, 1u << 20}));
+        const auto text = package_text(L, plugin);
+        if (text) push_json(L, Json::parse(*text, {plugin.limits_.file_bytes, 64, 1u << 20}));
+        else lua_pushnil(L);
         return 1;
     }
     // variants(): the variants the plugin's own mod holds (its reskate-plugin.json "variants",
@@ -331,23 +493,16 @@ struct ApiFunctions {
     // first; nil when it declares none.
     static int variants(lua_State* L) {
         auto& plugin = plugin_of(L);
-        const auto state = plugin.services_.game().variants(plugin.id(), plugin.directory());
+        const auto state = game_of(plugin).variants(plugin.id(), plugin.directory());
         if (!state) {
             lua_pushnil(L);
             return 1;
         }
         lua_createtable(L, 0, 3);
-        lua_createtable(L, static_cast<int>(state->installed.size()), 0);
-        for (std::size_t i = 0; i < state->installed.size(); ++i) {
-            lua_pushlstring(L, state->installed[i].data(), state->installed[i].size());
-            lua_rawseti(L, -2, static_cast<int>(i + 1));
-        }
+        push_texts(L, state->installed);
         lua_setfield(L, -2, "list");
-        for (const auto& [field, value] : {std::pair{"chosen", &state->chosen}, std::pair{"in_play", &state->in_play}}) {
-            if (value->empty()) continue;
-            lua_pushlstring(L, value->data(), value->size());
-            lua_setfield(L, -2, field);
-        }
+        for (const auto& [field, value] : {std::pair{"chosen", &state->chosen}, std::pair{"in_play", &state->in_play}})
+            if (!value->empty()) field_text(L, field, *value);
         return 1;
     }
     // choose(name): that variant of the plugin's own mod in the game: kept as the choice, the mods
@@ -356,11 +511,7 @@ struct ApiFunctions {
         auto& plugin = plugin_of(L);
         need(L, plugin, "variants", "reskate.package.choose");
         const std::string name = luaL_checkstring(L, 1);
-        const auto why = plugin.services_.game().choose_variant(plugin.id(), plugin.directory(), name);
-        lua_pushboolean(L, why.empty());
-        if (why.empty()) return 1;
-        lua_pushlstring(L, why.data(), why.size());
-        return 2;
+        return result(L, game_of(plugin).choose_variant(plugin.id(), plugin.directory(), name));
     }
     static int list(lua_State* L) {
         auto& plugin = plugin_of(L);
@@ -377,11 +528,7 @@ struct ApiFunctions {
             if (names.size() > maximum_listing) luaL_error(L, "the folder holds more than %d entries", static_cast<int>(maximum_listing));
         }
         std::sort(names.begin(), names.end());
-        lua_createtable(L, static_cast<int>(names.size()), 0);
-        for (std::size_t i = 0; i < names.size(); ++i) {
-            lua_pushlstring(L, names[i].data(), names[i].size());
-            lua_rawseti(L, -2, static_cast<int>(i + 1));
-        }
+        push_texts(L, names);
         return 1;
     }
     static int encode(lua_State* L) {
@@ -570,8 +717,13 @@ struct ApiFunctions {
         else lua_pushnil(L);
         return 1;
     }
-    // skater.teleport: true when the teleport was sent (it happens within a few seconds); false
+    // skater.teleport: true means queued, not an arrival or equipment acknowledgement; false
     // and why when the host has turned teleporting off, it cannot be done now, or it is asked too often.
+    // Explicit on_board sets the native spawn preference at dispatch, when it can be set (not against a
+    // match's own lock, nor while No Bail holds the board); otherwise the move happens with the board
+    // as it is. The engine may retain it
+    // for later teleports; omitted options leave that preference unchanged. This is native state,
+    // not a saved SDK setting, and no automatic restoration is promised.
     static int skater_teleport(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "skater.teleport", "reskate.skater.teleport");
@@ -584,6 +736,21 @@ struct ApiFunctions {
             if (!std::isfinite(given)) luaL_argerror(L, 2, "the heading must be a finite number of radians");
             heading = static_cast<float>(std::remainder(given, 2 * 3.14159265358979323846));
         }
+        std::optional<bool> on_board;
+        if (!lua_isnoneornil(L, 3)) {
+            luaL_checktype(L, 3, LUA_TTABLE);
+            lua_pushnil(L);
+            while (lua_next(L, 3)) {
+                std::size_t size = 0;
+                const char* key = lua_type(L, -2) == LUA_TSTRING ? lua_tolstring(L, -2, &size) : nullptr;
+                if (!key || std::string_view(key, size) != "on_board")
+                    luaL_argerror(L, 3, "the only teleport option is on_board");
+                if (lua_type(L, -1) != LUA_TBOOLEAN)
+                    luaL_argerror(L, 3, "on_board must be a boolean");
+                on_board = lua_toboolean(L, -1) != 0;
+                lua_pop(L, 1);
+            }
+        }
         const double now = plugin.services_.now_ms();
         if (now - plugin.teleport_second_ >= 1000) {
             plugin.teleport_second_ = now;
@@ -591,7 +758,7 @@ struct ApiFunctions {
         }
         const char* refusal = nullptr;
         if (++plugin.teleports_ > plugin.limits_.teleports_per_second) refusal = "asked more than twice in a second";
-        else switch (plugin.services_.teleport(plugin.id(), at, heading)) {
+        else switch (plugin.services_.teleport(plugin.id(), at, heading, on_board)) {
         case Teleport::sent: break;
         case Teleport::forbidden: refusal = "the host has turned teleporting off"; break;
         case Teleport::unavailable: refusal = "teleporting is unavailable now (no skater, or a load)"; break;
@@ -639,6 +806,8 @@ struct ApiFunctions {
         lua_setfield(L, -2, "detail");
         lua_pushboolean(L, now->manual);
         lua_setfield(L, -2, "manual");
+        lua_pushnumber(L, now->timer);
+        lua_setfield(L, -2, "timer");
         return 1;
     }
     // Modules come from the plugin's own package, beside its entry: require("./rules") or
@@ -661,7 +830,8 @@ struct ApiFunctions {
         for (const auto& candidate : candidates) {
             const auto path = package_path(L, plugin, candidate, false);
             std::error_code code;
-            if (std::filesystem::is_regular_file(path, code)) {
+            const bool exists = plugin.sources_ ? plugin.sources_->contains(plugin_source_key(candidate)) : std::filesystem::is_regular_file(path, code);
+            if (exists) {
                 key = candidate;
                 file = path;
                 break;
@@ -710,21 +880,26 @@ void Api::install(Plugin& plugin, lua_State* L) {
     lua_setfield(L, -2, "side");
     // Named constants, read-only and built from the C++ lists so they cannot drift:
     // reskate.Enums.Side.server is "server", reskate.Enums.Event.tick is "tick". Plain strings still work.
-    lua_createtable(L, 0, 2);
-    lua_createtable(L, 0, 3);
-    for (const auto side : {Side::client, Side::server, Side::both}) {
-        lua_pushstring(L, side_name(side));
-        lua_setfield(L, -2, side_name(side));
-    }
-    readonly();
-    lua_setfield(L, -2, "Side");
-    lua_createtable(L, 0, static_cast<int>(events.size()));
-    for (const auto& event : events) {
-        lua_pushlstring(L, event.name.data(), event.name.size());
-        lua_setfield(L, -2, std::string(event.name).c_str());
-    }
-    readonly();
-    lua_setfield(L, -2, "Event");
+    const auto push_enum = [&](const char* name, const auto& values, auto word) {
+        lua_createtable(L, 0, static_cast<int>(std::size(values)));
+        for (const auto& value : values) {
+            const std::string_view w = word(value);
+            lua_pushlstring(L, w.data(), w.size());
+            lua_setfield(L, -2, std::string(w).c_str());
+        }
+        readonly();
+        lua_setfield(L, -2, name);
+    };
+    const auto same = [](std::string_view w) { return w; };
+    lua_createtable(L, 0, 14);
+    push_enum("Side", std::array{Side::client, Side::server, Side::both}, [](Side side) { return std::string_view(side_name(side)); });
+    push_enum("Event", events, [](const Event& event) { return event.name; });
+    push_enum("Key", key_names, [](const auto& key) { return key.first; });
+    for (const auto& [name, words] : {std::pair<const char*, Words>{"LogLevel", log_levels}, {"Align", aligns}, {"Launch", launches},
+                                      {"Stance", stances}, {"Pop", pops}, {"Space", spaces}, {"Throwdown", throwdown_modes},
+                                      {"Card", throwdown_cards}, {"EntityStatus", entity_statuses}, {"Target", send_targets},
+                                      {"ItemSource", item_sources}, {"MenuPage", menu_pages}})
+        push_enum(name, words, same);
     readonly();
     lua_setfield(L, -2, "Enums");
     using F = ApiFunctions;
@@ -743,9 +918,14 @@ void Api::install(Plugin& plugin, lua_State* L) {
     install_ui_api(plugin, L);
     install_more_api(plugin, L);
     install_world_api(plugin, L);
+    install_physics_api(plugin, L);
     install_services_api(plugin, L);
     install_kit_api(plugin, L);
     install_capture_api(plugin, L);
+    install_effects_api(plugin, L);
+    install_viewmodel_api(plugin, L);
+    install_object_physics_api(plugin, L);
+    install_values_api(plugin, L);
     readonly();
     lua_setglobal(L, "reskate");
     lua_pushcfunction(L, ApiFunctions::print, "print");
