@@ -40,12 +40,61 @@ void Exchange::begin(std::uint64_t session) {
     peers_.clear();
 }
 
+// A Hello with the proofs of every code and group held now. Sent when the side connection comes
+// up, and again whenever the codes held change, so a code entered mid-session counts at once.
+void Exchange::hello(std::uint64_t peer, Peer& p, bool again) {
+    if (!p.linked || !p.refused.empty() || !may_ask(settings_, peer)) return;
+    const auto proofs = proofs_for(settings_, session_, peer, me_);
+    const Message message{Hello{session_, proofs.personal, proofs.group}};
+    std::vector<std::uint8_t> bytes;
+    try {
+        bytes = encode(message);
+    } catch (const std::exception&) {
+        return;
+    }
+    if (p.hello_sent && (!again || bytes == p.asked_with)) return;
+    send(peer, message);
+    note("asked " + std::to_string(peer) + " for their outfit (" + std::to_string(proofs.personal.size()) + " code(s), " +
+         std::to_string(proofs.group.size()) + " group(s))");
+    p.hello_sent = true;
+    p.asked_with = std::move(bytes);
+}
+
+// Whether a viewer may see this player's outfit, from the proofs it last sent: told to them when
+// it changes, and an outfit made ready for them when it becomes yes.
+void Exchange::judge(std::uint64_t peer, Peer& p) {
+    const auto paired_before = settings_.paired.size();
+    accept_proofs(settings_, grants_, p.proofs, session_, me_, peer);
+    if (settings_.paired.size() != paired_before) settings_changed_ = true;
+    const bool now = may_send(settings_, grants_, peer);
+    const bool changed = now != p.sharing || !p.hello_seen;
+    p.sharing = now;
+    p.hello_seen = true;
+    if (!changed) return;
+    send(peer, Message{Welcome{p.sharing}});
+    if (!p.sharing) note("not sharing this player's outfit with " + std::to_string(peer) + " (no matching code or group)");
+    if (p.sharing) {
+        std::set<std::string> worn;
+        if (game_.wearing) worn = game_.wearing();
+        p.outfit = std::make_unique<Outfit>(closet_, std::move(worn), game_.game_item);
+        note("sharing this player's outfit with " + std::to_string(peer));
+    } else {
+        p.outfit.reset();
+    }
+}
+
 void Exchange::connected(std::uint64_t peer) {
     auto& p = peers_[peer];
-    if (p.hello_sent || !may_ask(settings_, peer)) return;
-    const auto proofs = proofs_for(settings_, session_, peer, me_);
-    send(peer, Message{Hello{session_, proofs.personal, proofs.group}});
-    p.hello_sent = true;
+    p.linked = true;
+    hello(peer, p, false);
+}
+
+void Exchange::settings_changed() {
+    for (auto& [peer, p] : peers_) {
+        if (!p.linked || !p.refused.empty()) continue;
+        if (p.hello_seen) judge(peer, p);   // sharing switched, a group left, a player removed
+        hello(peer, p, true);               // a code entered, a group joined, showing switched on
+    }
 }
 
 void Exchange::closed(std::uint64_t peer) {
@@ -113,24 +162,24 @@ void Exchange::received(std::uint64_t peer, std::span<const std::uint8_t> bytes)
     std::visit([&](const auto& m) {
         using T = std::decay_t<decltype(m)>;
         if constexpr (std::is_same_v<T, Hello>) {
-            // Wearer: a viewer offering its proofs.
-            if (p.hello_seen || m.session != session_) { refuse(peer, "an unexpected hello"); return; }
-            p.hello_seen = true;
-            const auto paired_before = settings_.paired.size();
-            accept_proofs(settings_, grants_, Proofs{m.personal, m.group}, session_, me_, peer);
-            if (settings_.paired.size() != paired_before) settings_changed_ = true;
-            p.sharing = may_send(settings_, grants_, peer);
-            send(peer, Message{Welcome{p.sharing}});
-            if (p.sharing) {
-                std::set<std::string> worn;
-                if (game_.wearing) worn = game_.wearing();
-                p.outfit = std::make_unique<Outfit>(closet_, std::move(worn), game_.game_item);
-                note("sharing this player's outfit with " + std::to_string(peer));
-            }
+            // Wearer: a viewer offering its proofs (again, when its codes changed).
+            if (m.session != session_) { refuse(peer, "a hello for another session"); return; }
+            p.proofs = Proofs{m.personal, m.group};
+            const bool first = !p.hello_seen;
+            const bool was = p.sharing;
+            judge(peer, p);
+            // A viewer asking again is told again even when the answer is the same.
+            if (!first && was == p.sharing) send(peer, Message{Welcome{p.sharing}});
         } else if constexpr (std::is_same_v<T, Welcome>) {
-            // Viewer: whether they let this player in.
-            if (!p.hello_sent || p.welcomed) { refuse(peer, "an unexpected welcome"); return; }
+            // Viewer: whether they let this player in (again, when either side's settings changed).
+            if (!p.hello_sent) { refuse(peer, "an unexpected welcome"); return; }
+            const bool was = p.welcomed;
             p.welcomed = m.allowed;
+            if (p.welcomed && !was) {
+                p.asked.clear();   // ask for everything they wear
+                note(std::to_string(peer) + " shares their outfit with this player");
+            }
+            if (!p.welcomed) note(std::to_string(peer) + " does not share their outfit with this player");
             if (p.welcomed) ask(peer, p);
         } else if constexpr (std::is_same_v<T, Want>) {
             if (!p.outfit || !p.sharing) { refuse(peer, "asked without being let in"); return; }

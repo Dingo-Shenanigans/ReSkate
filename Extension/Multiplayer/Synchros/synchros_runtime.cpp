@@ -297,6 +297,8 @@ std::string change(const std::function<std::string(Settings&)>& change) {
     auto said = change(s.settings);
     if (s.settings.share && s.settings.own_code.empty()) renew_code(s.settings);
     s.save();
+    // Players already connected hear of it now, not at the next session.
+    if (s.exchange) s.exchange->settings_changed();
     return said;
 }
 
