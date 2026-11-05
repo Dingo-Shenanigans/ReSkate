@@ -66,6 +66,9 @@ struct State {
     std::string selected_player;
     bool copy_code_requested{};
     Value menu_style, primary_style;
+    // The page's own copy of the backdrop style, and the opacity last given it (ui backdrop).
+    Value backdrop_style;
+    float backdrop_opacity{};
     Ref white_text_style;
     float row_width = main_width;
     std::map<std::string, Address, std::less<>> assets;

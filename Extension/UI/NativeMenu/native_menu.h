@@ -1,6 +1,7 @@
 #pragma once
 #include <cstdint>
 #include <string>
+#include <string_view>
 
 namespace dingosdk::overlay { struct CallbacksV3; struct HubPage; }
 
@@ -29,6 +30,10 @@ bool native_pause_menu_open() noexcept;
 // Goes to one of ReSkate's pages in the pause menu (`slot` 0 Multiplayer, 1 Mod Options, 2 Mod
 // Manager), as picking its tab does; nothing when that page is not there. Any thread.
 void show_native_menu_page(int slot) noexcept;
+// ui backdrop (an experiment): "hub" or "cas" raises the game's UI state flag Menu_HUB or Menu_CAS
+// while the Mod Manager is the pause menu's page, "off" (the default) does not; empty says which.
+// Kept for the run only. Returns the line for the console. Any thread.
+std::string set_native_menu_backdrop(std::string_view mode);
 // The game's HUB tab, under ReSkate's front page (native_hub.cpp, Extension/UI/Overlay/hub_home_page.cpp).
 // Opens the player's profile as the HUB's Profile tile did; native_profile_failed says (once) when
 // nothing the game was asked took the menu off the HUB. Any thread.
