@@ -24,8 +24,9 @@
 // screen, so the page keeps the middle open and is drawn in two columns either side of it:
 //
 //   left   the news posts, and only those. The one featured is drawn big (its picture on top, tag,
-//          title, description, READ and a pager), and the next ones under it as compact cards, as
-//          many as fit;
+//          title, the start of what the post says, READ and a dot a post), and moves on to the next
+//          by itself every few seconds; the posts are listed under it as compact cards, as many as
+//          fit, the featured one marked;
 //   right  PATCH NOTES (the latest release's highlights, stretched so both columns end level),
 //          YOUR PROFILE with EDIT PROFILE, and RIGHT NOW (a friend to join, mods with updates),
 //          each row opening the page that deals with it.
@@ -93,12 +94,15 @@ struct Home {
     // What it shows.
     View view{View::front};
     std::size_t featured{};     // the post big on the left
+    ULONGLONG featured_at{};    // when its time to move on started (rotate_news)
+    ULONGLONG shown_at{};       // when it came up, for its fade
     std::size_t reading{};      // the post open in the reader (View::post)
     std::uint32_t back_focus{}; // the control the reader was opened from, to go back to
     float scroll{};             // the reader's, in pixels
     // B (or Escape) that closed the reader holds the HUB's Back until it is let go, and a moment after.
     ULONGLONG hold_until{};
     std::vector<profile::NewsPost> posts;
+    std::vector<std::string> excerpts; // a post each: what it says as plain lines (excerpt_of)
     ULONGLONG posts_at{};
     std::shared_ptr<const news::PatchNotes> notes;
     // The reader laid out, and for what (the view, the post, the notes' copy, the width).
@@ -126,6 +130,7 @@ struct Ui {
     bool input, clicked, moved;
     float wheel;
     ControllerInput pad;
+    ULONGLONG tick;
 };
 
 bool inside(ImVec2 p, ImVec2 a, ImVec2 b) { return p.x >= a.x && p.x < b.x && p.y >= a.y && p.y < b.y; }
@@ -247,6 +252,28 @@ void move_focus(Home &h, int dx, int dy) {
 
 // ---------------------------------------------------------------- what it shows
 
+// What a post says, for the cards to show the start of: its description, then its body with the
+// markdown taken out (headings and bullets as plain lines; code and rules left to the reader). A
+// body that opens with the description does not say it twice.
+std::string excerpt_of(const profile::NewsPost &post) {
+    constexpr std::string_view blank = " \t\r\n";
+    const auto trimmed = [&](std::string_view line) {
+        const auto start = line.find_first_not_of(blank);
+        return start == std::string_view::npos ? std::string_view{} : line.substr(start, line.find_last_not_of(blank) - start + 1);
+    };
+    const std::string description(trimmed(post.description));
+    std::string text = description;
+    bool opening = true;
+    for (const auto &line : ts::readme_lines(post.body, 60).lines) {
+        if (line.kind != Kind::text && line.kind != Kind::heading && line.kind != Kind::bullet) continue;
+        if (std::exchange(opening, false) && !description.empty() && trimmed(line.text) == description) continue;
+        if (!text.empty()) text += '\n';
+        if (line.kind == Kind::bullet) text += "- ";
+        text += line.text;
+    }
+    return text;
+}
+
 // The news as the HUB's own news tile had it: the live feed, else the one built into ReSkate.
 void read_news(Home &h) {
     const auto now = GetTickCount64();
@@ -257,8 +284,11 @@ void read_news(Home &h) {
         auto feed = news::current_news_feed(none);
         h.posts = feed.enabled ? std::move(feed.posts) : std::vector<profile::NewsPost>{};
         for (auto &post : h.posts) post.large_image = news::news_image_url(post.large_image.empty() ? post.small_image : post.large_image);
+        h.excerpts.clear();
+        for (const auto &post : h.posts) h.excerpts.push_back(excerpt_of(post));
     } catch (...) {
         h.posts.clear();
+        h.excerpts.clear();
     }
 }
 // The featured post and the one being read kept to the posts there are, and the reader closed when
@@ -312,6 +342,22 @@ void open_reader(Home &h, View view, std::size_t index, std::uint32_t from) {
     h.focus = 0;
     h.sound = sound_select;
 }
+// The post `index` featured, its time to move on started again: a press of the player's (LT, RT, a
+// dot) gives the post they picked the whole while, as the rotation's own step does.
+void feature(Home &h, std::size_t index, ULONGLONG tick) {
+    if (index >= h.posts.size()) return;
+    if (index != h.featured) h.featured = index, h.shown_at = tick;
+    h.featured_at = tick;
+}
+// What was drawn since vertex `start` at `alpha` of its own opacity.
+void fade_since(ImDrawList *draw, int start, float alpha) {
+    if (alpha >= 1) return;
+    for (int i = start; i < draw->VtxBuffer.Size; ++i) {
+        auto &colour = draw->VtxBuffer[i].col;
+        const auto opacity = static_cast<ImU32>(static_cast<float>((colour & IM_COL32_A_MASK) >> IM_COL32_A_SHIFT) * alpha);
+        colour = (colour & ~IM_COL32_A_MASK) | (opacity << IM_COL32_A_SHIFT);
+    }
+}
 void edit_profile(Home &h) {
     multiplayer::open_native_profile();
     h.sound = sound_select;
@@ -319,8 +365,25 @@ void edit_profile(Home &h) {
 
 // ---------------------------------------------------------------- the front page
 
+// The featured post moves on to the next by itself every few seconds rather than through a pager:
+// left and right on a pager turned it, so the D-pad could not leave it. It waits while the player
+// is on the news (the pointer over the left column while the pointer is in charge, or the focus on
+// one of its cards), so a post never changes under them, and the list under it moves with it.
+constexpr ULONGLONG rotate_every = 8000, fade_for = 300;
+void rotate_news(Ui &f, ImVec2 a, ImVec2 z) {
+    auto &h = f.h;
+    if (h.posts.size() < 2) return;
+    bool held = f.input && !h.ring && inside(f.mouse, a, z);
+    if (h.ring)
+        for (const auto &entry : h.last)
+            if (entry.id == h.focus && inside(ImVec2((entry.a.x + entry.b.x) * .5f, (entry.a.y + entry.b.y) * .5f), a, z)) held = true;
+    if (held || !h.featured_at) h.featured_at = f.tick;
+    else if (f.tick - h.featured_at >= rotate_every) feature(h, (h.featured + 1) % h.posts.size(), f.tick);
+}
+
 // The featured post, big at the top of the left column: its picture across the top, then its tag
-// and date, title, description, and READ and the pager at its foot.
+// and date, title, the start of what it says, and READ and a dot a post at its foot. It fades in as
+// it comes up.
 void featured_card(Ui &f, ImVec2 a, ImVec2 z) {
     auto &h = f.h;
     const float u = f.u, inset = 40 * u;
@@ -335,6 +398,7 @@ void featured_card(Ui &f, ImVec2 a, ImVec2 z) {
         return;
     }
     const auto &post = h.posts[h.featured];
+    const int faded = draw->VtxBuffer.Size;
     // The picture as wide as the card, at most 16:9, and leaving most of the card for the text.
     const float picture_h = std::min((z.x - a.x) * 9.f / 16.f, (z.y - a.y) * .44f);
     const ImVec2 pa = a, pz(z.x, a.y + picture_h);
@@ -343,7 +407,8 @@ void featured_card(Ui &f, ImVec2 a, ImVec2 z) {
     const float tag_w = tag(f, ImVec2(left, y), "NEWS", skate_theme::blue, theme::paper);
     if (const auto date = news::date_label(post.date); !date.empty()) label(draw, f.bold, 28 * u, ImVec2(left + tag_w + 20 * u, y + 6 * u), right, sub_ink, date);
     y += 64 * u;
-    // READ and the pager at the foot, and the title and description in what is left over them.
+    // READ and the dots at the foot, and the title and as much of the post as fits in what is left
+    // over them; READ has the rest.
     const float button_h = 88 * u, foot = z.y - inset - button_h;
     const float title_size = 60 * u;
     for (const auto &line : wrap(f.title, title_size, post.title, right - left, 2)) {
@@ -352,38 +417,70 @@ void featured_card(Ui &f, ImVec2 a, ImVec2 z) {
     }
     y += 16 * u;
     const float text_size = 30 * u, line_height = text_size * 1.4f, bottom = foot - 24 * u;
-    if (const auto most = static_cast<std::size_t>(std::max(0.f, (bottom - y) / line_height))) {
-        for (const auto &line : wrap(f.body, text_size, post.description, right - left, most)) {
+    if (const auto most = static_cast<std::size_t>(std::max(0.f, (bottom - y) / line_height)); most && h.featured < h.excerpts.size()) {
+        for (const auto &line : wrap(f.body, text_size, h.excerpts[h.featured], right - left, most)) {
             label(draw, f.body, text_size, ImVec2(left, y), right, soft, line);
             y += line_height;
         }
     }
+    if (h.shown_at) {
+        const float t = std::clamp(static_cast<float>(f.tick - h.shown_at) / static_cast<float>(fade_for), 0.f, 1.f);
+        fade_since(draw, faded, t * t * (3 - 2 * t));
+    }
     if (button(f, hash("home-read"), ImVec2(left, foot), ImVec2(left + 240 * u, foot + button_h), "READ", true))
         open_reader(h, View::post, h.featured, hash("home-read"));
-    if (h.posts.size() > 1) {
-        const auto pages = "<  " + std::to_string(h.featured + 1) + " / " + std::to_string(h.posts.size()) + "  >";
-        const float w = width_of(f.bold, 36 * u, pages) + 70 * u, x = left + 260 * u;
-        if (button(f, hash("home-pager"), ImVec2(x, foot), ImVec2(std::min(right, x + w), foot + button_h), pages, false))
-            h.featured = (h.featured + 1) % h.posts.size();
+    // Where the rotation is: a dot a post, the featured one long and blue. They are not controls the
+    // D-pad stops on (LT and RT step through the posts); a click on one features its post. With too
+    // many for the room, "2 / 9" instead.
+    if (const auto count = h.posts.size(); count > 1) {
+        const float dot = 8 * u, long_dot = 24 * u, spacing = 20 * u, centre_y = foot + button_h * .5f, room = right - (left + 280 * u);
+        const float dots_w = static_cast<float>(count - 1) * (dot * 2 + spacing) + long_dot * 2;
+        if (dots_w > room) {
+            const auto pages = std::to_string(h.featured + 1) + " / " + std::to_string(count);
+            const float size = 32 * u;
+            label(draw, f.bold, size, ImVec2(right - width_of(f.bold, size, pages), centre_y - size * .5f), right, sub_ink, pages);
+        } else {
+            float x = right - dots_w;
+            for (std::size_t i = 0; i < count; ++i) {
+                const bool current = i == h.featured;
+                const float w = (current ? long_dot : dot) * 2;
+                // Each dot answers a click on the whole height of the row and half the room to its
+                // neighbours, so it is not a fiddly target.
+                const ImVec2 hit_a(x - spacing * .5f, foot), hit_z(x + w + spacing * .5f, foot + button_h);
+                const bool over = f.input && !h.ring && inside(f.mouse, hit_a, hit_z);
+                draw->AddRectFilled(ImVec2(x, centre_y - dot), ImVec2(x + w, centre_y + dot), current ? skate_theme::blue : over ? theme::paper : skate_theme::tile_light,
+                                    dot);
+                if (over && f.clicked && !current) feature(h, i, f.tick), h.sound = sound_tab;
+                x += w + spacing;
+            }
+        }
     }
 }
 
-// One of the next posts under it, compact: a picture strip at its left, its tag and its title.
+// One of the posts listed under it, compact: a picture strip at its left, its tag, its title and the
+// start of what it says. The one featured has a blue edge, so the list reads with the rotation.
 // Returns whether it was pressed.
-bool compact_card(Ui &f, std::uint32_t id, ImVec2 a, ImVec2 z, const profile::NewsPost &post, unsigned seed) {
-    const float u = f.u, inset = 24 * u;
+bool compact_card(Ui &f, std::uint32_t id, ImVec2 a, ImVec2 z, const profile::NewsPost &post, std::string_view excerpt, bool featured, unsigned seed) {
+    const float u = f.u, inset = 22 * u;
     const Hit hit = item(f, id, a, z);
     auto *draw = f.draw;
     skate_theme::rough_rect(draw, a, z, hit.focused ? theme::paper : hit.pointed ? card_pointed : card, id & 0xfff, u * 2);
-    const ImVec2 pa = a, pz(a.x + std::min((z.y - a.y) * 1.6f, (z.x - a.x) * .36f), z.y);
+    const ImVec2 pa = a, pz(a.x + std::min((z.y - a.y) * 1.6f, (z.x - a.x) * .32f), z.y);
     picture(f, pa, pz, post.large_image, seed);
+    if (featured) draw->AddRectFilled(a, ImVec2(a.x + 10 * u, z.y), skate_theme::blue);
     const float left = pz.x + inset, right = z.x - inset;
     const auto date = news::date_label(post.date);
     const auto tag_text = date.empty() ? std::string("NEWS") : "NEWS  -  " + date;
-    label(draw, f.bold, 26 * u, ImVec2(left, a.y + inset), right, hit.focused ? sub_ink_lit : news_light, tag_text);
-    const auto lines = wrap(f.bold, 32 * u, post.title, right - left, 2);
-    for (std::size_t i = 0; i < lines.size(); ++i)
-        label(draw, f.bold, 32 * u, ImVec2(left, a.y + inset + 42 * u + static_cast<float>(i) * 40 * u), right, hit.focused ? focus_ink : theme::paper, lines[i]);
+    label(draw, f.bold, 24 * u, ImVec2(left, a.y + inset), right, hit.focused ? sub_ink_lit : news_light, tag_text);
+    // The title on one line, and what the post says on the lines left under it; with nothing to say,
+    // the title has two.
+    float y = a.y + inset + 38 * u;
+    for (const auto &line : wrap(f.bold, 32 * u, post.title, right - left, excerpt.empty() ? 2 : 1))
+        label(draw, f.bold, 32 * u, ImVec2(left, y), right, hit.focused ? focus_ink : theme::paper, line), y += 42 * u;
+    const float size = 26 * u, line_height = 34 * u;
+    if (const auto most = static_cast<std::size_t>(std::max(0.f, (z.y - inset + 6 * u - y) / line_height)); most && !excerpt.empty())
+        for (const auto &line : wrap(f.body, size, excerpt, right - left, std::min<std::size_t>(most, 2)))
+            label(draw, f.body, size, ImVec2(left, y), right, hit.focused ? sub_ink_lit : sub_ink, line), y += line_height;
     return hit.press;
 }
 
@@ -527,20 +624,27 @@ void front_page(Ui &f, ImVec2 a, ImVec2 z, const Model &model) {
     const float u = f.u, gap = 30 * u, width = z.x - a.x;
     const float left_z = a.x + std::clamp(width * .3f, 940 * u, 1180 * u);
     const float right_w = std::clamp(width * .29f, 980 * u, 1200 * u);
-    // ---- left: the featured post, and the next ones under it, as many as fit while the featured
-    // card keeps room for its picture and text. It takes what they leave, so the last ends at the foot,
-    // and with fewer posts there are fewer cards, never an empty one.
-    const float compact_h = 160 * u, featured_least = std::min(z.y - a.y, 880 * u);
+    // ---- left: the featured post, and the posts listed under it in their order, as many as fit
+    // while the featured card keeps room for its picture and text. It takes what they leave, so the
+    // last ends at the foot; with fewer posts there are fewer cards, never an empty one, and with one
+    // post there is no list. With more posts than fit, the list runs on to keep the featured one in it.
+    rotate_news(f, a, ImVec2(left_z, z.y));
+    const float compact_h = 190 * u, featured_least = std::min(z.y - a.y, 880 * u);
     const auto fit = static_cast<std::size_t>(std::max(0.f, std::floor((z.y - a.y - featured_least + gap) / (compact_h + gap))));
-    const std::size_t next = std::min(fit, h.posts.empty() ? std::size_t{} : h.posts.size() - 1);
-    const float featured_z = z.y - static_cast<float>(next) * (compact_h + gap);
+    const std::size_t listed = h.posts.size() > 1 ? std::min(fit, h.posts.size()) : 0;
+    const float featured_z = z.y - static_cast<float>(listed) * (compact_h + gap);
     featured_card(f, a, ImVec2(left_z, featured_z));
-    for (std::size_t i = 0; i < next; ++i) {
-        const auto index = (h.featured + 1 + i) % h.posts.size();
+    const std::size_t first = h.featured < listed ? 0 : h.featured + 1 - listed;
+    for (std::size_t i = 0; i < listed; ++i) {
+        const auto index = first + i;
         const float y = featured_z + gap + static_cast<float>(i) * (compact_h + gap);
         const auto id = hash("home-next-post", index);
-        if (compact_card(f, id, ImVec2(a.x, y), ImVec2(left_z, y + compact_h), h.posts[index], static_cast<unsigned>(index)))
+        const std::string_view excerpt = index < h.excerpts.size() ? std::string_view(h.excerpts[index]) : std::string_view{};
+        if (compact_card(f, id, ImVec2(a.x, y), ImVec2(left_z, y + compact_h), h.posts[index], excerpt, index == h.featured, static_cast<unsigned>(index))) {
+            // A opens it, as before, and it is the featured post when the reader closes.
+            feature(h, index, f.tick);
             open_reader(h, View::post, index, id);
+        }
     }
     // ---- right: patch notes at the top, stretched over what the profile and right now leave under
     // it, so the column ends at the foot level with the left.
@@ -739,7 +843,7 @@ bool draw_home_page(ImDrawList *draw, float u, ImVec2 a, ImVec2 z, bool input, c
     }
     h.seen = tick;
     Ui f{h, draw, s.menu.bold ? s.menu.bold : ImGui::GetFont(), s.menu.body ? s.menu.body : ImGui::GetFont(), nullptr, nullptr, u, io.MousePos,
-            input, false, false, 0, {}};
+            input, false, false, 0, {}, tick};
     f.heading = s.menu.heading ? s.menu.heading : f.bold;
     f.title = s.menu.title_large ? s.menu.title_large : s.menu.title ? s.menu.title : f.heading;
     f.clicked = input && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
@@ -749,7 +853,9 @@ bool draw_home_page(ImDrawList *draw, float u, ImVec2 a, ImVec2 z, bool input, c
     h.notes = news::patch_notes();
     read_updates(h);
     keep_in_range(h);
-    if (returned) h.featured = 0;
+    if (returned) h.featured = 0, h.featured_at = tick, h.shown_at = 0;
+    // The rotation waits while the reader is open, and starts its time again when it closes.
+    if (h.view != View::front) h.featured_at = tick;
 
     // ---- the controller and the keys, watched while the game has them
     if (input) DingoSDKOverlayReadControllerInput(&f.pad, true);
@@ -791,7 +897,7 @@ bool draw_home_page(ImDrawList *draw, float u, ImVec2 a, ImVec2 z, bool input, c
         if (direction < 0 && tick >= h.repeat_at)
             for (int i = 0; i < 4; ++i)
                 if (held[static_cast<std::size_t>(i)]) direction = i, h.repeat_at = tick + (reading ? 60 : 70);
-        const bool on_pager = h.focus == hash("home-pager") || h.focus == hash("home-reader-pager");
+        const bool on_pager = h.focus == hash("home-reader-pager");
         if (direction >= 0 && reading && direction < 2) {
             // Up and down read on down the page.
             scroll_step = direction == 0 ? -1 : 1;
@@ -826,7 +932,7 @@ bool draw_home_page(ImDrawList *draw, float u, ImVec2 a, ImVec2 z, bool input, c
     const ImVec2 body_z(z.x, z.y - footer);
     if (h.view == View::front) {
         if (page_step && h.posts.size() > 1) {
-            h.featured = (h.featured + h.posts.size() + (page_step > 0 ? 1 : h.posts.size() - 1)) % h.posts.size();
+            feature(h, (h.featured + h.posts.size() + (page_step > 0 ? 1 : h.posts.size() - 1)) % h.posts.size(), tick);
             h.sound = sound_tab;
         }
         front_page(f, a, body_z, model);
