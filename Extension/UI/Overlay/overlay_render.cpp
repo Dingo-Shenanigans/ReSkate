@@ -871,8 +871,10 @@ void render(IDXGISwapChain* presented, UINT flags) {
     sync_menu_cursor();
     // (Watching the pointer for the pause menu's browser keeps the mouse state between frames,
     // or every frame would look like a fresh click.)
-    if (!interactive) { ImGui::GetIO().ClearInputKeys(); if (!hub_frame) ImGui::GetIO().ClearInputMouse(); }
-    feed_menu_gamepad(interactive && (s.visible.load() || s.plugin_dialog_visible.load()) && !s.editor_visible.load());
+    // (Nor its keys while a plugin's page in it has ImGui's navigation: State::hub_nav.)
+    const bool hub_nav = hub_frame && s.hub_nav.load();
+    if (!interactive) { if (!hub_nav) ImGui::GetIO().ClearInputKeys(); if (!hub_frame) ImGui::GetIO().ClearInputMouse(); }
+    feed_menu_gamepad((interactive && (s.visible.load() || s.plugin_dialog_visible.load()) && !s.editor_visible.load()) || hub_nav);
     ImGui::GetIO().MouseDrawCursor = owns_menu_cursor(s);
     ImGui_ImplDX12_NewFrame();
     { OverlayInputAccess access; ImGui_ImplWin32_NewFrame(); }

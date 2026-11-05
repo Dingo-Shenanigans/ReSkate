@@ -2,6 +2,7 @@
 #include "skate_menu.h"
 #include "Extension/Plugins/plugin_ui.h"
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <initializer_list>
 #include <span>
@@ -199,6 +200,21 @@ inline constexpr const char* plugin_manager_entry = "" "plugin-manager";
 // The plugin page shown, or null while that is the list (also when the page chosen is gone).
 const plugin_ui::PageEntry* shown_plugin_page(SkateMenu& menu);
 void plugins_page(SkateMenu& menu);
+// The kit's controls drawn outside the menu's own window (skate_menu.cpp): `body` runs with px(), the
+// faces and the style as the menu sets them, at `scale` (px(1) in pixels), in the wide layout. What
+// the menu's own frame set is put back after.
+void draw_in_kit(SkateMenu& menu, float scale, const std::function<void()>& body);
+// A plugin's page in a box of the game's pause menu (the Mod Manager's PLUGINS tab, hub_page.cpp),
+// drawn with the same widgets as PLUGINS here, so a plugin's page is one page in both menus. `input`:
+// the box takes the pointer and ImGui's navigation (the pause page hands the pad and keys over while
+// it shows); `take_focus`: give it the keyboard focus now, its first control lit.
+struct PausePluginPage {
+    bool shown = false;  // the plugin still has a page (else nothing was drawn)
+    bool busy = false;   // a widget is held, typed in or has a popup open: B and Escape are its own
+    bool typing = false; // a text field has the keyboard
+    bool moved = false;  // ImGui's focus went to another control this frame
+};
+PausePluginPage pause_menu_plugin_page(SkateMenu& menu, const std::string& plugin, ImVec2 a, ImVec2 b, float scale, bool input, bool take_focus);
 // The menu's first page (skate_menu_addons.cpp): where the player is, the quick switches, and the pages
 // to pick up again.
 void home_page(SkateMenu&, const Model&, const CallbacksV3&);

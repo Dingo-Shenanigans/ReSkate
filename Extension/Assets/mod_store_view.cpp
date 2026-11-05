@@ -37,8 +37,8 @@ bool before(const ts::Package& a, const ts::Package& b, Sort sort) {
     }
     return lower(a.title()) < lower(b.title());
 }
-// The date `days` before "YYYY-MM-DD", in the same form (months taken as 30 days: close enough for
-// what counts as recent).
+} // namespace
+
 std::string days_before(std::string_view today, int days) {
     int year{}, month{}, day{};
     if (!ymd(today, year, month, day)) return {};
@@ -48,7 +48,6 @@ std::string days_before(std::string_view today, int days) {
     std::snprintf(text, sizeof(text), "%04d-%02d-%02d", total / 360, total % 360 / 30 + 1, total % 30 + 1);
     return text;
 }
-} // namespace
 
 const char* sort_label(Sort sort) {
     static constexpr std::array<const char*, sort_count> labels{"MOST DOWNLOADED", "LAST UPDATED", "NEWEST", "TOP RATED", "NAME"};

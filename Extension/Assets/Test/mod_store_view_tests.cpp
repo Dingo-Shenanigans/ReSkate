@@ -132,6 +132,15 @@ int main() {
         check(ms::front(packages, none, "2026-10-24", 8, 2).shelves.front().packages.size() == 2, "a row holds at most what was asked for");
     }
 
+    // ---- what counts as lately (BROWSE's NEW tag)
+    {
+        check(ms::days_before("2026-10-24", 14) == "2026-10-10", "two weeks back in the same month");
+        check(ms::days_before("2026-11-04", 14) == "2026-10-20", "two weeks back over a month's end");
+        check(ms::days_before("2026-01-05", 14) == "2025-12-21", "and over a year's end");
+        check(std::string("2026-10-12T08:00:00Z") >= ms::days_before("2026-10-24", 14), "an ISO date compares with it as text");
+        check(ms::days_before("not a date", 14).empty(), "not a date: empty");
+    }
+
     // ---- what a package's button does
     {
         const auto* desert = ts::find_package(packages, "Zee-Desert_Springs");

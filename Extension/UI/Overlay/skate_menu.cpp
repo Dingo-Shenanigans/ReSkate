@@ -1966,6 +1966,37 @@ void menu_sounds() {
     }
     heard = g.NavId;
 }
+
+// The kit's look over ImGui's own, for the menu and for a page drawn in the kit outside it (draw_in_kit).
+// px() must already be at the scale drawn at. Returns how many colours it pushed, for pop_kit_style.
+int push_kit_style() {
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0);
+    // ImGui's own widgets on a page as tall as the kit's rows.
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(px(14), (row_height() - px(text_size)) * .5f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(px(10), px(6)));
+    ImGui::PushStyleVar(ImGuiStyleVar_GrabRounding, 0);
+    ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, 0);
+    ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarRounding, 0);
+    ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, px(10));
+    int colours = skate_theme::push_widget_colours();
+    // Raw ImGui widgets on a page in the kit's greys, and a controller's focus in white: the theme's
+    // blue vanishes on blue buttons and tabs.
+    const std::pair<ImGuiCol, ImU32> kit_colours[]{
+        {ImGuiCol_FrameBg, row_fill}, {ImGuiCol_FrameBgHovered, row_hover}, {ImGuiCol_FrameBgActive, IM_COL32(66, 67, 72, 255)},
+        {ImGuiCol_Button, row_fill}, {ImGuiCol_ButtonHovered, row_hover}, {ImGuiCol_ButtonActive, skate_theme::blue_active},
+        {ImGuiCol_Header, row_hover}, {ImGuiCol_HeaderHovered, IM_COL32(66, 67, 72, 255)}, {ImGuiCol_HeaderActive, skate_theme::blue_active},
+        {ImGuiCol_PopupBg, IM_COL32(22, 22, 24, 252)}, {ImGuiCol_Border, rule_ink}, {ImGuiCol_Separator, rule_ink},
+        {ImGuiCol_TableHeaderBg, row_fill}, {ImGuiCol_NavCursor, paper}};
+    for (const auto& [id, colour] : kit_colours) ImGui::PushStyleColor(id, colour);
+    return colours + static_cast<int>(std::size(kit_colours));
+}
+void pop_kit_style(int colours) {
+    ImGui::PopStyleColor(colours);
+    ImGui::PopStyleVar(10);
+}
 }
 
 void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks,
@@ -2045,34 +2076,12 @@ void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& cal
     pad_before = pad_now;
 
     ImGui::PushFont(menu.body);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0);
-    // ImGui's own widgets on a page as tall as the kit's rows.
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(px(14), (row_height() - px(text_size)) * .5f));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(px(10), px(6)));
-    ImGui::PushStyleVar(ImGuiStyleVar_GrabRounding, 0);
-    ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, 0);
-    ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarRounding, 0);
-    ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, px(10));
-    int colours = skate_theme::push_widget_colours();
-    // Raw ImGui widgets on a page in the kit's greys, and a controller's focus in white: the theme's
-    // blue vanishes on blue buttons and tabs.
-    const std::pair<ImGuiCol, ImU32> kit_colours[]{
-        {ImGuiCol_FrameBg, row_fill}, {ImGuiCol_FrameBgHovered, row_hover}, {ImGuiCol_FrameBgActive, IM_COL32(66, 67, 72, 255)},
-        {ImGuiCol_Button, row_fill}, {ImGuiCol_ButtonHovered, row_hover}, {ImGuiCol_ButtonActive, skate_theme::blue_active},
-        {ImGuiCol_Header, row_hover}, {ImGuiCol_HeaderHovered, IM_COL32(66, 67, 72, 255)}, {ImGuiCol_HeaderActive, skate_theme::blue_active},
-        {ImGuiCol_PopupBg, IM_COL32(22, 22, 24, 252)}, {ImGuiCol_Border, rule_ink}, {ImGuiCol_Separator, rule_ink},
-        {ImGuiCol_TableHeaderBg, row_fill}, {ImGuiCol_NavCursor, paper}};
-    for (const auto& [id, colour] : kit_colours) ImGui::PushStyleColor(id, colour);
-    colours += static_cast<int>(std::size(kit_colours));
+    const int colours = push_kit_style();
     begin_controls_frame(menu.bold);
     if (layout == menu_layout_hub) draw_hub(menu, model, callbacks, visible, appearing, pad);
     else draw_sheet(menu, model, callbacks, visible, appearing, pad);
     menu_sounds();
-    ImGui::PopStyleColor(colours);
-    ImGui::PopStyleVar(10);
+    pop_kit_style(colours);
     ImGui::PopFont();
     io.FontGlobalScale = restore_font_scale;
     if (large) {
@@ -2081,5 +2090,55 @@ void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& cal
         menu.heading = small_fonts[2];
         menu.title = small_fonts[3];
     }
+}
+
+namespace menu {
+void draw_in_kit(SkateMenu& menu, float scale, const std::function<void()>& body) {
+    if (!menu.body || !menu.bold || !menu.heading || !menu.title) return;
+    // What the menu's own frame set, put back after: it may have drawn earlier this frame, and its
+    // footer and its record of the pages lately opened read these.
+    const float kept_scale = ui_scale;
+    const int kept_layout = shown_layout, kept_primary_tab = primary_tab;
+    const bool kept_tab_switched = tab_switched;
+    ImFont* const kept_control_font = control_font;
+    const std::string kept_focus_hint = focus_hint, kept_pending_hint = pending_hint, kept_primary_name = primary_tab_name;
+    const double kept_step = next_step;
+    // The wide layout's cards, two columns of them in a box wide enough, as on the menu's own window.
+    ui_scale = scale;
+    shown_layout = menu_layout_hub;
+    auto& io = ImGui::GetIO();
+    const bool large = ui_scale > 1.25f && menu.body_large && menu.bold_large && menu.heading_large && menu.title_large;
+    const std::array<ImFont*, 4> small_fonts{menu.body, menu.bold, menu.heading, menu.title};
+    if (large) {
+        menu.body = menu.body_large;
+        menu.bold = menu.bold_large;
+        menu.heading = menu.heading_large;
+        menu.title = menu.title_large;
+    }
+    const auto restore_font_scale = io.FontGlobalScale;
+    io.FontGlobalScale = large ? ui_scale / large_font_ratio : ui_scale;
+    ImGui::PushFont(menu.body);
+    const int colours = push_kit_style();
+    begin_controls_frame(menu.bold);
+    body();
+    pop_kit_style(colours);
+    ImGui::PopFont();
+    io.FontGlobalScale = restore_font_scale;
+    if (large) {
+        menu.body = small_fonts[0];
+        menu.bold = small_fonts[1];
+        menu.heading = small_fonts[2];
+        menu.title = small_fonts[3];
+    }
+    ui_scale = kept_scale;
+    shown_layout = kept_layout;
+    primary_tab = kept_primary_tab;
+    tab_switched = kept_tab_switched;
+    control_font = kept_control_font;
+    focus_hint = kept_focus_hint;
+    pending_hint = kept_pending_hint;
+    primary_tab_name = kept_primary_name;
+    next_step = kept_step;
+}
 }
 }

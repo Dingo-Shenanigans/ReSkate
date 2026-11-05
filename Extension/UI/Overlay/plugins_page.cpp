@@ -246,6 +246,23 @@ void draw_widgets(SkateMenu& menu, const plugin_ui::Panel& panel, double now) {
     }
     if (in_card) end_card();
 }
+
+// A plugin's page body: its page first, then its panels as cards under it. False while it has
+// neither yet (its first build has not come).
+bool draw_plugin_panels(SkateMenu& menu, const std::string& plugin, double now) {
+    const auto panels = plugin_ui::latest_panels();
+    if (!panels) return false;
+    bool any = false;
+    for (const bool page : {true, false})
+        for (const auto& panel : *panels) {
+            if (panel.screen || panel.page != page || panel.plugin != plugin) continue;
+            any = true;
+            ImGui::PushID(panel.title.c_str());
+            draw_widgets(menu, panel, now);
+            ImGui::PopID();
+        }
+    return any;
+}
 }
 
 std::shared_ptr<const std::vector<plugin_ui::PageEntry>> plugin_pages() {
@@ -444,21 +461,53 @@ void plugins_page(SkateMenu& menu) {
     std::erase_if(edits(), [&](const auto& item) { return now - item.second.at > 1.0; });
     ImGui::PushID(shown->plugin.c_str());
     ImGui::BeginChild("plugin-page", ImVec2(0, page_body_height(menu)), ImGuiChildFlags_NavFlattened);
-    const auto panels = plugin_ui::latest_panels();
-    static const std::vector<plugin_ui::Panel> none;
-    const auto& list = panels ? *panels : none;
-    bool any = false;
-    // The page first, then the plugin's panels as cards under it.
-    for (const bool page : {true, false})
-        for (const auto& panel : list) {
-            if (panel.screen || panel.page != page || panel.plugin != shown->plugin) continue;
-            any = true;
-            ImGui::PushID(panel.title.c_str());
-            draw_widgets(menu, panel, now);
-            ImGui::PopID();
-        }
-    if (!any) note("Loading...");
+    if (!draw_plugin_panels(menu, shown->plugin, now)) note("Loading...");
     ImGui::EndChild();
     ImGui::PopID();
+}
+
+PausePluginPage pause_menu_plugin_page(SkateMenu& menu, const std::string& plugin, ImVec2 a, ImVec2 b, float scale, bool input, bool take_focus) {
+    PausePluginPage result;
+    const auto pages = plugin_ui::latest_pages();
+    if (!pages || std::ranges::none_of(*pages, [&](const plugin_ui::PageEntry& p) { return p.plugin == plugin; })) return result;
+    result.shown = true;
+    draw_in_kit(menu, scale, [&] {
+        // The box keeps the keyboard focus while the pause page has handed it the pad: a click on the
+        // page around it would leave ImGui's navigation with no window, and the D-pad doing nothing.
+        // (Not over a popup of its own, which has the focus while it is open.)
+        static bool focused_before = false;
+        static ImGuiID heard = 0;
+        const auto any_popup = [] { return ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel); };
+        if (input && (take_focus || (!focused_before && !any_popup()))) ImGui::SetNextWindowFocus();
+        ImGui::SetNextWindowPos(a);
+        ImGui::SetNextWindowSize(ImVec2(b.x - a.x, b.y - a.y));
+        ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+                                 ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus;
+        // Under the ReSkate menu or the console it is there to look at, as the rest of the pause page is.
+        if (!input) flags |= ImGuiWindowFlags_NoInputs;
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(0, 0, 0, 0));
+        if (ImGui::Begin("###pause-menu-plugin-page", nullptr, flags)) {
+            if (input && take_focus && ImGui::GetCurrentContext()->NavWindow == ImGui::GetCurrentWindow()) {
+                ImGui::NavInitWindow(ImGui::GetCurrentWindow(), true);
+                ImGui::SetNavCursorVisible(true);
+            }
+            // (The ReSkate menu over it may show another plugin's page: it has the say then.)
+            if (input) plugin_ui::note_page_shown(plugin);
+            const double now = ImGui::GetTime();
+            std::erase_if(edits(), [&](const auto& item) { return now - item.second.at > 1.0; });
+            ImGui::PushID(plugin.c_str());
+            if (!draw_plugin_panels(menu, plugin, now)) note("Loading...");
+            ImGui::PopID();
+            focused_before = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+        }
+        ImGui::End();
+        ImGui::PopStyleColor();
+        const ImGuiID now_focused = ImGui::GetFocusID();
+        result.moved = input && now_focused && now_focused != heard && ImGui::GetCurrentContext()->NavCursorVisible;
+        heard = now_focused;
+        result.typing = ImGui::GetIO().WantTextInput;
+        result.busy = result.typing || ImGui::IsAnyItemActive() || any_popup();
+    });
+    return result;
 }
 }

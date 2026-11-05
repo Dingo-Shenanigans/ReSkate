@@ -70,4 +70,8 @@ std::string size_text(std::uint64_t bytes);
 std::string count_text(std::uint64_t count);
 // "2026-10-24T12:00:00Z" as "Oct 24, 2026".
 std::string date_text(std::string_view iso);
+// The date `days` before `today` ("YYYY-MM-DD"), in the same form, so ISO dates compare with it as
+// text (months taken as 30 days: close enough for what counts as recent). Empty when `today` is not
+// a date.
+std::string days_before(std::string_view today, int days);
 }

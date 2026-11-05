@@ -255,7 +255,7 @@ void update_menu_pointer() {
         s.raw_mouse_buttons.store(0);
         return;
     }
-    if (watching) io.ClearInputKeys();
+    if (watching && !s.hub_nav.load()) io.ClearInputKeys(); // (a plugin's page there has the keys: State::hub_nav)
     OverlayInputAccess access;
     POINT point{};
     // The Win32 backend only polls when it thinks WM_MOUSEMOVE tracking ended.

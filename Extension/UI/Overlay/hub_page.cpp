@@ -11,6 +11,7 @@
 #include "Extension/Assets/map_download.h"
 #include "Extension/Assets/mod_store.h"
 #include "Extension/Multiplayer/Steam/steam_avatars.h"
+#include "Extension/Plugins/plugin_runtime.h"
 #include "Extension/Music/local_music_playback.h"
 #include "Extension/Profile/local_profile_runtime.h"
 #include "Engine/Game/Input/controller_bindings.h"
@@ -2275,6 +2276,7 @@ bool hub_page_pending() {
         h.last.clear();
         if (!shown) {
             dingosdk::multiplayer::hold_native_menu_back(false);
+            s.hub_nav.store(false);
             if (!mod_page().leaving) mod_page().declined = false;
             h.recording_bind = 0;
             set_typing(h, 0);
@@ -2400,22 +2402,21 @@ void hub_frame(Hub &h, ImDrawList *draw, float u, ImVec2 a, ImVec2 z, float tabs
         if (direction < 0 && tick >= h.repeat_at)
             for (int i = 0; i < 4; ++i)
                 if (held[static_cast<std::size_t>(i)]) direction = i, h.repeat_at = tick + 70;
-        if (direction >= 0 && on_mods && h.ring && h.focus == featured_card && (direction == 2 || direction == 3)) {
-            // Left and right on the Mod Manager's carousel turn it, at a pace to see each card go by.
-            mods_page.carousel_turn = direction == 3 ? 1 : -1;
-            h.repeat_at = std::max(h.repeat_at, tick + 260);
-            h.sound = sound_navigate;
-        } else if (direction >= 0) {
+        // A plugin's page on the Mod Manager has ImGui's own focus: the D-pad, the arrows and A are
+        // its navigation's while it shows (State::hub_nav), and B still the page's way back.
+        const bool page_nav = on_mods && mods_imgui_nav(mods_page);
+        if (direction >= 0 && !page_nav) {
             // The first press only shows where the focus is.
             if (h.ring || !h.focus) move_focus(h, direction == 2 ? -1 : direction == 3 ? 1 : 0, direction == 0 ? -1 : direction == 1 ? 1 : 0, on_mods);
             h.ring = true;
             h.focus_moved = true;
         }
-        if (key_new(4) || (pressed & 0x1000)) {
+        if (!page_nav && (key_new(4) || (pressed & 0x1000))) {
             if (h.focus && std::any_of(h.last.begin(), h.last.end(), [&](const Item &entry) { return entry.id == h.focus; })) h.fire = h.focus, h.ring = true;
         }
-        previous_tab = key_new(5) || (pressed & 0x10000);
-        next_tab = key_new(6) || (pressed & 0x20000);
+        // (And LT and RT are its own tabs', as on the Insert menu: B goes back to the list first.)
+        previous_tab = !page_nav && (key_new(5) || (pressed & 0x10000));
+        next_tab = !page_nav && (key_new(6) || (pressed & 0x20000));
     }
     if (back_down && GetTickCount64() < mods_page.hold_back_until) mods_page.hold_back_until = GetTickCount64() + 300;
     // The answer to leaving with changes not applied: LATER (or an apply that reloads nothing) lets go
@@ -2452,7 +2453,7 @@ void hub_frame(Hub &h, ImDrawList *draw, float u, ImVec2 a, ImVec2 z, float tabs
         int multiplayer_tab = static_cast<int>(h.tab);
         int &open = tools ? h.tools_tab : mods ? mod_page().tab : multiplayer_tab;
         if (mods) {
-            tabs = {{browse_tab, "BROWSE"}, {installed_tab, "MY MODS"}, {updates_tab, "UPDATES"}};
+            tabs = mod_tabs();
         } else if (tools) {
             if (h.tools_tab == custom_tab) h.tools_tab = official_tab;
             tabs = {{official_tab, "MAPS"}, {world_tab, "WORLD"}, {parks_tab, "PARKS"},
@@ -2523,6 +2524,7 @@ void hub_frame(Hub &h, ImDrawList *draw, float u, ImVec2 a, ImVec2 z, float tabs
         else failed_page(ui, a, z);
     }
     if (ui.input) h.pad_before = ui.pad.buttons;
+    s.hub_nav.store(mods && ui.input && mods_imgui_nav(mod_page()));
     // A press that found nothing to land on is forgotten; the focus stays on a control that is
     // still there, or goes to the first one.
     if (h.focus_next) {

@@ -135,6 +135,10 @@ struct State {
     // keeps it. hub_typing: one of its text boxes has the keyboard, which the overlay takes
     // for that long, as for chat.
     std::atomic<bool> hub_pointer{false}, hub_typing{false};
+    // hub_nav: a plugin's page shows in it (the Mod Manager's PLUGINS tab), drawn with ImGui's own
+    // widgets, so the pad and the arrow keys go to ImGui's navigation for that long: its keys are
+    // kept from one frame to the next, and the pad fed to it, as while the ReSkate menu is open.
+    std::atomic<bool> hub_nav{false};
     // The map download card is asking (map_download_card.cpp): the overlay has the pointer, with
     // its own cursor, so the card's buttons can be clicked whatever is behind it.
     std::atomic<bool> prompt_pointer{false};
