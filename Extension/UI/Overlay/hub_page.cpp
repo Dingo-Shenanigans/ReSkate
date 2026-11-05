@@ -23,6 +23,7 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <ctime>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -86,13 +87,13 @@ constexpr ImU32 accent = skate_theme::blue, accent_hover = skate_theme::blue_hov
                 accent_sub = IM_COL32(214, 234, 255, 255), focus_ink = IM_COL32(11, 11, 11, 255), row_hover = IM_COL32(56, 57, 61, 245),
                 hint_ink = IM_COL32(110, 110, 110, 255), soft = IM_COL32(210, 210, 214, 255);
 
-// The Multiplayer page's own look, on the SERVER BROWSER and FRIENDS tabs and its tab strip: the
-// kit's dark rows, and a type plate on each server in the kit's tag colours (official blue, server
-// grey, lobby green).
+// The Multiplayer page's own look, on the SERVER BROWSER and FRIENDS tabs and its tab strip, and
+// the other pages' since: the kit's dark rows, and a type plate on each server in the kit's tag
+// colours (official blue, server grey, lobby green).
 constexpr ImU32 tile_dark = IM_COL32(16, 16, 16, 242), card_light = IM_COL32(217, 219, 223, 255), card_light_hover = IM_COL32(196, 198, 203, 255),
                 field_on_white = IM_COL32(228, 230, 233, 255), sub_ink = IM_COL32(138, 140, 146, 255), sub_ink_lit = IM_COL32(70, 70, 74, 255),
                 track = IM_COL32(61, 62, 66, 255), track_lit = IM_COL32(201, 204, 209, 255), chip_ink = IM_COL32(185, 187, 192, 255),
-                plate_grey = IM_COL32(61, 62, 66, 255);
+                plate_grey = IM_COL32(61, 62, 66, 255), raised = IM_COL32(29, 29, 31, 245), raised_hover = IM_COL32(82, 83, 88, 255);
 
 // (FRIENDS comes after SERVER BROWSER on the strip; its number here is only a name.)
 enum class Tab { browser, host, session, voice, settings, ignored, friends };
@@ -294,7 +295,7 @@ bool button(Ui &ui, std::uint32_t id, ImVec2 a, ImVec2 b, const std::string &tex
     const float u = ui.u, height = b.y - a.y, size = std::min(40 * u, height * .42f);
     const Hit hit = enabled ? item(ui, id, a, b, clip) : Hit{};
     const bool lit = hit.focus || hit.hover;
-    ImU32 fill = skate_theme::tile, ink = enabled ? theme::paper : theme::muted;
+    ImU32 fill = tile_dark, ink = enabled ? theme::paper : theme::muted;
     // The main action is the Insert menu's primary button: blue, lighter under the pointer, and
     // white with dark ink under the D-pad or the keys (a blue focus would not show on blue).
     if (look == Look::primary)
@@ -304,7 +305,7 @@ bool button(Ui &ui, std::uint32_t id, ImVec2 a, ImVec2 b, const std::string &tex
     // kit's lighter grey under the pointer; the tiles themselves near black, as its sheet is.
     else if (hit.focus && !hit.hover) fill = theme::paper, ink = enabled ? focus_ink : theme::muted;
     else if (lit) fill = row_hover;
-    else if (look == Look::plain) fill = IM_COL32(29, 29, 31, 245);
+    else if (look == Look::plain) fill = raised;
     else if (look == Look::chosen) fill = theme::paper, ink = skate_theme::black;
     skate_theme::rough_rect(ui.draw, a, b, fill, id & 0xfff, u * 2);
     if (value.empty()) {
@@ -614,6 +615,40 @@ struct Lit {
 };
 Lit lit_of(const Hit &hit) { return {hit.focus && !hit.hover, hit.hover}; }
 
+// A chip of a bar of filters, as the Insert menu's: a chosen one blue, white under the D-pad or the
+// keys (with a blue line along its foot when it is chosen), a lighter grey or blue under the pointer.
+// Drawn from `x`, between `top` and `bottom`, and `x` moves on past it. Returns whether it was pressed.
+bool chip(Ui &ui, std::uint32_t id, float &x, float top, float bottom, const char *text, bool on) {
+    const float u = ui.u, size = 32 * u, w = width_of(ui.bold, size, text) + 40 * u;
+    const ImVec2 c(x, top), d(x + w, bottom);
+    const Hit hit = item(ui, id, c, d);
+    const auto [focused, pointed] = lit_of(hit);
+    skate_theme::rough_rect(ui.draw, c, d, focused ? theme::paper : on ? (pointed ? accent_hover : accent) : pointed ? row_hover : tile_dark,
+                            hash(text) & 0xfff, u * 2);
+    if (focused && on) ui.draw->AddRectFilled(ImVec2(c.x, d.y - 8 * u), d, accent);
+    ui.draw->AddText(ui.bold, size, ImVec2(c.x + 20 * u, c.y + (d.y - c.y - size) * .5f), focused ? focus_ink : on || pointed ? theme::paper : chip_ink, text);
+    x = d.x + 10 * u;
+    return hit.press;
+}
+// What a group of chips is, in small grey capitals before them; `x` moves on past it.
+void chip_label(Ui &ui, float &x, float top, float bottom, const char *text) {
+    const float u = ui.u, size = 24 * u;
+    ui.draw->AddText(ui.bold, size, ImVec2(x, top + (bottom - top - size) * .5f), sub_ink, text);
+    x += width_of(ui.bold, size, text) + 18 * u;
+}
+
+// A group's heading over its rows, in the Multiplayer page's small white capitals.
+void group_heading(Ui &ui, ImVec2 at, const std::string &text) { ui.draw->AddText(ui.bold, 28 * ui.u, at, theme::paper, text.c_str()); }
+
+// A tag on a row in one of the kit's tag colours (ON blue, OFF grey, problems amber or red), with
+// its middle at `middle_y` and its right end at `right`. Returns its width.
+float row_tag(Ui &ui, float right, float middle_y, const char *text, ImU32 fill, ImU32 ink) {
+    const float u = ui.u, size = 26 * u, w = width_of(ui.bold, size, text) + 28 * u, tall = 44 * u;
+    ui.draw->AddRectFilled(ImVec2(right - w, middle_y - tall * .5f), ImVec2(right, middle_y + tall * .5f), fill, 3 * u);
+    ui.draw->AddText(ui.bold, size, ImVec2(right - w + 14 * u, middle_y - size * .5f), ink, text);
+    return w;
+}
+
 // One of the three big tiles over the server list. `primary`: the main thing to do on the page now,
 // on the blue. `open`: what it opens is showing, marked with the kit's blue edge.
 bool hero(Ui &ui, std::uint32_t id, ImVec2 a, ImVec2 b, const char *title, const std::string &line, bool primary, bool enabled = true,
@@ -797,28 +832,16 @@ void browser_page(Ui &ui, ImVec2 a, ImVec2 z) {
         field(ui, hash("search"), ImVec2(a.x, bar_top), ImVec2(a.x + search_width, bar_top + bar), h.search, "Search servers, maps, friends");
         changed |= before != h.search;
         float x = a.x + search_width + 20 * u;
-        const auto chip = [&](const char *text, bool on) {
-            const float size = 32 * u, w = width_of(ui.bold, size, text) + 40 * u;
-            const ImVec2 c(x, bar_top + 12 * u), d(x + w, bar_top + bar - 12 * u);
-            // As the Insert menu's chips: a chosen one blue, white under the D-pad or the keys (with
-            // a blue line along its foot when it is chosen), a lighter grey or blue under the pointer.
-            const Hit hit = item(ui, hash(text, 7), c, d);
-            const auto [focused, pointed] = lit_of(hit);
-            skate_theme::rough_rect(draw, c, d, focused ? theme::paper : on ? (pointed ? accent_hover : accent) : pointed ? row_hover : tile_dark,
-                                    hash(text) & 0xfff, u * 2);
-            if (focused && on) draw->AddRectFilled(ImVec2(c.x, d.y - 8 * u), d, accent);
-            draw->AddText(ui.bold, size, ImVec2(c.x + 20 * u, c.y + (d.y - c.y - size) * .5f), focused ? focus_ink : on || pointed ? theme::paper : chip_ink, text);
-            x = d.x + 10 * u;
-            return hit.press;
-        };
-        if (chip("ALL", h.kind == Kind::all)) h.kind = Kind::all, changed = true;
-        if (chip("SERVERS", h.kind == Kind::servers)) h.kind = Kind::servers, changed = true;
-        if (chip("LOBBIES", h.kind == Kind::lobbies)) h.kind = Kind::lobbies, changed = true;
+        const float c_top = bar_top + 12 * u, c_bottom = bar_top + bar - 12 * u;
+        const auto filter = [&](const char *text, bool on) { return chip(ui, hash(text, 7), x, c_top, c_bottom, text, on); };
+        if (filter("ALL", h.kind == Kind::all)) h.kind = Kind::all, changed = true;
+        if (filter("SERVERS", h.kind == Kind::servers)) h.kind = Kind::servers, changed = true;
+        if (filter("LOBBIES", h.kind == Kind::lobbies)) h.kind = Kind::lobbies, changed = true;
         x += 14 * u;
-        if (chip("FRIENDS", h.friends_only)) h.friends_only = !h.friends_only, changed = true;
-        if (chip("FAVORITES", h.favorites_only)) h.favorites_only = !h.favorites_only, changed = true;
-        if (chip("HIDE FULL", h.hide_full)) h.hide_full = !h.hide_full, changed = true;
-        if (chip("MY MAP", h.same_map)) h.same_map = !h.same_map, changed = true;
+        if (filter("FRIENDS", h.friends_only)) h.friends_only = !h.friends_only, changed = true;
+        if (filter("FAVORITES", h.favorites_only)) h.favorites_only = !h.favorites_only, changed = true;
+        if (filter("HIDE FULL", h.hide_full)) h.hide_full = !h.hide_full, changed = true;
+        if (filter("MY MAP", h.same_map)) h.same_map = !h.same_map, changed = true;
         const auto refresh = wait ? "REFRESH IN " + std::to_string(wait) : std::string(mp.lobby_searching ? "SEARCHING..." : "REFRESH");
         const float refresh_x = z.x - 380 * u;
         if (action(ui, hash("refresh"), ImVec2(refresh_x, bar_top + 12 * u), ImVec2(z.x, bar_top + bar - 12 * u), refresh, false, true, !wait))
@@ -1539,18 +1562,26 @@ template<std::size_t N> float stepped(float current, const std::array<float, N> 
 }
 std::string whole(float value, const char *unit = "") { return std::to_string(static_cast<int>(value + .5f)) + unit; }
 
-// A column of settings that scrolls: each a row with its name and what it is now.
+// A column of settings that scrolls, in the Multiplayer page's look: each setting a full-width row on
+// the near-black tile with its name on the left and what it is now on the right (white under the
+// D-pad or the keys), in groups under small headings.
 struct Column {
     Ui &ui;
     Scroller list;
     float left, right, tall, between;
+    bool placed{}; // anything in it yet: the first heading needs no room over it
     Column(Ui &owner, std::uint32_t id, ImVec2 a, ImVec2 b)
         : ui(owner), list(owner, id, a, b), left(a.x), right(b.x - 26 * owner.u), tall(96 * owner.u), between(10 * owner.u) {}
+    // The top of a row `height` tall (see Scroller::next).
+    float next(float height, float gap, bool &drawn) {
+        placed = true;
+        return list.next(height, gap, drawn);
+    }
     // A row that is pressed: a switch, a choice that goes round, or an action (no value).
     bool setting(const std::string &name, const std::string &value, bool enabled, Look look = Look::tile) {
         const auto id = hash(name, 21);
         bool drawn{};
-        const float top = list.next(tall, between, drawn);
+        const float top = next(tall, between, drawn);
         list.reveal(id, top, tall);
         return button(ui, id, ImVec2(left, top), ImVec2(right, top + tall), name, look, enabled, value, &list.box);
     }
@@ -1559,13 +1590,14 @@ struct Column {
         const float u = ui.u, side = 96 * u, readout = 300 * u;
         const auto less = hash(name, 22), more = hash(name, 23);
         bool drawn{};
-        const float top = list.next(tall, between, drawn);
+        const float top = next(tall, between, drawn);
         list.reveal(less, top, tall), list.reveal(more, top, tall);
         const float more_x = right - side, less_x = more_x - readout - side;
         if (drawn) {
-            skate_theme::rough_rect(ui.draw, ImVec2(left, top), ImVec2(less_x - 10 * u, top + tall), skate_theme::tile, less & 0xfff, u * 2);
+            skate_theme::rough_rect(ui.draw, ImVec2(left, top), ImVec2(less_x - 10 * u, top + tall), tile_dark, less & 0xfff, u * 2);
             label(ui.draw, ui.body, 40 * u, ImVec2(left + 30 * u, top + (tall - 40 * u) * .5f), less_x - 30 * u, enabled ? theme::paper : theme::muted, name);
-            skate_theme::rough_rect(ui.draw, ImVec2(less_x + side + 6 * u, top), ImVec2(more_x - 6 * u, top + tall), skate_theme::tile, more & 0xfff, u * 2);
+            skate_theme::rough_rect(ui.draw, ImVec2(less_x + side + 6 * u, top), ImVec2(more_x - 6 * u, top + tall), tile_dark, more & 0xfff, u * 2);
+            // (The value in the kit's blue, as button() and the Insert menu's option rows show one.)
             const float w = width_of(ui.bold, 40 * u, value);
             ui.draw->AddText(ui.bold, 40 * u, ImVec2(less_x + side + (readout - w) * .5f, top + (tall - 40 * u) * .5f), enabled ? theme::blue : theme::muted, value.c_str());
         }
@@ -1574,35 +1606,54 @@ struct Column {
         if (button(ui, more, ImVec2(more_x, top), ImVec2(right, top + tall), "+", Look::plain, enabled, {}, &list.box)) result = 1;
         return result;
     }
-    void heading(const char *text) {
+    // A group's heading: small white capitals, with room over it after the group before.
+    void heading(const std::string &text) {
+        const float u = ui.u, size = 28 * u, height = placed ? 84 * u : 44 * u;
         bool drawn{};
-        const float top = list.next(52 * ui.u, 30 * ui.u, drawn);
-        if (drawn) ui.draw->AddText(ui.heading, 52 * ui.u, ImVec2(left, top), theme::paper, text);
+        const float top = next(height, 14 * u, drawn);
+        if (drawn) group_heading(ui, ImVec2(left, top + height - size - 4 * u), text);
     }
-    void title(const char *text) {
-        bool drawn{};
-        const float top = list.next(54 * ui.u, 12 * ui.u, drawn);
-        if (drawn) ui.draw->AddText(ui.bold, 28 * ui.u, ImVec2(left, top + 26 * ui.u), theme::muted, text);
-    }
+    void title(const std::string &text) { heading(text); }
     void note(const std::string &text, ImU32 colour = theme::muted) {
         if (text.empty()) return;
         const float size = 30 * ui.u, wrap = right - left;
         bool drawn{};
-        const float top = list.next(ui.body->CalcTextSizeA(size, FLT_MAX, wrap, text.c_str()).y + 6 * ui.u, 18 * ui.u, drawn);
+        const float top = next(ui.body->CalcTextSizeA(size, FLT_MAX, wrap, text.c_str()).y + 6 * ui.u, 18 * ui.u, drawn);
         if (drawn) ui.draw->AddText(ui.body, size, ImVec2(left, top + 6 * ui.u), colour, text.c_str(), nullptr, wrap);
     }
     void end() { list.end(); }
 };
 
+// A settings tab's two columns: side by side on a page wide enough for two, so that short rows do not
+// leave most of a wide page empty; else one after the other in a single column.
+template<class Left, class Right> void two_columns(Ui &ui, std::uint32_t id, ImVec2 a, ImVec2 z, Left &&left_side, Right &&right_side) {
+    const float u = ui.u, gap = 60 * u, room = z.x - a.x;
+    if (room >= 2600 * u) {
+        const float w = std::min((room - gap) * .5f, 1900 * u);
+        Column first(ui, hash("left", id), a, ImVec2(a.x + w, z.y));
+        left_side(first);
+        first.end();
+        Column second(ui, hash("right", id), ImVec2(a.x + w + gap, a.y), ImVec2(a.x + w * 2 + gap, z.y));
+        right_side(second);
+        second.end();
+        return;
+    }
+    Column only(ui, id, a, ImVec2(a.x + std::min(room, 2100 * u), z.y));
+    left_side(only);
+    right_side(only);
+    only.end();
+}
+
 // The page's tabs. What a control does, and when it can, is the same as on ReSkate's own menu
 // (native_tools_view.h for travel, parks and the world; the same requests and commands that
-// menu sends for the rest); how it is laid out is here.
+// menu sends for the rest); how it is laid out is here, in the Multiplayer page's look: no title,
+// groups of full-width rows, and a line under it with what happened last and what the buttons do.
 void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
     auto &h = ui.h;
     const auto &m = h.full;
     const auto &mp = m.multiplayer;
     const auto &cb = h.callbacks;
-    const float u = ui.u, gap = 28 * u, tall = 96 * u, between = 10 * u;
+    const float u = ui.u, gap = 28 * u, tall = 96 * u, between = 10 * u, footer = 70 * u;
     auto *draw = ui.draw;
     native_tools::sync(h.tools, m);
     const auto changed = [&] { h.next_model = {}; }; // what it changed shows at once
@@ -1627,42 +1678,89 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
         changed();
     };
     const auto on_off = [](bool on) { return std::string(on ? "On" : "Off"); };
-    const float column_width = std::min(z.x - a.x, 2100 * u);
-    // Every map as a grid of cards, each with its picture (an official map's loading screen, a custom
-    // map's mod icon: the same pictures as the ReSkate menu's map grid, menu_map_pictures.cpp) and its
-    // name under it: the game's maps, then the custom ones under their own heading. The one pointed at
-    // says LOAD, and pressing it travels there. (Not Tutorial Island: the game's first-time tutorial.)
-    const auto levels = [&](const char *title) {
-        draw->AddText(ui.heading, 52 * u, a, theme::paper, title);
-        const auto listed = grid_levels(m.levels);
+    const bool fresh_input = ui.input && !h.typing;
+    const std::uint32_t pressed = fresh_input ? ui.pad.buttons & ~h.pad_before : 0;
+    // The tabs draw down to here; the line under them is the page's foot.
+    const ImVec2 bz(z.x, z.y - footer);
+    // What the foot says when nothing has happened: the tab's own advice, if it has any.
+    std::string advice;
+
+    // MAPS: every map as a grid of cards, each with its picture (an official map's loading screen, a
+    // custom map's mod icon: the same pictures as the ReSkate menu's map grid, menu_map_pictures.cpp)
+    // and its name under it; pressing one travels there. (Not Tutorial Island: the game's first-time
+    // tutorial.) Over it, the Insert menu's Map > Travel filters: which maps (all, the game's own or
+    // the custom ones) and in what order (by name, or the custom maps first by when their mod was
+    // installed, newest first, with a NEW tag on those from the last week). The choices are the Insert
+    // menu's own (SkateMenu::map_show and map_sort), so the two agree for the rest of the run. When
+    // each mod was installed comes with the pictures (map_icons.cpp reads it off this thread), so
+    // nothing here reads the disk.
+    const auto maps = [&] {
+        auto &menu = state().menu;
+        auto listed = grid_levels(m.levels);
+        // (All of them, whatever is shown: the server browser asks for the same set.)
         want_grid_pictures(listed);
-        // Why a level cannot be loaded now, or what loading one said: beside the title.
-        const std::string note = multiplayer_controls_level(mp) ? "Only the lobby host can change levels."
-                                 : !m.can_queue_load ? "Travel is unavailable right now. Wait for the game to finish loading." : h.notice;
-        if (!note.empty()) {
-            const float after = a.x + width_of(ui.heading, 52 * u, title) + 48 * u;
-            label(draw, ui.body, 30 * u, ImVec2(after, a.y + 14 * u), z.x - 20 * u, theme::muted, note);
-        }
         const auto *root = native_tools::level(m, native_tools::root_asset);
         const bool travel = root && root->native_registered && root->can_load && m.can_queue_load && !multiplayer_controls_level(mp) && cb.queue_load;
-        const float card_gap = 24 * u, room = z.x - a.x - 16 * u;
+        const auto list_id = hash("maps", 30);
+        // ---- the filters, as chips: A or a click picks one; Y goes from one order to the other.
+        const float bar = 96 * u, c_top = a.y + 12 * u, c_bottom = a.y + bar - 12 * u;
+        float x = a.x;
+        bool refilter{};
+        chip_label(ui, x, c_top, c_bottom, "SHOW");
+        constexpr std::array<const char *, 3> shows{"ALL", "STOCK", "CUSTOM"};
+        for (int i = 0; i < static_cast<int>(shows.size()); ++i)
+            if (chip(ui, hash(shows[static_cast<std::size_t>(i)], 33), x, c_top, c_bottom, shows[static_cast<std::size_t>(i)], menu.map_show == i))
+                menu.map_show = i, refilter = true;
+        x += 40 * u;
+        chip_label(ui, x, c_top, c_bottom, "SORT");
+        constexpr std::array<const char *, 2> sorts{"A TO Z", "NEWEST INSTALLED"};
+        for (int i = 0; i < static_cast<int>(sorts.size()); ++i)
+            if (chip(ui, hash(sorts[static_cast<std::size_t>(i)], 34), x, c_top, c_bottom, sorts[static_cast<std::size_t>(i)], menu.map_sort == i))
+                menu.map_sort = i, refilter = true;
+        if (pressed & 0x8000) menu.map_sort = menu.map_sort == 1 ? 0 : 1, refilter = true; // Y / Triangle
+        if (refilter) h.scrolls[list_id] = 0;
+        // Why a level cannot be loaded now: at the bar's other end.
+        const std::string blocked = multiplayer_controls_level(mp) ? "Only the lobby host can change levels."
+                                    : !m.can_queue_load ? "Travel is unavailable right now. Wait for the game to finish loading." : std::string();
+        if (!blocked.empty()) {
+            const float size = 30 * u, w = width_of(ui.body, size, blocked);
+            label(draw, ui.body, size, ImVec2(std::max(x + 30 * u, bz.x - w), a.y + (bar - size) * .5f), bz.x, theme::muted, blocked);
+        }
+        // ---- which maps, in what order (as skate_menu_world.cpp's level_picker has them)
+        const bool show_stock = menu.map_show != 2, show_custom = menu.map_show != 1, newest = menu.map_sort == 1;
+        std::vector<std::pair<const Level *, std::int64_t>> shown;
+        for (const auto *entry : listed)
+            if (entry->custom ? show_custom : show_stock) shown.emplace_back(entry, newest && entry->custom ? menu_map_installed(entry->asset) : 0);
+        // (Stable: the stock maps, and custom ones whose time is not known yet, keep their order by name.)
+        if (newest)
+            std::stable_sort(shown.begin(), shown.end(), [](const auto &x1, const auto &x2) {
+                if (x1.first->custom != x2.first->custom) return x1.first->custom;
+                return x1.second > x2.second;
+            });
+        const auto customs = static_cast<std::size_t>(std::count_if(shown.begin(), shown.end(), [](const auto &entry) { return entry.first->custom; }));
+        const auto now = static_cast<std::int64_t>(std::time(nullptr));
+        constexpr std::int64_t new_for = 7 * 24 * 60 * 60;
+        // ---- the grid
+        const float card_gap = 24 * u, room = bz.x - a.x - 16 * u, top = a.y + bar + gap;
         const int columns = std::max(1, static_cast<int>((room + card_gap) / (540 * u + card_gap)));
         const float card = (room - card_gap * static_cast<float>(columns - 1)) / static_cast<float>(columns);
         const float picture = card * 0.5625f, name_bar = 86 * u, card_tall = picture + name_bar;
-        Scroller list(ui, hash(title, 30), ImVec2(a.x, a.y + 96 * u), ImVec2(z.x, z.y));
+        Scroller list(ui, list_id, ImVec2(a.x, top), bz);
         float row_top{};
         bool row_drawn{};
         std::size_t in_section{};
-        bool any_custom{};
-        for (std::size_t i = 0; i < listed.size(); ++i) {
-            const auto *entry = listed[i];
-            // The custom maps start a new row under their own heading.
-            if (entry->custom && !any_custom) {
-                any_custom = true;
+        int section = -1;
+        for (const auto &[entry, installed] : shown) {
+            // Each group (the game's maps, the custom ones) starts a row of its own under its heading.
+            if (static_cast<int>(entry->custom) != section) {
+                const float height = section < 0 ? 44 * u : 84 * u;
+                section = static_cast<int>(entry->custom);
                 in_section = 0;
                 bool heading_drawn{};
-                const float heading_top = list.next(70 * u, 0, heading_drawn);
-                if (heading_drawn) draw->AddText(ui.heading, 40 * u, ImVec2(a.x, heading_top + 18 * u), theme::paper, "CUSTOM MAPS");
+                const float heading_top = list.next(height, 14 * u, heading_drawn);
+                const auto count = entry->custom ? customs : shown.size() - customs;
+                if (heading_drawn)
+                    group_heading(ui, ImVec2(a.x, heading_top + height - 32 * u), std::string(entry->custom ? "CUSTOM MAPS" : "OFFICIAL MAPS") + "  \xc2\xb7  " + std::to_string(count));
             }
             const auto column = static_cast<int>(in_section++ % static_cast<std::size_t>(columns));
             if (!column) row_top = list.next(card_tall, card_gap, row_drawn);
@@ -1673,8 +1771,10 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
             list.reveal(id, row_top, card_tall);
             if (hit.press && can) h.tools.destination = entry->asset, act("load-level");
             if (!row_drawn) continue;
-            const bool lit = hit.focus || hit.hover;
-            skate_theme::rough_rect(draw, p, q, lit ? theme::blue : skate_theme::tile, id & 0xfff, u * 2);
+            // White under the D-pad or the keys, a lighter grey under the pointer, as the browser's rows.
+            const auto [focused, pointed] = lit_of(hit);
+            const bool lit = focused || pointed;
+            skate_theme::rough_rect(draw, p, q, focused ? theme::paper : pointed ? row_hover : tile_dark, id & 0xfff, u * 2);
             // The picture: the middle band of its square, to the card's shape.
             const ImVec2 shot_a(p.x + 8 * u, p.y + 8 * u), shot_b(q.x - 8 * u, p.y + picture);
             ImTextureID texture{};
@@ -1684,53 +1784,66 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
                 draw->AddImage(texture, shot_a, shot_b, ImVec2(uv0.x, uv0.y + band), ImVec2(uv1.x, uv1.y - band),
                                can || lit ? IM_COL32_WHITE : IM_COL32(255, 255, 255, 110));
             } else {
-                draw->AddRectFilled(shot_a, shot_b, IM_COL32(18, 18, 20, 255));
+                draw->AddRectFilled(shot_a, shot_b, IM_COL32(30, 30, 33, 255));
+                const char *initial = entry->custom ? "CUSTOM" : "MAP";
+                const float size = 30 * u;
+                draw->AddText(ui.bold, size, ImVec2(shot_a.x + (shot_b.x - shot_a.x - width_of(ui.bold, size, initial)) * .5f, shot_a.y + (shot_b.y - shot_a.y - size) * .5f),
+                              theme::muted, initial);
             }
-            // The name under it, and on the one pointed at what pressing it does.
+            // Installed in the last week, while they are in that order: the Insert menu's NEW tag in a corner.
+            if (newest && entry->custom && installed && now - installed < new_for) {
+                const float size = 26 * u, w = width_of(ui.bold, size, "NEW") + 28 * u;
+                const ImVec2 t0(shot_b.x - 14 * u - w, shot_a.y + 14 * u), t1(shot_b.x - 14 * u, shot_a.y + 14 * u + 44 * u);
+                draw->AddRectFilled(t0, t1, skate_theme::bar, 3 * u);
+                draw->AddText(ui.bold, size, ImVec2(t0.x + 14 * u, t0.y + (t1.y - t0.y - size) * .5f), skate_theme::black, "NEW");
+            }
+            // The name under it, and on the one pointed at what pressing it does: LOAD on the blue, or
+            // why not on grey.
             const float bar_top = p.y + picture, text_y = bar_top + (name_bar - 38 * u) * .5f;
             float name_right = q.x - 24 * u;
             if (lit) {
                 const char *does = can ? "LOAD" : multiplayer_controls_level(mp) ? "HOST'S CHOICE" : "NOT NOW";
                 const float w = width_of(ui.bold, 28 * u, does) + 36 * u;
                 const ImVec2 c(q.x - w - 18 * u, bar_top + 18 * u), d(q.x - 18 * u, q.y - 18 * u);
-                // (On the card's blue: white when it can load, a dark shade when it cannot.)
-                skate_theme::rough_rect(draw, c, d, can ? theme::paper : IM_COL32(0, 0, 0, 90), 0x52, u * 2);
-                draw->AddText(ui.bold, 28 * u, ImVec2(c.x + 18 * u, c.y + (d.y - c.y - 28 * u) * .5f), can ? focus_ink : theme::paper, does);
+                skate_theme::rough_rect(draw, c, d, can ? accent : focused ? track_lit : track, 0x52, u * 2);
+                draw->AddText(ui.bold, 28 * u, ImVec2(c.x + 18 * u, c.y + (d.y - c.y - 28 * u) * .5f), can || !focused ? theme::paper : focus_ink, does);
                 name_right = c.x - 16 * u;
             }
-            label(draw, ui.bold, 38 * u, ImVec2(p.x + 24 * u, text_y), name_right, can || lit ? theme::paper : theme::muted,
+            label(draw, ui.bold, 38 * u, ImVec2(p.x + 24 * u, text_y), name_right, focused ? focus_ink : can || pointed ? theme::paper : theme::muted,
                   native_tools::level_name(*entry));
         }
         list.end();
-        if (listed.empty()) draw->AddText(ui.body, 38 * u, ImVec2(a.x, a.y + 110 * u), theme::muted, "Waiting for available levels...");
+        if (listed.empty()) draw->AddText(ui.body, 38 * u, ImVec2(a.x, top + 20 * u), theme::muted, "Waiting for available levels...");
+        else if (shown.empty()) draw->AddText(ui.body, 38 * u, ImVec2(a.x, top + 20 * u), theme::muted, show_custom ? "No custom maps to show." : "No stock maps to show.");
     };
 
     switch (h.tools_tab) {
     case official_tab:
-    case custom_tab: levels("FIND YOUR SPOT"); break; // (custom maps are on the one tab now)
+    case custom_tab: maps(); break; // (custom maps are on the one tab now)
     case world_tab: {
-        Column list(ui, hash("world"), a, ImVec2(a.x + column_width, z.y));
-        list.heading("THIS WORLD");
-        const bool population = m.world.ready && m.world_controls.population_available && console;
-        if (list.setting("Traffic", population_labels[std::clamp(m.world_controls.choices.traffic, -1, 3) + 1], population)) act("traffic");
-        if (list.setting("Pedestrians", population_labels[std::clamp(m.world_controls.choices.pedestrians, -1, 3) + 1], population)) act("pedestrians");
-        if (list.setting("Time of day", native_tools::time_of_day_labels[native_tools::time_of_day(m)], native_tools::time_of_day_available(m, cb))) act("time-of-day");
-        if (m.world.controlled_by_host)
-            list.note(server_can(mp, "tod") ? "Your role sets it: time of day changes for the whole server." : "The lobby host controls world layers, including time of day.");
-        list.note(h.notice);
-        list.end();
+        two_columns(ui, hash("world"), a, bz, [&](Column &list) {
+            list.heading("POPULATION");
+            const bool population = m.world.ready && m.world_controls.population_available && console;
+            if (list.setting("Traffic", population_labels[std::clamp(m.world_controls.choices.traffic, -1, 3) + 1], population)) act("traffic");
+            if (list.setting("Pedestrians", population_labels[std::clamp(m.world_controls.choices.pedestrians, -1, 3) + 1], population)) act("pedestrians");
+        }, [&](Column &list) {
+            list.heading("TIME");
+            if (list.setting("Time of day", native_tools::time_of_day_labels[native_tools::time_of_day(m)], native_tools::time_of_day_available(m, cb))) act("time-of-day");
+            if (m.world.controlled_by_host)
+                list.note(server_can(mp, "tod") ? "Your role sets it: time of day changes for the whole server." : "The lobby host controls world layers, including time of day.");
+        });
         break;
     }
     case parks_tab: {
         // One card for each of the three lots: its style, its layout, and loading it.
-        draw->AddText(ui.heading, 52 * u, a, theme::paper, "PARK LAYOUTS");
         const bool available = native_tools::can_park(m, cb);
+        group_heading(ui, ImVec2(a.x, a.y + 12 * u), "THE LOTS");
         const float cards = static_cast<float>(park_lots.size());
-        const float width = std::min(((z.x - a.x) - gap * (cards - 1)) / cards, 1300 * u), top = a.y + 96 * u;
+        const float width = std::min(((bz.x - a.x) - gap * (cards - 1)) / cards, 1300 * u), top = a.y + 58 * u;
         const float card_height = 36 * u + 60 * u + (tall + between) * 2 + 16 * u + 110 * u + 36 * u;
         for (unsigned lot = 0; lot < park_lots.size(); ++lot) {
             const ImVec2 p(a.x + static_cast<float>(lot) * (width + gap), top), q(p.x + width, top + card_height);
-            skate_theme::rough_rect(draw, p, q, skate_theme::tile, 0x60 + lot, u * 2);
+            skate_theme::rough_rect(draw, p, q, tile_dark, 0x60 + lot, u * 2);
             const float left = p.x + 36 * u, right = q.x - 36 * u;
             float y = p.y + 36 * u;
             label(draw, ui.bold, 40 * u, ImVec2(left, y), right, theme::paper, std::string(park_lots[lot].label));
@@ -1749,39 +1862,29 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
                        available && valid_park(lot, h.tools.parks[lot])))
                 h.tools.lot = lot, act("load-park");
         }
-        Column all(ui, hash("parks"), ImVec2(a.x, top + card_height + 30 * u), ImVec2(a.x + std::min(z.x - a.x, 1500 * u), z.y));
-        all.title("ALL THREE LOTS");
-        if (all.setting("Load random parks", {}, available)) act("load-random-parks");
-        if (all.setting("Randomize on launch", on_off(m.parks.randomize_on_launch), m.parks.available && console)) act("park-random-on-launch");
-        all.note(m.world.map != WorldMap::bam ? std::string("Load San Vansterdam to change parks.")
+        // Under them, what goes for all three, as two rows side by side.
+        two_columns(ui, hash("parks"), ImVec2(a.x, top + card_height + 16 * u), bz, [&](Column &list) {
+            list.heading("ALL THREE LOTS");
+            if (list.setting("Load random parks", {}, available)) act("load-random-parks");
+        }, [&](Column &list) {
+            list.heading(" "); // (no words: it lines the row up with the one beside it)
+            if (list.setting("Randomize on launch", on_off(m.parks.randomize_on_launch), m.parks.available && console)) act("park-random-on-launch");
+        });
+        advice = m.world.map != WorldMap::bam ? std::string("Load San Vansterdam to change parks.")
                  : native_tools::parks_locked(m) ? std::string("The lobby host controls park layouts.")
-                 : m.parks.controlled_by_host ? std::string("Your role sets them: layouts you load change for the whole server.") : h.notice);
-        all.end();
+                 : m.parks.controlled_by_host ? std::string("Your role sets them: layouts you load change for the whole server.") : std::string();
         break;
     }
     case player_tab: {
-        Column list(ui, hash("player"), a, ImVec2(a.x + column_width, z.y));
         const auto &d = m.debug;
-        list.heading("SKATE YOUR WAY");
-        if (list.setting("Noclip", on_off(d.noclip), (d.noclip_available || d.noclip) && debugging)) debug({DebugAction::set_noclip, !d.noclip});
-        if (list.setting("No bail", on_off(d.no_bail), (d.no_bail_available || d.no_bail) && debugging)) debug({DebugAction::set_no_bail, !d.no_bail});
-        const auto &wear = m.offline.board_wear;
-        if (list.setting("Board wear", on_off(wear.effective), wear.available && cb.queue_offline_feature)) act("board-wear");
-        if (list.setting("Reset board wear", {}, wear.available && wear.effective && console)) act("board-wear-reset");
-        list.title("CAMERA");
-        const bool camera = d.available && d.camera_available && debugging, edit = d.available && debugging;
-        if (list.setting("First person", on_off(d.first_person), camera)) debug({DebugAction::set_first_person, !d.first_person});
-        if (list.setting("True first person", on_off(d.first_person_arm.stabilize), edit)) debug({DebugAction::set_first_person_stabilize, !d.first_person_arm.stabilize});
-        if (list.setting("Third person on foot", on_off(d.first_person_arm.board_only), edit)) debug({DebugAction::set_first_person_board_only, !d.first_person_arm.board_only});
-        if (list.setting("Freecam", on_off(d.free_camera), camera)) debug({DebugAction::set_free_camera, !d.free_camera});
-        {
-            constexpr std::array<float, 7> speeds{.6f, 3.f, 5.f, 15.f, 60.f, 300.f, 1500.f};
-            const auto text = std::to_string(d.camera_speed);
-            if (const int way = list.adjust("Flight speed", text.substr(0, text.find('.') + 2), (d.free_camera || d.noclip) && d.camera_available && debugging))
-                debug({DebugAction::set_camera_speed, false, stepped(d.camera_speed, speeds, way)});
-        }
-        list.title("BOOSTS");
-        {
+        two_columns(ui, hash("player"), a, bz, [&](Column &list) {
+            list.heading("SKATING");
+            if (list.setting("Noclip", on_off(d.noclip), (d.noclip_available || d.noclip) && debugging)) debug({DebugAction::set_noclip, !d.noclip});
+            if (list.setting("No bail", on_off(d.no_bail), (d.no_bail_available || d.no_bail) && debugging)) debug({DebugAction::set_no_bail, !d.no_bail});
+            const auto &wear = m.offline.board_wear;
+            if (list.setting("Board wear", on_off(wear.effective), wear.available && cb.queue_offline_feature)) act("board-wear");
+            if (list.setting("Reset board wear", {}, wear.available && wear.effective && console)) act("board-wear-reset");
+            list.heading("BOOSTS");
             constexpr std::array<float, 10> forward{0.f, 1.f, 5.f, 10.f, 25.f, 50.f, 100.f, 150.f, 200.f, 300.f};
             constexpr std::array<float, 9> up{0.f, 1.f, 2.f, 3.f, 5.f, 8.f, 12.f, 18.f, 25.f};
             if (const int way = list.adjust("Forward boost", "+" + whole(d.forward_velocity_speed), debugging))
@@ -1790,31 +1893,47 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
                 debug({DebugAction::set_up_velocity_speed, false, stepped(d.up_velocity_speed, up, way)});
             if (const int way = list.adjust("Off-board up boost", "+" + whole(d.offboard_up_velocity_speed), debugging))
                 debug({DebugAction::set_offboard_up_velocity_speed, false, stepped(d.offboard_up_velocity_speed, up, way)});
-        }
-        list.note(!h.notice.empty() ? h.notice : std::string("The buttons for the boosts are on the BINDS tab. Flight speed is for noclip and freecam; close the menu to fly."));
-        list.end();
+            list.note("The buttons for the boosts are on the BINDS tab.");
+        }, [&](Column &list) {
+            list.heading("CAMERA");
+            const bool camera = d.available && d.camera_available && debugging, edit = d.available && debugging;
+            if (list.setting("First person", on_off(d.first_person), camera)) debug({DebugAction::set_first_person, !d.first_person});
+            if (list.setting("True first person", on_off(d.first_person_arm.stabilize), edit)) debug({DebugAction::set_first_person_stabilize, !d.first_person_arm.stabilize});
+            if (list.setting("Third person on foot", on_off(d.first_person_arm.board_only), edit)) debug({DebugAction::set_first_person_board_only, !d.first_person_arm.board_only});
+            if (list.setting("Freecam", on_off(d.free_camera), camera)) debug({DebugAction::set_free_camera, !d.free_camera});
+            constexpr std::array<float, 7> speeds{.6f, 3.f, 5.f, 15.f, 60.f, 300.f, 1500.f};
+            const auto text = std::to_string(d.camera_speed);
+            if (const int way = list.adjust("Flight speed", text.substr(0, text.find('.') + 2), (d.free_camera || d.noclip) && d.camera_available && debugging))
+                debug({DebugAction::set_camera_speed, false, stepped(d.camera_speed, speeds, way)});
+            list.note("Flight speed is for noclip and freecam; close the menu to fly.");
+        });
         break;
     }
     case online_tab: {
-        Column list(ui, hash("online"), a, ImVec2(a.x + column_width, z.y));
-        list.heading("OTHER SKATERS");
         if (m.steam_offline) {
+            Column list(ui, hash("online"), a, ImVec2(a.x + std::min(bz.x - a.x, 2100 * u), bz.y));
+            list.heading("OTHER SKATERS");
             list.note("Multiplayer is off in offline mode.");
-        } else {
+            list.end();
+            break;
+        }
+        two_columns(ui, hash("online"), a, bz, [&](Column &list) {
             constexpr std::array<float, 8> shown{50.f, 75.f, 100.f, 150.f, 200.f, 300.f, 500.f, 1000.f};
             constexpr std::array<float, 8> tags{10.f, 25.f, 50.f, 75.f, 120.f, 200.f, 300.f, 500.f};
-            constexpr std::array<float, 7> reach{5.f, 10.f, 20.f, 40.f, 75.f, 120.f, 200.f};
-            constexpr std::array<float, 6> seconds{1.f, 3.f, 5.f, 8.f, 15.f, 30.f};
-            constexpr std::array<float, 8> lines{1.f, 2.f, 3.f, 4.f, 5.f, 6.f, 7.f, 8.f};
+            list.heading("OTHER SKATERS");
             if (const int way = list.adjust("Player distance", mp.player_distance >= player_distance_unlimited ? std::string("Everyone") : whole(mp.player_distance, " m"), true))
                 online("player-distance", whole(stepped(mp.player_distance, shown, way)));
             if (list.setting("Direct connections", on_off(mp.prefer_direct), true)) online("direct-connections", mp.prefer_direct ? "off" : "on");
-            list.title("NAMETAGS");
+            list.heading("NAMETAGS");
             if (list.setting("Nametags", on_off(mp.nametags), true)) online("nametags", mp.nametags ? "off" : "on");
             if (const int way = list.adjust("Nametag distance", whole(mp.nametag_distance, " m"), true)) online("nametag-distance", whole(stepped(mp.nametag_distance, tags, way)));
             if (list.setting("Nametag dots", on_off(mp.nametag_dots), true)) online("nametag-dots", mp.nametag_dots ? "off" : "on");
             if (list.setting("Friends' nametags only", on_off(mp.nametags_friends), true)) online("nametags-friends", mp.nametags_friends ? "off" : "on");
-            list.title("CHAT");
+        }, [&](Column &list) {
+            constexpr std::array<float, 7> reach{5.f, 10.f, 20.f, 40.f, 75.f, 120.f, 200.f};
+            constexpr std::array<float, 6> seconds{1.f, 3.f, 5.f, 8.f, 15.f, 30.f};
+            constexpr std::array<float, 8> lines{1.f, 2.f, 3.f, 4.f, 5.f, 6.f, 7.f, 8.f};
+            list.heading("CHAT");
             if (list.setting("Text chat", on_off(mp.chat_visible), true)) online("chat-visible", mp.chat_visible ? "off" : "on");
             if (list.setting("Chat bubbles", on_off(mp.chat_bubbles), true)) online("chat-bubbles", mp.chat_bubbles ? "off" : "on");
             if (list.setting("Own chat bubbles", on_off(mp.chat_bubbles_own), mp.chat_bubbles)) online("chat-bubbles-own", mp.chat_bubbles_own ? "off" : "on");
@@ -1825,45 +1944,44 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
             if (const int way = list.adjust("Bubble lines", whole(static_cast<float>(mp.chat_bubbles_history)), mp.chat_bubbles))
                 online("chat-bubbles-history", whole(stepped(static_cast<float>(mp.chat_bubbles_history), lines, way)));
             if (dingosdk::discord_presence::available()) {
-                list.title("DISCORD");
+                list.heading("DISCORD");
                 if (list.setting("Discord status", on_off(dingosdk::discord_presence::enabled()), true)) dingosdk::discord_presence::set_enabled(!dingosdk::discord_presence::enabled());
             }
             if (!mp.identity_tag.empty()) {
                 // Only for players the ReSkate team has given a tag.
-                list.title("YOUR TAG");
+                list.heading("YOUR TAG");
                 if (list.setting("Show my tag", on_off(mp.identity_tag_shown), true)) online("mark-tag", mp.identity_tag_shown ? "off" : "on");
                 if (list.setting("Show my items", on_off(mp.identity_items_shown), true)) online("mark-items", mp.identity_items_shown ? "off" : "on");
             }
-            list.note(h.notice);
-        }
-        list.end();
+        });
         break;
     }
     case visuals_tab: {
-        Column list(ui, hash("visuals"), a, ImVec2(a.x + column_width, z.y));
-        list.heading("WHAT YOU SEE AND HEAR");
-        constexpr std::array<const char *, 3> names{"Film grain", "Vignette", "Chromatic aberration"};
-        for (unsigned i = 0; i < names.size(); ++i) {
-            const auto choice = m.graphics.choices.effects[i];
-            const bool on = choice < 0 ? !m.graphics.ready[i] || m.graphics.enabled[i] : choice != 0;
-            if (list.setting(names[i], on_off(on) + (choice < 0 ? " (default)" : ""), m.graphics.available && console)) act("graphics", std::string(graphics_keys[i]));
-        }
-        if (list.setting("Restore default effects", {}, m.graphics.available && console)) act("graphics-reset");
-        if (list.setting("Keyframe smoothing", on_off(m.keyframe_smoothing.enabled), m.keyframe_smoothing.available && console))
-            act("keyframe-smoothing");
-        if (list.setting("Keyframe smoothness", std::to_string(keyframe_smoothness_percent(m.keyframe_smoothing)) + "%",
-                         m.keyframe_smoothing.available && m.keyframe_smoothing.enabled && console))
-            act("keyframe-smoothness");
-        if (list.setting("Challenges", m.progression.challenges_hidden ? "Hidden" : "Shown", m.progression.challenges_enabled && console)) act("challenges");
-        {
+        two_columns(ui, hash("visuals"), a, bz, [&](Column &list) {
+            list.heading("SCREEN EFFECTS");
+            constexpr std::array<const char *, 3> names{"Film grain", "Vignette", "Chromatic aberration"};
+            for (unsigned i = 0; i < names.size(); ++i) {
+                const auto choice = m.graphics.choices.effects[i];
+                const bool on = choice < 0 ? !m.graphics.ready[i] || m.graphics.enabled[i] : choice != 0;
+                if (list.setting(names[i], on_off(on) + (choice < 0 ? " (default)" : ""), m.graphics.available && console)) act("graphics", std::string(graphics_keys[i]));
+            }
+            if (list.setting("Restore default effects", {}, m.graphics.available && console)) act("graphics-reset");
+        }, [&](Column &list) {
+            list.heading("ANIMATION");
+            if (list.setting("Keyframe smoothing", on_off(m.keyframe_smoothing.enabled), m.keyframe_smoothing.available && console))
+                act("keyframe-smoothing");
+            if (list.setting("Keyframe smoothness", std::to_string(keyframe_smoothness_percent(m.keyframe_smoothing)) + "%",
+                             m.keyframe_smoothing.available && m.keyframe_smoothing.enabled && console))
+                act("keyframe-smoothness");
+            list.heading("CHALLENGES AND MUSIC");
+            if (list.setting("Challenges", m.progression.challenges_hidden ? "Hidden" : "Shown", m.progression.challenges_enabled && console)) act("challenges");
             const bool shuffle = dingosdk::profile_runtime::music_shuffle_enabled();
             if (list.setting("Shuffle playlists", on_off(shuffle), true)) {
                 dingosdk::profile_runtime::set_music_shuffle_enabled(!shuffle);
                 dingosdk::profile_runtime::set_local_preference("MusicShuffle", !shuffle);
             }
-        }
-        list.note(!h.notice.empty() ? h.notice : std::string("Hiding challenges keeps your progress."));
-        list.end();
+            list.note("Hiding challenges keeps your progress.");
+        });
         break;
     }
     default: {
@@ -1889,18 +2007,17 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
                 save(action, *combo);
             }
         }
-        Column list(ui, hash("binds"), a, ImVec2(a.x + column_width, z.y));
-        list.heading("ACTION BINDS");
-        list.note(h.recording_bind ? std::string("Press the button, combination or key to use. Escape cancels.")
-                  : !h.notice.empty() ? h.notice : std::string("Pick an action, then press what should do it. CLEAR takes its button away."));
-        const auto row = [&](int action, const std::string &name, std::uint32_t combo) {
-            const float u2 = ui.u, clear_width = 260 * u2;
+        // (What to do, and that Escape cancels a recording, is the foot's.)
+        advice = h.recording_bind ? std::string("Press the button, combination or key to use. Escape cancels.")
+                                  : std::string("Pick an action, then press what should do it. CLEAR takes its button away.");
+        const auto row = [&](Column &list, int action, const std::string &name, std::uint32_t combo) {
+            const float clear_width = 260 * u;
             const auto id = hash("bind", static_cast<std::uint64_t>(action)), clear = hash("bind-clear", static_cast<std::uint64_t>(action));
             bool drawn{};
-            const float top = list.list.next(list.tall, list.between, drawn);
+            const float top = list.next(list.tall, list.between, drawn);
             list.list.reveal(id, top, list.tall), list.list.reveal(clear, top, list.tall);
             const bool mine = h.recording_bind == action, idle = available && !h.recording_bind;
-            if (button(ui, id, ImVec2(list.left, top), ImVec2(list.right - clear_width - 12 * u2, top + list.tall), name, mine ? Look::chosen : Look::tile, idle,
+            if (button(ui, id, ImVec2(list.left, top), ImVec2(list.right - clear_width - 12 * u, top + list.tall), name, mine ? Look::chosen : Look::tile, idle,
                        mine ? std::string("Recording...") : controller_combo_label(combo, ui.pad.style), &list.list.box)) {
                 h.recording_bind = action;
                 h.bind_capture = {};
@@ -1911,19 +2028,39 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
             if (button(ui, clear, ImVec2(list.right - clear_width, top), ImVec2(list.right, top + list.tall), "CLEAR", Look::plain, idle && combo != 0, {}, &list.list.box))
                 save(action, 0);
         };
-        row(1, "Freecam controller", binds.freecam_controller_combo);
-        row(2, "Freecam", binds.freecam_combo);
-        row(3, "Noclip", binds.noclip_combo);
-        row(4, "Forward boost", binds.forward_velocity_combo);
-        row(5, "Up boost", binds.up_velocity_combo);
-        row(7, "Off-board up boost", binds.offboard_up_velocity_combo);
-        row(6, "Teleport to freecam", binds.tp_to_freecam_combo);
-        row(8, "Vote yes", binds.vote_yes_combo);
-        row(9, "Vote no", binds.vote_no_combo);
-        for (std::size_t i = 0; i < action_binds.size(); ++i) row(10 + static_cast<int>(i), std::string(action_binds[i].label), binds.action_combos[i]);
-        list.end();
+        two_columns(ui, hash("binds"), a, bz, [&](Column &list) {
+            list.heading("MOVING AND THE CAMERA");
+            row(list, 1, "Freecam controller", binds.freecam_controller_combo);
+            row(list, 2, "Freecam", binds.freecam_combo);
+            row(list, 3, "Noclip", binds.noclip_combo);
+            row(list, 4, "Forward boost", binds.forward_velocity_combo);
+            row(list, 5, "Up boost", binds.up_velocity_combo);
+            row(list, 7, "Off-board up boost", binds.offboard_up_velocity_combo);
+            row(list, 6, "Teleport to freecam", binds.tp_to_freecam_combo);
+        }, [&](Column &list) {
+            list.heading("VOTES AND ACTIONS");
+            row(list, 8, "Vote yes", binds.vote_yes_combo);
+            row(list, 9, "Vote no", binds.vote_no_combo);
+            for (std::size_t i = 0; i < action_binds.size(); ++i) row(list, 10 + static_cast<int>(i), std::string(action_binds[i].label), binds.action_combos[i]);
+        });
         break;
     }
+    }
+
+    // ---- under it: what happened last (else the tab's advice) and what the buttons do
+    {
+        const float y = z.y - 52 * u, most = 1900 * u;
+        const bool on_maps = h.tools_tab == official_tab || h.tools_tab == custom_tab;
+        const auto text = view::caption(h.recording_bind || h.notice.empty() ? advice : h.notice, 140);
+        label(draw, ui.body, 30 * u, ImVec2(a.x, y + 4 * u), a.x + most, theme::muted, text);
+        const float x = a.x + (text.empty() ? 0 : std::min(width_of(ui.body, 30 * u, text), most) + 60 * u);
+        if (ui.pad.available) {
+            if (on_maps) hints(ui, x, y, {{0x1000, "", "Load"}, {0x8000, "", "Sort"}});
+            else if (h.tools_tab == binds_tab) hints(ui, x, y, {{0x1000, "", "Record"}});
+            else hints(ui, x, y, {{0x1000, "", "Change"}});
+        } else {
+            hints(ui, x, y, {{0, "Enter", on_maps ? "Load" : h.tools_tab == binds_tab ? "Record" : "Change"}});
+        }
     }
 }
 
@@ -2269,21 +2406,14 @@ void hub_frame(Hub &h, ImDrawList *draw, float u, ImVec2 a, ImVec2 z, float tabs
             const float w = width_of(ui.bold, size, name) + 56 * u;
             const ImVec2 p(x, top), q(x + w, bottom);
             const Hit hit = item(ui, hash(name, 1), p, q);
-            const bool on = open == tab, lit = hit.focus || hit.hover;
-            if (!tools && !mods) {
-                // The Multiplayer page's own strip, as the Insert menu's page names: the open tab's
-                // name in white over a blue line, the others grey, the one under the D-pad or the
-                // keys a white tile and the one under the pointer a grey one.
-                const auto [focused, pointed] = lit_of(hit);
-                if (focused || pointed) skate_theme::rough_rect(ui.draw, p, q, focused ? theme::paper : row_hover, hash(name) & 0xfff, u * 2);
-                ui.draw->AddText(ui.bold, size, ImVec2(p.x + 28 * u, top + (bottom - top - size) * .5f), focused ? focus_ink : on || pointed ? theme::paper : sub_ink, name);
-                if (on) ui.draw->AddRectFilled(ImVec2(p.x + 20 * u, bottom + 4 * u), ImVec2(q.x - 20 * u, bottom + 12 * u), accent);
-            } else {
-                skate_theme::rough_rect(ui.draw, p, q, lit && !on ? theme::blue : on ? theme::paper : IM_COL32(26, 26, 26, 200), hash(name) & 0xfff, u * 2);
-                ui.draw->AddText(ui.bold, size, ImVec2(p.x + 28 * u, top + (bottom - top - size) * .5f), on ? skate_theme::black : theme::paper, name);
-                // The game's brushed blue line under the tab that is open.
-                if (on) ui.draw->AddRectFilled(ImVec2(p.x + 6 * u, bottom + 4 * u), ImVec2(q.x - 6 * u, bottom + 14 * u), theme::blue, 5 * u);
-            }
+            const bool on = open == tab;
+            // Every page's strip as the Insert menu's page names: the open tab's name in white over a
+            // blue line, the others grey, the one under the D-pad or the keys a white tile and the
+            // one under the pointer a grey one.
+            const auto [focused, pointed] = lit_of(hit);
+            if (focused || pointed) skate_theme::rough_rect(ui.draw, p, q, focused ? theme::paper : row_hover, hash(name) & 0xfff, u * 2);
+            ui.draw->AddText(ui.bold, size, ImVec2(p.x + 28 * u, top + (bottom - top - size) * .5f), focused ? focus_ink : on || pointed ? theme::paper : sub_ink, name);
+            if (on) ui.draw->AddRectFilled(ImVec2(p.x + 20 * u, bottom + 4 * u), ImVec2(q.x - 20 * u, bottom + 12 * u), accent);
             if (hit.press && !on) open = tab, h.sound = sound_tab, set_typing(h, 0);
             x = q.x + 20 * u;
         }

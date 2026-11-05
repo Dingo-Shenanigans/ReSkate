@@ -169,7 +169,7 @@ void package_icon(Ui &ui, ImVec2 a, ImVec2 b, const ts::Package *package, std::s
             ui.draw->AddImage(id, a, b, ImVec2(0, 0), ImVec2(1, 1), dim ? IM_COL32(150, 150, 150, 255) : IM_COL32_WHITE);
             return;
         }
-    skate_theme::rough_rect(ui.draw, a, b, skate_theme::tile_light, static_cast<unsigned>(hash(title)) & 0xfff, ui.u * 2);
+    skate_theme::rough_rect(ui.draw, a, b, track, static_cast<unsigned>(hash(title)) & 0xfff, ui.u * 2);
     const float size = (b.y - a.y) * .5f;
     const std::string letter = title.empty() ? std::string("?") : std::string(1, static_cast<char>(std::toupper(static_cast<unsigned char>(title.front()))));
     ui.draw->AddText(ui.heading, size, ImVec2(a.x + (b.x - a.x - width_of(ui.heading, size, letter)) * .5f, a.y + (b.y - a.y - size) * .5f),
@@ -177,6 +177,36 @@ void package_icon(Ui &ui, ImVec2 a, ImVec2 b, const ts::Package *package, std::s
 }
 std::string action_label(ms::Action action) {
     return action == ms::Action::install ? "INSTALL" : action == ms::Action::update ? "UPDATE" : "INSTALLED";
+}
+// A mod's state as the Insert menu's MODS library shows it (modding_menu.cpp): a tag in the kit's
+// colours (ON blue, OFF grey, an update or a set-aside amber, a conflict or an error red), and the
+// line under its name: what is wrong or waiting when something is, else what it is and its version.
+struct StateTag {
+    const char *text;
+    ImU32 fill, ink;
+    std::string detail;
+    ImU32 detail_colour;
+    bool problem; // red or amber, with an edge in that colour on its row
+};
+StateTag state_tag(const ms::Mod &mod) {
+    constexpr ImU32 problem_ink = IM_COL32(255, 138, 138, 255);
+    std::string about;
+    for (std::size_t i = 0; i < mod.contents.size() && i < 3; ++i) about += (i ? ", " : "") + mod.contents[i];
+    if (!mod.version.empty()) about += (about.empty() ? "v" : "  \xc2\xb7  v") + mod.version;
+    about += (about.empty() ? "" : "  \xc2\xb7  ") + (mod.author.empty() ? std::string("Unknown author") : "by " + mod.author);
+    const auto why = [&](const char *otherwise) { return mod.why.empty() ? std::string(otherwise) : mod.why; };
+    switch (mod.state) {
+    case ms::State::loaded: return {"ON", accent, theme::paper, about, sub_ink, false};
+    case ms::State::apply_to_load: return {"ON", accent, theme::paper, why("Apply your changes to load it."), skate_theme::warning, false};
+    case ms::State::disabled: return {"OFF", plate_grey, chip_ink, about, sub_ink, false};
+    case ms::State::apply_to_unload: return {"OFF", plate_grey, chip_ink, why("Apply your changes to unload it."), skate_theme::warning, false};
+    case ms::State::left_out: return {"CONFLICT", skate_theme::danger, skate_theme::black, why("It changes the same parts of the game as another mod."), problem_ink, true};
+    case ms::State::not_loaded: return {"ERROR", skate_theme::danger, skate_theme::black, why("It could not be loaded."), problem_ink, true};
+    case ms::State::set_aside: return {"SET ASIDE", skate_theme::warning, skate_theme::black, why("Set aside for another variant."), skate_theme::warning, true};
+    case ms::State::update_waiting: return {"UPDATE", skate_theme::warning, skate_theme::black, why("Restart the game to update it."), skate_theme::warning, true};
+    case ms::State::removal_waiting: return {"REMOVED", plate_grey, chip_ink, why("Restart the game to remove it."), skate_theme::warning, false};
+    }
+    return {ms::state_label(mod.state), plate_grey, chip_ink, about, sub_ink, false};
 }
 ms::Action action_of(const ModPage &m, const ts::Package &package) {
     return m.mods ? ms::action_for(package, m.mods->versions) : ms::Action::install;
@@ -244,8 +274,9 @@ bool package_tile(Ui &ui, ModPage &m, std::uint32_t id, ImVec2 p, float w, const
     const ImVec2 q(p.x + w, p.y + h);
     const Hit hit = item(ui, id, p, q, clip);
     if (clip && (q.x < clip->a.x || p.x > clip->b.x || q.y < clip->a.y || p.y > clip->b.y)) return hit.press;
-    const bool lit = hit.focus || hit.hover;
-    skate_theme::rough_rect(ui.draw, p, q, lit ? theme::blue : skate_theme::tile, id & 0xfff, u * 2);
+    // White under the D-pad or the keys, a lighter grey under the pointer, as the server browser's rows.
+    const auto [focused, pointed] = lit_of(hit);
+    skate_theme::rough_rect(ui.draw, p, q, focused ? theme::paper : pointed ? row_hover : tile_dark, id & 0xfff, u * 2);
     const float inset = 10 * u;
     package_icon(ui, ImVec2(p.x + inset, p.y + inset), ImVec2(q.x - inset, p.y + w - inset), &package, package.title());
     // Being installed, or waiting its turn: a strip over the foot of its icon says so.
@@ -254,28 +285,34 @@ bool package_tile(Ui &ui, ModPage &m, std::uint32_t id, ImVec2 p, float w, const
     if (progress.busy && (progress.package == package.full_name || queued)) {
         const ImVec2 s0(p.x + inset, p.y + w - inset - 46 * u), s1(q.x - inset, p.y + w - inset);
         ui.draw->AddRectFilled(s0, s1, IM_COL32(0, 0, 0, 200));
-        if (!queued && progress.fraction >= 0) ui.draw->AddRectFilled(s0, ImVec2(s0.x + (s1.x - s0.x) * std::clamp(progress.fraction, 0.f, 1.f), s1.y), theme::blue);
+        if (!queued && progress.fraction >= 0) ui.draw->AddRectFilled(s0, ImVec2(s0.x + (s1.x - s0.x) * std::clamp(progress.fraction, 0.f, 1.f), s1.y), accent);
         const auto text = queued ? std::string("WAITING") : progress.step == ms::Progress::Step::downloading ? std::string("DOWNLOADING") : std::string("INSTALLING");
         ui.draw->AddText(ui.bold, 26 * u, ImVec2(s0.x + 12 * u, s0.y + 10 * u), theme::paper, text.c_str());
     }
+    // What it is to this PC, in the kit's tag colours: installed blue (as the Insert menu's ON), an
+    // update amber (as its UPDATE).
     const auto action = action_of(m, package);
     if (action != ms::Action::install)
         plate(ui, ImVec2(p.x + inset + 8 * u, p.y + inset + 8 * u), 40 * u, action == ms::Action::update ? "UPDATE" : "INSTALLED",
-              action == ms::Action::update ? skate_theme::warning : skate_theme::good, skate_theme::black);
-    label(ui.draw, ui.bold, 32 * u, ImVec2(p.x + 16 * u, p.y + w + 4 * u), q.x - 12 * u, theme::paper, package.title());
-    label(ui.draw, ui.body, 26 * u, ImVec2(p.x + 16 * u, p.y + w + 50 * u), q.x - 12 * u, lit ? theme::paper : theme::muted,
-          package.owner + "  -  " + ms::count_text(package.downloads));
+              action == ms::Action::update ? skate_theme::warning : accent, action == ms::Action::update ? skate_theme::black : theme::paper);
+    label(ui.draw, ui.bold, 32 * u, ImVec2(p.x + 16 * u, p.y + w + 4 * u), q.x - 12 * u, focused ? focus_ink : theme::paper, package.title());
+    label(ui.draw, ui.body, 26 * u, ImVec2(p.x + 16 * u, p.y + w + 50 * u), q.x - 12 * u, focused ? sub_ink_lit : sub_ink,
+          package.owner + "  \xc2\xb7  " + ms::count_text(package.downloads));
     return hit.press;
 }
 
+// A round arrow: grey, white with dark ink under the D-pad or the keys, lighter under the pointer.
+void draw_arrow(Ui &ui, ImVec2 centre, float radius, int direction, bool focused, bool pointed) {
+    ui.draw->AddCircleFilled(centre, radius, focused ? theme::paper : pointed ? raised_hover : track, 32);
+    const float s = radius * .38f, d = static_cast<float>(direction);
+    ui.draw->AddTriangleFilled(ImVec2(centre.x + s * d, centre.y), ImVec2(centre.x - s * .7f * d, centre.y - s),
+                               ImVec2(centre.x - s * .7f * d, centre.y + s), focused ? focus_ink : theme::paper);
+}
 // A round arrow button, for the carousel and the rows.
 bool arrow(Ui &ui, std::uint32_t id, ImVec2 centre, float radius, int direction, const Item *clip = nullptr) {
     const Hit hit = item(ui, id, ImVec2(centre.x - radius, centre.y - radius), ImVec2(centre.x + radius, centre.y + radius), clip);
-    const bool lit = hit.focus || hit.hover;
-    ui.draw->AddCircleFilled(centre, radius, lit ? theme::blue : IM_COL32(245, 245, 245, 235), 32);
-    const float s = radius * .38f, d = static_cast<float>(direction);
-    ui.draw->AddTriangleFilled(ImVec2(centre.x + s * d, centre.y), ImVec2(centre.x - s * .7f * d, centre.y - s),
-                               ImVec2(centre.x - s * .7f * d, centre.y + s), lit ? theme::paper : skate_theme::black);
+    const auto [focused, pointed] = lit_of(hit);
+    draw_arrow(ui, centre, radius, direction, focused, pointed);
     return hit.press;
 }
 
@@ -338,11 +375,11 @@ void browse_bar(Ui &ui, ModPage &m, ImVec2 a, ImVec2 z, float bar) {
 void categories_panel(Ui &ui, ModPage &m, ImVec2 a, ImVec2 z) {
     auto *draw = ui.draw;
     const float u = ui.u, inset = 40 * u;
-    skate_theme::rough_rect(draw, a, z, skate_theme::tile, 0x3c1, u * 2);
-    draw->AddText(ui.heading, 56 * u, ImVec2(a.x + inset, a.y + inset), theme::paper, "CATEGORIES");
+    skate_theme::rough_rect(draw, a, z, tile_dark, 0x3c1, u * 2);
+    draw->AddText(ui.bold, 44 * u, ImVec2(a.x + inset, a.y + inset + 6 * u), theme::paper, "CATEGORIES");
     const float bh = 92 * u, bw = 400 * u;
     const ImVec2 done(z.x - inset - bw, a.y + inset), clear(done.x - 20 * u - bw, a.y + inset);
-    label(draw, ui.body, 30 * u, ImVec2(a.x + inset, a.y + inset + 78 * u), clear.x - 30 * u, theme::muted,
+    label(draw, ui.body, 30 * u, ImVec2(a.x + inset, a.y + inset + 78 * u), clear.x - 30 * u, sub_ink,
           "Press a category to show only it, again to hide it, and again for either. Mods in any category shown are listed.");
     if (button(ui, hash("mods-categories-clear"), clear, ImVec2(clear.x + bw, clear.y + bh), "CLEAR", Look::plain, !m.only.empty() || !m.hidden.empty())) {
         m.only.clear();
@@ -374,24 +411,29 @@ void categories_panel(Ui &ui, ModPage &m, ImVec2 a, ImVec2 z) {
                 save_categories(m);
             }
             if (!drawn) continue;
-            const bool lit = hit.focus || hit.hover;
-            skate_theme::rough_rect(draw, p, q, lit ? theme::blue : state == 1 ? skate_theme::friends_tile : state == 2 ? IM_COL32(70, 24, 24, 240) : skate_theme::tile_grey,
-                                    id & 0xfff, u * 2);
+            // As the chips: shown only on the blue, hidden on a dark red, white under the D-pad or the
+            // keys and lighter under the pointer.
+            const auto [focused, pointed] = lit_of(hit);
+            skate_theme::rough_rect(draw, p, q, focused ? theme::paper : state == 1 ? (pointed ? accent_hover : accent) : state == 2 ? IM_COL32(86, 30, 30, 245)
+                                    : pointed ? row_hover : raised, id & 0xfff, u * 2);
             // Its state on the left, as a mark: a tick shown only, a cross hidden, nothing either way.
             const ImVec2 mark(p.x + 30 * u, p.y + tile_h * .5f);
+            const ImU32 tick = focused ? accent : theme::paper, cross = focused ? skate_theme::danger : IM_COL32(255, 138, 138, 255);
             if (state == 1) {
-                draw->AddLine(ImVec2(mark.x - 14 * u, mark.y), ImVec2(mark.x - 3 * u, mark.y + 12 * u), skate_theme::good, 7 * u);
-                draw->AddLine(ImVec2(mark.x - 3 * u, mark.y + 12 * u), ImVec2(mark.x + 18 * u, mark.y - 14 * u), skate_theme::good, 7 * u);
+                draw->AddLine(ImVec2(mark.x - 14 * u, mark.y), ImVec2(mark.x - 3 * u, mark.y + 12 * u), tick, 7 * u);
+                draw->AddLine(ImVec2(mark.x - 3 * u, mark.y + 12 * u), ImVec2(mark.x + 18 * u, mark.y - 14 * u), tick, 7 * u);
             } else if (state == 2) {
-                draw->AddLine(ImVec2(mark.x - 14 * u, mark.y - 14 * u), ImVec2(mark.x + 14 * u, mark.y + 14 * u), skate_theme::danger, 7 * u);
-                draw->AddLine(ImVec2(mark.x - 14 * u, mark.y + 14 * u), ImVec2(mark.x + 14 * u, mark.y - 14 * u), skate_theme::danger, 7 * u);
-            } else draw->AddCircle(mark, 14 * u, theme::muted, 20, 3 * u);
+                draw->AddLine(ImVec2(mark.x - 14 * u, mark.y - 14 * u), ImVec2(mark.x + 14 * u, mark.y + 14 * u), cross, 7 * u);
+                draw->AddLine(ImVec2(mark.x - 14 * u, mark.y + 14 * u), ImVec2(mark.x + 14 * u, mark.y - 14 * u), cross, 7 * u);
+            } else draw->AddCircle(mark, 14 * u, focused ? sub_ink_lit : sub_ink, 20, 3 * u);
             std::string upper = name;
             for (auto &c : upper) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
             const auto counted = std::to_string(count);
             const float count_w = width_of(ui.body, 30 * u, counted);
-            label(draw, ui.bold, 36 * u, ImVec2(p.x + 64 * u, p.y + (tile_h - 36 * u) * .5f), q.x - count_w - 40 * u, state == 2 && !lit ? theme::muted : theme::paper, upper);
-            draw->AddText(ui.body, 30 * u, ImVec2(q.x - count_w - 24 * u, p.y + (tile_h - 30 * u) * .5f), lit ? theme::paper : theme::muted, counted.c_str());
+            label(draw, ui.bold, 36 * u, ImVec2(p.x + 64 * u, p.y + (tile_h - 36 * u) * .5f), q.x - count_w - 40 * u,
+                  focused ? focus_ink : state == 2 && !pointed ? theme::muted : theme::paper, upper);
+            draw->AddText(ui.body, 30 * u, ImVec2(q.x - count_w - 24 * u, p.y + (tile_h - 30 * u) * .5f),
+                          focused ? sub_ink_lit : state == 1 ? accent_sub : chip_ink, counted.c_str());
         }
     }
     list.end();
@@ -413,20 +455,16 @@ Pointed pointed(Ui &ui, ImVec2 a, ImVec2 b, const Item *clip) {
 bool pointer_button(Ui &ui, ImVec2 a, ImVec2 b, const std::string &text, Look look, bool enabled, const Item *clip) {
     const float u = ui.u, size = std::min(40 * u, (b.y - a.y) * .42f);
     const auto hit = enabled ? pointed(ui, a, b, clip) : Pointed{};
-    ImU32 fill = skate_theme::tile, ink = enabled ? theme::paper : theme::muted;
+    // (On the carousel's dark card: the primary blue, else a grey that stands off it, lighter under the pointer.)
+    ImU32 fill = hit.hover ? raised_hover : plate_grey, ink = enabled ? theme::paper : theme::muted;
     if (look == Look::primary) fill = !enabled ? accent_off : hit.hover ? accent_hover : accent, ink = enabled ? theme::paper : IM_COL32(245, 245, 245, 140);
-    else if (hit.hover) fill = theme::blue;
-    else if (look == Look::plain) fill = skate_theme::tile_light;
     skate_theme::rough_rect(ui.draw, a, b, fill, hash(text) & 0xfff, u * 2);
     ui.draw->AddText(ui.bold, size, ImVec2(a.x + (b.x - a.x - width_of(ui.bold, size, text)) * .5f, a.y + (b.y - a.y - size) * .5f), ink, text.c_str());
     return hit.press;
 }
 bool pointer_arrow(Ui &ui, ImVec2 centre, float radius, int direction, const Item *clip) {
     const auto hit = pointed(ui, ImVec2(centre.x - radius, centre.y - radius), ImVec2(centre.x + radius, centre.y + radius), clip);
-    ui.draw->AddCircleFilled(centre, radius, hit.hover ? theme::blue : IM_COL32(245, 245, 245, 235), 32);
-    const float s = radius * .38f, d = static_cast<float>(direction);
-    ui.draw->AddTriangleFilled(ImVec2(centre.x + s * d, centre.y), ImVec2(centre.x - s * .7f * d, centre.y - s),
-                               ImVec2(centre.x - s * .7f * d, centre.y + s), hit.hover ? theme::paper : skate_theme::black);
+    draw_arrow(ui, centre, radius, direction, false, hit.hover);
     return hit.press;
 }
 
@@ -459,7 +497,7 @@ float featured(Ui &ui, ModPage &m, ImVec2 a, float right, float top, const Item 
         const ImVec2 p(x, top + (card_h - side_h) * .5f), q(x + side_w, p.y + side_h);
         const auto hit = pointed(ui, p, q, &clip);
         held |= hit.hover;
-        skate_theme::rough_rect(draw, p, q, hit.hover ? skate_theme::tile_light : IM_COL32(20, 20, 20, 220), hash(package->full_name) & 0xfff, u * 2);
+        skate_theme::rough_rect(draw, p, q, hit.hover ? row_hover : tile_dark, hash(package->full_name) & 0xfff, u * 2);
         const float icon = side_h - 60 * u;
         package_icon(ui, ImVec2(p.x + 30 * u, p.y + 30 * u), ImVec2(p.x + 30 * u + icon, p.y + 30 * u + icon), package, package->title(), true);
         label(draw, ui.heading, 48 * u, ImVec2(p.x + icon + 70 * u, p.y + 40 * u), q.x - 30 * u, theme::muted, package->title());
@@ -477,7 +515,7 @@ float featured(Ui &ui, ModPage &m, ImVec2 a, float right, float top, const Item 
     const Hit card = item(ui, featured_card, ImVec2(clip.a.x, p.y), ImVec2(clip.b.x, q.y), &clip);
     const bool ringed = card.focus && ui.h.ring;
     held |= card.focus;
-    skate_theme::rough_rect(draw, p, q, skate_theme::tile, hash(package->full_name) & 0xfff, u * 2);
+    skate_theme::rough_rect(draw, p, q, tile_dark, hash(package->full_name) & 0xfff, u * 2);
     const ImVec2 bp(p.x + 6 * u, p.y + 6 * u), bq(q.x - 6 * u, q.y - 6 * u);
     if (const auto backdrop = store_icon(package->latest().icon)) {
         // A band across the middle of the square picture, as wide as the card.
@@ -485,7 +523,9 @@ float featured(Ui &ui, ModPage &m, ImVec2 a, float right, float top, const Item 
         draw->AddImage(backdrop, bp, bq, ImVec2(0, from), ImVec2(1, from + band), IM_COL32(150, 150, 150, 255));
     }
     draw->AddRectFilledMultiColor(bp, bq, IM_COL32(16, 16, 18, 250), IM_COL32(16, 16, 18, 175), IM_COL32(16, 16, 18, 175), IM_COL32(16, 16, 18, 250));
-    draw->AddRect(p, q, ringed ? theme::blue : IM_COL32(245, 245, 245, 60), 0, 0, (ringed ? 8.f : 3.f) * u);
+    // Under the D-pad or the keys, a white edge: the card's own focus (its picture fills it, so it
+    // cannot go white as a row does).
+    draw->AddRect(p, q, ringed ? theme::paper : IM_COL32(245, 245, 245, 60), 0, 0, (ringed ? 8.f : 3.f) * u);
 
     // The picture, tipped a little, in a white border with a shadow under it.
     const float picture = card_h - inset * 2 - 16 * u;
@@ -506,14 +546,14 @@ float featured(Ui &ui, ModPage &m, ImVec2 a, float right, float top, const Item 
     if (const auto texture = store_icon(package->latest().icon))
         draw->AddImageQuad(texture, image[0], image[1], image[2], image[3]);
     else
-        draw->AddQuadFilled(image[0], image[1], image[2], image[3], skate_theme::tile_light);
+        draw->AddQuadFilled(image[0], image[1], image[2], image[3], track);
 
     // What it is.
     const float tx = middle.x + picture * .5f + 64 * u, edge = q.x - inset;
     float y = p.y + inset;
     float x = tx;
-    x += plate(ui, ImVec2(x, y), 42 * u, package->pinned ? "PINNED" : "FEATURED", theme::blue, theme::paper) + 12 * u;
-    if (action == ms::Action::installed) plate(ui, ImVec2(x, y), 42 * u, "INSTALLED", skate_theme::good, skate_theme::black);
+    x += plate(ui, ImVec2(x, y), 42 * u, package->pinned ? "PINNED" : "FEATURED", theme::paper, focus_ink) + 12 * u;
+    if (action == ms::Action::installed) plate(ui, ImVec2(x, y), 42 * u, "INSTALLED", accent, theme::paper);
     else if (action == ms::Action::update) plate(ui, ImVec2(x, y), 42 * u, "UPDATE AVAILABLE", skate_theme::warning, skate_theme::black);
     y += 58 * u;
     label(draw, ui.heading, 76 * u, ImVec2(tx, y), edge, theme::paper, package->title());
@@ -524,17 +564,17 @@ float featured(Ui &ui, ModPage &m, ImVec2 a, float right, float top, const Item 
         if (x + w > edge) return;
         x += plate(ui, ImVec2(x, y), 38 * u, text, fill, ink) + 10 * u;
     };
-    fact("BY " + package->owner, IM_COL32(245, 245, 245, 235), skate_theme::black);
-    fact(ms::count_text(package->downloads) + " DOWNLOADS", skate_theme::tile_light, theme::paper);
-    fact("V" + package->latest().number, skate_theme::tile_light, theme::paper);
-    if (package->latest().file_size) fact(ms::size_text(package->latest().file_size), skate_theme::tile_light, theme::paper);
+    fact("BY " + package->owner, plate_grey, theme::paper);
+    fact(ms::count_text(package->downloads) + " DOWNLOADS", plate_grey, chip_ink);
+    fact("V" + package->latest().number, plate_grey, chip_ink);
+    if (package->latest().file_size) fact(ms::size_text(package->latest().file_size), plate_grey, chip_ink);
     for (std::size_t i = 0; i < package->categories.size() && i < 3; ++i) {
         std::string upper = package->categories[i];
         for (auto &c : upper) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-        fact(upper, IM_COL32(1, 131, 255, 70), theme::paper);
+        fact(upper, plate_grey, chip_ink);
     }
     y += 54 * u;
-    label(draw, ui.body, 28 * u, ImVec2(tx, y), edge, theme::muted, "Updated " + ms::date_text(package->date_updated));
+    label(draw, ui.body, 28 * u, ImVec2(tx, y), edge, sub_ink, "Updated " + ms::date_text(package->date_updated));
     y += 48 * u;
 
     // Its buttons, at the foot of the text, and as much of its description as fits above them.
@@ -572,7 +612,7 @@ float featured(Ui &ui, ModPage &m, ImVec2 a, float right, float top, const Item 
     const float dot = 9 * u, dots_w = static_cast<float>(count) * dot * 3;
     for (std::size_t i = 0; i < count; ++i)
         draw->AddCircleFilled(ImVec2(centre - dots_w * .5f + (static_cast<float>(i) + .5f) * dot * 3, top + card_h + 30 * u), dot,
-                              i == m.featured ? theme::blue : skate_theme::tile_light, 16);
+                              i == m.featured ? theme::paper : track, 16);
     // Moves on by itself every 8 s, unless the player is on it.
     held |= ui.input && inside(ui.mouse, p, q);
     if (held || !m.featured_at) m.featured_at = now;
@@ -591,7 +631,8 @@ float shelf(Ui &ui, ModPage &m, const ms::Shelf &row, Scroller &list, ImVec2 a, 
     const float row_left = a.x + 70 * u, row_right = right - 70 * u, view = row_right - row_left;
     const float content = static_cast<float>(row.packages.size()) * (tile_w + gap) - gap;
     offset = std::clamp(offset, 0.f, std::max(0.f, content - view));
-    draw->AddText(ui.heading, 46 * u, ImVec2(a.x, top), theme::paper, row.title.c_str());
+    // (The Multiplayer page's small capitals for a group, a size up: a shelf is a row of big tiles.)
+    draw->AddText(ui.bold, 36 * u, ImVec2(a.x, top + 14 * u), theme::paper, row.title.c_str());
     // A row well out of view takes no part at all; one just out of view only its place in the focus
     // order, so the D-pad can move down onto it.
     if (top + title_h + tile_h < list.box.a.y - tile_h || top > list.box.b.y + tile_h) return title_h + tile_h;
@@ -634,7 +675,7 @@ void package_details(Ui &ui, ModPage &m, const ts::Package &package, ImVec2 a, I
     // as the buttons under it leave room for; in a window too short for that, the buttons go two to a row.
     const float left_w = std::min(760 * u, (z.x - a.x) * .3f);
     const ImVec2 la(a.x, a.y), lz(a.x + left_w, z.y);
-    skate_theme::rough_rect(draw, la, lz, skate_theme::tile, 0x3a1, u * 2);
+    skate_theme::rough_rect(draw, la, lz, tile_dark, 0x3a1, u * 2);
     const bool changes = m.mods && m.mods->changes && !live_mods::busy();
     const bool mine_here = mine && !mine->gone;
     const int count = 2 + (changes ? 1 : 0) + (mine_here ? 2 : 0); // the action, BACK, and the rest
@@ -693,7 +734,7 @@ void package_details(Ui &ui, ModPage &m, const ts::Package &package, ImVec2 a, I
 
     // ---- the right: what it is, and its README
     const ImVec2 ra(lz.x + 28 * u, a.y), rz(z.x, z.y);
-    skate_theme::rough_rect(draw, ra, rz, skate_theme::tile, 0x3a2, u * 2);
+    skate_theme::rough_rect(draw, ra, rz, tile_dark, 0x3a2, u * 2);
     const float left = ra.x + inset, edge = rz.x - inset;
     y = ra.y + inset;
     label(draw, ui.heading, 72 * u, ImVec2(left, y), edge, theme::paper, package.title());
@@ -702,23 +743,23 @@ void package_details(Ui &ui, ModPage &m, const ts::Package &package, ImVec2 a, I
     if (version.file_size) facts += "   " + ms::size_text(version.file_size);
     facts += "   updated " + ms::date_text(package.date_updated);
     if (package.rating) facts += "   " + std::to_string(package.rating) + " likes";
-    label(draw, ui.body, 32 * u, ImVec2(left, y), edge, theme::muted, facts);
+    label(draw, ui.body, 32 * u, ImVec2(left, y), edge, sub_ink, facts);
     y += 54 * u;
     float x = left;
     if (mine) {
-        const bool good = mine->state == ms::State::loaded;
-        x += plate(ui, ImVec2(x, y), 42 * u, ms::state_label(mine->state), good ? skate_theme::good : skate_theme::warning, skate_theme::black) + 12 * u;
+        const auto tag = state_tag(*mine);
+        x += plate(ui, ImVec2(x, y), 42 * u, tag.text, tag.fill, tag.ink) + 12 * u;
         if (mine->version != version.number && !mine->version.empty())
-            x += plate(ui, ImVec2(x, y), 42 * u, "YOU HAVE v" + mine->version, skate_theme::tile_light, theme::paper) + 12 * u;
+            x += plate(ui, ImVec2(x, y), 42 * u, "YOU HAVE v" + mine->version, plate_grey, theme::paper) + 12 * u;
     }
     for (std::size_t i = 0; i < package.categories.size() && i < 5; ++i) {
         std::string upper = package.categories[i];
         for (auto &c : upper) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-        x += plate(ui, ImVec2(x, y), 42 * u, upper, skate_theme::tile_light, theme::paper) + 12 * u;
+        x += plate(ui, ImVec2(x, y), 42 * u, upper, plate_grey, chip_ink) + 12 * u;
     }
     y += 66 * u;
     if (package.deprecated) {
-        label(draw, ui.bold, 30 * u, ImVec2(left, y), edge, skate_theme::warning, "Its author marked it deprecated: it is no longer looked after.");
+        label(draw, ui.bold, 30 * u, ImVec2(left, y), edge, IM_COL32(255, 138, 138, 255), "Its author marked it deprecated: it is no longer looked after.");
         y += 48 * u;
     }
     if (!version.dependencies.empty()) {
@@ -731,11 +772,11 @@ void package_details(Ui &ui, ModPage &m, const ts::Package &package, ImVec2 a, I
         }
         if (named > 6) needs += " and " + std::to_string(named - 6) + " more";
         if (!needs.empty()) {
-            y += paragraph(draw, ui.body, 30 * u, ImVec2(left, y), edge - left, theme::muted, "Brings what it needs with it: " + needs, 2) + 14 * u;
+            y += paragraph(draw, ui.body, 30 * u, ImVec2(left, y), edge - left, sub_ink, "Brings what it needs with it: " + needs, 2) + 14 * u;
         }
     }
     y += 6 * u;
-    draw->AddRectFilled(ImVec2(left, y), ImVec2(edge, y + 3 * u), skate_theme::tile_light);
+    draw->AddRectFilled(ImVec2(left, y), ImVec2(edge, y + 3 * u), track);
     y += 24 * u;
     // The README, scrolled with the wheel, or by moving the focus down its paragraphs.
     if (!m.readme) m.readme = ms::readme(package);
@@ -781,21 +822,22 @@ void package_details(Ui &ui, ModPage &m, const ts::Package &package, ImVec2 a, I
             const auto stop = hash("mods-readme-line", i);
             const Hit hit = item(ui, stop, ImVec2(ba.x, top), ImVec2(bz.x - 20 * u, top + height), &list.box);
             list.reveal(stop, top, std::min(height * 4, bz.y - ba.y));
-            if (hit.focus && ui.h.ring) draw->AddRectFilled(ImVec2(ba.x, top), ImVec2(ba.x + 6 * u, top + height), theme::blue);
+            if (hit.focus && ui.h.ring) draw->AddRectFilled(ImVec2(ba.x, top), ImVec2(ba.x + 6 * u, top + height), theme::paper);
         }
         if (!shown) continue;
         const float text_top = top + (line.kind == Kind::heading && line.first ? 16 * u : 0);
         switch (line.kind) {
         case Kind::heading: draw->AddText(ui.bold, size, ImVec2(ba.x + 16 * u, text_top), theme::paper, line.text.c_str()); break;
         case Kind::bullet:
-            if (line.first) draw->AddCircleFilled(ImVec2(ba.x + 28 * u, text_top + size * .55f), 6 * u, theme::blue, 12);
+            if (line.first) draw->AddCircleFilled(ImVec2(ba.x + 28 * u, text_top + size * .55f), 6 * u, chip_ink, 12);
             draw->AddText(ui.body, size, ImVec2(ba.x + 56 * u, text_top), soft, line.text.c_str());
             break;
         case Kind::code:
             draw->AddRectFilled(ImVec2(ba.x + 16 * u, top), ImVec2(bz.x - 24 * u, top + height), IM_COL32(10, 10, 10, 200));
             draw->AddText(ui.body, size, ImVec2(ba.x + 44 * u, text_top), IM_COL32(190, 220, 255, 255), line.text.c_str());
             break;
-        case Kind::rule: draw->AddRectFilled(ImVec2(ba.x + 16 * u, top + 13 * u), ImVec2(bz.x - 24 * u, top + 16 * u), skate_theme::tile_light); break;
+        case Kind::rule: draw->AddRectFilled(ImVec2(ba.x + 16 * u, top + 13 * u), ImVec2(bz.x - 24 * u, top + 16 * u), track); break;
+
         case Kind::gap: break;
         default: draw->AddText(ui.body, size, ImVec2(ba.x + 16 * u, text_top), soft, line.text.c_str()); break;
         }
@@ -862,15 +904,8 @@ void browse_page(Ui &ui, ModPage &m, ImVec2 a, ImVec2 z) {
 
 // ---------------------------------------------------------------- MY MODS
 
-ImU32 state_colour(ms::State state) {
-    switch (state) {
-    case ms::State::loaded: return skate_theme::good;
-    case ms::State::disabled: return skate_theme::tile_light;
-    case ms::State::not_loaded: return skate_theme::danger;
-    default: return skate_theme::warning;
-    }
-}
-
+// A mod as the Insert menu's MODS library rows show it: its picture, its name with what it is and
+// its version (or what is wrong) under it, its state as a tag at the right end, and a switch.
 void installed_page(Ui &ui, ModPage &m, ImVec2 a, ImVec2 z) {
     auto *draw = ui.draw;
     const float u = ui.u, gap = 28 * u, bar = 96 * u, list_width = (z.x - a.x) * .62f;
@@ -879,25 +914,19 @@ void installed_page(Ui &ui, ModPage &m, ImVec2 a, ImVec2 z) {
         return;
     }
     const auto &mods = *m.mods;
-    // ---- the bar: search and which to show
+    // ---- the bar: search and which to show, as the server browser's chips
     {
         const float search_width = std::min(900 * u, list_width * .45f);
         field(ui, hash("mods-installed-search"), a, ImVec2(a.x + search_width, a.y + bar), m.installed_search, "Search your mods", false, 64);
-        float x = a.x + search_width + gap;
-        const auto chip = [&](const char *text, int filter) {
-            const float size = 34 * u, w = width_of(ui.bold, size, text) + 44 * u;
-            const ImVec2 c(x, a.y + 10 * u), d(x + w, a.y + bar - 10 * u);
-            const Hit hit = item(ui, hash(text, 23), c, d);
-            const bool lit = hit.focus || hit.hover, on = m.installed_filter == filter;
-            skate_theme::rough_rect(draw, c, d, lit ? theme::blue : on ? theme::paper : skate_theme::tile, hash(text) & 0xfff, u * 2);
-            draw->AddText(ui.bold, size, ImVec2(c.x + 22 * u, c.y + (d.y - c.y - size) * .5f), on && !lit ? skate_theme::black : theme::paper, text);
-            x = d.x + 12 * u;
-            if (hit.press) m.installed_filter = filter, ui.h.scrolls[hash("mods-installed")] = 0;
+        float x = a.x + search_width + 20 * u;
+        const auto filter = [&](const char *text, int which) {
+            if (chip(ui, hash(text, 23), x, a.y + 12 * u, a.y + bar - 12 * u, text, m.installed_filter == which))
+                m.installed_filter = which, ui.h.scrolls[hash("mods-installed")] = 0;
         };
-        chip("ALL", 0);
-        chip("ON", 1);
-        chip("OFF", 2);
-        chip("NOT APPLIED", 3);
+        filter("ALL", 0);
+        filter("ON", 1);
+        filter("OFF", 2);
+        filter("NOT APPLIED", 3);
     }
     const auto lower = [](std::string text) {
         for (auto &c : text) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -923,7 +952,7 @@ void installed_page(Ui &ui, ModPage &m, ImVec2 a, ImVec2 z) {
 
     // ---- the list
     const ImVec2 la(a.x, a.y + bar + gap), lz(a.x + list_width, z.y);
-    const float row_height = 112 * u, row_gap = 8 * u, pad = 20 * u;
+    const float row_height = 120 * u, row_gap = 10 * u, pad = 24 * u;
     {
         Scroller list(ui, hash("mods-installed"), la, lz);
         for (const auto *mod : rows) {
@@ -937,28 +966,25 @@ void installed_page(Ui &ui, ModPage &m, ImVec2 a, ImVec2 z) {
             // Pressing a row switches it on or off.
             if (hit.press && !mod->gone) ms::set_enabled(mod->folder, !mod->enabled);
             if (!drawn) continue;
-            const bool lit = hit.focus || hit.hover, chosen = m.selected == mod->folder;
-            skate_theme::rough_rect(draw, p, q, lit ? theme::blue : skate_theme::tile, 0xa00 + (id & 0xff), u * 2);
-            if (chosen && !lit) draw->AddRectFilled(ImVec2(p.x, p.y + 6 * u), ImVec2(p.x + 10 * u, q.y - 6 * u), theme::blue);
-            const float icon = row_height - 20 * u;
-            package_icon(ui, ImVec2(p.x + pad, p.y + 10 * u), ImVec2(p.x + pad + icon, p.y + 10 * u + icon), package_of(mod->folder), mod->title, !mod->enabled);
-            const float tx = p.x + pad * 2 + icon;
-            const auto tag = ms::state_label(mod->state);
-            const float tag_w = width_of(ui.bold, 26 * u, tag) + 24 * u;
-            const float tag_x = q.x - pad - tag_w;
-            plate(ui, ImVec2(tag_x, p.y + (row_height - 44 * u) * .5f), 44 * u, tag, lit ? IM_COL32(0, 0, 0, 90) : state_colour(mod->state),
-                  lit || mod->state == ms::State::disabled ? theme::paper : skate_theme::black);
-            // The switch: on or off at a glance.
-            const float sw = 84 * u, sx = tag_x - sw - 24 * u, sy = p.y + (row_height - 44 * u) * .5f;
+            // White under the D-pad or the keys, a lighter grey under the pointer; the one the panel
+            // shows has the kit's blue edge, and one with a problem an edge in its tag's colour.
+            const auto [focused, pointed] = lit_of(hit);
+            const auto tag = state_tag(*mod);
+            skate_theme::rough_rect(draw, p, q, focused ? theme::paper : pointed ? row_hover : tile_dark, 0xa00 + (id & 0xff), u * 2);
+            if (m.selected == mod->folder) draw->AddRectFilled(p, ImVec2(p.x + 8 * u, q.y), focused ? focus_ink : accent);
+            else if (tag.problem) draw->AddRectFilled(p, ImVec2(p.x + 8 * u, q.y), tag.fill);
+            const float icon = row_height - 24 * u;
+            package_icon(ui, ImVec2(p.x + pad, p.y + 12 * u), ImVec2(p.x + pad + icon, p.y + 12 * u + icon), package_of(mod->folder), mod->title, !mod->enabled);
+            const float tx = p.x + pad * 2 + icon, middle = p.y + row_height * .5f;
+            const float tag_x = q.x - pad - row_tag(ui, q.x - pad, middle, tag.text, tag.fill, tag.ink);
+            // The switch: on or off at a glance, on the blue when on as the ON tag is.
+            const float sw = 84 * u, sx = tag_x - sw - 24 * u, sy = middle - 22 * u;
             if (!mod->gone) {
-                draw->AddRectFilled(ImVec2(sx, sy), ImVec2(sx + sw, sy + 44 * u), mod->enabled ? skate_theme::good : skate_theme::tile_light, 22 * u);
+                draw->AddRectFilled(ImVec2(sx, sy), ImVec2(sx + sw, sy + 44 * u), mod->enabled ? accent : focused ? sub_ink : track, 22 * u);
                 draw->AddCircleFilled(ImVec2(mod->enabled ? sx + sw - 22 * u : sx + 22 * u, sy + 22 * u), 17 * u, theme::paper, 20);
             }
-            label(draw, ui.bold, 38 * u, ImVec2(tx, p.y + 14 * u), sx - 20 * u, mod->enabled || lit ? theme::paper : theme::muted, mod->title);
-            std::string byline = mod->author.empty() ? std::string("Unknown author") : "by " + mod->author;
-            if (!mod->version.empty()) byline += "   v" + mod->version;
-            for (std::size_t i = 0; i < mod->contents.size() && i < 3; ++i) byline += (i ? ", " : "   ") + mod->contents[i];
-            label(draw, ui.body, 28 * u, ImVec2(tx, p.y + 64 * u), sx - 20 * u, lit ? theme::paper : theme::muted, byline);
+            label(draw, ui.bold, 40 * u, ImVec2(tx, p.y + 18 * u), sx - 20 * u, focused ? focus_ink : mod->enabled || pointed ? theme::paper : theme::muted, mod->title);
+            label(draw, ui.body, 28 * u, ImVec2(tx, p.y + 70 * u), sx - 20 * u, focused ? sub_ink_lit : tag.detail_colour, tag.detail);
         }
         if (rows.empty()) {
             bool shown{};
@@ -972,7 +998,7 @@ void installed_page(Ui &ui, ModPage &m, ImVec2 a, ImVec2 z) {
 
     // ---- beside it: the chosen mod
     const ImVec2 da(lz.x + gap, la.y), dz(z.x, z.y);
-    skate_theme::rough_rect(draw, da, dz, skate_theme::tile, 0x7a, u * 2);
+    skate_theme::rough_rect(draw, da, dz, tile_dark, 0x7a, u * 2);
     const float inset = 40 * u, left = da.x + inset, edge = dz.x - inset;
     const ms::Mod *mod{};
     for (const auto *row : rows)
@@ -982,20 +1008,19 @@ void installed_page(Ui &ui, ModPage &m, ImVec2 a, ImVec2 z) {
         return;
     }
     const auto *package = package_of(mod->folder);
+    const auto tag = state_tag(*mod);
     float y = da.y + inset;
     const float icon = 220 * u;
     package_icon(ui, ImVec2(left, y), ImVec2(left + icon, y + icon), package, mod->title, !mod->enabled);
     label(draw, ui.heading, 52 * u, ImVec2(left + icon + 30 * u, y + 4 * u), edge, theme::paper, mod->title);
-    label(draw, ui.body, 30 * u, ImVec2(left + icon + 30 * u, y + 76 * u), edge, theme::muted,
+    label(draw, ui.body, 30 * u, ImVec2(left + icon + 30 * u, y + 76 * u), edge, sub_ink,
           (mod->author.empty() ? std::string("Unknown author") : "by " + mod->author) + (mod->version.empty() ? std::string() : "   v" + mod->version));
-    plate(ui, ImVec2(left + icon + 30 * u, y + 130 * u), 44 * u, ms::state_label(mod->state), state_colour(mod->state),
-          mod->state == ms::State::disabled ? theme::paper : skate_theme::black);
+    plate(ui, ImVec2(left + icon + 30 * u, y + 130 * u), 44 * u, tag.text, tag.fill, tag.ink);
     y += icon + 30 * u;
-    if (!mod->why.empty()) y += paragraph(draw, ui.body, 30 * u, ImVec2(left, y), edge - left, skate_theme::warning, mod->why, 3) + 16 * u;
+    if (!mod->why.empty()) y += paragraph(draw, ui.body, 30 * u, ImVec2(left, y), edge - left, tag.problem ? tag.detail_colour : soft, mod->why, 3) + 16 * u;
     if (!mod->description.empty()) y += paragraph(draw, ui.body, 30 * u, ImVec2(left, y), edge - left, soft, mod->description, 4) + 16 * u;
     const float bh = 88 * u;
     float by = dz.y - inset - bh;
-    const auto progress = ms::progress();
     if (!mod->gone) {
         const bool confirming = m.confirm == mod->folder && GetTickCount64() < m.confirm_until;
         if (button(ui, hash("mods-installed-remove"), ImVec2(left, by), ImVec2(edge, by + bh), confirming ? "PRESS AGAIN TO UNINSTALL" : "UNINSTALL",
@@ -1025,13 +1050,16 @@ void installed_page(Ui &ui, ModPage &m, ImVec2 a, ImVec2 z) {
 
 // ---------------------------------------------------------------- UPDATES
 
+// What Thunderstore has newer, in the server browser's look: a row a mod with columns for the
+// version it goes from and to, when it was updated and its size, and UPDATE on the blue at the end.
 void updates_page(Ui &ui, ModPage &m, ImVec2 a, ImVec2 z) {
     auto *draw = ui.draw;
-    const float u = ui.u, gap = 28 * u, bar = 96 * u, pad = 24 * u;
+    const float u = ui.u, gap = 28 * u, bar = 96 * u, pad = 24 * u, pad_x = 30 * u, head = 46 * u;
     const auto progress = ms::progress();
     const auto count = m.updates.size();
-    std::string title = count == 0 ? "EVERYTHING IS UP TO DATE" : count == 1 ? "1 MOD HAS AN UPDATE" : std::to_string(count) + " MODS HAVE UPDATES";
-    draw->AddText(ui.heading, 56 * u, ImVec2(a.x, a.y + (bar - 56 * u) * .5f), theme::paper, title.c_str());
+    // ---- the bar: how many, and UPDATE ALL
+    const std::string title = count == 0 ? "EVERYTHING IS UP TO DATE" : count == 1 ? "1 MOD HAS AN UPDATE" : std::to_string(count) + " MODS HAVE UPDATES";
+    draw->AddText(ui.bold, 44 * u, ImVec2(a.x, a.y + (bar - 44 * u) * .5f), theme::paper, title.c_str());
     if (count) {
         std::vector<std::string> all;
         std::uint64_t bytes{};
@@ -1044,8 +1072,25 @@ void updates_page(Ui &ui, ModPage &m, ImVec2 a, ImVec2 z) {
             start_install(m, all);
     }
     const ImVec2 la(a.x, a.y + bar + gap), lz(z.x, z.y);
-    const float row_height = 120 * u;
-    Scroller list(ui, hash("mods-updates"), la, lz);
+    const float row_height = 120 * u, row_gap = 10 * u, right = lz.x - 20 * u, icon = row_height - 24 * u, column_gap = 40 * u;
+    // The columns, from the right: what pressing it does, the size, when it was updated, the version it
+    // goes from and to; the name has what is left. A narrow page folds the date and size in under the name.
+    const float chip_left = right - pad_x - 340 * u, size_right = chip_left - column_gap, size_left = size_right - 200 * u;
+    const float date_right = size_left - column_gap, date_left = date_right - 320 * u;
+    const float name_left = la.x + pad * 2 + icon;
+    const bool wide = date_left - column_gap - 440 * u - column_gap - name_left >= 600 * u;
+    const float change_right = wide ? date_left - column_gap : chip_left - column_gap, change_left = change_right - 440 * u;
+    const float name_right = change_left - column_gap;
+    if (count) {
+        const float size = 24 * u, y = la.y + (head - size) * .5f - 4 * u;
+        draw->AddText(ui.bold, size, ImVec2(name_left, y), sub_ink, "MOD");
+        draw->AddText(ui.bold, size, ImVec2(change_left, y), sub_ink, "VERSION");
+        if (wide) {
+            draw->AddText(ui.bold, size, ImVec2(date_left, y), sub_ink, "UPDATED");
+            draw->AddText(ui.bold, size, ImVec2(size_right - width_of(ui.bold, size, "SIZE"), y), sub_ink, "SIZE");
+        }
+    }
+    Scroller list(ui, hash("mods-updates"), ImVec2(la.x, la.y + (count ? head : 0)), lz);
     const auto installed_version = [&](const ts::Package &package) -> std::string {
         if (!m.mods) return {};
         const auto found = m.mods->versions.find(ts::folder_for(package.full_name));
@@ -1054,29 +1099,42 @@ void updates_page(Ui &ui, ModPage &m, ImVec2 a, ImVec2 z) {
     for (const auto *package : m.updates) {
         const auto id = hash(package->full_name, 61);
         bool drawn{};
-        const float top = list.next(row_height, 8 * u, drawn);
-        const ImVec2 p(la.x, top), q(lz.x - 20 * u, top + row_height);
+        const float top = list.next(row_height, row_gap, drawn);
+        const ImVec2 p(la.x, top), q(right, top + row_height);
         const Hit hit = item(ui, id, p, q, &list.box);
         list.reveal(id, top, row_height);
         const auto does_now = queue_button(m, *package, ms::Action::update, "UPDATE");
         if (hit.press && does_now.enabled) start_install(m, {package->full_name});
         if (!drawn) continue;
-        const bool lit = hit.focus || hit.hover;
-        skate_theme::rough_rect(draw, p, q, lit ? theme::blue : skate_theme::tile, 0xb00 + (id & 0xff), u * 2);
-        const float icon = row_height - 20 * u;
-        package_icon(ui, ImVec2(p.x + pad, p.y + 10 * u), ImVec2(p.x + pad + icon, p.y + 10 * u + icon), package, package->title());
-        const float tx = p.x + pad * 2 + icon;
+        const auto [focused, pointed] = lit_of(hit);
+        const ImU32 ink = focused ? focus_ink : theme::paper, sub = focused ? sub_ink_lit : sub_ink;
+        skate_theme::rough_rect(draw, p, q, focused ? theme::paper : pointed ? row_hover : tile_dark, 0xb00 + (id & 0xff), u * 2);
+        package_icon(ui, ImVec2(p.x + pad, p.y + 12 * u), ImVec2(p.x + pad + icon, p.y + 12 * u + icon), package, package->title());
+        // The name, with its maker (and, on a narrow page, the date and size) under it.
+        const std::string when = ms::date_text(package->date_updated), bytes = package->latest().file_size ? ms::size_text(package->latest().file_size) : std::string("-");
+        label(draw, ui.bold, 40 * u, ImVec2(name_left, p.y + 18 * u), name_right, ink, package->title());
+        label(draw, ui.body, 28 * u, ImVec2(name_left, p.y + 70 * u), name_right, sub,
+              "by " + package->owner + (wide ? std::string() : "  \xc2\xb7  " + when + "  \xc2\xb7  " + bytes));
+        // The version change: the one installed in grey, the new one in white.
+        const float cell = 34 * u, cell_y = p.y + (row_height - cell) * .5f;
+        {
+            const auto have = installed_version(*package);
+            const std::string from = "v" + (have.empty() ? std::string("?") : have) + "  >  ";
+            const float from_w = std::min(width_of(ui.body, cell, from), change_right - change_left);
+            label(draw, ui.body, cell, ImVec2(change_left, cell_y), change_right, sub, from);
+            label(draw, ui.bold, cell, ImVec2(change_left + from_w, cell_y), change_right, ink, "v" + package->latest().number);
+        }
+        if (wide) {
+            label(draw, ui.body, 32 * u, ImVec2(date_left, cell_y), date_right, ink, when);
+            draw->AddText(ui.body, 32 * u, ImVec2(size_right - width_of(ui.body, 32 * u, bytes), cell_y), ink, bytes.c_str());
+        }
+        // What pressing it does: UPDATE (or ADD TO QUEUE) on the blue, or what it is doing on grey.
         const auto &does = does_now.text;
-        const float dw = width_of(ui.bold, 32 * u, does) + 60 * u;
-        const ImVec2 c(q.x - pad - dw, p.y + 24 * u), d(q.x - pad, q.y - 24 * u);
-        // The primary blue, or white on a row the focus has turned blue.
-        skate_theme::rough_rect(draw, c, d, !does_now.enabled ? accent_off : lit ? theme::paper : accent, 0x52, u * 2);
-        draw->AddText(ui.bold, 32 * u, ImVec2(c.x + 30 * u, c.y + (d.y - c.y - 32 * u) * .5f), does_now.enabled && lit ? focus_ink : theme::paper, does.c_str());
-        label(draw, ui.bold, 40 * u, ImVec2(tx, p.y + 16 * u), c.x - 30 * u, theme::paper, package->title());
-        const auto have = installed_version(*package);
-        label(draw, ui.body, 30 * u, ImVec2(tx, p.y + 70 * u), c.x - 30 * u, lit ? theme::paper : theme::muted,
-              "v" + (have.empty() ? std::string("?") : have) + "  >  v" + package->latest().number + "   " + ms::date_text(package->date_updated) +
-                  (package->latest().file_size ? "   " + ms::size_text(package->latest().file_size) : std::string()));
+        const float chip_size = 32 * u;
+        const ImVec2 c(chip_left, p.y + 30 * u), d(right - pad_x, q.y - 30 * u);
+        skate_theme::rough_rect(draw, c, d, does_now.enabled ? accent : focused ? track_lit : track, 0x52, u * 2);
+        label(draw, ui.bold, chip_size, ImVec2(c.x + std::max(16 * u, (d.x - c.x - width_of(ui.bold, chip_size, does)) * .5f), c.y + (d.y - c.y - chip_size) * .5f), d.x - 16 * u,
+              does_now.enabled || !focused ? theme::paper : focus_ink, does);
     }
     if (!count) {
         bool shown{};
@@ -1171,21 +1229,22 @@ void mod_manager_page(Ui &ui, ImVec2 a, ImVec2 z) {
         right -= w + 20 * u;
     }
     // A bar with how far something is: `fraction` below 0 is not known, and a block goes back and forth.
+    // (On the grey track, the blue of the server browser's bars of how full a session is.)
     const auto bar = [&](ImVec2 b0, ImVec2 b1, float fraction) {
-        draw->AddRectFilled(b0, b1, skate_theme::tile_light, 6 * u);
+        draw->AddRectFilled(b0, b1, track, 6 * u);
         if (fraction >= 0) {
-            draw->AddRectFilled(b0, ImVec2(b0.x + (b1.x - b0.x) * std::clamp(fraction, 0.f, 1.f), b1.y), theme::blue, 6 * u);
+            draw->AddRectFilled(b0, ImVec2(b0.x + (b1.x - b0.x) * std::clamp(fraction, 0.f, 1.f), b1.y), accent, 6 * u);
             return;
         }
         const float t = static_cast<float>(std::fmod(ImGui::GetTime(), 2.0)) / 2.f, w = (b1.x - b0.x) * .25f;
         const float x = b0.x + (b1.x - b0.x - w) * (t < .5f ? t * 2 : 2 - t * 2);
-        draw->AddRectFilled(ImVec2(x, b0.y), ImVec2(x + w, b1.y), theme::blue, 6 * u);
+        draw->AddRectFilled(ImVec2(x, b0.y), ImVec2(x + w, b1.y), accent, 6 * u);
     };
     if (progress.busy) {
         // What is being installed: its icon and name, the step and which of how many, how much has
         // come, and a bar, with CANCEL at the end.
         const ImVec2 sa(a.x, fy), sz(right - 20 * u, z.y);
-        skate_theme::rough_rect(draw, sa, sz, skate_theme::tile, 0x3b7, u * 2);
+        skate_theme::rough_rect(draw, sa, sz, tile_dark, 0x3b7, u * 2);
         const ImVec2 cancel_a(sz.x - 300 * u, fy + 10 * u), cancel_z(sz.x - 10 * u, z.y - 10 * u);
         if (button(ui, hash("mods-cancel"), cancel_a, cancel_z, progress.waiting ? "CANCEL ALL" : "CANCEL", Look::plain)) ms::cancel();
         float x = sa.x + 10 * u;
@@ -1204,13 +1263,13 @@ void mod_manager_page(Ui &ui, ImVec2 a, ImVec2 z) {
         const std::string name = progress.title + (progress.version.empty() || progress.step == Step::uninstalling ? std::string() : "  v" + progress.version);
         const std::string where = std::string(step) + (progress.of > 1 ? "  " + std::to_string(progress.at + 1) + " OF " + std::to_string(progress.of) : std::string()) +
                                   (progress.waiting ? "   +" + std::to_string(progress.waiting) + " MORE IN THE QUEUE" : std::string());
-        draw->AddText(ui.bold, 26 * u, ImVec2(x, fy + 8 * u), theme::blue, where.c_str());
+        draw->AddText(ui.bold, 26 * u, ImVec2(x, fy + 8 * u), sub_ink, where.c_str());
         label(draw, ui.bold, 36 * u, ImVec2(x, fy + 38 * u), bar_x - 20 * u, theme::paper, name);
         std::string amount = progress.step == Step::downloading
             ? (progress.total ? ms::size_text(progress.received) + " of " + ms::size_text(progress.total) : ms::size_text(progress.received))
             : progress.step == Step::installing ? std::string("Putting it in your Mods folder") : std::string();
         if (progress.fraction >= 0 && progress.step != Step::uninstalling) amount += (amount.empty() ? "" : "   ") + std::to_string(static_cast<int>(progress.fraction * 100)) + "%";
-        draw->AddText(ui.body, 26 * u, ImVec2(bar_x, fy + 10 * u), theme::muted, amount.c_str());
+        draw->AddText(ui.body, 26 * u, ImVec2(bar_x, fy + 10 * u), sub_ink, amount.c_str());
         bar(ImVec2(bar_x, fy + 46 * u), ImVec2(bar_x + bar_w, fy + 64 * u), progress.fraction);
         return;
     }
@@ -1218,22 +1277,24 @@ void mod_manager_page(Ui &ui, ImVec2 a, ImVec2 z) {
         // The merge: its step and how far, and what happens at the end of it.
         const auto applying = live_mods::progress();
         const ImVec2 sa(a.x, fy), sz(right - 20 * u, z.y);
-        skate_theme::rough_rect(draw, sa, sz, skate_theme::tile, 0x3b8, u * 2);
+        skate_theme::rough_rect(draw, sa, sz, tile_dark, 0x3b8, u * 2);
         const float x = sa.x + 24 * u, bar_w = std::min(900 * u, (sz.x - x) * .42f), bar_x = sz.x - 24 * u - bar_w;
         const auto shown = std::min(applying.done + 1, applying.total);
         const std::string where = applying.total ? "APPLYING MODS  " + std::to_string(shown) + " OF " + std::to_string(applying.total) : std::string("APPLYING MODS");
-        draw->AddText(ui.bold, 26 * u, ImVec2(x, fy + 8 * u), theme::blue, where.c_str());
+        draw->AddText(ui.bold, 26 * u, ImVec2(x, fy + 8 * u), sub_ink, where.c_str());
         label(draw, ui.bold, 34 * u, ImVec2(x, fy + 40 * u), bar_x - 20 * u, theme::paper, applying.step.empty() ? std::string("Merging the mods into the game...") : applying.step);
-        draw->AddText(ui.body, 26 * u, ImVec2(bar_x, fy + 10 * u), theme::muted,
+        draw->AddText(ui.body, 26 * u, ImVec2(bar_x, fy + 10 * u), sub_ink,
                       m.mods && m.mods->effect == live_mods::ApplyEffect::reload_level ? "The level reloads when it is done" : "It takes effect at the next level load");
         bar(ImVec2(bar_x, fy + 46 * u), ImVec2(bar_x + bar_w, fy + 64 * u), applying.total ? static_cast<float>(applying.done) / static_cast<float>(applying.total) : -1.f);
         return;
     }
     std::string line = m.notice;
     ImU32 colour = m.notice_bad ? skate_theme::danger : theme::paper;
-    if (line.empty() && changes) line = std::to_string(changes) + (changes == 1 ? " change is" : " changes are") + " not in the game yet: apply them when you are ready.", colour = skate_theme::warning;
+    // (What is waiting in white beside the blue APPLY, not in amber: the button is the call to act.)
+    if (line.empty() && changes) line = std::to_string(changes) + (changes == 1 ? " change is" : " changes are") + " not in the game yet: apply them when you are ready.", colour = theme::paper;
     if (line.empty() && m.mods && m.mods->waiting)
-        line = std::to_string(m.mods->waiting) + (m.mods->waiting == 1 ? " change goes" : " changes go") + " in the next time the game starts.", colour = skate_theme::warning;
+        line = std::to_string(m.mods->waiting) + (m.mods->waiting == 1 ? " change goes" : " changes go") + " in the next time the game starts.", colour = theme::paper;
+
     if (line.empty() && m.listing) {
         const auto &listing = *m.listing;
         if (listing.fetching && listing.packages.empty()) line = "Getting the mods from Thunderstore...";
