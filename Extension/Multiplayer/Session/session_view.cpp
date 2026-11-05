@@ -317,9 +317,11 @@ void publish(Session &s, const NativeFrame *local) {
     // Looked up as the list is shown: the team's list can arrive, or change, after a server was found.
     for (auto &server : view.lobbies) server.official = official_server(server.id);
     view.lobbies.insert(view.lobbies.end(), lobby.rows.begin(), lobby.rows.end());
-    // Steam friends by the public server or lobby their game says they are in.
+    // Steam friends by the public server or lobby their game says they are in, and every friend in
+    // the game for the FRIENDS tab (the snapshot lists those playing first).
     if (const auto social = steam_social_snapshot())
         for (const auto &player : social->friends) {
+            if (player.playing && view.friends_skating.size() < 256) view.friends_skating.push_back({player.id, player.session, player.name});
             if (!player.session) continue;
             const auto row = std::find_if(view.lobbies.begin(), view.lobbies.end(), [&](const auto &entry) { return entry.id == player.session; });
             if (row != view.lobbies.end() && row->friends.size() < 16) row->friends.push_back(player.name.empty() ? std::string("A friend") : player.name);

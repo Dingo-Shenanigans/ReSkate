@@ -53,6 +53,12 @@ inline std::string lobby_friends_text(const MultiplayerLobby &lobby, std::size_t
     if (lobby.friends.size() > named) text += " and " + std::to_string(lobby.friends.size() - named) + " more";
     return text;
 }
+// A Steam friend in the game now (steam_social.h), for the pause menu's FRIENDS tab: who, and the
+// public server or lobby their game says they are in (its browser row's id; 0: none or private).
+struct MultiplayerFriend {
+    std::uint64_t id{}, session{};
+    std::string name;
+};
 struct MultiplayerPlayer {
     std::uint64_t id{};
     std::string name;
@@ -311,6 +317,7 @@ struct MultiplayerModel {
     // When the lists may be searched again, on the steady clock in microseconds (browse_wait).
     std::uint64_t browse_ready_us{};
     std::vector<MultiplayerLobby> lobbies;
+    std::vector<MultiplayerFriend> friends_skating; // Steam friends playing ReSkate now
     bool network_telemetry{};
     unsigned prioritized_connections{};
     std::uint64_t cosmetic_queue_us{};
