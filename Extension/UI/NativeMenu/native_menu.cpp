@@ -199,7 +199,7 @@ std::atomic<bool> game_in_menu{};
 std::atomic<bool> back_wanted{}; // hold_native_menu_back
 std::atomic<int> page_wanted{-1}; // show_native_menu_page
 // Selects the tab of ReSkate's page `slot`, as restore_last_tab does when the menu reopens.
-void select_page(const Context& context, Value menu, unsigned slot) {
+void select_page(const Context& context, Value menu, unsigned slot, bool say = true) {
     const auto list = context.path(menu, {content, items});
     unsigned count{}, stride{};
     const auto values = context.array(list, 16, count, stride);
@@ -210,7 +210,7 @@ void select_page(const Context& context, Value menu, unsigned slot) {
         if (key != our_key + slot * 0x100) continue;
         context.set(context.path(menu, {content, 0x18f8355b}), static_cast<int>(i));
         context.set(context.path(menu, {content, 0x55511280}), static_cast<int>(i));
-        logging::printf(logging::Level::info, logging::Channel::ui, "Pause menu: went to ReSkate tab %u from the front page.", i);
+        if (say) logging::printf(logging::Level::info, logging::Channel::ui, "Pause menu: went to ReSkate tab %u from the front page.", i);
         return;
     }
 }
@@ -643,9 +643,25 @@ void tick_page(std::uintptr_t base, bool loading) noexcept {
         if (!active.model.handle) return;
         trim_store(context, active.model);
         if (!s.slot) {
-            if (const int wanted = page_wanted.exchange(-1); wanted >= 0 && wanted < static_cast<int>(page_count))
+            // A tab asked for from the front page (show_native_menu_page). The game often puts its own
+            // selection back straight after the first write (the HUB came back and it took a few
+            // presses), so it is written again on each pass until that tab is the one shown, for a
+            // second and a half at most.
+            static int chasing = -1;
+            static ULONGLONG chase_until{};
+            if (const int wanted = page_wanted.exchange(-1); wanted >= 0 && wanted < static_cast<int>(page_count)) {
+                chasing = wanted, chase_until = now + 1500;
                 select_page(context, active.model, static_cast<unsigned>(wanted));
+            } else if (chasing >= 0) {
+                if (now > chase_until) {
+                    logging::printf(logging::Level::warning, logging::Channel::ui, "Pause menu: the game kept its own tab over ReSkate tab %d.", chasing);
+                    chasing = -1;
+                } else {
+                    select_page(context, active.model, static_cast<unsigned>(chasing), false);
+                }
+            }
             const auto shown_tab = restore_last_tab(context, active.model);
+            if (chasing >= 0 && shown_tab == our_key + static_cast<unsigned>(chasing) * 0x100) chasing = -1;
             hide_top_bar_currency(context, active.model);
             update_hub(context);
             // Tell the overlay while this page is the one on screen: it draws the body.
