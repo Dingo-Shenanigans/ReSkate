@@ -208,14 +208,20 @@ void spatialize_block(Speaker& speaker, std::uintptr_t buffer, std::uint32_t fra
             delay_l[wp & 4095] = sl; delay_r[wp & 4095] = sr;
             speaker.lpf_l_state += al * (delay_l[(wp - dl) & 4095] - speaker.lpf_l_state);
             speaker.lpf_r_state += ar * (delay_r[(wp - dr) & 4095] - speaker.lpf_r_state);
-            const float t1 = rev_buf[(wp - 624u) & 4095], t2 = rev_buf[(wp - 1392u) & 4095];
-            const float t3 = rev_buf[(wp - 2256u) & 4095], t4 = rev_buf[(wp - 3264u) & 4095];
-            const float rl = 0.42f * t1 - 0.30f * t2 + 0.24f * t3 - 0.16f * t4;
-            const float rr = 0.38f * t2 - 0.32f * t1 + 0.22f * t4 - 0.18f * t3;
-            speaker.rev_lp += 0.30f * (0.5f * (speaker.lpf_l_state * speaker.cur_left + speaker.lpf_r_state * speaker.cur_right) + 0.22f * t4 - speaker.rev_lp);
+            const float dry_l = speaker.lpf_l_state * speaker.cur_left, dry_r = speaker.lpf_r_state * speaker.cur_right;
+            const float t1 = rev_buf[(wp - 523u)  & 4095], t2 = rev_buf[(wp - 1103u) & 4095];
+            const float t3 = rev_buf[(wp - 1787u) & 4095], t4 = rev_buf[(wp - 2477u) & 4095];
+            const float t5 = rev_buf[(wp - 3253u) & 4095], t6 = rev_buf[(wp - 4027u) & 4095];
+            const float rl = 0.38f * t1 - 0.28f * t2 + 0.24f * t3 - 0.20f * t4 + 0.18f * t5 - 0.14f * t6;
+            const float rr = 0.36f * t2 - 0.30f * t1 + 0.22f * t4 - 0.18f * t3 + 0.17f * t6 - 0.15f * t5;
+            const float pre_send = 0.5f * (speaker.lpf_l_state + speaker.lpf_r_state) * std::min(1.0f, speaker.cur_left + speaker.cur_right);
+            const float rev_in = 0.275f * (dry_l + dry_r) + 0.45f * pre_send;
+            const float fb = 0.26f + 0.42f * env_wet;
+            speaker.rev_lp += 0.28f * (rev_in + fb * (0.60f * t6 + 0.40f * t4) - speaker.rev_lp);
             rev_buf[wp & 4095] = speaker.rev_lp;
-            left[i] = speaker.lpf_l_state * speaker.cur_left + env_wet * rl;
-            right[i] = speaker.lpf_r_state * speaker.cur_right + env_wet * rr;
+            const float wet = env_wet * 1.45f;
+            left[i] = dry_l + wet * rl;
+            right[i] = dry_r + wet * rr;
             speaker.ring_wp = wp + 1;
         }
         speaker.cur_left = target_l; speaker.cur_right = target_r;
