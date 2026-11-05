@@ -188,6 +188,8 @@ void hide_top_bar_currency(const Context& context, Value menu) {
 } // namespace
 void update_hub(const Context& context);
 bool update_hub_front_page(const Context& context, Value menu, bool in_menu);
+// The game's menu room behind the Mod Manager tab, when `ui modbackdrop` asks for it (native_backdrop.cpp).
+void update_mod_backdrop(const Context& context, bool mod_manager_shown, bool in_menu);
 bool hub_title_blanked() noexcept;
 void restore_hub_title(const Context& context) noexcept;
 namespace {
@@ -688,6 +690,7 @@ void tick_page(std::uintptr_t base, bool loading) noexcept {
             const bool hub = update_hub_front_page(context, active.model, !ours && game_in_menu.load(std::memory_order_relaxed));
             // (Said at once when another page takes its place, not left to go stale.)
             page_shown.store(hub ? overlay::hub_home_section : static_cast<int>(shown_slot), std::memory_order_relaxed);
+            update_mod_backdrop(context, ours && shown_slot == menu_view::mods_page, game_in_menu.load(std::memory_order_relaxed));
             page_seen.store(on_screen || hub ? now : 0, std::memory_order_relaxed);
         }
         if (s.slot == menu_view::mods_page && active.model.handle == s.core.handle && s.page.handle &&
