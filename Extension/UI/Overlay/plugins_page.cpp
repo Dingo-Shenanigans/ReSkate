@@ -470,22 +470,7 @@ PausePluginPage pause_menu_plugin_page(SkateMenu& menu, const std::string& plugi
     PausePluginPage result;
     const auto pages = plugin_ui::latest_pages();
     if (!pages || std::ranges::none_of(*pages, [&](const plugin_ui::PageEntry& p) { return p.plugin == plugin; })) return result;
-    result = pause_menu_box(menu, "###pause-menu-plugin-page", a, b, scale, input, take_focus, [&] {
-        // (The ReSkate menu over it may show another plugin's page: it has the say then.)
-        if (input) plugin_ui::note_page_shown(plugin);
-        const double now = ImGui::GetTime();
-        std::erase_if(edits(), [&](const auto& item) { return now - item.second.at > 1.0; });
-        ImGui::PushID(plugin.c_str());
-        if (!draw_plugin_panels(menu, plugin, now)) note("Loading...");
-        ImGui::PopID();
-    });
     result.shown = true;
-    return result;
-}
-
-PausePluginPage pause_menu_box(SkateMenu& menu, const char* window_id, ImVec2 a, ImVec2 b, float scale, bool input, bool take_focus,
-                               const std::function<void()>& body) {
-    PausePluginPage result;
     draw_in_kit(menu, scale, [&] {
         // The box keeps the keyboard focus while the pause page has handed it the pad: a click on the
         // page around it would leave ImGui's navigation with no window, and the D-pad doing nothing.
@@ -501,12 +486,18 @@ PausePluginPage pause_menu_box(SkateMenu& menu, const char* window_id, ImVec2 a,
         // Under the ReSkate menu or the console it is there to look at, as the rest of the pause page is.
         if (!input) flags |= ImGuiWindowFlags_NoInputs;
         ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(0, 0, 0, 0));
-        if (ImGui::Begin(window_id, nullptr, flags)) {
+        if (ImGui::Begin("###pause-menu-plugin-page", nullptr, flags)) {
             if (input && take_focus && ImGui::GetCurrentContext()->NavWindow == ImGui::GetCurrentWindow()) {
                 ImGui::NavInitWindow(ImGui::GetCurrentWindow(), true);
                 ImGui::SetNavCursorVisible(true);
             }
-            body();
+            // (The ReSkate menu over it may show another plugin's page: it has the say then.)
+            if (input) plugin_ui::note_page_shown(plugin);
+            const double now = ImGui::GetTime();
+            std::erase_if(edits(), [&](const auto& item) { return now - item.second.at > 1.0; });
+            ImGui::PushID(plugin.c_str());
+            if (!draw_plugin_panels(menu, plugin, now)) note("Loading...");
+            ImGui::PopID();
             focused_before = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
         }
         ImGui::End();

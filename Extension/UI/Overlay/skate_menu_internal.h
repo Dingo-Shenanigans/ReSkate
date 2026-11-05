@@ -215,11 +215,6 @@ struct PausePluginPage {
     bool moved = false;  // ImGui's focus went to another control this frame
 };
 PausePluginPage pause_menu_plugin_page(SkateMenu& menu, const std::string& plugin, ImVec2 a, ImVec2 b, float scale, bool input, bool take_focus);
-// The box both of those draw in: an ImGui window over the pause page at a..b, in the kit's look, that
-// takes the pointer and the navigation while `input` (and the keyboard focus now with `take_focus`).
-// `body` draws its contents. (`shown` is left to the caller.)
-PausePluginPage pause_menu_box(SkateMenu& menu, const char* window_id, ImVec2 a, ImVec2 b, float scale, bool input, bool take_focus,
-                               const std::function<void()>& body);
 // The menu's first page (skate_menu_addons.cpp): where the player is, the quick switches, and the pages
 // to pick up again.
 void home_page(SkateMenu&, const Model&, const CallbacksV3&);
@@ -239,13 +234,6 @@ inline constexpr int settings_controls_tab = 0, settings_screen_tab = 1, setting
                      settings_replays_tab = 4;
 // Opens a page, and with `tab` (0 and up) that tab of it, for a page with tabs (Map, Build, Skater, Settings).
 void open_page(SkateMenu&, int page, int tab = -1);
-// One of this menu's pages in a box of the pause menu: Mod Options' tabs (hub_page.cpp), so the pause
-// menu offers what the Insert menu does, drawn by the same code. `page` is page_map, page_build,
-// page_skater or page_settings, or pause_online_settings for Online's PLAYERS AND CHAT on its own. The
-// page's own tabs are the D-pad's and the pointer's there: LT and RT stay the pause page's.
-inline constexpr int pause_online_settings = page_count;
-PausePluginPage pause_menu_kit_page(SkateMenu& menu, int page, const Model& model, const CallbacksV3& callbacks, ImVec2 a, ImVec2 b, float scale,
-                                    bool input, bool take_focus);
 
 // A list of things (players, servers, bans) as rows whose actions open inline under them: A or a click
 // on a row opens them, closing any other row's; A on the row again, or B while the focus is in it,
