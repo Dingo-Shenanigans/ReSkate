@@ -7,7 +7,7 @@
 #include "Engine/Game/Build/20260929/atmosphere.h"
 
 namespace dingosdk::profile_runtime {
-// Exact retail component ABI and spawn consumers: analysis/world-controls.md.
+// Exact retail component ABI and spawn consumers.
 
 // Component kinds: fog, sky, wind. Offsets refer to live native component caches.
 

@@ -16,7 +16,7 @@ the launcher, the runtime that loads into the game, and the dedicated server.
   - Proximity voice chat, and text chat with emotes and an optional bad-word filter.
   - Parties in lobbies and on dedicated servers: invite, join, leave, promote.
   - Throwdowns with other players (Jam, Spot Battle and S.K.A.T.E.), and co-op challenges. Plugins add
-    throwdown modes of their own to the Throwdowns page ([contrib/throwdown-kit.md](contrib/throwdown-kit.md)).
+    throwdown modes of their own to the Throwdowns page ([Throwdowns](https://docs.reskate.dev/plugins/api/throwdowns) in the docs).
 - **In-game menu and console.**
   - Map and fast travel.
   - World: time of day, population, district levels, rotating parks.

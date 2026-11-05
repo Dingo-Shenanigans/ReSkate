@@ -15,7 +15,7 @@
 #include <map>
 #include <mutex>
 
-// The pose paths of Animation Studio (PR 297, anim_studio.cpp: on_animation, on_render,
+// The pose paths first written for Animation Studio (PR 297: on_animation, on_render,
 // on_board_render, on_send), for clips plugins play; see the header.
 namespace dingosdk::skater_animation {
 namespace {
@@ -119,7 +119,7 @@ const std::array<bool, skeleton_joints>& body_joints() {
     return mask;
 }
 
-// ---- a clip on the floor (Play::floor; PR 297's anim_studio.cpp) ------------------------------------------
+// ---- a clip on the floor (Play::floor; from Animation Studio, PR 297) -------------------------------------
 // The board under the feet, as when riding. The game's clips leave the board where the animators had it,
 // and the game's foot placement puts the feet on it: before the pop and after the landing their feet
 // sink into the board or float over it by up to 6 cm. Riding, the feet (joints 343 and 10) are 0.104 m
@@ -698,7 +698,7 @@ void on_animation(std::uintptr_t component) noexcept {
             }
         } else if (snap->allowed && !snap->replacements.empty() && air) {
             // A game trick with a replacement: the clip plays on the body from the takeoff, blended in
-            // and out, its air stretched to this one's (anim_studio.cpp's play in game).
+            // and out, its air stretched to this one's.
             if (*air) {
                 if (!l.game_air) {
                     l.game_air = true;
@@ -1140,7 +1140,7 @@ void on_drawn(std::uintptr_t animation_interface) noexcept {
 }
 
 // The board's pose, just before it goes to the renderer: the whole rig moved so its mount lands where
-// the clip has it (anim_studio.cpp's on_board_render).
+// the clip has it.
 void on_board_render(std::uintptr_t animation_interface, std::uintptr_t /*render_data*/) noexcept {
     auto& l = live();
     const auto error = GetLastError();

@@ -3,7 +3,7 @@
 #include <cstdint>
 
 // The UI's per-frame pointer hit-test and the mouse cursor mode that says whether it matters
-// (Runtime/ui_pointer.cpp; analysis/sim-performance.md).
+// (Extension/UI/ui_pointer_skip.cpp; analysis/sim-performance.md).
 namespace dingosdk::game::build::v20260929::ui_pointer {
 // Every client frame the input dispatch (0x31ff690) runs the mouse state update (0x31fdbf0),
 // which clears the player's hit list and hands the pointer to the UI's pointer handler (vtable

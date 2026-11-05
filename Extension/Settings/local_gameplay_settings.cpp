@@ -16,8 +16,6 @@ namespace dingosdk::profile_runtime {
 
 // service does not exist. Hook the applied cache, never the pending UI edits.
 
-// See analysis/native-game-settings.md for the two distinct native boundaries.
-
 GameplaySettingFunctions& gameplay_settings() { static GameplaySettingFunctions f; return f; }
 
 // UI edits and repeated backend initialization share the same setters. Only

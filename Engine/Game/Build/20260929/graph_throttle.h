@@ -13,7 +13,8 @@ inline constexpr std::uintptr_t post_frames_fast = engine::post_event_delayed_fr
 //   PostEventDelayedFrames  0x9967fc07: self, payload, port offset, payload type, int frames.
 inline constexpr std::uint32_t post_seconds_hash = 0x5e3aee8e, post_frames_hash = 0x9967fc07;
 
-// Each graph as shipped (res_all dump, build 20260908): header +0x20 frame bytes, +0x24
+// Each graph as shipped (read from a res_all dump; the feature checks every one of these values
+// before it patches, so a graph that differs is refused): header +0x20 frame bytes, +0x24
 // constant bytes, +0x2c code words; code at code_offset with its first word; the native
 // call table of {hash, pc} pairs. The graph calls `native` `sites` times; the one patched is
 // at `pc` (word 0 = next << 8 | 4: four operands and the delay), with S0 as its first operand

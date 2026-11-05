@@ -6,9 +6,7 @@
 #include "Engine/Game/Build/20260929/local_neighborhood.h"
 
 namespace dingosdk::profile_runtime {
-// Included in local_profile_runtime.cpp's private namespace. Native contracts
-
-// and ownership evidence are documented in analysis/local-profile-persistence.md.
+// Included in local_profile_runtime.cpp's private namespace.
 
 NeighborhoodRuntime& neighborhood_runtime() { static auto* n = new NeighborhoodRuntime; return *n; }
 

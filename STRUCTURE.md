@@ -57,14 +57,14 @@ ReSkate/
 ├── config/defaults/       default profile/settings JSON embedded into ReSkate.dll
 ├── contrib/               server hosting files, design notes, release script
 ├── README.md, LICENSE
-└── .clangd, .gitattributes, .gitignore
+└── .gitattributes, .gitignore
 ```
 
 ## `cmake/`
 
 | File | Covers |
 |---|---|
-| `ProjectOptions.cmake` | `DINGOSDK_*` options, version stamping (`reskate_version.h`, `version.rc`) |
+| `ProjectOptions.cmake` | `DINGOSDK_*` cache settings and `DINGOSDK_DEV_TOOLS`, version stamping (`reskate_version.h`, `version.rc`); the test options are in `CMakeLists.txt`, `Apps.cmake` and `CrashReport.cmake` |
 | `Dependencies.cmake` | the `External/` libraries as static targets |
 | `Core.cmake` | `Engine/` libraries: hooks, console core, launcher support, supported build |
 | `Features.cmake` | `Extension/` feature libraries |
@@ -180,9 +180,9 @@ The Luau plugin host. A plugin is a folder in `Mods/` with a `reskate-plugin.jso
 - `plugin_ui`, `plugin_sound`, `plugin_wave`, `plugin_http`, `plugin_session_feed`, `plugin_wire` — pages, audio, HTTP, multiplayer messages.
 - `plugin_commands` — the `plugin` console command.
 - `plugin_effects`, `plugin_api_effects` — the permission, asset declarations and Lua calls for
-  [plugin particles and decals](contrib/plugin-effects.md). `Extension/Rendering/plugin_effects`
+  [plugin particles and decals](https://docs.reskate.dev/plugins/api/effects). `Extension/Rendering/plugin_effects`
   owns their native references, surface attachments and world lifetime.
-- [Item origins and favorites](contrib/plugin-item-origins.md) — `reskate.mods.item_origins` and
+- [Item origins and favorites](https://docs.reskate.dev/plugins/api/mods) — `reskate.mods.item_origins` and
   `reskate.menu.favorites`, read-only, for plugins that filter the item grids.
 - [Other players' items](https://docs.reskate.dev/plugins/api/session#other-players-items) — `reskate.session.outfit` and
   `reskate.session.hide_items`, for plugins that choose what of other players' outfits shows.
@@ -236,7 +236,6 @@ Valve's Steam networking headers, and fonts (Montserrat, Permanent Marker).
 - `assets/launcher/` — launcher background and icons.
 - `assets/emotes/` — chat emotes (`emotes.json`, `emotes.png`).
 - `assets/builtin/` — built-in packs (`throwdown_menu.zip`).
-- `assets/models/fpv/` — FPV drone model.
 - `assets/*.jpg|png` — splash, music artwork.
 - `config/defaults/` — default `profile.json`, `progress.json`, `settings.json`, `options.json`,
   `challenges.json`, `location-travel.json`, `object-dropper.json`, `news.json`, `manifest.json`.

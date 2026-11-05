@@ -663,7 +663,7 @@ Clip Library::load(std::string_view asked) const {
         board_y.push_back(up.position[1]);
     }
     // The pop is the board's first low point (the tail strikes); the landing its deepest low point
-    // between a quarter and about 0.85 s later (make_trick_library.py; at 60 a second). Its height is
+    // between a quarter and about 0.85 s later (at 60 a second). Its height is
     // smoothed over five frames, as numpy's convolve "same" does (nothing past the ends).
     std::vector<float> smooth(board_y.size());
     for (std::size_t i = 0; i < board_y.size(); ++i) {
