@@ -376,6 +376,9 @@ void plugin_images_lost();
 // by their URL, in the SRV heap's slots from store_icon_first_slot on.
 inline constexpr UINT store_icon_first_slot = screen_look_slot + screen_look_slots, store_icon_slots = 64;
 ImTextureID store_icon(const std::string& url);
+// The same, and whether it is still on its way (`loading`: asked for and neither there nor failed),
+// so a page can show it loading rather than as missing.
+ImTextureID store_icon(const std::string& url, bool& loading);
 // A news post's picture from ReSkate's news repository (live_news.h), the same way and in the same
 // slots, kept on disk in %LOCALAPPDATA%\ReSkate\news\pictures and decoded no wider than 1024
 // pixels, its shape kept: `size` is its size in pixels once it is there.

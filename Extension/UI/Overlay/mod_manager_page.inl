@@ -240,7 +240,18 @@ void package_icon(Ui &ui, ImVec2 a, ImVec2 b, const ts::Package *package, std::s
 // the middle, on a band of itself darkened to the box's width; the letter tile while it is on its way.
 void package_picture(Ui &ui, ImVec2 a, ImVec2 b, const ts::Package *package, std::string_view title) {
     const float w = b.x - a.x, h = b.y - a.y;
-    const auto texture = package && w > h ? store_icon(package->latest().icon) : ImTextureID{};
+    bool loading{};
+    const auto texture = package && w > h ? store_icon(package->latest().icon, loading) : ImTextureID{};
+    if (!texture && loading) {
+        // Still on its way: a spinning circle on the picture's panel. The letter is for a mod whose
+        // picture failed or that has none.
+        ui.draw->AddRectFilled(a, b, IM_COL32(40, 40, 43, 255));
+        const ImVec2 centre((a.x + b.x) * .5f, (a.y + b.y) * .5f);
+        const float radius = std::min(w, h) * .14f, start = static_cast<float>(ImGui::GetTime()) * 6.0f;
+        ui.draw->PathArcTo(centre, radius, start, start + 4.2f, 32);
+        ui.draw->PathStroke(IM_COL32(200, 202, 207, 230), 0, std::max(2.0f, radius * .18f));
+        return;
+    }
     if (!texture) return package_icon(ui, a, b, package, title);
     const float band = h / w, from = .5f - band * .5f;
     ui.draw->AddImage(texture, a, b, ImVec2(0, from), ImVec2(1, from + band), IM_COL32(95, 95, 95, 255));

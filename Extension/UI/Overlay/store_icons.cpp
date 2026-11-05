@@ -193,6 +193,16 @@ ImTextureID store_icon(const std::string& url) {
     const auto* entry = ask(c, url);
     return entry && entry->stage == Entry::Stage::uploaded ? entry->id : ImTextureID{};
 }
+ImTextureID store_icon(const std::string& url, bool& loading) {
+    loading = false;
+    if (url.empty()) return {};
+    auto& c = cache();
+    std::lock_guard lock(c.mutex);
+    const auto* entry = ask(c, url);
+    // No entry: no room for it this frame, so it is still to come.
+    loading = !entry || (entry->stage != Entry::Stage::uploaded && entry->stage != Entry::Stage::failed);
+    return entry && entry->stage == Entry::Stage::uploaded ? entry->id : ImTextureID{};
+}
 ImTextureID news_picture(const std::string& url, ImVec2& size) {
     if (!news_host(url)) return {};
     auto& c = cache();
