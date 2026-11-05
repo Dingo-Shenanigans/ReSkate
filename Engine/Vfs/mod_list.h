@@ -109,6 +109,10 @@ struct Mod {
     std::map<std::string, std::set<std::string>, std::less<>> variant_projection;
     std::map<std::string, std::string, std::less<>> variant_targets;
     std::set<std::string> variant_authority;
+    // The items the player chose to leave out of this mod (mod_catalog.h items_left_out), by their
+    // lower-case keys. The merge drops their entries from the item lists the mod adds them to, so the
+    // game never lists them; the rest of the mod loads as it is. Set by the catalogue.
+    std::set<std::string> items_off;
     // From .reskate-studio-patch: whether the mod has one, and the Skate.exe SHA-256 it records.
     bool studio_marker{};
     std::string skate_sha256;

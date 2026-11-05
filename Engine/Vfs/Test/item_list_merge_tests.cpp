@@ -17,6 +17,8 @@
 //   * values two mods changed in place in one asset are both in the merged asset, and where that
 //     cannot be done the merge keeps one mod's copy whole and says whose changes are missing;
 //   * the list other mods' copies of the bundle are given leaves out an item that is not in them.
+// And an item the player left out of a pack (Mod::items_off) is out of the list, unless another pack
+// that adds it is left with it.
 //
 // The mods are made here from the installed game's own list and one of its items.
 // Arguments: <Skate folder> [<folder>]; skipped when the game is not there. With a second
@@ -547,6 +549,42 @@ void the_list_other_copies_are_given(const Game& game, const CasStore& store) {
 }
 } // namespace
 
+// The player left an item out of a pack (Mod::items_off, chosen in the launcher). Its entry goes from
+// the list, the pack's other item stays, and it is not reported as missing. With `alone` the pack is
+// the only mod that ships the bundle, which the merge otherwise passes through as the mod built it.
+void items_the_player_left_out(const Game& game, const CasStore& store, bool alone) {
+    const std::string label = alone ? "left out of the only mod" : "left out beside another mod";
+    Merge merge(game, alone ? "left-out-alone" : "left-out");
+    const auto kept = item_from(game.item, "items/reskate_test/own_kept", 0x10);
+    const auto dropped = item_from(game.item, "items/reskate_test/own_dropped", 0x20);
+    const auto list = list_with(game.list, {kept.identity, dropped.identity});
+    write_mod(merge.add("pack"), store, game, &list, {kept, dropped});
+    merge.catalog.mods.back().items_off = {"own_dropped"};
+    if (!alone) write_mod(merge.add("bystander"), store, game, nullptr, {});
+    const auto report = mods::merge_mods(merge.catalog);
+    const auto merged = merged_list(merge, game, report, label, 1);
+    expect(names(merged, kept) && !names(merged, dropped), label + ": the list has the item kept and not the one left out");
+    expect(noted(report, "pack: " + game.listName + ": 1 item(s) left out of the list, as the player chose"),
+           label + ": the merge says the player left the item out\n" + describe(report));
+    expect(!noted_part(report, "does not hold them"), label + ": the item left out is not reported missing\n" + describe(report));
+}
+
+// Two packs both add one item and the player left it out of the first. The second still adds it, so it
+// stays; left out of both, it goes.
+void an_item_two_mods_add_left_out(const Game& game, const CasStore& store, bool both) {
+    const std::string label = both ? "left out of both mods" : "left out of one of two mods";
+    Merge merge(game, both ? "left-out-both" : "left-out-one");
+    const auto shared = item_from(game.item, "items/reskate_test/own_in_both", 0x10);
+    const auto list = list_with(game.list, {shared.identity});
+    write_mod(merge.add("first"), store, game, &list, {shared});
+    merge.catalog.mods.back().items_off = {"own_in_both"};
+    write_mod(merge.add("second"), store, game, &list, {shared});
+    if (both) merge.catalog.mods.back().items_off = {"own_in_both"};
+    const auto report = mods::merge_mods(merge.catalog);
+    const auto merged = merged_list(merge, game, report, label, both ? 0 : 1);
+    expect(names(merged, shared) != both, label + (both ? ": the item is still in the list" : ": the item is not in the list"));
+}
+
 int main(int argc, char** argv) try {
     if (argc < 2 || !fs::exists(fs::path(argv[1]) / L"Data" / L"Win32" / L"items.toc")) {
         std::cout << "No game given; skipped.\n";
@@ -568,6 +606,10 @@ int main(int argc, char** argv) try {
     values_two_mods_changed(game, store, true);
     a_change_that_does_not_combine(game, store);
     the_list_other_copies_are_given(game, store);
+    items_the_player_left_out(game, store, true);
+    items_the_player_left_out(game, store, false);
+    an_item_two_mods_add_left_out(game, store, false);
+    an_item_two_mods_add_left_out(game, store, true);
     if (failures) {
         std::cerr << failures << " failure(s)\n";
         return 1;

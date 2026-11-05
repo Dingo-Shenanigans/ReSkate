@@ -4,6 +4,8 @@
 
 #include "mod_manager.h"
 #include "Engine/Vfs/builtin_packs.h"
+#include "Engine/Vfs/mod_catalog.h"
+#include "Engine/Vfs/mod_item_sources.h"
 
 #include "Engine/Core/Log/logging.h"
 
@@ -1422,6 +1424,139 @@ void installed_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, co
 }
 
 // Everything an installed mod says about itself, in a popup over the page.
+// ---------------------------------------------------------------- choose items
+
+// A pack of 200 decks where a player wants a few: the ones left out never reach the game's item lists
+// (mods::items_left_out, Engine/Vfs/mod_catalog.h), and the rest of the pack loads as it is. The items
+// are what the last merge read of the pack (Mods/.reskate/reskate-items.json), its variants' with it,
+// so a pack the game has not loaded yet has none to show.
+void open_item_choice(ModsPanel& panel, const mods::Mod& mod) {
+    auto& choice = panel.items;
+    choice = {};
+    choice.mod = mod.name;
+    std::set<std::string> keys;
+    for (const auto& source : mods::read_item_sources(panel.root / mods::generated_folder / mods::item_sources_file)) {
+        const auto owner = mods::variant_owner(source.mod);
+        if (folded(owner.empty() ? source.mod : owner) == folded(mod.name)) keys.insert(source.keys.begin(), source.keys.end());
+    }
+    choice.keys.assign(keys.begin(), keys.end());
+    choice.off = mods::items_left_out(mod.name);
+    // A pack's keys mostly share a beginning ("own_heroin_shapes_-_"): shown without it, the names
+    // are told apart at a glance. Cut at a separator, and only where every key has more after it.
+    if (choice.keys.size() > 1) {
+        const auto& first = choice.keys.front();
+        const auto& last = choice.keys.back();   // (sorted: what the first and last share, all share)
+        std::size_t common = 0;
+        while (common < first.size() && common < last.size() && first[common] == last[common]) ++common;
+        while (common > 0 && first[common - 1] != '_' && first[common - 1] != '-') --common;
+        if (std::ranges::all_of(choice.keys, [&](const std::string& key) { return key.size() > common; })) choice.prefix = common;
+    }
+}
+
+// An item's key as the list shows it: without the pack's common beginning, words apart.
+std::string item_label(const std::string& key, std::size_t prefix) {
+    std::string label = key.substr(std::min(prefix, key.size()));
+    std::replace(label.begin(), label.end(), '_', ' ');
+    const auto start = label.find_first_not_of(" -");
+    return start == std::string::npos ? key : label.substr(start);
+}
+
+// The overview turned into the pack's item list, each ticked to load or not, until saved or left.
+void item_chooser(const Fonts& fonts, ModsPanel& panel, const thunderstore::Package* package, const mods::Mod& mod, ImVec2 extent) {
+    auto& choice = panel.items;
+    const auto leave = [&] { choice = {}; };
+    const auto loads = static_cast<std::size_t>(std::ranges::count_if(choice.keys, [&](const std::string& key) {
+        return !choice.off.contains(key); }));
+
+    const float icon = S(64), header_top = ImGui::GetCursorPosY();
+    mod_icon(panel, package, ImGui::GetCursorScreenPos(), icon, mod.directory);
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + icon + S(20));
+    ImGui::BeginGroup();
+    ImGui::PushFont(fonts.heading);
+    ImGui::TextUnformatted(mod.title.c_str());
+    ImGui::PopFont();
+    if (choice.keys.empty()) ImGui::TextDisabled("Choose items");
+    else ImGui::TextDisabled("%s", std::format("Choose items  \xc2\xb7  {} of {} load", loads, choice.keys.size()).c_str());
+    ImGui::EndGroup();
+    ImGui::SetCursorPosY(std::max(ImGui::GetCursorPosY(), header_top + icon) + S(14));
+
+    const float footer = S(24) + ImGui::GetFrameHeight();
+    if (choice.keys.empty()) {
+        ImGui::PushTextWrapPos(0);
+        ImGui::TextUnformatted("ReSkate lists a pack's items once the game has loaded it. Switch this mod on, start "
+                               "Skate once, then come back here to choose which of its items load.");
+        ImGui::PopTextWrapPos();
+        ImGui::SetCursorPos(ImVec2(extent.x - S(28) - S(110), extent.y - footer));
+        if (ImGui::Button("BACK", ImVec2(S(110), 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) leave();
+        return;
+    }
+
+    // Search, and All / None for what the search shows (search "egg", None: no eggs).
+    const auto query = folded(choice.search.data());
+    std::vector<const std::string*> shown;
+    for (const auto& key : choice.keys)
+        if (query.empty() || folded(item_label(key, choice.prefix)).find(query) != std::string::npos ||
+            key.find(query) != std::string::npos)
+            shown.push_back(&key);
+    ImGui::SetNextItemWidth(std::min(S(360), ImGui::GetContentRegionAvail().x * 0.5f));
+    ImGui::InputTextWithHint("##item_search", "Search items", choice.search.data(), choice.search.size());
+    ImGui::SameLine();
+    if (ImGui::Button("All")) for (const auto* key : shown) choice.off.erase(*key);
+    ImGui::SameLine();
+    if (ImGui::Button("None")) for (const auto* key : shown) choice.off.insert(*key);
+    if (!query.empty()) {
+        ImGui::SameLine();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextDisabled("%s", std::format("{} shown", shown.size()).c_str());
+    }
+    ImGui::Dummy(ImVec2(0, S(4)));
+
+    const float body = std::max(S(120), extent.y - ImGui::GetCursorPosY() - footer - S(12));
+    ImGui::BeginChild("##item_choices", ImVec2(0, body), ImGuiChildFlags_NavFlattened);
+    const int columns = std::max(1, static_cast<int>(ImGui::GetContentRegionAvail().x / S(280)));
+    if (ImGui::BeginTable("##items", columns, ImGuiTableFlags_SizingStretchSame)) {
+        for (const auto* key : shown) {
+            ImGui::TableNextColumn();
+            ImGui::PushID(key->c_str());
+            bool on = !choice.off.contains(*key);
+            if (ImGui::Checkbox(item_label(*key, choice.prefix).c_str(), &on)) {
+                if (on) choice.off.erase(*key);
+                else choice.off.insert(*key);
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", key->c_str());
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+    ImGui::EndChild();
+
+    ImGui::SetCursorPosY(extent.y - footer);
+    ImGui::AlignTextToFramePadding();
+    if (!choice.error.empty())
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::danger), "%s", choice.error.c_str());
+    else
+        ImGui::TextDisabled("Applies the next time Skate starts. An item of the game's that the pack only changes stays.");
+    ImGui::SameLine(extent.x - S(28) - S(110) * 2 - S(8));
+    if (ImGui::Button("Cancel", ImVec2(S(110), 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+        leave();
+        return;
+    }
+    ImGui::SameLine(0, S(8));
+    push_primary_button();
+    const bool save = ImGui::Button("SAVE", ImVec2(S(110), 0));
+    pop_primary_button();
+    if (!save) return;
+    if (!mods::save_items_left_out(mod.name, choice.off)) {
+        choice.error = "The choice could not be saved (%LOCALAPPDATA%\\ReSkate\\items-off.json).";
+        return;
+    }
+    logging::log(logging::Level::info, logging::Channel::launcher, "{}: {} of {} item(s) left out, from the next start",
+                 mod.name, choice.keys.size() - loads, choice.keys.size());
+    if (choice.off.empty()) panel.items_off.erase(folded(mod.name));
+    else panel.items_off[folded(mod.name)] = choice.off.size();
+    leave();
+}
+
 void mod_overview(const Fonts& fonts, ModsPanel& panel, const thunderstore::Installed& installed, ImVec2 size,
                   bool installing) {
     if (panel.selected < 0 || panel.selected >= static_cast<int>(panel.list.entries.size())) {
@@ -1449,8 +1584,14 @@ void mod_overview(const Fonts& fonts, ModsPanel& panel, const thunderstore::Inst
     const auto close = [&] {
         panel.overview = false;
         panel.selected = -1;
+        panel.items = {};
         ImGui::CloseCurrentPopup();
     };
+    if (!panel.items.mod.empty() && panel.items.mod == mod.name) {
+        item_chooser(fonts, panel, package, mod, extent);
+        ImGui::EndPopup();
+        return;
+    }
     // The icon (the package's when the mod is on Thunderstore, else its own icon.png), with the name,
     // a line of what it is and its description beside it.
     const float icon = S(104), header_top = ImGui::GetCursorPosY();
@@ -1481,6 +1622,12 @@ void mod_overview(const Fonts& fonts, ModsPanel& panel, const thunderstore::Inst
         ImGui::SameLine();
     }
     if (ImGui::Button("Open folder", ImVec2(0, S(34)))) open_path(mod.directory);
+    if (mod.provides_layout) {
+        ImGui::SameLine();
+        if (ImGui::Button("Choose items", ImVec2(0, S(34)))) open_item_choice(panel, mod);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Pick which of this pack's items load, for a big pack you only want some of.");
+    }
     if (package && !package->package_url.empty()) {
         ImGui::SameLine();
         if (ImGui::Button("Thunderstore page", ImVec2(0, S(34)))) open_url(package->package_url);
@@ -1544,6 +1691,8 @@ void mod_overview(const Fonts& fonts, ModsPanel& panel, const thunderstore::Inst
         overview_fact(fonts, "THUNDERSTORE", package->full_name + (update ? "\nv" + package->latest().number + " available"
                                                                           : std::string("\nUp to date")));
     overview_fact(fonts, "FOLDER", "Mods\\" + mod.name);
+    if (const auto off = panel.items_off.find(folded(mod.name)); off != panel.items_off.end())
+        overview_fact(fonts, "ITEMS LEFT OUT", std::to_string(off->second));
     if (!mod.tool.empty() || !mod.built.empty())
         overview_fact(fonts, "BUILT WITH", mod.tool + (mod.built.empty() ? "" : (mod.tool.empty() ? "" : ", ") + mod.built));
     std::string levels;
@@ -1676,6 +1825,8 @@ void scan(ModsPanel& panel, const launcher_app::Session& session) {
     read_conflict_choices(panel);
     panel.sizes.clear();
     for (const auto& entry : panel.list.entries) panel.sizes[entry.mod.name] = folder_size(entry.mod.directory);
+    panel.items_off.clear();
+    for (const auto& [mod, keys] : mods::items_left_out()) panel.items_off[mod] = keys.size();
     panel.scanned = true;
     if (panel.selected >= static_cast<int>(panel.list.entries.size())) panel.selected = -1;
     std::erase_if(panel.marked, [&](const std::string& name) {
