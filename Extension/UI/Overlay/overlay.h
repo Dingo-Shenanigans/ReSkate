@@ -409,7 +409,7 @@ using MultiplayerQueue = bool (*)(const char *action, const char *argument, cons
 void set_multiplayer_queue(MultiplayerQueue) noexcept;
 // What the session needs being fetched, a map and plugins (Extension/Assets/map_download.h), for its card.
 struct MapDownloadCard {
-    int stage{};                // 0 none, 1 asking, 2 downloading, 3 installing, 4 applying, 5 joining
+    int stage{};                // 0 none, 1 asking, 2 downloading, 3 installing, 4 applying, 5 joining, 6 failed
     std::string map, package, author, version, description;
     std::string have;            // the version installed here, when the host's replaces it
     std::size_t step{}, steps{}; // applying: the merge's steps done of all
@@ -418,15 +418,23 @@ struct MapDownloadCard {
     std::uint64_t bytes{};       // asking: the package's size; 0 when it is not known
     std::uint64_t received{}, total{};
     std::uint32_t yes_bind{}, no_bind{};
+    // The session it is for: its name, and its map as a destination ("root|level"), whose picture
+    // the heading shows when the map itself is not needed. Either may be empty.
+    std::string session, session_map;
     // Everything asked for, the map first when it is needed, then a dedicated server's plugins.
-    // One map alone has the map's own card; anything more is listed.
     struct Item {
         std::string name, author, version, have;
+        std::string icon; // its Thunderstore icon's URL; empty for one that is here already
         bool plugin{}, installed{};
         std::uint64_t bytes{};
     };
     std::vector<Item> items;
     std::size_t current{}; // downloading, installing: the one in hand
+    // Failed (stage 6): why, the stage it failed in (as `stage` counts them) and the item it failed
+    // on (items.size() for none in particular).
+    std::string failure;
+    int failed_stage{};
+    std::size_t failed_item{};
 };
 using MapDownloadFeed = MapDownloadCard (*)();
 void set_map_download_feed(MapDownloadFeed) noexcept;
