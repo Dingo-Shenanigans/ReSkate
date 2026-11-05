@@ -225,6 +225,7 @@ LaunchOptions parse_launch_options(const std::vector<std::wstring>& arguments) {
         }
         if (argument == L"--gpu-diagnostics") { options.gpu_diagnostics = true; continue; }
         if (argument == L"--no-discord") { options.discord = false; continue; }
+        if (argument == L"--no-steam-card-pictures") { options.steam_card_pictures = false; continue; }
         const bool menu_key = argument.starts_with(L"--menu-key=");
         if (menu_key || argument.starts_with(L"--console-key=")) {
             const std::wstring value(argument.substr(argument.find(L'=') + 1));

@@ -44,6 +44,7 @@ struct LaunchOptions {
     bool force_windowed{};
     bool gpu_diagnostics{};
     bool discord{true}; // the game may show a Discord status (--no-discord: never)
+    bool steam_card_pictures{true}; // player cards show Steam profile pictures (--no-steam-card-pictures: off)
     bool window_console{};
     bool log_trace{};
     bool loose_files{true};
