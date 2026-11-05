@@ -165,9 +165,8 @@ struct Hub {
     view::Sort sort{view::Sort::players};
     bool sort_reverse{}; // the other way round: fewest skaters, Z to A
     std::uint64_t selected{};
-    // The row whose actions are open under it (A on a row; 0: none), and whether its details show.
+    // The row whose actions are open under it (A on a row; 0: none).
     std::uint64_t open{};
-    bool details{};
     // The JOIN YOUR FRIENDS tile over the list: the session most friends are on.
     const MultiplayerLobby *crew{};
     // Thunderstore's map packages' icons by their squashed title (squashed()), for servers on a map
@@ -607,7 +606,7 @@ void join_lobby(Hub &h, const MultiplayerLobby &lobby) {
         }
         if (h.selected != lobby.id) wipe(h.password);
         h.selected = h.open = lobby.id;
-        h.details = h.code_mode = false;
+        h.code_mode = false;
         if (h.tab != Tab::browser) to_tab(h, Tab::browser);
         h.focus_next = hash("password");
         return say(h, "Enter the password, then join.");
@@ -900,7 +899,7 @@ void browser_page(Ui &ui, ImVec2 a, ImVec2 z) {
     if (h.code_mode) {
         code_card(ui, la, ImVec2(lz.x, std::min(lz.y, la.y + 560 * u)));
     } else {
-        const float row_height = 120 * u, row_gap = 10 * u, picture_width = 213 * u, strip = 116 * u, facts = 128 * u, pad_x = 30 * u, head = 46 * u;
+        const float row_height = 120 * u, row_gap = 10 * u, picture_width = 213 * u, strip = 116 * u, pad_x = 30 * u, head = 46 * u;
         const float right = lz.x - 20 * u;
         // The columns, from the right: the skaters with a bar of how full it is, the ping, the
         // friends on it and its map; the name (with its type plate under it) has what is left. A
@@ -927,7 +926,7 @@ void browser_page(Ui &ui, ImVec2 a, ImVec2 z) {
             const auto &lobby = *row.lobby;
             const auto id = hash("server", lobby.id);
             const bool open = h.open == lobby.id;
-            const float block = row_height + (open ? strip + (h.details ? facts : 0) : 0);
+            const float block = row_height + (open ? strip : 0);
             bool drawn{};
             const float top = list.next(block, row_gap, drawn);
             const ImVec2 p(la.x, top), q(right, top + row_height);
@@ -937,15 +936,15 @@ void browser_page(Ui &ui, ImVec2 a, ImVec2 z) {
             if (hit.focus && (h.ring || ui.moved || ui.clicked) && h.selected != lobby.id) {
                 wipe(h.password);
                 h.selected = lobby.id;
-                h.open = 0, h.details = false;
+                h.open = 0;
             }
             if (hit.press) {
                 if (ui.doubled) join(h, row);
                 else if (open) h.open = 0;
                 else {
-                    h.open = h.selected = lobby.id, h.details = false;
+                    h.open = h.selected = lobby.id;
                     // From the pad_x or the keys, on to the first thing it offers.
-                    if (h.ring) h.focus_next = row.joinable ? hash("row-join") : lobby.dedicated ? hash("row-favorite") : hash("row-details");
+                    if (h.ring && (row.joinable || lobby.dedicated)) h.focus_next = row.joinable ? hash("row-join") : hash("row-favorite");
                 }
             }
             // White under the D-pad or the keys and while open, a lighter grey under the pointer.
@@ -1008,8 +1007,8 @@ void browser_page(Ui &ui, ImVec2 a, ImVec2 z) {
             float x = left;
             const char *does = mp.lobby_joining ? "JOINING..." : row.here ? "YOU ARE HERE" : row.own ? "YOURS" : row.full ? "FULL"
                                : mp.active && mp.hosting ? "END YOUR SESSION FIRST" : "JOIN";
-            const auto join_id = hash("row-join"), favorite_id = hash("row-favorite"), details_id = hash("row-details"), password_id = hash("password");
-            list.reveal(join_id, top, block), list.reveal(favorite_id, top, block), list.reveal(details_id, top, block), list.reveal(password_id, top, block);
+            const auto join_id = hash("row-join"), favorite_id = hash("row-favorite"), password_id = hash("password");
+            list.reveal(join_id, top, block), list.reveal(favorite_id, top, block), list.reveal(password_id, top, block);
             const float join_width = width_of(ui.bold, 36 * u, does) + 120 * u;
             if (action(ui, join_id, ImVec2(x, y0), ImVec2(x + join_width, y1), does, true, false, row.joinable, &list.box)) join(h, row);
             x += join_width + 16 * u;
@@ -1017,12 +1016,6 @@ void browser_page(Ui &ui, ImVec2 a, ImVec2 z) {
                 const char *text = row.favorite ? "REMOVE FAVORITE" : "FAVORITE";
                 const float w = width_of(ui.bold, 36 * u, text) + 70 * u;
                 if (action(ui, favorite_id, ImVec2(x, y0), ImVec2(x + w, y1), text, false, false, true, &list.box)) toggle_favorite(h, lobby);
-                x += w + 16 * u;
-            }
-            {
-                const char *text = h.details ? "HIDE DETAILS" : "DETAILS";
-                const float w = width_of(ui.bold, 36 * u, text) + 70 * u;
-                if (action(ui, details_id, ImVec2(x, y0), ImVec2(x + w, y1), text, false, false, true, &list.box)) h.details = !h.details;
                 x += w + 16 * u;
             }
             if (lobby.password_required && row.joinable) {
@@ -1038,17 +1031,6 @@ void browser_page(Ui &ui, ImVec2 a, ImVec2 z) {
             if (!status.empty()) {
                 const float w = std::min(width_of(ui.body, 28 * u, status), std::max(0.f, right - pad_x - x));
                 label(draw, ui.body, 28 * u, ImVec2(right - pad_x - w, y0 + (y1 - y0 - 28 * u) * .5f), right - pad_x, sub_ink_lit, view::caption(status, 96));
-            }
-            if (h.details) {
-                // What the listing says of it. (A server's rules and mods are not in the listing.)
-                const float fy = y0 + strip - 6 * u;
-                std::string first = std::string(lobby.official ? "Official server" : lobby.dedicated ? "Dedicated server" : "Player lobby") + "  -  " + row.map + "  -  " +
-                                    std::to_string(lobby.players) + " / " + std::to_string(lobby.capacity) + " skaters";
-                if (lobby.ping >= 0) first += "  -  " + std::to_string(lobby.ping) + " ms";
-                first += lobby.password_required ? "  -  password needed" : "  -  no password";
-                label(draw, ui.body, 30 * u, ImVec2(left, fy), right - pad_x, skate_theme::black, first);
-                label(draw, ui.body, 30 * u, ImVec2(left, fy + 50 * u), right - pad_x, sub_ink_lit,
-                      view::caption(!lobby.friends.empty() ? "Friends here: " + lobby_friends_text(lobby, lobby.friends.size()) : mp.browser_status, 160));
             }
         }
         list.end();
