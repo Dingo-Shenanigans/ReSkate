@@ -12,6 +12,7 @@
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/engine.h"
 #include "Engine/Game/Build/20260929/native_menu.h"
+#include "Engine/Game/Build/20260929/ui_state_flags.h"
 #include <algorithm>
 #include <atomic>
 #include <cstring>
@@ -198,6 +199,73 @@ std::atomic<int> page_shown{}; // 0: Multiplayer, 1: Mod Options, 2: Mod Manager
 std::atomic<bool> game_in_menu{};
 std::atomic<bool> back_wanted{}; // hold_native_menu_back
 std::atomic<int> page_wanted{-1}; // show_native_menu_page
+// ui backdrop (an experiment, saved only for the run): while the Mod Manager is the page shown,
+// raise one of the game's UI state flags (Engine/Game/Build/20260929/ui_state_flags.h), Menu_HUB
+// or Menu_CAS, to see whether the game then draws that page's presentation backdrop behind ours.
+// 0: off, else the Menu flag. backdrop_raised is the flag ReSkate has up (client thread only).
+std::atomic<std::uint32_t> backdrop_mode{};
+std::uint32_t backdrop_raised{};
+const char* backdrop_name(std::uint32_t flag) {
+    return flag == addr::ui_state_flags::menu_hub ? "Menu_HUB" : flag == addr::ui_state_flags::menu_cas ? "Menu_CAS" : "none";
+}
+template<std::size_t N> bool code_matches(std::uintptr_t address, const std::array<unsigned char, N>& expected) {
+    std::array<unsigned char, N> bytes{};
+    return memory::peek(address, bytes) && bytes == expected;
+}
+// Sets (raise) or clears one Menu flag through the game's own entry points. They do nothing when
+// the flags' component is not up, and only act when the request changes something, so asking
+// again while the flag is up is free. False (said once) when their bytes are not the ones known.
+bool set_menu_flag(std::uintptr_t base, std::uint32_t flag, bool raise) {
+    namespace f = addr::ui_state_flags;
+    static bool refused{};
+    if (refused) return false;
+    if (!code_matches(base + f::raise, f::raise_prefix) || !code_matches(base + f::lower, f::lower_prefix) ||
+        !code_matches(base + f::raise_worker, f::raise_worker_prefix) ||
+        !code_matches(base + f::lower_worker, f::lower_worker_prefix)) {
+        refused = true;
+        logging::write(logging::Level::warning, logging::Channel::ui,
+            "Backdrop: the game's UI state flag functions are not the ones known; ui backdrop does nothing.");
+        return false;
+    }
+    alignas(8) std::array<std::byte, f::flags_size> flags{};
+    std::memcpy(flags.data() + f::menu_word, &flag, sizeof(flag));
+    reinterpret_cast<void (*)(const void*)>(base + (raise ? f::raise : f::lower))(flags.data());
+    return true;
+}
+// Lowers what ReSkate raised; `why` goes in the log.
+void lower_backdrop(std::uintptr_t base, const char* why) {
+    if (!backdrop_raised) return;
+    const auto flag = std::exchange(backdrop_raised, 0U);
+    if (base && set_menu_flag(base, flag, false))
+        logging::printf(logging::Level::info, logging::Channel::ui, "Backdrop: lowered %s (%s).", backdrop_name(flag), why);
+}
+// Each tick of the first page slot. The flag goes up while the Mod Manager is the selected page of
+// the open pause menu (under the game's side menu too: the page is still there), and down when
+// another page is selected, the menu closes or the mode changes. Going straight to the game's HUB
+// page with Menu_HUB up leaves it up: that page raises it itself, a request that changed nothing
+// while ours was up, and lowering it then would take it from the HUB.
+void tick_backdrop(const Context& context, std::uintptr_t base, bool mods_selected, bool hub_selected) {
+    const auto wanted = mods_selected ? backdrop_mode.load(std::memory_order_relaxed) : 0U;
+    if (backdrop_raised && backdrop_raised != wanted) {
+        if (backdrop_raised == addr::ui_state_flags::menu_hub && hub_selected) {
+            backdrop_raised = 0;
+            logging::write(logging::Level::info, logging::Channel::ui, "Backdrop: Menu_HUB left up for the game's HUB page.");
+        } else lower_backdrop(base, mods_selected ? "mode changed" : "Mod Manager left");
+    }
+    // Asked every tick while wanted: free while it is up, and put back if something lowered it.
+    if (wanted && set_menu_flag(base, wanted, true) && backdrop_raised != wanted) {
+        backdrop_raised = wanted;
+        logging::printf(logging::Level::info, logging::Channel::ui, "Backdrop: raised %s for the Mod Manager.", backdrop_name(wanted));
+    }
+    // Our page's own black backdrop goes lighter while a game backdrop is asked for behind it.
+    auto& mods = page_state(menu_view::mods_page);
+    const float opacity = backdrop_raised ? 0.3f : 0.75f;
+    if (mods.manager == context.manager && mods.page.handle && mods.backdrop_style.handle &&
+        mods.backdrop_opacity != opacity && context.type_of(mods.backdrop_style.handle) == mods.backdrop_style.type) {
+        context.set(context.field(mods.backdrop_style, 0x22092eae), opacity);
+        mods.backdrop_opacity = opacity;
+    }
+}
 // Selects the tab of ReSkate's page `slot`, as restore_last_tab does when the menu reopens.
 void select_page(const Context& context, Value menu, unsigned slot) {
     const auto list = context.path(menu, {content, items});
@@ -482,6 +550,8 @@ void initialize(const Context& context, Root root, const MultiplayerModel& model
     catch (const std::exception&) { backdrop_style = owned_style(context, "BackgroundStylesList/BackgroundStyle.Dark", background_style); }
     context.set(context.field(backdrop_style, 0x87638719), false); // Opaque: off, so opacity applies.
     context.set(context.field(backdrop_style, 0x22092eae), 0.75f); // Opacity.
+    s.backdrop_style = backdrop_style;
+    s.backdrop_opacity = 0.75f;
     const auto backdrop = make(context, {0x4d7e89f7, 32});
     context.set(context.field(backdrop, 0xff242844), 11);
     context.set(context.field(backdrop, 0xccf9c3c6), Ref{0, backdrop_style.handle});
@@ -673,6 +743,7 @@ void tick_page(std::uintptr_t base, bool loading) noexcept {
             // (Said at once when another page takes its place, not left to go stale.)
             page_shown.store(hub ? overlay::hub_home_section : static_cast<int>(shown_slot), std::memory_order_relaxed);
             page_seen.store(on_screen || hub ? now : 0, std::memory_order_relaxed);
+            tick_backdrop(context, base, ours && shown_slot == menu_view::mods_page && game_in_menu.load(std::memory_order_relaxed), hub);
         }
         if (s.slot == menu_view::mods_page && active.model.handle == s.core.handle && s.page.handle &&
             context.type_of(s.page.handle) == s.page.type && back_wanted.load(std::memory_order_relaxed) != s.back_held)
@@ -803,6 +874,8 @@ bool prepare_native_menu_level_load(std::uintptr_t base) noexcept {
     }
 }
 void native_menu_before_level_transition(std::uintptr_t base, unsigned next) noexcept {
+    // A UI state flag raised for the Mod Manager must not outlive the level it was raised in.
+    lower_backdrop(base, "level transition");
     lifetime.before_transition(next, [&] {
         // Both shutdown and multiplayer pause dumps fault in the engine
         // while destroying a 0x590-byte menu item with an unloaded widget asset.
@@ -826,6 +899,20 @@ overlay::HubPage native_menu_page() noexcept {
 void hold_native_menu_back(bool held) noexcept { back_wanted.store(held, std::memory_order_relaxed); }
 void show_native_menu_page(int slot) noexcept { page_wanted.store(slot, std::memory_order_relaxed); }
 bool native_pause_menu_open() noexcept { return game_in_menu.load(std::memory_order_relaxed); }
+std::string set_native_menu_backdrop(std::string_view mode) {
+    std::uint32_t flag{};
+    if (mode == "hub") flag = addr::ui_state_flags::menu_hub;
+    else if (mode == "cas") flag = addr::ui_state_flags::menu_cas;
+    else if (mode != "off") {
+        if (!mode.empty()) return "error: Choose hub, cas or off.";
+        flag = backdrop_mode.load(std::memory_order_relaxed);
+        return std::string("Backdrop: ") + (flag ? backdrop_name(flag) : "off") + ".";
+    }
+    backdrop_mode.store(flag, std::memory_order_relaxed);
+    logging::printf(logging::Level::info, logging::Channel::ui, "Backdrop: mode %s.", flag ? backdrop_name(flag) : "off");
+    return flag ? std::string("Backdrop: ") + backdrop_name(flag) + " is raised while the Mod Manager is the page shown."
+                : "Backdrop: off.";
+}
 void tick_native_menu(std::uintptr_t base, bool loading) noexcept {
     const ui::OwnUiWrites own_writes; // Custom labels are not the native trick list.
     run_pending_ui_dump(base);
@@ -833,6 +920,8 @@ void tick_native_menu(std::uintptr_t base, bool loading) noexcept {
     tick_ui_sounds(base, loading);
     // (Read here: it takes the UI model's lock, which a page's tick then holds.)
     game_in_menu.store(!loading && sample_game_ui_state(base).in_menu, std::memory_order_relaxed);
+    // (Also here: the page tick that lowers it does not run while the pause menu's core is not found.)
+    if (backdrop_raised && !loading && !game_in_menu.load(std::memory_order_relaxed)) lower_backdrop(base, "pause menu closed");
     if (lifetime.blocked()) return;
     tick_native_throwdown_menu(base, loading, game_in_menu.load(std::memory_order_relaxed));
     if (native_throwdown_match_active()) {
