@@ -107,6 +107,8 @@ struct Index::State {
     std::unordered_map<std::string, std::vector<std::size_t>> by_leaf, bundle_assets;
     std::unordered_map<std::uint64_t, std::size_t> by_resource;
     std::unordered_map<std::uint64_t, std::vector<std::size_t>> chunk_by_prefix;
+    std::set<std::string> bundle_chunk_listed;   // chunks a bundle entry of is indexed
+    std::unordered_map<std::string, std::size_t> bundle_twin;   // a TOC chunk's guid -> its bundle entry
     std::size_t unreadable{};
     // Each mod's bundle-reference table copies, read when a cut first needs them: per source,
     // table name -> its presets (lower-case path -> bundle index).
@@ -170,6 +172,8 @@ struct Index::State {
         auto& n = nodes[i];
         if (n.linked) return;
         n.linked = true;
+        if (n.piece.kind == Piece::toc_chunk)
+            if (const auto twin = bundle_twin.find(n.guid); twin != bundle_twin.end()) n.edges.push_back(twin->second);
         if (n.piece.kind == Piece::chunk || n.piece.kind == Piece::toc_chunk) return;
         if (n.piece.kind == Piece::resource) {
             try { scan(fb::decode_cas(encoded(n.piece), {game}), n.edges); } catch (const std::exception&) { ++unreadable; }
@@ -268,8 +272,16 @@ struct Index::State {
                         // whichever wins the name, so each mod's items are found in its own copy.
                         const bool list_copy = kind == Piece::ebx && name.starts_with("items/") &&
                                                name.find("collection") != std::string::npos && by_name.contains(name);
+                        // A chunk a bundle lists is looked up in that bundle's own chunk table as well as by
+                        // guid: a TOC copy of it (this mod's or a higher one's) does not stand in for the
+                        // bundle's entry, and without it the game finds nothing there (the GUID table guard's
+                        // "not in its table", then a crash drawing the item, 2026-11-05). One bundle entry per
+                        // chunk is kept beside its TOC copy.
                         if (kind == Piece::chunk) {
-                            if (by_guid.contains(guid_key(asset.guid))) return;
+                            const auto key = guid_key(asset.guid);
+                            if (const auto f = by_guid.find(key); f != by_guid.end() &&
+                                (nodes[f->second].piece.kind != Piece::toc_chunk || !bundle_chunk_listed.insert(key).second))
+                                return;
                         } else if (!list_copy && (kind == Piece::resource ? res_by_name.contains(name)
                                                            : by_name.contains(name) && nodes[by_name[name]].piece.kind == Piece::ebx)) {
                             return;  // a higher mod's
@@ -286,7 +298,8 @@ struct Index::State {
                         const auto index = nodes.size();
                         if (kind == Piece::chunk) {
                             n.guid = guid_key(asset.guid);
-                            by_guid.emplace(n.guid, index);
+                            if (!by_guid.emplace(n.guid, index).second) bundle_twin.emplace(n.guid, index);
+                            bundle_chunk_listed.insert(n.guid);
                         } else if (!list_copy) {
                             // EBX first by name; a resource only where no EBX has the name.
                             if (kind == Piece::ebx || !by_name.contains(name)) by_name[name] = index;
