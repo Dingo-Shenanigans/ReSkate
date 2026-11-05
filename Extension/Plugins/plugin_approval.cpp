@@ -63,6 +63,7 @@ constexpr Capability capabilities[] = {
     {"world.ai", "WORLD", Risk::amber, "Spawn and clear AI skaters"},
     {"effects", "WORLD", Risk::amber, "Draw particle effects and decals in the world"},
     {"world.raycast", "WORLD", Risk::grey, "Cast rays and pick objects in the world"},
+    {"world.vehicles", "WORLD", Risk::red, "Take over nearby traffic vehicles and move them"},
     {"camera", "CAMERA", Risk::amber, "Control the camera"},
     {"input", "INPUT", Risk::amber, "Bind your keys, pads and mouse, and read text input"},
     {"input.write", "INPUT", Risk::amber, "Replace your controller input while you play"},
@@ -291,6 +292,7 @@ std::string approval_prompt(const std::vector<PermissionGroup>& groups) {
             if (has("world.ai")) actions.push_back("spawn or clear AI skaters");
             if (has("effects")) actions.push_back("draw particle effects and decals");
             if (has("world.raycast")) actions.push_back("probe the world and pick objects");
+            if (has("world.vehicles")) actions.push_back("take over nearby traffic vehicles and move them");
         } else if (group.category == "CAMERA") {
             actions.push_back("control the camera");
         } else if (group.category == "INPUT") {
