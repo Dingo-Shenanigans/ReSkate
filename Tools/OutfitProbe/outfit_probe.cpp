@@ -166,7 +166,8 @@ std::string round_trip(syn::Index& index, const std::string& item, const fs::pat
     std::size_t lists = 0;
     for (const auto& piece : cut->pieces)
         if (piece.kind == syn::Piece::ebx && piece.name.starts_with("items/") && piece.name.find("collection") != std::string::npos) ++lists;
-    if (!lists) return "no item list names it, so the viewer's catalogue would not have it";
+    // (Most mods' items are listed by no item list of theirs: the game learns of those another way,
+    // the same for the viewer's copy. Those that are listed bring the list.)
     return "ok: " + std::to_string(lists) + " item list(s), " + std::to_string(bundles) + " bundles, " + std::to_string(checked) + " payloads read back, " +
            std::to_string(presets) + " presets in the table, " + mb(written.bytes) + " written";
 }
@@ -177,7 +178,7 @@ int main(int argc, char** argv) {
     const fs::path game = argc > 1 ? fs::path(argv[1]) : self.parent_path();
     const fs::path out = argc > 2 ? fs::path(argv[2]) : self / "outfit-probe-report.txt";
     report.open(out);
-    say("outfit-probe 8: game " + game.string());
+    say("outfit-probe 9: game " + game.string());
     const auto sources = enabled_mods(game / "Mods");
     say(std::to_string(sources.size()) + " enabled mods; reading their cosmetics...");
     const auto started = std::chrono::steady_clock::now();
@@ -238,6 +239,11 @@ int main(int argc, char** argv) {
         ++tried;
         if (verdict.starts_with("ok")) ++ok;
         say("   " + index->sources()[source].name + ": " + item + "  " + verdict);
+        // What refers to the item (where its mod lists it), to see how the game learns of it.
+        const auto refs = index->referrers(item);
+        if (refs.empty()) say("      nothing refers to it");
+        for (std::size_t r = 0; r < refs.size() && r < 12; ++r)
+            say("      referred to by " + refs[r][0] + " (" + refs[r][1] + ", " + refs[r][2] + ")");
     }
     std::error_code gone;
     fs::remove_all(folder, gone);

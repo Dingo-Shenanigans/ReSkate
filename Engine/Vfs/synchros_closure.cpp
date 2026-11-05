@@ -441,4 +441,22 @@ std::pair<std::size_t, std::size_t> Index::tables() {
     return {state_->presets.size(), presets};
 }
 const std::vector<Source>& Index::sources() const noexcept { return state_->sources; }
+
+std::vector<std::array<std::string, 3>> Index::referrers(std::string_view item) {
+    auto& s = *state_;
+    std::vector<std::array<std::string, 3>> out;
+    const auto name = lower(std::string(item));
+    const auto found = s.by_name.find(name);
+    if (found == s.by_name.end()) return out;
+    const auto& guid = s.nodes[found->second].guid;
+    for (const auto& n : s.nodes) {
+        if (!n.doc) continue;
+        for (const auto& imp : n.doc->imports)
+            if (guid_key(imp.fileGuid) == guid) {
+                out.push_back({n.piece.name, n.doc->rootType, s.sources[n.piece.source].name});
+                break;
+            }
+    }
+    return out;
+}
 } // namespace dingosdk::synchros

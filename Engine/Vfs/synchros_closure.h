@@ -83,6 +83,8 @@ public:
     [[nodiscard]] std::size_t unreadable() const noexcept;
     // How many bundle-reference table copies were read, and the presets in them all.
     [[nodiscard]] std::pair<std::size_t, std::size_t> tables();
+    // For research: every EBX that refers to `item`'s file (an import of it): name, root type, mod.
+    [[nodiscard]] std::vector<std::array<std::string, 3>> referrers(std::string_view item);
     [[nodiscard]] const std::vector<Source>& sources() const noexcept;
 
 private:
