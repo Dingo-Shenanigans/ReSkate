@@ -74,19 +74,34 @@ void host_page(SkateMenu &menu, const Model &model, const CallbacksV3 &) {
     unsigned tps = mp.hosting ? mp.tps : menu.multiplayer_tps;
     bool locked = mp.hosting ? mp.password_required : menu.multiplayer_password_enabled;
 
-    begin_card(menu, "host-access", "WHO CAN JOIN");
-    choice(menu, "visibility", visibility, {"Join code only", "Public lobby"}, editable);
+    // Who can get in, and the session's size and speed: two cards of about one height, so in a wide
+    // window they sit side by side.
+    begin_card(menu, "host-access", "LOBBY");
+    info(menu, "Map", map_label(model, mp.map));
+    {
+        static const std::vector<std::string> visibilities{"Join code only", "Public lobby"};
+        option_row(menu, "Who can join", "Whether the lobby is listed in Servers or only found with your join code.",
+                   visibility, visibilities, editable);
+    }
     menu.multiplayer_visibility = visibility;
     note(visibility == 0 ? "Unlisted: friends join with the code you share from Session." : "Listed in Servers: anyone on a compatible build can join.");
-    end_card();
-
-    begin_card(menu, "host-settings", "LOBBY SETTINGS");
-    info(menu, "Map", map_label(model, mp.map));
     ImGui::BeginDisabled(!editable);
     field(menu, "Lobby name");
     const auto name_hint = mp.local_name.empty() ? std::string("Your Steam name") : mp.local_name + " (your Steam name)";
     ImGui::InputTextWithHint("##lobby-name", name_hint.c_str(), menu.multiplayer_lobby_name.data(),
                              menu.multiplayer_lobby_name.size());
+    ImGui::EndDisabled();
+    toggle_row(menu, "Require password", "Players must enter a password to join.", locked, editable, locked ? "ON" : "OFF");
+    menu.multiplayer_password_enabled = locked;
+    if (locked && !mp.hosting) {
+        field(menu, "Password");
+        ImGui::InputTextWithHint("##host-password", "Choose a lobby password", menu.multiplayer_host_password.data(),
+                                 menu.multiplayer_host_password.size(), ImGuiInputTextFlags_Password);
+    }
+    end_card();
+
+    begin_card(menu, "host-settings", "PLAYERS AND SPEED");
+    ImGui::BeginDisabled(!editable);
     field(menu, "Player limit", "Includes you.");
     ::dingosdk::overlay::menu::slider_int("##player-limit", &capacity, 2, multiplayer_lobby_player_limit, "%d players");
     menu.multiplayer_capacity = capacity;
@@ -104,14 +119,6 @@ void host_page(SkateMenu &menu, const Model &model, const CallbacksV3 &) {
             tps = multiplayer_tick_rates[static_cast<std::size_t>(rate)];
     }
     menu.multiplayer_tps = tps;
-    ImGui::Dummy(ImVec2(0, px(2)));
-    toggle_row(menu, "Require password", "Players must enter a password to join.", locked, editable, locked ? "ON" : "OFF");
-    menu.multiplayer_password_enabled = locked;
-    if (locked && !mp.hosting) {
-        field(menu, "Password");
-        ImGui::InputTextWithHint("##host-password", "Choose a lobby password", menu.multiplayer_host_password.data(),
-                                 menu.multiplayer_host_password.size(), ImGuiInputTextFlags_Password);
-    }
     const auto rates = "Nearby players update at " + std::to_string(tps) + " TPS, distant ones at 10 and 5.";
     note(rates.c_str());
     end_card();
@@ -229,7 +236,8 @@ void debug_page(SkateMenu &menu, const MultiplayerModel &mp, const CallbacksV3 &
 // Local-only display preferences; they live in Settings > Interface.
 void multiplayer_display_settings(SkateMenu &menu, const Model &model) {
     const auto &mp = model.multiplayer;
-    begin_card(menu, "multiplayer-display", "MULTIPLAYER");
+    // Three cards by topic, so in a wide window they share the two columns.
+    begin_card(menu, "multiplayer-players", "PLAYERS");
     {
         std::array<char, 65> unused{};
         field(menu, "Player distance", "How far away other players are still shown as skaters. Past it they keep their nametag "
@@ -255,6 +263,16 @@ void multiplayer_display_settings(SkateMenu &menu, const Model &model) {
         std::array<char, 65> unused{};
         send_private(menu, "direct-connections", direct ? "on" : "off", unused, false);
     }
+    if (dingosdk::discord_presence::available()) {
+        bool discord = dingosdk::discord_presence::enabled();
+        if (toggle_row(menu, "Discord status",
+                "Show on your Discord profile where you are skating: the map, the server or lobby and how many are in it. A session with a password shows no name.",
+                discord))
+            dingosdk::discord_presence::set_enabled(discord);
+    }
+    end_card();
+
+    begin_card(menu, "multiplayer-nametags", "NAMETAGS");
     bool nametags = mp.nametags;
     if (toggle_row(menu, "Player nametags",
                    "The name above each skater, with their distance: purple for ReSkate developers, red for content creators, "
@@ -289,6 +307,9 @@ void multiplayer_display_settings(SkateMenu &menu, const Model &model) {
         std::array<char, 65> unused{};
         send_private(menu, "nametags-friends", friends_only ? "on" : "off", unused, false);
     }
+    end_card();
+
+    begin_card(menu, "multiplayer-chat", "CHAT");
     bool chat = mp.chat_visible;
     if (toggle_row(menu, "Text chat", "Show session chat in the bottom-right corner; T opens it. Hidden, nothing shows and T does nothing.",
             chat)) {
@@ -299,13 +320,6 @@ void multiplayer_display_settings(SkateMenu &menu, const Model &model) {
     if (toggle_row(menu, "Chat filter", "Show bad words in chat messages and names as ****.", filter, mp.chat_visible, "OFF")) {
         std::array<char, 65> unused{};
         send_private(menu, "chat-filter", filter ? "on" : "off", unused, false);
-    }
-    if (dingosdk::discord_presence::available()) {
-        bool discord = dingosdk::discord_presence::enabled();
-        if (toggle_row(menu, "Discord status",
-                "Show on your Discord profile where you are skating: the map, the server or lobby and how many are in it. A session with a password shows no name.",
-                discord))
-            dingosdk::discord_presence::set_enabled(discord);
     }
     bool bubbles = mp.chat_bubbles;
     if (toggle_row(menu, "Chat bubbles", "Show each player's newest chat line in a bubble above their skater.", bubbles)) {
@@ -357,8 +371,8 @@ void multiplayer_display_settings(SkateMenu &menu, const Model &model) {
              ImGui::GetTime() >= menu.chat_bubbles_history_until))
             menu.chat_bubbles_history_pending.reset();
     }
-    note("These only change your screen; nobody else is affected.");
     end_card();
+    note("Nametags and chat only change your screen; nobody else is affected.");
 }
 void multiplayer_network_page(SkateMenu &menu, const Model &model, const CallbacksV3 &callbacks) {
     debug_page(menu, model.multiplayer, callbacks);

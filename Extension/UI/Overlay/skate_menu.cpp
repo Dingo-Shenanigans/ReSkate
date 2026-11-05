@@ -342,53 +342,124 @@ namespace {
 constexpr float card_pad_x = 16, card_pad_y = 14, card_gap = 10;
 // A window this wide, or wider, lays a page's cards out in two columns.
 constexpr float two_column_width = 780;
+// A run of one card spans the page in a wide window, but no wider than this: across a wider card a
+// row's label and its control drift too far apart to read as one.
+constexpr float single_card_width = 900;
+// A longer run than this goes one card at a time under the shorter column: working out the best split
+// tries every way of sharing the cards between the two columns.
+constexpr std::size_t planned_run_cards = 12;
 struct CardFrame {
     ImGuiWindow* window{};
     ImDrawListSplitter splitter;
     float left{}, right{}, top{};
     float work_max{}, content_max{};
     unsigned seed{};
-    int column = -1; // its column in a two-column run, -1 for none
+    ImGuiID id{};
+    int column = -1; // its column in a two-column run (2 for a run's only card, across the page), -1 for none
 };
 std::array<CardFrame, 6>& card_frames() {
     static auto* frames = new std::array<CardFrame, 6>;
     return *frames;
 }
 int card_depth = 0;
-// The run of cards one after another on a wide page: each goes under the shorter of the two
-// columns. Anything drawn between two cards ends the run, so a page's own layout is kept.
+// A run of cards as drawn: each card's id and its height with the gap under it, and the frame.
+struct CardRun {
+    std::vector<ImGuiID> cards;
+    std::vector<float> heights;
+    int frame = 0;
+};
+// The runs drawn lately, by the id of their first card. A card's height is only known once it has
+// drawn, so a run is laid out from how tall its cards were the frame before.
+std::map<ImGuiID, CardRun>& card_runs() {
+    static auto* runs = new std::map<ImGuiID, CardRun>;
+    return *runs;
+}
+// The run of cards one after another on a wide page, shared between two columns so that they end up
+// about as tall as each other. Anything drawn between two cards ends the run, so a page's own layout
+// is kept.
 struct CardFlow {
     ImGuiWindow* window{};
     int frame = -1;
     ImVec2 next{};   // where a card leaves the cursor: the next card carries the run on only from there
     float left{}, width{};
     std::array<float, 2> bottom{};
+    ImGuiID first{};       // the run's first card, which keys its record
+    CardRun drawn;         // this frame's run so far
+    std::vector<int> plan; // each card's column from last frame's heights; empty: each under the shorter column
+    bool single = false;   // the run was one card last frame, which then spans the page
 };
 CardFlow card_flow;
+
+// Columns for a run's cards, the first top left, that leave the taller column as short as they can.
+// Used only when that beats putting each card under the shorter column by more than a row, so a page
+// keeps the usual flow unless the split is clearly better. Empty for the usual flow.
+std::vector<int> plan_card_columns(const std::vector<float>& heights) {
+    const std::size_t count = heights.size();
+    if (count < 3 || count > planned_run_cards) return {};
+    std::array<float, 2> greedy{};
+    for (const float height : heights) greedy[greedy[1] < greedy[0] ? 1 : 0] += height;
+    unsigned best = 0;
+    float best_tallest = FLT_MAX, best_spread = FLT_MAX;
+    // Bit i of a split puts card i in the right column; the first card always heads the left one.
+    for (unsigned split = 0; split < (1u << count); split += 2) {
+        std::array<float, 2> sum{};
+        for (std::size_t i = 0; i < count; ++i) sum[(split >> i) & 1u] += heights[i];
+        const float tallest = std::max(sum[0], sum[1]), spread = std::abs(sum[0] - sum[1]);
+        if (tallest < best_tallest || (tallest == best_tallest && spread < best_spread)) best = split, best_tallest = tallest, best_spread = spread;
+    }
+    if (best_tallest >= std::max(greedy[0], greedy[1]) - px(36)) return {};
+    std::vector<int> columns(count);
+    for (std::size_t i = 0; i < count; ++i) columns[i] = static_cast<int>((best >> i) & 1u);
+    return columns;
+}
 }
 void begin_card(SkateMenu& menu, const char* id, const char* title, const char* subtitle) {
     ImGui::PushID(id);
     ImGuiWindow* window = ImGui::GetCurrentWindow();
     const auto cursor = ImGui::GetCursorScreenPos();
     const float avail = ImGui::GetContentRegionAvail().x;
+    const ImGuiID card_id = ImGui::GetID("##card");
     float left = cursor.x, right = cursor.x + avail, top = cursor.y;
     int column = -1;
     if (card_depth == 0 && shown_layout == menu_layout_hub && avail >= px(two_column_width)) {
         auto& flow = card_flow;
-        const bool carries_on = flow.window == window && flow.frame == ImGui::GetFrameCount() && std::abs(cursor.x - flow.next.x) < 0.5f &&
+        const int frame_count = ImGui::GetFrameCount();
+        const bool carries_on = flow.window == window && flow.frame == frame_count && std::abs(cursor.x - flow.next.x) < 0.5f &&
                                 std::abs(cursor.y - flow.next.y) < 0.5f;
-        if (!carries_on) flow = CardFlow{window, ImGui::GetFrameCount(), {}, cursor.x, avail, {cursor.y, cursor.y}};
-        column = flow.bottom[1] < flow.bottom[0] ? 1 : 0;
-        const float half = (flow.width - px(card_gap)) * .5f;
-        left = flow.left + static_cast<float>(column) * (half + px(card_gap));
-        right = left + half;
-        top = flow.bottom[static_cast<std::size_t>(column)];
+        if (!carries_on) {
+            flow = CardFlow{window, frame_count, {}, cursor.x, avail, {cursor.y, cursor.y}, card_id, {}, {}, false};
+            flow.drawn.frame = frame_count;
+            auto& runs = card_runs();
+            if (const auto found = runs.find(card_id); found != runs.end()) {
+                flow.single = found->second.cards.size() == 1;
+                flow.plan = plan_card_columns(found->second.heights);
+                // Last frame's cards, to check the run is still the same cards as it draws.
+                if (!flow.plan.empty()) flow.drawn.cards = found->second.cards;
+            }
+            // Runs not drawn for a minute or so, of pages long closed, are let go.
+            if (runs.size() > 256) std::erase_if(runs, [&](const auto& run) { return frame_count - run.second.frame > 3600; });
+        }
+        const std::size_t index = flow.drawn.heights.size();
+        if (!flow.plan.empty() && (index >= flow.plan.size() || flow.drawn.cards[index] != card_id)) flow.plan.clear();
+        if (flow.single && index == 0) {
+            column = 2;
+            right = left + std::min(flow.width, px(single_card_width));
+        } else {
+            column = !flow.plan.empty() ? flow.plan[index] : flow.bottom[1] < flow.bottom[0] ? 1 : 0;
+            const float half = (flow.width - px(card_gap)) * .5f;
+            left = flow.left + static_cast<float>(column) * (half + px(card_gap));
+            right = left + half;
+            top = flow.bottom[static_cast<std::size_t>(column)];
+        }
+        if (flow.drawn.cards.size() <= index) flow.drawn.cards.resize(index + 1);
+        flow.drawn.cards[index] = card_id;
     }
     if (card_depth < static_cast<int>(card_frames().size())) {
         auto& frame = card_frames()[static_cast<std::size_t>(card_depth)];
         frame.window = window;
         frame.left = left, frame.right = right, frame.top = top, frame.column = column;
-        frame.seed = static_cast<unsigned>(ImGui::GetID("##card")) & 0xfff;
+        frame.id = card_id;
+        frame.seed = static_cast<unsigned>(card_id) & 0xfff;
         frame.work_max = window->WorkRect.Max.x;
         frame.content_max = window->ContentRegionRect.Max.x;
         frame.splitter.Split(window->DrawList, 2);
@@ -441,9 +512,20 @@ void end_card() {
         // What follows starts under the card, or under the taller column of a run.
         float next = bottom + px(card_gap), x = frame.left;
         if (frame.column >= 0) {
-            card_flow.bottom[static_cast<std::size_t>(frame.column)] = next;
-            next = std::max(card_flow.bottom[0], card_flow.bottom[1]);
-            x = card_flow.left;
+            auto& flow = card_flow;
+            if (frame.column == 2) flow.bottom = {next, next};
+            else flow.bottom[static_cast<std::size_t>(frame.column)] = next;
+            // The run as drawn so far is what lays it out next frame.
+            const std::size_t index = flow.drawn.heights.size();
+            if (index < flow.drawn.cards.size() && flow.drawn.cards[index] == frame.id) {
+                flow.drawn.heights.push_back(next - frame.top);
+                auto& record = card_runs()[flow.first];
+                record.cards.assign(flow.drawn.cards.begin(), flow.drawn.cards.begin() + static_cast<std::ptrdiff_t>(index + 1));
+                record.heights = flow.drawn.heights;
+                record.frame = flow.drawn.frame;
+            }
+            next = std::max(flow.bottom[0], flow.bottom[1]);
+            x = flow.left;
         }
         ImGui::SetCursorScreenPos(ImVec2(x, next - ImGui::GetStyle().ItemSpacing.y));
         ImGui::Dummy(ImVec2(0, 0));
@@ -532,7 +614,10 @@ void field(SkateMenu&, const char* label, const char* tooltip) {
 }
 void info(SkateMenu&, const char* label, const std::string& value) {
     const float start = ImGui::GetCursorPosX(), column = label_column();
-    const bool beside = wide_rows() && ImGui::CalcTextSize(label).x <= column - ImGui::GetStyle().ItemSpacing.x;
+    // A value is text that wraps, not a control that needs the width, so it stays beside its label in
+    // narrower cards than a field does (a half-width card in the window, say), where a label alone on
+    // its line over its value reads as two loose lines.
+    const bool beside = ImGui::GetContentRegionAvail().x >= px(300) && ImGui::CalcTextSize(label).x <= column - ImGui::GetStyle().ItemSpacing.x;
     ImGui::PushStyleColor(ImGuiCol_Text, muted);
     ImGui::TextUnformatted(label);
     ImGui::PopStyleColor();
@@ -1797,9 +1882,9 @@ void draw_hub(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks,
         // The rail: the wordmark, then the pages in the brushed font, the open one white on a blue stroke.
         const float rail = px(250);
         draw->AddRectFilled(origin, ImVec2(origin.x + rail, origin.y + size.y), rail_fill);
-        wordmark(draw, menu, ImVec2(origin.x + px(28), origin.y + px(22)), px(30));
+        wordmark(draw, menu, ImVec2(origin.x + px(28), origin.y + px(20)), px(42));
         {
-            const float top = px(84), list_height = size.y - top - px(20);
+            const float top = px(100), list_height = size.y - top - px(20);
             ImGui::SetCursorScreenPos(ImVec2(origin.x + px(18), origin.y + top));
             ImGui::BeginChild("pages", ImVec2(rail - px(18), list_height), ImGuiChildFlags_NavFlattened,
                               ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);

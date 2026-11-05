@@ -42,10 +42,13 @@ inline void category_tabs(SkateMenu& menu, int& selected, std::initializer_list<
 // with dark text.
 //   begin_card / end_card  a titled dark tile grouping related controls, sized to its content
 //                          (always pair them). In a wide window a page's cards flow into two
-//                          columns, each under the shorter one, while nothing comes between them.
+//                          columns, shared out by last frame's heights so the columns end about
+//                          level, while nothing comes between them; a run of one card spans the
+//                          page, up to a width that stays readable.
 //   field                  a label, then the next widget beside it filling the rest of the row
 //                          (stacked under the label when the page is narrow)
-//   info                   a status line: muted label column, value beside it
+//   info                   a status line: muted label column, value beside it (in a half-width
+//                          card too)
 //   note / warn            muted help text / a warning, wrapped
 //   choice                 one of a few options as "< option >": left / right, A or a click on
 //                          either half steps it

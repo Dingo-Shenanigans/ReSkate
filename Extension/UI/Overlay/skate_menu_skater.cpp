@@ -45,6 +45,18 @@ void camera_controls(SkateMenu& menu, const Model& model, const CallbacksV3& cal
         callbacks.queue_console_command(callbacks.user, freecam_controller ? "freecam_controller true" : "freecam_controller false", result.data(), result.size());
     }
     flight_speed_row(menu, model, callbacks, "Also used by Noclip. Set it before or while flying.");
+    if (button_row(menu, "freecam-actions", {{"TELEPORT TO FREECAM",
+            debug.free_camera && debug.camera_position_valid && callbacks.queue_console_command != nullptr, false,
+            "Move the skater to where the freecam is."}}) == 0) {
+        std::array<char, 512> result{};
+        callbacks.queue_console_command(callbacks.user, "tp_to_freecam", result.data(), result.size());
+    }
+    if (debug.free_camera) note("Close the menu to fly. WASD / Q E move; hold the right mouse button to look.");
+    if (!debug.camera_available) warn(debug.camera_unavailable.c_str());
+    end_card();
+
+    // What the freecam sees, apart from how it flies, so in a wide window the two cards sit side by side.
+    begin_card(menu, "freecam-view", "CAMERA");
     const bool custom_fov = debug.free_camera_fov > 0;
     field(menu, "Field of view");
     int free_fov = static_cast<int>(std::lround(custom_fov ? debug.free_camera_fov : debug.camera_fov));
@@ -52,19 +64,9 @@ void camera_controls(SkateMenu& menu, const Model& model, const CallbacksV3& cal
     if (slider_int("##free-camera-fov", &free_fov, 40, 120, custom_fov ? "%d degrees" : "%d degrees (game)", ImGuiSliderFlags_AlwaysClamp))
         debug_request(menu, callbacks, {DebugAction::set_free_camera_fov, false, static_cast<float>(free_fov)});
     ImGui::EndDisabled();
-    // The camera's two one-off actions share a row, under the settings they go with.
-    const int pressed = button_row(menu, "freecam-actions", {
-        {"TELEPORT TO FREECAM", debug.free_camera && debug.camera_position_valid && callbacks.queue_console_command != nullptr, false,
-         "Move the skater to where the freecam is."},
-        {"GAME FIELD OF VIEW", custom_fov && callbacks.queue_debug != nullptr, false, "The freecam's field of view back to the game's own."}});
-    if (pressed == 0) {
-        std::array<char, 512> result{};
-        callbacks.queue_console_command(callbacks.user, "tp_to_freecam", result.data(), result.size());
-    }
-    if (pressed == 1) debug_request(menu, callbacks, {DebugAction::set_free_camera_fov, false, 0.0f});
-    if (debug.free_camera) note("Close the menu to fly. WASD / Q E move; hold the right mouse button to look.");
-    if (!debug.camera_available) warn(debug.camera_unavailable.c_str());
-    note("The replay editor's keyframe smoothing is in Settings > Replays.");
+    if (button_row(menu, "freecam-fov-actions", {{"GAME FIELD OF VIEW", custom_fov && callbacks.queue_debug != nullptr, false,
+            "The freecam's field of view back to the game's own."}}) == 0)
+        debug_request(menu, callbacks, {DebugAction::set_free_camera_fov, false, 0.0f});
     end_card();
 }
 
