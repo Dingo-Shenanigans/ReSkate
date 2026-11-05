@@ -278,13 +278,13 @@ void register_multiplayer_commands(Commands &registry) {
         out(multiplayer::request_ui_dump(text, static_cast<unsigned>(seconds)));
     };
     registry.add(std::move(dump));
-    // Test: the game's menu room behind the Mod Manager tab (native_backdrop.cpp).
+    // The game's menu room behind the Mod Manager tab (native_backdrop.cpp).
     auto room = argument("off|cas|store|skatepass|skatepedia", Type::text, true);
     room.complete = [](const Model &, auto) {
         return std::vector<std::string>{"off", "cas", "store", "skatepass", "skatepedia"};
     };
-    auto backdrop = action("ui modbackdrop", "Test: show the game's menu room behind the Mod Manager tab "
-                           "(off, cas, store, skatepass, skatepedia; off by default, not saved)",
+    auto backdrop = action("ui modbackdrop", "Which of the game's menu rooms shows behind the Mod Manager tab "
+                           "(off, cas, store, skatepass, skatepedia; store by default, not saved)",
                            Group::console, {std::move(room)});
     backdrop.run = [](const Model &, const Values &values, const Output &out) {
         out(multiplayer::set_mod_backdrop(values.empty() ? std::string{} : std::get<std::string>(values[0])));

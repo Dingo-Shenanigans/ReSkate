@@ -9,7 +9,8 @@
 
 
 // The pause menu's 3D backdrop (the room behind the HUB and Skater tabs), offered behind ReSkate's
-// Mod Manager tab as a test (`ui modbackdrop`, off by default).
+// Mod Manager tab: the Store room by default (Zee tried it in game on 2026-11-04), another with
+// `ui modbackdrop`, or none.
 //
 // How the game picks it, read from build 20260929's data (2026-11-04):
 // - gameplay/core/dingogamecore places gameplay/myworld/prefab_myworldmenushared, which places the
@@ -34,7 +35,7 @@ constexpr std::array<Named, 7> watched{{{"IsFTUE", 0x929523fe}, {"IsStanceSelect
 constexpr unsigned environment = 2, world_visible = 6;
 constexpr std::array<const char*, 5> environments{"none", "cas", "skatepass", "store", "skatepedia"};
 
-std::atomic<int> wanted{-1}; // -1: off, else a MenuEnvironment value
+std::atomic<int> wanted{3}; // -1: off, else a MenuEnvironment value (3: the Store room)
 struct Backdrop {
     Handle root{};
     Address type{};
@@ -44,6 +45,7 @@ struct Backdrop {
     std::int64_t before_environment{}, before_visible{};
     std::array<std::int64_t, watched.size()> seen{};
     bool seen_any{};
+    bool told_fight{};        // said that the game set Environment back while Mod Manager was up
 };
 Backdrop& backdrop() { static Backdrop b; return b; }
 
@@ -87,7 +89,7 @@ std::string set_mod_backdrop(std::string_view choice) {
     for (auto& ch : lower) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
     if (lower.empty() || lower == "status") {
         const int now = wanted.load();
-        return now < 0 ? "Mod Manager backdrop: off." : std::string("Mod Manager backdrop: ") + environments[now] + ".";
+        return now < 0 ? "Mod Manager backdrop: off." : std::string("Mod Manager backdrop: ") + environments[now] + (now == 3 ? " (the default)." : ".");
     }
     if (lower == "off") {
         wanted.store(-1);
@@ -124,8 +126,8 @@ void update_mod_backdrop(const Context& c, bool mod_manager_shown, bool in_menu)
             if (!std::exchange(told, true)) say("MSGlobalDataModel has no Environment or MyWorldVisible it can read; nothing done.");
             return;
         }
-        // What the game writes as tabs change: logged while the test is on, so a run shows which
-        // tab sets what.
+#if defined(DINGOSDK_DEV_TOOLS)
+        // What the game writes as tabs change, in dev builds, so a run shows which tab sets what.
         if (in_menu && (!b.seen_any || now != b.seen)) {
             std::string line = mod_manager_shown ? "on Mod Manager:" : "on another page:";
             for (std::size_t i = 0; i < watched.size(); ++i)
@@ -133,15 +135,17 @@ void update_mod_backdrop(const Context& c, bool mod_manager_shown, bool in_menu)
             say(line);
             b.seen = now; b.seen_any = true;
         }
+#endif
         const bool show = want > 0 && in_menu && mod_manager_shown;
         if (show) {
             if (!b.applied) {
                 b.before_environment = now[environment];
                 b.before_visible = now[world_visible];
                 b.applied = true;
+                b.told_fight = false;
                 say(std::string("showing the ") + environments[want] + " room behind Mod Manager (was Environment=" +
                     std::to_string(b.before_environment) + ", MyWorldVisible=" + std::to_string(b.before_visible) + ").");
-            } else if (now[environment] != b.written) {
+            } else if (now[environment] != b.written && !std::exchange(b.told_fight, true)) {
                 say("the game set Environment=" + std::to_string(now[environment]) + " while Mod Manager was up; set back.");
             }
             write_number(c, fields[environment], want);
