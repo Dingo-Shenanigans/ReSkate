@@ -89,7 +89,7 @@ constexpr ImU32 accent = skate_theme::blue, accent_hover = skate_theme::blue_hov
 // The Multiplayer page's own look, on the SERVER BROWSER and FRIENDS tabs and its tab strip: the
 // kit's dark rows, and a type plate on each server in the kit's tag colours (official blue, server
 // grey, lobby green).
-constexpr ImU32 tile_dark = IM_COL32(40, 40, 43, 245), card_light = IM_COL32(217, 219, 223, 255), card_light_hover = IM_COL32(196, 198, 203, 255),
+constexpr ImU32 tile_dark = IM_COL32(16, 16, 16, 242), card_light = IM_COL32(217, 219, 223, 255), card_light_hover = IM_COL32(196, 198, 203, 255),
                 field_on_white = IM_COL32(228, 230, 233, 255), sub_ink = IM_COL32(138, 140, 146, 255), sub_ink_lit = IM_COL32(70, 70, 74, 255),
                 track = IM_COL32(61, 62, 66, 255), track_lit = IM_COL32(201, 204, 209, 255), chip_ink = IM_COL32(185, 187, 192, 255),
                 plate_grey = IM_COL32(61, 62, 66, 255);
@@ -300,8 +300,11 @@ bool button(Ui &ui, std::uint32_t id, ImVec2 a, ImVec2 b, const std::string &tex
     if (look == Look::primary)
         fill = !enabled ? accent_off : hit.focus && !hit.hover ? theme::paper : hit.hover ? accent_hover : accent,
         ink = !enabled ? IM_COL32(245, 245, 245, 140) : hit.focus && !hit.hover ? focus_ink : theme::paper;
-    else if (lit) fill = theme::blue;
-    else if (look == Look::plain) fill = skate_theme::tile_light;
+    // Focus as the Insert menu draws it: white with dark ink under the D-pad or the keys, the
+    // kit's lighter grey under the pointer; the tiles themselves near black, as its sheet is.
+    else if (hit.focus && !hit.hover) fill = theme::paper, ink = enabled ? focus_ink : theme::muted;
+    else if (lit) fill = row_hover;
+    else if (look == Look::plain) fill = IM_COL32(29, 29, 31, 245);
     else if (look == Look::chosen) fill = theme::paper, ink = skate_theme::black;
     skate_theme::rough_rect(ui.draw, a, b, fill, id & 0xfff, u * 2);
     if (value.empty()) {
