@@ -1,4 +1,6 @@
 #include "plugin_game_runtime.h"
+#include "Extension/Input/native_input_source.h"
+#include "Extension/Input/native_input_capture.h"
 #include "plugin_ui_values.h"
 #include "Extension/Rendering/plugin_effects.h"
 #include "Extension/Objects/placement_physics.h"
@@ -184,6 +186,17 @@ std::filesystem::path game_folder() {
 class RealGame final : public Game {
 public:
     explicit RealGame(std::uintptr_t base) : base_(base) {}
+    bool input_lease_request(std::uint64_t owner, std::uint32_t user, input_lease::Handle& h, input_lease::Reason& why) noexcept override { return native_input_source::lease_request(owner, user, h, why); }
+    bool input_lease_read(std::uint64_t owner, input_lease::Handle h, input_lease::Snapshot& s, input_lease::Reason& why) noexcept override { return native_input_source::lease_read(owner, h, s, why); }
+    bool input_lease_renew(std::uint64_t owner, input_lease::Handle h, const input_lease::Snapshot& s, input_lease::Reason& why) noexcept override { return native_input_source::lease_renew(owner, h, s, why); }
+    bool input_lease_release(std::uint64_t owner, input_lease::Handle h, input_lease::Reason& why) noexcept override { return native_input_source::lease_release(owner, h, why); }
+    bool input_lease_state(std::uint64_t owner, input_lease::Handle h, input_lease::Receipt& s, input_lease::Reason& why) noexcept override { return native_input_source::lease_state(owner, h, s, why); }
+    bool input_lease_acknowledge(std::uint64_t owner, input_lease::Handle h, input_lease::Reason& why) noexcept override { return native_input_source::lease_acknowledge(owner, h, why); }
+    void input_lease_release_all(std::uint64_t owner) noexcept override { native_input_source::lease_release_all(owner); }
+    bool input_lease_capture_request(std::uint64_t owner, input_lease::Handle h, const input_lease::Snapshot& s, input_lease_capture::Reason& why) noexcept override { return native_input_source::capture_request(owner, h, s, why); }
+    bool input_lease_capture_state(std::uint64_t owner, input_lease::Handle h, input_lease_capture::Receipt& r) noexcept override { return native_input_source::capture_state(owner, h, r); }
+    bool input_lease_capture_release(std::uint64_t owner, input_lease::Handle h) noexcept override { return native_input_source::capture_release(owner, h); }
+    bool input_lease_capture_acknowledge(std::uint64_t owner, input_lease::Handle h) noexcept override { return native_input_source::capture_acknowledge(owner, h); }
     std::string publish_ui_values(std::string_view plugin, const ui_values::Values& values) override {
         return ui_values::publish(base_, plugin, values);
     }

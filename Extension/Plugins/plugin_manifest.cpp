@@ -38,6 +38,10 @@ namespace {
 // spending another of the process's native allocations; it grants no slot choice, mask, force or
 // other owner's body. A manifest's "resident" list and "variants" are the merge's
 // (Engine/Vfs/mod_list.h ResidentAssets, Variants), not the plugin host's.
+// "input.lease" reserves one observed XInput source for bounded passive reads
+// and renewal. It neither captures/changes reports nor controls a native actor.
+// "input.capture", together with "input.lease", captures one selected stream
+// until its bounded neutral-release duty is resolved; it grants no actor control.
 // "objects.physics" lets the plugin claim its own local park placements (at most 32, offline only)
 // and make them fall, roll and be knocked over (reskate.objects.physics, velocity, pose, motion;
 // Extension/Objects/placement_physics.h); a claimed object's moved pose is never saved to the park.
@@ -45,8 +49,8 @@ namespace {
 // "ui.models" publishes bounded plugin-namespaced floats for authored native UI (not stock fields).
 // "replay" grants nothing yet: no API checks it. It stays known so a manifest that lists it still
 // loads (an unknown permission refuses the whole manifest).
-constexpr std::array<std::string_view, 62> permissions{
-    "console", "storage", "overlay", "menu", "ui.screen", "input", "input.write", "hud", "events.tricks", "events.skater",
+constexpr std::array<std::string_view, 64> permissions{
+    "console", "storage", "overlay", "menu", "ui.screen", "input", "input.lease", "input.capture", "input.write", "hud", "events.tricks", "events.skater",
     "skater.read", "skater.teleport", "skater.control", "skater.animation", "trainer", "camera",
     "world.raycast", "world.physics", "world.physics.observe", "world.physics.reuse", "world.objects", "world.entities", "world.environment", "world.ai", "travel", "session.read",
     "session.skaters", "session.nametags", "net.session", "net.http", "voice.control", "chat.read",
