@@ -348,6 +348,8 @@ void card_image_uploaded(ImTextureID texture, unsigned serial);
 void card_image_lost();
 // Decodes a PNG to RGBA; with `side`, scaled to a square of that many pixels.
 bool decode_picture(const std::string& png, CardPixels& out, UINT side);
+// Decodes a picture to RGBA no wider than `most_width` pixels, its shape kept (a news post's picture).
+bool decode_banner(const std::string& bytes, CardPixels& out, UINT most_width);
 // The menu's map pictures (menu_map_pictures.cpp), the same way, in the SRV heap's third slot.
 bool take_menu_map_pixels(CardPixels& pixels);
 void menu_map_pixels_uploaded(ImTextureID texture, unsigned serial);
@@ -374,6 +376,10 @@ void plugin_images_lost();
 // by their URL, in the SRV heap's slots from store_icon_first_slot on.
 inline constexpr UINT store_icon_first_slot = screen_look_slot + screen_look_slots, store_icon_slots = 64;
 ImTextureID store_icon(const std::string& url);
+// A news post's picture from ReSkate's news repository (live_news.h), the same way and in the same
+// slots, kept on disk in %LOCALAPPDATA%\ReSkate\news\pictures and decoded no wider than 1024
+// pixels, its shape kept: `size` is its size in pixels once it is there.
+ImTextureID news_picture(const std::string& url, ImVec2& size);
 // Then a viewmodel's pictures (viewmodel.h): three for each of its at most eight materials.
 inline constexpr UINT viewmodel_first_slot = store_icon_first_slot + store_icon_slots, viewmodel_slots = 24;
 struct StoreIconUpload {
@@ -426,4 +432,11 @@ bool queue_multiplayer_action(const char* action, const std::string& argument, c
 // The pause menu's Multiplayer page (hub_page.cpp): polled every presented frame.
 bool hub_page_pending();
 void draw_hub_page();
+// ReSkate's front page over the game's own HUB tab (hub_home_page.cpp), drawn by draw_hub_page in
+// `a`..`z`. Returns true when Back closed the pause menu from it.
+bool draw_home_page(ImDrawList* draw, float u, ImVec2 a, ImVec2 z, bool input, const Model& model);
+// What the front page opens on ReSkate's other pages (hub_page.cpp): the Multiplayer page's FRIENDS
+// tab, the Mod Manager's UPDATES.
+void show_friends_tab();
+void show_mod_updates();
 }

@@ -1,5 +1,6 @@
 #include "overlay_internal.h"
 #include "Engine/Game/Input/controller_bindings.h"
+#include <algorithm>
 #include <format>
 #include <mutex>
 #include <wincodec.h>
@@ -41,8 +42,9 @@ std::vector<bool> vote_icon_has;
 ImTextureID card_icon() { return image_is_atlas.load() ? ImTextureID{} : image.load(); }
 
 // Straight-alpha RGBA, at most 512 pixels a side (an icon is 256). With `side`, scaled to a
-// square of that many pixels (the vote's pictures share one texture).
-bool decode(const std::string& bytes, detail::CardPixels& out, UINT side = 0) {
+// square of that many pixels (the vote's pictures share one texture). With `banner`, a picture up
+// to 4096 pixels a side scaled to no wider than that, its shape kept (a news post's picture).
+bool decode(const std::string& bytes, detail::CardPixels& out, UINT side = 0, UINT banner = 0) {
     const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     bool ok{};
     {
@@ -53,18 +55,25 @@ bool decode(const std::string& bytes, detail::CardPixels& out, UINT side = 0) {
         ComPtr<IWICFormatConverter> converter;
         ComPtr<IWICBitmapScaler> scaler;
         UINT width{}, height{};
+        const UINT largest = banner ? 4096U : side ? 2048U : 512U;
+        // (Set once the size is known: the square, or the banner's width and the height that keeps its shape.)
+        UINT scaled_width = side, scaled_height = side;
+        const auto scaled = [&] {
+            if (banner && width > banner) scaled_width = banner, scaled_height = std::max(1U, static_cast<UINT>(static_cast<std::uint64_t>(height) * banner / width));
+            return scaled_width != 0;
+        };
         if (SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory))) &&
             SUCCEEDED(factory->CreateStream(&stream)) &&
             SUCCEEDED(stream->InitializeFromMemory(reinterpret_cast<BYTE*>(const_cast<char*>(bytes.data())), static_cast<DWORD>(bytes.size()))) &&
             SUCCEEDED(factory->CreateDecoderFromStream(stream.Get(), nullptr, WICDecodeMetadataCacheOnDemand, &decoder)) &&
             SUCCEEDED(decoder->GetFrame(0, &frame)) && SUCCEEDED(frame->GetSize(&width, &height)) && width && height &&
-            width <= (side ? 2048U : 512U) && height <= (side ? 2048U : 512U) && SUCCEEDED(factory->CreateFormatConverter(&converter)) &&
-            (!side || (SUCCEEDED(factory->CreateBitmapScaler(&scaler)) &&
-                       SUCCEEDED(scaler->Initialize(frame.Get(), side, side, WICBitmapInterpolationModeFant)))) &&
-            SUCCEEDED(converter->Initialize(side ? static_cast<IWICBitmapSource*>(scaler.Get()) : static_cast<IWICBitmapSource*>(frame.Get()),
+            width <= largest && height <= largest && SUCCEEDED(factory->CreateFormatConverter(&converter)) &&
+            (!scaled() || (SUCCEEDED(factory->CreateBitmapScaler(&scaler)) &&
+                           SUCCEEDED(scaler->Initialize(frame.Get(), scaled_width, scaled_height, WICBitmapInterpolationModeFant)))) &&
+            SUCCEEDED(converter->Initialize(scaled_width ? static_cast<IWICBitmapSource*>(scaler.Get()) : static_cast<IWICBitmapSource*>(frame.Get()),
                                             GUID_WICPixelFormat32bppRGBA, WICBitmapDitherTypeNone, nullptr, 0,
                                             WICBitmapPaletteTypeCustom))) {
-            if (side) width = height = side;
+            if (scaled_width) width = scaled_width, height = scaled_height;
             out.rgba.resize(static_cast<std::size_t>(width) * height * 4);
             out.width = width;
             out.height = height;
@@ -95,6 +104,7 @@ void set_map_download_icon(const std::string& png) noexcept {
 
 namespace dingosdk::overlay::detail {
 bool decode_picture(const std::string& png, CardPixels& out, UINT side) { return decode(png, out, side); }
+bool decode_banner(const std::string& bytes, CardPixels& out, UINT most_width) { return decode(bytes, out, 0, most_width); }
 bool take_card_pixels(CardPixels& out) {
     std::lock_guard lock(image_mutex);
     if (!waiting) return false;

@@ -22,6 +22,9 @@
 // tiles on screen ask (mod_manager_page.inl), so the slots are enough for a full page of them.
 // Pictures made here rather than fetched (made_icon: Steam friends' avatars on the FRIENDS tab,
 // never on screen with the Mod Manager page) share the workers and the slots.
+//
+// The pictures of ReSkate's news posts for the front page in the HUB tab (hub_home_page.cpp) go the
+// same way, kept in %LOCALAPPDATA%\ReSkate\news\pictures and decoded wider, their shape kept.
 namespace dingosdk::overlay::detail {
 namespace {
 namespace fs = std::filesystem;
@@ -37,6 +40,7 @@ struct Entry {
     CardPixels pixels;
     int slot{-1};
     ImTextureID id{};
+    UINT width{}, height{}; // the decoded picture's size
     double drawn{}, failed{};
     IconMaker make{}; // set: made here (made_icon), not fetched
 };
@@ -54,11 +58,11 @@ Cache& cache() {
 double seconds_now() {
     return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
-fs::path icon_folder() {
+fs::path icon_folder(bool news) {
     std::array<wchar_t, 32768> local{};
     const auto length = GetEnvironmentVariableW(L"LOCALAPPDATA", local.data(), static_cast<DWORD>(local.size()));
     if (!length || length >= local.size()) return {};
-    return fs::path(local.data()) / L"ReSkate" / L"thunderstore" / L"icons";
+    return news ? fs::path(local.data()) / L"ReSkate" / L"news" / L"pictures" : fs::path(local.data()) / L"ReSkate" / L"thunderstore" / L"icons";
 }
 // Icon URLs end in Namespace-Name-1.2.3.png, so a file named after that never goes stale.
 std::wstring icon_file(std::string_view url) {
@@ -79,9 +83,12 @@ bool thunderstore_host(std::string_view url) {
     return host == "thunderstore.io" || host == "gcdn.thunderstore.io" || host.ends_with(".thunderstore.io");
 }
 
+// The news repository's files (live_news.h live_news_images): the only other place pictures come from.
+bool news_host(std::string_view url) { return url.starts_with("https://raw.githubusercontent.com/Dingo-Shenanigans/ReSkateCache/"); }
+constexpr UINT news_picture_width = 1024;
+
 void decode_loop() {
     auto& c = cache();
-    const auto folder = icon_folder();
     for (;;) {
         std::string url;
         IconMaker make{};
@@ -108,6 +115,8 @@ void decode_loop() {
                 ok = false;
             }
         } else try {
+            const bool news = news_host(url);
+            const auto folder = icon_folder(news);
             const auto cached = folder.empty() ? fs::path() : folder / icon_file(url);
             std::string bytes;
             std::error_code error;
@@ -115,7 +124,7 @@ void decode_loop() {
                 std::ifstream in(cached, std::ios::binary);
                 bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
             }
-            if (bytes.empty() && thunderstore_host(url)) {
+            if (bytes.empty() && (thunderstore_host(url) || news)) {
                 if (auto body = https::get_text(std::wstring(url.begin(), url.end()), most_icon_bytes, 20, L"ReSkate")) {
                     bytes = std::move(*body);
                     if (!cached.empty() && !bytes.empty()) {
@@ -125,7 +134,7 @@ void decode_loop() {
                     }
                 }
             }
-            ok = !bytes.empty() && decode_picture(bytes, pixels, 256);
+            ok = !bytes.empty() && (news ? decode_banner(bytes, pixels, news_picture_width) : decode_picture(bytes, pixels, 256));
         } catch (...) {
             ok = false;
         }
@@ -134,6 +143,7 @@ void decode_loop() {
         if (found == c.entries.end()) continue;
         if (!ok) found->second.stage = Entry::Stage::failed, found->second.failed = seconds_now();
         else {
+            found->second.width = pixels.width, found->second.height = pixels.height;
             found->second.pixels = std::move(pixels);
             found->second.stage = Entry::Stage::decoded;
         }
@@ -142,10 +152,9 @@ void decode_loop() {
 }
 
 namespace {
-ImTextureID icon(const std::string& url, IconMaker make) {
-    if (url.empty()) return {};
-    auto& c = cache();
-    std::lock_guard lock(c.mutex);
+// The picture's entry, asked for (and so kept) this frame; null when there is no room for it now.
+// The caller holds the cache's mutex. `make` makes the picture here instead of fetching it.
+Entry* ask(Cache& c, const std::string& url, IconMaker make = nullptr) {
     const double now = seconds_now();
     auto found = c.entries.find(url);
     if (found == c.entries.end()) {
@@ -156,7 +165,7 @@ ImTextureID icon(const std::string& url, IconMaker make) {
                 if (it->second.slot < 0 && it->second.stage != Entry::Stage::waiting && now - it->second.drawn >= idle_seconds &&
                     (oldest == c.entries.end() || it->second.drawn < oldest->second.drawn))
                     oldest = it;
-            if (oldest == c.entries.end()) return {};
+            if (oldest == c.entries.end()) return nullptr;
             c.entries.erase(oldest);
         }
         found = c.entries.emplace(url, Entry{}).first;
@@ -173,12 +182,34 @@ ImTextureID icon(const std::string& url, IconMaker make) {
     }
     auto& entry = found->second;
     entry.drawn = now;
-    return entry.stage == Entry::Stage::uploaded ? entry.id : ImTextureID{};
+    return &entry;
 }
 }
 
-ImTextureID store_icon(const std::string& url) { return icon(url, nullptr); }
-ImTextureID made_icon(const std::string& key, IconMaker make) { return make ? icon(key, make) : ImTextureID{}; }
+ImTextureID store_icon(const std::string& url) {
+    if (url.empty()) return {};
+    auto& c = cache();
+    std::lock_guard lock(c.mutex);
+    const auto* entry = ask(c, url);
+    return entry && entry->stage == Entry::Stage::uploaded ? entry->id : ImTextureID{};
+}
+ImTextureID news_picture(const std::string& url, ImVec2& size) {
+    if (!news_host(url)) return {};
+    auto& c = cache();
+    std::lock_guard lock(c.mutex);
+    const auto* entry = ask(c, url);
+    if (!entry || entry->stage != Entry::Stage::uploaded) return {};
+    size = ImVec2(static_cast<float>(entry->width), static_cast<float>(entry->height));
+    return entry->id;
+}
+
+ImTextureID made_icon(const std::string& key, IconMaker make) {
+    if (key.empty() || !make) return {};
+    auto& c = cache();
+    std::lock_guard lock(c.mutex);
+    const auto* entry = ask(c, key, make);
+    return entry && entry->stage == Entry::Stage::uploaded ? entry->id : ImTextureID{};
+}
 
 std::optional<StoreIconUpload> take_store_icon() {
     auto& c = cache();

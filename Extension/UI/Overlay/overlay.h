@@ -491,13 +491,15 @@ void map_vote_dismiss() noexcept;
 using ChatFeed = MultiplayerChat (*)();
 void set_chat_feed(ChatFeed) noexcept;
 // The game's pause menu, as far as ReSkate's own pages in it go: whether one of them is the
-// page on screen, and which (`section` 0: Multiplayer, 1: Mod Options, 2: Mod Manager). The overlay draws
-// everything in such a page itself, its tabs too (hub_page.cpp). Read every presented frame
-// (thread-safe, cheap).
+// page on screen, and which (`section` 0: Multiplayer, 1: Mod Options, 2: Mod Manager, or
+// hub_home_section: the game's own HUB tab, with ReSkate's front page over it). The overlay draws
+// everything in such a page itself, its tabs too (hub_page.cpp, hub_home_page.cpp). Read every
+// presented frame (thread-safe, cheap).
 struct HubPage {
     bool visible{};
     int section{};
 };
+inline constexpr int hub_home_section = 3;
 using HubPageFeed = HubPage (*)();
 void set_hub_page_feed(HubPageFeed) noexcept;
 // Text the game draws with its debug text natives, where retail draws nothing (the
