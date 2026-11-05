@@ -2353,11 +2353,29 @@ void draw_hub_page() {
     const ImVec2 a(page_left, (body_top + lower) * u);
     const ImVec2 z(std::min(page_right, a.x + body_most * u), (down - (layout_height - body_bottom) - lower) * u);
     // (A card that asks something over the page has the input while it asks.)
-    hub_frame(h, ImGui::GetBackgroundDrawList(), u, a, z, (tabs_top + lower) * u,
-              !others && !s.prompt_input_active.load(std::memory_order_relaxed) && game_window_foreground(s.window.load()));
+    const bool input = !others && !s.prompt_input_active.load(std::memory_order_relaxed) && game_window_foreground(s.window.load());
+    // The game's own HUB tab: ReSkate's front page over it (hub_home_page.cpp). It has no tabs, so
+    // it starts where they would.
+    if (h.page.section == hub_home_section) {
+        if (draw_home_page(ImGui::GetBackgroundDrawList(), u, ImVec2(a.x, (tabs_top + lower) * u), z, input, h.full)) h.dismissed = true;
+        return;
+    }
+    hub_frame(h, ImGui::GetBackgroundDrawList(), u, a, z, (tabs_top + lower) * u, input);
 }
 
 bool online_embedded_typing() { return hub().typing != 0; }
+
+void show_friends_tab() {
+    auto &h = hub();
+    h.tab = Tab::friends;
+    h.focus = 0;
+}
+void show_mod_updates() {
+    auto &m = mod_page();
+    m.tab = updates_tab;
+    m.details.clear();
+    hub().focus = 0;
+}
 
 // Mods being applied with the pause menu closed (most often after the Mod Manager's question): a
 // small card at the right edge, out of the way of skating, as the map download's is, then a few

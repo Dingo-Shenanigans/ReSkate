@@ -187,13 +187,31 @@ void hide_top_bar_currency(const Context& context, Value menu) {
 }
 } // namespace
 void update_hub(const Context& context);
+bool update_hub_front_page(const Context& context, Value menu, bool in_menu);
 namespace {
 // Which of ReSkate's pages is on screen, for the overlay (native_menu_page): when one was last
 // seen selected with the pause menu up (GetTickCount64; 0: not now), and which.
 std::atomic<std::uint64_t> page_seen{};
-std::atomic<int> page_shown{}; // 0: Multiplayer, 1: Mod Options, 2: Mod Manager
+std::atomic<int> page_shown{}; // 0: Multiplayer, 1: Mod Options, 2: Mod Manager, overlay::hub_home_section: the game's HUB
 std::atomic<bool> game_in_menu{};
 std::atomic<bool> back_wanted{}; // hold_native_menu_back
+std::atomic<int> page_wanted{-1}; // show_native_menu_page
+// Selects the tab of ReSkate's page `slot`, as restore_last_tab does when the menu reopens.
+void select_page(const Context& context, Value menu, unsigned slot) {
+    const auto list = context.path(menu, {content, items});
+    unsigned count{}, stride{};
+    const auto values = context.array(list, 16, count, stride);
+    if (stride != stack_item.size) return;
+    for (unsigned i = 0; i < count; ++i) {
+        std::uint32_t key{};
+        std::memcpy(&key, values.data() + i * stride + 0x568, 4);
+        if (key != our_key + slot * 0x100) continue;
+        context.set(context.path(menu, {content, 0x18f8355b}), static_cast<int>(i));
+        context.set(context.path(menu, {content, 0x55511280}), static_cast<int>(i));
+        logging::printf(logging::Level::info, logging::Channel::ui, "Pause menu: went to ReSkate tab %u from the front page.", i);
+        return;
+    }
+}
 // Returns the key of the tab the pause menu has selected (0: none of ours can be told).
 std::uint32_t restore_last_tab(const Context& context, Value menu) {
     static std::uint32_t remembered{};
@@ -623,6 +641,8 @@ void tick_page(std::uintptr_t base, bool loading) noexcept {
         if (!active.model.handle) return;
         trim_store(context, active.model);
         if (!s.slot) {
+            if (const int wanted = page_wanted.exchange(-1); wanted >= 0 && wanted < static_cast<int>(page_count))
+                select_page(context, active.model, static_cast<unsigned>(wanted));
             const auto shown_tab = restore_last_tab(context, active.model);
             hide_top_bar_currency(context, active.model);
             update_hub(context);
@@ -646,9 +666,11 @@ void tick_page(std::uintptr_t base, bool loading) noexcept {
                         std::string("Native menu: the page's focus could not be read (") + e.what() + "); it stays up under the game's side menu.");
                 } catch (...) {}
             }
+            // The game's own HUB tab, with ReSkate's front page drawn over it (native_hub.cpp).
+            const bool hub = update_hub_front_page(context, active.model, !ours && game_in_menu.load(std::memory_order_relaxed));
             // (Said at once when another page takes its place, not left to go stale.)
-            page_shown.store(static_cast<int>(shown_slot), std::memory_order_relaxed);
-            page_seen.store(on_screen ? now : 0, std::memory_order_relaxed);
+            page_shown.store(hub ? overlay::hub_home_section : static_cast<int>(shown_slot), std::memory_order_relaxed);
+            page_seen.store(on_screen || hub ? now : 0, std::memory_order_relaxed);
         }
         if (s.slot == menu_view::mods_page && active.model.handle == s.core.handle && s.page.handle &&
             context.type_of(s.page.handle) == s.page.type && back_wanted.load(std::memory_order_relaxed) != s.back_held)
@@ -788,6 +810,7 @@ overlay::HubPage native_menu_page() noexcept {
     return {true, page_shown.load(std::memory_order_relaxed)};
 }
 void hold_native_menu_back(bool held) noexcept { back_wanted.store(held, std::memory_order_relaxed); }
+void show_native_menu_page(int slot) noexcept { page_wanted.store(slot, std::memory_order_relaxed); }
 bool native_pause_menu_open() noexcept { return game_in_menu.load(std::memory_order_relaxed); }
 void tick_native_menu(std::uintptr_t base, bool loading) noexcept {
     const ui::OwnUiWrites own_writes; // Custom labels are not the native trick list.

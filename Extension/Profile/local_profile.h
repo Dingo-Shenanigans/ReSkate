@@ -76,6 +76,8 @@ struct NeighborhoodState {
 struct NewsPost {
     std::string id, title, description, body, small_image, large_image;
     std::string fallback_small, fallback_large;
+    // When it was posted, "YYYY-MM-DD"; empty when the feed does not say (the field is optional).
+    std::string date;
 };
 struct NewsFeed {
     bool enabled{};
@@ -84,6 +86,9 @@ struct NewsFeed {
 NewsFeed news_feed(const Snapshot&);
 // A news section ({"enabled", "posts": [...]}) as validated for the Hub; throws on invalid input.
 NewsFeed parse_news(const Json& section);
+// The date of an ISO 8601 date or time ("2026-10-24", "2026-10-24T18:00:00Z") as "YYYY-MM-DD", or
+// empty when it does not start with a real one.
+std::string iso_date(std::string_view text);
 struct RipScore {
     std::int64_t value{}, cap{};
     std::int32_t level{};
