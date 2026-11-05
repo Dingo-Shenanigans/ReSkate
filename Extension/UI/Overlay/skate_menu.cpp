@@ -98,6 +98,9 @@ void debug_request(SkateMenu& menu, const CallbacksV3& callbacks, DebugRequest r
 // the focused control does shows in the menu (focus_hint): a controller has no hover tooltips.
 namespace {
 bool tab_switched = false; // a page or tab changed this frame (the menu's tab sound)
+// LT and RT step a page's first row of tabs (category_tabs). Off while a page is drawn in the pause
+// menu (pause_menu_kit_page), where they are the pause page's own tabs'.
+bool tabs_on_triggers = true;
 // The page's first row of tabs this frame (category_tabs): which is open and its name, for the
 // pages opened lately (SkateMenu::recent). -1: the page has none.
 int primary_tab = -1;
@@ -928,7 +931,7 @@ void category_tabs(SkateMenu& menu, int& selected, std::span<const char* const> 
     const bool primary = stepped_frame != ImGui::GetFrameCount();
     if (primary) {
         stepped_frame = ImGui::GetFrameCount();
-        if (!ImGui::IsAnyItemActive() && !ImGui::GetIO().WantTextInput && !menu.recording_bind && !menu.voice_bind_capture) {
+        if (tabs_on_triggers && !ImGui::IsAnyItemActive() && !ImGui::GetIO().WantTextInput && !menu.recording_bind && !menu.voice_bind_capture) {
             const int was = selected;
             if (ImGui::IsKeyPressed(ImGuiKey_GamepadL2, false)) selected = (selected + count - 1) % count;
             if (ImGui::IsKeyPressed(ImGuiKey_GamepadR2, false)) selected = (selected + 1) % count;
@@ -1538,6 +1541,9 @@ void note_recent_page(SkateMenu& menu) {
     if (recent.size() > 3) recent.resize(3);
 }
 
+// The line under a page saying what its last action did, or why it could not (feedback), on `page`.
+void page_feedback(SkateMenu& menu, const Model& model, int page);
+
 void draw_page_body(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
     card_depth = 0;
     primary_tab = -1;
@@ -1566,18 +1572,51 @@ void draw_page_body(SkateMenu& menu, const Model& model, const CallbacksV3& call
     case page_developer: developer_page(menu, model, callbacks); break;
     }
     note_recent_page(menu);
+    page_feedback(menu, model, menu.page);
+}
+
+PausePluginPage kit_page_in_pause(SkateMenu& menu, int page, const Model& model, const CallbacksV3& callbacks, ImVec2 a, ImVec2 b, float scale,
+                                  bool input, bool take_focus) {
+    // (A window of its own for each, so each keeps its own scroll and focus.)
+    const char* id = page == page_map ? "###pause-kit-map" : page == page_build ? "###pause-kit-build" : page == page_skater ? "###pause-kit-skater"
+                   : page == page_settings ? "###pause-kit-settings" : "###pause-kit-online";
+    auto result = pause_menu_box(menu, id, a, b, scale, input, take_focus, [&] {
+        const bool kept_triggers = std::exchange(tabs_on_triggers, false);
+        card_depth = 0;
+        primary_tab = -1;
+        primary_tab_name.clear();
+        page_prompts(nullptr);
+        switch (page) {
+        case page_map: map_page(menu, model, callbacks); break;
+        case page_build: build_page(menu, model, callbacks); break;
+        case page_skater: skater_page(menu, model, callbacks); break;
+        case page_settings: settings_page(menu, model, callbacks); break;
+        default:
+            ImGui::BeginChild("pause-online", ImVec2(0, page_body_height(menu)), ImGuiChildFlags_NavFlattened);
+            multiplayer_display_settings(menu, model);
+            ImGui::EndChild();
+            break;
+        }
+        page_feedback(menu, model, page);
+        tabs_on_triggers = kept_triggers;
+    });
+    result.shown = true;
+    return result;
+}
+
+void page_feedback(SkateMenu& menu, const Model& model, int page) {
     if (!menu.feedback.empty() && ImGui::GetTime() < menu.feedback_until) {
         // The feedback line sits in a dark strip with a blue edge, like the game's toasts.
         ImGui::Spacing();
-        const bool debug_page = menu.page == page_skater || menu.page == page_sandbox || (menu.page == page_settings && menu.settings_tab == 1);
+        const bool debug_page = page == page_skater || page == page_sandbox || (page == page_settings && menu.settings_tab == 1);
         const auto& result = debug_page && !model.debug.status.empty() && ImGui::GetTime() > menu.feedback_until - 5.75 ? model.debug.status
                                                                                                                        : menu.feedback;
         const auto at = ImGui::GetCursorScreenPos();
         const float width = ImGui::GetContentRegionAvail().x;
         const float text_height = ImGui::CalcTextSize(result.c_str(), nullptr, false, width - px(24)).y;
-        auto* page = ImGui::GetWindowDrawList();
-        page->AddRectFilled(at, ImVec2(at.x + width, at.y + text_height + px(12)), card_fill);
-        page->AddRectFilled(at, ImVec2(at.x + px(4), at.y + text_height + px(12)), blue);
+        auto* strip = ImGui::GetWindowDrawList();
+        strip->AddRectFilled(at, ImVec2(at.x + width, at.y + text_height + px(12)), card_fill);
+        strip->AddRectFilled(at, ImVec2(at.x + px(4), at.y + text_height + px(12)), blue);
         ImGui::SetCursorScreenPos(ImVec2(at.x + px(14), at.y + px(6)));
         ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + width - px(24));
         ImGui::TextUnformatted(result.c_str());
@@ -2095,6 +2134,10 @@ void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& cal
 }
 
 namespace menu {
+PausePluginPage pause_menu_kit_page(SkateMenu& menu, int page, const Model& model, const CallbacksV3& callbacks, ImVec2 a, ImVec2 b, float scale,
+                                    bool input, bool take_focus) {
+    return kit_page_in_pause(menu, page, model, callbacks, a, b, scale, input, take_focus);
+}
 void draw_in_kit(SkateMenu& menu, float scale, const std::function<void()>& body) {
     if (!menu.body || !menu.bold || !menu.heading || !menu.title) return;
     // What the menu's own frame set, put back after: it may have drawn earlier this frame, and its

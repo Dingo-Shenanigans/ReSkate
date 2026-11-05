@@ -1416,14 +1416,14 @@ void plugin_list_tab(Ui &ui, ModPage &m, ImVec2 a, ImVec2 z) {
 // The arrow keys, Enter and Escape to ImGui while a plugin's page has its navigation (State::hub_nav):
 // the overlay does not take the keyboard from the game for that, so they are read here, as hub_frame
 // reads them for the page's own focus, and let go when the page closes.
-void feed_page_keys(ModPage &m, bool on) {
-    if (!on && !m.keys_fed) return;
+void feed_page_keys(bool &fed, bool on) {
+    if (!on && !fed) return;
     static constexpr std::array<std::pair<int, ImGuiKey>, 6> keys{{{VK_UP, ImGuiKey_UpArrow}, {VK_DOWN, ImGuiKey_DownArrow}, {VK_LEFT, ImGuiKey_LeftArrow},
                                                                    {VK_RIGHT, ImGuiKey_RightArrow}, {VK_RETURN, ImGuiKey_Enter}, {VK_ESCAPE, ImGuiKey_Escape}}};
     auto &io = ImGui::GetIO();
     OverlayInputAccess access;
     for (const auto &[code, key] : keys) io.AddKeyEvent(key, on && (GetAsyncKeyState(code) & 0x8000) != 0);
-    m.keys_fed = on;
+    fed = on;
 }
 
 // A plugin's page, full size in place of the list, drawn by the Insert menu's own code for plugin pages
@@ -1537,7 +1537,7 @@ void mod_manager_page(Ui &ui, ImVec2 a, ImVec2 z) {
         break;
     default: m.tab = browse_tab; break;
     }
-    feed_page_keys(m, mods_imgui_nav(m) && ui.input && !h.typing);
+    feed_page_keys(m.keys_fed, mods_imgui_nav(m) && ui.input && !h.typing);
     const float fy = z.y - foot;
     float right = z.x;
     if (changes && !live_mods::busy()) {
