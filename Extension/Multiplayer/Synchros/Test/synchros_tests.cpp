@@ -235,7 +235,7 @@ void malformed_messages_are_refused() {
     check(!decode(std::span(bytes).first(bytes.size() - 1)), "truncated");
     auto longer = bytes; longer.push_back(0);
     check(!decode(longer), "trailing bytes");
-    auto version = bytes; version[1] = 2;
+    auto version = bytes; version[1] = wire_version + 1;
     check(!decode(version), "another version");
     auto kind = bytes; kind[0] = 99;
     check(!decode(kind), "an unknown kind");
@@ -525,6 +525,22 @@ void the_wearer_sends_only_what_is_worn_and_offered() {
     check(outfit.answer(Want{{"own_hat"}})[0].items[0].withheld == Withheld::not_worn, "an item taken off is not offered any more");
 }
 
+void a_custom_shader_item_is_withheld() {
+    FakeCloset closet;
+    const auto a = closet.add(1, 100);
+    dingosdk::synchros::Cut deck{"items/board_bottomart/own_lenticular_x", {a}, {}, 0};
+    deck.custom_shaders = true;
+    closet.cuts["own_lenticular_x"] = deck;
+    Outfit outfit(closet, {"own_lenticular_x"}, {});
+    const auto answer = outfit.answer(Want{{"own_lenticular_x"}});
+    check(answer[0].items[0].withheld == Withheld::custom_shaders && answer[0].items[0].files.empty(),
+          "a deck drawn with shaders of its own is not sent");
+    check(!outfit.fetch(Fetch{{content_id(std::span(reinterpret_cast<const std::uint8_t*>(closet.stored[1].data()), closet.stored[1].size()))}}),
+          "and none of its files can be fetched");
+    const auto back = decode(encode(Message{answer[0]}));
+    check(back && std::get<Contents>(*back).items[0].withheld == Withheld::custom_shaders, "the reason reaches the viewer");
+}
+
 // Two games' side connection, in memory: what one sends the other receives on deliver().
 struct Wire final : Channel {
     std::uint64_t self{};
@@ -750,6 +766,7 @@ int main() {
         a_file_arrives_in_order_and_whole();
         the_cache_keeps_files_by_content_and_wearer();
         the_wearer_sends_only_what_is_worn_and_offered();
+        a_custom_shader_item_is_withheld();
         two_players_exchange_an_outfit_end_to_end();
         settings_survive_a_restart();
         a_code_entered_after_connecting_counts_at_once();

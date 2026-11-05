@@ -88,6 +88,10 @@ ItemContents Outfit::answer_one(const std::string& item) {
     } catch (const std::exception&) {
         cut.reset();
     }
+    if (cut && cut->custom_shaders) {
+        answer.withheld = Withheld::custom_shaders;
+        return answer;
+    }
     if (!cut || cut->pieces.size() > max_files_per_item) {
         answer.withheld = cut ? Withheld::too_large : Withheld::unreadable;
         return answer;

@@ -79,6 +79,7 @@ public:
         bool welcomed{};         // they let this player see their outfit
         bool sharing{};          // this player lets them see theirs
         std::size_t items{}, files_missing{};
+        std::size_t custom_shaders{};   // their items left out for custom shaders (Withheld::custom_shaders)
         std::uint64_t bytes_received{};
         std::string refused;     // why it stopped, if it did
     };
@@ -103,6 +104,7 @@ private:
         std::map<ContentId, File> expected;     // asked for, by id
         std::map<ContentId, Arriving> arriving;
         std::uint64_t bytes_received{};
+        std::set<std::string> custom_shaders;   // their items withheld for custom shaders
         bool ready_told{};
         // As a wearer.
         bool hello_seen{}, sharing{};

@@ -331,7 +331,7 @@ std::vector<PlayerStatus> players() {
     for (const auto& [id, worn] : s.worn) ids.insert(id);
     for (const auto id : ids) {
         const auto st = s.exchange->status(id);
-        out.push_back({id, s.connected.contains(id), st.sharing, st.welcomed, st.items, st.files_missing, st.bytes_received, st.refused});
+        out.push_back({id, s.connected.contains(id), st.sharing, st.welcomed, st.items, st.files_missing, st.bytes_received, st.refused, st.custom_shaders});
     }
     return out;
 }

@@ -59,6 +59,10 @@ struct Cut {
     std::vector<Piece> pieces;        // the tables themselves are never pieces: rows say what they add
     std::vector<PresetRow> rows;
     std::uint64_t bytes{};            // encoded, every piece once
+    // The item's own mod adds shaders: it edits the game's shader lookup tables or ships shader
+    // bytecode or level data (a Deck Tool export, SDEC). Such an item needs rows and programs no
+    // piece carries.
+    bool custom_shaders{};
 };
 
 class Index {
