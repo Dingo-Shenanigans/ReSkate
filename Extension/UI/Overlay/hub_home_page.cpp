@@ -7,6 +7,7 @@
 #include "Extension/Assets/mod_store.h"
 #include "Extension/News/live_news.h"
 #include "Extension/News/patch_notes.h"
+#include "Extension/Multiplayer/Steam/steam_avatars.h"
 #include "Engine/Core/Platform/launcher_support.h"
 #include "Engine/Game/Input/controller_bindings.h"
 #include <algorithm>
@@ -531,11 +532,22 @@ void notes_card(Ui &f, ImVec2 a, ImVec2 z) {
     }
 }
 
+// The player's Steam avatar, made on one of store_icons.cpp's workers (tried again every few seconds
+// while Steam is still downloading it).
+bool make_own_avatar(const std::string &, CardPixels &pixels) {
+    dingosdk::multiplayer::SteamAvatar avatar;
+    if (!dingosdk::multiplayer::steam_own_avatar(avatar)) return false;
+    pixels.rgba = std::move(avatar.rgba);
+    pixels.width = avatar.width, pixels.height = avatar.height;
+    return true;
+}
+
 // YOUR PROFILE: one button the width of the column, the whole card pressed (A, Enter or a click
-// anywhere on it; Y from anywhere) for EDIT PROFILE: the player's initial on a tile, their name and
-// what their card says, and EDIT PROFILE at its bottom right as a prompt. The game draws the player
-// card's banner and emblem from their cosmetic hashes through its own item thumbnails, which nothing
-// in ReSkate turns into a picture the overlay can draw, so the card keeps the initial on a tile.
+// anywhere on it; Y from anywhere) for EDIT PROFILE: the player's Steam avatar (their initial on a
+// tile until it is there, or offline), their name and what their card says, and EDIT PROFILE at its
+// bottom right as a prompt. The game draws the player card's banner and emblem from their cosmetic
+// hashes through its own item thumbnails, which nothing in ReSkate turns into a picture the overlay
+// can draw.
 void profile_card(Ui &f, ImVec2 a, ImVec2 z, const Model &model) {
     auto &h = f.h;
     const float u = f.u, inset = 40 * u;
@@ -544,10 +556,12 @@ void profile_card(Ui &f, ImVec2 a, ImVec2 z, const Model &model) {
     skate_theme::rough_rect(draw, a, z, hit.focused ? theme::paper : hit.pointed ? card_pointed : card, 0x3c3, u * 2);
     const float side = z.y - a.y - inset * 2;
     const ImVec2 sa(a.x + inset, a.y + inset), sz(sa.x + side, sa.y + side);
-    draw->AddRectFilled(sa, sz, skate_theme::avatar);
     auto name = !model.player_card.custom_name.empty() ? model.player_card.custom_name : model.multiplayer.local_name;
     if (name.empty()) name = "Skater";
-    {
+    if (const auto avatar = made_icon("steam-avatar:own", make_own_avatar); avatar != ImTextureID{}) {
+        draw->AddImage(avatar, sa, sz);
+    } else {
+        draw->AddRectFilled(sa, sz, skate_theme::avatar);
         const std::string letter(1, static_cast<char>(std::toupper(static_cast<unsigned char>(name.front()))));
         const float size = side * .55f, w = width_of(f.heading, size, letter);
         draw->AddText(f.heading, size, ImVec2(sa.x + (side - w) * .5f, sa.y + (side - size) * .5f), skate_theme::black, letter.c_str());

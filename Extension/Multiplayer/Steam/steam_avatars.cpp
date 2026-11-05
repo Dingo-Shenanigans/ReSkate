@@ -22,6 +22,9 @@ struct Api {
     void *(*friends)(){};
     void *(*utils)(){};
     int (*medium_avatar)(void *, std::uint64_t){};
+    int (*large_avatar)(void *, std::uint64_t){};
+    void *(*user)(){};
+    std::uint64_t (*own_id)(void *){};
     bool (*image_size)(void *, int, std::uint32_t *, std::uint32_t *){};
     bool (*image_rgba)(void *, int, std::uint8_t *, int){};
     bool (*overlay_enabled)(void *){};
@@ -54,18 +57,49 @@ bool steam_up() {
         found.friends = symbol<decltype(found.friends)>(loaded, "SteamAPI_SteamFriends_v017");
         found.utils = symbol<decltype(found.utils)>(loaded, "SteamAPI_SteamUtils_v010");
         found.medium_avatar = symbol<decltype(found.medium_avatar)>(loaded, "SteamAPI_ISteamFriends_GetMediumFriendAvatar");
+        found.large_avatar = symbol<decltype(found.large_avatar)>(loaded, "SteamAPI_ISteamFriends_GetLargeFriendAvatar");
+        found.user = symbol<decltype(found.user)>(loaded, "SteamAPI_SteamUser_v023");
+        found.own_id = symbol<decltype(found.own_id)>(loaded, "SteamAPI_ISteamUser_GetSteamID");
         found.image_size = symbol<decltype(found.image_size)>(loaded, "SteamAPI_ISteamUtils_GetImageSize");
         found.image_rgba = symbol<decltype(found.image_rgba)>(loaded, "SteamAPI_ISteamUtils_GetImageRGBA");
         found.overlay_enabled = symbol<decltype(found.overlay_enabled)>(loaded, "SteamAPI_ISteamUtils_IsOverlayEnabled");
         found.overlay_to_user = symbol<decltype(found.overlay_to_user)>(loaded, "SteamAPI_ISteamFriends_ActivateGameOverlayToUser");
         if (!found.user_handle || !found.friends || !found.utils || !found.medium_avatar || !found.image_size || !found.image_rgba ||
-            !found.overlay_enabled || !found.overlay_to_user)
+            !found.overlay_enabled || !found.overlay_to_user || !found.large_avatar || !found.user || !found.own_id)
             return false;
         found.module = loaded;
         api = found;
     }
     return api.user_handle() != 0;
 }
+}
+
+namespace {
+// Under the mutex, with Steam up: the avatar's pixels from its image handle.
+// 0: they have no avatar; -1: Steam has not downloaded it yet, and now starts to.
+bool avatar_pixels(void *utils, int image, SteamAvatar &out) {
+    if (image <= 0) return false;
+    std::uint32_t width{}, height{};
+    if (!api.image_size(utils, image, &width, &height) || !width || !height || width > 256 || height > 256) return false;
+    std::vector<unsigned char> rgba(static_cast<std::size_t>(width) * height * 4);
+    if (!api.image_rgba(utils, image, rgba.data(), static_cast<int>(rgba.size()))) return false;
+    out.rgba = std::move(rgba);
+    out.width = width, out.height = height;
+    return true;
+}
+}
+
+bool steam_own_avatar(SteamAvatar &out) {
+    std::lock_guard lock(api_mutex);
+    try {
+        if (!steam_up()) return false;
+        void *friends = api.friends(), *utils = api.utils(), *user = api.user();
+        if (!friends || !utils || !user) return false;
+        const auto id = api.own_id(user);
+        return id && avatar_pixels(utils, api.large_avatar(friends, id), out);
+    } catch (...) {
+        return false;
+    }
 }
 
 bool steam_friend_avatar(std::uint64_t id, SteamAvatar &out) {
@@ -75,21 +109,11 @@ bool steam_friend_avatar(std::uint64_t id, SteamAvatar &out) {
         if (!steam_up()) return false;
         void *friends = api.friends(), *utils = api.utils();
         if (!friends || !utils) return false;
-        // 0: they have no avatar; -1: Steam has not downloaded it yet, and now starts to.
-        const int image = api.medium_avatar(friends, id);
-        if (image <= 0) return false;
-        std::uint32_t width{}, height{};
-        if (!api.image_size(utils, image, &width, &height) || !width || !height || width > 256 || height > 256) return false;
-        std::vector<unsigned char> rgba(static_cast<std::size_t>(width) * height * 4);
-        if (!api.image_rgba(utils, image, rgba.data(), static_cast<int>(rgba.size()))) return false;
-        out.rgba = std::move(rgba);
-        out.width = width, out.height = height;
-        return true;
+        return avatar_pixels(utils, api.medium_avatar(friends, id), out);
     } catch (...) {
         return false;
     }
 }
-
 bool steam_open_profile(std::uint64_t id) {
     if (!id) return false;
     std::lock_guard lock(api_mutex);
