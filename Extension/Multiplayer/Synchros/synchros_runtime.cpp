@@ -163,6 +163,7 @@ void write_outfit(std::uint64_t wearer) {
             if (made.written) {
                 log("Skate Synchros: " + std::to_string(made.items.size()) + " of " + std::to_string(wearer) +
                     "'s items made into a mod; they show from the next level load");
+                for (const auto& key : made.items) log("Skate Synchros:   " + std::to_string(wearer) + " wears " + key);
                 st.arrived = true;
                 st.apply_wanted = true;
             } else {
