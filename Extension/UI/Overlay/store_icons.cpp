@@ -20,12 +20,15 @@
 // it is what the player is looking at now. The render thread uploads one a frame into the SRV heap's
 // store icon slots, and an icon not drawn for 2 s gives its slot up when another needs it. Only the
 // tiles on screen ask (mod_manager_page.inl), so the slots are enough for a full page of them.
+// Pictures made here rather than fetched (made_icon: Steam friends' avatars on the FRIENDS tab,
+// never on screen with the Mod Manager page) share the workers and the slots.
 namespace dingosdk::overlay::detail {
 namespace {
 namespace fs = std::filesystem;
 constexpr std::size_t most_icons = 192;          // known at once, decoded or waiting
 constexpr std::size_t workers = 3;
 constexpr double retry_seconds = 20;             // an icon that could not be had is tried again after this
+constexpr double made_retry_seconds = 3;         // a made one sooner: Steam is usually still downloading it
 constexpr std::uint64_t most_icon_bytes = 4 * 1024 * 1024;
 constexpr double idle_seconds = 2;
 
@@ -35,6 +38,7 @@ struct Entry {
     int slot{-1};
     ImTextureID id{};
     double drawn{}, failed{};
+    IconMaker make{}; // set: made here (made_icon), not fetched
 };
 struct Cache {
     std::mutex mutex;
@@ -80,6 +84,7 @@ void decode_loop() {
     const auto folder = icon_folder();
     for (;;) {
         std::string url;
+        IconMaker make{};
         {
             std::unique_lock lock(c.mutex);
             c.wake.wait(lock, [&] { return !c.queue.empty(); });
@@ -92,10 +97,17 @@ void decode_loop() {
                 c.entries.erase(found);
                 continue;
             }
+            make = found->second.make;
         }
         CardPixels pixels;
         bool ok{};
-        try {
+        if (make) {
+            try {
+                ok = make(url, pixels) && pixels.width && pixels.height && pixels.rgba.size() == std::size_t{pixels.width} * pixels.height * 4;
+            } catch (...) {
+                ok = false;
+            }
+        } else try {
             const auto cached = folder.empty() ? fs::path() : folder / icon_file(url);
             std::string bytes;
             std::error_code error;
@@ -129,7 +141,8 @@ void decode_loop() {
 }
 }
 
-ImTextureID store_icon(const std::string& url) {
+namespace {
+ImTextureID icon(const std::string& url, IconMaker make) {
     if (url.empty()) return {};
     auto& c = cache();
     std::lock_guard lock(c.mutex);
@@ -147,12 +160,13 @@ ImTextureID store_icon(const std::string& url) {
             c.entries.erase(oldest);
         }
         found = c.entries.emplace(url, Entry{}).first;
+        found->second.make = make;
         c.queue.push_back(url);
         if (c.started < workers && c.queue.size() > c.started) {
             try { std::thread(decode_loop).detach(); ++c.started; } catch (...) {}
         }
         c.wake.notify_one();
-    } else if (found->second.stage == Entry::Stage::failed && now - found->second.failed >= retry_seconds) {
+    } else if (found->second.stage == Entry::Stage::failed && now - found->second.failed >= (found->second.make ? made_retry_seconds : retry_seconds)) {
         found->second.stage = Entry::Stage::waiting;
         c.queue.push_back(url);
         c.wake.notify_one();
@@ -161,6 +175,10 @@ ImTextureID store_icon(const std::string& url) {
     entry.drawn = now;
     return entry.stage == Entry::Stage::uploaded ? entry.id : ImTextureID{};
 }
+}
+
+ImTextureID store_icon(const std::string& url) { return icon(url, nullptr); }
+ImTextureID made_icon(const std::string& key, IconMaker make) { return make ? icon(key, make) : ImTextureID{}; }
 
 std::optional<StoreIconUpload> take_store_icon() {
     auto& c = cache();

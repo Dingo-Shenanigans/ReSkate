@@ -380,6 +380,11 @@ struct StoreIconUpload {
 std::optional<StoreIconUpload> take_store_icon();
 void store_icon_uploaded(const std::string& url, int slot, ImTextureID id, bool later = false);
 void store_icons_lost();
+// A picture made here rather than fetched (a Steam friend's avatar, hub_page.cpp), through the same
+// slots under a `key` of its own that is not a URL: `make` fills its pixels on one of the workers, or
+// returns false while it cannot yet, and is asked again a few seconds later while it is still drawn.
+using IconMaker = bool (*)(const std::string& key, CardPixels& pixels);
+ImTextureID made_icon(const std::string& key, IconMaker make);
 // Mods being applied with the pause menu closed (hub_page.cpp): whether its card is up, and drawing it.
 bool mod_apply_card_pending();
 void draw_mod_apply_card();

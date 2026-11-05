@@ -10,6 +10,7 @@
 #include "Extension/Boot/discord_presence.h"
 #include "Extension/Assets/map_download.h"
 #include "Extension/Assets/mod_store.h"
+#include "Extension/Multiplayer/Steam/steam_avatars.h"
 #include "Extension/Music/local_music_playback.h"
 #include "Extension/Profile/local_profile_runtime.h"
 #include "Engine/Game/Input/controller_bindings.h"
@@ -23,6 +24,7 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <ctime>
 #include <map>
 #include <mutex>
@@ -122,6 +124,9 @@ struct FriendRow {
     const MultiplayerFriend *who{};
     const MultiplayerLobby *where{};
     bool here{}, joinable{};
+    // Their session's map, with its picture found as the server browser's rows find theirs (only
+    // `map`, `asset` and `icon` are set).
+    Row place;
 };
 struct Item {
     std::uint32_t id{};
@@ -541,7 +546,17 @@ void rebuild(Hub &h) {
                 if (lobby.id == who.session) row.where = &lobby;
         row.here = mp.active && std::any_of(mp.roster.begin(), mp.roster.end(), [&](const auto &player) { return player.id == who.id && player.connected; });
         row.joinable = row.where && !row.here && view::can_join(mp, *row.where);
-        h.friends.push_back(row);
+        // Their card's map picture: their session's, or the player's own when that is where they are
+        // and it is not in the list (a private one).
+        if (row.where || row.here) {
+            MultiplayerLobby own;
+            own.map = mp.map;
+            Row probe{row.where ? row.where : &own};
+            picture(probe);
+            row.place.map = view::caption(view::map_name(probe.lobby->map, levels), 40);
+            row.place.asset = std::move(probe.asset), row.place.icon = std::move(probe.icon);
+        }
+        h.friends.push_back(std::move(row));
     }
     std::stable_sort(h.friends.begin(), h.friends.end(), [](const FriendRow &x, const FriendRow &y) {
         if (x.joinable != y.joinable) return x.joinable;
@@ -1060,19 +1075,55 @@ void browser_page(Ui &ui, ImVec2 a, ImVec2 z) {
 
 // ---------------------------------------------------------------- friends
 
-// The player's Steam friends in the game, in the server browser's look: three tiles over the list
-// (host a lobby for them, join by code, refresh), then a full-width row for each friend. Those in a
-// session come first, with where they are and JOIN on the ones the player can join (A joins), then
-// those skating on their own. There is no Steam invite here: a friend finds a public lobby on this
-// tab of their own, or through Steam's Join Game.
+// A friend's Steam avatar, made on one of store_icons.cpp's workers from its key, "steam-avatar:<id>".
+bool make_friend_avatar(const std::string &key, CardPixels &pixels) {
+    const auto colon = key.find(':');
+    if (colon == std::string::npos) return false;
+    dingosdk::multiplayer::SteamAvatar avatar;
+    if (!dingosdk::multiplayer::steam_friend_avatar(std::strtoull(key.c_str() + colon + 1, nullptr, 10), avatar)) return false;
+    pixels.rgba = std::move(avatar.rgba);
+    pixels.width = avatar.width, pixels.height = avatar.height;
+    return true;
+}
+// A friend's picture: their Steam avatar once it is on the GPU, and until then (or with no Steam,
+// or no avatar) a square in a colour of their own with their initial.
+void friend_avatar(Ui &ui, ImVec2 a, float side, const MultiplayerFriend &who) {
+    auto *draw = ui.draw;
+    const ImVec2 b(a.x + side, a.y + side);
+    if (const auto texture = made_icon("steam-avatar:" + std::to_string(who.id), make_friend_avatar); texture != ImTextureID{}) {
+        draw->AddImage(texture, a, b);
+        return;
+    }
+    constexpr std::array<ImU32, 6> colours{IM_COL32(240, 122, 30, 255), IM_COL32(154, 124, 255, 255), IM_COL32(255, 210, 92, 255),
+                                           IM_COL32(46, 184, 92, 255), IM_COL32(255, 92, 92, 255), IM_COL32(91, 143, 217, 255)};
+    draw->AddRectFilled(a, b, colours[hash("avatar", who.id) % colours.size()]);
+    const char first = who.name.empty() ? '?' : who.name.front();
+    const char initial[2]{std::isalnum(static_cast<unsigned char>(first)) ? static_cast<char>(std::toupper(static_cast<unsigned char>(first))) : '?', 0};
+    const float size = side * .42f;
+    draw->AddText(ui.bold, size, ImVec2(a.x + (side - width_of(ui.bold, size, initial)) * .5f, a.y + (side - size) * .5f), skate_theme::black, initial);
+}
+void view_profile(Hub &h, const MultiplayerFriend &who) {
+    h.sound = sound_select;
+    if (!dingosdk::multiplayer::steam_open_profile(who.id)) say(h, "Profiles open in the Steam overlay, which is off. Turn it on in Steam's settings.");
+}
+
+// The player's Steam friends in the game, as cards: four to a row (fewer when the page is narrower),
+// those in a session first, then those skating on their own. A session's card has its map's picture
+// across the top with how full it is, where they are under their avatar and name, and JOIN (A, or a
+// click on the card); every card has VIEW PROFILE, their Steam profile in the Steam overlay (Y, P, or
+// a click on it). Over the cards, only how many there are and a small REFRESH; joining by code is View
+// / Select (or C) away, on the server browser's card. There is no Steam invite here: a friend finds a
+// public lobby on this tab of their own, or through Steam's Join Game.
 void friends_page(Ui &ui, ImVec2 a, ImVec2 z) {
     auto &h = ui.h;
     const auto &mp = ui.mp;
-    const float u = ui.u, gap = 24 * u, tiles = 190 * u, footer = 70 * u;
+    const float u = ui.u, gap = 24 * u, head = 72 * u, footer = 70 * u;
     auto *draw = ui.draw;
     const int wait = browse_wait(mp);
     first_browse(h, wait);
-    // Joining by code is the server browser's card: the tile, and View / Select, open it there.
+    // The cards' map pictures, asked for as the server browser asks for its rows'.
+    if (ui.input && !std::exchange(h.pictures_asked, true)) want_grid_pictures(h.grid);
+    // Joining by code is the server browser's card: View / Select (or C) opens it there.
     const auto join_by_code = [&] {
         to_tab(h, Tab::browser);
         h.code_mode = true;
@@ -1080,28 +1131,27 @@ void friends_page(Ui &ui, ImVec2 a, ImVec2 z) {
     };
     const bool fresh_input = ui.input && !h.typing;
     const std::uint32_t pressed = ui.pad.buttons & ~h.pad_before;
-    if (fresh_input && (pressed & 0x4000) && !wait) queue_multiplayer_action("browse", ""); // X / Square
-    if (fresh_input && (pressed & 0x20)) join_by_code();                                     // View / Select
+    if (fresh_input && (pressed & 0x4000) && !wait) queue_multiplayer_action("browse", "");      // X / Square
+    if (fresh_input && ((pressed & 0x20) || ImGui::IsKeyPressed(ImGuiKey_C, false))) join_by_code(); // View / Select, or C
+    // Y / Triangle (or P) opens the profile of the friend whose card has the focus, found as it is drawn.
+    const bool profile_asked = fresh_input && ((pressed & 0x8000) || ImGui::IsKeyPressed(ImGuiKey_P, false));
     // A friend in a public session in the list, or in the player's own. rebuild() puts them first,
     // so the two groups follow one another.
     const auto together = static_cast<std::size_t>(std::count_if(h.friends.begin(), h.friends.end(), [](const FriendRow &row) { return row.where || row.here; }));
 
-    // ---- the tiles. Hosting has the most to say, so it is the widest.
+    // ---- over the cards: how many, and refresh
     {
-        const float spare = z.x - a.x - gap * 2, wide = spare * .4f, narrow = spare * .3f;
-        const float x1 = a.x + wide + gap, x2 = x1 + narrow + gap;
-        const auto host = !mp.active ? std::string("Your map, your rules; friends see it here and in Steam")
-                          : std::string(mp.hosting ? "You are hosting a session" : "Leave your session to host your own");
-        if (hero(ui, hash("friends-host"), a, ImVec2(a.x + wide, a.y + tiles), "HOST A LOBBY FOR FRIENDS", host, true)) to_tab(h, Tab::host);
-        if (hero(ui, hash("friends-code"), ImVec2(x1, a.y), ImVec2(x1 + narrow, a.y + tiles), "JOIN BY CODE", "Paste a friend's join code", false)) join_by_code();
+        const float size = 30 * u;
         // Refresh stays a control while it counts down, so the D-pad does not lose its place on it.
         const auto refresh = wait ? "REFRESH IN " + std::to_string(wait) : std::string(mp.lobby_searching ? "SEARCHING..." : "REFRESH");
+        const float w = std::max(width_of(ui.bold, size, "REFRESH IN 00"), width_of(ui.bold, size, refresh)) + 60 * u;
+        if (action(ui, hash("friends-refresh"), ImVec2(z.x - w, a.y), ImVec2(z.x, a.y + head), refresh, false, true) && !wait) queue_multiplayer_action("browse", "");
         const auto count = h.friends.empty() ? std::string("No friends skating right now")
-                           : std::to_string(h.friends.size()) + (h.friends.size() == 1 ? " friend skating, " : " friends skating, ") + std::to_string(together) + " in a session";
-        if (hero(ui, hash("friends-refresh"), ImVec2(x2, a.y), ImVec2(z.x, a.y + tiles), refresh.c_str(), count, false) && !wait) queue_multiplayer_action("browse", "");
+                           : std::to_string(h.friends.size()) + " skating, " + std::to_string(together) + " in a session";
+        label(draw, ui.body, size, ImVec2(a.x, a.y + (head - size) * .5f), z.x - w - 40 * u, theme::muted, count);
     }
 
-    const ImVec2 la(a.x, a.y + tiles + gap), lz(z.x, z.y - footer);
+    const ImVec2 la(a.x, a.y + head + gap), lz(z.x, z.y - footer);
     if (h.friends.empty()) {
         // Nobody to show: a card that says so, with the way to give them somewhere to go.
         const ImVec2 cz(lz.x, std::min(lz.y, la.y + 360 * u));
@@ -1117,116 +1167,146 @@ void friends_page(Ui &ui, ImVec2 a, ImVec2 z) {
         const float w = width_of(ui.bold, 36 * u, text) + 120 * u;
         if (action(ui, hash("friends-empty-host"), ImVec2(left, y), ImVec2(left + w, y + tall), text, true, true)) to_tab(h, Tab::host);
     } else {
-        // The columns, as the server browser's rows have them. From the right: what pressing it does,
-        // the skaters with a bar of how full the session is, then where they are; their colour square
-        // and name on the left. A narrow page folds the skaters in with where they are.
-        const float row_height = 120 * u, row_gap = 10 * u, head = 64 * u, pad_x = 30 * u, column_gap = 40 * u, side = 84 * u;
-        const float right = lz.x - 20 * u;
-        const float chip_left = right - pad_x - 220 * u, skaters_right = chip_left - column_gap, skaters_left = skaters_right - 280 * u;
-        const float name_left = a.x + pad_x + side + 30 * u, name_width = std::clamp((skaters_left - name_left) * .3f, 420 * u, 760 * u);
-        const float where_left = name_left + name_width + column_gap;
-        const bool with_skaters = skaters_left - column_gap - where_left >= 600 * u;
-        const float where_right = with_skaters ? skaters_left - column_gap : chip_left - column_gap;
+        // Four cards to a row while each is at least `least` wide (the page is 3456 units wide at 16:9
+        // and wider on a wider screen), fewer when it is narrower. A session's card is taller than a
+        // card for a friend skating on their own, so each group's rows are as tall as its cards.
+        const float right = lz.x - 20 * u; // clear of the scroll bar
+        const float least = 760 * u, card_gap = 24 * u;
+        const auto columns = static_cast<std::size_t>(std::clamp(static_cast<int>((right - la.x + card_gap) / (least + card_gap)), 1, 4));
+        const float card_width = (right - la.x - card_gap * static_cast<float>(columns - 1)) / static_cast<float>(columns);
+        const float pad = 28 * u, side = 120 * u, strip = 250 * u, buttons = 76 * u, group_head = 64 * u, facts = 96 * u;
+        const float session_height = strip + pad + side + 20 * u + facts + 20 * u + buttons + pad, solo_height = pad + side + 24 * u + buttons + pad;
         Scroller list(ui, hash("friends"), la, lz);
-        // A group's heading, with how many are in it; the first group's names its columns too.
-        const auto heading = [&](const char *title, std::size_t count, bool columns) {
+        const auto heading = [&](const char *title, std::size_t count) {
             bool drawn{};
-            const float top = list.next(head, 0, drawn);
-            if (!drawn) return;
-            const float size = 28 * u, label_size = 24 * u, y = top + head - size - 14 * u;
-            draw->AddText(ui.bold, size, ImVec2(a.x, y), theme::paper, (std::string(title) + "  \xc2\xb7  " + std::to_string(count)).c_str());
-            if (!columns) return;
-            draw->AddText(ui.bold, label_size, ImVec2(where_left, y + size - label_size), sub_ink, "WHERE");
-            if (with_skaters) draw->AddText(ui.bold, label_size, ImVec2(skaters_right - width_of(ui.bold, label_size, "SKATERS"), y + size - label_size), sub_ink, "SKATERS");
+            const float top = list.next(group_head, 0, drawn);
+            if (drawn) group_heading(ui, ImVec2(a.x, top + group_head - 42 * u), std::string(title) + "  \xc2\xb7  " + std::to_string(count));
         };
-        for (std::size_t i = 0; i < h.friends.size(); ++i) {
-            const auto &row = h.friends[i];
-            if (i == 0 && together) heading("IN A SESSION", together, true);
-            if (i == together) heading("SKATING", h.friends.size() - together, false);
+        const auto card = [&](const FriendRow &row, ImVec2 p, ImVec2 q, bool drawn) {
             const auto &who = *row.who;
+            const auto *lobby = row.where;
+            const bool session = lobby || row.here, full = lobby && lobby->players >= lobby->capacity;
             const auto id = hash("friend", who.id);
-            bool drawn{};
-            const float top = list.next(row_height, row_gap, drawn);
-            const ImVec2 p(a.x, top), q(right, top + row_height);
+            // Along its foot: JOIN (what A or a click anywhere else on the card does, on a session's
+            // card only) and VIEW PROFILE, which a click on it or Y does.
+            const float by = q.y - pad - buttons, split = p.x + pad + (q.x - p.x - pad * 3) * .55f;
+            const ImVec2 join_a(p.x + pad, by), join_b(split, by + buttons);
+            const ImVec2 profile_a(session ? split + pad : p.x + pad, by), profile_b(q.x - pad, by + buttons);
+            const bool in_view = ui.input && inside(ui.mouse, list.box.a, list.box.b);
+            const bool over_profile = in_view && inside(ui.mouse, profile_a, profile_b), over_join = session && in_view && inside(ui.mouse, join_a, join_b);
             const Hit hit = item(ui, id, p, q, &list.box);
-            list.reveal(id, top, row_height);
-            const bool full = row.where && row.where->players >= row.where->capacity;
+            list.reveal(id, p.y, q.y - p.y);
             if (hit.press) {
-                if (row.joinable) join_lobby(h, *row.where);
+                if (over_profile && ui.clicked) view_profile(h, who);
+                else if (row.joinable) join_lobby(h, *row.where);
                 else say(h, row.here ? "You are skating with them already." : full ? "Their session is full."
-                            : row.where && mp.active && mp.hosting ? "End your session first, then join them."
-                            : row.where && mp.lobby_joining ? "You are joining a session already."
+                            : lobby && mp.active && mp.hosting ? "End your session first, then join them."
+                            : lobby && mp.lobby_joining ? "You are joining a session already."
                             : who.session ? "Their session is not in your list yet. Refresh to look again."
                                           : "They are not in a public session. Ask them for their join code, or host a lobby they can join.");
             }
-            if (!drawn) continue;
+            if (profile_asked && h.focus == id) view_profile(h, who);
+            if (!drawn) return;
             // White under the D-pad or the keys, a lighter grey under the pointer, as the browser's rows.
             const auto [focused, pointed] = lit_of(hit);
             const ImU32 ink = focused ? focus_ink : theme::paper, sub = focused ? sub_ink_lit : sub_ink;
             skate_theme::rough_rect(draw, p, q, focused ? theme::paper : pointed ? row_hover : tile_dark, 0x900 + static_cast<unsigned>(who.id & 0xff), u * 2);
-            // No Steam avatars here: a square in a colour of their own, with their initial.
-            constexpr std::array<ImU32, 6> colours{IM_COL32(240, 122, 30, 255), IM_COL32(154, 124, 255, 255), IM_COL32(255, 210, 92, 255),
-                                                   IM_COL32(46, 184, 92, 255), IM_COL32(255, 92, 92, 255), IM_COL32(91, 143, 217, 255)};
-            const ImVec2 av(p.x + pad_x, top + (row_height - side) * .5f);
-            draw->AddRectFilled(av, ImVec2(av.x + side, av.y + side), colours[hash("avatar", who.id) % colours.size()]);
-            const char first = who.name.empty() ? '?' : who.name.front();
-            const char initial[2]{std::isalnum(static_cast<unsigned char>(first)) ? static_cast<char>(std::toupper(static_cast<unsigned char>(first))) : '?', 0};
-            const float initial_size = 50 * u;
-            draw->AddText(ui.bold, initial_size, ImVec2(av.x + (side - width_of(ui.bold, initial_size, initial)) * .5f, av.y + (side - initial_size) * .5f), skate_theme::black, initial);
-            // Their name, with what they are doing in the session under it when it is more than skating there.
-            const auto name = view::caption(who.name.empty() ? "A friend" : who.name, 40);
-            const char *role = row.here ? "Skating with you" : row.where && !row.where->dedicated && row.where->owner == who.id ? "Hosting" : nullptr;
-            const float name_size = 40 * u, name_right = where_left - column_gap;
-            if (role) {
-                label(draw, ui.bold, name_size, ImVec2(name_left, top + 18 * u), name_right, ink, name);
-                label(draw, ui.body, 28 * u, ImVec2(name_left, top + 72 * u), name_right, sub, role);
+            float y = p.y + pad;
+            if (session) {
+                // The map's picture across the top (a plain tile with its name while there is none),
+                // darker along its foot for the skaters, over a bar of how full the session is; the
+                // session's type plate and marks in its corner.
+                const ImVec2 sa(p.x, p.y), sb(q.x, p.y + strip);
+                map_picture(ui, sa, sb, row.place);
+                const ImU32 clear = IM_COL32(0, 0, 0, 0), shade = IM_COL32(0, 0, 0, 210);
+                draw->AddRectFilledMultiColor(ImVec2(sa.x, sb.y - 130 * u), sb, clear, clear, shade, shade);
+                const bool official = lobby && lobby->official, dedicated = lobby ? lobby->dedicated : mp.dedicated;
+                float px = sa.x + pad;
+                const float plate_y = sa.y + pad;
+                px += plate(ui, ImVec2(px, plate_y), official ? "OFFICIAL" : dedicated ? "SERVER" : "LOBBY", official ? skate_theme::blue : dedicated ? plate_grey : skate_theme::good,
+                            official ? theme::paper : dedicated ? chip_ink : skate_theme::black) + 10 * u;
+                if (row.here) px += plate(ui, ImVec2(px, plate_y), "YOU ARE HERE", focus_ink, theme::paper) + 10 * u;
+                if (lobby && lobby->password_required) plate(ui, ImVec2(px, plate_y), "PASSWORD", skate_theme::warning, skate_theme::black);
+                const int players = lobby ? lobby->players : mp.players, capacity = lobby ? lobby->capacity : mp.capacity;
+                const float count_size = 40 * u, tag_size = 24 * u, foot = sb.y - 24 * u;
+                const auto count = full ? std::string("FULL") : std::to_string(players) + " / " + std::to_string(capacity);
+                const float count_x = sb.x - pad - width_of(ui.bold, count_size, count);
+                draw->AddText(ui.bold, count_size, ImVec2(count_x, foot - count_size), full ? skate_theme::danger : theme::paper, count.c_str());
+                draw->AddText(ui.bold, tag_size, ImVec2(count_x - 14 * u - width_of(ui.bold, tag_size, "SKATERS"), foot - tag_size - 6 * u), chip_ink, "SKATERS");
+                const float fill = capacity > 0 ? std::clamp(static_cast<float>(players) / static_cast<float>(capacity), 0.f, 1.f) : 0.f;
+                draw->AddRectFilled(ImVec2(sa.x, sb.y - 8 * u), sb, track);
+                draw->AddRectFilled(ImVec2(sa.x, sb.y - 8 * u), ImVec2(sa.x + (sb.x - sa.x) * fill, sb.y), full ? skate_theme::danger : accent);
+                y = sb.y + pad;
+            }
+            // Their avatar and name, and what they are doing: skating with the player (and in their
+            // party), hosting, or where they are.
+            friend_avatar(ui, ImVec2(p.x + pad, y), side, who);
+            const float text_left = p.x + pad + side + 24 * u, text_right = q.x - pad;
+            label(draw, ui.bold, 42 * u, ImVec2(text_left, y + 14 * u), text_right, ink, view::caption(who.name.empty() ? "A friend" : who.name, 40));
+            std::string status;
+            bool with{};
+            if (row.here) {
+                const auto me = std::find_if(mp.roster.begin(), mp.roster.end(), [&](const auto &player) { return player.id == who.id; });
+                const bool party = mp.parties && me != mp.roster.end() && me->party_member;
+                status = !party ? "Skating with you" : me->party_leader ? "Your party's leader, skating with you" : "In your party, skating with you";
+                with = true;
+            } else if (lobby && !lobby->dedicated && lobby->owner == who.id) {
+                status = "Hosting this lobby";
+                with = true;
+            } else if (lobby) {
+                status = lobby->dedicated ? "Skating on a server" : "Skating in a lobby";
             } else {
-                label(draw, ui.bold, name_size, ImVec2(name_left, top + (row_height - name_size) * .5f), name_right, ink, name);
+                status = who.session ? "In a session not in your list yet" : "Skating solo, or in a private session";
             }
-            const float cell_size = 32 * u, cell_y = top + (row_height - cell_size) * .5f;
-            if (!row.where && !row.here) {
-                // Skating on their own, or somewhere the list does not show: what is known, and no join.
-                label(draw, ui.body, cell_size, ImVec2(where_left, cell_y), right - pad_x, sub,
-                      who.session ? "In a session not in your list yet" : "Skating solo, or in a private session");
-                continue;
-            }
-            // Where they are: the session and its map, with its type plate (and marks) under it.
-            const float plate_y = top + 68 * u;
-            float px = where_left;
-            if (const auto *lobby = row.where) {
-                label(draw, ui.body, 34 * u, ImVec2(where_left, top + 18 * u), where_right, ink,
-                      view::caption(lobby->name, 40) + "  \xc2\xb7  " + view::map_name(lobby->map, h.full.levels));
-                px += plate(ui, ImVec2(px, plate_y), lobby->official ? "OFFICIAL" : lobby->dedicated ? "SERVER" : "LOBBY",
-                            lobby->official ? skate_theme::blue : lobby->dedicated ? plate_grey : skate_theme::good,
-                            lobby->official ? theme::paper : lobby->dedicated ? chip_ink : skate_theme::black) + 10 * u;
-                if (row.here) px += plate(ui, ImVec2(px, plate_y), "YOU ARE HERE", focused ? focus_ink : theme::paper, focused ? theme::paper : focus_ink) + 10 * u;
-                if (lobby->password_required) px += plate(ui, ImVec2(px, plate_y), "PASSWORD", skate_theme::warning, skate_theme::black) + 10 * u;
-                const auto count = full ? std::string("FULL") : std::to_string(lobby->players) + " / " + std::to_string(lobby->capacity);
-                if (with_skaters) {
-                    // The skaters, with a thin blue bar of how full it is.
-                    const float count_size = 40 * u;
-                    draw->AddText(ui.bold, count_size, ImVec2(skaters_right - width_of(ui.bold, count_size, count), top + 20 * u), full ? skate_theme::danger : ink, count.c_str());
-                    const float fill = lobby->capacity > 0 ? std::clamp(static_cast<float>(lobby->players) / static_cast<float>(lobby->capacity), 0.f, 1.f) : 0.f;
-                    const ImVec2 t0(skaters_left, top + 80 * u), t1(skaters_right, top + 90 * u);
-                    draw->AddRectFilled(t0, t1, focused ? track_lit : track);
-                    draw->AddRectFilled(t0, ImVec2(t0.x + (t1.x - t0.x) * fill, t1.y), full ? skate_theme::danger : accent);
-                } else {
-                    label(draw, ui.body, 28 * u, ImVec2(px + 6 * u, plate_y + 4 * u), where_right, sub, count + " skaters");
+            label(draw, ui.body, 30 * u, ImVec2(text_left, y + 72 * u), text_right, with ? (focused ? IM_COL32(24, 120, 60, 255) : skate_theme::friends_text) : sub, status);
+            if (session) {
+                // The session's name, then its map, the ping and the other friends there.
+                y += side + 20 * u;
+                const auto server = lobby ? view::caption(lobby->name, 64) : mp.lobby_name.empty() ? std::string("Your session") : view::caption(mp.lobby_name, 64);
+                label(draw, ui.bold, 36 * u, ImVec2(p.x + pad, y), q.x - pad, ink, server);
+                std::string line = row.place.map;
+                if (lobby && lobby->ping >= 0) line += "  \xc2\xb7  " + std::to_string(lobby->ping) + " ms";
+                if (lobby) {
+                    std::vector<std::string> others;
+                    for (const auto &name : lobby->friends)
+                        if (name != who.name) others.push_back(name);
+                    if (!others.empty()) {
+                        line += "  \xc2\xb7  with " + view::caption(others.front(), 24);
+                        if (others.size() == 2) line += " and " + view::caption(others[1], 24);
+                        else if (others.size() > 2) line += " and " + std::to_string(others.size() - 1) + " more";
+                    }
                 }
-            } else {
-                // In the player's own session, which is not in the list (a private one).
-                label(draw, ui.body, 34 * u, ImVec2(where_left, top + 18 * u), where_right, ink, mp.lobby_name.empty() ? std::string("Your session") : view::caption(mp.lobby_name, 40));
-                plate(ui, ImVec2(px, plate_y), "YOU ARE HERE", focused ? focus_ink : theme::paper, focused ? theme::paper : focus_ink);
+                label(draw, ui.body, 28 * u, ImVec2(p.x + pad, y + 52 * u), q.x - pad, sub, line);
+                // JOIN on the blue, or why not on grey.
+                const char *does = mp.lobby_joining ? "JOINING..." : row.joinable ? "JOIN" : row.here ? "YOU ARE HERE" : full ? "FULL"
+                                   : mp.active && mp.hosting ? "END YOUR SESSION FIRST" : "JOIN";
+                skate_theme::rough_rect(draw, join_a, join_b, row.joinable ? (over_join && !h.ring ? accent_hover : accent) : focused ? track_lit : track, 0x5c, u * 2);
+                const float size = 32 * u, w = width_of(ui.bold, size, does);
+                label(draw, ui.bold, size, ImVec2(join_a.x + std::max(16 * u, (join_b.x - join_a.x - w) * .5f), join_a.y + (buttons - size) * .5f), join_b.x - 16 * u,
+                      row.joinable ? theme::paper : focused ? focus_ink : chip_ink, does);
             }
-            // What pressing the row does, on the right: JOIN on the blue, or why not on grey.
-            if (const char *chip = row.joinable ? "JOIN" : row.here ? "HERE" : full ? "FULL" : nullptr) {
-                const float size = 32 * u;
-                const ImVec2 c(chip_left, top + 30 * u), d(right - pad_x, top + row_height - 30 * u);
-                skate_theme::rough_rect(draw, c, d, row.joinable ? accent : focused ? track_lit : track, 0x5c, u * 2);
-                draw->AddText(ui.bold, size, ImVec2(c.x + (d.x - c.x - width_of(ui.bold, size, chip)) * .5f, c.y + (d.y - c.y - size) * .5f),
-                              focused && !row.joinable ? focus_ink : theme::paper, chip);
+            // VIEW PROFILE: a lighter tile under the pointer.
+            {
+                const bool lit = over_profile && !h.ring;
+                skate_theme::rough_rect(draw, profile_a, profile_b, focused ? (lit ? card_light_hover : card_light) : lit ? raised_hover : raised, 0x5d, u * 2);
+                const float size = 32 * u, w = width_of(ui.bold, size, "VIEW PROFILE");
+                label(draw, ui.bold, size, ImVec2(profile_a.x + std::max(16 * u, (profile_b.x - profile_a.x - w) * .5f), profile_a.y + (buttons - size) * .5f), profile_b.x - 16 * u,
+                      focused ? skate_theme::black : theme::paper, "VIEW PROFILE");
             }
-        }
+        };
+        // A group's cards, `columns` to a row.
+        const auto group = [&](std::size_t first, std::size_t end, float height) {
+            for (std::size_t i = first; i < end; i += columns) {
+                bool drawn{};
+                const float top = list.next(height, card_gap, drawn);
+                for (std::size_t j = i; j < std::min(end, i + columns); ++j) {
+                    const float x = la.x + (card_width + card_gap) * static_cast<float>(j - i);
+                    card(h.friends[j], ImVec2(x, top), ImVec2(x + card_width, top + height), drawn);
+                }
+            }
+        };
+        if (together) heading("IN A SESSION", together), group(0, together, session_height);
+        if (together < h.friends.size()) heading("SKATING", h.friends.size() - together), group(together, h.friends.size(), solo_height);
         list.end();
     }
 
@@ -1236,8 +1316,8 @@ void friends_page(Ui &ui, ImVec2 a, ImVec2 z) {
         const auto text = view::caption(h.notice, 96);
         label(draw, ui.body, 30 * u, ImVec2(a.x, y + 4 * u), a.x + 1100 * u, theme::muted, text);
         const float x = a.x + (text.empty() ? 0 : std::min(width_of(ui.body, 30 * u, text), 1100 * u) + 60 * u);
-        if (ui.pad.available) hints(ui, x, y, {{0x1000, "", "Join"}, {0x4000, "", "Refresh"}, {0x20, "", "Join by code"}});
-        else hints(ui, x, y, {{0, "Enter", "Join"}});
+        if (ui.pad.available) hints(ui, x, y, {{0x1000, "", "Join"}, {0x8000, "", "Steam profile"}, {0x4000, "", "Refresh"}, {0x20, "", "Join by code"}});
+        else hints(ui, x, y, {{0, "Enter", "Join"}, {0, "P", "Steam profile"}, {0, "C", "Join by code"}});
     }
 }
 

@@ -62,6 +62,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Multiplayer/Hud/native_indicators.cpp
     Extension/Multiplayer/Steam/steam_transport.cpp
     Extension/Multiplayer/Steam/steam_social.cpp
+    Extension/Multiplayer/Steam/steam_avatars.cpp
     Extension/Multiplayer/Steam/steam_friend_join.cpp
     Extension/Multiplayer/Steam/steam_lobbies.cpp
     Extension/Multiplayer/Steam/steam_lobby_api.cpp
