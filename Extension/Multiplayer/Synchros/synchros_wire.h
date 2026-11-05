@@ -21,7 +21,7 @@
 // Every message is one Steam message: u8 kind, u8 version, then its fields, little-endian.
 // Anything malformed, oversized or out of order ends the exchange.
 namespace dingosdk::multiplayer::synchros {
-inline constexpr std::uint8_t wire_version = 1;
+inline constexpr std::uint8_t wire_version = 2;  // 2: Withheld::custom_shaders
 inline constexpr std::uint16_t steam_virtual_port = 7347;  // "SYNC" on a phone pad, near enough
 
 inline constexpr std::size_t max_items = 64;              // worn items asked for at once
@@ -84,6 +84,10 @@ enum class Withheld : std::uint8_t {
     too_large = 3,      // over max_outfit
     game_item = 4,      // the game's own: the viewer has it
     unreadable = 5,
+    // Drawn with shaders of its own (a Deck Tool or SDEC deck): those live in the game's shader
+    // tables and the maps' shader data, which are not sent yet, and the item crashes a viewer's
+    // game without them. The viewer shows the default in its place.
+    custom_shaders = 6,
 };
 // A preset of the item and the bundle that loads it, for the viewer's bundle-reference table
 // (Engine/Resource/bundle_ref_table.h: with_presets). The bundle is an index into the game's own

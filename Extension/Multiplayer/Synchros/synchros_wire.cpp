@@ -189,7 +189,7 @@ std::optional<Message> decode(std::span<const std::uint8_t> bytes) {
             ItemContents item;
             item.item = r.text(max_name);
             const auto withheld = r.u8();
-            if (withheld > static_cast<std::uint8_t>(Withheld::unreadable) || item.item.empty()) r.ok = false;
+            if (withheld > static_cast<std::uint8_t>(Withheld::custom_shaders) || item.item.empty()) r.ok = false;
             item.withheld = static_cast<Withheld>(withheld);
             const auto files = r.count(max_files_per_item);
             if (item.withheld != Withheld::none && files) r.ok = false;  // a withheld item carries nothing

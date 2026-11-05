@@ -188,6 +188,10 @@ void Exchange::received(std::uint64_t peer, std::span<const std::uint8_t> bytes)
             if (!p.welcomed) { refuse(peer, "contents without a welcome"); return; }
             // Only what was asked for, and only items that came whole.
             for (const auto& item : m.items) {
+                if (p.asked.contains(item.item) && item.withheld == Withheld::custom_shaders &&
+                    p.custom_shaders.insert(item.item).second)
+                    note(std::to_string(peer) + "'s " + item.item +
+                         " uses custom shaders, which are not shared yet: it shows as the default");
                 if (!p.asked.contains(item.item) || item.withheld != Withheld::none) continue;
                 std::erase_if(p.listing, [&](const ItemContents& old) { return old.item == item.item; });
                 p.listing.push_back(item);
@@ -264,6 +268,7 @@ Exchange::Status Exchange::status(std::uint64_t peer) const {
     s.welcomed = p.welcomed;
     s.sharing = p.sharing;
     s.items = p.listing.size();
+    s.custom_shaders = p.custom_shaders.size();
     s.files_missing = p.to_fetch.size() + p.arriving.size();
     s.bytes_received = p.bytes_received;
     s.refused = p.refused;

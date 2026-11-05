@@ -48,6 +48,7 @@ struct PlayerStatus {
     std::size_t items{}, files_missing{};
     std::uint64_t bytes_received{};
     std::string refused;
+    std::size_t custom_shaders{};   // their items that show as the default: custom shaders are not shared yet
 };
 [[nodiscard]] std::vector<PlayerStatus> players();
 // Blocks a player: neither sent to nor shown, and what was received from them is removed.

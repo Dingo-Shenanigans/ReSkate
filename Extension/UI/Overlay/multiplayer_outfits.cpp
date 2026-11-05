@@ -213,6 +213,8 @@ void outfits_page(SkateMenu& menu, const Model& model) {
                               : p.welcomed ? (p.files_missing ? "receiving their outfit (" + std::to_string(p.files_missing) + " files to come)"
                                                               : std::to_string(p.items) + " of their items shown")
                               : "they do not share with you";
+            if (p.welcomed && p.custom_shaders)
+                state += "; " + std::to_string(p.custom_shaders) + " with custom shaders (not shared yet) show as the default";
             if (p.sharing) state += "; they see yours";
             if (list_row(name_of(mp, p.id) + "  -  " + state, "Block")) {
                 synchros::block_player(p.id);
