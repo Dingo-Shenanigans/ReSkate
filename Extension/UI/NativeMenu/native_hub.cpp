@@ -5,9 +5,11 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <format>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 // The pause menu's Hub page lists live-service tiles in two native TileLists.
 // ReSkate has no store, skate.Pass, bounties, missions or crew bounties, and
@@ -15,9 +17,10 @@
 // news, patch notes, the profile), so every tile goes. The game keeps the
 // controller while its menu is up and needs something to focus on the Hub, so
 // one tile stays, emptied in place: drawn as nothing, with no action. The game
-// rebuilds the Hub now and then; this is re-applied then. Where the Hub's lists
-// are not found the Hub is left as the game made it, and the front page is not
-// drawn over it.
+// rebuilds the Hub now and then (coming back to it from a page opened from it
+// among others); this runs every frame, so it is re-applied then. Where the
+// Hub's lists are not found the Hub is left as the game made it, and the front
+// page is not drawn over it.
 namespace dingosdk::multiplayer {
 using namespace menu_data;
 using namespace native_menu_detail;
@@ -153,10 +156,14 @@ void empty_hub_list(const Context &c, Value list) {
     std::vector<std::byte> kept(bytes.begin(), bytes.begin() + stride);
     c.array(rows, kept, 1);
 }
+// The partitions holding the Hub's lists, as last found: the Hub's body, by which the Hub page's own
+// stack is told to show it (hub_stack).
+std::vector<Handle> hub_bodies;
 // Returns whether the Hub's lists were found (and so emptied).
 bool take_over_hub(const Context &c) {
     const auto list_type = c.type({tile_list_schema, 392});
     bool found{};
+    hub_bodies.clear();
     for (const auto &root : c.roots({partition_schema})) {
         const auto left = c.field(root.model, partition_left), right = c.field(root.model, partition_right);
         auto left_widget = read<Widget>(c.address(left));
@@ -164,6 +171,7 @@ bool take_over_hub(const Context &c) {
         const auto left_tiles = hub_list_tiles(c, left_widget, list_type), right_tiles = hub_list_tiles(c, right_widget, list_type);
         if (!left_tiles && !right_tiles) continue;
         found = true;
+        hub_bodies.push_back(root.model.handle);
         if ((!left_tiles || !*left_tiles) && right_tiles && *right_tiles) {
             c.set(left, right_widget);
             left_widget = right_widget;
@@ -192,6 +200,70 @@ std::optional<Value> selected_hub(const Context &c, Value menu) {
     const auto widget = read<Widget>(c.address(c.field(item, content)));
     const Value model{widget.data.handle, widget.data.handle ? c.type_of(widget.data.handle) : 0};
     return model.handle && model.type == c.type(page) ? model : Value{};
+}
+
+// What the Hub page's own stack (its Content) shows. A page opened from the Hub (the profile EDIT
+// PROFILE opens, the player card editor) leaves the selected tab on the Hub and the Hub page's focused
+// index at 0 or more, so neither says it is up: 2026-11-04 in game the front page stayed drawn over
+// the profile. Such a page is believed to be pushed onto this stack over the Hub's body, as the menu
+// pushes its pages, so the front page is drawn only while the stack shows the body: the item whose
+// content is a partition take_over_hub emptied, or, where none is, the item it showed as the Hub came
+// up. The log says which page of the stack is up whenever that changes, to check this by.
+struct HubStack {
+    int target{-1}, body{-1}; // the item shown, and the Hub's body (-1: not found)
+    unsigned count{};
+};
+HubStack hub_stack(const Context &c, Value hub) {
+    HubStack s;
+    const auto list = c.path(hub, {content, items});
+    unsigned stride{};
+    c.array(list, 32, s.count, stride);
+    s.target = read<int>(c.address(c.path(hub, {content, 0x18f8355b})));
+    for (unsigned i = 0; i < s.count && s.body < 0; ++i) {
+        const auto widget = read<Widget>(c.address(c.field(c.element(list, i), content)));
+        if (widget.data.handle && std::find(hub_bodies.begin(), hub_bodies.end(), widget.data.handle) != hub_bodies.end())
+            s.body = static_cast<int>(i);
+    }
+    return s;
+}
+// The stack as the Hub came up (its page model, the item shown and how many): what stands for the
+// body when it is not found. Forgotten when another tab is chosen.
+struct {
+    Handle page{};
+    int target{-1};
+    unsigned count{};
+} hub_arrival;
+// Why the front page is not drawn while the Hub is the tab, or an empty text when it is drawn.
+std::string hub_hidden_reason(const Context &c, Value hub) {
+    if (!hub_taken) return "the Hub's lists were not found, so the game's Hub is left as it is";
+    if (!hub.handle) return {};
+    try {
+        // No big brushed title: the front page starts where it was, as ReSkate's own pages do.
+        if (const auto title = c.path(hub, {0x3781b603, text_field}); c.text(title, 64) != " ") c.text(title, " ");
+        // (The page's screen record, and in it the focused index: -1 under the game's side menu.)
+        if (read<int>(c.address(c.path(hub, {0xfafda1a6, 0x20a39d92, 0x6b01fd01}))) < 0) return "the game's side menu is over the Hub";
+    } catch (const std::exception &e) {
+        static bool said{};
+        if (!std::exchange(said, true))
+            logging::log(logging::Level::warning, logging::Channel::ui,
+                         "Front page: the Hub's page could not be read ({}); it is drawn whenever the Hub is the tab.", e.what());
+        return {};
+    }
+    try {
+        const auto stack = hub_stack(c, hub);
+        if (hub_arrival.page != hub.handle) hub_arrival = {hub.handle, stack.target, stack.count};
+        const bool covered = stack.body >= 0 ? stack.target != stack.body
+                                             : stack.target != hub_arrival.target || stack.count > hub_arrival.count;
+        if (covered)
+            return std::format("a page opened from the Hub is over it (the Hub page's stack shows item {} of {}; the Hub's body is {})", stack.target,
+                               stack.count, stack.body >= 0 ? "item " + std::to_string(stack.body) : "not found, item " + std::to_string(hub_arrival.target) + " stands for it");
+    } catch (const std::exception &e) {
+        static bool said{};
+        if (!std::exchange(said, true))
+            logging::log(logging::Level::warning, logging::Channel::ui,
+                         "Front page: the Hub page's stack could not be read ({}); a page opened from the Hub may have it drawn over it.", e.what());
+    }
+    return {};
 }
 
 // The Hub's Back held while the front page has something open (hold_hub_back): its input and
@@ -299,9 +371,10 @@ void update_hub(const Context &c) {
     }
 }
 // Whether ReSkate's front page is drawn over the Hub now: the Hub is the selected tab with the
-// player on it (not under the game's side menu), and its lists were emptied. Holds its Back and
-// walks to the profile for the overlay meanwhile. Called whatever page is up (`in_menu` false when
-// it is not the Hub's turn), so a held Back is always given back.
+// player on it (not under the game's side menu, and no page opened from the Hub over it), and its
+// lists were emptied. Holds its Back and walks to the profile for the overlay meanwhile. Called
+// whatever page is up (`in_menu` false when it is not the Hub's turn), so a held Back is always
+// given back. Each frame decides afresh, so the front page is back as soon as the Hub's body is.
 bool update_hub_front_page(const Context &c, Value menu, bool in_menu) {
     std::optional<Value> hub;
     try {
@@ -309,18 +382,17 @@ bool update_hub_front_page(const Context &c, Value menu, bool in_menu) {
     } catch (const std::exception &) {
         hub.reset();
     }
-    bool on_hub = hub && hub_taken;
-    if (on_hub && hub->handle) {
-        try {
-            // No big brushed title: the front page starts where it was, as ReSkate's own pages do.
-            if (const auto title = c.path(*hub, {0x3781b603, text_field}); c.text(title, 64) != " ") c.text(title, " ");
-            // (The page's screen record, and in it the focused index: -1 under the game's side menu.)
-            on_hub = read<int>(c.address(c.path(*hub, {0xfafda1a6, 0x20a39d92, 0x6b01fd01}))) >= 0;
-        } catch (const std::exception &e) {
-            static bool said{};
-            if (!std::exchange(said, true))
-                logging::log(logging::Level::warning, logging::Channel::ui,
-                             "Front page: the Hub's page could not be read ({}); it is drawn whenever the Hub is the tab.", e.what());
+    if (!hub) hub_arrival = {};
+    const auto reason = hub ? hub_hidden_reason(c, *hub) : std::string();
+    const bool on_hub = hub && reason.empty();
+    {
+        // Said when it changes: whether it is drawn, and why not.
+        static std::string said;
+        const auto now_said = !hub ? std::string() : on_hub ? std::string("drawn") : reason;
+        if (now_said != said) {
+            if (on_hub) logging::log(logging::Level::info, logging::Channel::ui, "Front page: drawn over the Hub{}.", said.empty() ? "" : " again");
+            else if (hub) logging::log(logging::Level::info, logging::Channel::ui, "Front page: not drawn: {}.", reason);
+            said = now_said;
         }
     }
     try {

@@ -14,6 +14,7 @@
 #include "Extension/Plugins/plugin_runtime.h"
 #include "Extension/Music/local_music_playback.h"
 #include "Extension/Profile/local_profile_runtime.h"
+#include "Engine/Core/Log/logging.h"
 #include "Engine/Game/Input/controller_bindings.h"
 #include "Engine/Game/Input/voice_input.h"
 #include "Engine/Game/Multiplayer/object_placement.h"
@@ -142,6 +143,7 @@ struct Hub {
     MultiplayerModel model; // its multiplayer part
     CallbacksV3 callbacks;
     bool shown{}, dismissed{}, was_active{}, searched{};
+    Clock::time_point dismissed_at{}; // when the front page over the HUB was dismissed
     // Mod Options: the same rows and actions the page has always had (native_tools_view.h).
     native_tools::State tools;
     int tools_tab{};
@@ -2244,6 +2246,14 @@ bool hub_page_pending() {
         }
         if (!h.page.visible) h.dismissed = false;
     }
+    // B on the front page over the HUB dismisses it at once, taking for granted that the pause menu
+    // closes. When the HUB is still there a moment later, B did something else of the game's (it took
+    // a page opened from the HUB away, 2026-11-04 in game, and the front page stayed gone over the
+    // empty HUB until the menu was opened again): the front page comes back.
+    if (h.dismissed && h.page.visible && h.page.section == hub_home_section && now - h.dismissed_at > 1500ms) {
+        h.dismissed = false;
+        logging::log(logging::Level::info, logging::Channel::ui, "Front page: Back left the pause menu open; drawn again.");
+    }
     const bool shown = h.page.visible && !h.dismissed;
     // The Mod Manager's changes that are not applied are asked about once the pause menu has closed
     // (not when another of its pages comes up), if it was open this time.
@@ -2551,7 +2561,7 @@ void draw_hub_page() {
     // The game's own HUB tab: ReSkate's front page over it (hub_home_page.cpp). It has no tabs, so
     // it starts where they would.
     if (h.page.section == hub_home_section) {
-        if (draw_home_page(ImGui::GetBackgroundDrawList(), u, ImVec2(a.x, (tabs_top + lower) * u), z, input, h.full)) h.dismissed = true;
+        if (draw_home_page(ImGui::GetBackgroundDrawList(), u, ImVec2(a.x, (tabs_top + lower) * u), z, input, h.full)) h.dismissed = true, h.dismissed_at = Clock::now();
         return;
     }
     hub_frame(h, ImGui::GetBackgroundDrawList(), u, a, z, (tabs_top + lower) * u, input);
