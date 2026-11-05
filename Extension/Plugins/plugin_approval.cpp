@@ -53,6 +53,9 @@ constexpr Capability capabilities[] = {
     // Red: real bodies in your game's physics world, pushed with forces, which the game cannot free until it restarts.
     {"world.physics", "WORLD", Risk::red, "Create physical bodies in your world and push them around"},
     {"world.physics.observe", "WORLD", Risk::red, "See what its rays hit, other skaters' shapes included"},
+    // Amber: only its own parked bodies, but each comes back at any place it asks, every few ticks,
+    // where world.physics alone sets a body's place once, at one of eight creations.
+    {"world.physics.reuse", "WORLD", Risk::amber, "Bring its own physical bodies back, anywhere in your world"},
     {"objects.physics", "WORLD", Risk::red, "Make your own park's objects fall, roll and get knocked over (offline)"},
     {"travel", "WORLD", Risk::red, "Travel to locations and levels"},
     {"world.environment", "WORLD", Risk::red, "Change the time of day, world controls and parks"},
@@ -70,6 +73,7 @@ constexpr Capability capabilities[] = {
     {"hud", "SCREEN", Risk::amber, "Hide your HUD and change the trick ticker"},
     {"overlay", "SCREEN", Risk::amber, "Draw on your screen, with screen effects, toasts and x-ray view"},
     {"ui.screen", "SCREEN", Risk::grey, "Open its own screens and dialogs"},
+    {"ui.models", "SCREEN", Risk::grey, "Send numbers to its own mod's menus and HUD"},
     {"menu", "SCREEN", Risk::grey, "Edit the game's menu and add its own menu page"},
     {"music", "SOUND", Risk::amber, "Read and control your music playback"},
     {"audio", "SOUND", Risk::grey, "Play, stop and adjust sounds"},
@@ -279,6 +283,7 @@ std::string approval_prompt(const std::vector<PermissionGroup>& groups) {
             if (has("world.objects")) actions.push_back("list and edit park objects");
             if (has("world.physics")) actions.push_back("create physical bodies in your world and push them around");
             if (has("world.physics.observe")) actions.push_back("see what its rays hit, other skaters' shapes included");
+            if (has("world.physics.reuse")) actions.push_back("reuse its own parked bodies");
             if (has("objects.physics")) actions.push_back("make your own park's objects fall, roll, and get knocked over (offline)");
             if (has("travel")) actions.push_back("travel to locations and levels");
             if (has("world.environment")) actions.push_back("change parks, world controls, and time of day");
@@ -298,6 +303,7 @@ std::string approval_prompt(const std::vector<PermissionGroup>& groups) {
             if (has("hud")) actions.push_back("hide your HUD or change the trick ticker");
             if (has("overlay")) actions.push_back("draw on screen, including screen effects");
             if (has("ui.screen")) actions.push_back("open plugin screens and dialogs");
+            if (has("ui.models")) actions.push_back("send numbers to its own mod's menus and HUD");
             if (has("menu")) actions.push_back("edit the game's menu and add menu pages");
         } else if (group.category == "SOUND") {
             if (has("music")) actions.push_back("read and control music playback");

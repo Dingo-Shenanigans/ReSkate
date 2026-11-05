@@ -15,10 +15,10 @@ namespace {
 using Address = std::uintptr_t;
 
 // The two re-post natives as the loader binds them in a call slot: the functions of their
-// {fn, hash} table rows. Each takes one pointer per operand, five here, and writes none back.
-//   PostEventDelayedSeconds 0x5e3aee8e: self, event, port offset, payload, float seconds.
-//   PostEventDelayedFrames  0x9967fc07: self, payload, port offset, payload type, int frames.
-constexpr std::uint32_t post_seconds_hash = 0x5e3aee8e, post_frames_hash = 0x9967fc07;
+// {fn, hash} table rows. Each takes one pointer per operand, five here, and writes none back
+// (their operands: Engine/Game/Build/20260929/graph_throttle.h).
+constexpr std::uint32_t post_seconds_hash = addr::graph_throttle::post_seconds_hash,
+                        post_frames_hash = addr::graph_throttle::post_frames_hash;
 constexpr Address post_seconds_fast = addr::graph_throttle::post_seconds_fast,
                   post_frames_fast = addr::graph_throttle::post_frames_fast;
 using PostSeconds = void (*)(const void*, const void*, const void*, const void*, const float*);
@@ -40,44 +40,20 @@ void post_frames_later(const void* self, const void* payload, const void* port, 
 void skip_post(const void*, const void*, const void*, const void*, const void*) {}
 
 enum class Change : std::uint8_t { stop, wait };
-// Each graph as shipped (res_all dump, build 20260908): header +0x20 frame bytes, +0x24
-// constant bytes, +0x2c code words; code at code_offset with its first word; the native
-// call table of {hash, pc} pairs. The graph calls `native` `sites` times; the one patched is
-// at `pc` (word 0 = next << 8 | 4: four operands and the delay), with S0 as its first operand
-// and the zero delay constant K`delay` as its fifth.
-struct Graph {
-    std::uint32_t hash;
-    const char* name;
-    std::uint32_t frame, constants, code_words, code_offset, first_word, table_offset, table_count;
-    std::uint32_t native, sites, pc, next, delay;
+// Each graph's re-post as shipped (Engine/Game/Build/20260929/graph_throttle.h), and what becomes
+// of it: stop drops it, wait has it ask again after wait_seconds (wait_frames). The graphs' other
+// re-posts stay.
+struct Graph : addr::graph_throttle::Repost {
     Change change;
 };
 constexpr std::array graphs{
-    // Re-posts at pc 0x38, then GetBoolSetting("CommunityEvent.DebugDrawQueues") (a retail stub:
-    // its default, false) sends it to RETURN.
-    Graph{0xe300874d, "MPActivityCoordinator.OnDebugDrawUpdate", 0x90, 0x1c0, 0x309, 0x360, 0xc27, 0xfb4, 48,
-          post_seconds_hash, 1, 0x38, 0x6c, 0xec, Change::stop},
-    // Re-posts at pc 0x38, then returns while field +0x50 is clear (every traced run).
-    Graph{0xe399e493, "InputVisualization_Dev.OnUpdate", 0x40, 0x158, 0x2ce, 0x248, 0xc27, 0xd90, 63,
-          post_seconds_hash, 1, 0x38, 0x6c, 0xcc, Change::stop},
-    // Re-posts at pc 0x38; its per-entry print loop needs field +0x118 and the retail-stubbed
-    // "DingoActivity.DrawActivityDebug".
-    Graph{0xf5a89f23, "ActivityLeaderboardManager.OnDebugPrintLoop", 0x70, 0x1d8, 0x2b7, 0x3a8, 0xc27, 0xebc, 49,
-          post_seconds_hash, 1, 0x38, 0x6c, 0x110, Change::stop},
-    // Play Event failed (pc 0x20 -> 0x2454): logs "…retrying for {0}" and re-posts the
-    // activation at pc 0x24ec. Its other re-post (pc 0x608, success path) stays.
-    Graph{0xa4becd75, "NarrativeSet Play Event retry", 0xb0, 0x888, 0x949, 0xa58, 0x102e, 0x3044, 167,
-          post_seconds_hash, 2, 0x24ec, 0x2520, 0x35c, Change::wait},
-    // Not IsOnline && IsSessionReady (pc 0x84 -> 0xadc): asks again at pc 0xadc.
-    Graph{0xf64d93b7, "QuickDropPersistenceManager.OnWaitForEntitlements", 0x60, 0x210, 0x2c5, 0x3b0, 0xc27, 0xee4, 52,
-          post_seconds_hash, 1, 0xadc, 0xb10, 0x124, Change::wait},
-    // Not ready (pc 0x198 -> 0x4f8): asks again at pc 0x4f8. Its ready re-post (pc 0x4c4) stays.
-    Graph{0x7fab7dbd, "MilestoneManager.OnInitLoop", 0x40, 0x100, 0x14c, 0x210, 0xc27, 0x750, 26, post_seconds_hash, 2,
-          0x4f8, 0x52c, 0xa8, Change::wait},
-    // Not IsOnline && quests present (pc 0x84 -> 0xc8): asks again next frame at pc 0xc8. Its
-    // ready branch (pc 0x94, two frames) stays.
-    Graph{0xa24d0261, "QuestManager.OnDelayedInit", 0x40, 0x28, 0x40, 0xb8, 0xc27, 0x1b8, 5, post_frames_hash, 2, 0xc8,
-          0xfc, 0x1c, Change::wait},
+    Graph{addr::graph_throttle::coordinator_debug_draw, Change::stop},
+    Graph{addr::graph_throttle::input_visualization, Change::stop},
+    Graph{addr::graph_throttle::leaderboard_debug_print, Change::stop},
+    Graph{addr::graph_throttle::narrative_play_retry, Change::wait},
+    Graph{addr::graph_throttle::quick_drop_entitlements, Change::wait},
+    Graph{addr::graph_throttle::milestone_init, Change::wait},
+    Graph{addr::graph_throttle::quest_delayed_init, Change::wait},
 };
 
 // The last copy of each graph that did not match, so it is not checked again every run.

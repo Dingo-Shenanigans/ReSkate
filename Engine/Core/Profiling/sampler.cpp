@@ -1,5 +1,6 @@
 #include "profiler_internal.h"
 #include "Engine/Core/Log/logging.h"
+#include "Engine/Core/Text/ascii.h"
 #include <DbgHelp.h>
 #include <TlHelp32.h>
 #include <psapi.h>
@@ -44,12 +45,6 @@ struct Modules {
     }
 };
 
-std::string narrow(std::wstring_view text) {
-    std::string result;
-    for (const auto c : text) result.push_back(c < 128 ? static_cast<char>(c) : '?');
-    return result;
-}
-
 Modules snapshot_modules() {
     Modules result;
     std::vector<HMODULE> handles(1024);
@@ -69,7 +64,7 @@ Modules snapshot_modules() {
         if (GetModuleFileNameW(handle, path, MAX_PATH)) {
             module.path = path;
             const auto slash = module.path.find_last_of(L"\\/");
-            module.name = narrow(slash == std::wstring::npos ? module.path : module.path.substr(slash + 1));
+            module.name = ascii_narrow(slash == std::wstring::npos ? module.path : module.path.substr(slash + 1));
         }
         const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(module.base);
         const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(module.base + dos->e_lfanew);
@@ -607,7 +602,7 @@ void run(SampleRequest request, std::vector<Sampled> threads) {
         }
         if (report.functions.size() > 400) report.functions.resize(400);
         logging::log(logging::Level::info, logging::Channel::diagnostics, "Profiler: sampled {} for {:.1f} s ({} samples); report {}",
-            report.target, report.seconds, total, narrow(report.report.wstring()));
+            report.target, report.seconds, total, ascii_narrow(report.report.wstring()));
     } catch (const std::exception& e) {
         report.error = std::string("Report failed: ") + e.what();
     }

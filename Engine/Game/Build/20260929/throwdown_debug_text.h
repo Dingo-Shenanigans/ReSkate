@@ -14,4 +14,9 @@ inline constexpr std::uintptr_t player_name_raw = 0x821100;
 inline constexpr std::uintptr_t debug_screen_size_fast = 0x597e720;
 // PostEventDelayedFrames, which the HUD's own re-post is bound to.
 inline constexpr std::uintptr_t post_frames_fast = engine::post_event_delayed_frames;
+// ClientSkateThrowdown.OnDebugPrint re-posts itself for the next frame: PostEventDelayedFrames
+// (hash 0x9967fc07) at pc 0xad2c, whose word 0 is 0xad6004, operands S0 (self), payload, port
+// offset, payload type and the frame count K1c8c (1). The HUD patches that call's slot.
+inline constexpr std::uint32_t repost_hash = 0x9967fc07, repost_pc = 0xad2c, repost_word = 0xad6004,
+                               repost_frames_constant = 0x1c8c;
 }

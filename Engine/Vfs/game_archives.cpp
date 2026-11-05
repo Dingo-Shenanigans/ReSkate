@@ -1,6 +1,7 @@
 #include "game_archives.h"
 #include "Engine/Resource/cas_codec.h"
 #include "Engine/Core/Platform/path_text.h"
+#include "Engine/Core/Text/ascii.h"
 #include <charconv>
 #include <cstdio>
 #include <cstring>
@@ -14,13 +15,6 @@
 namespace dingosdk::vfs {
 namespace fs = std::filesystem;
 namespace fb = frostbite;
-namespace {
-std::string lower(std::string text) {
-    for (auto& c : text) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
-    return text;
-}
-}
-
 std::string archive_file(std::uint16_t archive) {
     char name[32]{};
     std::snprintf(name, sizeof(name), "cas_%02u.cas", static_cast<unsigned>(archive));
@@ -81,7 +75,7 @@ GameArchives::GameArchives(fs::path root, const native_db::Node& layout) : root_
     const auto win32 = root_ / "Win32";
     for (fs::recursive_directory_iterator it(win32, error), end; it != end && !error; it.increment(error)) {
         if (!it->is_regular_file(error) || error) { error.clear(); continue; }
-        if (lower(path_utf8(it->path().extension())) != ".cas") continue;
+        if (ascii_lower(path_utf8(it->path().extension())) != ".cas") continue;
         const auto index = archive_index(path_utf8(it->path().stem()));
         if (!index) continue;
         // Relative to Win32, because read() adds that itself.
@@ -106,7 +100,7 @@ GameArchives::GameArchives(fs::path root, const native_db::Node& layout) : root_
             if (value.size() != 4) continue;
             const auto id = static_cast<std::uint32_t>(value[0]) | (static_cast<std::uint32_t>(value[1]) << 8) |
                 (static_cast<std::uint32_t>(value[2]) << 16) | (static_cast<std::uint32_t>(value[3]) << 24);
-            chunkDirectory_.emplace(id, lower(name->text));
+            chunkDirectory_.emplace(id, ascii_lower(name->text));
         }
     }
 
@@ -124,7 +118,7 @@ GameArchives::GameArchives(fs::path root, const native_db::Node& layout) : root_
         for (const auto& [id, archives] : declared) {
             const auto found = byArchives.find(archives);
             if (found != byArchives.end() && found->second.size() == 1)
-                chunkDirectory_.emplace(id, lower(found->second.front()));
+                chunkDirectory_.emplace(id, ascii_lower(found->second.front()));
         }
     }
 }

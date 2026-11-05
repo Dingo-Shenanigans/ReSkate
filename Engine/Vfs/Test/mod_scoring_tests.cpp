@@ -12,6 +12,7 @@ namespace fs = std::filesystem;
 namespace fb = dingosdk::frostbite;
 using namespace dingosdk::mods;
 using namespace dingosdk::mods::detail;
+using dingosdk::ascii_lower;
 
 namespace {
 int failures = 0;
@@ -29,10 +30,10 @@ fb::Sha1 game_flip(const fs::path& game) {
     const auto layout = dingosdk::vfs::read_layout(base / L"layout.toc");
     const CasStore store(base, fs::temp_directory_path() / L"reskate-scoring-test-out", layout.root);
     for (const auto& bundle : fb::read_toc(read_file(base / core_toc)).bundles) {
-        if (lower(bundle.name) != core_bundle) continue;
+        if (ascii_lower(bundle.name) != core_bundle) continue;
         if (const auto listing = list_bundle(store, base, base, bundle, game))
             for (const auto& asset : listing->manifest.ebx)
-                if (lower(asset.name) == flip) return asset.sha1;
+                if (ascii_lower(asset.name) == flip) return asset.sha1;
     }
     throw std::runtime_error("the game has no 360 flip");
 }

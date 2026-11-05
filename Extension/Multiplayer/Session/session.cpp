@@ -21,6 +21,7 @@
 #include "Extension/Progression/script_natives.h"
 #include "Extension/Multiplayer/Steam/steam_social.h"
 #include "Extension/Profile/local_profile_runtime.h"
+#include "Extension/Customization/local_customization_runtime.h"
 #include "Extension/Objects/network_object_runtime.h"
 #include "Extension/Objects/ParkEditor/park_editor_runtime.h"
 #include "Extension/Multiplayer/Remote/native_audio.h"
@@ -574,11 +575,14 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
     bool native_pass{};
     const auto apply_cosmetics = [&](Peer &p, bool spawned) {
         if (now - p.last_cosmetic_apply < 500000) return;
-        if (p.applied_cosmetics != p.cosmetic_revision && !spawned) {
+        // Plugins hiding other items puts every outfit on again, one player per frame too.
+        const auto hidden = plugin_feed::hidden_items_revision();
+        if ((p.applied_cosmetics != p.cosmetic_revision || p.applied_hidden != hidden) && !spawned) {
             if (native_pass) return;
             native_pass = true;
         }
-        update_remote_cosmetics(s.base, local, *p.appearance.value(), p.cosmetic_status);
+        update_remote_cosmetics(s.base, local, *p.appearance.value(), p.member.id, p.cosmetic_status);
+        p.applied_hidden = hidden;
         // The effects their costume and board items come with follow the outfit.
         if (p.applied_cosmetics != p.cosmetic_revision && s.sync_effects) note_remote_outfit(now);
         p.last_cosmetic_apply = now;
@@ -781,6 +785,24 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
                 peers.push_back({p.member.id, p.latest_root->position, p.latest_root->rotation,
                                  now > p.pose_arrival ? static_cast<double>(now - p.pose_arrival) / 1000.0 : 0.0});
         plugin_feed::publish_peers(std::move(peers));
+        // And what they wear (reskate.session.outfit), each time it changes.
+        std::set<std::uint64_t> present;
+        for (auto &p : active_peers(s)) {
+            if (!p.member.id) continue;
+            present.insert(p.member.id);
+            const auto &look = p.appearance.value();
+            if (!look || p.published_outfit == p.cosmetic_revision) continue;
+            // Paid store items are left out: this PC never shows them on another player (their stand-ins
+            // do), and the party HUD blanks their card parts the same way.
+            plugin_feed::Outfit outfit;
+            for (const auto &item : look->skater.items)
+                if (!item.asset.empty() && !profile_runtime::reserved_cosmetic(item.asset)) outfit.skater.push_back(item.asset);
+            for (const auto &item : look->board.items)
+                if (!item.asset.empty() && !profile_runtime::reserved_cosmetic(item.asset)) outfit.board.push_back(item.asset);
+            plugin_feed::publish_outfit(p.member.id, std::move(outfit));
+            p.published_outfit = p.cosmetic_revision;
+        }
+        plugin_feed::keep_outfits(present);
         // And the joints of theirs that plugins asked for (reskate.entities.set's attach).
         std::map<std::pair<std::uint64_t, std::uint16_t>, plugin_feed::JointPlace> joints;
         if (const auto wanted = plugin_feed::joints_wanted(); !wanted.empty()) {

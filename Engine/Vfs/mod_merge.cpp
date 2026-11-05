@@ -57,7 +57,7 @@ bool store_copy_problems(const Catalog& all, MergeReport& report, const std::vec
     if (!checked.empty()) {
         fewer = all;
         std::erase_if(fewer->mods, [&](const Mod& mod) {
-            return std::ranges::any_of(checked, [&](const std::string& name) { return lower(name) == lower(mod.name); });
+            return std::ranges::any_of(checked, [&](const std::string& name) { return ascii_lower(name) == ascii_lower(mod.name); });
         });
     }
     const Catalog& catalog = fewer ? *fewer : all;
@@ -182,8 +182,8 @@ MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, co
         // screens, the asset overrides, each superbundle, then the layout.
         std::set<std::string> distinctTocs;
         for (const auto& [mod, files] : modFiles)
-            for (const auto& toc : files.tocs) distinctTocs.insert(lower(toc));
-        for (const auto relative : launch_superbundles) distinctTocs.insert(lower(relative));
+            for (const auto& toc : files.tocs) distinctTocs.insert(ascii_lower(toc));
+        for (const auto relative : launch_superbundles) distinctTocs.insert(ascii_lower(relative));
         MergeProgress progress{0, mods.size() + distinctTocs.size() + (options.live ? 4 : 3), mods.size(), {}};
         const auto advance = [&](std::string step) {
             if (!observe) return;
@@ -284,9 +284,9 @@ MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, co
                 // later only needs what is read at each load; while its level
                 // and root TOCs are left out it cannot load.
                 if (!active && !(mod->provides_levels &&
-                                 (lower(relative) == launch_level_registry || lower(relative) == root_level)))
+                                 (ascii_lower(relative) == launch_level_registry || ascii_lower(relative) == root_level)))
                     continue;
-                auto& list = providers[lower(relative)];
+                auto& list = providers[ascii_lower(relative)];
                 if (list.empty()) superbundles.push_back(relative);
                 list.push_back(mod);
             }
@@ -305,7 +305,7 @@ MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, co
                     const auto path = fs::path(relative);
                     const auto number = vfs::GameArchives::archive_index(path.stem().string());
                     if (!number) throw std::runtime_error("Unexpected archive name: " + relative);
-                    auto directory = lower(path.parent_path().generic_string());
+                    auto directory = ascii_lower(path.parent_path().generic_string());
                     if (directory.starts_with("win32/")) directory.erase(0, 6);
                     const auto target = inside(output, path.parent_path() / archive_file(manifestArchive));
                     if (!fs::exists(target, error))
@@ -339,7 +339,7 @@ MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, co
                 const auto number = *index;
                 // CasStore keys its directories relative to Win32, so the mod's
                 // own Win32/ prefix comes off before the two are matched up.
-                auto directory = lower(path.parent_path().generic_string());
+                auto directory = ascii_lower(path.parent_path().generic_string());
                 if (directory.starts_with("win32/")) directory.erase(0, 6);
                 // The first mod to ship an index keeps it. A later one takes a
                 // free index of its own, so the file is hard linked rather
@@ -387,7 +387,7 @@ MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, co
         }
 
         for (const auto relative : launch_superbundles)
-            if (providers.try_emplace(lower(relative)).second) superbundles.emplace_back(relative);
+            if (providers.try_emplace(ascii_lower(relative)).second) superbundles.emplace_back(relative);
         // A mod added while the game runs has no archive index declared for it,
         // so its archives go on the end of the patch's own archive 1 (see the
         // live placement above). Every package gets one from launch, empty if
@@ -434,7 +434,7 @@ MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, co
         const auto grid = plan_material_grid(rootMods, modFiles, store, baseRoot, gameRoot, report);
         if (rootMods.empty()) {
             providers.erase(std::string(root_level));
-            std::erase_if(superbundles, [](const std::string& relative) { return lower(relative) == root_level; });
+            std::erase_if(superbundles, [](const std::string& relative) { return ascii_lower(relative) == root_level; });
         }
         lap("material grid");
         if (options.live) {
@@ -479,7 +479,7 @@ MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, co
         std::vector<Job> jobs;
         jobs.reserve(superbundles.size());
         for (const auto& relative : superbundles) {
-            if (keepRoot && lower(relative) == root_level) continue;
+            if (keepRoot && ascii_lower(relative) == root_level) continue;
             auto& job = jobs.emplace_back();
             job.relative = relative;
             job.store.emplace(store.waiting());
@@ -491,7 +491,7 @@ MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, co
             try {
                 const auto& relative = job.relative;
                 std::vector<Source> sources;
-                for (const auto* mod : providers.at(lower(relative))) {
+                for (const auto* mod : providers.at(ascii_lower(relative))) {
                     Source source;
                     source.root = mod->directory;
                     source.mod = mod;
@@ -551,13 +551,13 @@ MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, co
         } catch (const std::system_error&) {} // fewer threads, or none: this one does the rest
         std::size_t settledJobs{};
         for (const auto& relative : superbundles) {
-            if (keepRoot && lower(relative) == root_level) {
+            if (keepRoot && ascii_lower(relative) == root_level) {
                 advance("Keeping the root level as the game has it");
                 ++report.superbundles;
                 continue;
             }
             auto& job = jobs[settledJobs++];
-            const auto& shippedBy = providers.at(lower(relative));
+            const auto& shippedBy = providers.at(ascii_lower(relative));
             advance("Merging " + fs::path(relative).stem().string() +
                     (shippedBy.empty() ? std::string(" (the game's own)")
                      : shippedBy.size() > 1 ? " from " + std::to_string(shippedBy.size()) + " mods"
@@ -619,10 +619,10 @@ MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, co
         // any more, so the next load reads the game's own copy instead.
         {
             std::set<std::string> written;
-            for (const auto& relative : superbundles) written.insert(lower(relative));
+            for (const auto& relative : superbundles) written.insert(ascii_lower(relative));
             if (options.live)
                 for (const auto& previous : record.tocs)
-                    if (!written.contains(lower(previous)) && [&] {
+                    if (!written.contains(ascii_lower(previous)) && [&] {
                             try { return fs::remove(inside(output, fs::path(previous)), error); } catch (const std::exception&) { return false; }
                         }())
                         report.removed_tocs.push_back(previous);
@@ -640,7 +640,7 @@ MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, co
         std::set<std::string, std::less<>> known;
         for (const auto& row : list->children) {
             const auto* name = row.field("name");
-            if (name && name->type == 7) known.emplace(lower(name->text));
+            if (name && name->type == 7) known.emplace(ascii_lower(name->text));
         }
         // A mod's own layout.toc. A damaged one is that mod's problem: the merge runs again without it.
         const auto mod_layout = [&](const Mod& mod) -> std::optional<vfs::Layout> {
@@ -674,14 +674,14 @@ MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, co
             if (!otherList) continue;
             for (const auto& row : otherList->children) {
                 const auto* name = row.field("name");
-                if (!name || name->type != 7 || !known.emplace(lower(name->text)).second) continue;
+                if (!name || name->type != 7 || !known.emplace(ascii_lower(name->text)).second) continue;
                 // The list is ordered by name and the engine searches it that
                 // way, so an entry appended at the end is never found.
-                const auto key = lower(name->text);
+                const auto key = ascii_lower(name->text);
                 auto at = list->children.begin();
                 for (; at != list->children.end(); ++at) {
                     const auto* existing = at->field("name");
-                    if (existing && existing->type == 7 && lower(existing->text) > key) break;
+                    if (existing && existing->type == 7 && ascii_lower(existing->text) > key) break;
                 }
                 list->children.insert(at, native_db::make_named_record("name", name->text));
                 report.notes.push_back("Merged layout adds " + name->text + " from " + mod->name);
@@ -709,14 +709,14 @@ MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, co
                 if (!targetList) continue;
                 for (const auto& entry : sourceList->children) {
                     if (entry.type != 7) continue;
-                    const auto key = lower(entry.text);
+                    const auto key = ascii_lower(entry.text);
                     bool held{};
                     for (const auto& existing : targetList->children)
-                        if (existing.type == 7 && lower(existing.text) == key) { held = true; break; }
+                        if (existing.type == 7 && ascii_lower(existing.text) == key) { held = true; break; }
                     if (held) continue;
                     auto position = targetList->children.begin();
                     for (; position != targetList->children.end(); ++position)
-                        if (position->type == 7 && lower(position->text) > key) break;
+                        if (position->type == 7 && ascii_lower(position->text) > key) break;
                     Node added;
                     added.type = 7;
                     added.text = entry.text;

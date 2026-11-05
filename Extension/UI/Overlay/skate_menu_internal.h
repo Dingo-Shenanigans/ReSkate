@@ -116,7 +116,6 @@ void debug_request(SkateMenu& menu, const CallbacksV3& callbacks, DebugRequest r
 inline constexpr int multiplayer_session_tab = 1, multiplayer_voice_tab = 2, multiplayer_bans_tab = 3, multiplayer_chat_tab = 4, multiplayer_outfits_tab = 5;
 void multiplayer_display_settings(SkateMenu&, const Model&);
 void special_page(SkateMenu&, const Model&, const CallbacksV3&);
-void multiplayer_network_page(SkateMenu&, const Model&, const CallbacksV3&);
 void atmosphere_menu(SkateMenu&, const Model&, const CallbacksV3&);
 void progression_page(SkateMenu&, const Model&, const CallbacksV3&);
 void multiplayer_page(SkateMenu&, const Model&, const CallbacksV3&);
@@ -128,7 +127,6 @@ void dark_pop_controls(SkateMenu&, const Model&, const CallbacksV3&); // shown o
 void settings_page(SkateMenu&, const Model&, const CallbacksV3&);
 // Settings > Post FX (skate_menu_world.cpp).
 void graphics_page(SkateMenu&, const Model&, const CallbacksV3&);
-void developer_page(SkateMenu&, const Model&, const CallbacksV3&);
 // Extension/Music/music_page.cpp
 void music_page(SkateMenu&, const Model&, const CallbacksV3&);
 // Extension/Trainer/trainer_page.cpp: the SANDBOX page (once the Trainer).
@@ -163,7 +161,7 @@ void set_menu_fullscreen(SkateMenu&, const CallbacksV3&, bool fullscreen);
 // The pages, for the shells and the home tiles (skate_menu.cpp).
 enum Page {
     page_home, page_map, page_build, page_skater, page_sandbox, page_addons, page_plugins, page_online, page_progress, page_mods,
-    page_settings, page_developer, page_count
+    page_settings, page_count
 };
 enum Addon { addon_all, addon_music, addon_count, addon_first = addon_music };
 void open_page(SkateMenu&, int page, int addon = -1);

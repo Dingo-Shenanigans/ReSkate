@@ -1,4 +1,5 @@
 #pragma once
+#include "plugin_ui_values.h"
 #include "plugin_effects.h"
 #include "plugin_wave.h"
 #include "plugin_object_physics.h"
@@ -290,12 +291,19 @@ struct Progress {
 class Game {
 public:
     virtual ~Game() = default;
+    // Publish incremental, plugin-owned float models for authored game UI; unavailable on dedicated servers.
+    virtual std::string publish_ui_values(std::string_view, const ui_values::Values&) { return unavailable; }
     // ---- native bodies a plugin owns (reskate.world.physics; Extension/World/owned_bodies.h) ------
     // Owned by one VM instance, not by a reloadable plugin name. Client phase only; the typed
     // handles and epochs reach Lua only inside opaque userdata.
     // Generic deferred producer setup and readiness only; no owner or definition is kept.
     virtual std::string body_prepare() { return unavailable; }
     virtual std::string body_create(std::uint64_t, const owned_body::Definition&, owned_body::Handle&) { return unavailable; }
+    // create with options: true asks to re-activate one of this owner's own parked bodies before
+    // allocating, and the report says which happened (owned_bodies::create).
+    virtual std::string body_create_reusing(std::uint64_t, const owned_body::Definition&, owned_body::Handle&, bool, owned_body::CreateReport&) {
+        return unavailable;
+    }
     virtual std::string body_read(std::uint64_t, const owned_body::Handle&, owned_body::Sample&) { return unavailable; }
     // allowed is the VM's remaining native cast budget; the result counts every native call made.
     virtual body_query::Result body_probe_batch(std::uint64_t, const owned_body::Handle&, const body_query::Request&, unsigned) { return {}; }
@@ -409,6 +417,20 @@ public:
     // any plugin hides them (at most 256 between them).
     virtual std::string hide_player(std::string_view /*plugin*/, std::uint64_t, bool /*hidden*/) { return unavailable; }
     virtual std::vector<std::uint64_t> hidden_players(std::string_view /*plugin*/) { return {}; }
+    // What another player wears, as their game sent it: the item names of their skater and of their
+    // board. Nothing until their outfit has arrived.
+    struct PlayerOutfit {
+        std::vector<std::string> skater, board;
+    };
+    virtual std::optional<PlayerOutfit> player_outfit(std::uint64_t) { return std::nullopt; }
+    // Items shown on other players, on this screen, as items this PC does not have are (a stand-in,
+    // the default or nothing): the plugin's whole list, on everyone and on some players, which
+    // replaces the one before. Empty lists take it away. Any case matches.
+    struct HiddenItems {
+        std::vector<std::string> everyone;
+        std::vector<std::pair<std::uint64_t, std::vector<std::string>>> players;
+    };
+    virtual std::string hide_items(std::string_view /*plugin*/, HiddenItems) { return unavailable; }
     // A short tag beside a player's nametag, the plugin's own (empty text takes it away).
     virtual void set_nametag(std::string_view /*plugin*/, std::uint64_t, std::string, std::uint32_t) {}
     // The names over the other players held off while any plugin asks (chat bubbles still show).
@@ -499,6 +521,17 @@ public:
         bool known{}; // The native screen model was resolved; false is not a known closed menu.
     };
     virtual GameMenu game_menu() { return {}; }
+    // What is up over the game (reskate.menu.state and the menu_changed event): the game's own
+    // pause menu, on any of its pages; ReSkate's menu, its window or one of its pages in the pause
+    // menu (`page`: "multiplayer", "mod_options" or "mod_manager", empty for none); and the replay
+    // editor. Read every tick while a plugin has the menu permission, so it should be cheap.
+    struct MenuState {
+        bool pause{}, reskate{}, replay_editor{};
+        std::string page;
+        bool known{}; // The native screen model was resolved, as for GameMenu; false is not a known closed pause menu.
+        bool operator==(const MenuState&) const = default;
+    };
+    virtual MenuState menu_state() { return {}; }
     // The customization grid that has the focus (Extension/Customization/item_browser.h), when one does.
     struct MenuGrid {
         std::string focused, title, category; // the highlighted item: key, title, catalog category
@@ -613,6 +646,9 @@ public:
     // the ticker's label `from` shown as `to` (empty: that label is the game's again), and the next
     // trick with one of `from`'s ids, within `within_ms`, recorded as `to`. Empty when done, else why not.
     virtual std::string trick_label(std::string_view /*plugin*/, std::string_view /*from*/, std::string_view /*to*/) { return unavailable; }
+    virtual std::string trick_record_as(std::string_view /*plugin*/, std::vector<std::uint32_t> /*from*/, std::uint32_t /*to*/, int /*within_ms*/) {
+        return unavailable;
+    }
     // ---- strings: the text the game shows for its ids (Extension/Localization/text_overrides.h) ----
     // Each key (an id, or "#" and 1 to 8 hex digits for one known by its hash) shown as its UTF-8
     // text, checked by the API; stored over the next ticks. Empty when taken, else why not.
@@ -634,9 +670,6 @@ public:
     virtual std::string content_list(std::string_view /*folder*/, std::vector<ContentFile>& /*files*/) { return unavailable; }
     // One of them: `path` is checked already (safe_relative_path). Empty when read, else why not.
     virtual std::string content_read(std::string_view /*mod*/, std::string_view /*folder*/, std::string_view /*path*/, std::string& /*text*/) {
-        return unavailable;
-    }
-    virtual std::string trick_record_as(std::string_view /*plugin*/, std::vector<std::uint32_t> /*from*/, std::uint32_t /*to*/, int /*within_ms*/) {
         return unavailable;
     }
     // ---- files: the plugin's own data folder, <game>/Mods/.reskate_plugin_data/<plugin>/ -----------
@@ -793,7 +826,6 @@ public:
     // One plugin plays at a time; none while a throwdown runs. A replacement plays when the game does
     // `trick` ("kickflip") with that pop ("" any, "low", "mid", "high"); a null clip takes it away.
     using ClipRef = std::shared_ptr<const anim_studio::Clip>;
-    // `at`: seconds into the clip it starts from; `paused`: held there (seek and pause move it).
     // The game's own animations (Extension/AnimationStudio/game_clips.h): the names containing `containing`
     // (lower case), at most `most`; and one read as a clip. Empty, and why, while they are still read or
     // when that one is not a clip on the skater's rig.
@@ -813,6 +845,7 @@ public:
         why = unavailable;
         return nullptr;
     }
+    // `at`: seconds into the clip it starts from; `paused`: held there (seek and pause move it).
     virtual std::string play_clip(std::string_view /*plugin*/, ClipRef, float /*speed*/, float /*blend*/, bool /*loop*/, float /*at*/, bool /*paused*/,
                                   bool /*floor*/) {
         return unavailable;
@@ -857,7 +890,7 @@ public:
     struct JointOffset {
         std::uint16_t joint{};
         std::array<float, 4> rotation{0, 0, 0, 1};
-        float scale{1};
+        Vec3 scale{1, 1, 1}; // each of its own axes
         Vec3 offset{}; // added to its position, in its parent's frame
         std::optional<pose_place::Place> place; // set instead of added, after the above
         bool keep_children{};                   // its children stay where they were in the world
@@ -1021,8 +1054,6 @@ public:
     // launch comes back from take_launches.
     virtual std::string shape_launch(std::string_view /*plugin*/, std::string_view /*from*/, std::optional<LaunchShape>) { return unavailable; }
     virtual std::vector<LaunchNews> take_launches() { return {}; }
-    // Pad controls kept from the game while any plugin asks: the triggers, and the left stick's
-    // left/right while the skater grinds.
     // The skater carried up to a speed (m/s, 0 off) for the next 300 ms, eased down to it with may_slow.
     virtual std::string cruise(std::string_view /*plugin*/, float /*speed*/, bool /*may_slow*/) { return unavailable; }
     // The board's velocity set (or `add`ed to) by the next physics step with the skater on its board,

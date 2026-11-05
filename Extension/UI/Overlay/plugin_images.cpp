@@ -1,9 +1,9 @@
 #include "overlay_internal.h"
 #include "Engine/Core/Log/logging.h"
+#include "Engine/Core/Platform/clock.h"
 
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <filesystem>
@@ -41,9 +41,6 @@ struct Cache {
 Cache& cache() {
     static auto* value = new Cache;
     return *value;
-}
-double seconds_now() {
-    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 void warn_once(Cache& c, const std::string& path, const char* why) {
     if (!c.warned.insert(path).second) return;
@@ -94,7 +91,7 @@ void decode_loop() {
 ImTextureID plugin_image(const std::string& path, ImVec2& size) {
     auto& c = cache();
     std::lock_guard lock(c.mutex);
-    const double now = seconds_now();
+    const double now = steady_seconds();
     auto found = c.entries.find(path);
     if (found == c.entries.end()) {
         if (c.entries.size() >= most_pictures) {
@@ -143,7 +140,7 @@ std::optional<PluginImageUpload> take_plugin_image() {
         }
     if (slot < 0) {
         // Every slot is in use: the one drawn longest ago gives it up, if it is idle.
-        const double now = seconds_now();
+        const double now = steady_seconds();
         auto oldest = c.entries.end();
         for (auto it = c.entries.begin(); it != c.entries.end(); ++it)
             if (it->second.slot >= 0 && now - it->second.drawn >= idle_seconds &&

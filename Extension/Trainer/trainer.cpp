@@ -24,6 +24,7 @@
 #include "Extension/Throwdowns/throwdown_kit.h"
 #include "Extension/Skater/skater_observer.h"
 #include "Extension/UI/Overlay/overlay.h"
+#include "Engine/Core/Text/ascii.h"
 #include <mutex>
 #include <thread>
 #include <windows.h>
@@ -100,6 +101,8 @@ struct Saved {
     double value{};
     bool frozen{};
 };
+#if defined(DINGOSDK_DEV_TOOLS)
+// `trainer selftest` (development builds only, DINGOSDK_DEV_TOOLS).
 struct SelfTest {
     int step{}; // 0: idle
     std::uint64_t until{};
@@ -108,6 +111,7 @@ struct SelfTest {
     Vec3 origin{};
     int failures{};
 };
+#endif
 struct Motion {
     bool valid{};
     Vec3 position{}, velocity{};
@@ -343,19 +347,16 @@ struct State {
     Telemetry telemetry;
     std::ofstream log;
     std::int64_t log_start{};
-    std::map<std::uint32_t, std::uint64_t> states; // physics state -> ticks seen
+#if defined(DINGOSDK_DEV_TOOLS)
+    std::map<std::uint32_t, std::uint64_t> states; // physics state -> ticks seen (`trainer states`)
     SelfTest test;
+#endif
 };
 State &state() {
     static auto *value = new State;
     return *value;
 }
 
-std::string lower(std::string_view text) {
-    std::string result(text);
-    std::ranges::transform(result, result.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return result;
-}
 // "MaxPushSpeed" -> "Max Push Speed"
 std::string spaced(std::string_view text) {
     std::string result;
@@ -504,13 +505,13 @@ void load_store() {
         if (json->contains("values") && json->at("values").is_object())
             for (const auto &[key, row] : json->at("values").items())
                 if (row.is_object() && row.contains("value") && row.at("value").is_number())
-                    s.saved[lower(key)] = {row.at("value").get<double>(), row.value("frozen", false)};
+                    s.saved[ascii_lower(key)] = {row.at("value").get<double>(), row.value("frozen", false)};
         if (json->contains("presets") && json->at("presets").is_object())
             for (const auto &[name, values] : json->at("presets").items()) {
                 if (!values.is_object() || name.empty() || name.size() > max_preset_name) continue;
                 auto &preset = s.user[name];
                 for (const auto &[key, value] : values.items())
-                    if (value.is_number()) preset[lower(key)] = value.get<double>();
+                    if (value.is_number()) preset[ascii_lower(key)] = value.get<double>();
             }
         if (json->contains("active") && json->at("active").is_array())
             for (const auto &name : json->at("active"))
@@ -529,7 +530,7 @@ void load_store() {
         if (json->contains("maps") && json->at("maps").is_object())
             for (const auto &[level, row] : json->at("maps").items()) {
                 if (!row.is_object()) continue;
-                auto &map = s.maps[lower(level)];
+                auto &map = s.maps[ascii_lower(level)];
                 map.preset = row.value("preset", "");
                 if (row.contains("markers") && row.at("markers").is_array())
                     for (std::size_t i = 0; i < marker_slots && i < row.at("markers").size(); ++i)
@@ -542,9 +543,9 @@ void load_store() {
     // built-in. It keeps its values under a new name, and what named it follows.
     for (const auto &[from, to] : rename_reserved_presets(s.user)) {
         for (auto &name : s.active)
-            if (lower(name) == lower(from)) name = to;
+            if (ascii_lower(name) == ascii_lower(from)) name = to;
         for (auto &entry : s.maps)
-            if (lower(entry.second.preset) == lower(from)) entry.second.preset = to;
+            if (ascii_lower(entry.second.preset) == ascii_lower(from)) entry.second.preset = to;
         s.save_due = true;
         say(logging::Level::info, std::format("Trainer: your preset \"{}\" is now \"{}\": a built-in preset has that name.", from, to));
     }
@@ -823,7 +824,7 @@ bool is_locked(const Entry &e) {
 }
 Entry *find_entry(std::string_view id) {
     auto &s = state();
-    const auto found = s.index.find(lower(id));
+    const auto found = s.index.find(ascii_lower(id));
     return found == s.index.end() ? nullptr : &s.entries[found->second];
 }
 void build_entries() {
@@ -837,10 +838,10 @@ void build_entries() {
         if (name.empty()) name = std::format("Unnamed.0x{:x}", offset);
         Entry e;
         e.id = kind == Kind::curve || kind == Kind::graph ? name + " x" : name;
-        e.key = lower(e.id);
+        e.key = ascii_lower(e.id);
         if (s.index.contains(e.key)) { // arrays of structures repeat names
             e.id += std::format(" @0x{:x}", offset);
-            e.key = lower(e.id);
+            e.key = ascii_lower(e.id);
         }
         const auto dot = name.find('.');
         auto group = dot == std::string::npos ? std::string("General") : name.substr(0, dot);
@@ -895,7 +896,7 @@ void build_entries() {
             if (std::string_view(field.name).starts_with("Code")) continue;
             Entry e;
             e.id = std::format("{}.{}", class_specs[c].key, field.name);
-            e.key = lower(e.id);
+            e.key = ascii_lower(e.id);
             if (s.index.contains(e.key)) continue;
             e.group = class_specs[c].group;
             e.label = spaced(field.name);
@@ -1162,9 +1163,9 @@ const std::vector<std::vector<std::pair<std::size_t, std::size_t>>> &preset_targ
 std::string apply_dial(std::string_view name, double factor) {
     auto &s = state();
     const auto &presets = builtin_presets();
-    const auto wanted = lower(name);
+    const auto wanted = ascii_lower(name);
     std::size_t p = 0;
-    while (p < presets.size() && lower(presets[p].name) != wanted) ++p;
+    while (p < presets.size() && ascii_lower(presets[p].name) != wanted) ++p;
     if (p == presets.size()) return "error: no built-in preset is called \"" + std::string(name) + "\".";
     const auto &rules = presets[p].rules;
     if (rules.empty() || !rules[0].multiply || rules[0].amount <= 0 || rules[0].amount == 1)
@@ -1357,7 +1358,7 @@ bool builtin_on(std::size_t p);
 // value the player has since set themselves).
 std::string remove_preset(std::string_view name, bool matching = false) {
     auto &s = state();
-    const auto wanted = lower(name);
+    const auto wanted = ascii_lower(name);
     std::size_t count{};
     std::string removed;
     const auto put_back = [&](Entry &e) {
@@ -1375,7 +1376,7 @@ std::string remove_preset(std::string_view name, bool matching = false) {
             }
     };
     for (const auto &[user_name, values] : s.user) {
-        if (lower(user_name) != wanted) continue;
+        if (ascii_lower(user_name) != wanted) continue;
         for (const auto &saved : values) {
             if (const auto *one = find_setup(saved.first)) {
                 one->set(one->stock);
@@ -1388,7 +1389,7 @@ std::string remove_preset(std::string_view name, bool matching = false) {
     }
     if (removed.empty())
         for (const auto &preset : builtin_presets()) {
-            if (lower(preset.name) != wanted) continue;
+            if (ascii_lower(preset.name) != wanted) continue;
             for (const auto &rule : preset.rules)
                 for (auto &e : s.entries) {
                     const bool scale = e.kind == Kind::curve || e.kind == Kind::graph;
@@ -1420,7 +1421,7 @@ std::size_t reset_all() {
 }
 std::string apply_preset(std::string_view name) {
     auto &s = state();
-    const auto wanted = lower(name);
+    const auto wanted = ascii_lower(name);
     if (wanted == "stock") {
         const auto count = reset_all();
         changed();
@@ -1436,7 +1437,7 @@ std::string apply_preset(std::string_view name) {
     }
     if (applied.empty())
         for (const auto &[user_name, values] : s.user) {
-            if (lower(user_name) != wanted) continue;
+            if (ascii_lower(user_name) != wanted) continue;
             for (const auto &[key, value] : values) {
                 if (set_setup_key(key, value)) ++count;
                 else if (auto *e = find_entry(key); e && !is_locked(*e)) { set_entry(*e, value); ++count; }
@@ -1446,7 +1447,7 @@ std::string apply_preset(std::string_view name) {
         }
     if (applied.empty())
         for (const auto &preset : builtin_presets()) {
-            if (lower(preset.name) != wanted) continue;
+            if (ascii_lower(preset.name) != wanted) continue;
             for (const auto &rule : preset.rules)
                 for (auto &e : s.entries) {
                     const bool scale = e.kind == Kind::curve || e.kind == Kind::graph;
@@ -1481,10 +1482,10 @@ MapFile read_map_file(const std::string &level) {
         try {
             // The file names its level, or it stands for every level its mod adds.
             bool mine = false;
-            if (json->contains("level") && json->at("level").is_string()) mine = lower(json->at("level").string()) == level;
+            if (json->contains("level") && json->at("level").is_string()) mine = ascii_lower(json->at("level").string()) == level;
             else if (const auto levels = read_json(it->path() / L"reskate-levels.json"); levels && levels->contains("levels"))
                 for (const auto &row : levels->at("levels"))
-                    if (row.is_object() && lower(row.value("asset", "")) == level) mine = true;
+                    if (row.is_object() && ascii_lower(row.value("asset", "")) == level) mine = true;
             if (!mine) continue;
             result.note = json->value("note", "");
             if (json->contains("preset") && json->at("preset").is_object()) {
@@ -1986,7 +1987,9 @@ void observe(std::uintptr_t base, std::uintptr_t client, std::uint64_t now) {
     t.heading = std::atan2(matrix[8], matrix[10]) * 180.0f / std::numbers::pi_v<float>;
     if (t.heading < 0) t.heading += 360.0f;
     t.physics_state = watch.valid ? watch.state : 0;
+#if defined(DINGOSDK_DEV_TOOLS)
     if (watch.valid) ++s.states[watch.state];
+#endif
     // A hippy jump leaves the board (504) straight from riding (100): measured. A plain
     // dismount does the same but is not rising, so it is left alone.
     if (watch.valid && watch.state != s.last_state) {
@@ -2112,10 +2115,12 @@ void observe(std::uintptr_t base, std::uintptr_t client, std::uint64_t now) {
         if (m.airborne) m.board_turn = std::max(m.board_turn, board_turn);
     }
     if (!m.airborne) s.board_spin = {};
+#if defined(DINGOSDK_DEV_TOOLS)
     if (s.logging && s.log) {
         s.log << std::format("{:.4f},{:.3f},{:.3f},{:.3f},{:.3f},{:.3f},{:.1f},{},{},{:.0f}\n", clock_seconds(stamp - s.log_start), position[0],
                              position[1], position[2], t.speed, t.vertical, t.heading, t.airborne ? 1 : 0, t.physics_state, board_turn);
     }
+#endif
     // A bail: back to the selected marker once the skater has had time to fall.
     if (watch.valid && (!s.wipeouts_known || watch.wipeouts != s.seen_wipeouts)) {
         if (s.wipeouts_known && s.auto_return && !match_blocks_markers()) {
@@ -2128,13 +2133,12 @@ void observe(std::uintptr_t base, std::uintptr_t client, std::uint64_t now) {
         s.seen_wipeouts = watch.wipeouts;
     }
 }
+#if defined(DINGOSDK_DEV_TOOLS)
+// `trainer option log`: telemetry to a CSV file (development builds only).
 void set_logging(bool on) {
     auto &s = state();
     if (s.log.is_open()) s.log.close();
     s.logging = false;
-#if defined(DINGOSDK_LEAN_PLAYTEST)
-    (void)on;
-#else
     if (!on) return;
     const auto directory = data_directory() / L"telemetry";
     std::error_code error;
@@ -2151,8 +2155,8 @@ void set_logging(bool on) {
     s.log << "seconds,x,y,z,speed_mps,vertical_mps,heading_deg,airborne,physics_state,board_turn_dps\n";
     s.log_start = clock_now();
     s.logging = true;
-#endif
 }
+#endif
 void shortcuts() {
     auto &s = state();
     ControllerInput input;
@@ -2170,6 +2174,7 @@ void shortcuts() {
 }
 
 // ---- self test -------------------------------------------------------------------------
+#if defined(DINGOSDK_DEV_TOOLS)
 void test_line(bool ok, const std::string &text) {
     auto &s = state();
     if (!ok) ++s.test.failures;
@@ -2258,6 +2263,7 @@ void run_selftest(std::uint64_t now) {
         break;
     }
 }
+#endif
 
 // ---- transition skating ------------------------------------------------------------------------
 // Bowls, quarter pipes, vert and spines: the trainer's own help back into the ramp, and Skate 3's numbers for it.
@@ -2662,7 +2668,7 @@ std::string export_preset(const std::string &name) {
     auto &s = state();
     Json values = Json::object();
     std::string title;
-    if (lower(name) == "current") {
+    if (ascii_lower(name) == "current") {
         for (const auto &e : s.entries)
             if (e.touched) values[e.key] = e.value;
         for (const auto &one : setups())
@@ -2670,7 +2676,7 @@ std::string export_preset(const std::string &name) {
         title = "My setup";
     } else {
         for (const auto &[user_name, saved] : s.user)
-            if (lower(user_name) == lower(name)) {
+            if (ascii_lower(user_name) == ascii_lower(name)) {
                 for (const auto &[key, value] : saved) values[key] = value;
                 title = user_name;
             }
@@ -2723,7 +2729,7 @@ std::string import_preset(const std::string &file_name) {
         std::size_t unknown{};
         for (const auto &[key, value] : json.at("values").items()) {
             if (!value.is_number() || values.size() >= 512) continue;
-            const auto id = lower(key);
+            const auto id = ascii_lower(key);
             const bool setting = find_setup(id) || id == "trick.flip_gate" || id == "trick.catch_at" || id == "trick.catch_percent";
             if (!setting && !find_entry(id)) ++unknown; // kept: another build of the game may have it
             values[id] = value.get<double>();
@@ -2732,8 +2738,8 @@ std::string import_preset(const std::string &file_name) {
         auto name = json.value("name", "Imported");
         if (name.empty() || name.size() > 40) name = "Imported";
         const auto taken = [&](const std::string &candidate) {
-            if (lower(candidate) == "stock" || lower(candidate) == "map" || s.user.contains(candidate)) return true;
-            return std::ranges::any_of(builtin_presets(), [&](const auto &preset) { return lower(preset.name) == lower(candidate); });
+            if (ascii_lower(candidate) == "stock" || ascii_lower(candidate) == "map" || s.user.contains(candidate)) return true;
+            return std::ranges::any_of(builtin_presets(), [&](const auto &preset) { return ascii_lower(preset.name) == ascii_lower(candidate); });
         };
         auto unique = name;
         for (int n = 2; taken(unique); ++n) unique = std::format("{} {}", name, n);
@@ -2747,7 +2753,7 @@ std::string import_preset(const std::string &file_name) {
     }
 }
 bool flag(const std::string &text, bool &out) {
-    const auto value = lower(text);
+    const auto value = ascii_lower(text);
     if (value == "1" || value == "on" || value == "true") { out = true; return true; }
     if (value == "0" || value == "off" || value == "false") { out = false; return true; }
     return false;
@@ -2769,9 +2775,9 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool playing, const std::s
         s.base = base;
         sync_session();
         s.boosts = boosts_in_force();
-        if (const auto key = lower(playing ? level : std::string{}); key != s.map) enter_map(key);
+        if (const auto key = ascii_lower(playing ? level : std::string{}); key != s.map) enter_map(key);
         take_map_file();
-        if (const auto key = lower(level); !key.empty() && key != s.waypoint_level) {
+        if (const auto key = ascii_lower(level); !key.empty() && key != s.waypoint_level) {
             s.waypoint_level = key;
             s.waypoint.reset();
             s.view_due = true;
@@ -2924,11 +2930,11 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool playing, const std::s
                 s.pump_live = pump.found;
                 s.view_due = true;
             }
-            bool measure = false, searching = false;
+            bool searching = false;
             const bool grind_held = std::ranges::any_of(s.grind_mode, [](std::int8_t mode) { return mode >= 0; });
             keep_holds_alive();
             for (std::size_t i = 0; i < grind_settings.size(); ++i) force_grind_setting(i, extras_blocked() ? -1 : s.grind_setting[i]);
-            states_in_use(s.pump_power != 1.0f || s.manual_height != 1.0f || grind_held || s.grind_watch || s.grind_push != 0.0f || s.grind_range != 0.0f || measure || searching);
+            states_in_use(s.pump_power != 1.0f || s.manual_height != 1.0f || grind_held || s.grind_watch || s.grind_push != 0.0f || s.grind_range != 0.0f || searching);
             {
                 const auto watch = watched_physics_state();
                 const bool grinding = watch.valid && watch.state >= 400 && watch.state < 500;
@@ -2991,7 +2997,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool playing, const std::s
                     s.view_due = true;
                 }
             }
-            set_pump_power(client, s.entity, extras_blocked() ? 1.0f : s.pump_power, pump.found && pump.pumping, measure);
+            set_pump_power(client, s.entity, extras_blocked() ? 1.0f : s.pump_power, pump.found && pump.pumping);
         }
         {
             // Gravity: the game's own under a host's physics or with boosts off. Both levers let go by themselves.
@@ -3030,7 +3036,9 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool playing, const std::s
                                                       launch.trick == Trick::boneless ? "boneless" : "no comply", launch.up_speed, launch.factor));
         hold(now);
         if (s.extras_due) publish_extras();
+#if defined(DINGOSDK_DEV_TOOLS)
         run_selftest(now);
+#endif
         publish(s.telemetry);
         if (s.view_due) build_view();
         if (s.save_due && now >= s.next_save) save_store();
@@ -3042,7 +3050,7 @@ namespace {
 // trainer revert <field> <number> | reset: what counts as a revert and what it is worth.
 std::string revert_command(const std::vector<std::string> &a) {
     auto &s = state();
-    const auto name = a.empty() ? std::string{} : lower(a[0]);
+    const auto name = a.empty() ? std::string{} : ascii_lower(a[0]);
     std::string why;
     if (!editable(&why)) return "error: " + why;
     if (name == "reset") {
@@ -3068,7 +3076,7 @@ constexpr std::pair<std::string_view, double> trickline_friction[]{
 // choices are its difficulty settings (the built-in presets of those names); only one is on.
 constexpr std::pair<std::string_view, std::string_view> feels[]{{"easy", "Skate 3 Easy"}, {"normal", "Skate 3"}, {"hardcore", "Skate 3 Hardcore"}};
 std::string feel_command(const std::vector<std::string> &a) {
-    const auto which = a.empty() ? std::string{} : lower(a[0]);
+    const auto which = a.empty() ? std::string{} : ascii_lower(a[0]);
     std::string why;
     if (!editable(&why)) return "error: " + why;
     const auto found = std::ranges::find(feels, which, [](const auto &feel) { return feel.first; });
@@ -3090,7 +3098,7 @@ std::string trickline_command(const std::vector<std::string> &a) {
     std::string why;
     if (!editable(&why)) return "error: " + why;
     bool on{};
-    if (a.size() < 2 || lower(a[0]) != "extras" || !flag(a[1], on)) return "error: usage: trainer trickline extras on|off";
+    if (a.size() < 2 || ascii_lower(a[0]) != "extras" || !flag(a[1], on)) return "error: usage: trainer trickline extras on|off";
     // Off puts back only what still holds the extras' own numbers: a value the player has since moved is theirs.
     for (const auto &[key, factor] : trickline_friction)
         if (auto *e = find_entry(key); e && !is_locked(*e) && (on || std::abs(e->value - sane(*e, e->stock * factor)) < 1e-6 * std::max(1.0, std::abs(e->value))))
@@ -3107,7 +3115,7 @@ std::string trickline_command(const std::vector<std::string> &a) {
 std::string transition_command(const std::vector<std::string> &a) {
     auto &s = state();
     const auto arg = [&](std::size_t i) { return i < a.size() ? a[i] : std::string{}; };
-    const auto what = lower(arg(0)), to = lower(arg(1));
+    const auto what = ascii_lower(arg(0)), to = ascii_lower(arg(1));
     std::string why;
     if (what.empty()) {
         const auto now = GetTickCount64();
@@ -3213,7 +3221,7 @@ std::string transition_command(const std::vector<std::string> &a) {
 // trainer foot (lists the switches and how often the game asked for each) | foot <setting>|all game|off|on
 std::string foot_command(const std::vector<std::string> &a) {
     auto &s = state();
-    const auto what = a.empty() ? std::string{} : lower(a[0]), to = a.size() > 1 ? lower(a[1]) : std::string{};
+    const auto what = a.empty() ? std::string{} : ascii_lower(a[0]), to = a.size() > 1 ? ascii_lower(a[1]) : std::string{};
     if (what.empty()) {
         std::string out = "The game's own hidden on-foot switches:";
         for (std::size_t i = 0; i < foot_settings.size(); ++i)
@@ -3238,7 +3246,7 @@ std::string foot_command(const std::vector<std::string> &a) {
 }
 std::string run(std::string_view verb, const std::vector<std::string> &a) {
     auto &s = state();
-    const auto v = lower(verb);
+    const auto v = ascii_lower(verb);
     const auto arg = [&](std::size_t i) { return i < a.size() ? a[i] : std::string{}; };
     if (v == "status") {
         std::size_t touched{}, frozen{};
@@ -3250,7 +3258,7 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
                            frozen, s.map.empty() ? "none" : s.map, s.active.empty() ? "stock" : std::to_string(s.active.size()) + " applied", own.empty() ? " none" : own);
     }
     if (v == "set" || v == "freeze" || v == "reset") {
-        if (v == "reset" && lower(arg(0)) == "all") {
+        if (v == "reset" && ascii_lower(arg(0)) == "all") {
             const auto count = reset_all();
             std::size_t locked{};
             for (const auto &e : s.entries) locked += e.touched;
@@ -3258,11 +3266,11 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
             return locked ? std::format("{} values put back; {} locked values kept (Reset everything clears those too).", count, locked)
                           : std::format("{} values put back.", count);
         }
-        if (v == "reset" && (lower(arg(0)) == "tricks" || lower(arg(0)).starts_with("section"))) {
+        if (v == "reset" && (ascii_lower(arg(0)) == "tricks" || ascii_lower(arg(0)).starts_with("section"))) {
             // reset tricks: the sliders and switches of POP AND TRICKS. reset section <name>: everything one section of
             // the Tune tab shows, its tuning values too (locked ones stay).
             // (The console hands `reset` its words as one: "section grinds".)
-            const auto words = lower(arg(0)) + (a.size() > 1 ? " " + lower(arg(1)) : std::string{});
+            const auto words = ascii_lower(arg(0)) + (a.size() > 1 ? " " + ascii_lower(arg(1)) : std::string{});
             const bool section = words.starts_with("section");
             const auto named = section && words.size() > 8 ? words.substr(8) : std::string{};
             const auto topic = section ? topic_named(named) : topic_pop;
@@ -3280,14 +3288,14 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
             changed();
             return std::format("{}: {} put back to the game's own.", section ? std::string(topics[topic].title) : std::string("Tricks"), count);
         }
-        if (v == "reset" && lower(arg(0)) == "presets") {
+        if (v == "reset" && ascii_lower(arg(0)) == "presets") {
             const auto on = s.active;
             for (const auto &name : on) (void)remove_preset(name);
             s.active.clear();
             changed();
             return std::format("{} presets switched off.", on.size());
         }
-        if (v == "reset" && lower(arg(0)) == "everything") {
+        if (v == "reset" && ascii_lower(arg(0)) == "everything") {
             // The game as it shipped: no lock survives, no preset stays on, nothing of the trainer's stays set.
             // (Under a host's physics the player's own setup is kept for when they leave.)
             if (s.enforced) return "error: the host controls physics in this multiplayer game; your own setup is kept for when you leave.";
@@ -3332,7 +3340,7 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
         return std::format("{} = {:.6g}{}{}", e->id, e->value, e->touched ? std::format(" (stock {:.6g})", e->stock) : "", e->frozen ? ", frozen" : "");
     }
     if (v == "find") {
-        const auto pattern = lower(arg(0));
+        const auto pattern = ascii_lower(arg(0));
         std::string result;
         std::size_t count{};
         for (const auto &e : s.entries)
@@ -3350,7 +3358,7 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
         return apply_dial(name, *factor);
     }
     if (v == "preset") {
-        const auto action = lower(arg(0));
+        const auto action = ascii_lower(arg(0));
         std::string name;
         for (std::size_t i = 1; i < a.size(); ++i) name += (i > 1 ? " " : "") + a[i];
         if (action == "import") return import_preset(name);
@@ -3399,7 +3407,7 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
         return std::format("Marker slot {}{}.", s.slot + 1, current_map().markers[static_cast<std::size_t>(s.slot)].set ? "" : " (empty)");
     }
     if (v == "marker") {
-        const auto action = lower(arg(0));
+        const auto action = ascii_lower(arg(0));
         if ((action == "save" || action == "go") && match_blocks_markers())
             return "error: markers are disabled during this match.";
         const auto slot = slot_argument(a, 1);
@@ -3430,7 +3438,7 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
     }
     if (v == "waypoint") {
         refresh_waypoint();
-        if (lower(arg(0)) == "info")
+        if (ascii_lower(arg(0)) == "info")
             return "Map waypoint: " + (s.waypoint ? std::format("{:.1f}, {:.1f}, {:.1f}", (*s.waypoint)[0], (*s.waypoint)[1], (*s.waypoint)[2]) : std::string("none")) +
                    " (" + s.waypoint_detail + ").";
         if (!s.waypoint) return "error: no waypoint on the map. Open the pause map and place one first.";
@@ -3440,7 +3448,7 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
     if (v == "foot") return foot_command(a);
     if (v == "grind") {
         // trainer grind | grind watch 0|1 | grind side <x> | grind assist <0-100> | grind <key>|all game|off|on
-        const auto what = lower(arg(0)), to = lower(arg(1));
+        const auto what = ascii_lower(arg(0)), to = ascii_lower(arg(1));
         if (what == "assist") {
             // The player's own game setting, as its Settings menu sets it: in any session, never part of presets or resets.
             const auto value = number(to);
@@ -3549,7 +3557,7 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
         return go_to(spot.position, spot.name);
     }
     if (v == "option") {
-        const auto name = lower(arg(0));
+        const auto name = ascii_lower(arg(0));
         bool on{};
         std::string why;
         if (name == "flip_speed" || name == "underflip_speed" || name.starts_with("flip.")) {
@@ -3598,7 +3606,11 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
             if (!value) return "error: return_delay needs seconds.";
             s.return_delay = std::clamp(static_cast<float>(*value), 0.0f, 3600.0f);
         } else if (!flag(arg(1), on)) {
-            return "error: usage: trainer option hud|hud_jump|auto_return|pad|flip_advanced|flip_pop|flip_flick|flip_limit|underflip_split|gravity_landing_own|log 0|1";
+            return "error: usage: trainer option hud|hud_jump|auto_return|pad|flip_advanced|flip_pop|flip_flick|flip_limit|underflip_split|gravity_landing_own"
+#if defined(DINGOSDK_DEV_TOOLS)
+                   "|log"
+#endif
+                   " 0|1";
         } else if (name == "hud") s.hud = on;
         else if (name == "hud_jump") s.hud_jump = on;
         else if (name == "auto_return") s.auto_return = on;
@@ -3625,15 +3637,18 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
             if (on && !editable(&why)) return "error: " + why;
             s.gravity_landing_own = on;
         }
+#if defined(DINGOSDK_DEV_TOOLS)
         else if (name == "log") {
             set_logging(on);
             if (on && !s.logging) return "error: the telemetry file could not be created.";
-        } else return "error: no option is called \"" + name + "\".";
+        }
+#endif
+        else return "error: no option is called \"" + name + "\".";
         changed();
         return name + " = " + arg(1);
     }
     if (v == "profile") {
-        const auto action = lower(arg(0));
+        const auto action = ascii_lower(arg(0));
         if (s.map.empty()) return "error: load a level first.";
         if (action == "clear") {
             current_map().preset.clear();
@@ -3649,7 +3664,7 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
     }
     if (v == "setup") {
         // Any one of the trainer's own settings by its preset key (the menu's quick settings): trainer setup grind.push 1.8
-        const auto *one = find_setup(lower(arg(0)));
+        const auto *one = find_setup(ascii_lower(arg(0)));
         const auto value = number(arg(1));
         if (!one || !value) return "error: usage: trainer setup <key> <value> (the keys are the ones presets use: trick.flip_speed, grind.push, transition.lean ...)";
         std::string why;
@@ -3667,7 +3682,7 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
         return std::string{};
     }
     if (v == "open") {
-        const auto tab = lower(arg(0));
+        const auto tab = ascii_lower(arg(0));
         // After "movement": a section of the Tune tab, opened and scrolled to (realistic, fun: lists of earlier versions).
         const std::array<std::string_view, 19> tabs{"tune", "presets", "practice", "map", "realistic", "fun", "everything", "movement", "trickline", "transition",
                                                     "pop", "speed", "bails", "grinds", "pumping", "foot", "tricklining", "tricks", "game"};
@@ -3692,18 +3707,20 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
                            s.telemetry.heading, s.telemetry.speed * 3.6f, p[0], -p[2], p[1]);
     }
     if (v == "classes") {
-        if (lower(arg(0)) == "find") {
+        if (ascii_lower(arg(0)) == "find") {
             find_classes();
             return "Looking for the game's tuning classes.";
         }
         return "Copies found: " + classes_summary();
     }
     if (v == "refresh") return tuning::refresh_skater(s.base, s.entity) ? "Skater copy refreshed." : "error: the skater has no cached copy right now.";
+#if defined(DINGOSDK_DEV_TOOLS)
     if (v == "states") {
         std::string result;
         for (const auto &[id, ticks] : s.states) result += std::format("{}{}: {}", result.empty() ? "" : ", ", id, ticks);
         return result.empty() ? "No physics state seen yet." : "Physics states seen (id: ticks): " + result;
     }
+#endif
     if (v == "livedump") {
         // Diagnostic: what the game itself holds right now (its live tuning, and the first copy of each class value), not the
         // trainer's own numbers: `trainer livedump <name>` before and after changing one of the game's settings shows what
@@ -3739,6 +3756,7 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
             if (const auto held = profile_runtime::local_game_option(key)) file << std::format("setting:{}\t{:.6g}\n", key, *held);
         return std::format("Wrote {} live values to {}.", count, path_utf8(directory / std::filesystem::path("tuning-live-" + name + ".txt")));
     }
+#if defined(DINGOSDK_DEV_TOOLS)
     if (v == "dump") {
         const auto directory = data_directory();
         std::error_code error;
@@ -3759,6 +3777,9 @@ std::string run(std::string_view verb, const std::vector<std::string> &a) {
         return "Self test started; see the log for \"trainer selftest:\" lines.";
     }
     return "error: trainer status|open|set|freeze|reset|find|preset|slot|marker|tp|ground|waypoint|spot|option|profile|jumps|where|states|dump|selftest";
+#else
+    return "error: trainer status|open|set|freeze|reset|find|preset|slot|marker|tp|ground|waypoint|spot|option|profile|jumps|where";
+#endif
 }
 } // namespace
 
@@ -3786,7 +3807,7 @@ std::optional<TuningValue> tuning_value(std::string_view id, std::string *why) {
 std::vector<TuningValue> find_tuning(std::string_view text, std::size_t most) {
     std::vector<TuningValue> found;
     if (!state().ready) return found;
-    const auto pattern = lower(text);
+    const auto pattern = ascii_lower(text);
     for (const auto &e : state().entries)
         if (found.size() < most && matches(e.key, pattern)) found.push_back(tuning_of(e));
     return found;

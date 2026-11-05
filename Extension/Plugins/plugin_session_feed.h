@@ -8,6 +8,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -178,6 +179,75 @@ inline std::vector<std::uint64_t> hidden_by(const std::string& plugin) {
 inline void release_hidden(const std::string& plugin) {
     std::lock_guard lock(detail::mutex);
     std::erase_if(detail::hidden, [&](const auto& item) { return item.first == plugin; });
+}
+
+// What another player wears, as their game sent it: the item names of their skater and of their
+// board (reskate.session.outfit). The session publishes each once it arrives or changes, and
+// keeps only the players still in it.
+struct Outfit {
+    std::vector<std::string> skater, board;
+};
+namespace detail {
+inline std::map<std::uint64_t, Outfit> outfits;
+}
+inline void publish_outfit(std::uint64_t player, Outfit outfit) {
+    std::lock_guard lock(detail::mutex);
+    detail::outfits[player] = std::move(outfit);
+}
+inline void keep_outfits(const std::set<std::uint64_t>& players) {
+    std::lock_guard lock(detail::mutex);
+    std::erase_if(detail::outfits, [&](const auto& item) { return !players.contains(item.first); });
+}
+inline std::optional<Outfit> outfit_of(std::uint64_t player) {
+    std::lock_guard lock(detail::mutex);
+    const auto found = detail::outfits.find(player);
+    if (found == detail::outfits.end()) return std::nullopt;
+    return found->second;
+}
+
+// Items plugins hide on other players (reskate.session.hide_items): shown on this screen as items
+// this PC does not have are, by a stand-in, the default or nothing. Each plugin's list, on
+// everyone or on some players; all of them apply. Names in lower case, so any case matches.
+struct HiddenItems {
+    std::set<std::string, std::less<>> everyone;
+    std::map<std::uint64_t, std::set<std::string, std::less<>>> players;
+    bool operator==(const HiddenItems&) const = default;
+};
+inline constexpr std::size_t max_hidden_items = 4096, max_hidden_item_players = 64;
+namespace detail {
+inline std::map<std::string, HiddenItems, std::less<>> hidden_items; // by plugin
+inline std::uint64_t hidden_items_revision{1};
+}
+// A list the same as the plugin's last one changes nothing: every change dresses the players shown again.
+inline void hide_items(const std::string& plugin, HiddenItems items) {
+    std::lock_guard lock(detail::mutex);
+    const auto found = detail::hidden_items.find(plugin);
+    if (items.everyone.empty() && items.players.empty()) {
+        if (found == detail::hidden_items.end()) return;
+        detail::hidden_items.erase(found);
+    } else {
+        if (found != detail::hidden_items.end() && found->second == items) return;
+        detail::hidden_items[plugin] = std::move(items);
+    }
+    ++detail::hidden_items_revision;
+}
+inline void release_hidden_items(const std::string& plugin) {
+    std::lock_guard lock(detail::mutex);
+    if (detail::hidden_items.erase(plugin)) ++detail::hidden_items_revision;
+}
+// Changes whenever any plugin's list does, so the outfits already shown are put on again.
+inline std::uint64_t hidden_items_revision() {
+    std::lock_guard lock(detail::mutex);
+    return detail::hidden_items_revision;
+}
+// `item` is a name in lower case.
+inline bool item_hidden(std::uint64_t player, std::string_view item) {
+    std::lock_guard lock(detail::mutex);
+    for (const auto& [plugin, items] : detail::hidden_items) {
+        if (items.everyone.contains(item)) return true;
+        if (const auto found = items.players.find(player); found != items.players.end() && found->second.contains(item)) return true;
+    }
+    return false;
 }
 
 inline void publish_peers(std::vector<Peer> peers) {

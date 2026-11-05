@@ -2,6 +2,7 @@
 #include "Engine/Core/Hooks/hooks.h"
 #include "Engine/Core/Log/logging.h"
 #include "Extension/AnimationStudio/anim_core.h"
+#include "Extension/AnimationStudio/pose_math.h"
 #include "Extension/Multiplayer/Remote/native_pose_layout.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
 #include <Windows.h>
@@ -62,11 +63,11 @@ bool store_scale(std::uintptr_t address, const Vec3& scale) noexcept {
         return false;
     }
 }
-bool finite(const Vec3& v) { return std::isfinite(v[0]) && std::isfinite(v[1]) && std::isfinite(v[2]); }
-Vec3 add(const Vec3& a, const Vec3& b) { return {a[0] + b[0], a[1] + b[1], a[2] + b[2]}; }
-Vec3 sub(const Vec3& a, const Vec3& b) { return {a[0] - b[0], a[1] - b[1], a[2] - b[2]}; }
-Vec3 mul(const Vec3& a, float k) { return {a[0] * k, a[1] * k, a[2] * k}; }
-float length(const Vec3& v) { return std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]); }
+using anim_studio::pose_math::add;
+using anim_studio::pose_math::finite;
+using anim_studio::pose_math::length;
+using anim_studio::pose_math::scaled;
+using anim_studio::pose_math::sub;
 Quat about(const Vec3& axis, float angle) {
     const float s = std::sin(angle * 0.5f);
     return normalised({axis[0] * s, axis[1] * s, axis[2] * s, std::cos(angle * 0.5f)});
@@ -201,8 +202,8 @@ void fly(Piece& p, const Quat& place_rotation, const Vec3& place_at, const std::
     p.last = now;
     if (!p.landed) {
         p.velocity[1] -= 9.81f * dt;
-        p.at = add(p.at, mul(p.velocity, dt));
-        if (const float rate = length(p.spin); rate > 1e-4f) p.facing = normalised(multiply(about(mul(p.spin, 1.0f / rate), rate * dt), p.facing));
+        p.at = add(p.at, scaled(p.velocity, dt));
+        if (const float rate = length(p.spin); rate > 1e-4f) p.facing = normalised(multiply(about(scaled(p.spin, 1.0f / rate), rate * dt), p.facing));
         if (p.velocity[1] <= 0 && p.at[1] <= p.ground) {
             // Down: flat, pointing the way it was, a short slide.
             const auto ahead = rotate(p.facing, {0, 0, 1});
@@ -215,8 +216,8 @@ void fly(Piece& p, const Quat& place_rotation, const Vec3& place_at, const std::
             p.landed = true;
         }
     } else {
-        p.at = add(p.at, mul(p.velocity, dt));
-        p.velocity = mul(p.velocity, std::max(0.0f, 1.0f - 7.0f * dt));
+        p.at = add(p.at, scaled(p.velocity, dt));
+        p.velocity = scaled(p.velocity, std::max(0.0f, 1.0f - 7.0f * dt));
         p.at[1] = p.ground;
     }
 }

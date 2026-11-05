@@ -29,7 +29,11 @@ void register_trainer_commands(Commands &registry) {
         {"waypoint", "Teleport to the waypoint placed on the pause map, onto the surface there", "[info]", false},
         {"ground", "Teleport to the topmost surface at a map position", "<x> <z>", false},
         {"spot", "Go to one of the map author's spots", "<number>", false},
-        {"option", "Trainer options", "hud|hud_jump|auto_return|pad|flip_advanced|flip_pop|flip_flick|flip_limit|log 0|1, return_delay <seconds>, hippy_height|nocomply_height|boneless_height|manual_height|offboard_height|flip_speed|flip.<trick>|pump_power|revert_boost <x>", true},
+        {"option", "Trainer options", "hud|hud_jump|auto_return|pad|flip_advanced|flip_pop|flip_flick|flip_limit"
+#if defined(DINGOSDK_DEV_TOOLS)
+         "|log"
+#endif
+         " 0|1, return_delay <seconds>, hippy_height|nocomply_height|boneless_height|manual_height|offboard_height|flip_speed|flip.<trick>|pump_power|revert_boost <x>", true},
         {"grind", "Grinds: the feel, the game's own settings and switches, the pop off a grind", "[feel skate|skate3] | side <multiplier> | push <m/s> | range <degrees> | <setting or switch>|all game|off|on | watch 0|1", false},
         {"transition", "Transition skating: the feel, the help back into the ramp and the game's own settings",
          "[feel skate|skate3] | lean|carry|drop|unstick|lockout|plant <number> | spine on|off | <setting>|all game|off|on", false},
@@ -37,12 +41,18 @@ void register_trainer_commands(Commands &registry) {
         {"profile", "The preset this map applies on load", "set <preset>|clear", false},
         {"jumps", "The last measured jump", nullptr, false},
         {"where", "The skater's position, heading and speed", nullptr, false},
+#if defined(DINGOSDK_DEV_TOOLS)
         {"states", "Physics states the skater has been in (diagnostic)", nullptr, false},
+#endif
         {"classes", "The game's tuning classes the trainer found in memory (diagnostic)", "[find]", false},
         {"refresh", "Refresh the skater's cached copy of the tuning (diagnostic)", nullptr, false},
+#if defined(DINGOSDK_DEV_TOOLS)
         {"dump", "Write every tuning value to a text file", nullptr, false},
+#endif
         {"livedump", "Write what the game holds now (live tuning, class values, assist settings) to tuning-live-<name>.txt (diagnostic)", "[name]", false},
+#if defined(DINGOSDK_DEV_TOOLS)
         {"selftest", "Check the trainer against the running game", nullptr, false},
+#endif
     };
     for (const auto &verb : verbs) {
         std::vector<Argument> arguments;

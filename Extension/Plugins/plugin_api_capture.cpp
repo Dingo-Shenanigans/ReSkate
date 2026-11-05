@@ -10,40 +10,14 @@
 
 // reskate.capture (the screen as the game draws it, saved as a GIF, APNG, PNG or WebM), the game
 // menu's preview turned (reskate.room.turn) and read (reskate.menu.game, reskate.menu.grid,
-// reskate.menu.favorites), what the skater wears (reskate.outfit.worn, board, title) and
-// reskate.files.reveal: from Fit Check (pull request 326), whose turn finding and card are now a
-// plugin's (contrib/plugins/fit-check).
+// reskate.menu.favorites), what is up over the game (reskate.menu.state: the pause menu, ReSkate's
+// menu, the replay editor), what the skater wears (reskate.outfit.worn, board, title) and
+// reskate.files.reveal (the plugin's data folder shown in Explorer). The building blocks only: when
+// to turn the preview and what a saved capture's card says are the calling plugin's.
 namespace dingosdk::plugins {
 namespace {
-int result(lua_State* L, const std::string& why) {
-    lua_pushboolean(L, why.empty());
-    if (why.empty()) return 1;
-    lua_pushlstring(L, why.data(), why.size());
-    return 2;
-}
-void push_text(lua_State* L, const std::string& text, const char* field) {
-    lua_pushlstring(L, text.data(), text.size());
-    lua_setfield(L, -2, field);
-}
-// An option of a table at `index`: a number within [least, most] (raises otherwise), or `fallback`.
-double number_option(lua_State* L, int index, const char* name, double fallback, double least, double most) {
-    if (lua_isnoneornil(L, index)) return fallback;
-    lua_getfield(L, index, name);
-    double value = fallback;
-    if (!lua_isnil(L, -1)) {
-        value = luaL_checknumber(L, -1);
-        if (!(value >= least && value <= most)) luaL_error(L, "%s is %g to %g", name, least, most);
-    }
-    lua_pop(L, 1);
-    return value;
-}
-bool flag_option(lua_State* L, int index, const char* name, bool fallback) {
-    if (lua_isnoneornil(L, index)) return fallback;
-    lua_getfield(L, index, name);
-    const bool value = lua_isnil(L, -1) ? fallback : lua_toboolean(L, -1) != 0;
-    lua_pop(L, 1);
-    return value;
-}
+// A string option of a table at `index` (which may be nil), or `fallback`. Unlike text_field
+// (plugin_api.h) it has a fallback and no length bound, and a non-string is Lua's own argument error.
 std::string text_option(lua_State* L, int index, const char* name, const char* fallback) {
     if (lua_isnoneornil(L, index)) return fallback;
     lua_getfield(L, index, name);
@@ -52,23 +26,10 @@ std::string text_option(lua_State* L, int index, const char* name, const char* f
     lua_pop(L, 1);
     return value;
 }
-// A per-second budget; false past it.
-bool within(double now, double& second, int& count, int most) {
-    if (now - second >= 1000) {
-        second = now;
-        count = 0;
-    }
-    return ++count <= most;
-}
 } // namespace
 
 struct CaptureApi {
-    static Game& game(Plugin& plugin) { return plugin.services_.game(); }
-    static Plugin& capturing(lua_State* L, const char* what) {
-        auto& plugin = plugin_of(L);
-        need(L, plugin, "capture", what);
-        return plugin;
-    }
+    static Plugin& capturing(lua_State* L, const char* what) { return permitted(L, "capture", what); }
 
     // start({area = {left, top, right, bottom}, frame = "screen"|"menu", depth, height, skip, frames, seconds})
     static int start(lua_State* L) {
@@ -103,23 +64,23 @@ struct CaptureApi {
             request.seconds = number_option(L, 1, "seconds", 60, 1, 120);
         }
         if (!within(plugin.services_.now_ms(), plugin.control_second_, plugin.controls_, 4)) return result(L, "asked more than 4 times in a second");
-        return result(L, game(plugin).capture_start(plugin.id(), request));
+        return result(L, game_of(plugin).capture_start(plugin.id(), request));
     }
     static int stop(lua_State* L) {
         auto& plugin = capturing(L, "reskate.capture.stop");
-        game(plugin).capture_stop(plugin.id());
+        game_of(plugin).capture_stop(plugin.id());
         return 0;
     }
     static int discard(lua_State* L) {
         auto& plugin = capturing(L, "reskate.capture.discard");
-        game(plugin).capture_discard(plugin.id());
+        game_of(plugin).capture_discard(plugin.id());
         return 0;
     }
     static int state(lua_State* L) {
         auto& plugin = capturing(L, "reskate.capture.state");
-        const auto now = game(plugin).capture_status(plugin.id());
+        const auto now = game_of(plugin).capture_status(plugin.id());
         lua_createtable(L, 0, 8);
-        push_text(L, now.state, "state");
+        field_text(L, "state", now.state);
         lua_pushinteger(L,static_cast<int>(now.dropped));lua_setfield(L,-2,"dropped");
         lua_pushinteger(L,static_cast<int>(now.pending));lua_setfield(L,-2,"pending");
         lua_pushinteger(L, static_cast<int>(now.taken));
@@ -128,8 +89,8 @@ struct CaptureApi {
         lua_setfield(L, -2, "kept");
         lua_pushboolean(L, now.depth);
         lua_setfield(L, -2, "depth");
-        if (!now.message.empty()) push_text(L, now.message, "message");
-        if (!now.file.empty()) push_text(L, now.file, "file");
+        if (!now.message.empty()) field_text(L, "message", now.message);
+        if (!now.file.empty()) field_text(L, "file", now.file);
         return 1;
     }
     static std::uint32_t frame_number(lua_State* L, int index) {
@@ -140,14 +101,14 @@ struct CaptureApi {
     // compare(a, b): how unlike two frames taken look, 0 to 255; nil when either is not known.
     static int compare(lua_State* L) {
         auto& plugin = capturing(L, "reskate.capture.compare");
-        const float d = game(plugin).capture_compare(plugin.id(), frame_number(L, 1), frame_number(L, 2));
+        const float d = game_of(plugin).capture_compare(plugin.id(), frame_number(L, 1), frame_number(L, 2));
         if (d < 0) lua_pushnil(L);
         else lua_pushnumber(L, d);
         return 1;
     }
     static int kept(lua_State* L) {
         auto& plugin = capturing(L, "reskate.capture.kept");
-        const auto list = game(plugin).capture_kept(plugin.id());
+        const auto list = game_of(plugin).capture_kept(plugin.id());
         lua_createtable(L, static_cast<int>(list.size()), 0);
         for (std::size_t i = 0; i < list.size(); ++i) {
             lua_pushinteger(L, static_cast<int>(list[i]) + 1);
@@ -214,7 +175,7 @@ struct CaptureApi {
         }
         lua_pop(L, 1);
         if (!within(plugin.services_.now_ms(), plugin.files_second_, plugin.file_calls_, 64)) return result(L, "more than 64 file calls in a second");
-        return result(L, game(plugin).capture_save(plugin.id(), request));
+        return result(L, game_of(plugin).capture_save(plugin.id(), request));
     }
 
     // Read-only menu rig sample, with room permission and no ownership of the rig.
@@ -223,16 +184,12 @@ struct CaptureApi {
         need(L, plugin, "room", "reskate.room.pose");
         const std::string subject = luaL_optstring(L, 1, "board");
         if (subject != "board" && subject != "skater") luaL_argerror(L, 1, "board or skater");
-        const auto pose = game(plugin).room_pose(subject == "skater");
+        const auto pose = game_of(plugin).room_pose(subject == "skater");
         if (!pose) { lua_pushnil(L); return 1; }
         lua_createtable(L, 0, 4);
         lua_pushvector(L, pose->position[0], pose->position[1], pose->position[2]);
         lua_setfield(L, -2, "position");
-        lua_createtable(L, 4, 0);
-        for (int i = 0; i < 4; ++i) {
-            lua_pushnumber(L, pose->rotation[static_cast<std::size_t>(i)]);
-            lua_rawseti(L, -2, i + 1);
-        }
+        push_quaternion(L, pose->rotation);
         lua_setfield(L, -2, "rotation");
         lua_pushnumber(L, pose->age);
         lua_setfield(L, -2, "age");
@@ -250,12 +207,12 @@ struct CaptureApi {
         static constexpr const char* sticks[] = {"left_x", "left_y", "right_x", "right_y"};
         const auto at = std::find_if(std::begin(sticks), std::end(sticks), [&](const char* s) { return stick == s; });
         if (at == std::end(sticks)) luaL_argerror(L, 2, "\"left_x\", \"left_y\", \"right_x\" or \"right_y\"");
-        return result(L, game(plugin).room_turn(plugin.id(), static_cast<float>(value), static_cast<int>(at - std::begin(sticks))));
+        return result(L, game_of(plugin).room_turn(plugin.id(), static_cast<float>(value), static_cast<int>(at - std::begin(sticks))));
     }
     static int menu_game(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "menu", "reskate.menu.game");
-        const auto menu = game(plugin).game_menu();
+        const auto menu = game_of(plugin).game_menu();
         lua_createtable(L, 0, 4);
         lua_pushboolean(L, menu.known);
         lua_setfield(L, -2, "known");
@@ -263,31 +220,30 @@ struct CaptureApi {
         lua_setfield(L, -2, "open");
         lua_pushboolean(L, menu.open && menu.skaters);
         lua_setfield(L, -2, "skaters");
-        lua_createtable(L, static_cast<int>(menu.buttons.size()), 0);
-        for (std::size_t i = 0; i < menu.buttons.size() && i < 64; ++i) {
-            lua_pushlstring(L, menu.buttons[i].data(), menu.buttons[i].size());
-            lua_rawseti(L, -2, static_cast<int>(i + 1));
-        }
+        push_texts(L, menu.buttons, 64);
         lua_setfield(L, -2, "buttons");
+        return 1;
+    }
+    // menu.state(): what is up over the game now, as menu_changed hands it over.
+    static int menu_state(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "menu", "reskate.menu.state");
+        push_menu_state(L, game_of(plugin).menu_state());
         return 1;
     }
     static int menu_grid(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "menu", "reskate.menu.grid");
-        const auto grid = game(plugin).menu_grid();
+        const auto grid = game_of(plugin).menu_grid();
         if (!grid) {
             lua_pushnil(L);
             return 1;
         }
         lua_createtable(L, 0, 6);
-        if (!grid->focused.empty()) push_text(L, grid->focused, "focused");
-        if (!grid->title.empty()) push_text(L, grid->title, "title");
-        if (!grid->category.empty()) push_text(L, grid->category, "category");
-        lua_createtable(L, static_cast<int>(std::min<std::size_t>(grid->items.size(), 4000)), 0);
-        for (std::size_t i = 0; i < grid->items.size() && i < 4000; ++i) {
-            lua_pushlstring(L, grid->items[i].data(), grid->items[i].size());
-            lua_rawseti(L, -2, static_cast<int>(i + 1));
-        }
+        if (!grid->focused.empty()) field_text(L, "focused", grid->focused);
+        if (!grid->title.empty()) field_text(L, "title", grid->title);
+        if (!grid->category.empty()) field_text(L, "category", grid->category);
+        push_texts(L, grid->items, 4000);
         lua_setfield(L, -2, "items");
         lua_pushinteger(L, static_cast<int>(grid->shown));
         lua_setfield(L, -2, "shown");
@@ -309,33 +265,21 @@ struct CaptureApi {
         }
         return 1;
     }
-    static std::vector<std::string> keys_at(lua_State* L, int index, int most) {
-        std::vector<std::string> keys;
-        luaL_checktype(L, index, LUA_TTABLE);
-        const int count = lua_objlen(L, index);
-        if (count > most) luaL_argerror(L, index, most == 4000 ? "at most 4000 items" : "too many items");
-        for (int i = 1; i <= count; ++i) {
-            lua_rawgeti(L, index, i);
-            keys.push_back(checked_text(L, lua_gettop(L), 255, "an item's key"));
-            lua_pop(L, 1);
-        }
-        return keys;
-    }
     // menu.grid_show(keys): these items, in this order, in the grid that has the focus; nil gives it back.
     static int grid_show(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "menu", "reskate.menu.grid_show");
         std::optional<std::vector<std::string>> keys;
-        if (!lua_isnoneornil(L, 1)) keys = keys_at(L, 1, 4000);
-        return result(L, game(plugin).grid_show(plugin.id(), std::move(keys)));
+        if (!lua_isnoneornil(L, 1)) keys = item_keys(L, 1);
+        return result(L, game_of(plugin).grid_show(plugin.id(), std::move(keys)));
     }
     // menu.grid_mark(keys): the game's check on these items' tiles; nil or {} takes them off.
     static int grid_mark(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "menu", "reskate.menu.grid_mark");
         std::vector<std::string> keys;
-        if (!lua_isnoneornil(L, 1)) keys = keys_at(L, 1, 4000);
-        game(plugin).grid_mark(plugin.id(), std::move(keys));
+        if (!lua_isnoneornil(L, 1)) keys = item_keys(L, 1);
+        game_of(plugin).grid_mark(plugin.id(), std::move(keys));
         return 0;
     }
     // menu.favorites(): the player's starred item keys, or nil and why the set is not read yet.
@@ -343,7 +287,7 @@ struct CaptureApi {
     static int menu_favorites(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "menu", "reskate.menu.favorites");
-        const auto set = game(plugin).menu_favorites();
+        const auto set = game_of(plugin).menu_favorites();
         if (!set.ready) {
             lua_pushnil(L);
             if (set.why.empty()) lua_pushstring(L, "not loaded");
@@ -362,9 +306,9 @@ struct CaptureApi {
         lua_createtable(L, static_cast<int>(list.size()), 0);
         for (std::size_t i = 0; i < list.size(); ++i) {
             lua_createtable(L, 0, 3);
-            push_text(L, list[i].slot, "slot");
-            push_text(L, list[i].item, "item");
-            push_text(L, list[i].title, "title");
+            field_text(L, "slot", list[i].slot);
+            field_text(L, "item", list[i].item);
+            field_text(L, "title", list[i].title);
             lua_rawseti(L, -2, static_cast<int>(i + 1));
         }
         return 1;
@@ -372,18 +316,18 @@ struct CaptureApi {
     static int outfit_worn(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "outfit", "reskate.outfit.worn");
-        return push_worn(L, game(plugin).outfit_worn());
+        return push_worn(L, game_of(plugin).outfit_worn());
     }
     static int outfit_board(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "outfit", "reskate.outfit.board");
-        return push_worn(L, game(plugin).board_parts());
+        return push_worn(L, game_of(plugin).board_parts());
     }
     static int outfit_title(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "outfit", "reskate.outfit.title");
         const auto key = checked_text(L, 1, 255, "an item's key");
-        const auto title = game(plugin).item_title(key);
+        const auto title = game_of(plugin).item_title(key);
         lua_pushlstring(L, title.data(), title.size());
         return 1;
     }
@@ -404,24 +348,18 @@ struct CaptureApi {
             }
         }
         if (!within(plugin.services_.now_ms(), plugin.control_second_, plugin.controls_, 4)) return result(L, "asked more than 4 times in a second");
-        return result(L, game(plugin).outfit_on_top(plugin.id(), std::move(items)));
+        return result(L, game_of(plugin).outfit_on_top(plugin.id(), std::move(items)));
     }
     static int on_top_state(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "outfit", "reskate.outfit.on_top_state");
-        const auto now = game(plugin).outfit_on_top_state(plugin.id());
-        const auto list = [&](const std::vector<std::string>& names, const char* field) {
-            lua_createtable(L, static_cast<int>(names.size()), 0);
-            for (std::size_t i = 0; i < names.size(); ++i) {
-                lua_pushlstring(L, names[i].data(), names[i].size());
-                lua_rawseti(L, -2, static_cast<int>(i + 1));
-            }
-            lua_setfield(L, -2, field);
-        };
+        const auto now = game_of(plugin).outfit_on_top_state(plugin.id());
         lua_createtable(L, 0, 3);
-        list(now.items, "items");
-        list(now.worn, "worn");
-        if (!now.note.empty()) push_text(L, now.note, "note");
+        push_texts(L, now.items);
+        lua_setfield(L, -2, "items");
+        push_texts(L, now.worn);
+        lua_setfield(L, -2, "worn");
+        if (!now.note.empty()) field_text(L, "note", now.note);
         return 1;
     }
     static int files_reveal(lua_State* L) {
@@ -429,18 +367,32 @@ struct CaptureApi {
         need(L, plugin, "files", "reskate.files.reveal");
         const auto folder = data_path(L, 1, true);
         if (!within(plugin.services_.now_ms(), plugin.reveal_second_, plugin.reveals_, 1)) return result(L, "once a second");
-        return result(L, game(plugin).files_reveal(plugin.id(), folder));
+        return result(L, game_of(plugin).files_reveal(plugin.id(), folder));
     }
     static void install(lua_State* L) {
         add_functions(L, "capture", {{"start", start}, {"stop", stop}, {"discard", discard}, {"state", state}, {"compare", compare},
                                      {"kept", kept}, {"save", save}});
         add_functions(L, "room", {{"turn", room_turn}, {"pose", room_pose}});
-        add_functions(L, "menu", {{"game", menu_game}, {"grid", menu_grid}, {"grid_show", grid_show}, {"grid_mark", grid_mark},
-                                  {"favorites", menu_favorites}});
+        add_functions(L, "menu", {{"game", menu_game}, {"state", menu_state}, {"grid", menu_grid}, {"grid_show", grid_show},
+                                  {"grid_mark", grid_mark}, {"favorites", menu_favorites}});
         add_functions(L, "outfit", {{"worn", outfit_worn}, {"board", outfit_board}, {"title", outfit_title}, {"on_top", on_top}, {"on_top_state", on_top_state}});
         add_functions(L, "files", {{"reveal", files_reveal}});
     }
 };
 
 void install_capture_api(Plugin&, lua_State* L) { CaptureApi::install(L); }
+
+void push_menu_state(lua_State* L, const Game::MenuState& state) {
+    lua_createtable(L, 0, 5);
+    lua_pushboolean(L, state.known);
+    lua_setfield(L, -2, "known");
+    lua_pushboolean(L, state.pause);
+    lua_setfield(L, -2, "pause");
+    lua_pushboolean(L, state.reskate);
+    lua_setfield(L, -2, "reskate");
+    lua_pushboolean(L, state.replay_editor);
+    lua_setfield(L, -2, "replay_editor");
+    // Only the words plugins were told of (Enums.MenuPage) reach them.
+    if (one_of(menu_pages, state.page)) field_text(L, "page", state.page);
+}
 } // namespace dingosdk::plugins

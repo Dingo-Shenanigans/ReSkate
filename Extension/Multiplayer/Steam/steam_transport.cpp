@@ -2,6 +2,7 @@
 #include "steam_lanes.h"
 #include "Extension/Multiplayer/Net/wire_codec.h"
 #include "Engine/Core/Platform/launcher_support.h"
+#include "Engine/Core/Platform/clock.h"
 #ifdef _WIN32
 #include <Windows.h>
 #else
@@ -35,13 +36,8 @@ using NativeModule = HMODULE;
 #else
 using NativeModule = void *;
 using ULONGLONG = std::uint64_t;
-inline std::uint64_t tick_ms() noexcept {
-    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                          std::chrono::steady_clock::now().time_since_epoch())
-                                          .count());
-}
 #ifndef GetTickCount64
-#define GetTickCount64 tick_ms
+#define GetTickCount64 steady_ms
 #endif
 #endif
 template <class T> T symbol(NativeModule module, const char *name) {

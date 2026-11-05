@@ -1,4 +1,6 @@
 #pragma once
+#include "Engine/Game/Build/addresses.h"
+#include "Engine/Game/Build/20260929/native_throwdowns.h"
 #include <array>
 #include <cstdint>
 #include <stdexcept>
@@ -28,7 +30,7 @@ FlagBubbleDisplay flag_bubble_display(Reader&& reader,std::uintptr_t base,
         const auto local=static_cast<std::uint32_t>(entity);
         // The native world ID uses two addressable bytes and a generation byte.
         if(world>>22)return {};
-        const auto manager=ptr(base+0x74cd760);
+        const auto manager=ptr(base+addr::native_throwdowns::entity_world_manager);
         const auto world_page=ptr(ptr(manager+0x70)+(world>>14)*8);
         if(!world_page)return {};
         const auto world_context=world_page+((world>>8)&63)*0xa30;
@@ -87,7 +89,7 @@ FlagBubbleDisplay flag_bubble_display(Reader&& reader,std::uintptr_t base,
             if(ptr(node)==descriptor){store=ptr(node+8);break;}
             node=ptr(node+16);
         }
-        if(!store || ptr(store)!=base+0x65d0e48 || ptr(store+0x350)!=descriptor)return {};
+        if(!store || ptr(store)!=base+addr::native_throwdowns::map_object_store_vtable || ptr(store+0x350)!=descriptor)return {};
         const auto sentinel=store+0x10;
         auto leaf=ptr(sentinel);
         for(unsigned pages=0;leaf && leaf!=sentinel && pages<4096;++pages) {

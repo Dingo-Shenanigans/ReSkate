@@ -521,6 +521,11 @@ bool dingosdk::overlay::keyboard_shortcuts_allowed() noexcept {
     return s.started.load() && !s.stop.load() && !interactive_visible(s);
 }
 
+bool dingosdk::overlay::menu_visible() noexcept {
+    auto &s = state();
+    return s.started.load() && !s.stop.load() && s.visible.load();
+}
+
 extern "C" void DingoSDKOverlayGetStatus(dingosdk::overlay::Status* output) {
     if (!output) return;
     auto& s = state();

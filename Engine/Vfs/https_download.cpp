@@ -1,4 +1,5 @@
 #include "https_download.h"
+#include "Engine/Core/Platform/clock.h"
 #include <Windows.h>
 #include <winhttp.h>
 #include <array>
@@ -15,10 +16,6 @@
 
 namespace dingosdk::https {
 namespace {
-std::uint64_t now_us() noexcept {
-    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count());
-}
 
 struct Handle {
     HANDLE value{INVALID_HANDLE_VALUE};
@@ -92,13 +89,13 @@ struct AsyncRequest {
 Download get(std::wstring_view url, const std::filesystem::path& destination,
     std::uint64_t max_bytes, std::uint32_t timeout_seconds, const wchar_t* agent, Watch* watch) {
     Download result;
-    const auto started = now_us();
+    const auto started = steady_us();
     const auto timeout_deadline = started + std::uint64_t{timeout_seconds} * 1000000;
     const auto stop = [&]() -> DWORD {
         if (watch && watch->cancel.load()) return ERROR_CANCELLED;
         const auto external = watch ? watch->deadline_us.load() : 0;
         const auto deadline = external && external < timeout_deadline ? external : timeout_deadline;
-        return now_us() >= deadline ? ERROR_TIMEOUT : ERROR_SUCCESS;
+        return steady_us() >= deadline ? ERROR_TIMEOUT : ERROR_SUCCESS;
     };
     const auto fail = [&](DWORD error) {
         const auto stopped = stop();
@@ -193,13 +190,13 @@ Download get(std::wstring_view url, const std::filesystem::path& destination,
 
 std::optional<std::uint64_t> content_length(std::wstring_view url, std::uint32_t timeout_seconds,
     const wchar_t* agent, Watch* watch) {
-    const auto started = now_us();
+    const auto started = steady_us();
     const auto timeout_deadline = started + std::uint64_t{timeout_seconds} * 1000000;
     const auto stop = [&]() -> DWORD {
         if (watch && watch->cancel.load()) return ERROR_CANCELLED;
         const auto external = watch ? watch->deadline_us.load() : 0;
         const auto deadline = external && external < timeout_deadline ? external : timeout_deadline;
-        return now_us() >= deadline ? ERROR_TIMEOUT : ERROR_SUCCESS;
+        return steady_us() >= deadline ? ERROR_TIMEOUT : ERROR_SUCCESS;
     };
     if (stop() || url.empty() || url.size() >= 4096 || url.find_first_of(L"\r\n\t #") != std::wstring_view::npos)
         return std::nullopt;

@@ -1,6 +1,5 @@
 #pragma once
 #include <array>
-#include <filesystem>
 #include <string_view>
 #include <vector>
 
@@ -14,9 +13,6 @@ namespace dingosdk::tricks {
 using StickPath = std::vector<std::array<float, 2>>;
 // Starts the reading (once); nothing until it is done.
 void prepare_trick_gestures() noexcept;
-// Reads them now from a game folder (the one with Skate.exe), for tests; how many were found.
-// Throws when they cannot be read.
-std::size_t load_trick_gestures(const std::filesystem::path &game_root);
 // The path for one trick as skate. names it ("Kickflip", "Nollie Heelflip", "360 Pop Shove-it");
 // empty for a trick with no flick (grabs, grinds, manuals) or one not known.
 StickPath trick_gesture(std::string_view trick);

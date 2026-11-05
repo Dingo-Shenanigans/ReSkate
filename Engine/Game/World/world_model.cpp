@@ -2,6 +2,8 @@
 #include "Engine/Game/Build/supported_build.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/world_model.h"
+#include "Engine/Core/Text/ascii.h"
+#include "Engine/Core/Json/json.h"
 #include <algorithm>
 #include <sstream>
 #include <string_view>
@@ -14,10 +16,6 @@ template<class T> bool read(HANDLE process, std::uintptr_t address, T& value) {
     SIZE_T count{};
     return ReadProcessMemory(process, reinterpret_cast<const void*>(address), &value,
                              sizeof(value), &count) && count == sizeof(value);
-}
-std::string lower(std::string value) {
-    for (auto& c : value) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
-    return value;
 }
 bool name(HANDLE process, std::uintptr_t address, std::string& value, bool asset = false) {
     value.clear();
@@ -41,7 +39,7 @@ bool name(HANDLE process, std::uintptr_t address, std::string& value, bool asset
         for (std::size_t i = 0; i < size; ++i) {
             const char c = buffer[i];
             if (!c) return !asset || value.empty() ||
-                (lower(value).starts_with("levels/") && value.size() > 7 && value.find("..") == std::string::npos);
+                (ascii_lower(value).starts_with("levels/") && value.size() > 7 && value.find("..") == std::string::npos);
             if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
                   (c >= '0' && c <= '9') || c == '/' || c == '_' || c == '-' || c == '.' || c == ' ')) return false;
             value += c;
@@ -77,23 +75,6 @@ bool sublevel_header(HANDLE process, std::uintptr_t base, SublevelHeader& header
         !read(process, header.manager + 0xb0, header.active) || header.active > 1) return false;
     return !header.current_root || (header.current_root >= 0x10000 && header.current_root <= highest &&
                                     header.current_root % 8 == 0);
-}
-std::string json_string(std::string_view value) {
-    constexpr char hex[] = "0123456789abcdef";
-    std::string output = "\"";
-    for (const char c : value) {
-        const auto byte = static_cast<unsigned char>(c);
-        if (c == '"' || c == '\\') {
-            output += '\\';
-            output += c;
-        } else if (byte < 0x20) {
-            output += "\\u00";
-            output += hex[byte >> 4];
-            output += hex[byte & 0xf];
-        } else output += c;
-    }
-    output += '"';
-    return output;
 }
 }
 
@@ -211,7 +192,7 @@ WorldDescription read_world_description(HANDLE process, std::uintptr_t descripto
     for (std::uint32_t i = 0; i < attribute_count; ++i) {
         std::string key, value;
         if (!indirect_name(process, attributes + 0x10ULL * i, key)) return output;
-        key = lower(key);
+        key = ascii_lower(key);
         if (key != "gamemode" && key != "hostedmode") continue;
         // Native lookup returns the first case-insensitive match.
         if ((key == "gamemode" && have_game_mode) || (key == "hostedmode" && have_hosted_mode)) continue;
@@ -225,21 +206,21 @@ WorldDescription read_world_description(HANDLE process, std::uintptr_t descripto
 
 std::string world_catalog_json(const WorldCatalog& catalog) {
     std::ostringstream out;
-    out << "{\"available\":" << (catalog.available ? "true" : "false") << ",\"issue\":" << json_string(catalog.issue) << ",\"levels\":[";
+    out << "{\"available\":" << (catalog.available ? "true" : "false") << ",\"issue\":" << json::quoted(catalog.issue) << ",\"levels\":[";
     bool comma = false;
     for (const auto& level : catalog.levels) {
         if (comma) out << ',';
         comma = true;
-        out << "{\"asset\":" << json_string(level.asset) << ",\"display_name\":" << json_string(level.display_name)
+        out << "{\"asset\":" << json::quoted(level.asset) << ",\"display_name\":" << json::quoted(level.display_name)
             << ",\"manifest_only\":" << (level.manifest_only ? "true" : "false")
-            << ",\"manifest_start_point\":" << json_string(level.manifest_start_point)
+            << ",\"manifest_start_point\":" << json::quoted(level.manifest_start_point)
             << ",\"level_flag68\":" << static_cast<unsigned>(level.level_flag68)
             << ",\"start_points\":[";
         bool point_comma = false;
         for (const auto& point : level.start_points) {
             if (point_comma) out << ',';
             point_comma = true;
-            out << "{\"name\":" << json_string(point.name) << ",\"default\":" << (point.is_default ? "true" : "false") << '}';
+            out << "{\"name\":" << json::quoted(point.name) << ",\"default\":" << (point.is_default ? "true" : "false") << '}';
         }
         out << "]}";
     }
@@ -251,12 +232,12 @@ std::string sublevel_catalog_json(const SublevelCatalog& catalog) {
     std::ostringstream out;
     out << "{\"available\":" << (catalog.available ? "true" : "false")
         << ",\"active\":" << (catalog.active ? "true" : "false")
-        << ",\"issue\":" << json_string(catalog.issue) << ",\"levels\":[";
+        << ",\"issue\":" << json::quoted(catalog.issue) << ",\"levels\":[";
     bool comma = false;
     for (const auto& level : catalog.levels) {
         if (comma) out << ',';
         comma = true;
-        out << "{\"asset\":" << json_string(level.asset) << ",\"state\":" << level.state << '}';
+        out << "{\"asset\":" << json::quoted(level.asset) << ",\"state\":" << level.state << '}';
     }
     out << "]}";
     return out.str();
@@ -264,12 +245,12 @@ std::string sublevel_catalog_json(const SublevelCatalog& catalog) {
 
 std::string world_description_json(const WorldDescription& d) {
     std::ostringstream out;
-    out << "{\"available\":" << (d.available ? "true" : "false") << ",\"level\":" << json_string(d.level)
-        << ",\"start_point\":" << json_string(d.start_point) << ",\"lm_level\":" << json_string(d.lm_level)
-        << ",\"lm_start_point\":" << json_string(d.lm_start_point) << ",\"field28\":" << d.field28 << ",\"flags\":[";
+    out << "{\"available\":" << (d.available ? "true" : "false") << ",\"level\":" << json::quoted(d.level)
+        << ",\"start_point\":" << json::quoted(d.start_point) << ",\"lm_level\":" << json::quoted(d.lm_level)
+        << ",\"lm_start_point\":" << json::quoted(d.lm_start_point) << ",\"field28\":" << d.field28 << ",\"flags\":[";
     for (std::size_t i = 0; i < d.flags.size(); ++i) { if (i) out << ','; out << static_cast<unsigned>(d.flags[i]); }
     out << "],\"attributes_available\":" << (d.attributes_available ? "true" : "false")
-        << ",\"game_mode\":" << json_string(d.game_mode) << ",\"hosted_mode\":" << json_string(d.hosted_mode) << '}';
+        << ",\"game_mode\":" << json::quoted(d.game_mode) << ",\"hosted_mode\":" << json::quoted(d.hosted_mode) << '}';
     return out.str();
 }
 }

@@ -12,6 +12,7 @@
 namespace fs = std::filesystem;
 namespace fb = dingosdk::frostbite;
 using namespace dingosdk::mods::detail;
+using dingosdk::ascii_lower;
 
 namespace {
 int failures = 0;
@@ -22,12 +23,12 @@ struct Copy { std::vector<std::byte> bytes, meta; };
 Copy read_table(const CasStore& store, const fs::path& root, const fs::path& base_root, const fs::path& game_root) {
     const auto toc = fb::read_toc(read_file(root / L"Win32" / L"items.toc"));
     for (const auto& bundle : toc.bundles) {
-        if (lower(bundle.name) != "win32/characters/customization/configs/cas_main_sharedbundle") continue;
+        if (ascii_lower(bundle.name) != "win32/characters/customization/configs/cas_main_sharedbundle") continue;
         const auto listing = list_bundle(store, root, base_root, bundle, game_root);
         if (!listing) break;
         for (std::size_t i = 0; i < listing->manifest.resources.size(); ++i) {
             const auto& resource = listing->manifest.resources[i];
-            if (lower(resource.name) != "characters/customization/configs/cas_main_bundlereftable") continue;
+            if (ascii_lower(resource.name) != "characters/customization/configs/cas_main_bundlereftable") continue;
             const auto& file = listing->files.at(listing->first + listing->manifest.ebx.size() + i);
             return {fb::decode_cas(store.read(file.location.patch ? root : base_root, file.location, file.offset, file.size),
                                    {game_root}),

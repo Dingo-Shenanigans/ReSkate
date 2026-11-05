@@ -1,4 +1,5 @@
 #include "startup_interventions.h"
+#include "Engine/Core/Hooks/patches.h"
 #include "Engine/Core/Log/logging.h"
 
 #include <Windows.h>
@@ -64,15 +65,10 @@ bool executable_image_range(std::uintptr_t image_base, std::uintptr_t address, s
         address >= region && address - region < memory.RegionSize && size <= memory.RegionSize - (address - region);
 }
 
-bool write_opcode(std::uintptr_t address, std::uint8_t opcode) noexcept {
-    DWORD old_protection{};
-    if (!VirtualProtect(reinterpret_cast<void*>(address), 1, PAGE_EXECUTE_READWRITE, &old_protection)) return false;
-    SIZE_T count{};
-    const auto wrote = WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(address), &opcode, 1, &count) && count == 1;
-    const auto flushed = wrote && FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<void*>(address), 1) != FALSE;
-    DWORD ignored{};
-    const auto protected_again = VirtualProtect(reinterpret_cast<void*>(address), 1, old_protection, &ignored) != FALSE;
-    return wrote && flushed && protected_again;
+// The site's own opcode back over its int3 (patches.h): unchecked, as the handler has already read
+// the int3 there, and allocation-free, so the handler can call it.
+bool restore_opcode(std::uintptr_t address, std::uint8_t opcode) noexcept {
+    return patch_breakpoint_restore(address, opcode) == HookOk;
 }
 
 StartupInterventionRegisters capture_registers(const CONTEXT& c, std::uintptr_t address) noexcept {
@@ -119,7 +115,7 @@ LONG CALLBACK intervention_handler(EXCEPTION_POINTERS* pointers) {
                 const auto frame_address = registers.rbp - startup_frame_size;
                 if (!read_local(frame_address, saved_frame) ||
                     !machine.capture_frame(base, registers, instruction, metadata, thread) ||
-                    !write_opcode(address, startup_frame_instruction[0])) {
+                    !restore_opcode(address, startup_frame_instruction[0])) {
                     machine.fail(); return EXCEPTION_CONTINUE_SEARCH;
                 }
                 saved_frame_address = frame_address;
@@ -139,7 +135,7 @@ LONG CALLBACK intervention_handler(EXCEPTION_POINTERS* pointers) {
             machine.fail();
             logging::write(logging::Level::error, logging::Channel::runtime,
                 "Startup byte-store intervention could not replay an ordinary store");
-            if (!write_opcode(address, startup_frame_instruction[0])) return EXCEPTION_CONTINUE_SEARCH;
+            if (!restore_opcode(address, startup_frame_instruction[0])) return EXCEPTION_CONTINUE_SEARCH;
             context.Rip = address;
             return EXCEPTION_CONTINUE_EXECUTION;
         }
@@ -158,7 +154,7 @@ LONG CALLBACK intervention_handler(EXCEPTION_POINTERS* pointers) {
         machine.phase() == StartupInterventionPhase::frame_captured);
     if (!machine.return_from_exit(base, registers, instruction, return_address, thread) ||
         !write_local(saved_frame_address, saved_frame.data(), saved_frame.size()) ||
-        !write_opcode(address, startup_exit_instruction[0])) {
+        !restore_opcode(address, startup_exit_instruction[0])) {
         machine.fail();
         logging::write(logging::Level::error, logging::Channel::runtime, "Startup exit/frame restoration guard failed");
         return EXCEPTION_CONTINUE_SEARCH;
@@ -242,21 +238,22 @@ bool start_startup_interventions(std::uintptr_t base, std::string& error) noexce
             !startup_intervention_fingerprints_match(base, nt.OptionalHeader.SizeOfImage, frame, exit))
             throw std::runtime_error("Startup intervention image fingerprint does not match");
         installed_base.store(base, std::memory_order_release);
-        handler_handle = AddVectoredExceptionHandler(1, intervention_handler);
+        handler_handle = patch_breakpoint_handler("startup interventions", intervention_handler);
         if (!handler_handle) { installed_base.store(0); throw std::runtime_error("Cannot install startup intervention exception handler"); }
         bool frame_attempted = false;
-        if (!write_opcode(exit_address, breakpoint_opcode))
+        // The fingerprints above hold the sites' first bytes, which patch_breakpoint checks again.
+        if (patch_breakpoint("startup exit", exit_address, startup_exit_instruction[0]) != HookOk)
             error = "Cannot arm the guarded startup-exit intervention";
         if (error.empty()) {
             frame_attempted = true;
-            if (!write_opcode(frame_address, breakpoint_opcode))
+            if (patch_breakpoint("startup frame capture", frame_address, startup_frame_instruction[0]) != HookOk)
                 error = "Cannot arm the guarded frame-capture intervention";
         }
         if (error.empty() && !machine.arm()) error = "Cannot arm the startup intervention state machine";
         if (!error.empty()) {
-            if (frame_attempted) write_opcode(frame_address, startup_frame_instruction[0]);
-            write_opcode(exit_address, startup_exit_instruction[0]);
-            RemoveVectoredExceptionHandler(handler_handle);
+            if (frame_attempted) restore_opcode(frame_address, startup_frame_instruction[0]);
+            restore_opcode(exit_address, startup_exit_instruction[0]);
+            patch_breakpoint_handler_remove(handler_handle);
             handler_handle = nullptr;
             installed_base.store(0);
             machine.fail();

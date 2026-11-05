@@ -2,8 +2,8 @@
 #include <cstdint>
 #include <string>
 
-// Lua in the game is Lua and nothing else, whoever wrote the script: a loose file in scripts/,
-// a custom script, or one of the game's own. The game ships stock Lua 5.2 with every library
+// Lua in the game is Lua and nothing else, whoever wrote the script: a loose file in scripts/
+// or one of the game's own. The game ships stock Lua 5.2 with every library
 // open, so a script could otherwise load a DLL or start a program. These are switched off in
 // the game's own Lua functions, before any Lua state exists, so no script runs ahead of it and
 // none can keep a copy of the working function:

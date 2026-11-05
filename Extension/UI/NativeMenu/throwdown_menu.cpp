@@ -9,7 +9,6 @@
 #include "native_hud_selection.h"
 #include "native_hud_values.h"
 #include "Extension/UI/Overlay/overlay.h"
-#include "native_menu_dump.h"
 #include "native_menu_internal.h"
 #include "Extension/Throwdowns/native_throwdowns.h"
 #include "Extension/Throwdowns/native_flag_bubble.h"
@@ -21,6 +20,8 @@
 #include "Engine/Game/UI/game_view.h"
 #include "Extension/Trainer/trainer.h"
 #include "Extension/Multiplayer/Net/protocol.h"
+#include "Engine/Game/Build/addresses.h"
+#include "Engine/Game/Build/20260929/client_source_spawn.h"
 #include "Engine/Game/Build/20260929/engine.h"
 #include "Engine/Game/Build/20260929/native_menu.h"
 #include "Engine/Game/Build/20260929/native_party.h"
@@ -269,7 +270,6 @@ struct State {
     std::mutex mutex;
     std::vector<Action> pending;
     std::atomic<std::uint64_t> owner{};
-    std::atomic<bool> setup_open{};
     std::uint64_t next_id{}, next_tick{}, pass{};
     std::string original_title;
 };
@@ -1023,7 +1023,7 @@ void forget_manager() {
     s.official_sliders.clear();s.official_setup_rows.clear();s.official_page_actions.clear(); s.solo_sliders.clear();s.official_restore_at=0;
     s.waiting_originals.clear(); s.waiting_widgets.clear(); s.waiting_presentations.clear(); s.waiting_counts.clear();
     s.waiting_retired_notifications.clear(); s.waiting_hidden_slots.clear(); s.waiting_stock_revision=0;s.stock_waiting_slots.clear();s.stock_waiting_generation=0;
-    s.waiting_countdown={}; s.waiting_badge={}; s.waiting_diagnostic=0; s.owner.store(0); s.setup_open.store(false);
+    s.waiting_countdown={}; s.waiting_badge={}; s.waiting_diagnostic=0; s.owner.store(0);
     s.page={}; s.cards={}; s.official_badge={};s.official_game=0;s.official_mode.clear(); s.originals.clear(); s.assets.clear();s.anchor_asset=0;
     s.generations.clear();
 }
@@ -1068,7 +1068,7 @@ void release(const Context& c,bool preserve_match_input=false) {
         // cleanup. Native cached pages can still reference this generation.
         s.page={};s.cards={};
         s.picker_grid={};s.picker_anchor={};s.picker_stock={};s.picker_stock_logos={};
-        s.mode_cards.clear();s.originals.clear();s.setup_open.store(false);
+        s.mode_cards.clear();s.originals.clear();
         logging::write(logging::Level::info,logging::Channel::ui,
             "Throwdowns: picker generation retired; active gameplay HUD, native panel and delegates retained.");
         return;
@@ -1112,7 +1112,6 @@ void release(const Context& c,bool preserve_match_input=false) {
     s.mode_cards.clear();s.map_branding={};s.interaction_branding={};{std::lock_guard interaction_lock(s.interaction_mutex);s.interaction={};}
     s.join_cards.clear();s.join_mmid.store(0);s.originals.clear(); s.assets.clear();s.anchor_asset=0;
     clear_hud_state(preserve_match_input);
-    s.setup_open.store(false,std::memory_order_release);
 }
 void initialize(const Context& c, Value p, Value list) {
     auto& s=state(); s.page=p; s.cards=list; s.owner.store(p.handle);
@@ -1521,7 +1520,6 @@ void official_setup(const Context& c) {
     auto& s=state();
     const auto flag=kit::flag::state();
     if(!flag_plumbing::setup_page() || !flag.owned || flag.mode.empty()) {
-        s.setup_open.store(false);
         if(s.official_panels.empty()) {restore_official(c);s.official_restore_at=0;return;}
         // The page is still in its exit transition into flag placement: put the stock page back
         // once that is over, by when a retired page is skipped and a cached one sits idle.
@@ -1547,7 +1545,6 @@ void official_setup(const Context& c) {
     const auto title=!setup.title.empty()?setup.title:definition?definition->name:std::string{};
     const auto art=!setup.art.empty()?setup.art:definition?definition->logo:std::string{};
     const auto description=!setup.description.empty()?setup.description:definition?definition->description:std::string{};
-    s.setup_open.store(true);
     for(const auto& root:c.roots({panel_schema.hash})) {
       try {
         const auto header_slot=c.field(root.model,0xc0f1b449);
@@ -2228,7 +2225,6 @@ void gameplay_hud(const Context& c,std::uint64_t now) {
 }
 #include "throwdown_map_identity.inl"
 } // namespace
-bool native_throwdown_setup_open() noexcept { return state().setup_open.load(std::memory_order_acquire); }
 void observe_native_custom_join_details(std::uintptr_t vm) noexcept {
     try {
         const auto mmid=menu_data::native_join_mmid(vm,[](Address at,void* out,std::size_t count){return memory::peek_bytes(at,out,count);});
@@ -2249,8 +2245,6 @@ void observe_native_flag_interaction(std::uintptr_t vm) noexcept {
         }
     } catch(...) {}
 }
-bool native_throwdown_hud_ready() noexcept { return state().hud_ready.load(std::memory_order_acquire); }
-bool native_throwdown_match_panel_open() noexcept { return state().match_panel_open.load(std::memory_order_acquire); }
 bool native_throwdown_gameplay_input_allowed() noexcept {
     auto& s=state();return s.gameplay_input_allowed.load(std::memory_order_acquire) && !s.match_panel_open.load(std::memory_order_acquire);
 }
@@ -2279,13 +2273,13 @@ void prepare_native_throwdown_match_panel() noexcept {
 bool release_native_throwdown_menu(std::uintptr_t base,bool before_unload) noexcept {
     overlay::capture_challenge_menu_input(false);
     sync_custom_activity_ui_presence(false);
-    auto& s=state(); if(s.owned.empty() && (!before_unload || s.doomed.empty())) { s.owner.store(0); s.setup_open.store(false); return true; }
+    auto& s=state(); if(s.owned.empty() && (!before_unload || s.doomed.empty())) { s.owner.store(0); return true; }
     try { const auto ui=read<Address>(base+build::engine::ui_manager); const auto manager=ui?read<Address>(ui+0x140):0;
         require(manager!=0,"Throwdowns UI manager unavailable during cleanup.");
         if(manager!=s.manager) { forget_manager(); return true; }
         const Context c(base,manager); game::ModelWriteLock lock(manager);
         if(!s.owned.empty()) { release(c); s.generations.clear(); }
-        else { s.owner.store(0); s.setup_open.store(false); }
+        else s.owner.store(0);
         // Before a level unload the released models go now, not 3 s later: the tick does not run while
         // the level loads, and the game's own flush of the unloaded level's types destroyed them after
         // the assets they name were freed (Skate.exe+0x3dc5eaa, the most reported crash of 55a7342;

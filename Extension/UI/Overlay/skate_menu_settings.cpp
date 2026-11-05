@@ -10,7 +10,7 @@
 #include <algorithm>
 #include <array>
 
-// The SETTINGS and DEVELOPER pages.
+// The SETTINGS page.
 namespace dingosdk::overlay::menu {
 using namespace theme;
 void music_playback_card(SkateMenu& menu) {
@@ -303,11 +303,5 @@ void settings_page(SkateMenu& menu, const Model& model, const CallbacksV3& callb
     }
     ImGui::EndChild();
     ImGui::PopID();
-}
-
-void developer_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
-    ImGui::BeginChild("developer", ImVec2(0, page_body_height(menu)), ImGuiChildFlags_NavFlattened);
-    multiplayer_network_page(menu, model, callbacks);
-    ImGui::EndChild();
 }
 }

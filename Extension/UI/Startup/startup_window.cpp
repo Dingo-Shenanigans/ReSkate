@@ -1,4 +1,5 @@
 #include "startup_window.h"
+#include "Engine/Core/Platform/wide_text.h"
 
 #include <Windows.h>
 #include <shellapi.h>
@@ -62,16 +63,6 @@ Shared& shared() {
     // Kept for the life of the process: the window thread can outlive static teardown.
     static auto* value = new Shared;
     return *value;
-}
-
-std::wstring widen(std::string_view text) {
-    if (text.empty()) return {};
-    const auto size = static_cast<int>(text.size());
-    const auto length = MultiByteToWideChar(CP_UTF8, 0, text.data(), size, nullptr, 0);
-    if (length <= 0) return {};
-    std::wstring wide(static_cast<std::size_t>(length), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, text.data(), size, wide.data(), length);
-    return wide;
 }
 
 void fill(HDC dc, RECT area, COLORREF colour) {
@@ -560,8 +551,8 @@ void open() noexcept {
 
 void status(std::string_view heading, std::string_view detail, float progress) noexcept {
     try {
-        auto wide_heading = widen(heading);
-        auto wide_detail = widen(detail);
+        auto wide_heading = utf8_to_wide(heading);
+        auto wide_detail = utf8_to_wide(detail);
         auto& state = shared();
         std::lock_guard lock(state.mutex);
         state.heading = std::move(wide_heading);

@@ -165,7 +165,7 @@ Game read_game(const fs::path& root, const CasStore& store, const StoreItem& sol
     Game game{root, root / L"Data"};
     bool found{};
     for (const auto& bundle : fb::read_toc(read_file(game.base / L"Win32" / L"items.toc")).bundles) {
-        if (lower(bundle.name) != shared_bundle) continue;
+        if (ascii_lower(bundle.name) != shared_bundle) continue;
         if (auto listing = list_bundle(store, game.base, game.base, bundle, root)) {
             game.bundle = bundle;
             game.listing = std::move(*listing);
@@ -176,12 +176,12 @@ Game read_game(const fs::path& root, const CasStore& store, const StoreItem& sol
     if (!found) throw std::runtime_error(std::string("no readable ") + shared_bundle);
     const auto& assets = game.listing.manifest.ebx;
     for (std::size_t index = 0; index < assets.size() && (game.soldKey.empty() || game.freeKey.empty() || game.cardKey.empty()); ++index) {
-        const auto name = lower(assets[index].name);
+        const auto name = ascii_lower(assets[index].name);
         if (!name.starts_with("items/cust_") && !name.starts_with("thumbnail/pcard/bg/ownable/")) continue;
         auto document = fb::ebx::read_document(read_asset(store, game.base, game.base, game.listing, index, root));
         const auto item = item_content(document);
         if (!item || item->looks.size() != 1) continue;
-        const auto store_item = sold(lower(item->key));
+        const auto store_item = sold(ascii_lower(item->key));
         if (store_item && game.cardKey.empty() && item->shapes.empty() && item->looks.front().starts_with("picture ")) {
             game.cardKey = item->key;
             game.card = std::move(document);
@@ -323,14 +323,14 @@ void made_mods(const Game& game, const CasStore& store, const StoreItem& sold) {
     std::vector<std::string> notes;
     const auto found = check_store_copies(catalog, sold, &notes);
     const auto said = describe(found, notes);
-    const auto store_key = lower(game.soldKey);
+    const auto store_key = ascii_lower(game.soldKey);
     check(found.game_items > 3000, "the game's items were read (" + std::to_string(found.game_items) + ")");
     check(found.items.size() == 3, "three of the five items are copies of a store item" + said);
     check(found.items.contains("own_test_copy") && found.items.at("own_test_copy") == store_key,
           "the store item under another key is a copy of it" + said);
     check(found.items.contains("own_test_tinted") && found.items.at("own_test_tinted") == store_key,
           "and still is with its colour changed" + said);
-    check(found.items.contains("own_test_card") && found.items.at("own_test_card") == lower(game.cardKey),
+    check(found.items.contains("own_test_card") && found.items.at("own_test_card") == ascii_lower(game.cardKey),
           "a store card background under another key is a copy of it" + said);
     check(!found.items.contains("own_test_own_look"), "a look of the mod's own on the store item's shape is not" + said);
     check(!found.items.contains("own_test_free_copy"), "a copy of an item the store does not sell is not" + said);
@@ -354,7 +354,7 @@ void made_mods(const Game& game, const CasStore& store, const StoreItem& sold) {
     check(refused.problems.size() == 1 && refused.problems.contains("copies") &&
           refused.problems.at("copies") == std::vector<std::string>{std::string(store_copies_problem)},
           "and the problem is that mod's alone, and only the one line" + told(refused));
-    const auto lower_case = [](std::string text) { return lower(text); };
+    const auto lower_case = [](std::string text) { return ascii_lower(text); };
     for (const auto* word : {"store", "copy", "copies", "item", "own_"})
         check(lower_case(std::string(store_copies_problem)).find(word) == std::string::npos &&
               lower_case(std::string(store_copies_check)).find(word) == std::string::npos,

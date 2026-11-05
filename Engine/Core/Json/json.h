@@ -170,4 +170,34 @@ public:
 private:
     std::variant<std::monostate, bool, std::int64_t, std::uint64_t, double, std::string, Array, Object> data_;
 };
+
+// Small readers and writers shared by code that handles JSON by hand. In their own namespace so
+// that a file's private helper of the same name is not made ambiguous by lookup through Json.
+namespace json {
+// An object's string field, or "" when the value is not an object or the field is missing or
+// holds something other than a string.
+inline std::string text_of(const Json& object, std::string_view key) {
+    return object.is_object() && object.contains(key) && object.at(key).is_string() ? object.at(key).string() : std::string();
+}
+
+// Text as a JSON string, quotes included: the quote and the backslash escaped, control
+// characters as a four-digit hex escape, every other byte (UTF-8 too) as it is.
+inline std::string quoted(std::string_view text) {
+    static constexpr char digits[] = "0123456789abcdef";
+    std::string result{"\""};
+    for (const unsigned char c : text) {
+        if (c == '"' || c == '\\') {
+            result += '\\';
+            result += static_cast<char>(c);
+        } else if (c < 0x20) {
+            result += "\\u00";
+            result += digits[c >> 4];
+            result += digits[c & 15];
+        } else {
+            result += static_cast<char>(c);
+        }
+    }
+    return result + '"';
+}
+} // namespace json
 }

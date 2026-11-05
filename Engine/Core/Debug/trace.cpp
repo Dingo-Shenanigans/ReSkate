@@ -5,6 +5,7 @@
 #include "protocol.h"
 #include "crash_report_config.h"
 #include "Engine/Core/Json/json.h"
+#include "Engine/Core/Text/ascii.h"
 #include <array>
 #include <atomic>
 #include <condition_variable>
@@ -42,11 +43,6 @@ std::string random_hex(std::size_t bytes) {
     for (std::size_t i = 0; i < bytes; ++i) text += std::format("{:02x}", buffer[i]);
     return text;
 }
-std::string narrow(std::wstring_view value) {
-    std::string result;
-    for (const auto c : value) result += c < 0x80 ? static_cast<char>(c) : '?';
-    return result;
-}
 std::string timestamp(Clock::time_point time) {
     return std::format("{:%FT%T}Z", std::chrono::floor<std::chrono::milliseconds>(time));
 }
@@ -66,14 +62,14 @@ void configure(State& s) {
     if (parts.dwExtraInfoLength) s.resource.append(parts.lpszExtraInfo, parts.dwExtraInfoLength);
     s.port = parts.nPort;
     // The game inherits the launcher's trace, so one launch reads as one timeline.
-    s.trace_id = narrow(environment(L"RESKATE_TRACE_ID"));
+    s.trace_id = ascii_narrow(environment(L"RESKATE_TRACE_ID"));
     if (s.trace_id.size() != 32 || s.trace_id.find_first_not_of("0123456789abcdef") != std::string::npos) {
         s.trace_id = random_hex(16);
         SetEnvironmentVariableW(L"RESKATE_TRACE_ID", std::wstring(s.trace_id.begin(), s.trace_id.end()).c_str());
     }
     std::array<wchar_t, 32768> path{};
     const auto length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
-    if (length && length < path.size()) s.process = narrow(std::filesystem::path(path.data()).filename().wstring());
+    if (length && length < path.size()) s.process = ascii_narrow(std::filesystem::path(path.data()).filename().wstring());
     s.enabled = true;
 }
 // Set by start() and never destroyed: the worker thread may outlive static

@@ -36,8 +36,6 @@ std::string status();
 // ---- what the native layers report ----------------------------------------------------------
 // The setup page's Players / timer changed (posted to the plugin as setup_row by the page itself).
 void set_setup_limits(unsigned seconds, unsigned players) noexcept;
-// A fresh grid selection supersedes an unconfirmed setup. No placed flag is discarded.
-void retire_unconfirmed_setup() noexcept;
 // The waiting card's Start / Leave: posted to the owner's plugin as start / leave. Leave also
 // ends the registration. False without a waiting registration.
 bool start() noexcept;

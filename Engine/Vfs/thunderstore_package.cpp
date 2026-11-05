@@ -33,9 +33,6 @@ bool same(std::string_view a, std::string_view b) {
     });
 }
 std::wstring wide(const std::string& text) { return std::wstring(text.begin(), text.end()); }   // ASCII only here
-std::string text_of(const Json& object, std::string_view key) {
-    return object.is_object() && object.contains(key) && object.at(key).is_string() ? object.at(key).string() : std::string();
-}
 bool flag(const Json& object, std::string_view key) {
     return object.is_object() && object.contains(key) && object.at(key).is_boolean() && object.at(key).get<bool>();
 }
@@ -65,7 +62,7 @@ Choice choose(std::string_view json, const Name& wanted, std::string_view commun
     Choice choice;
     try {
         const auto root = Json::parse(json);
-        if (!root.is_object() || !same(text_of(root, "namespace"), wanted.owner) || !same(text_of(root, "name"), wanted.name)) {
+        if (!root.is_object() || !same(json::text_of(root, "namespace"), wanted.owner) || !same(json::text_of(root, "name"), wanted.name)) {
             choice.reason = "Thunderstore does not have that package.";
             return choice;
         }
@@ -77,9 +74,9 @@ Choice choose(std::string_view json, const Name& wanted, std::string_view commun
         bool listed{}, fits{}, rejected{}, nsfw{};
         if (root.contains("community_listings") && root.at("community_listings").is_array())
             for (const auto& listing : root.at("community_listings")) {
-                if (!same(text_of(listing, "community"), community)) continue;
+                if (!same(json::text_of(listing, "community"), community)) continue;
                 listed = true;
-                rejected = same(text_of(listing, "review_status"), "rejected");
+                rejected = same(json::text_of(listing, "review_status"), "rejected");
                 nsfw = flag(listing, "has_nsfw_content");
                 if (listing.contains("categories") && listing.at("categories").is_array())
                     for (const auto& category : listing.at("categories"))
@@ -96,17 +93,17 @@ Choice choose(std::string_view json, const Name& wanted, std::string_view commun
                                                  : "Its package is not listed as a map on Thunderstore.";
             return choice;
         }
-        const auto newest = root.contains("latest") ? text_of(root.at("latest"), "version_number") : std::string();
+        const auto newest = root.contains("latest") ? json::text_of(root.at("latest"), "version_number") : std::string();
         if (!version(newest)) { choice.reason = "Thunderstore gave no version of that package."; return choice; }
         choice.newest = newest;
         // Its own words about itself, kept to printable text of a card's length.
-        for (const unsigned char c : text_of(root.at("latest"), "description")) {
+        for (const unsigned char c : json::text_of(root.at("latest"), "description")) {
             if (choice.description.size() >= 240) { choice.description += "..."; break; }
             choice.description += c < 0x20 || c == 0x7f ? ' ' : static_cast<char>(c);
         }
         {
             // https://<something>.thunderstore.io/...png, and nothing that is not a plain URL.
-            const auto icon = text_of(root.at("latest"), "icon");
+            const auto icon = json::text_of(root.at("latest"), "icon");
             constexpr std::string_view scheme = "https://";
             const auto path = icon.find('/', scheme.size());
             const auto host = icon.starts_with(scheme) && path != std::string::npos ? std::string_view(icon).substr(scheme.size(), path - scheme.size())

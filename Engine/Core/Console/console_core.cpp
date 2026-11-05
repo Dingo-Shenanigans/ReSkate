@@ -1,4 +1,5 @@
 #include "console_core.h"
+#include "Engine/Core/Text/ascii.h"
 
 #include <chrono>
 #include <iomanip>
@@ -17,13 +18,6 @@ bool is_allowed_input_character(unsigned char value) noexcept {
     return value == static_cast<unsigned char>('\t') ||
            (value >= static_cast<unsigned char>(' ') &&
             value <= static_cast<unsigned char>('~'));
-}
-
-char ascii_lower(char value) noexcept {
-    if (value >= 'A' && value <= 'Z') {
-        return static_cast<char>(value + ('a' - 'A'));
-    }
-    return value;
 }
 
 } // namespace

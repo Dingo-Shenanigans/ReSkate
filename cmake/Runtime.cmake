@@ -38,7 +38,6 @@ add_library(dingosdk_runtime SHARED
     Extension/UI/NativeMenu/native_menu_rows.cpp
     Extension/UI/NativeMenu/native_menu_multiplayer.cpp
     Extension/UI/NativeMenu/ui_sound.cpp
-    Extension/UI/NativeMenu/native_menu_dump.cpp
     Extension/UI/NativeMenu/native_hub.cpp
     Extension/UI/NativeMenu/native_menu_data.cpp
     Extension/Multiplayer/Remote/native_skater.cpp
@@ -150,11 +149,11 @@ add_library(dingosdk_runtime SHARED
     Extension/Assets/loose_files.cpp
     Extension/Scripting/lua_startup.cpp
     Extension/Scripting/lua_native_block.cpp
-    Extension/Scripting/custom_script_loader.cpp
     Extension/Plugins/plugin_runtime.cpp
     Extension/Plugins/plugin_commands.cpp
     Extension/Plugins/plugin_http.cpp
     Extension/Plugins/plugin_game_runtime.cpp
+    Extension/Plugins/plugin_ui_values.cpp
     Extension/Rendering/plugin_effects.cpp
     Extension/Plugins/plugin_joystick.cpp
     Extension/Skater/skater_animation.cpp
@@ -241,7 +240,6 @@ add_library(dingosdk_runtime SHARED
     Extension/Customization/item_browser.cpp
     Extension/Customization/worn_items.cpp
     Extension/Rendering/Capture/capture_runtime.cpp
-    Extension/Rendering/Capture/capture_commands.cpp
     Extension/Progression/local_entitlement_trigger_runtime.cpp
     Extension/Progression/local_neighborhood_runtime.cpp
     Extension/Customization/local_player_card_runtime.cpp
@@ -270,7 +268,6 @@ add_library(dingosdk_runtime SHARED
     Extension/World/visual_environment.cpp
     Extension/World/local_population_controls.cpp
     Extension/World/native_route_lookahead.cpp
-    Extension/World/unload_guard.cpp
     Extension/World/local_world_controls.cpp
     Extension/World/local_atmosphere_controls.cpp
     Extension/Rendering/local_graphics_controls.cpp
@@ -289,8 +286,16 @@ add_library(dingosdk_runtime SHARED
     Extension/Boot/descriptor_heap_size.cpp
     Extension/Boot/game_fatal_dump.cpp)
 
+# The research tools that are whole files (cmake/ProjectOptions.cmake, DINGOSDK_DEV_TOOLS): `ui dump`
+# and `capture depth`. The rest are guarded where they are.
+if(DINGOSDK_DEV_TOOLS)
+    target_sources(dingosdk_runtime PRIVATE
+        Extension/UI/NativeMenu/native_menu_dump.cpp
+        Extension/Rendering/Capture/capture_commands.cpp)
+endif()
+
 target_link_libraries(dingosdk_runtime PRIVATE dingosdk_logging dingosdk_profiler dingosdk_supported_build dingosdk_overlay dingosdk_console_core dingosdk_steam_restart_guard
-    dingosdk_startup_interventions dingosdk_fast_travel_unlock dingosdk_local_profile dingosdk_initfs dingosdk_mods dingosdk_mod_list dingosdk_launcher_support dingosdk_miniz shell32 dingosdk_startup_window dingosdk_custom_scripts dingosdk_world_layer_scan bcrypt
+    dingosdk_startup_interventions dingosdk_fast_travel_unlock dingosdk_local_profile dingosdk_initfs dingosdk_mods dingosdk_mod_list dingosdk_launcher_support dingosdk_miniz shell32 dingosdk_startup_window dingosdk_world_layer_scan bcrypt
     dingosdk_https winhttp ws2_32 xaudio2 ole32 dingosdk_game_archives dingosdk_word_filter dingosdk_plugins)
 
 add_library(dingosdk_custom_level_manifest STATIC
@@ -308,10 +313,12 @@ find_program(DINGOSDK_CARGO cargo HINTS "$ENV{USERPROFILE}/.cargo/bin")
 set(dingosdk_spotify_dir "${PROJECT_SOURCE_DIR}/SpotifyHelper")
 if(WIN32 AND DINGOSDK_CARGO AND EXISTS "${dingosdk_spotify_dir}/Cargo.toml")
     set(dingosdk_spotify_lib "${dingosdk_spotify_dir}/target/release/reskate_spotify.lib")
+    # Every module of the library (stream.rs changed alone did not rebuild it when only lib.rs was named).
+    file(GLOB dingosdk_spotify_sources CONFIGURE_DEPENDS "${dingosdk_spotify_dir}/src/*.rs")
     add_custom_command(OUTPUT "${dingosdk_spotify_lib}"
         COMMAND "${DINGOSDK_CARGO}" build --release --lib
         WORKING_DIRECTORY "${dingosdk_spotify_dir}"
-        DEPENDS "${dingosdk_spotify_dir}/src/lib.rs" "${dingosdk_spotify_dir}/Cargo.toml" "${dingosdk_spotify_dir}/Cargo.lock"
+        DEPENDS ${dingosdk_spotify_sources} "${dingosdk_spotify_dir}/Cargo.toml" "${dingosdk_spotify_dir}/Cargo.lock"
         COMMENT "Building the Spotify device (cargo)"
         VERBATIM)
     add_custom_target(dingosdk_spotify_device DEPENDS "${dingosdk_spotify_lib}")
@@ -352,16 +359,16 @@ set(dingosdk_startup_art "${PROJECT_SOURCE_DIR}/assets/startup_splash.png")
 if(NOT EXISTS "${dingosdk_startup_art}")
     set(dingosdk_startup_art "${PROJECT_SOURCE_DIR}/assets/startup_splash.jpg")
 endif()
-if(EXISTS "${PROJECT_SOURCE_DIR}/assets")
-    # Adding or removing the picture re-runs the configure step.
-    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/assets")
-endif()
+# Adding or removing the picture re-runs the configure step: a glob of its two names, which CMake
+# checks itself. A folder named in CMAKE_CONFIGURE_DEPENDS did that before, but MSBuild knows only
+# files there, so it re-ran CMake in every project on every build, and a parallel build's CMake runs
+# collided writing the same generated files ("Configuring incomplete" in a release build).
+file(GLOB dingosdk_startup_art_names CONFIGURE_DEPENDS
+    "${PROJECT_SOURCE_DIR}/assets/startup_splash.png" "${PROJECT_SOURCE_DIR}/assets/startup_splash.jpg")
 # Chat emotes (Better Chat's pack format; Extension/UI/Overlay/chat_emotes.h), built into
-# ReSkate.dll when the repository has assets/emotes/emotes.json and emotes.png.
+# ReSkate.dll when the repository has assets/emotes/emotes.json and emotes.png (globbed likewise).
 set(dingosdk_emotes "${PROJECT_SOURCE_DIR}/assets/emotes")
-if(EXISTS "${dingosdk_emotes}")
-    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${dingosdk_emotes}")
-endif()
+file(GLOB dingosdk_emotes_names CONFIGURE_DEPENDS "${dingosdk_emotes}/emotes.json" "${dingosdk_emotes}/emotes.png")
 if(EXISTS "${dingosdk_emotes}/emotes.json" AND EXISTS "${dingosdk_emotes}/emotes.png")
     file(TO_NATIVE_PATH "${dingosdk_emotes}" dingosdk_emotes_native)
     string(REPLACE "\\" "\\\\" dingosdk_emotes_native "${dingosdk_emotes_native}")

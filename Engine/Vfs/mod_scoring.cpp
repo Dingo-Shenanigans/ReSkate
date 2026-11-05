@@ -2,6 +2,7 @@
 
 #include "mod_catalog.h"
 #include "mod_merge_internal.h"
+#include "Engine/Core/Text/hex.h"
 
 #include <algorithm>
 #include <array>
@@ -43,18 +44,7 @@ constexpr std::array<std::string_view, 18> scoring_prefixes{
 constexpr std::string_view reference_toc = "Win32/levels/game/bam_levelroot/bam_levelroot.toc";
 
 std::string key_of(const fb::BundleAsset& asset) {
-    return (asset.kind == fb::AssetKind::ebx ? "ebx " : "res ") + lower(asset.name);
-}
-
-std::string hex(const fb::Sha1& sha1) {
-    static constexpr char digits[] = "0123456789abcdef";
-    std::string text;
-    for (const auto value : sha1.bytes) {
-        const auto byte = static_cast<unsigned>(value);
-        text += digits[byte >> 4];
-        text += digits[byte & 15];
-    }
-    return text;
+    return (asset.kind == fb::AssetKind::ebx ? "ebx " : "res ") + ascii_lower(asset.name);
 }
 
 std::uint64_t fnv(std::uint64_t hash, std::string_view text) {
@@ -102,10 +92,10 @@ public:
                     std::vector<const fb::BundleAsset*> scoring;
                     for (const auto* list : {&listing->manifest.ebx, &listing->manifest.resources})
                         for (const auto& asset : *list)
-                            if (scoring_asset(lower(asset.name))) scoring.push_back(&asset);
+                            if (scoring_asset(ascii_lower(asset.name))) scoring.push_back(&asset);
                     if (scoring.empty()) continue;
                     if (game)
-                        if (const auto shipped = game->find(lower(bundle.name)); shipped != game->end())
+                        if (const auto shipped = game->find(ascii_lower(bundle.name)); shipped != game->end())
                             read_game_bundle(relative, *shipped->second);
                     for (const auto* asset : scoring) {
                         const auto known = game_.find(key_of(*asset));
@@ -124,7 +114,7 @@ private:
     using Bundles = std::map<std::string, const fb::TocBundle*, std::less<>>;
 
     const Bundles* game_toc(std::string_view relative) {
-        const auto key = lower(relative);
+        const auto key = ascii_lower(relative);
         if (const auto found = tocs_.find(key); found != tocs_.end())
             return found->second.index.empty() ? nullptr : &found->second.index;
         auto& entry = tocs_[key];
@@ -137,18 +127,18 @@ private:
             note("The game's " + std::string(relative) + " could not be read for the scoring check (" + failure.what() + ")");
             return nullptr;
         }
-        for (const auto& bundle : entry.document.bundles) entry.index.emplace(lower(bundle.name), &bundle);
+        for (const auto& bundle : entry.document.bundles) entry.index.emplace(ascii_lower(bundle.name), &bundle);
         return &entry.index;
     }
 
     void read_game_bundle(std::string_view relative, const fb::TocBundle& bundle) {
-        if (!read_.insert(lower(relative) + '|' + lower(bundle.name)).second) return;
+        if (!read_.insert(ascii_lower(relative) + '|' + ascii_lower(bundle.name)).second) return;
         try {
             const auto listing = list_bundle(store_, baseRoot_, baseRoot_, bundle, gameRoot_);
             if (!listing) return;
             for (const auto* list : {&listing->manifest.ebx, &listing->manifest.resources})
                 for (const auto& asset : *list)
-                    if (scoring_asset(lower(asset.name))) game_[key_of(asset)].insert(asset.sha1);
+                    if (scoring_asset(ascii_lower(asset.name))) game_[key_of(asset)].insert(asset.sha1);
         } catch (const std::exception& failure) {
             note("The game's " + bundle.name + " could not be read for the scoring check (" + failure.what() + ")");
         }
@@ -199,7 +189,7 @@ ScoringCheck check_scoring(const Catalog& catalog, std::vector<std::string>* not
         std::uint64_t hash = 0xcbf29ce484222325ULL;
         for (const auto& [key, versions] : all) {
             result.assets.push_back(key.substr(4));
-            for (const auto& sha1 : versions) hash = fnv(hash, key + ' ' + hex(sha1) + '\n');
+            for (const auto& sha1 : versions) hash = fnv(hash, key + ' ' + hex_bytes(sha1.bytes) + '\n');
         }
         std::ranges::sort(result.assets); // "ebx "/"res " keys sort apart once the prefix is gone
         result.assets.erase(std::unique(result.assets.begin(), result.assets.end()), result.assets.end());

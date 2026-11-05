@@ -33,8 +33,6 @@ FlipState read_flip_state(std::uintptr_t base, std::uintptr_t entity) noexcept;
 // every region it reads to this, which keeps the ones it knows. True once both are known.
 void find_state_objects(std::uintptr_t start, std::size_t size) noexcept;
 bool flip_states_found() noexcept;
-// The skater's pages of game states (0 where there is none).
-std::array<std::uintptr_t, 6> state_pages(std::uintptr_t base, std::uintptr_t entity) noexcept;
 bool write_flip_speed(const FlipState &state, float speed) noexcept;
 
 // Pumping a transition, as the game's trick scripts see it: whether the skater counts as pumping
@@ -47,27 +45,7 @@ struct PumpState {
 };
 PumpState read_pump_state(std::uintptr_t base, std::uintptr_t entity) noexcept;
 
-// Off the board, a flip in the air (jump, then RB and the left stick): Float.Intent.BodyFlipSpeedMod and
-// Float.Intent.BodyFlipAccelerationRate. An address is 0 while that state is not known or the skater has none.
-struct BodyFlipState {
-    std::uintptr_t speed_at{}, rate_at{};
-    float speed{}, rate{};
-};
-BodyFlipState read_body_flip_state(std::uintptr_t base, std::uintptr_t entity) noexcept;
 bool write_state_number(std::uintptr_t at, float value) noexcept;
-// Float.Intent.GrindStabilityNudge: the left stick's sideways push on a grind as the game's scripts hand it to the
-// grind code (Skate 3's PhysGrindStabilityNudge is left stick X). False while the state is not known or has no value.
-bool read_grind_nudge(std::uintptr_t base, std::uintptr_t entity, float &nudge) noexcept;
-// How the game's scripts steer the board on a grind, as they hand it to the grind code: the stick as they see it
-// (GrindControlLR / UD), the board's turn and tip they ask for (GrindControlHeading / Pitch, with their multipliers and
-// base values), the grind's type and whether the stick counts as active. `found` has bit n set where value n was read,
-// in the order of the members.
-struct GrindControl {
-    float lr{}, ud{}, heading{}, pitch{}, heading_multiplier{}, pitch_multiplier{}, base_heading{}, base_pitch{};
-    std::uint32_t grind_type{}, skate_grind_type{}, active_input{};
-    std::uint32_t found{};
-};
-GrindControl read_grind_control(std::uintptr_t base, std::uintptr_t entity) noexcept;
 // Enum.Intent.Manual for the skater: 0 none, above 0 a manual; -1 while the state is not known.
 std::int32_t read_manual_intent(std::uintptr_t base, std::uintptr_t entity) noexcept;
 
@@ -173,8 +151,6 @@ inline constexpr std::array<GrindSetting, 6> grind_settings{{
 // Each tick of the trainer: without it for half a second, every forced setting and held switch below is the game's own
 // again, whatever the trainer last asked for.
 void keep_holds_alive() noexcept;
-// How many settings are forced and switches held right now (0 once the lease has run out).
-int holds_in_force() noexcept;
 // mode: -1 the game's own, 0 forced off, 1 forced on.
 void force_grind_setting(std::size_t index, int mode) noexcept;
 // For the settings getter hook: the forced value when `reference` (the script's setting reference) is one of those.
@@ -282,16 +258,6 @@ inline constexpr std::array<TransitionOption, 3> transition_options{{
     {"forwardpush", "Forward to push", "The game's own control option: the left stick pushed forward pushes. With it on the stick's up and down is not passed on as "
      "the transition input, so forward cannot pump or ask to fly out of a ramp.", "egf_pushforwardtopush", true, 0, 0, 1},
 }};
-// What the game's physics says about the lip the skater is at, and the stick that asks to fly out of a transition.
-// `found` has bit n set where value n was read, in the order of the members.
-struct TransitionState {
-    bool lip_found{}, lip_tricking{}, handplanting{}, targeting_vert{};
-    float transition_input{};
-    std::uint32_t drop_in_type{};
-    std::array<float, 3> lip_direction{}, lip_nearest{}, ground_normal{};
-    std::uint32_t found{};
-};
-TransitionState read_transition_state(std::uintptr_t base, std::uintptr_t entity) noexcept;
 
 // The game finds every state's value through one lookup (0x11dcdd0). Hooked, a held switch is answered with the
 // trainer's own value whoever asks and whenever: writing the value alone lost to the game's scripts, which set the

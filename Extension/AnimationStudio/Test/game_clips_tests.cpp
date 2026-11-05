@@ -1,5 +1,5 @@
 // The game's own clips read out of its data (game_clips.h), against the installed game.
-//   dingosdk_game_clips_tests <Skate folder> [<clip file made by make_trick_library.py> <its asset name>]
+//   dingosdk_game_clips_tests <Skate folder> [<a clip file of the same trick> <its asset name>]
 // With a clip file, the clip read here must match it: the same frames, joints within 1 mm and 0.2
 // degrees, the same board and the same takeoff and landing.
 #include "Extension/AnimationStudio/game_clips.h"

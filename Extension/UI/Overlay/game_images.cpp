@@ -266,7 +266,6 @@ void fill_game_images(ImFontAtlas& atlas) noexcept {
     }
 }
 
-bool game_image_known(std::string_view name) noexcept { return std::find(names.begin(), names.end(), name) != names.end(); }
 bool draw_game_image(ImDrawList* draw, std::string_view name, ImVec2 min, ImVec2 max, ImU32 tint, GameImageFit fit, float edge, int frame) {
     const auto at = std::find(names.begin(), names.end(), name);
     if (at == names.end()) return false;
@@ -280,5 +279,4 @@ bool draw_game_image(ImDrawList* draw, std::string_view name, ImVec2 min, ImVec2
     }
     return false;
 }
-float thrasher_arch() noexcept { return ui::thrasher_wordmark_arch; }
 }

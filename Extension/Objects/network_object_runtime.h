@@ -5,6 +5,8 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
+#include <vector>
 
 namespace dingosdk {
 std::optional<NetworkObjectSnapshot> capture_local_network_objects();
@@ -22,6 +24,13 @@ void remove_remote_network_objects(std::uint64_t owner, std::uint64_t epoch);
 // player has or places, in this world and the next, until it is changed.
 void set_network_object_owner_solid(std::uint64_t owner, bool solid);
 std::string network_object_status();
+// Other players' objects of one item (its key, as placed), with who placed them: the map shows their
+// QuickDrop fast travel flags (native_party_hooks.cpp). Any thread.
+struct RemoteNetworkObject {
+    std::uint64_t owner{}, epoch{}, id{};
+    std::array<float, 3> position{};
+};
+std::vector<RemoteNetworkObject> remote_network_objects_of(std::string_view item);
 // Client update thread, every frame: queues the next of other players' objects
 // while some are still to be created (a no-op otherwise).
 void tick_network_objects() noexcept;

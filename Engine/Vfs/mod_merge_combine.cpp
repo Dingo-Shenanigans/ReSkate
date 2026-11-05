@@ -82,17 +82,9 @@ std::vector<Asset> flatten(const fb::BundleRegion& region, const fb::BinaryBundl
 
 std::string asset_key(const fb::BundleAsset& asset) {
     return std::to_string(static_cast<int>(asset.kind)) + ':' +
-        (asset.kind == fb::AssetKind::chunk ? asset.guid.string() : lower(asset.name));
+        (asset.kind == fb::AssetKind::chunk ? asset.guid.string() : ascii_lower(asset.name));
 }
 
-// The game's item lists (items/itemmastercollection, a season's
-// 0.30.0_itemcollection), which every cosmetic mod adds its items to. The game
-// reads each entry of one at startup without checking it, so an entry naming an
-// item that is not loaded is a crash on every launch, not a missing item.
-bool item_list_name(std::string_view name) {
-    const auto text = lower(name);
-    return text.starts_with("items/") && text.find("collection") != std::string::npos;
-}
 constexpr std::string_view item_list_type = "delmaritemcollectionasset";
 
 // Some bundles carry no inline manifest: their region only lists placements,
@@ -408,7 +400,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
     // pass through as they arrived, which keeps the risky path narrow.
     std::map<std::string, std::size_t, std::less<>> providers;
     for (const auto& source : sources)
-        for (const auto& bundle : source.toc.bundles) ++providers[lower(bundle.name)];
+        for (const auto& bundle : source.toc.bundles) ++providers[ascii_lower(bundle.name)];
 
     // Bundle order follows the base, then anything a mod introduces.
     std::vector<std::string> order;
@@ -438,7 +430,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
             if (addition.asset.kind == fb::AssetKind::ebx)
                 addedByGuid.emplace(addition.file, std::pair{&bundleName, &addition});
             else if (addition.asset.kind == fb::AssetKind::resource)
-                companions.emplace(std::tuple{bundleName, addition.mod, lower(addition.asset.name)}, &addition);
+                companions.emplace(std::tuple{bundleName, addition.mod, ascii_lower(addition.asset.name)}, &addition);
             else if (addition.asset.kind == fb::AssetKind::chunk)
                 bundleChunks.emplace(std::tuple{bundleName,addition.mod,addition.asset.guid},&addition);
         }
@@ -454,7 +446,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
     // `tocChunks`: the chunks the copy's own TOC lists, which a texture streams its mips from.
     const auto absorb = [&](const fb::TocBundle& bundle, const ArchivePlacement* placement,
                             bool isBase, const fs::path& root, const std::set<fb::Guid>* tocChunks, const Mod* contributor) {
-        const auto key = lower(bundle.name);
+        const auto key = ascii_lower(bundle.name);
         auto region = fb::read_bundle_region(bundle.region);
         const auto provider = providers.find(key);
         const auto shared = provider != providers.end() && provider->second > 1;
@@ -469,7 +461,12 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
         // Reading the manifest only to look for such copies is optional: a
         // bundle that cannot be read that way just passes through as it is.
         const auto cooperative = contributor && (contributor->variant_projection.contains(key) || contributor->variant_authority.contains(key));
-        const auto needed = shared || gridBundle || renumber || cooperative;
+        // A copy of a bundle in which a mod changed one of the game's item lists is read even where
+        // that mod alone ships it, and the game's copy with it: the combine below drops an entry
+        // naming an item the bundle does not hold (a pack that kept the entry of an item it no
+        // longer ships, 2026-11-04), which passed through whole was a crash on every launch.
+        const auto itemList = overrides.item_list_bundles.contains(key);
+        const auto needed = shared || gridBundle || renumber || cooperative || itemList;
 
         // A mod's payloads have to lie inside the archives it ships. A bundle
         // pointing past the end of one, or into one that is not there, means
@@ -614,7 +611,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                 for (std::size_t index = 0; index < assets.size(); ++index) {
                     auto& asset = assets[index];
                     if (!names.contains(name_hash(asset.name))) continue;
-                    const auto named = changes.find(lower(asset.name));
+                    const auto named = changes.find(ascii_lower(asset.name));
                     if (named == changes.end()) continue;
                     const auto change = named->second.find(asset.sha1);
                     const auto at = (casBacked ? 1 : 0) + first + index;
@@ -653,14 +650,18 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
         std::map<std::size_t, fb::BundleFileInfo> repaired;
         std::map<std::size_t, std::pair<fb::BundleFileInfo, fb::Sha1>> repairedFrom;
         bool offsetsRepaired{};
+        // The mod's own EBX whose asset list entry gives another size than the payload decodes to:
+        // the merged copy's entry gives the payload's (repair_ebx_payload). The payload stays where
+        // it is; only the list is written again.
+        std::size_t resized{};
         if (!isBase && (casBacked || !region.inlineManifest.empty())) {
             auto manifest = casBacked ? std::move(casManifest) : fb::read_binary_bundle(region.inlineManifest);
             std::size_t removed{};
-            std::string example;
+            std::string example, resizedExample;
             // What reading this copy found last time, while the mod's files are as they were
             // (ScanCache): then only what it found is read again. Else all of it, and what it finds
             // is kept for the next merge, unless something could not be read.
-            const auto scanKey = lower(relative) + '|' + key;
+            const auto scanKey = ascii_lower(relative) + '|' + key;
             const auto known = scans.find(modName, scanKey);
             ScanCache::Bundle found;
             bool whole = true;
@@ -674,16 +675,29 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                 try {
                     auto encoded = store.read(root, file.location, file.offset, file.size);
                     auto checked = asset;
-                    const auto count = repair_ebx_payload(encoded, checked, gameRoot);
-                    if (!count) return;
+                    const auto result = repair_ebx_payload(encoded, checked, gameRoot);
+                    if (!result) return;
                     found.repair.push_back(static_cast<std::uint32_t>(at));
                     // (One that carries another mod's change is that change, not this copy.)
                     if (overridden.contains(at)) return;
+                    if (result.listed) {
+                        ++resized;
+                        if (resizedExample.empty())
+                            resizedExample = asset.name + " (" + std::to_string(*result.listed) + " bytes listed, " +
+                                             std::to_string(checked.originalSize) + " decoded)";
+                    }
+                    if (!result.removed) {
+                        // The payload as it ships, under an entry that describes it: still this
+                        // mod's copy where it lies, which a combine reads as it is.
+                        asset.sha1 = checked.sha1;
+                        asset.originalSize = checked.originalSize;
+                        return;
+                    }
                     const auto before = asset.sha1;
                     asset = checked;
                     repaired[at] = store.write(file.location.installChunk, manifestArchive, encoded);
                     repairedFrom.emplace(at, std::pair{file, before});
-                    removed += count;
+                    removed += result.removed;
                     if (example.empty()) example = asset.name;
                 } catch (const std::exception& error) {
                     whole = false;
@@ -752,12 +766,16 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                         streamed.offset_example);
             }
             if (casBacked) casManifest = std::move(manifest);
-            else if (!repaired.empty() || offsetsRepaired) region.inlineManifest = fb::write_binary_bundle(manifest);
+            else if (!repaired.empty() || offsetsRepaired || resized) region.inlineManifest = fb::write_binary_bundle(manifest);
             if (!known && whole) scans.keep(modName, scanKey, std::move(found));
             if (ebxRepaired)
                 report.notes.push_back(modName + ": " + bundle.name + ": " + std::to_string(ebxRepaired) +
                     " asset(s) listed " + std::to_string(removed) + " type reference(s) on another fixup's slot, "
                     "which crash the game as it loads; taken out of the merged copies, e.g. " + example);
+            if (resized)
+                report.notes.push_back(modName + ": " + bundle.name + ": " + std::to_string(resized) +
+                    " asset(s) listed another size than their payload decodes to; the merged copy lists the "
+                    "payload's, e.g. " + resizedExample);
         }
         // Assets another mod added to the game's copy of this bundle: this copy
         // loads instead of the game's on this mod's levels, so it gets them too.
@@ -767,7 +785,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
             std::set<const AssetAddition*> taking;
             // A copy in the TOC the adder ships itself merges with the adder's bundle and has
             // its assets already; only copies in other superbundles (maps) need them carried.
-            const auto here = lower(relative);
+            const auto here = ascii_lower(relative);
             if (const auto found = overrides.added.find(key); found != overrides.added.end())
                 for (const auto& addition : found->second) {
                     if (addition.mod == modName || addition.asset.kind == fb::AssetKind::chunk ||
@@ -790,7 +808,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                     for (const auto& name : addition->names)
                         if (wanted.insert(name).second) open.push_back(name);
                     // The resource added under the same name goes where the asset goes.
-                    if (const auto companion = companions.find({*from, addition->mod, lower(addition->asset.name)});
+                    if (const auto companion = companions.find({*from, addition->mod, ascii_lower(addition->asset.name)});
                         companion != companions.end() && taking.insert(companion->second).second)
                         take.push_back(companion->second);
                 }
@@ -831,8 +849,8 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
             }
         }
         // Nothing moved in this bundle: it passes through whole, as before.
-        if (casBacked && !shared && !gridBundle && !cooperative && renumbered.empty() && overridden.empty() && repaired.empty() &&
-            !offsetsRepaired && additions.empty())
+        if (casBacked && !shared && !gridBundle && !cooperative && !itemList && renumbered.empty() && overridden.empty() &&
+            repaired.empty() && !offsetsRepaired && !resized && additions.empty())
             casBacked = false;
 
         for (auto& file : region.files) {
@@ -1108,7 +1126,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
     }
 
     for (const auto& name : order) {
-        auto& state = states.at(lower(name));
+        auto& state = states.at(ascii_lower(name));
         std::vector<std::byte> region;
         if (state.opaque) {
             region = fb::write_bundle_region(state.files, {});
@@ -1267,7 +1285,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                     } else {
                         const auto baseDocument = fb::ebx::read_document(baseBytes);
                         content = content_type(baseDocument.rootType);
-                        const auto itemList = lower(baseDocument.rootType) == item_list_type;
+                        const auto itemList = ascii_lower(baseDocument.rootType) == item_list_type;
                         if (edits.size() < 2 && !itemList) continue;
                         // A material grid is a square interaction matrix whose rows are
                         // addressed by slot numbers baked into each map's collision.
@@ -1275,7 +1293,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                         // slots, so a plain merge would hand one map's triangles the
                         // other map's materials. The grid plan combines them instead
                         // and renumbers the collision (mod_merge_grid.cpp).
-                        if (lower(baseDocument.rootType).find("materialgrid") != std::string::npos) {
+                        if (ascii_lower(baseDocument.rootType).find("materialgrid") != std::string::npos) {
                             if (grid.payload.empty())
                                 report.notes.push_back(entry.asset.name + ": " + std::to_string(edits.size()) +
                                     " mods edit the shared material grid; kept the highest-priority copy");
@@ -1395,7 +1413,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                 }
             }
 
-            if (!grid.payload.empty() && lower(name) == grid.bundle) {
+            if (!grid.payload.empty() && ascii_lower(name) == grid.bundle) {
                 const auto found = state.seen.find(std::to_string(static_cast<int>(fb::AssetKind::ebx)) + ':' + grid.asset);
                 if (found == state.seen.end()) {
                     report.notes.push_back("material grid: " + grid.asset + " is not in " + name +

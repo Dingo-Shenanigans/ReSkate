@@ -17,6 +17,7 @@ struct Note {
 void ask(const std::string& owner, bool on);
 bool wanted() noexcept;
 std::vector<Note> take();
-// From the model write hook, on whichever thread the game writes from.
-void tap(std::uint64_t handle, std::uintptr_t type, const void* value) noexcept;
+// From the model write hook, on whichever thread the game writes from, under the model lock:
+// the write's model manager, handle, value type, value and flag (which of the two registries).
+void tap(std::uintptr_t manager, std::uint64_t handle, std::uintptr_t type, const void* value, std::uint8_t flag) noexcept;
 } // namespace dingosdk::tricks::feed

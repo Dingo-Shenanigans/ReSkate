@@ -20,17 +20,18 @@ using anim_studio::Vec3;
 // The smallest scale a joint is given (skater_animation.cpp's): a joint at scale 0 has no inverse.
 inline constexpr float smallest_scale = 0.001f;
 
-// What goes on one joint: turned in its own axes, scaled, then moved in its parent's frame.
+// What goes on one joint: turned in its own axes, scaled (each of its own axes), then moved in its
+// parent's frame.
 struct Delta {
     std::uint16_t joint{};
     Quat rotation{0, 0, 0, 1};
-    float scale{1};
+    Vec3 scale{1, 1, 1};
     Vec3 offset{};
 };
 
 // One offset at `weight` (0..1) added to `out`, after any already there for the same joint, in the
 // order pose() gives them.
-void add(std::vector<Delta>& out, std::uint16_t joint, const Quat& rotation, float scale, const Vec3& offset, float weight);
+void add(std::vector<Delta>& out, std::uint16_t joint, const Quat& rotation, const Vec3& scale, const Vec3& offset, float weight);
 
 // `at` with `delta` on it, the same as skater_animation.cpp's pose_joints does to the animation's pose.
 Joint apply(const Joint& at, const Delta& delta) noexcept;

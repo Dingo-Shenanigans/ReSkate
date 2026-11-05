@@ -5,6 +5,7 @@
 #include "lua.h"
 #include "luacode.h"
 #include "lualib.h"
+#include <algorithm>
 #include <atomic>
 #include <cstdlib>
 #include <format>
@@ -31,6 +32,32 @@ int traceback(lua_State* L) {
     }
     lua_pushlstring(L, text.data(), text.size());
     return 1;
+}
+// " (at <file>:<line> <function> < <its caller> ...)": up to three of the script's own frames of a
+// Luau traceback (lua_debugtrace's lines), or nothing. The interrupt looks at the clock at a safe
+// point, so a slow API call shows as the script just past it, in the function that made it.
+std::string where_in(std::string_view trace) {
+    std::string frames;
+    int count = 0;
+    std::size_t at = 0;
+    while (at != std::string_view::npos && at < trace.size() && count < 3) {
+        const auto end = trace.find('\n', at);
+        auto line = trace.substr(at, end == std::string_view::npos ? std::string_view::npos : end - at);
+        at = end == std::string_view::npos ? end : end + 1;
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.remove_suffix(1);
+        if (line.empty() || line.starts_with("[C]")) continue;
+        if (const auto f = line.find(" function "); f != std::string_view::npos)
+            frames += std::string(frames.empty() ? "" : " < ") + std::string(line.substr(0, f)) + " " + std::string(line.substr(f + 10));
+        else
+            frames += std::string(frames.empty() ? "" : " < ") + std::string(line);
+        ++count;
+    }
+    return frames.empty() ? std::string{} : " (at " + frames + ")";
+}
+// Where the script was when its time ran out: the traceback after the interrupt's error's own line.
+std::string stopped_at(std::string_view message) {
+    const auto at = message.find('\n');
+    return at == std::string_view::npos ? std::string{} : where_in(message.substr(at + 1));
 }
 }
 
@@ -76,13 +103,21 @@ void* Plugin::allocate(void* ud, void* ptr, std::size_t old_size, std::size_t ne
 }
 
 // Called at Luau's safe points: loop back edges, calls and returns. Once a plugin is over a limit
-// every safe point raises again, so a pcall in the script cannot catch it and carry on.
+// every safe point raises again, so a pcall in the script cannot catch it and carry on. Past the
+// call's slow mark it only notes where the script is, for Plugin::call to say.
 void Plugin::interrupt(lua_State* L, int gc) {
     if (gc >= 0) return; // inside the collector, where raising is not allowed
     auto& self = *static_cast<Plugin*>(lua_callbacks(L)->userdata);
     if (self.halt_ == Halt::none) {
         if (self.memory_exceeded_) self.halt_ = Halt::memory;
-        else if (self.timed_ && (++self.interrupts_ & 63) == 0 && Clock::now() > self.deadline_) self.halt_ = Halt::time;
+        else if (self.timed_ && (++self.interrupts_ & 63) == 0) {
+            const auto now = Clock::now();
+            if (now > self.deadline_) self.halt_ = Halt::time;
+            else if (now > self.slow_after_ && !self.slow_at_) {
+                const char* trace = lua_debugtrace(L);
+                self.slow_at_ = trace ? where_in(trace) : std::string{};
+            }
+        }
     }
     if (self.halt_ != Halt::none) luaL_error(L, "the plugin was stopped");
 }
@@ -160,7 +195,17 @@ bool Plugin::load(std::string entry) {
     return true;
 }
 
+void Plugin::untime(Clock::duration took) {
+    if (!timed_) return; // the entry's own compile, before its call starts
+    const auto allowance = std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double, std::milli>(limits_.io_ms));
+    const auto moved = std::clamp(took, Clock::duration::zero(), std::max(Clock::duration::zero(), allowance - untimed_));
+    untimed_ += moved;
+    deadline_ += moved;
+    slow_after_ += moved;
+}
+
 bool Plugin::load_chunk(lua_State* L, const std::string& relative, const std::filesystem::path& file) {
+    const Untimed untimed{*this}; // a module's compile is ReSkate's work, as the entry's is
     std::string error;
     std::string source;
     if (sources_) {
@@ -194,7 +239,7 @@ bool Plugin::load_chunk(lua_State* L, const std::string& relative, const std::fi
     return status == 0;
 }
 
-bool Plugin::call(int count, std::string_view what, double limit_ms, int results) {
+bool Plugin::call(int count, std::string_view what, double limit_ms, int results, bool strict) {
     const int function = lua_gettop(L_) - count;
     if (state_ != State::running) {
         lua_settop(L_, function - 1);
@@ -203,14 +248,28 @@ bool Plugin::call(int count, std::string_view what, double limit_ms, int results
     lua_pushcfunction(L_, traceback, "traceback");
     lua_insert(L_, function);
     const auto start = Clock::now();
-    deadline_ = start + std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double, std::milli>(limit_ms));
+    const auto ms = [](double v) { return std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double, std::milli>(v)); };
+    // One slow call (a hard disk, Windows holding the game's thread a moment) is said, not stopped:
+    // only a call that goes on past hang_ms is taken for a script stuck in a loop.
+    const double stop_ms = strict ? limit_ms : std::max(limit_ms, limits_.hang_ms);
+    slow_after_ = start + ms(limit_ms);
+    deadline_ = start + ms(stop_ms);
+    slow_at_.reset();
     timed_ = true;
+    untimed_ = {};
     interrupts_ = 0;
     ++calls_;
     const int status = lua_pcall(L_, count, results, function);
     --calls_;
     timed_ = calls_ > 0; // a call this one was made from goes on, timed
-    spent_ms_ += elapsed_ms(start);
+    const double took = elapsed_ms(start);
+    spent_ms_ += took;
+    const double own = took - std::chrono::duration<double, std::milli>(untimed_).count();
+    if (halt_ == Halt::none && own > limit_ms && services_.now_ms() - slow_told_ >= 10'000) {
+        slow_told_ = services_.now_ms();
+        log(LogLevel::warn, std::format("{} took {:.0f} ms, over its {:g} ms{}; ReSkate stops a plugin past {:g} ms", what, own, limit_ms,
+                                        slow_at_ ? *slow_at_ : std::string{}, stop_ms));
+    }
     // Caught in the script or not, going over its memory stops it.
     if (memory_exceeded_ && halt_ == Halt::none) halt_ = Halt::memory;
     if (status == LUA_OK && halt_ == Halt::none) {
@@ -219,10 +278,9 @@ bool Plugin::call(int count, std::string_view what, double limit_ms, int results
         return true;
     }
     if (halt_ == Halt::none && (memory_exceeded_ || status == LUA_ERRMEM)) halt_ = Halt::memory;
-    std::string message;
-    if (halt_ == Halt::none) message = lua_isstring(L_, -1) ? lua_tostring(L_, -1) : "an error that is not a string";
+    const std::string message = lua_isstring(L_, -1) ? lua_tostring(L_, -1) : "an error that is not a string";
     lua_settop(L_, function - 1);
-    if (halt_ == Halt::time) stop(std::format("{} ran longer than {:g} ms", what, limit_ms));
+    if (halt_ == Halt::time) stop(std::format("{} ran longer than {:g} ms{}", what, stop_ms, stopped_at(message)));
     else if (halt_ == Halt::memory) stop(std::format("it used more than {} MB of memory", limits_.memory >> 20));
     else if (halt_ == Halt::none) report(what, message);
     return false;
@@ -283,6 +341,7 @@ void Plugin::close() {
     exposed_.clear();
     listeners_.clear();
     http_pending_.clear();
+    preloads_.clear(); // (a read still going hands its result to nobody)
     screens_.clear();
     open_screen_.clear();
     binds_.clear();
@@ -307,7 +366,7 @@ void Plugin::unload() {
             const double left = limits_.unload_ms - elapsed_ms(start);
             if (left <= 0 || state_ != State::running) break;
             lua_getref(L_, handler);
-            call(0, "the unload handler", left);
+            call(0, "the unload handler", left, 0, true);
         }
         if (state_ == State::running) {
             state_ = State::stopped;
@@ -401,8 +460,10 @@ void Plugin::tick(double dt_ms) {
     raycasts_ = 0;
     native_casts_ = {};
     body_prepares_ = 0;
+    body_reuses_ = 0;
     effect_calls_ = 0;
     prune_effects();
+    deliver_preloads(*this);
     const double now = services_.now_ms();
     std::vector<int> due;
     for (const auto& [id, timer] : timers_)
@@ -621,6 +682,15 @@ void Plugin::skater_changed(const char* state, const char* previous) {
     fire_with("skater_state", [&](lua_State* L) {
         lua_pushstring(L, state);
         lua_pushstring(L, previous);
+        return 2;
+    });
+}
+
+void Plugin::menu_changed(const Game::MenuState& state, const Game::MenuState& previous) {
+    if (state_ != State::running || !has("menu")) return;
+    fire_with("menu_changed", [&](lua_State* L) {
+        push_menu_state(L, state);
+        push_menu_state(L, previous);
         return 2;
     });
 }

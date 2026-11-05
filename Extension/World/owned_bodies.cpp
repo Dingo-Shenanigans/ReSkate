@@ -89,6 +89,12 @@ struct Slot {
     std::array<NativeHandle, maximum_capsules> shapes{};
     std::size_t made{};
     bool attempted{}, body_observed{}, active{}, retained{}, quarantined{}, creation_failed{};
+    // A setter that failed or ran unqualified bars re-activation for good. quarantined alone
+    // cannot say so: the next clean park recomputes it from the allocation.
+    bool reuse_barred{};
+    // The world generation the body was last activated in, and the one it was cleanly parked
+    // in (0 when that park cannot be re-activated), with the step clock's sequence at the park.
+    std::uint64_t active_world{}, parked_world{}, parked_serial{};
     AllocationProgress allocation{};
     Sample latest{};
     Mailbox mailbox{};
@@ -411,8 +417,13 @@ void retire(Slot& s, bool may_park) noexcept {
     s.retained = true;
     s.quarantined = s.allocation.quarantine(parked);
     s.latest = {};
-    // No qualified native destructor exists. This slot is never recycled and its old
-    // handles are never adopted by another owner, even after a level reload.
+    // No qualified native destructor exists. This slot is never given to another owner and
+    // its old handles are never adopted, even after a level reload. Only its own VM may
+    // re-activate it, under a new handle, and only after a clean park in the world generation
+    // it was activated in: a body held active across a generation change is never a candidate.
+    const bool reusable = parked && !s.quarantined && s.active_world && s.active_world == service.world_generation;
+    s.parked_world = reusable ? service.world_generation : 0;
+    s.parked_serial = reusable ? clock_feed.sequence.load(std::memory_order_acquire) : 0;
 }
 bool command_clock(const Slot& s, Epoch& out) noexcept {
     out.world = s.latest.epoch.world;
@@ -429,7 +440,7 @@ void produce(NativeHandle* incoming_pointer, std::uintptr_t wrapper) noexcept {
         Epoch current{};
         if (!peek(reinterpret_cast<std::uintptr_t>(incoming_pointer), incoming) || !producer_owner(s, incoming) || !command_clock(s, current)) {
             s.mailbox.cancel();
-            s.quarantined = true;
+            s.quarantined = s.reuse_barred = true;
             s.active = false;
             continue;
         }
@@ -451,7 +462,7 @@ void produce(NativeHandle* incoming_pointer, std::uintptr_t wrapper) noexcept {
             }
         }
         s.mailbox.finish(attempted_force, attempted_torque, ok);
-        if (!ok) { s.quarantined = true; s.active = false; }
+        if (!ok) { s.quarantined = s.reuse_barred = true; s.active = false; }
     }
     ReleaseSRWLockExclusive(&service.lock);
 }
@@ -560,6 +571,19 @@ bool sample(Slot& s, Sample& out) noexcept {
     (void)s.mailbox.observe_successor(out);
     return true;
 }
+// The end of every creation, and all a re-activation writes after park(): place the configured
+// keyframed body at its definition's pose, let its shapes collide with the world, then make it
+// dynamic and wake it, checking the whole pool around each step.
+bool arm(Slot& s) noexcept {
+    const auto& d = s.definition;
+    alignas(16) const std::array<float, 8> pose{d.rotation[0], d.rotation[1], d.rotation[2], d.rotation[3], d.position[0], d.position[1], d.position[2], 1};
+    if (!pool_current(s) || !pending_zero(s) || !vector(service.api.transform, s.body, pose.data()) || !pool_current(s)) return false;
+    for (std::size_t i = 0; i < s.made; ++i)
+        if (!mask(service.api.collides, s.shapes[i], r::safe_world_collisions) || !shape_current(s, i)) return false;
+    if (!set_int(service.api.motion, s.body, 3) || !pool_current(s, true) || !touch(service.api.wake, s.body) || !pool_current(s, true)) return false;
+    s.active = true;
+    return true;
+}
 bool create_native(Slot& s) noexcept {
     if (!anchor_current(s.anchor) || !allocate(service.api, s.anchor.world, s.body)) return false;
     s.body_observed = true;
@@ -598,13 +622,96 @@ bool create_native(Slot& s) noexcept {
             !mask(service.api.categories, s.shapes[i], r::safe_categories) || !shape_current(s, i, false) ||
             !mask(service.api.collides, s.shapes[i], 0) || !shape_current(s, i)) return false;
     }
-    const auto& d = s.definition;
-    alignas(16) const std::array<float, 8> pose{d.rotation[0], d.rotation[1], d.rotation[2], d.rotation[3], d.position[0], d.position[1], d.position[2], 1};
-    if (!pool_current(s) || !pending_zero(s) || !vector(service.api.transform, s.body, pose.data()) || !pool_current(s)) return false;
-    for (std::size_t i = 0; i < s.made; ++i)
-        if (!mask(service.api.collides, s.shapes[i], r::safe_world_collisions) || !shape_current(s, i)) return false;
-    if (!set_int(service.api.motion, s.body, 3) || !pool_current(s, true) || !touch(service.api.wake, s.body) || !pool_current(s, true)) return false;
-    s.active = true;
+    return arm(s);
+}
+// Why one slot cannot be re-activated for this owner and definition in the world just captured,
+// or none when it can. Only the caller's own slots are ever looked at, so a miss says nothing
+// about another owner's bodies; a slot that is not one of the caller's parked bodies is none_parked.
+ReuseMiss reuse_candidate(const Slot& s, std::uint64_t owner, const Definition& request, const Anchor& fresh) noexcept {
+    if (!s.attempted || s.owner != owner || !s.retained || s.active) return ReuseMiss::none_parked;
+    if (s.active_world != service.world_generation || (s.parked_world && s.parked_world != service.world_generation) ||
+        s.anchor.world != fresh.world || s.anchor.state != fresh.state || s.anchor.context != fresh.context || s.body.world != fresh.world)
+        return ReuseMiss::world_changed;
+    if (s.quarantined || s.creation_failed || s.reuse_barred || s.parked_world != service.world_generation ||
+        !s.allocation.body_confirmed || s.allocation.shapes_attempted != s.allocation.shapes_confirmed || s.made != s.definition.count)
+        return ReuseMiss::quarantined;
+    if (!same_shape(s.definition, request) || s.made != request.count) return ReuseMiss::definition_differs;
+    return ReuseMiss::none;
+}
+// How far a slot got: the miss of the closest one is what the caller is told.
+int reuse_rank(ReuseMiss miss) noexcept {
+    switch (miss) {
+    case ReuseMiss::world_changed: return 1;
+    case ReuseMiss::quarantined: return 2;
+    case ReuseMiss::definition_differs: return 3;
+    case ReuseMiss::parked_body_changed: return 4;
+    default: return 0;
+    }
+}
+// Reads a parked candidate and writes nothing. s is a copy whose anchor is the fresh capture, so
+// a failed check leaves no trace in the real slot. Each check is one a body that is still exactly
+// as park() left it passes: allocated in its current generation, keyframed (a positive read of
+// the dynamic word with the bit clear; a failed read proves nothing), configured as its definition
+// says, with no pending force, velocity or spin, and every shape still this body's, unowned, in
+// no category and colliding with nothing.
+bool parked_witness(const Slot& s) noexcept {
+    if (!body_current(s) || !s.made || s.made != s.definition.count) return false;
+    const auto index = std::uintptr_t{s.body.index};
+    const auto word = (index >> 5) * sizeof(std::uint32_t);
+    const auto bit = 1U << (s.body.index & 31U);
+    std::uintptr_t generations{}, dynamics{}, source{};
+    std::uint32_t generation{}, dynamic_word{};
+    if (!peek(s.anchor.world + r::world_body_generations, generations) || !pointer(generations) ||
+        !peek(generations + index * sizeof(std::uint32_t), generation) || generation != s.body.generation ||
+        !peek(s.anchor.state + r::dynamic_bits, dynamics) || !pointer(dynamics) || !peek(dynamics + word, dynamic_word) ||
+        (dynamic_word & bit) || !configured(s) || !pending_zero(s)) return false;
+    V4 com{}, local{};
+    if (!array4(s.anchor.state, r::local_com, s.body.index, com, source) || com != V4{} ||
+        !array4(s.anchor.state, r::local_rotation, s.body.index, local, source) || local != V4{1, 0, 0, 0}) return false;
+    Ring header;
+    V4 linear{}, angular{};
+    // park()'s angular setter and its zero check compare XYZ; the fourth lane is not ours to judge.
+    if (!ring(s, r::velocity_ring, header, linear) || linear != V4{} ||
+        !ring(s, r::spin_ring, header, angular) || angular != V4{0, 0, 0, angular[3]}) return false;
+    // The same reads as body_hit_identity::resolve, here for shapes this slot constructed.
+    std::uintptr_t shape_bits{}, shape_generations{}, shape_bodies{}, owners{}, categories{}, with{};
+    if (!peek(s.anchor.state + r::shape_allocated_bits, shape_bits) || !pointer(shape_bits) ||
+        !peek(s.anchor.state + r::shape_generations, shape_generations) || !pointer(shape_generations) ||
+        !peek(s.anchor.state + r::shape_body_indices, shape_bodies) || !pointer(shape_bodies) ||
+        !peek(s.anchor.state + pb::body_owner_offset, owners) || !pointer(owners) ||
+        !peek(s.anchor.state + r::shape_categories, categories) || !pointer(categories) ||
+        !peek(s.anchor.state + r::shape_collides, with) || !pointer(with)) return false;
+    for (std::size_t i = 0; i < s.made; ++i) {
+        const auto& shape = s.shapes[i];
+        const auto at = std::uintptr_t{shape.index};
+        std::uint8_t bits{}, shape_generation{};
+        std::uint32_t body{}, owner{}, category{}, collides{};
+        if (shape.world != s.anchor.world || !valid_handle(service.api.shape_valid, shape) ||
+            !peek(shape_bits + (at >> 3), bits) || !(bits & (1U << (shape.index & 7U))) ||
+            !peek(shape_generations + at, shape_generation) || shape_generation != shape.generation ||
+            !peek(shape_bodies + at * 4, body) || body != s.body.index ||
+            !peek(owners + at * 4, owner) || owner != r::unassigned_shape_owner ||
+            !peek(categories + at * 4, category) || category != r::safe_categories ||
+            // Exactly zero: an active shape's 0x101 means it was never parked or was set again.
+            !peek(with + at * 4, collides) || collides != 0) return false;
+    }
+    return body_current(s);
+}
+// Re-activates a candidate whose witness held, under the service lock. The new identity comes
+// before any write, so every old handle and epoch fails lookup() from here on. Then park() again,
+// as a quiesce that changes nothing on a parked body, and arm(): mass, inertia, centre of mass,
+// the shape owner and clear_body_aa0 are not called again.
+bool reactivate(Slot& s, const Definition& request, const Anchor& fresh) noexcept {
+    s.anchor = fresh;
+    s.definition = request;
+    s.handle = {++service.generation, s.handle.slot};
+    s.latest = {};
+    if (!park(s) || !arm(s)) return false;
+    // park()'s cancel() failed the old mailbox, and a failed mailbox refuses every submit.
+    s.mailbox = {};
+    s.retained = s.quarantined = false;
+    s.parked_world = s.parked_serial = 0;
+    s.active_world = service.world_generation;
     return true;
 }
 } // namespace
@@ -681,8 +788,13 @@ std::string prepare() noexcept {
     } catch (...) { return "native body preparation failed closed"; }
 }
 std::string create(std::uint64_t owner, const Definition& definition, Handle& out) noexcept {
+    CreateReport ignored;
+    return create(owner, definition, out, false, ignored);
+}
+std::string create(std::uint64_t owner, const Definition& definition, Handle& out, bool reuse_own_parked, CreateReport& report) noexcept {
     LastError error;
     out = {};
+    report = {};
     try {
         if (!owner || !valid(definition)) return "invalid body definition";
         if (!eligible()) return "owned bodies require the current local client phase outside multiplayer";
@@ -692,11 +804,14 @@ std::string create(std::uint64_t owner, const Definition& definition, Handle& ou
             // Preparation is generic and process-lifetime: no owner, definition,
             // position or allocation request survives this refused call.
             service.initialization_requested = true;
-            return "waiting for a fresh qualified 60 Hz physics step";
+            // This and the capture or clock refusal below share one fixed code. Nothing is
+            // reserved or allocated yet, so a plugin may wait and ask again, and it should
+            // compare a code rather than a sentence whose wording can change.
+            return "body_preallocation_unavailable";
         }
         Anchor anchor;
         Epoch epoch;
-        if (!capture(anchor) || !clock(anchor, epoch)) return "waiting for a fresh qualified 60 Hz physics step";
+        if (!capture(anchor) || !clock(anchor, epoch)) return "body_preallocation_unavailable";
         if (anchor.world != service.world || anchor.state != service.state || anchor.context != service.context) {
             for (auto& s : service.slots) if (s.attempted && !s.retained) retire(s, false);
             service.world = anchor.world;
@@ -707,6 +822,43 @@ std::string create(std::uint64_t owner, const Definition& definition, Handle& ou
         for (const auto& prior : service.slots)
             if (prior.creation_failed && prior.anchor.world == anchor.world && prior.anchor.state == anchor.state && prior.anchor.context == anchor.context)
                 return "a previous partial allocation in this world prohibits another native allocation";
+        auto miss = ReuseMiss::none_parked;
+        if (reuse_own_parked) {
+            // The lowest of the caller's own parked bodies that qualifies and is proven unchanged.
+            // One parked too recently is not passed over for a new allocation: the eight slots
+            // are for the process, so the caller is asked to wait and nothing is reserved.
+            bool pending{};
+            for (auto& s : service.slots) {
+                const auto why = reuse_candidate(s, owner, definition, anchor);
+                if (why != ReuseMiss::none) {
+                    if (reuse_rank(why) > reuse_rank(miss)) miss = why;
+                    continue;
+                }
+                // Two native steps, so the keyframed park has been through a whole step before
+                // its state is read.
+                if (epoch.serial < s.parked_serial + 2) { pending = true; continue; }
+                auto copy = s;
+                copy.anchor = anchor;
+                if (!parked_witness(copy)) {
+                    s.reuse_barred = true;
+                    miss = ReuseMiss::parked_body_changed;
+                    continue;
+                }
+                if (!reactivate(s, definition, anchor)) {
+                    // Native writes were made and did not all hold, which is the same evidence
+                    // as a partial creation: keep the body, and allow no more allocation here.
+                    retire(s, anchor_current(s.anchor));
+                    s.quarantined = s.reuse_barred = s.creation_failed = true;
+                    s.parked_world = s.parked_serial = 0;
+                    return "body_reactivation_failed";
+                }
+                out = s.handle;
+                report = {Origin::reused, ReuseMiss::none};
+                return {};
+            }
+            if (pending) return "body_reuse_pending";
+        }
+        report = {Origin::allocated, reuse_own_parked ? miss : ReuseMiss::none};
         const auto at = std::find_if(service.slots.begin(), service.slots.end(), [](const Slot& s) { return !s.attempted; });
         if (at == service.slots.end()) return "the eight retained body slots are exhausted; native destruction is unproven";
         auto& s = *at;
@@ -721,6 +873,7 @@ std::string create(std::uint64_t owner, const Definition& definition, Handle& ou
             return s.quarantined ? "partial native body creation retained in quarantine; allocation retry prohibited" :
                 "partial native body creation retained and parked; allocation retry prohibited";
         }
+        s.active_world = service.world_generation;
         out = s.handle;
         return {};
     } catch (...) { return "native body creation failed closed"; }
@@ -937,7 +1090,12 @@ std::string submit(std::uint64_t owner, const Handle& handle, const Command& com
         auto* s = lookup(owner, handle);
         if (!s || !s->active || s->retained || s->quarantined || !fresh(*s)) return "body owner or generation changed";
         Epoch current{};
-        if (!command_clock(*s, current) || current != s->latest.epoch) return "measured native body epoch expired";
+        // Fixed codes, so a plugin can tell a clock it should wait for from an epoch it
+        // should read again without matching sentences. An epoch older than the latest
+        // sample (a later read or receipt published a newer one) would also fail the
+        // mailbox check below; naming it here gives it the same code as any stale epoch.
+        if (!command_clock(*s, current)) return "body_clock_unavailable";
+        if (current != s->latest.epoch || command.epoch != current) return "body_epoch_expired";
         if (service.command_sequence == std::numeric_limits<std::uint64_t>::max() ||
             !s->mailbox.submit(command, current, GetTickCount64(), service.command_sequence + 1))
             return "body command invalid, repeated, stopped, pending or receipt ring full";

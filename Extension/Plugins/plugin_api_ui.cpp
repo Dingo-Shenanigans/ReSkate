@@ -768,25 +768,6 @@ struct UiApi {
         }
         return 1;
     }
-    // The same bound as menu.grid_show: a picker asks about the keys a grid already showed it.
-    static std::vector<std::string> item_keys(lua_State* L, int index) {
-        luaL_checktype(L, index, LUA_TTABLE);
-        const int count = lua_objlen(L, index);
-        if (count > 4000) luaL_argerror(L, index, "at most 4000 items");
-        std::vector<std::string> keys;
-        keys.reserve(static_cast<std::size_t>(count));
-        for (int i = 1; i <= count; ++i) {
-            lua_rawgeti(L, index, i);
-            keys.push_back(checked_text(L, lua_gettop(L), 255, "an item's key"));
-            lua_pop(L, 1);
-        }
-        return keys;
-    }
-    static void set_text(lua_State* L, const std::string& text, const char* field) {
-        if (text.empty()) return;
-        lua_pushlstring(L, text.data(), text.size());
-        lua_setfield(L, -2, field);
-    }
     // mods.item_origins(keys): where each key comes from. The second result is false while the
     // merge or the catalogues are not read yet; every key is "unknown" then, never "game".
     static int item_origins(lua_State* L) {
@@ -808,12 +789,10 @@ struct UiApi {
             lua_createtable(L, 0, 5);
             lua_pushlstring(L, source.data(), source.size());
             lua_setfield(L, -2, "source");
-            if (ready && fact.from_mod) {
-                set_text(L, fact.folder, "folder");
-                set_text(L, fact.title, "title");
-                set_text(L, fact.author, "author");
-                set_text(L, fact.version, "version");
-            }
+            if (ready && fact.from_mod)
+                for (const auto& [field, text] : {std::pair{"folder", &fact.folder}, std::pair{"title", &fact.title},
+                                                  std::pair{"author", &fact.author}, std::pair{"version", &fact.version}})
+                    if (!text->empty()) field_text(L, field, *text);
             lua_pushlstring(L, keys[i].data(), keys[i].size());
             lua_pushvalue(L, -2);
             lua_settable(L, -4);
@@ -865,18 +844,15 @@ struct UiApi {
         auto& plugin = plugin_of(L);
         need(L, plugin, "net.session", "reskate.net.send");
         std::uint64_t to = 0;
-        if (lua_istable(L, 1)) {
-            lua_getfield(L, 1, "id");
-            const std::string id = luaL_checkstring(L, -1);
-            lua_pop(L, 1);
-            if (std::from_chars(id.data(), id.data() + id.size(), to).ec != std::errc{} || !to) luaL_argerror(L, 1, "not a player");
-        } else {
-            const std::string text = luaL_checkstring(L, 1);
-            if (text == "server") {
-                if (plugin.services_.authority()) luaL_argerror(L, 1, "the server copy is the server: send to \"all\" or a player");
-                to = wire::authority;
-            } else if (text != "all" && (std::from_chars(text.data(), text.data() + text.size(), to).ec != std::errc{} || to <= wire::authority))
-                luaL_argerror(L, 1, "send to \"all\", \"server\", a player's id, or a player");
+        const std::string_view word = lua_type(L, 1) == LUA_TSTRING ? lua_tostring(L, 1) : "";
+        if (lua_istable(L, 1)) to = player_id(L, 1, "not a player");
+        else if (word == "server") {
+            if (plugin.services_.authority()) luaL_argerror(L, 1, "the server copy is the server: send to \"all\" or a player");
+            to = wire::authority;
+        } else if (word != "all") {
+            const char* problem = "send to \"all\", \"server\", a player's id, or a player";
+            to = player_id(L, 1, problem);
+            if (to <= wire::authority) luaL_argerror(L, 1, problem);
         }
         std::string payload;
         if (lua_isbuffer(L, 2)) {

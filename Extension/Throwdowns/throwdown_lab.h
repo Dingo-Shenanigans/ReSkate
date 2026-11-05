@@ -10,7 +10,9 @@
 // inject the events that put a player id with no native player into the local
 // throwdown (AddAIParticipantToCommunityEvent), spawn a queue hosted by such an id
 // (DebugSpawnThrowdownWithParams), start or destroy it, and log every participant
-// change in both realms. Console: `throwdown <verb> ...`.
+// change in both realms. Console: `throwdown <verb> ...`. The console verbs (`throwdown`,
+// `challenge`) and the condition probe are in development builds only (DINGOSDK_DEV_TOOLS); the
+// injection the relay and plugin modes use is in every build.
 namespace dingosdk::multiplayer {
 // Called once by initialize_native_throwdowns after its own hooks are installed.
 void initialize_throwdown_lab(std::uintptr_t base) noexcept;
@@ -42,12 +44,14 @@ std::uint64_t native_throwdown_queue_revision() noexcept;
 // True for ids the lab put into a throwdown; the UI player lookups answer them with
 // the local player's record so rows and host lookups resolve.
 bool throwdown_lab_player(std::uint32_t player_id) noexcept;
+#if defined(DINGOSDK_DEV_TOOLS)
 // `skater` is the local skater's position when known (spawn without a recorded placement).
 std::string throwdown_lab_command(std::string_view arguments, std::optional<std::array<float, 3>> skater);
 // Coop challenge research (analysis/coop-challenges-mp.md): `challenge virtual <n>` gives the
 // next challenge start n virtual participants and makes it coop; `challenge attempt [id]`
 // replays the local player's last finished attempt as that player. Console: `challenge ...`.
 std::string challenge_lab_command(std::string_view arguments);
+#endif
 
 // Injection for the throwdown relay (throwdown_relay.cpp); game thread, in a world.
 // Each queues one event that the local client sends to its own server from the next

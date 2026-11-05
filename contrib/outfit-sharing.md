@@ -10,8 +10,8 @@ cutter; the cache; received outfits made into a mod per wearer and merged after 
 (read back on 29 real items, one of each of 29 mods); settings in `Mods/.synchros/settings.json`,
 an OUTFITS tab on the Multiplayer page and a `synchros` console command. An outfit shows as soon as
 it has arrived by loading the map again for that player alone (*Show arrivals straight away*);
-showing it with no load at all needs the research in `live-apply-without-reload.md` (how the
-cosmetics manager takes in a new item's definition) finished first.
+showing it with no load at all needs a received item's files loaded into the running game first
+(see the notes at the end).
 
 ## What it does
 
@@ -115,10 +115,9 @@ The received files are kept in a cache outside `Mods/` (`Mods/.synchros/`), as a
 layer the merge reads after every enabled mod and never lists, so it can never win over a mod
 the player installed.
 
-- **New items need the shared bundle's definitions**, so for now they show after the next level
-  load (`contrib/live-apply-without-reload.md`, the table "What each kind of cosmetic change
-  needs"). Until then the player wears stand-ins. The plan in that note for new items without a
-  reload would make them show at once.
+- **New items need the shared bundle's definitions**, so they show after a level load: at once by
+  loading the map again for the viewer alone, or at the next map. Until then the player wears
+  stand-ins.
 - **Kept out of the wardrobe:** the local catalogue (`Extension/Customization/local_cosmetic_catalog`)
   skips every key from the layer, so a received item is never owned, listed or wearable.
 - The layer is used to dress remote skaters only. Nothing in it is sent on, saved, or counted.
@@ -184,3 +183,27 @@ Skate Synchros
   This is a different route (from a chosen peer, cosmetics only, never owned): is that acceptable?
 - Is a merge layer read after the mods the right place, or should received items load as a
   delta bundle once that exists?
+
+## Notes: how the cosmetics manager takes in items (read from Skate.exe 20260929, 2026-11-05)
+
+Static reading of the shipped executable, for Skate Synchros (contrib/outfit-sharing.md); not yet
+tried in the running game.
+
+- The manager (pointer at `0x71ee610`, vtable `0x6089cc8`, made by `0x14054b8d0`) holds the item
+  hash map at +0x30 (buckets), +0x38 (bucket count, a u32: the lookup at `0x14054c450`, its
+  vtable's first entry, takes the item's hash modulo it), +0x3c (items) and a vector of the item
+  lists it has taken in at +0x58 (begin, end, capacity, then its allocator at +0x70). +0xa8 is the
+  "ready" byte the remote cosmetics check.
+- `0x140557c40` (manager, array of item lists, ready byte) takes in item lists: for each list (a
+  `DelMarItemCollectionAsset`, its tagged pointer array of items at +0x28, the count in the 4
+  bytes before it), each item's hash at +0x48 goes into the map through `0x14041fe40`
+  (insert or find; the node's +8 then points at the item), the list is appended to +0x58, the
+  ready byte is set, and it ends by calling `0x14054f470`, which tells the UI.
+- Its only caller, `0x140550500`, is a virtual method of the manager's second interface (vtable
+  `0x6089cc8 + 8 * 8`). It finds each list by name in a compartment (`0x1441b5800`, the
+  compartment a u16) and passes them on.
+- So an item becomes known when an item list that names it is loaded and handed to `0x140557c40`.
+  A mod's items are known because the merge combines the game's item lists with each mod's
+  copy (mod_merge_combine.cpp, `item_list_name`). For a new item without a reload, what is still
+  missing is getting a list that names it loaded in a compartment (the delta bundle above); handing
+  it to `0x140557c40` (or calling `0x140550500` with its name) is then known.

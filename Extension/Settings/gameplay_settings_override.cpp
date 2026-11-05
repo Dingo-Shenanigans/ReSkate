@@ -6,6 +6,7 @@
 #include "Engine/Game/Build/20260929/engine.h"
 #include "Engine/Game/Build/20260929/gameplay_settings.h"
 #include "Engine/Game/Build/supported_build.h"
+#include "Engine/Core/Text/ascii.h"
 
 #include <Windows.h>
 
@@ -61,10 +62,6 @@ bool validate_settings_image(std::uintptr_t base) {
         if (field.offset >= type.object_size) return false;
     }
     return true;
-}
-
-char ascii_lower(char value) {
-    return value >= 'A' && value <= 'Z' ? static_cast<char>(value + ('a' - 'A')) : value;
 }
 
 bool exact_variable_name(const std::string& incoming, const char* expected) {

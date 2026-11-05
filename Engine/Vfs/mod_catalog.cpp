@@ -9,6 +9,7 @@
 #include "native_db.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Game/Build/supported_build.h"
+#include "Engine/Core/Text/ascii.h"
 
 #include <Windows.h>
 #include <shellapi.h>
@@ -31,12 +32,6 @@ namespace {
 namespace fs = std::filesystem;
 
 constexpr char levels_name[] = "reskate-levels.json";
-
-std::string lower(std::string_view text) {
-    std::string result(text);
-    for (auto& ch : result) if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch + ('a' - 'A'));
-    return result;
-}
 
 std::string join(const std::vector<std::string>& parts, const char* separator) {
     std::string text;
@@ -102,7 +97,7 @@ bool lists_bundle(const fs::path& mod, const std::vector<std::string>& bundles) 
     for (const auto& list : lists) {
         std::ifstream file(list, std::ios::binary);
         if (!file) continue;
-        const auto bytes = lower(std::string{std::istreambuf_iterator<char>(file), {}});
+        const auto bytes = ascii_lower(std::string{std::istreambuf_iterator<char>(file), {}});
         for (const auto& bundle : bundles)
             if (bytes.find(bundle) != std::string::npos) return true;
     }
@@ -129,7 +124,7 @@ std::vector<std::pair<std::string, fs::path>> variants_inside(const Mod& mod) {
     std::error_code error;
     for (fs::directory_iterator at(mod.directory / mod.variants->folder, error), end; !error && at != end; at.increment(error)) {
         if (!at->is_directory(error) || !fs::is_regular_file(at->path() / L"layout.toc", error)) continue;
-        auto name = lower(path_utf8(at->path().filename()));
+        auto name = ascii_lower(path_utf8(at->path().filename()));
         if (variant_name(name)) found.emplace_back(std::move(name), at->path());
     }
     const auto& order = mod.variants->order;
@@ -161,7 +156,7 @@ VariantMap read_choices() {
     const auto root = Json::parse(text, {64 * 1024, 4, 1024});
     if (!root.is_object()) return out;
     for (const auto& [mod, variant] : root.items())
-        if (variant.is_string() && variant_name(lower(variant.string()))) out[lower(mod)] = lower(variant.string());
+        if (variant.is_string() && variant_name(ascii_lower(variant.string()))) out[ascii_lower(mod)] = ascii_lower(variant.string());
     return out;
 }
 
@@ -170,7 +165,7 @@ VariantMap read_choices() {
 std::string variant_of(std::string_view mod) {
     const auto mark = mod.rfind('#');
     if (mark == std::string_view::npos) return {};
-    auto name = lower(mod.substr(mark + 1));
+    auto name = ascii_lower(mod.substr(mark + 1));
     return variant_name(name) ? name : std::string{};
 }
 std::string variant_owner(std::string_view mod) {
@@ -186,7 +181,7 @@ std::vector<std::string> installed_variants(const Mod& mod) {
 }
 std::filesystem::path variant_folder(const Mod& mod, std::string_view variant) {
     try {
-        const auto wanted = lower(variant);
+        const auto wanted = ascii_lower(variant);
         for (auto& one : variants_inside(mod))
             if (one.first == wanted) return std::move(one.second);
     } catch (...) {}
@@ -202,7 +197,7 @@ std::string chosen_variant(std::string_view mod) noexcept {
                 chosen_variants.emplace(); // an unreadable file chooses nothing
             }
         }
-        const auto found = chosen_variants->find(lower(mod));
+        const auto found = chosen_variants->find(ascii_lower(mod));
         return found == chosen_variants->end() ? std::string{} : found->second;
     } catch (...) {
         return {};
@@ -210,14 +205,14 @@ std::string chosen_variant(std::string_view mod) noexcept {
 }
 bool save_variant(std::string_view mod, std::string_view variant) noexcept {
     try {
-        const auto name = lower(variant);
+        const auto name = ascii_lower(variant);
         if (mod.empty() || !variant_name(name)) return false;
         const auto path = variants_file();
         if (path.empty()) return false;
         (void)chosen_variant(mod); // read the file once, so its other choices are kept
         std::lock_guard lock(variants_mutex);
         auto choices = *chosen_variants;
-        choices[lower(mod)] = name;
+        choices[ascii_lower(mod)] = name;
         auto root = Json::object();
         for (const auto& [owner, chosen] : choices) root[owner] = chosen;
         std::error_code error;
@@ -235,7 +230,7 @@ std::string variant_in_play(std::string_view mod) noexcept {
     try {
         const auto look = [&](const VariantMap& in_play) {
             for (const auto& [owner, variant] : in_play)
-                if (lower(owner) == lower(mod)) return variant;
+                if (ascii_lower(owner) == ascii_lower(mod)) return variant;
             return std::string{};
         };
         {
@@ -485,7 +480,7 @@ Catalog load_catalog(const std::filesystem::path& data_root, const MergeObserver
             result.mods.push_back(std::move(entry.mod));
         }
         std::sort(result.disabled.begin(), result.disabled.end(),
-            [](const std::string& a, const std::string& b) { return lower(a) < lower(b); });
+            [](const std::string& a, const std::string& b) { return ascii_lower(a) < ascii_lower(b); });
         // Mods built for another Skate.exe (or not stamped with one) never load until they are
         // updated, enabled or not (a disabled mod's layout is merged too). They are checked on every
         // launch, so they never enter the exclusions file.
@@ -734,10 +729,10 @@ std::vector<std::filesystem::path> level_manifest_paths(const Catalog& catalog) 
 
 const Mod* mod_registering(const Catalog& catalog, std::string_view destination) noexcept {
     try {
-        const auto haystack = lower(destination);
+        const auto haystack = ascii_lower(destination);
         for (const auto& mod : catalog.mods)
             for (const auto& level : mod.levels)
-                if (!level.empty() && haystack.find(lower(level)) != std::string::npos) return &mod;
+                if (!level.empty() && haystack.find(ascii_lower(level)) != std::string::npos) return &mod;
     } catch (...) {}
     return nullptr;
 }

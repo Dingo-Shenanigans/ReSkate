@@ -74,7 +74,7 @@ void carry(std::optional<carry::Goal> goal, bool push_straightens = false, Shown
 struct PoseOffset {
     std::uint16_t joint{};
     anim_studio::Quat rotation{0, 0, 0, 1};
-    float scale{1};
+    anim_studio::Vec3 scale{1, 1, 1}; // each of its own axes
     anim_studio::Vec3 offset{}; // added to its position, in its parent's frame
     std::optional<pose_place::Place> place; // set instead of added, after the above
     bool keep_children{};                   // its children stay where they were in the world

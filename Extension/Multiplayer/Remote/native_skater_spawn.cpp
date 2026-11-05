@@ -9,9 +9,11 @@
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Game/Build/supported_build.h"
 #include "Engine/Game/Build/20260929/engine.h"
+#include "Extension/Plugins/plugin_session_feed.h"
 #include <mutex>
 #include <map>
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <intrin.h>
 #include <string_view>
@@ -507,7 +509,7 @@ void remove_remote(std::uintptr_t base) noexcept {
     }
 }
 void update_remote_cosmetics(std::uintptr_t base, const NativeFrame &local, const Appearance &appearance,
-                             std::string &detail) {
+                             std::uint64_t player, std::string &detail) {
     auto &r = remote();
     try {
         require(valid_appearance(appearance), "Peer cosmetic recipe is invalid.");
@@ -521,23 +523,38 @@ void update_remote_cosmetics(std::uintptr_t base, const NativeFrame &local, cons
         const auto now = GetTickCount64();
         if (r.rejected_appearance && *r.rejected_appearance == appearance && now < r.next_appearance_retry)
             return;
-        // A plugin changed what stands in for missing items: dress this player again. Dressing is
-        // a heavy native pass, so players already shown take turns, one every 100 ms, rather than
-        // the whole server in one frame.
+        // A plugin changed what stands in for missing items, or what it hides on other players: dress
+        // this player again. Dressing is a heavy native pass, so players already shown take turns,
+        // one every 100 ms, rather than the whole server in one frame.
         const auto stand_ins_now = stand_ins::generation();
-        if (r.stand_ins_applied != stand_ins_now && r.skater_appearance) {
+        const auto hidden_now = plugin_feed::hidden_items_revision();
+        const bool stale_stand_ins = r.stand_ins_applied != stand_ins_now && r.skater_appearance;
+        const bool stale_hidden = (r.skater_appearance && r.skater_hidden != hidden_now) ||
+                                  (r.board_appearance && r.board_hidden != hidden_now);
+        bool turn{};
+        if (stale_stand_ins || stale_hidden) {
             static ULONGLONG next_restyle{}; // client thread only
             if (now >= next_restyle) {
                 next_restyle = now + 100;
-                r.skater_appearance.reset();
-                r.board_appearance.reset();
+                turn = true;
             }
         }
+        if (stale_stand_ins && turn) {
+            r.skater_appearance.reset();
+            r.board_appearance.reset();
+        }
         if (!r.skater_appearance) r.stand_ins_applied = stand_ins_now;
+        // What plugins hide on this player, as it is now, the same for both recipes of this pass.
+        const auto hidden = [player](const std::string &asset) {
+            std::string name(asset);
+            std::ranges::transform(name, name.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            return plugin_feed::item_hidden(player, name);
+        };
         try {
-            if (!r.skater_appearance || *r.skater_appearance != appearance.skater) {
-                apply_cosmetic_recipe(base, r.entity, local.entity, appearance.skater);
+            if (!r.skater_appearance || *r.skater_appearance != appearance.skater || (r.skater_hidden != hidden_now && turn)) {
+                apply_cosmetic_recipe(base, r.entity, local.entity, appearance.skater, hidden);
                 r.skater_appearance = appearance.skater;
+                r.skater_hidden = hidden_now;
             }
             r.rejected_appearance.reset();
             if (!r.board_entity || !local.board_entity) {
@@ -545,9 +562,10 @@ void update_remote_cosmetics(std::uintptr_t base, const NativeFrame &local, cons
                 detail = "Cosmetics: skater recipe applied; waiting for the skateboard.";
                 return;
             }
-            if (!r.board_appearance || *r.board_appearance != appearance.board) {
-                apply_cosmetic_recipe(base, r.board_entity, local.board_entity, appearance.board);
+            if (!r.board_appearance || *r.board_appearance != appearance.board || (r.board_hidden != hidden_now && turn)) {
+                apply_cosmetic_recipe(base, r.board_entity, local.board_entity, appearance.board, hidden);
                 r.board_appearance = appearance.board;
+                r.board_hidden = hidden_now;
             }
         } catch (...) {
             const bool again = r.rejected_appearance && *r.rejected_appearance == appearance;

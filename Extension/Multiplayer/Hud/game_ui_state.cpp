@@ -3,6 +3,8 @@
 #include "Engine/Game/Abi/native_data.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/engine.h"
+#include "Engine/Game/Build/20260929/replay_activity.h"
+#include "Engine/Core/Platform/memory.h"
 #include "Extension/UI/NativeMenu/native_menu_data.h"
 #include <chrono>
 #include <mutex>
@@ -70,5 +72,15 @@ GameUiState sample_game_ui_state(std::uintptr_t base) noexcept {
         try { s.latest = read(base, s); } catch (...) { s.screen = {}; s.latest = {}; }
     }
     return s.latest;
+}
+
+bool replay_editor_open(std::uintptr_t base) noexcept {
+    namespace r = addr::replay_activity;
+    if (!base) return false;
+    const auto pointer = [](Address at) { Address value{}; memory::peek(at, value); return value; };
+    const auto client = pointer(base + r::client);
+    const auto manager = client ? pointer(client + r::manager) : 0;
+    const auto lease = manager ? pointer(manager + r::lease) : 0;
+    return lease && pointer(lease) == base + r::lease_vtable && pointer(lease + r::lease_manager) == manager;
 }
 } // namespace dingosdk::multiplayer

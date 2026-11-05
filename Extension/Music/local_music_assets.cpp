@@ -419,7 +419,7 @@ bool read_music_catalog(MusicCatalog& result) {
             }
             // Its rows are the songs registered for it, and the game's song is added as it is
             // bound (local_music_playback.cpp); without any the game's song is its row.
-            spotify_station::Station station{{}, {}, identity, metadata->second, playlist, id};
+            spotify_station::Station station{{}, {}, identity, metadata->second, playlist};
             std::vector<std::string> members;
             for (const auto& [row, track] : spotify_row_ids[entry])
                 if (const auto found = row.empty() ? identities.end() : identities.find(row); found != identities.end() && index.contains(row)) {

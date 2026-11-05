@@ -1,16 +1,9 @@
 #include "object_categories.h"
+#include "Engine/Core/Text/ascii.h"
 #include <algorithm>
 #include <tuple>
 
 namespace dingosdk::objects {
-namespace {
-std::string lower(std::string_view value) {
-    std::string result(value);
-    for (auto& c : result) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
-    return result;
-}
-}
-
 std::map<std::string, Placement, std::less<>> object_groups(const content_cache::Catalogs& catalogs) {
     std::map<std::string, Placement, std::less<>> result;
     for (const bool browser : {true, false})
@@ -22,7 +15,7 @@ std::map<std::string, Placement, std::less<>> object_groups(const content_cache:
 
 Placement object_placement(std::string_view key, const content_cache::Catalogs& catalogs,
     const std::map<std::string, Placement, std::less<>>& groups) {
-    const auto id = lower(key);
+    const auto id = ascii_lower(key);
     // The game's own record, or the family a mod gives its object (reskate-objects.json).
     const auto& records = catalogs.items.contains(id) ? catalogs.items : catalogs.mod_objects;
     if (!records.contains(id)) return {};

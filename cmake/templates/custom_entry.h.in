@@ -1,4 +1,0 @@
-#pragma once
-namespace dingosdk {
-inline constexpr char custom_entry_lua[] = R"custom_lua(@custom_entry_source@)custom_lua";
-}

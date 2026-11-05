@@ -2,6 +2,8 @@
 #include <iostream>
 #include <limits>
 #include <stdexcept>
+#include <string_view>
+#include <utility>
 
 using namespace dingosdk::owned_body;
 namespace {
@@ -35,6 +37,47 @@ void definitions_are_bounded_and_have_no_gameplay_defaults() {
     bad = d;
     bad.rotation = {0, 0, 0, 2};
     check(!valid(bad), "nonunit rotation admitted");
+}
+// A parked body may come back only for a definition with its exact capsules, mass and inertia.
+void reuse_compares_the_shape_bit_for_bit_and_names_its_outcomes() {
+    Definition d;
+    d.count = 2;
+    d.capsules[0] = {{0, 0, 0}, {0, 1, 0}, .1f};
+    d.capsules[1] = {{.2f, 0, -.3f}, {.2f, .4f, -.3f}, .05f};
+    d.mass = 12;
+    d.inertia = {2, 3, 4};
+    d.position = {1, 2, 3};
+    d.rotation = {0, 0, 0, 1};
+    check(same_shape(d, d), "a definition differs from itself");
+    auto moved = d;
+    moved.position = {-40, 7, 900};
+    moved.rotation = {0, .7071068f, 0, .7071068f};
+    check(same_shape(d, moved) && same_shape(moved, d), "a new position or rotation stopped a parked body coming back");
+    // Capsules past count are not part of the body.
+    moved.capsules[5] = {{9, 9, 9}, {1, 1, 1}, 2};
+    check(same_shape(d, moved), "an unused capsule entry was compared");
+    const auto differs = [&](auto change, const char* why) {
+        auto other = d;
+        change(other);
+        check(!same_shape(d, other) && !same_shape(other, d), why);
+    };
+    differs([](Definition& x) { x.count = 1; }, "a different capsule count matched");
+    differs([](Definition& x) { x.capsules[1].a[2] = -.30001f; }, "a moved capsule endpoint matched");
+    differs([](Definition& x) { x.capsules[0].b[1] = 1.0000001f; }, "a one-ulp endpoint change matched");
+    differs([](Definition& x) { x.capsules[1].radius = .051f; }, "a different radius matched");
+    differs([](Definition& x) { x.mass = 12.5f; }, "a different mass matched");
+    for (std::size_t axis = 0; axis < 3; ++axis)
+        differs([axis](Definition& x) { x.inertia[axis] += .25f; }, "a different inertia axis matched");
+    // Bit for bit, not ==: a negative zero is a different value here.
+    differs([](Definition& x) { x.capsules[0].a[0] = -0.f; }, "a negative zero endpoint matched as equal");
+    check(std::string_view(name(Origin::allocated)) == "allocated" && std::string_view(name(Origin::reused)) == "reused",
+        "create's origin names changed");
+    const std::pair<ReuseMiss, std::string_view> misses[] = {{ReuseMiss::none, "none"}, {ReuseMiss::none_parked, "none_parked"},
+        {ReuseMiss::definition_differs, "definition_differs"}, {ReuseMiss::world_changed, "world_changed"},
+        {ReuseMiss::quarantined, "quarantined"}, {ReuseMiss::parked_body_changed, "parked_body_changed"}};
+    for (const auto& [miss, text] : misses) check(name(miss) == text, "a reuse miss name changed");
+    const CreateReport report;
+    check(report.origin == Origin::allocated && report.miss == ReuseMiss::none, "a default report claims a reuse or a miss");
 }
 void uncertain_allocations_stay_quarantined_after_confirmed_subset_cleanup() {
     AllocationProgress allocation;
@@ -266,6 +309,7 @@ void expiry_and_release_keep_their_own_records_while_older_results_wait() {
 int main() {
     try {
         definitions_are_bounded_and_have_no_gameplay_defaults();
+        reuse_compares_the_shape_bit_for_bit_and_names_its_outcomes();
         uncertain_allocations_stay_quarantined_after_confirmed_subset_cleanup();
         commands_bound_the_combined_impulse_and_force();
         observed_predecessor_targets_only_the_next_real_callback();

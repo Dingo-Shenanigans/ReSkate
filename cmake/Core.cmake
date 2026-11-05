@@ -1,6 +1,7 @@
 if(WIN32)
     add_library(dingosdk_hooks STATIC
-        Engine/Core/Hooks/hooks.cpp)
+        Engine/Core/Hooks/hooks.cpp
+        Engine/Core/Hooks/patches.cpp)
     target_link_libraries(dingosdk_hooks PRIVATE dingosdk_detours)
 endif()
 
@@ -118,9 +119,6 @@ if(WIN32)
         Engine/Vfs/builtin_packs.cpp)
     target_link_libraries(dingosdk_mods PUBLIC dingosdk_json dingosdk_mod_list PRIVATE dingosdk_game_archives dingosdk_native_db dingosdk_frostbite dingosdk_content_cache dingosdk_miniz dingosdk_zstd shell32 bcrypt)
 
-    add_library(dingosdk_custom_scripts STATIC Engine/Scripting/custom_scripts.cpp)
-    target_link_libraries(dingosdk_custom_scripts PUBLIC dingosdk_json PRIVATE dingosdk_initfs)
-
     # HTTPS downloads shared by the park preview and content cache packs.
     add_library(dingosdk_https STATIC Engine/Vfs/https_download.cpp)
     target_link_libraries(dingosdk_https PUBLIC winhttp)
@@ -155,6 +153,8 @@ add_library(dingosdk_plugins STATIC
     Extension/Plugins/plugin_api_throwdowns.cpp
     Extension/Plugins/plugin_api_capture.cpp
     Extension/Plugins/plugin_api_object_physics.cpp
+    Extension/Plugins/plugin_api_values.cpp
+    Extension/Plugins/plugin_ui_values_reservations.cpp
     Extension/Plugins/plugin_content.cpp
     Extension/Plugins/plugin_api_effects.cpp
     Extension/Plugins/plugin_api_viewmodel.cpp

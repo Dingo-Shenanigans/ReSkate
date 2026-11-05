@@ -3,7 +3,6 @@
 #include <filesystem>
 #include <map>
 #include <memory>
-#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -196,6 +195,7 @@ private:
     };
     std::vector<Emitted> events_; // emitted since the last tick
     std::optional<std::uint32_t> skater_state_;
+    std::optional<Game::MenuState> menu_state_; // as last read, while a plugin has the menu permission
     std::uint64_t wipeouts_{};
     bool wipeouts_known_{};
     std::uint64_t chat_seen_{};

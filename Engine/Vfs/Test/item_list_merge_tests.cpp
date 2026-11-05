@@ -7,9 +7,10 @@
 // crash on every launch (Skate.exe+0x891e07, 2026-10-04). Two ways to get one:
 //   * two mods each add a different item under the same asset name, and only one can stay;
 //   * a mod's list names an item no installed mod ships (it was built on top of another mod).
-// Either way the entry has to go, and everything else of every mod has to stay. (A bundle only
-// one mod ships is not merged at all, it passes through as that mod built it, so every case
-// here has two mods shipping the shared bundle.)
+// Either way the entry has to go, and everything else of every mod has to stay. A bundle only
+// one mod ships otherwise passes through as that mod built it; one whose item list that mod
+// changed is looked at all the same (a pack that kept an entry for an item it no longer ships,
+// 2026-11-04), so the cases are tried with that mod alone too.
 //
 // The same mods also show what else the merge does with two copies of one of the game's assets:
 //   * an item two mods both list is in the merged list once;
@@ -70,7 +71,7 @@ struct Shared {
 };
 Shared shared_in(const CasStore& store, const fs::path& root, const fs::path& baseRoot, const fs::path& gameRoot) {
     for (const auto& bundle : fb::read_toc(read_file(root / L"Win32" / L"items.toc")).bundles) {
-        if (lower(bundle.name) != shared_bundle) continue;
+        if (ascii_lower(bundle.name) != shared_bundle) continue;
         if (auto listing = list_bundle(store, root, baseRoot, bundle, gameRoot)) return {bundle, std::move(*listing)};
         break;
     }
@@ -78,7 +79,7 @@ Shared shared_in(const CasStore& store, const fs::path& root, const fs::path& ba
 }
 
 bool list_name(std::string_view name) {
-    const auto text = lower(name);
+    const auto text = ascii_lower(name);
     return text.starts_with("items/") && text.find("collection") != std::string::npos;
 }
 
@@ -158,10 +159,10 @@ Game read_game(const fs::path& root, const CasStore& store) {
     const auto& assets = game.shared.listing.manifest.ebx;
     bool list{}, item{};
     for (std::size_t index = 0; index < assets.size(); ++index) {
-        const auto name = lower(assets[index].name);
+        const auto name = ascii_lower(assets[index].name);
         if (!name.starts_with("items/") || (item && !list_name(name))) continue;
         auto document = fb::ebx::read_document(read_asset(store, game.base, game.base, game.shared.listing, index, root));
-        const auto type = lower(document.rootType);
+        const auto type = ascii_lower(document.rootType);
         if (type == list_type) {
             const auto count = listed(document).size();
             if (list && count >= game.listed) continue;
@@ -272,7 +273,7 @@ Merged read_merged(const Merge& merge, const Game& game) {
         const auto& name = shared.listing.manifest.ebx[index].name;
         if (!list_name(name)) continue;
         const auto document = fb::ebx::read_document(bytes);
-        if (lower(document.rootType) == list_type) merged.lists.emplace(name, listed(document));
+        if (ascii_lower(document.rootType) == list_type) merged.lists.emplace(name, listed(document));
     }
     return merged;
 }
@@ -363,17 +364,17 @@ void different_names_from_two_mods(const Game& game, const CasStore& store) {
            "different names: nothing is reported\n" + describe(report));
 }
 
-// One mod alone changes the list, beside a mod that ships the bundle with the game's. Its list
-// as it wrote it is what the bundle gets, unless that list names an item nothing ships: then
-// that entry goes and its own item stays.
-void one_mod_changes_the_list(const Game& game, const CasStore& store, bool missing) {
-    const std::string label = missing ? "an item nothing ships" : "one mod's list";
-    Merge merge(game, missing ? "missing-item" : "one-list");
+// One mod alone changes the list, beside a mod that ships the bundle with the game's, or as the
+// only mod that ships the bundle at all. Its list as it wrote it is what the bundle gets, unless
+// that list names an item nothing ships: then that entry goes and its own item stays.
+void one_mod_changes_the_list(const Game& game, const CasStore& store, bool missing, bool alone) {
+    const std::string label = std::string(missing ? "an item nothing ships" : "one mod's list") + (alone ? ", the only mod" : "");
+    Merge merge(game, std::string(missing ? "missing-item" : "one-list") + (alone ? "-alone" : ""));
     const auto own = item_from(game.item, "items/reskate_test/own_alone", 0x10);
     const fb::ebx::ImportReference absent{guid(0x70), guid(0x90)};
     const auto shipped = missing ? list_with(game.list, {own.identity, absent}) : list_with(game.list, {own.identity});
     write_mod(merge.add("alone"), store, game, &shipped, {own});
-    write_mod(merge.add("bystander"), store, game, nullptr, {});
+    if (!alone) write_mod(merge.add("bystander"), store, game, nullptr, {});
     const auto report = mods::merge_mods(merge.catalog);
     const auto list = merged_list(merge, game, report, label, 1);
     expect(names(list, own), label + ": the list has the mod's own item");
@@ -530,7 +531,7 @@ void the_list_other_copies_are_given(const Game& game, const CasStore& store) {
     }
     mods::MergeReport report;
     const auto overrides = collect_asset_overrides(order, files, store, game.base, game.root, report);
-    const auto versions = overrides.changed.find(lower(game.listName));
+    const auto versions = overrides.changed.find(ascii_lower(game.listName));
     expect(versions != overrides.changed.end() && versions->second.size() == 1,
            "carried list: there is one changed list for other mods' copies\n" + describe(report));
     if (versions == overrides.changed.end() || versions->second.empty()) return;
@@ -558,8 +559,10 @@ int main(int argc, char** argv) try {
     const fs::path keep = argc > 2 ? fs::path(argv[2]) : fs::path{};
     same_name_from_two_mods(game, store, argc > 2 ? &keep : nullptr);
     different_names_from_two_mods(game, store);
-    one_mod_changes_the_list(game, store, false);
-    one_mod_changes_the_list(game, store, true);
+    for (const auto alone : {false, true}) {
+        one_mod_changes_the_list(game, store, false, alone);
+        one_mod_changes_the_list(game, store, true, alone);
+    }
     an_item_two_mods_both_list(game, store);
     values_two_mods_changed(game, store, false);
     values_two_mods_changed(game, store, true);
