@@ -30,22 +30,54 @@ void refresh_identity_lists() noexcept;
 bool identity_listed(std::uint64_t id, IdentityList list) noexcept;
 // Shared by the developer tag and the rainbow hoodie and board.
 inline bool reskate_developer(std::uint64_t id) noexcept { return identity_listed(id, IdentityList::developer); }
-// The category a player's tag and items come from: a developer's before the staff's before
-// Centrix's before a content creator's before a homie's. Most players are in none.
+// The lists that give a tag, a developer's before the staff's before Centrix's before a content
+// creator's before a homie's: the order a player's tag and items come from when they are on
+// several. Most players are in none.
+inline constexpr std::array<IdentityList, 5> tag_lists{IdentityList::developer, IdentityList::staff, IdentityList::centrix,
+                                                       IdentityList::content_creator, IdentityList::homie};
+// Their names in the profile and in the mark-tag-list command, as the backend names them.
+inline constexpr std::array<std::string_view, 5> tag_list_names{"dev", "staff", "centrix", "content_creator", "homie"};
+inline std::optional<IdentityList> tag_list_named(std::string_view name) noexcept {
+    for (std::size_t i = 0; i < tag_lists.size(); ++i)
+        if (tag_list_names[i] == name) return tag_lists[i];
+    return std::nullopt;
+}
+inline std::string_view tag_list_name(IdentityList list) noexcept {
+    for (std::size_t i = 0; i < tag_lists.size(); ++i)
+        if (tag_lists[i] == list) return tag_list_names[i];
+    return {};
+}
+// The category a player's items come from, and their tag unless they chose another
+// (identity_tag): the first of tag_lists they are on.
 inline std::optional<IdentityList> identity_mark(std::uint64_t id) noexcept {
-    for (const auto list : {IdentityList::developer, IdentityList::staff, IdentityList::centrix, IdentityList::content_creator,
-                            IdentityList::homie})
+    for (const auto list : tag_lists)
         if (identity_listed(id, list)) return list;
     return std::nullopt;
 }
-// The local player's own choices to go without their tag, and without their animated items
-// (the menu's Special page, which only a listed player gets). Their appearance tells everyone
-// else (Appearance::hide_tag, Appearance::hide_items).
+// No choice of tag: the first list by identity_mark's order.
+inline constexpr std::uint8_t usual_tag = 0xff;
+// The tag a player shows: the list they chose (Appearance::tag, an IdentityList's number) while
+// they are on it. A list they are not on, one without a tag, or no choice (usual_tag, and every
+// older build) is identity_mark's. What their items may do still comes from identity_mark, so
+// showing a homie's tag does not take a developer's rainbow away, nor give a homie's gold.
+inline std::optional<IdentityList> identity_tag(std::uint64_t id, std::uint8_t chosen) noexcept {
+    for (const auto list : tag_lists)
+        if (static_cast<std::uint8_t>(list) == chosen && identity_listed(id, list)) return list;
+    return identity_mark(id);
+}
+// The local player's own choices to go without their tag, and without their coloured items
+// (the Skater page's STYLE tab). Their appearance tells everyone else (Appearance::hide_tag,
+// Appearance::hide_items).
 inline std::atomic<bool> own_tag{true}, own_items{true};
 inline bool own_tag_shown() noexcept { return own_tag.load(std::memory_order_relaxed); }
 inline void show_own_tag(bool shown) noexcept { own_tag.store(shown, std::memory_order_relaxed); }
 inline bool own_items_shown() noexcept { return own_items.load(std::memory_order_relaxed); }
 inline void show_own_items(bool shown) noexcept { own_items.store(shown, std::memory_order_relaxed); }
+// And which of their lists' tags shows, for a player on more than one (Appearance::tag);
+// usual_tag for identity_mark's.
+inline std::atomic<std::uint8_t> own_tag_list{usual_tag};
+inline std::uint8_t own_tag_choice() noexcept { return own_tag_list.load(std::memory_order_relaxed); }
+inline void choose_own_tag(std::uint8_t list) noexcept { own_tag_list.store(list, std::memory_order_relaxed); }
 // A global ban is enforced by whoever a player would play with: a host and a dedicated server
 // turn them away, and a guest leaves a lobby they host, which their own game does not start
 // either (session_receive.cpp, Server/server_host.cpp). A server can opt out ("global_bans"),

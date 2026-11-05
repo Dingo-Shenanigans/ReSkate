@@ -1,4 +1,5 @@
 #pragma once
+#include "Extension/Multiplayer/developer_identity.h"
 #include <array>
 #include <cstdint>
 #include <string_view>
@@ -28,8 +29,10 @@ struct PlayerCard {
     std::uint32_t background{}, emblem{}, title{};
     bool operator==(const PlayerCard &) const = default;
 };
-// How one of a listed player's marked cosmetics is coloured (developer_identity.h), chosen on
-// the menu's Special page and carried in their Appearance, so everyone sees the same.
+// How one of a player's marked cosmetics is coloured, chosen on the Skater page's STYLE tab and
+// carried in their Appearance, so everyone sees the same. Anyone may give an item a solid
+// colour; the rest comes with a list of the backend's (developer_identity.h,
+// developer_hoodie_material.h: item_animation).
 enum class MarkMode : std::uint8_t { standard, off, gradient, solid };
 struct MarkStyle {
     MarkMode mode{};                          // standard: what the player's list gives
@@ -52,6 +55,39 @@ inline bool rainbow_style(const MarkStyle &style) noexcept { return style.mode =
 inline bool valid_mark_style(const MarkStyle &style) noexcept {
     return style.mode <= MarkMode::solid && style.speed <= 2;
 }
+// Which list's tag a player shows (Appearance::tag) travels the same way, so that builds from
+// before it still read the appearance it is in: the packet has no room of its own for it, and
+// an older build turns down a packet with anything more. It goes in the second colour of a
+// style that does not use it (one standard, off, or a solid colour that is not the rainbow),
+// as these two bytes and the list's number. Every build ignores that colour there.
+inline constexpr std::array<std::uint8_t, 2> tag_marker{0x54, 0x47}; // "TG"
+inline bool carries_tag(const MarkStyle &style) noexcept {
+    return style.mode != MarkMode::gradient && !rainbow_style(style) && style.to[0] == tag_marker[0] && style.to[1] == tag_marker[1];
+}
+// The styles as sent: the choice in the first free second colour from the end (the board's
+// parts first, which the fewest players colour), and no other one that reads as a choice.
+// When every style uses its second colour the choice is left out, and the usual tag shows.
+inline MarkStyles carry_tag(MarkStyles styles, std::uint8_t tag) noexcept {
+    for (auto &style : styles)
+        if (carries_tag(style)) style.to[1] ^= 1;
+    if (tag == usual_tag) return styles;
+    for (auto style = styles.rbegin(); style != styles.rend(); ++style)
+        if (style->mode != MarkMode::gradient && !rainbow_style(*style)) {
+            style->to = {tag_marker[0], tag_marker[1], tag};
+            break;
+        }
+    return styles;
+}
+// The choice the styles carry (usual_tag for none), taken out: that colour reads as nothing.
+inline std::uint8_t carried_tag(MarkStyles &styles) noexcept {
+    for (auto &style : styles)
+        if (carries_tag(style)) {
+            const auto tag = style.to[2];
+            style.to = {};
+            return tag;
+        }
+    return usual_tag;
+}
 struct Appearance {
     CosmeticRecipe skater, board;
     PlayerCard card;
@@ -59,6 +95,9 @@ struct Appearance {
     // nobody shows their tag, or nobody animates their hoodie and board.
     bool hide_tag{}, hide_items{};
     MarkStyles marks{};
+    // Which of their lists' tags shows, for a player on more than one (developer_identity.h:
+    // identity_tag); usual_tag for the usual. In the styles on the wire (carry_tag).
+    std::uint8_t tag = usual_tag;
     bool operator==(const Appearance &) const = default;
 };
 // Stand-ins for a peer's cosmetic that this PC does not have (a player's

@@ -158,7 +158,6 @@ RowPress library_row(SkateMenu& menu, const char* id, const LibraryRow& row);
 // HOST shows the host form until a session exists, then that session (SESSION).
 inline constexpr int multiplayer_session_tab = 1, multiplayer_voice_tab = 2, multiplayer_bans_tab = 3, multiplayer_chat_tab = 4;
 void multiplayer_display_settings(SkateMenu&, const Model&);
-void special_page(SkateMenu&, const Model&, const CallbacksV3&);
 void multiplayer_network_page(SkateMenu&, const Model&, const CallbacksV3&);
 void atmosphere_menu(SkateMenu&, const Model&, const CallbacksV3&);
 void progression_page(SkateMenu&, const Model&, const CallbacksV3&);

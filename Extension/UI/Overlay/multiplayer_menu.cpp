@@ -1,5 +1,4 @@
 #include "multiplayer_menu_internal.h"
-#include "role_badge.h"
 #include "Extension/Boot/discord_presence.h"
 #include "Engine/Game/World/world_names.h"
 #include <algorithm>
@@ -364,150 +363,15 @@ void multiplayer_display_settings(SkateMenu &menu, const Model &model) {
 void multiplayer_network_page(SkateMenu &menu, const Model &model, const CallbacksV3 &callbacks) {
     debug_page(menu, model.multiplayer, callbacks);
 }
-// SPECIAL: the page only a player on one of the backend's lists gets. Their tag as everyone
-// sees it, and whether it shows; then the items that come with it, on or off together and
-// each on its own: what their list gives it, two colours of their own, or nothing.
-void special_page(SkateMenu &menu, const Model &model, const CallbacksV3 &) {
-    const auto &mp = model.multiplayer;
-    std::array<char, 65> unused{};
-    begin_card(menu, "special-tag", "YOUR TAG");
-    {
-        // Drawn the way chat and nametags draw it (role_badge.h), and faint while it is off.
-        field(menu, "Looks like", "Your tag and name, as chat and your nametag show them.");
-        const std::string name = mp.local_name.empty() ? std::string("You") : mp.local_name;
-        const float size = px(18), height = ImGui::GetFrameHeight(), alpha = mp.identity_tag_shown ? 1.0f : .3f;
-        auto *draw = ImGui::GetWindowDrawList();
-        const auto at = ImGui::GetCursorScreenPos();
-        const float badge = overlay::detail::role_badge_width(menu.bold, size, mp.identity_tag) + px(6);
-        overlay::detail::draw_role_badge(draw, menu.bold, size, at, height, mp.identity_tag, mp.identity_tag_colour, alpha);
-        const auto extent = menu.bold->CalcTextSizeA(size, FLT_MAX, 0, name.c_str());
-        const ImVec2 name_at(at.x + badge, at.y + (height - extent.y) * .5f);
-        const int name_vertices = draw->VtxBuffer.Size;
-        draw->PushClipRect(at, ImVec2(at.x + ImGui::GetContentRegionAvail().x, at.y + height), true);
-        draw->AddText(menu.bold, size, name_at,
-                      (mp.identity_tag_colour & ~IM_COL32_A_MASK) | (static_cast<ImU32>(255.0f * alpha) << IM_COL32_A_SHIFT), name.c_str());
-        draw->PopClipRect();
-        overlay::detail::shade_nametag_gradient(draw, name_vertices, name_at.x, extent.x, mp.identity_tag_colour, ImGui::GetTime());
-        ImGui::Dummy(ImVec2(std::min(badge + extent.x, ImGui::GetContentRegionAvail().x), height));
-    }
-    bool tag = mp.identity_tag_shown;
-    if (toggle_row(menu, "Show my tag",
-                   "Your tag and the color of your name, in chat and on your nametag. "
-                   "Off: your name looks like any other player's, to yourself and to everyone you skate with.",
-                   tag))
-        send_private(menu, "mark-tag", tag ? "on" : "off", unused, false);
-    end_card();
-
-    begin_card(menu, "special-items", "YOUR ITEMS");
-    bool shown = mp.identity_items_shown;
-    if (toggle_row(menu, "Show my items",
-                   "The colors that come with your tag, on whatever you wear and ride. "
-                   "Off: it all keeps its own colors, for you and for everyone you skate with.",
-                   shown))
-        send_private(menu, "mark-items", shown ? "on" : "off", unused, false);
-    note("Below, each one on its own: it colors whatever you have on in that slot. Everyone you skate with sees what you pick.");
-    end_card();
-
-    // The colours being picked: held here while the mouse has them, and after it lets go until
-    // the saved ones catch up, so a swatch never jumps back to the colour it had.
-    struct Picking {
-        std::array<float, 3> from{}, to{};
-        bool changed{};
-        int waiting{}; // frames
-    };
-    static std::vector<Picking> picking;
-    picking.resize(mp.identity_styles.size());
-    for (int item = 0; item < static_cast<int>(mp.identity_styles.size()); ++item) {
-        const auto &style = mp.identity_styles[static_cast<std::size_t>(item)];
-        auto &picked = picking[static_cast<std::size_t>(item)];
-        const auto same = [](const std::array<float, 3> &a, const std::array<float, 3> &b) {
-            return std::abs(a[0] - b[0]) < .003f && std::abs(a[1] - b[1]) < .003f && std::abs(a[2] - b[2]) < .003f;
-        };
-        if (picked.waiting && same(picked.from, style.from) && same(picked.to, style.to)) picked.waiting = 0;
-        else if (picked.waiting) --picked.waiting;
-        if (!picked.changed && !picked.waiting) picked.from = style.from, picked.to = style.to;
-        const auto send = [&](int mode, int speed) {
-            const auto hex = [](const std::array<float, 3> &colour) {
-                unsigned value{};
-                for (const float part : colour) value = value << 8 | static_cast<unsigned>(std::clamp(part, 0.0f, 1.0f) * 255.0f + 0.5f);
-                return value;
-            };
-            send_private(menu, "mark-style", std::format("{} {} {:06x} {:06x} {}", item, mode, hex(picked.from), hex(picked.to), speed),
-                         unused, false);
-        };
-        // The card is headed by the cosmetic: whatever is in that slot is what gets coloured.
-        std::string title = style.name;
-        for (auto &letter : title) letter = static_cast<char>(std::toupper(static_cast<unsigned char>(letter)));
-        ImGui::PushID(item);
-        begin_card(menu, title.c_str(), title.c_str());
-        // The options in the order shown; a style's mode is 0 what the list gives, 1 off, 2 a
-        // gradient between the player's two colours, 3 their one colour, 4 the rainbow (the
-        // staff's to pick).
-        field(menu, "Color");
-        if (mp.identity_rainbow) {
-            static constexpr std::array<int, 5> modes{0, 4, 2, 3, 1};
-            int option = static_cast<int>(std::find(modes.begin(), modes.end(), style.mode) - modes.begin()) % 5;
-            if (choice(menu, "mode", option, {mp.identity_animation.c_str(), "RAINBOW", "GRADIENT", "SOLID", "OFF"}, shown))
-                send(modes[static_cast<std::size_t>(option)], style.speed);
-        } else {
-            static constexpr std::array<int, 4> modes{0, 2, 3, 1};
-            int option = static_cast<int>(std::find(modes.begin(), modes.end(), style.mode) - modes.begin()) % 4;
-            if (choice(menu, "mode", option, {mp.identity_animation.c_str(), "GRADIENT", "SOLID", "OFF"}, shown))
-                send(modes[static_cast<std::size_t>(option)], style.speed);
-        }
-        if (style.mode == 2 || style.mode == 3) {
-            const bool gradient = style.mode == 2;
-            field(menu, gradient ? "Colors" : "Pick", gradient ? "The two colors it moves between. Click one to change it."
-                                                               : "Click the color to change it.");
-            ImGui::BeginDisabled(!shown);
-            constexpr auto flags = ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoLabel | ImGuiColorEditFlags_NoAlpha;
-            if (ImGui::ColorEdit3("##from", picked.from.data(), flags)) picked.changed = true;
-            // Beside the swatch, what it gives: the one colour, or all that lies between the two.
-            ImGui::SameLine(0, px(6));
-            const auto at = ImGui::GetCursorScreenPos();
-            const float swatch = gradient ? ImGui::GetFrameHeight() + px(6) : 0.0f;
-            const ImVec2 bar(std::max(px(20), ImGui::GetContentRegionAvail().x - swatch), ImGui::GetFrameHeight());
-            const auto solid = [&](const std::array<float, 3> &colour) {
-                return ImGui::ColorConvertFloat4ToU32(ImVec4(colour[0], colour[1], colour[2], shown ? 1.0f : .4f));
-            };
-            const auto left = solid(picked.from), right = solid(gradient ? picked.to : picked.from);
-            ImGui::GetWindowDrawList()->AddRectFilledMultiColor(at, ImVec2(at.x + bar.x, at.y + bar.y), left, right, right, left);
-            ImGui::Dummy(bar);
-            if (gradient) {
-                ImGui::SameLine(0, px(6));
-                if (ImGui::ColorEdit3("##to", picked.to.data(), flags)) picked.changed = true;
-            }
-            ImGui::EndDisabled();
-            // One save when the mouse lets go, not one for every shade dragged through.
-            if (picked.changed && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-                picked.changed = false;
-                picked.waiting = 120;
-                send(style.mode, style.speed);
-            }
-        }
-        // A colour that stands still has no speed.
-        if (style.mode == 0 || style.mode == 2 || style.mode == 4) {
-            int speed = style.speed;
-            field(menu, "Speed");
-            if (choice(menu, "speed", speed, {"NORMAL", "SLOW", "FAST"}, shown)) send(style.mode, speed);
-        }
-        end_card();
-        ImGui::PopID();
-    }
-}
 void multiplayer_page(SkateMenu &menu, const Model &model, const CallbacksV3 &callbacks) {
     const auto &mp = model.multiplayer;
     const bool has_session = mp.active || mp.lobby_joining;
     if (has_session && !menu.multiplayer_session_seen) menu.multiplayer_tab = multiplayer_session_tab;
     menu.multiplayer_session_seen = has_session;
-    // YOUR TAG only for a player the backend lists (it was the SPECIAL page).
-    if (mp.identity_tag.empty())
-        category_tabs(menu, menu.multiplayer_tab, {"SERVERS", has_session ? "SESSION" : "HOST", "VOICE", "BANS AND IGNORED", "PLAYERS AND CHAT"},
-                      "multiplayer-categories");
-    else
-        category_tabs(menu, menu.multiplayer_tab,
-                      {"SERVERS", has_session ? "SESSION" : "HOST", "VOICE", "BANS AND IGNORED", "PLAYERS AND CHAT", "YOUR TAG"},
-                      "multiplayer-categories");
+    // A player's tag and item colours are on the Skater page's STYLE tab (skate_menu_skater.cpp).
+    menu.multiplayer_tab = std::clamp(menu.multiplayer_tab, 0, multiplayer_chat_tab);
+    category_tabs(menu, menu.multiplayer_tab, {"SERVERS", has_session ? "SESSION" : "HOST", "VOICE", "BANS AND IGNORED", "PLAYERS AND CHAT"},
+                  "multiplayer-categories");
     if (menu.multiplayer_tab != multiplayer_voice_tab) menu.voice_bind_capture = 0;
     ImGui::PushID(menu.multiplayer_tab);
     ImGui::BeginChild("multiplayer-category", ImVec2(0, page_body_height(menu)), ImGuiChildFlags_NavFlattened);
@@ -526,11 +390,8 @@ void multiplayer_page(SkateMenu &menu, const Model &model, const CallbacksV3 &ca
     case multiplayer_bans_tab:
         bans_page(menu, model);
         break;
-    case multiplayer_chat_tab:
-        menu::multiplayer_display_settings(menu, model);
-        break;
     default:
-        menu::special_page(menu, model, callbacks);
+        menu::multiplayer_display_settings(menu, model);
         break;
     }
     ImGui::EndChild();

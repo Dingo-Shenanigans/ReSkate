@@ -44,10 +44,13 @@ bool publish_materials(std::uintptr_t base, std::uintptr_t item) noexcept {
     } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 // What each of the board's cosmetics does for this player: deck, grip tape, trucks, wheels.
+// Only a player on one of the backend's lists has their board coloured; the solid colours
+// anyone may pick are for what they wear.
 using Animations = std::array<developer_board_detail::ItemAnimation, developer_board_detail::part_count>;
 Animations board_animations(std::uint64_t steam_id, const multiplayer::MarkStyles &styles) noexcept {
     const auto mark = multiplayer::identity_mark(steam_id);
     Animations out;
+    if (!mark) return out;
     for (std::size_t i = 0; i < out.size(); ++i)
         out[i] = developer_board_detail::item_animation(mark, styles[multiplayer::skater_mark_items + i]);
     return out;

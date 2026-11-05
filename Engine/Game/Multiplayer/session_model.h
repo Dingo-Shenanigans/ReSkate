@@ -230,11 +230,21 @@ struct MultiplayerModel {
     std::string identity_tag;
     std::uint32_t identity_tag_colour{};
     bool identity_tag_shown{true}, identity_items_shown{true};
-    // Local: how each of this player's marked cosmetics is coloured, for the Special page: what
-    // they wear in each slot ("Top", "Shoes", ...), then the parts of their board. mode: 0 what
-    // their list gives (`identity_animation`: "RAINBOW", "GREEN", "RED", "BLUE" or "GOLD"), 1 off, 2 a gradient
-    // between the two colours they picked, 3 the first of them alone, 4 the rainbow (offered
-    // when `identity_rainbow`: to the staff). speed: 0 normal, 1 slow, 2 fast.
+    // Local: the lists whose tags this player may show (more than one: they pick on the Skater
+    // page's STYLE tab), by their name for the mark-tag-list command ("dev", "homie", ...), and
+    // the one whose tag shows (`identity_tag_list`).
+    struct IdentityTagList {
+        std::string list, tag;
+        std::uint32_t colour{};
+    };
+    std::vector<IdentityTagList> identity_tag_lists;
+    std::string identity_tag_list;
+    // Local: how each of this player's marked cosmetics is coloured, for the STYLE tab: what
+    // they wear in each slot ("Top", "Shoes", ...), then, for a player on one of the backend's
+    // lists, the parts of their board. mode: 0 what their list gives (`identity_animation`:
+    // "RAINBOW", "GREEN", "RED", "BLUE" or "GOLD"; empty for a player on none, who has only 1 and
+    // 3), 1 off, 2 a gradient between the two colours they picked, 3 the first of them alone, 4
+    // the rainbow (offered when `identity_rainbow`: to the staff). speed: 0 normal, 1 slow, 2 fast.
     struct IdentityStyle {
         std::string name;
         int mode{}, speed{};
