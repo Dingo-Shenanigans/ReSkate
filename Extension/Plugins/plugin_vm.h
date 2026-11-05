@@ -300,13 +300,13 @@ private:
     friend struct UiApi;
     friend struct MoreApi;
     friend struct WorldApi;
-    friend struct ServicesApi;
     friend struct KitApi;
     friend struct CaptureApi;
     friend struct ValuesApi;
     friend struct PhysicsApi;
     friend struct EffectsApi;
     friend struct ViewmodelApi;
+    friend Game& game_of(Plugin& plugin); // plugin_api.h
     std::uint64_t instance_{};
     struct Subcommand { std::string name, args, help; };
     struct Command { std::string help; int function{}; std::vector<Subcommand> subcommands; };

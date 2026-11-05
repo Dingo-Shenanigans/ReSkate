@@ -29,9 +29,6 @@ std::string lowered(std::string_view text) {
     for (auto& c : out) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + 32);
     return out;
 }
-std::string text_of(const Json& object, std::string_view key) {
-    return object.is_object() && object.contains(key) && object.at(key).is_string() ? object.at(key).string() : std::string();
-}
 const char* state_name(int state) {
     static constexpr const char* names[] = {"plugin", "not_plugin", "rejected", "missing"};
     return state >= 0 && state < 4 ? names[state] : "missing";
@@ -58,10 +55,10 @@ Listings::Listings(std::filesystem::path file) : file_(std::move(file)) {
         for (const auto& [package, row] : root.items()) {
             if (!row.is_object() || !listing_package(package)) continue;
             Record record;
-            const auto state = text_of(row, "state");
+            const auto state = json::text_of(row, "state");
             for (int i = 0; i < 4; ++i)
                 if (state == state_name(i)) record.state = static_cast<Record::State>(i);
-            record.categories = text_of(row, "categories");
+            record.categories = json::text_of(row, "categories");
             record.was_listed = row.contains("was_listed") && row.at("was_listed").is_boolean() && row.at("was_listed").get<bool>();
             record.checked = row.contains("checked") && row.at("checked").is_number() ? row.at("checked").get<std::int64_t>() : 0;
             records_[lowered(package)] = record;
@@ -134,14 +131,14 @@ void Listings::record(std::string_view package, const ListingAnswer& answer, std
             const auto root = Json::parse(answer.json, {1 << 20, 16, 65536});
             const auto split = package.find('-');
             const auto owner = lowered(package.substr(0, split)), name = lowered(package.substr(split + 1));
-            if (!root.is_object() || lowered(text_of(root, "namespace")) != owner || lowered(text_of(root, "name")) != name) return; // not its answer
+            if (!root.is_object() || lowered(json::text_of(root, "namespace")) != owner || lowered(json::text_of(root, "name")) != name) return; // not its answer
             record.was_listed = true;
             bool listed{}, plugin{}, rejected{};
             if (root.contains("community_listings") && root.at("community_listings").is_array())
                 for (const auto& listing : root.at("community_listings")) {
-                    if (lowered(text_of(listing, "community")) != community) continue;
+                    if (lowered(json::text_of(listing, "community")) != community) continue;
                     listed = true;
-                    rejected = rejected || lowered(text_of(listing, "review_status")) == "rejected";
+                    rejected = rejected || lowered(json::text_of(listing, "review_status")) == "rejected";
                     if (listing.contains("categories") && listing.at("categories").is_array())
                         for (const auto& category : listing.at("categories")) {
                             if (!category.is_string()) continue;

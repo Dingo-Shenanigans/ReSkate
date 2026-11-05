@@ -119,7 +119,7 @@ struct MoreApi {
     // function(status, body, error)): to a host its manifest's "domains" lists, HTTPS only.
     static int http_request(lua_State* L) {
         auto& plugin = plugin_of(L);
-        if (!plugin.has("net.http")) luaL_error(L, "reskate.http.request needs the \"net.http\" permission in reskate-plugin.json");
+        need(L, plugin, "net.http", "reskate.http.request");
         luaL_checktype(L, 1, LUA_TTABLE);
         luaL_checktype(L, 2, LUA_TFUNCTION);
         lua_getfield(L, 1, "url");

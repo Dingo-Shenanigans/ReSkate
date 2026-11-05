@@ -24,13 +24,6 @@ int hit_owner_equal(lua_State* L) {
     lua_pushboolean(L, a.owner == b.owner && a.world == b.world && a.serial == b.serial && a.slot == b.slot);
     return 1;
 }
-int fail(lua_State* L, const std::string& why) { lua_pushnil(L); lua_pushlstring(L, why.data(), why.size()); return 2; }
-int result(lua_State* L, const std::string& why) {
-    lua_pushboolean(L, why.empty());
-    if (why.empty()) return 1;
-    lua_pushlstring(L, why.data(), why.size());
-    return 2;
-}
 void fields(lua_State* L, int at, std::initializer_list<const char*> names) {
     luaL_checktype(L, at, LUA_TTABLE);
     at = lua_absindex(L, at);
@@ -116,8 +109,7 @@ void push_sample(lua_State* L, const BodyValue& b, const Sample& sample) {
     lua_setfield(L, -2, "inertia");
     lua_pushnumber(L, sample.mass);
     lua_setfield(L, -2, "mass");
-    lua_createtable(L, 4, 0);
-    for (int i = 0; i < 4; ++i) { lua_pushnumber(L, sample.rotation[static_cast<std::size_t>(i)]); lua_rawseti(L, -2, i + 1); }
+    push_quaternion(L, sample.rotation);
     lua_setfield(L, -2, "rotation");
 }
 }
@@ -174,15 +166,15 @@ struct PhysicsApi {
         // The plugin names no slot, generation or native identity.
         if (reuse) {
             need(L, p, "world.physics.reuse", "reskate.world.physics.create reuse");
-            if (p.body_reuses_ >= 1) return fail(L, "asked to reuse a native body more than once in one tick");
+            if (p.body_reuses_ >= 1) return failed(L, "asked to reuse a native body more than once in one tick");
             ++p.body_reuses_;
         }
         Handle h;
         CreateReport report;
         const auto why = options ? p.services_.game().body_create_reusing(p.instance(), d, h, reuse, report) :
             p.services_.game().body_create(p.instance(), d, h);
-        if (!why.empty()) return fail(L, why);
-        if (!h.generation || h.slot >= retained_capacity) return fail(L, "native body did not return an owned generation");
+        if (!why.empty()) return failed(L, why);
+        if (!h.generation || h.slot >= retained_capacity) return failed(L, "native body did not return an owned generation");
         opaque(L, BodyValue{p.instance(), h}, handle_type);
         if (!options) return 1;
         // body, nil, origin[, miss], as submit returns true, nil, sequence. Nothing was reused
@@ -199,7 +191,7 @@ struct PhysicsApi {
         const auto b = body(L, p, 1);
         Sample sample;
         const auto why = p.services_.game().body_read(p.instance(), b.handle, sample);
-        if (!why.empty()) return fail(L, why);
+        if (!why.empty()) return failed(L, why);
         push_sample(L, b, sample);
         return 1;
     }
@@ -407,7 +399,7 @@ struct PhysicsApi {
         Receipt receipt;
         const auto selected = lua_isnoneornil(L, 2) ? std::uint64_t{} : sequence(L, 2);
         const auto why = p.services_.game().body_receipt(p.instance(), b.handle, selected, receipt);
-        if (!why.empty()) return fail(L, why);
+        if (!why.empty()) return failed(L, why);
         lua_createtable(L, 0, 9);
         lua_pushstring(L, name(receipt.outcome));
         lua_setfield(L, -2, "outcome");

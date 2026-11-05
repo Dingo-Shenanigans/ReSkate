@@ -3,7 +3,6 @@
 #include "lua.h"
 #include "lualib.h"
 #include <algorithm>
-#include <array>
 #include <cctype>
 #include <cmath>
 
@@ -13,39 +12,8 @@
 // permission and its arguments; the game (plugin_game.h) does the rest.
 namespace dingosdk::plugins {
 namespace {
-int result(lua_State* L, const std::string& why) {
-    lua_pushboolean(L, why.empty());
-    if (why.empty()) return 1;
-    lua_pushlstring(L, why.data(), why.size());
-    return 2;
-}
-// nil, why: what a call that hands back a value returns when it fails.
-int failed(lua_State* L, const std::string& why) {
-    lua_pushnil(L);
-    lua_pushlstring(L, why.data(), why.size());
-    return 2;
-}
-bool within(double now, double& second, int& count, int most) {
-    if (now - second >= 1000) {
-        second = now;
-        count = 0;
-    }
-    return ++count <= most;
-}
-// A string field of the table at `table` (nil: empty), at most `most` long.
-std::string text_field(lua_State* L, int table, const char* name, std::size_t most) {
-    lua_getfield(L, table, name);
-    std::string value;
-    if (!lua_isnil(L, -1)) {
-        if (!lua_isstring(L, -1)) luaL_error(L, "%s is a string", name);
-        std::size_t length = 0;
-        const char* text = lua_tolstring(L, -1, &length);
-        if (length > most) luaL_error(L, "%s is longer than %d characters", name, static_cast<int>(most));
-        value.assign(text, length);
-    }
-    lua_pop(L, 1);
-    return value;
-}
+// A number field of the table at `table`: `fallback` when nil, otherwise a number from `low` to
+// `high`. Unlike number_option (plugin_api.h) a non-number is "<name> is a number".
 double number_field(lua_State* L, int table, const char* name, double fallback, double low, double high) {
     lua_getfield(L, table, name);
     double value = fallback;
@@ -57,12 +25,6 @@ double number_field(lua_State* L, int table, const char* name, double fallback, 
     lua_pop(L, 1);
     return value;
 }
-bool bool_field(lua_State* L, int table, const char* name, bool fallback) {
-    lua_getfield(L, table, name);
-    const bool value = lua_isnil(L, -1) ? fallback : lua_toboolean(L, -1) != 0;
-    lua_pop(L, 1);
-    return value;
-}
 // A mode id of the plugin's own ("duel"): the SDK's is "<plugin>/<id>".
 std::string own_mode(lua_State* L, int index) {
     auto id = checked_text(L, index, 32, "a mode id");
@@ -70,31 +32,8 @@ std::string own_mode(lua_State* L, int index) {
     return id;
 }
 } // namespace
-// A path in the plugin's data folder: relative, inside it, and no name Windows keeps for a device.
-std::string data_path(lua_State* L, int index, bool folder) {
-    if (folder && lua_isnoneornil(L, index)) return {};
-    auto path = checked_text(L, index, 200, "a data path");
-    while (folder && path.ends_with('/')) path.pop_back();
-    if (folder && path.empty()) return {};
-    if (safe_relative_path(path).empty()) luaL_argerror(L, index, "a path inside the plugin's data folder (no .., no drive, / between folders)");
-    std::size_t start = 0;
-    while (start <= path.size()) {
-        const auto end = std::min(path.find('/', start), path.size());
-        std::string base(path.substr(start, std::min(path.find('.', start), end) - start));
-        for (auto& c : base) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        static constexpr std::array<std::string_view, 4> devices{"con", "prn", "aux", "nul"};
-        const bool numbered = base.size() == 4 && (base.starts_with("com") || base.starts_with("lpt")) && base[3] >= '0' && base[3] <= '9';
-        if (numbered || std::find(devices.begin(), devices.end(), base) != devices.end()) luaL_argerror(L, index, "a name Windows keeps for a device");
-        start = end + 1;
-    }
-    return path;
-}
-namespace {
-} // namespace
 
 struct KitApi {
-    static Game& game(Plugin& plugin) { return plugin.services_.game(); }
-
     // ---- throwdowns: the kit ---------------------------------------------------------------------
     // ui(doc): the plugin's documents (setup, waiting, hud, panel, flags, match) for the native UI.
     // Every tick is fine: an unchanged document costs a comparison.
@@ -108,7 +47,7 @@ struct KitApi {
         } catch (const std::exception& e) {
             luaL_error(L, "%s", e.what());
         }
-        return result(L, game(plugin).publish_throwdown_ui(plugin.id(), document));
+        return result(L, game_of(plugin).publish_throwdown_ui(plugin.id(), document));
     }
     // flag.begin(mode, game, {players, seconds, setup_page, cursor_height}): the native flag for
     // one of the plugin's modes; false while another registration is busy.
@@ -123,10 +62,10 @@ struct KitApi {
             luaL_checktype(L, 3, LUA_TTABLE);
             options.players = static_cast<unsigned>(number_field(L, 3, "players", options.players, 1, 10));
             options.seconds = static_cast<unsigned>(number_field(L, 3, "seconds", options.seconds, 1, 3600));
-            options.setup_page = bool_field(L, 3, "setup_page", options.setup_page);
+            options.setup_page = flag_option(L, 3, "setup_page", options.setup_page);
             options.cursor_height = static_cast<float>(number_field(L, 3, "cursor_height", options.cursor_height, 0, 100000));
         }
-        lua_pushboolean(L, game(plugin).throwdown_flag_begin(plugin.id() + "/" + mode, static_cast<std::uint32_t>(number), options));
+        lua_pushboolean(L, game_of(plugin).throwdown_flag_begin(plugin.id() + "/" + mode, static_cast<std::uint32_t>(number), options));
         return 1;
     }
     // flag.state(): {owned, waiting, placing, busy, mine, mode, game}; mode (the plugin's own id) and
@@ -134,7 +73,7 @@ struct KitApi {
     static int flag_state(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "throwdowns", "reskate.throwdowns.flag.state");
-        const auto state = game(plugin).throwdown_flag_state();
+        const auto state = game_of(plugin).throwdown_flag_state();
         const auto prefix = plugin.id() + "/";
         const bool mine = state.mode.starts_with(prefix);
         lua_createtable(L, 0, 7);
@@ -160,7 +99,7 @@ struct KitApi {
     static int flag_leave(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "throwdowns", "reskate.throwdowns.flag.leave");
-        game(plugin).throwdown_flag_leave(plugin.id());
+        game_of(plugin).throwdown_flag_leave(plugin.id());
         return 0;
     }
 
@@ -176,12 +115,8 @@ struct KitApi {
         auto& plugin = files_call(L, "reskate.files.list");
         const auto folder = data_path(L, 1, true);
         std::vector<std::string> names;
-        if (const auto why = game(plugin).files_list(plugin.id(), folder, names); !why.empty()) return failed(L, why);
-        lua_createtable(L, static_cast<int>(names.size()), 0);
-        for (std::size_t i = 0; i < names.size(); ++i) {
-            lua_pushlstring(L, names[i].data(), names[i].size());
-            lua_rawseti(L, -2, static_cast<int>(i + 1));
-        }
+        if (const auto why = game_of(plugin).files_list(plugin.id(), folder, names); !why.empty()) return failed(L, why);
+        push_texts(L, names);
         return 1;
     }
     // read(path): the file's text, or nil, why ("not found" for none).
@@ -189,7 +124,7 @@ struct KitApi {
         auto& plugin = files_call(L, "reskate.files.read");
         const auto path = data_path(L, 1, false);
         std::string text;
-        if (const auto why = game(plugin).files_read(plugin.id(), path, text); !why.empty()) return failed(L, why);
+        if (const auto why = game_of(plugin).files_read(plugin.id(), path, text); !why.empty()) return failed(L, why);
         lua_pushlstring(L, text.data(), text.size());
         return 1;
     }
@@ -200,12 +135,12 @@ struct KitApi {
         std::size_t length = 0;
         const char* text = luaL_checklstring(L, 2, &length);
         if (length > files_most_bytes) return result(L, "a file is at most 1 MB");
-        return result(L, game(plugin).files_write(plugin.id(), path, std::string_view(text, length)));
+        return result(L, game_of(plugin).files_write(plugin.id(), path, std::string_view(text, length)));
     }
     // remove(path): a file, or a folder with nothing in it.
     static int files_remove(lua_State* L) {
         auto& plugin = files_call(L, "reskate.files.remove");
-        return result(L, game(plugin).files_remove(plugin.id(), data_path(L, 1, false)));
+        return result(L, game_of(plugin).files_remove(plugin.id(), data_path(L, 1, false)));
     }
 
     // ---- ui.dialog ----------------------------------------------------------------------------------
@@ -310,13 +245,13 @@ struct KitApi {
                     luaL_error(L, "a file filter is patterns like *.json, split by ;");
         }
         lua_pop(L, 1);
-        return result(L, game(plugin).dialog_open(plugin.id(), spec));
+        return result(L, game_of(plugin).dialog_open(plugin.id(), spec));
     }
     static int close_dialog(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "ui.screen", "reskate.ui.close_dialog");
         const auto id = lua_isnoneornil(L, 1) ? std::string{} : checked_text(L, 1, 32, "a dialog id");
-        game(plugin).dialog_close(plugin.id(), id);
+        game_of(plugin).dialog_close(plugin.id(), id);
         return 0;
     }
 
@@ -328,19 +263,19 @@ struct KitApi {
         const float* v = luaL_checkvector(L, 1);
         for (int i = 0; i < 3; ++i)
             if (!std::isfinite(v[i]) || std::fabs(v[i]) > 100) luaL_argerror(L, 1, "a velocity within 100 m/s on each axis");
-        return result(L, game(plugin).skater_push(plugin.id(), Vec3{v[0], v[1], v[2]}));
+        return result(L, game_of(plugin).skater_push(plugin.id(), Vec3{v[0], v[1], v[2]}));
     }
     // push_wait(): the skater is still getting back on its board, so a pending push waits two seconds
     // more; push_reset(): a pending push is dropped.
     static int push_wait(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "skater.control", "reskate.skater.push_wait");
-        return result(L, game(plugin).skater_push_wait(plugin.id()));
+        return result(L, game_of(plugin).skater_push_wait(plugin.id()));
     }
     static int push_reset(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "skater.control", "reskate.skater.push_reset");
-        return result(L, game(plugin).skater_push_reset(plugin.id()));
+        return result(L, game_of(plugin).skater_push_reset(plugin.id()));
     }
     // cruise(speed, may_slow): carried up to `speed` (m/s, 1 to 30; 0 or nil off) while rolling and not
     // braking, for the next 300 ms (call it every tick); with may_slow, eased down to it when faster.
@@ -349,7 +284,7 @@ struct KitApi {
         need(L, plugin, "skater.control", "reskate.skater.cruise");
         const double speed = luaL_optnumber(L, 1, 0);
         if (!(speed == 0 || (speed >= 1 && speed <= 30))) luaL_argerror(L, 1, "a cruise speed is 1 to 30 m/s, or 0 for none");
-        return result(L, game(plugin).cruise(plugin.id(), static_cast<float>(speed), lua_toboolean(L, 2) != 0));
+        return result(L, game_of(plugin).cruise(plugin.id(), static_cast<float>(speed), lua_toboolean(L, 2) != 0));
     }
     // set_velocity(velocity, add): the board's velocity (m/s, in the world) set, or added to, by the
     // next physics step with the skater on its board, on the ground or in the air.
@@ -359,7 +294,7 @@ struct KitApi {
         const auto v = position_of(L, 1, "a velocity");
         for (const auto a : v)
             if (!(std::abs(a) <= 100)) luaL_argerror(L, 1, "a velocity is at most 100 m/s on each axis");
-        return result(L, game(plugin).set_velocity(plugin.id(), v, lua_toboolean(L, 2) != 0));
+        return result(L, game_of(plugin).set_velocity(plugin.id(), v, lua_toboolean(L, 2) != 0));
     }
     // flip_speed(factor): flip tricks in the air turn at factor times their speed (0.05 to 10, times the
     // player's own flip speed) for the next 300 ms, so call it every tick; 1 or nil ends it. The game
@@ -369,12 +304,12 @@ struct KitApi {
         need(L, plugin, "skater.control", "reskate.skater.flip_speed");
         const double factor = luaL_optnumber(L, 1, 1);
         if (!(factor >= 0.05 && factor <= 10)) luaL_argerror(L, 1, "a flip speed is 0.05 to 10 times the game's");
-        return result(L, game(plugin).flip_speed(plugin.id(), static_cast<float>(factor)));
+        return result(L, game_of(plugin).flip_speed(plugin.id(), static_cast<float>(factor)));
     }
     static int hold(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "skater.control", "reskate.skater.hold");
-        return result(L, game(plugin).skater_hold(plugin.id(), lua_toboolean(L, 1) != 0));
+        return result(L, game_of(plugin).skater_hold(plugin.id(), lua_toboolean(L, 1) != 0));
     }
 
     static constexpr std::size_t files_most_bytes = 1u << 20;

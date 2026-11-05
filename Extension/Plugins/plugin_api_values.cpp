@@ -5,7 +5,6 @@
 
 namespace dingosdk::plugins {
 struct ValuesApi {
-    static Game& game(Plugin& plugin) { return plugin.services_.game(); }
     static bool server(Plugin& plugin) { return plugin.services_.authority(); }
 };
 namespace {
@@ -21,11 +20,7 @@ int ui_symbol(lua_State* L) {
 int ui_values_publish(lua_State* L) {
     auto& plugin = plugin_of(L);
     need(L, plugin, "ui.models", "reskate.ui.values");
-    if (ValuesApi::server(plugin)) {
-        lua_pushboolean(L, false);
-        lua_pushliteral(L, "ui.models is client-only");
-        return 2;
-    }
+    if (ValuesApi::server(plugin)) return result(L, "ui.models is client-only");
     luaL_checktype(L, 1, LUA_TTABLE);
     ui_values::Values values;
     lua_pushnil(L);
@@ -43,13 +38,8 @@ int ui_values_publish(lua_State* L) {
         values.emplace(name, static_cast<float>(value));
         lua_pop(L, 1);
     }
-    const auto error = ui_values::distinct_symbols(plugin.id(), values)
-        ? ValuesApi::game(plugin).publish_ui_values(plugin.id(), values)
-        : std::string("UI symbol collision or reserved symbol");
-    lua_pushboolean(L, error.empty());
-    if (error.empty()) return 1;
-    lua_pushlstring(L, error.data(), error.size());
-    return 2;
+    return result(L, ui_values::distinct_symbols(plugin.id(), values) ? game_of(plugin).publish_ui_values(plugin.id(), values)
+                                                                      : std::string("UI symbol collision or reserved symbol"));
 }
 }
 void install_values_api(Plugin&, lua_State* L) {

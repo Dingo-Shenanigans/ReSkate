@@ -3391,43 +3391,62 @@ void the_sandbox_holds() {
     check(environment.logged("sandbox fine"), "Every way out is closed\n" + environment.all());
 }
 
-// ReSkate's own reading and compiling is not a plugin's running time (Limits::io_ms): a module that
-// takes far longer to compile than a call may run still loads, the time is let off only up to the
+// ReSkate's own reading and compiling is not a plugin's running time (Limits::io_ms): modules that
+// take far longer to compile than a call may run still load, the time is let off only up to the
 // allowance, and a plugin that reads a file in a loop is stopped all the same.
 void reskates_own_reading_is_not_a_plugins_time() {
-    // About 1 MB of code in a function that never runs: it compiles for tens of milliseconds.
+    // About 1 MB of code (the most a source file may be) in a function that never runs. Measured on
+    // a 32-thread desktop: the two compile for 130 ms idle and 560 ms with every core busy, while the
+    // rest of the load is 1 to 2 ms idle and 3 to 15 ms busy. The limit sits well between the two:
+    // at 5 ms a busy machine (another build running) once stopped the first case.
+    constexpr double limit_ms = 40;
     std::string big = "local function never()\n";
     while (big.size() < 1'000'000 - 64) big += "    do local a = {1, 2, 3, x = 'y'} if a.x == 'z' then a[1] = a[2] + a[3] end end\n";
     big += "end\nreturn {}\n";
-    // The loop after it gives the interrupt its safe points, where it looks at the clock.
-    const std::string main = R"(require("big") for i = 1, 1000 do end reskate.log("big loaded"))";
+    // The loop after them gives the interrupt its safe points, where it looks at the clock.
+    const std::string main = R"(require("big") require("big2") for i = 1, 1000 do end reskate.log("big loaded"))";
+    const auto modules = [&](const char* id) {
+        return package(id, {{manifest_file, manifest()}, {"plugin/main.lua", main}, {"plugin/big.lua", big}, {"plugin/big2.lua", big}});
+    };
     {
-        TestEnvironment environment;
-        Limits limits;
-        limits.call_ms = limits.hang_ms = 5;
-        Host host(environment, Side::client, limits);
-        host.apply({package("big-module", {{manifest_file, manifest()}, {"plugin/main.lua", main}, {"plugin/big.lua", big}})});
-        running(host, "big-module", environment);
-        check(environment.logged("big loaded"), "A module's compile is not counted against the load's 5 ms");
+        // With a build running on top of that, Windows can still hold the thread past the limit
+        // anywhere in the load (twice in ten runs here). That says nothing about compiles: a load
+        // that counted them would be stopped every time, so it gets a few tries.
+        std::string why;
+        for (int attempt = 0; attempt < 5; ++attempt) {
+            TestEnvironment environment;
+            Limits limits;
+            limits.call_ms = limits.hang_ms = limit_ms;
+            limits.io_ms = 2000; // two compiles on a busy machine may pass the default 250 ms
+            Host host(environment, Side::client, limits);
+            host.apply({modules("big-module")});
+            const auto status = status_of(host, "big-module");
+            if (status.state == "running" && environment.logged("big loaded")) {
+                why.clear();
+                break;
+            }
+            why = status.state + ": " + status.reason + "\n" + environment.all();
+        }
+        check(why.empty(), "A module's compile is not counted against the load's 40 ms, and big-module is " + why);
     }
     {
         TestEnvironment environment;
         Limits limits;
-        limits.call_ms = limits.hang_ms = 5;
+        limits.call_ms = limits.hang_ms = limit_ms;
         limits.io_ms = 0;
         Host host(environment, Side::client, limits);
-        host.apply({package("big-module-counted", {{manifest_file, manifest()}, {"plugin/main.lua", main}, {"plugin/big.lua", big}})});
-        stopped(host, "big-module-counted", "ran longer than 5 ms");
+        host.apply({modules("big-module-counted")});
+        stopped(host, "big-module-counted", "ran longer than 40 ms");
     }
     {
         TestEnvironment environment;
         Limits limits;
-        limits.call_ms = limits.hang_ms = 5;
+        limits.call_ms = limits.hang_ms = limit_ms;
         limits.io_ms = 20;
         Host host(environment, Side::client, limits);
         host.apply({package("read-loop", {{manifest_file, manifest()}, {"plugin/main.lua", R"(while true do reskate.package.read("plugin/big.lua") end)"},
                                           {"plugin/big.lua", big}})});
-        stopped(host, "read-loop", "ran longer than 5 ms");
+        stopped(host, "read-loop", "ran longer than 40 ms");
     }
 }
 
@@ -3444,12 +3463,32 @@ void a_steam_id_reaches_the_game_exactly() {
         assert(not pcall(reskate.session.spectate, 76561198000000001), "a Steam ID as a number")
         assert(not pcall(reskate.session.spectate, 1.5), "a whole number")
         reskate.session.spectate()
+        -- One reading of a player everywhere: digits and nothing after them, a player table, or a
+        -- number while it is exact. "123abc" once passed as player 123.
+        reskate.session.spectate({id = "76561198000000002"})
+        reskate.session.spectate(12345)
+        for _, junk in {"76561198000000001x", "123abc", "", " 1", "+1", {id = "123abc"}, {}, true} do
+            assert(not pcall(reskate.session.spectate, junk), "session.spectate refuses " .. tostring(junk))
+            assert(not pcall(reskate.session.tag, junk, "x"), "session.tag refuses " .. tostring(junk))
+            assert(not pcall(reskate.net.send, junk, "x"), "net.send refuses " .. tostring(junk))
+        end
+        -- "0" is no player, but it stops a Spectate, as the docs say.
+        assert(not pcall(reskate.session.tag, "0", "x") and not pcall(reskate.net.send, "0", "x"), "player 0 is no player")
+        reskate.session.spectate("76561198000000003")
+        reskate.session.spectate("0")
+        assert(not pcall(reskate.objects.move, "42abc", vector.create(0, 0, 0)), "an object's id has nothing after its digits")
+        assert(not pcall(reskate.objects.remove, 42), "and is a string")
         reskate.log("watched")
-    )", R"("session.read")")});
+    )", R"("session.read", "session.nametags", "net.session", "world.objects")")});
     running(host, "watcher", environment);
     check(environment.logged("watched"), "The plugin ran\n" + environment.all());
     check(environment.fake.called("spectate 76561198000000001"), "The Steam ID arrives exactly\n" + environment.all());
     check(environment.fake.called("spectate 0"), "and nothing stops spectating");
+    check(environment.fake.called("spectate 76561198000000002") && environment.fake.called("spectate 12345"),
+          "A player table and an exact number are players too\n" + environment.all());
+    const auto& calls = environment.fake.calls;
+    const auto third = std::find(calls.begin(), calls.end(), "spectate 76561198000000003");
+    check(third != calls.end() && std::find(third, calls.end(), "spectate 0") != calls.end(), "\"0\" stops spectating\n" + environment.all());
 }
 
 void a_slow_call_is_said_and_a_hung_one_stopped() {
