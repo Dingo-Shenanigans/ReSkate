@@ -403,8 +403,8 @@ std::optional<Cut> Index::cut(std::string_view item) {
                 list.piece.source == s.nodes[start].piece.source)
                 at->second = index;
         }
-        for (const auto& [name, index] : chosen) {
-            const auto& list = s.nodes[index].piece;
+        for (const auto& entry : chosen) {
+            const auto& list = s.nodes[entry.second].piece;
             if (placed.insert(placement(list.source, list.file)).second) {
                 cut.pieces.push_back(list);
                 cut.bytes += list.file.size;

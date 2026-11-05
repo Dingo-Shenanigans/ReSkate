@@ -153,25 +153,25 @@ void write_outfit(std::uint64_t wearer) {
     auto listing = s.cache->listing(wearer);
     ++s.writing;
     std::thread([wearer, listing = std::move(listing)] {
-        auto& s = state();
+        auto& st = state();
         try {
             std::vector<dingosdk::synchros::OutfitItem> items;
             for (const auto& item : listing) items.push_back(outfit_item(item));
             const auto folder = dingosdk::synchros::next_outfit_folder(outfit_mods_root(), wearer);
             const auto made = dingosdk::synchros::write_outfit_mod(folder, wearer, game_root(), items,
-                [&](const ContentId& id) { return s.cache->read(id); });
+                [&](const ContentId& id) { return st.cache->read(id); });
             if (made.written) {
                 log("Skate Synchros: " + std::to_string(made.items.size()) + " of " + std::to_string(wearer) +
                     "'s items made into a mod; they show from the next level load");
-                s.arrived = true;
-                s.apply_wanted = true;
+                st.arrived = true;
+                st.apply_wanted = true;
             } else {
                 log("Skate Synchros: " + std::to_string(wearer) + "'s outfit could not be made into a mod: " + made.problem);
             }
         } catch (const std::exception& failure) {
             log(std::string("Skate Synchros: an outfit could not be made into a mod: ") + failure.what());
         }
-        --s.writing;
+        --st.writing;
     }).detach();
 }
 
