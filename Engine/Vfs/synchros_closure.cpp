@@ -263,10 +263,15 @@ struct Index::State {
                             tables.push_back(std::move(table));
                             return;
                         }
+                        // Every mod ships its own copy of an item list under the game's name too, with
+                        // its own items added (mod_merge_combine.cpp, item_list_name): each copy is read,
+                        // whichever wins the name, so each mod's items are found in its own copy.
+                        const bool list_copy = kind == Piece::ebx && name.starts_with("items/") &&
+                                               name.find("collection") != std::string::npos && by_name.contains(name);
                         if (kind == Piece::chunk) {
                             if (by_guid.contains(guid_key(asset.guid))) return;
-                        } else if (kind == Piece::resource ? res_by_name.contains(name)
-                                                           : by_name.contains(name) && nodes[by_name[name]].piece.kind == Piece::ebx) {
+                        } else if (!list_copy && (kind == Piece::resource ? res_by_name.contains(name)
+                                                           : by_name.contains(name) && nodes[by_name[name]].piece.kind == Piece::ebx)) {
                             return;  // a higher mod's
                         }
                         Node n;
@@ -282,14 +287,14 @@ struct Index::State {
                         if (kind == Piece::chunk) {
                             n.guid = guid_key(asset.guid);
                             by_guid.emplace(n.guid, index);
-                        } else {
+                        } else if (!list_copy) {
                             // EBX first by name; a resource only where no EBX has the name.
                             if (kind == Piece::ebx || !by_name.contains(name)) by_name[name] = index;
                             if (kind == Piece::resource) res_by_name.emplace(name, index);
                             by_leaf[leaf(name)].push_back(index);
                             if (kind == Piece::resource) by_resource.emplace(asset.resourceId, index);
                         }
-                        in_bundle.push_back(index);
+                        if (!list_copy) in_bundle.push_back(index);
                         nodes.push_back(std::move(n));
                     };
                     for (std::size_t i = 0; i < manifest.ebx.size(); ++i) add(Piece::ebx, manifest.ebx[i], first + i);
