@@ -644,6 +644,91 @@ void settings_survive_a_restart() {
     std::filesystem::remove_all(file.parent_path());
 }
 
+// What happened in the first real test: both switched sharing on (which opens the side connection)
+// before either had entered a code, so nobody asked. A code entered later must count at once.
+void a_code_entered_after_connecting_counts_at_once() {
+    const auto root = std::filesystem::temp_directory_path() / "synchros-late-code-test";
+    std::filesystem::remove_all(root);
+    FakeCloset my_mods, their_mods;
+    const auto a = my_mods.add(1, 900);
+    my_mods.cuts["own_hat"] = {"items/own_hat", {a}, {}, 0};
+    Cache my_cache(root / "mine"), their_cache(root / "theirs");
+    Settings mine, theirs;
+    mine.share = true;
+    mine.own_code = *read_code(make_code(CodeKind::personal), CodeKind::personal);
+    theirs.share = true;                       // switched on to get a code of their own
+    theirs.own_code = *read_code(make_code(CodeKind::personal), CodeKind::personal);
+    std::deque<std::pair<std::uint64_t, std::vector<std::uint8_t>>> to_them, to_me;
+    Wire my_wire, their_wire;
+    my_wire.outbox = &to_them;
+    their_wire.outbox = &to_me;
+    std::vector<std::uint64_t> ready;
+    Game my_game{[](std::uint64_t) { return std::set<std::string>{}; }, [](std::string_view) { return true; },
+                 [] { return std::set<std::string>{"own_hat"}; }, [](std::string_view) { return false; }, nullptr, nullptr};
+    Game their_game{[](std::uint64_t) { return std::set<std::string>{"own_hat"}; }, [](std::string_view) { return false; },
+                    [] { return std::set<std::string>{}; }, [](std::string_view) { return false; },
+                    [&](std::uint64_t wearer) { ready.push_back(wearer); }, nullptr};
+    Exchange my_side(mine, my_cache, my_mods, my_wire, my_game, me);
+    Exchange their_side(theirs, their_cache, their_mods, their_wire, their_game, them);
+    my_side.begin(session);
+    their_side.begin(session);
+    const auto run = [&] {
+        for (int round = 0; round < 40; ++round) {
+            my_side.tick();
+            their_side.tick();
+            while (!to_them.empty()) { auto m = std::move(to_them.front()); to_them.pop_front(); their_side.received(me, m.second); }
+            while (!to_me.empty()) { auto m = std::move(to_me.front()); to_me.pop_front(); my_side.received(them, m.second); }
+        }
+    };
+    my_side.connected(them);
+    their_side.connected(me);
+    run();
+    check(ready.empty(), "nothing yet: nobody holds a code");
+    // They switch showing on and enter my code, connected all along.
+    theirs.show = true;
+    check(enter_code(theirs, show_code(mine.own_code, CodeKind::personal)).empty(), "code entered");
+    their_side.settings_changed();
+    run();
+    check(ready == std::vector<std::uint64_t>{me}, "a code entered mid-session brings the outfit");
+    check(their_side.status(me).welcomed && my_side.status(them).sharing, "and both ends agree");
+
+    // The other way round: they already asked while I was not sharing; switching it on answers them.
+    Settings late;
+    late.own_code = *read_code(make_code(CodeKind::personal), CodeKind::personal);
+    Settings viewer;
+    viewer.show = true;
+    check(enter_code(viewer, show_code(late.own_code, CodeKind::personal)).empty(), "code entered");
+    Cache c1(root / "late"), c2(root / "viewer");
+    std::deque<std::pair<std::uint64_t, std::vector<std::uint8_t>>> q1, q2;
+    Wire w1, w2;
+    w1.outbox = &q1;
+    w2.outbox = &q2;
+    std::vector<std::uint64_t> ready2;
+    Game viewer_game = their_game;
+    viewer_game.outfit_ready = [&](std::uint64_t wearer) { ready2.push_back(wearer); };
+    Exchange wearer(late, c1, my_mods, w1, my_game, me);
+    Exchange watcher(viewer, c2, their_mods, w2, viewer_game, them);
+    wearer.begin(session);
+    watcher.begin(session);
+    const auto run2 = [&] {
+        for (int round = 0; round < 40; ++round) {
+            wearer.tick();
+            watcher.tick();
+            while (!q1.empty()) { auto m = std::move(q1.front()); q1.pop_front(); watcher.received(me, m.second); }
+            while (!q2.empty()) { auto m = std::move(q2.front()); q2.pop_front(); wearer.received(them, m.second); }
+        }
+    };
+    wearer.connected(them);
+    watcher.connected(me);
+    run2();
+    check(ready2.empty() && !watcher.status(me).welcomed, "not shared while sharing is off");
+    late.share = true;
+    wearer.settings_changed();
+    run2();
+    check(ready2 == std::vector<std::uint64_t>{me}, "switching sharing on mid-session sends the outfit");
+    std::filesystem::remove_all(root);
+}
+
 int main() {
     try {
         codes_look_right_and_read_back();
@@ -663,6 +748,7 @@ int main() {
         the_wearer_sends_only_what_is_worn_and_offered();
         two_players_exchange_an_outfit_end_to_end();
         settings_survive_a_restart();
+        a_code_entered_after_connecting_counts_at_once();
     } catch (const std::exception& e) {
         std::cerr << "synchros: " << e.what() << '\n';
         return 1;

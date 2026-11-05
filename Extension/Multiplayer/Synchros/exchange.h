@@ -3,6 +3,7 @@
 #include "sharing_rules.h"
 #include "synchros_wire.h"
 #include "wearer.h"
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -70,6 +71,9 @@ public:
     void own_outfit_changed();
     // Blocking: their exchange ends, both ways.
     void blocked(std::uint64_t peer);
+    // The settings changed (a code entered, a group joined, sharing or showing switched): each
+    // player connected now is asked again, and told again whether they may see this player's.
+    void settings_changed();
 
     struct Status {
         bool welcomed{};         // they let this player see their outfit
@@ -89,8 +93,10 @@ public:
 
 private:
     struct Peer {
+        bool linked{};             // the side connection is up
         // As a viewer.
         bool hello_sent{}, welcomed{};
+        std::vector<std::uint8_t> asked_with;   // the last Hello as sent, so a change is noticed
         std::set<std::string> asked;
         std::vector<ItemContents> listing;
         std::vector<ContentId> to_fetch;        // not asked for yet
@@ -100,10 +106,13 @@ private:
         bool ready_told{};
         // As a wearer.
         bool hello_seen{}, sharing{};
+        Proofs proofs;             // the viewer's, kept to judge again when the settings change
         std::unique_ptr<Outfit> outfit;
         std::string refused;
     };
     void send(std::uint64_t peer, const Message& message);
+    void hello(std::uint64_t peer, Peer& p, bool again);
+    void judge(std::uint64_t peer, Peer& p);
     void refuse(std::uint64_t peer, const std::string& why);
     void ask(std::uint64_t peer, Peer& p);
     void fetch_more(std::uint64_t peer, Peer& p);
