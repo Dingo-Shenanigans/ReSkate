@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <iostream>
 #include <map>
@@ -317,10 +318,13 @@ struct Fixture {
     }
 
     // A mod with its own copy of a bundle: the manifest first (raw), then every payload.
+    // `retouch` changes the asset list as the mod's tool wrote it, wrongly or not.
     void add(const std::string& name, bool levels, const std::string& toc, const std::vector<std::string>& superbundles,
              const std::vector<Ebx>& assets, const std::vector<Resource>& resources = {}, const char* bundle = bundle_name,
-             const std::vector<Chunk>& chunks = {}) {
-        const auto listing = fb::write_binary_bundle(manifest_of(assets, resources, chunks));
+             const std::vector<Chunk>& chunks = {}, const std::function<void(fb::BinaryBundle&)>& retouch = {}) {
+        auto manifest = manifest_of(assets, resources, chunks);
+        if (retouch) retouch(manifest);
+        const auto listing = fb::write_binary_bundle(manifest);
         Bytes archive(listing);
         std::vector<fb::BundleFileInfo> files{{{true, package, 1}, 0, static_cast<std::uint32_t>(listing.size())}};
         const auto store = [&](const Bytes& payload) {
@@ -870,6 +874,54 @@ void two_merges_write_the_same_bytes() {
     expect(read(patch / "Win32" / fs::path(second_map_toc)) == toc, "same bytes: the second map's TOC differs");
 }
 
+// A map whose tool put a document of the map's own in place of the game's and kept the game's
+// asset list entry for it, its size and all (333-Skate_3_Improved's lighting descriptions in its
+// copy of the game's lighting bundles, 2026-11-04). The merged copy lists the size the payload
+// decodes to, as every entry of the game's own does, and says so; and it still does when the
+// merge goes by what the first one found in the map (ScanCache) rather than reading it again.
+void a_listed_size_the_payload_does_not_have() {
+    Fixture fixture("listed-size");
+    auto assets = game_copy();
+    const auto listed = assets[1].payload.size();
+    assets[1].payload = ebx_document(guid(2), {guid(20), guid(21)});
+    const auto decoded = assets[1].payload.size();
+    fixture.add("map", true, map_toc, {map_superbundle}, assets, {}, bundle_name, {},
+                [&](fb::BinaryBundle& manifest) { manifest.ebx[1].originalSize = listed; });
+    const auto patch = fixture.catalog.root / mods::generated_folder;
+    for (const std::string pass : {"first merge", "merge from what the first found"}) {
+        if (pass != "first merge") fs::remove(patch / mods::detail::stamp_file);
+        const auto report = mods::merge_mods(fixture.catalog);
+        expect(report.issue.empty() && report.built && !report.reused, "listed size, " + pass + ": the merge builds the patch\n" + describe(report));
+        if (!report.built) return;
+        expect(noted(report, std::string("map: ") + bundle_name + ": 1 asset(s) listed another size than their payload decodes to; "
+                             "the merged copy lists the payload's, e.g. test/other (" + std::to_string(listed) + " bytes listed, " +
+                             std::to_string(decoded) + " decoded)"),
+               "listed size, " + pass + ": the merge says what it repaired\n" + describe(report));
+        if (pass == "first merge") {
+            const auto scan = read(fixture.catalog.root / mods::detail::scan_cache_file);
+            expect(std::string(reinterpret_cast<const char*>(scan.data()), scan.size()).find("\nr\t") != std::string::npos,
+                   "listed size: what the first merge found in the map is kept for the next");
+        }
+        Patch merged(fixture);
+        std::optional<fb::BundleAsset> entry;
+        std::optional<fb::BundleFileInfo> file;
+        for (const auto& bundle : fb::read_toc(read(patch / "Win32" / fs::path(map_toc))).bundles)
+            if (const auto listing = mods::detail::list_bundle(merged.store, merged.root, merged.base, bundle, merged.game))
+                for (std::size_t index = 0; index < listing->manifest.ebx.size(); ++index)
+                    if (listing->manifest.ebx[index].name == "test/other") {
+                        entry = listing->manifest.ebx[index];
+                        file = listing->files.at(listing->first + index);
+                    }
+        expect(entry && file, "listed size, " + pass + ": the map's copy still holds test/other");
+        if (!entry || !file) return;
+        const auto bytes = merged.bytes(file->location, file->offset, file->size, "listed size: test/other");
+        expect(bytes == encoded(assets[1].payload), "listed size, " + pass + ": test/other is the map's own document as it ships it");
+        expect(entry->originalSize == decoded, "listed size, " + pass + ": the merged entry lists " + std::to_string(entry->originalSize) +
+               " bytes, the payload decodes to " + std::to_string(decoded));
+        expect(entry->sha1 == mods::detail::sha1_of(assets[1].payload), "listed size, " + pass + ": the merged entry's sha1 is the payload's");
+    }
+}
+
 void a_manifest_after_the_first_payload_keeps_asset_order() {
     Fixture fixture("manifest-order");
     const auto assets = game_copy();
@@ -1268,6 +1320,7 @@ int main(int argc, char** argv) try {
     every_placement_lands_in_an_archive();
     a_mod_archive_numbered_like_a_placeholder();
     two_merges_write_the_same_bytes();
+    a_listed_size_the_payload_does_not_have();
     carried_chunk_keeps_the_records_in_step();
     streamed_world_texture_chunk_gets_its_logical_offset();
     if (failures) {

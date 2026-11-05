@@ -85,14 +85,6 @@ std::string asset_key(const fb::BundleAsset& asset) {
         (asset.kind == fb::AssetKind::chunk ? asset.guid.string() : ascii_lower(asset.name));
 }
 
-// The game's item lists (items/itemmastercollection, a season's
-// 0.30.0_itemcollection), which every cosmetic mod adds its items to. The game
-// reads each entry of one at startup without checking it, so an entry naming an
-// item that is not loaded is a crash on every launch, not a missing item.
-bool item_list_name(std::string_view name) {
-    const auto text = ascii_lower(name);
-    return text.starts_with("items/") && text.find("collection") != std::string::npos;
-}
 constexpr std::string_view item_list_type = "delmaritemcollectionasset";
 
 // Some bundles carry no inline manifest: their region only lists placements,
@@ -469,7 +461,12 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
         // Reading the manifest only to look for such copies is optional: a
         // bundle that cannot be read that way just passes through as it is.
         const auto cooperative = contributor && (contributor->variant_projection.contains(key) || contributor->variant_authority.contains(key));
-        const auto needed = shared || gridBundle || renumber || cooperative;
+        // A copy of a bundle in which a mod changed one of the game's item lists is read even where
+        // that mod alone ships it, and the game's copy with it: the combine below drops an entry
+        // naming an item the bundle does not hold (a pack that kept the entry of an item it no
+        // longer ships, 2026-11-04), which passed through whole was a crash on every launch.
+        const auto itemList = overrides.item_list_bundles.contains(key);
+        const auto needed = shared || gridBundle || renumber || cooperative || itemList;
 
         // A mod's payloads have to lie inside the archives it ships. A bundle
         // pointing past the end of one, or into one that is not there, means
@@ -653,10 +650,14 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
         std::map<std::size_t, fb::BundleFileInfo> repaired;
         std::map<std::size_t, std::pair<fb::BundleFileInfo, fb::Sha1>> repairedFrom;
         bool offsetsRepaired{};
+        // The mod's own EBX whose asset list entry gives another size than the payload decodes to:
+        // the merged copy's entry gives the payload's (repair_ebx_payload). The payload stays where
+        // it is; only the list is written again.
+        std::size_t resized{};
         if (!isBase && (casBacked || !region.inlineManifest.empty())) {
             auto manifest = casBacked ? std::move(casManifest) : fb::read_binary_bundle(region.inlineManifest);
             std::size_t removed{};
-            std::string example;
+            std::string example, resizedExample;
             // What reading this copy found last time, while the mod's files are as they were
             // (ScanCache): then only what it found is read again. Else all of it, and what it finds
             // is kept for the next merge, unless something could not be read.
@@ -674,16 +675,29 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                 try {
                     auto encoded = store.read(root, file.location, file.offset, file.size);
                     auto checked = asset;
-                    const auto count = repair_ebx_payload(encoded, checked, gameRoot);
-                    if (!count) return;
+                    const auto result = repair_ebx_payload(encoded, checked, gameRoot);
+                    if (!result) return;
                     found.repair.push_back(static_cast<std::uint32_t>(at));
                     // (One that carries another mod's change is that change, not this copy.)
                     if (overridden.contains(at)) return;
+                    if (result.listed) {
+                        ++resized;
+                        if (resizedExample.empty())
+                            resizedExample = asset.name + " (" + std::to_string(*result.listed) + " bytes listed, " +
+                                             std::to_string(checked.originalSize) + " decoded)";
+                    }
+                    if (!result.removed) {
+                        // The payload as it ships, under an entry that describes it: still this
+                        // mod's copy where it lies, which a combine reads as it is.
+                        asset.sha1 = checked.sha1;
+                        asset.originalSize = checked.originalSize;
+                        return;
+                    }
                     const auto before = asset.sha1;
                     asset = checked;
                     repaired[at] = store.write(file.location.installChunk, manifestArchive, encoded);
                     repairedFrom.emplace(at, std::pair{file, before});
-                    removed += count;
+                    removed += result.removed;
                     if (example.empty()) example = asset.name;
                 } catch (const std::exception& error) {
                     whole = false;
@@ -752,12 +766,16 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                         streamed.offset_example);
             }
             if (casBacked) casManifest = std::move(manifest);
-            else if (!repaired.empty() || offsetsRepaired) region.inlineManifest = fb::write_binary_bundle(manifest);
+            else if (!repaired.empty() || offsetsRepaired || resized) region.inlineManifest = fb::write_binary_bundle(manifest);
             if (!known && whole) scans.keep(modName, scanKey, std::move(found));
             if (ebxRepaired)
                 report.notes.push_back(modName + ": " + bundle.name + ": " + std::to_string(ebxRepaired) +
                     " asset(s) listed " + std::to_string(removed) + " type reference(s) on another fixup's slot, "
                     "which crash the game as it loads; taken out of the merged copies, e.g. " + example);
+            if (resized)
+                report.notes.push_back(modName + ": " + bundle.name + ": " + std::to_string(resized) +
+                    " asset(s) listed another size than their payload decodes to; the merged copy lists the "
+                    "payload's, e.g. " + resizedExample);
         }
         // Assets another mod added to the game's copy of this bundle: this copy
         // loads instead of the game's on this mod's levels, so it gets them too.
@@ -831,8 +849,8 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
             }
         }
         // Nothing moved in this bundle: it passes through whole, as before.
-        if (casBacked && !shared && !gridBundle && !cooperative && renumbered.empty() && overridden.empty() && repaired.empty() &&
-            !offsetsRepaired && additions.empty())
+        if (casBacked && !shared && !gridBundle && !cooperative && !itemList && renumbered.empty() && overridden.empty() &&
+            repaired.empty() && !offsetsRepaired && !resized && additions.empty())
             casBacked = false;
 
         for (auto& file : region.files) {

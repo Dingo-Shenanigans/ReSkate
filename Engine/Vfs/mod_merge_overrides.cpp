@@ -448,6 +448,7 @@ AssetOverrides collect_asset_overrides(const std::vector<const Mod*>& mods,
                 " referenced bundle chunk(s) accompany mesh/texture additions into map copies");
         }
         for (auto& change : changes) {
+            if (item_list_name(change.name)) out.item_list_bundles.insert(change.bundle);
             // What the change names of the assets the mod added beside it. The mod
             // put them in one bundle with what names them, so they stay together.
             std::set<fb::Guid> names;

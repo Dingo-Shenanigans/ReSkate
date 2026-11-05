@@ -149,18 +149,27 @@ fb::Sha1 sha1_of(std::span<const std::byte> bytes) {
     return digest;
 }
 
-std::size_t repair_ebx_payload(std::vector<std::byte>& encoded, fb::BundleAsset& asset, const fs::path& gameRoot) {
+EbxRepair repair_ebx_payload(std::vector<std::byte>& encoded, fb::BundleAsset& asset, const fs::path& gameRoot) {
+    std::vector<std::byte> decoded;
     std::optional<fb::ebx::FixupRepair> repaired;
     try {
-        repaired = fb::ebx::repair_type_fixups(fb::decode_cas(encoded, {gameRoot}));
+        decoded = fb::decode_cas(encoded, {gameRoot});
+        repaired = fb::ebx::repair_type_fixups(decoded);
     } catch (const std::exception&) {
-        return 0;
+        if (decoded.empty()) return {};
     }
-    if (!repaired) return 0;
-    encoded = fb::encode_cas(repaired->bytes, {gameRoot});
-    asset.sha1 = sha1_of(repaired->bytes);
-    asset.originalSize = repaired->bytes.size();
-    return repaired->removed;
+    EbxRepair result;
+    if (asset.originalSize != decoded.size()) result.listed = asset.originalSize;
+    if (repaired) {
+        encoded = fb::encode_cas(repaired->bytes, {gameRoot});
+        asset.sha1 = sha1_of(repaired->bytes);
+        asset.originalSize = repaired->bytes.size();
+        result.removed = repaired->removed;
+    } else if (result.listed) {
+        asset.sha1 = sha1_of(decoded);
+        asset.originalSize = decoded.size();
+    }
+    return result;
 }
 
 PlacementRecord read_placements(const fs::path& file) {

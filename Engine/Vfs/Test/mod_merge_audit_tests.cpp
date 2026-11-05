@@ -9,8 +9,9 @@
 //   * every bundle, asset and TOC chunk a mod ships is in the patch;
 //   * a document two mods' assets fought over by name is named by nothing that is left;
 //   * a document the merge wrote keeps its instances in the order the engine searches them, has
-//     every reference a mod appended to one of its lists, and has every value a mod changed in
-//     place changed: no value in it is the merge's own invention;
+//     every reference a mod appended to one of its lists (but one naming a document the mod
+//     does not ship, which the merge leaves out and says so), and has every value a mod changed
+//     in place changed: no value in it is the merge's own invention;
 //   * a list whose entries the game keeps beside it (an item list, the music playlist) names
 //     nothing its own bundle does not hold, in every copy of that bundle the patch carries;
 //   * a bundle's chunk metadata has one record for each of its chunks, in the order of the
@@ -386,6 +387,43 @@ struct Audit {
             }
         }
         return result;
+    }
+    // The guid of every document a mod's own copies of a bundle hold, wherever the mod ships one;
+    // unsure when a copy cannot be read or the mod ships none.
+    struct HeldBy {
+        bool unsure{};
+        std::set<fb::Guid> guids;
+    };
+    std::map<std::pair<std::size_t, std::string>, HeldBy> modHeld;
+    const HeldBy& held_by_mod(std::size_t index, const std::string& bundleName) {
+        const auto key = std::pair{index, ascii_lower(bundleName)};
+        if (const auto found = modHeld.find(key); found != modHeld.end()) return found->second;
+        HeldBy result;
+        bool any{};
+        const auto& mod = catalog.mods[index];
+        for (const auto& relative : scan(mod.directory).tocs) {
+            fb::TocDocument own;
+            try { own = fb::read_toc(read_file(mod.directory / fs::path(relative))); }
+            catch (const std::exception&) { result.unsure = true; continue; }
+            for (const auto& bundle : own.bundles) {
+                if (ascii_lower(bundle.name) != key.second) continue;
+                const auto copy = read_bundle(static_cast<int>(index + 2), bundle);
+                if (!copy.listing) { result.unsure = true; continue; }
+                any = true;
+                const auto documents = held(static_cast<int>(index + 2), copy, result.unsure);
+                result.guids.insert(documents.begin(), documents.end());
+            }
+        }
+        result.unsure |= !any;
+        return modHeld.emplace(key, std::move(result)).first->second;
+    }
+    // The merge said it left entries of this mod's copy of an item list out (mod_merge_combine.cpp).
+    bool noted_left_out(const std::string& mod, const std::string& asset) const {
+        const auto prefix = ascii_lower(mod + ": " + asset + ": ");
+        return std::ranges::any_of(catalog.notes, [&](const std::string& note) {
+            const auto text = ascii_lower(note);
+            return text.starts_with(prefix) && text.find("left out of the list") != std::string::npos;
+        });
     }
     std::string mod_names(const std::vector<std::size_t>& list) const {
         std::set<std::string> unique;
@@ -827,7 +865,7 @@ struct Audit {
         std::cout << gone.size() << " document(s) went with a guid nothing in the patch has; " << references << " reference(s) in the patch still name one\n";
 
         section("Documents the merge wrote");
-        std::size_t checked{}, lists{}, kept{}, inPlace{}, valueEdits{}, reshaped{};
+        std::size_t checked{}, lists{}, kept{}, namesNothing{}, inPlace{}, valueEdits{}, reshaped{};
         for (const auto* record : written) {
             fb::ebx::Document merged;
             try { merged = fb::ebx::read_document(payload(record->mergedPlace)); }
@@ -881,7 +919,18 @@ struct Audit {
                         const auto id = identity(edit, (*added)[at]);
                         if (id.empty()) continue;
                         if (present.contains(id)) { ++kept; continue; }
-                        if (const auto* target = named(edit, (*added)[at]); target && gone.contains(*target)) continue;
+                        const auto* target = named(edit, (*added)[at]);
+                        if (target && gone.contains(*target)) continue;
+                        // An entry naming a document the mod's own copy of the bundle does not hold
+                        // names nothing the game could load: the mod shipped it broken, and the
+                        // merge leaves it out and says so (the lists below may not keep it either).
+                        if (target) {
+                            const auto& own = held_by_mod(copy.mod, record->bundle);
+                            if (!own.unsure && !own.guids.contains(*target) && noted_left_out(catalog.mods[copy.mod].name, record->name)) {
+                                ++namesNothing;
+                                continue;
+                            }
+                        }
                         fail("merged list", label + ": " + field.name + " lacks an entry " + catalog.mods[copy.mod].name + " added (" + id + ")");
                     }
                 }
@@ -945,7 +994,8 @@ struct Audit {
                 ++valueEdits;
             }
         }
-        std::cout << checked << " document(s) read back; " << lists << " list(s) a mod appended to, " << kept << " appended reference(s) found in them\n";
+        std::cout << checked << " document(s) read back; " << lists << " list(s) a mod appended to, " << kept << " appended reference(s) found in them; "
+                  << namesNothing << " left out that name a document the mod does not ship, as the merge says\n";
         std::cout << inPlace << " value(s) in them differ from the game's, each one some mod's; " << valueEdits
                   << " mod copy(ies) that changed values alone have them all in; " << reshaped
                   << " that also moved a reference or resized a list are not combined that way\n";

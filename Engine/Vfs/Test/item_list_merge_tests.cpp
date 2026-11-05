@@ -7,9 +7,10 @@
 // crash on every launch (Skate.exe+0x891e07, 2026-10-04). Two ways to get one:
 //   * two mods each add a different item under the same asset name, and only one can stay;
 //   * a mod's list names an item no installed mod ships (it was built on top of another mod).
-// Either way the entry has to go, and everything else of every mod has to stay. (A bundle only
-// one mod ships is not merged at all, it passes through as that mod built it, so every case
-// here has two mods shipping the shared bundle.)
+// Either way the entry has to go, and everything else of every mod has to stay. A bundle only
+// one mod ships otherwise passes through as that mod built it; one whose item list that mod
+// changed is looked at all the same (a pack that kept an entry for an item it no longer ships,
+// 2026-11-04), so the cases are tried with that mod alone too.
 //
 // The same mods also show what else the merge does with two copies of one of the game's assets:
 //   * an item two mods both list is in the merged list once;
@@ -363,17 +364,17 @@ void different_names_from_two_mods(const Game& game, const CasStore& store) {
            "different names: nothing is reported\n" + describe(report));
 }
 
-// One mod alone changes the list, beside a mod that ships the bundle with the game's. Its list
-// as it wrote it is what the bundle gets, unless that list names an item nothing ships: then
-// that entry goes and its own item stays.
-void one_mod_changes_the_list(const Game& game, const CasStore& store, bool missing) {
-    const std::string label = missing ? "an item nothing ships" : "one mod's list";
-    Merge merge(game, missing ? "missing-item" : "one-list");
+// One mod alone changes the list, beside a mod that ships the bundle with the game's, or as the
+// only mod that ships the bundle at all. Its list as it wrote it is what the bundle gets, unless
+// that list names an item nothing ships: then that entry goes and its own item stays.
+void one_mod_changes_the_list(const Game& game, const CasStore& store, bool missing, bool alone) {
+    const std::string label = std::string(missing ? "an item nothing ships" : "one mod's list") + (alone ? ", the only mod" : "");
+    Merge merge(game, std::string(missing ? "missing-item" : "one-list") + (alone ? "-alone" : ""));
     const auto own = item_from(game.item, "items/reskate_test/own_alone", 0x10);
     const fb::ebx::ImportReference absent{guid(0x70), guid(0x90)};
     const auto shipped = missing ? list_with(game.list, {own.identity, absent}) : list_with(game.list, {own.identity});
     write_mod(merge.add("alone"), store, game, &shipped, {own});
-    write_mod(merge.add("bystander"), store, game, nullptr, {});
+    if (!alone) write_mod(merge.add("bystander"), store, game, nullptr, {});
     const auto report = mods::merge_mods(merge.catalog);
     const auto list = merged_list(merge, game, report, label, 1);
     expect(names(list, own), label + ": the list has the mod's own item");
@@ -558,8 +559,10 @@ int main(int argc, char** argv) try {
     const fs::path keep = argc > 2 ? fs::path(argv[2]) : fs::path{};
     same_name_from_two_mods(game, store, argc > 2 ? &keep : nullptr);
     different_names_from_two_mods(game, store);
-    one_mod_changes_the_list(game, store, false);
-    one_mod_changes_the_list(game, store, true);
+    for (const auto alone : {false, true}) {
+        one_mod_changes_the_list(game, store, false, alone);
+        one_mod_changes_the_list(game, store, true, alone);
+    }
     an_item_two_mods_both_list(game, store);
     values_two_mods_changed(game, store, false);
     values_two_mods_changed(game, store, true);
