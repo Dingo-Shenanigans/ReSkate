@@ -72,7 +72,7 @@ std::vector<const ts::Package*> search(std::span<const ts::Package> packages, co
         result.push_back(&package);
     }
     std::stable_sort(result.begin(), result.end(), [&](const ts::Package* a, const ts::Package* b) {
-        if (a->pinned != b->pinned) return a->pinned;
+        if (query.pinned_first && a->pinned != b->pinned) return a->pinned;
         return before(*a, *b, query.sort);
     });
     return result;

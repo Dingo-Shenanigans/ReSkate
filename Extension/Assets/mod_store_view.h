@@ -27,8 +27,11 @@ struct Query {
     // package in any of them is left out), as the launcher's GET MODS has them (thunderstore.h).
     std::vector<std::string> only, hidden;
     Sort sort{Sort::popular};
+    // Pinned packages ahead of the rest. Off where the order is the point (BROWSE's MOST POPULAR,
+    // RECENTLY UPDATED and NEW), so a pinned package is where its downloads or dates put it.
+    bool pinned_first{true};
 };
-// The packages that match, pinned first, then in `sort` order. A deprecated package only shows once
+// The packages that match, pinned first (unless not `pinned_first`), then in `sort` order. A deprecated package only shows once
 // installed.
 std::vector<const ts::Package*> search(std::span<const ts::Package> packages, const Query& query, const ts::Installed& installed);
 

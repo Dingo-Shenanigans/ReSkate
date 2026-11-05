@@ -35,9 +35,11 @@ constexpr ImU32 sheet_fill = IM_COL32(16, 16, 16, 242);
 constexpr ImU32 band_fill = IM_COL32(11, 11, 11, 255);
 constexpr ImU32 window_fill = IM_COL32(20, 20, 20, 242);
 constexpr ImU32 rail_fill = IM_COL32(17, 17, 17, 255);
-constexpr ImU32 card_fill = IM_COL32(29, 29, 31, 250);
+// Cards and rows: the menu's greys on its own dark sheet; a page drawn in the kit over the game world
+// (draw_in_kit: a plugin's page in the pause menu) swaps in the pause pages' near black for its time.
+ImU32 card_fill = IM_COL32(29, 29, 31, 250);
 constexpr ImU32 inner_card_fill = IM_COL32(37, 37, 40, 250);
-constexpr ImU32 row_fill = IM_COL32(40, 40, 43, 255);
+ImU32 row_fill = IM_COL32(40, 40, 43, 255);
 constexpr ImU32 row_hover = IM_COL32(56, 57, 61, 255);
 constexpr ImU32 tab_fill = IM_COL32(35, 35, 37, 255);
 constexpr ImU32 rule_ink = IM_COL32(45, 45, 47, 255);
@@ -2117,6 +2119,9 @@ void draw_in_kit(SkateMenu& menu, float scale, const std::function<void()>& body
     }
     const auto restore_font_scale = io.FontGlobalScale;
     io.FontGlobalScale = large ? ui_scale / large_font_ratio : ui_scale;
+    // Over the game world the menu's greys read as grey cards: the pause pages' near black instead.
+    const ImU32 kept_card = card_fill, kept_row = row_fill;
+    card_fill = IM_COL32(16, 16, 16, 242), row_fill = IM_COL32(29, 29, 31, 250);
     ImGui::PushFont(menu.body);
     const int colours = push_kit_style();
     begin_controls_frame(menu.bold);
@@ -2130,6 +2135,7 @@ void draw_in_kit(SkateMenu& menu, float scale, const std::function<void()>& body
         menu.heading = small_fonts[2];
         menu.title = small_fonts[3];
     }
+    card_fill = kept_card, row_fill = kept_row;
     ui_scale = kept_scale;
     shown_layout = kept_layout;
     primary_tab = kept_primary_tab;

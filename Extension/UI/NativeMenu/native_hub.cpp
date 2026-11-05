@@ -6,6 +6,8 @@
 #include <array>
 #include <atomic>
 #include <optional>
+#include <stdexcept>
+#include <string>
 
 // The pause menu's Hub page lists live-service tiles in two native TileLists.
 // ReSkate has no store, skate.Pass, bounties, missions or crew bounties, and
@@ -49,10 +51,27 @@ Value empty_tile_style(const Context &c, Value style_ref) {
     const auto current = read<Ref>(c.address(style_ref));
     const Value source{current.handle, current.handle ? c.type_of(current.handle) : 0};
     require(source.handle && source.type == c.type(button_style), "Hub tile style differs.");
-    // The authored tile style already uses the empty fill for its disabled state.
-    const auto empty = read<Address>(c.address(c.path(source, {state_fills, 0x69cf50ca})));
-    require(empty && string(read<Address>(empty + 0x18), 96) == "UI/Foundations/Styles/FIll/Common/FillStyle_Empty",
-            "Hub empty fill is unavailable.");
+    // The game's empty fill: the tile style's disabled state when it uses it, else found by name from
+    // the style's own fills (2026-11-04 in game the disabled state held another fill, and the Hub was
+    // left as the game made it).
+    const auto fill_name = [](Address fill) { return fill ? string(read<Address>(fill + 0x18), 96) : std::string(); };
+    const auto is_empty_fill = [&](Address fill) {
+        auto name = fill_name(fill);
+        std::transform(name.begin(), name.end(), name.begin(), [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+        return name.ends_with("/fillstyle_empty");
+    };
+    const auto disabled = read<Address>(c.address(c.path(source, {state_fills, 0x69cf50ca})));
+    auto empty = is_empty_fill(disabled) ? disabled : Address{};
+    for (const auto field : state_fill_fields) {
+        if (empty) break;
+        if (const auto anchor = read<Address>(c.address(c.path(source, {state_fills, field}))))
+            for (const char *name : {"UI/Foundations/Styles/FIll/Common/FillStyle_Empty", "UI/Foundations/Styles/Fill/Common/FillStyle_Empty"})
+                if (const auto found = named_asset(c, anchor, name); found && is_empty_fill(found)) {
+                    empty = found;
+                    break;
+                }
+    }
+    if (!empty) throw std::runtime_error("Hub empty fill is unavailable (the tiles' disabled fill is \"" + fill_name(disabled) + "\").");
     style = c.create(button_style, empty_style_id);
     manager = c.manager;
     c.copy(style, c.address(source));

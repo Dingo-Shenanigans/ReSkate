@@ -5,7 +5,8 @@
 // and its focus. The work behind it is Extension/Assets/mod_store.h; nothing here reads the disk or
 // the network.
 //
-// BROWSE is a store's grid: the categories down the left (Featured, All mods, then Thunderstore's own),
+// BROWSE is a store's grid: the views down the left (Featured, Most popular, Recently updated, New,
+// All mods, then Thunderstore's categories),
 // a search box, SORT and HIDE INSTALLED over five cards across, and the card picked shown big at the
 // right with its main button (install, update, or switch on or off) and FULL PAGE, which opens the
 // mod's page with its README. MY MODS is the Mods folder; UPDATES what Thunderstore has newer; PLUGINS
@@ -24,13 +25,15 @@ struct ModPage {
     std::vector<std::string> only, hidden;
     bool categories_loaded{}, categories_open{};
     ms::Sort sort{ms::Sort::popular};
-    // BROWSE's rail: the category the grid shows (rail_featured, rail_all or a category's name), and
-    // whether what is installed is left out of it.
+    // BROWSE's rail: what the grid shows (one of the rail_ views or a category's name), and whether
+    // what is installed is left out of it.
     std::string rail;
     bool hide_installed{};
-    // The card the details beside the grid show (Namespace-Name), and whether a card has the D-pad's
-    // focus this frame (A is its main action then, and the footer says which).
+    // The card the details beside the grid show: its mod (Namespace-Name) and its place in the grid,
+    // so a mod listed twice is only ever one card lit; and whether a card has the D-pad's focus this
+    // frame (A is its main action then, and the footer says which).
     std::string picked;
+    std::size_t picked_at{};
     bool card_focused{};
     int installed_filter{};             // 0 all, 1 on, 2 off, 3 waiting to be applied
     std::string details;                // the package whose page is open (Namespace-Name); empty: none
@@ -49,7 +52,10 @@ struct ModPage {
     unsigned listing_serial{~0U}, mods_serial{~0U};
     std::string query_key;
     ms::Front front;
+    // BROWSE's grid, and each card's control id beside it (a mod's name, made unique when it is in
+    // the grid twice, so the focus is never on two cards).
     std::vector<const ts::Package*> results, updates;
+    std::vector<std::uint32_t> card_ids;
     std::vector<std::pair<std::string, int>> categories;
     std::map<std::string, const ts::Package*, std::less<>> by_folder;
     std::size_t listed{};               // every mod BROWSE lists (All mods, and the search box's hint)
@@ -85,8 +91,40 @@ ModPage &mod_page() {
     return value;
 }
 const std::uint32_t categories_button = hash("mods-categories-open"), plugin_typing = hash("mods-plugin-page-typing");
-// The rail's first two rows; every other row is a category's name, which neither can be.
-constexpr std::string_view rail_featured = "", rail_all = "\x01" "all";
+// The rail's first rows; every other row is a category's name, which none can be (none starts with
+// \x01). Featured is the front page's picks; Most popular, Recently updated and New every mod in that
+// order; All mods every mod in SORT's.
+constexpr std::string_view rail_featured = "", rail_popular = "\x01" "popular", rail_updated = "\x01" "updated", rail_new = "\x01" "new",
+                           rail_all = "\x01" "all";
+struct OrderedView {
+    std::string_view key;
+    const char *name;
+    ms::Sort order;
+};
+constexpr std::array<OrderedView, 3> ordered_views{{{rail_popular, "Most popular", ms::Sort::popular},
+                                                     {rail_updated, "Recently updated", ms::Sort::updated},
+                                                     {rail_new, "New", ms::Sort::newest}}};
+const OrderedView *ordered_view(std::string_view rail) {
+    for (const auto &view : ordered_views)
+        if (view.key == rail) return &view;
+    return nullptr;
+}
+// Featured shows its picks until something is searched for; then, as before there were views, every
+// mod that matches, in SORT's order (the picks are too few to search in).
+bool featured_picks(const ModPage &m) { return m.rail == rail_featured && m.search.empty(); }
+// SORT orders All mods, the categories and a search from Featured. The picks and the three ordered
+// views keep their own order, which is what they are; SORT is greyed out on them.
+bool sort_applies(const ModPage &m) { return !featured_picks(m) && !ordered_view(m.rail); }
+ms::Sort grid_sort(const ModPage &m) {
+    const auto *view = ordered_view(m.rail);
+    return view ? view->order : m.sort;
+}
+// What the grid's head line calls the rail row shown.
+std::string rail_name(const ModPage &m) {
+    if (const auto *view = ordered_view(m.rail)) return view->name;
+    if (featured_picks(m)) return "Featured";
+    return m.rail.empty() || m.rail == rail_all ? "All mods" : m.rail;
+}
 
 // The categories chosen, kept in the profile as the launcher keeps its own: a name a line.
 void load_categories(ModPage &m) {
@@ -355,24 +393,26 @@ enum class CardPress { none, main, pick, page };
 // A package as a card of BROWSE's grid: its picture, what it is to this PC as a tag (INSTALLED, UPDATE,
 // NEW), its name, its maker, its downloads and version. A or Enter is its main action; a click picks it
 // for the details beside the grid, a double click opens its page; the D-pad picks the card it moves
-// onto. A card out of view still takes its place in the focus order, so the D-pad can move onto it,
-// but is not drawn: drawing it would ask for its icon, and icons have only so many places on the GPU.
-CardPress package_card(Ui &ui, ModPage &m, std::uint32_t id, ImVec2 p, ImVec2 q, float picture_h, const ts::Package &package, const Item *clip) {
+// onto (browse_grid). A card out of view still takes its place in the focus order, so the D-pad can
+// move onto it, but is not drawn: drawing it would ask for its icon, and icons have only so many
+// places on the GPU. `at` is its place in the grid, which is what picking it keeps.
+CardPress package_card(Ui &ui, ModPage &m, std::uint32_t id, std::size_t at, ImVec2 p, ImVec2 q, float picture_h, const ts::Package &package,
+                       const Item *clip) {
     auto &h = ui.h;
     const bool fired = h.fire == id;
     const Hit hit = item(ui, id, p, q, clip);
-    // (Not by the pointer passing over: the details would change under it on its way to them.)
-    if (h.focus == id && h.ring) m.picked = package.full_name, m.card_focused = true;
+    if (h.focus == id && h.ring) m.card_focused = true;
     const CardPress press = !hit.press ? CardPress::none : fired ? CardPress::main : ui.doubled ? CardPress::page : CardPress::pick;
-    if (press == CardPress::pick || press == CardPress::page) m.picked = package.full_name;
+    if (press == CardPress::pick || press == CardPress::page) m.picked = package.full_name, m.picked_at = at;
     if (clip && (q.x < clip->a.x || p.x > clip->b.x || q.y < clip->a.y || p.y > clip->b.y)) return press;
     auto *draw = ui.draw;
     const float u = ui.u, inset = 8 * u;
     // White under the D-pad or the keys, a lighter grey under the pointer, as the server browser's rows;
     // the one the details show, while the focus is elsewhere (on them, or on the rail), a blue edge.
+    // That one is a place in the grid, not a mod: the same mod twice is not lit twice.
     const auto [focused, pointed] = lit_of(hit);
     skate_theme::rough_rect(draw, p, q, focused ? theme::paper : pointed ? row_hover : tile_dark, id & 0xfff, u * 2);
-    if (!focused && m.picked == package.full_name) draw->AddRect(p, q, accent, 0, 0, 5 * u);
+    if (!focused && m.picked_at == at && m.picked == package.full_name) draw->AddRect(p, q, accent, 0, 0, 5 * u);
     const ImVec2 pa(p.x + inset, p.y + inset), pz(q.x - inset, p.y + picture_h);
     package_picture(ui, pa, pz, &package, package.title());
     // Being installed, or waiting its turn: a strip over the foot of its picture says so.
@@ -429,7 +469,7 @@ void refresh_view(ModPage &m) {
     m.mods = ms::installed();
     const auto mods_serial = m.mods ? m.mods->serial : 0U;
     load_categories(m);
-    std::string key = m.search + '\n' + std::to_string(static_cast<int>(m.sort)) + '\n' + m.rail + (m.hide_installed ? "\n-installed" : "");
+    std::string key = m.search + '\n' + std::to_string(static_cast<int>(grid_sort(m))) + '\n' + m.rail + (m.hide_installed ? "\n-installed" : "");
     for (const auto &name : m.only) key += "\n+" + name;
     for (const auto &name : m.hidden) key += "\n-" + name;
     if (m.listing->serial == m.listing_serial && mods_serial == m.mods_serial && key == m.query_key) return;
@@ -440,18 +480,37 @@ void refresh_view(ModPage &m) {
     const auto &packages = m.listing->packages;
     const ts::Installed none;
     const auto &have = m.mods ? m.mods->versions : none;
-    m.results = ms::search(packages, {m.search, m.only, m.hidden, m.sort}, have);
-    // The rail's category (any, on Featured and All mods) and HIDE INSTALLED narrow it.
-    const bool any_category = m.rail.empty() || m.rail == rail_all;
-    std::erase_if(m.results, [&](const ts::Package *package) {
-        return (!any_category && !package->in_category(m.rail)) || (m.hide_installed && ms::action_for(*package, have) != ms::Action::install);
-    });
     if (listing_changed || m.front.shelves.empty()) {
         m.front = ms::front(packages, have, ms::today());
         m.categories = ms::categories(packages);
         m.by_folder.clear();
         for (const auto &package : packages) m.by_folder[ts::folder_for(package.full_name)] = &package;
         m.new_since = ms::days_before(ms::today(), 14);
+    }
+    if (featured_picks(m)) {
+        // The front page's picks, less what the categories chosen leave out.
+        const ts::CategoryFilter filter{m.only, m.hidden};
+        m.results.clear();
+        for (const auto *package : m.front.featured)
+            if (ts::shown_by(*package, filter)) m.results.push_back(package);
+    } else {
+        ms::Query query{m.search, m.only, m.hidden, grid_sort(m)};
+        query.pinned_first = !ordered_view(m.rail);
+        m.results = ms::search(packages, query, have);
+    }
+    // The rail's category (any, on the views before the categories) and HIDE INSTALLED narrow it.
+    const bool any_category = m.rail.empty() || m.rail.front() == '\x01';
+    std::erase_if(m.results, [&](const ts::Package *package) {
+        return (!any_category && !package->in_category(m.rail)) || (m.hide_installed && ms::action_for(*package, have) != ms::Action::install);
+    });
+    // Each card's id: its mod's name, and if that mod is already in the grid (nothing lists one twice
+    // today, but a view that did must not light two cards), the name again with another salt.
+    m.card_ids.clear();
+    std::set<std::uint32_t> taken;
+    for (const auto *package : m.results) {
+        auto id = hash(package->full_name, 41);
+        for (std::uint64_t again = 1; !taken.insert(id).second; ++again) id = hash(package->full_name, 41 + again * 7919);
+        m.card_ids.push_back(id);
     }
     if (data_changed) {
         m.listed = ms::search(packages, {}, have).size();
@@ -468,8 +527,9 @@ const ts::Package *package_named(const ModPage &m, std::string_view full_name) {
 
 // ---------------------------------------------------------------- BROWSE
 
-// The categories down the left, as rows with how many mods each has: Featured (the front page's
-// picks), All mods, then the listing's own categories, the biggest first. Pressing one shows it; the
+// The views down the left, as rows: Featured (the front page's picks), Most popular, Recently updated
+// and New, then All mods and the listing's own categories with how many mods each has, the biggest
+// first. Pressing one shows it; the
 // one shown is a light row with the kit's blue edge, the focus white as everywhere.
 void category_rail(Ui &ui, ModPage &m, ImVec2 a, ImVec2 z) {
     auto *draw = ui.draw;
@@ -499,6 +559,7 @@ void category_rail(Ui &ui, ModPage &m, ImVec2 a, ImVec2 z) {
         label(draw, ui.bold, 32 * u, ImVec2(p.x + 28 * u, p.y + (row_h - 32 * u) * .5f), right, dark ? focus_ink : theme::paper, name);
     };
     row(rail_featured, "Featured", 0);
+    for (const auto &view : ordered_views) row(view.key, view.name, 0);
     row(rail_all, "All mods", m.listed);
     for (const auto &[name, count] : m.categories) row(name, name, static_cast<std::size_t>(count));
     list.end();
@@ -512,7 +573,10 @@ void browse_bar(Ui &ui, ModPage &m, ImVec2 a, float right, float bar) {
     const float search_w = std::max(360 * u, right - a.x - sort_w - hide_w - filter_w - gap * 3);
     field(ui, hash("mods-search"), a, ImVec2(a.x + search_w, a.y + bar), m.search, m.search_hint.empty() ? "Search mods" : m.search_hint.c_str(), false, 64);
     float x = a.x + search_w + gap;
-    if (button(ui, hash("mods-sort"), ImVec2(x, a.y), ImVec2(x + sort_w, a.y + bar), "SORT", Look::tile, true, ms::sort_label(m.sort)))
+    // On the views with an order of their own it says that order, greyed out (sort_applies).
+    const bool sorts = sort_applies(m);
+    const std::string order = sorts ? ms::sort_label(m.sort) : featured_picks(m) ? "FEATURED" : ms::sort_label(grid_sort(m));
+    if (button(ui, hash("mods-sort"), ImVec2(x, a.y), ImVec2(x + sort_w, a.y + bar), "SORT", Look::tile, sorts, order))
         m.sort = static_cast<ms::Sort>((static_cast<std::size_t>(m.sort) + 1) % ms::sort_count);
     x += sort_w + gap;
     if (chip(ui, hash("mods-hide-installed"), x, a.y, a.y + bar, "HIDE INSTALLED", m.hide_installed))
@@ -839,73 +903,51 @@ void browse_panel(Ui &ui, ModPage &m, const ts::Package *package, ImVec2 a, ImVe
     if (lines) paragraph(draw, ui.body, 30 * u, ImVec2(left, y), edge - left, soft, version.description, lines);
 }
 
-// The grid, five cards across, scrolled down. On Featured: the front page's picks, then its first rows
-// (the most popular, recently updated and new), each under its title. Otherwise every mod of the rail's
-// category that the search, the categories chosen and HIDE INSTALLED leave, in SORT's order.
+// The grid, five cards across, scrolled down, under a line saying what it is: the rail row's mods
+// (refresh_view) that the search, the categories chosen and HIDE INSTALLED leave, in its order.
 void browse_grid(Ui &ui, ModPage &m, ImVec2 a, ImVec2 z) {
     auto *draw = ui.draw;
+    auto &h = ui.h;
     const float u = ui.u, spacing = 20 * u;
     const float card_w = (z.x - a.x - 24 * u - spacing * 4) / 5, picture_h = card_w * .62f, card_h = picture_h + 140 * u;
+    const auto &cards = m.results;
+    // Which card the details show, settled before any is drawn, so the blue edge is on that card from
+    // the frame the focus moves: the one the D-pad or the keys are on (not the pointer passing over,
+    // or the details would change under it on its way to them); else the one picked, if it is still
+    // in its place; else the first place its mod has now (the order changed); else the first card.
+    if (h.ring)
+        for (std::size_t i = 0; i < cards.size(); ++i)
+            if (m.card_ids[i] == h.focus) m.picked = cards[i]->full_name, m.picked_at = i;
+    if (m.picked_at >= cards.size() || cards[m.picked_at]->full_name != m.picked) {
+        const auto found = std::find_if(cards.begin(), cards.end(), [&](const ts::Package *package) { return package->full_name == m.picked; });
+        if (found == cards.end()) m.picked = cards.empty() ? std::string() : cards.front()->full_name, m.picked_at = 0;
+        else m.picked_at = static_cast<std::size_t>(found - cards.begin());
+    }
     Scroller list(ui, hash("mods-browse"), a, z);
-    const ts::Package *first{};
-    bool picked_here{};
-    const auto title = [&](const std::string &text) {
-        bool shown{};
-        const float top = list.next(60 * u, 6 * u, shown);
-        if (shown) draw->AddText(ui.bold, 34 * u, ImVec2(a.x, top + 10 * u), theme::paper, text.c_str());
-    };
-    const auto cards = [&](const std::vector<const ts::Package *> &packages, std::uint64_t salt) {
-        for (std::size_t i = 0; i < packages.size(); i += 5) {
-            bool shown{};
-            const float top = list.next(card_h, spacing, shown);
-            for (std::size_t j = i; j < std::min(packages.size(), i + 5); ++j) {
-                const auto &package = *packages[j];
-                if (!first) first = &package;
-                picked_here |= package.full_name == m.picked;
-                // (Rows out of view still take their place in the focus order, near it, for the D-pad.)
-                if (!shown && (top + card_h < a.y - card_h * 2 || top > z.y + card_h * 2)) continue;
-                const auto id = hash(package.full_name, salt);
-                const ImVec2 p(a.x + static_cast<float>(j - i) * (card_w + spacing), top);
-                const auto press = package_card(ui, m, id, p, ImVec2(p.x + card_w, top + card_h), picture_h, package, &list.box);
-                if (press == CardPress::main) run_main_action(m, package);
-                else if (press == CardPress::page) open_details(ui, m, package);
-                list.reveal(id, top, card_h);
-            }
-        }
-    };
-    if (m.rail.empty() && m.search.empty()) {
-        const ts::CategoryFilter filter{m.only, m.hidden};
-        const auto kept = [&](const std::vector<const ts::Package *> &packages) {
-            std::vector<const ts::Package *> row;
-            for (const auto *package : packages) {
-                if (row.size() >= 10) break; // two rows of each
-                if (!ts::shown_by(*package, filter) || (m.hide_installed && action_of(m, *package) != ms::Action::install)) continue;
-                row.push_back(package);
-            }
-            return row;
-        };
-        if (const auto picks = kept(m.front.featured); !picks.empty()) title("FEATURED"), cards(picks, 401);
-        std::uint64_t salt = 402;
-        for (const auto &shelf : m.front.shelves) {
-            if (shelf.title != "MOST POPULAR" && shelf.title != "RECENTLY UPDATED" && shelf.title != "NEW") continue;
-            if (const auto row = kept(shelf.packages); !row.empty()) title(shelf.title), cards(row, salt);
-            ++salt;
-        }
-    } else {
-        bool shown{};
-        const float head = list.next(56 * u, 10 * u, shown);
-        std::string count = std::string(m.rail.empty() || m.rail == rail_all ? "All mods" : m.rail) + "  \xc2\xb7  " + std::to_string(m.results.size()) +
-                            (m.results.size() == 1 ? " mod" : " mods");
-        if (!m.search.empty()) count += " matching \"" + m.search + "\"";
-        if (!m.only.empty() || !m.hidden.empty()) count += "  \xc2\xb7  " + category_summary(m);
-        if (shown) label(draw, ui.body, 32 * u, ImVec2(a.x, head + 8 * u), z.x, theme::muted, count);
-        cards(m.results, 41);
-        if (m.results.empty()) {
-            const float top = list.next(60 * u, 0, shown);
-            draw->AddText(ui.body, 36 * u, ImVec2(a.x, top), theme::muted, "Nothing matches. Try other words, another category, or ALL.");
+    bool shown{};
+    const float head = list.next(56 * u, 10 * u, shown);
+    std::string count = rail_name(m) + "  \xc2\xb7  " + std::to_string(cards.size()) + (cards.size() == 1 ? " mod" : " mods");
+    if (!m.search.empty()) count += " matching \"" + m.search + "\"";
+    if (!m.only.empty() || !m.hidden.empty()) count += "  \xc2\xb7  " + category_summary(m);
+    if (shown) label(draw, ui.body, 32 * u, ImVec2(a.x, head + 8 * u), z.x, theme::muted, count);
+    for (std::size_t i = 0; i < cards.size(); i += 5) {
+        const float top = list.next(card_h, spacing, shown);
+        for (std::size_t j = i; j < std::min(cards.size(), i + 5); ++j) {
+            // (Rows out of view still take their place in the focus order, near it, for the D-pad.)
+            if (!shown && (top + card_h < a.y - card_h * 2 || top > z.y + card_h * 2)) continue;
+            const auto &package = *cards[j];
+            const auto id = m.card_ids[j];
+            const ImVec2 p(a.x + static_cast<float>(j - i) * (card_w + spacing), top);
+            const auto press = package_card(ui, m, id, j, p, ImVec2(p.x + card_w, top + card_h), picture_h, package, &list.box);
+            if (press == CardPress::main) run_main_action(m, package);
+            else if (press == CardPress::page) open_details(ui, m, package);
+            list.reveal(id, top, card_h);
         }
     }
-    if (!picked_here) m.picked = first ? first->full_name : std::string();
+    if (cards.empty()) {
+        const float top = list.next(60 * u, 0, shown);
+        draw->AddText(ui.body, 36 * u, ImVec2(a.x, top), theme::muted, "Nothing matches. Try other words, another category, or ALL.");
+    }
     list.end();
 }
 
@@ -1468,11 +1510,11 @@ void mod_manager_page(Ui &ui, ImVec2 a, ImVec2 z) {
     // (Asked about its changes when the pause menu closes: hub_page_pending. Not once they were asked
     // about as the player backed out, and said later.)
     if (!m.declined && !m.leaving) m.visited = true;
-    // On BROWSE's grid X changes the order and Y opens the picked mod's full page; View (Select)
+    // On BROWSE's grid X changes the order (where SORT does: sort_applies) and Y opens the picked mod's full page; View (Select)
     // applies the changes, from anywhere here. (B and Escape going back from a mod's page are hub_frame's.)
     const std::uint32_t pressed = ui.input && !h.typing ? ui.pad.buttons & ~h.pad_before : 0;
     const bool on_grid = m.tab == browse_tab && m.details.empty() && !m.categories_open;
-    if (on_grid && (pressed & 0x4000)) m.sort = static_cast<ms::Sort>((static_cast<std::size_t>(m.sort) + 1) % ms::sort_count), h.sound = sound_select;
+    if (on_grid && sort_applies(m) && (pressed & 0x4000)) m.sort = static_cast<ms::Sort>((static_cast<std::size_t>(m.sort) + 1) % ms::sort_count), h.sound = sound_select;
     if (on_grid && (pressed & 0x8000))
         if (const auto *package = package_named(m, m.picked)) open_details(ui, m, *package), h.sound = sound_select;
     const auto changes = m.mods ? m.mods->changes : 0;
@@ -1589,7 +1631,8 @@ void mod_manager_page(Ui &ui, ImVec2 a, ImVec2 z) {
         if (const auto *picked = m.card_focused ? package_named(m, m.picked) : nullptr) {
             if (const auto does = main_action(m, *picked); does.enabled) hint(0x1000, "Enter", does.prompt);
         } else hint(0x1000, "Enter", "Choose");
-        hint(0x8000, "", "Full page"), hint(0x4000, "", "Sort");
+        hint(0x8000, "", "Full page");
+        if (sort_applies(m)) hint(0x4000, "", "Sort");
     } else if (m.tab == installed_tab) hint(0x1000, "Enter", "Switch on / off");
     else if (m.tab == updates_tab) hint(0x1000, "Enter", "Update");
     else if (!m.plugin_open.empty()) hint(0x1000, "Enter", "Select"), hint(0x2000, "Esc", "Back to plugins");

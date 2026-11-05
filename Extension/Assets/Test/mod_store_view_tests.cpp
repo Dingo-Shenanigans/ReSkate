@@ -86,6 +86,11 @@ int main() {
         check(updated.size() == 2 && updated.front()->full_name == "Zee-Desert_Springs", "LAST UPDATED puts the newest update first");
         const auto by_name = ms::search(packages, {{}, {}, {}, ms::Sort::name}, none);
         check(by_name.size() > 2 && by_name[1]->full_name == "Fourth-Board_Lib", "NAME sorts A to Z after the pinned ones");
+        ms::Query unpinned;
+        unpinned.pinned_first = false;
+        const auto plain = ms::search(packages, unpinned, none);
+        check(!plain.empty() && plain.front()->full_name == "Sandos-Vancouver_Plaza" && has(plain, "Team-Pinned_Pack"),
+              "without pinned_first a pinned package takes its place in the order");
     }
 
     // ---- categories
