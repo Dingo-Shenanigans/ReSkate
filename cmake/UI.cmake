@@ -39,6 +39,9 @@ add_library(dingosdk_overlay STATIC
     Extension/UI/Overlay/park_editor.cpp
     Extension/UI/Overlay/park_editor_actions.cpp
     Extension/UI/Overlay/park_editor_panels.cpp
+    Extension/UI/Overlay/park_editor_project.cpp
+    Extension/UI/Overlay/park_editor_hotbar.cpp
+    Extension/UI/Overlay/park_editor_rail.cpp
     Extension/UI/Overlay/park_editor_viewport.cpp
     Extension/UI/Overlay/park_previews.cpp
     Extension/UI/Overlay/gpu_diagnostics.cpp

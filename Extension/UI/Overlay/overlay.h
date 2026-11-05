@@ -352,6 +352,9 @@ struct Model {
     float menu_scale = default_menu_scale;
     // How the ReSkate menu is laid out (`ui layout`): menu_layout_sheet or menu_layout_hub (menu_scale.h).
     int menu_layout = menu_layout_sheet;
+    // How the park editor is laid out (`editor layout`): park_editor_layout_hotbar or
+    // park_editor_layout_rail (menu_scale.h).
+    int park_editor_layout = park_editor_layout_hotbar;
     // The side sheet's width and the window's size as last dragged, in pixels at 1080 lines and a menu
     // scale of 1; 0 for the default (`ui sheetwidth`, `ui hubsize`).
     float menu_sheet_width = 0;

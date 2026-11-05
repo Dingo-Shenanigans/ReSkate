@@ -88,6 +88,10 @@ struct SkateMenu {
     std::optional<int> layout_pending;
     double layout_until = 0;
     int layout_drawn = -1; // the layout the last frame was drawn in
+    // The park editor's layout as just chosen on BUILD > PARK EDITOR, until `editor layout` comes back
+    // through the model.
+    std::optional<int> editor_layout_pending;
+    double editor_layout_until = 0;
     std::optional<float> sheet_width_pending;
     double sheet_width_until = 0;
     bool sheet_dragging{};     // the sheet's left edge is held

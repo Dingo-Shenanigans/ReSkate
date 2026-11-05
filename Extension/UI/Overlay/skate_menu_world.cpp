@@ -210,6 +210,19 @@ void park_editor_panel(SkateMenu& menu, const Model& model, const CallbacksV3& c
     const bool can = model.editor.available && model.debug.camera_available && model.debug.ui_available && callbacks.queue_debug;
     if (primary_button(menu, "OPEN PARK EDITOR", can)) debug_request(menu, callbacks, {DebugAction::set_park_editor, true});
     if (!model.editor.available) warn(model.editor.status.c_str());
+    // The saved setting returns through the model a frame or more later: show the choice meanwhile.
+    if (menu.editor_layout_pending &&
+        (*menu.editor_layout_pending == model.park_editor_layout || ImGui::GetTime() > menu.editor_layout_until))
+        menu.editor_layout_pending.reset();
+    int layout = menu.editor_layout_pending.value_or(model.park_editor_layout) == park_editor_layout_rail ? 1 : 0;
+    field(menu, "Layout");
+    if (choice(menu, "editor-layout", layout, {"HOTBAR", "TOOL RAIL"}, callbacks.queue_console_command != nullptr, 0.0f,
+            {"The world fills the screen, the objects in a hotbar along the bottom.",
+             "A rail of tools down the left, a panel beside it and the selection on the right."})) {
+        menu.editor_layout_pending = layout ? park_editor_layout_rail : park_editor_layout_hotbar;
+        menu.editor_layout_until = ImGui::GetTime() + 3.0;
+        send_console(menu, callbacks, layout ? "editor layout rail" : "editor layout hotbar");
+    }
     note("Placed objects are listed under Saved Objects.");
     end_card();
 }

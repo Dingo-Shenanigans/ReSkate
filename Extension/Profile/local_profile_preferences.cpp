@@ -354,6 +354,7 @@ void set_menu_number(std::atomic<float>& cache, const char* key, float value) no
     } catch (...) { /* Saving is best effort; the runtime value already applied. */ }
 }
 std::atomic<float>& menu_layout_cache() noexcept { static std::atomic<float> value{-1}; return value; }
+std::atomic<float>& park_editor_layout_cache() noexcept { static std::atomic<float> value{-1}; return value; }
 std::atomic<float>& menu_sheet_width_cache() noexcept { static std::atomic<float> value{-1}; return value; }
 std::atomic<float>& menu_hub_width_cache() noexcept { static std::atomic<float> value{-1}; return value; }
 std::atomic<float>& menu_hub_height_cache() noexcept { static std::atomic<float> value{-1}; return value; }
@@ -368,6 +369,19 @@ int local_menu_layout() noexcept {
 bool set_local_menu_layout(int layout) noexcept {
     if (layout != menu_layout_sheet && layout != menu_layout_hub) return false;
     set_menu_number(menu_layout_cache(), "ReSkate.MenuLayout", static_cast<float>(layout));
+    return true;
+}
+
+int local_park_editor_layout() noexcept {
+    return static_cast<int>(menu_number(park_editor_layout_cache(), "ReSkate.ParkEditorLayout",
+                                        static_cast<float>(park_editor_layout_hotbar),
+                                        static_cast<float>(park_editor_layout_hotbar),
+                                        static_cast<float>(park_editor_layout_rail)));
+}
+
+bool set_local_park_editor_layout(int layout) noexcept {
+    if (layout != park_editor_layout_hotbar && layout != park_editor_layout_rail) return false;
+    set_menu_number(park_editor_layout_cache(), "ReSkate.ParkEditorLayout", static_cast<float>(layout));
     return true;
 }
 

@@ -144,6 +144,27 @@ void register_settings_commands(Commands &registry) {
     };
     registry.add(std::move(layout));
 
+    auto editor_choice = argument("hotbar|rail");
+    editor_choice.choices = {"hotbar", "rail"};
+    auto editor_layout = variable("editor layout",
+                                  "Lay the park editor out with a hotbar of objects along the bottom or a rail of tools down the left",
+                                  Group::objects, std::move(editor_choice));
+    editor_layout.execution = Execution::local;
+    editor_layout.inspect = [](const Model &m) {
+        return State{true, std::string(m.park_editor_layout == park_editor_layout_rail ? "rail" : "hotbar"), {},
+                     "Saved with your profile.", false};
+    };
+    editor_layout.run = [](const Model &, const Values &args, const Output &out) {
+        const bool rail = lower(std::get<std::string>(args[0])) == "rail";
+        profile_runtime::set_local_park_editor_layout(rail ? park_editor_layout_rail : park_editor_layout_hotbar);
+        out(rail ? "The park editor has a rail of tools down the left." : "The park editor has a hotbar along the bottom.");
+    };
+    editor_layout.reset = [](const Model &, const Output &out) {
+        profile_runtime::set_local_park_editor_layout(park_editor_layout_hotbar);
+        out("The park editor has a hotbar along the bottom.");
+    };
+    registry.add(std::move(editor_layout));
+
     // The menu saves these itself when its edge or corner is dragged; they are commands so that goes the
     // way the scale does, and so a size that went wrong can be put back.
     auto width = argument("width", Type::number);

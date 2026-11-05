@@ -156,6 +156,10 @@ bool set_local_menu_scale(float value) noexcept;
 // How the ReSkate menu is laid out (menu_layout_sheet or menu_layout_hub, menu_scale.h). Cached likewise.
 int local_menu_layout() noexcept;
 bool set_local_menu_layout(int layout) noexcept;
+// How the park editor is laid out (park_editor_layout_hotbar or park_editor_layout_rail, menu_scale.h).
+// Cached likewise.
+int local_park_editor_layout() noexcept;
+bool set_local_park_editor_layout(int layout) noexcept;
 // The side sheet's width and the window's size as the player last dragged them, in pixels at 1080
 // lines and a menu scale of 1 (menu_scale.h); 0 (both 0 for the window) is the default size, and
 // setting 0 goes back to it. A size out of menu_scale.h's range is refused. Cached likewise.

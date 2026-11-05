@@ -60,6 +60,7 @@ void read_model(void*, dingosdk::overlay::Model& output) {
     output.console_log.clear();
     output.menu_scale = dingosdk::profile_runtime::local_menu_scale();
     output.menu_layout = dingosdk::profile_runtime::local_menu_layout();
+    output.park_editor_layout = dingosdk::profile_runtime::local_park_editor_layout();
     output.menu_sheet_width = dingosdk::profile_runtime::local_menu_sheet_width();
     std::tie(output.menu_hub_width, output.menu_hub_height) = dingosdk::profile_runtime::local_menu_hub_size();
     output.replay_export_quality = dingosdk::profile_runtime::local_replay_export_quality();
