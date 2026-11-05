@@ -1,4 +1,5 @@
 #include "script_natives.h"
+#include "Engine/Core/Hooks/patches.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/script_natives.h"
@@ -63,14 +64,10 @@ void install_script_error_log(std::uintptr_t base) noexcept {
         if (!read(base + record, hash) || hash != 0xa5910db3) return;
         unsigned patched{};
         for (const auto offset : {0x30u, 0x40u, 0x48u}) {
-            std::uintptr_t current{};
-            const auto slot = base + record + offset;
-            if (!read(slot, current) || current != base + stub) continue;
-            DWORD old{};
-            if (!VirtualProtect(reinterpret_cast<void*>(slot), sizeof(current), PAGE_READWRITE, &old)) continue;
-            *reinterpret_cast<std::uintptr_t*>(slot) = reinterpret_cast<std::uintptr_t>(&script_error);
-            VirtualProtect(reinterpret_cast<void*>(slot), sizeof(current), old, &old);
-            ++patched;
+            // Only a slot still bound to the shared no-op stub is rebound.
+            if (patch_table_slot("script error binding", reinterpret_cast<void**>(base + record + offset),
+                    reinterpret_cast<void*>(base + stub), reinterpret_cast<void*>(&script_error)) == HookOk)
+                ++patched;
         }
         logging::log(logging::Level::info, logging::Channel::progression,
             "Script error log: {} binding slot(s) redirected.", patched);

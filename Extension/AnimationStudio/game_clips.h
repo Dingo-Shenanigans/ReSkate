@@ -16,7 +16,7 @@
 // Each joint's rotation, position and scale are the clip's channels where it has them, else the rig's
 // default pose; the clip's frames are its own (60 a second for the tricks). The board is Skateboard_Root,
 // relative to the placement joint, as a recording keeps it. The takeoff and landing are found from the
-// board's height, as make_trick_library.py did: the game's trick clips stay in place.
+// board's height: the game's trick clips stay in place.
 namespace dingosdk::anim_studio::game_clips {
 class Library {
 public:

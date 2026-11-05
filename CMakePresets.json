@@ -13,6 +13,15 @@
       "toolset": "v143"
     },
     {
+      "name": "vs2022-x64-dev",
+      "displayName": "Visual Studio 2022 x64, with the research tools (development only)",
+      "inherits": "vs2022-x64",
+      "binaryDir": "${sourceDir}/build/vs2022-x64-dev",
+      "cacheVariables": {
+        "DINGOSDK_DEV_TOOLS": "ON"
+      }
+    },
+    {
       "name": "linux-x64",
       "displayName": "Linux x64 (dedicated server only)",
       "generator": "Unix Makefiles",
@@ -26,6 +35,11 @@
     {
       "name": "release",
       "configurePreset": "vs2022-x64",
+      "configuration": "Release"
+    },
+    {
+      "name": "dev-release",
+      "configurePreset": "vs2022-x64-dev",
       "configuration": "Release"
     },
     {

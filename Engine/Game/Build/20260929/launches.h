@@ -1,4 +1,5 @@
 #pragma once
+#include <array>
 #include <cstdint>
 
 namespace dingosdk::game::build::v20260929::launches {
@@ -28,6 +29,33 @@ inline constexpr std::uint32_t pop_state = 200;
 // manual) launch from ollie_call, a boneless from boneless_call while the foot is planted (602).
 // The trainer verifies their bytes before it hooks anything.
 inline constexpr std::uintptr_t grind_pop_call = 0x482f646, ollie_call = 0x4824f7f, boneless_call = 0x47691f8;
+inline constexpr std::array<unsigned char, 5> grind_pop_call_prefix{0xe8, 0x55, 0x34, 0xf2, 0xff};
+inline constexpr std::array<unsigned char, 5> ollie_call_prefix{0xe8, 0x1c, 0xdb, 0xf2, 0xff};
+inline constexpr std::array<unsigned char, 5> boneless_call_prefix{0xe8, 0xa3, 0x98, 0xfe, 0xff};
+// The setter itself, void set_trajectory(trajectory, parameters), which the trainer hooks.
+inline constexpr std::uintptr_t set_trajectory = 0x4752aa0;
+inline constexpr std::array<unsigned char, 32> set_trajectory_prefix{0x40, 0x53, 0x48, 0x83, 0xec, 0x20, 0x80, 0xb9, 0x88, 0xbb, 0x00,
+                                                                     0x00, 0x00, 0x48, 0x8b, 0xd9, 0x0f, 0x85, 0xf6, 0x00, 0x00, 0x00,
+                                                                     0xc5, 0xfc, 0x28, 0x05, 0x62, 0x7d, 0xe8, 0x01, 0xc5, 0xfc};
+//
+// Where a flight lands, and when, the game finds by walking trajectories through the world
+// (set_trajectory every 7 steps in the air, the grind searches 0x47fb08f, 0x4803148); the gravity
+// of each walk is copied from the trajectory query manager (a pointer at query_manager; the
+// object's +0x30, (0, -9.8, 0)) into the query (0x4787820, +0xd0). query_manager_load is the
+// mov rcx, [rip + query_manager] in the reckoning's query launch (0x473e280): this build's manager.
+// The trainer's air gravity (Extension/Skater/client_noclip.cpp) writes that gravity.
+inline constexpr std::uintptr_t query_manager = 0x7785da8;
+inline constexpr std::uintptr_t query_manager_load = 0x473e312;
+inline constexpr std::array<unsigned char, 7> query_manager_load_prefix{0x48, 0x8b, 0x0d, 0x8f, 0x7a, 0x04, 0x03};
+//
+// On foot (Extension/Trainer/trainer_jump.cpp). A skater off the board falls under a gravity of
+// its own, which the game writes from one instruction (mov dword ptr [rbx + 0x934], -9.8):
+// foot_gravity is the instruction's number, and foot_gravity_prefix the instruction's first six
+// bytes, just before it. The walking speed limit (10 m/s) is the float at foot_speed_cap, read by
+// FollowGround (0x48318a0) alone; the walkable slope angles 60, 55 and 75 follow it.
+inline constexpr std::uintptr_t foot_gravity = 0x4834a95;
+inline constexpr std::array<unsigned char, 6> foot_gravity_prefix{0xc7, 0x83, 0x34, 0x09, 0x00, 0x00};
+inline constexpr std::uintptr_t foot_speed_cap = 0x65e8238;
 //
 // The launch velocity it passes (parameters + 0x80): out of a grind, along the rail about 0.93 x
 // the grind speed; up a fixed 2.03; across the rail one of three values the game chose before the

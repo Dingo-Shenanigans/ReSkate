@@ -51,18 +51,9 @@ std::uint32_t air_gravity_steps() noexcept;
 void note_flight_record(std::uintptr_t trajectory) noexcept;
 // The trainer's pump power: speed added for as long as the skater pumps a transition, sized so
 // that `factor` 2 is about one more of the game's own pumps (1 leaves the game alone, under 1
-// takes speed away). `pumping` is the game's own word on whether the skater is pumping this tick; with
-// `measure` the gain is measured even at factor 1. Publish every client tick: it expires after
-// 500 ms.
-void set_pump_power(std::uintptr_t client, std::uintptr_t entity, float factor, bool pumping, bool measure) noexcept;
-// The pump now running, or the last one: the energy the game's pump gained (J per kg; negative: the
-// skater lost speed while pumping) and what the trainer added to that.
-struct PumpPowerReport {
-    std::uint32_t pumps{}; // one more per pump
-    float gained{}, given{}, speed{};
-    std::uint32_t steps{}; // physics steps it has lasted
-};
-PumpPowerReport pump_power_report() noexcept;
+// takes speed away). `pumping` is the game's own word on whether the skater is pumping this tick.
+// Publish every client tick: it expires after 500 ms.
+void set_pump_power(std::uintptr_t client, std::uintptr_t entity, float factor, bool pumping) noexcept;
 // The trainer's revert boost: speed given back on a landing the game auto reverts (client_noclip.cpp).
 // `strength` multiplies the boost (1: about +1.5 to +2.6 m/s a landing), 0 switches it off. Call
 // every tick: it lapses half a second after the last call.

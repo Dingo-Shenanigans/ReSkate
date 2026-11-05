@@ -1,4 +1,5 @@
 #include "command_registry.h"
+#include "Engine/Core/Text/ascii.h"
 #include <array>
 namespace dingosdk::console {
 std::vector<CompletionToken> completion_tokens(std::string_view input, int cursor) {
@@ -47,13 +48,7 @@ std::vector<CompletionToken> completion_tokens(std::string_view input, int curso
     return tokens;
 }
 
-std::string lower(std::string_view text) {
-    std::string result(text);
-    for (auto &c : result)
-        if (c >= 'A' && c <= 'Z')
-            c = static_cast<char>(c + ('a' - 'A'));
-    return result;
-}
+std::string lower(std::string_view text) { return ascii_lower(text); }
 bool equal(std::string_view a, std::string_view b) {
     return a.size() == b.size() && ascii_case_insensitive_starts_with(a, b);
 }

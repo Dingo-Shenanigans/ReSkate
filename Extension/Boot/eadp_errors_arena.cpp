@@ -1,5 +1,6 @@
 #include "eadp_errors_arena.h"
 
+#include "Engine/Core/Hooks/patches.h"
 #include "Engine/Core/Platform/memory.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/supported_build.h"
@@ -29,16 +30,6 @@ bool rel32(std::uintptr_t next_instruction, std::uintptr_t target, std::int32_t&
     if (delta < std::numeric_limits<std::int32_t>::min() || delta > std::numeric_limits<std::int32_t>::max()) return false;
     displacement = static_cast<std::int32_t>(delta);
     return true;
-}
-
-bool write_code(std::uintptr_t address, const void* bytes, std::size_t size) noexcept {
-    auto* const destination = reinterpret_cast<void*>(address);
-    DWORD previous{};
-    if (!VirtualProtect(destination, size, PAGE_EXECUTE_READWRITE, &previous)) return false;
-    std::memcpy(destination, bytes, size);
-    const bool flushed = FlushInstructionCache(GetCurrentProcess(), destination, size) != FALSE;
-    DWORD discarded{};
-    return VirtualProtect(destination, size, previous, &discarded) != FALSE && flushed;
 }
 } // namespace
 
@@ -79,11 +70,13 @@ bool start_eadp_errors_arena(std::uintptr_t base, std::string& error) {
         error = "its stub could not be made executable";
         return false;
     }
-    std::array<std::uint8_t, contract::size_load.size()> jump{0xe9};
-    std::memcpy(jump.data() + 1, &into, 4);
-    std::memset(jump.data() + 5, 0x90, jump.size() - 5);
-    if (!write_code(base + contract::size_load_rva, jump.data(), jump.size())) {
-        (void)write_code(base + contract::size_load_rva, contract::size_load.data(), contract::size_load.size());
+    // jmp stub, then NOPs over the rest of the two moved instructions.
+    const auto redirected = patch_code_jump("EADP errors arena size load", base + contract::size_load_rva,
+        contract::size_load, at);
+    if (redirected != HookOk) {
+        // A refused patch wrote nothing; a failed write may have written some of it.
+        if (redirected != HookBytesDiffer && redirected != HookOutOfReach)
+            (void)patch_code_restore(base + contract::size_load_rva, contract::size_load);
         VirtualFree(stub, 0, MEM_RELEASE);
         error = "the size load could not be redirected";
         return false;

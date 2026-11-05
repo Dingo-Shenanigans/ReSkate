@@ -7,6 +7,7 @@
 #include "Engine/Vfs/mod_list.h"
 #include "Engine/Vfs/thunderstore_package.h"
 #include "Launcher/mod_manager.h"
+#include "Engine/Core/Platform/wide_text.h"
 
 #include <Windows.h>
 #include <algorithm>
@@ -45,7 +46,6 @@ fs::path local_folder() {
     if (!size || size >= local.size()) return {};
     return fs::path(local.data()) / L"ReSkate" / L"thunderstore";
 }
-std::wstring wide(std::string_view ascii) { return std::wstring(ascii.begin(), ascii.end()); }
 bool same(std::string_view a, std::string_view b) {
     return a.size() == b.size() && _strnicmp(a.data(), b.data(), a.size()) == 0;
 }
@@ -60,7 +60,7 @@ std::atomic<std::uint64_t> next_fetch{};
 
 fs::path listing_file() {
     const auto folder = local_folder();
-    return folder.empty() ? fs::path() : folder / wide("listing-" + thunderstore::community() + ".json");
+    return folder.empty() ? fs::path() : folder / utf8_to_wide("listing-" + thunderstore::community() + ".json");
 }
 // One listing chunk (a JSON array) without its brackets, for joining chunks into one array.
 std::string_view inner(std::string_view json) {
@@ -384,7 +384,7 @@ std::string install_one(const ts::Package& wanted, std::size_t at, std::size_t o
     const auto archive_folder = root / L".reskate-download";
     std::error_code error;
     fs::create_directories(archive_folder, error);
-    const auto archive = archive_folder / (wide(wanted.full_name) + L"-ingame.zip");
+    const auto archive = archive_folder / (utf8_to_wide(wanted.full_name) + L"-ingame.zip");
     struct Cleanup {
         fs::path archive, folder;
         ~Cleanup() { std::error_code ignored; fs::remove(archive, ignored); fs::remove(folder, ignored); }
@@ -428,7 +428,7 @@ std::string install_one(const ts::Package& wanted, std::size_t at, std::size_t o
     options.author = wanted.owner;
     options.require_content = true;
     const auto meter_install = [&](float fraction) { set_activity("Installing " + wanted.title() + " v" + version.number + counter, fraction); };
-    const bool update = fs::exists(root / wide(options.folder), error);
+    const bool update = fs::exists(root / utf8_to_wide(options.folder), error);
     try {
         launcher_mods::install(root, archive, true, meter_install, stop, options);
         if (update) {

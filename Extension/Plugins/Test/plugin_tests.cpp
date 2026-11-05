@@ -489,8 +489,6 @@ struct FakeGame final : Game {
         return static_cast<std::size_t>(std::count_if(declared_holds.begin(), declared_holds.end(), [&](const auto& h) { return h.owner == plugin; }));
     }
     // The general services a game layer in Lua reads and drives (plugin_api_services.cpp).
-    std::optional<SkaterTelemetry> telemetry;
-    std::optional<SkaterTelemetry> skater_telemetry(std::string_view) override { return telemetry; }
     std::uint64_t world_id() override { return 77; }
     std::string world_map() override { return "test_map"; }
     std::string pad_flight(std::string_view plugin, bool on) override {
@@ -498,6 +496,7 @@ struct FakeGame final : Game {
         return {};
     }
     void competition(std::string_view plugin, bool on) override { calls.push_back(std::format("competition {} {}", plugin, on)); }
+    void spectate(std::uint64_t player) override { calls.push_back(std::format("spectate {}", player)); }
     bool stock_physics_ready() override { return true; }
     void prepare_physics() override { calls.push_back("prepare physics"); }
     void trick_feed(std::string_view plugin, bool on) override { calls.push_back(std::format("trick feed {} {}", plugin, on)); }
@@ -1050,14 +1049,10 @@ struct FakeGame final : Game {
         dialog = spec;
         return {};
     }
-    // SmokeyDawg58's editor reads the pad and the window's focus.
-    std::optional<std::uint32_t> pad_bits_now;
+    // The window's focus (reskate.input.focus), and how often it was read.
     InputFocus focus_now{};
-    std::optional<std::uint32_t> pad_bits(bool) override { return pad_bits_now; }
     unsigned focus_reads{};
     InputFocus input_focus() override { ++focus_reads; return focus_now; }
-    std::optional<Cursor> cursor_now;
-    std::optional<Cursor> cursor() override { return cursor_now; }
     void dialog_close(std::string_view plugin, std::string_view id) override { calls.push_back(std::format("dialog close {} {}", plugin, id)); }
     std::string skater_push(std::string_view plugin, const Vec3& v) override {
         calls.push_back(std::format("push {} {:.0f} {:.0f} {:.0f}", plugin, v[0], v[1], v[2]));
@@ -1174,17 +1169,14 @@ struct FakeGame final : Game {
         if (auto it = ui_models.find(std::string(plugin)); it != ui_models.end())
             for (auto& [name, value] : it->second) { (void)name; value = 0; }
     }
-    // The game menu, its item grid, what is worn, and a screen capture of something turning once
-    // every `turning` frames (reskate.capture, room.turn, menu.game/grid, outfit.board).
+    // The game menu, and a screen capture of something turning once every `turning` frames
+    // (reskate.capture, room.turn, menu.game).
     GameMenu menu_now;
     unsigned menu_reads{};
-    std::optional<MenuGrid> grid_now;
-    std::vector<WornItem> board_now, outfit_now;
     std::vector<std::string> render_settings; // more settings, each on
     CaptureStatus capture_now{"idle"};
     double turning = 100;
     std::vector<CaptureStart> capture_starts;
-    std::vector<CaptureSave> capture_saves;
     float turned{};
     std::optional<RoomPose> preview;
     std::optional<RoomPose> room_pose(bool skater) override {
@@ -1200,9 +1192,6 @@ struct FakeGame final : Game {
     GameMenu game_menu() override { ++menu_reads; return menu_now; }
     MenuState menu_state_now; // what is up over the game (menu.state, menu_changed)
     MenuState menu_state() override { return menu_state_now; }
-    std::optional<MenuGrid> menu_grid() override { return grid_now; }
-    std::vector<WornItem> board_parts() override { return board_now; }
-    std::vector<WornItem> outfit_worn() override { return outfit_now; }
     std::string capture_start(std::string_view plugin, const CaptureStart& request) override {
         capture_starts.push_back(request);
         capture_now = {"recording"};
@@ -1226,8 +1215,7 @@ struct FakeGame final : Game {
         for (std::uint32_t n = 0; n < capture_now.taken; ++n) out.push_back(n);
         return out;
     }
-    std::string capture_save(std::string_view, const CaptureSave& request) override {
-        capture_saves.push_back(request);
+    std::string capture_save(std::string_view, const CaptureSave&) override {
         capture_now = {"saving", capture_now.taken, capture_now.taken};
         return {};
     }
@@ -1235,17 +1223,7 @@ struct FakeGame final : Game {
         calls.push_back(std::format("reveal {} {}", plugin, folder));
         return {};
     }
-    // Keys held, the keys and pad buttons kept from the game, the items worn on top and what the item
-    // grid was asked to show and mark (Item Tabs).
-    std::set<int> keys_held;
-    bool key_down(int virtual_key) override { return keys_held.contains(virtual_key); }
-    // The game window has the focus and nothing is in the way (reskate.input.allowed): off unless a test says so.
-    bool input_open{};
-    bool input_allowed() override { return input_open; }
-    std::vector<std::uint8_t> kept_keys;
-    std::uint16_t kept_buttons{};
-    void game_keys(std::string_view, std::vector<std::uint8_t> keys) override { kept_keys = std::move(keys); }
-    void game_buttons(std::string_view, std::uint16_t hidden, std::uint16_t, bool) override { kept_buttons = hidden; }
+    // The items worn on top, and what the item grid was asked to show.
     std::vector<std::string> on_top_now;
     static std::string joined(const std::vector<std::string>& list) {
         std::string out;
@@ -1258,14 +1236,10 @@ struct FakeGame final : Game {
         return {};
     }
     OnTop outfit_on_top_state(std::string_view) override { return {on_top_now, on_top_now, {}}; }
-    std::optional<std::vector<std::string>> grid_shown;
-    std::vector<std::string> grid_marked;
     std::string grid_show(std::string_view plugin, std::optional<std::vector<std::string>> keys) override {
         calls.push_back(keys ? std::format("show {} [{}]", plugin, joined(*keys)) : std::format("show {} none", plugin));
-        grid_shown = std::move(keys);
         return {};
     }
-    void grid_mark(std::string_view, std::vector<std::string> keys) override { grid_marked = std::move(keys); }
     // Item origins and the player's starred keys, as reskate.mods.item_origins and reskate.menu.favorites read them.
     struct OriginRow {
         std::string key;
@@ -3417,49 +3391,106 @@ void the_sandbox_holds() {
     check(environment.logged("sandbox fine"), "Every way out is closed\n" + environment.all());
 }
 
-// ReSkate's own reading and compiling is not a plugin's running time (Limits::io_ms): a module that
-// takes far longer to compile than a call may run still loads, the time is let off only up to the
+// ReSkate's own reading and compiling is not a plugin's running time (Limits::io_ms): modules that
+// take far longer to compile than a call may run still load, the time is let off only up to the
 // allowance, and a plugin that reads a file in a loop is stopped all the same.
 void reskates_own_reading_is_not_a_plugins_time() {
-    // About 1 MB of code in a function that never runs: it compiles for tens of milliseconds.
+    // About 1 MB of code (the most a source file may be) in a function that never runs. Measured on
+    // a 32-thread desktop: the two compile for 130 ms idle and 560 ms with every core busy, while the
+    // rest of the load is 1 to 2 ms idle and 3 to 15 ms busy. The limit sits well between the two:
+    // at 5 ms a busy machine (another build running) once stopped the first case.
+    constexpr double limit_ms = 40;
     std::string big = "local function never()\n";
     while (big.size() < 1'000'000 - 64) big += "    do local a = {1, 2, 3, x = 'y'} if a.x == 'z' then a[1] = a[2] + a[3] end end\n";
     big += "end\nreturn {}\n";
-    // The loop after it gives the interrupt its safe points, where it looks at the clock.
-    const std::string main = R"(require("big") for i = 1, 1000 do end reskate.log("big loaded"))";
+    // The loop after them gives the interrupt its safe points, where it looks at the clock.
+    const std::string main = R"(require("big") require("big2") for i = 1, 1000 do end reskate.log("big loaded"))";
+    const auto modules = [&](const char* id) {
+        return package(id, {{manifest_file, manifest()}, {"plugin/main.lua", main}, {"plugin/big.lua", big}, {"plugin/big2.lua", big}});
+    };
     {
-        TestEnvironment environment;
-        Limits limits;
-        limits.call_ms = limits.hang_ms = 5;
-        Host host(environment, Side::client, limits);
-        host.apply({package("big-module", {{manifest_file, manifest()}, {"plugin/main.lua", main}, {"plugin/big.lua", big}})});
-        running(host, "big-module", environment);
-        check(environment.logged("big loaded"), "A module's compile is not counted against the load's 5 ms");
+        // With a build running on top of that, Windows can still hold the thread past the limit
+        // anywhere in the load (twice in ten runs here). That says nothing about compiles: a load
+        // that counted them would be stopped every time, so it gets a few tries.
+        std::string why;
+        for (int attempt = 0; attempt < 5; ++attempt) {
+            TestEnvironment environment;
+            Limits limits;
+            limits.call_ms = limits.hang_ms = limit_ms;
+            limits.io_ms = 2000; // two compiles on a busy machine may pass the default 250 ms
+            Host host(environment, Side::client, limits);
+            host.apply({modules("big-module")});
+            const auto status = status_of(host, "big-module");
+            if (status.state == "running" && environment.logged("big loaded")) {
+                why.clear();
+                break;
+            }
+            why = status.state + ": " + status.reason + "\n" + environment.all();
+        }
+        check(why.empty(), "A module's compile is not counted against the load's 40 ms, and big-module is " + why);
     }
     {
         TestEnvironment environment;
         Limits limits;
-        limits.call_ms = limits.hang_ms = 5;
+        limits.call_ms = limits.hang_ms = limit_ms;
         limits.io_ms = 0;
         Host host(environment, Side::client, limits);
-        host.apply({package("big-module-counted", {{manifest_file, manifest()}, {"plugin/main.lua", main}, {"plugin/big.lua", big}})});
-        stopped(host, "big-module-counted", "ran longer than 5 ms");
+        host.apply({modules("big-module-counted")});
+        stopped(host, "big-module-counted", "ran longer than 40 ms");
     }
     {
         TestEnvironment environment;
         Limits limits;
-        limits.call_ms = limits.hang_ms = 5;
+        limits.call_ms = limits.hang_ms = limit_ms;
         limits.io_ms = 20;
         Host host(environment, Side::client, limits);
         host.apply({package("read-loop", {{manifest_file, manifest()}, {"plugin/main.lua", R"(while true do reskate.package.read("plugin/big.lua") end)"},
                                           {"plugin/big.lua", big}})});
-        stopped(host, "read-loop", "ran longer than 5 ms");
+        stopped(host, "read-loop", "ran longer than 40 ms");
     }
 }
 
 // A call past call_ms is said, with where the script was, and goes on: one slow call (a hard disk,
 // Windows holding the game's thread) is no reason to stop a plugin. One past hang_ms is stopped,
 // saying where it was, and unload's own share of time still cuts its handlers off.
+// A Steam ID reaches the game exactly: as a string (which Lua also takes for a number, and which
+// went through a number and came out as another player), never as a number that cannot hold it.
+void a_steam_id_reaches_the_game_exactly() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({script("watcher", R"(
+        reskate.session.spectate("76561198000000001")
+        assert(not pcall(reskate.session.spectate, 76561198000000001), "a Steam ID as a number")
+        assert(not pcall(reskate.session.spectate, 1.5), "a whole number")
+        reskate.session.spectate()
+        -- One reading of a player everywhere: digits and nothing after them, a player table, or a
+        -- number while it is exact. "123abc" once passed as player 123.
+        reskate.session.spectate({id = "76561198000000002"})
+        reskate.session.spectate(12345)
+        for _, junk in {"76561198000000001x", "123abc", "", " 1", "+1", {id = "123abc"}, {}, true} do
+            assert(not pcall(reskate.session.spectate, junk), "session.spectate refuses " .. tostring(junk))
+            assert(not pcall(reskate.session.tag, junk, "x"), "session.tag refuses " .. tostring(junk))
+            assert(not pcall(reskate.net.send, junk, "x"), "net.send refuses " .. tostring(junk))
+        end
+        -- "0" is no player, but it stops a Spectate, as the docs say.
+        assert(not pcall(reskate.session.tag, "0", "x") and not pcall(reskate.net.send, "0", "x"), "player 0 is no player")
+        reskate.session.spectate("76561198000000003")
+        reskate.session.spectate("0")
+        assert(not pcall(reskate.objects.move, "42abc", vector.create(0, 0, 0)), "an object's id has nothing after its digits")
+        assert(not pcall(reskate.objects.remove, 42), "and is a string")
+        reskate.log("watched")
+    )", R"("session.read", "session.nametags", "net.session", "world.objects")")});
+    running(host, "watcher", environment);
+    check(environment.logged("watched"), "The plugin ran\n" + environment.all());
+    check(environment.fake.called("spectate 76561198000000001"), "The Steam ID arrives exactly\n" + environment.all());
+    check(environment.fake.called("spectate 0"), "and nothing stops spectating");
+    check(environment.fake.called("spectate 76561198000000002") && environment.fake.called("spectate 12345"),
+          "A player table and an exact number are players too\n" + environment.all());
+    const auto& calls = environment.fake.calls;
+    const auto third = std::find(calls.begin(), calls.end(), "spectate 76561198000000003");
+    check(third != calls.end() && std::find(third, calls.end(), "spectate 0") != calls.end(), "\"0\" stops spectating\n" + environment.all());
+}
+
 void a_slow_call_is_said_and_a_hung_one_stopped() {
     TestEnvironment environment;
     Limits limits;
@@ -6773,6 +6804,7 @@ int main() {
         run(the_sandbox_holds);
         run(a_runaway_plugin_is_stopped_and_the_rest_go_on);
         run(a_slow_call_is_said_and_a_hung_one_stopped);
+        run(a_steam_id_reaches_the_game_exactly);
         run(reskates_own_reading_is_not_a_plugins_time);
         run(a_plugin_over_its_time_budget_is_stopped);
         run(a_plugin_reloads_when_its_files_change);

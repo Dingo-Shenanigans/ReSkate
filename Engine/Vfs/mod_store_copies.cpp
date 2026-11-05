@@ -5,6 +5,7 @@
 #include "Engine/Resource/cas_codec.h"
 #include "Engine/Resource/ebx_document.h"
 #include "Engine/Resource/mesh_set.h"
+#include "Engine/Core/Text/hex.h"
 
 #include <Windows.h>
 
@@ -46,17 +47,6 @@ constexpr std::size_t mod_mesh_lods = 3;
 // game's own items, store and free ones share shapes and never a look.
 constexpr bool shape_kind(std::int64_t kind) noexcept { return kind == 1 || kind == 2; }
 
-std::string hex(const fb::Sha1& sha1) {
-    static constexpr char digits[] = "0123456789abcdef";
-    std::string text;
-    for (const auto value : sha1.bytes) {
-        const auto byte = static_cast<unsigned>(value);
-        text += digits[byte >> 4];
-        text += digits[byte & 15];
-    }
-    return text;
-}
-
 const std::string* text_of(const fb::ebx::Object& object, std::string_view name) {
     const auto* field = object.find(name);
     return field ? std::get_if<std::string>(&field->value.data) : nullptr;
@@ -88,9 +78,9 @@ public:
             void operator()(std::int64_t held) const { reader.text_ += std::to_string(held); }
             void operator()(std::uint64_t held) const { reader.text_ += std::to_string(held); }
             void operator()(double held) const { reader.text_ += std::to_string(held); }
-            void operator()(const std::string& held) const { reader.text_ += '"' + lower(held) + '"'; }
+            void operator()(const std::string& held) const { reader.text_ += '"' + ascii_lower(held) + '"'; }
             void operator()(const fb::Guid& held) const { reader.text_ += held.string(); }
-            void operator()(const fb::Sha1& held) const { reader.text_ += hex(held); }
+            void operator()(const fb::Sha1& held) const { reader.text_ += hex_bytes(held.bytes); }
             void operator()(const fb::ebx::ResourceReference& held) const { reader.text_ += "resource " + std::to_string(held.id); }
             void operator()(const fb::ebx::PointerReference& held) const { reader.pointer(held, depth); }
             void operator()(const fb::ebx::TypeReference& held) const { reader.text_ += "type " + std::to_string(held.encoded); }
@@ -157,15 +147,15 @@ private:
         if (const auto* name = text_of(object, "AssetName"); name && !name->empty())
             if (const auto kind = integer_of(object, "AssetTypeId"))
                 (shape_kind(*kind) ? item_.shapes : item_.looks)
-                    .push_back("asset " + std::to_string(*kind) + ' ' + lower(*name));
+                    .push_back("asset " + std::to_string(*kind) + ' ' + ascii_lower(*name));
         // Stickers and tattoos: the textures of the decal.
         if (const auto* name = text_of(object, "TextureName"); name && !name->empty())
-            item_.looks.push_back("texture " + lower(*name));
+            item_.looks.push_back("texture " + ascii_lower(*name));
         // Quick Drop objects: what is spawned, and the bundle it is in.
         if (const auto* name = text_of(object, "BuildKitPrefabName"); name && !name->empty())
-            item_.looks.push_back("prefab " + lower(*name));
+            item_.looks.push_back("prefab " + ascii_lower(*name));
         if (const auto* name = text_of(object, "BuildKitBundleName"); name && !name->empty())
-            item_.looks.push_back("bundle " + lower(*name));
+            item_.looks.push_back("bundle " + ascii_lower(*name));
         // Player-card backgrounds and icons: the picture, which is another asset.
         if (const auto* texture = object.find("ItemTexture"))
             if (const auto* reference = std::get_if<fb::ebx::PointerReference>(&texture->value.data))
@@ -253,7 +243,7 @@ public:
                 continue;
             }
             for (const auto& bundle : own.bundles) {
-                const auto shipped = game->find(lower(bundle.name));
+                const auto shipped = game->find(ascii_lower(bundle.name));
                 if (shipped == game->end()) continue;
                 try {
                     // A bundle the mod only passes through reads every file from the game.
@@ -269,7 +259,7 @@ public:
                         const auto at = listing->first + index;
                         // The mod's own payloads are in its own archives.
                         if (at >= listing->files.size() || !listing->files[at].location.patch) continue;
-                        const auto original = known->find(lower(asset.name));
+                        const auto original = known->find(ascii_lower(asset.name));
                         if (original != known->end() && original->second == asset.sha1) continue;
                         try {
                             const auto document = fb::ebx::read_document(
@@ -301,7 +291,7 @@ public:
                                        bool background) {
         const auto* toc = game_toc(items_toc);
         if (!toc) return {};
-        const auto& document = tocs_.at(lower(items_toc)).document;
+        const auto& document = tocs_.at(ascii_lower(items_toc)).document;
         struct Read {
             struct Item {
                 ItemContent content;
@@ -325,7 +315,7 @@ public:
                 if (!listing) return;
                 const auto& manifest = listing->manifest;
                 for (std::size_t index = 0; index < manifest.ebx.size(); ++index) {
-                    const auto name = lower(manifest.ebx[index].name);
+                    const auto name = ascii_lower(manifest.ebx[index].name);
                     if (!item_name(name)) continue;
                     try {
                         const auto asset = fb::ebx::read_document(read_asset(store_, baseRoot_, baseRoot_, *listing, index, gameRoot_));
@@ -368,7 +358,7 @@ public:
         for (auto& read : reads) {
             if (!read.note.empty()) note(std::move(read.note));
             for (const auto& item : read.items) {
-                const bool store = sold(lower(item.content.key));
+                const bool store = sold(ascii_lower(item.content.key));
                 items.add(item.content, store);
                 ++counts.items;
                 if (!item.costume) continue;
@@ -380,7 +370,7 @@ public:
         if (!meshes || costumes_.empty()) return counts;
         // A costume's own bundle is named after the preset its item is fitted on.
         for (std::size_t at = 0; at < bundles.size(); ++at) {
-            const auto name = lower(bundles[at]->name);
+            const auto name = ascii_lower(bundles[at]->name);
             const Costume* costume{};
             if (name.ends_with(costume_bundle_suffix)) {
                 const auto stem = name.substr(0, name.size() - costume_bundle_suffix.size());
@@ -407,7 +397,7 @@ private:
     // and what they hand out stays where it is.)
     const Bundles* game_toc(std::string_view relative) {
         std::lock_guard lock(cache_mutex_);
-        const auto key = lower(relative);
+        const auto key = ascii_lower(relative);
         if (const auto found = tocs_.find(key); found != tocs_.end())
             return found->second.index.empty() ? nullptr : &found->second.index;
         auto& entry = tocs_[key];
@@ -420,7 +410,7 @@ private:
             note("The game's " + std::string(relative) + " could not be read for " + std::string(store_copies_check) + " (" + failure.what() + ")");
             return nullptr;
         }
-        for (const auto& bundle : entry.document.bundles) entry.index.emplace(lower(bundle.name), &bundle);
+        for (const auto& bundle : entry.document.bundles) entry.index.emplace(ascii_lower(bundle.name), &bundle);
         return entry.index.empty() ? nullptr : &entry.index;
     }
 
@@ -428,14 +418,14 @@ private:
     // and changes from what it carries untouched. Null when it cannot be read.
     const Assets* game_assets(std::string_view relative, const fb::TocBundle& bundle) {
         std::lock_guard lock(cache_mutex_);
-        const auto key = lower(relative) + '|' + lower(bundle.name);
+        const auto key = ascii_lower(relative) + '|' + ascii_lower(bundle.name);
         if (const auto found = assets_.find(key); found != assets_.end())
             return found->second ? &*found->second : nullptr;
         auto& entry = assets_[key];
         const auto listing = list_bundle(store_, baseRoot_, baseRoot_, bundle, gameRoot_);
         if (!listing) return nullptr;
         entry.emplace();
-        for (const auto& asset : listing->manifest.ebx) entry->emplace(lower(asset.name), asset.sha1);
+        for (const auto& asset : listing->manifest.ebx) entry->emplace(ascii_lower(asset.name), asset.sha1);
         return &*entry;
     }
 
@@ -522,7 +512,7 @@ std::optional<ItemContent> item_content(const fb::ebx::Document& document) {
     if (!key || key->empty() || !data) return std::nullopt;
     ItemContent item;
     item.key = *key;
-    if (const auto* name = text_of(*root->object, "Name")) item.costume = lower(*name).starts_with(costume_items);
+    if (const auto* name = text_of(*root->object, "Name")) item.costume = ascii_lower(*name).starts_with(costume_items);
     std::string text;
     ItemReader reader(document, item, text);
     reader.value(data->value);
@@ -531,7 +521,7 @@ std::optional<ItemContent> item_content(const fb::ebx::Document& document) {
         parts->erase(std::unique(parts->begin(), parts->end()), parts->end());
     }
     // Data with no field in it is every such item's alike, and says nothing.
-    if (reader.any()) item.data = hex(sha1_of(std::as_bytes(std::span(text))));
+    if (reader.any()) item.data = hex_bytes(sha1_of(std::as_bytes(std::span(text))).bytes);
     return item;
 }
 
@@ -672,7 +662,7 @@ StoreCopies check_store_copies(const Catalog& catalog, const StoreItem& sold, st
             }
             for (std::size_t index = 0; index < asked.size(); ++index) {
                 StoreCopies::Added keys{asked[index]->name, {}};
-                for (const auto& item : reads[index].items) keys.keys.push_back(lower(item.key));
+                for (const auto& item : reads[index].items) keys.keys.push_back(ascii_lower(item.key));
                 std::sort(keys.keys.begin(), keys.keys.end());
                 keys.keys.erase(std::unique(keys.keys.begin(), keys.keys.end()), keys.keys.end());
                 result.added.push_back(std::move(keys));
@@ -704,10 +694,10 @@ StoreCopies check_store_copies(const Catalog& catalog, const StoreItem& sold, st
                     source.original = original;
                     source.by_mesh = true;
                 }
-                result.items.insert_or_assign(lower(mesh.name), lower(original));
+                result.items.insert_or_assign(ascii_lower(mesh.name), ascii_lower(original));
             }
             for (const auto& item : items) {
-                const auto key = lower(item.key);
+                const auto key = ascii_lower(item.key);
                 // A store item under its own key is held by that key already.
                 if (sold(key)) continue;
                 const auto original = game.original(item);
@@ -716,7 +706,7 @@ StoreCopies check_store_copies(const Catalog& catalog, const StoreItem& sold, st
                     source.example = item.key;
                     source.original = original;
                 }
-                result.items.insert_or_assign(key, lower(original));
+                result.items.insert_or_assign(key, ascii_lower(original));
             }
             if (source.count) result.mods.push_back(std::move(source));
         }

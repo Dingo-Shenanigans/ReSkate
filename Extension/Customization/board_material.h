@@ -1,5 +1,6 @@
 #pragma once
 #include "developer_board_material.h"
+#include "Engine/Game/Build/supported_build.h"
 #include "Engine/Vfs/mod_materials.h"
 #include "Engine/Vfs/mod_item_sources.h"
 #include <cstring>
@@ -124,7 +125,7 @@ template <class Memory> std::vector<Node> parameters(Memory& m, std::uintptr_t m
             if (type) {
                 const auto info = m.ptr(type);
                 // A type's information is in the game's image, as the board's colour descriptor is.
-                if (info >= m.base && info < m.base + 0x09144000)
+                if (info >= m.base && info < m.base + supported_build::game_image_size)
                     p.kind = kind_of(m.template get<std::uint32_t>(info), m.template get<std::uint16_t>(info, 6), key,
                                      (m.template get<std::uint32_t>(node, n::parameter_flags) & 1) != 0);
             }

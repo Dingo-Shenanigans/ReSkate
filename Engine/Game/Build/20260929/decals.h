@@ -11,9 +11,6 @@ inline constexpr std::uintptr_t release=0x19862f0;
 inline constexpr std::uintptr_t properties_init=0x5b09bb0;
 inline constexpr std::uintptr_t settings_init=0x5b09c70;
 inline constexpr std::uintptr_t reference_assign=0x3dd1d70;
-inline constexpr std::uintptr_t reference_release=0x3dc5e90;
-inline constexpr std::uintptr_t manager_create=0x1991bf0;
-inline constexpr std::uintptr_t manager_release=0x19925c0;
 inline constexpr std::uintptr_t resource_release=0x48a9f80;
 inline constexpr std::uintptr_t current_context=0x18b6ae0;
 // Service vtable +0x20: (manager, owned decal id, Properties*). This merges

@@ -148,99 +148,6 @@ void host_page(SkateMenu &menu, const Model &model, const CallbacksV3 &) {
     }
     if (!mp.lobby_status.empty()) note(mp.lobby_status.c_str());
 }
-std::string number(unsigned long long value) { return std::to_string(value); }
-std::string decimal(double value, int digits = 1) {
-    std::array<char, 64> text{};
-    std::snprintf(text.data(), text.size(), "%.*f", digits, value);
-    return text.data();
-}
-void debug_page(SkateMenu &menu, const MultiplayerModel &mp, const CallbacksV3 &callbacks) {
-    begin_card(menu, "local-test", "LOCAL TEST");
-    note("Local Echo replays your skater, board, cosmetics and sound with a short delay, on this PC only.");
-    ImGui::BeginDisabled(mp.active || mp.lobby_joining || !mp.local_ready);
-    if (ImGui::Button("Start Local Echo", ImVec2(-FLT_MIN, 0)))
-        send_console(menu, callbacks, "mp echo");
-    ImGui::EndDisabled();
-    const float half = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * .5f;
-    if (ImGui::Button("Test Steam transport", ImVec2(half, 0)))
-        send_console(menu, callbacks, "mp test");
-    ImGui::SameLine();
-    if (ImGui::Button("Retry remote skater", ImVec2(-FLT_MIN, 0)))
-        send_console(menu, callbacks, "mp retry");
-    for (const auto *detail : {&mp.native_status, &mp.player_ui_status, &mp.cosmetic_status, &mp.audio_status})
-        if (!detail->empty()) note(detail->c_str());
-    end_card();
-
-    begin_card(menu, "connection", "CONNECTION");
-    info(menu, "Steam ID", number(mp.local_id));
-    if (mp.peer_id) info(menu, "Peer", number(mp.peer_id) + (mp.peer_name.empty() ? "" : "  (" + mp.peer_name + ")"));
-    info(menu, "Update rate", std::to_string(mp.tps) + " TPS nearby, 10 / 5 TPS at distance");
-    info(menu, "Routes", std::to_string(mp.direct_connections) + " direct, " + std::to_string(mp.fallback_streams) +
-                             " forwarded by the host");
-    if (mp.active && !mp.hosting && !mp.echo)
-        info(menu, "Direct upload limit", std::to_string(mp.direct_upload_limit) + " peers (automatic)");
-    info(menu, "Messages", number(mp.sent) + " sent, " + number(mp.received) + " received");
-    if (mp.network_telemetry) {
-        info(menu, "Ping", std::to_string(mp.ping_ms) + " ms");
-        info(menu, "Traffic", decimal(mp.outgoing_bps / 1024.f) + " KiB/s out, " + decimal(mp.incoming_bps / 1024.f) + " KiB/s in");
-        info(menu, "Send budget", decimal(mp.send_rate / 1024.f) + " KiB/s total");
-        info(menu, "Gameplay queue", decimal(static_cast<double>(mp.queue_us) / 1000.0) + " ms (" +
-                                         std::to_string(mp.pending_bytes) + " bytes)");
-        info(menu, "Cosmetic queue", decimal(static_cast<double>(mp.cosmetic_queue_us) / 1000.0) + " ms, " +
-                                         std::to_string(mp.prioritized_connections) + " prioritized");
-        if (mp.delivery_local >= 0 && mp.delivery_remote >= 0)
-            info(menu, "In-order delivery", decimal(mp.delivery_local * 100.f) + "% here, " +
-                                                decimal(mp.delivery_remote * 100.f) + "% there");
-    }
-    info(menu, "Skipped / errors", number(mp.skipped_updates) + " stale skipped, " + number(mp.send_failures) +
-                                       " send errors, " + number(mp.invalid_messages) + " invalid");
-    if (mp.raw_sent_bytes)
-        info(menu, "Compression", decimal(100.0 * (1.0 - static_cast<double>(mp.sent_bytes) /
-                                                        static_cast<double>(mp.raw_sent_bytes))) + "% of outgoing bytes saved");
-    note("Automatic LZ4 / Zstd compression; unchanged bone fields are left out.");
-    end_card();
-
-    begin_card(menu, "animation", "SKATERS AND SOUND");
-    info(menu, "Captured bones", std::to_string(mp.skater_bones) + " skater, " + std::to_string(mp.board_bones) + " board");
-    info(menu, "Remote updates", number(mp.pose_updates) + " skater, " + number(mp.board_pose_updates) + " board");
-    info(menu, "Player map updates", number(mp.player_map_updates));
-    info(menu, "Sound frames", number(mp.audio_captured) + " captured, " + number(mp.audio_played) + " played");
-    end_card();
-
-    if (mp.active) {
-        begin_card(menu, "timing", "CLIENT TIMING", "average / peak per callback, 5 s window");
-        const auto &timing = mp.client_timing;
-        info(menu, "Callbacks", decimal(timing.callback_hz) + "/s, longest gap " + decimal(timing.gap_max_ms, 2) + " ms");
-        info(menu, "Multiplayer work", decimal(timing.work_ms, 2) + " / " + decimal(timing.work_max_ms, 2) + " ms");
-        constexpr std::array labels{"Capture / setup", "Receive / routing", "Encode / send", "Remote playback", "Diagnostics"};
-        for (unsigned i = 0; i < labels.size(); ++i)
-            info(menu, labels[i], decimal(timing.mean_ms[i], 2) + " / " + decimal(timing.peak_ms[i], 2) + " ms");
-        note("Native animation work runs in engine hooks outside these phases.");
-        end_card();
-    }
-
-    if (!mp.roster.empty()) {
-        begin_card(menu, "peers", "PEERS");
-        for (const auto &peer : mp.roster) {
-            const auto label = peer.name + "##peer-" + std::to_string(peer.id);
-            if (!ImGui::TreeNode(label.c_str())) continue;
-            info(menu, "Route", peer.route + ", " + decimal(peer.pose_hz) + " poses/s, target " +
-                                    std::to_string(peer.pose_target_tps) + " TPS");
-            if (peer.distance_m >= 0) info(menu, "Distance", decimal(peer.distance_m, 0) + " m");
-            info(menu, "Newest pose", number(peer.pose_age_ms) + " ms ago");
-            info(menu, "Native updates", decimal(peer.native_pose_hz) + " skater, " + decimal(peer.native_board_hz) + " board /s");
-            info(menu, "Remote graph", decimal(peer.native_animation_hz) + "/s at " + decimal(peer.native_animation_ms, 3) +
-                                           " ms, pose apply " + decimal(peer.pose_apply_ms, 3) + " ms");
-            info(menu, "Graph skips", number(peer.native_animation_skipped));
-            info(menu, "Playback", peer.playback + ", prediction " + std::to_string(peer.prediction_ms) + " ms" +
-                                       (peer.correcting ? ", correcting" : ""));
-            for (const auto *detail : {&peer.native_status, &peer.cosmetic_status, &peer.audio_status, &peer.ui_status})
-                if (!detail->empty()) note(detail->c_str());
-            ImGui::TreePop();
-        }
-        end_card();
-    }
-}
 } // namespace
 // Local-only display preferences; they live in Settings > Interface.
 void multiplayer_display_settings(SkateMenu &menu, const Model &model) {
@@ -375,9 +282,6 @@ void multiplayer_display_settings(SkateMenu &menu, const Model &model) {
     }
     note("These only change your screen; nobody else is affected.");
     end_card();
-}
-void multiplayer_network_page(SkateMenu &menu, const Model &model, const CallbacksV3 &callbacks) {
-    debug_page(menu, model.multiplayer, callbacks);
 }
 // SPECIAL: the page only a player on one of the backend's lists gets. Their tag as everyone
 // sees it, and whether it shows; then the items that come with it, on or off together and

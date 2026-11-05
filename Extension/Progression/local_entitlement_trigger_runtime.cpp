@@ -21,8 +21,6 @@ namespace dingosdk::profile_runtime {
 
 // No connection state, ECS activation bits, or map entries are fabricated.
 
-// See analysis/local-entitlement-trigger-readiness.md for the bytecode contract.
-
 thread_local std::uintptr_t executing_expression{};
 
 thread_local const ExpressionExecutionScope* expression_scope{};

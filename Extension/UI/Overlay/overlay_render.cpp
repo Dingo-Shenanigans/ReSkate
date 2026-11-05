@@ -380,7 +380,7 @@ bool setup_graphics() {
     s.commands->SetName(L"ReSkate overlay draw");
     dingosdk::overlay::watch_draws(s.commands.Get());
     dingosdk::overlay::watch_addresses(s.commands.Get());
-    install_depth_probe(s.commands.Get());
+    install_depth_tap(s.commands.Get());
     s.fence->SetName(L"ReSkate overlay fence");
     s.fence_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     if (!s.fence_event) return false;
@@ -801,7 +801,7 @@ void render(IDXGISwapChain* presented, UINT flags) {
     const bool item_browser_frame = item_browser_pending();
     const bool perf_frame = perf_hud_pending() || trainer_hud_pending();
     const bool hub_frame = hub_page_pending();
-    const bool grab_frame = frame_grab_pending() || depth_probe_pending();
+    const bool grab_frame = frame_grab_pending() || depth_tap_pending() || depth_probe_pending();
     // A plugin's screen look is drawn under every frame it asks for (reskate.screen.look).
     const bool look_frame = screen_look::pending();
     // And a plugin's viewmodel (reskate.viewmodel), or its pictures still going up to the GPU.

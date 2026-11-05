@@ -5,7 +5,7 @@
 #include "Engine/Game/Build/20260929/visual_environment.h"
 
 namespace dingosdk::profile_runtime {
-// Renderer settings and native filmic property contracts: analysis/graphics-controls.md.
+// Renderer settings and native filmic property contracts.
 
 namespace {
 bool writable(std::uintptr_t address) {

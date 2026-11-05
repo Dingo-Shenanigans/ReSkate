@@ -1,4 +1,5 @@
 #pragma once
+#include "Engine/Core/Text/ascii.h"
 #include <algorithm>
 #include <array>
 #include <cstdint>
@@ -49,12 +50,6 @@ std::string set(Policy policy);
 // Puts the defaults back, if `owner` holds the policy.
 void clear(std::string_view owner);
 
-inline std::string lower(std::string_view text) {
-    std::string out(text);
-    for (auto &c : out)
-        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
-    return out;
-}
 // Where `piece` (not empty) first starts in `text`, or npos. Knuth-Morris-Pratt, so the work is
 // linear in both whatever a plugin writes; a piece longer than a rule can be is plainly searched.
 inline std::size_t find_piece(std::string_view text, std::string_view piece) {
@@ -100,7 +95,7 @@ inline bool fits(std::string_view name, std::string_view rule) {
 // Whether `asset` is in the policy's exclude list (which set() keeps lower case).
 inline bool excluded(const Policy &policy, std::string_view asset) {
     if ((policy.exclude.empty() && policy.exclude_names.empty()) || asset.empty()) return false;
-    const auto name = lower(asset);
+    const auto name = ascii_lower(asset);
     if (policy.exclude_names.contains(name)) return true;
     for (const auto &rule : policy.exclude)
         if (fits(name, rule)) return true;

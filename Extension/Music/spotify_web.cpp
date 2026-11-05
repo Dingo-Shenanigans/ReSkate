@@ -6,6 +6,8 @@
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Vfs/https_download.h"
 #include "Extension/Boot/user_data_redirect.h"
+#include "Engine/Core/Platform/wide_text.h"
+#include "Engine/Core/Text/url.h"
 #include <WinSock2.h>
 #include <WS2tcpip.h>
 #include <Windows.h>
@@ -60,20 +62,6 @@ void problem(const std::string& text) {
     if (!text.empty()) say(logging::Level::warning, text);
 }
 
-std::wstring wide(const std::string& text) {
-    if (text.empty()) return {};
-    std::wstring out(static_cast<std::size_t>(MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0)), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), out.data(), static_cast<int>(out.size()));
-    return out;
-}
-std::string escaped(const std::string& text) {
-    std::string out;
-    for (const unsigned char c : text) {
-        if (std::isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') out.push_back(static_cast<char>(c));
-        else out += std::format("%{:02X}", c);
-    }
-    return out;
-}
 std::string base64url(const unsigned char* data, std::size_t size) {
     static constexpr char digits[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     std::string out;
@@ -203,7 +191,7 @@ std::string token() {
     access_token.clear();
     if (client.empty() || renewal.empty()) return {};
     const auto reply = request(L"POST", L"accounts.spotify.com", L"/api/token", L"Content-Type: application/x-www-form-urlencoded",
-        "grant_type=refresh_token&refresh_token=" + escaped(renewal) + "&client_id=" + escaped(client));
+        "grant_type=refresh_token&refresh_token=" + url_escaped(renewal) + "&client_id=" + url_escaped(client));
     if (!take_tokens(reply)) {
         if (reply.status == 400 || reply.status == 401) { // the sign-in was withdrawn
             {
@@ -222,7 +210,7 @@ std::string token() {
 Reply api(const wchar_t* method, const std::string& path, const std::string& body = {}) {
     const auto bearer = token();
     if (bearer.empty()) return {};
-    return request(method, L"api.spotify.com", wide(path), wide("Authorization: Bearer " + bearer) + (body.empty() ? L"" : L"\r\nContent-Type: application/json"), body);
+    return request(method, L"api.spotify.com", utf8_to_wide(path), utf8_to_wide("Authorization: Bearer " + bearer) + (body.empty() ? L"" : L"\r\nContent-Type: application/json"), body);
 }
 
 // Waits for the browser to come back to the redirect address, and answers it. The code, or
@@ -370,7 +358,7 @@ void fetch_playlists() {
             if (item.contains("images") && item.at("images").is_array() && item.at("images").size() && item.at("images").at(std::size_t{0}).is_object()) {
                 const auto address = item.at("images").at(std::size_t{0}).value("url", "");
                 if (address.starts_with("https://"))
-                    if (const auto image = https::get_text(wide(address), 4 * 1024 * 1024, 15, agent))
+                    if (const auto image = https::get_text(utf8_to_wide(address), 4 * 1024 * 1024, 15, agent))
                         playlist.artwork = spotify_cover::serve(std::vector<std::uint8_t>(image->begin(), image->end()), "playlist-" + playlist.id + ".png");
             }
             playlist.tracks = tracks_of(api(L"GET", "/v1/playlists/" + playlist.id + "/tracks?limit=50"));
@@ -399,14 +387,14 @@ void sign_in() {
     const auto verifier = random_text(64), state = random_text(16);
     const auto challenge = sha256_base64url(verifier);
     if (verifier.empty() || challenge.empty()) return problem("the sign-in could not be prepared");
-    const auto address = "https://accounts.spotify.com/authorize?response_type=code&client_id=" + escaped(client) + "&scope=" + escaped(scopes) +
-        "&redirect_uri=" + escaped(redirect()) + "&state=" + state + "&code_challenge_method=S256&code_challenge=" + challenge;
-    ShellExecuteW(nullptr, L"open", wide(address).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    const auto address = "https://accounts.spotify.com/authorize?response_type=code&client_id=" + url_escaped(client) + "&scope=" + url_escaped(scopes) +
+        "&redirect_uri=" + url_escaped(redirect()) + "&state=" + state + "&code_challenge_method=S256&code_challenge=" + challenge;
+    ShellExecuteW(nullptr, L"open", utf8_to_wide(address).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
     say(logging::Level::info, "waiting for the sign-in in the browser.");
     const auto code = await_callback(state);
     if (code.empty()) return problem("the sign-in was not finished in the browser");
     const auto reply = request(L"POST", L"accounts.spotify.com", L"/api/token", L"Content-Type: application/x-www-form-urlencoded",
-        "grant_type=authorization_code&code=" + escaped(code) + "&redirect_uri=" + escaped(redirect()) + "&client_id=" + escaped(client) + "&code_verifier=" + verifier);
+        "grant_type=authorization_code&code=" + url_escaped(code) + "&redirect_uri=" + url_escaped(redirect()) + "&client_id=" + url_escaped(client) + "&code_verifier=" + verifier);
     if (!take_tokens(reply)) return problem(std::format("Spotify refused the sign-in ({})", reply.status));
     say(logging::Level::info, "signed in.");
     fetch_playlists();
@@ -456,7 +444,7 @@ void start_playlist(const std::string& playlist, const std::string& track) {
             } catch (...) {}
         }
         if (device.empty()) return problem("Spotify is not open on any device to play the playlist on");
-        reply = api(L"PUT", "/v1/me/player/play?device_id=" + escaped(device), body);
+        reply = api(L"PUT", "/v1/me/player/play?device_id=" + url_escaped(device), body);
     }
     if (reply.status == 403) return problem("Spotify only lets Premium accounts start a playlist from another application");
     if (reply.status != 200 && reply.status != 202 && reply.status != 204) return problem(std::format("the playlist could not be started ({})", reply.status));

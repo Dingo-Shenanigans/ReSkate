@@ -7,11 +7,12 @@
 #include <string_view>
 #include <vector>
 
-// FOURTH Animation Studio's own data: a trick recorded from the game, and the keyframes a player puts
-// on it. Nothing here touches the game. The game side (anim_studio.cpp) copies the pose the native
-// animation just wrote into a Clip, and writes the evaluated pose back over the same buffer, the way
-// first person shrinks the head (client_first_person.cpp): no native animation data, channel or
-// asset is created or changed, and the next native update writes the whole pose again.
+// Clips of the skater's animation and the keyframes put on them (reskate.animation): a trick
+// recorded from the game, played back, edited and saved. Nothing here touches the game; the
+// skater's animation layer (Extension/Skater/skater_animation.cpp) copies the pose the native
+// animation just wrote into a Clip, and writes the evaluated pose back over the same buffer: no
+// native animation data, channel or asset is created or changed, and the next native update
+// writes the whole pose again.
 //
 // A pose is parent-local per joint, {scale, Hamilton quaternion xyzw, translation}, in the numbering
 // of the 395-joint AnimBase_Default_Skeleton the skater's animation output uses (Hips 7, Spine 42,
@@ -126,10 +127,8 @@ Joint world(std::span<const Joint> local, std::uint16_t joint) noexcept;
 std::int16_t parent(std::uint16_t joint) noexcept;
 
 // ---- files ----------------------------------------------------------------------------------------
-// The profile: name, trick, settings and keyframes, as versioned JSON. The clip goes beside it in a
-// small binary file. Both throw std::runtime_error on bad input; nothing half-read is returned.
-std::string to_json(const Animation& animation);
-Animation from_json(std::string_view text); // without the clip
+// A clip as a small binary file. Reading throws std::runtime_error on bad input; nothing half-read
+// is returned.
 std::vector<std::uint8_t> clip_bytes(const Clip& clip);
 Clip clip_from_bytes(std::span<const std::uint8_t> bytes);
 // A name safe as a file name ("Kickflip 2"): letters, digits, space, - and _ only.

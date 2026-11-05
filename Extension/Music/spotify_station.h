@@ -35,14 +35,11 @@ struct Station {
     std::array<unsigned char, 16> carrier{}; // the song of the game's whose sound is replaced: a row, or one added when it is bound
     std::uintptr_t metadata{};               // the carrier's artist and title, as the game holds them
     std::string playlist;                    // the Spotify playlist it starts, or empty: whatever is playing
-    std::string id;                          // its playlist's id in the music screen
 };
 // Set each time the catalog is read (local_music_assets.cpp). `table` is what a metadata
 // asset begins with, by which one is known to be still there.
 void set_stations(std::vector<Station> stations, std::uintptr_t table);
 bool has_stations() noexcept;
-// Their playlists' ids in the music screen.
-std::vector<std::string> playlist_ids();
 // Which of them a playlist of these `count` members (16 bytes each) is, or -1. `add` is set
 // when its carrier is not among them and is to be added (`carrier`, 16 bytes). Any thread.
 int station_of(const unsigned char* members, std::uint32_t count, unsigned char* carrier, bool& add) noexcept;

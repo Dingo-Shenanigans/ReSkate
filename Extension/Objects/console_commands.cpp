@@ -3,13 +3,16 @@
 #include "Extension/World/world_entities.h"
 namespace dingosdk::console {
 void register_object_commands(Commands &registry) {
-    // Test only: a per-body physics setter on plugins' world objects (world_entities.h test_bodies).
+#if defined(DINGOSDK_DEV_TOOLS)
+    // Test only, in development builds (DINGOSDK_DEV_TOOLS): a per-body physics setter on plugins'
+    // world objects (world_entities.h test_bodies).
     auto body_test = action("objbody", "Test: run a physics body setter on plugins' world objects", Group::objects, {argument("setter")});
     body_test.run = [](const Model &, const Values &args, const Output &out) {
         world_entities::test_bodies(std::get<std::string>(args[0]));
         out("Queued; the log says which bodies it ran on.");
     };
     registry.add(std::move(body_test));
+#endif
     auto enabled = variable("objects enabled", "Persist placed objects between sessions", Group::objects,
                             argument("0|1", Type::boolean));
     enabled.aliases = {"objectpersistence"};

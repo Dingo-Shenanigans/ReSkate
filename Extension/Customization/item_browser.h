@@ -8,7 +8,7 @@
 
 // Favorites, search and filters for the skater's item grids (Apparel, Accessories, Board, Tattoos,
 // Gestures, Appearance). The grids stay the game's own: their tile rows are reordered and filtered in
-// place, the way the music screen's Mods shelf filters playlist tiles (contrib/native-music-ui.md).
+// place, the way the music screen's Mods shelf filters playlist tiles.
 namespace dingosdk::overlay { struct ItemBrowserHost; }
 namespace dingosdk::item_browser {
 // What the overlay draws: read every presented frame (thread-safe, cheap).

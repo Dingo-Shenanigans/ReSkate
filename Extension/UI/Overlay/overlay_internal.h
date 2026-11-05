@@ -301,12 +301,25 @@ void destroy_graphics();
 bool frame_grab_pending();
 void grab_presented_frame(State& s, ID3D12Resource* buffer);
 void release_frame_grab();
-// The depth probe (depth_probe.cpp, `capture depth`): its hook, installed with the overlay's command
-// list; whether it needs this present; and its turn at it.
-void install_depth_probe(ID3D12GraphicsCommandList* list) noexcept;
+// The depth tap (depth_tap.cpp): its ResourceBarrier hook, installed with the overlay's command
+// list; whether the hook is on; and whether its buffers still want presents.
+using ResourceBarrierFn = void(STDMETHODCALLTYPE*)(ID3D12GraphicsCommandList*, UINT, const D3D12_RESOURCE_BARRIER*);
+void install_depth_tap(ID3D12GraphicsCommandList* list) noexcept;
+bool depth_barrier_hooked() noexcept;
+bool depth_tap_pending();
+// A 2D, single-sample texture that can be a depth buffer.
+bool depth_capable(const D3D12_RESOURCE_DESC& d);
+// The depth probe (depth_probe.cpp, `capture depth`), in development builds only: its look at each
+// barrier the hook sees; whether it needs this present; and its turn at it.
+#if defined(DINGOSDK_DEV_TOOLS)
+void depth_probe_barrier(ID3D12GraphicsCommandList* list, UINT count, const D3D12_RESOURCE_BARRIER* barriers, ResourceBarrierFn original);
 bool depth_probe_pending();
 void depth_probe_present(State& s, std::uint32_t width, std::uint32_t height);
-// The depth tap (depth_probe.cpp): while a frame grab runs, the game's main depth buffer is copied
+#else
+inline bool depth_probe_pending() { return false; }
+inline void depth_probe_present(State&, std::uint32_t, std::uint32_t) {}
+#endif
+// The depth tap (depth_tap.cpp): while a frame grab runs, the game's main depth buffer is copied
 // every frame. depth_tap_present runs at each present (`wanted`: a grab is running); after the
 // frame's own work is known finished, depth_tap_latest maps the newest copy the GPU has made (or
 // gives null) until depth_tap_done.

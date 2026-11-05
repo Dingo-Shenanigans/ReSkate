@@ -1,4 +1,5 @@
 #include "logging_internal.h"
+#include "Engine/Core/Platform/wide_text.h"
 #include <ShlObj.h>
 #include <array>
 #include <algorithm>
@@ -45,18 +46,11 @@ Options options_from_environment() {
         if (!count || count >= module.size()) throw std::runtime_error("Cannot resolve log directory");
         options.directory = log_directory(std::filesystem::path(module.data()).parent_path());
     }
-    if (const auto level = parse_level(detail::utf8(environment(L"RESKATE_LOG_LEVEL")))) options.level = *level;
+    if (const auto level = parse_level(wide_to_utf8(environment(L"RESKATE_LOG_LEVEL")))) options.level = *level;
     options.external_console = environment(L"RESKATE_LOG_CONSOLE") == L"1";
     return options;
 }
 namespace detail {
-std::string utf8(std::wstring_view text) {
-    if (text.empty()) return {};
-    const auto size = WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0, nullptr, nullptr);
-    std::string result(static_cast<std::size_t>(size), '\0');
-    if (size) WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), result.data(), size, nullptr, nullptr);
-    return result;
-}
 std::string clean(std::string_view text) {
     constexpr std::size_t limit = 8192;
     std::string result; result.reserve(std::min(text.size(), limit));

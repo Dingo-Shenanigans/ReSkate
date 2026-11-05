@@ -1,6 +1,7 @@
 #include "game_fatal_dump.h"
 
 #include "Engine/Core/Debug/crash_report.h"
+#include "Engine/Core/Hooks/patches.h"
 #include "Engine/Core/Platform/memory.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/game_fatal_dump.h"
@@ -60,16 +61,19 @@ bool start_game_fatal_dump(std::uintptr_t base, std::string& error) {
         error = "the game's MiniDumpWriteDump import does not match the supported game";
         return false;
     }
+    // Published before the swap: a dump written the moment the slot changes forwards to it.
     original_write.store(reinterpret_cast<WriteDump>(bound), std::memory_order_release);
     auto* const slot = reinterpret_cast<void**>(base + contract::import_slot);
-    DWORD previous{};
-    if (!VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &previous)) {
+    const auto swapped = patch_import_slot("MiniDumpWriteDump import", slot, reinterpret_cast<void*>(bound),
+        reinterpret_cast<void*>(&write_dump));
+    if (swapped == HookBytesDiffer) {
+        error = "the game's MiniDumpWriteDump import does not match the supported game";
+        return false;
+    }
+    if (swapped != HookOk) {
         error = "its import slot could not be made writable";
         return false;
     }
-    InterlockedExchangePointer(slot, reinterpret_cast<void*>(&write_dump));
-    DWORD ignored{};
-    VirtualProtect(slot, sizeof(void*), previous, &ignored);
     installed_base = base;
     return true;
 }

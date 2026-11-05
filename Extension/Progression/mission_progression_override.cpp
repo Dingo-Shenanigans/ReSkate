@@ -207,17 +207,12 @@ bool hydrate_resolved_quest(MainMissionOverrideState& state, std::size_t index,
     return result[1] && result[2] && apply_persisted_state(state, index, result[2], handle);
 }
 
-#ifndef DINGOSDK_MISSION_PROFILE_CALLER_CANDIDATE
-#define DINGOSDK_MISSION_PROFILE_CALLER_CANDIDATE(return_address, image_base) \
-    ((image_base) && (return_address) == (image_base) + mission::quest_expression_return)
-#endif
-
 std::uint64_t* quest_lookup_hook(
     std::uintptr_t manager, std::uint64_t* output, const void* quest_id_wrapper) {
     const auto incoming_error = GetLastError();
     auto& state = main_mission_override_state();
     const auto return_address = reinterpret_cast<std::uintptr_t>(_ReturnAddress());
-    const bool expression_lookup = DINGOSDK_MISSION_PROFILE_CALLER_CANDIDATE(return_address, state.base);
+    const bool expression_lookup = state.base && return_address == state.base + mission::quest_expression_return;
     thread_lookup_tag = {};
     const auto original = state.original_lookup.load(std::memory_order_acquire);
     const auto gate = state.gate.load(std::memory_order_acquire);
@@ -276,11 +271,6 @@ std::uint64_t* quest_lookup_hook(
     return result;
 }
 
-#ifndef DINGOSDK_MISSION_DIRECT_CALLER_CANDIDATE
-#define DINGOSDK_MISSION_DIRECT_CALLER_CANDIDATE(return_address, image_base) \
-    ((image_base) && (return_address) == (image_base) + mission::quest_status_query_return)
-#endif
-
 std::uint64_t component_query_hook(
     const void* context, const void* component_descriptor,
     void* output, std::uint32_t mode) {
@@ -288,7 +278,7 @@ std::uint64_t component_query_hook(
     auto& state = main_mission_override_state();
     const auto return_address = reinterpret_cast<std::uintptr_t>(_ReturnAddress());
     const auto original = state.original_query.load(std::memory_order_acquire);
-    if (!DINGOSDK_MISSION_DIRECT_CALLER_CANDIDATE(return_address, state.base))
+    if (!state.base || return_address != state.base + mission::quest_status_query_return)
         return original(context, component_descriptor, output, mode);
 
     const auto gate = state.gate.load(std::memory_order_acquire);

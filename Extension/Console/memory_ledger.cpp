@@ -1,6 +1,7 @@
 #include "Extension/Console/memory_ledger.h"
 #include "Engine/Core/Hooks/hooks.h"
 #include "Engine/Core/Log/logging.h"
+#include "Engine/Core/Text/ascii.h"
 #include <Windows.h>
 #include <Psapi.h>
 #include <dxgi1_4.h>
@@ -18,6 +19,8 @@
 
 namespace dingosdk::memory_ledger {
 namespace {
+#if defined(DINGOSDK_DEV_TOOLS)
+// The owner tracing (everything up to the heaps but megabytes) is in development builds only.
 constexpr std::size_t depth = 14;
 constexpr std::size_t caller_slots = 8192;
 constexpr unsigned block_bits = 18;
@@ -182,11 +185,13 @@ LONG NTAPI hooked_free(HANDLE process, PVOID* base, PSIZE_T size, ULONG type) {
 void* ntdll_function(const char* name) {
     return reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), name));
 }
+#endif
 
 std::string megabytes(std::uint64_t bytes) {
     return bytes >= (1ull << 30) ? std::format("{:.2f} GB", static_cast<double>(bytes) / (1ull << 30))
                                  : std::format("{:.1f} MB", static_cast<double>(bytes) / (1ull << 20));
 }
+#if defined(DINGOSDK_DEV_TOOLS)
 std::string age(std::uint32_t seconds) {
     return seconds < 120 ? std::format("{} s", seconds) : seconds < 7200 ? std::format("{} min", seconds / 60)
                                                                          : std::format("{:.1f} h", seconds / 3600.0);
@@ -278,10 +283,6 @@ std::string place(void* address) {
     if (module.name.empty()) return std::format("{:#x}", reinterpret_cast<std::uintptr_t>(address));
     return std::format("{}+{:#x}", module.name, reinterpret_cast<std::uintptr_t>(address) - module.base);
 }
-std::string lower(std::string text) {
-    for (auto& c : text) c = static_cast<char>(c >= 'A' && c <= 'Z' ? c + 32 : c);
-    return text;
-}
 // Who a caller's memory belongs to: the first module on its stack that is not Windows' or the
 // C runtime's way to memory. Through a heap when Windows' heap asked (the heap grew for
 // whoever was allocating when it ran out).
@@ -291,7 +292,7 @@ std::string owner_of(const Caller& caller) {
     bool heap{};
     for (unsigned i = 0; i < caller.frame_count; ++i) {
         const auto module = module_at(caller.frames[i]);
-        const auto name = lower(module.name);
+        const auto name = ascii_lower(module.name);
         if (i == 0 && name == "ntdll.dll") heap = true;
         if (name.empty() || std::ranges::find(passing, name) != passing.end()) continue;
         return heap ? module.name + " (through a heap)" : module.name;
@@ -466,6 +467,7 @@ void watch() {
         try { watch_once(); } catch (...) {}
     }
 }
+#endif
 
 // ---- heaps ----
 struct SizeCount {
@@ -522,6 +524,7 @@ std::map<std::uint64_t, std::uint64_t> heap_mark; // block size -> count
 bool heap_marked{};
 } // namespace
 
+#if defined(DINGOSDK_DEV_TOOLS)
 bool start(std::string& error) {
     std::lock_guard start_lock(start_mutex);
     if (running.load()) return true;
@@ -673,6 +676,7 @@ void owners_report(const Line& out, std::size_t most_callers) {
         out("     " + stack_of(copy.callers[order[i].first - 1]));
     }
 }
+#endif
 
 void heap_report(const Line& out, bool mark, std::size_t most_sizes) {
     std::lock_guard report_lock(heap_mutex);
@@ -780,9 +784,13 @@ void gpu_report(const Line& out) {
 }
 
 std::string owners_line() {
+#if defined(DINGOSDK_DEV_TOOLS)
     if (!running.load()) return {};
     std::lock_guard lock(watch_mutex);
     return watched_owners;
+#else
+    return {};
+#endif
 }
 std::string gpu_line() {
     std::string line;
@@ -798,13 +806,17 @@ std::filesystem::path write_report() {
         now.wDay, now.wHour, now.wMinute, now.wSecond);
     std::string text;
     const Line add = [&](const std::string& line) { text += line + "\n"; };
+#if defined(DINGOSDK_DEV_TOOLS)
     owners_report(add, 60);
     add("");
+#endif
     heap_report(add, false, 60);
+#if defined(DINGOSDK_DEV_TOOLS)
     if (asking()) {
         add("");
         asked_report(add);
     }
+#endif
     std::ofstream file(path, std::ios::binary);
     file << text;
     return file ? path : std::filesystem::path{};

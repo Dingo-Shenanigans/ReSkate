@@ -9,8 +9,6 @@
 namespace dingosdk::profile_runtime {
 // Offline building configuration, loaded before publishing local-profile readiness.
 
-// Native ABI and cursor-clamp evidence: analysis/local-object-dropper.md.
-
 BuildKitLimits buildkit_limits_from(const profile::Snapshot& snapshot) {
     BuildKitLimits result;
     const auto section = snapshot.extensions.find("object_dropper");

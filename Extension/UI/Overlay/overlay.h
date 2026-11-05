@@ -602,7 +602,7 @@ struct GrabbedFrame {
     const std::uint8_t* data{};
     std::uint32_t width{}, height{}, pitch{};
     bool bgra{};
-    // The game's depth for the same frame, when it was found (depth_probe.cpp): 32-bit floats,
+    // The game's depth for the same frame, when it was found (depth_tap.cpp): 32-bit floats,
     // reversed (1 near, 0 at the far plane), `depth_pitch` bytes a row, the size of the frame.
     const std::uint8_t* depth{};
     std::uint32_t depth_pitch{};
@@ -624,9 +624,11 @@ struct FrameGrabHost {
 };
 // `host` must stay valid for the life of the process.
 void set_frame_grab(const FrameGrabHost *host) noexcept;
-// Research aid for captures (`capture depth`): the game's depth buffers over the next two frames are
-// copied and written to `folder` as pictures, with depth-probe.txt (depth_probe.cpp).
+#if defined(DINGOSDK_DEV_TOOLS)
+// Research aid for captures (`capture depth`, development builds): the game's depth buffers over the
+// next two frames are copied and written to `folder` as pictures, with depth-probe.txt (depth_probe.cpp).
 void request_depth_probe(const wchar_t *folder) noexcept;
+#endif
 using ParkSurfaceQueue = bool (*)(const EditorSurfaceRequest &);
 void set_park_surface_queue(ParkSurfaceQueue) noexcept;
 using ParkPreviewQueue = bool (*)(const EditorPreviewRequest &);

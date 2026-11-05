@@ -6,6 +6,7 @@
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/initfs.h"
 #include "Engine/Core/Platform/path_text.h"
+#include "Engine/Core/Text/ascii.h"
 
 #include <Windows.h>
 #include <bcrypt.h>
@@ -30,11 +31,6 @@ constexpr auto decrypt_reference = addr::initfs::decrypt_reference_prefix;
 [[noreturn]] void fail(const std::string& message) { throw std::runtime_error("InitFS: " + message); }
 void crypto_check(NTSTATUS status, const char* operation) {
     if (status < 0) fail(std::string(operation) + " failed (status " + std::to_string(status) + ")");
-}
-std::string lower(std::string_view text) {
-    std::string result(text);
-    for (auto& ch : result) if (ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch + ('a' - 'A'));
-    return result;
 }
 Bytes read_file(const fs::path& path, std::size_t maximum) {
     std::ifstream input(path, std::ios::binary | std::ios::ate);
@@ -162,7 +158,7 @@ void apply_archive(const fs::path& path, const Secret& key, Entries& effective, 
             (file_system->type != 7 || (!file_system->text.empty() && file_system->text != "/data")))
             fail("Unsupported InitFS filesystem destination for " + name->text);
         Entry entry{name->text, path_utf8(path), Bytes(payload->bytes.begin(), payload->bytes.end())};
-        if (!entries.emplace(lower(name->text), std::move(entry)).second) fail("Duplicate InitFS virtual path");
+        if (!entries.emplace(ascii_lower(name->text), std::move(entry)).second) fail("Duplicate InitFS virtual path");
     }
     if (!inherit) effective.clear();
     for (auto& [name, entry] : entries) effective.insert_or_assign(name, std::move(entry));
@@ -229,9 +225,9 @@ std::optional<std::string> loose_relative_path(std::string_view input) {
     if (input.empty() || input.size() > 1024) return {};
     std::string path(input);
     std::replace(path.begin(), path.end(), '\\', '/');
-    auto key = lower(path);
+    auto key = ascii_lower(path);
     for (const auto prefix : {"/data/", "/fs/", "/native_data/"}) {
-        if (key.starts_with(prefix)) { path.erase(0, std::strlen(prefix)); key = lower(path); break; }
+        if (key.starts_with(prefix)) { path.erase(0, std::strlen(prefix)); key = ascii_lower(path); break; }
     }
     if (path.empty() || path.front() == '/' || path.back() == '/') return {};
     for (const auto ch : path) if (static_cast<unsigned char>(ch) < 32 || std::string_view(":<>\"|?*").find(ch) != std::string_view::npos) return {};
@@ -308,7 +304,7 @@ ExportReport export_files(const fs::path& executable, const fs::path& data_root,
         (void)name;
         const auto relative = loose_relative_path(entry.name);
         if (!relative) { ++report.skipped; continue; }
-        if (!destinations.emplace(lower(*relative), entry.name).second) fail("Colliding loose file paths");
+        if (!destinations.emplace(ascii_lower(*relative), entry.name).second) fail("Colliding loose file paths");
         const bool script = relative->starts_with("scripts/");
         script ? ++report.scripts : ++report.configs;
         const auto destination = output / utf8_path(*relative);

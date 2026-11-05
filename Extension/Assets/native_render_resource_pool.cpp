@@ -1,6 +1,7 @@
 #include "native_render_resource_pool.h"
 
 #include "Engine/Core/Hooks/hooks.h"
+#include "Engine/Core/Hooks/patches.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/memory.h"
 #include "Engine/Game/Build/supported_build.h"
@@ -334,41 +335,18 @@ void* __fastcall construct_native_renderer(void* self, void* configuration) {
     return result;
 }
 
-bool write_bytes(std::uintptr_t address, std::span<const std::uint8_t> bytes) noexcept {
-    DWORD previous{};
-    auto* const destination = reinterpret_cast<void*>(address);
-    if (!VirtualProtect(destination, bytes.size(), PAGE_EXECUTE_READWRITE, &previous)) return false;
-    std::memcpy(destination, bytes.data(), bytes.size());
-    const bool flushed = FlushInstructionCache(GetCurrentProcess(), destination, bytes.size()) != FALSE;
-    DWORD discarded{};
-    const bool restored = VirtualProtect(destination, bytes.size(), previous, &discarded) != FALSE;
-    return flushed && restored;
-}
-
 constexpr std::size_t resource_flag_stub_page_bytes = 0x1000;
 constexpr std::size_t priority_stub_offset = 0x00;
 constexpr std::size_t visibility_stub_offset = 0x40;
-
-bool relative_jump(std::uintptr_t instruction, std::uintptr_t destination,
-    std::int32_t& displacement) noexcept {
-    const auto delta = static_cast<std::int64_t>(destination) -
-        static_cast<std::int64_t>(instruction + 5);
-    if (delta < std::numeric_limits<std::int32_t>::min() ||
-        delta > std::numeric_limits<std::int32_t>::max()) return false;
-    displacement = static_cast<std::int32_t>(delta);
-    return true;
-}
 
 template<std::size_t N>
 bool write_stub(std::byte* destination, std::span<const std::uint8_t, N> prefix,
     std::uintptr_t return_address) noexcept {
     std::array<std::uint8_t, N + 5> bytes{};
     std::memcpy(bytes.data(), prefix.data(), prefix.size());
-    bytes[N] = 0xe9;
-    std::int32_t displacement{};
+    // The moved instructions, then jmp back to the game after them.
     const auto jump = reinterpret_cast<std::uintptr_t>(destination) + N;
-    if (!relative_jump(jump, return_address, displacement)) return false;
-    std::memcpy(bytes.data() + N + 1, &displacement, sizeof(displacement));
+    if (!code_jump_bytes(jump, return_address, std::span{bytes}.subspan(N))) return false;
     std::memcpy(destination, bytes.data(), bytes.size());
     return true;
 }
@@ -402,26 +380,23 @@ bool prepare_resource_flag_stubs(std::uintptr_t base) noexcept {
     return true;
 }
 
+// jmp stub, then NOPs over the rest of the replaced read; read back once written.
 template<std::size_t N>
-bool install_generated_jump(std::uintptr_t address, std::byte* stub,
+bool install_generated_jump(const char* name, std::uintptr_t address, std::byte* stub,
     std::span<const std::uint8_t, N> expected) noexcept {
     std::array<std::uint8_t, N> replacement{};
-    replacement.fill(0x90);
-    replacement[0] = 0xe9;
-    std::int32_t displacement{};
-    if (!relative_jump(address, reinterpret_cast<std::uintptr_t>(stub), displacement)) return false;
-    std::memcpy(replacement.data() + 1, &displacement, sizeof(displacement));
-    return matches(address, expected) && write_bytes(address, replacement) &&
-        matches(address, replacement);
+    const auto destination = reinterpret_cast<std::uintptr_t>(stub);
+    return code_jump_bytes(address, destination, replacement) &&
+        patch_code_jump(name, address, expected, destination) == HookOk && matches(address, replacement);
 }
 
 bool install_resource_flag_access_redirects(std::uintptr_t base, std::size_t& applied) noexcept {
     applied = 0;
-    if (!install_generated_jump(base + contract::resource_flags_priority_rva,
+    if (!install_generated_jump("render-resource priority flag read", base + contract::resource_flags_priority_rva,
             resource_flag_stubs + priority_stub_offset,
             std::span{contract::resource_flags_read_priority})) return false;
     ++applied;
-    if (!install_generated_jump(base + contract::resource_flags_visibility_rva,
+    if (!install_generated_jump("render-resource visibility flag read", base + contract::resource_flags_visibility_rva,
             resource_flag_stubs + visibility_stub_offset,
             std::span{contract::resource_flags_read_visibility})) return false;
     ++applied;
@@ -429,9 +404,9 @@ bool install_resource_flag_access_redirects(std::uintptr_t base, std::size_t& ap
 }
 
 void restore_resource_flag_access_redirects(std::uintptr_t base, std::size_t count) noexcept {
-    if (count >= 2) (void)write_bytes(base + contract::resource_flags_visibility_rva,
+    if (count >= 2) (void)patch_code_restore(base + contract::resource_flags_visibility_rva,
         contract::resource_flags_read_visibility);
-    if (count >= 1) (void)write_bytes(base + contract::resource_flags_priority_rva,
+    if (count >= 1) (void)patch_code_restore(base + contract::resource_flags_priority_rva,
         contract::resource_flags_read_priority);
 }
 
@@ -444,7 +419,7 @@ void restore_patches(std::uintptr_t base, std::size_t count) noexcept {
     while (count) {
         --count;
         const auto& patch = contract::patches[count];
-        (void)write_bytes(base + patch.rva, patch.expected);
+        (void)patch_code_restore(base + patch.rva, patch.expected);
     }
 }
 } // namespace
@@ -538,9 +513,11 @@ bool start_native_render_resource_pool(std::uintptr_t base, std::string& error) 
 
     std::size_t applied{};
     for (const auto& patch : contract::patches) {
-        if (!write_bytes(base + patch.rva, patch.replacement) ||
-            !matches(base + patch.rva, patch.replacement)) {
-            restore_patches(base, applied + 1);
+        const auto written = patch_code("render-resource pool instruction", base + patch.rva, patch.expected,
+            patch.replacement);
+        if (written != HookOk || !matches(base + patch.rva, patch.replacement)) {
+            // A refused patch wrote nothing, so only the ones before it are put back.
+            restore_patches(base, applied + (written == HookBytesDiffer ? 0 : 1));
             (void)hook_remove(index_target);
             (void)hook_remove(target);
             std::lock_guard allocation_lock(allocation_mutex);

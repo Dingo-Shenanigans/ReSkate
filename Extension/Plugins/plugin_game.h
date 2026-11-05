@@ -662,6 +662,9 @@ public:
     // the ticker's label `from` shown as `to` (empty: that label is the game's again), and the next
     // trick with one of `from`'s ids, within `within_ms`, recorded as `to`. Empty when done, else why not.
     virtual std::string trick_label(std::string_view /*plugin*/, std::string_view /*from*/, std::string_view /*to*/) { return unavailable; }
+    virtual std::string trick_record_as(std::string_view /*plugin*/, std::vector<std::uint32_t> /*from*/, std::uint32_t /*to*/, int /*within_ms*/) {
+        return unavailable;
+    }
     // ---- strings: the text the game shows for its ids (Extension/Localization/text_overrides.h) ----
     // Each key (an id, or "#" and 1 to 8 hex digits for one known by its hash) shown as its UTF-8
     // text, checked by the API; stored over the next ticks. Empty when taken, else why not.
@@ -683,9 +686,6 @@ public:
     virtual std::string content_list(std::string_view /*folder*/, std::vector<ContentFile>& /*files*/) { return unavailable; }
     // One of them: `path` is checked already (safe_relative_path). Empty when read, else why not.
     virtual std::string content_read(std::string_view /*mod*/, std::string_view /*folder*/, std::string_view /*path*/, std::string& /*text*/) {
-        return unavailable;
-    }
-    virtual std::string trick_record_as(std::string_view /*plugin*/, std::vector<std::uint32_t> /*from*/, std::uint32_t /*to*/, int /*within_ms*/) {
         return unavailable;
     }
     // ---- files: the plugin's own data folder, <game>/Mods/.reskate_plugin_data/<plugin>/ -----------
@@ -842,7 +842,6 @@ public:
     // One plugin plays at a time; none while a throwdown runs. A replacement plays when the game does
     // `trick` ("kickflip") with that pop ("" any, "low", "mid", "high"); a null clip takes it away.
     using ClipRef = std::shared_ptr<const anim_studio::Clip>;
-    // `at`: seconds into the clip it starts from; `paused`: held there (seek and pause move it).
     // The game's own animations (Extension/AnimationStudio/game_clips.h): the names containing `containing`
     // (lower case), at most `most`; and one read as a clip. Empty, and why, while they are still read or
     // when that one is not a clip on the skater's rig.
@@ -862,6 +861,7 @@ public:
         why = unavailable;
         return nullptr;
     }
+    // `at`: seconds into the clip it starts from; `paused`: held there (seek and pause move it).
     virtual std::string play_clip(std::string_view /*plugin*/, ClipRef, float /*speed*/, float /*blend*/, bool /*loop*/, float /*at*/, bool /*paused*/,
                                   bool /*floor*/) {
         return unavailable;
@@ -1070,8 +1070,6 @@ public:
     // launch comes back from take_launches.
     virtual std::string shape_launch(std::string_view /*plugin*/, std::string_view /*from*/, std::optional<LaunchShape>) { return unavailable; }
     virtual std::vector<LaunchNews> take_launches() { return {}; }
-    // Pad controls kept from the game while any plugin asks: the triggers, and the left stick's
-    // left/right while the skater grinds.
     // The skater carried up to a speed (m/s, 0 off) for the next 300 ms, eased down to it with may_slow.
     virtual std::string cruise(std::string_view /*plugin*/, float /*speed*/, bool /*may_slow*/) { return unavailable; }
     // The board's velocity set (or `add`ed to) by the next physics step with the skater on its board,

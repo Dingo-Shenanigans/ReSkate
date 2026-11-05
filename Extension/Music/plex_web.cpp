@@ -2,6 +2,8 @@
 #include "Engine/Core/Json/json.h"
 #include "Engine/Core/Log/logging.h"
 #include "Extension/Boot/user_data_redirect.h"
+#include "Engine/Core/Platform/wide_text.h"
+#include "Engine/Core/Text/url.h"
 #include <Windows.h>
 #include <bcrypt.h>
 #include <dpapi.h>
@@ -48,20 +50,6 @@ void problem(const std::string& text) {
     if (!text.empty()) say(logging::Level::warning, text);
 }
 
-std::wstring wide(const std::string& text) {
-    if (text.empty()) return {};
-    std::wstring out(static_cast<std::size_t>(MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0)), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), out.data(), static_cast<int>(out.size()));
-    return out;
-}
-std::string escaped(const std::string& text) {
-    std::string out;
-    for (const unsigned char c : text) {
-        if (std::isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') out.push_back(static_cast<char>(c));
-        else out += std::format("%{:02X}", c);
-    }
-    return out;
-}
 std::string random_hex(std::size_t bytes) {
     std::vector<unsigned char> data(bytes);
     if (BCryptGenRandom(nullptr, data.data(), static_cast<ULONG>(data.size()), BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0) return {};
@@ -139,9 +127,9 @@ struct Handle {
 // A call to plex.tv or to the player's server, as Plex's API asks for one: JSON back, and who is asking in its headers.
 Reply request(const wchar_t* method, const std::wstring& host, INTERNET_PORT port, bool secure, const std::wstring& path, const std::string& token = {}, const std::wstring& extra = {}) {
     Reply reply;
-    std::wstring headers = L"Accept: application/json\r\nX-Plex-Product: " + std::wstring(product) + L"\r\nX-Plex-Client-Identifier: " + wide(client_identifier()) +
+    std::wstring headers = L"Accept: application/json\r\nX-Plex-Product: " + std::wstring(product) + L"\r\nX-Plex-Client-Identifier: " + utf8_to_wide(client_identifier()) +
         L"\r\nX-Plex-Device-Name: ReSkate\r\nX-Plex-Platform: Windows\r\n" + extra;
-    if (!token.empty()) headers += L"X-Plex-Token: " + wide(token) + L"\r\n";
+    if (!token.empty()) headers += L"X-Plex-Token: " + utf8_to_wide(token) + L"\r\n";
     Handle session{WinHttpOpen(agent, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0)};
     if (!session.h) return reply;
     WinHttpSetTimeouts(session.h, 5000, 5000, 10000, 10000);
@@ -192,14 +180,14 @@ void sign_in() {
     } catch (...) {
         return problem("Plex would not start a sign-in");
     }
-    const auto address = "https://app.plex.tv/auth#?clientID=" + escaped(client_identifier()) + "&code=" + escaped(code) + "&context%5Bdevice%5D%5Bproduct%5D=ReSkate";
-    ShellExecuteW(nullptr, L"open", wide(address).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    const auto address = "https://app.plex.tv/auth#?clientID=" + url_escaped(client_identifier()) + "&code=" + url_escaped(code) + "&context%5Bdevice%5D%5Bproduct%5D=ReSkate";
+    ShellExecuteW(nullptr, L"open", utf8_to_wide(address).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
     say(logging::Level::info, "waiting for the sign-in in the browser.");
     const auto until = GetTickCount64() + approval_wait_ms;
     std::string granted;
     while (GetTickCount64() < until) {
         Sleep(2000);
-        const auto polled = request(L"GET", L"/api/v2/pins/" + std::to_wstring(id) + L"?code=" + wide(escaped(code)));
+        const auto polled = request(L"GET", L"/api/v2/pins/" + std::to_wstring(id) + L"?code=" + utf8_to_wide(url_escaped(code)));
         if (polled.status == 404) return problem("the sign-in expired; try again");
         if (polled.status != 200) continue;
         try {
@@ -257,12 +245,12 @@ bool parse_uri(const std::string& uri, Server& out) {
         rest.resize(colon);
     }
     if (rest.empty() || port == 0 || port > 65535) return false;
-    out.host = wide(rest);
+    out.host = utf8_to_wide(rest);
     out.port = static_cast<INTERNET_PORT>(port);
     return true;
 }
 Reply to_server(const wchar_t* method, const std::string& path, const std::wstring& extra = {}) {
-    return request(method, server.host, server.port, server.secure, wide(path), server.token, extra);
+    return request(method, server.host, server.port, server.secure, utf8_to_wide(path), server.token, extra);
 }
 
 // Looks for a server the account owns that answers: its local address first, then the others, a relay last.
@@ -349,7 +337,7 @@ void poll() {
     } catch (...) {}
     std::vector<std::uint8_t> art;
     if (found.valid && !thumb.empty() && thumb != art_thumb) {
-        const auto picture = to_server(L"GET", "/photo/:/transcode?width=600&height=600&minSize=1&upscale=1&url=" + escaped(thumb));
+        const auto picture = to_server(L"GET", "/photo/:/transcode?width=600&height=600&minSize=1&upscale=1&url=" + url_escaped(thumb));
         if (picture.status == 200 && !picture.body.empty()) {
             art.assign(picture.body.begin(), picture.body.end());
             art_thumb = thumb;
@@ -378,7 +366,7 @@ void send_control(const std::string& action) {
         client = session_client;
     }
     if (client.empty() || !have_server) return;
-    to_server(L"GET", "/player/playback/" + action + "?type=music&commandID=" + std::to_string(tick() & 0xFFFFFF), L"X-Plex-Target-Client-Identifier: " + wide(client) + L"\r\n");
+    to_server(L"GET", "/player/playback/" + action + "?type=music&commandID=" + std::to_string(tick() & 0xFFFFFF), L"X-Plex-Target-Client-Identifier: " + utf8_to_wide(client) + L"\r\n");
 }
 
 void run() noexcept {

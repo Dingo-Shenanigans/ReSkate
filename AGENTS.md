@@ -24,6 +24,11 @@ Output is in `build/vs2022-x64/Release/`. One target at a time:
 
 Warnings are errors (`/W4 /WX`). A change is not done until it builds clean.
 
+Research tools (the throwdown lab's verbs, `ui dump`, `capture depth`, memory owner tracing, the
+trainer's self test, dumps and telemetry) are only in dev builds: `cmake --preset vs2022-x64-dev` and
+`cmake --build --preset dev-release` (option `DINGOSDK_DEV_TOOLS`, output in `build/vs2022-x64-dev/`).
+A new research tool goes behind `#if defined(DINGOSDK_DEV_TOOLS)` too; releases leave it off.
+
 The Linux dedicated server builds with `cmake --preset linux-x64` and
 `cmake --build build/linux --target dingosdk_server`. Only the server builds on Linux.
 
@@ -56,7 +61,9 @@ can only be checked in the game, say so, and say what you did and did not verify
   or patched has a `<name>_prefix` byte array beside it, and the feature checks those bytes before
   touching it, so wrong bytes are refused rather than patched. Follow an existing header.
 - **Hooks go through [Engine/Core/Hooks](Engine/Core/Hooks/hooks.h)** (Microsoft Detours): `hook_prepare`,
-  then `hook_enable`. Hooks installed while the game is running go inside a `HookBatch`.
+  then `hook_enable`. Hooks installed while the game is running go inside a `HookBatch`. Patches
+  Detours does not make go through [patches.h](Engine/Core/Hooks/patches.h) beside it: `patch_table_slot`,
+  `patch_import_slot`, `patch_code_jump` / `patch_code` and `patch_breakpoint`.
 - **The SDK offers general APIs, not modes.** No C++ that knows one particular game mode, menu or
   feature that a plugin could provide. Add the general building block to the SDK and build the feature
   on it as a Luau plugin mod (a mod folder with a `reskate-plugin.json`). The goal is that

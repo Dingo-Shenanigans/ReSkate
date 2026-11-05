@@ -5,6 +5,7 @@
 #include "Engine/Game/Abi/native_data.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/engine.h"
+#include "Engine/Core/Text/hex.h"
 
 #include <Windows.h>
 #include <algorithm>
@@ -27,12 +28,6 @@ std::string request_what;
 std::atomic<bool> request_pending{false};
 std::atomic<std::uint64_t> request_due{0};
 
-std::string hex(std::uint64_t value, int width) {
-    static constexpr char digits[] = "0123456789abcdef";
-    std::string out(static_cast<std::size_t>(width), '0');
-    for (int i = width - 1; i >= 0; --i, value >>= 4) out[static_cast<std::size_t>(i)] = digits[value & 15];
-    return "0x" + out;
-}
 std::uint32_t schema_of(Address type) { return read<std::uint32_t>(read<Address>(type)); }
 
 struct Walker {
@@ -44,13 +39,13 @@ struct Walker {
 
     void indent(unsigned depth) { out.append(std::size_t{depth} * 2 + 2, ' '); }
     void describe(Address type) {
-        out += " <" + hex(schema_of(type), 8) + " k" + std::to_string(kind(type)) + ' ' +
+        out += " <" + hex_number(schema_of(type), 8) + " k" + std::to_string(kind(type)) + ' ' +
             std::to_string(size(type)) + '>';
     }
     void bytes(Address value, unsigned length) {
         out += " = ";
         for (unsigned i = 0; i < std::min(length, 32U); ++i)
-            out += hex(read<std::uint8_t>(value + i), 2).substr(2);
+            out += hex_number(read<std::uint8_t>(value + i), 2).substr(2);
     }
     // An asset reference is one pointer. The referenced header carries its real
     // type at +8; named records keep their name at +0x28 and their typed data
@@ -59,7 +54,7 @@ struct Walker {
         const auto asset = read<Address>(value);
         if (!asset) { out += " = null\n"; return; }
         const auto actual = read<Address>(asset + 8);
-        if (!actual || kind(actual) != kind_reference) { out += " = " + hex(asset, 16) + "\n"; return; }
+        if (!actual || kind(actual) != kind_reference) { out += " = " + hex_number(asset, 16) + "\n"; return; }
         if (schema_of(actual) == record_schema) {
             out += " = record " + string(read<Address>(asset + 0x28), 256) + '\n';
             const auto type = read<Address>(asset + 0x18), data = read<Address>(asset + 0x20);
@@ -75,14 +70,14 @@ struct Walker {
     }
     void handle(Address value, unsigned depth) {
         const auto id = read<Handle>(value);
-        out += " = " + hex(id, 16) + '\n';
+        out += " = " + hex_number(id, 16) + '\n';
         if (!id || depth >= max_depth || !models.insert(id).second) return;
         const auto type = context.type_of(id);
         if (!type) return;
         const auto data = game::native_data().models.value(context.manager, id, 0, 0);
         if (!data) return;
         indent(depth + 1);
-        out += "(model) -> handle " + hex(id, 16);
+        out += "(model) -> handle " + hex_number(id, 16);
         describe(type);
         out += '\n';
         walk(type, data, depth + 2);
@@ -103,7 +98,7 @@ struct Walker {
                     const auto offset = read<std::uint16_t>(entry + 8);
                     if (!field_type) continue;
                     indent(depth);
-                    out += hex(read<std::uint32_t>(entry), 8) + '@' + hex(offset, 4);
+                    out += hex_number(read<std::uint32_t>(entry), 8) + '@' + hex_number(offset, 4);
                     describe(field_type);
                     leaf(field_type, value + offset, depth);
                 }
@@ -193,27 +188,27 @@ void run_pending_ui_dump(std::uintptr_t base) noexcept {
                 if (!asset) continue;
                 const auto type = read<Address>(asset + 8);
                 Walker walker{context};
-                walker.out = "asset " + name + " in domain " + std::to_string(domain) + " at " + hex(asset, 16) +
-                             " type <" + hex(type ? schema_of(type) : 0, 8) + " k" + std::to_string(type ? kind(type) : 0) +
+                walker.out = "asset " + name + " in domain " + std::to_string(domain) + " at " + hex_number(asset, 16) +
+                             " type <" + hex_number(type ? schema_of(type) : 0, 8) + " k" + std::to_string(type ? kind(type) : 0) +
                              " " + std::to_string(type ? size(type) : 0) + ">\n";
                 Address words[12]{};
                 memory::read_bytes(asset, words, sizeof(words));
                 walker.out += "header:";
-                for (const auto word : words) walker.out += ' ' + hex(word, 16);
+                for (const auto word : words) walker.out += ' ' + hex_number(word, 16);
                 walker.out += '\n';
                 // Each header word that points at another object: its first words, to find the data.
                 for (unsigned index = 0; index < 12; ++index) {
                     Address inner[6]{};
                     if (!words[index] || !memory::read_bytes(words[index], inner, sizeof(inner))) continue;
-                    walker.out += "  +" + hex(index * 8, 2) + " ->";
-                    for (const auto word : inner) walker.out += ' ' + hex(word, 16);
+                    walker.out += "  +" + hex_number(index * 8, 2) + " ->";
+                    for (const auto word : inner) walker.out += ' ' + hex_number(word, 16);
                     walker.out += '\n';
                 }
                 // A record keeps its real type at +0x18 and its data at +0x20.
                 try {
                     const auto data_type = words[3], data = words[4];
                     if (data_type && data) {
-                        walker.out += "data <" + hex(schema_of(data_type), 8) + " k" + std::to_string(kind(data_type)) + " " +
+                        walker.out += "data <" + hex_number(schema_of(data_type), 8) + " k" + std::to_string(kind(data_type)) + " " +
                                       std::to_string(size(data_type)) + ">\n";
                         walker.walk(data_type, data, 1);
                     }
@@ -241,7 +236,7 @@ void run_pending_ui_dump(std::uintptr_t base) noexcept {
                 ++roots;
                 const auto schema = schema_of(root.model.type);
                 if (only_schema && schema != only_schema) continue;
-                std::string header = "root " + hex(root.model.handle, 16) + " <" + hex(schema, 8) + ' ' +
+                std::string header = "root " + hex_number(root.model.handle, 16) + " <" + hex_number(schema, 8) + ' ' +
                     std::to_string(size(root.model.type)) + ">\n";
                 if (what == "roots") { text += header; ++written; continue; }
                 Walker walker{context};

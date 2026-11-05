@@ -9,7 +9,7 @@
 #include "Engine/Game/Build/20260929/park_rotation.h"
 
 namespace dingosdk::profile_runtime {
-// Authored BAM park-pack event adapter. See analysis/rotating-parks.md.
+// Authored BAM park-pack event adapter.
 
 ParkRuntime& park_runtime() { static auto* r = new ParkRuntime; return *r; }
 

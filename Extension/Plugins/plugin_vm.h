@@ -260,7 +260,6 @@ public:
         Vec3 at{};
     };
     std::optional<float> touch_reach() const noexcept { return touch_reach_; }
-    const std::map<std::uint64_t, Contact>& contacts() const noexcept { return contacts_; }
     void touch_tick(const std::vector<Body>& bodies);
     void track_changed(const Track& track);
     void throwdown_phase(const char* phase);
@@ -288,7 +287,6 @@ public:
     const std::string& reason() const noexcept { return reason_; }
     std::size_t memory() const noexcept { return memory_; }
     double tick_ms() const noexcept { return last_window_ms_; }
-    // Its console commands and their help.
     // Its console commands, and the subcommands each declared ("prop random", run by "prop"'s
     // function): the name, its arguments as help shows them, and its help.
     std::vector<CommandInfo> commands() const;
@@ -302,7 +300,6 @@ private:
     friend struct UiApi;
     friend struct MoreApi;
     friend struct WorldApi;
-    friend struct ServicesApi;
     friend struct KitApi;
     friend struct CaptureApi;
     friend struct ValuesApi;
@@ -310,6 +307,7 @@ private:
     friend struct EffectsApi;
     friend struct ViewmodelApi;
     friend struct InputLeaseApi;
+    friend Game& game_of(Plugin& plugin); // plugin_api.h
     std::uint64_t instance_{};
     struct Subcommand { std::string name, args, help; };
     struct Command { std::string help; int function{}; std::vector<Subcommand> subcommands; };

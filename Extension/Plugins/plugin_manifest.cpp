@@ -47,6 +47,8 @@ namespace {
 // Extension/Objects/placement_physics.h); a claimed object's moved pose is never saved to the park.
 // "marker.read" reads the local skater's marker saves and returns (reskate.marker.events).
 // "ui.models" publishes bounded plugin-namespaced floats for authored native UI (not stock fields).
+// "replay" grants nothing yet: no API checks it. It stays known so a manifest that lists it still
+// loads (an unknown permission refuses the whole manifest).
 constexpr std::array<std::string_view, 64> permissions{
     "console", "storage", "overlay", "menu", "ui.screen", "input", "input.lease", "input.capture", "input.write", "hud", "events.tricks", "events.skater",
     "skater.read", "skater.teleport", "skater.control", "skater.animation", "trainer", "camera",

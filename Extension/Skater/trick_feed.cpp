@@ -4,6 +4,7 @@
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/memory.h"
 #include "Engine/Game/Build/addresses.h"
+#include "Engine/Game/Build/20260929/engine.h"
 #include "Engine/Game/Build/20260929/native_party.h"
 #include <Windows.h>
 #include <array>
@@ -19,7 +20,6 @@ namespace {
 constexpr std::uint32_t trick_name_member = 0x0002, trick_side_member = 0x009c, trick_landing_member = 0x0034;
 constexpr std::uint32_t trick_body_spin_member = 0x00bc, trick_board_spin_member = 0x00ac, trick_stance_member = 0x004e;
 constexpr std::uint32_t trick_late_member = 0x007c, trick_darkflip_member = 0x010d, trick_darkcatch_member = 0x00fd;
-constexpr std::uintptr_t ui_string_type_rva = 0x765dcc0; // Skate.exe: the UI model's string type
 struct Feed {
     std::atomic<bool> on{};
     std::mutex mutex;
@@ -107,7 +107,7 @@ void tap(std::uintptr_t manager, std::uint64_t handle, std::uintptr_t type, cons
         member != trick_board_spin_member && member != trick_stance_member && member != trick_late_member && member != trick_darkflip_member &&
         member != trick_darkcatch_member)
         return;
-    static const auto string_type = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)) + ui_string_type_rva;
+    static const auto string_type = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)) + addr::engine::string_type; // the UI model's string type
     if (member == trick_name_member && type != string_type) return;
     try {
         std::uint64_t first{};

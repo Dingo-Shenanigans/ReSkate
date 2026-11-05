@@ -3,6 +3,7 @@
 #include "trainer_classes.h"
 #include "Extension/UI/Overlay/skate_menu_internal.h"
 #include "Extension/UI/skate_theme.h"
+#include "Engine/Core/Text/ascii.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -121,11 +122,6 @@ void wrapped_tooltip(const char *format, ...) {
 void tip(const char *text) {
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) wrapped_tooltip("%s", text);
 }
-std::string lower(std::string_view text) {
-    std::string result(text);
-    std::ranges::transform(result, result.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    return result;
-}
 bool contains_words(const std::string &haystack, const std::string &words) {
     std::size_t start = 0;
     while (start < words.size()) {
@@ -153,7 +149,7 @@ std::string console_arg(std::string_view name) {
 
 // The rows EVERY VALUE and a search show.
 void filter_rows(Page &p, const trainer::View &view) {
-    const auto words = lower(p.search.data());
+    const auto words = ascii_lower(p.search.data());
     const auto key = std::format("{}|{}|{}|{}|{}", words, p.group, p.only_changed, p.graph_points, p.show_unused);
     if (p.shown_revision == view.revision && p.shown_key == key) return;
     p.shown_revision = view.revision;
@@ -166,7 +162,7 @@ void filter_rows(Page &p, const trainer::View &view) {
         if (row.detail && !p.graph_points && !row.touched) continue;
         if (p.only_changed && !row.touched && !row.frozen) continue;
         // Searching looks through every group.
-        if (words.empty() ? (group && row.group != *group) : !contains_words(lower(row.id + " " + row.label + " " + row.friendly), words))
+        if (words.empty() ? (group && row.group != *group) : !contains_words(ascii_lower(row.id + " " + row.label + " " + row.friendly), words))
             continue;
         // A value nothing in the game reads would be a slider that does nothing.
         if (!row.used && !p.show_unused && !row.touched && !row.frozen) {
@@ -218,7 +214,7 @@ void place_rows(Page &p, const trainer::View &view) {
     p.placed_revision = view.revision;
     p.placed.assign(view.rows.size(), 0);
     std::vector<std::string> ids(view.rows.size());
-    for (std::size_t i = 0; i < view.rows.size(); ++i) ids[i] = lower(view.rows[i].id);
+    for (std::size_t i = 0; i < view.rows.size(); ++i) ids[i] = ascii_lower(view.rows[i].id);
     const auto find = [&](std::string_view key, std::vector<std::size_t> &into) {
         for (std::size_t i = 0; i < ids.size(); ++i)
             if (ids[i] == key) {
@@ -1167,13 +1163,13 @@ void tune_tab(SkateMenu &menu, const Model &model, const CallbacksV3 &callbacks,
         if (ImGui::Button("Fold all", ImVec2(fold_all, 0))) all(false);
         tip("Closes every section. A click on a section's bar opens it; a click on a card's title folds that card.");
     }
-    const auto words = lower(p.search.data());
+    const auto words = ascii_lower(p.search.data());
     place_rows(p, view);
     if (!words.empty()) {
         // Searching looks through everything at once, whatever section it is in.
         const auto listed = [&](const trainer::PresetRow &preset) {
             return preset.builtin && preset.name != "Stock" && !preset.name.starts_with("Skate 3") && !preset.name.starts_with("Transition:") &&
-                   contains_words(lower(preset.title + " " + preset.name + " " + preset.note), words);
+                   contains_words(ascii_lower(preset.title + " " + preset.name + " " + preset.note), words);
         };
         if (std::ranges::any_of(view.presets, listed)) {
             begin_card(menu, "dials-found", "DIALS AND SWITCHES", "1 is the game's own. A dial moves every value its preset moves.");
@@ -1255,7 +1251,7 @@ void trick_heights(SkateMenu &menu, const CallbacksV3 &callbacks, Page &p, const
         const std::string_view name(label);
         if (part == 2) return name == "Off-board jump height";
         if (part == 1) return name != "Off-board jump height" && !name.starts_with("Pump power") && !name.starts_with("Board bending");
-        return contains_words(lower(std::string(label) + " tricks"), words);
+        return contains_words(ascii_lower(std::string(label) + " tricks"), words);
     };
     if (std::ranges::none_of(labels, wanted)) return;
     if (card(menu, p, part == 2 ? "trick-foot" : part == 1 ? "trick-heights" : "trick-found", part == 2 ? "JUMP" : "TRICKS", "1.0 is the game's own")) {
@@ -2128,14 +2124,18 @@ void transition_section(SkateMenu &menu, const CallbacksV3 &callbacks, Page &p, 
 void map_tab(SkateMenu &menu, const CallbacksV3 &callbacks, Page &p, const trainer::View &view) {
     const auto telemetry = trainer::telemetry();
     if (card(menu, p, "hud", "HUD")) {
-    bool hud = view.hud, jump = view.hud_jump, logging = view.logging;
+    bool hud = view.hud, jump = view.hud_jump;
     if (toggle_row(menu, "Speed and air HUD", "Speed, air time and height in the corner while you skate.", hud))
         trainer_command(menu, callbacks, std::format("option hud {}", hud ? 1 : 0));
     if (toggle_row(menu, "Jump read-out", "After each landing: takeoff speed and angle, height, distance, landing speed.", jump))
         trainer_command(menu, callbacks, std::format("option hud_jump {}", jump ? 1 : 0));
+#if defined(DINGOSDK_DEV_TOOLS)
+    // (`trainer option log`, a research aid: development builds only.)
+    bool logging = view.logging;
     if (toggle_row(menu, "Record telemetry", "Write position and speed every frame to a CSV in %LOCALAPPDATA%\\ReSkate\\trainer\\telemetry.",
             logging))
         trainer_command(menu, callbacks, std::format("option log {}", logging ? 1 : 0));
+#endif
     }
     card_end(p);
 
@@ -2271,8 +2271,8 @@ void trainer_page(SkateMenu &menu, const Model &model, const CallbacksV3 &callba
         ImGui::EndChild();
         ImGui::PopStyleColor(2);
     }
-    // Everything that changes how the game plays, said in words. The first parts are the trainer's own; the cheats,
-    // grind exits, Board Break and the game speed are ReSkate's and count all the same.
+    // Everything that changes how the game plays, said in words. The first parts are the trainer's own; the cheats
+    // and the game speed are ReSkate's and count all the same.
     const double speed = game_speed(model);
     std::string what;
     const auto add = [&](const std::string &part) { what += (what.empty() ? "" : ", ") + part; };
@@ -2296,13 +2296,13 @@ void trainer_page(SkateMenu &menu, const Model &model, const CallbacksV3 &callba
     if (ImGui::Button("RESET EVERYTHING")) {
         clear_edits(p);
         trainer_command(menu, callbacks, "reset everything");
-        // The cheats, grind exits, Board Break and the game speed change how the game plays too: off with the rest.
+        // The cheats and the game speed change how the game plays too: off with the rest.
         for (const auto &line : cheats) cheat_off(menu, callbacks, line);
         if (callbacks.queue_debug && model.debug.probe) debug_request(menu, callbacks, {DebugAction::set_probe_enabled, false});
         if (std::abs(speed - 1.0) > 1e-3) send_console(menu, callbacks, "reset SimulationTime.TimeScale");
     }
-    tip("Puts back every value, lock, preset, dial, trick, grind, transition and bending setting, turns No Bail, Noclip, Dark Pop, Revert Boost, "
-        "grind exit triggers and Board Break off, puts the boosts back to 0 (off), sets the "
+    tip("Puts back every value, lock, preset, dial, trick, grind, transition and bending setting, turns No Bail, Noclip, Dark Pop and "
+        "Revert Boost off, puts the boosts back to 0 (off), sets the "
         "game speed to normal and stops loading a preset on this map: the game exactly as it shipped. Your saved presets are kept, and so are your "
         "game's own settings.");
     ImGui::EndDisabled();

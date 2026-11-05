@@ -112,16 +112,16 @@ ModRead read_mod(const Mod& mod, const RelativeFiles& files, const CasStore& sto
         if (!fs::is_regular_file(baseToc, error)) continue;
         try {
             const auto own = fb::read_toc(read_file(mod.directory / fs::path(relative)));
-            const auto tocKey = lower(relative);
+            const auto tocKey = ascii_lower(relative);
             const auto& game = gameTocs.get(tocKey, [&](GameToc& toc) {
                 toc.document = fb::read_toc(read_file(baseToc));
-                for (const auto& bundle : toc.document.bundles) toc.bundles.emplace(lower(bundle.name), &bundle);
+                for (const auto& bundle : toc.document.bundles) toc.bundles.emplace(ascii_lower(bundle.name), &bundle);
                 for (const auto& chunk : toc.document.chunks) toc.chunks.insert(chunk.guid);
             });
             for (const auto& chunk : own.chunks)
                 if (!chunk.removed && chunk.location.patch && !game.chunks.contains(chunk.guid)) newChunks.push_back(chunk);
             for (const auto& bundle : own.bundles) {
-                const auto bundleName = lower(bundle.name);
+                const auto bundleName = ascii_lower(bundle.name);
                 const auto shipped = game.bundles.find(bundleName);
                 if (shipped == game.bundles.end()) continue;
                 const auto modListing = list_bundle(store, mod.directory, baseRoot, bundle, gameRoot);
@@ -130,13 +130,13 @@ ModRead read_mod(const Mod& mod, const RelativeFiles& files, const CasStore& sto
                     if (!made.listing) return;
                     const auto& manifest = made.listing->manifest;
                     for (std::size_t index = 0; index < manifest.ebx.size(); ++index)
-                        made.original.emplace(lower(manifest.ebx[index].name), std::pair{manifest.ebx[index].sha1, index});
+                        made.original.emplace(ascii_lower(manifest.ebx[index].name), std::pair{manifest.ebx[index].sha1, index});
                     // Maps carry stock SkaterLoader too. Replacing it only in the game's
                     // bundles loses custom cosmetic material targets on a map transition.
                     // Other resource types retain their own table/dependency merge rules.
                     for (const auto& asset : manifest.resources) {
-                        if (asset.resourceType == luaScriptResourceType) made.scripts.emplace(lower(asset.name), &asset);
-                        made.resources.insert(lower(asset.name));
+                        if (asset.resourceType == luaScriptResourceType) made.scripts.emplace(ascii_lower(asset.name), &asset);
+                        made.resources.insert(ascii_lower(asset.name));
                     }
                 });
                 if (!modListing || !known.listing) continue;
@@ -150,7 +150,7 @@ ModRead read_mod(const Mod& mod, const RelativeFiles& files, const CasStore& sto
                 const auto& original = known.original;
                 for (std::size_t index = 0; index < modListing->manifest.ebx.size(); ++index) {
                     const auto& asset = modListing->manifest.ebx[index];
-                    const auto name = lower(asset.name);
+                    const auto name = ascii_lower(asset.name);
                     const auto game_copy = original.find(name);
                     if (game_copy != original.end() && game_copy->second.first == asset.sha1) continue;
                     const auto at = modListing->first + index;
@@ -185,7 +185,7 @@ ModRead read_mod(const Mod& mod, const RelativeFiles& files, const CasStore& sto
                 for (std::size_t index = 0; index < modListing->manifest.resources.size(); ++index) {
                     const auto& asset = modListing->manifest.resources[index];
                     if (asset.resourceType != luaScriptResourceType) continue;
-                    const auto name = lower(asset.name);
+                    const auto name = ascii_lower(asset.name);
                     const auto originalScript = known.scripts.find(name);
                     if (originalScript == known.scripts.end() || originalScript->second->sha1 == asset.sha1 ||
                         originalScript->second->resourceId != asset.resourceId) continue;
@@ -230,7 +230,7 @@ ModRead read_mod(const Mod& mod, const RelativeFiles& files, const CasStore& sto
                 for (std::size_t index = 0; index < modListing->manifest.resources.size(); ++index) {
                     const auto& asset = modListing->manifest.resources[index];
                     const auto at = modListing->first + modListing->manifest.ebx.size() + index;
-                    if (known.resources.contains(lower(asset.name)) || at >= modListing->files.size()) continue;
+                    if (known.resources.contains(ascii_lower(asset.name)) || at >= modListing->files.size()) continue;
                     const auto& file = modListing->files[at];
                     companions.push_back({bundleName, {mod.name, asset,
                         store.read(file.location.patch ? mod.directory : baseRoot, file.location, file.offset, file.size), tocKey}});
@@ -349,7 +349,7 @@ AssetOverrides collect_asset_overrides(const std::vector<const Mod*>& mods,
         const auto keep = [&](const std::string& bundle, AssetAddition addition) {
             auto& list = out.added[bundle];
             auto& index = addedAt[bundle];
-            const auto [place, fresh] = index.try_emplace({addition.asset.kind, lower(addition.asset.name)}, list.size());
+            const auto [place, fresh] = index.try_emplace({addition.asset.kind, ascii_lower(addition.asset.name)}, list.size());
             if (!fresh) {
                 const auto holder = list.begin() + static_cast<std::ptrdiff_t>(place->second);
                 if (holder->mod != addition.mod && holder->asset.sha1 != addition.asset.sha1) {
@@ -382,7 +382,7 @@ AssetOverrides collect_asset_overrides(const std::vector<const Mod*>& mods,
             if (found == out.added.end()) continue;
             // One addition per kind and name in a bundle (keep): this mod's, or not.
             const auto& index = addedAt[bundle];
-            const auto held = index.find({fb::AssetKind::ebx, lower(companion.asset.name)});
+            const auto held = index.find({fb::AssetKind::ebx, ascii_lower(companion.asset.name)});
             // Native mesh material keys do not import their shader depot by EBX GUID/name. A depot
             // the mod's resident list names goes with its own runtime roots, once all of them come
             // from this mod (on a replacement map's copy of the bundle too).
@@ -392,7 +392,7 @@ AssetOverrides collect_asset_overrides(const std::vector<const Mod*>& mods,
                 std::all_of(shader->roots.begin(),shader->roots.end(),[&](const auto& root) {
                     return std::any_of(found->second.begin(),found->second.end(),[&](const auto& addition) {
                         return addition.mod==mod->name && addition.asset.kind==fb::AssetKind::ebx &&
-                            lower(addition.asset.name)==root;
+                            ascii_lower(addition.asset.name)==root;
                     });
                 });
             if ((held != index.end() && found->second[held->second].mod == mod->name) || runtimeShader)
@@ -448,6 +448,7 @@ AssetOverrides collect_asset_overrides(const std::vector<const Mod*>& mods,
                 " referenced bundle chunk(s) accompany mesh/texture additions into map copies");
         }
         for (auto& change : changes) {
+            if (item_list_name(change.name)) out.item_list_bundles.insert(change.bundle);
             // What the change names of the assets the mod added beside it. The mod
             // put them in one bundle with what names them, so they stay together.
             std::set<fb::Guid> names;

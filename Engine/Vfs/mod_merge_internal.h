@@ -5,6 +5,7 @@
 #include "game_archives.h"
 #include "Engine/Resource/material_grid.h"
 #include "Engine/Resource/toc.h"
+#include "Engine/Core/Text/ascii.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -24,8 +25,6 @@
 namespace dingosdk::mods::detail {
 namespace fs = std::filesystem;
 namespace fb = frostbite;
-
-std::string lower(std::string_view text);
 
 std::vector<std::byte> read_file(const fs::path& path);
 // A hash of `name` that ignores case (ASCII), to rule a name out before a lower-case copy of
@@ -88,9 +87,18 @@ fb::Sha1 sha1_of(std::span<const std::byte> bytes);
 
 // A mod's EBX as stored in cas, with the type-reference fixups that would crash the game's
 // load taken out (Engine/Resource/ebx_fixup_repair.h): the payload is encoded again and the
-// asset's sha1 and size follow it. How many came out; with none, or a payload that does not
-// decode, both stay as they were.
-std::size_t repair_ebx_payload(std::vector<std::byte>& encoded, fb::BundleAsset& asset, const fs::path& gameRoot);
+// asset's sha1 and size follow it. An asset list entry giving another size than its payload
+// decodes to is set to the payload's, and its sha1 with it; the payload stays as it is. (A tool
+// that put a mod's document in place of the game's and kept the game's entry for it does that:
+// 333-Skate_3_Improved's lighting descriptions, 2026-11-04. Every entry of the game's own agrees
+// with its payload; one that does not leaves the game a buffer of one size for a document of
+// another.) With a payload that does not decode, nothing changes.
+struct EbxRepair {
+    std::size_t removed{};                 // type references taken out
+    std::optional<std::uint64_t> listed;   // the size the entry gave, when the payload has another
+    explicit operator bool() const { return removed || listed; }
+};
+EbxRepair repair_ebx_payload(std::vector<std::byte>& encoded, fb::BundleAsset& asset, const fs::path& gameRoot);
 
 // Where the launch's merge put every installed mod's archives, and which
 // superbundle TOCs the patch holds: Mods/.reskate/reskate-placements.json.
@@ -250,7 +258,7 @@ public:
     };
     // One copy of a bundle, by the places of its files in the region.
     struct Bundle {
-        std::vector<std::uint32_t> repair;     // EBX with type references to repair
+        std::vector<std::uint32_t> repair;     // EBX with type references or a listed size to repair
         std::vector<std::uint32_t> textures;   // textures whose header is changed so they stream
         std::vector<Mesh> meshes;              // a map's meshes (where each lies in the mod, and its bytes)
     };
@@ -347,6 +355,15 @@ struct AssetAddition {
     std::shared_ptr<const std::vector<std::byte>> chunk_metadata;
     std::size_t chunk_index{};
 };
+// The game's item lists (items/itemmastercollection, a season's
+// 0.30.0_itemcollection), which every cosmetic mod adds its items to. The game
+// reads each entry of one at startup without checking it, so an entry naming an
+// item that is not loaded is a crash on every launch, not a missing item.
+inline bool item_list_name(std::string_view name) {
+    const auto text = ascii_lower(name);
+    return text.starts_with("items/") && text.find("collection") != std::string::npos;
+}
+
 struct AssetOverrides {
     struct ChunkDefaults { std::vector<std::byte> metadata; std::vector<fb::Guid> chunks; };
     std::map<std::string,ChunkDefaults,std::less<>> bundle_chunk_defaults;
@@ -361,6 +378,9 @@ struct AssetOverrides {
     // so wherever the additions go these entries go too. Collected pointing into
     // the mod's own archives; the merge shifts them to where those archives landed.
     std::map<std::string, std::vector<fb::TocChunk>, std::less<>> chunks;
+    // By lower-case name: the bundles in which a mod changed one of the game's item lists
+    // (item_list_name). Each is merged with the game's copy even where one mod alone ships it.
+    std::set<std::string, std::less<>> item_list_bundles;
 
     [[nodiscard]] bool empty() const noexcept { return changed.empty() && scripts.empty() && added.empty(); }
 };

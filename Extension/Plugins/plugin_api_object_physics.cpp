@@ -1,44 +1,25 @@
 #include "lualib.h"
 #include "plugin_api.h"
 #include "plugin_object_physics.h"
-#include <charconv>
 
 namespace dingosdk::plugins {
 struct ObjectPhysicsApi {
-    static Game& game(Plugin& plugin) { return plugin.services_.game(); }
     static void ray(lua_State* L, Plugin& plugin) {
         if (++plugin.raycasts_ > plugin.limits_.raycasts_per_tick)
             luaL_error(L, "too many contact rays in one tick");
     }
 };
 namespace {
-Plugin& allowed(lua_State* L, const char* permission, const char* api) {
-    auto& plugin = plugin_of(L);
-    need(L, plugin, permission, api);
+// permitted, for a plugin that runs only on the player's game (its manifest's side "client").
+Plugin& client_permitted(lua_State* L, const char* permission, const char* api) {
+    auto& plugin = permitted(L, permission, api);
     if (plugin.manifest().side != Side::client)
         luaL_error(L, "%s requires a client-only plugin", api);
     return plugin;
 }
-std::uint64_t id_at(lua_State* L) {
-    if (lua_type(L, 1) != LUA_TSTRING)
-        luaL_argerror(L, 1, "an object's decimal string ID");
-    const auto text = checked_text(L, 1, 20, "an object ID");
-    std::uint64_t id{};
-    const auto result = std::from_chars(text.data(), text.data() + text.size(), id);
-    if (result.ec != std::errc{} || result.ptr != text.data() + text.size() || !id)
-        luaL_argerror(L, 1, "an object's decimal string ID");
-    return id;
-}
-int result(lua_State* L, const std::string& why) {
-    lua_pushboolean(L, why.empty());
-    if (why.empty())
-        return 1;
-    lua_pushlstring(L, why.data(), why.size());
-    return 2;
-}
 int physics(lua_State* L) {
-    auto& plugin = allowed(L, "objects.physics", "reskate.objects.physics");
-    const auto id = id_at(L);
+    auto& plugin = client_permitted(L, "objects.physics", "reskate.objects.physics");
+    const auto id = object_id(L, 1);
     std::optional<ObjectPhysics> options;
     if (!lua_isnoneornil(L, 2)) {
         luaL_checktype(L, 2, LUA_TTABLE);
@@ -66,19 +47,19 @@ int physics(lua_State* L) {
         }
         lua_pop(L, 1);
     }
-    return result(L, ObjectPhysicsApi::game(plugin).object_physics(plugin.id(), id, options));
+    return result(L, game_of(plugin).object_physics(plugin.id(), id, options));
 }
 int velocity(lua_State* L) {
-    auto& plugin = allowed(L, "objects.physics", "reskate.objects.velocity");
-    const auto id = id_at(L);
+    auto& plugin = client_permitted(L, "objects.physics", "reskate.objects.velocity");
+    const auto id = object_id(L, 1);
     const auto v = position_of(L, 2, "velocity");
     if (!valid_object_velocity(v))
         luaL_argerror(L, 2, "velocity must have a finite speed at most 45 m/s");
-    return result(L, ObjectPhysicsApi::game(plugin).object_velocity(plugin.id(), id, v));
+    return result(L, game_of(plugin).object_velocity(plugin.id(), id, v));
 }
 int motion(lua_State* L) {
-    auto& plugin = allowed(L, "objects.physics", "reskate.objects.motion");
-    const auto value = ObjectPhysicsApi::game(plugin).object_motion(plugin.id(), id_at(L));
+    auto& plugin = client_permitted(L, "objects.physics", "reskate.objects.motion");
+    const auto value = game_of(plugin).object_motion(plugin.id(), object_id(L, 1));
     if (!value) {
         lua_pushnil(L);
         return 1;
@@ -88,11 +69,7 @@ int motion(lua_State* L) {
     lua_setfield(L, -2, "position");
     push_position(L, value->velocity);
     lua_setfield(L, -2, "velocity");
-    lua_createtable(L, 4, 0);
-    for (int i = 0; i < 4; ++i) {
-        lua_pushnumber(L, value->rotation[static_cast<std::size_t>(i)]);
-        lua_rawseti(L, -2, i + 1);
-    }
+    push_quaternion(L, value->rotation);
     lua_setfield(L, -2, "rotation");
     lua_pushboolean(L, value->dynamic);
     lua_setfield(L, -2, "dynamic");
@@ -113,8 +90,8 @@ int motion(lua_State* L) {
     return 1;
 }
 int pose(lua_State* L) {
-    auto& plugin = allowed(L, "objects.physics", "reskate.objects.pose");
-    const auto id = id_at(L);
+    auto& plugin = client_permitted(L, "objects.physics", "reskate.objects.pose");
+    const auto id = object_id(L, 1);
     const auto position = position_of(L, 2, "position");
     luaL_checktype(L, 3, LUA_TTABLE);
     std::array<float, 4> rotation{};
@@ -130,27 +107,22 @@ int pose(lua_State* L) {
     }
     if (!valid_object_rotation(rotation))
         luaL_error(L, "rotation must be a unit quaternion");
-    return result(L, ObjectPhysicsApi::game(plugin).object_pose(plugin.id(), id, position, rotation));
+    return result(L, game_of(plugin).object_pose(plugin.id(), id, position, rotation));
 }
 int marker_events(lua_State* L) {
-    auto& plugin = allowed(L, "marker.read", "reskate.marker.events");
-    const auto value = ObjectPhysicsApi::game(plugin).marker_events(plugin.id());
+    auto& plugin = client_permitted(L, "marker.read", "reskate.marker.events");
+    const auto value = game_of(plugin).marker_events(plugin.id());
     if (!value) {
         lua_pushnil(L);
         lua_pushliteral(L, "unavailable here");
         return 2;
     }
-    lua_createtable(L, static_cast<int>(value->events.size()), 0);
-    int i = 0;
-    for (const auto& event : value->events) {
-        lua_pushlstring(L, event.data(), event.size());
-        lua_rawseti(L, -2, ++i);
-    }
+    push_texts(L, value->events);
     lua_pushboolean(L, value->overflow);
     return 2;
 }
 int contact(lua_State* L) {
-    auto& plugin = allowed(L, "objects.physics", "reskate.objects.contact");
+    auto& plugin = client_permitted(L, "objects.physics", "reskate.objects.contact");
     const auto from = position_of(L, 1, "ray start"), to = position_of(L, 2, "ray end");
     float length2{};
     for (unsigned i = 0; i < 3; ++i)
@@ -158,7 +130,7 @@ int contact(lua_State* L) {
     if (length2 > 100)
         luaL_error(L, "a contact ray is at most 10 m");
     ObjectPhysicsApi::ray(L, plugin);
-    const auto hit = ObjectPhysicsApi::game(plugin).object_contact(plugin.id(), from, to);
+    const auto hit = game_of(plugin).object_contact(plugin.id(), from, to);
     if (!hit) {
         lua_pushnil(L);
         return 1;

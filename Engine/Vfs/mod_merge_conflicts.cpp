@@ -122,7 +122,7 @@ struct ConflictChecker::State {
         std::error_code error;
         if (!fs::is_regular_file(path, error)) return;
         toc.document = fb::read_toc(read_file(path));
-        for (const auto& bundle : toc.document->bundles) toc.bundles.emplace(lower(bundle.name), &bundle);
+        for (const auto& bundle : toc.document->bundles) toc.bundles.emplace(ascii_lower(bundle.name), &bundle);
     }
 };
 
@@ -195,7 +195,7 @@ Rows decide(const Shared& shared, const std::vector<const Mod*>& mods, ConflictC
                     read_asset(*state.store, state.baseRoot, state.baseRoot, *shared.game->listing, shipped->second.second, state.gameRoot));
                 // The combined material grid is worked out separately (mod_merge_grid.cpp), and how an item
                 // looks is content: the higher mod's is kept.
-                if (lower(base.rootType).find("materialgrid") != std::string::npos || content_type(base.rootType)) {
+                if (ascii_lower(base.rootType).find("materialgrid") != std::string::npos || content_type(base.rootType)) {
                     uncombinable = false;
                 } else {
                     std::map<fb::Sha1, fb::ebx::Document> documents;
@@ -266,7 +266,7 @@ std::vector<MergeReport::Conflict> ConflictChecker::check(const std::vector<cons
         std::map<std::string, std::string> spelled;
         for (std::size_t mod = 0; mod < mods.size(); ++mod)
             for (const auto& relative : held[mod]->files.tocs) {
-                auto key = lower(relative);
+                auto key = ascii_lower(relative);
                 spelled.try_emplace(key, relative);
                 shippedBy[std::move(key)].push_back(mod);
             }
@@ -399,12 +399,12 @@ std::string conflict_winner(const Mod& mod) {
 }
 
 bool content_type(std::string_view root_type) {
-    const auto type = lower(root_type);
+    const auto type = ascii_lower(root_type);
     return type.find("appearance") != std::string::npos || type.ends_with("textureasset") || type.ends_with("meshasset");
 }
 
 std::string asset_area(std::string_view asset) {
-    const auto name = lower(asset);
+    const auto name = ascii_lower(asset);
     if (name.find("lua") != std::string::npos) return "scripts";
     if (name.starts_with("gameplay/characters/data/recipe") || name.starts_with("characters/")) return "skater setup";
     static constexpr std::pair<std::string_view, std::string_view> areas[]{

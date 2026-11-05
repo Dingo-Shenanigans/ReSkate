@@ -4,6 +4,7 @@
 #include "Engine/Core/Json/json.h"
 #include "Engine/Resource/ebx_document.h"
 #include "Engine/Core/Platform/path_text.h"
+#include "Engine/Core/Text/ascii.h"
 #include <algorithm>
 #include <array>
 #include <fstream>
@@ -29,11 +30,6 @@ constexpr std::array<MapSource, 6> maps{{
     {WorldMap::mpr, "Win32/levels/game/dingolevel_mpr/dingolevel_mpr.toc"},
 }};
 
-std::string lower(std::string_view value) {
-    std::string result(value);
-    for (auto& c : result) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + ('a' - 'A'));
-    return result;
-}
 bool contains(std::string_view text, std::string_view part) { return text.find(part) != std::string_view::npos; }
 std::string leaf_of(std::string_view bundle) {
     const auto slash = bundle.find_last_of('/');
@@ -41,7 +37,7 @@ std::string leaf_of(std::string_view bundle) {
 }
 std::string slug(std::string_view text) {
     std::string result;
-    for (const char c : lower(text)) {
+    for (const char c : ascii_lower(text)) {
         const bool word = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
         if (word) result += c;
         else if (!result.empty() && result.back() != '_') result += '_';
@@ -58,7 +54,7 @@ std::vector<Reference> read_references(const fs::path& gameRoot, const char* toc
     const auto toc = data.read_toc(tocPath);
     std::vector<Reference> result;
     for (const auto& entry : toc.bundles) {
-        const auto name = lower(entry.name.starts_with("win32/") ? std::string_view(entry.name).substr(6) : entry.name);
+        const auto name = ascii_lower(entry.name.starts_with("win32/") ? std::string_view(entry.name).substr(6) : entry.name);
         shipped.insert(name);
         const auto bundle = data.read_bundle(toc, entry.name);
         if (!bundle) continue;
@@ -85,11 +81,11 @@ std::vector<Reference> read_references(const fs::path& gameRoot, const char* toc
 // who turned it off lost the world with no clue which row had done it. A
 // choice already stored for one is keyed by row, so it simply stops applying.
 bool essential_layer(std::string_view bundle) {
-    return contains(leaf_of(lower(bundle)), "coregameassets");
+    return contains(leaf_of(ascii_lower(bundle)), "coregameassets");
 }
 
 std::string category(std::string_view bundle) {
-    const auto path = lower(bundle);
+    const auto path = ascii_lower(bundle);
     const auto leaf = leaf_of(path);
     if (contains(leaf, "activit")) return "Activities";
     if (contains(leaf, "season")) return "Seasonal";
@@ -113,7 +109,7 @@ void add_map(WorldLayerCatalog& catalog, WorldMap map, const std::vector<Referen
     std::map<std::string, Reference> kept;
     std::vector<std::string> order;
     for (const auto& reference : references) {
-        const auto bundle = lower(reference.bundle);
+        const auto bundle = ascii_lower(reference.bundle);
         if (!shipped.contains(bundle) || contains(bundle, "activitypresentation") ||
             contains(reference.carrier, "activitypresentation") || contains(bundle, "commlot") ||
             contains(reference.carrier, "commlot"))

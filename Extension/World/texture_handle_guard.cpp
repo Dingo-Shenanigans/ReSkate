@@ -1,5 +1,6 @@
 #include "texture_handle_guard.h"
 #include "Engine/Core/Hooks/hooks.h"
+#include "Engine/Core/Hooks/patches.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/memory.h"
 #include "Engine/Game/Build/addresses.h"
@@ -150,16 +151,6 @@ bool rel32(std::uintptr_t next_instruction, std::uintptr_t target, std::int32_t&
     return true;
 }
 
-bool write_code(std::uintptr_t address, const void* bytes, std::size_t size) noexcept {
-    auto* const destination = reinterpret_cast<void*>(address);
-    DWORD previous{};
-    if (!VirtualProtect(destination, size, PAGE_EXECUTE_READWRITE, &previous)) return false;
-    std::memcpy(destination, bytes, size);
-    const bool flushed = FlushInstructionCache(GetCurrentProcess(), destination, size) != FALSE;
-    DWORD discarded{};
-    return VirtualProtect(destination, size, previous, &discarded) != FALSE && flushed;
-}
-
 // The null the guard leads resolve to reaches the texture view cache, which asks the texture for its
 // key before keeping the view it built (texture_handles.h). The stub skips the keeping for a null
 // texture, so the cache hands back the empty view:
@@ -190,11 +181,13 @@ bool skip_null_view_insert(std::uintptr_t base) noexcept {
         VirtualFree(stub, 0, MEM_RELEASE);
         return false;
     }
-    std::array<std::uint8_t, th::view_cache_insert.size()> jump{0xe9};
-    std::memcpy(jump.data() + 1, &into, 4);
-    std::memset(jump.data() + 5, 0x90, jump.size() - 5);
-    if (!write_code(base + th::view_cache_insert_rva, jump.data(), jump.size())) {
-        (void)write_code(base + th::view_cache_insert_rva, th::view_cache_insert.data(), th::view_cache_insert.size());
+    // jmp stub, then NOPs over the rest of the two moved instructions.
+    const auto redirected = patch_code_jump("texture view cache insert", base + th::view_cache_insert_rva,
+        th::view_cache_insert, at);
+    if (redirected != HookOk) {
+        // A refused patch wrote nothing; a failed write may have written some of it.
+        if (redirected != HookBytesDiffer && redirected != HookOutOfReach)
+            (void)patch_code_restore(base + th::view_cache_insert_rva, th::view_cache_insert);
         VirtualFree(stub, 0, MEM_RELEASE);
         return false;
     }

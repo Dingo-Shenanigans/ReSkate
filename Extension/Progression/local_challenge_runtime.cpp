@@ -12,8 +12,6 @@
 namespace dingosdk::profile_runtime {
 // Decoded challenge entry/exit expressions and the native activity model catalog.
 
-// See analysis/local-challenges.md for layouts and lifetime/ownership evidence.
-
 ChallengeRuntime& challenge_runtime() { static auto* value = new ChallengeRuntime; return *value; }
 
 std::atomic_bool& hidden_challenges() { static std::atomic_bool value{}; return value; }

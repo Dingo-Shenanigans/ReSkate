@@ -10,8 +10,4 @@
 namespace dingosdk::mesh_settings_guard {
 // Checks this build's function and hooks it; once. False when the build differs (no guard).
 bool install(std::uintptr_t base) noexcept;
-// Meshes without a settings object since the game started, and how many of them held something
-// the game would have freed.
-std::uint64_t without_settings() noexcept;
-std::uint64_t would_have_freed() noexcept;
 }
