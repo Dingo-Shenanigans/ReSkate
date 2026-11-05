@@ -162,7 +162,12 @@ std::string round_trip(syn::Index& index, const std::string& item, const fs::pat
     }
     if (presets < want_presets.size())
         return "only " + std::to_string(presets) + " of " + std::to_string(want_presets.size()) + " presets are in the table copy";
-    return "ok: " + std::to_string(bundles) + " bundles, " + std::to_string(checked) + " payloads read back, " +
+    // The item is listed by an item list in the mod, so the viewer's catalogue gets it.
+    std::size_t lists = 0;
+    for (const auto& piece : cut->pieces)
+        if (piece.kind == syn::Piece::ebx && piece.name.starts_with("items/") && piece.name.find("collection") != std::string::npos) ++lists;
+    if (!lists) return "no item list names it, so the viewer's catalogue would not have it";
+    return "ok: " + std::to_string(lists) + " item list(s), " + std::to_string(bundles) + " bundles, " + std::to_string(checked) + " payloads read back, " +
            std::to_string(presets) + " presets in the table, " + mb(written.bytes) + " written";
 }
 } // namespace
@@ -172,7 +177,7 @@ int main(int argc, char** argv) {
     const fs::path game = argc > 1 ? fs::path(argv[1]) : self.parent_path();
     const fs::path out = argc > 2 ? fs::path(argv[2]) : self / "outfit-probe-report.txt";
     report.open(out);
-    say("outfit-probe 7: game " + game.string());
+    say("outfit-probe 8: game " + game.string());
     const auto sources = enabled_mods(game / "Mods");
     say(std::to_string(sources.size()) + " enabled mods; reading their cosmetics...");
     const auto started = std::chrono::steady_clock::now();

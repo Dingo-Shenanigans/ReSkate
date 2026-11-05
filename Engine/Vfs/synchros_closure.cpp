@@ -100,6 +100,10 @@ struct Index::State {
     std::unique_ptr<vfs::GameArchives> archives;
     std::vector<Node> nodes;
     std::unordered_map<std::string, std::size_t> by_guid, by_name, res_by_name, by_key;
+    // The game's item lists a mod adds its items to (items/itemmastercollection, a season's
+    // 0.30.0_itemcollection), by the file GUID of each item they list: a received item is only in
+    // the viewer's catalogue when one of them lists it (mod_merge_combine.cpp, item_list_name).
+    std::map<std::string, std::vector<std::size_t>> collections_of;
     std::unordered_map<std::string, std::vector<std::size_t>> by_leaf, bundle_assets;
     std::unordered_map<std::uint64_t, std::size_t> by_resource;
     std::unordered_map<std::uint64_t, std::vector<std::size_t>> chunk_by_prefix;
@@ -318,6 +322,11 @@ struct Index::State {
                             by_key.emplace(n.key, i);
                         }
                 }
+                if (lower(doc->rootType) == "delmaritemcollectionasset")
+                    for (const auto& listed : doc->imports) {
+                        auto& lists = collections_of[guid_key(listed.fileGuid)];
+                        if (std::find(lists.begin(), lists.end(), i) == lists.end()) lists.push_back(i);
+                    }
                 scan(bytes, n.edges);
                 n.doc = std::move(doc);
             } catch (const std::exception&) {
@@ -381,6 +390,26 @@ std::optional<Cut> Index::cut(std::string_view item) {
         }
         for (const auto next : n.edges)
             if (!seen[next]) { seen[next] = 1; queue.push_back(next); }
+    }
+    // The item lists that list it, so the viewer's catalogue has it: its own mod's copy of each list
+    // (the merge keeps of a list only the entries whose items are in the bundle), another mod's when
+    // its own mod has none.
+    if (const auto lists = s.collections_of.find(s.nodes[start].guid); lists != s.collections_of.end()) {
+        std::map<std::string, std::size_t> chosen;   // list name -> node
+        for (const auto index : lists->second) {
+            const auto& list = s.nodes[index];
+            const auto [at, fresh] = chosen.try_emplace(list.piece.name, index);
+            if (!fresh && s.nodes[at->second].piece.source != s.nodes[start].piece.source &&
+                list.piece.source == s.nodes[start].piece.source)
+                at->second = index;
+        }
+        for (const auto& [name, index] : chosen) {
+            const auto& list = s.nodes[index].piece;
+            if (placed.insert(placement(list.source, list.file)).second) {
+                cut.pieces.push_back(list);
+                cut.bytes += list.file.size;
+            }
+        }
     }
     // The presets among the pieces, as the mods' tables list them: the item's own mod first, then
     // the others in priority order.

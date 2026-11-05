@@ -171,3 +171,27 @@ the count changes). What fills the map is not found yet (see the open questions)
   the type of the child vector at `data + 0x20`.
 - The `BundleUnloadGraceTime` value (E1 measures it).
 - Whether compartment 5 is cleared by the level unload regardless of handles (`ResourceCompartmentCleared`).
+
+## How the cosmetics manager takes in items (read from Skate.exe 20260929, 2026-11-05)
+
+Static reading of the shipped executable, for Skate Synchros (contrib/outfit-sharing.md); not yet
+tried in the running game.
+
+- The manager (pointer at `0x71ee610`, vtable `0x6089cc8`, made by `0x14054b8d0`) holds the item
+  hash map at +0x30 (buckets), +0x38 (bucket count, a u32: the lookup at `0x14054c450`, its
+  vtable's first entry, takes the item's hash modulo it), +0x3c (items) and a vector of the item
+  lists it has taken in at +0x58 (begin, end, capacity, then its allocator at +0x70). +0xa8 is the
+  "ready" byte the remote cosmetics check.
+- `0x140557c40` (manager, array of item lists, ready byte) takes in item lists: for each list (a
+  `DelMarItemCollectionAsset`, its tagged pointer array of items at +0x28, the count in the 4
+  bytes before it), each item's hash at +0x48 goes into the map through `0x14041fe40`
+  (insert or find; the node's +8 then points at the item), the list is appended to +0x58, the
+  ready byte is set, and it ends by calling `0x14054f470`, which tells the UI.
+- Its only caller, `0x140550500`, is a virtual method of the manager's second interface (vtable
+  `0x6089cc8 + 8 * 8`). It finds each list by name in a compartment (`0x1441b5800`, the
+  compartment a u16) and passes them on.
+- So an item becomes known when an item list that names it is loaded and handed to `0x140557c40`.
+  A mod's items are known because the merge combines the game's item lists with each mod's
+  copy (mod_merge_combine.cpp, `item_list_name`). For a new item without a reload, what is still
+  missing is getting a list that names it loaded in a compartment (the delta bundle above); handing
+  it to `0x140557c40` (or calling `0x140550500` with its name) is then known.
