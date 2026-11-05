@@ -7,6 +7,7 @@
 #include "Extension/Assets/mod_store.h"
 #include "Extension/News/live_news.h"
 #include "Extension/News/patch_notes.h"
+#include "Engine/Core/Platform/launcher_support.h"
 #include "Engine/Game/Input/controller_bindings.h"
 #include <algorithm>
 #include <array>
@@ -22,13 +23,14 @@
 // says while the HUB is the page on screen. The HUB shows the player's skater in the middle of the
 // screen, so the page keeps the middle open and is drawn in two columns either side of it:
 //
-//   left   the news: the latest ReSkate release's patch notes first, then the news posts. The one
-//          featured is drawn big (its picture on top, tag, title, description, READ and a pager),
-//          and the next ones under it as compact cards, as many as fit;
-//   right  YOUR PROFILE with EDIT PROFILE, and RIGHT NOW (a friend to join, mods with updates) under
-//          it, each row opening the page that deals with it. The patch notes are only in the news.
+//   left   the news posts, and only those. The one featured is drawn big (its picture on top, tag,
+//          title, description, READ and a pager), and the next ones under it as compact cards, as
+//          many as fit;
+//   right  PATCH NOTES (the latest release's highlights, stretched so both columns end level),
+//          YOUR PROFILE with EDIT PROFILE, and RIGHT NOW (a friend to join, mods with updates),
+//          each row opening the page that deals with it.
 //
-// READ opens a reader in the page's place, which B closes; the HUB's Back is held
+// READ and READ PATCH NOTES open a reader in the page's place, which B closes; the HUB's Back is held
 // for that long (hold_hub_back) so B does not close the pause menu as well. Only the latest release's
 // notes are shown: older ones are on ReSkate's GitHub page.
 //
@@ -47,7 +49,7 @@ using Kind = ts::ReadmeLine::Kind;
 constexpr ImU32 card = IM_COL32(16, 16, 16, 242), card_pointed = IM_COL32(56, 57, 61, 245), button_dark = IM_COL32(38, 38, 40, 250),
                 focus_ink = IM_COL32(11, 11, 11, 255), sub_ink = IM_COL32(138, 140, 146, 255), sub_ink_lit = IM_COL32(70, 70, 74, 255),
                 soft = IM_COL32(210, 210, 214, 255), news_light = IM_COL32(124, 196, 255, 255), placeholder = IM_COL32(63, 84, 104, 255),
-                placeholder_alt = IM_COL32(74, 97, 119, 255), release_tile_fill = IM_COL32(24, 66, 40, 255);
+                placeholder_alt = IM_COL32(74, 97, 119, 255);
 // The game's own menu sounds, by their numbers in its list (UI/NativeMenu/ui_sound.h).
 constexpr std::uint32_t sound_navigate = 3, sound_select = 7, sound_tab = 56;
 // Pad buttons (ControllerInput::buttons).
@@ -63,12 +65,6 @@ constexpr std::uint32_t hash(std::string_view text, std::uint64_t salt = 0) {
 }
 
 enum class View { front, post, notes };
-
-// One item of the news: the latest release's patch notes, or a news post.
-struct Entry {
-    bool release{};
-    std::size_t post{}; // which post, when it is one
-};
 
 struct Control {
     std::uint32_t id{};
@@ -96,10 +92,8 @@ struct Home {
     std::uint32_t sound{~0U};
     // What it shows.
     View view{View::front};
-    std::vector<Entry> entries; // the news in its order: the patch notes first, then the posts
-    bool had_notes{};           // whether entries began with the patch notes last frame
-    std::size_t featured{};     // the entry big on the left
-    std::size_t reading{};      // the entry open in the reader
+    std::size_t featured{};     // the post big on the left
+    std::size_t reading{};      // the post open in the reader (View::post)
     std::uint32_t back_focus{}; // the control the reader was opened from, to go back to
     float scroll{};             // the reader's, in pixels
     // B (or Escape) that closed the reader holds the HUB's Back until it is let go, and a moment after.
@@ -267,22 +261,12 @@ void read_news(Home &h) {
         h.posts.clear();
     }
 }
-// The news in its order: the latest release's patch notes first, then the posts. The notes come in
-// from GitHub after the posts, so the entry featured and the one being read are moved along with
-// them as they come or go, and stay the same item.
-void list_entries(Home &h) {
-    const bool notes = h.notes && !h.notes->releases.empty();
-    if (notes != h.had_notes) {
-        const auto shift = [&](std::size_t &index) { index = notes ? index + 1 : index ? index - 1 : 0; };
-        shift(h.featured), shift(h.reading);
-        h.had_notes = notes;
-    }
-    h.entries.clear();
-    if (notes) h.entries.push_back({true, 0});
-    for (std::size_t i = 0; i < h.posts.size(); ++i) h.entries.push_back({false, i});
-    if (h.featured >= h.entries.size()) h.featured = 0;
-    if (h.view != View::front && h.reading >= h.entries.size()) h.view = View::front;
-    if (h.view != View::front) h.view = h.entries[h.reading].release ? View::notes : View::post;
+// The featured post and the one being read kept to the posts there are, and the reader closed when
+// what it shows is gone (a post the feed dropped, or patch notes that could no longer be read).
+void keep_in_range(Home &h) {
+    if (h.featured >= h.posts.size()) h.featured = 0;
+    if (h.view == View::post && h.reading >= h.posts.size()) h.view = View::front;
+    if (h.view == View::notes && (!h.notes || h.notes->releases.empty())) h.view = View::front;
 }
 // How many installed mods Thunderstore has newer, from what the Mod Manager reads (mod_store.h).
 void read_updates(Home &h) {
@@ -318,17 +302,10 @@ void picture(Ui &f, ImVec2 a, ImVec2 b, const std::string &url, unsigned seed) {
                     name.data(), name.data() + name.size());
 }
 
-// A release has no picture: its version, big, on a green tile.
-void release_tile(Ui &f, ImVec2 a, ImVec2 z, std::string_view version) {
-    f.draw->AddRectFilled(a, z, release_tile_fill);
-    const float inset = 20 * f.u, size = std::min(96 * f.u, (z.y - a.y) * .4f), w = width_of(f.heading, size, version);
-    label(f.draw, f.heading, size, ImVec2(a.x + std::max(inset, (z.x - a.x - w) * .5f), a.y + (z.y - a.y - size) * .5f), z.x - inset, theme::paper, version);
-}
-
-// The entry `index` in the reader; BACK goes to `from` again.
-void open_entry(Home &h, std::size_t index, std::uint32_t from) {
-    if (index >= h.entries.size()) return;
-    h.view = h.entries[index].release ? View::notes : View::post;
+// `view` in the reader (the post `index`, for a post); BACK goes to `from` again.
+void open_reader(Home &h, View view, std::size_t index, std::uint32_t from) {
+    if (view == View::post && index >= h.posts.size()) return;
+    h.view = view;
     h.reading = index;
     h.back_focus = from;
     h.scroll = 0;
@@ -342,123 +319,132 @@ void edit_profile(Home &h) {
 
 // ---------------------------------------------------------------- the front page
 
-// What a news entry shows: its tag and the tag's colours, its date, title and picture (none: a
-// release, drawn as its version on a green tile).
-struct Shown {
-    std::string tag, date, version;
-    std::string_view title, description;
-    ImU32 fill{}, ink{};
-    const std::string *picture{};
-    const news::Release *release{};
-};
-Shown shown_of(const Home &h, const Entry &entry) {
-    Shown s;
-    if (entry.release) {
-        const auto &release = h.notes->releases.front();
-        s.release = &release;
-        s.version = news::release_version(release);
-        s.tag = "PATCH NOTES " + s.version;
-        s.fill = skate_theme::good, s.ink = skate_theme::black;
-        s.date = news::date_label(release.date);
-        s.title = release.name;
-    } else {
-        const auto &post = h.posts[entry.post];
-        s.tag = "NEWS";
-        s.fill = skate_theme::blue, s.ink = theme::paper;
-        s.date = news::date_label(post.date);
-        s.title = post.title;
-        s.description = post.description;
-        s.picture = &post.large_image;
-    }
-    return s;
-}
-
-// The featured entry, big at the top of the left column: its picture across the top, then its tag
-// and date, title, description (a release's highlights), and READ and the pager at its foot.
+// The featured post, big at the top of the left column: its picture across the top, then its tag
+// and date, title, description, and READ and the pager at its foot.
 void featured_card(Ui &f, ImVec2 a, ImVec2 z) {
     auto &h = f.h;
     const float u = f.u, inset = 40 * u;
     auto *draw = f.draw;
     skate_theme::rough_rect(draw, a, z, card, 0x3a1, u * 2);
     const float left = a.x + inset, right = z.x - inset;
-    if (h.entries.empty()) {
+    if (h.posts.empty()) {
         label(draw, f.heading, 56 * u, ImVec2(left, a.y + inset), right, theme::paper, "NO NEWS RIGHT NOW");
         float y = a.y + inset + 90 * u;
-        for (const auto &line : wrap(f.body, 32 * u, "ReSkate's news and patch notes show here when there are some.", right - left, 3))
+        for (const auto &line : wrap(f.body, 32 * u, "ReSkate's news shows here when there is some.", right - left, 3))
             label(draw, f.body, 32 * u, ImVec2(left, y), right, sub_ink, line), y += 46 * u;
         return;
     }
-    const auto &entry = h.entries[h.featured];
-    const auto s = shown_of(h, entry);
+    const auto &post = h.posts[h.featured];
     // The picture as wide as the card, at most 16:9, and leaving most of the card for the text.
     const float picture_h = std::min((z.x - a.x) * 9.f / 16.f, (z.y - a.y) * .44f);
     const ImVec2 pa = a, pz(z.x, a.y + picture_h);
-    if (s.release) release_tile(f, pa, pz, s.version);
-    else picture(f, pa, pz, *s.picture, static_cast<unsigned>(entry.post));
+    picture(f, pa, pz, post.large_image, static_cast<unsigned>(h.featured));
     float y = pz.y + 30 * u;
-    const float tag_w = tag(f, ImVec2(left, y), s.tag, s.fill, s.ink);
-    if (!s.date.empty()) label(draw, f.bold, 28 * u, ImVec2(left + tag_w + 20 * u, y + 6 * u), right, sub_ink, s.date);
+    const float tag_w = tag(f, ImVec2(left, y), "NEWS", skate_theme::blue, theme::paper);
+    if (const auto date = news::date_label(post.date); !date.empty()) label(draw, f.bold, 28 * u, ImVec2(left + tag_w + 20 * u, y + 6 * u), right, sub_ink, date);
     y += 64 * u;
     // READ and the pager at the foot, and the title and description in what is left over them.
     const float button_h = 88 * u, foot = z.y - inset - button_h;
     const float title_size = 60 * u;
-    for (const auto &line : wrap(f.title, title_size, s.title, right - left, 2)) {
+    for (const auto &line : wrap(f.title, title_size, post.title, right - left, 2)) {
         label(draw, f.title, title_size, ImVec2(left, y), right + 8 * u, theme::paper, line);
         y += title_size;
     }
     y += 16 * u;
     const float text_size = 30 * u, line_height = text_size * 1.4f, bottom = foot - 24 * u;
-    if (s.release) {
-        // Each highlight whole, while it fits over the buttons.
-        const float bullet_x = left + 30 * u;
-        for (const auto &highlight : news::release_highlights(*s.release, 12)) {
-            const auto lines = wrap(f.body, text_size, highlight, right - bullet_x, 2);
-            if (lines.empty() || y + line_height * static_cast<float>(lines.size()) > bottom) break;
-            draw->AddCircleFilled(ImVec2(left + 9 * u, y + text_size * .55f), 5 * u, skate_theme::good, 12);
-            for (const auto &line : lines) label(draw, f.body, text_size, ImVec2(bullet_x, y), right, soft, line), y += line_height;
-            y += 6 * u;
-        }
-    } else if (const auto most = static_cast<std::size_t>(std::max(0.f, (bottom - y) / line_height))) {
-        for (const auto &line : wrap(f.body, text_size, s.description, right - left, most)) {
+    if (const auto most = static_cast<std::size_t>(std::max(0.f, (bottom - y) / line_height))) {
+        for (const auto &line : wrap(f.body, text_size, post.description, right - left, most)) {
             label(draw, f.body, text_size, ImVec2(left, y), right, soft, line);
             y += line_height;
         }
     }
-    if (button(f, hash("home-read"), ImVec2(left, foot), ImVec2(left + 240 * u, foot + button_h), "READ", true)) open_entry(h, h.featured, hash("home-read"));
-    if (h.entries.size() > 1) {
-        const auto pages = "<  " + std::to_string(h.featured + 1) + " / " + std::to_string(h.entries.size()) + "  >";
+    if (button(f, hash("home-read"), ImVec2(left, foot), ImVec2(left + 240 * u, foot + button_h), "READ", true))
+        open_reader(h, View::post, h.featured, hash("home-read"));
+    if (h.posts.size() > 1) {
+        const auto pages = "<  " + std::to_string(h.featured + 1) + " / " + std::to_string(h.posts.size()) + "  >";
         const float w = width_of(f.bold, 36 * u, pages) + 70 * u, x = left + 260 * u;
         if (button(f, hash("home-pager"), ImVec2(x, foot), ImVec2(std::min(right, x + w), foot + button_h), pages, false))
-            h.featured = (h.featured + 1) % h.entries.size();
+            h.featured = (h.featured + 1) % h.posts.size();
     }
 }
 
-// One of the next entries under it, compact: a picture strip at its left, its tag and its title.
+// One of the next posts under it, compact: a picture strip at its left, its tag and its title.
 // Returns whether it was pressed.
-bool compact_card(Ui &f, std::uint32_t id, ImVec2 a, ImVec2 z, const Shown &s, unsigned seed) {
+bool compact_card(Ui &f, std::uint32_t id, ImVec2 a, ImVec2 z, const profile::NewsPost &post, unsigned seed) {
     const float u = f.u, inset = 24 * u;
     const Hit hit = item(f, id, a, z);
     auto *draw = f.draw;
     skate_theme::rough_rect(draw, a, z, hit.focused ? theme::paper : hit.pointed ? card_pointed : card, id & 0xfff, u * 2);
     const ImVec2 pa = a, pz(a.x + std::min((z.y - a.y) * 1.6f, (z.x - a.x) * .36f), z.y);
-    if (s.release) release_tile(f, pa, pz, s.version);
-    else picture(f, pa, pz, *s.picture, seed);
+    picture(f, pa, pz, post.large_image, seed);
     const float left = pz.x + inset, right = z.x - inset;
-    const auto tag_text = s.date.empty() ? s.tag : s.tag + "  -  " + s.date;
-    const ImU32 tag_ink = s.release ? skate_theme::good : news_light;
-    label(draw, f.bold, 26 * u, ImVec2(left, a.y + inset), right, hit.focused ? sub_ink_lit : tag_ink, tag_text);
-    const auto lines = wrap(f.bold, 32 * u, s.title, right - left, 2);
+    const auto date = news::date_label(post.date);
+    const auto tag_text = date.empty() ? std::string("NEWS") : "NEWS  -  " + date;
+    label(draw, f.bold, 26 * u, ImVec2(left, a.y + inset), right, hit.focused ? sub_ink_lit : news_light, tag_text);
+    const auto lines = wrap(f.bold, 32 * u, post.title, right - left, 2);
     for (std::size_t i = 0; i < lines.size(); ++i)
         label(draw, f.bold, 32 * u, ImVec2(left, a.y + inset + 42 * u + static_cast<float>(i) * 40 * u), right, hit.focused ? focus_ink : theme::paper, lines[i]);
     return hit.press;
 }
 
-// YOUR PROFILE: the player's name and what their card says, and EDIT PROFILE (Y from anywhere).
+// PATCH NOTES: the latest release's version and date, its highlights as many as fit, and READ PATCH
+// NOTES at its foot (that release's notes in the reader). It takes whatever height the right column
+// has left, so it ends level with the left.
+void notes_card(Ui &f, ImVec2 a, ImVec2 z) {
+    auto &h = f.h;
+    const float u = f.u, inset = 40 * u;
+    auto *draw = f.draw;
+    skate_theme::rough_rect(draw, a, z, card, 0x3b2, u * 2);
+    const float left = a.x + inset, right = z.x - inset;
+    float y = a.y + inset;
+    label(draw, f.heading, 48 * u, ImVec2(left, y), right, theme::paper, "PATCH NOTES");
+    const news::Release *latest = h.notes && !h.notes->releases.empty() ? &h.notes->releases.front() : nullptr;
+    if (latest) {
+        const auto version = news::release_version(*latest);
+        const float w = width_of(f.bold, 26 * u, version) + 24 * u;
+        tag(f, ImVec2(right - w, y + 4 * u), version, skate_theme::good, skate_theme::black);
+    }
+    y += 76 * u;
+    const float button_top = z.y - inset - 90 * u;
+    if (button(f, hash("home-notes"), ImVec2(left, button_top), ImVec2(right, z.y - inset), "READ PATCH NOTES", false, latest != nullptr))
+        open_reader(h, View::notes, 0, hash("home-notes"));
+    if (!latest) {
+        const char *note = h.notes && h.notes->fetching ? "Reading ReSkate's releases..."
+                           : launcher::offline_mode()  ? "Patch notes need a connection. They come from ReSkate's GitHub page."
+                                                       : "Patch notes could not be read just now. They come from ReSkate's GitHub page.";
+        for (const auto &line : wrap(f.body, 32 * u, note, right - left, 4)) label(draw, f.body, 32 * u, ImVec2(left, y), right, sub_ink, line), y += 46 * u;
+        return;
+    }
+    {
+        auto title = latest->name;
+        if (const auto date = news::date_label(latest->date); !date.empty()) title += "  -  " + date;
+        label(draw, f.bold, 32 * u, ImVec2(left, y), right, sub_ink, title);
+        y += 62 * u;
+    }
+    // Each highlight whole, while it fits over the button.
+    const float size = 32 * u, line_height = size * 1.4f, bottom = button_top - 24 * u, bullet_x = left + 34 * u;
+    const auto highlights = news::release_highlights(*latest, 40);
+    if (highlights.empty()) label(draw, f.body, size, ImVec2(left, y), right, sub_ink, "READ PATCH NOTES says what changed.");
+    for (const auto &highlight : highlights) {
+        const auto lines = wrap(f.body, size, highlight, right - bullet_x);
+        if (lines.empty() || y + line_height * static_cast<float>(lines.size()) > bottom) break;
+        draw->AddCircleFilled(ImVec2(left + 10 * u, y + size * .55f), 6 * u, skate_theme::blue, 12);
+        for (const auto &line : lines) label(draw, f.body, size, ImVec2(bullet_x, y), right, soft, line), y += line_height;
+        y += 8 * u;
+    }
+}
+
+// YOUR PROFILE: one button the width of the column, the whole card pressed (A, Enter or a click
+// anywhere on it; Y from anywhere) for EDIT PROFILE: the player's initial on a tile, their name and
+// what their card says, and EDIT PROFILE at its bottom right as a prompt. The game draws the player
+// card's banner and emblem from their cosmetic hashes through its own item thumbnails, which nothing
+// in ReSkate turns into a picture the overlay can draw, so the card keeps the initial on a tile.
 void profile_card(Ui &f, ImVec2 a, ImVec2 z, const Model &model) {
     auto &h = f.h;
     const float u = f.u, inset = 40 * u;
     auto *draw = f.draw;
-    skate_theme::rough_rect(draw, a, z, card, 0x3c3, u * 2);
+    const Hit hit = item(f, hash("home-edit-profile"), a, z);
+    skate_theme::rough_rect(draw, a, z, hit.focused ? theme::paper : hit.pointed ? card_pointed : card, 0x3c3, u * 2);
     const float side = z.y - a.y - inset * 2;
     const ImVec2 sa(a.x + inset, a.y + inset), sz(sa.x + side, sa.y + side);
     draw->AddRectFilled(sa, sz, skate_theme::avatar);
@@ -469,13 +455,16 @@ void profile_card(Ui &f, ImVec2 a, ImVec2 z, const Model &model) {
         const float size = side * .55f, w = width_of(f.heading, size, letter);
         draw->AddText(f.heading, size, ImVec2(sa.x + (side - w) * .5f, sa.y + (side - size) * .5f), skate_theme::black, letter.c_str());
     }
-    const float button_w = std::min(340 * u, (z.x - a.x) * .4f);
-    const ImVec2 ba(z.x - inset - button_w, a.y + (z.y - a.y - 96 * u) * .5f), bz(z.x - inset, ba.y + 96 * u);
-    const float left = sz.x + 30 * u, right = ba.x - 24 * u;
-    label(draw, f.bold, 40 * u, ImVec2(left, a.y + (z.y - a.y) * .5f - 50 * u), right, theme::paper, name);
-    label(draw, f.body, 28 * u, ImVec2(left, a.y + (z.y - a.y) * .5f + 4 * u), right, sub_ink,
+    const float left = sz.x + 30 * u, right = z.x - inset;
+    label(draw, f.bold, 26 * u, ImVec2(left, sa.y), right, hit.focused ? sub_ink_lit : sub_ink, "YOUR PROFILE");
+    label(draw, f.bold, 44 * u, ImVec2(left, sa.y + 40 * u), right, hit.focused ? focus_ink : theme::paper, name);
+    // (Blue with white ink, so it reads on the card's dark fill and on the white of the focus.)
+    constexpr std::string_view prompt = "EDIT PROFILE";
+    const float prompt_w = width_of(f.bold, 26 * u, prompt) + 24 * u;
+    label(draw, f.body, 28 * u, ImVec2(left, sa.y + 96 * u), z.x - inset - prompt_w - 20 * u, hit.focused ? sub_ink_lit : sub_ink,
           model.player_card.custom_name.empty() ? "Your player card" : "Your player card, renamed");
-    if (button(f, hash("home-edit-profile"), ba, bz, "EDIT PROFILE", true)) edit_profile(h);
+    tag(f, ImVec2(z.x - inset - prompt_w, z.y - inset - 40 * u), prompt, skate_theme::blue, theme::paper);
+    if (hit.press) edit_profile(h);
 }
 
 // RIGHT NOW: what is going on that the player can act on, a row each; with nothing, no card. A
@@ -538,31 +527,34 @@ void front_page(Ui &f, ImVec2 a, ImVec2 z, const Model &model) {
     const float u = f.u, gap = 30 * u, width = z.x - a.x;
     const float left_z = a.x + std::clamp(width * .3f, 940 * u, 1180 * u);
     const float right_w = std::clamp(width * .29f, 980 * u, 1200 * u);
-    // ---- left: the featured entry, and the next ones under it, as many as fit while the featured
+    // ---- left: the featured post, and the next ones under it, as many as fit while the featured
     // card keeps room for its picture and text. It takes what they leave, so the last ends at the foot,
-    // and with fewer entries there are fewer cards, never an empty one.
+    // and with fewer posts there are fewer cards, never an empty one.
     const float compact_h = 160 * u, featured_least = std::min(z.y - a.y, 880 * u);
     const auto fit = static_cast<std::size_t>(std::max(0.f, std::floor((z.y - a.y - featured_least + gap) / (compact_h + gap))));
-    const std::size_t next = std::min(fit, h.entries.empty() ? std::size_t{} : h.entries.size() - 1);
+    const std::size_t next = std::min(fit, h.posts.empty() ? std::size_t{} : h.posts.size() - 1);
     const float featured_z = z.y - static_cast<float>(next) * (compact_h + gap);
     featured_card(f, a, ImVec2(left_z, featured_z));
     for (std::size_t i = 0; i < next; ++i) {
-        const auto index = (h.featured + 1 + i) % h.entries.size();
-        const auto &entry = h.entries[index];
+        const auto index = (h.featured + 1 + i) % h.posts.size();
         const float y = featured_z + gap + static_cast<float>(i) * (compact_h + gap);
-        const auto id = entry.release ? hash("home-next-notes") : hash("home-next-post", entry.post);
-        if (compact_card(f, id, ImVec2(a.x, y), ImVec2(left_z, y + compact_h), shown_of(h, entry), static_cast<unsigned>(entry.post)))
-            open_entry(h, index, id);
+        const auto id = hash("home-next-post", index);
+        if (compact_card(f, id, ImVec2(a.x, y), ImVec2(left_z, y + compact_h), h.posts[index], static_cast<unsigned>(index)))
+            open_reader(h, View::post, index, id);
     }
-    // ---- right, from the top: the profile, then right now. The patch notes are the news' first item
-    // on the left, so they have no card of their own here.
+    // ---- right: patch notes at the top, stretched over what the profile and right now leave under
+    // it, so the column ends at the foot level with the left.
     const float rx = z.x - right_w, profile_h = 230 * u;
-    profile_card(f, ImVec2(rx, a.y), ImVec2(z.x, a.y + profile_h), model);
     const auto rows = now_rows(h, model);
-    if (const float now_h = now_height(rows.size(), u); now_h > 0) {
-        const float y = a.y + profile_h + gap;
-        now_card(f, ImVec2(rx, y), ImVec2(z.x, std::min(z.y, y + now_h)), rows);
+    const float now_h = now_height(rows.size(), u);
+    float y = z.y;
+    if (now_h > 0) {
+        now_card(f, ImVec2(rx, y - now_h), ImVec2(z.x, y), rows);
+        y -= now_h + gap;
     }
+    profile_card(f, ImVec2(rx, y - profile_h), ImVec2(z.x, y), model);
+    y -= profile_h + gap;
+    notes_card(f, ImVec2(rx, a.y), ImVec2(z.x, std::max(a.y + 300 * u, y)));
 }
 
 // ---------------------------------------------------------------- the reader
@@ -582,9 +574,9 @@ void lay_out(Ui &f, float width) {
         for (auto &line : wrap(font, size, text, width - indent))
             h.laid.push_back({look, std::move(line), {}, std::exchange(first, false), size * spacing, release, size});
     };
-    if (h.reading >= h.entries.size()) return;
     if (h.view == View::post) {
-        const auto &post = h.posts[h.entries[h.reading].post];
+        if (h.reading >= h.posts.size()) return;
+        const auto &post = h.posts[h.reading];
         h.laid.push_back({Look::picture, post.large_image, {}, true, std::min(width * 9.f / 16.f, 760 * u)});
         h.laid.push_back({Look::gap, {}, {}, true, 40 * u});
         add(Look::title, f.title, 96 * u, post.title, 0, .98f);
@@ -625,14 +617,14 @@ void reader(Ui &f, ImVec2 a, ImVec2 z, int step, int page_step) {
     auto *draw = f.draw;
     skate_theme::rough_rect(draw, a, z, card, 0x3e5, u * 2);
     const bool post = h.view == View::post;
-    // ---- its bar: what it is, the pager (a post) and BACK
+    // ---- its bar: what it is, the pager (a post, among the posts) and BACK
     const float bar = 96 * u, top = a.y + inset;
     {
         float x = a.x + inset;
         x += tag(f, ImVec2(x, top + 28 * u), post ? "NEWS" : "PATCH NOTES", post ? skate_theme::blue : skate_theme::good,
                  post ? theme::paper : skate_theme::black) + 24 * u;
-        if (h.entries.size() > 1) {
-            const auto pages = "<  " + std::to_string(h.reading + 1) + " / " + std::to_string(h.entries.size()) + "  >";
+        if (post && h.posts.size() > 1) {
+            const auto pages = "<  " + std::to_string(h.reading + 1) + " / " + std::to_string(h.posts.size()) + "  >";
             const float w = width_of(f.bold, 36 * u, pages) + 70 * u;
             if (button(f, hash("home-reader-pager"), ImVec2(x, top), ImVec2(x + w, top + bar), pages, false)) page_step = 1;
         }
@@ -642,11 +634,11 @@ void reader(Ui &f, ImVec2 a, ImVec2 z, int step, int page_step) {
             return;
         }
     }
-    // The pager, LT and RT: the entry before or after, the patch notes among the posts.
-    if (page_step && h.entries.size() > 1) {
-        const auto count = h.entries.size();
+    // The pager, LT and RT: the post before or after. The patch notes are only the latest release's,
+    // so they have nothing to step to.
+    if (post && page_step && h.posts.size() > 1) {
+        const auto count = h.posts.size();
         h.reading = (h.reading + count + (page_step > 0 ? 1 : count - 1)) % count;
-        h.view = h.entries[h.reading].release ? View::notes : View::post;
         h.scroll = 0;
         h.sound = sound_tab;
     }
@@ -734,7 +726,7 @@ bool draw_home_page(ImDrawList *draw, float u, ImVec2 a, ImVec2 z, bool input, c
     const auto tick = GetTickCount64();
     // Shown again after a while away: what is held as it comes up is not a press on it (the Back
     // that closed the game's side menu over it, the A that picked the HUB tab), and it opens on the
-    // front page, with the news back at its first item (the latest patch notes).
+    // front page, with the news back at its first post.
     const bool returned = !h.seen || tick - h.seen > 250;
     if (returned) {
         h.keys_before.fill(true);
@@ -756,7 +748,7 @@ bool draw_home_page(ImDrawList *draw, float u, ImVec2 a, ImVec2 z, bool input, c
     read_news(h);
     h.notes = news::patch_notes();
     read_updates(h);
-    list_entries(h);
+    keep_in_range(h);
     if (returned) h.featured = 0;
 
     // ---- the controller and the keys, watched while the game has them
@@ -833,15 +825,15 @@ bool draw_home_page(ImDrawList *draw, float u, ImVec2 a, ImVec2 z, bool input, c
     const float footer = 70 * u;
     const ImVec2 body_z(z.x, z.y - footer);
     if (h.view == View::front) {
-        if (page_step && h.entries.size() > 1) {
-            h.featured = (h.featured + h.entries.size() + (page_step > 0 ? 1 : h.entries.size() - 1)) % h.entries.size();
+        if (page_step && h.posts.size() > 1) {
+            h.featured = (h.featured + h.posts.size() + (page_step > 0 ? 1 : h.posts.size() - 1)) % h.posts.size();
             h.sound = sound_tab;
         }
         front_page(f, a, body_z, model);
     } else {
         reader(f, a, body_z, scroll_step, page_step);
     }
-    hints(f, a.x, z.y - 52 * u, h.view != View::front, h.entries.size() > 1);
+    hints(f, a.x, z.y - 52 * u, h.view != View::front, h.view != View::notes && h.posts.size() > 1);
 
     // A press that found nothing to land on is forgotten; the focus stays on a control that is still
     // there, or goes to the first one once the D-pad or the keys are in charge.

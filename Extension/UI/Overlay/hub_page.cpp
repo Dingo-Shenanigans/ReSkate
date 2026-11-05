@@ -2468,11 +2468,21 @@ void hub_frame(Hub &h, ImDrawList *draw, float u, ImVec2 a, ImVec2 z, float tabs
             h.sound = sound_tab;
             set_typing(h, 0);
         }
-        const float top = tabs_y, bottom = top + tabs_height * u, size = 44 * u;
+        // Every page's strip as the Insert menu's segmented tabs: each tab on its own near-black tile,
+        // so it reads over a bright part of the world as well as a dark one (bare grey names over the
+        // world could not be read on a light background), the open tab white with dark ink, the one
+        // under the pointer the kit's lighter grey, and the one under the D-pad or the keys a light
+        // tile (the open one, already white, a blue line under it). The strip is as wide as its tabs,
+        // with LT and RT (Z and C) at its ends, each on a tile of its own too.
+        const float top = tabs_y, bottom = top + tabs_height * u, size = 44 * u, segment_gap = 8 * u;
         float x = a.x;
         const auto cap = [&](std::uint32_t pad_button, const char *key) {
             const auto name = ui.pad.available ? controller_combo_label(pad_button, ui.pad.style) : std::string(key);
-            x += theme::keycap(ui.draw, ui.bold, u * 2.2f, ImVec2(x, top + 20 * u), name.c_str(), "") + 4 * u;
+            const float scale = u * 2.2f, pad = 18 * u;
+            const float w = ui.bold->CalcTextSizeA(12 * scale, FLT_MAX, 0, name.c_str()).x + 12 * scale;
+            skate_theme::rough_rect(ui.draw, ImVec2(x, top), ImVec2(x + w + pad * 2, bottom), tile_dark, hash(key) & 0xfff, u * 2);
+            theme::keycap(ui.draw, ui.bold, scale, ImVec2(x + pad, top + (bottom - top - 20 * scale) * .5f), name.c_str(), "");
+            x += w + pad * 2 + segment_gap;
         };
         cap(0x10000, "Z");
         for (const auto &[tab, name] : tabs) {
@@ -2480,15 +2490,14 @@ void hub_frame(Hub &h, ImDrawList *draw, float u, ImVec2 a, ImVec2 z, float tabs
             const ImVec2 p(x, top), q(x + w, bottom);
             const Hit hit = item(ui, hash(name, 1), p, q);
             const bool on = open == tab;
-            // Every page's strip as the Insert menu's page names: the open tab's name in white over a
-            // blue line, the others grey, the one under the D-pad or the keys a white tile and the
-            // one under the pointer a grey one.
             const auto [focused, pointed] = lit_of(hit);
-            if (focused || pointed) skate_theme::rough_rect(ui.draw, p, q, focused ? theme::paper : row_hover, hash(name) & 0xfff, u * 2);
-            ui.draw->AddText(ui.bold, size, ImVec2(p.x + 28 * u, top + (bottom - top - size) * .5f), focused ? focus_ink : on || pointed ? theme::paper : sub_ink, name);
-            if (on) ui.draw->AddRectFilled(ImVec2(p.x + 20 * u, bottom + 4 * u), ImVec2(q.x - 20 * u, bottom + 12 * u), accent);
+            const ImU32 fill = on ? theme::paper : focused ? card_light : pointed ? row_hover : tile_dark;
+            const ImU32 ink = on || focused ? focus_ink : pointed ? theme::paper : chip_ink;
+            skate_theme::rough_rect(ui.draw, p, q, fill, hash(name) & 0xfff, u * 2);
+            ui.draw->AddText(ui.bold, size, ImVec2(p.x + 28 * u, top + (bottom - top - size) * .5f), ink, name);
+            if (on && focused) ui.draw->AddRectFilled(ImVec2(p.x + 20 * u, bottom + 4 * u), ImVec2(q.x - 20 * u, bottom + 12 * u), accent);
             if (hit.press && !on) open = tab, h.sound = sound_tab, set_typing(h, 0);
-            x = q.x + 20 * u;
+            x = q.x + segment_gap;
         }
         cap(0x20000, "C");
         if (!tools && !mods) h.tab = static_cast<Tab>(multiplayer_tab);

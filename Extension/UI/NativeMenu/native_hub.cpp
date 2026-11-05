@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstring>
 #include <format>
 #include <optional>
 #include <stdexcept>
@@ -296,20 +297,68 @@ void hold_back(const Context &c, Value page_model, bool held) {
 }
 
 // EDIT PROFILE sends what the Hub's Profile tile did, HUB_Nav_CollectionScore, which opens the
-// profile over the Hub (2026-11-04 in game). The profile leaves the Hub the selected tab, and nothing
-// read so far says it is up, so the front page steps aside from the moment the navigation goes until
-// the player leaves the profile: the next B or Escape, and a moment for the game to take the profile
-// away. Leaving the Hub (another tab, or the pause menu closed) ends it too.
+// profile over the Hub (2026-11-04 in game). The profile leaves the Hub the selected tab, and the
+// Hub's StackScreen says "item -1 of 1" the whole time, so neither tells the profile is up.
+//
+// The menu's button bar does: it holds the buttons of the page on screen (character_room.cpp knows
+// the Skaters page by its CASPresetPurchase the same way). The profile's page (PlayerCard_Page,
+// titled ID_MENU_PROFILE, UI dumps of 2026-09-26) has the button PlayerProfile_EditCard, whose
+// navigation is EditPlayerCardPage. The page's model alone says nothing: the pause menu keeps a model
+// for each of its pages (15, the profile's among them) whether it is shown or not. No dump has the
+// card editor (EditPlayerCardPage) up, so it is known by what it is not: once the profile was seen,
+// the front page stays hidden until the bar is the Hub's again (as it was while the front page was
+// last drawn, or with the pause menu's own GoToMyPlayerCard, which pages pushed over it replace).
+// Before 2026-11-05 the first B after EDIT PROFILE was taken for leaving the profile, so B out of the
+// card editor back to the profile brought the front page back over it.
+//
+// Where the profile's bar does not show up after EDIT PROFILE, the old rule stays as the fallback:
+// hidden until the next B or Escape, and a moment for the game to take the profile away. Leaving the
+// Hub (another tab, or the pause menu closed) ends it either way.
 constexpr std::string_view profile_navigation = "HUB_Nav_CollectionScore";
-constexpr std::uint64_t profile_give_up_ms = 2000, profile_back_ms = 300, hub_gone_ms = 200;
+constexpr std::uint64_t profile_give_up_ms = 2000, profile_back_ms = 300, hub_gone_ms = 200, profile_find_ms = 1500, bar_every_ms = 100;
+constexpr std::uint32_t button_bar = 0xe6ab1489, button_bar_buttons = 0x5fc6738b, button_action = 0xa2b71c93;
+constexpr std::uintptr_t button_model_handle = 8; // each 16-byte element of the bar holds its button model's handle here
+constexpr std::string_view profile_bar_button = "EditPlayerCardPage ", pause_bar_button = "GoToMyPlayerCard ";
 std::atomic<bool> profile_wanted{};
+// How the front page tells the profile has gone: by the button bar, by B or Escape (the fallback), or
+// not yet known (EDIT PROFILE's navigation went, and the profile's bar has not shown up yet).
+enum class ProfileSignal { waiting, bar, keys };
 struct ProfileAway {
     std::uint64_t asked{};      // GetTickCount64 when EDIT PROFILE was pressed, while the navigation waits; 0: not waiting
     bool away{};                // the front page is hidden for the profile
+    ProfileSignal signal{};     // while away
+    std::uint64_t sent_at{};    // when EDIT PROFILE's navigation went
     bool back_down{};           // B or Escape held at the last look
     std::uint64_t back_at{};    // when B or Escape was pressed on the profile; 0: not yet
     std::uint64_t gone_since{}; // when the Hub stopped being the tab shown; 0: it is
+    // The button bar's navigations in one line, read at most every bar_every_ms; and the Hub's own,
+    // as it was while the front page was drawn.
+    std::string bar, hub_bar;
+    bool bar_read{};
+    std::uint64_t bar_at{};
 } profile;
+// The navigations of the button bar's buttons, each followed by a space; nothing when there is no bar.
+std::optional<std::string> bar_navigations(const Context &c) {
+    const auto roots = c.roots({button_bar});
+    if (roots.empty()) return std::nullopt;
+    std::string line;
+    for (const auto &root : roots) {
+        unsigned count{}, stride{};
+        const auto bytes = c.array(c.field(root.model, button_bar_buttons), 64, count, stride);
+        for (unsigned i = 0; i < count && stride >= button_model_handle + 8; ++i) {
+            try {
+                std::uint64_t handle{};
+                std::memcpy(&handle, bytes.data() + i * stride + button_model_handle, sizeof(handle));
+                if (!handle) continue;
+                const Value shown_button{handle, c.type_of(handle)};
+                line += c.text(c.path(shown_button, {button_action, navigation}), 64) + ' ';
+            } catch (const std::exception &) {
+                // (A button without an action.)
+            }
+        }
+    }
+    return line;
+}
 // As QueueStateNavigation does (Extension/Throwdowns/native_flag_session.cpp navigate): the
 // navigation's name hash and, for a navigation without arguments, metadata [-1]. False while the
 // game's own navigation is still on its way.
@@ -338,33 +387,81 @@ bool away_for_profile(const Context &c, const std::optional<Value> &hub) {
         if (!p.gone_since) p.gone_since = now;
         if (p.away && now - p.gone_since >= hub_gone_ms) {
             p.away = false;
-            logging::log(logging::Level::info, logging::Channel::ui, "Front page: back after the profile (the Hub was left).");
+            logging::log(logging::Level::info, logging::Channel::ui, "Front page: back: the profile closed (the Hub was left).");
         }
         p.asked = 0;
         profile_wanted = false;
         return p.away;
     }
     p.gone_since = 0;
+    if (!p.bar_at || now - p.bar_at >= bar_every_ms) {
+        p.bar_at = now;
+        try {
+            auto line = bar_navigations(c);
+            p.bar_read = line.has_value();
+            p.bar = std::move(line).value_or(std::string());
+        } catch (const std::exception &) {
+            p.bar_read = false;
+            p.bar.clear();
+        }
+    }
+    const bool profile_bar = p.bar_read && p.bar.find(profile_bar_button) != std::string::npos;
+    // The profile on screen, however it was opened (EDIT PROFILE, or the game's own View shortcut).
+    if (profile_bar && (!p.away || p.signal != ProfileSignal::bar)) {
+        p.away = true;
+        p.signal = ProfileSignal::bar;
+        p.asked = p.back_at = 0;
+        logging::log(logging::Level::info, logging::Channel::ui, "Front page: hidden: the profile is open (the button bar has its EditPlayerCardPage).");
+    }
     if (profile_wanted.exchange(false) && !p.away) p.asked = now;
     if (p.asked) {
         if (navigate(c, profile_navigation)) {
             // (What is held as it goes is not the press that leaves the profile.)
-            p = {0, true, true, 0, 0};
-            logging::log(logging::Level::info, logging::Channel::ui, "Front page: hidden for the profile.");
+            p.asked = 0;
+            p.away = true;
+            p.signal = ProfileSignal::waiting;
+            p.sent_at = now;
+            p.back_down = true;
+            p.back_at = 0;
+            logging::log(logging::Level::info, logging::Channel::ui, "Front page: hidden: the profile is opening (EDIT PROFILE).");
         } else if (now - p.asked >= profile_give_up_ms) {
             p.asked = 0;
             logging::log(logging::Level::info, logging::Channel::ui, "Front page: the game's navigation stayed busy; EDIT PROFILE gave up on it.");
         }
     }
-    if (!p.away) return false;
+    if (!p.away) {
+        // The Hub's own bar, kept up to date while the front page is over it.
+        if (p.bar_read && hub_taken) p.hub_bar = p.bar;
+        return false;
+    }
     const bool down = back_down_now();
-    if (down && !p.back_down && !p.back_at) p.back_at = now;
+    if (p.signal != ProfileSignal::bar && down && !p.back_down && !p.back_at) p.back_at = now;
     p.back_down = down;
-    if (p.back_at && now - p.back_at >= profile_back_ms) {
-        p.away = false;
-        p.back_at = 0;
-        logging::log(logging::Level::info, logging::Channel::ui, "Front page: back after the profile (the Hub's stack shows {}).",
-                     hub->handle ? hub_stack_said(c, *hub) : std::string("nothing readable"));
+    switch (p.signal) {
+    case ProfileSignal::bar:
+        // The profile and anything opened from it (the card editor) keep it hidden; the bar of the Hub
+        // itself brings it back.
+        if (!profile_bar && p.bar_read && ((!p.hub_bar.empty() && p.bar == p.hub_bar) || p.bar.find(pause_bar_button) != std::string::npos)) {
+            p.away = false;
+            logging::log(logging::Level::info, logging::Channel::ui, "Front page: back: the profile closed (the button bar is the Hub's again).");
+        }
+        break;
+    case ProfileSignal::waiting:
+        if (now - p.sent_at < profile_find_ms) break;
+        p.signal = ProfileSignal::keys;
+        logging::log(logging::Level::info, logging::Channel::ui,
+                     "Front page: the profile's button bar was not found ({}); leaving the profile is read from B or Escape instead.",
+                     p.bar_read ? (p.bar.find_first_not_of(' ') == std::string::npos ? std::string("no navigations") : "it has " + p.bar)
+                                : std::string("no bar"));
+        [[fallthrough]];
+    case ProfileSignal::keys:
+        if (p.back_at && now - p.back_at >= profile_back_ms) {
+            p.away = false;
+            p.back_at = 0;
+            logging::log(logging::Level::info, logging::Channel::ui, "Front page: back: the profile closed (B or Escape; the Hub's stack shows {}).",
+                         hub->handle ? hub_stack_said(c, *hub) : std::string("nothing readable"));
+        }
+        break;
     }
     return p.away;
 }
