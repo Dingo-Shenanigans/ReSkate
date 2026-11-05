@@ -15,6 +15,8 @@
 #include "Extension/Music/local_music_playback.h"
 #include "Extension/Profile/local_profile_runtime.h"
 #include "Engine/Core/Log/logging.h"
+#include "Engine/Core/Profiling/profiler.h"
+#include "Extension/Rendering/replay_export.h"
 #include "Engine/Game/Input/controller_bindings.h"
 #include "Engine/Game/Input/voice_input.h"
 #include "Engine/Game/Multiplayer/object_placement.h"
@@ -1612,7 +1614,9 @@ void failed_page(Ui &ui, ImVec2 a, ImVec2 z) {
 
 // ---------------------------------------------------------------- Mod Options
 
-enum ToolsTab : int { official_tab, custom_tab, world_tab, parks_tab, player_tab, online_tab, visuals_tab, binds_tab };
+// MAPS is the page's own grid; the others are lists of settings made for a controller
+// (mod_options_page.inl), holding everything the Insert menu sets.
+enum ToolsTab : int { official_tab, custom_tab, world_tab, parks_tab, skater_tab, camera_tab, style_tab, online_tab, settings_tab };
 
 // The next (or the one before) of a setting's steps from where it is now; it stops at the ends.
 template<std::size_t N> float stepped(float current, const std::array<float, N> &steps, int direction) {
@@ -1626,6 +1630,8 @@ template<std::size_t N> float stepped(float current, const std::array<float, N> 
     return steps.front();
 }
 std::string whole(float value, const char *unit = "") { return std::to_string(static_cast<int>(value + .5f)) + unit; }
+
+#include "mod_options_page.inl"
 
 // A column of settings that scrolls, in the Multiplayer page's look: each setting a full-width row on
 // the near-black tile with its name on the left and what it is now on the right (white under the
@@ -1718,7 +1724,7 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
     const auto &m = h.full;
     const auto &mp = m.multiplayer;
     const auto &cb = h.callbacks;
-    const float u = ui.u, gap = 28 * u, tall = 96 * u, between = 10 * u, footer = 70 * u;
+    const float u = ui.u, gap = 28 * u, footer = 70 * u;
     auto *draw = ui.draw;
     native_tools::sync(h.tools, m);
     const auto changed = [&] { h.next_model = {}; }; // what it changed shows at once
@@ -1885,229 +1891,22 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
     switch (h.tools_tab) {
     case official_tab:
     case custom_tab: maps(); break; // (custom maps are on the one tab now)
-    case world_tab: {
-        two_columns(ui, hash("world"), a, bz, [&](Column &list) {
-            list.heading("POPULATION");
-            const bool population = m.world.ready && m.world_controls.population_available && console;
-            if (list.setting("Traffic", population_labels[std::clamp(m.world_controls.choices.traffic, -1, 3) + 1], population)) act("traffic");
-            if (list.setting("Pedestrians", population_labels[std::clamp(m.world_controls.choices.pedestrians, -1, 3) + 1], population)) act("pedestrians");
-        }, [&](Column &list) {
-            list.heading("TIME");
-            if (list.setting("Time of day", native_tools::time_of_day_labels[native_tools::time_of_day(m)], native_tools::time_of_day_available(m, cb))) act("time-of-day");
-            if (m.world.controlled_by_host)
-                list.note(server_can(mp, "tod") ? "Your role sets it: time of day changes for the whole server." : "The lobby host controls world layers, including time of day.");
-        });
-        break;
-    }
-    case parks_tab: {
-        // One card for each of the three lots: its style, its layout, and loading it.
-        const bool available = native_tools::can_park(m, cb);
-        group_heading(ui, ImVec2(a.x, a.y + 12 * u), "THE LOTS");
-        const float cards = static_cast<float>(park_lots.size());
-        const float width = std::min(((bz.x - a.x) - gap * (cards - 1)) / cards, 1300 * u), top = a.y + 58 * u;
-        const float card_height = 36 * u + 60 * u + (tall + between) * 2 + 16 * u + 110 * u + 36 * u;
-        for (unsigned lot = 0; lot < park_lots.size(); ++lot) {
-            const ImVec2 p(a.x + static_cast<float>(lot) * (width + gap), top), q(p.x + width, top + card_height);
-            skate_theme::rough_rect(draw, p, q, tile_dark, 0x60 + lot, u * 2);
-            const float left = p.x + 36 * u, right = q.x - 36 * u;
-            float y = p.y + 36 * u;
-            label(draw, ui.bold, 40 * u, ImVec2(left, y), right, theme::paper, std::string(park_lots[lot].label));
-            y += 60 * u;
-            std::string family = "Empty lot";
-            for (unsigned i = 0; i < park_families.size(); ++i)
-                if (h.tools.parks[lot].starts_with(park_families[i])) family = park_family_labels[i];
-            const auto row = [&](const char *name, const std::string &value, std::string_view command) {
-                if (button(ui, hash(name, 40 + lot), ImVec2(left, y), ImVec2(right, y + tall), name, Look::plain, available, value)) h.tools.lot = lot, act(command);
-                y += tall + between;
-            };
-            row("Style", family, "park-family");
-            row("Layout", park_label(h.tools.parks[lot]), "park-layout");
-            y += 16 * u;
-            if (button(ui, hash("load-park", lot), ImVec2(left, y), ImVec2(right, y + 110 * u), "LOAD THIS LAYOUT", Look::primary,
-                       available && valid_park(lot, h.tools.parks[lot])))
-                h.tools.lot = lot, act("load-park");
-        }
-        // Under them, what goes for all three, as two rows side by side.
-        two_columns(ui, hash("parks"), ImVec2(a.x, top + card_height + 16 * u), bz, [&](Column &list) {
-            list.heading("ALL THREE LOTS");
-            if (list.setting("Load random parks", {}, available)) act("load-random-parks");
-        }, [&](Column &list) {
-            list.heading(" "); // (no words: it lines the row up with the one beside it)
-            if (list.setting("Randomize on launch", on_off(m.parks.randomize_on_launch), m.parks.available && console)) act("park-random-on-launch");
-        });
-        advice = m.world.map != WorldMap::bam ? std::string("Load San Vansterdam to change parks.")
-                 : native_tools::parks_locked(m) ? std::string("The lobby host controls park layouts.")
-                 : m.parks.controlled_by_host ? std::string("Your role sets them: layouts you load change for the whole server.") : std::string();
-        break;
-    }
-    case player_tab: {
-        const auto &d = m.debug;
-        two_columns(ui, hash("player"), a, bz, [&](Column &list) {
-            list.heading("SKATING");
-            if (list.setting("Noclip", on_off(d.noclip), (d.noclip_available || d.noclip) && debugging)) debug({DebugAction::set_noclip, !d.noclip});
-            if (list.setting("No bail", on_off(d.no_bail), (d.no_bail_available || d.no_bail) && debugging)) debug({DebugAction::set_no_bail, !d.no_bail});
-            const auto &wear = m.offline.board_wear;
-            if (list.setting("Board wear", on_off(wear.effective), wear.available && cb.queue_offline_feature)) act("board-wear");
-            if (list.setting("Reset board wear", {}, wear.available && wear.effective && console)) act("board-wear-reset");
-            list.heading("BOOSTS");
-            constexpr std::array<float, 10> forward{0.f, 1.f, 5.f, 10.f, 25.f, 50.f, 100.f, 150.f, 200.f, 300.f};
-            constexpr std::array<float, 9> up{0.f, 1.f, 2.f, 3.f, 5.f, 8.f, 12.f, 18.f, 25.f};
-            if (const int way = list.adjust("Forward boost", "+" + whole(d.forward_velocity_speed), debugging))
-                debug({DebugAction::set_forward_velocity_speed, false, stepped(d.forward_velocity_speed, forward, way)});
-            if (const int way = list.adjust("Up boost", "+" + whole(d.up_velocity_speed), debugging))
-                debug({DebugAction::set_up_velocity_speed, false, stepped(d.up_velocity_speed, up, way)});
-            if (const int way = list.adjust("Off-board up boost", "+" + whole(d.offboard_up_velocity_speed), debugging))
-                debug({DebugAction::set_offboard_up_velocity_speed, false, stepped(d.offboard_up_velocity_speed, up, way)});
-            list.note("The buttons for the boosts are on the BINDS tab.");
-        }, [&](Column &list) {
-            list.heading("CAMERA");
-            const bool camera = d.available && d.camera_available && debugging, edit = d.available && debugging;
-            if (list.setting("First person", on_off(d.first_person), camera)) debug({DebugAction::set_first_person, !d.first_person});
-            if (list.setting("True first person", on_off(d.first_person_arm.stabilize), edit)) debug({DebugAction::set_first_person_stabilize, !d.first_person_arm.stabilize});
-            if (list.setting("Third person on foot", on_off(d.first_person_arm.board_only), edit)) debug({DebugAction::set_first_person_board_only, !d.first_person_arm.board_only});
-            if (list.setting("Freecam", on_off(d.free_camera), camera)) debug({DebugAction::set_free_camera, !d.free_camera});
-            constexpr std::array<float, 7> speeds{.6f, 3.f, 5.f, 15.f, 60.f, 300.f, 1500.f};
-            const auto text = std::to_string(d.camera_speed);
-            if (const int way = list.adjust("Flight speed", text.substr(0, text.find('.') + 2), (d.free_camera || d.noclip) && d.camera_available && debugging))
-                debug({DebugAction::set_camera_speed, false, stepped(d.camera_speed, speeds, way)});
-            list.note("Flight speed is for noclip and freecam; close the menu to fly.");
-        });
-        break;
-    }
-    case online_tab: {
-        if (m.steam_offline) {
-            Column list(ui, hash("online"), a, ImVec2(a.x + std::min(bz.x - a.x, 2100 * u), bz.y));
-            list.heading("OTHER SKATERS");
-            list.note("Multiplayer is off in offline mode.");
-            list.end();
-            break;
-        }
-        two_columns(ui, hash("online"), a, bz, [&](Column &list) {
-            constexpr std::array<float, 8> shown{50.f, 75.f, 100.f, 150.f, 200.f, 300.f, 500.f, 1000.f};
-            constexpr std::array<float, 8> tags{10.f, 25.f, 50.f, 75.f, 120.f, 200.f, 300.f, 500.f};
-            list.heading("OTHER SKATERS");
-            if (const int way = list.adjust("Player distance", mp.player_distance >= player_distance_unlimited ? std::string("Everyone") : whole(mp.player_distance, " m"), true))
-                online("player-distance", whole(stepped(mp.player_distance, shown, way)));
-            if (list.setting("Direct connections", on_off(mp.prefer_direct), true)) online("direct-connections", mp.prefer_direct ? "off" : "on");
-            list.heading("NAMETAGS");
-            if (list.setting("Nametags", on_off(mp.nametags), true)) online("nametags", mp.nametags ? "off" : "on");
-            if (const int way = list.adjust("Nametag distance", whole(mp.nametag_distance, " m"), true)) online("nametag-distance", whole(stepped(mp.nametag_distance, tags, way)));
-            if (list.setting("Nametag dots", on_off(mp.nametag_dots), true)) online("nametag-dots", mp.nametag_dots ? "off" : "on");
-            if (list.setting("Friends' nametags only", on_off(mp.nametags_friends), true)) online("nametags-friends", mp.nametags_friends ? "off" : "on");
-        }, [&](Column &list) {
-            constexpr std::array<float, 7> reach{5.f, 10.f, 20.f, 40.f, 75.f, 120.f, 200.f};
-            constexpr std::array<float, 6> seconds{1.f, 3.f, 5.f, 8.f, 15.f, 30.f};
-            constexpr std::array<float, 8> lines{1.f, 2.f, 3.f, 4.f, 5.f, 6.f, 7.f, 8.f};
-            list.heading("CHAT");
-            if (list.setting("Text chat", on_off(mp.chat_visible), true)) online("chat-visible", mp.chat_visible ? "off" : "on");
-            if (list.setting("Chat bubbles", on_off(mp.chat_bubbles), true)) online("chat-bubbles", mp.chat_bubbles ? "off" : "on");
-            if (list.setting("Own chat bubbles", on_off(mp.chat_bubbles_own), mp.chat_bubbles)) online("chat-bubbles-own", mp.chat_bubbles_own ? "off" : "on");
-            if (const int way = list.adjust("Bubble distance", whole(mp.chat_bubbles_distance, " m"), mp.chat_bubbles))
-                online("chat-bubbles-distance", whole(stepped(mp.chat_bubbles_distance, reach, way)));
-            if (const int way = list.adjust("Bubble time", whole(mp.chat_bubbles_duration, " s"), mp.chat_bubbles))
-                online("chat-bubbles-duration", whole(stepped(mp.chat_bubbles_duration, seconds, way)));
-            if (const int way = list.adjust("Bubble lines", whole(static_cast<float>(mp.chat_bubbles_history)), mp.chat_bubbles))
-                online("chat-bubbles-history", whole(stepped(static_cast<float>(mp.chat_bubbles_history), lines, way)));
-            if (dingosdk::discord_presence::available()) {
-                list.heading("DISCORD");
-                if (list.setting("Discord status", on_off(dingosdk::discord_presence::enabled()), true)) dingosdk::discord_presence::set_enabled(!dingosdk::discord_presence::enabled());
-            }
-            if (!mp.identity_tag.empty()) {
-                // Only for players the ReSkate team has given a tag.
-                list.heading("YOUR TAG");
-                if (list.setting("Show my tag", on_off(mp.identity_tag_shown), true)) online("mark-tag", mp.identity_tag_shown ? "off" : "on");
-                if (list.setting("Show my items", on_off(mp.identity_items_shown), true)) online("mark-items", mp.identity_items_shown ? "off" : "on");
-            }
-        });
-        break;
-    }
-    case visuals_tab: {
-        two_columns(ui, hash("visuals"), a, bz, [&](Column &list) {
-            list.heading("SCREEN EFFECTS");
-            constexpr std::array<const char *, 3> names{"Film grain", "Vignette", "Chromatic aberration"};
-            for (unsigned i = 0; i < names.size(); ++i) {
-                const auto choice = m.graphics.choices.effects[i];
-                const bool on = choice < 0 ? !m.graphics.ready[i] || m.graphics.enabled[i] : choice != 0;
-                if (list.setting(names[i], on_off(on) + (choice < 0 ? " (default)" : ""), m.graphics.available && console)) act("graphics", std::string(graphics_keys[i]));
-            }
-            if (list.setting("Restore default effects", {}, m.graphics.available && console)) act("graphics-reset");
-        }, [&](Column &list) {
-            list.heading("ANIMATION");
-            if (list.setting("Keyframe smoothing", on_off(m.keyframe_smoothing.enabled), m.keyframe_smoothing.available && console))
-                act("keyframe-smoothing");
-            if (list.setting("Keyframe smoothness", std::to_string(keyframe_smoothness_percent(m.keyframe_smoothing)) + "%",
-                             m.keyframe_smoothing.available && m.keyframe_smoothing.enabled && console))
-                act("keyframe-smoothness");
-            list.heading("CHALLENGES AND MUSIC");
-            if (list.setting("Challenges", m.progression.challenges_hidden ? "Hidden" : "Shown", m.progression.challenges_enabled && console)) act("challenges");
-            const bool shuffle = dingosdk::profile_runtime::music_shuffle_enabled();
-            if (list.setting("Shuffle playlists", on_off(shuffle), true)) {
-                dingosdk::profile_runtime::set_music_shuffle_enabled(!shuffle);
-                dingosdk::profile_runtime::set_local_preference("MusicShuffle", !shuffle);
-            }
-            list.note("Hiding challenges keeps your progress.");
-        });
-        break;
-    }
     default: {
-        // Buttons for ReSkate's own actions. Pressing a row records the next button, combination
-        // of buttons or key; for that long the game does not see them.
-        const auto &binds = m.bindings;
-        const bool available = binds.available && console;
-        const auto recording = hash("bind-recording");
-        const auto save = [&](int action, std::uint32_t combo) {
-            run("bind " + (action >= 10 ? std::string(action_binds[static_cast<std::size_t>(action - 10)].name) : std::string(action == 1 ? "freecamcontroller" : action == 2 ? "freecam"
-                           : action == 3 ? "noclip" : action == 4 ? "forwardvelocity" : action == 5 ? "upvelocity" : action == 6 ? "tptofreecam" : action == 8 ? "voteyes"
-                           : action == 9 ? "voteno" : "offboardupvelocity")) + " " + std::to_string(combo));
-        };
-        if (h.recording_bind) {
-            ControllerInput controller;
-            DingoSDKOverlayReadControllerInput(&controller, true);
-            if (!available || GetTickCount64() >= h.recording_until || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
-                h.recording_bind = 0, set_typing(h, 0);
-                say(h, "Recording cancelled. Your binding is unchanged.");
-            } else if (const auto combo = h.bind_capture.update(controller, true)) {
-                const int action = std::exchange(h.recording_bind, 0);
-                set_typing(h, 0);
-                save(action, *combo);
-            }
+        // A list of settings and the panel about the one the focus is on (mod_options_page.inl).
+        OptionsContext context{h, m, cb, run, debug, online, act, console, debugging};
+        Opts rows;
+        switch (h.tools_tab) {
+        case world_tab: world_rows(rows, context); break;
+        case parks_tab: parks_rows(rows, context); break;
+        case skater_tab: skater_rows(rows, context); break;
+        case camera_tab: camera_rows(rows, context); break;
+        case style_tab: style_rows(rows, context); break;
+        case online_tab: online_rows(rows, context); break;
+        default: settings_rows(rows, context); break;
         }
-        // (What to do, and that Escape cancels a recording, is the foot's.)
-        advice = h.recording_bind ? std::string("Press the button, combination or key to use. Escape cancels.")
-                                  : std::string("Pick an action, then press what should do it. CLEAR takes its button away.");
-        const auto row = [&](Column &list, int action, const std::string &name, std::uint32_t combo) {
-            const float clear_width = 260 * u;
-            const auto id = hash("bind", static_cast<std::uint64_t>(action)), clear = hash("bind-clear", static_cast<std::uint64_t>(action));
-            bool drawn{};
-            const float top = list.next(list.tall, list.between, drawn);
-            list.list.reveal(id, top, list.tall), list.list.reveal(clear, top, list.tall);
-            const bool mine = h.recording_bind == action, idle = available && !h.recording_bind;
-            if (button(ui, id, ImVec2(list.left, top), ImVec2(list.right - clear_width - 12 * u, top + list.tall), name, mine ? Look::chosen : Look::tile, idle,
-                       mine ? std::string("Recording...") : controller_combo_label(combo, ui.pad.style), &list.list.box)) {
-                h.recording_bind = action;
-                h.bind_capture = {};
-                h.recording_until = GetTickCount64() + 30000;
-                h.notice.clear();
-                set_typing(h, recording);
-            }
-            if (button(ui, clear, ImVec2(list.right - clear_width, top), ImVec2(list.right, top + list.tall), "CLEAR", Look::plain, idle && combo != 0, {}, &list.list.box))
-                save(action, 0);
-        };
-        two_columns(ui, hash("binds"), a, bz, [&](Column &list) {
-            list.heading("MOVING AND THE CAMERA");
-            row(list, 1, "Freecam controller", binds.freecam_controller_combo);
-            row(list, 2, "Freecam", binds.freecam_combo);
-            row(list, 3, "Noclip", binds.noclip_combo);
-            row(list, 4, "Forward boost", binds.forward_velocity_combo);
-            row(list, 5, "Up boost", binds.up_velocity_combo);
-            row(list, 7, "Off-board up boost", binds.offboard_up_velocity_combo);
-            row(list, 6, "Teleport to freecam", binds.tp_to_freecam_combo);
-        }, [&](Column &list) {
-            list.heading("VOTES AND ACTIONS");
-            row(list, 8, "Vote yes", binds.vote_yes_combo);
-            row(list, 9, "Vote no", binds.vote_no_combo);
-            for (std::size_t i = 0; i < action_binds.size(); ++i) row(list, 10 + static_cast<int>(i), std::string(action_binds[i].label), binds.action_combos[i]);
-        });
+        // (Recording a bind keeps its own words in the foot.)
+        if (h.recording_bind) advice = "Press the button, combination or key to use. Escape cancels.";
+        options_page(ui, static_cast<std::uint32_t>(h.tools_tab), rows, a, bz, (pressed & 0x8000) != 0);
         break;
     }
     }
@@ -2121,10 +1920,9 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
         const float x = a.x + (text.empty() ? 0 : std::min(width_of(ui.body, 30 * u, text), most) + 60 * u);
         if (ui.pad.available) {
             if (on_maps) hints(ui, x, y, {{0x1000, "", "Load"}, {0x8000, "", "Sort"}});
-            else if (h.tools_tab == binds_tab) hints(ui, x, y, {{0x1000, "", "Record"}});
-            else hints(ui, x, y, {{0x1000, "", "Change"}});
+            else hints(ui, x, y, {{0x1000, "", "Select"}, {0x4 | 0x8, "", "Change"}, {0x8000, "", "Default"}});
         } else {
-            hints(ui, x, y, {{0, "Enter", on_maps ? "Load" : h.tools_tab == binds_tab ? "Record" : "Change"}});
+            hints(ui, x, y, {{0, "Enter", on_maps ? "Load" : "Select"}, {0, "Left Right", "Change"}});
         }
     }
 }
@@ -2397,6 +2195,12 @@ void hub_frame(Hub &h, ImDrawList *draw, float u, ImVec2 a, ImVec2 z, float tabs
         // A plugin's page on the Mod Manager has ImGui's own focus: the D-pad, the arrows and A are
         // its navigation's while it shows (State::hub_nav), and B still the page's way back.
         const bool page_nav = on_mods && mods_imgui_nav(mods_page);
+        if (direction >= 0 && !page_nav && (direction == 2 || direction == 3) && h.ring && h.page.section == 1 &&
+            options_take_step(h.focus, direction == 2 ? -1 : 1)) {
+            // (Held, a little slower than the focus moves: each step waits on the game.)
+            if (!fresh[static_cast<std::size_t>(direction)]) h.repeat_at = tick + 160;
+            direction = -1;
+        }
         if (direction >= 0 && !page_nav) {
             // The first press only shows where the focus is.
             if (h.ring || !h.focus) move_focus(h, direction == 2 ? -1 : direction == 3 ? 1 : 0, direction == 0 ? -1 : direction == 1 ? 1 : 0, on_mods);
@@ -2448,8 +2252,8 @@ void hub_frame(Hub &h, ImDrawList *draw, float u, ImVec2 a, ImVec2 z, float tabs
             tabs = mod_tabs();
         } else if (tools) {
             if (h.tools_tab == custom_tab) h.tools_tab = official_tab;
-            tabs = {{official_tab, "MAPS"}, {world_tab, "WORLD"}, {parks_tab, "PARKS"},
-                    {player_tab, "PLAYER"}, {online_tab, "ONLINE"}, {visuals_tab, "VISUALS"}, {binds_tab, "BINDS"}};
+            tabs = {{official_tab, "MAPS"}, {world_tab, "WORLD"}, {parks_tab, "PARKS"}, {skater_tab, "SKATER"},
+                    {camera_tab, "CAMERA"}, {style_tab, "STYLE"}, {online_tab, "ONLINE"}, {settings_tab, "SETTINGS"}};
         } else {
             tabs = {{static_cast<int>(Tab::browser), "SERVER BROWSER"}, {static_cast<int>(Tab::friends), "FRIENDS"}, {static_cast<int>(Tab::host), "HOST LOBBY"}};
             // The session and its voice chat are only there in one.
