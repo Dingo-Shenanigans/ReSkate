@@ -55,6 +55,10 @@ void reading_is_forgiving_but_checked() {
     }
     for (std::size_t at = 0; at + 1 < symbols.size(); ++at) {
         if (symbols[at] == symbols[at + 1]) continue;
+        // The check is modulo 31, so a swap of the two symbols 31 apart (0 and Z) is the one it
+        // cannot see: a rare code that fails this would fail by design, not by a bug.
+        const auto pair = std::string{symbols[at], symbols[at + 1]};
+        if (pair == "0Z" || pair == "Z0") continue;
         auto wrong = symbols;
         std::swap(wrong[at], wrong[at + 1]);
         check(!read_code(wrong, CodeKind::personal), "swapped characters are not a code");
