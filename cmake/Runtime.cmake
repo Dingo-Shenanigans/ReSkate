@@ -21,6 +21,14 @@ add_library(dingosdk_runtime SHARED
     Extension/Multiplayer/Session/session.cpp
     Extension/Multiplayer/Session/session_view.cpp
     Extension/Multiplayer/Session/session_send.cpp
+    Extension/Multiplayer/Session/session_synchros.cpp
+    Extension/Multiplayer/Synchros/synchros_runtime.cpp
+    Extension/Multiplayer/Synchros/exchange.cpp
+    Extension/Multiplayer/Synchros/wearer.cpp
+    Extension/Multiplayer/Synchros/received.cpp
+    Extension/Multiplayer/Synchros/settings_file.cpp
+    Extension/Multiplayer/Synchros/share_code.cpp
+    Extension/Multiplayer/Synchros/synchros_wire.cpp
     Extension/Multiplayer/Session/session_receive.cpp
     Extension/Multiplayer/Session/session_commands.cpp
     Extension/Multiplayer/Session/session_party.cpp

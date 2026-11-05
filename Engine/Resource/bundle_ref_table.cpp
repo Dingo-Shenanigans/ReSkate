@@ -253,4 +253,37 @@ MergedTable merge(const Table& base, std::span<const Table> edits) {
     return result;
 }
 
+std::map<std::string, std::uint32_t> presets(const Table& table) {
+    return Reader(table.resource, table.resourceMeta).out.presets;
+}
+
+MergedTable with_presets(const Table& base, std::span<const Preset> added) {
+    const auto original = Reader(base.resource, base.resourceMeta).out;
+    MergedTable result{{base.resource.begin(), base.resource.end()}, {base.resourceMeta.begin(), base.resourceMeta.end()}};
+    std::map<std::string, std::uint32_t> taken;
+    Builder builder(base.resource, original);
+    // In path order, as merge adds an edit's presets: the table comes out the same whatever order
+    // the presets were given in.
+    std::vector<Preset> sorted(added.begin(), added.end());
+    std::ranges::stable_sort(sorted, {}, &Preset::path);
+    for (const auto& preset : sorted) {
+        if (preset.bundle >= original.bundle_count) throw std::runtime_error(preset.path + " names a bundle the table does not list");
+        if (preset.path.empty()) throw std::runtime_error("a preset has no path");
+        if (const auto found = original.presets.find(preset.path); found != original.presets.end()) {
+            if (found->second != preset.bundle) ++result.conflicts;
+            continue;
+        }
+        if (const auto found = taken.find(preset.path); found != taken.end()) {
+            if (found->second != preset.bundle) ++result.conflicts;
+            continue;
+        }
+        if (auto holder = builder.insert(preset.path, preset.bundle); !holder.empty())
+            result.shadowed.push_back({0, preset.path, std::move(holder)});
+        taken.emplace(preset.path, preset.bundle);
+        ++result.added;
+    }
+    builder.write(result.resource, result.resourceMeta);
+    return result;
+}
+
 } // namespace dingosdk::frostbite::bundle_ref
