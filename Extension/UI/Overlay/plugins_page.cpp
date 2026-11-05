@@ -428,6 +428,17 @@ void plugins_page(SkateMenu& menu) {
         plugin_list(menu, *pages);
         return;
     }
+    // Whose page this is and the way back, first on the page: B does it on a pad, but the pointer needs a
+    // button, and the page reads as one plugin's rather than as PLUGINS itself.
+    {
+        const auto back = std::string("< PLUGINS    ") + shown->title;
+        if (button_row(menu, "plugin-page-back", {{back.c_str(), true, false, "Back to the plugin list (B)."}}) == 0) {
+            refocus_plugin() = shown->plugin;
+            menu.plugin_page = plugin_manager_entry;
+            plugin_list(menu, *pages);
+            return;
+        }
+    }
     plugin_ui::note_page_shown(shown->plugin);
     const double now = ImGui::GetTime();
     std::erase_if(edits(), [&](const auto& item) { return now - item.second.at > 1.0; });

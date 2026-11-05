@@ -1333,7 +1333,7 @@ const char* page_title(SkateMenu& menu) {
     return page_names[static_cast<std::size_t>(menu.page)];
 }
 const char* page_subtitle(SkateMenu& menu) {
-    if (drilled_plugin_page(menu)) return "A plugin's page. B for the list.";
+    if (drilled_plugin_page(menu)) return "A plugin's page, opened from PLUGINS.";
     return page_subtitles[static_cast<std::size_t>(menu.page)];
 }
 void step_page(SkateMenu& menu, const Model& model, int step) {
@@ -1682,7 +1682,9 @@ void draw_sheet(SkateMenu& menu, const Model& model, const CallbacksV3& callback
         if (page_button("##previous-page", ImVec2(origin.x + pad_x, cap_y), Glyph::lb)) step_page(menu, model, -1);
         const float rb_width = glyph(nullptr, menu, ImVec2(), Glyph::rb, pad.playstation);
         if (page_button("##next-page", ImVec2(origin.x + size.x - pad_x - rb_width, cap_y), Glyph::rb)) step_page(menu, model, 1);
-        const char* name = page_names[static_cast<std::size_t>(menu.page)];
+        // A plugin's page opened from PLUGINS is titled with the plugin's name (page_title), so the sheet says
+        // whose page it is; the names row under it still marks PLUGINS, where B goes back to.
+        const char* name = page_title(menu);
         ImFont* big = title_font(menu);
         const float title = px(44);
         const auto extent = big->CalcTextSizeA(title, FLT_MAX, 0, name);
