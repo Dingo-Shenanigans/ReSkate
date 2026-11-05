@@ -349,7 +349,7 @@ void categories_panel(Ui &ui, ModPage &m, ImVec2 a, ImVec2 z) {
         m.hidden.clear();
         save_categories(m);
     }
-    if (button(ui, hash("mods-categories-done"), done, ImVec2(done.x + bw, done.y + bh), "DONE", Look::sticky)) close_categories(ui.h, m);
+    if (button(ui, hash("mods-categories-done"), done, ImVec2(done.x + bw, done.y + bh), "DONE", Look::primary)) close_categories(ui.h, m);
     const ImVec2 la(a.x + inset, a.y + inset + 150 * u), lz(z.x - inset, z.y - inset);
     const float spacing = 16 * u, tile_h = 104 * u;
     const auto columns = std::max<std::size_t>(1, static_cast<std::size_t>((lz.x - la.x + spacing) / (600 * u + spacing)));
@@ -414,7 +414,7 @@ bool pointer_button(Ui &ui, ImVec2 a, ImVec2 b, const std::string &text, Look lo
     const float u = ui.u, size = std::min(40 * u, (b.y - a.y) * .42f);
     const auto hit = enabled ? pointed(ui, a, b, clip) : Pointed{};
     ImU32 fill = skate_theme::tile, ink = enabled ? theme::paper : theme::muted;
-    if (look == Look::sticky) fill = !enabled ? sticky_off : hit.hover ? sticky_hover : sticky, ink = skate_theme::black;
+    if (look == Look::primary) fill = !enabled ? accent_off : hit.hover ? accent_hover : accent, ink = enabled ? theme::paper : IM_COL32(245, 245, 245, 140);
     else if (hit.hover) fill = theme::blue;
     else if (look == Look::plain) fill = skate_theme::tile_light;
     skate_theme::rough_rect(ui.draw, a, b, fill, hash(text) & 0xfff, u * 2);
@@ -547,7 +547,7 @@ float featured(Ui &ui, ModPage &m, ImVec2 a, float right, float top, const Item 
     const bool on_button = ui.input && (inside(ui.mouse, b1, ImVec2(b1.x + bw, b1.y + bh)) || inside(ui.mouse, b2, ImVec2(b2.x + bw, b2.y + bh)));
     const auto does = queue_button(m, *package, action, action_label(action));
     const bool can_install = does.enabled;
-    bool install = pointer_button(ui, b1, ImVec2(b1.x + bw, b1.y + bh), does.text, can_install ? Look::sticky : Look::plain, can_install, &clip);
+    bool install = pointer_button(ui, b1, ImVec2(b1.x + bw, b1.y + bh), does.text, can_install ? Look::primary : Look::plain, can_install, &clip);
     bool details = pointer_button(ui, b2, ImVec2(b2.x + bw, b2.y + bh), "DETAILS", Look::plain, true, &clip);
     if (ringed && ui.pad.available) {
         float px = b2.x + bw + 36 * u;
@@ -664,12 +664,12 @@ void package_details(Ui &ui, ModPage &m, const ts::Package &package, ImVec2 a, I
         // is at the foot of the page).
         const auto [p, q] = place();
         const auto does = queue_button(m, package, action, action == ms::Action::install ? "INSTALL" : action == ms::Action::update ? "UPDATE" : "REINSTALL");
-        if (button(ui, hash("mods-detail-action"), p, q, does.text, does.enabled && action != ms::Action::installed ? Look::sticky : Look::plain, does.enabled))
+        if (button(ui, hash("mods-detail-action"), p, q, does.text, does.enabled && action != ms::Action::installed ? Look::primary : Look::plain, does.enabled))
             start_install(m, {package.full_name});
     }
     if (changes) {
         const auto [p, q] = place();
-        if (button(ui, hash("mods-detail-apply"), p, q, "APPLY CHANGES", Look::sticky, !m.progress.busy)) mod_say(m, ms::apply());
+        if (button(ui, hash("mods-detail-apply"), p, q, "APPLY CHANGES", Look::primary, !m.progress.busy)) mod_say(m, ms::apply());
     }
     if (mine_here) {
         {
@@ -818,7 +818,7 @@ void browse_page(Ui &ui, ModPage &m, ImVec2 a, ImVec2 z) {
         const auto line = !listing.error.empty() && !listing.fetching ? "Thunderstore could not be reached: " + listing.error
                           : std::string("Getting the mods from Thunderstore...");
         draw->AddText(ui.body, 40 * u, ImVec2(ca.x, ca.y + 30 * u), theme::muted, line.c_str());
-        if (!listing.fetching && button(ui, hash("mods-retry"), ImVec2(ca.x, ca.y + 110 * u), ImVec2(ca.x + 500 * u, ca.y + 206 * u), "TRY AGAIN", Look::sticky))
+        if (!listing.fetching && button(ui, hash("mods-retry"), ImVec2(ca.x, ca.y + 110 * u), ImVec2(ca.x + 500 * u, ca.y + 206 * u), "TRY AGAIN", Look::primary))
             ms::refresh();
         return;
     }
@@ -1013,13 +1013,13 @@ void installed_page(Ui &ui, ModPage &m, ImVec2 a, ImVec2 z) {
         by -= bh + 16 * u;
         if (ts::update_available(*package, mods.versions)) {
             const auto does = queue_button(m, *package, ms::Action::update, "UPDATE TO v" + package->latest().number);
-            if (button(ui, hash("mods-installed-update"), ImVec2(left, by), ImVec2(edge, by + bh), does.text, does.enabled ? Look::sticky : Look::plain, does.enabled))
+            if (button(ui, hash("mods-installed-update"), ImVec2(left, by), ImVec2(edge, by + bh), does.text, does.enabled ? Look::primary : Look::plain, does.enabled))
                 start_install(m, {package->full_name});
         }
         by -= bh + 16 * u;
     }
     if (!mod->gone && button(ui, hash("mods-installed-toggle"), ImVec2(left, by), ImVec2(edge, by + bh), mod->enabled ? "SWITCH OFF" : "SWITCH ON",
-                             mod->enabled ? Look::plain : Look::sticky))
+                             mod->enabled ? Look::plain : Look::primary))
         ms::set_enabled(mod->folder, !mod->enabled);
 }
 
@@ -1040,7 +1040,7 @@ void updates_page(Ui &ui, ModPage &m, ImVec2 a, ImVec2 z) {
                                                                 (progress.busy && progress.package == name); });
         if (button(ui, hash("mods-update-all"), ImVec2(z.x - 640 * u, a.y), ImVec2(z.x, a.y + bar),
                    all.empty() ? std::string("ALL QUEUED") : (progress.busy ? "QUEUE ALL  (" : "UPDATE ALL  (") + ms::size_text(bytes) + ")",
-                   all.empty() ? Look::plain : Look::sticky, !all.empty()))
+                   all.empty() ? Look::plain : Look::primary, !all.empty()))
             start_install(m, all);
     }
     const ImVec2 la(a.x, a.y + bar + gap), lz(z.x, z.y);
@@ -1069,8 +1069,9 @@ void updates_page(Ui &ui, ModPage &m, ImVec2 a, ImVec2 z) {
         const auto &does = does_now.text;
         const float dw = width_of(ui.bold, 32 * u, does) + 60 * u;
         const ImVec2 c(q.x - pad - dw, p.y + 24 * u), d(q.x - pad, q.y - 24 * u);
-        skate_theme::rough_rect(draw, c, d, does_now.enabled ? sticky : sticky_off, 0x52, u * 2);
-        draw->AddText(ui.bold, 32 * u, ImVec2(c.x + 30 * u, c.y + (d.y - c.y - 32 * u) * .5f), skate_theme::black, does.c_str());
+        // The primary blue, or white on a row the focus has turned blue.
+        skate_theme::rough_rect(draw, c, d, !does_now.enabled ? accent_off : lit ? theme::paper : accent, 0x52, u * 2);
+        draw->AddText(ui.bold, 32 * u, ImVec2(c.x + 30 * u, c.y + (d.y - c.y - 32 * u) * .5f), does_now.enabled && lit ? focus_ink : theme::paper, does.c_str());
         label(draw, ui.bold, 40 * u, ImVec2(tx, p.y + 16 * u), c.x - 30 * u, theme::paper, package->title());
         const auto have = installed_version(*package);
         label(draw, ui.body, 30 * u, ImVec2(tx, p.y + 70 * u), c.x - 30 * u, lit ? theme::paper : theme::muted,
@@ -1166,7 +1167,7 @@ void mod_manager_page(Ui &ui, ImVec2 a, ImVec2 z) {
         std::string apply = live_mods::apply_label(m.mods->effect);
         for (auto &c : apply) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
         const float w = width_of(ui.bold, 34 * u, apply) + 100 * u;
-        if (button(ui, hash("mods-apply"), ImVec2(right - w, fy), ImVec2(right, z.y), apply, Look::sticky, !progress.busy)) mod_say(m, ms::apply());
+        if (button(ui, hash("mods-apply"), ImVec2(right - w, fy), ImVec2(right, z.y), apply, Look::primary, !progress.busy)) mod_say(m, ms::apply());
         right -= w + 20 * u;
     }
     // A bar with how far something is: `fraction` below 0 is not known, and a block goes back and forth.

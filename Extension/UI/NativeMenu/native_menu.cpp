@@ -481,9 +481,12 @@ void initialize(const Context& context, Root root, const MultiplayerModel& model
     context.set(context.field(backdrop_stack, 0x3b14d43c), false);
     context.set(context.field(backdrop_stack, 0x2a98baa3), false);
     build_back_action(context, s);
-    static constexpr std::array<const char*, page_count> titles{"MULTIPLAYER", "MOD OPTIONS", "MOD MANAGER"},
-        tab_names{"Multiplayer", "Mod Options", "Mod Manager"};
-    context.text(context.path(s.page, {0x3781b603, text_field}), titles[s.slot]);
+    static constexpr std::array<const char*, page_count> tab_names{"Multiplayer", "Mod Options", "Mod Manager"};
+    // No big brushed title on ReSkate's pages: the icon bar above already names the page, and the
+    // overlay (hub_page.cpp) starts its own tabs and body where the title was. The page model is
+    // ReSkate's own, so the game's pages keep theirs. A single space, as the body's section label
+    // has always been, rather than an empty string the game has never been given there.
+    context.text(context.path(s.page, {0x3781b603, text_field}), " ");
     context.set(context.field(s.page, 0xe1d821a3), true);
     context.set(context.field(s.page, 0x616cb924), false);
     // One body for either page: the overlay draws the page and its tabs.
