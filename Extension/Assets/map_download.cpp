@@ -40,6 +40,7 @@ struct Item {
     std::string have;       // the version here, when the one fetched replaces it
     std::string folder;     // its folder in Mods: an installed one's when it is here, else the package's
     std::string version, newest, description;
+    std::string icon;       // its icon's URL on Thunderstore, for its row on the card
     std::uint64_t bytes{};  // the zip's Content-Length (0: not known)
     bool off{};             // here already, switched off: nothing is downloaded
     bool merge{};           // once it is in: it has game data, which the live merge applies
@@ -64,6 +65,17 @@ std::atomic<bool> apply_wanted{}, apply_started{};
 std::atomic<std::uint64_t> join_at{};
 std::atomic<std::uint32_t> yes_bind{}, no_bind{};
 std::atomic<bool> pick_download{true};
+// The session's name and map as it last said them, for the card's heading. Under mutex.
+std::string session_name, session_map;
+// A failure the card shows (View::failure) until the player puts it away: why, the stage it came
+// in and the item in hand then. Under mutex; `failure_up` says whether there is one.
+std::string failure;
+Stage failure_stage{};
+std::size_t failure_item{};
+std::atomic<bool> failure_up{};
+// What fail() is given when the player, or a session that moved on, called the download off: that
+// is said as a notice and not shown as a failure on the card.
+constexpr char cancelled[] = "Download cancelled.";
 
 bool same(std::string_view a, std::string_view b) { return a.size() == b.size() && _strnicmp(a.data(), b.data(), a.size()) == 0; }
 fs::path mods_root() { return mods::engine_data_root() / mods::mods_folder; }
@@ -137,7 +149,16 @@ void fail(std::string reason, bool retry = false) {
     std::uint64_t failed_deadline{};
     {
         std::lock_guard lock(mutex);
-        if (stage.exchange(Stage::idle) == Stage::idle) return;
+        const auto was = stage.exchange(Stage::idle);
+        if (was == Stage::idle) return;
+        // The card was up (anything after the check): it says what went wrong, on the item it went
+        // wrong on, until the player puts it away. A check that fails had no card yet.
+        if (was != Stage::checking && reason != cancelled) {
+            failure = reason;
+            failure_stage = was;
+            failure_item = was == Stage::downloading || was == Stage::installing ? std::min(current.load(), items.size()) : items.size();
+            failure_up.store(true);
+        }
         failed_deadline = deadline.load();
         watch.cancel.store(true);
         stop_install.store(true);
@@ -321,6 +342,7 @@ bool check_map(Item& item, bool first) {
     item.version = choice.version;
     item.newest = choice.newest;
     item.description = choice.description;
+    item.icon = choice.icon;
     item.bytes = length.value_or(0);
     // Its icon for the card: small, and not worth holding the question up for long.
     if (first && !choice.icon.empty())
@@ -375,6 +397,7 @@ bool check_plugin(Item& item, bool first, bool& ready) {
     item.version = choice.newest;
     item.newest = choice.newest;
     item.description = choice.description;
+    item.icon = choice.icon;
     item.bytes = length.value_or(0);
     if (first && !choice.icon.empty())
         if (const auto png = https::get_text(std::wstring(choice.icon.begin(), choice.icon.end()), 2 * 1024 * 1024, 8, agent, nullptr, &watch))
@@ -580,11 +603,14 @@ void start(void (*work)()) {
 
 void offer(const multiplayer::MapNeed& asked) {
     std::unique_lock lock(mutex);
+    // (A failure still on the card is old news once the session asks for something again.)
+    failure_up.store(false);
+    failure.clear();
     // (Another session's need cancels this attempt, unless its own session has stopped waiting
     // on it already: then it finishes, and the new need is turned away below.)
     if (stage.load() != Stage::idle && !detached.load() && asked.deadline_us && asked.deadline_us != deadline.load()) {
         lock.unlock();
-        fail("Download cancelled.", true);
+        fail(cancelled, true);
         lock.lock();
     }
     // A cancelled worker/atomic live merge must drain before its globals or files are reused.
@@ -645,6 +671,8 @@ void offer(const multiplayer::MapNeed& asked) {
         }
         items = std::move(list);
         current.store(0);
+        session_name.clear();
+        session_map.clear();
     }
     overlay::set_map_download_icon({});
     watch.cancel.store(false);
@@ -667,6 +695,13 @@ void offer(const multiplayer::MapNeed& asked) {
 
 void answer(bool download) noexcept {
     try {
+        // A failure on the card: either answer puts it away.
+        if (stage.load() == Stage::idle && failure_up.load()) {
+            std::lock_guard lock(mutex);
+            failure_up.store(false);
+            failure.clear();
+            return;
+        }
         // (A click and a key can answer in the same moment: only the first does.)
         if (!continuing()) return;
         const auto now = multiplayer::now_us();
@@ -676,7 +711,7 @@ void answer(bool download) noexcept {
         }
         if (!download) {
             if (stage.load() == Stage::asking || stage.load() == Stage::downloading)
-                fail("Download cancelled.", true);
+                fail(cancelled, true);
         } else {
             // Publish the stage and claim its worker together. Cancellation cannot allow
             // a fresh offer to reuse the globals before this thread starts its worker.
@@ -690,6 +725,7 @@ void answer(bool download) noexcept {
 }
 
 bool asking() noexcept { return stage.load(std::memory_order_relaxed) == Stage::asking; }
+bool failure_shown() noexcept { return failure_up.load(std::memory_order_relaxed) && stage.load(std::memory_order_relaxed) == Stage::idle; }
 void pick(bool download) noexcept { pick_download.store(download, std::memory_order_relaxed); }
 bool picked() noexcept { return pick_download.load(std::memory_order_relaxed); }
 
@@ -701,8 +737,16 @@ void set_binds(std::uint32_t yes, std::uint32_t no) noexcept {
 View view() {
     View out;
     out.stage = stage.load();
-    if (out.stage == Stage::idle || out.stage == Stage::checking) return out;
+    if ((out.stage == Stage::idle && !failure_up.load()) || out.stage == Stage::checking) return out;
     std::lock_guard lock(mutex);
+    if (out.stage == Stage::idle) {
+        if (!failure_up.load()) return out;
+        out.failure = failure;
+        out.failed_in = failure_stage;
+        out.failed_item = failure_item;
+    }
+    out.session = session_name;
+    out.session_map = session_map;
     for (const auto& item : items) {
         View::Item shown;
         shown.name = item.plugin ? plugin_label(item.name.folder()) : need.map;
@@ -710,6 +754,7 @@ View view() {
         shown.version = item.version;
         shown.description = item.description;
         shown.have = item.have;
+        shown.icon = item.off ? std::string() : item.icon;
         shown.plugin = item.plugin;
         shown.installed = item.off;
         shown.bytes = item.off ? 0 : item.bytes;
@@ -758,6 +803,11 @@ void tick() {
     auto now = stage.load();
     if (now != Stage::idle) {
         const auto session = multiplayer::model();
+        if (session.active) {
+            std::lock_guard lock(mutex);
+            if (!session.lobby_name.empty()) session_name = session.lobby_name;
+            if (!session.map.empty()) session_map = session.map;
+        }
         // Admission (or completed travel) retires the session deadline. Do not turn an
         // already successful join into a timeout while waiting out the UI's settling delay.
         if (now == Stage::joining && session.active && session.connected &&
@@ -774,7 +824,7 @@ void tick() {
                 "The " + [] { std::lock_guard lock(mutex); return host_word(need.server); }() +
                 " stopped waiting for the download. It goes on and installs when it is done; join again then.");
         if (session.active && !detached.load() && now != Stage::joining && multiplayer::map_fetch_deadline() != deadline.load())
-            fail("Download cancelled.", true);
+            fail(cancelled, true);
         if (!session.active && !under_way(now) && gave_up)
             fail("The server stopped waiting for the download.", true);
         if (continuing() && now == Stage::asking &&
