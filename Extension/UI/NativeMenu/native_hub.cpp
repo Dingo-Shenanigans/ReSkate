@@ -1,7 +1,10 @@
 #include "native_menu.h"
 #include "native_menu_internal.h"
 #include "Engine/Core/Log/logging.h"
+#include "Engine/Game/Input/controller_bindings.h"
+#include "Extension/UI/Overlay/overlay.h"
 #include <Windows.h>
+#include <Xinput.h>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -156,14 +159,10 @@ void empty_hub_list(const Context &c, Value list) {
     std::vector<std::byte> kept(bytes.begin(), bytes.begin() + stride);
     c.array(rows, kept, 1);
 }
-// The partitions holding the Hub's lists, as last found: the Hub's body, by which the Hub page's own
-// stack is told to show it (hub_stack).
-std::vector<Handle> hub_bodies;
 // Returns whether the Hub's lists were found (and so emptied).
 bool take_over_hub(const Context &c) {
     const auto list_type = c.type({tile_list_schema, 392});
     bool found{};
-    hub_bodies.clear();
     for (const auto &root : c.roots({partition_schema})) {
         const auto left = c.field(root.model, partition_left), right = c.field(root.model, partition_right);
         auto left_widget = read<Widget>(c.address(left));
@@ -171,7 +170,6 @@ bool take_over_hub(const Context &c) {
         const auto left_tiles = hub_list_tiles(c, left_widget, list_type), right_tiles = hub_list_tiles(c, right_widget, list_type);
         if (!left_tiles && !right_tiles) continue;
         found = true;
-        hub_bodies.push_back(root.model.handle);
         if ((!left_tiles || !*left_tiles) && right_tiles && *right_tiles) {
             c.set(left, right_widget);
             left_widget = right_widget;
@@ -187,8 +185,15 @@ bool take_over_hub(const Context &c) {
 constexpr std::string_view hub_tab_label = "ID_MENU_HUB";
 // Set while the Hub's lists were last found and emptied; the front page is only drawn then.
 bool hub_taken{};
-// The Hub's page model, while the Hub is the pause menu's selected tab; nothing when another tab is,
-// and an empty value when the Hub is but its page is not a page model of the kind ReSkate's are.
+// The Hub tab's content is not a page model but a StackScreen (UI dumps of 2026-09-19: the Hub's tab
+// shows UI/Foundations/Components/Stack/StackScreen, the Social tab Page_Widget): a stack whose items
+// are pages, the Hub's own page (Page_Widget, a page model with the brushed title) first and what is
+// opened from the Hub (the profile) pushed over it. Until 2026-11-04 the Hub was looked for as a page
+// model, so its title and stack were never read.
+constexpr Schema stack_screen{0xd71ee0a1, 80};
+constexpr std::uint32_t page_title = 0x3781b603;
+// The Hub tab's StackScreen, while the Hub is the pause menu's selected tab; nothing when another tab
+// is, and an empty value when the Hub is but its content is not a StackScreen.
 std::optional<Value> selected_hub(const Context &c, Value menu) {
     const auto list = c.path(menu, {content, items});
     unsigned count{}, stride{};
@@ -199,71 +204,62 @@ std::optional<Value> selected_hub(const Context &c, Value menu) {
     if (c.text(c.path(item, {tab_data, label, text_field}), 64) != hub_tab_label) return std::nullopt;
     const auto widget = read<Widget>(c.address(c.field(item, content)));
     const Value model{widget.data.handle, widget.data.handle ? c.type_of(widget.data.handle) : 0};
+    if (!model.handle || !model.type || kind(model.type) != 2 || size(model.type) != stack_screen.size ||
+        read<std::uint32_t>(read<Address>(model.type)) != stack_screen.hash)
+        return Value{};
+    return model;
+}
+// The Hub's own page: the first page of its stack, when that is a page model.
+Value hub_page(const Context &c, Value hub) {
+    const auto list = c.field(hub, items);
+    unsigned count{}, stride{};
+    c.array(list, 32, count, stride);
+    if (!count) return {};
+    const auto widget = read<Widget>(c.address(c.field(c.element(list, 0), content)));
+    const Value model{widget.data.handle, widget.data.handle ? c.type_of(widget.data.handle) : 0};
     return model.handle && model.type == c.type(page) ? model : Value{};
 }
-
-// What the Hub page's own stack (its Content) shows. A page opened from the Hub (the profile EDIT
-// PROFILE opens, the player card editor) leaves the selected tab on the Hub and the Hub page's focused
-// index at 0 or more, so neither says it is up: 2026-11-04 in game the front page stayed drawn over
-// the profile. Such a page is believed to be pushed onto this stack over the Hub's body, as the menu
-// pushes its pages, so the front page is drawn only while the stack shows the body: the item whose
-// content is a partition take_over_hub emptied, or, where none is, the item it showed as the Hub came
-// up. The log says which page of the stack is up whenever that changes, to check this by.
-struct HubStack {
-    int target{-1}, body{-1}; // the item shown, and the Hub's body (-1: not found)
-    unsigned count{};
-};
-HubStack hub_stack(const Context &c, Value hub) {
-    HubStack s;
-    const auto list = c.path(hub, {content, items});
-    unsigned stride{};
-    c.array(list, 32, s.count, stride);
-    s.target = read<int>(c.address(c.path(hub, {content, 0x18f8355b})));
-    for (unsigned i = 0; i < s.count && s.body < 0; ++i) {
-        const auto widget = read<Widget>(c.address(c.field(c.element(list, i), content)));
-        if (widget.data.handle && std::find(hub_bodies.begin(), hub_bodies.end(), widget.data.handle) != hub_bodies.end())
-            s.body = static_cast<int>(i);
+// What the Hub's stack shows (the item and how many), for the log only: it does not decide whether
+// the front page is drawn.
+std::string hub_stack_said(const Context &c, Value hub) {
+    try {
+        unsigned count{}, stride{};
+        c.array(c.field(hub, items), 32, count, stride);
+        return std::format("item {} of {}", read<int>(c.address(c.field(hub, 0x18f8355b))), count);
+    } catch (const std::exception &e) {
+        return std::string("unreadable: ") + e.what();
     }
-    return s;
 }
-// The stack as the Hub came up (its page model, the item shown and how many): what stands for the
-// body when it is not found. Forgotten when another tab is chosen.
-struct {
-    Handle page{};
-    int target{-1};
-    unsigned count{};
-} hub_arrival;
-// Why the front page is not drawn while the Hub is the tab, or an empty text when it is drawn.
-std::string hub_hidden_reason(const Context &c, Value hub) {
-    if (!hub_taken) return "the Hub's lists were not found, so the game's Hub is left as it is";
-    if (!hub.handle) return {};
-    try {
-        // No big brushed title: the front page starts where it was, as ReSkate's own pages do.
-        if (const auto title = c.path(hub, {0x3781b603, text_field}); c.text(title, 64) != " ") c.text(title, " ");
-        // (The page's screen record, and in it the focused index: -1 under the game's side menu.)
-        if (read<int>(c.address(c.path(hub, {0xfafda1a6, 0x20a39d92, 0x6b01fd01}))) < 0) return "the game's side menu is over the Hub";
-    } catch (const std::exception &e) {
-        static bool said{};
-        if (!std::exchange(said, true))
-            logging::log(logging::Level::warning, logging::Channel::ui,
-                         "Front page: the Hub's page could not be read ({}); it is drawn whenever the Hub is the tab.", e.what());
-        return {};
+
+// No big brushed "HUB" title behind the player card: the Hub's page gets a single space for a title
+// while the front page is over it, as ReSkate's own pages have (native_menu.cpp; an empty string
+// once crashed the game), and the game's title back when the front page falls back or ReSkate lets go
+// of the menu. Written again whenever the game rebuilds it.
+struct HubTitle {
+    Value page;
+    Address manager{}; // the model manager the page is in
+    std::string original;
+} hub_title;
+std::atomic<bool> hub_title_held{};
+void give_back_hub_title(const Context &c) {
+    const auto held = std::exchange(hub_title, {});
+    hub_title_held = false;
+    if (!held.page.handle || held.original.empty() || held.manager != c.manager || c.type_of(held.page.handle) != held.page.type) return;
+    const auto title = c.path(held.page, {page_title, text_field});
+    if (c.text(title, 64) == " ") c.text(title, held.original);
+}
+void blank_hub_title(const Context &c, Value page_model) {
+    if (hub_title.page.handle != page_model.handle || hub_title.manager != c.manager) {
+        give_back_hub_title(c);
+        hub_title = {page_model, c.manager, {}};
     }
-    try {
-        const auto stack = hub_stack(c, hub);
-        if (hub_arrival.page != hub.handle) hub_arrival = {hub.handle, stack.target, stack.count};
-        const bool covered = stack.body >= 0 ? stack.target != stack.body
-                                             : stack.target != hub_arrival.target || stack.count > hub_arrival.count;
-        if (covered)
-            return std::format("a page opened from the Hub is over it (the Hub page's stack shows item {} of {}; the Hub's body is {})", stack.target,
-                               stack.count, stack.body >= 0 ? "item " + std::to_string(stack.body) : "not found, item " + std::to_string(hub_arrival.target) + " stands for it");
-    } catch (const std::exception &e) {
-        static bool said{};
-        if (!std::exchange(said, true))
-            logging::log(logging::Level::warning, logging::Channel::ui,
-                         "Front page: the Hub page's stack could not be read ({}); a page opened from the Hub may have it drawn over it.", e.what());
-    }
-    return {};
+    const auto title = c.path(page_model, {page_title, text_field});
+    auto text = c.text(title, 64);
+    if (text == " ") return;
+    logging::log(logging::Level::info, logging::Channel::ui, "Front page: the Hub's title \"{}\" is blanked.", text);
+    hub_title.original = std::move(text);
+    hub_title_held = true;
+    c.text(title, " ");
 }
 
 // The Hub's Back held while the front page has something open (hold_hub_back): its input and
@@ -299,18 +295,21 @@ void hold_back(const Context &c, Value page_model, bool held) {
     c.set(c.field(base, 0x4b3146e9), true);
 }
 
-// EDIT PROFILE: what the Hub's Profile tile did (its navigation), and failing that what the top
-// bar's player card button does, each given a moment to take the menu off the Hub. Which one works
-// from the Hub is said in the log. Neither: the overlay presses View for the player.
-constexpr std::array<std::string_view, 2> profile_navigations{"HUB_Nav_CollectionScore", "GoToMyPlayerCard"};
-constexpr std::uint64_t profile_wait_ms = 700, profile_give_up_ms = 2000;
+// EDIT PROFILE sends what the Hub's Profile tile did, HUB_Nav_CollectionScore, which opens the
+// profile over the Hub (2026-11-04 in game). The profile leaves the Hub the selected tab, and nothing
+// read so far says it is up, so the front page steps aside from the moment the navigation goes until
+// the player leaves the profile: the next B or Escape, and a moment for the game to take the profile
+// away. Leaving the Hub (another tab, or the pause menu closed) ends it too.
+constexpr std::string_view profile_navigation = "HUB_Nav_CollectionScore";
+constexpr std::uint64_t profile_give_up_ms = 2000, profile_back_ms = 300, hub_gone_ms = 200;
 std::atomic<bool> profile_wanted{};
-std::atomic<std::uint64_t> profile_failed_at{}; // GetTickCount64; 0: not failed
-struct ProfileWalk {
-    bool active{};
-    std::size_t step{};
-    std::uint64_t asked{}, sent{}; // GetTickCount64: when this step began, and when its navigation went
-} profile_walk;
+struct ProfileAway {
+    std::uint64_t asked{};      // GetTickCount64 when EDIT PROFILE was pressed, while the navigation waits; 0: not waiting
+    bool away{};                // the front page is hidden for the profile
+    bool back_down{};           // B or Escape held at the last look
+    std::uint64_t back_at{};    // when B or Escape was pressed on the profile; 0: not yet
+    std::uint64_t gone_since{}; // when the Hub stopped being the tab shown; 0: it is
+} profile;
 // As QueueStateNavigation does (Extension/Throwdowns/native_flag_session.cpp navigate): the
 // navigation's name hash and, for a navigation without arguments, metadata [-1]. False while the
 // game's own navigation is still on its way.
@@ -324,29 +323,50 @@ bool navigate(const Context &c, std::string_view name) {
     logging::log(logging::Level::info, logging::Channel::ui, "Front page: EDIT PROFILE sent the navigation {}.", name);
     return true;
 }
-void walk_to_profile(const Context &c, bool on_hub) {
+// B or Escape, as the overlay reads them (with the pause menu up).
+bool back_down_now() {
+    ControllerInput pad;
+    DingoSDKOverlayReadControllerInput(&pad, true);
+    const bool escape = (pad.keys[VK_ESCAPE / 64] >> (VK_ESCAPE % 64)) & 1;
+    return escape || (pad.available && (pad.buttons & XINPUT_GAMEPAD_B));
+}
+// Whether the front page is hidden for the profile now.
+bool away_for_profile(const Context &c, const std::optional<Value> &hub) {
+    auto &p = profile;
     const auto now = GetTickCount64();
-    if (profile_wanted.exchange(false) && !profile_walk.active) profile_walk = {true, 0, now, 0};
-    auto &w = profile_walk;
-    if (!w.active) return;
-    if (!on_hub) {
-        if (w.sent) logging::log(logging::Level::info, logging::Channel::ui, "Front page: {} took the menu off the Hub.", profile_navigations[w.step]);
-        w = {};
-        return;
+    if (!hub) {
+        if (!p.gone_since) p.gone_since = now;
+        if (p.away && now - p.gone_since >= hub_gone_ms) {
+            p.away = false;
+            logging::log(logging::Level::info, logging::Channel::ui, "Front page: back after the profile (the Hub was left).");
+        }
+        p.asked = 0;
+        profile_wanted = false;
+        return p.away;
     }
-    if (w.sent && now < w.sent + profile_wait_ms) return;
-    if (w.sent) {
-        logging::log(logging::Level::info, logging::Channel::ui, "Front page: {} left the menu on the Hub.", profile_navigations[w.step]);
-        ++w.step, w.sent = 0, w.asked = now;
+    p.gone_since = 0;
+    if (profile_wanted.exchange(false) && !p.away) p.asked = now;
+    if (p.asked) {
+        if (navigate(c, profile_navigation)) {
+            // (What is held as it goes is not the press that leaves the profile.)
+            p = {0, true, true, 0, 0};
+            logging::log(logging::Level::info, logging::Channel::ui, "Front page: hidden for the profile.");
+        } else if (now - p.asked >= profile_give_up_ms) {
+            p.asked = 0;
+            logging::log(logging::Level::info, logging::Channel::ui, "Front page: the game's navigation stayed busy; EDIT PROFILE gave up on it.");
+        }
     }
-    const bool late = now >= w.asked + profile_give_up_ms;
-    if (w.step >= profile_navigations.size() || late) {
-        if (late) logging::log(logging::Level::info, logging::Channel::ui, "Front page: the game's navigation stayed busy; EDIT PROFILE gave up on it.");
-        w = {};
-        profile_failed_at = now;
-        return;
+    if (!p.away) return false;
+    const bool down = back_down_now();
+    if (down && !p.back_down && !p.back_at) p.back_at = now;
+    p.back_down = down;
+    if (p.back_at && now - p.back_at >= profile_back_ms) {
+        p.away = false;
+        p.back_at = 0;
+        logging::log(logging::Level::info, logging::Channel::ui, "Front page: back after the profile (the Hub's stack shows {}).",
+                     hub->handle ? hub_stack_said(c, *hub) : std::string("nothing readable"));
     }
-    if (navigate(c, profile_navigations[w.step])) w.sent = now;
+    return p.away;
 }
 } // namespace
 
@@ -370,11 +390,10 @@ void update_hub(const Context &c) {
         }
     }
 }
-// Whether ReSkate's front page is drawn over the Hub now: the Hub is the selected tab with the
-// player on it (not under the game's side menu, and no page opened from the Hub over it), and its
-// lists were emptied. Holds its Back and walks to the profile for the overlay meanwhile. Called
-// whatever page is up (`in_menu` false when it is not the Hub's turn), so a held Back is always
-// given back. Each frame decides afresh, so the front page is back as soon as the Hub's body is.
+// Whether ReSkate's front page is drawn over the Hub now: the Hub is the selected tab, its lists were
+// emptied, and the profile EDIT PROFILE opened is not up. Holds the Hub's Back for the overlay
+// meanwhile and blanks the Hub page's title. Called whatever page is up (`in_menu` false when it is
+// not the Hub's turn), so a held Back is always given back.
 bool update_hub_front_page(const Context &c, Value menu, bool in_menu) {
     std::optional<Value> hub;
     try {
@@ -382,40 +401,56 @@ bool update_hub_front_page(const Context &c, Value menu, bool in_menu) {
     } catch (const std::exception &) {
         hub.reset();
     }
-    if (!hub) hub_arrival = {};
-    const auto reason = hub ? hub_hidden_reason(c, *hub) : std::string();
-    const bool on_hub = hub && reason.empty();
+    bool away{};
+    try {
+        away = away_for_profile(c, hub);
+    } catch (const std::exception &e) {
+        profile = {};
+        logging::log(logging::Level::warning, logging::Channel::ui, "Front page: EDIT PROFILE could not navigate ({}).", e.what());
+    }
+    const bool on_hub = hub && hub_taken && !away;
     {
-        // Said when it changes: whether it is drawn, and why not.
+        // Said when it changes: whether it is drawn, and why not (the profile says so itself).
         static std::string said;
-        const auto now_said = !hub ? std::string() : on_hub ? std::string("drawn") : reason;
+        const auto now_said = !hub ? std::string() : on_hub ? std::string("drawn") : away ? std::string("profile") : std::string("lists");
         if (now_said != said) {
             if (on_hub) logging::log(logging::Level::info, logging::Channel::ui, "Front page: drawn over the Hub{}.", said.empty() ? "" : " again");
-            else if (hub) logging::log(logging::Level::info, logging::Channel::ui, "Front page: not drawn: {}.", reason);
+            else if (now_said == "lists")
+                logging::log(logging::Level::info, logging::Channel::ui,
+                             "Front page: not drawn: the Hub's lists were not found, so the game's Hub is left as it is.");
             said = now_said;
         }
     }
+    Value page_model;
     try {
-        hold_back(c, hub ? *hub : Value{}, on_hub && GetTickCount64() < back_wanted_until.load(std::memory_order_relaxed));
+        if (hub && hub->handle) page_model = hub_page(c, *hub);
+        if (!hub_taken) give_back_hub_title(c);
+        else if (page_model.handle) blank_hub_title(c, page_model);
+    } catch (const std::exception &e) {
+        static bool said{};
+        if (!std::exchange(said, true))
+            logging::log(logging::Level::warning, logging::Channel::ui, "Front page: the Hub's title could not be blanked ({}).", e.what());
+    }
+    try {
+        hold_back(c, page_model, on_hub && GetTickCount64() < back_wanted_until.load(std::memory_order_relaxed));
     } catch (const std::exception &e) {
         held_back = {};
         logging::log(logging::Level::warning, logging::Channel::ui, "Front page: the Hub's Back could not be held ({}).", e.what());
     }
-    try {
-        walk_to_profile(c, on_hub);
-    } catch (const std::exception &e) {
-        profile_walk = {};
-        profile_failed_at = GetTickCount64();
-        logging::log(logging::Level::warning, logging::Channel::ui, "Front page: EDIT PROFILE could not navigate ({}).", e.what());
-    }
     return on_hub;
 }
-
-void open_native_profile() noexcept { profile_failed_at = 0, profile_wanted = true; }
-// (Only just now: one the overlay did not see before the menu closed is not acted on the next time.)
-bool native_profile_failed() noexcept {
-    const auto at = profile_failed_at.exchange(0);
-    return at && GetTickCount64() - at < 1000;
+// The game's title back on the Hub's page before ReSkate lets go of the menu (a level load, or the
+// game closing).
+bool hub_title_blanked() noexcept { return hub_title_held.load(); }
+void restore_hub_title(const Context &c) noexcept {
+    try {
+        give_back_hub_title(c);
+    } catch (...) {
+        hub_title = {};
+        hub_title_held = false;
+    }
 }
+
+void open_native_profile() noexcept { profile_wanted = true; }
 void hold_hub_back(bool held) noexcept { back_wanted_until.store(held ? GetTickCount64() + 300 : 0, std::memory_order_relaxed); }
 } // namespace dingosdk::multiplayer

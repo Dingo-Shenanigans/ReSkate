@@ -30,10 +30,9 @@ bool native_pause_menu_open() noexcept;
 // Manager), as picking its tab does; nothing when that page is not there. Any thread.
 void show_native_menu_page(int slot) noexcept;
 // The game's HUB tab, under ReSkate's front page (native_hub.cpp, Extension/UI/Overlay/hub_home_page.cpp).
-// Opens the player's profile as the HUB's Profile tile did; native_profile_failed says (once) when
-// nothing the game was asked took the menu off the HUB. Any thread.
+// Opens the player's profile as the HUB's Profile tile did; the front page is hidden until the player
+// leaves it. Any thread.
 void open_native_profile() noexcept;
-bool native_profile_failed() noexcept;
 // While held (asked again at least every 300 ms), the HUB's Back does nothing, so B and Escape close
 // what the front page has open instead of the pause menu. Any thread.
 void hold_hub_back(bool held) noexcept;

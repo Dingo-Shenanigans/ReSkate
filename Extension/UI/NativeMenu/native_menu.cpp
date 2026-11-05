@@ -188,6 +188,8 @@ void hide_top_bar_currency(const Context& context, Value menu) {
 } // namespace
 void update_hub(const Context& context);
 bool update_hub_front_page(const Context& context, Value menu, bool in_menu);
+bool hub_title_blanked() noexcept;
+void restore_hub_title(const Context& context) noexcept;
 namespace {
 // Which of ReSkate's pages is on screen, for the overlay (native_menu_page): when one was last
 // seen selected with the pause menu up (GetTickCount64; 0: not now), and which.
@@ -717,6 +719,18 @@ void tick_page(std::uintptr_t base, bool loading) noexcept {
 }
 bool prepare_native_menu_level_load(std::uintptr_t base) noexcept {
     if (!release_native_throwdown_menu(base, true)) return false;
+    // The HUB's own title, blanked under the front page (native_hub.cpp), is the game's again. Only
+    // a courtesy: it never holds the level load up.
+    if (hub_title_blanked()) {
+        try {
+            const auto ui = read<Address>(base + addr::engine::ui_manager);
+            if (const auto manager = ui ? read<Address>(ui + 0x140) : 0) {
+                const Context context(base, manager);
+                game::ModelWriteLock lock(manager);
+                restore_hub_title(context);
+            }
+        } catch (...) {}
+    }
     if (std::all_of(page_slots.begin(), page_slots.end(), [](unsigned slot) { return page_state(slot).owned_models.empty(); }))
         return true;
     try {

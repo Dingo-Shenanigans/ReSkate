@@ -2,14 +2,11 @@
 #include "skate_style.h"
 #include "cursor.h"
 #include "input_capture.h"
-#include "scripted_pad.h"
 #include "Extension/UI/NativeMenu/native_menu.h"
 #include "Extension/UI/NativeMenu/native_menu_view.h"
 #include "Extension/Assets/mod_store.h"
 #include "Extension/News/live_news.h"
 #include "Extension/News/patch_notes.h"
-#include "Engine/Core/Log/logging.h"
-#include "Engine/Core/Platform/launcher_support.h"
 #include "Engine/Game/Input/controller_bindings.h"
 #include <algorithm>
 #include <array>
@@ -28,11 +25,10 @@
 //   left   the news: the latest ReSkate release's patch notes first, then the news posts. The one
 //          featured is drawn big (its picture on top, tag, title, description, READ and a pager),
 //          and the next ones under it as compact cards, as many as fit;
-//   right  PATCH NOTES (the latest release's highlights, stretched so both columns end level),
-//          YOUR PROFILE with EDIT PROFILE, and RIGHT NOW (a friend to join, mods with updates),
-//          each row opening the page that deals with it.
+//   right  YOUR PROFILE with EDIT PROFILE, and RIGHT NOW (a friend to join, mods with updates) under
+//          it, each row opening the page that deals with it. The patch notes are only in the news.
 //
-// READ and READ PATCH NOTES open a reader in the page's place, which B closes; the HUB's Back is held
+// READ opens a reader in the page's place, which B closes; the HUB's Back is held
 // for that long (hold_hub_back) so B does not close the pause menu as well. Only the latest release's
 // notes are shown: older ones are on ReSkate's GitHub page.
 //
@@ -457,54 +453,6 @@ bool compact_card(Ui &f, std::uint32_t id, ImVec2 a, ImVec2 z, const Shown &s, u
     return hit.press;
 }
 
-// PATCH NOTES: the latest release's version and highlights, as many as fit, and READ PATCH NOTES at
-// its foot (that release's notes, the news entry they are). It takes whatever height the right column
-// has left, so it ends level with the left.
-void notes_card(Ui &f, ImVec2 a, ImVec2 z) {
-    auto &h = f.h;
-    const float u = f.u, inset = 40 * u;
-    auto *draw = f.draw;
-    skate_theme::rough_rect(draw, a, z, card, 0x3b2, u * 2);
-    const float left = a.x + inset, right = z.x - inset;
-    float y = a.y + inset;
-    label(draw, f.heading, 48 * u, ImVec2(left, y), right, theme::paper, "PATCH NOTES");
-    const news::Release *latest = h.notes && !h.notes->releases.empty() ? &h.notes->releases.front() : nullptr;
-    if (latest) {
-        const auto version = news::release_version(*latest);
-        const float w = width_of(f.bold, 26 * u, version) + 24 * u;
-        tag(f, ImVec2(right - w, y + 4 * u), version, skate_theme::good, skate_theme::black);
-    }
-    y += 76 * u;
-    const float button_top = z.y - inset - 90 * u;
-    // (The notes are the first news entry whenever there is a release.)
-    if (button(f, hash("home-notes"), ImVec2(left, button_top), ImVec2(right, z.y - inset), "READ PATCH NOTES", false, latest != nullptr))
-        open_entry(h, 0, hash("home-notes"));
-    if (!latest) {
-        const char *note = h.notes && h.notes->fetching ? "Reading ReSkate's releases..."
-                           : launcher::offline_mode()  ? "Patch notes need a connection. They come from ReSkate's GitHub page."
-                                                       : "Patch notes could not be read just now. They come from ReSkate's GitHub page.";
-        for (const auto &line : wrap(f.body, 32 * u, note, right - left, 4)) label(draw, f.body, 32 * u, ImVec2(left, y), right, sub_ink, line), y += 46 * u;
-        return;
-    }
-    {
-        auto title = latest->name;
-        if (const auto date = news::date_label(latest->date); !date.empty()) title += "  -  " + date;
-        label(draw, f.bold, 32 * u, ImVec2(left, y), right, sub_ink, title);
-        y += 62 * u;
-    }
-    // Each highlight whole, while it fits over the button.
-    const float size = 32 * u, line_height = size * 1.4f, bottom = button_top - 24 * u, bullet_x = left + 34 * u;
-    const auto highlights = news::release_highlights(*latest, 40);
-    if (highlights.empty()) label(draw, f.body, size, ImVec2(left, y), right, sub_ink, "READ PATCH NOTES says what changed.");
-    for (const auto &highlight : highlights) {
-        const auto lines = wrap(f.body, size, highlight, right - bullet_x);
-        if (lines.empty() || y + line_height * static_cast<float>(lines.size()) > bottom) break;
-        draw->AddCircleFilled(ImVec2(left + 10 * u, y + size * .55f), 6 * u, skate_theme::blue, 12);
-        for (const auto &line : lines) label(draw, f.body, size, ImVec2(bullet_x, y), right, soft, line), y += line_height;
-        y += 8 * u;
-    }
-}
-
 // YOUR PROFILE: the player's name and what their card says, and EDIT PROFILE (Y from anywhere).
 void profile_card(Ui &f, ImVec2 a, ImVec2 z, const Model &model) {
     auto &h = f.h;
@@ -606,18 +554,15 @@ void front_page(Ui &f, ImVec2 a, ImVec2 z, const Model &model) {
         if (compact_card(f, id, ImVec2(a.x, y), ImVec2(left_z, y + compact_h), shown_of(h, entry), static_cast<unsigned>(entry.post)))
             open_entry(h, index, id);
     }
-    // ---- right: patch notes (stretched), the profile, right now
+    // ---- right, from the top: the profile, then right now. The patch notes are the news' first item
+    // on the left, so they have no card of their own here.
     const float rx = z.x - right_w, profile_h = 230 * u;
+    profile_card(f, ImVec2(rx, a.y), ImVec2(z.x, a.y + profile_h), model);
     const auto rows = now_rows(h, model);
-    const float now_h = now_height(rows.size(), u);
-    float y = z.y;
-    if (now_h > 0) {
-        now_card(f, ImVec2(rx, y - now_h), ImVec2(z.x, y), rows);
-        y -= now_h + gap;
+    if (const float now_h = now_height(rows.size(), u); now_h > 0) {
+        const float y = a.y + profile_h + gap;
+        now_card(f, ImVec2(rx, y), ImVec2(z.x, std::min(z.y, y + now_h)), rows);
     }
-    profile_card(f, ImVec2(rx, y - profile_h), ImVec2(z.x, y), model);
-    y -= profile_h + gap;
-    notes_card(f, ImVec2(rx, a.y), ImVec2(z.x, std::max(a.y + 300 * u, y)));
 }
 
 // ---------------------------------------------------------------- the reader
@@ -876,14 +821,6 @@ bool draw_home_page(ImDrawList *draw, float u, ImVec2 a, ImVec2 z, bool input, c
             if (reading) h.view = View::front;
             edit_profile(h);
         }
-    }
-    // EDIT PROFILE that nothing the game was asked could do (native_hub.cpp): View, as the player
-    // would press it, opens their card from any page of the pause menu.
-    if (multiplayer::native_profile_failed() && multiplayer::native_pause_menu_open()) {
-        logging::log(logging::Level::info, logging::Channel::ui, "Front page: EDIT PROFILE pressed View for the player.");
-        XINPUT_GAMEPAD view{}, neutral{};
-        view.wButtons = XINPUT_GAMEPAD_BACK;
-        play_pad({{0, view}, {6, neutral}, {12, neutral}});
     }
     if (back_down && tick < h.hold_until) h.hold_until = tick + 300;
     multiplayer::hold_hub_back(h.view != View::front || tick < h.hold_until);
