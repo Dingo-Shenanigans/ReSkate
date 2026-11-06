@@ -4,6 +4,7 @@
 #include "plugin_wave.h"
 #include "plugin_object_physics.h"
 #include "plugin_skater_movement.h"
+#include "Extension/World/traffic_vehicles.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Game/World/body_query.h"
 #include "Extension/AnimationStudio/anim_core.h"
@@ -394,8 +395,15 @@ public:
         bool object{};
         std::optional<std::array<float, 16>> matrix;
         std::string blueprint;
+        std::uint64_t vehicle_owner{};
+        std::uint64_t vehicle_root{};
     };
     virtual std::optional<WorldPick> world_pick(const Vec3& /*from*/, const Vec3& /*to*/) { return std::nullopt; }
+    virtual std::string vehicle_take(std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t&) { return unavailable; }
+    virtual traffic_vehicles::Sample vehicle_read(std::uint64_t, std::uint64_t) { return {}; }
+    virtual std::string vehicle_set_pose(std::uint64_t, std::uint64_t, const traffic_vehicles::Pose&) { return unavailable; }
+    virtual bool vehicle_release(std::uint64_t, std::uint64_t) { return false; }
+    virtual void vehicle_release_all(std::uint64_t) {}
     // kind "tod" (key: morning, noon, afternoon, evening, night, weatherday, weathernight, default),
     // "control" (key: fog, fog_distance, sky_brightness, clouds, wind_strength, wind_direction,
     // traffic, pedestrians; value a number, -1 the default) or "park" (key: a lot, value a layout).

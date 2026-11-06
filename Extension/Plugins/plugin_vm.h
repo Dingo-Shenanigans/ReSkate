@@ -300,6 +300,7 @@ private:
     friend struct UiApi;
     friend struct MoreApi;
     friend struct WorldApi;
+    friend struct VehiclesApi;
     friend struct KitApi;
     friend struct CaptureApi;
     friend struct ValuesApi;
