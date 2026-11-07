@@ -10,8 +10,8 @@
 // earlier tricks' share), so a trick's points are taken from the unscaled rise, at the new
 // multiplier (not yet checked against the game's own trick list).
 namespace dingosdk::tricks {
-// The score HUD's values (ScoringHUDViewModel), and whether the skater is in a wipeout (physics
-// states 300-399).
+// The score HUD's values (ScoringHUDViewModel), and whether the skater is falling (a wipeout, a
+// ragdoll or a runout).
 struct TrickSignals {
     bool action{};
     float line_score{}, multiplier{};
@@ -33,7 +33,7 @@ public:
 
 private:
     int wait_ticks_;
-    bool seen_{}, action_{};
+    bool seen_{}, action_{}, down_{}; // down_: in a slam or wipeout, already told
     int waiting_{};
     float score_{}, multiplier_{}; // the line's score and multiplier before the trick
 };

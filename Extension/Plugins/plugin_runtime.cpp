@@ -19,6 +19,7 @@
 #include "Extension/Console/commands.h"
 #include "Extension/Profile/local_profile_runtime.h"
 #include "Extension/Skater/launches.h"
+#include "Extension/Skater/no_bail.h"
 #include "Extension/Skater/score_hud.h"
 #include "Extension/Skater/trick_watch.h"
 #include "Extension/Trainer/trainer.h"
@@ -259,8 +260,13 @@ void read_tricks() {
     signals.line_score = hud->line_score;
     signals.multiplier = hud->multiplier;
     signals.slam = hud->slam;
-    // A wipeout is physics states 300-399.
-    signals.wipeout = skater.skater && skater.physics_state >= 300 && skater.physics_state < 400;
+    // A fall: a wipeout (physics states 300-399, often for a single tick, so its count too), a ragdoll,
+    // or a runout (a failed landing on foot, which never leaves 504). Stepping off is none of them.
+    const auto watch = watched_physics_state();
+    static std::uint64_t falls = watch.wipeouts + watch.runouts;
+    const bool fell = watch.wipeouts + watch.runouts != falls;
+    falls = watch.wipeouts + watch.runouts;
+    signals.wipeout = (skater.skater && skater.physics_state >= 300 && skater.physics_state < 400) || fell || (watch.valid && watch.ragdoll);
     const auto event = trick_watch.update(signals);
     environment->score_now = ScoreState{hud->line_score, hud->multiplier, trick_watch.in_trick(), hud->header, hud->descriptor,
                                         tricks::names_manual(*hud), hud->line_timer};
