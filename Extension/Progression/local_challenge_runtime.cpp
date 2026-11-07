@@ -2,9 +2,11 @@
 #include "Engine/Game/Abi/native_data.h"
 #include "Extension/Profile/runtime_internal.h"
 #include "local_challenge_runtime.h"
+#include "challenge_attempts.h"
 #include "Extension/Throwdowns/virtual_player_names.h"
 #include "local_entitlement_trigger_runtime.h"
 #include <algorithm>
+#include <mutex>
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/engine.h"
 #include "Engine/Game/Build/20260929/local_challenge.h"
@@ -63,15 +65,61 @@ bool challenge_native_strings(const void* wrapper, std::vector<std::string>& val
     return true;
 }
 
+namespace {
+// The local player's open attempts (challenge_attempts.h), under a lock of their own: begin and end
+// requests come on the game's threads, and the client thread asks.
+struct Attempts {
+    std::mutex mutex;
+    OpenAttempts open;
+};
+Attempts& attempts() {
+    static auto* value = new Attempts;
+    return *value;
+}
+// A begin or end request seen, whether the local challenges take it or the game does.
+void note_attempt(bool ending, const void* id_value) noexcept {
+    PreserveError preserve;
+    try {
+        std::string id;
+        const bool known = identifier(id_value, id) && !id.empty();
+        auto& a = attempts();
+        std::lock_guard lock(a.mutex);
+        if (ending) a.open.end(known ? std::string_view(id) : std::string_view{});
+        else if (known) a.open.begin(id);
+        else a.open.begin_unknown();
+    } catch (...) {}
+}
+} // namespace
+
+bool local_challenge_attempt_open() noexcept {
+    // Without its hooks no request is seen, so whether one is open cannot be told.
+    const auto& f = challenge_runtime().f;
+    if (!f.begin || !f.end) return true;
+    auto& a = attempts();
+    std::lock_guard lock(a.mutex);
+    return a.open.open();
+}
+
+void challenge_attempts_before_level_transition(unsigned next) noexcept {
+    if (next != 3 && next != 14 && next != 22 && next != 24 && next != 25) return;
+    auto& a = attempts();
+    std::lock_guard lock(a.mutex);
+    a.open.clear();
+}
+
 void* challenge_request(bool ending, void* out, const void* id_value, const void* player_value,
     const void* values, const void* callback) {
     auto& r = challenge_runtime(); auto& s = local_runtime();
     const auto original = ending ? r.f.end : r.f.begin;
-    if (!local_challenges_active()) return original(out, id_value, player_value, values, callback);
+    if (!local_challenges_active()) {
+        note_attempt(ending, id_value);
+        return original(out, id_value, player_value, values, callback);
+    }
     PreserveError preserve;
     std::lock_guard lock(s.native_mutex);
     PendingChallenge request; request.ending = ending;
     if (!identifier(id_value, request.id) || !local_challenge(request.id)) {
+        note_attempt(ending, id_value);
         if (r.forwarded_requests++ < 16)
             dingosdk::logging::event(dingosdk::logging::Channel::progression, dingosdk::Json{{"event", "local_challenge_native_forward"}, {"ending", ending},
                 {"id", request.id}, {"selected", r.selected}}.dump().c_str());
@@ -129,6 +177,8 @@ void* challenge_request(bool ending, void* out, const void* id_value, const void
         dingosdk::logging::event(dingosdk::logging::Channel::progression, dingosdk::Json{{"event", "local_challenge_request_rejected"}, {"id", request.id},
             {"reason", error.what()}}.dump().c_str());
     }
+    // A virtual participant's leave ends its entry, not the local attempt, which goes on.
+    if (!ending || !request.virtual_leave) note_attempt(ending, id_value);
     // No native pointer into the expression stack survives this call. Retain
     // the VM delegate, then commit and acknowledge on the client update thread.
     r.pending.push_back(std::move(request)); retained.value = 0;

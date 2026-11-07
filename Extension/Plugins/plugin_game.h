@@ -9,6 +9,7 @@
 #include "Extension/AnimationStudio/anim_core.h"
 #include "Extension/Skater/pose_place.h"
 #include "Extension/Throwdowns/throwdown_kit.h"
+#include "Extension/UI/score_line.h"
 #include <array>
 #include <cstdint>
 #include <filesystem>
@@ -29,6 +30,8 @@
 namespace dingosdk::plugins {
 using Vec3 = std::array<float, 3>;
 inline constexpr char unavailable[] = "unavailable here";
+// A plugin's own line in skate.'s score HUD (reskate.hud.score_line; Extension/UI/score_line.h).
+using ScoreLine = score_line::Line;
 
 // The game's camera as it is now: where it is, the way it looks, and its vertical field of view.
 struct CameraView {
@@ -1045,6 +1048,11 @@ public:
     virtual std::string hide_skater(std::string_view /*plugin*/, bool) { return unavailable; }
     // skate.'s bottom left HUD hidden while any plugin asks; false keeps the plugin ready to hide it.
     virtual std::string hud_corner(std::string_view /*plugin*/, bool) { return unavailable; }
+    // A plugin's own line shown in skate.'s score HUD at the bottom left while it sets it again within
+    // 500 ms, display only (it never counts); nullopt clears it. One plugin's line at a time; never in
+    // a multiplayer session, a throwdown or match, a challenge or activity, the replay editor or a
+    // menu, and it yields to skate.'s own line and to a hidden corner (Extension/UI/score_line_hud.h).
+    virtual std::string score_line(std::string_view /*plugin*/, const std::optional<ScoreLine>&) { return unavailable; }
     // The game run at `speed` (0.05 to 1; 1 drops the ask) while it is the slowest asked; never in a
     // multiplayer session. And the speed it runs at for plugins now.
     virtual std::string game_speed(std::string_view /*plugin*/, float) { return unavailable; }

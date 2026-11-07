@@ -37,6 +37,8 @@
 #include "Extension/Multiplayer/Hud/custom_nametags.h"
 #include "Extension/Skater/xray.h"
 #include "Extension/UI/hud_corner.h"
+#include "Extension/UI/score_line_hud.h"
+#include "Extension/Progression/challenge_attempts.h"
 #include "Extension/Throwdowns/custom_modes.h"
 #include "Extension/Throwdowns/throwdown_kit.h"
 #include "plugin_camera.h"
@@ -741,6 +743,15 @@ public:
         hud_corner::ask(plugin, hidden);
         return {};
     }
+    std::string score_line(std::string_view plugin, const std::optional<ScoreLine>& line) override {
+        if (line) {
+            if (auto why = score_line_refusal(); !why.empty()) {
+                score_line::ask(plugin, std::nullopt); // a refused line does not stay up
+                return why;
+            }
+        }
+        return score_line::ask(plugin, line);
+    }
     std::string game_speed(std::string_view plugin, float speed) override {
         if (speed < 1.0f && multiplayer_session_active()) return "never in a multiplayer session";
         game_speed::ask(plugin, speed);
@@ -1441,6 +1452,7 @@ public:
     void tick_animation(std::uintptr_t base, std::uintptr_t client) {
         xray::tick();
         hud_corner::tick();
+        if (score_line::wanted()) score_line::tick(base, score_line_refusal());
         game_speed::tick();
         launches::tick(client);
         outfit_overlay::tick();
@@ -1965,6 +1977,7 @@ public:
         xray::prepare(plugin, false);
         xray::hide(plugin, false);
         hud_corner::release(plugin);
+        score_line::release(plugin);
         game_speed::ask(plugin, 1.0f);
         held_settings::release(plugin);
         launches::release(plugin);
@@ -2008,6 +2021,33 @@ public:
     }
 
 private:
+    // Why no plugin's line may be in skate.'s score HUD now ("" when one may), in this order. Each is
+    // checked at the call and every tick while a line is wanted. Where the game's state cannot be told
+    // (an activity's player not verified, a challenge's hooks not in) the line is refused, never shown.
+    std::string score_line_refusal() {
+        if (multiplayer_session_active()) return "never in a multiplayer session";
+        if (multiplayer::local_throwdown_active() || multiplayer::local_throwdown_event_active() || throwdowns::kit::match().in_activity ||
+            competition_stock_physics())
+            return "never during a throwdown or match";
+        if (challenge_or_activity()) return "never during a challenge or activity";
+        if (multiplayer::replay_editor_open(base_)) return "not in the replay editor";
+        if (multiplayer::native_pause_menu_open()) return "not while a menu is open";
+        return {};
+    }
+    // Challenges are checked on every call. Only the game's activity getter waits 250 ms between
+    // reads while a line is wanted; an unknown holds the display back and is logged once.
+    bool challenge_or_activity() {
+        return activity_.running(profile_runtime::local_challenge_attempt_open(), GetTickCount64(), [&] {
+            const char* why{};
+            const bool active = multiplayer::local_player_in_activity(&why);
+            if (why && !std::exchange(activity_unknown_said_, true))
+                logging::log(logging::Level::warning, logging::Channel::plugins,
+                    "Plugins' score lines stay down: whether the player is in an activity cannot be told ({}).", why);
+            return active;
+        });
+    }
+    score_line::ActivityCheck activity_;
+    bool activity_unknown_said_{};
     void publish_replacements() {
         std::vector<skater_animation::Replacement> list;
         for (const auto& [key, value] : replacements_) list.push_back(value.second);

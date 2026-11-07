@@ -29,6 +29,12 @@ std::uint32_t local_native_player_id() noexcept;
 // throwdown Quit action reads it; offline the SDK owns that record.
 bool local_throwdown_active() noexcept;
 bool local_throwdown_event_active() noexcept;
+// Client thread: whether the local player is in a native activity, as the game's own
+// GetPlayerIsInActivity answers for the client player that the activity UI asks about (the id
+// sync_custom_activity_ui_presence uses). True as well when that cannot be told (no sole offline
+// player, no verified client player, the getter not hooked): callers that hold back for an activity
+// hold back then too, and `why` says which.
+bool local_player_in_activity(const char** why = nullptr) noexcept;
 // Client UI thread only. Match availability owns the observed native client
 // activity flag; results, Quit and real world teardown relinquish it.
 void sync_custom_activity_ui_presence(bool participant) noexcept;

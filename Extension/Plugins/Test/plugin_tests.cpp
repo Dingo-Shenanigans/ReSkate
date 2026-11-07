@@ -568,6 +568,22 @@ struct FakeGame final : Game {
         calls.push_back(std::format("corner {} {}", plugin, hidden ? "on" : "off"));
         return {};
     }
+    // A plugin's score line: refused as told (score_refusal), else one plugin's line at a time on its
+    // 500 ms lease, as Extension/UI/score_line_hud.cpp keeps it (by `clock`, the test's time).
+    std::string score_line(std::string_view plugin, const std::optional<ScoreLine>& line) override {
+        if (!line) calls.push_back(std::format("score_line {} clear", plugin));
+        else {
+            std::string tricks;
+            for (const auto& trick : line->tricks) tricks += (tricks.empty() ? "" : "|") + trick;
+            calls.push_back(std::format("score_line {} tricks={} points={} line={} x{:.2f} timer={:.2f} closed={}", plugin, tricks, line->points,
+                line->line, line->multiplier, line->timer, line->closed ? 1 : 0));
+            if (!score_refusal.empty()) return score_refusal;
+        }
+        return score_lines.ask(plugin, line, clock ? *clock : 0);
+    }
+    dingosdk::score_line::LineOwner score_lines;
+    std::string score_refusal;
+    const double* clock{};
     std::string game_speed(std::string_view plugin, float speed) override {
         calls.push_back(std::format("slow {} {:.2f}", plugin, speed));
         return {};
@@ -1158,6 +1174,7 @@ struct FakeGame final : Game {
     std::vector<std::pair<std::string, std::string>> take_presses() override { return std::exchange(presses, {}); }
     void release(std::string_view plugin) override {
         released.emplace_back(plugin);
+        score_lines.release(plugin);
         entity_clear(plugin);
         effects_clear(plugin);
         viewmodel_unload(plugin);
@@ -1864,6 +1881,9 @@ void plugin_approval_follows_the_plugins_own_files() {
         if (name == "events.physics.geometry")
             check(requested_prompt.find("Follow detailed skater physics, including geometry, each step") != std::string::npos,
                   "The geometry permission says it adds detailed physics geometry");
+        if (name == "hud.score")
+            check(requested_prompt.find("its own tricks and points in skate.'s score HUD (they never count)") != std::string::npos,
+                  "The score HUD permission says what it shows never counts");
     }
 
     // Every requested permission group contributes a capability summary, while the card remains bounded.
@@ -3258,10 +3278,147 @@ void a_permission_must_be_declared() {
         assert(not ok and err:find("needs the \"input\" permission"), err)
         ok, err = pcall(reskate.input.joystick, 1)
         assert(not ok and err:find("needs the \"input\" permission"), err)
+        ok, err = pcall(reskate.hud.score_line, {points = 5})
+        assert(not ok and err:find("needs the \"hud.score\" permission"), err)
+        ok, err = pcall(reskate.hud.score_line, nil)
+        assert(not ok and err:find("needs the \"hud.score\" permission"), err)
         reskate.console.print("never")
     )")});
     stopped(host, "bare", "raised an error");
     check(environment.logged("needs the \"console\" permission"), "The error names the permission\n" + environment.all());
+}
+
+// ---- reskate.hud.score_line: a plugin's own line in skate.'s score HUD, display only.
+// "hud" alone does not give it: hud.score is a permission of its own.
+void a_score_line_needs_its_own_permission() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({script("corner", R"(
+        assert(reskate.hud.corner(false))
+        local ok, err = pcall(reskate.hud.score_line, {points = 5})
+        assert(not ok and err:find("needs the \"hud.score\" permission"), err)
+        reskate.log("hud alone is refused")
+    )", R"("hud")")});
+    running(host, "corner", environment);
+    check(environment.logged("[corner] hud alone is refused") && !environment.fake.called("score_line"),
+          "A plugin with only \"hud\" cannot show a score line\n" + environment.all());
+}
+
+// What a plugin passes is checked before the game sees it: only the keys there are, their types and
+// ranges, and no name the HUD could not show.
+void a_score_line_is_checked_before_the_game_sees_it() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    game.clock = &environment.now;
+    Host host(environment, Side::client);
+    host.apply({script("sample-line", R"(
+        assert(reskate.hud.score_line({tricks = {"First action", "Second action"}, points = 549.9, line = 4200.7, multiplier = 2.4, timer = 0.5}))
+        assert(reskate.hud.score_line({}), "every key has a default")
+        assert(reskate.hud.score_line({line = 937, closed = true}))
+        assert(reskate.hud.score_line({tricks = {"B\195\188r", string.rep("x", 63), "3", "4", "5"}, points = 999999999, multiplier = 99, timer = 0}))
+        local function refused(line, part)
+            local ok, err = pcall(reskate.hud.score_line, line)
+            assert(not ok and err:find(part, 1, true), tostring(err))
+        end
+        refused(5, "takes a table")
+        refused("First action", "takes a table")
+        refused({banner = "Landed"}, "no key \"banner\"")
+        refused({[1] = "First action"}, "a line's keys are")
+        refused({tricks = "First action"}, "tricks is a list")
+        refused({tricks = {a = "First action"}}, "tricks is a list")
+        refused({tricks = {"A", nil, "C"}}, "tricks is a list")
+        refused({tricks = {1}}, "tricks is a list")
+        refused({tricks = {"1", "2", "3", "4", "5", "6"}}, "at most 5 tricks")
+        refused({tricks = {""}}, "1 to 63 bytes")
+        refused({tricks = {string.rep("x", 64)}}, "1 to 63 bytes")
+        refused({tricks = {"First\naction"}}, "no control characters")
+        refused({tricks = {"First\127action"}}, "no control characters")
+        refused({tricks = {"First\255action"}}, "UTF-8")
+        refused({points = 0 / 0}, "points is 0 to 999999999")
+        refused({points = -1}, "points is 0 to 999999999")
+        refused({points = 1e9}, "points is 0 to 999999999")
+        refused({points = math.huge}, "points is 0 to 999999999")
+        refused({points = "5"}, "points is a number")
+        refused({line = -0.5}, "line is 0 to 999999999")
+        refused({multiplier = 0.5}, "multiplier is 1 to 99")
+        refused({multiplier = 100}, "multiplier is 1 to 99")
+        refused({timer = -0.1}, "timer is 0 to 1")
+        refused({timer = 1.1}, "timer is 0 to 1")
+        refused({closed = 1}, "closed is true or false")
+        assert(reskate.hud.score_line(nil))
+        assert(reskate.hud.score_line())
+        reskate.log("checked")
+    )", R"("hud.score")")});
+    running(host, "sample-line", environment);
+    check(environment.logged("[sample-line] checked"), "The plugin's lines were taken or refused as they should be\n" + environment.all());
+    check(game.called("score_line sample-line tricks=First action|Second action points=549 line=4200 x2.40 timer=0.50 closed=0"),
+          "A line reaches the game, its points and total floored");
+    check(game.called("score_line sample-line tricks= points=0 line=0 x1.00 timer=1.00 closed=0"), "and an empty one with every default");
+    check(game.called("score_line sample-line tricks= points=0 line=937 x1.00 timer=1.00 closed=1"), "and a closed one");
+    check(game.called("points=999999999 line=0 x99.00 timer=0.00 closed=0"), "and one at the top of each range");
+    const auto lines = std::count_if(game.calls.begin(), game.calls.end(), [](const auto& c) { return c.starts_with("score_line "); });
+    check(lines == 6 && game.called("score_line sample-line clear"), "No refused line reached the game, and nil clears it");
+}
+
+// A refusal of the game's comes back to the plugin as false and why, and the plugin goes on.
+void a_score_line_refusal_comes_back_to_the_plugin() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    game.clock = &environment.now;
+    game.score_refusal = "never during a throwdown or match";
+    Host host(environment, Side::client);
+    host.apply({script("sample-line", R"(
+        local ok, why = reskate.hud.score_line({tricks = {"First action"}, points = 5})
+        assert(ok == false and why == "never during a throwdown or match", tostring(why))
+        assert(reskate.hud.score_line(nil), "clearing is never refused")
+        reskate.log("told why")
+    )", R"("hud.score")")});
+    running(host, "sample-line", environment);
+    check(environment.logged("[sample-line] told why"), "The refusal reached the plugin\n" + environment.all());
+}
+
+// One plugin's line at a time: another is told whose is up until that one's lease of 500 ms after its
+// last call runs out, or it stops.
+void one_plugins_score_line_shows_at_a_time() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    game.clock = &environment.now;
+    Host host(environment, Side::client);
+    const auto first = script("first", R"(
+        reskate.console.command("first line", "x", function()
+            local ok, why = reskate.hud.score_line({points = 1})
+            reskate.log("first " .. tostring(ok) .. " " .. tostring(why))
+        end)
+    )", R"("hud.score", "console")");
+    host.apply({first, script("second", R"(
+        reskate.console.command("second line", "x", function()
+            local ok, why = reskate.hud.score_line({points = 2})
+            reskate.log("second " .. tostring(ok) .. " " .. tostring(why))
+        end)
+    )", R"("hud.score", "console")")});
+    running(host, "first", environment);
+    running(host, "second", environment);
+    host.run_console("first line");
+    host.run_console("second line");
+    check(environment.logged("[first] first true nil") && environment.logged("[second] second false first shows its line there"),
+          "The second plugin is told whose line is up\n" + environment.all());
+    environment.logs.clear();
+    environment.now += 500;
+    host.run_console("second line");
+    check(environment.logged("[second] second false first shows its line there"), "The first's line holds 500 ms after its last call");
+    environment.logs.clear();
+    environment.now += 1;
+    host.run_console("second line");
+    check(environment.logged("[second] second true nil"), "and then the second may show its own\n" + environment.all());
+    environment.logs.clear();
+    host.run_console("first line");
+    check(environment.logged("[first] first false second shows its line there"), "The second's line now holds");
+    // The second stopping gives its line up at once.
+    environment.logs.clear();
+    host.apply({first});
+    host.run_console("first line");
+    check(std::find(game.released.begin(), game.released.end(), "second") != game.released.end() && environment.logged("[first] first true nil"),
+          "A plugin that stops lets its line go\n" + environment.all());
 }
 
 void command_names_are_checked() {
@@ -6790,6 +6947,10 @@ int main() {
         run(object_contact_queries_are_owned_and_budgeted);
         run(a_plugin_loads_ticks_runs_its_commands_and_unloads);
         run(a_permission_must_be_declared);
+        run(a_score_line_needs_its_own_permission);
+        run(a_score_line_is_checked_before_the_game_sees_it);
+        run(a_score_line_refusal_comes_back_to_the_plugin);
+        run(one_plugins_score_line_shows_at_a_time);
         run(plugins_choose_stand_ins);
         run(plugins_read_and_hide_other_players_items);
         run(plugins_add_chat_commands);

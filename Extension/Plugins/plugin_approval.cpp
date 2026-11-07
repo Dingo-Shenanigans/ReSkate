@@ -71,6 +71,7 @@ constexpr Capability capabilities[] = {
     {"capture", "SCREEN", Risk::amber, "Record your screen"},
     {"viewmodel", "SCREEN", Risk::grey, "Draw a model of its own in front of your camera, such as something held"},
     {"hud", "SCREEN", Risk::amber, "Hide your HUD and change the trick ticker"},
+    {"hud.score", "SCREEN", Risk::amber, "Show its own tricks and points in skate.'s score HUD"},
     {"overlay", "SCREEN", Risk::amber, "Draw on your screen, with screen effects, toasts and x-ray view"},
     {"ui.screen", "SCREEN", Risk::grey, "Open its own screens and dialogs"},
     {"ui.models", "SCREEN", Risk::grey, "Send numbers to its own mod's menus and HUD"},
@@ -301,6 +302,7 @@ std::string approval_prompt(const std::vector<PermissionGroup>& groups) {
             if (has("capture")) actions.push_back("record your screen");
             if (has("viewmodel")) actions.push_back("draw a model in front of your camera");
             if (has("hud")) actions.push_back("hide your HUD or change the trick ticker");
+            if (has("hud.score")) actions.push_back("show its own tricks and points in skate.'s score HUD (they never count)");
             if (has("overlay")) actions.push_back("draw on screen, including screen effects");
             if (has("ui.screen")) actions.push_back("open plugin screens and dialogs");
             if (has("ui.models")) actions.push_back("send numbers to its own mod's menus and HUD");

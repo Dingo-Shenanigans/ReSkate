@@ -120,6 +120,9 @@ inline constexpr std::uintptr_t client_game_manager = 0x71ef898;
 inline constexpr std::uintptr_t location_owner = 0x71f4288;
 // Pointer.
 inline constexpr std::uintptr_t ui_manager = 0x71f5ef0;
+// The UI manager's UI model registry (the ModelManager every UI model is made in), a pointer at this
+// offset in it.
+inline constexpr std::uint32_t ui_model_registry = 0x140;
 // Pointer.
 inline constexpr std::uintptr_t game_server = 0x71f8ad0;
 // DelMarGameSettings handle.

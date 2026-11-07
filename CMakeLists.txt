@@ -527,6 +527,15 @@ if(DINGOSDK_BUILD_PLUGIN_TESTS AND WIN32)
     add_executable(dingosdk_trick_feed_gate_tests Extension/Skater/Test/trick_feed_gate_tests.cpp)
     target_include_directories(dingosdk_trick_feed_gate_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME trick_feed_gate COMMAND dingosdk_trick_feed_gate_tests)
+    # A plugin's own line in skate.'s score HUD (Extension/UI/score_line.h): one plugin's at a time, the
+    # yield to skate.'s own line, the take-out that is never dropped.
+    add_executable(dingosdk_score_line_tests Extension/UI/Test/score_line_tests.cpp)
+    target_include_directories(dingosdk_score_line_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME score_line COMMAND dingosdk_score_line_tests)
+    # The local player's open challenge attempts (Extension/Progression/challenge_attempts.h).
+    add_executable(dingosdk_challenge_attempts_tests Extension/Progression/Test/challenge_attempts_tests.cpp)
+    target_include_directories(dingosdk_challenge_attempts_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME challenge_attempts COMMAND dingosdk_challenge_attempts_tests)
     # The board's shader parameters (Extension/Customization/board_material.h): the walk over a board
     # laid out as the game holds it, what plugins may set, and holding and putting back.
     add_executable(dingosdk_board_material_tests Extension/Customization/Test/board_material_tests.cpp)
