@@ -1,4 +1,5 @@
 #include "Extension/UI/NativeMenu/native_tools_view.h"
+#include "Engine/Game/World/custom_level_manifest.h"
 #include <cstdio>
 #include <stdexcept>
 
@@ -244,6 +245,46 @@ int main() {
             log.calls = 0;
             activate(tod, world, record, "time-of-day", {});
             check(log.calls == 0 && !time_of_day_available(world, record), "A host-forced lobby cannot change time of day");
+        }
+        {
+            // A custom map's own "timeOfDay" in reskate-levels.json.
+            const auto row = [](std::string_view extra) {
+                return std::string(R"({"schema":1,"levels":[{"asset":"levels/game/dingolevel_reskate_park/dingolevel_reskate_park",)"
+                                   R"("displayName":"Park","startPoints":["DefaultStartPoint"])") + std::string(extra) + "}]}";
+            };
+            const auto plain = parse_custom_level_manifest(row(""));
+            check(plain.issue.empty() && plain.levels.size() == 1 && plain.levels[0].time_of_day == 0, "A row without timeOfDay names no time");
+            const auto night = parse_custom_level_manifest(row(R"(,"timeOfDay":"night")"));
+            check(night.issue.empty() && night.levels.size() == 1 && night.levels[0].time_of_day == 5, "timeOfDay night is time 5");
+            const auto weather = parse_custom_level_manifest(row(R"(,"timeOfDay":"weathernight")"));
+            check(weather.issue.empty() && weather.levels[0].time_of_day == 7, "timeOfDay weathernight is time 7");
+            for (const auto* bad : {R"(,"timeOfDay":"dusk")", R"(,"timeOfDay":"Night")", R"(,"timeOfDay":5)", R"(,"timeOfDay":"")"})
+                check(!parse_custom_level_manifest(row(bad)).issue.empty() && parse_custom_level_manifest(row(bad)).levels.empty(),
+                      "An unknown timeOfDay fails the manifest closed");
+            check(!parse_custom_level_manifest(row(R"(,"timeOfDay":"night","weather":"rain")")).issue.empty(),
+                  "Fields other than timeOfDay are still refused");
+
+            // While the player's seven times are Default, the map's time loads in their place.
+            const auto defaults = default_world_layers();
+            const auto mapped = with_map_time_of_day(defaults, WorldMap::bam, 5);
+            for (unsigned slot = 1; slot <= 7; ++slot)
+                check(mapped[world_layer_time_row(WorldMap::bam, slot)] == (slot == 5 ? "on" : "off"), "The map's time is on, the others off");
+            check(with_map_time_of_day(defaults, WorldMap::bam, 0) == defaults, "A map without a time leaves Default alone");
+            check(with_map_time_of_day(defaults, WorldMap::grom, 5) == defaults, "A map family without time rows is left alone");
+            auto picked = defaults;
+            for (unsigned slot = 1; slot <= 7; ++slot) picked[world_layer_time_row(WorldMap::bam, slot)] = slot == 2 ? "on" : "off";
+            check(with_map_time_of_day(picked, WorldMap::bam, 5) == picked, "A time the player or host picked wins over the map's");
+            auto partial = defaults;
+            partial[world_layer_time_row(WorldMap::bam, 3)] = "off";
+            check(with_map_time_of_day(partial, WorldMap::bam, 5) == partial, "Any time row not on Default keeps the choices as they are");
+
+            // Menus say which time Default is on such a map.
+            overlay::Model world;
+            world.world.map = WorldMap::bam;
+            check(time_of_day_label(world, 0) == "Default", "Default reads plainly without a map time");
+            world.world.map_time_of_day = 5;
+            check(time_of_day_label(world, 0) == "Default (map: Night)", "Default names the map's own time");
+            check(time_of_day_label(world, 2) == "Noon", "A picked time reads as itself");
         }
         {
             overlay::Model maps;

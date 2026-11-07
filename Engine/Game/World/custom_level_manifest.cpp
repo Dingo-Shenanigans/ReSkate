@@ -1,4 +1,5 @@
 #include "custom_level_manifest.h"
+#include "world_layers.h"
 
 #include "Engine/Core/Json/json.h"
 
@@ -74,9 +75,13 @@ bool valid_start_point(std::string_view value) {
     });
 }
 
+// Every field in `expected` must be there, and nothing but those and `optional`.
 void exact_fields(const Json& object, std::initializer_list<std::string_view> expected,
-                  std::string_view description) {
-    if (!object.is_object() || object.size() != expected.size())
+                  std::string_view description, std::initializer_list<std::string_view> optional = {}) {
+    if (!object.is_object()) throw std::runtime_error(std::string(description) + " has unexpected fields");
+    std::size_t present{};
+    for (const auto field : optional) present += object.contains(field) ? 1 : 0;
+    if (object.size() != expected.size() + present)
         throw std::runtime_error(std::string(description) + " has unexpected fields");
     for (const auto field : expected)
         if (!object.contains(field)) throw std::runtime_error(
@@ -103,7 +108,7 @@ CustomLevelManifest parse(std::string_view text) {
     result.present = true;
     std::set<std::string, std::less<>> assets;
     for (const auto& row : rows) {
-        exact_fields(row, {"asset", "displayName", "startPoints"}, "custom-level row");
+        exact_fields(row, {"asset", "displayName", "startPoints"}, "custom-level row", {"timeOfDay"});
         const auto& asset = row.at("asset");
         const auto& display_name = row.at("displayName");
         const auto& points = row.at("startPoints");
@@ -120,6 +125,14 @@ CustomLevelManifest parse(std::string_view text) {
         level.asset = asset.string();
         level.display_name = display_name.string();
         level.manifest_only = true;
+        // Optional: the time the map loads at while the player leaves time of day on Default.
+        if (row.contains("timeOfDay")) {
+            const auto& time = row.at("timeOfDay");
+            const auto slot = time.is_string() ? time_of_day_slot(time.string()) : 0u;
+            if (!slot) throw std::runtime_error(
+                "custom-level timeOfDay must be morning, noon, afternoon, evening, night, weatherday or weathernight");
+            level.time_of_day = static_cast<std::uint8_t>(slot);
+        }
         std::set<std::string, std::less<>> point_names;
         for (const auto& point : points) {
             if (!point.is_string() || !valid_start_point(point.string()))

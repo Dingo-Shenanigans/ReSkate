@@ -1290,11 +1290,14 @@ void update_model(std::uintptr_t client, TickState& frame) {
     const auto& sublevels = *r.sublevel_catalog;
     const auto client_content = read_client_content(r.base, client, description.lm_level);
     const bool context_ready = native_context_ready();
-    const bool manifest_custom_active = (state == 13 || state == 21) &&
-        context_ready && description.available &&
-        std::any_of(catalog.levels.begin(), catalog.levels.end(), [&](const auto& level) {
-            return level.manifest_only && equals(level.asset, description.lm_level);
-        });
+    const auto manifest_custom = (state == 13 || state == 21) && context_ready && description.available
+        ? std::find_if(catalog.levels.begin(), catalog.levels.end(), [&](const auto& level) {
+              return level.manifest_only && equals(level.asset, description.lm_level);
+          })
+        : catalog.levels.end();
+    const bool manifest_custom_active = manifest_custom != catalog.levels.end();
+    // The map's own "timeOfDay", if its reskate-levels.json names one.
+    dingosdk::set_local_world_layer_map_time(manifest_custom_active ? manifest_custom->time_of_day : 0u);
     // Schema 1 Studio maps are authored exclusively from BAM's bounded
     // service/environment closure. This hint permits that reduced controller
     // graph to identify its family without weakening native-map detection.

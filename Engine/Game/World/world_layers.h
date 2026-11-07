@@ -85,6 +85,9 @@ struct WorldLayersModel {
     // reference is unavailable; never invent a live state from AutoLoad alone.
     std::vector<std::optional<bool>> enabled = std::vector<std::optional<bool>>(world_layers().size());
     std::vector<std::string> status = std::vector<std::string>(world_layers().size());
+    // The active custom map's own time of day (1..7, as time_of_day_names counts them), which
+    // loads while `choices` leave every time row on "default"; 0 when the map names none.
+    unsigned map_time_of_day{};
     std::string feedback;
     // Clear the per-row live state, sized to the catalog.
     void clear_live() {
@@ -177,6 +180,39 @@ inline bool world_layer_time_of_day(std::size_t slot) {
     const auto mid = leaf.find("_tod_");
     const auto at = leaf.starts_with("tod_") ? 4 : mid == std::string::npos ? leaf.size() : mid + 5;
     return at < leaf.size() && leaf[at] >= '1' && leaf[at] <= '9';
+}
+
+// The times of day as the `tod` command and reskate-levels.json's "timeOfDay" name them. Time n
+// (1..7) is the map's "<map>_tod_<n>_<name>" row.
+inline constexpr std::array<std::string_view, 7> time_of_day_names{
+    "morning", "noon", "afternoon", "evening", "night", "weatherday", "weathernight"};
+// 1..7 for a name in time_of_day_names, 0 for anything else.
+inline unsigned time_of_day_slot(std::string_view name) noexcept {
+    for (unsigned i = 0; i < time_of_day_names.size(); ++i)
+        if (time_of_day_names[i] == name) return i + 1;
+    return 0;
+}
+// The catalog row of `map`'s time `slot` (1..7); world_layers().size() when it has none.
+inline std::size_t world_layer_time_row(WorldMap map, unsigned slot) {
+    if (map == WorldMap::none || slot < 1 || slot > time_of_day_names.size()) return world_layers().size();
+    const auto prefix = std::string(world_map_key(map)) + "_tod_" + std::to_string(slot) + "_";
+    for (std::size_t i = 0; i < world_layers().size(); ++i)
+        if (world_layers()[i].map == map && world_layers()[i].key.starts_with(prefix)) return i;
+    return world_layers().size();
+}
+// The choices to load with on a custom map that names its own time (`map_time`, 1..7): while
+// every one of `map`'s seven time rows is still "default" (neither the player nor a host has
+// picked a time), that time is on and the others off. Otherwise, or with no map time, `choices`
+// as they are. The result is never saved, so leaving the map drops it.
+inline WorldLayerChoices with_map_time_of_day(WorldLayerChoices choices, WorldMap map, unsigned map_time) {
+    if (!map_time || map_time > time_of_day_names.size() || choices.size() != world_layers().size()) return choices;
+    std::array<std::size_t, time_of_day_names.size()> rows{};
+    for (unsigned slot = 1; slot <= rows.size(); ++slot) {
+        rows[slot - 1] = world_layer_time_row(map, slot);
+        if (rows[slot - 1] == world_layers().size() || choices[rows[slot - 1]] != "default") return choices;
+    }
+    for (unsigned slot = 1; slot <= rows.size(); ++slot) choices[rows[slot - 1]] = slot == map_time ? "on" : "off";
+    return choices;
 }
 
 // A sibling time of day that is to be off but not fully unloaded yet, which `slot` must wait for;

@@ -77,6 +77,13 @@ inline constexpr std::array<const char*, 7> time_of_day_keys{
     "1_morning", "2_noon", "3_afternoon", "4_evening", "5_night", "6_weatherday", "7_weathernight"};
 inline constexpr std::array<const char*, 8> time_of_day_labels{
     "Default", "Morning", "Noon", "Afternoon", "Evening", "Night", "Weather (day)", "Weather (night)"};
+// A time's label (time_of_day below counts them). Default names the custom map's own time when
+// its reskate-levels.json gives one, since that is the time that loads.
+inline std::string time_of_day_label(const overlay::Model& m, unsigned slot) {
+    const auto map_time = m.world.map_time_of_day;
+    if (slot || !map_time || map_time >= time_of_day_labels.size()) return time_of_day_labels[slot < time_of_day_labels.size() ? slot : 0];
+    return std::string("Default (map: ") + time_of_day_labels[map_time] + ")";
+}
 inline std::size_t time_of_day_layer(WorldMap map, unsigned slot) {
     const auto key = std::string(world_map_key(map)) + "_tod_" + time_of_day_keys[slot];
     for (std::size_t i = 0; i < world_layers().size(); ++i) if (world_layers()[i].key == key) return i;
@@ -262,7 +269,7 @@ inline Page render(State& s, const overlay::Model& m, const overlay::CallbacksV3
                 population_labels[std::clamp(choice, -1, 3) + 1], i == 0 ? "traffic" : "pedestrians",
                 m.world.ready && m.world_controls.population_available && cb.queue_console_command);
         }
-        button(p.side, "time-of-day", std::string("Time of day: ") + time_of_day_labels[time_of_day(m)],
+        button(p.side, "time-of-day", "Time of day: " + time_of_day_label(m, time_of_day(m)),
             "time-of-day", time_of_day_available(m, cb));
         if (m.world.controlled_by_host)
             text(p.side, "time-status", server_can(m.multiplayer, "tod") ? "Your role sets it: time of day changes for the whole server."
