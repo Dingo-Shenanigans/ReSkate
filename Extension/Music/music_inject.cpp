@@ -115,7 +115,8 @@ struct Speaker {
     std::uint32_t generation{}, ring_wp{};
     float cur_left{}, cur_right{}, lpf_l_state{}, lpf_r_state{};
     float hpf_in_l{}, hpf_in_r{}, hpf_out_l{}, hpf_out_r{}, mid_l{}, mid_r{}, rev_lp{};
-    std::array<float, 4096> delay_l{}, delay_r{}, rev_buf{};
+    std::array<float, 4096> delay_l{}, delay_r{};
+    std::array<float, 16384> rev_buf{};
 };
 std::array<Speaker, 8> speakers{};
 
@@ -208,14 +209,32 @@ void spatialize_block(Speaker& speaker, std::uintptr_t buffer, std::uint32_t fra
             delay_l[wp & 4095] = sl; delay_r[wp & 4095] = sr;
             speaker.lpf_l_state += al * (delay_l[(wp - dl) & 4095] - speaker.lpf_l_state);
             speaker.lpf_r_state += ar * (delay_r[(wp - dr) & 4095] - speaker.lpf_r_state);
-            const float t1 = rev_buf[(wp - 624u) & 4095], t2 = rev_buf[(wp - 1392u) & 4095];
-            const float t3 = rev_buf[(wp - 2256u) & 4095], t4 = rev_buf[(wp - 3264u) & 4095];
-            const float rl = 0.42f * t1 - 0.30f * t2 + 0.24f * t3 - 0.16f * t4;
-            const float rr = 0.38f * t2 - 0.32f * t1 + 0.22f * t4 - 0.18f * t3;
-            speaker.rev_lp += 0.30f * (0.5f * (speaker.lpf_l_state * speaker.cur_left + speaker.lpf_r_state * speaker.cur_right) + 0.22f * t4 - speaker.rev_lp);
-            rev_buf[wp & 4095] = speaker.rev_lp;
-            left[i] = speaker.lpf_l_state * speaker.cur_left + env_wet * rl;
-            right[i] = speaker.lpf_r_state * speaker.cur_right + env_wet * rr;
+            const float dry_l = speaker.lpf_l_state * speaker.cur_left, dry_r = speaker.lpf_r_state * speaker.cur_right;
+            const float t1 = rev_buf[(wp - 1087u)  & 16383], t2 = rev_buf[(wp - 1907u)  & 16383];
+            const float t3 = rev_buf[(wp - 3109u)  & 16383], t4 = rev_buf[(wp - 4723u)  & 16383];
+            const float t5 = rev_buf[(wp - 6833u)  & 16383], t6 = rev_buf[(wp - 9497u)  & 16383];
+            const float t7 = rev_buf[(wp - 12497u) & 16383], t8 = rev_buf[(wp - 15991u) & 16383];
+            const float early_l = 0.36f * t1 + 0.16f * t2 + 0.30f * t3 + 0.14f * t4;
+            const float early_r = 0.16f * t1 + 0.36f * t2 + 0.14f * t3 + 0.30f * t4;
+            const float late_l  = 0.28f * t5 + 0.16f * t6 + 0.24f * t7 + 0.16f * t8;
+            const float late_r  = 0.16f * t5 + 0.28f * t6 + 0.16f * t7 + 0.24f * t8;
+            const float raw_sum = speaker.cur_left + speaker.cur_right;
+            const float inv_sum = raw_sum > 0.0001f ? (1.0f / raw_sum) : 0.5f;
+            const float pan_l = raw_sum > 0.0001f ? (speaker.cur_left * inv_sum) : 0.5f;
+            const float pan_r = 1.0f - pan_l;
+            const float rl = early_l * (0.68f + 0.64f * pan_l) + late_l * (0.82f + 0.36f * pan_l);
+            const float rr = early_r * (0.68f + 0.64f * pan_r) + late_r * (0.82f + 0.36f * pan_r);
+            const float gain_sum = std::clamp(raw_sum, 0.0f, 1.0f);
+            const float dist_drive = gain_sum * (2.0f - gain_sum);
+            const float pre_send = 0.5f * (speaker.lpf_l_state + speaker.lpf_r_state) * dist_drive;
+            const float rev_in = std::clamp(0.26f * (dry_l + dry_r) + 0.52f * pre_send, -1.35f, 1.35f);
+            const float fb = std::clamp(0.30f + 0.35f * env_wet, 0.0f, 0.72f);
+            speaker.rev_lp = std::clamp(speaker.rev_lp + 0.28f * (rev_in + fb * (0.46f * t8 + 0.34f * t6 + 0.20f * t4) - speaker.rev_lp), -2.5f, 2.5f);
+            rev_buf[wp & 16383] = speaker.rev_lp;
+            const float wet = env_wet * (1.70f + 0.50f * env_wet);
+            const float dry_duck = std::clamp(1.0f - 0.14f * env_wet, 0.82f, 1.0f);
+            left[i] = dry_l * dry_duck + wet * rl;
+            right[i] = dry_r * dry_duck + wet * rr;
             speaker.ring_wp = wp + 1;
         }
         speaker.cur_left = target_l; speaker.cur_right = target_r;
@@ -394,7 +413,7 @@ void set_spatial(bool active, float left, float right, float lpf_l, float lpf_r,
     sp_lpf_l.store(std::clamp(lpf_l, 0.04f, 1.0f), std::memory_order_relaxed);
     sp_lpf_r.store(std::clamp(lpf_r, 0.04f, 1.0f), std::memory_order_relaxed);
     sp_itd.store(std::clamp(itd, -32, 32), std::memory_order_relaxed);
-    sp_env.store(std::clamp(env, 0.0f, 0.65f), std::memory_order_relaxed);
+    sp_env.store(std::clamp(env, 0.0f, 1.20f), std::memory_order_relaxed);
     sp_mute_loops.store(mute_loops, std::memory_order_relaxed);
     sp_expires_at.store(GetTickCount64() + 2000, std::memory_order_relaxed);
     // (Release, so the audio thread that sees it on also sees the generation moved on.)
