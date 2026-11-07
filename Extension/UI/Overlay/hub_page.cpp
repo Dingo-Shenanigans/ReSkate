@@ -1181,7 +1181,7 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
         const bool population = m.world.ready && m.world_controls.population_available && console;
         if (list.setting("Traffic", population_labels[std::clamp(m.world_controls.choices.traffic, -1, 3) + 1], population)) act("traffic");
         if (list.setting("Pedestrians", population_labels[std::clamp(m.world_controls.choices.pedestrians, -1, 3) + 1], population)) act("pedestrians");
-        if (list.setting("Time of day", native_tools::time_of_day_labels[native_tools::time_of_day(m)], native_tools::time_of_day_available(m, cb))) act("time-of-day");
+        if (list.setting("Time of day", native_tools::time_of_day_label(m, native_tools::time_of_day(m)), native_tools::time_of_day_available(m, cb))) act("time-of-day");
         if (m.world.controlled_by_host)
             list.note(server_can(mp, "tod") ? "Your role sets it: time of day changes for the whole server." : "The lobby host controls world layers, including time of day.");
         list.note(h.notice);
