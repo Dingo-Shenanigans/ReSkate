@@ -76,35 +76,43 @@ Attempts& attempts() {
     static auto* value = new Attempts;
     return *value;
 }
+AttemptFallback attempt_fallback;
 // A begin or end request seen, whether the local challenges take it or the game does.
 void note_attempt(bool ending, const void* id_value) noexcept {
     PreserveError preserve;
-    try {
-        std::string id;
-        const bool known = identifier(id_value, id) && !id.empty();
+    attempt_fallback.guard([&] {
         auto& a = attempts();
         std::lock_guard lock(a.mutex);
-        if (ending) a.open.end(known ? std::string_view(id) : std::string_view{});
-        else if (known) a.open.begin(id);
-        else a.open.begin_unknown();
-    } catch (...) {}
+        a.open.observe(ending, [&](std::string& id) { return identifier(id_value, id); });
+    });
 }
 } // namespace
 
 bool local_challenge_attempt_open() noexcept {
-    // Without its hooks no request is seen, so whether one is open cannot be told.
-    const auto& f = challenge_runtime().f;
-    if (!f.begin || !f.end) return true;
-    auto& a = attempts();
-    std::lock_guard lock(a.mutex);
-    return a.open.open();
+    // The active flag is published only after all profile hooks enabled successfully. Prepared
+    // originals alone are not proof: initialization failure deliberately retains their relays.
+    if (attempt_fallback.unknown()) return true;
+    bool open = true;
+    attempt_fallback.guard([&] {
+        const bool active = local_runtime().active.load(std::memory_order_acquire);
+        if (!active) return;
+        const auto& f = challenge_runtime().f;
+        if (!challenge_requests_watched(active, f.begin != nullptr, f.end != nullptr)) return;
+        auto& a = attempts();
+        std::lock_guard lock(a.mutex);
+        open = a.open.open();
+    });
+    return open || attempt_fallback.unknown();
 }
 
 void challenge_attempts_before_level_transition(unsigned next) noexcept {
     if (next != 3 && next != 14 && next != 22 && next != 24 && next != 25) return;
-    auto& a = attempts();
-    std::lock_guard lock(a.mutex);
-    a.open.clear();
+    attempt_fallback.guard([&] {
+        auto& a = attempts();
+        std::lock_guard lock(a.mutex);
+        a.open.clear();
+        attempt_fallback.cleared();
+    });
 }
 
 void* challenge_request(bool ending, void* out, const void* id_value, const void* player_value,
