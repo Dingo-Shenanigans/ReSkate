@@ -48,10 +48,7 @@ template <class T> std::optional<T> read(std::uintptr_t address) noexcept {
     if (!peek(address, &value, sizeof(T))) return std::nullopt;
     return value;
 }
-struct alignas(16) NativeBone {
-    std::array<float, 4> scale, rotation, position;
-};
-static_assert(sizeof(NativeBone) == 0x30);
+using NativeBone = pose_replay::NativeBone;
 
 double now_seconds() noexcept {
     static const double frequency = [] {
@@ -65,8 +62,6 @@ double now_seconds() noexcept {
 }
 
 // ---- transforms ------------------------------------------------------------------------------------
-// The smallest scale a posed joint is given: as small as hiding the skater makes its placement joint.
-constexpr float smallest_scale = 0.001f;
 // One transform after another (parent, then child in the parent's frame); uniform scale.
 Joint compose(const Joint& parent, const Joint& child) noexcept {
     const float k = (parent.scale[0] + parent.scale[1] + parent.scale[2]) / 3.0f;
@@ -386,8 +381,11 @@ struct Pending {
     std::vector<NativeBone> bones; // [first, last)
     // Instead of bones: an offset-only pose, put on [first, last) as the body physics left it when drawn.
     std::vector<pose_offset::Delta> deltas;
+    std::vector<PoseOffset> replay; // place/kept-child requests resolved on the current render pose
+    float replay_weight{};
     std::vector<std::pair<std::uint16_t, pose_offset::Written>> written; // the render thread's, a joint each
     std::uintptr_t written_buffer{};
+    std::uintptr_t written_interface{}, written_component{};
     double at{};
     // What the buffer held where the pose was written for the render, put back once the renderer has
     // copied the pose (on_drawn). The game does not set every part of every joint again before the next
@@ -401,6 +399,12 @@ struct Pending {
     std::vector<NativeBone> game; // [game_first, game_first + size)
     std::uint32_t game_first{};
     std::uintptr_t game_buffer{}, game_interface{};
+    void clear_pose() {
+        bones.clear();
+        deltas.clear();
+        replay.clear();
+        written.clear();
+    }
 };
 Pending& pending() {
     static auto* p = new Pending;
@@ -606,8 +610,7 @@ void on_animation(std::uintptr_t component) noexcept {
         if (!busy && !reaching && !carrying && !joints_wanted && !posing && !in_room &&
             (!snap->allowed || (!snap->play && snap->replacements.empty()))) {
             std::lock_guard lock(pending().mutex);
-            pending().bones.clear();
-            pending().deltas.clear();
+            pending().clear_pose();
             SetLastError(error);
             return;
         }
@@ -798,23 +801,8 @@ void on_animation(std::uintptr_t component) noexcept {
         // carried; then an arm reaching. Each goes into the pose drawn, the pose sent, or both (Shown), and
         // its joints join what is written (a joint's children too, when they are kept where they were).
         const auto pose_joints = [&](std::vector<Joint>& pose, std::size_t& first, std::size_t& last) {
-            const float w = std::clamp(snap->offsets_weight, 0.0f, 1.0f);
-            thread_local std::vector<pose_place::Kept> kept;
-            for (const auto& o : snap->offsets) {
-                if (o.joint < 2 || o.joint >= layout.count) continue;
-                if (o.keep_children) pose_place::keep(pose, o.joint, kept);
-                auto& j = pose[o.joint];
-                j.rotation = normalised(multiply(j.rotation, slerp(Quat{0, 0, 0, 1}, o.rotation, w)));
-                // Never quite 0: a joint at scale 0 has no inverse. This small, it is as good as gone.
-                for (std::size_t a = 0; a < 3; ++a) j.scale[a] *= std::max(1.0f + (o.scale[a] - 1.0f) * w, smallest_scale);
-                for (std::size_t a = 0; a < 3; ++a) j.position[a] += o.offset[a] * w;
-                if (o.place) pose_place::apply(pose, o.joint, *o.place, w);
-                if (o.keep_children) {
-                    pose_place::put_back(pose, o.joint, kept);
-                    for (const auto& k : kept) widen(first, last, k.joint, k.joint + 1u);
-                }
-                widen(first, last, o.joint, o.joint + 1u);
-            }
+            const auto changed = pose_replay::apply(pose, snap->offsets, snap->offsets_weight);
+            if (changed.last > changed.first) widen(first, last, changed.first, changed.last);
         };
         if (carrying && snap->carry_push) {
             // Pushing on the board: the knees mostly straighten while the foot is down (eased, from the
@@ -836,13 +824,11 @@ void on_animation(std::uintptr_t component) noexcept {
                 widen(first, last, arm_reach::first_written(goal.hand), arm_reach::last_written(goal.hand) + 1u);
         };
         const auto for_everyone = [](bool on, Shown shown) { return on && shown == Shown::everyone; };
-        // A pose that only moves, turns and scales joints, with nothing else written to the pose drawn,
-        // goes on when the pose is drawn, onto the joints as the body physics left them (pose_offset.h).
-        // Written whole from here, a joint lost what the body physics did to it and its children kept
-        // theirs: posing the hips put the feet into the deck on tricks from standing still.
+        // With no other layer to bake, keep the requests until drawing. Physics changes both the
+        // joints and their placement after animation; cached local bones lose those changes and a
+        // world goal moves with the newer placement. Other layers retain their existing baked path.
         const bool at_draw = posing && snap->offsets_shown != Shown::others && last <= first && !in_room &&
-                             !(carrying && snap->carry_shown != Shown::others) && !(reaching && snap->reach_shown != Shown::others) &&
-                             std::all_of(snap->offsets.begin(), snap->offsets.end(), [](const PoseOffset& o) { return !o.place && !o.keep_children; });
+                              !(carrying && snap->carry_shown != Shown::others) && !(reaching && snap->reach_shown != Shown::others);
         if (for_everyone(posing, snap->offsets_shown)) pose_joints(l.pose, first, last);
         if (for_everyone(carrying, snap->carry_shown)) carry_item(l.pose, first, last);
         if (for_everyone(reaching, snap->reach_shown)) reach_arm(l.pose, first, last);
@@ -881,8 +867,10 @@ void on_animation(std::uintptr_t component) noexcept {
         if (at_draw && last > first) {
             thread_local std::vector<pose_offset::Delta> deltas;
             deltas.clear();
-            for (const auto& o : snap->offsets)
-                if (o.joint >= 2 && o.joint < layout.count) pose_offset::add(deltas, o.joint, o.rotation, o.scale, o.offset, snap->offsets_weight);
+            const bool only_deltas = std::all_of(snap->offsets.begin(), snap->offsets.end(), [](const PoseOffset& o) { return !o.place && !o.keep_children; });
+            if (only_deltas)
+                for (const auto& o : snap->offsets)
+                    if (o.joint >= 2 && o.joint < layout.count) pose_offset::add(deltas, o.joint, o.rotation, o.scale, o.offset, snap->offsets_weight);
             auto& p = pending();
             std::lock_guard lock(p.mutex);
             p.buffer = layout.buffer;
@@ -890,6 +878,9 @@ void on_animation(std::uintptr_t component) noexcept {
             p.last = static_cast<std::uint32_t>(last);
             p.bones.clear();
             p.deltas = deltas;
+            if (only_deltas) p.replay.clear();
+            else p.replay = snap->offsets;
+            p.replay_weight = snap->offsets_weight;
             p.at = at;
         } else if (last > first) {
             for (std::size_t i = first; i < last; ++i)
@@ -915,6 +906,7 @@ void on_animation(std::uintptr_t component) noexcept {
                 p.last = static_cast<std::uint32_t>(last);
                 p.bones.assign(l.bones.begin() + static_cast<std::ptrdiff_t>(first), l.bones.begin() + static_cast<std::ptrdiff_t>(last));
                 p.deltas.clear();
+                p.replay.clear();
                 p.at = at;
             }
             if (clip) {
@@ -944,8 +936,7 @@ void on_animation(std::uintptr_t component) noexcept {
         } else {
             auto& p = pending();
             std::lock_guard lock(p.mutex);
-            p.bones.clear();
-            p.deltas.clear();
+            p.clear_pose();
         }
         // What the others are sent: the pose drawn, or its own copy (Shown). Other players are never
         // sent the room: from joint 2 on only.
@@ -1070,8 +1061,8 @@ void on_render(std::uintptr_t animation_interface) noexcept {
             std::lock_guard probe_lock(pr.mutex);
             ++(pr.*n);
         };
-        if ((p.bones.empty() && p.deltas.empty()) || now_seconds() - p.at > 0.1) {
-            if (!p.bones.empty() || !p.deltas.empty()) count(&Probe::stale);
+        if ((p.bones.empty() && p.deltas.empty() && p.replay.empty()) || now_seconds() - p.at > 0.1) {
+            if (!p.bones.empty() || !p.deltas.empty() || !p.replay.empty()) count(&Probe::stale);
             SetLastError(error);
             return;
         }
@@ -1082,6 +1073,33 @@ void on_render(std::uintptr_t animation_interface) noexcept {
             return;
         }
         count(&Probe::drawn);
+        if (p.written_buffer != layout.buffer || p.written_interface != animation_interface || p.written_component != component)
+            p.written.clear();
+        p.written_buffer = layout.buffer;
+        p.written_interface = animation_interface;
+        p.written_component = component;
+        if (!p.replay.empty()) {
+            // Reference joints can be outside the written interval. Resolve on the complete current
+            // skeleton, then publish only the affected range with its unrequested native lanes intact.
+            thread_local std::vector<NativeBone> drawn;
+            thread_local pose_replay::Written candidate;
+            drawn.resize(layout.count);
+            if (!peek(layout.buffer, drawn.data(), drawn.size() * sizeof(NativeBone))) {
+                SetLastError(error);
+                return;
+            }
+            pose_replay::Range range;
+            candidate = p.written;
+            if (pose_replay::draw(drawn, p.replay, p.replay_weight, candidate, p.game, range) &&
+                poke(layout.buffer + range.first * sizeof(NativeBone), drawn.data() + range.first, p.game.size() * sizeof(NativeBone))) {
+                p.written.swap(candidate);
+                p.game_first = range.first;
+                p.game_buffer = layout.buffer;
+                p.game_interface = animation_interface;
+            } else p.game.clear();
+            SetLastError(error);
+            return;
+        }
         thread_local std::vector<NativeBone> current;
         current.resize(p.last - p.first);
         if (!peek(layout.buffer + p.first * sizeof(NativeBone), current.data(), current.size() * sizeof(NativeBone))) {
@@ -1090,8 +1108,6 @@ void on_render(std::uintptr_t animation_interface) noexcept {
         }
         p.game = current;
         if (!p.deltas.empty()) {
-            if (p.written_buffer != layout.buffer) p.written.clear();
-            p.written_buffer = layout.buffer;
             for (const auto& d : p.deltas) {
                 if (d.joint < p.first || d.joint >= p.last) continue;
                 auto& b = current[d.joint - p.first];
@@ -1131,8 +1147,9 @@ void on_drawn(std::uintptr_t animation_interface) noexcept {
     try {
         auto& p = pending();
         std::lock_guard lock(p.mutex);
-        if (!p.game.empty() && animation_interface == p.game_interface)
-            (void)poke(p.game_buffer + p.game_first * sizeof(NativeBone), p.game.data(), p.game.size() * sizeof(NativeBone));
+        if (!p.game.empty() && animation_interface == p.game_interface &&
+            poke(p.game_buffer + p.game_first * sizeof(NativeBone), p.game.data(), p.game.size() * sizeof(NativeBone)))
+            p.written.clear(); // A completed restore makes a later matching native value genuine, not an old overlay.
         p.game.clear();
     } catch (...) {
     }
