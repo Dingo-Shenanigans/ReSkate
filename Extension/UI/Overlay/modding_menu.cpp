@@ -251,7 +251,7 @@ void draw_installed_mods(SkateMenu& menu) {
         const float room = ImGui::GetContentRegionAvail().x, button = menu::px(240), start = ImGui::GetCursorPosX();
         ImGui::BeginGroup();
         ImGui::PushFont(menu.bold);
-        ImGui::Text("%zu mods Â· %zu on", list.entries.size(), enabled);
+        ImGui::Text("%zu mods \xc2\xb7 %zu on", list.entries.size(), enabled);
         ImGui::PopFont();
         if (live_mods::busy()) {
             ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(st::warning), "Applying mods...");
