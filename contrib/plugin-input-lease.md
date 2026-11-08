@@ -72,6 +72,8 @@ Read cleanup from the actual receipt fields: passive `capture_reserved` and `sou
 
 ## Validation scope
 
-Windows Release builds completed for the runtime, launcher and server plus the plugin, passive-source, capture-source, scripted-pad and held-input test executables, on upstream main with `reskate.input.write`. All 35 selected CTest entries passed: 9 passive-source, 23 capture-source, plugins, scripted pad and held input. The plugin test entry skipped 21 optional contrib subcases whose plugins are not in the checkout. The Cargo-built Spotify component was disabled.
+Windows Release qualification of the current menu repair built 21 targets, including the runtime, launcher and server, with `/W4 /WX` verified in the generated Release projects. All 48 selected CTest entries passed. The selected roster includes the passive-source and capture-source cases, plugins, scripted pad, held input, pose placement, score line, trick watch, challenge attempts, placement motion, song filtering, park editor UI, news, map download timeout, mod-store view, developer identity and multiplayer protocol/mesh. CTest discovery and the JUnit result matched that exact roster. Cargo and development tools were OFF; Spotify-device compilation is not covered.
+
+The current capture-source cases exercise replacement publication and item-filter open/close across the actual staged finalizer. They require retained neutral fallback and cleanup debt before later confirmed handback and callback drain. The production State member is statically bound to the publication-aware flag type.
 
 This is not a full configured CTest-suite result. Native hardware and in-game validation, concurrent callback runs, garbage-collection runs and counter-exhaustion runs remain unrun. The selected tests do not establish physical-device identity, gameplay consumption or native cleanup behavior under real controller polling.
