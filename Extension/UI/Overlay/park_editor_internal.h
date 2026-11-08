@@ -117,7 +117,7 @@ enum class Chip {
     plain, // no tile until hovered, grey text: an action that is not the main one
     tile,  // a grey tile
     blue,  // chosen, or the main action: blue with black text
-    white, // a switch that is on: white with black text
+    white, // a switch that is on: skate.'s light grey with black text
     danger // a grey tile with red text
 };
 float chip_width(const ParkEditorUI &ui, const char *label, float text_size = 15);
@@ -136,7 +136,7 @@ void float_panel(const char *id, ImVec2 at, ImVec2 size, unsigned seed, float k,
         auto *draw = ImGui::GetWindowDrawList();
         const auto from = ImGui::GetWindowPos(), extent = ImGui::GetWindowSize();
         draw->PushClipRect(plus(from, {-2, -2}), plus(from, {extent.x + 2, extent.y + 2}), false);
-        skate_theme::rough_rect(draw, from, plus(from, extent), colour, seed, k);
+        theme::tile_rect(draw, from, plus(from, extent), colour, seed, k);
         draw->PopClipRect();
         body();
     }

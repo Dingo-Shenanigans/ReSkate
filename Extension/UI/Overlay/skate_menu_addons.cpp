@@ -53,14 +53,14 @@ int home_tile(SkateMenu& menu, const char* id, const char* name, const std::stri
     auto* draw = ImGui::GetWindowDrawList();
     const ImVec2 end(at.x + size.x, at.y + size.y);
     // The kit's greys (skate_menu.cpp): a row's fill, and a step lighter under the pointer. Being
-    // changed it stays white, with a blue bar along its foot.
+    // changed it stays the focus blue, with a black bar along its foot.
     const bool lit = enabled && (focused || changing);
-    const ImU32 fill = lit ? paper : !enabled ? IM_COL32(40, 40, 43, 130) : hovered ? IM_COL32(56, 57, 61, 255) : IM_COL32(40, 40, 43, 255);
-    skate_theme::rough_rect(draw, at, end, fill, seed, px(1));
-    if (changing) draw->AddRectFilled(ImVec2(at.x, end.y - px(4)), end, blue);
+    const ImU32 fill = lit ? focus_fill : !enabled ? IM_COL32(40, 40, 43, 130) : hovered ? IM_COL32(56, 57, 61, 255) : IM_COL32(40, 40, 43, 255);
+    tile_rect(draw, at, end, fill, seed, px(1));
+    if (changing) draw->AddRectFilled(ImVec2(at.x, end.y - px(4)), end, skate_theme::black);
     const ImU32 focus_text = IM_COL32(11, 11, 11, 255);
     draw->PushClipRect(at, end, true);
-    draw->AddText(menu.bold, px(14), ImVec2(at.x + px(18), at.y + px(14)), lit ? IM_COL32(70, 70, 74, 255) : muted, name);
+    draw->AddText(menu.bold, px(14), ImVec2(at.x + px(18), at.y + px(14)), lit ? IM_COL32(10, 40, 82, 255) : muted, name);
     // The value on one line: a size smaller when the tile is too narrow for it (the side sheet).
     const float room = size.x - px(36) - (steps && enabled ? px(40) : 0.0f);
     ImFont* value_font = big_value ? menu.heading : menu.body;
@@ -98,11 +98,11 @@ bool where_chip(SkateMenu& menu, const char* label, float width, const char* hin
     if (lit || hovered) set_console_hint(hint);
     auto* draw = ImGui::GetWindowDrawList();
     const ImVec2 end(at.x + size.x, at.y + size.y);
-    skate_theme::rough_rect(draw, at, end, lit ? paper : hovered ? IM_COL32(26, 112, 205, 255) : IM_COL32(11, 95, 184, 255),
+    tile_rect(draw, at, end, lit ? focus_fill : hovered ? IM_COL32(246, 246, 248, 255) : IM_COL32(226, 227, 230, 255),
                             static_cast<unsigned>(ImGui::GetItemID()) & 0xfff, px(1));
     const auto text = menu.bold->CalcTextSizeA(px(14), FLT_MAX, 0, label);
     draw->AddText(menu.bold, px(14), ImVec2(at.x + (size.x - text.x) * .5f, at.y + (size.y - text.y) * .5f),
-                  lit ? IM_COL32(11, 11, 11, 255) : paper, label);
+                  IM_COL32(11, 11, 11, 255), label);
     return pressed;
 }
 
@@ -137,7 +137,7 @@ void where_you_are(SkateMenu& menu, const Model& model) {
     const auto at = ImGui::GetCursorScreenPos();
     const float width = ImGui::GetContentRegionAvail().x, height = px(146);
     auto* draw = ImGui::GetWindowDrawList();
-    skate_theme::rough_rect(draw, at, ImVec2(at.x + width, at.y + height), blue, 0x5a1, px(1));
+    tile_rect(draw, at, ImVec2(at.x + width, at.y + height), blue, 0x5a1, px(1));
     draw->PushClipRect(at, ImVec2(at.x + width - px(16), at.y + height), true);
     draw->AddText(menu.bold, px(14), ImVec2(at.x + px(18), at.y + px(16)), IM_COL32(219, 238, 255, 255), "YOU ARE ON");
     draw->AddText(menu.heading, px(22), ImVec2(at.x + px(18), at.y + px(36)), paper, title.c_str());

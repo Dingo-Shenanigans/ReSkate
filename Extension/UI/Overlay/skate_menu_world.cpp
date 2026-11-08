@@ -167,7 +167,7 @@ void level_picker(SkateMenu& menu, const Model& model, const CallbacksV3& callba
                 const auto size = menu.bold->CalcTextSizeA(px(13), FLT_MAX, 0, initial);
                 draw->AddText(menu.bold, px(13), ImVec2(at.x + (width - size.x) * .5f, at.y + (picture - size.y) * .5f), muted, initial);
             }
-            draw->AddRectFilled(ImVec2(at.x, at.y + picture), end, focused ? paper : hovered ? skate_theme::tile_light : skate_theme::tile);
+            draw->AddRectFilled(ImVec2(at.x, at.y + picture), end, focused ? focus_fill : hovered ? skate_theme::tile_light : skate_theme::tile);
             if (current) {
                 // The map loaded now: a blue edge along its name and a badge on its picture.
                 draw->AddRectFilled(ImVec2(at.x, at.y + picture), ImVec2(at.x + px(4), end.y), blue);

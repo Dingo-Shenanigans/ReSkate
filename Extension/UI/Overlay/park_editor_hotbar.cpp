@@ -96,7 +96,7 @@ void hotbar_layout(ParkEditorUI &ui, EditorFrame &f) {
         const bool hovered = ImGui::IsItemHovered();
         ImGui::EndDisabled();
         if (hovered)
-            skate_theme::rough_rect(draw, ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), skate_theme::tile_grey, 202, k);
+            theme::tile_rect(draw, ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), skate_theme::tile_grey, 202, k);
         if (open)
             open_project_dialog(ui, model);
         if (hovered)

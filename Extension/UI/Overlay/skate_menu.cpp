@@ -30,7 +30,9 @@ namespace {
 float ui_scale = default_menu_scale;
 int shown_layout = menu_layout_sheet; // the layout this frame is drawn in
 // The menu's own greys, from its mock-ups: a near-black sheet, dark tiles for cards and rows a step
-// lighter, and the side sheet's focus: white, with dark text on it.
+// lighter. The focus is skate.'s own (its Settings and Skaters pages): its blue with black text and
+// halftone dots (theme::focus_fill, tile_rect); what is chosen or the main action rests on the light
+// grey of skate.'s open tab, so it never reads as the focus.
 constexpr ImU32 sheet_fill = IM_COL32(16, 16, 16, 242);
 constexpr ImU32 band_fill = IM_COL32(11, 11, 11, 255);
 constexpr ImU32 window_fill = IM_COL32(20, 20, 20, 242);
@@ -44,6 +46,7 @@ constexpr ImU32 row_hover = IM_COL32(56, 57, 61, 255);
 constexpr ImU32 tab_fill = IM_COL32(35, 35, 37, 255);
 constexpr ImU32 rule_ink = IM_COL32(45, 45, 47, 255);
 constexpr ImU32 focus_ink = IM_COL32(11, 11, 11, 255);
+constexpr ImU32 primary_rest = IM_COL32(226, 227, 230, 255), primary_hover = IM_COL32(246, 246, 248, 255), primary_off = IM_COL32(226, 227, 230, 70);
 constexpr ImU32 quiet_ink = IM_COL32(138, 140, 146, 255);
 // Rows are this tall at 1080 lines; FramePadding is set so ImGui's own widgets are as tall.
 constexpr float row_size = 48, text_size = 17;
@@ -141,11 +144,11 @@ float held_for() {
 // The item just drawn has the controller's or the keyboard's focus, shown. (After a click ImGui
 // keeps its focus on the item too, but hidden: the pointer then lights it as hovered instead.)
 bool nav_lit() { return ImGui::IsItemFocused() && ImGui::GetIO().NavVisible; }
-// The tile under a row: white under the focus, a lighter grey under the pointer, rough-cut like the
-// game's tiles.
+// The tile under a row: the focus blue under the focus, a lighter grey under the pointer, rough-cut
+// like the game's tiles.
 void row_frame(ImDrawList* draw, ImVec2 at, ImVec2 end, bool lit, bool hovered, bool disabled) {
-    const ImU32 fill = lit ? paper : disabled ? IM_COL32(40, 40, 43, 130) : hovered ? row_hover : row_fill;
-    skate_theme::rough_rect(draw, at, end, fill, static_cast<unsigned>(ImGui::GetItemID()) & 0xfff, ui_scale);
+    const ImU32 fill = lit ? focus_fill : disabled ? IM_COL32(40, 40, 43, 130) : hovered ? row_hover : row_fill;
+    tile_rect(draw, at, end, fill, static_cast<unsigned>(ImGui::GetItemID()) & 0xfff, ui_scale);
 }
 ImU32 row_ink(bool lit, bool enabled) { return lit ? focus_ink : enabled ? paper : muted; }
 void arrows(ImDrawList* draw, ImVec2 at, ImVec2 end, ImU32 colour) {
@@ -324,10 +327,10 @@ bool toggle_row(SkateMenu& menu, const char* label, const char* hint, bool& valu
     const char* state = available ? (value ? "ON" : "OFF") : unavailable;
     const bool on = available && value;
     const ImVec2 box(end.x - px(8) - block, at.y + px(8)), box_end(end.x - px(8), end.y - px(8));
-    if (available) draw->AddRectFilled(box, box_end, on ? blue : lit ? IM_COL32(0, 0, 0, 38) : IM_COL32(0, 0, 0, 110));
+    if (available) draw->AddRectFilled(box, box_end, on ? (lit ? skate_theme::black : blue) : lit ? IM_COL32(0, 0, 0, 38) : IM_COL32(0, 0, 0, 110));
     const auto size = menu.bold->CalcTextSizeA(px(14), FLT_MAX, 0, state);
     draw->AddText(menu.bold, px(14), ImVec2(box.x + (block - size.x) * 0.5f, box.y + (box_end.y - box.y - size.y) * 0.5f),
-                  on ? paper : lit ? IM_COL32(70, 70, 74, 255) : muted, state);
+                  on ? paper : lit ? IM_COL32(10, 40, 82, 255) : muted, state);
     if (hint && *hint && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", hint);
     ImGui::EndDisabled();
     ImGui::PopID();
@@ -507,7 +510,7 @@ void end_card() {
             window->WorkRect.Max.x = frame.work_max;
             window->ContentRegionRect.Max.x = frame.content_max;
             frame.splitter.SetCurrentChannel(window->DrawList, 0);
-            skate_theme::rough_rect(window->DrawList, ImVec2(frame.left, frame.top), ImVec2(frame.right, bottom), card_depth ? inner_card_fill : card_fill,
+            tile_rect(window->DrawList, ImVec2(frame.left, frame.top), ImVec2(frame.right, bottom), card_depth ? inner_card_fill : card_fill,
                                     frame.seed, ui_scale);
             frame.splitter.Merge(window->DrawList);
         }
@@ -580,7 +583,7 @@ bool fold_card(SkateMenu& menu, const char* id, const char* title, const char* s
     const bool hovered = ImGui::IsItemHovered(), lit = nav_lit();
     auto* draw = ImGui::GetWindowDrawList();
     if (lit || hovered)
-        skate_theme::rough_rect(draw, at, ImVec2(at.x + width, at.y + height), lit ? paper : row_hover, static_cast<unsigned>(ImGui::GetItemID()) & 0xfff,
+        tile_rect(draw, at, ImVec2(at.x + width, at.y + height), lit ? focus_fill : row_hover, static_cast<unsigned>(ImGui::GetItemID()) & 0xfff,
                                 ui_scale);
     if (hovered) ImGui::SetTooltip(open ? "Click to fold this card away." : "Click to open this card.");
     if (lit || hovered) focus_hint = open ? "A folds this card away." : "A opens this card.";
@@ -705,13 +708,13 @@ bool primary_button(SkateMenu& menu, const char* label, bool enabled) {
     const bool lit = nav_lit(), hovered = enabled && ImGui::IsItemHovered();
     auto* draw = ImGui::GetWindowDrawList();
     const ImVec2 end(at.x + width, at.y + height);
-    skate_theme::rough_rect(draw, at, end, !enabled ? IM_COL32(1, 131, 255, 90) : lit ? paper : hovered ? skate_theme::blue_hover : blue,
+    tile_rect(draw, at, end, !enabled ? primary_off : lit ? focus_fill : hovered ? primary_hover : primary_rest,
                             static_cast<unsigned>(ImGui::GetItemID()) & 0xfff, ui_scale);
     const char* shown_end = ImGui::FindRenderedTextEnd(label);
     const auto size = menu.bold->CalcTextSizeA(px(text_size), FLT_MAX, 0, label, shown_end);
     draw->PushClipRect(at, end, true);
     draw->AddText(menu.bold, px(text_size), ImVec2(at.x + std::max(px(10), (width - size.x) * .5f), at.y + (height - size.y) * .5f),
-                  lit ? focus_ink : enabled ? paper : IM_COL32(245, 245, 245, 140), label, shown_end);
+                  enabled || lit ? focus_ink : IM_COL32(245, 245, 245, 140), label, shown_end);
     draw->PopClipRect();
     ImGui::PopID();
     return clicked && enabled;
@@ -786,13 +789,13 @@ bool button_tile(SkateMenu& menu, const char* label, ImVec2 size, bool enabled, 
     if (hint && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", hint);
     auto* draw = ImGui::GetWindowDrawList();
     const ImVec2 end(at.x + size.x, at.y + size.y);
-    const ImU32 fill = lit ? paper : !enabled ? IM_COL32(40, 40, 43, 130) : on ? blue : hovered ? row_hover : row_fill;
-    skate_theme::rough_rect(draw, at, end, fill, static_cast<unsigned>(ImGui::GetItemID()) & 0xfff, ui_scale);
+    const ImU32 fill = lit ? focus_fill : !enabled ? IM_COL32(40, 40, 43, 130) : on ? primary_rest : hovered ? row_hover : row_fill;
+    tile_rect(draw, at, end, fill, static_cast<unsigned>(ImGui::GetItemID()) & 0xfff, ui_scale);
     const char* shown_end = ImGui::FindRenderedTextEnd(label);
     const auto text = menu.bold->CalcTextSizeA(px(16), FLT_MAX, 0, label, shown_end);
     draw->PushClipRect(at, end, true);
     draw->AddText(menu.bold, px(16), ImVec2(at.x + std::max(px(10), (size.x - text.x) * .5f), at.y + (size.y - text.y) * .5f),
-                  lit ? focus_ink : enabled ? paper : muted, label, shown_end);
+                  lit || (on && enabled) ? focus_ink : enabled ? paper : muted, label, shown_end);
     draw->PopClipRect();
     return pressed && enabled;
 }
@@ -905,9 +908,9 @@ bool list_row(SkateMenu& menu, const char* id, const std::string& text, const st
     const bool lit = enabled && nav_lit(), hovered = enabled && ImGui::IsItemHovered();
     auto* draw = ImGui::GetWindowDrawList();
     const ImVec2 end(at.x + width, at.y + height);
-    skate_theme::rough_rect(draw, at, end, lit ? paper : current ? blue : hovered ? row_hover : row_fill, static_cast<unsigned>(ImGui::GetItemID()) & 0xfff,
+    tile_rect(draw, at, end, lit ? focus_fill : current ? primary_rest : hovered ? row_hover : row_fill, static_cast<unsigned>(ImGui::GetItemID()) & 0xfff,
                             ui_scale);
-    const ImU32 text_ink = lit ? focus_ink : enabled ? paper : muted;
+    const ImU32 text_ink = lit || current ? focus_ink : enabled ? paper : muted;
     const auto side_size = menu.body->CalcTextSizeA(px(15), FLT_MAX, 0, side.c_str());
     draw->PushClipRect(at, ImVec2(end.x - side_size.x - px(36), end.y), true);
     draw->AddText(menu.bold, px(text_size), ImVec2(at.x + px(16), at.y + (height - px(text_size)) * .5f), text_ink, text.c_str());
@@ -963,7 +966,7 @@ void category_tabs(SkateMenu& menu, int& selected, std::span<const char* const> 
             ImGui::PopID();
             const bool on = selected == i;
             if (lit)
-                skate_theme::rough_rect(draw, ImVec2(x - px(6), y), ImVec2(x + w + px(6), y + height - px(7)), paper, static_cast<unsigned>(i + 7), ui_scale);
+                tile_rect(draw, ImVec2(x - px(6), y), ImVec2(x + w + px(6), y + height - px(7)), paper, static_cast<unsigned>(i + 7), ui_scale);
             draw->AddText(menu.bold, size, ImVec2(x, y + (height - px(7) - size) * .5f), lit ? focus_ink : on || hovered ? paper : quiet_ink, label);
             if (on) open_at = ImVec2(x - px(4), y + height - px(5)), open_end = ImVec2(x + w + px(4), y + height);
             x += w + gap;
@@ -999,15 +1002,15 @@ void category_tabs(SkateMenu& menu, int& selected, std::span<const char* const> 
         ImGui::PopID();
         const bool on = selected == i;
         const ImVec2 end(at.x + tab_width, at.y + height);
-        skate_theme::rough_rect(draw, at, end, on ? paper : hovered ? row_hover : tab_fill, static_cast<unsigned>(i + 11), ui_scale);
-        // The focus on another tab is a white edge (white is the open tab's); on the open one, a blue line under it.
-        if (lit && !on) draw->AddRect(at, end, paper, 0, 0, px(2));
-        if (lit && on) draw->AddRectFilled(ImVec2(at.x, end.y - px(3)), end, blue);
+        tile_rect(draw, at, end, lit ? focus_fill : on ? primary_rest : hovered ? row_hover : tab_fill, static_cast<unsigned>(i + 11), ui_scale);
+        // The open tab's blue brush line, as skate.'s (black on it while it has the focus).
+        if (on) draw->AddQuadFilled(ImVec2(at.x + px(6), end.y - px(2)), ImVec2(end.x - px(4), end.y - px(3)), ImVec2(end.x - px(6), end.y + px(1)),
+                                    ImVec2(at.x + px(8), end.y + px(2)), lit ? skate_theme::black : blue);
         const char* label = tabs[static_cast<std::size_t>(i)];
         const auto text = menu.bold->CalcTextSizeA(size, FLT_MAX, 0, label);
         draw->PushClipRect(at, end, true);
         draw->AddText(menu.bold, size, ImVec2(at.x + std::max(px(6), (tab_width - text.x) * .5f), at.y + (height - text.y) * .5f),
-                      on ? focus_ink : hovered || lit ? paper : quiet_ink, label);
+                      on || lit ? focus_ink : hovered ? paper : quiet_ink, label);
         draw->PopClipRect();
     }
     ImGui::SetCursorScreenPos(ImVec2(start.x, start.y + static_cast<float>(rows) * height + static_cast<float>(rows - 1) * gap));
@@ -1055,12 +1058,12 @@ bool open_row(SkateMenu& menu, const char* id, const OpenRow& row) {
     if (ImGui::IsItemVisible()) {
         auto* draw = ImGui::GetWindowDrawList();
         const ImVec2 end(at.x + width, at.y + height);
-        skate_theme::rough_rect(draw, at, end, lit ? paper : open || hovered ? row_hover : row_fill, static_cast<unsigned>(self) & 0xfff, ui_scale);
+        tile_rect(draw, at, end, lit ? focus_fill : open || hovered ? row_hover : row_fill, static_cast<unsigned>(self) & 0xfff, ui_scale);
         if (row.edge && !open) draw->AddRectFilled(at, ImVec2(at.x + px(4), end.y), row.edge);
         float x = at.x + px(16);
         if (row.swatch) {
             const float s = px(26), y = at.y + (height - s) * .5f;
-            skate_theme::rough_rect(draw, ImVec2(x, y), ImVec2(x + s, y + s), row.swatch, static_cast<unsigned>(self >> 12) & 0xfff, ui_scale);
+            tile_rect(draw, ImVec2(x, y), ImVec2(x + s, y + s), row.swatch, static_cast<unsigned>(self >> 12) & 0xfff, ui_scale);
             x += s + px(12);
         }
         // Right to left: the side text, then the tags after the name, then the name in what is left.
@@ -1183,7 +1186,7 @@ bool expand_row(SkateMenu& menu, const char* id, const std::string& title, const
     if (lit || hovered) focus_hint = is_open ? "A or B closes it." : "A shows what you can do with it.";
     auto* draw = ImGui::GetWindowDrawList();
     const ImVec2 end(at.x + width, at.y + height);
-    skate_theme::rough_rect(draw, at, end, lit ? paper : is_open || hovered ? row_hover : row_fill, static_cast<unsigned>(ImGui::GetItemID()) & 0xfff,
+    tile_rect(draw, at, end, lit ? focus_fill : is_open || hovered ? row_hover : row_fill, static_cast<unsigned>(ImGui::GetItemID()) & 0xfff,
                             ui_scale);
     if (current) draw->AddRectFilled(at, ImVec2(at.x + px(4), end.y), lit ? focus_ink : blue);
     const float title_y = detail.empty() ? at.y + (height - px(text_size)) * .5f : at.y + px(12);
@@ -1239,7 +1242,7 @@ RowPress library_row(SkateMenu& menu, const char* id, const LibraryRow& row) {
     }
     if (ImGui::IsItemVisible()) {
         auto* draw = ImGui::GetWindowDrawList();
-        skate_theme::rough_rect(draw, at, end, lit ? paper : row.open || hovered ? row_hover : row_fill, static_cast<unsigned>(ImGui::GetItemID()) & 0xfff,
+        tile_rect(draw, at, end, lit ? focus_fill : row.open || hovered ? row_hover : row_fill, static_cast<unsigned>(ImGui::GetItemID()) & 0xfff,
                                 ui_scale);
         if (row.edge) draw->AddRectFilled(at, ImVec2(at.x + px(4), end.y), row.edge);
         if (row.open) draw->AddRectFilled(at, ImVec2(at.x + px(4), end.y), blue);
@@ -1247,7 +1250,7 @@ RowPress library_row(SkateMenu& menu, const char* id, const LibraryRow& row) {
         if (row.swatch || row.image) {
             const float s = std::min(px(34), height - px(16)), y = at.y + (height - s) * .5f;
             if (row.image) draw->AddImage(row.image, ImVec2(x, y), ImVec2(x + s, y + s));
-            else skate_theme::rough_rect(draw, ImVec2(x, y), ImVec2(x + s, y + s), row.swatch, static_cast<unsigned>(ImGui::GetItemID() >> 12) & 0xfff, ui_scale);
+            else tile_rect(draw, ImVec2(x, y), ImVec2(x + s, y + s), row.swatch, static_cast<unsigned>(ImGui::GetItemID() >> 12) & 0xfff, ui_scale);
             x += s + px(12);
         }
         if (row.tag && *row.tag) {
@@ -1906,10 +1909,10 @@ void draw_hub(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks,
                 if (on || lit) {
                     // A brush stroke, cut crooked at its ends.
                     const float x0 = at.x, x1 = at.x + px(200), y0 = at.y + row * .08f, y1 = at.y + row * .92f, h = y1 - y0;
-                    list->AddQuadFilled(ImVec2(x0 + px(4), y0 + h * .12f), ImVec2(x1, y0), ImVec2(x1 - px(8), y1), ImVec2(x0, y1 - h * .12f), lit ? paper : blue);
+                    list->AddQuadFilled(ImVec2(x0 + px(4), y0 + h * .12f), ImVec2(x1, y0), ImVec2(x1 - px(8), y1), ImVec2(x0, y1 - h * .12f), lit && !on ? primary_rest : blue);
                 }
                 const float text = std::min(px(24), row * .8f);
-                list->AddText(font, text, ImVec2(at.x + px(10), at.y + (row - text) * .5f), lit ? focus_ink : on || hovered ? paper : quiet_ink,
+                list->AddText(font, text, ImVec2(at.x + px(10), at.y + (row - text) * .5f), lit || on ? focus_ink : hovered ? paper : quiet_ink,
                               page_names[static_cast<std::size_t>(i)]);
             }
             ImGui::EndChild();

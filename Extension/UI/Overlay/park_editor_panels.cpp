@@ -80,8 +80,8 @@ bool asset_card(ParkEditorUI &ui, const std::string &key, const std::string &tit
     const bool clicked = ImGui::InvisibleButton("##card", size);
     const bool hovered = ImGui::IsItemHovered();
     auto *draw = ImGui::GetWindowDrawList();
-    skate_theme::rough_rect(draw, top, plus(top, size),
-                            chosen    ? skate_theme::white
+    theme::tile_rect(draw, top, plus(top, size),
+                            chosen    ? theme::focus_fill
                             : hovered ? skate_theme::tile_light
                                       : skate_theme::tile_grey,
                             seed, k);
@@ -271,7 +271,8 @@ bool chip(const ParkEditorUI &ui, const char *label, Chip style, float height, u
         ink = skate_theme::black;
         break;
     case Chip::white:
-        fill = hovered ? IM_COL32(255, 255, 255, 255) : skate_theme::white;
+        // (The light grey of skate.'s chosen tab: the blue is the focus's and the active tool's.)
+        fill = hovered ? IM_COL32(246, 246, 248, 255) : IM_COL32(226, 227, 230, 255);
         ink = skate_theme::black;
         break;
     case Chip::danger:
@@ -286,7 +287,7 @@ bool chip(const ParkEditorUI &ui, const char *label, Chip style, float height, u
     }
     auto *draw = ImGui::GetWindowDrawList();
     if (fill)
-        skate_theme::rough_rect(draw, at, plus(at, size), fill, seed, k);
+        theme::tile_rect(draw, at, plus(at, size), fill, seed, k);
     draw->AddText(font, text_size * k, {at.x + (size.x - extent.x) * .5f, at.y + (size.y - extent.y) * .5f}, ink, label,
                   end);
     return pressed;
@@ -474,7 +475,7 @@ void set_list(ParkEditorUI &ui, const Model &model) {
         const float width = ImGui::GetContentRegionAvail().x;
         const float height = ImGui::GetTextLineHeight() * 2 + ImGui::GetFrameHeight() + 26 * k;
         const bool chosen = ui.placing_set == set.name;
-        skate_theme::rough_rect(draw, top, plus(top, {width, height}),
+        theme::tile_rect(draw, top, plus(top, {width, height}),
                                 chosen ? skate_theme::tile_light : skate_theme::tile_grey,
                                 static_cast<unsigned>(index + 91), k);
         if (chosen)
@@ -521,7 +522,7 @@ void set_strip(ParkEditorUI &ui, const Model &model, float card_width) {
         const ImVec2 top{start.x + static_cast<float>(index) * pitch, start.y};
         ImGui::PushID(set.name.c_str());
         const bool chosen = ui.placing_set == set.name;
-        skate_theme::rough_rect(draw, top, plus(top, {width, height}),
+        theme::tile_rect(draw, top, plus(top, {width, height}),
                                 chosen ? skate_theme::tile_light : skate_theme::tile_grey,
                                 static_cast<unsigned>(index + 91), k);
         if (chosen)

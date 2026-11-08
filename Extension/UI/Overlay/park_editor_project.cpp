@@ -37,7 +37,7 @@ void project_dialog(ParkEditorUI &ui, EditorFrame &frame) {
         auto *draw = ImGui::GetWindowDrawList();
         const auto at = ImGui::GetWindowPos();
         draw->PushClipRect(plus(at, {-2, -2}), plus(at, {size.x + 2, size.y + 2}), false);
-        skate_theme::rough_rect(draw, at, plus(at, size), IM_COL32(18, 18, 19, 252), 60, k);
+        theme::tile_rect(draw, at, plus(at, size), IM_COL32(18, 18, 19, 252), 60, k);
         draw->PopClipRect();
         draw->AddRectFilled(at, {at.x + size.x, at.y + P(3)}, blue);
         // The brushed title, tilted like the editor's own.
@@ -78,7 +78,7 @@ void project_dialog(ParkEditorUI &ui, EditorFrame &frame) {
         // left: projects
         {
             const auto list_at = ImGui::GetCursorScreenPos();
-            skate_theme::rough_rect(draw, list_at, {list_at.x + list_width, list_at.y + body}, skate_theme::tile, 61, k);
+            theme::tile_rect(draw, list_at, {list_at.x + list_width, list_at.y + body}, skate_theme::tile, 61, k);
             ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {P(10), P(10)});
             ImGui::BeginChild("##projects", {list_width, body}, ImGuiChildFlags_AlwaysUseWindowPadding);
             if (chip(ui, "+  NEW PARK MOD##new", creating ? Chip::white : Chip::tile, P(32), 62, true,

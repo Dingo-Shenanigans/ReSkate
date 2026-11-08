@@ -40,14 +40,14 @@ bool rail_button(const ParkEditorUI &ui, const RailEntry &entry, ImVec2 size, Ch
         ink = skate_theme::black;
         key = IM_COL32(0, 48, 100, 255);
     } else if (lit == Chip::white) {
-        fill = skate_theme::white;
+        fill = IM_COL32(226, 227, 230, 255);
         ink = skate_theme::black;
         key = IM_COL32(90, 92, 96, 255);
     }
     if (!enabled)
         ink = key = IM_COL32(70, 72, 76, 255);
     if (fill)
-        skate_theme::rough_rect(draw, at, plus(at, size), fill, seed, k);
+        theme::tile_rect(draw, at, plus(at, size), fill, seed, k);
     ImFont *bold = font_or(ui.bold_font);
     const auto name = bold->CalcTextSizeA(13 * k, FLT_MAX, 0, entry.name);
     const auto letter = ImGui::GetFont()->CalcTextSizeA(11 * k, FLT_MAX, 0, entry.key);
@@ -117,7 +117,7 @@ void rail_layout(ParkEditorUI &ui, EditorFrame &f) {
         ImGui::SetTooltip("Create, open or save a park mod.");
     {
         const auto a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
-        skate_theme::rough_rect(frame, a, b, picker_hovered ? skate_theme::tile_light : IM_COL32(29, 29, 31, 255), 301, k);
+        theme::tile_rect(frame, a, b, picker_hovered ? skate_theme::tile_light : IM_COL32(29, 29, 31, 255), 301, k);
         frame->PushClipRect(a, {b.x - P(24), b.y}, true);
         frame->AddText({a.x + P(12), a.y + (P(32) - ImGui::GetTextLineHeight()) * .5f}, paper, picker.c_str());
         frame->PopClipRect();
