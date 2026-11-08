@@ -72,7 +72,7 @@ int skater_frame(lua_State* L) {
 }
 // Direct trainer states are not necessarily present in the animation graph's property list.
 int flip_state(lua_State* L) {
-    auto& p = allowed(L, "skater.read", "reskate.skater.flip_state");
+    auto& p = permitted(L, "skater.read", "reskate.skater.flip_state");
     const auto state = game_of(p).flip_state();
     if (!state) { lua_pushnil(L); return 1; }
     lua_createtable(L, 0, 4);
