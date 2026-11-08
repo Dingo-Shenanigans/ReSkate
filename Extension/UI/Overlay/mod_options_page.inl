@@ -336,7 +336,7 @@ void world_rows(Opts &o, OptionsContext &c) {
     const bool loaded = m.world.map != WorldMap::none;
     const std::string load_first = "Load a map on the MAPS tab first.";
 
-    opt_heading(o, "TIME AND SKY");
+    opt_heading(o, "TIME");
     {
         const bool can = native_tools::time_of_day_available(m, c.cb);
         const int now = static_cast<int>(native_tools::time_of_day(m));
@@ -357,61 +357,6 @@ void world_rows(Opts &o, OptionsContext &c) {
         if (m.world.controlled_by_host && server_can(m.multiplayer, "tod")) row.help += " Your role on this server sets it for everyone.";
         row.reset = [&c] { for (const auto &line : native_tools::time_of_day_commands(c.m, 0)) c.run(line); };
         row.reset_does = "Back to the level's own time";
-    }
-    // Fog, sky and wind: one group at a time, as on the Insert menu, its switches, choices and numbers
-    // (a colour or a several-part value is the Insert menu's: Map > Time and weather).
-    {
-        static int kind = 0;
-        const auto &controls = m.world_controls;
-        const bool can = loaded && controls.environment_available && c.console;
-        opt_choice(o, "Fog, sky or wind", std::string(atmosphere_groups[static_cast<std::size_t>(kind)]), true,
-                   "Which of the level's fog, sky and wind settings show below.", [](int way) { kind = wrap_step(kind, 3, way); });
-        const std::string why_env = loaded ? "Fog, sky and wind are not ready on this map yet." : load_first;
-        opt_action(o, "Restore fog, sky and wind", "RESTORE", can, "Fog, sky and wind back to the level's own settings.",
-                   [&c] { c.run("environment reset_environment"); }).why_not = why_env;
-        for (unsigned i = 0; i < atmosphere_controls.size(); ++i) {
-            const auto &control = atmosphere_controls[i];
-            if (atmosphere_kind(control.property) != static_cast<unsigned>(kind)) continue;
-            const auto &reading = controls.atmosphere[i];
-            const auto saved = controls.choices.atmosphere.find(control.key);
-            AtmosphereValue value = saved != controls.choices.atmosphere.end() ? saved->second : reading.value.value_or(AtmosphereValue{});
-            const auto submit = [&c, i](AtmosphereValue next) {
-                const auto &ctl = atmosphere_controls[i];
-                if (!valid_atmosphere_value(ctl, next)) return;
-                c.run(std::string(ctl.key) + " \"" + atmosphere_value_text(ctl, next) + "\"");
-            };
-            std::string help = std::string(control.section) + ". Changes apply at once and save by themselves.";
-            if (control.type == AtmosphereType::toggle) {
-                auto &row = opt_toggle(o, control.label, value.number[0] != 0, can, help, [submit, value](bool on) mutable {
-                    value.number[0] = on ? 1 : 0;
-                    submit(value);
-                });
-                row.why_not = why_env;
-            } else if (control.type == AtmosphereType::enumeration) {
-                int at = 0;
-                for (unsigned j = 0; j < control.option_count; ++j)
-                    if (value.number[0] == atmosphere_options[control.option_start + j].value) at = static_cast<int>(j);
-                auto &row = opt_choice(o, control.label, atmosphere_options[control.option_start + static_cast<unsigned>(at)].label, can, help,
-                                       [submit, value, at, i](int way) mutable {
-                                           const auto &ctl = atmosphere_controls[i];
-                                           const int next = wrap_step(at, static_cast<int>(ctl.option_count), way);
-                                           value.number[0] = atmosphere_options[ctl.option_start + static_cast<unsigned>(next)].value;
-                                           submit(value);
-                                       });
-                row.why_not = why_env;
-            } else if ((control.type == AtmosphereType::integer || control.type == AtmosphereType::number) && control.lanes <= 1) {
-                const double low = control.minimum, high = control.maximum, range = high - low;
-                const double step = control.type == AtmosphereType::integer ? 1.0 : range > 0 && range <= 1e4 ? range / 40 : std::max(std::abs(value.number[0]) * 0.05, 0.01);
-                char text[32];
-                std::snprintf(text, sizeof(text), control.type == AtmosphereType::integer ? "%.0f" : "%.3g", value.number[0]);
-                auto &row = opt_number(o, control.label, text, range > 0 ? static_cast<float>((value.number[0] - low) / range) : -1.f, can, help,
-                                       [submit, value, step, low, high](int way) mutable {
-                                           value.number[0] = std::clamp(value.number[0] + step * way, low, high);
-                                           submit(value);
-                                       });
-                row.why_not = why_env;
-            }
-        }
     }
 
     opt_heading(o, "STREETS");
