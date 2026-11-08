@@ -20,7 +20,10 @@
 //   (MenuEnvironment: None 0, CAS 1, Skatepass 2, Store 3, Skatepedia 4) sends one event per value
 //   into the menu prefab, and its MyWorldVisible feeds the prefab's gate. The room picks its look
 //   (prefab_background_cas, _store, ...) from the same value.
-// So writing those two fields is what the game's own tabs do to show it. ReSkate writes them only
+// - The room also shows what CharacterPreviewModel's Section says (MyWorldSelection: Skater 0,
+//   Skateboard 1, None 2, BuildKit 3): the default skater stood in the Store room behind the Mod
+//   Manager, so ReSkate sets it to None there too.
+// So writing those fields is what the game's own tabs do to show it. ReSkate writes them only
 // while its Mod Manager tab is on screen, and puts back what was there when it leaves, unless the
 // game has written something else meanwhile.
 namespace dingosdk::multiplayer {
@@ -48,6 +51,18 @@ struct Backdrop {
     bool told_fight{};        // said that the game set Environment back while Mod Manager was up
 };
 Backdrop& backdrop() { static Backdrop b; return b; }
+
+// CharacterPreviewModel (gameplay/characters/data/structs/characterpreviewmodel) and its Section field.
+constexpr std::uint32_t preview_model = 0x4288e313, preview_section = 0xbf15f9d1;
+constexpr std::int64_t section_none = 2;
+struct Preview {
+    Handle root{};
+    Address type{};
+    ULONGLONG next_scan{};
+    bool applied{}, told{};
+    std::int64_t before{};
+};
+Preview& preview() { static Preview p; return p; }
 
 void say(const std::string& text) { logging::write(logging::Level::info, logging::Channel::ui, "Menu backdrop: " + text); }
 
@@ -104,6 +119,43 @@ std::string set_mod_backdrop(std::string_view choice) {
     return "Use off, cas, store, skatepass or skatepedia.";
 }
 
+Value find_preview(const Context& c, Preview& p) {
+    if (p.root && p.type && c.type_of(p.root) == p.type) return {p.root, p.type};
+    p.root = 0; p.type = 0;
+    const auto now = GetTickCount64();
+    if (now < p.next_scan) return {};
+    p.next_scan = now + 1000;
+    const auto roots = c.roots({preview_model});
+    if (roots.empty()) return {};
+    p.root = roots.front().model.handle; p.type = roots.front().model.type;
+    return roots.front().model;
+}
+// Nothing stands in the room while `show`, and what was there comes back after (unless the game
+// has picked something else meanwhile). Quietly nothing where the model is not found.
+void hide_preview(const Context& c, bool show) {
+    auto& p = preview();
+    if (!show && !p.applied) return;
+    try {
+        const auto root = find_preview(c, p);
+        if (!root.handle) return;
+        const auto field = c.field(root, preview_section);
+        std::int64_t now{};
+        if (!number(c, field, now)) {
+            if (!std::exchange(p.told, true)) say("CharacterPreviewModel's Section is not a number it can read; the skater may show.");
+            return;
+        }
+        if (show) {
+            if (!p.applied) p.before = now, p.applied = true;
+            write_number(c, field, section_none);
+        } else {
+            p.applied = false;
+            if (now == section_none && p.before != section_none) write_number(c, field, p.before);
+        }
+    } catch (...) {
+        p.root = 0; p.applied = false;
+    }
+}
+
 // Client thread, under the model write lock, every page tick of the pause menu.
 void update_mod_backdrop(const Context& c, bool mod_manager_shown, bool in_menu) {
     auto& b = backdrop();
@@ -151,8 +203,10 @@ void update_mod_backdrop(const Context& c, bool mod_manager_shown, bool in_menu)
             write_number(c, fields[environment], want);
             write_number(c, fields[world_visible], 1);
             b.written = want;
+            hide_preview(c, true);
         } else if (b.applied) {
             b.applied = false;
+            hide_preview(c, false);
             // Left alone when the page now showing wrote its own.
             if (now[environment] == b.written) {
                 write_number(c, fields[environment], b.before_environment);
