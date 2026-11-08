@@ -86,18 +86,23 @@ using namespace std::chrono_literals;
 // that ends near 290, and the body follows them up.
 constexpr float layout_width = 3840.f, layout_height = 2160.f, layout_widest = 4704.f, side_margin = 192.f, tabs_top = 340.f,
                 tabs_height = 84.f, body_top = 520.f, body_bottom = 1905.f, body_most = 4400.f;
-// The Insert menu's colours (skate_menu.cpp's kit): the main action on its blue (`accent`), the
-// tiles its greys, the one the D-pad or the keys are on white with dark ink, and the one the
-// pointer is over a lighter grey.
+// skate.'s own menu colours (its Settings, Skaters and Skatepedia pages): near-black tiles, the one
+// the D-pad or the keys are on in its blue with black text and halftone dots (theme::focus_fill,
+// tile_rect), the one the pointer is over a lighter grey, and the main action on the light grey of
+// its chosen tab (`primary_rest`), so it never reads as the focus. `accent` is the blue for marks.
 constexpr ImU32 accent = skate_theme::blue, accent_hover = skate_theme::blue_hover, accent_off = IM_COL32(1, 131, 255, 90),
                 accent_sub = IM_COL32(214, 234, 255, 255), focus_ink = IM_COL32(11, 11, 11, 255), row_hover = IM_COL32(56, 57, 61, 245),
-                hint_ink = IM_COL32(110, 110, 110, 255), soft = IM_COL32(210, 210, 214, 255);
+                hint_ink = IM_COL32(110, 110, 110, 255), soft = IM_COL32(210, 210, 214, 255),
+                primary_rest = IM_COL32(226, 227, 230, 255), primary_hover = IM_COL32(246, 246, 248, 255), primary_off = IM_COL32(226, 227, 230, 70);
+// A mark in the blue (an ON tag, a bar, a switch) inside a row that may have the focus: black there,
+// where the row is the blue itself.
+constexpr ImU32 on_row(bool focused, ImU32 colour) { return focused && colour == skate_theme::blue ? skate_theme::black : colour; }
 
 // The Multiplayer page's own look, on the SERVER BROWSER and FRIENDS tabs and its tab strip, and
 // the other pages' since: the kit's dark rows, and a type plate on each server in the kit's tag
 // colours (official blue, server grey, lobby green).
 constexpr ImU32 tile_dark = IM_COL32(16, 16, 16, 242), card_light = IM_COL32(217, 219, 223, 255), card_light_hover = IM_COL32(196, 198, 203, 255),
-                field_on_white = IM_COL32(228, 230, 233, 255), sub_ink = IM_COL32(138, 140, 146, 255), sub_ink_lit = IM_COL32(70, 70, 74, 255),
+                field_on_white = IM_COL32(228, 230, 233, 255), sub_ink = IM_COL32(138, 140, 146, 255), sub_ink_lit = IM_COL32(10, 40, 82, 255),
                 track = IM_COL32(61, 62, 66, 255), track_lit = IM_COL32(201, 204, 209, 255), chip_ink = IM_COL32(185, 187, 192, 255),
                 plate_grey = IM_COL32(61, 62, 66, 255), raised = IM_COL32(29, 29, 31, 245), raised_hover = IM_COL32(82, 83, 88, 255);
 
@@ -305,18 +310,18 @@ bool button(Ui &ui, std::uint32_t id, ImVec2 a, ImVec2 b, const std::string &tex
     const Hit hit = enabled ? item(ui, id, a, b, clip) : Hit{};
     const bool lit = hit.focus || hit.hover;
     ImU32 fill = tile_dark, ink = enabled ? theme::paper : theme::muted;
-    // The main action is the Insert menu's primary button: blue, lighter under the pointer, and
-    // white with dark ink under the D-pad or the keys (a blue focus would not show on blue).
+    // The main action: light grey with black text at rest, whiter under the pointer, and the focus
+    // blue under the D-pad or the keys.
     if (look == Look::primary)
-        fill = !enabled ? accent_off : hit.focus && !hit.hover ? theme::paper : hit.hover ? accent_hover : accent,
-        ink = !enabled ? IM_COL32(245, 245, 245, 140) : hit.focus && !hit.hover ? focus_ink : theme::paper;
-    // Focus as the Insert menu draws it: white with dark ink under the D-pad or the keys, the
-    // kit's lighter grey under the pointer; the tiles themselves near black, as its sheet is.
-    else if (hit.focus && !hit.hover) fill = theme::paper, ink = enabled ? focus_ink : theme::muted;
+        fill = !enabled ? primary_off : hit.focus && !hit.hover ? theme::focus_fill : hit.hover ? primary_hover : primary_rest,
+        ink = !enabled ? IM_COL32(245, 245, 245, 140) : focus_ink;
+    // Focus as skate. draws it: its blue with black text under the D-pad or the keys, a lighter grey
+    // under the pointer; the tiles themselves near black.
+    else if (hit.focus && !hit.hover) fill = theme::focus_fill, ink = enabled ? focus_ink : theme::muted;
     else if (lit) fill = row_hover;
     else if (look == Look::plain) fill = raised;
     else if (look == Look::chosen) fill = theme::paper, ink = skate_theme::black;
-    skate_theme::rough_rect(ui.draw, a, b, fill, id & 0xfff, u * 2);
+    theme::tile_rect(ui.draw, a, b, fill, id & 0xfff, u * 2);
     if (value.empty()) {
         ui.draw->AddText(ui.bold, size, ImVec2(a.x + (b.x - a.x - width_of(ui.bold, size, text)) * .5f, a.y + (height - size) * .5f), ink, text.c_str());
     } else {
@@ -363,7 +368,7 @@ bool field(Ui &ui, std::uint32_t id, ImVec2 a, ImVec2 b, std::string &text, cons
         if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) set_typing(h, 0), typing = false;
         else if (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false)) set_typing(h, 0), typing = false, entered = true;
     }
-    skate_theme::rough_rect(ui.draw, a, b, fill, id & 0xfff, u * 2);
+    theme::tile_rect(ui.draw, a, b, fill, id & 0xfff, u * 2);
     if (typing || hit.focus) ui.draw->AddRect(a, b, theme::blue, 0, 0, 6 * u);
     const bool empty = text.empty() && !typing;
     std::string shown = empty ? std::string(hint) : secret ? std::string(text.size(), '*') : text;
@@ -634,18 +639,18 @@ struct Lit {
 };
 Lit lit_of(const Hit &hit) { return {hit.focus && !hit.hover, hit.hover}; }
 
-// A chip of a bar of filters, as the Insert menu's: a chosen one blue, white under the D-pad or the
-// keys (with a blue line along its foot when it is chosen), a lighter grey or blue under the pointer.
+// A chip of a bar of filters, as skate.'s tabs: a chosen one light grey with black text and a blue
+// line along its foot, the focus blue, a lighter grey under the pointer.
 // Drawn from `x`, between `top` and `bottom`, and `x` moves on past it. Returns whether it was pressed.
 bool chip(Ui &ui, std::uint32_t id, float &x, float top, float bottom, const char *text, bool on) {
     const float u = ui.u, size = 32 * u, w = width_of(ui.bold, size, text) + 40 * u;
     const ImVec2 c(x, top), d(x + w, bottom);
     const Hit hit = item(ui, id, c, d);
     const auto [focused, pointed] = lit_of(hit);
-    skate_theme::rough_rect(ui.draw, c, d, focused ? theme::paper : on ? (pointed ? accent_hover : accent) : pointed ? row_hover : tile_dark,
-                            hash(text) & 0xfff, u * 2);
-    if (focused && on) ui.draw->AddRectFilled(ImVec2(c.x, d.y - 8 * u), d, accent);
-    ui.draw->AddText(ui.bold, size, ImVec2(c.x + 20 * u, c.y + (d.y - c.y - size) * .5f), focused ? focus_ink : on || pointed ? theme::paper : chip_ink, text);
+    theme::tile_rect(ui.draw, c, d, focused ? theme::focus_fill : on ? (pointed ? primary_hover : primary_rest) : pointed ? row_hover : tile_dark,
+                     hash(text) & 0xfff, u * 2);
+    if (on) ui.draw->AddRectFilled(ImVec2(c.x + 10 * u, d.y - 7 * u), ImVec2(d.x - 10 * u, d.y), focused ? skate_theme::black : accent);
+    ui.draw->AddText(ui.bold, size, ImVec2(c.x + 20 * u, c.y + (d.y - c.y - size) * .5f), focused || on ? focus_ink : pointed ? theme::paper : chip_ink, text);
     x = d.x + 10 * u;
     return hit.press;
 }
@@ -675,11 +680,11 @@ bool hero(Ui &ui, std::uint32_t id, ImVec2 a, ImVec2 b, const char *title, const
     const float u = ui.u;
     const Hit hit = enabled ? item(ui, id, a, b) : Hit{};
     const auto [focused, pointed] = lit_of(hit);
-    const ImU32 fill = focused ? theme::paper : primary ? (pointed ? accent_hover : accent) : pointed ? row_hover : tile_dark;
-    const ImU32 ink = focused ? focus_ink : enabled ? theme::paper : theme::muted;
-    const ImU32 sub = focused ? sub_ink_lit : primary ? accent_sub : sub_ink;
-    skate_theme::rough_rect(ui.draw, a, b, fill, id & 0xfff, u * 2);
-    if (open) ui.draw->AddRectFilled(a, ImVec2(a.x + 10 * u, b.y), accent);
+    const ImU32 fill = focused ? theme::focus_fill : primary ? (pointed ? primary_hover : primary_rest) : pointed ? row_hover : tile_dark;
+    const ImU32 ink = focused || primary ? focus_ink : enabled ? theme::paper : theme::muted;
+    const ImU32 sub = focused ? sub_ink_lit : primary ? IM_COL32(70, 70, 74, 255) : sub_ink;
+    theme::tile_rect(ui.draw, a, b, fill, id & 0xfff, u * 2);
+    if (open) ui.draw->AddRectFilled(a, ImVec2(a.x + 10 * u, b.y), focused ? skate_theme::black : accent);
     const float inset = 44 * u, title_size = 64 * u, line_size = 32 * u, between = 16 * u;
     const float top = a.y + (b.y - a.y - title_size - between - line_size) * .5f;
     label(ui.draw, ui.heading, title_size, ImVec2(a.x + inset, top), b.x - inset, ink, title);
@@ -697,15 +702,14 @@ bool action(Ui &ui, std::uint32_t id, ImVec2 a, ImVec2 b, const std::string &tex
     const auto [focused, pointed] = lit_of(hit);
     ImU32 fill = tile_dark, ink = theme::paper;
     if (primary) {
-        if (!enabled) fill = accent_off, ink = IM_COL32(245, 245, 245, 140);
-        else if (focused) fill = dark ? theme::paper : skate_theme::black, ink = dark ? focus_ink : theme::paper;
-        else fill = pointed ? accent_hover : accent;
+        if (!enabled) fill = primary_off, ink = IM_COL32(245, 245, 245, 140);
+        else fill = focused ? theme::focus_fill : pointed ? primary_hover : primary_rest, ink = focus_ink;
     } else if (dark) {
-        fill = focused ? theme::paper : pointed ? row_hover : tile_dark, ink = focused ? focus_ink : enabled ? theme::paper : theme::muted;
+        fill = focused ? theme::focus_fill : pointed ? row_hover : tile_dark, ink = focused ? focus_ink : enabled ? theme::paper : theme::muted;
     } else {
-        fill = focused ? skate_theme::black : pointed ? card_light_hover : card_light, ink = focused ? theme::paper : enabled ? skate_theme::black : sub_ink;
+        fill = focused ? theme::focus_fill : pointed ? card_light_hover : card_light, ink = enabled || focused ? skate_theme::black : sub_ink;
     }
-    skate_theme::rough_rect(ui.draw, a, b, fill, id & 0xfff, u * 2);
+    theme::tile_rect(ui.draw, a, b, fill, id & 0xfff, u * 2);
     const float w = width_of(ui.bold, size, text);
     label(ui.draw, ui.bold, size, ImVec2(a.x + std::max(16 * u, (b.x - a.x - w) * .5f), a.y + (b.y - a.y - size) * .5f), b.x - 16 * u, ink, text);
     return hit.press;
@@ -759,7 +763,7 @@ void code_card(Ui &ui, ImVec2 a, ImVec2 z) {
     const auto &mp = ui.mp;
     const float u = ui.u, bar = 96 * u, inset = 44 * u, tall = 100 * u;
     auto *draw = ui.draw;
-    skate_theme::rough_rect(draw, a, z, tile_dark, 0x77, u * 2);
+    theme::tile_rect(draw, a, z, tile_dark, 0x77, u * 2);
     const float left = a.x + inset, middle = a.x + (z.x - a.x) * .42f, edge = z.x - inset;
     float y = a.y + inset;
     draw->AddText(ui.heading, 64 * u, ImVec2(left, y), theme::paper, "JOIN BY CODE");
@@ -794,7 +798,7 @@ struct Hint {
 float hints(Ui &ui, float x, float y, std::initializer_list<Hint> list) {
     for (const auto &hint : list) {
         const auto name = ui.pad.available ? (hint.pad_button ? controller_combo_label(hint.pad_button, ui.pad.style) : std::string()) : std::string(hint.key);
-        if (!name.empty()) x += theme::keycap(ui.draw, ui.bold, ui.u * 2, ImVec2(x, y), name.c_str(), hint.what) + 36 * ui.u;
+        if (!name.empty()) x += theme::prompt(ui.draw, ui.bold, ui.u * 2, ImVec2(x, y), name.c_str(), hint.what) + 16 * ui.u;
     }
     return x;
 }
@@ -874,7 +878,7 @@ void browser_page(Ui &ui, ImVec2 a, ImVec2 z) {
         if (c.x > x) {
             const Hit hit = item(ui, hash("sort"), c, d);
             const auto [lit, pointed] = lit_of(hit);
-            if (lit || pointed) skate_theme::rough_rect(draw, c, d, lit ? theme::paper : row_hover, 0x5a, u * 2);
+            if (lit || pointed) theme::tile_rect(draw, c, d, lit ? theme::focus_fill : row_hover, 0x5a, u * 2);
             const float y = c.y + (d.y - c.y - size) * .5f;
             draw->AddText(ui.body, size, ImVec2(c.x + 20 * u, y), lit ? sub_ink_lit : sub_ink, "Sort: ");
             draw->AddText(ui.bold, size, ImVec2(c.x + 20 * u + lead, y), lit ? focus_ink : theme::paper, value.c_str());
@@ -956,7 +960,7 @@ void browser_page(Ui &ui, ImVec2 a, ImVec2 z) {
             const bool lit = focused || open;
             const ImU32 ink = lit ? focus_ink : row.full ? theme::muted : theme::paper, sub = lit ? sub_ink_lit : sub_ink;
             if (drawn) {
-                skate_theme::rough_rect(draw, p, ImVec2(right, top + block), lit ? theme::paper : pointed ? row_hover : tile_dark,
+                theme::tile_rect(draw, p, ImVec2(right, top + block), lit ? theme::focus_fill : pointed ? row_hover : tile_dark,
                                         0x900 + static_cast<unsigned>(lobby.id & 0xff), u * 2);
                 map_picture(ui, p, ImVec2(p.x + picture_width, q.y), row);
                 // The skaters, with a thin blue bar of how full it is.
@@ -966,7 +970,7 @@ void browser_page(Ui &ui, ImVec2 a, ImVec2 z) {
                 const float fill = lobby.capacity > 0 ? std::clamp(static_cast<float>(lobby.players) / static_cast<float>(lobby.capacity), 0.f, 1.f) : 0.f;
                 const ImVec2 t0(skaters_left, top + 80 * u), t1(right - pad_x, top + 90 * u);
                 draw->AddRectFilled(t0, t1, lit ? track_lit : track);
-                draw->AddRectFilled(t0, ImVec2(t0.x + (t1.x - t0.x) * fill, t1.y), row.full ? skate_theme::danger : accent);
+                draw->AddRectFilled(t0, ImVec2(t0.x + (t1.x - t0.x) * fill, t1.y), row.full ? skate_theme::danger : on_row(lit, accent));
                 const float cell_size = 32 * u, cell_y = top + (row_height - cell_size) * .5f;
                 {
                     const auto ping = lobby.ping >= 0 ? std::to_string(lobby.ping) + " ms" : std::string("-");
@@ -1142,7 +1146,7 @@ void friends_page(Ui &ui, ImVec2 a, ImVec2 z) {
     if (h.friends.empty()) {
         // Nobody to show: a card that says so, with the way to give them somewhere to go.
         const ImVec2 cz(lz.x, std::min(lz.y, la.y + 360 * u));
-        skate_theme::rough_rect(draw, la, cz, tile_dark, 0x7c, u * 2);
+        theme::tile_rect(draw, la, cz, tile_dark, 0x7c, u * 2);
         const float inset = 44 * u, tall = 100 * u, left = la.x + inset;
         float y = la.y + inset;
         draw->AddText(ui.bold, 48 * u, ImVec2(left, y), theme::paper, "No friends skating right now");
@@ -1197,7 +1201,7 @@ void friends_page(Ui &ui, ImVec2 a, ImVec2 z) {
             // White under the D-pad or the keys, a lighter grey under the pointer, as the browser's rows.
             const auto [focused, pointed] = lit_of(hit);
             const ImU32 ink = focused ? focus_ink : theme::paper, sub = focused ? sub_ink_lit : sub_ink;
-            skate_theme::rough_rect(draw, p, q, focused ? theme::paper : pointed ? row_hover : tile_dark, 0x900 + static_cast<unsigned>(who.id & 0xff), u * 2);
+            theme::tile_rect(draw, p, q, focused ? theme::focus_fill : pointed ? row_hover : tile_dark, 0x900 + static_cast<unsigned>(who.id & 0xff), u * 2);
             float y = p.y + pad;
             if (session) {
                 // The map's picture across the top (a plain tile with its name while there is none),
@@ -1222,7 +1226,7 @@ void friends_page(Ui &ui, ImVec2 a, ImVec2 z) {
                 draw->AddText(ui.bold, tag_size, ImVec2(count_x - 14 * u - width_of(ui.bold, tag_size, "SKATERS"), foot - tag_size - 6 * u), chip_ink, "SKATERS");
                 const float fill = capacity > 0 ? std::clamp(static_cast<float>(players) / static_cast<float>(capacity), 0.f, 1.f) : 0.f;
                 draw->AddRectFilled(ImVec2(sa.x, sb.y - 8 * u), sb, track);
-                draw->AddRectFilled(ImVec2(sa.x, sb.y - 8 * u), ImVec2(sa.x + (sb.x - sa.x) * fill, sb.y), full ? skate_theme::danger : accent);
+                draw->AddRectFilled(ImVec2(sa.x, sb.y - 8 * u), ImVec2(sa.x + (sb.x - sa.x) * fill, sb.y), full ? skate_theme::danger : on_row(focused, accent));
                 y = sb.y + pad;
             }
             // Their avatar and name, and what they are doing: skating with the player (and in their
@@ -1267,15 +1271,15 @@ void friends_page(Ui &ui, ImVec2 a, ImVec2 z) {
                 // JOIN on the blue, or why not on grey.
                 const char *does = mp.lobby_joining ? "JOINING..." : row.joinable ? "JOIN" : row.here ? "YOU ARE HERE" : full ? "FULL"
                                    : mp.active && mp.hosting ? "END YOUR SESSION FIRST" : "JOIN";
-                skate_theme::rough_rect(draw, join_a, join_b, row.joinable ? (over_join && !h.ring ? accent_hover : accent) : focused ? track_lit : track, 0x5c, u * 2);
+                theme::tile_rect(draw, join_a, join_b, row.joinable ? (focused ? skate_theme::black : over_join && !h.ring ? primary_hover : primary_rest) : focused ? track_lit : track, 0x5c, u * 2);
                 const float size = 32 * u, w = width_of(ui.bold, size, does);
                 label(draw, ui.bold, size, ImVec2(join_a.x + std::max(16 * u, (join_b.x - join_a.x - w) * .5f), join_a.y + (buttons - size) * .5f), join_b.x - 16 * u,
-                      row.joinable ? theme::paper : focused ? focus_ink : chip_ink, does);
+                      row.joinable ? (focused ? theme::paper : focus_ink) : focused ? focus_ink : chip_ink, does);
             }
             // VIEW PROFILE: a lighter tile under the pointer.
             {
                 const bool lit = over_profile && !h.ring;
-                skate_theme::rough_rect(draw, profile_a, profile_b, focused ? (lit ? card_light_hover : card_light) : lit ? raised_hover : raised, 0x5d, u * 2);
+                theme::tile_rect(draw, profile_a, profile_b, focused ? (lit ? card_light_hover : card_light) : lit ? raised_hover : raised, 0x5d, u * 2);
                 const float size = 32 * u, w = width_of(ui.bold, size, "VIEW PROFILE");
                 label(draw, ui.bold, size, ImVec2(profile_a.x + std::max(16 * u, (profile_b.x - profile_a.x - w) * .5f), profile_a.y + (buttons - size) * .5f), profile_b.x - 16 * u,
                       focused ? skate_theme::black : theme::paper, "VIEW PROFILE");
@@ -1396,7 +1400,7 @@ void session_page(Ui &ui, ImVec2 a, ImVec2 z) {
             const Hit hit = item(ui, key, p, q, &list.box);
             list.reveal(key, top, row);
             if (!drawn) return;
-            skate_theme::rough_rect(draw, p, q, hit.focus && h.ring ? row_hover : skate_theme::tile, key & 0xfff, u * 2);
+            theme::tile_rect(draw, p, q, hit.focus && h.ring ? row_hover : skate_theme::tile, key & 0xfff, u * 2);
             const float w = role.empty() ? 0 : width_of(ui.bold, 28 * u, role) + 30 * u;
             label(draw, ui.bold, 40 * u, ImVec2(p.x + 30 * u, top + (row - 40 * u) * .5f), q.x - w - 30 * u, theme::paper, view::caption(name, 48));
             if (!role.empty()) draw->AddText(ui.bold, 28 * u, ImVec2(q.x - w, top + (row - 28 * u) * .5f), theme::muted, role.c_str());
@@ -1411,7 +1415,7 @@ void session_page(Ui &ui, ImVec2 a, ImVec2 z) {
 
     // Beside the list: the session and its settings.
     const ImVec2 da(a.x + list_width + gap, a.y), dz(z.x, z.y);
-    skate_theme::rough_rect(draw, da, dz, skate_theme::tile, 0x7a, u * 2);
+    theme::tile_rect(draw, da, dz, skate_theme::tile, 0x7a, u * 2);
     const float inset = 36 * u, left = da.x + inset, edge = dz.x - inset - 14 * u, opt = 84 * u, opt_gap = 10 * u;
     Scroller side(ui, hash("session-side"), ImVec2(da.x, da.y + inset), ImVec2(dz.x, dz.y - inset));
     const auto text = [&](ImFont *font, float size, ImU32 colour, const std::string &line, float below) {
@@ -1495,7 +1499,7 @@ void voice_page(Ui &ui, ImVec2 a, ImVec2 z) {
             const auto mute = hash("mute", player.id), volume = hash("volume", player.id), ignore = hash("ignore", player.id);
             list.reveal(mute, top, row), list.reveal(volume, top, row), list.reveal(ignore, top, row);
             if (drawn) {
-                skate_theme::rough_rect(draw, ImVec2(a.x, top), ImVec2(ignore_x - 12 * u, top + row), skate_theme::tile, mute & 0xfff, u * 2);
+                theme::tile_rect(draw, ImVec2(a.x, top), ImVec2(ignore_x - 12 * u, top + row), skate_theme::tile, mute & 0xfff, u * 2);
                 label(draw, ui.bold, 40 * u, ImVec2(a.x + 30 * u, top + (row - 40 * u) * .5f), ignore_x - 40 * u,
                       player.ignored ? theme::muted : mp.voice.allowed && voice.speaking && !voice.muted ? skate_theme::good : theme::paper,
                       view::caption(player.name, 40));
@@ -1563,7 +1567,7 @@ void connecting_page(Ui &ui, ImVec2 a, ImVec2 z) {
     const ImVec2 p(a.x + (z.x - a.x - width) * .5f, a.y + std::max(0.f, (z.y - a.y - height) * .4f)), q(p.x + width, p.y + height);
     auto *draw = ui.draw;
     draw->AddRectFilled(ImVec2(0, 0), ImGui::GetIO().DisplaySize, IM_COL32(0, 0, 0, 150));
-    skate_theme::rough_rect(draw, p, q, IM_COL32(26, 26, 26, 252), 0x4c0, u * 2);
+    theme::tile_rect(draw, p, q, IM_COL32(26, 26, 26, 252), 0x4c0, u * 2);
     const float left = p.x + inset, edge = q.x - inset;
     float y = p.y + inset;
     draw->AddText(ui.bold, 28 * u, ImVec2(left, y), theme::blue, "CONNECTING");
@@ -1596,7 +1600,7 @@ void failed_page(Ui &ui, ImVec2 a, ImVec2 z) {
     const ImVec2 p(a.x + (z.x - a.x - width) * .5f, a.y + std::max(0.f, (z.y - a.y - height) * .4f)), q(p.x + width, p.y + height);
     auto *draw = ui.draw;
     draw->AddRectFilled(ImVec2(0, 0), ImGui::GetIO().DisplaySize, IM_COL32(0, 0, 0, 150));
-    skate_theme::rough_rect(draw, p, q, IM_COL32(26, 26, 26, 252), 0x4c0, u * 2);
+    theme::tile_rect(draw, p, q, IM_COL32(26, 26, 26, 252), 0x4c0, u * 2);
     const float left = p.x + inset, edge = q.x - inset;
     float y = p.y + inset;
     draw->AddText(ui.bold, 28 * u, ImVec2(left, y), skate_theme::danger, "COULDN'T CONNECT");
@@ -1665,9 +1669,9 @@ struct Column {
         list.reveal(less, top, tall), list.reveal(more, top, tall);
         const float more_x = right - side, less_x = more_x - readout - side;
         if (drawn) {
-            skate_theme::rough_rect(ui.draw, ImVec2(left, top), ImVec2(less_x - 10 * u, top + tall), tile_dark, less & 0xfff, u * 2);
+            theme::tile_rect(ui.draw, ImVec2(left, top), ImVec2(less_x - 10 * u, top + tall), tile_dark, less & 0xfff, u * 2);
             label(ui.draw, ui.body, 40 * u, ImVec2(left + 30 * u, top + (tall - 40 * u) * .5f), less_x - 30 * u, enabled ? theme::paper : theme::muted, name);
-            skate_theme::rough_rect(ui.draw, ImVec2(less_x + side + 6 * u, top), ImVec2(more_x - 6 * u, top + tall), tile_dark, more & 0xfff, u * 2);
+            theme::tile_rect(ui.draw, ImVec2(less_x + side + 6 * u, top), ImVec2(more_x - 6 * u, top + tall), tile_dark, more & 0xfff, u * 2);
             // (The value in the kit's blue, as button() and the Insert menu's option rows show one.)
             const float w = width_of(ui.bold, 40 * u, value);
             ui.draw->AddText(ui.bold, 40 * u, ImVec2(less_x + side + (readout - w) * .5f, top + (tall - 40 * u) * .5f), enabled ? theme::blue : theme::muted, value.c_str());
@@ -1845,7 +1849,7 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
             // White under the D-pad or the keys, a lighter grey under the pointer, as the browser's rows.
             const auto [focused, pointed] = lit_of(hit);
             const bool lit = focused || pointed;
-            skate_theme::rough_rect(draw, p, q, focused ? theme::paper : pointed ? row_hover : tile_dark, id & 0xfff, u * 2);
+            theme::tile_rect(draw, p, q, focused ? theme::focus_fill : pointed ? row_hover : tile_dark, id & 0xfff, u * 2);
             // The picture: the middle band of its square, to the card's shape.
             const ImVec2 shot_a(p.x + 8 * u, p.y + 8 * u), shot_b(q.x - 8 * u, p.y + picture);
             ImTextureID texture{};
@@ -1876,8 +1880,9 @@ void tools_page(Ui &ui, ImVec2 a, ImVec2 z) {
                 const char *does = can ? "LOAD" : multiplayer_controls_level(mp) ? "HOST'S CHOICE" : "NOT NOW";
                 const float w = width_of(ui.bold, 28 * u, does) + 36 * u;
                 const ImVec2 c(q.x - w - 18 * u, bar_top + 18 * u), d(q.x - 18 * u, q.y - 18 * u);
-                skate_theme::rough_rect(draw, c, d, can ? accent : focused ? track_lit : track, 0x52, u * 2);
-                draw->AddText(ui.bold, 28 * u, ImVec2(c.x + 18 * u, c.y + (d.y - c.y - 28 * u) * .5f), can || !focused ? theme::paper : focus_ink, does);
+                theme::tile_rect(draw, c, d, can ? (focused ? skate_theme::black : primary_rest) : focused ? track_lit : track, 0x52, u * 2);
+                draw->AddText(ui.bold, 28 * u, ImVec2(c.x + 18 * u, c.y + (d.y - c.y - 28 * u) * .5f),
+                              can ? (focused ? theme::paper : focus_ink) : focused ? focus_ink : theme::paper, does);
                 name_right = c.x - 16 * u;
             }
             label(draw, ui.bold, 38 * u, ImVec2(p.x + 24 * u, text_y), name_right, focused ? focus_ink : can || pointed ? theme::paper : theme::muted,
@@ -2284,7 +2289,7 @@ void hub_frame(Hub &h, ImDrawList *draw, float u, ImVec2 a, ImVec2 z, float tabs
             const auto name = ui.pad.available ? controller_combo_label(pad_button, ui.pad.style) : std::string(key);
             const float scale = u * 2.2f, pad = 18 * u;
             const float w = ui.bold->CalcTextSizeA(12 * scale, FLT_MAX, 0, name.c_str()).x + 12 * scale;
-            skate_theme::rough_rect(ui.draw, ImVec2(x, top), ImVec2(x + w + pad * 2, bottom), tile_dark, hash(key) & 0xfff, u * 2);
+            theme::tile_rect(ui.draw, ImVec2(x, top), ImVec2(x + w + pad * 2, bottom), tile_dark, hash(key) & 0xfff, u * 2);
             theme::keycap(ui.draw, ui.bold, scale, ImVec2(x + pad, top + (bottom - top - 20 * scale) * .5f), name.c_str(), "");
             x += w + pad * 2 + segment_gap;
         };
@@ -2295,11 +2300,13 @@ void hub_frame(Hub &h, ImDrawList *draw, float u, ImVec2 a, ImVec2 z, float tabs
             const Hit hit = item(ui, hash(name, 1), p, q);
             const bool on = open == tab;
             const auto [focused, pointed] = lit_of(hit);
-            const ImU32 fill = on ? theme::paper : focused ? card_light : pointed ? row_hover : tile_dark;
+            const ImU32 fill = focused ? theme::focus_fill : on ? primary_rest : pointed ? row_hover : tile_dark;
             const ImU32 ink = on || focused ? focus_ink : pointed ? theme::paper : chip_ink;
-            skate_theme::rough_rect(ui.draw, p, q, fill, hash(name) & 0xfff, u * 2);
+            theme::tile_rect(ui.draw, p, q, fill, hash(name) & 0xfff, u * 2);
             ui.draw->AddText(ui.bold, size, ImVec2(p.x + 28 * u, top + (bottom - top - size) * .5f), ink, name);
-            if (on && focused) ui.draw->AddRectFilled(ImVec2(p.x + 20 * u, bottom + 4 * u), ImVec2(q.x - 20 * u, bottom + 12 * u), accent);
+            // The open tab's brush line, cut a little crooked as skate.'s is.
+            if (on) ui.draw->AddQuadFilled(ImVec2(p.x + 16 * u, bottom - 2 * u), ImVec2(q.x - 12 * u, bottom - 6 * u), ImVec2(q.x - 16 * u, bottom + 6 * u),
+                                           ImVec2(p.x + 20 * u, bottom + 9 * u), accent);
             if (hit.press && !on) open = tab, h.sound = sound_tab, set_typing(h, 0);
             x = q.x + segment_gap;
         }
@@ -2425,7 +2432,7 @@ void draw_mod_apply_card() {
     const float height = inset + 24 * u + 12 * u + 38 * u + 18 * u + bar + 14 * u + 26 * u + inset;
     const ImVec2 min(std::floor(display.x - 48 * u - width), std::floor(display.y * 0.2f)), max(min.x + width, min.y + height);
     auto *draw = ImGui::GetForegroundDrawList();
-    skate_theme::rough_rect(draw, min, max, IM_COL32(26, 26, 26, 235), 0x4d3, u * 2);
+    theme::tile_rect(draw, min, max, IM_COL32(26, 26, 26, 235), 0x4d3, u * 2);
     draw->AddRectFilled(min, ImVec2(min.x + 8 * u, max.y), applying ? theme::blue : skate_theme::good);
     const float left = min.x + inset + 8 * u, right = max.x - inset;
     float y = min.y + inset;

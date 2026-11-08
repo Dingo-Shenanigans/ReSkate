@@ -110,7 +110,13 @@ void options_page(Ui &ui, std::uint32_t tab_id, const Opts &rows, ImVec2 a, ImVe
             if (row.kind == Opt::Kind::heading) {
                 group = row.name;
                 const float top = list.next(placed ? head : head - 30 * u, 0, drawn);
-                if (drawn) draw->AddText(ui.bold, 30 * u, ImVec2(a.x + 4 * u, top + (placed ? head : head - 30 * u) - 42 * u), soft_ink, row.name.c_str());
+                if (drawn) {
+                    // As skate.'s list headings ("GRIND TRICKS"): white capitals over a white brush line.
+                    const float base = top + (placed ? head : head - 30 * u) - 16 * u, right = a.x + list_w - 26 * u;
+                    draw->AddText(ui.bold, 34 * u, ImVec2(a.x + 4 * u, base - 46 * u), theme::paper, row.name.c_str());
+                    draw->AddQuadFilled(ImVec2(a.x, base - 2 * u), ImVec2(right, base - 5 * u), ImVec2(right - 6 * u, base + 3 * u), ImVec2(a.x + 4 * u, base + 5 * u),
+                                        theme::paper);
+                }
                 placed = true;
                 continue;
             }
@@ -138,9 +144,9 @@ void options_page(Ui &ui, std::uint32_t tab_id, const Opts &rows, ImVec2 a, ImVe
             if (h.focus == id && y_pressed && row.enabled && row.reset) row.reset(), h.sound = sound_select;
             if (!drawn) continue;
             const bool lit = hit.focus && !hit.hover;
-            const ImU32 fill = lit ? theme::paper : hit.hover ? row_hover : tile_dark;
+            const ImU32 fill = lit ? theme::focus_fill : hit.hover ? row_hover : tile_dark;
             const ImU32 ink = lit ? focus_ink : row.enabled ? theme::paper : theme::muted;
-            skate_theme::rough_rect(draw, p, q, fill, id & 0xfff, u * 2);
+            theme::tile_rect(draw, p, q, fill, id & 0xfff, u * 2);
             const float size = 38 * u, text_y = top + (tall - size) * .5f;
             // The value at the right end: ON in blue, OFF grey; a choice or a number in blue, with its
             // arrows while it has the focus; an action's word; a bind's buttons.
@@ -155,8 +161,8 @@ void options_page(Ui &ui, std::uint32_t tab_id, const Opts &rows, ImVec2 a, ImVe
             // A number's place in its range, as a thin bar along the row's foot.
             if (row.kind == Opt::Kind::number && row.fraction >= 0) {
                 const float bar_y = q.y - 12 * u, left = p.x + 30 * u, right = q.x - 30 * u;
-                draw->AddRectFilled(ImVec2(left, bar_y), ImVec2(right, bar_y + 4 * u), lit ? IM_COL32(205, 206, 210, 255) : IM_COL32(48, 48, 52, 255));
-                draw->AddRectFilled(ImVec2(left, bar_y), ImVec2(left + (right - left) * row.fraction, bar_y + 4 * u), theme::blue);
+                draw->AddRectFilled(ImVec2(left, bar_y), ImVec2(right, bar_y + 4 * u), lit ? IM_COL32(0, 70, 150, 255) : IM_COL32(48, 48, 52, 255));
+                draw->AddRectFilled(ImVec2(left, bar_y), ImVec2(left + (right - left) * row.fraction, bar_y + 4 * u), lit ? skate_theme::black : theme::blue);
             }
         }
         list.end();
@@ -168,15 +174,17 @@ void options_page(Ui &ui, std::uint32_t tab_id, const Opts &rows, ImVec2 a, ImVe
 
     // ---- the panel: about the row the focus is on
     const ImVec2 pa(a.x + list_w + gap - 26 * u, a.y), pz(z.x, z.y);
-    skate_theme::rough_rect(draw, pa, pz, tile_dark, hash("options-panel", tab_id) & 0xfff, u * 2);
+    // skate.'s description card (Skatepedia's): off-white paper, black text.
+    constexpr ImU32 paper_card = IM_COL32(234, 234, 230, 250), card_ink = IM_COL32(16, 16, 16, 255), card_sub = IM_COL32(70, 70, 72, 255);
+    theme::tile_rect(draw, pa, pz, paper_card, hash("options-panel", tab_id) & 0xfff, u * 2);
     const float left = pa.x + 60 * u, right = pz.x - 60 * u, wrap = right - left;
     float y = pa.y + 56 * u;
     if (!focused) {
-        draw->AddText(ui.body, 36 * u, ImVec2(left, y), soft_ink, "Choose a setting to see what it does.", nullptr, wrap);
+        draw->AddText(ui.body, 36 * u, ImVec2(left, y), card_sub, "Choose a setting to see what it does.", nullptr, wrap);
         return;
     }
     if (!focused_group.empty()) {
-        draw->AddText(ui.bold, 28 * u, ImVec2(left, y), news_blue, focused_group.c_str());
+        draw->AddText(ui.bold, 28 * u, ImVec2(left, y), theme::blue, focused_group.c_str());
         y += 28 * u + 22 * u;
     }
     std::string title = focused->name;
@@ -184,17 +192,17 @@ void options_page(Ui &ui, std::uint32_t tab_id, const Opts &rows, ImVec2 a, ImVe
     {
         const float size = 76 * u;
         const auto extent = ui.heading->CalcTextSizeA(size, FLT_MAX, wrap, title.c_str());
-        draw->AddText(ui.heading, size, ImVec2(left, y), theme::paper, title.c_str(), nullptr, wrap);
+        draw->AddText(ui.heading, size, ImVec2(left, y), card_ink, title.c_str(), nullptr, wrap);
         y += extent.y + 30 * u;
     }
     if (!focused->value.empty() && focused->kind != Opt::Kind::action) {
         const float size = 60 * u;
-        const ImU32 colour = focused->kind == Opt::Kind::toggle && !focused->on ? theme::muted : focused->kind == Opt::Kind::info ? theme::paper : theme::blue;
+        const ImU32 colour = focused->kind == Opt::Kind::toggle && !focused->on ? card_sub : focused->kind == Opt::Kind::info ? card_ink : theme::blue;
         draw->AddText(ui.bold, size, ImVec2(left, y), colour, focused->value.c_str());
         if (focused->kind == Opt::Kind::number && focused->fraction >= 0) {
             const float bar_x = left + width_of(ui.bold, size, focused->value) + 40 * u, bar_y = y + size * .5f - 6 * u;
             if (bar_x < right - 100 * u) {
-                draw->AddRectFilled(ImVec2(bar_x, bar_y), ImVec2(right, bar_y + 12 * u), IM_COL32(38, 38, 40, 255));
+                draw->AddRectFilled(ImVec2(bar_x, bar_y), ImVec2(right, bar_y + 12 * u), IM_COL32(196, 196, 192, 255));
                 draw->AddRectFilled(ImVec2(bar_x, bar_y), ImVec2(bar_x + (right - bar_x) * focused->fraction, bar_y + 12 * u), theme::blue);
             }
         }
@@ -206,9 +214,9 @@ void options_page(Ui &ui, std::uint32_t tab_id, const Opts &rows, ImVec2 a, ImVe
         draw->AddText(ui.body, size, ImVec2(left, y), colour, text.c_str(), nullptr, wrap);
         y += extent.y + 26 * u;
     };
-    paragraph(focused->help, IM_COL32(212, 214, 218, 255), 36 * u);
+    paragraph(focused->help, card_ink, 36 * u);
     if (!focused->enabled && focused->kind != Opt::Kind::info)
-        paragraph(focused->why_not.empty() ? std::string("Not available right now.") : focused->why_not, skate_theme::warning, 34 * u);
+        paragraph(focused->why_not.empty() ? std::string("Not available right now.") : focused->why_not, IM_COL32(168, 60, 20, 255), 34 * u);
     // What the buttons do to it, at the panel's foot.
     std::vector<std::pair<std::string, std::string>> does;
     if (focused->enabled) {
@@ -226,11 +234,13 @@ void options_page(Ui &ui, std::uint32_t tab_id, const Opts &rows, ImVec2 a, ImVe
     for (const auto &[key, what] : does) {
         float x = left;
         if (!key.empty()) {
-            const float scale = u * 2.2f;
-            theme::keycap(draw, ui.bold, scale, ImVec2(x, foot), key.c_str(), "");
-            x += ui.bold->CalcTextSizeA(12 * scale, FLT_MAX, 0, key.c_str()).x + 12 * scale + 24 * u;
+            // (Black on the paper, where the page's white keycaps would not show.)
+            const float scale = u * 2.2f, size = 12 * scale, w = ui.bold->CalcTextSizeA(size, FLT_MAX, 0, key.c_str()).x + 12 * scale;
+            draw->AddRectFilled(ImVec2(x, foot), ImVec2(x + w, foot + 20 * scale), card_ink, 3 * scale);
+            draw->AddText(ui.bold, size, ImVec2(x + 6 * scale, foot + (20 * scale - size) * .5f), theme::paper, key.c_str());
+            x += w + 24 * u;
         }
-        draw->AddText(ui.body, 32 * u, ImVec2(x, foot + 4 * u), soft_ink, what.c_str());
+        draw->AddText(ui.body, 32 * u, ImVec2(x, foot + 4 * u), card_sub, what.c_str());
         foot += 58 * u;
     }
 }

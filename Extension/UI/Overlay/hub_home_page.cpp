@@ -217,8 +217,8 @@ bool button(Ui &f, std::uint32_t id, ImVec2 a, ImVec2 b, std::string_view text, 
     ImU32 fill = primary ? (hit.pointed ? skate_theme::blue_hover : skate_theme::blue) : hit.pointed ? card_pointed : button_dark;
     ImU32 ink = enabled ? theme::paper : theme::muted;
     if (!enabled) fill = primary ? IM_COL32(1, 131, 255, 90) : button_dark;
-    if (hit.focused) fill = theme::paper, ink = focus_ink;
-    skate_theme::rough_rect(f.draw, a, b, fill, id & 0xfff, u * 2);
+    if (hit.focused) fill = theme::focus_fill, ink = focus_ink;
+    theme::tile_rect(f.draw, a, b, fill, id & 0xfff, u * 2);
     const float w = width_of(f.bold, size, text);
     label(f.draw, f.bold, size, ImVec2(a.x + std::max(16 * u, (b.x - a.x - w) * .5f), a.y + (b.y - a.y - size) * .5f), b.x - 16 * u, ink, text);
     return hit.press;
@@ -389,7 +389,7 @@ void featured_card(Ui &f, ImVec2 a, ImVec2 z) {
     auto &h = f.h;
     const float u = f.u, inset = 40 * u;
     auto *draw = f.draw;
-    skate_theme::rough_rect(draw, a, z, card, 0x3a1, u * 2);
+    theme::tile_rect(draw, a, z, card, 0x3a1, u * 2);
     const float left = a.x + inset, right = z.x - inset;
     if (h.posts.empty()) {
         label(draw, f.heading, 56 * u, ImVec2(left, a.y + inset), right, theme::paper, "NO NEWS RIGHT NOW");
@@ -465,7 +465,7 @@ bool compact_card(Ui &f, std::uint32_t id, ImVec2 a, ImVec2 z, const profile::Ne
     const float u = f.u, inset = 22 * u;
     const Hit hit = item(f, id, a, z);
     auto *draw = f.draw;
-    skate_theme::rough_rect(draw, a, z, hit.focused ? theme::paper : hit.pointed ? card_pointed : card, id & 0xfff, u * 2);
+    theme::tile_rect(draw, a, z, hit.focused ? theme::focus_fill : hit.pointed ? card_pointed : card, id & 0xfff, u * 2);
     const ImVec2 pa = a, pz(a.x + std::min((z.y - a.y) * 1.6f, (z.x - a.x) * .32f), z.y);
     picture(f, pa, pz, post.large_image, seed);
     if (featured) draw->AddRectFilled(a, ImVec2(a.x + 10 * u, z.y), skate_theme::blue);
@@ -492,7 +492,7 @@ void notes_card(Ui &f, ImVec2 a, ImVec2 z) {
     auto &h = f.h;
     const float u = f.u, inset = 40 * u;
     auto *draw = f.draw;
-    skate_theme::rough_rect(draw, a, z, card, 0x3b2, u * 2);
+    theme::tile_rect(draw, a, z, card, 0x3b2, u * 2);
     const float left = a.x + inset, right = z.x - inset;
     float y = a.y + inset;
     label(draw, f.heading, 48 * u, ImVec2(left, y), right, theme::paper, "PATCH NOTES");
@@ -553,7 +553,7 @@ void profile_card(Ui &f, ImVec2 a, ImVec2 z, const Model &model) {
     const float u = f.u, inset = 40 * u;
     auto *draw = f.draw;
     const Hit hit = item(f, hash("home-edit-profile"), a, z);
-    skate_theme::rough_rect(draw, a, z, hit.focused ? theme::paper : hit.pointed ? card_pointed : card, 0x3c3, u * 2);
+    theme::tile_rect(draw, a, z, hit.focused ? theme::focus_fill : hit.pointed ? card_pointed : card, 0x3c3, u * 2);
     const float side = z.y - a.y - inset * 2;
     const ImVec2 sa(a.x + inset, a.y + inset), sz(sa.x + side, sa.y + side);
     auto name = !model.player_card.custom_name.empty() ? model.player_card.custom_name : model.multiplayer.local_name;
@@ -611,14 +611,14 @@ float now_height(std::size_t rows, float u) { return rows ? 40 * u + 64 * u + st
 void now_card(Ui &f, ImVec2 a, ImVec2 z, const std::vector<NowRow> &rows) {
     const float u = f.u, inset = 40 * u;
     auto *draw = f.draw;
-    skate_theme::rough_rect(draw, a, z, card, 0x3d4, u * 2);
+    theme::tile_rect(draw, a, z, card, 0x3d4, u * 2);
     label(draw, f.heading, 44 * u, ImVec2(a.x + inset, a.y + inset), z.x - inset, theme::paper, "RIGHT NOW");
     float y = a.y + inset + 64 * u;
     for (std::size_t i = 0; i < rows.size(); ++i, y += 110 * u) {
         const auto &row = rows[i];
         const ImVec2 ra(a.x + inset, y), rz(z.x - inset, y + 96 * u);
         const Hit hit = item(f, hash("home-now", i), ra, rz);
-        skate_theme::rough_rect(draw, ra, rz, hit.focused ? theme::paper : hit.pointed ? card_pointed : button_dark, 0x500 + static_cast<unsigned>(i), u * 2);
+        theme::tile_rect(draw, ra, rz, hit.focused ? theme::focus_fill : hit.pointed ? card_pointed : button_dark, 0x500 + static_cast<unsigned>(i), u * 2);
         const float size = 32 * u, does_w = width_of(f.bold, size, row.does + "  >");
         label(draw, f.bold, size, ImVec2(ra.x + 28 * u, ra.y + (96 * u - size) * .5f), rz.x - does_w - 50 * u, hit.focused ? focus_ink : theme::paper, row.text);
         label(draw, f.bold, size, ImVec2(rz.x - 28 * u - does_w, ra.y + (96 * u - size) * .5f), rz.x, hit.focused ? focus_ink : row.colour, row.does + "  >");
@@ -733,7 +733,7 @@ void reader(Ui &f, ImVec2 a, ImVec2 z, int step, int page_step) {
     auto &h = f.h;
     const float u = f.u, inset = 60 * u;
     auto *draw = f.draw;
-    skate_theme::rough_rect(draw, a, z, card, 0x3e5, u * 2);
+    theme::tile_rect(draw, a, z, card, 0x3e5, u * 2);
     const bool post = h.view == View::post;
     // ---- its bar: what it is, the pager (a post, among the posts) and BACK
     const float bar = 96 * u, top = a.y + inset;
@@ -832,7 +832,7 @@ void hints(Ui &f, float x, float y, bool reading, bool several) {
         } else {
             name = hint.key;
         }
-        if (!name.empty()) x += theme::keycap(f.draw, f.bold, f.u * 2, ImVec2(x, y), name.c_str(), hint.what) + 36 * f.u;
+        if (!name.empty()) x += theme::prompt(f.draw, f.bold, f.u * 2, ImVec2(x, y), name.c_str(), hint.what) + 16 * f.u;
     }
 }
 } // namespace

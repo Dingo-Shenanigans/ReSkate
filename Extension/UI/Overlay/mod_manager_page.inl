@@ -230,7 +230,7 @@ void package_icon(Ui &ui, ImVec2 a, ImVec2 b, const ts::Package *package, std::s
             ui.draw->AddImage(id, a, b, ImVec2(0, 0), ImVec2(1, 1), dim ? IM_COL32(150, 150, 150, 255) : IM_COL32_WHITE);
             return;
         }
-    skate_theme::rough_rect(ui.draw, a, b, track, static_cast<unsigned>(hash(title)) & 0xfff, ui.u * 2);
+    theme::tile_rect(ui.draw, a, b, track, static_cast<unsigned>(hash(title)) & 0xfff, ui.u * 2);
     const float size = (b.y - a.y) * .5f;
     const std::string letter = title.empty() ? std::string("?") : std::string(1, static_cast<char>(std::toupper(static_cast<unsigned char>(title.front()))));
     ui.draw->AddText(ui.heading, size, ImVec2(a.x + (b.x - a.x - width_of(ui.heading, size, letter)) * .5f, a.y + (b.y - a.y - size) * .5f),
@@ -419,7 +419,7 @@ CardPress package_card(Ui &ui, ModPage &m, std::uint32_t id, std::size_t at, ImV
     // the one the details show, while the focus is elsewhere (on them, or on the rail), a blue edge.
     // That one is a place in the grid, not a mod: the same mod twice is not lit twice.
     const auto [focused, pointed] = lit_of(hit);
-    skate_theme::rough_rect(draw, p, q, focused ? theme::paper : pointed ? row_hover : tile_dark, id & 0xfff, u * 2);
+    theme::tile_rect(draw, p, q, focused ? theme::focus_fill : pointed ? row_hover : tile_dark, id & 0xfff, u * 2);
     if (!focused && m.picked_at == at && m.picked == package.full_name) draw->AddRect(p, q, accent, 0, 0, 5 * u);
     const ImVec2 pa(p.x + inset, p.y + inset), pz(q.x - inset, p.y + picture_h);
     package_picture(ui, pa, pz, &package, package.title());
@@ -464,8 +464,8 @@ bool pointer_button(Ui &ui, ImVec2 a, ImVec2 b, const std::string &text, Look lo
     const float u = ui.u, size = std::min(40 * u, (b.y - a.y) * .42f);
     const auto hit = enabled ? pointed(ui, a, b, clip) : Pointed{};
     ImU32 fill = hit.hover ? raised_hover : plate_grey, ink = enabled ? theme::paper : theme::muted;
-    if (look == Look::primary) fill = !enabled ? accent_off : hit.hover ? accent_hover : accent, ink = enabled ? theme::paper : IM_COL32(245, 245, 245, 140);
-    skate_theme::rough_rect(ui.draw, a, b, fill, hash(text) & 0xfff, u * 2);
+    if (look == Look::primary) fill = !enabled ? primary_off : hit.hover ? primary_hover : primary_rest, ink = enabled ? focus_ink : IM_COL32(245, 245, 245, 140);
+    theme::tile_rect(ui.draw, a, b, fill, hash(text) & 0xfff, u * 2);
     ui.draw->AddText(ui.bold, size, ImVec2(a.x + (b.x - a.x - width_of(ui.bold, size, text)) * .5f, a.y + (b.y - a.y - size) * .5f), ink, text.c_str());
     return hit.press;
 }
@@ -546,7 +546,7 @@ void category_rail(Ui &ui, ModPage &m, ImVec2 a, ImVec2 z) {
         if (hit.press && !chosen) m.rail = std::string(key), ui.h.scrolls[hash("mods-browse")] = 0;
         if (!drawn) return;
         const auto [focused, pointed] = lit_of(hit);
-        skate_theme::rough_rect(draw, p, q, focused ? theme::paper : chosen ? card_light : pointed ? row_hover : tile_dark, id & 0xfff, u * 2);
+        theme::tile_rect(draw, p, q, focused ? theme::focus_fill : chosen ? card_light : pointed ? row_hover : tile_dark, id & 0xfff, u * 2);
         if (chosen) draw->AddRectFilled(p, ImVec2(p.x + 8 * u, q.y), accent);
         const bool dark = focused || chosen;
         float right = q.x - 22 * u;
@@ -598,7 +598,7 @@ void browse_bar(Ui &ui, ModPage &m, ImVec2 a, float right, float bar) {
 void categories_panel(Ui &ui, ModPage &m, ImVec2 a, ImVec2 z) {
     auto *draw = ui.draw;
     const float u = ui.u, inset = 40 * u;
-    skate_theme::rough_rect(draw, a, z, tile_dark, 0x3c1, u * 2);
+    theme::tile_rect(draw, a, z, tile_dark, 0x3c1, u * 2);
     draw->AddText(ui.bold, 44 * u, ImVec2(a.x + inset, a.y + inset + 6 * u), theme::paper, "CATEGORIES");
     const float bh = 92 * u, bw = 400 * u;
     const ImVec2 done(z.x - inset - bw, a.y + inset), clear(done.x - 20 * u - bw, a.y + inset);
@@ -637,11 +637,11 @@ void categories_panel(Ui &ui, ModPage &m, ImVec2 a, ImVec2 z) {
             // As the chips: shown only on the blue, hidden on a dark red, white under the D-pad or the
             // keys and lighter under the pointer.
             const auto [focused, pointed] = lit_of(hit);
-            skate_theme::rough_rect(draw, p, q, focused ? theme::paper : state == 1 ? (pointed ? accent_hover : accent) : state == 2 ? IM_COL32(86, 30, 30, 245)
+            theme::tile_rect(draw, p, q, focused ? theme::focus_fill : state == 1 ? (pointed ? primary_hover : primary_rest) : state == 2 ? IM_COL32(86, 30, 30, 245)
                                     : pointed ? row_hover : raised, id & 0xfff, u * 2);
             // Its state on the left, as a mark: a tick shown only, a cross hidden, nothing either way.
             const ImVec2 mark(p.x + 30 * u, p.y + tile_h * .5f);
-            const ImU32 tick = focused ? accent : theme::paper, cross = focused ? skate_theme::danger : IM_COL32(255, 138, 138, 255);
+            const ImU32 tick = focused || state == 1 ? skate_theme::black : theme::paper, cross = focused ? skate_theme::danger : IM_COL32(255, 138, 138, 255);
             if (state == 1) {
                 draw->AddLine(ImVec2(mark.x - 14 * u, mark.y), ImVec2(mark.x - 3 * u, mark.y + 12 * u), tick, 7 * u);
                 draw->AddLine(ImVec2(mark.x - 3 * u, mark.y + 12 * u), ImVec2(mark.x + 18 * u, mark.y - 14 * u), tick, 7 * u);
@@ -654,9 +654,9 @@ void categories_panel(Ui &ui, ModPage &m, ImVec2 a, ImVec2 z) {
             const auto counted = std::to_string(count);
             const float count_w = width_of(ui.body, 30 * u, counted);
             label(draw, ui.bold, 36 * u, ImVec2(p.x + 64 * u, p.y + (tile_h - 36 * u) * .5f), q.x - count_w - 40 * u,
-                  focused ? focus_ink : state == 2 && !pointed ? theme::muted : theme::paper, upper);
+                  focused || state == 1 ? focus_ink : state == 2 && !pointed ? theme::muted : theme::paper, upper);
             draw->AddText(ui.body, 30 * u, ImVec2(q.x - count_w - 24 * u, p.y + (tile_h - 30 * u) * .5f),
-                          focused ? sub_ink_lit : state == 1 ? accent_sub : chip_ink, counted.c_str());
+                          focused ? sub_ink_lit : state == 1 ? IM_COL32(70, 70, 74, 255) : chip_ink, counted.c_str());
         }
     }
     list.end();
@@ -672,7 +672,7 @@ void package_details(Ui &ui, ModPage &m, const ts::Package &package, ImVec2 a, I
     // as the buttons under it leave room for; in a window too short for that, the buttons go two to a row.
     const float left_w = std::min(760 * u, (z.x - a.x) * .3f);
     const ImVec2 la(a.x, a.y), lz(a.x + left_w, z.y);
-    skate_theme::rough_rect(draw, la, lz, tile_dark, 0x3a1, u * 2);
+    theme::tile_rect(draw, la, lz, tile_dark, 0x3a1, u * 2);
     const bool changes = m.mods && m.mods->changes && !live_mods::busy();
     const bool mine_here = mine && !mine->gone;
     const int count = 2 + (changes ? 1 : 0) + (mine_here ? 2 : 0); // the action, BACK, and the rest
@@ -731,7 +731,7 @@ void package_details(Ui &ui, ModPage &m, const ts::Package &package, ImVec2 a, I
 
     // ---- the right: what it is, and its README
     const ImVec2 ra(lz.x + 28 * u, a.y), rz(z.x, z.y);
-    skate_theme::rough_rect(draw, ra, rz, tile_dark, 0x3a2, u * 2);
+    theme::tile_rect(draw, ra, rz, tile_dark, 0x3a2, u * 2);
     const float left = ra.x + inset, edge = rz.x - inset;
     y = ra.y + inset;
     label(draw, ui.heading, 72 * u, ImVec2(left, y), edge, theme::paper, package.title());
@@ -848,7 +848,7 @@ void package_details(Ui &ui, ModPage &m, const ts::Package &package, ImVec2 a, I
 void browse_panel(Ui &ui, ModPage &m, const ts::Package *package, ImVec2 a, ImVec2 z) {
     auto *draw = ui.draw;
     const float u = ui.u, inset = 32 * u;
-    skate_theme::rough_rect(draw, a, z, tile_dark, 0x3a5, u * 2);
+    theme::tile_rect(draw, a, z, tile_dark, 0x3a5, u * 2);
     if (!package) {
         draw->AddText(ui.body, 32 * u, ImVec2(a.x + inset, a.y + inset), theme::muted, "Pick a mod to see it here.");
         return;
@@ -1049,17 +1049,17 @@ void installed_page(Ui &ui, ModPage &m, ImVec2 a, ImVec2 z) {
             // shows has the kit's blue edge, and one with a problem an edge in its tag's colour.
             const auto [focused, pointed] = lit_of(hit);
             const auto tag = state_tag(*mod);
-            skate_theme::rough_rect(draw, p, q, focused ? theme::paper : pointed ? row_hover : tile_dark, 0xa00 + (id & 0xff), u * 2);
+            theme::tile_rect(draw, p, q, focused ? theme::focus_fill : pointed ? row_hover : tile_dark, 0xa00 + (id & 0xff), u * 2);
             if (m.selected == mod->folder) draw->AddRectFilled(p, ImVec2(p.x + 8 * u, q.y), focused ? focus_ink : accent);
             else if (tag.problem) draw->AddRectFilled(p, ImVec2(p.x + 8 * u, q.y), tag.fill);
             const float icon = row_height - 24 * u;
             package_icon(ui, ImVec2(p.x + pad, p.y + 12 * u), ImVec2(p.x + pad + icon, p.y + 12 * u + icon), package_of(mod->folder), mod->title, !mod->enabled);
             const float tx = p.x + pad * 2 + icon, middle = p.y + row_height * .5f;
-            const float tag_x = q.x - pad - row_tag(ui, q.x - pad, middle, tag.text, tag.fill, tag.ink);
+            const float tag_x = q.x - pad - row_tag(ui, q.x - pad, middle, tag.text, on_row(focused, tag.fill), tag.ink);
             // The switch: on or off at a glance, on the blue when on as the ON tag is.
             const float sw = 84 * u, sx = tag_x - sw - 24 * u, sy = middle - 22 * u;
             if (!mod->gone) {
-                draw->AddRectFilled(ImVec2(sx, sy), ImVec2(sx + sw, sy + 44 * u), mod->enabled ? accent : focused ? sub_ink : track, 22 * u);
+                draw->AddRectFilled(ImVec2(sx, sy), ImVec2(sx + sw, sy + 44 * u), mod->enabled ? on_row(focused, accent) : focused ? sub_ink : track, 22 * u);
                 draw->AddCircleFilled(ImVec2(mod->enabled ? sx + sw - 22 * u : sx + 22 * u, sy + 22 * u), 17 * u, theme::paper, 20);
             }
             label(draw, ui.bold, 40 * u, ImVec2(tx, p.y + 18 * u), sx - 20 * u, focused ? focus_ink : mod->enabled || pointed ? theme::paper : theme::muted, mod->title);
@@ -1077,7 +1077,7 @@ void installed_page(Ui &ui, ModPage &m, ImVec2 a, ImVec2 z) {
 
     // ---- beside it: the chosen mod
     const ImVec2 da(lz.x + gap, la.y), dz(z.x, z.y);
-    skate_theme::rough_rect(draw, da, dz, tile_dark, 0x7a, u * 2);
+    theme::tile_rect(draw, da, dz, tile_dark, 0x7a, u * 2);
     const float inset = 40 * u, left = da.x + inset, edge = dz.x - inset;
     const ms::Mod *mod{};
     for (const auto *row : rows)
@@ -1187,7 +1187,7 @@ void updates_page(Ui &ui, ModPage &m, ImVec2 a, ImVec2 z) {
         if (!drawn) continue;
         const auto [focused, pointed] = lit_of(hit);
         const ImU32 ink = focused ? focus_ink : theme::paper, sub = focused ? sub_ink_lit : sub_ink;
-        skate_theme::rough_rect(draw, p, q, focused ? theme::paper : pointed ? row_hover : tile_dark, 0xb00 + (id & 0xff), u * 2);
+        theme::tile_rect(draw, p, q, focused ? theme::focus_fill : pointed ? row_hover : tile_dark, 0xb00 + (id & 0xff), u * 2);
         package_icon(ui, ImVec2(p.x + pad, p.y + 12 * u), ImVec2(p.x + pad + icon, p.y + 12 * u + icon), package, package->title());
         // The name, with its maker (and, on a narrow page, the date and size) under it.
         const std::string when = ms::date_text(package->date_updated), bytes = package->latest().file_size ? ms::size_text(package->latest().file_size) : std::string("-");
@@ -1211,9 +1211,9 @@ void updates_page(Ui &ui, ModPage &m, ImVec2 a, ImVec2 z) {
         const auto &does = does_now.text;
         const float chip_size = 32 * u;
         const ImVec2 c(chip_left, p.y + 30 * u), d(right - pad_x, q.y - 30 * u);
-        skate_theme::rough_rect(draw, c, d, does_now.enabled ? accent : focused ? track_lit : track, 0x52, u * 2);
+        theme::tile_rect(draw, c, d, does_now.enabled ? (focused ? skate_theme::black : primary_rest) : focused ? track_lit : track, 0x52, u * 2);
         label(draw, ui.bold, chip_size, ImVec2(c.x + std::max(16 * u, (d.x - c.x - width_of(ui.bold, chip_size, does)) * .5f), c.y + (d.y - c.y - chip_size) * .5f), d.x - 16 * u,
-              does_now.enabled || !focused ? theme::paper : focus_ink, does);
+              does_now.enabled ? (focused ? theme::paper : focus_ink) : focused ? focus_ink : theme::paper, does);
     }
     if (!count) {
         bool shown{};
@@ -1267,9 +1267,9 @@ void plugin_list_tab(Ui &ui, ModPage &m, ImVec2 a, ImVec2 z) {
             if (hit.press && !pl::set_developer_mode(!on)) mod_say(m, "Plugin dev mode could not be saved.", true);
             if (drawn) {
                 const auto [focused, pointed] = lit_of(hit);
-                skate_theme::rough_rect(draw, p, q, focused ? theme::paper : pointed ? row_hover : tile_dark, id & 0xfff, u * 2);
+                theme::tile_rect(draw, p, q, focused ? theme::focus_fill : pointed ? row_hover : tile_dark, id & 0xfff, u * 2);
                 const float sw = 84 * u, sx = q.x - pad - sw, sy = p.y + row_height * .5f - 22 * u;
-                draw->AddRectFilled(ImVec2(sx, sy), ImVec2(sx + sw, sy + 44 * u), on ? accent : focused ? sub_ink : track, 22 * u);
+                draw->AddRectFilled(ImVec2(sx, sy), ImVec2(sx + sw, sy + 44 * u), on ? on_row(focused, accent) : focused ? sub_ink : track, 22 * u);
                 draw->AddCircleFilled(ImVec2(on ? sx + sw - 22 * u : sx + 22 * u, sy + 22 * u), 17 * u, theme::paper, 20);
                 label(draw, ui.bold, 40 * u, ImVec2(p.x + pad, p.y + 18 * u), sx - 20 * u, focused ? focus_ink : theme::paper, "PLUGIN DEV MODE");
                 label(draw, ui.body, 28 * u, ImVec2(p.x + pad, p.y + 70 * u), sx - 20 * u, focused ? sub_ink_lit : sub_ink,
@@ -1311,14 +1311,14 @@ void plugin_list_tab(Ui &ui, ModPage &m, ImVec2 a, ImVec2 z) {
             // As MY MODS' rows: white under the D-pad or the keys, a lighter grey under the pointer; the
             // one the panel shows has the kit's blue edge, and one waiting for an answer an amber one.
             const auto [focused, pointed] = lit_of(hit);
-            skate_theme::rough_rect(draw, p, q, focused ? theme::paper : pointed ? row_hover : tile_dark, 0xc00 + (id & 0xff), u * 2);
+            theme::tile_rect(draw, p, q, focused ? theme::focus_fill : pointed ? row_hover : tile_dark, 0xc00 + (id & 0xff), u * 2);
             if (m.plugin_selected == plugin.id) draw->AddRectFilled(p, ImVec2(p.x + 8 * u, q.y), focused ? focus_ink : accent);
             else if (waiting) draw->AddRectFilled(p, ImVec2(p.x + 8 * u, q.y), skate_theme::warning);
             const float icon = row_height - 24 * u;
             package_icon(ui, ImVec2(p.x + pad, p.y + 12 * u), ImVec2(p.x + pad + icon, p.y + 12 * u + icon), nullptr, plugin.title, !on && !waiting);
             const float tx = p.x + pad * 2 + icon, middle = p.y + row_height * .5f;
             const char *tag = waiting ? "ASKS" : on ? "ON" : "OFF";
-            float right = q.x - pad - row_tag(ui, q.x - pad, middle, tag, waiting ? skate_theme::warning : on ? accent : plate_grey,
+            float right = q.x - pad - row_tag(ui, q.x - pad, middle, tag, waiting ? skate_theme::warning : on ? on_row(focused, accent) : plate_grey,
                                                waiting ? skate_theme::black : on ? theme::paper : chip_ink) - 24 * u;
             if (page && !waiting) {
                 const char *side = "PAGE  \xe2\x80\xba";
@@ -1346,7 +1346,7 @@ void plugin_list_tab(Ui &ui, ModPage &m, ImVec2 a, ImVec2 z) {
 
     // ---- beside it: the plugin picked
     const ImVec2 da(lz.x + gap, la.y), dz(z.x, z.y);
-    skate_theme::rough_rect(draw, da, dz, tile_dark, 0x7c, u * 2);
+    theme::tile_rect(draw, da, dz, tile_dark, 0x7c, u * 2);
     const float inset = 40 * u, left = da.x + inset, edge = dz.x - inset;
     const pl::Installed *plugin{};
     for (const auto &each : installed)
@@ -1563,7 +1563,7 @@ void mod_manager_page(Ui &ui, ImVec2 a, ImVec2 z) {
         // What is being installed: its icon and name, the step and which of how many, how much has
         // come, and a bar, with CANCEL at the end.
         const ImVec2 sa(a.x, fy), sz(right - 20 * u, z.y);
-        skate_theme::rough_rect(draw, sa, sz, tile_dark, 0x3b7, u * 2);
+        theme::tile_rect(draw, sa, sz, tile_dark, 0x3b7, u * 2);
         const ImVec2 cancel_a(sz.x - 300 * u, fy + 10 * u), cancel_z(sz.x - 10 * u, z.y - 10 * u);
         if (button(ui, hash("mods-cancel"), cancel_a, cancel_z, progress.waiting ? "CANCEL ALL" : "CANCEL", Look::plain)) ms::cancel();
         float x = sa.x + 10 * u;
@@ -1596,7 +1596,7 @@ void mod_manager_page(Ui &ui, ImVec2 a, ImVec2 z) {
         // The merge: its step and how far, and what happens at the end of it.
         const auto applying = live_mods::progress();
         const ImVec2 sa(a.x, fy), sz(right - 20 * u, z.y);
-        skate_theme::rough_rect(draw, sa, sz, tile_dark, 0x3b8, u * 2);
+        theme::tile_rect(draw, sa, sz, tile_dark, 0x3b8, u * 2);
         const float x = sa.x + 24 * u, bar_w = std::min(900 * u, (sz.x - x) * .42f), bar_x = sz.x - 24 * u - bar_w;
         const auto shown = std::min(applying.done + 1, applying.total);
         const std::string where = applying.total ? "APPLYING MODS  " + std::to_string(shown) + " OF " + std::to_string(applying.total) : std::string("APPLYING MODS");
@@ -1625,7 +1625,7 @@ void mod_manager_page(Ui &ui, ImVec2 a, ImVec2 z) {
     float x = a.x;
     const auto hint = [&](std::uint32_t pad_button, const char *key, const char *what) {
         const auto name = ui.pad.available ? controller_combo_label(pad_button, ui.pad.style) : std::string(key);
-        if (!name.empty()) x += theme::keycap(draw, ui.bold, u * 2, ImVec2(x, fy + 20 * u), name.c_str(), what) + 36 * u;
+        if (!name.empty()) x += theme::prompt(draw, ui.bold, u * 2, ImVec2(x, fy + 20 * u), name.c_str(), what) + 16 * u;
     };
     if (m.tab == browse_tab && m.categories_open) hint(0x1000, "Enter", "Show only / hide / either"), hint(0x2000, "Esc", "Done");
     else if (m.tab == browse_tab && !m.details.empty()) hint(0x2000, "Esc", "Back to mods");
