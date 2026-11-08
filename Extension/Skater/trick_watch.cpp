@@ -16,6 +16,7 @@ TrickEvent TrickWatch::update(const TrickSignals& in) {
     // A slam or a wipeout: skate. drops the line, and the trick going on scores nothing. It breaks a
     // line with points too, once a fall (both flags stay up through it).
     if (in.slam || in.wipeout) {
+        calm_ = 0;
         const bool had = !std::exchange(down_, true) && (action_ || waiting_ || score_ > 0.5f);
         action_ = false;
         waiting_ = 0;
@@ -23,7 +24,7 @@ TrickEvent TrickWatch::update(const TrickSignals& in) {
         multiplier_ = in.multiplier;
         return had ? TrickEvent{TrickEvent::Kind::broken} : TrickEvent{};
     }
-    down_ = false;
+    if (down_ && (in.action || ++calm_ >= calm_ticks)) down_ = false;
     if (in.action) {
         if (action_) return {};
         // A trick starts (a previous one whose points never came scored nothing).

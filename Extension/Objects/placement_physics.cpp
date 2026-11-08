@@ -747,8 +747,9 @@ void server_tick() noexcept {
                 const bool found = body_of(lease.server, server);
                 if (found)
                     lease.server_motion = s.motion_type(&server);
-                else if (entity_live(lease.server)) {
-                    // Live, but no body to reach: it follows by transform (placement_motion.h).
+                else if (now > lease.claimed_at + 1000 && entity_live(lease.server)) {
+                    // Live, but still no body to reach after the second a body is given to turn up (not
+                    // there yet right after a map load, say): it follows by transform (placement_motion.h).
                     lease.server_motion = placement_motion::bodiless;
                     if (static unsigned told{}; told < 8) {
                         ++told;

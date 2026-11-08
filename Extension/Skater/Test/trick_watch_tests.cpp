@@ -83,6 +83,20 @@ void a_slam_breaks_a_line_that_has_points() {
     check(w.update(tick(true, 0, 1, true)).kind == K::broken, "and the next fall breaks again");
 }
 
+void one_fall_with_gaps_breaks_the_line_once() {
+    TrickWatch w;
+    feed(w, tick(false, 0, 1), 2);
+    feed(w, tick(true, 0, 1), 10);
+    feed(w, tick(false, 300, 1), 30);
+    // The fall's signals flicker (a one-tick count pulse, then the ragdoll flag), the line's score
+    // still showing between them: one broken, not one each time a signal comes back.
+    check(w.update(tick(false, 300, 1, false, true)).kind == K::broken, "the fall breaks the line");
+    check(w.update(tick(false, 300, 1)).kind == K::none, "a tick between the fall's signals is nothing");
+    check(w.update(tick(false, 300, 1, false, true)).kind == K::none, "the fall's next signal does not break it again");
+    check(w.update(tick(false, 300, 1)).kind == K::none && w.update(tick(false, 300, 1)).kind == K::none, "two quiet ticks are nothing");
+    check(w.update(tick(false, 300, 1, false, true)).kind == K::none, "nor a signal after them");
+}
+
 void a_trick_whose_points_never_come_is_skipped() {
     TrickWatch w(5);
     feed(w, tick(false, 50, 1), 2);
@@ -108,6 +122,7 @@ int main() {
         a_second_trick_in_a_line_scores_its_own_points();
         a_slam_ends_the_trick_for_nothing();
         a_slam_breaks_a_line_that_has_points();
+        one_fall_with_gaps_breaks_the_line_once();
         a_trick_whose_points_never_come_is_skipped();
         the_line_ending_is_not_a_trick();
         std::cout << "trick watch tests passed\n";

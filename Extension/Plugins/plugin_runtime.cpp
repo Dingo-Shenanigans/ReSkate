@@ -264,6 +264,11 @@ void read_tricks(const std::optional<tricks::ScoreHud>& hud) {
     // or a runout (a failed landing on foot, which never leaves 504). Stepping off is none of them.
     const auto watch = watched_physics_state();
     static std::uint64_t falls = watch.wipeouts + watch.runouts;
+    // The counts go on while no plugin wants tricks (this is not called then): after a gap, what
+    // they counted meanwhile is not a fall now.
+    static auto read_at = std::chrono::steady_clock::time_point{};
+    if (const auto at = std::chrono::steady_clock::now(); at - std::exchange(read_at, at) > std::chrono::milliseconds(500))
+        falls = watch.wipeouts + watch.runouts;
     const bool fell = watch.wipeouts + watch.runouts != falls;
     falls = watch.wipeouts + watch.runouts;
     signals.wipeout = (skater.skater && skater.physics_state >= 300 && skater.physics_state < 400) || fell || (watch.valid && watch.ragdoll);

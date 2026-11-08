@@ -35,6 +35,11 @@ private:
     int wait_ticks_;
     bool seen_{}, action_{}, down_{}; // down_: in a slam or wipeout, already told
     int waiting_{};
+    // Ticks since the last fall signal. A fall's signals need not be up on the same ticks (the fall
+    // count's one-tick pulse, a wipeout state of a tick, the ragdoll flag), so one fall is over only
+    // after a few ticks with none, or when a trick starts.
+    int calm_{};
+    static constexpr int calm_ticks = 8;
     float score_{}, multiplier_{}; // the line's score and multiplier before the trick
 };
 }
