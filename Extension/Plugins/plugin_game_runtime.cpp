@@ -57,6 +57,7 @@
 #include "Extension/Throwdowns/throwdown_relay.h"
 #include "Extension/Throwdowns/throwdown_debug_text.h"
 #include "Extension/Trainer/trainer.h"
+#include "Extension/Trainer/trainer_gamestate.h"
 #include "Extension/Travel/local_location_travel.h"
 #include "Extension/World/world_entities.h"
 #include "Extension/World/owned_bodies.h"
@@ -1080,6 +1081,22 @@ public:
         if (owner != source) { owner = source; ++serial; }
         result.serial = serial; result.backwards = backwards != 0; result.mirrored = flags[2] != 0; result.fakie = flags[4] != 0; result.basis = flags[0] != 0;
         return result;
+    }
+    std::optional<FlipState> flip_state() override {
+        NoBailSkater skater{}, after{};
+        if (!no_bail_skater(skater)) return std::nullopt;
+        const auto state = trainer::read_flip_state(skater.base, skater.entity);
+        // Reject a despawn or local rider change during the read. No addresses leave the runtime.
+        if (!state || !no_bail_skater(after) || skater.base != after.base ||
+            skater.core != after.core || skater.entity != after.entity || skater.context != after.context)
+            return std::nullopt;
+        const auto flag = [](std::int8_t value) -> std::optional<bool> {
+            if (value == 0) return false;
+            if (value == 1) return true;
+            return std::nullopt;
+        };
+        return FlipState{state.trick, flag(state.underflip_anim), flag(state.underflip_state),
+                         flag(state.underflip_window)};
     }
     std::vector<AnimationValue> animation_values() override {
         NoBailSkater skater;

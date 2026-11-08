@@ -1113,6 +1113,12 @@ public:
     virtual std::string select_rail_target(std::string_view, std::optional<int>, bool) { return unavailable; }
     struct SkaterFrame { Vec3 position{}, forward{}; bool backwards{}, mirrored{}, fakie{}, basis{}; std::uint64_t serial{}; };
     virtual std::optional<SkaterFrame> skater_frame() { return std::nullopt; }
+    // A read-only snapshot. Missing flags are unknown, not false; the trick remains the base flip.
+    struct FlipState {
+        std::uint32_t trick{};
+        std::optional<bool> underflip_anim, underflip_state, underflip_window;
+    };
+    virtual std::optional<FlipState> flip_state() { return std::nullopt; }
     struct AnimationValue { std::string name; double value{}; bool boolean{}, output{}; };
     virtual std::vector<AnimationValue> animation_values() { return {}; }
     virtual std::string set_animation_value(std::string_view, double) { return unavailable; }
