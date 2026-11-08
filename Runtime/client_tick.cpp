@@ -747,8 +747,9 @@ void update_model(std::uintptr_t client, TickState& frame) {
     std::array<std::uint32_t, dingosdk::action_binds.size()> action_combos{};
     const bool vote_open = dingosdk::multiplayer::server_vote_open();
     // The map download's card (map_download.h) is answered with the same two binds, and by a
-    // controller, whose buttons are kept from the game while it asks.
-    const bool map_prompt = dingosdk::map_download::asking();
+    // controller, whose buttons are kept from the game while it asks, or while it shows that the
+    // download failed (either answer puts that away).
+    const bool map_prompt = dingosdk::map_download::asking() || dingosdk::map_download::failure_shown();
     // The vote for the next map comes up the same way (overlay.h: map_vote_asking), when no map is being asked about.
     const bool map_vote = !map_prompt && dingosdk::overlay::map_vote_asking();
     // And a message to say OK to (overlay.h: message_asking), over either; and a question with two

@@ -1,6 +1,7 @@
 #include "Extension/Input/native_input_capture.h"
 #include "Engine/Game/Input/input_lease_capture_policy.h"
 #include "Extension/Input/input_publication.h"
+#include "Extension/Input/pad_output_publication.h"
 #include "Extension/Input/input_source_environment.h"
 #include <array>
 #include <cstdio>
@@ -210,6 +211,97 @@ void context_release() {
     check(!source::lease_read(1, handle, no_authority, reason), "context cleanup does not authorize a new input sample");
     close(handle);
 }
+void replacement_publication() {
+    dingosdk::input::PadOutput replacement{}; replacement.buttons = 0x1000;
+    auto before = source::publication_revision();
+    check(source::write_pad_output("replacement", 0, replacement, facts.now_ms).empty(),
+        "actual replacement adapter admits its owner");
+    check(source::publication_revision() > before && dingosdk::input::pad_outputs().active(facts.now_ms),
+        "replacement publication advances the shared revision and vetoes passive availability");
+    before = source::publication_revision();
+    check(source::read_pad_output(0, facts.now_ms, true).has_value() && source::publication_revision() == before,
+        "a nonmutating replacement read does not invalidate every raw poll");
+    check(!source::write_pad_output("other", 0, replacement, facts.now_ms).empty() &&
+        source::publication_revision() == before, "a refused owner cannot publish an interference transition");
+    check(source::write_pad_output("other", 0, std::nullopt, facts.now_ms).empty() &&
+        source::publication_revision() == before, "a foreign nil write does not release another replacement");
+    check(source::write_pad_output("replacement", 0, std::nullopt, facts.now_ms).empty() &&
+        source::publication_revision() > before && !dingosdk::input::pad_outputs().active(facts.now_ms),
+        "explicit nil release advances the same publication fence");
+
+    check(source::write_pad_output("replacement", 4, replacement, facts.now_ms).empty(),
+        "the native-pad slot uses the same adapter");
+    before = source::publication_revision();
+    source::release_pad_output("other");
+    check(source::publication_revision() == before, "foreign owner cleanup is not a replacement mutation");
+    source::release_pad_output("replacement");
+    check(source::publication_revision() > before && !dingosdk::input::pad_outputs().active(facts.now_ms),
+        "owner close fences native-pad replacement release too");
+
+    check(source::write_pad_output("replacement", 0, replacement, facts.now_ms).empty(), "expiry fixture publishes");
+    before = source::publication_revision(); facts.now_ms += dingosdk::input::PadOutputs::lifetime_ms;
+    check(!source::read_pad_output(0, facts.now_ms, true) && source::publication_revision() > before,
+        "read-time expiry is a fenced mutation, not an invisible clear");
+    check(source::write_pad_output("replacement", 0, replacement, facts.now_ms).empty() &&
+        source::write_pad_output("replacement", 4, replacement, facts.now_ms).empty(), "menu-clear fixture publishes both transports");
+    before = source::publication_revision();
+    check(!source::read_pad_output(0, facts.now_ms, false) && source::publication_revision() > before &&
+        !dingosdk::input::pad_outputs().active(facts.now_ms), "disallowed input clears every replacement behind the publication fence");
+
+    check(source::write_pad_output("replacement", 0, replacement, facts.now_ms).empty(), "active-veto fixture publishes");
+    source::tick(1, 2, true); report();
+    lease::Handle denied; lease::Reason reason;
+    check(!source::lease_request(1, 0, denied, reason) && reason == lease::Reason::interference,
+        "an active replacement vetoes passive admission even when the staged report equals raw");
+    source::release_pad_output("replacement");
+
+    const auto handle = start(); const auto identity = state(handle).key;
+    source::Poll poll; source::begin(true, 0, poll);
+    const auto staged = source::publication_revision();
+    // These are the two production filter reads. A replacement is published
+    // after both snapshots but before the real finalizer acquires its gate.
+    check(!source::read_pad_output(0, facts.now_ms, true) && !source::read_pad_output(0, facts.now_ms, true),
+        "both staged filter reads precede the replacement");
+    check(source::write_pad_output("replacement", 0, replacement, facts.now_ms).empty() &&
+        source::publication_revision() > staged, "the intervening setter cannot share the old staged revision");
+    lease::Pad pressed{}; pressed.buttons = replacement.buttons;
+    const auto buffer = finish(poll, pressed, pressed, 0, true, true, 0, 7, 7, staged);
+    const auto receipt = state(handle);
+    check(buffer.pad == lease::Pad{} && receipt.key == identity && receipt.phase == capture::Phase::releasing &&
+        receipt.debt && receipt.reason == capture::Reason::interference && !receipt.neutral_releases,
+        "late replacement permits only retained neutral fallback, never continued capture or a false handback");
+    lease::Snapshot unavailable;
+    check(!source::lease_read(1, handle, unavailable, reason), "the stale candidate cannot issue a new passive observation");
+    check(!source::capture_acknowledge(1, handle), "replacement interference cannot erase retained cleanup duty");
+    source::release_pad_output("replacement"); report(); close(handle);
+    check(!source::publication_held(), "all replacement paths return outside the publication gate");
+}
+void item_filters_aba() {
+    // State's production assertion binds its actual member to this lightweight
+    // type, without pulling rendering dependencies into the input fixture.
+    using FilterFlag = source::PublishedAtomic<bool>;
+    FilterFlag item_filters_visible{false};
+    const auto handle = start(); const auto identity = state(handle).key;
+    source::Poll poll; source::begin(true, 0, poll);
+    const auto staged = source::publication_revision();
+    item_filters_visible.store(true); item_filters_visible.store(false);
+    check(!item_filters_visible.load() && source::publication_revision() > staged && !source::publication_held(),
+        "item filters invalidate the staged raw candidate even when already closed");
+    lease::Pad pressed{}; pressed.buttons = 0x1000;
+    const auto buffer = finish(poll, pressed, pressed, 0, true, true, 0, 7, 7, staged);
+    auto receipt = state(handle);
+    check(buffer.pad == lease::Pad{} && receipt.key == identity && receipt.phase == capture::Phase::releasing &&
+        receipt.debt && receipt.reason == capture::Reason::interference && !receipt.neutral_releases,
+        "closed item filters cannot authorize continued capture or a false handback from the old candidate");
+    lease::Reason reason; lease::Snapshot unavailable;
+    check(!source::lease_read(1, handle, unavailable, reason) && !source::capture_acknowledge(1, handle),
+        "item-filter interference retains source cleanup and refuses fresh samples or early ACK");
+    report(); receipt = state(handle);
+    check(receipt.key == identity && receipt.phase == capture::Phase::complete && !receipt.debt &&
+        receipt.neutral_releases == 1 && !receipt.polls_in_flight,
+        "one later confirmed same-stream handback and exact callback drain discharge item-filter cleanup");
+    close(handle);
+}
 void staged_aba() {
     const auto handle = start(); source::Poll poll; source::begin(true, 0, poll);
     const auto staged = source::publication_revision(); source::PublishedAtomic<bool> writer{false};
@@ -220,6 +312,8 @@ void staged_aba() {
     check(buffer.pad == lease::Pad{} && receipt.phase == capture::Phase::releasing && receipt.debt &&
         !receipt.neutral_releases, "stale staged write gets only owed neutral fallback, no completion");
     report(); close(handle);
+    replacement_publication();
+    item_filters_aba();
 }
 void failed_write() {
     const auto handle = arm(); write_mode = Write::partial;
@@ -442,7 +536,13 @@ void capacity() {
     check(!source::lease_acknowledge(1, handle, reason), "passive ACK cannot bypass unknown capture");
 }
 }
-namespace dingosdk::native_input_source::environment { Facts sample() noexcept { return facts; } }
+namespace dingosdk::native_input_source::environment {
+Facts sample() noexcept {
+    auto result = facts;
+    result.interference_clear = result.interference_clear && !input::pad_outputs().active(result.now_ms);
+    return result;
+}
+}
 int main(int argc, char** argv) {
     if (argc != 2) return 2; const std::string_view mode = argv[1];
     if (mode == "denial") denial(); else if (mode == "cold_original") cold_original();

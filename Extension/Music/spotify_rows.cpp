@@ -1,6 +1,7 @@
 #include "spotify_rows.h"
 #include "spotify_station.h"
 #include "music_inject.h"
+#include "Extension/Skater/trick_feed.h"
 #include "Engine/Core/Hooks/hooks.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/memory.h"
@@ -136,6 +137,18 @@ std::uintptr_t play_song_hook(std::uintptr_t player, std::uintptr_t asset, std::
         if (std::uintptr_t metadata{}; !ours && graph && memory::peek(graph + graph_metadata, metadata) && (metadata &= ~std::uintptr_t{4}) != 0) {
             spotify_station::song_begun(channel, metadata);
             spotify_station::song_started(metadata);
+        }
+        // Every song begun, a row of ours or the game's own, as it reads now (a station's as
+        // Spotify's): the music writes its title to the trick list's name field of its own model,
+        // and the trick feed is to leave that out (trick_feed.h).
+        if (std::uintptr_t metadata{}, title{}; graph && memory::peek(graph + graph_metadata, metadata) && (metadata &= ~std::uintptr_t{4}) != 0 &&
+            memory::peek(metadata + metadata_title, title)) {
+            char artist_text[128]{}, title_text[128]{};
+            if (memory::peek_cstring(title, title_text, sizeof(title_text)) > 0) {
+                if (std::uintptr_t artist{}; !memory::peek(metadata + metadata_artist, artist) || memory::peek_cstring(artist, artist_text, sizeof(artist_text)) < 0)
+                    artist_text[0] = 0;
+                tricks::feed::song_playing(artist_text, title_text);
+            }
         }
     } catch (...) {}
     return play_song_original(player, asset, channel, a, b, c, d);

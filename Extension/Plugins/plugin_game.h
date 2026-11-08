@@ -6,11 +6,13 @@
 #include "Engine/Game/Input/input_lease_capture.h"
 #include "plugin_object_physics.h"
 #include "plugin_skater_movement.h"
+#include "Extension/World/traffic_vehicles.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Game/World/body_query.h"
 #include "Extension/AnimationStudio/anim_core.h"
 #include "Extension/Skater/pose_place.h"
 #include "Extension/Throwdowns/throwdown_kit.h"
+#include "Extension/UI/score_line.h"
 #include <array>
 #include <cstdint>
 #include <filesystem>
@@ -31,6 +33,8 @@
 namespace dingosdk::plugins {
 using Vec3 = std::array<float, 3>;
 inline constexpr char unavailable[] = "unavailable here";
+// A plugin's own line in skate.'s score HUD (reskate.hud.score_line; Extension/UI/score_line.h).
+using ScoreLine = score_line::Line;
 
 // The game's camera as it is now: where it is, the way it looks, and its vertical field of view.
 struct CameraView {
@@ -410,8 +414,15 @@ public:
         bool object{};
         std::optional<std::array<float, 16>> matrix;
         std::string blueprint;
+        std::uint64_t vehicle_owner{};
+        std::uint64_t vehicle_root{};
     };
     virtual std::optional<WorldPick> world_pick(const Vec3& /*from*/, const Vec3& /*to*/) { return std::nullopt; }
+    virtual std::string vehicle_take(std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t&) { return unavailable; }
+    virtual traffic_vehicles::Sample vehicle_read(std::uint64_t, std::uint64_t) { return {}; }
+    virtual std::string vehicle_set_pose(std::uint64_t, std::uint64_t, const traffic_vehicles::Pose&) { return unavailable; }
+    virtual bool vehicle_release(std::uint64_t, std::uint64_t) { return false; }
+    virtual void vehicle_release_all(std::uint64_t) {}
     // kind "tod" (key: morning, noon, afternoon, evening, night, weatherday, weathernight, default),
     // "control" (key: fog, fog_distance, sky_brightness, clouds, wind_strength, wind_direction,
     // traffic, pedestrians; value a number, -1 the default) or "park" (key: a lot, value a layout).
@@ -1061,6 +1072,11 @@ public:
     virtual std::string hide_skater(std::string_view /*plugin*/, bool) { return unavailable; }
     // skate.'s bottom left HUD hidden while any plugin asks; false keeps the plugin ready to hide it.
     virtual std::string hud_corner(std::string_view /*plugin*/, bool) { return unavailable; }
+    // A plugin's own line shown in skate.'s score HUD at the bottom left while it sets it again within
+    // 500 ms, display only (it never counts); nullopt clears it. One plugin's line at a time; never in
+    // a multiplayer session, a throwdown or match, a challenge or activity, the replay editor or a
+    // menu, and it yields to skate.'s own line and to a hidden corner (Extension/UI/score_line_hud.h).
+    virtual std::string score_line(std::string_view /*plugin*/, const std::optional<ScoreLine>&) { return unavailable; }
     // The game run at `speed` (0.05 to 1; 1 drops the ask) while it is the slowest asked; never in a
     // multiplayer session. And the speed it runs at for plugins now.
     virtual std::string game_speed(std::string_view /*plugin*/, float) { return unavailable; }
@@ -1113,6 +1129,12 @@ public:
     virtual std::string select_rail_target(std::string_view, std::optional<int>, bool) { return unavailable; }
     struct SkaterFrame { Vec3 position{}, forward{}; bool backwards{}, mirrored{}, fakie{}, basis{}; std::uint64_t serial{}; };
     virtual std::optional<SkaterFrame> skater_frame() { return std::nullopt; }
+    // A read-only snapshot. Missing flags are unknown, not false; the trick remains the base flip.
+    struct FlipState {
+        std::uint32_t trick{};
+        std::optional<bool> underflip_anim, underflip_state, underflip_window;
+    };
+    virtual std::optional<FlipState> flip_state() { return std::nullopt; }
     struct AnimationValue { std::string name; double value{}; bool boolean{}, output{}; };
     virtual std::vector<AnimationValue> animation_values() { return {}; }
     virtual std::string set_animation_value(std::string_view, double) { return unavailable; }

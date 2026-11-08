@@ -5,26 +5,14 @@
 #include "Engine/Game/Input/voice_input.h"
 #include <algorithm>
 #include <charconv>
+#include <cstdio>
 #include <ctime>
+#include <utility>
 #include <Windows.h>
 #include <shellapi.h>
 
 namespace dingosdk::overlay::menu::multiplayer_detail {
 namespace {
-// Two buttons sharing a row equally.
-bool half_button(const char* label, bool first) {
-    const float width = (ImGui::GetContentRegionAvail().x - (first ? ImGui::GetStyle().ItemSpacing.x : 0.0f)) *
-                        (first ? .5f : 1.0f);
-    return ImGui::Button(label, ImVec2(width, 0));
-}
-// A button filling the row after a label from field(), leaving room for a
-// small trailing button.
-bool bind_button(const std::string& label, const char* trailing) {
-    const float trailing_width = ImGui::CalcTextSize(trailing).x + ImGui::GetStyle().FramePadding.x * 2;
-    return ImGui::Button(label.c_str(), ImVec2(ImGui::GetContentRegionAvail().x - trailing_width -
-                                                   ImGui::GetStyle().ItemSpacing.x, 0));
-}
-
 // Who may change the session's settings: its host, or an admin of the dedicated
 // server it runs on (their changes are sent to the server).
 bool controls_session(const MultiplayerModel &mp) { return mp.hosting || mp.server_admin; }
@@ -36,6 +24,34 @@ const char *set_by(const MultiplayerModel &mp, std::string_view command) {
 const char *set_by(const MultiplayerModel &mp) {
     return controls_session(mp) ? nullptr : mp.dedicated ? "Set by the server" : "Set by the host";
 }
+// A player's voice state as the model has it, or the defaults for one it has not heard yet.
+VoicePlayer voice_of(const MultiplayerModel &mp, std::uint64_t id) {
+    const auto found = std::find_if(mp.voice.players.begin(), mp.voice.players.end(), [&](const auto &p) { return p.id == id; });
+    return found == mp.voice.players.end() ? VoicePlayer{id} : *found;
+}
+// How loud this PC hears one player: on the VOICE tab's rows and the SESSION tab's. The slider shows
+// what was just set until the model agrees (or two seconds pass).
+void player_volume(SkateMenu &menu, const MultiplayerModel &mp, const MultiplayerPlayer &peer) {
+    std::array<char, 65> unused{};
+    std::erase_if(menu.voice_volume_pending, [&](const auto &item) { return ImGui::GetTime() >= item.second.second; });
+    auto gain = voice_of(mp, peer.id).volume;
+    if (const auto pending = menu.voice_volume_pending.find(peer.id); pending != menu.voice_volume_pending.end()) {
+        if (pending->second.first == gain) menu.voice_volume_pending.erase(pending);
+        else gain = pending->second.first;
+    }
+    field(menu, "Volume", "How loud you hear this player. Only you hear the change.");
+    if (::dingosdk::overlay::menu::slider_float("##volume", &gain, 0.f, max_voice_volume, "%.2fx", ImGuiSliderFlags_AlwaysClamp) &&
+        send_private(menu, "voice-volume", std::to_string(peer.id) + " " + std::to_string(gain), unused, false))
+        menu.voice_volume_pending[peer.id] = {gain, ImGui::GetTime() + 2};
+}
+// The day a ban was added, or "-" for one without a date.
+std::string ban_date(std::int64_t added) {
+    std::array<char, 32> date{};
+    const auto time = static_cast<std::time_t>(added);
+    std::tm local{};
+    if (added > 0 && localtime_s(&local, &time) == 0) std::strftime(date.data(), date.size(), "%d %b %Y", &local);
+    return date[0] ? date.data() : "-";
+}
 void distance_settings(SkateMenu &menu, const MultiplayerModel &mp) {
     if (!menu.multiplayer_distance_initialized || menu.multiplayer_distance_applied != mp.distances ||
         menu.multiplayer_distance_hosting != mp.hosting || menu.multiplayer_distance_lobby != mp.invite) {
@@ -45,39 +61,34 @@ void distance_settings(SkateMenu &menu, const MultiplayerModel &mp) {
         menu.multiplayer_distance_initialized = true;
     }
     auto &draft = menu.multiplayer_distance_draft;
+    const bool editable = controls(mp, "distances");
     begin_card(menu, "distances", "NETWORK DISTANCES", set_by(mp, "distances"));
     note("Skaters further away update less often, which keeps big lobbies smooth.");
-    ImGui::BeginDisabled(!controls(mp, "distances"));
-    field(menu, "Drop to 10 TPS after");
-    ImGui::DragInt("##half-start", &draft.half_rate_start, 1.f, 1, 9999, "%d m", ImGuiSliderFlags_AlwaysClamp);
-    field(menu, "Drop to 5 TPS after");
-    ImGui::DragInt("##low-start", &draft.low_rate_start, 1.f, 2, 10000, "%d m", ImGuiSliderFlags_AlwaysClamp);
+    ImGui::BeginDisabled(!editable);
+    // Left / right move a distance 5 m at a time; the box beside it takes an exact one.
+    const auto distance = [&](const char *label, const char *id, int &value, int low, int high) {
+        field(menu, label);
+        set_console_step(5);
+        ::dingosdk::overlay::menu::slider_int(id, &value, low, high, "%d m", ImGuiSliderFlags_AlwaysClamp);
+    };
+    distance("Drop to 10 TPS after", "##half-start", draft.half_rate_start, 1, 9999);
+    distance("Drop to 5 TPS after", "##low-start", draft.low_rate_start, 2, 10000);
+    distance("Back to full rate within", "##full-return", draft.full_rate_return, 0, 9998);
+    distance("Back to 10 TPS within", "##half-return", draft.half_rate_return, 1, 9999);
     ImGui::EndDisabled();
-    if (ImGui::TreeNode("Return distances")) {
-        note("Slightly shorter than the drop distances, so a skater on the boundary does not flip between rates.");
-        ImGui::BeginDisabled(!controls(mp, "distances"));
-        field(menu, "Back to full rate within");
-        ImGui::DragInt("##full-return", &draft.full_rate_return, 1.f, 0, 9998, "%d m", ImGuiSliderFlags_AlwaysClamp);
-        field(menu, "Back to 10 TPS within");
-        ImGui::DragInt("##half-return", &draft.half_rate_return, 1.f, 1, 9999, "%d m", ImGuiSliderFlags_AlwaysClamp);
-        ImGui::EndDisabled();
-        ImGui::TreePop();
-    }
+    note("The return distances sit a little inside the drop ones, so a skater on the edge does not flip between rates.");
     const bool valid = draft.valid();
     if (!valid)
         warn("Keep the distances in order: back to full rate < drop to 10 <= back to 10 < drop to 5.");
-    ImGui::BeginDisabled(!controls(mp, "distances"));
-    ImGui::BeginDisabled(!valid || draft == mp.distances);
-    if (half_button("Apply to lobby", true)) {
+    const int pressed = button_row(menu, "distance-actions", {{"APPLY TO LOBBY", editable && valid && !(draft == mp.distances)},
+                                                              {"RESET VALUES", editable}});
+    if (pressed == 0) {
         std::array<char, 65> unused{};
         send_private(menu, "distances", std::to_string(draft.full_rate_return) + " " +
             std::to_string(draft.half_rate_start) + " " + std::to_string(draft.half_rate_return) + " " +
             std::to_string(draft.low_rate_start), unused, false);
     }
-    ImGui::EndDisabled();
-    ImGui::SameLine();
-    if (half_button("Reset values", false)) draft = {};
-    ImGui::EndDisabled();
+    if (pressed == 1) draft = {};
     const auto rates = "Rates: " + std::to_string(mp.tps) + " / 10 / 5 TPS. Players who join later get these too.";
     note(rates.c_str());
     end_card();
@@ -91,8 +102,7 @@ void map_pool_settings(SkateMenu &menu, const Model &model) { // the server's ow
     const auto pooled = pool.empty() ? mp.server_maps.size() : pool.size();
     const auto count = std::to_string(pooled) + " of " + std::to_string(mp.server_maps.size()) + " maps";
     begin_card(menu, "map-pool", "MAP POOL", count.c_str());
-    note("The maps players can vote for, in the order the rotation goes through them. These are the server's own "
-         "maps: its retail maps and the custom maps in its Mods folder.");
+    note("The maps players can vote for, in rotation order: the server's own retail maps and the custom maps in its Mods folder.");
     bool votes = mp.server_map_votes;
     if (toggle_row(menu, "Player map votes", "Players start a vote with /vote map <map>.", votes))
         server(votes ? "votes map on" : "votes map off");
@@ -126,15 +136,16 @@ void map_pool_settings(SkateMenu &menu, const Model &model) { // the server's ow
             menu.map_pool_pending[asset] = {listed, now + 2};
         ImGui::PopID();
     }
-    if (!pool.empty() && ImGui::Button("Use every map", ImVec2(-FLT_MIN, 0))) server("map-pool clear");
+    if (!pool.empty() && button_row(menu, "every-map", {{"USE EVERY MAP"}}) == 0) server("map-pool clear");
     note(pool.empty() ? "Every map is in the pool. Untick maps to leave them out."
                       : "Ticked maps join the end of the rotation; the numbers are its order.");
     ImGui::Dummy(ImVec2(0, px(2)));
 
     field(menu, "Rotation", "Minutes on each map before the server moves to the next map in the pool. 0 turns it off.");
     int minutes = menu.map_rotation_pending.value_or(static_cast<int>(mp.server_map_rotation));
-    ImGui::DragInt("##map-rotation", &minutes, .25f, 0, static_cast<int>(max_map_rotation), minutes ? "Every %d min" : "Off",
-                   ImGuiSliderFlags_AlwaysClamp);
+    set_console_step(5);
+    ::dingosdk::overlay::menu::slider_int("##map-rotation", &minutes, 0, static_cast<int>(max_map_rotation), minutes ? "Every %d min" : "Off",
+                                          ImGuiSliderFlags_AlwaysClamp);
     if (ImGui::IsItemActive()) menu.map_rotation_pending = minutes;
     if (ImGui::IsItemDeactivatedAfterEdit()) {
         server(minutes ? "rotation " + std::to_string(minutes) : std::string("rotation off"));
@@ -143,10 +154,8 @@ void map_pool_settings(SkateMenu &menu, const Model &model) { // the server's ow
     if (!ImGui::IsItemActive() && menu.map_rotation_pending &&
         (*menu.map_rotation_pending == static_cast<int>(mp.server_map_rotation) || now >= menu.map_rotation_until))
         menu.map_rotation_pending.reset();
-    note(mp.server_map_rotation ? "Set to 0 to turn the auto rotation off. Players get a minute's warning; the clock "
-                                  "waits while nobody is on, and starts over whenever the map changes."
-                                : "Auto rotation is off (0). Drag above 0 to change the map on a timer; until then it "
-                                  "changes only by a vote or an admin.");
+    note(mp.server_map_rotation ? "Players get a minute's warning. The clock waits while nobody is on and starts over when the map changes."
+                                : "Off: the map changes only by a vote or an admin.");
     end_card();
 }
 } // namespace
@@ -178,8 +187,7 @@ void voice_controls(SkateMenu &menu, const MultiplayerModel &mp) {
         if (!ImGui::IsItemActive() && menu.voice_range_pending &&
             (*menu.voice_range_pending == mp.voice_range || ImGui::GetTime() >= menu.voice_range_until))
             menu.voice_range_pending.reset();
-        note("Players further apart than the voice range cannot hear each other. Closer in, each player's own "
-             "hearing distance fades voices out.");
+        note("Past the range nobody hears each other; closer in, each player's own hearing distance fades voices out.");
         end_card();
     }
 
@@ -199,28 +207,26 @@ void voice_controls(SkateMenu &menu, const MultiplayerModel &mp) {
     GetWindowThreadProcessId(GetForegroundWindow(), &foreground_process);
     if (menu.voice_bind_capture && (ImGui::GetTime() >= menu.voice_capture_until || foreground_process != GetCurrentProcessId()))
         menu.voice_bind_capture = 0;
+    // Each bind as a tile that records a new one, and CLEAR beside it.
     field(menu, "Push-to-talk key");
-    const auto key_label = (menu.voice_bind_capture == 1 ? std::string("Press a key...")
-                                                         : voice_key_name(value.push_to_talk)) + "###voice-key";
-    if (bind_button(key_label, "Clear")) {
+    const auto key_label = menu.voice_bind_capture == 1 ? std::string("PRESS A KEY...") : voice_key_name(value.push_to_talk);
+    const int key_pressed = button_row(menu, "voice-key", {{key_label.c_str(), true, false, "A, then the key to talk with."}, {"CLEAR"}});
+    if (key_pressed == 0) {
         menu.voice_bind_capture = 1;
         menu.voice_capture_until = ImGui::GetTime() + 30;
         detail::OverlayInputAccess access;
         for (int key = 0; key < 256; ++key) menu.voice_keys_down[key] = (GetAsyncKeyState(key) & 0x8000) != 0;
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Clear##voice-key")) { value.push_to_talk = 0; changed = true; menu.voice_bind_capture = 0; }
+    if (key_pressed == 1) { value.push_to_talk = 0; changed = true; menu.voice_bind_capture = 0; }
     field(menu, "Controller combo");
-    const auto pad_label = (menu.voice_bind_capture == 2 ? std::string("Recording...")
-                                                         : controller_combo_label(value.controller_combo, controller.style)) +
-                           "###voice-controller";
-    if (bind_button(pad_label, "Clear")) {
+    const auto pad_label = menu.voice_bind_capture == 2 ? std::string("RECORDING...") : controller_combo_label(value.controller_combo, controller.style);
+    const int pad_pressed = button_row(menu, "voice-controller", {{pad_label.c_str(), true, false, "A, then hold the button or combo to talk with."}, {"CLEAR"}});
+    if (pad_pressed == 0) {
         menu.voice_bind_capture = 2;
         menu.voice_controller_capture = {};
         menu.voice_capture_until = ImGui::GetTime() + 30;
     }
-    ImGui::SameLine();
-    if (ImGui::Button("Clear##voice-controller")) { value.controller_combo = 0; changed = true; menu.voice_bind_capture = 0; }
+    if (pad_pressed == 1) { value.controller_combo = 0; changed = true; menu.voice_bind_capture = 0; }
     if (menu.voice_bind_capture) {
         detail::OverlayInputAccess access;
         if (GetAsyncKeyState(VK_ESCAPE) & 0x8000) menu.voice_bind_capture = 0;
@@ -244,7 +250,7 @@ void voice_controls(SkateMenu &menu, const MultiplayerModel &mp) {
                  !controller.available ? "Connect a controller. Escape cancels." :
                  !menu.voice_controller_capture.ready ? "Release all controller buttons first." :
                  "Hold your button or combo, then release it to save. Escape cancels.");
-            if (ImGui::SmallButton("Cancel binding")) menu.voice_bind_capture = 0;
+            if (button_row(menu, "voice-cancel", {{"CANCEL BINDING"}}) == 0) menu.voice_bind_capture = 0;
         }
     }
     if (!value.push_to_talk && !value.controller_combo && !value.open_mic)
@@ -255,7 +261,7 @@ void voice_controls(SkateMenu &menu, const MultiplayerModel &mp) {
     // Steam records the voice, so the input device is the one chosen in Steam;
     // its API cannot be pointed at another.
     field(menu, "Input device", "Voice is recorded by Steam, so it uses the microphone chosen in Steam's voice settings.");
-    if (ImGui::Button("Choose in Steam voice settings", ImVec2(-FLT_MIN, 0)))
+    if (button_row(menu, "voice-device", {{"CHOOSE IN STEAM VOICE SETTINGS"}}) == 0)
         ShellExecuteW(nullptr, L"open", L"steam://settings/voice", nullptr, nullptr, SW_SHOWNORMAL);
     field(menu, "Your microphone", "How loud other players hear you.");
     changed |= ::dingosdk::overlay::menu::slider_float("##microphone", &value.microphone, 0.f, max_voice_volume, "%.2fx", ImGuiSliderFlags_AlwaysClamp);
@@ -289,50 +295,34 @@ void voice_controls(SkateMenu &menu, const MultiplayerModel &mp) {
         }
     }
 
+    // Each player a row: their volume at its end, and A for the slider, mute and ignore.
     begin_card(menu, "voice-players", "PLAYER VOLUMES", "Only changes what you hear");
-    std::erase_if(menu.voice_volume_pending, [&](const auto &item) {
-        return ImGui::GetTime() >= item.second.second;
-    });
     if (mp.roster.empty()) note("Players appear here once you are in a session with them.");
-    ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(px(8), px(6)));
-    if (!mp.roster.empty() && ImGui::BeginTable("voice-players", 5,
-        ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
-        ImGui::TableSetupColumn("Player");
-        ImGui::TableSetupColumn("Volume");
-        ImGui::TableSetupColumn("##state", ImGuiTableColumnFlags_WidthFixed, px(100));
-        ImGui::TableSetupColumn("##mute", ImGuiTableColumnFlags_WidthFixed, px(76));
-        ImGui::TableSetupColumn("##ignore", ImGuiTableColumnFlags_WidthFixed, px(84));
-        ImGui::TableHeadersRow();
-        for (const auto &peer : mp.roster) {
-            ImGui::PushID(std::to_string(peer.id).c_str());
-            const auto found = std::find_if(mp.voice.players.begin(), mp.voice.players.end(), [&](const auto &p) { return p.id == peer.id; });
-            const auto player = found == mp.voice.players.end() ? VoicePlayer{peer.id} : *found;
-            auto gain = player.volume;
-            if (const auto pending = menu.voice_volume_pending.find(peer.id); pending != menu.voice_volume_pending.end()) {
-                if (pending->second.first == gain) menu.voice_volume_pending.erase(pending);
-                else gain = pending->second.first;
-            }
-            ImGui::TableNextRow(); ImGui::TableNextColumn();
-            ImGui::AlignTextToFramePadding(); cell_text(peer.name);
-            ImGui::TableNextColumn(); ImGui::SetNextItemWidth(-1);
-            if (::dingosdk::overlay::menu::slider_float("##volume", &gain, 0.f, max_voice_volume, "%.2fx", ImGuiSliderFlags_AlwaysClamp) &&
-                send_private(menu, "voice-volume", std::to_string(peer.id) + " " + std::to_string(gain), unused, false))
-                menu.voice_volume_pending[peer.id] = {gain, ImGui::GetTime() + 2};
-            ImGui::TableNextColumn();
-            if (player.muted) tag(menu, "MUTED", skate_theme::danger);
-            else if (mp.voice.allowed && player.speaking) tag(menu, "SPEAKING", skate_theme::good);
-            ImGui::TableNextColumn();
-            if (ImGui::Button(player.muted ? "Unmute" : "Mute", ImVec2(-1, 0)))
-                send_private(menu, "voice-mute", std::to_string(peer.id) + (player.muted ? " off" : " on"), unused, false);
+    for (const auto &peer : mp.roster) {
+        const auto player = voice_of(mp, peer.id);
+        float gain = player.volume;
+        if (const auto pending = menu.voice_volume_pending.find(peer.id); pending != menu.voice_volume_pending.end()) gain = pending->second.first;
+        OpenRow row;
+        row.name = peer.name;
+        std::array<char, 32> volume{};
+        std::snprintf(volume.data(), volume.size(), "%.2fx", gain);
+        row.side = volume.data();
+        if (player.muted) row.tags.push_back({"MUTED", skate_theme::danger});
+        else if (mp.voice.allowed && player.speaking) row.tags.push_back({"SPEAKING", skate_theme::good});
+        if (peer.ignored) row.tags.push_back({"IGNORED", skate_theme::grey_text});
+        row.hint = "A for this player's volume, mute and ignore.";
+        if (open_row(menu, std::to_string(peer.id).c_str(), row)) {
+            const int action = action_chips(menu, "voice-actions",
+                {{player.muted ? "UNMUTE" : "MUTE", true, player.muted, "Stop hearing their voice, on your game only."},
+                 {peer.ignored ? "UNIGNORE" : "IGNORE", true, peer.ignored,
+                  "Hide this player and everything they do, on your screen only: their skater, voice, chat, invites and plugins. They are not told."}});
+            if (action == 0) send_private(menu, "voice-mute", std::to_string(peer.id) + (player.muted ? " off" : " on"), unused, false);
             // Ignore: their skater, voice, chat and everything else of theirs, on this screen only.
-            ImGui::TableNextColumn();
-            if (ImGui::Button(peer.ignored ? "Unignore" : "Ignore", ImVec2(-1, 0)))
-                send_private(menu, "ignore", std::to_string(peer.id) + (peer.ignored ? " off" : " on"), unused, false);
-            ImGui::PopID();
+            if (action == 1) send_private(menu, "ignore", std::to_string(peer.id) + (peer.ignored ? " off" : " on"), unused, false);
+            player_volume(menu, mp, peer);
+            end_open_row();
         }
-        ImGui::EndTable();
     }
-    ImGui::PopStyleVar();
     end_card();
 }
 
@@ -345,7 +335,7 @@ void ban_popup(SkateMenu &menu) {
     if (!ImGui::IsPopupOpen(title)) return;
     const auto *viewport = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(viewport->GetCenter(), ImGuiCond_Appearing, ImVec2(.5f, .5f));
-    ImGui::SetNextWindowSize(ImVec2(std::min(px(440), viewport->WorkSize.x - 24.f), 0), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(std::min(px(460), viewport->WorkSize.x - 24.f), 0), ImGuiCond_Always);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(px(18), px(16)));
     if (ImGui::BeginPopupModal(title, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoResize)) {
         ImGui::PushFont(menu.bold);
@@ -357,12 +347,11 @@ void ban_popup(SkateMenu &menu) {
                     : "They are removed now and can never join a lobby you host, even with your join code. "
                       "Unban them any time in Online > Bans.");
         ImGui::Dummy(ImVec2(0, px(4)));
-        const float half = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) * .5f;
-        skate_theme::push_primary_button();
-        const bool ban = ImGui::Button("Ban", ImVec2(half, 0));
-        skate_theme::pop_primary_button();
-        ImGui::SameLine();
-        const bool cancel = ImGui::Button("Cancel", ImVec2(-FLT_MIN, 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape);
+        // The focus starts on BAN, so A bans; B (or Escape) cancels.
+        if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+        const int pressed = button_row(menu, "ban-actions", {{"BAN", true, true}, {"CANCEL"}});
+        const bool ban = pressed == 0;
+        const bool cancel = pressed == 1 || ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false);
         if (ban) {
             std::array<char, 65> unused{};
             send_private(menu, "ban", std::to_string(menu.ban_confirm_id) + " " + menu.ban_confirm_name, unused, false);
@@ -376,50 +365,44 @@ void ban_popup(SkateMenu &menu) {
     }
     ImGui::PopStyleVar();
 }
-// The players this PC ignores, here or not, each with Unignore; and the players here to ignore.
+// The players this PC ignores, here or not, each a row with UNIGNORE; and the players here to ignore.
 void ignored_card(SkateMenu &menu, const MultiplayerModel &mp) {
     std::array<char, 65> unused{};
     const auto count = std::to_string(mp.ignored.size()) + (mp.ignored.size() == 1 ? " player" : " players");
     begin_card(menu, "ignored", "IGNORED PLAYERS", count.c_str());
-    note("Only for you: their skater, voice, chat, invites and plugins never show or are heard on your game, in any session. "
-         "They are not told. /ignore <player> in chat does it too.");
-    ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(px(8), px(6)));
-    if (!mp.ignored.empty() && ImGui::BeginTable("ignored-table", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
-        ImGui::TableSetupColumn("Player", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn("##here", ImGuiTableColumnFlags_WidthFixed, px(110));
-        ImGui::TableSetupColumn("##unignore", ImGuiTableColumnFlags_WidthFixed, px(100));
-        ImGui::TableHeadersRow();
-        for (const auto &player : mp.ignored) {
-            ImGui::PushID(std::to_string(player.id).c_str());
-            ImGui::TableNextRow(); ImGui::TableNextColumn();
-            ImGui::PushFont(menu.bold);
-            cell_text(player.name.empty() ? std::string("Unknown player") : player.name);
-            ImGui::PopFont();
-            ImGui::PushStyleColor(ImGuiCol_Text, skate_theme::grey_text);
-            ImGui::TextUnformatted(std::to_string(player.id).c_str());
-            ImGui::PopStyleColor();
-            ImGui::TableNextColumn();
-            const bool here = std::any_of(mp.roster.begin(), mp.roster.end(), [&](const auto &p) { return p.id == player.id && p.connected; });
-            if (here) tag(menu, "HERE", skate_theme::warning);
-            ImGui::TableNextColumn();
-            if (ImGui::Button("Unignore", ImVec2(-1, 0))) send_private(menu, "ignore", std::to_string(player.id) + " off", unused, false);
-            ImGui::PopID();
-        }
-        ImGui::EndTable();
-    }
-    ImGui::PopStyleVar();
+    note("Only for you: nothing of theirs shows or is heard on your game, in any session, and they are not told. "
+         "/ignore <player> in chat does it too.");
     if (mp.ignored.empty()) note("You ignore nobody.");
+    for (const auto &player : mp.ignored) {
+        OpenRow row;
+        row.name = player.name.empty() ? std::string("Unknown player") : player.name;
+        row.detail = std::to_string(player.id);
+        if (std::any_of(mp.roster.begin(), mp.roster.end(), [&](const auto &p) { return p.id == player.id && p.connected; }))
+            row.tags.push_back({"HERE", skate_theme::warning});
+        row.hint = "A to unignore this player.";
+        if (open_row(menu, ("ignored-" + std::to_string(player.id)).c_str(), row)) {
+            if (action_chips(menu, "unignore", {{"UNIGNORE", true, false, "See and hear them again."}}) == 0)
+                send_private(menu, "ignore", std::to_string(player.id) + " off", unused, false);
+            end_open_row();
+        }
+    }
     // The players in this session you could ignore.
     bool heading{};
     for (const auto &peer : mp.roster) {
         if (peer.id == mp.local_id || !peer.connected || peer.ignored || (mp.dedicated && peer.id == mp.host_id)) continue;
-        if (!std::exchange(heading, true)) field(menu, "Players here", "Ignore one from here, or from their tile on the SESSION tab.");
-        ImGui::PushID(std::to_string(peer.id).c_str());
-        ImGui::AlignTextToFramePadding();
-        cell_text(peer.name);
-        ImGui::SameLine(ImGui::GetContentRegionAvail().x + ImGui::GetCursorPosX() - px(100));
-        if (ImGui::Button("Ignore", ImVec2(px(100), 0))) send_private(menu, "ignore", std::to_string(peer.id) + " on", unused, false);
-        ImGui::PopID();
+        if (!std::exchange(heading, true)) {
+            ImGui::Dummy(ImVec2(0, px(4)));
+            note("Players here: ignore one from here, or from their row on the SESSION tab.");
+        }
+        OpenRow row;
+        row.name = peer.name;
+        row.hint = "A to ignore this player.";
+        if (open_row(menu, ("here-" + std::to_string(peer.id)).c_str(), row)) {
+            if (action_chips(menu, "ignore", {{"IGNORE", true, false,
+                    "Hide this player and everything they do, on your screen only: their skater, voice, chat, invites and plugins."}}) == 0)
+                send_private(menu, "ignore", std::to_string(peer.id) + " on", unused, false);
+            end_open_row();
+        }
     }
     end_card();
 }
@@ -439,35 +422,18 @@ void bans_page(SkateMenu &menu, const Model &model) {
     if (bans.empty())
         note(server ? "Nobody is banned from this server. Ban a player from the Session tab, or add one below."
                     : "Nobody is banned. Ban a player from the Session tab while you host, or add one below.");
-    ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(px(8), px(6)));
-    if (!bans.empty() && ImGui::BeginTable("bans-table", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
-        ImGui::TableSetupColumn("Player", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn("Banned", ImGuiTableColumnFlags_WidthFixed, px(120));
-        ImGui::TableSetupColumn("##unban", ImGuiTableColumnFlags_WidthFixed, px(90));
-        ImGui::TableHeadersRow();
-        for (const auto &ban : bans) {
-            ImGui::PushID(std::to_string(ban.id).c_str());
-            ImGui::TableNextRow(); ImGui::TableNextColumn();
-            ImGui::PushFont(menu.bold);
-            cell_text(ban.name.empty() ? std::string("Unknown player") : ban.name);
-            ImGui::PopFont();
-            ImGui::PushStyleColor(ImGuiCol_Text, skate_theme::grey_text);
-            ImGui::TextUnformatted(std::to_string(ban.id).c_str());
-            ImGui::PopStyleColor();
-            ImGui::TableNextColumn();
-            ImGui::AlignTextToFramePadding();
-            std::array<char, 32> date{};
-            const auto added = static_cast<std::time_t>(ban.added);
-            std::tm local{};
-            if (ban.added > 0 && localtime_s(&local, &added) == 0) std::strftime(date.data(), date.size(), "%d %b %Y", &local);
-            ImGui::TextUnformatted(date[0] ? date.data() : "-");
-            ImGui::TableNextColumn();
-            if (ImGui::Button("Unban", ImVec2(-1, 0))) send_private(menu, "unban", std::to_string(ban.id), unused, false);
-            ImGui::PopID();
+    for (const auto &ban : bans) {
+        OpenRow row;
+        row.name = ban.name.empty() ? std::string("Unknown player") : ban.name;
+        row.detail = std::to_string(ban.id);
+        row.side = ban_date(ban.added);
+        row.hint = "A to unban this player.";
+        if (open_row(menu, ("ban-" + std::to_string(ban.id)).c_str(), row)) {
+            if (action_chips(menu, "unban", {{"UNBAN", true, false, server ? "Let them join this server again." : "Let them join your lobbies again."}}) == 0)
+                send_private(menu, "unban", std::to_string(ban.id), unused, false);
+            end_open_row();
         }
-        ImGui::EndTable();
     }
-    ImGui::PopStyleVar();
     end_card();
 
     begin_card(menu, "ban-add", server ? "BAN FROM THIS SERVER" : "BAN BY STEAM ID");
@@ -493,15 +459,18 @@ void bans_page(SkateMenu &menu, const Model &model) {
             menu.ban_name.fill(0);
         }
     }
-    note(server ? "Banned players can never join this server. A SteamID64 is the long number in a Steam profile's "
-                  "address (steamcommunity.com/profiles/...)."
+    note(server ? "Banned players can never join this server. A SteamID64 is the long number in a Steam profile's address."
                 : "Banned players can never join a lobby you host, even with your join code. A SteamID64 is the long number "
-                  "in a Steam profile's address (steamcommunity.com/profiles/...).");
+                  "in a Steam profile's address.");
     end_card();
 }
 void session_page(SkateMenu &menu, const Model &model) {
     const auto &mp = model.multiplayer;
-    begin_card(menu, "session", mp.lobby_name.empty() ? "CURRENT SESSION" : mp.lobby_name.c_str());
+    std::array<char, 65> unused{};
+    // The session: its name, then where and how full, as one line over its tags.
+    const auto where = map_label(model, mp.map) +
+                       (mp.active ? "  -  " + std::to_string(mp.players) + " of " + std::to_string(mp.capacity) : std::string{});
+    begin_card(menu, "session", mp.lobby_name.empty() ? "CURRENT SESSION" : mp.lobby_name.c_str(), where.c_str());
     if (mp.lobby_joining) tag(menu, "CONNECTING", skate_theme::warning);
     else tag(menu, mp.hosting ? "HOST" : "GUEST", mp.hosting ? skate_theme::blue : skate_theme::good);
     if (mp.dedicated) {
@@ -524,158 +493,97 @@ void session_page(SkateMenu &menu, const Model &model) {
         }
     }
     note(mp.status.c_str());
-    ImGui::Dummy(ImVec2(0, px(2)));
-    info(menu, "Map", map_label(model, mp.map));
-    if (mp.active) info(menu, "Players", std::to_string(mp.players) + " / " + std::to_string(mp.capacity));
-    if (mp.hosting && !mp.invite.empty()) {
-        field(menu, "Join code", "Friends paste this in Servers > Join with a code.");
-        std::array<char, 128> code{};
-        std::copy_n(mp.invite.begin(), std::min(mp.invite.size(), code.size() - 1), code.begin());
-        const float copy = ImGui::CalcTextSize("Copy").x + ImGui::GetStyle().FramePadding.x * 2;
-        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - copy - ImGui::GetStyle().ItemSpacing.x);
-        ImGui::InputText("##join-code", code.data(), code.size(), ImGuiInputTextFlags_ReadOnly);
-        ImGui::SameLine();
-        if (ImGui::Button("Copy")) {
-            ImGui::SetClipboardText(mp.invite.c_str());
-            feedback(menu, "Join code copied.");
-        }
-    }
+    const bool code = mp.hosting && !mp.invite.empty();
+    if (code) info(menu, "Join code", mp.invite);
     if (!mp.lobby_status.empty()) note(mp.lobby_status.c_str());
     ImGui::Dummy(ImVec2(0, px(2)));
-    if (ImGui::Button(mp.lobby_joining ? "Cancel join" : mp.hosting ? "End session" : "Leave session", ImVec2(-FLT_MIN, 0)))
-        send_private(menu, "stop", "", menu.multiplayer_join_password, false);
+    const char *leave = mp.lobby_joining ? "CANCEL JOIN" : mp.hosting ? "END SESSION" : "LEAVE SESSION";
+    // 0 copies the join code, 1 leaves.
+    int pressed = -1;
+    if (code) pressed = button_row(menu, "session-actions", {{"COPY JOIN CODE", true, false, "Friends paste it in Servers > Join with a code."}, {leave}});
+    else if (button_row(menu, "session-actions", {{leave}}) == 0) pressed = 1;
+    if (code && pressed == 0) {
+        ImGui::SetClipboardText(mp.invite.c_str());
+        feedback(menu, "Join code copied.");
+    }
+    if (pressed == 1) send_private(menu, "stop", "", menu.multiplayer_join_password, false);
     end_card();
     if (!mp.active) return;
 
+    // The players as rows: a square that is green once they are in the world, their tags, how far away
+    // they are. A on a player opens what can be done with them under the row.
     const auto count = std::to_string(mp.players) + " / " + std::to_string(mp.capacity);
     begin_card(menu, "players", "PLAYERS", count.c_str());
-    auto *draw = ImGui::GetWindowDrawList();
-    const auto player = [&](int index, const std::string &name, bool you, bool host, std::string detail,
-                            const char *status, ImU32 colour, const MultiplayerPlayer *peer) {
-        ImGui::PushID(index);
-        const auto top = ImGui::GetCursorScreenPos();
-        const float width = ImGui::GetContentRegionAvail().x, height = px(54), pad = px(14);
-        skate_theme::rough_rect(draw, top, ImVec2(top.x + width, top.y + height), skate_theme::tile_grey,
-                                static_cast<unsigned>(index + 57), px(1));
-        if (host) draw->AddRectFilled(top, ImVec2(top.x + px(4), top.y + height), skate_theme::blue);
-        const float middle = top.y + (height - ImGui::GetFrameHeight()) * .5f;
-        float right = top.x + width - pad;
-        // Right: the host's actions, then the status tag leading into them.
-        if (peer && (controls(mp, "kick") || controls(mp, "ban")) && peer->id != mp.local_id && peer->id != mp.host_id) {
-            const float button = px(76), spacing = ImGui::GetStyle().ItemSpacing.x;
-            right -= button * 2 + spacing;
-            ImGui::SetCursorScreenPos(ImVec2(right, middle));
-            ImGui::BeginDisabled(!peer->connected || !peer->epoch);
-            if (ImGui::Button("Kick", ImVec2(button, 0))) {
-                std::array<char, 65> unused{};
-                send_private(menu, "kick", std::to_string(peer->id) + " " + std::to_string(peer->epoch), unused, false);
-            }
-            ImGui::EndDisabled();
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-                ImGui::SetTooltip("%s", mp.dedicated ? "Remove them until the server restarts."
-                                                     : "Remove them from this session. They can join your next one.");
-            ImGui::SameLine();
-            if (ImGui::Button("Ban", ImVec2(button, 0))) {
-                menu.ban_confirm_id = peer->id;
-                menu.ban_confirm_name = peer->name;
+    const auto copy_id = [&](std::uint64_t id) {
+        ImGui::SetClipboardText(std::to_string(id).c_str());
+        feedback(menu, "Steam ID copied.");
+    };
+    {
+        // You. The ReSkate team's lists see everyone's Steam ID, and copy their own from here.
+        OpenRow row;
+        row.name = mp.local_name.empty() ? std::string("You") : mp.local_name;
+        row.swatch = mp.local_ready ? skate_theme::good : skate_theme::warning;
+        row.tags.push_back({"YOU", skate_theme::white});
+        if (mp.hosting) row.tags.push_back({"HOST", skate_theme::blue});
+        if (!mp.local_ready) row.tags.push_back({"LOADING", skate_theme::warning});
+        if (mp.steam_ids_shown && mp.local_id) row.detail = std::to_string(mp.local_id);
+        row.openable = mp.steam_ids_shown && mp.local_id;
+        row.hint = "A to copy your Steam ID.";
+        if (open_row(menu, "you", row)) {
+            if (action_chips(menu, "you-actions", {{"COPY STEAM ID"}}) == 0) copy_id(mp.local_id);
+            end_open_row();
+        }
+    }
+    for (const auto &peer : mp.roster) {
+        const bool in_game = peer.connected && peer.visible;
+        const bool host = peer.id == mp.host_id;
+        const auto voice = voice_of(mp, peer.id);
+        OpenRow row;
+        row.name = peer.name;
+        row.swatch = in_game ? skate_theme::good : skate_theme::warning;
+        if (host) row.tags.push_back({"HOST", skate_theme::blue});
+        if (peer.party_member) row.tags.push_back({peer.party_leader ? "PARTY LEAD" : "PARTY", skate_theme::friends_text});
+        if (!in_game) row.tags.push_back({!peer.connected ? "CONNECTING" : "LOADING", skate_theme::warning});
+        if (voice.muted) row.tags.push_back({"MUTED", skate_theme::danger});
+        if (peer.ignored) row.tags.push_back({"IGNORED", skate_theme::grey_text});
+        if (peer.distance_m >= 0) row.side = std::to_string(static_cast<int>(peer.distance_m)) + " m";
+        if (mp.steam_ids_shown && peer.id) row.detail = std::to_string(peer.id);
+        row.hint = "A for teleport, mute, ignore, volume and the rest.";
+        if (!open_row(menu, std::to_string(peer.id).c_str(), row)) continue;
+        // (A dedicated server's own entry is not a skater to go to.)
+        const int action = action_chips(menu, "player-actions",
+            {{"TELEPORT", peer.connected && !(mp.dedicated && host), false, "Go to where they are skating."},
+             {voice.muted ? "UNMUTE" : "MUTE", true, voice.muted, "Stop hearing their voice, on your game only."},
+             // Ignoring them: nothing of theirs shows or is heard on this PC (the list is on the BANS tab).
+             {peer.ignored ? "UNIGNORE" : "IGNORE", true, peer.ignored,
+              peer.ignored ? "You ignore this player. Press to see and hear them again."
+                           : "Hide this player and everything they do, on your screen only: their skater, voice, chat, invites and plugins. They are not told."},
+             // Their placed objects: ghosts for you (skated and walked through) until made solid.
+             {"SOLID OBJECTS", true, peer.objects_solid,
+              peer.objects_solid ? "Everything this player places is solid for you. Press to pass through their objects instead."
+                                 : "You pass through everything this player places. Press to make their objects solid, to skate them."}});
+        if (action == 0) send_private(menu, "tp", std::to_string(peer.id), unused, false);
+        if (action == 1) send_private(menu, "voice-mute", std::to_string(peer.id) + (voice.muted ? " off" : " on"), unused, false);
+        if (action == 2) send_private(menu, "ignore", std::to_string(peer.id) + (peer.ignored ? " off" : " on"), unused, false);
+        if (action == 3) send_private(menu, "objects-solid", std::to_string(peer.id) + (peer.objects_solid ? " off" : " on"), unused, false);
+        // The host's (or a server role's) actions.
+        if ((controls(mp, "kick") || controls(mp, "ban")) && peer.id != mp.local_id && !host) {
+            const int removed = action_chips(menu, "host-actions",
+                {{"KICK", peer.connected && peer.epoch != 0, false,
+                  mp.dedicated ? "Remove them until the server restarts." : "Remove them from this session. They can join your next one."},
+                 {"BAN", true, false,
+                  mp.dedicated ? "Remove them and keep them off this server for good." : "Remove them and keep them out of every lobby you host."}});
+            if (removed == 0) send_private(menu, "kick", std::to_string(peer.id) + " " + std::to_string(peer.epoch), unused, false);
+            if (removed == 1) {
+                menu.ban_confirm_id = peer.id;
+                menu.ban_confirm_name = peer.name;
                 menu.ban_confirm_on_server = mp.dedicated;
                 menu.ban_confirm_requested = true;
             }
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("%s", mp.dedicated ? "Remove them and keep them off this server for good."
-                                                     : "Remove them and keep them out of every lobby you host.");
-            right -= px(14);
         }
-        // Ignoring them: nothing of theirs shows or is heard on this PC (the list is on the BANS tab).
-        if (peer && peer->id != mp.local_id) {
-            const float button = px(84);
-            right -= button;
-            ImGui::SetCursorScreenPos(ImVec2(right, middle));
-            if (peer->ignored) skate_theme::push_primary_button();
-            if (ImGui::Button(peer->ignored ? "Ignored" : "Ignore", ImVec2(button, 0))) {
-                std::array<char, 65> unused{};
-                send_private(menu, "ignore", std::to_string(peer->id) + (peer->ignored ? " off" : " on"), unused, false);
-            }
-            if (peer->ignored) skate_theme::pop_primary_button();
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("%s", peer->ignored
-                    ? "You ignore this player. Press to see and hear them again."
-                    : "Hide this player and everything they do, on your screen only: their skater, voice, chat, invites and plugins. They are not told.");
-            right -= px(14);
-        }
-        // Their placed objects: ghosts for you (skated and walked through) until made solid.
-        if (peer && peer->id != mp.local_id) {
-            const float button = px(124);
-            right -= button;
-            ImGui::SetCursorScreenPos(ImVec2(right, middle));
-            if (peer->objects_solid) skate_theme::push_primary_button();
-            if (ImGui::Button(peer->objects_solid ? "Objects: solid" : "Objects: ghost", ImVec2(button, 0))) {
-                std::array<char, 65> unused{};
-                send_private(menu, "objects-solid", std::to_string(peer->id) + (peer->objects_solid ? " off" : " on"), unused, false);
-            }
-            if (peer->objects_solid) skate_theme::pop_primary_button();
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("%s", peer->objects_solid
-                    ? "Everything this player places is solid for you. Press to pass through their objects instead."
-                    : "You pass through everything this player places. Press to make their objects solid, to skate them.");
-            right -= px(14);
-        }
-        const float status_width = menu.bold->CalcTextSizeA(px(12), FLT_MAX, 0, status).x + px(14);
-        right -= status_width;
-        ImGui::SetCursorScreenPos(ImVec2(right, middle));
-        tag(menu, status, colour);
-        right -= px(14);
-        // Left: the name, with who they are under it.
-        ImGui::SetCursorScreenPos(ImVec2(top.x + pad + (host ? px(4) : 0.0f), top.y + px(8)));
-        ImGui::PushClipRect(ImGui::GetCursorScreenPos(), ImVec2(right, top.y + height), true);
-        ImGui::BeginGroup();
-        ImGui::PushFont(menu.bold);
-        ImGui::TextUnformatted(name.c_str());
-        ImGui::PopFont();
-        if (you) {
-            ImGui::SameLine(0, px(8));
-            ImGui::PushStyleColor(ImGuiCol_Text, skate_theme::blue);
-            ImGui::TextUnformatted("you");
-            ImGui::PopStyleColor();
-        }
-        ImGui::PushStyleColor(ImGuiCol_Text, skate_theme::grey_text);
-        ImGui::TextUnformatted(detail.c_str());
-        // The ReSkate team's lists see who is who: the Steam ID, copied by a click.
-        if (const auto id = peer ? peer->id : mp.local_id; mp.steam_ids_shown && id) {
-            const auto text = std::to_string(id);
-            ImGui::SameLine(0, 0);
-            ImGui::TextUnformatted("  -  ");
-            ImGui::SameLine(0, 0);
-            ImGui::TextUnformatted(text.c_str());
-            if (ImGui::IsItemHovered()) {
-                ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-                ImGui::SetTooltip("Steam ID. Click to copy.");
-            }
-            if (ImGui::IsItemClicked()) ImGui::SetClipboardText(text.c_str());
-        }
-        ImGui::PopStyleColor();
-        ImGui::EndGroup();
-        ImGui::PopClipRect();
-        ImGui::SetCursorScreenPos(ImVec2(top.x, top.y + height + px(6)));
-        ImGui::Dummy(ImVec2(0, 0));
-        ImGui::PopID();
-    };
-    player(0, mp.local_name.empty() ? std::string("You") : mp.local_name, true, mp.hosting,
-           mp.hosting ? "Host" : "Guest", mp.local_ready ? "IN GAME" : "LOADING",
-           mp.local_ready ? skate_theme::good : skate_theme::warning, nullptr);
-    // Only the tiles in view are drawn; every tile is the same height.
-    ImGuiListClipper clipper;
-    clipper.Begin(static_cast<int>(mp.roster.size()));
-    while (clipper.Step()) {
-        for (auto i = static_cast<std::size_t>(clipper.DisplayStart); i < static_cast<std::size_t>(clipper.DisplayEnd); ++i) {
-            const auto &peer = mp.roster[i];
-            const bool in_game = peer.connected && peer.visible;
-            std::string detail = peer.id == mp.host_id ? "Host" : "Guest";
-            if (peer.distance_m >= 0) detail += "  -  " + std::to_string(static_cast<int>(peer.distance_m)) + " m away";
-            player(static_cast<int>(i) + 1, peer.name, false, peer.id == mp.host_id, std::move(detail),
-                   !peer.connected ? "CONNECTING" : in_game ? "IN GAME" : "LOADING",
-                   in_game ? skate_theme::good : skate_theme::warning, &peer);
-        }
+        if (mp.steam_ids_shown && peer.id && action_chips(menu, "id-actions", {{"COPY STEAM ID"}}) == 0) copy_id(peer.id);
+        player_volume(menu, mp, peer);
+        end_open_row();
     }
     ImGui::Dummy(ImVec2(0, px(2)));
     if (!mp.object_status.empty()) note(("Objects: " + mp.object_status).c_str());
@@ -685,17 +593,12 @@ void session_page(SkateMenu &menu, const Model &model) {
 
     if (mp.server_admin) {
         begin_card(menu, "server-command", "SERVER COMMAND", mp.server_all_commands ? "Admins only" : "Your role's commands");
-        note(mp.server_all_commands
-                 ? "Any server console command: status, map grom, name <text>, tps 60, park historic megapark_02, "
-                   "layer-sync on... Type help for the list. Replies appear in chat."
-                 : "The server commands your role has: type help for what there is. Replies appear in chat.");
-        const float send = ImGui::CalcTextSize("Send").x + ImGui::GetStyle().FramePadding.x * 2;
-        ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - send - ImGui::GetStyle().ItemSpacing.x);
+        note(mp.server_all_commands ? "Any server console command, such as status, map grom or tps 60. Type help for the list; replies appear in chat."
+                                    : "The server commands your role has: type help for the list. Replies appear in chat.");
+        ImGui::SetNextItemWidth(-FLT_MIN);
         const bool enter = ImGui::InputTextWithHint("##server-command", "help", menu.server_command.data(),
                                                     menu.server_command.size(), ImGuiInputTextFlags_EnterReturnsTrue);
-        ImGui::SameLine();
-        if ((ImGui::Button("Send") || enter) && menu.server_command[0]) {
-            std::array<char, 65> unused{};
+        if ((button_row(menu, "server-send", {{"SEND", menu.server_command[0] != 0}}) == 0 || enter) && menu.server_command[0]) {
             send_private(menu, "server", menu.server_command.data(), unused, false);
             menu.server_command.fill(0);
         }
@@ -704,7 +607,6 @@ void session_page(SkateMenu &menu, const Model &model) {
     map_pool_settings(menu, model);
 
     begin_card(menu, "host-options", mp.dedicated ? "SERVER OPTIONS" : "HOST OPTIONS", mp.dedicated && mp.server_admin ? nullptr : set_by(mp));
-    std::array<char, 65> unused{};
     field(menu, "Who can build");
     int placement = mp.object_placement == ObjectPlacement::everyone ? 0 : mp.object_placement == ObjectPlacement::host_only ? 1 : 2;
     // On a dedicated server "host only" is its admins.
@@ -720,19 +622,16 @@ void session_page(SkateMenu &menu, const Model &model) {
              : mp.dedicated ? "Nobody can build. Existing objects stay."
                             : "Nobody can build, including the host. Existing objects stay.");
     // How many objects each player may have placed: a few round numbers, and whatever the
-    // server's file or console set that is not one of them.
+    // server's file or console set that is not one of them (shown, not offered).
     {
         static constexpr std::array<unsigned, 7> limits{0, 10, 25, 50, 100, 250, 500};
         const auto found = std::find(limits.begin(), limits.end(), mp.object_limit);
-        const std::string custom = std::to_string(mp.object_limit);
-        std::array<const char *, 8> labels{"No limit", "10", "25", "50", "100", "250", "500", custom.c_str()};
+        std::vector<std::string> labels{"No limit", "10", "25", "50", "100", "250", "500"};
+        if (found == limits.end()) labels.push_back(std::to_string(mp.object_limit));
         int picked = static_cast<int>(found - limits.begin());
-        field(menu, "Objects per player");
-        ImGui::BeginDisabled(!controls(mp, "objects"));
-        ImGui::SetNextItemWidth(-FLT_MIN);
-        if (ImGui::Combo("##object-limit", &picked, labels.data(), found == limits.end() ? 8 : 7) && picked < 7)
+        if (option_row(menu, "Objects per player", "How many objects each player may have placed at once.", picked, labels,
+                       controls(mp, "objects")) && picked < 7)
             send_private(menu, "object-limit", picked ? std::to_string(limits[static_cast<std::size_t>(picked)]) : std::string("off"), unused, false);
-        ImGui::EndDisabled();
         const char *exempt = mp.dedicated ? "Admins" : "The host";
         if (!mp.object_limit) note("Everyone can place as many objects as they like.");
         else if (mp.object_limit_own)
@@ -742,12 +641,12 @@ void session_page(SkateMenu &menu, const Model &model) {
                    (mp.dedicated ? " are not limited." : " is not limited.")).c_str());
     }
     if (controls(mp, "clear-objects")) {
-        note(mp.dedicated ? "Enforced by the server, so modified clients cannot get around it."
-                          : "Enforced by the host, so modified clients cannot get around it.");
-        if (ImGui::Button(mp.dedicated ? "Delete all placed objects" : "Delete all guest objects", ImVec2(-FLT_MIN, 0)))
+        if (button_row(menu, "clear-objects", {{mp.dedicated ? "DELETE ALL PLACED OBJECTS" : "DELETE ALL GUEST OBJECTS"}}) == 0)
             send_private(menu, "clear-objects", "", unused, false);
-        note(mp.dedicated ? "Removes every object players placed, for everyone. Their saved parks stay."
-                          : "Removes every object guests placed, for everyone. Your objects and guests' saved parks stay.");
+        note(mp.dedicated ? "Removes every object players placed, for everyone; their saved parks stay. Enforced by the server, "
+                            "so modified clients cannot get around it."
+                          : "Removes every object guests placed, for everyone; your objects and guests' saved parks stay. Enforced by "
+                            "the host, so modified clients cannot get around it.");
     }
     ImGui::Dummy(ImVec2(0, px(2)));
     const char *who = mp.dedicated ? "Players" : "Guests";

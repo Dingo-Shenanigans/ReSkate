@@ -1,6 +1,7 @@
 #include "Extension/Input/native_input_source.h"
 #include "Extension/Input/native_input_capture.h"
 #include "Extension/Input/input_publication.h"
+#include "Extension/Input/pad_output_publication.h"
 #include "Engine/Core/Log/logging.h"
 #include "overlay_internal.h"
 #include "input_capture.h"
@@ -191,7 +192,7 @@ bool output_allowed() noexcept {
 void replace_pad(unsigned controller, dingosdk::overlay::GamepadValues& pad) noexcept {
     if (overlay_input_access) return;
     const auto saved_error = GetLastError();
-    const auto output = input::pad_outputs().read(controller, GetTickCount64(), output_allowed());
+    const auto output = native_input_source::read_pad_output(controller, GetTickCount64(), output_allowed());
     SetLastError(saved_error);
     if (output) pad = {output->buttons, output->left_trigger, output->right_trigger,
         output->left_x, output->left_y, output->right_x, output->right_y};
@@ -214,7 +215,7 @@ void filter_hid(const InputCaptureHooks::HidRead& read, DWORD size) noexcept {
 // A finished native PlayStation read of the game's: neutral while a menu holds the input, else
 // through the gamepad filter.
 void handle_hid(const InputCaptureHooks::HidRead& read, DWORD size) noexcept {
-    if (block_polled_input()) { (void)input::pad_outputs().read(4, GetTickCount64(), false); neutral_hid(read, size); }
+    if (block_polled_input()) { (void)native_input_source::read_pad_output(4, GetTickCount64(), false); neutral_hid(read, size); }
     else {
         filter_hid(read, size);
         int stick{};
@@ -397,7 +398,7 @@ void filter_pad(bool outer, DWORD user, XINPUT_STATE* output) noexcept {
     g.sThumbRY = pad.right_y;
     // Synthetic changes must be noticed even when the physical packet stays unchanged.
     // Keep physical packet numbers when no replacement is active.
-    if (input::pad_outputs().read(static_cast<unsigned>(user), GetTickCount64(), true))
+    if (native_input_source::read_pad_output(static_cast<unsigned>(user), GetTickCount64(), true))
         output->dwPacketNumber = static_cast<DWORD>(GetTickCount64());
 }
 // Another program's hook on XInput that was put in front of the capture's own after it was
@@ -449,7 +450,7 @@ DWORD WINAPI captured_front(DWORD user, XINPUT_STATE* output) {
     // Only the game gets a scripted pad (the character room's walk): ReSkate's own reads get the real one.
     if (outer && output && scripted_pad(user, *output)) return ERROR_SUCCESS;
     if (result == ERROR_SUCCESS && output && capture) {
-        (void)input::pad_outputs().read(0, GetTickCount64(), false);
+        (void)native_input_source::read_pad_output(0, GetTickCount64(), false);
         output->Gamepad = {};
         output->dwPacketNumber ^= 0x80000000u;
     } else if (result == ERROR_SUCCESS && output) {
@@ -919,7 +920,7 @@ bool passive_source_available() noexcept {
         now >= dark_pop_hide().until.load() && !dark_pop_hide().latched.load() &&
         !(grind_stick_turn().on.load() && now < grind_stick_turn().until.load()) &&
         !(grind_stick_lean().on.load() && now < grind_stick_lean().until.load()) &&
-        !scripted_pad_active();
+        !scripted_pad_active() && !input::pad_outputs().active(now);
 }
 template<std::size_t I, bool Extended = false>
 DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
@@ -948,7 +949,7 @@ DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
     // Only the game gets a scripted pad (the character room's walk): ReSkate's own reads get the real one.
     if (game_poll && output && scripted_pad(user, *output)) return ERROR_SUCCESS;
     if (result == ERROR_SUCCESS && output && capture) {
-        (void)input::pad_outputs().read(0, GetTickCount64(), false);
+        (void)native_input_source::read_pad_output(0, GetTickCount64(), false);
         output->Gamepad = {};
         // The game must notice a neutral state even if the physical packet did
         // not change between opening the menu and its next controller poll.

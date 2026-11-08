@@ -11,7 +11,8 @@
 //   ExtraInfoStyle and keeps what the game meant, so the game keeps writing them but the widget only
 //   ever sees the HUD down, until it is given back.
 // The game's models are read and written on the client thread only, under the model lock its own
-// writers take too.
+// writers take too. The score HUD held is always the game's own root, never a plugin's line
+// (score_line_hud.h), which is a model of the same type.
 namespace dingosdk::hud_corner {
 // Startup, with the game's image base: prepares the model write hook, which patches nothing; without
 // it the score HUD stays as it is.
@@ -27,6 +28,9 @@ bool hide_hud(bool hidden) noexcept;
 // hook on, so hiding it later is immediate); release drops the plugin. Client thread.
 void ask(std::string_view owner, bool hidden);
 void release(std::string_view owner);
+// Whether any plugin asks the corner hidden now: a plugin's score line (score_line_hud.h) stays down
+// while one does.
+bool hidden_by_plugin() noexcept;
 // Client thread, every tick.
 void tick() noexcept;
 }

@@ -47,16 +47,20 @@ namespace {
 // Extension/Objects/placement_physics.h); a claimed object's moved pose is never saved to the park.
 // "marker.read" reads the local skater's marker saves and returns (reskate.marker.events).
 // "ui.models" publishes bounded plugin-namespaced floats for authored native UI (not stock fields).
+// "hud.score" shows the plugin's own line (trick names, points, multiplier, the line's total) in
+// skate.'s score HUD (reskate.hud.score_line, Extension/UI/score_line_hud.h): display only, from a
+// model of the SDK's own, never the game's score, challenges or progression. It stands apart from
+// "hud" so plugins approved for "hud" are not given a new thing on screen without being asked.
 // "replay" grants nothing yet: no API checks it. It stays known so a manifest that lists it still
 // loads (an unknown permission refuses the whole manifest).
-constexpr std::array<std::string_view, 64> permissions{
+constexpr std::array<std::string_view, 66> permissions{
     "console", "storage", "overlay", "menu", "ui.screen", "input", "input.lease", "input.capture", "input.write", "hud", "events.tricks", "events.skater",
     "skater.read", "skater.teleport", "skater.control", "skater.animation", "trainer", "camera",
-    "world.raycast", "world.physics", "world.physics.observe", "world.physics.reuse", "world.objects", "world.entities", "world.environment", "world.ai", "travel", "session.read",
+    "world.raycast", "world.vehicles", "world.physics", "world.physics.observe", "world.physics.reuse", "world.objects", "world.entities", "world.environment", "world.ai", "travel", "session.read",
     "session.skaters", "session.nametags", "net.session", "net.http", "voice.control", "chat.read",
     "chat.send", "chat.local", "chat.commands", "server", "server.parks", "throwdowns", "replay", "music", "progression.read", "settings.read", "audio.ui", "audio", "outfit", "board", "mods.read",
     "events.physics", "game.speed", "files", "variants", "settings.write", "room", "capture", "effects", "events.physics.geometry", "viewmodel", "strings", "outfit.stand_ins",
-    "objects.physics", "marker.read", "ui.models"};
+    "objects.physics", "marker.read", "ui.models", "hud.score"};
 }
 
 bool known_permission(std::string_view name) noexcept {

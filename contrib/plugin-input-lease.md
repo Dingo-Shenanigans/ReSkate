@@ -60,6 +60,8 @@ Callback capacity/counter failure sets `callbacks_unknown=true`, `quarantined=tr
 
 A `reskate.input.write` replacement on a captured stream ends capture as interference, like any other filter that changes the report. Its cleanup duty stays retained until the replacement has ended and the same-stream handback is confirmed.
 
+An active replacement vetoes passive availability even when its controls match the raw report. Replacement writes, owner releases, expiry and menu clears share the finalizer's publication fence, so a setter after the filter snapshots cannot authorize continued capture from that older candidate.
+
 ### Compatibility with older observations
 
 Pass the whole issued sample returned by `lease_read` to methods which require a sample, rather than passing only `sample.epoch` or rebuilding a sample from selected fields. Retain the issued sample when associating work with its epoch. Public diagnostic strings cannot create or replace the opaque epoch, and copying or editing those strings does not refresh an observation.

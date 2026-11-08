@@ -42,7 +42,9 @@ if(DINGOSDK_BUILD_PARK_EDITOR_TESTS AND WIN32)
     add_test(NAME park_editor COMMAND dingosdk_park_editor_tests "${CMAKE_CURRENT_BINARY_DIR}/editor-fixtures")
     add_executable(dingosdk_park_editor_ui_tests Extension/UI/Overlay/Test/park_editor_tests.cpp
         Extension/UI/Overlay/park_editor.cpp Extension/UI/Overlay/park_editor_actions.cpp
-        Extension/UI/Overlay/park_editor_panels.cpp Extension/UI/Overlay/park_editor_viewport.cpp Extension/UI/Overlay/park_previews.cpp)
+        Extension/UI/Overlay/park_editor_panels.cpp Extension/UI/Overlay/park_editor_project.cpp
+        Extension/UI/Overlay/park_editor_hotbar.cpp Extension/UI/Overlay/park_editor_rail.cpp
+        Extension/UI/Overlay/park_editor_viewport.cpp Extension/UI/Overlay/park_previews.cpp)
     target_link_libraries(dingosdk_park_editor_ui_tests PRIVATE dingosdk_imgui dingosdk_json dingosdk_game_archives dingosdk_content_cache dingosdk_logging)
     add_test(NAME park_editor_ui COMMAND dingosdk_park_editor_ui_tests "${CMAKE_CURRENT_BINARY_DIR}/editor-preview" "${DINGOSDK_TEST_GAME_ROOT}")
     add_executable(dingosdk_park_editor_transaction_tests Extension/Objects/ParkEditor/Test/park_editor_transaction_tests.cpp)
@@ -54,6 +56,12 @@ if(DINGOSDK_BUILD_PARK_EDITOR_TESTS AND WIN32)
     add_executable(dingosdk_profile_change_tests Extension/Profile/Test/profile_change_tests.cpp)
     target_link_libraries(dingosdk_profile_change_tests PRIVATE dingosdk_local_profile)
     add_test(NAME profile_changes COMMAND dingosdk_profile_change_tests)
+    # The front page in the pause menu's HUB tab: a news post's date, and the patch notes read from
+    # ReSkate's releases on GitHub (Extension/News/patch_notes.h).
+    add_executable(dingosdk_news_tests Extension/News/Test/news_tests.cpp Extension/News/patch_notes.cpp Launcher/thunderstore.cpp)
+    target_link_libraries(dingosdk_news_tests PRIVATE dingosdk_local_profile dingosdk_miniz)
+    target_include_directories(dingosdk_news_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME news COMMAND dingosdk_news_tests)
     add_executable(dingosdk_music_favorites_tests Extension/Music/Test/local_music_favorites_tests.cpp)
     target_link_libraries(dingosdk_music_favorites_tests PRIVATE dingosdk_local_profile)
     add_test(NAME music_favorites COMMAND dingosdk_music_favorites_tests)
@@ -411,6 +419,7 @@ if(DINGOSDK_BUILD_ANIMATION_STUDIO_TESTS)
     add_test(NAME carry COMMAND dingosdk_carry_tests)
     # A joint set to a place (reskate.skater.pose's place): in a frame, its children kept, the order.
     add_executable(dingosdk_pose_place_tests Extension/Skater/Test/pose_place_tests.cpp Extension/Skater/pose_place.cpp
+        Extension/Skater/pose_replay.cpp Extension/Skater/pose_offset.cpp
         Extension/AnimationStudio/anim_core.cpp)
     target_include_directories(dingosdk_pose_place_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     target_link_libraries(dingosdk_pose_place_tests PRIVATE dingosdk_json)
@@ -544,10 +553,19 @@ if(DINGOSDK_BUILD_PLUGIN_TESTS AND WIN32)
     add_executable(dingosdk_trick_watch_tests Extension/Skater/Test/trick_watch_tests.cpp Extension/Skater/trick_watch.cpp)
     target_include_directories(dingosdk_trick_watch_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME trick_watch COMMAND dingosdk_trick_watch_tests)
-    # Which trick list writes are a trick's (Extension/Skater/trick_feed_gate.h): never the song's title.
-    add_executable(dingosdk_trick_feed_gate_tests Extension/Skater/Test/trick_feed_gate_tests.cpp)
-    target_include_directories(dingosdk_trick_feed_gate_tests PRIVATE "${PROJECT_SOURCE_DIR}")
-    add_test(NAME trick_feed_gate COMMAND dingosdk_trick_feed_gate_tests)
+    # The songs' titles the trick feed leaves out (Extension/Skater/trick_feed_songs.h): never a trick's name.
+    add_executable(dingosdk_trick_feed_songs_tests Extension/Skater/Test/trick_feed_songs_tests.cpp)
+    target_include_directories(dingosdk_trick_feed_songs_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME trick_feed_songs COMMAND dingosdk_trick_feed_songs_tests)
+    # A plugin's own line in skate.'s score HUD (Extension/UI/score_line.h): one plugin's at a time, the
+    # yield to skate.'s own line, the take-out that is never dropped.
+    add_executable(dingosdk_score_line_tests Extension/UI/Test/score_line_tests.cpp)
+    target_include_directories(dingosdk_score_line_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME score_line COMMAND dingosdk_score_line_tests)
+    # The local player's open challenge attempts (Extension/Progression/challenge_attempts.h).
+    add_executable(dingosdk_challenge_attempts_tests Extension/Progression/Test/challenge_attempts_tests.cpp)
+    target_include_directories(dingosdk_challenge_attempts_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME challenge_attempts COMMAND dingosdk_challenge_attempts_tests)
     # The board's shader parameters (Extension/Customization/board_material.h): the walk over a board
     # laid out as the game holds it, what plugins may set, and holding and putting back.
     add_executable(dingosdk_board_material_tests Extension/Customization/Test/board_material_tests.cpp)

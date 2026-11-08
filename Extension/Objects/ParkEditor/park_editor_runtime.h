@@ -43,6 +43,7 @@ struct WorldPick {
     std::uint64_t entity{};
     std::optional<std::array<float, 12>> pose;
     std::string blueprint;
+    std::uint64_t ecs_owner{}; // Only the native vehicle adapter sees the shape owner's id.
 };
 std::optional<WorldPick> local_world_pick(const std::array<float, 3> &from, const std::array<float, 3> &to);
 // The park editor's picking reader (park_editor_selection.cpp), for a native surface ray cast

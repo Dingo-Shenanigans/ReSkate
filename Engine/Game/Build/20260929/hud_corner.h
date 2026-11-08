@@ -26,8 +26,13 @@ inline constexpr std::uint32_t default_transition = 0x54c9abee; // DefaultTransi
 inline constexpr std::uint32_t item_key = 0x1e95752c;        // uint32 Key: the stack tells its items apart by it
 inline constexpr std::uint32_t item_priority = 0x644a8875;   // int32 Priority
 inline constexpr std::uint32_t item_transition = 0xd78d240b; // Transition
+inline constexpr std::uint16_t item_transition_size = 16;     // its size (checked against the type's at run time)
 inline constexpr std::uint32_t item_content = 0x716496c8;    // Content: a presenter (its blueprint and data)
 inline constexpr std::uint32_t content_blueprint = 0x8d1441c7;
+// Two more members, as every item P1 dumped held them (the d-pad's, the game's score item and each
+// trick list row): bool 1, and f32 0. The SDK's own items with content are made the same way.
+inline constexpr std::uint32_t item_active = 0x369babfe;
+inline constexpr std::uint32_t item_unknown_float = 0x99f9d6ee;
 
 // The score HUD (ui/features/hud/scoring/ScoringHUD_Widget) shows the game's UI model
 // ScoringHUDViewModel, one root of the UI model registry, which its own widget logic writes on its

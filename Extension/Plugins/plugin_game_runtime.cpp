@@ -1,6 +1,7 @@
 #include "plugin_game_runtime.h"
 #include "Extension/Input/native_input_source.h"
 #include "Extension/Input/native_input_capture.h"
+#include "Extension/Input/pad_output_publication.h"
 #include "plugin_ui_values.h"
 #include "Extension/Rendering/plugin_effects.h"
 #include "Extension/Objects/placement_physics.h"
@@ -39,6 +40,8 @@
 #include "Extension/Multiplayer/Hud/custom_nametags.h"
 #include "Extension/Skater/xray.h"
 #include "Extension/UI/hud_corner.h"
+#include "Extension/UI/score_line_hud.h"
+#include "Extension/Progression/challenge_attempts.h"
 #include "Extension/Throwdowns/custom_modes.h"
 #include "Extension/Throwdowns/throwdown_kit.h"
 #include "plugin_camera.h"
@@ -57,9 +60,11 @@
 #include "Extension/Throwdowns/throwdown_relay.h"
 #include "Extension/Throwdowns/throwdown_debug_text.h"
 #include "Extension/Trainer/trainer.h"
+#include "Extension/Trainer/trainer_gamestate.h"
 #include "Extension/Travel/local_location_travel.h"
 #include "Extension/World/world_entities.h"
 #include "Extension/World/owned_bodies.h"
+#include "Extension/World/traffic_vehicles.h"
 #include "Extension/Skater/bone_cam.h"
 #include "Extension/Skater/pad_flight.h"
 #include "Extension/Skater/trick_feed.h"
@@ -342,9 +347,24 @@ public:
         return {{p.available, p.hit, p.position, p.fraction}, p.native_casts};
     }
     std::optional<WorldPick> world_pick(const Vec3& from, const Vec3& to) override {
-        const auto pick = local_world_pick(from, to);
+        return convert_pick(local_world_pick(from, to));
+    }
+    std::string vehicle_take(std::uint64_t owner, std::uint64_t entity, std::uint64_t root, std::uint64_t& handle) override {
+        return traffic_vehicles::take(base_, owner, entity, root, handle);
+    }
+    traffic_vehicles::Sample vehicle_read(std::uint64_t owner, std::uint64_t handle) override {
+        return traffic_vehicles::read(owner, handle);
+    }
+    std::string vehicle_set_pose(std::uint64_t owner, std::uint64_t handle, const traffic_vehicles::Pose& pose) override {
+        return traffic_vehicles::set_pose(owner, handle, pose);
+    }
+    bool vehicle_release(std::uint64_t owner, std::uint64_t handle) override { return traffic_vehicles::release(owner, handle); }
+    void vehicle_release_all(std::uint64_t owner) override { traffic_vehicles::release_all(owner); }
+    static std::optional<WorldPick> convert_pick(const std::optional<dingosdk::WorldPick>& pick) {
         if (!pick) return std::nullopt;
         WorldPick out{pick->at, pick->entity != 0 || !pick->blueprint.empty(), std::nullopt, pick->blueprint};
+        out.vehicle_owner = pick->ecs_owner;
+        out.vehicle_root = pick->entity;
         if (pick->pose) {
             // The pose: scale xyz, -, rotation xyzw, position xyz. Rows: the rotated x, y and z axes
             // times their scale (the same rotation objects.list's heading reads), then position.
@@ -754,6 +774,15 @@ public:
         hud_corner::ask(plugin, hidden);
         return {};
     }
+    std::string score_line(std::string_view plugin, const std::optional<ScoreLine>& line) override {
+        if (line) {
+            if (auto why = score_line_refusal(); !why.empty()) {
+                score_line::ask(plugin, std::nullopt); // a refused line does not stay up
+                return why;
+            }
+        }
+        return score_line::ask(plugin, line);
+    }
     std::string game_speed(std::string_view plugin, float speed) override {
         if (speed < 1.0f && multiplayer_session_active()) return "never in a multiplayer session";
         game_speed::ask(plugin, speed);
@@ -1067,6 +1096,22 @@ public:
         result.serial = serial; result.backwards = backwards != 0; result.mirrored = flags[2] != 0; result.fakie = flags[4] != 0; result.basis = flags[0] != 0;
         return result;
     }
+    std::optional<FlipState> flip_state() override {
+        NoBailSkater skater{}, after{};
+        if (!no_bail_skater(skater)) return std::nullopt;
+        const auto state = trainer::read_flip_state(skater.base, skater.entity);
+        // Reject a despawn or local rider change during the read. No addresses leave the runtime.
+        if (!state || !no_bail_skater(after) || skater.base != after.base ||
+            skater.core != after.core || skater.entity != after.entity || skater.context != after.context)
+            return std::nullopt;
+        const auto flag = [](std::int8_t value) -> std::optional<bool> {
+            if (value == 0) return false;
+            if (value == 1) return true;
+            return std::nullopt;
+        };
+        return FlipState{state.trick, flag(state.underflip_anim), flag(state.underflip_state),
+                         flag(state.underflip_window)};
+    }
     std::vector<AnimationValue> animation_values() override {
         NoBailSkater skater;
         std::vector<AnimationValue> result;
@@ -1112,13 +1157,13 @@ public:
         return PadInput{pad.left_x, pad.left_y, pad.right_x, pad.right_y, pad.left_trigger, pad.right_trigger, pad.buttons, pad.playstation};
     }
     std::string write_pad(std::string_view plugin, unsigned controller, std::optional<PadInput> pad) override {
-        if (!pad) return input::pad_outputs().write(plugin, controller, std::nullopt, GetTickCount64());
+        if (!pad) return native_input_source::write_pad_output(plugin, controller, std::nullopt, GetTickCount64());
         if (!input_allowed()) return "the game does not have gameplay input";
         const auto axis = [](float v) { return static_cast<std::int16_t>(std::round(v * (v < 0 ? 32768.0f : 32767.0f))); };
         const input::PadOutput out{static_cast<std::uint16_t>(pad->buttons),
             static_cast<std::uint8_t>(std::round(pad->left_trigger * 255)), static_cast<std::uint8_t>(std::round(pad->right_trigger * 255)),
             axis(pad->left_x), axis(pad->left_y), axis(pad->right_x), axis(pad->right_y)};
-        return input::pad_outputs().write(plugin, controller, out, GetTickCount64());
+        return native_input_source::write_pad_output(plugin, controller, out, GetTickCount64());
     }
     std::optional<StickInput> joystick(int device) override {
         if (!joystick::game_in_foreground()) return std::nullopt;
@@ -1454,6 +1499,7 @@ public:
     void tick_animation(std::uintptr_t base, std::uintptr_t client) {
         xray::tick();
         hud_corner::tick();
+        if (score_line::wanted()) score_line::tick(base, score_line_refusal());
         game_speed::tick();
         launches::tick(client);
         outfit_overlay::tick();
@@ -1926,7 +1972,7 @@ public:
         return done > 32 ? std::string{} : std::string("the folder could not be opened");
     }
     void release(std::string_view plugin) override {
-        input::pad_outputs().release(plugin);
+        native_input_source::release_pad_output(plugin);
         grind_target::release(plugin);
         input::gameplay_options().release(plugin);
         placement_physics::release(plugin);
@@ -1978,6 +2024,7 @@ public:
         xray::prepare(plugin, false);
         xray::hide(plugin, false);
         hud_corner::release(plugin);
+        score_line::release(plugin);
         game_speed::ask(plugin, 1.0f);
         held_settings::release(plugin);
         launches::release(plugin);
@@ -2021,6 +2068,33 @@ public:
     }
 
 private:
+    // Why no plugin's line may be in skate.'s score HUD now ("" when one may), in this order. Each is
+    // checked at the call and every tick while a line is wanted. Where the game's state cannot be told
+    // (an activity's player not verified, a challenge's hooks not in) the line is refused, never shown.
+    std::string score_line_refusal() {
+        if (multiplayer_session_active()) return "never in a multiplayer session";
+        if (multiplayer::local_throwdown_active() || multiplayer::local_throwdown_event_active() || throwdowns::kit::match().in_activity ||
+            competition_stock_physics())
+            return "never during a throwdown or match";
+        if (challenge_or_activity()) return "never during a challenge or activity";
+        if (multiplayer::replay_editor_open(base_)) return "not in the replay editor";
+        if (multiplayer::native_pause_menu_open()) return "not while a menu is open";
+        return {};
+    }
+    // Challenges are checked on every call. Only the game's activity getter waits 250 ms between
+    // reads while a line is wanted; an unknown holds the display back and is logged once.
+    bool challenge_or_activity() {
+        return activity_.running(profile_runtime::local_challenge_attempt_open(), GetTickCount64(), [&] {
+            const char* why{};
+            const bool active = multiplayer::local_player_in_activity(&why);
+            if (why && !std::exchange(activity_unknown_said_, true))
+                logging::log(logging::Level::warning, logging::Channel::plugins,
+                    "Plugins' score lines stay down: whether the player is in an activity cannot be told ({}).", why);
+            return active;
+        });
+    }
+    score_line::ActivityCheck activity_;
+    bool activity_unknown_said_{};
     void publish_replacements() {
         std::vector<skater_animation::Replacement> list;
         for (const auto& [key, value] : replacements_) list.push_back(value.second);

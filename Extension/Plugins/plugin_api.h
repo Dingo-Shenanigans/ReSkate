@@ -24,6 +24,7 @@ void install_ui_api(Plugin& plugin, lua_State* L);
 void install_more_api(Plugin& plugin, lua_State* L);
 // The wider set's game parts (plugin_api_world.cpp), into the same table.
 void install_world_api(Plugin& plugin, lua_State* L);
+void install_vehicles_api(Plugin& plugin, lua_State* L);
 // Native bodies a plugin owns and their ray batches (plugin_api_physics.cpp), into reskate.world.
 void install_physics_api(Plugin& plugin, lua_State* L);
 // General services for a game layer: the skater's telemetry and Bone Cam, the pad and keys, the
@@ -115,6 +116,10 @@ int failed(lua_State* L, std::string_view why);
 // ---- arguments ---------------------------------------------------------------------------------
 // A string argument of at most `most` bytes.
 std::string checked_text(lua_State* L, int index, std::size_t most, const char* what);
+// Why a text is not one the game's text takes, or null: UTF-8 (no overlong form, surrogate or NUL) of
+// at most 511 UTF-16 units, as the string store's conversion holds (text_overrides.h). strings.set and
+// hud.score_line check theirs with it.
+const char* text_problem(std::string_view text);
 // A path in the plugin's data folder (reskate.files): relative, inside it, no name Windows keeps
 // for a device. `folder`: nil or "" is the folder itself, and a "/" at the end is fine.
 std::string data_path(lua_State* L, int index, bool folder);

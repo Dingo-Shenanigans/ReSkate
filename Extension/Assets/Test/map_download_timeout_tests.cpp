@@ -429,6 +429,26 @@ void tests() {
     download::answer(false);
     idle("decline");
     require(downloads.load() == 0 && noticed("cancelled"), "decline never downloads");
+    require(!download::failure_shown() && download::view().failure.empty(), "the player's own cancel is not shown as a failure");
+
+    // A failure while the card is up stays on it, on the item it failed on, until either answer
+    // puts it away; that answer starts nothing.
+    reset();
+    transfer_error = true;
+    offer();
+    download::answer(true);
+    wait([] { return download::view().stage == Stage::idle; }, "transfer error did not fail");
+    idle("transfer error on the card");
+    {
+        const auto shown = download::view();
+        require(download::failure_shown() && shown.failure.find("timed out") != std::string::npos && shown.failed_in == Stage::downloading &&
+                    shown.failed_item == 0 && shown.items.size() == 1,
+            "a failure while downloading stays on the card with the item it failed on");
+    }
+    download::answer(true);
+    require(!download::failure_shown() && download::view().failure.empty() && downloads.load() == 1 && download::view().stage == Stage::idle,
+        "an answer puts a failure away and starts nothing");
+    transfer_error = false;
 
     reset();
     offer();
@@ -446,6 +466,11 @@ void tests() {
     download::tick();
     idle("confirmation tick timeout");
     require(downloads.load() == 0 && noticed("two minutes"), "tick expires unanswered prompt");
+    require(download::failure_shown() && download::view().failed_in == Stage::asking && download::view().failed_item == download::view().items.size(),
+        "an unanswered question that expires is shown as a failure on no item in particular");
+    offer();
+    require(!download::failure_shown(), "a new need puts an old failure away");
+    download::answer(false);
 
     reset();
     const auto short_session = clock.load() + policy::confirmation_us / 2;

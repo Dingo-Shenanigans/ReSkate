@@ -305,6 +305,99 @@ struct WorldApi {
         need(L, plugin, "hud", "reskate.hud.corner");
         return result(L, game_of(plugin).hud_corner(plugin.id(), lua_toboolean(L, 1) != 0));
     }
+    // hud.score_line(line): the plugin's own line in skate.'s score HUD at the bottom left, drawn by
+    // skate.'s own widget from a model of the SDK's. Display only: what it shows never counts toward
+    // the game's score, challenges, XP or progression, and the SDK's readers (score.current, the trick
+    // events) never report it. `line` takes only these keys:
+    //   tricks      the line's trick names, newest last: a list of at most 5 names, each 1 to 63 bytes
+    //               of UTF-8 without control characters; the HUD draws the newest 3. Default none.
+    //               They show once skate. has made a trick row of its own in the level (its first
+    //               scored action); until then a line shows without them. A line that opens after a
+    //               closed one, or after none, starts its rows again, so a repeated name comes in anew.
+    //   points      the current action's points, the big number beside the ring: 0 to 999,999,999,
+    //               floored. Default 0.
+    //   line        what the line has banked, shown as "LINE: N" while above 0: 0 to 999,999,999,
+    //               floored. Default 0.
+    //   multiplier  the ring's number, 1 to 99. Default 1.
+    //   timer       the ring's time left, 0 to 1. Default 1.
+    //   closed      true for the look of a line that has ended: the ring, the big number and the rows
+    //               go and "LINE: N" stays. Default false.
+    // The line shows while the plugin sets it again at least every 500 ms (one call a tick is the use);
+    // nil clears it at once, and it goes when the plugin stops. true, or false and why not: another
+    // plugin's line is up, a multiplayer session, a throwdown or match, a challenge or activity, the
+    // replay editor or a menu; skate.'s own line is showing (the plugin's yields to it, and comes back
+    // 0.5 s after the game's goes idle); the corner is hidden (hud.corner); skate.'s score HUD is not
+    // loaded. A key, type or value other than these is an error.
+    static int score_line(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "hud.score", "reskate.hud.score_line");
+        if (lua_isnoneornil(L, 1)) return result(L, game_of(plugin).score_line(plugin.id(), std::nullopt));
+        if (!lua_istable(L, 1)) luaL_error(L, "reskate.hud.score_line takes a table, or nil to clear the line");
+        static constexpr std::array<std::string_view, 6> keys{"tricks", "points", "line", "multiplier", "timer", "closed"};
+        lua_pushnil(L);
+        while (lua_next(L, 1)) {
+            if (lua_type(L, -2) != LUA_TSTRING) luaL_error(L, "reskate.hud.score_line: a line's keys are tricks, points, line, multiplier, timer and closed");
+            std::size_t length = 0;
+            const char* name = lua_tolstring(L, -2, &length);
+            if (std::find(keys.begin(), keys.end(), std::string_view(name, length)) == keys.end()) {
+                const std::string shown(name, std::min<std::size_t>(length, 32));
+                luaL_error(L, "reskate.hud.score_line: no key \"%s\" (tricks, points, line, multiplier, timer, closed)", shown.c_str());
+            }
+            lua_pop(L, 1);
+        }
+        ScoreLine line;
+        lua_getfield(L, 1, "tricks");
+        const int list = lua_gettop(L);
+        if (!lua_isnil(L, list)) {
+            constexpr const char* not_list = "reskate.hud.score_line: tricks is a list of names, newest last";
+            if (!lua_istable(L, list)) luaL_error(L, "%s", not_list);
+            const auto count = static_cast<int>(lua_objlen(L, list));
+            int entries = 0;
+            lua_pushnil(L);
+            while (lua_next(L, list)) {
+                ++entries;
+                lua_pop(L, 1);
+            }
+            if (entries != count) luaL_error(L, "%s", not_list);
+            if (count > static_cast<int>(score_line::most_tricks)) luaL_error(L, "reskate.hud.score_line: at most 5 tricks");
+            for (int index = 1; index <= count; ++index) {
+                lua_rawgeti(L, list, index);
+                if (lua_type(L, -1) != LUA_TSTRING) luaL_error(L, "%s", not_list);
+                std::size_t length = 0;
+                const char* text = lua_tolstring(L, -1, &length);
+                const std::string_view trick(text, length);
+                if (trick.empty() || trick.size() > score_line::most_trick_bytes)
+                    luaL_error(L, "reskate.hud.score_line: a trick's name is 1 to 63 bytes");
+                if (const auto why = text_problem(trick)) luaL_error(L, "reskate.hud.score_line: %s", why);
+                if (std::any_of(trick.begin(), trick.end(), [](char c) { return static_cast<unsigned char>(c) < 0x20 || c == 0x7f; }))
+                    luaL_error(L, "reskate.hud.score_line: a trick's name holds no control characters");
+                line.tricks.emplace_back(trick);
+                lua_pop(L, 1);
+            }
+        }
+        lua_pop(L, 1);
+        // A number field: a Lua number (not a string), finite and within its range.
+        const auto number = [&](const char* name, double fallback, double low, double high, const char* range) {
+            lua_getfield(L, 1, name);
+            double value = fallback;
+            if (!lua_isnil(L, -1)) {
+                if (lua_type(L, -1) != LUA_TNUMBER) luaL_error(L, "reskate.hud.score_line: %s is a number", name);
+                value = lua_tonumber(L, -1);
+                if (!(value >= low && value <= high)) luaL_error(L, "reskate.hud.score_line: %s is %s", name, range);
+            }
+            lua_pop(L, 1);
+            return value;
+        };
+        line.points = std::floor(number("points", 0, 0, score_line::most_points, "0 to 999999999"));
+        line.line = std::floor(number("line", 0, 0, score_line::most_points, "0 to 999999999"));
+        line.multiplier = static_cast<float>(number("multiplier", 1, score_line::least_multiplier, score_line::most_multiplier, "1 to 99"));
+        line.timer = static_cast<float>(number("timer", 1, 0, 1, "0 to 1"));
+        lua_getfield(L, 1, "closed");
+        if (!lua_isnil(L, -1) && !lua_isboolean(L, -1)) luaL_error(L, "reskate.hud.score_line: closed is true or false");
+        line.closed = lua_toboolean(L, -1) != 0;
+        lua_pop(L, 1);
+        return result(L, game_of(plugin).score_line(plugin.id(), line));
+    }
     // time.slow(speed): the game at `speed` (0.05 to 1; 1 or nil gives it back); single player only.
     static int slow(lua_State* L) {
         auto& plugin = plugin_of(L);
@@ -3358,7 +3451,7 @@ void WorldApi::install(Plugin& plugin, lua_State* L) {
                                {"set_parameter", board_set_parameter}, {"clear_parameter", board_clear_parameter}});
     add_functions(L, "camera", {{"look", camera_look}, {"set", camera_set}, {"follow", camera_follow}, {"release", camera_release}, {"held", camera_held}, {"get", camera_get}, {"cycle", camera_cycle}});
     add_functions(L, "trainer", {{"set_point", set_point}, {"back", back}});
-    add_functions(L, "hud", {{"hide", hide_hud}, {"corner", hud_corner}});
+    add_functions(L, "hud", {{"hide", hide_hud}, {"corner", hud_corner}, {"score_line", score_line}});
     add_functions(L, "time", {{"slow", slow}, {"speed", speed}});
     add_functions(L, "objects", {{"catalog", catalog}, {"list", objects}, {"place", place}, {"move", move}, {"remove", remove}});
     add_functions(L, "entities", {{"set", entities_set}, {"remove", entities_remove}, {"clear", entities_clear}, {"status", entities_status},

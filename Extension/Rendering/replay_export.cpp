@@ -5,10 +5,15 @@
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/replay_export.h"
 #include "Engine/Game/Build/supported_build.h"
+#include "Extension/Profile/local_profile_runtime.h"
 #include "Extension/UI/Overlay/gpu_diagnostics.h"
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <climits>
 #include <cstring>
+#include <format>
+#include <string>
 #include <vector>
 #include <Windows.h>
 #include <dxgi1_4.h>
@@ -32,6 +37,43 @@ void submit(std::uintptr_t encoder, std::uintptr_t pixels, std::uintptr_t pitch,
     if (memory::peek(encoder, vtable) && vtable == image.load() + native::replay_encoder_vtable)
         *reinterpret_cast<std::uint8_t*>(encoder + native::frame_permit) = 1;
     original.load()(encoder, pixels, pitch, unused);
+}
+
+// The export's quality: the H.264 setup reads the encoder's bitrate as it builds the output type, so
+// it is set on the encoder just before. The setup's other arguments are passed on as they came.
+using Configure = std::uintptr_t (*)(std::uintptr_t encoder, std::uintptr_t, std::uintptr_t, std::uintptr_t);
+std::atomic<Configure> original_configure{};
+
+void apply_quality(std::uintptr_t encoder) noexcept {
+    int kilobits{}, mode{}, width{}, height{};
+    float fps{};
+    if (!memory::peek(encoder + native::h264_kilobits, kilobits) || !memory::peek(encoder + native::h264_rate_mode, mode) ||
+        !memory::peek(encoder + native::h264_width, width) || !memory::peek(encoder + native::h264_height, height) ||
+        !memory::peek(encoder + native::h264_fps, fps))
+        return;
+    const int quality = profile_runtime::local_replay_export_quality();
+    const int wanted = export_kilobits(quality, width, height, fps);
+    // What the game asked for goes to the log either way, so an export's own bitrate can be compared.
+    logging::write(logging::Level::info, logging::Channel::graphics,
+        std::format("Replay MP4 export: {}x{} at {:.2f} fps, the game's bitrate {} kbit/s (rate control {}); quality {}{}.", width,
+            height, fps, kilobits, mode, quality_names[static_cast<std::size_t>(std::clamp(quality, 0, quality_count - 1))],
+            wanted ? std::format(", encoded at {} kbit/s", wanted) : std::string()));
+    if (!wanted) return;
+    if (mode == 1 && kilobits > 0) {
+        // Peak constrained: the peak keeps its share of the average, in whatever unit the game gave it.
+        int peak{};
+        if (memory::peek(encoder + native::h264_peak, peak) && peak > 0) {
+            const auto scaled = static_cast<long long>(peak) * wanted / kilobits;
+            *reinterpret_cast<int*>(encoder + native::h264_peak) = static_cast<int>(std::min<long long>(scaled, INT_MAX));
+        }
+    }
+    if (mode == 3) *reinterpret_cast<int*>(encoder + native::h264_quality) = quality_percent[static_cast<std::size_t>(quality)];
+    *reinterpret_cast<int*>(encoder + native::h264_kilobits) = wanted;
+}
+
+std::uintptr_t configure(std::uintptr_t encoder, std::uintptr_t a, std::uintptr_t b, std::uintptr_t c) {
+    if (encoder) apply_quality(encoder);
+    return original_configure.load()(encoder, a, b, c);
 }
 
 // A hardware H.264 encoder only accepts frames from a device on its own GPU. On
@@ -96,6 +138,20 @@ bool start(std::uintptr_t base) noexcept {
                 original_enum = reinterpret_cast<EnumTransforms>(previous);
                 if (hook_enable(target) != HookOk) hook_remove(target);
             }
+        }
+
+        // The export quality, on its own: without it MP4 exports keep the game's bitrate.
+        std::array<unsigned char, native::configure_h264_prefix.size()> setup{};
+        if (base && memory::read_bytes(base + native::configure_h264, setup.data(), setup.size()) && setup == native::configure_h264_prefix) {
+            auto* target = reinterpret_cast<void*>(base + native::configure_h264);
+            void* previous{};
+            if (hook_prepare(target, reinterpret_cast<void*>(&configure), &previous) == HookOk) {
+                original_configure = reinterpret_cast<Configure>(previous);
+                if (hook_enable(target) != HookOk) hook_remove(target);
+            }
+        } else {
+            logging::write(logging::Level::warning, logging::Channel::graphics,
+                "Replay export quality hook skipped: game code did not match the supported build.");
         }
 
         std::array<unsigned char, native::submit_frame_prefix.size()> bytes{};

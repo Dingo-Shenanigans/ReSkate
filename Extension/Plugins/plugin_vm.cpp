@@ -333,6 +333,7 @@ void Plugin::close() {
         input_lease_used_ = false;
         services_.game().input_lease_release_all(instance_);
     }
+    services_.game().vehicle_release_all(instance_);
     services_.game().body_release_all(instance_);
     save_storage();
     shapes_.clear();
