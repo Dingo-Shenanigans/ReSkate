@@ -17,6 +17,7 @@
 #include "local_placements_runtime.h"
 #include "placement_adapters.h"
 #include "placement_motion.h"
+#include "placement_pose.h"
 #include "Engine/Core/Log/logging.h"
 #include <atomic>
 #include <format>
@@ -43,7 +44,11 @@ struct Lease {
     Body body{};
     float inverse_mass{};
     plugins::ObjectPhysics options;
+    // Motion/mirroring use the sampled client pose. Keep a plugin's requested teleport separately
+    // until both native copies acknowledge it; reading motion must not overwrite the request.
     Pose pose{};
+    std::optional<placement_pose::Pending> pending_pose;
+    bool pose_timeout_reported{};
     // The pose in the park's layout: where it was claimed, or where an edit put it. A released object
     // goes back to it, so physics never changes a saved layout.
     Pose fixed_pose{};
@@ -217,6 +222,34 @@ bool sample_pose(Lease& lease) {
     lease.sampled = GetTickCount64();
     return true;
 }
+// On the server's own tick, observe its transform and, when reachable, its body. A transform-only
+// acknowledgement is valid only for the existing bodiless-copy case, not a missing physical body.
+bool sample_copy(const Lease& lease, const Pose& target, Pose& pose) {
+    auto& r = placements_runtime();
+    alignas(16) std::array<std::uint64_t, 3> query{};
+    if (r.query(query.data(), lease.server) != query.data() || r.pose(pose.data(), query.data()) != pose.data() ||
+        !placement_geometry::finite(pose))
+        return false;
+    Body body;
+    if (!body_of(lease.server, body))
+        return lease.server_motion == placement_motion::bodiless;
+    alignas(16) std::array<float, 8> rigid{};
+    if (state().body_pose(&body, rigid.data()) != rigid.data())
+        return false;
+    auto actual = pose;
+    std::copy_n(rigid.begin(), 4, actual.begin() + 4);
+    std::copy_n(rigid.begin() + 4, 3, actual.begin() + 8);
+    return placement_pose::matches(actual, target);
+}
+void expire_pose(std::uint64_t id, Lease& lease, std::uint64_t now) {
+    if (!lease.pending_pose || !lease.pending_pose->expired(now))
+        return;
+    lease.pending_pose.reset();
+    if (!std::exchange(lease.pose_timeout_reported, true))
+        logging::log(logging::Level::warning, logging::Channel::objects,
+            "Object physics: object {} pose request was not acknowledged by both copies within {} ms; retries stopped.",
+            id, placement_pose::lifetime_ms);
+}
 // Moves one copy's body and transform to `pose` as the dropper does, leaving it in motion type `mode`.
 bool place(std::uint64_t entity, const Pose& pose, int mode) {
     auto& r = placements_runtime();
@@ -328,6 +361,7 @@ placement_adapters::Inbox receive_edits() {
         if (at == s.leases.end() || !current(at->first, at->second))
             continue;
         auto& lease = at->second;
+        lease.pending_pose.reset(); // A dropper edit supersedes any earlier transient pose request.
         if (place(lease.client, edit.pose, abi::motion_fixed)) {
             stop(lease.body);
             lease.pose = edit.pose;
@@ -344,6 +378,7 @@ placement_adapters::Inbox receive_edits() {
         if (at == s.leases.end() || !current(id, at->second))
             continue;
         auto& lease = at->second;
+        lease.pending_pose.reset();
         if (!lease.editing)
             lease.fixed_pose = lease.pose;
         lease.editing = true;
@@ -429,12 +464,16 @@ std::string configure(std::uintptr_t base, std::string_view plugin, std::uint64_
         return "another plugin controls this object's physics";
     if (s.claims.owns(plugin, id)) {
         auto& lease = s.leases.at(id);
-        if (!current(id, lease))
+        if (!current(id, lease)) {
+            lease.pending_pose.reset();
             return "object changed; release its old physics claim first";
+        }
         if (lease.options.dynamic == options->dynamic && lease.options.mass == options->mass && lease.options.surface == options->surface)
             return {};
         if (GetTickCount64() < lease.configured_at + 16)
             return "object physics rate limit reached";
+        if (lease.options.dynamic != options->dynamic)
+            lease.pending_pose.reset(); // A later motion-mode choice supersedes the pending move.
         lease.options = *options;
     } else {
         const auto identity = placed_identity(row->entity);
@@ -500,6 +539,7 @@ std::string velocity(std::string_view plugin, std::uint64_t id, const std::array
     const auto now = GetTickCount64();
     if (lease.velocity_at && now < lease.velocity_at + 16)
         return "object velocity rate limit reached";
+    lease.pending_pose.reset(); // Do not later teleport/stop a body after accepting a new velocity.
     alignas(16) std::array<float, 4> aligned{value[0], value[1], value[2], 0};
     s.linear(&lease.body, aligned.data());
     s.wake(&lease.body);
@@ -514,7 +554,11 @@ std::optional<plugins::ObjectMotion> sample(std::string_view plugin, std::uint64
     if (!s.claims.owns(plugin, id))
         return std::nullopt;
     auto& lease = s.leases.at(id);
-    if (!current(id, lease) || !sample_pose(lease))
+    if (!current(id, lease)) {
+        lease.pending_pose.reset();
+        return std::nullopt;
+    }
+    if (!sample_pose(lease))
         return std::nullopt;
     plugins::ObjectMotion result;
     std::copy_n(lease.pose.begin() + 8, 3, result.position.begin());
@@ -552,7 +596,13 @@ std::string pose(std::string_view plugin, std::uint64_t id, const std::array<flo
     if (!s.claims.owns(plugin, id))
         return "this plugin does not control this object's physics";
     auto& lease = s.leases.at(id);
-    if (suspended() || lease.editing || !current(id, lease) || !sample_pose(lease))
+    if (suspended() || lease.editing || placement_adapters::pending(id) ||
+        multiplayer::sample_game_ui_state(s.base).in_menu || park_editor_owns_placements() ||
+        !current(id, lease)) {
+        lease.pending_pose.reset();
+        return "object physics is unavailable";
+    }
+    if (!sample_pose(lease))
         return "object physics is unavailable";
     const auto now = GetTickCount64();
     if (lease.pose_at && now < lease.pose_at + 250)
@@ -560,7 +610,8 @@ std::string pose(std::string_view plugin, std::uint64_t id, const std::array<flo
     auto wanted = lease.pose;
     std::copy(position.begin(), position.end(), wanted.begin() + 8);
     std::copy(rotation.begin(), rotation.end(), wanted.begin() + 4);
-    // The client replica moves now; server_tick mirrors the new pose to the server copy.
+    // Keep the accepted target independent of readback: the next client sample can still be the
+    // old pose when a native setter is deferred. Both owning ticks consume this bounded request.
     if (!place(lease.client, wanted, lease.options.dynamic ? abi::motion_dynamic : abi::motion_fixed))
         return "object pose could not be applied";
     stop(lease.body);
@@ -568,8 +619,8 @@ std::string pose(std::string_view plugin, std::uint64_t id, const std::array<flo
         s.wake(&lease.body);
         s.sleep(&lease.body, false);
     }
-    lease.pose = wanted;
-    lease.sampled = now;
+    lease.pending_pose.emplace(wanted, now);
+    lease.pending_pose->attempted(placement_pose::Side::client, now, true);
     lease.pose_at = now;
     return {};
 }
@@ -632,12 +683,27 @@ void client_tick() noexcept {
         const bool menu = multiplayer::sample_game_ui_state(s.base).in_menu || park_editor_owns_placements();
         for (auto& [id, lease] : s.leases) {
             const bool editing = menu || inbox.selected.contains(id) || now <= lease.edit_until;
+            if (editing || placement_adapters::pending(id))
+                lease.pending_pose.reset();
             if (editing && !lease.editing)
                 lease.fixed_pose = lease.pose;
             lease.editing = editing;
             const int mode = lease.options.dynamic && !editing ? abi::motion_dynamic : abi::motion_fixed;
             if (editing && !placement_geometry::same_pose(lease.pose, lease.fixed_pose))
                 (void)place(lease.client, lease.fixed_pose, abi::motion_fixed);
+            expire_pose(id, lease, now);
+            if (lease.pending_pose) {
+                auto& pending = *lease.pending_pose;
+                if (pending.client_confirmed(lease.pose, now))
+                    lease.pending_pose.reset();
+                else if (!placement_pose::matches(lease.pose, pending.target()) &&
+                         pending.retry_due(placement_pose::Side::client, now)) {
+                    const bool issued = place(lease.client, pending.target(), mode);
+                    pending.attempted(placement_pose::Side::client, now, issued);
+                    if (issued)
+                        stop(lease.body);
+                }
+            }
             s.motion(&lease.body, mode);
             if (mode == abi::motion_fixed)
                 stop(lease.body);
@@ -734,9 +800,15 @@ void server_tick() noexcept {
         // Moving objects: the server copy follows the client replica, keyframed. An object being edited
         // is left to the dropper, which moves the server copy itself.
         const auto now = GetTickCount64();
+        const bool menu = multiplayer::sample_game_ui_state(s.base).in_menu || park_editor_owns_placements();
         for (auto& [id, lease] : s.leases) {
-            if (lease.editing || now > lease.sampled + 100 || placement_adapters::pending(id) ||
-                !row_current(id, lease.token, lease.map_generation, lease.server))
+            expire_pose(id, lease, now);
+            if (lease.editing || menu || placement_adapters::pending(id) ||
+                !row_current(id, lease.token, lease.map_generation, lease.server)) {
+                lease.pending_pose.reset();
+                continue;
+            }
+            if (now > lease.sampled + 100)
                 continue;
             if (lease.server_lost)
                 continue;
@@ -769,7 +841,22 @@ void server_tick() noexcept {
                 if (!seen)
                     continue;
             }
-            (void)place_copy(lease.server, lease.pose, abi::motion_keyframed);
+            if (lease.pending_pose) {
+                auto& pending = *lease.pending_pose;
+                Pose actual{};
+                const bool observed = sample_copy(lease, pending.target(), actual);
+                if (observed)
+                    pending.observe_server(actual, now);
+                else
+                    pending.server_unavailable();
+                if ((!pending.has_written(placement_pose::Side::server) || !observed ||
+                     !placement_pose::matches(actual, pending.target())) &&
+                    pending.retry_due(placement_pose::Side::server, now)) {
+                    const bool issued = place_copy(lease.server, pending.target(), abi::motion_keyframed);
+                    pending.attempted(placement_pose::Side::server, now, issued);
+                }
+            } else
+                (void)place_copy(lease.server, lease.pose, abi::motion_keyframed);
         }
     } catch (...) {
     }
