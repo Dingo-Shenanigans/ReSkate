@@ -1,5 +1,8 @@
 #include "Extension/Skater/trick_feed.h"
 #include "hud_corner.h"
+#include "hud_stack.h"
+#include "score_line.h"
+#include "score_line_hud.h"
 #include "Engine/Core/Hooks/hooks.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/memory.h"
@@ -72,7 +75,7 @@ thread_local bool publishing{};
 std::uint64_t model_write(Address manager, std::uint64_t handle, Address type, const void* value, std::uint8_t flag) {
     auto& h = hook();
     // SmokeyDawg58's trick feed reads the score HUD's trick list off the same writes.
-    if (handle && value && tricks::feed::wanted()) tricks::feed::tap(manager, handle, type, value, flag);
+    if (handle && value && tricks::feed::wanted()) tricks::feed::tap(handle, type, value);
     if (handle && value && !publishing) {
         for (std::size_t index = 0; index < score_switches.size(); ++index) {
             auto& field = h.fields[index];
@@ -140,26 +143,6 @@ bool score_held() noexcept {
     return std::any_of(fields.begin(), fields.end(), [](const Taken& field) { return field.taken.load(std::memory_order_acquire); });
 }
 
-// Runs `use(context)` on the game's UI model registry under its model lock, which the game's
-// writers take too. False while there is no registry.
-template <class Use> bool with_ui_models(Address base, Use&& use) {
-    if (!base) return false;
-    const auto ui = menu_data::read<Address>(base + addr::engine::ui_manager);
-    const auto manager = ui ? menu_data::read<Address>(ui + 0x140) : 0;
-    if (!manager) return false;
-    const menu_data::Context context(base, manager);
-    game::ModelWriteLock lock(manager);
-    use(context);
-    return true;
-}
-
-std::string asset_name(Address asset) { return asset ? menu_data::string(menu_data::read<Address>(asset + 0x18), 256) : std::string{}; }
-std::string widget_of(const menu_data::Context& context, const menu_data::Value& item) {
-    return asset_name(menu_data::read<Address>(context.address(context.path(item, {corner::item_content, corner::content_blueprint}))));
-}
-menu_data::Value items_of(const menu_data::Context& context, const menu_data::Value& stack) {
-    return context.field(stack, corner::stack_items);
-}
 // Whether `next` says it is time to look again (at most once a second while something is not found).
 bool time_to_look(Clock::time_point& next) {
     const auto now = Clock::now();
@@ -183,37 +166,16 @@ bool find_stack(Corner& c, const menu_data::Context& context) {
     if (c.stack.handle && context.type_of(c.stack.handle) == c.stack.type) return true;
     c.stack = {};
     if (!time_to_look(c.next_stack_scan)) return false;
-    for (const auto& root : context.roots({corner::hud_view_schema})) {
-        const auto stack = context.field(root.model, corner::dpad_scoring_stack);
-        const auto items = items_of(context, stack);
-        unsigned count{}, stride{};
-        (void)context.array(items, 16, count, stride);
-        for (unsigned index = 0; index < count; ++index)
-            if (widget_of(context, context.element(items, index)) == corner::dpad_widget) {
-                c.stack = stack;
-                return true;
-            }
-    }
-    return false;
+    c.stack = hud_stack::find_dpad_stack(context);
+    return c.stack.handle != 0;
 }
 
 // Puts our item into the d-pad's stack, or takes it out; the game's items stay as they are. Our
 // item: empty content, our key, the stack's transition as a push gives it.
 void hide_dpad(Corner& c, const menu_data::Context& context, bool hidden) {
     if (c.cover.handle && context.type_of(c.cover.handle) != c.cover.type) c.cover = {}; // a level load took it with the HUD's models
-    const auto field = items_of(context, c.stack);
-    unsigned count{}, stride{};
-    auto items = context.array(field, 16, count, stride);
-    menu_data::require(!count || stride == menu_data::stack_item.size, "the stack's items differ");
-    const auto key_at = context.member(context.type(menu_data::stack_item), corner::item_key).offset;
-    unsigned ours = count;
-    for (unsigned index = 0; index < count; ++index) {
-        std::uint32_t key{};
-        std::memcpy(&key, items.data() + std::size_t{index} * stride + key_at, sizeof key);
-        if (key == cover_key) ours = index;
-    }
-    items.resize(std::size_t{count} * menu_data::stack_item.size);
-    if (hidden && ours == count) {
+    const bool in = hud_stack::find_key(context, c.stack, cover_key).has_value();
+    if (hidden && !in) {
         if (!c.cover.handle) {
             c.cover = context.create(menu_data::stack_item, cover_id);
             context.set(context.field(c.cover, corner::item_key), cover_key);
@@ -221,15 +183,8 @@ void hide_dpad(Corner& c, const menu_data::Context& context, bool hidden) {
             context.copy(context.field(c.cover, corner::item_transition),
                          context.address(context.field(c.stack, corner::default_transition)));
         }
-        std::vector<std::byte> bytes(menu_data::stack_item.size);
-        menu_data::require(memory::read_bytes(context.address(c.cover), bytes.data(), bytes.size()), "our stack item is unavailable");
-        items.insert(items.end(), bytes.begin(), bytes.end());
-        context.array(field, items, count + 1);
-    } else if (!hidden && ours < count) {
-        const auto begin = items.begin() + static_cast<std::ptrdiff_t>(std::size_t{ours} * stride);
-        items.erase(begin, begin + stride);
-        context.array(field, items, count - 1);
-    }
+        hud_stack::insert_item(context, c.stack, c.cover);
+    } else if (!hidden && in) (void)hud_stack::remove_key(context, c.stack, cover_key);
     if (!hidden && c.cover.handle) {
         context.destroy(c.cover);
         c.cover = {};
@@ -242,9 +197,11 @@ bool find_score(Corner& c, const menu_data::Context& context) {
     c.score_model = {};
     for (std::size_t index = 0; index < score_switches.size(); ++index) bind(index, 0);
     if (!time_to_look(c.next_score_scan)) return false;
+    // The game's own root, never a plugin's line (score_line_hud.h makes one of the same type).
     const auto roots = context.roots({corner::score_view_schema});
-    if (roots.empty()) return false;
-    const auto model = roots.front().model;
+    const auto* root = score_line::pick_game_root(roots, score_line::own_model());
+    if (!root) return false;
+    const auto model = root->model;
     for (std::size_t index = 0; index < score_switches.size(); ++index) {
         const auto member = context.member(model.type, score_switches[index].field);
         menu_data::require(menu_data::size(member.type) == score_switches[index].size, "a score HUD field's size differs");
@@ -305,7 +262,7 @@ bool hide_hud(bool hidden) noexcept {
     const bool hold = hidden && hook().hooked.load(std::memory_order_acquire);
     try {
         if (!hidden && !c.cover.handle && !score_held()) return true; // the game's own corner, untouched
-        with_ui_models(c.base, [&](const menu_data::Context& context) {
+        hud_stack::with_ui_models(c.base, [&](const menu_data::Context& context) {
             follow_registry(c, context);
             if (find_stack(c, context)) hide_dpad(c, context, hidden);
             if ((hold || score_held()) && find_score(c, context)) hold_score(c, context, hold);
@@ -339,6 +296,10 @@ void ask(std::string_view owner, bool hidden) { asks().owners.insert_or_assign(s
 void release(std::string_view owner) {
     auto& a = asks();
     if (const auto found = a.owners.find(owner); found != a.owners.end()) a.owners.erase(found);
+}
+bool hidden_by_plugin() noexcept {
+    const auto& owners = asks().owners;
+    return std::any_of(owners.begin(), owners.end(), [](const auto& owner) { return owner.second; });
 }
 void tick() noexcept {
     auto& a = asks();

@@ -86,6 +86,11 @@ int main() {
         check(updated.size() == 2 && updated.front()->full_name == "Zee-Desert_Springs", "LAST UPDATED puts the newest update first");
         const auto by_name = ms::search(packages, {{}, {}, {}, ms::Sort::name}, none);
         check(by_name.size() > 2 && by_name[1]->full_name == "Fourth-Board_Lib", "NAME sorts A to Z after the pinned ones");
+        ms::Query unpinned;
+        unpinned.pinned_first = false;
+        const auto plain = ms::search(packages, unpinned, none);
+        check(!plain.empty() && plain.front()->full_name == "Sandos-Vancouver_Plaza" && has(plain, "Team-Pinned_Pack"),
+              "without pinned_first a pinned package takes its place in the order");
     }
 
     // ---- categories
@@ -130,6 +135,15 @@ int main() {
         }
         check(maps_at < misc_at, "the biggest categories come first");
         check(ms::front(packages, none, "2026-10-24", 8, 2).shelves.front().packages.size() == 2, "a row holds at most what was asked for");
+    }
+
+    // ---- what counts as lately (BROWSE's NEW tag)
+    {
+        check(ms::days_before("2026-10-24", 14) == "2026-10-10", "two weeks back in the same month");
+        check(ms::days_before("2026-11-04", 14) == "2026-10-20", "two weeks back over a month's end");
+        check(ms::days_before("2026-01-05", 14) == "2025-12-21", "and over a year's end");
+        check(std::string("2026-10-12T08:00:00Z") >= ms::days_before("2026-10-24", 14), "an ISO date compares with it as text");
+        check(ms::days_before("not a date", 14).empty(), "not a date: empty");
     }
 
     // ---- what a package's button does

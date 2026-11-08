@@ -6,6 +6,11 @@
 
 namespace dingosdk::overlay {
 enum class ParkTransformMode { move, rotate, scale };
+// What the object library lists: the objects (of ui.category, or all), the objects picked lately,
+// the saved sets, or the objects placed in the scene.
+enum class ParkLibraryView { objects, recent, sets, scene };
+// The tool rail layout's panel beside the rail.
+enum class ParkRailPanel { place, sets, scene, snap };
 struct ParkEditorUI {
     std::uint64_t generation{}, selected{}, draft_revision{}, queued_revision{};
     std::array<char, 128> search{};
@@ -48,8 +53,20 @@ struct ParkEditorUI {
     // Saved object sets: the library lists them in place of objects. `placing_set` follows the
     // cursor at ui.position / ui.angles / ui.scale until a click pastes it; `set_delete` is
     // the set whose Delete was pressed once and waits for the confirming press.
-    bool library_sets{};
     std::string placing_set, set_delete;
+    // The two layouts (`editor layout`) draw the same library, inspector and placement settings in
+    // different places. `layout_pending` is a layout just switched to here, shown until the saved
+    // setting comes back through the model.
+    ParkLibraryView library_view{ParkLibraryView::objects};
+    ParkRailPanel rail_panel{ParkRailPanel::place};
+    std::optional<int> layout_pending;
+    double layout_until{};
+    // chip_scroll: [ or ] stepped the library's chips, so the row scrolls to the one now chosen.
+    bool library_hidden{}, snap_open{}, focus_set_name{}, chip_scroll{};
+    std::vector<std::string> recent; // asset keys picked to place, newest first
+    // A line the viewport has for the player this frame (no surface under the cursor, say); each
+    // layout shows it beside the viewport's hint.
+    const char *viewport_note{};
     // A multi-selection's own orientation, for its local axes and its Rotation field: a placed set
     // starts at the rotation it was placed with and keeps every turn given to it. Any other group
     // uses its active (last selected) object's rotation. `group_angles` is what the field showed.

@@ -16,6 +16,7 @@ add_library(dingosdk_overlay STATIC
     Extension/UI/Overlay/map_download_card.cpp
     Extension/UI/Overlay/message_card.cpp
     Extension/UI/Overlay/hub_page.cpp
+    Extension/UI/Overlay/hub_home_page.cpp
     Extension/UI/Overlay/game_text_overlay.cpp
     Extension/UI/Overlay/perf_overlay.cpp
     Extension/UI/Overlay/skate_hud_overlay.cpp
@@ -39,6 +40,9 @@ add_library(dingosdk_overlay STATIC
     Extension/UI/Overlay/park_editor.cpp
     Extension/UI/Overlay/park_editor_actions.cpp
     Extension/UI/Overlay/park_editor_panels.cpp
+    Extension/UI/Overlay/park_editor_project.cpp
+    Extension/UI/Overlay/park_editor_hotbar.cpp
+    Extension/UI/Overlay/park_editor_rail.cpp
     Extension/UI/Overlay/park_editor_viewport.cpp
     Extension/UI/Overlay/park_previews.cpp
     Extension/UI/Overlay/gpu_diagnostics.cpp

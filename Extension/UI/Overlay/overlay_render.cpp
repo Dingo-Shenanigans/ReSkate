@@ -561,12 +561,11 @@ void draw_menu() {
 // holds it for its window switcher.
 void feed_menu_gamepad(bool menu_open) {
     auto& io = ImGui::GetIO();
-    // Holding a direction in the full screen menu waits before it repeats, then moves at a pace
-    // the eye can follow (ImGui's own, made for a keyboard, races through a list).
-    const bool slow = menu_open && dingosdk::overlay::menu_fullscreen_shown().load();
-    io.KeyRepeatDelay = slow ? 0.42f : 0.275f;
-    io.KeyRepeatRate = slow ? 0.16f : 0.05f;
-    // A page with its own focus (the full screen ONLINE page) takes the D-pad and the arrow keys itself.
+    // Holding a direction in the menu waits before it repeats, then moves at a pace the eye can follow
+    // (ImGui's own, made for a keyboard, races through a list).
+    io.KeyRepeatDelay = menu_open ? 0.42f : 0.275f;
+    io.KeyRepeatRate = menu_open ? 0.16f : 0.05f;
+    // A page reading the controller itself (recording a bind) takes the D-pad and the arrow keys.
     if (menu_open && dingosdk::overlay::menu_page_owns_pad().load()) io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableKeyboard;
     else io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     struct Button { unsigned bit; ImGuiKey key; };
@@ -578,14 +577,14 @@ void feed_menu_gamepad(bool menu_open) {
     static bool fed = false;
     const auto pad = menu_open ? dingosdk::overlay::read_gamepad() : dingosdk::overlay::Gamepad{};
     {
-        // A button pressed, a trigger pulled or a stick pushed in the full screen menu hands it to
-        // the controller: the pointer hides until the mouse is used again.
+        // A button pressed, a trigger pulled or a stick pushed in the menu hands it to the controller:
+        // the pointer hides until the mouse is used again.
         static unsigned before{};
         const bool used = pad.valid && ((pad.buttons & ~before) != 0 || pad.left_trigger > 0.5f || pad.right_trigger > 0.5f ||
                                         std::abs(pad.left_x) > 0.5f || std::abs(pad.left_y) > 0.5f || std::abs(pad.right_x) > 0.5f ||
                                         std::abs(pad.right_y) > 0.5f);
         before = pad.valid ? pad.buttons : 0;
-        if (used && slow) dingosdk::overlay::menu_pad_in_charge().store(true);
+        if (used && menu_open) dingosdk::overlay::menu_pad_in_charge().store(true);
         if (!menu_open) dingosdk::overlay::menu_pad_in_charge().store(false);
     }
     if (!pad.valid && !fed) return;
@@ -602,7 +601,7 @@ void feed_menu_gamepad(bool menu_open) {
     stick(ImGuiKey_GamepadLStickRight, pad.left_x);
     stick(ImGuiKey_GamepadLStickUp, pad.left_y);
     stick(ImGuiKey_GamepadLStickDown, -pad.left_y);
-    // The right stick scrolls the full screen menu's page.
+    // The right stick scrolls the menu's page.
     stick(ImGuiKey_GamepadRStickUp, pad.right_y);
     stick(ImGuiKey_GamepadRStickDown, -pad.right_y);
     fed = pad.valid;
@@ -872,8 +871,10 @@ void render(IDXGISwapChain* presented, UINT flags) {
     sync_menu_cursor();
     // (Watching the pointer for the pause menu's browser keeps the mouse state between frames,
     // or every frame would look like a fresh click.)
-    if (!interactive) { ImGui::GetIO().ClearInputKeys(); if (!hub_frame) ImGui::GetIO().ClearInputMouse(); }
-    feed_menu_gamepad(interactive && (s.visible.load() || s.plugin_dialog_visible.load()) && !s.editor_visible.load());
+    // (Nor its keys while a plugin's page in it has ImGui's navigation: State::hub_nav.)
+    const bool hub_nav = hub_frame && s.hub_nav.load();
+    if (!interactive) { if (!hub_nav) ImGui::GetIO().ClearInputKeys(); if (!hub_frame) ImGui::GetIO().ClearInputMouse(); }
+    feed_menu_gamepad((interactive && (s.visible.load() || s.plugin_dialog_visible.load()) && !s.editor_visible.load()) || hub_nav);
     ImGui::GetIO().MouseDrawCursor = owns_menu_cursor(s);
     ImGui_ImplDX12_NewFrame();
     { OverlayInputAccess access; ImGui_ImplWin32_NewFrame(); }

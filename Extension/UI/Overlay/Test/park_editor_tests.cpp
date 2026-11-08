@@ -131,6 +131,9 @@ struct Fixture {
         model.editor.park_mods = {{"Warehouse lines", "Warehouse lines", "Zee", "1.0", "", true, true, {"bam"}},
                                   {"Rooftop session", "Rooftop session", "", "", "", true, false, {"grom"}}};
         model.editor.can_load_parks = true;
+        // The tool rail keeps the library on the left and the viewport in the middle, as the
+        // clicks below expect; the hotbar has its own checks at the end.
+        model.park_editor_layout = park_editor_layout_rail;
     }
     void frame(bool console = false, bool text_input = false) {
         ImGui::NewFrame();
@@ -270,13 +273,13 @@ int main(int argc, char **argv) {
         const std::string filter = "Rails piece 8";
         std::copy(filter.begin(), filter.end(), fixture.ui.search.begin());
         fixture.frame();
-        click_card(60);
+        click_card(130);
         check(fixture.ui.placing == "own_bk_Rails7",
               "Grid search did not preserve the filtered asset identity");
         fixture.ui.search = {};
         fixture.ui.category = "Props";
         fixture.frame();
-        click_card(60);
+        click_card(130);
         check(fixture.ui.placing == "own_bk_Props0", "Grid category filter selected the wrong object");
         fixture.ui.category.clear();
         fixture.ui.placing.clear();
@@ -526,11 +529,11 @@ int main(int argc, char **argv) {
         // Exercise ImGui's actual source/target delivery while holding the mouse.
         const auto dragdrop_creates = fixture.count(EditorPreviewAction::begin_place);
         // Inside the first library card (below the panel heading, search and filters).
-        io.AddMousePosEvent(100, 340);
+        io.AddMousePosEvent(130, 300);
         fixture.frame();
         io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
         fixture.frame();
-        io.AddMousePosEvent(130, 345);
+        io.AddMousePosEvent(160, 305);
         fixture.frame();
         check(fixture.ui.asset_drag, "Library row did not start an ImGui drag payload");
         io.AddMousePosEvent(700, 420);
@@ -626,7 +629,7 @@ int main(int argc, char **argv) {
             // Saved object sets: saving sends the selected objects; placing follows the surface
             // as wire cubes, turns with the wheel and pastes the whole set once, with no preview.
             using namespace park_editor_detail;
-            fixture.ui.library_sets = true;
+            fixture.ui.library_view = ParkLibraryView::sets;
             fixture.frame();
             check(!save_set(fixture.ui, fixture.model.editor) && fixture.set_requests.empty(),
                   "A set was saved with nothing selected");
@@ -778,11 +781,79 @@ int main(int argc, char **argv) {
                 fixture.frame();
             }
             fixture.model.editor.object_sets.reset();
-            fixture.ui.library_sets = false;
+            fixture.ui.library_view = ParkLibraryView::objects;
             fixture.ui.paste_expected.clear();
             fixture.ui.selection.clear();
             fixture.ui.angles = {};
             fixture.frame();
+        }
+        {
+            // The hotbar: the world fills the screen and the library is a strip of cards along the
+            // bottom, over it. The strip's cards place objects and keep the mouse from the world.
+            fixture.model.park_editor_layout = park_editor_layout_hotbar;
+            fixture.ui.selection.clear();
+            fixture.ui.selected = 0;
+            fixture.ui.placing.clear();
+            fixture.frame();
+            fixture.frame();
+            const auto click = [&](float x, float y) {
+                io.AddMousePosEvent(x, y);
+                fixture.frame();
+                io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+                fixture.frame();
+                io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+                fixture.frame();
+            };
+            const auto flies_at = [&](float x, float y) {
+                io.AddMousePosEvent(x, y);
+                fixture.frame();
+                io.AddMouseButtonEvent(ImGuiMouseButton_Right, true);
+                fixture.frame();
+                const bool flying = fixture.flight;
+                io.AddMouseButtonEvent(ImGuiMouseButton_Right, false);
+                fixture.frame();
+                return flying;
+            };
+            click(200, 560);
+            check(fixture.ui.placing == "own_bk_Ramps1", "A hotbar card did not pick its own object");
+            check(fixture.ui.recent.front() == "own_bk_Ramps1", "A picked object was not remembered as recent");
+            fixture.ui.placing.clear();
+            fixture.frame();
+            check(!flies_at(200, 560), "RMB over the hotbar flew the camera");
+            check(flies_at(640, 300), "RMB over the world in the hotbar layout did not fly");
+            const auto press = [&](ImGuiKey key) {
+                io.AddMousePosEvent(640, 300);
+                io.AddKeyEvent(key, true);
+                fixture.frame();
+                io.AddKeyEvent(key, false);
+                fixture.frame();
+            };
+            press(ImGuiKey_RightBracket);
+            check(fixture.ui.library_view == ParkLibraryView::objects && fixture.ui.category == "Props",
+                  "] did not step the library to the next category");
+            press(ImGuiKey_LeftBracket);
+            check(fixture.ui.category.empty(), "[ did not step the library back to all objects");
+            press(ImGuiKey_H);
+            check(fixture.ui.library_hidden && flies_at(640, 560),
+                  "H did not hide the library and give its place to the world");
+            press(ImGuiKey_G);
+            check(!fixture.ui.library_hidden && fixture.ui.library_view == ParkLibraryView::sets,
+                  "G did not show the saved sets");
+            fixture.ui.library_view = ParkLibraryView::objects;
+            // Esc closes the snap settings before it would close the editor.
+            fixture.ui.snap_open = true;
+            press(ImGuiKey_Escape);
+            check(!fixture.ui.snap_open && fixture.visible && !fixture.ui.exit_pending,
+                  "Esc did not close the snap settings first");
+            // LAYOUT switches to the tool rail at once and saves it with the profile.
+            const auto commands = fixture.commands.size();
+            click(1158, 41);
+            check(fixture.commands.size() == commands + 1 && fixture.commands.back() == "editor layout rail" &&
+                      fixture.ui.layout_pending == park_editor_layout_rail,
+                  "LAYOUT did not switch to the tool rail and save it");
+            fixture.model.park_editor_layout = park_editor_layout_rail;
+            fixture.frame();
+            check(!fixture.ui.layout_pending, "The layout switched to stayed pending after it was saved");
         }
         // With the game's thumbnails loaded, show real items, titled from the
         // installed content cache when there is one.
@@ -797,17 +868,30 @@ int main(int argc, char **argv) {
             if (!assets->empty())
                 fixture.model.editor.assets = assets;
         }
-        for (const ImVec2 size : std::array{ImVec2{1280, 720}, ImVec2{1920, 1080}, ImVec2{1024, 768}}) {
-            io.DisplaySize = size;
-            fixture.ui.selected = 1;
-            fixture.ui.position = {0, 0, 0};
-            fixture.ui.angles = {};
-            fixture.ui.mode = ParkTransformMode::move;
-            fixture.frame();
-            fixture.frame();
-            capture(directory / (std::to_string(static_cast<int>(size.x)) + ".ppm"), *ImGui::GetDrawData(),
-                    atlas, atlas_width, atlas_height);
+        // Both layouts at a few window sizes, the hotbar also with its sets and snap settings open.
+        for (const int layout : {park_editor_layout_rail, park_editor_layout_hotbar}) {
+            fixture.model.park_editor_layout = layout;
+            const std::string name = layout == park_editor_layout_rail ? "rail-" : "hotbar-";
+            for (const ImVec2 size : std::array{ImVec2{1280, 720}, ImVec2{1920, 1080}, ImVec2{1024, 768}}) {
+                io.DisplaySize = size;
+                fixture.ui.selected = 1;
+                fixture.ui.position = {0, 0, 0};
+                fixture.ui.angles = {};
+                fixture.ui.mode = ParkTransformMode::move;
+                fixture.frame();
+                fixture.frame();
+                capture(directory / (name + std::to_string(static_cast<int>(size.x)) + ".ppm"),
+                        *ImGui::GetDrawData(), atlas, atlas_width, atlas_height);
+            }
         }
+        io.DisplaySize = {1280, 720};
+        fixture.ui.library_view = ParkLibraryView::sets;
+        fixture.ui.snap_open = true;
+        fixture.frame();
+        fixture.frame();
+        capture(directory / "hotbar-sets-1280.ppm", *ImGui::GetDrawData(), atlas, atlas_width, atlas_height);
+        fixture.ui.library_view = ParkLibraryView::objects;
+        fixture.ui.snap_open = false;
         clear_park_previews();
         ImGui::DestroyContext();
         std::cout

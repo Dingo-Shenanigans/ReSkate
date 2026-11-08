@@ -70,6 +70,18 @@ int skater_frame(lua_State* L) {
     field_number(L, "serial", static_cast<double>(frame->serial));
     return 1;
 }
+// Direct trainer states are not necessarily present in the animation graph's property list.
+int flip_state(lua_State* L) {
+    auto& p = permitted(L, "skater.read", "reskate.skater.flip_state");
+    const auto state = game_of(p).flip_state();
+    if (!state) { lua_pushnil(L); return 1; }
+    lua_createtable(L, 0, 4);
+    field_number(L, "trick", state->trick);
+    if (state->underflip_anim.has_value()) field_bool(L, "underflip_anim", *state->underflip_anim);
+    if (state->underflip_state.has_value()) field_bool(L, "underflip_state", *state->underflip_state);
+    if (state->underflip_window.has_value()) field_bool(L, "underflip_window", *state->underflip_window);
+    return 1;
+}
 int animation_values(lua_State* L) {
     auto& p = permitted(L, "skater.read", "reskate.skater.animation_values");
     const auto values = game_of(p).animation_values();
@@ -523,32 +535,6 @@ const char* key_problem(std::string_view key) {
         if (c <= 0x20 || c > 0x7e) return "an id is printable ASCII, without spaces";
     return nullptr;
 }
-// Why a text is not one the game's store takes, or null: UTF-8 (no overlong form, surrogate or NUL)
-// of at most 511 UTF-16 units, as the store's conversion holds (text_overrides.h).
-const char* text_problem(std::string_view text) {
-    std::size_t units = 0;
-    for (std::size_t at = 0; at < text.size();) {
-        const auto byte = [&](std::size_t i) { return static_cast<unsigned char>(text[i]); };
-        const unsigned lead = byte(at);
-        std::size_t size = 1;
-        char32_t c = lead;
-        if (lead >= 0xc2 && lead <= 0xdf) { size = 2; c = lead & 0x1f; }
-        else if (lead >= 0xe0 && lead <= 0xef) { size = 3; c = lead & 0x0f; }
-        else if (lead >= 0xf0 && lead <= 0xf4) { size = 4; c = lead & 0x07; }
-        else if (lead >= 0x80) return "a text must be UTF-8";
-        if (!lead) return "a text cannot hold a NUL character";
-        if (at + size > text.size()) return "a text must be UTF-8";
-        for (std::size_t i = 1; i < size; ++i) {
-            if ((byte(at + i) & 0xc0) != 0x80) return "a text must be UTF-8";
-            c = c << 6 | (byte(at + i) & 0x3f);
-        }
-        if ((size == 3 && (c < 0x800 || (c >= 0xd800 && c <= 0xdfff))) || (size == 4 && (c < 0x10000 || c > 0x10ffff)))
-            return "a text must be UTF-8";
-        units += size == 4 ? 2 : 1;
-        at += size;
-    }
-    return units > text_overrides::most_units ? "a text is at most 511 characters (UTF-16 units)" : nullptr;
-}
 std::string string_key(lua_State* L, int index, const char* what) {
     std::size_t length = 0;
     const char* key = luaL_checklstring(L, index, &length);
@@ -634,7 +620,7 @@ int strings_hash(lua_State* L) {
 
 void install_services_api(Plugin&, lua_State* L) {
     add_functions(L, "settings", {{"gameplay", gameplay_option}, {"hold_gameplay", hold_gameplay}});
-    add_functions(L, "skater", {{"rail_target", rail_target}, {"select_rail_target", select_rail_target}, {"frame", skater_frame}, {"animation_values", animation_values}, {"set_animation_value", set_animation_value}, {"telemetry", telemetry}, {"movement", movement}, {"goofy", goofy}, {"bone_cam", bone_cam}});
+    add_functions(L, "skater", {{"rail_target", rail_target}, {"select_rail_target", select_rail_target}, {"frame", skater_frame}, {"animation_values", animation_values}, {"flip_state", flip_state}, {"set_animation_value", set_animation_value}, {"telemetry", telemetry}, {"movement", movement}, {"goofy", goofy}, {"bone_cam", bone_cam}});
     add_functions(L, "input", {{"pad_bits", pad_bits}, {"key", key}, {"wheel", wheel}, {"mouse", mouse}, {"game_buttons", game_buttons}, {"game_keys", game_keys}, {"allowed", input_allowed}, {"focus", focus}});
     add_functions(L, "session", {{"spectate", spectate}, {"world", world}});
     add_functions(L, "camera", {{"free", free_camera}, {"pad_flight", pad_flight}});

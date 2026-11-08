@@ -61,8 +61,12 @@ void viewport(ParkEditorUI &ui, const Model &model, ImVec2 screen_origin, ImVec2
     const bool hovered = ImGui::IsItemHovered();
     const auto mouse = ImGui::GetIO().MousePos;
     const bool usable = model.debug.camera_transform_valid && camera.valid() && !blocked;
-    const bool mouse_in =
-        mouse.x >= start.x && mouse.y >= start.y && mouse.x < start.x + size.x && mouse.y < start.y + size.y;
+    ui.viewport_note = nullptr;
+    // The hotbar layout floats its bars and panels over the viewport: the cursor is only in the world
+    // while no window of those is under it.
+    const bool mouse_in = mouse.x >= start.x && mouse.y >= start.y && mouse.x < start.x + size.x &&
+                          mouse.y < start.y + size.y &&
+                          ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
     if (!mouse_in || !ImGui::IsMouseDown(ImGuiMouseButton_Right) || blocked)
         ui.flying = false;
     if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && usable && ui.dragging < 0)
@@ -75,9 +79,7 @@ void viewport(ParkEditorUI &ui, const Model &model, ImVec2 screen_origin, ImVec2
         ui.surface_confirm = false;
         if (ui.dragging >= 0 || ui.preview_token)
             cancel_drag(ui, model);
-        draw->AddText(plus(start, {22, 20}), muted,
-                      model.debug.camera_transform_valid ? "Editor paused"
-                                                         : "Waiting for the editor camera...");
+        ui.viewport_note = model.debug.camera_transform_valid ? "Editor paused" : "Waiting for the editor camera...";
         draw->PopClipRect();
         return;
     }
@@ -99,8 +101,10 @@ void viewport(ParkEditorUI &ui, const Model &model, ImVec2 screen_origin, ImVec2
                 ui.angles = {};
                 ui.scale = 1;
                 dropped = payload->IsDelivery();
-                if (dropped)
+                if (dropped) {
                     ui.asset_drag = false;
+                    remember_recent(ui, ui.placing);
+                }
             }
         }
         ImGui::EndDragDropTarget();
@@ -150,10 +154,9 @@ void viewport(ParkEditorUI &ui, const Model &model, ImVec2 screen_origin, ImVec2
                             ui.preview_token ? EditorPreviewAction::update
                                              : EditorPreviewAction::begin_place);
             } else {
-                draw->AddText(plus(start, {16, 38}), muted,
-                              current ? (hit.available ? "No surface hit. Aim at solid ground."
-                                                       : "Game collision query unavailable.")
-                                      : "Finding ground surface...");
+                ui.viewport_note = current ? (hit.available ? "No surface hit. Aim at solid ground."
+                                                            : "Game collision query unavailable.")
+                                           : "Finding ground surface...";
             }
             if (ui.surface_confirm && current) {
                 ui.surface_confirm = false;
@@ -225,10 +228,9 @@ void viewport(ParkEditorUI &ui, const Model &model, ImVec2 screen_origin, ImVec2
                 ui.position[1] += ui.surface_offset;
             }
             if (!ui.surface_valid)
-                draw->AddText(plus(start, {16, 38}), muted,
-                              current ? (hit.available ? "No surface hit. Aim at solid ground."
-                                                       : "Game collision query unavailable.")
-                                      : "Finding ground surface...");
+                ui.viewport_note = current ? (hit.available ? "No surface hit. Aim at solid ground."
+                                                            : "Game collision query unavailable.")
+                                           : "Finding ground surface...";
             if (ui.surface_confirm && current) {
                 ui.surface_confirm = false;
                 commit = ui.surface_valid;
@@ -461,10 +463,6 @@ void viewport(ParkEditorUI &ui, const Model &model, ImVec2 screen_origin, ImVec2
             }
         }
     }
-    draw->AddText(plus(start, {16, 14}), muted,
-                  !ui.placing_set.empty() ? "Click to place the set    |    Wheel turns it    |    Escape to cancel"
-                  : ui.placing.empty()    ? "T move / R rotate / Y scale  |  Shift-click adds / RMB flies"
-                                          : "Click to place    |    Escape to cancel");
     if (ui.preview_token && can_edit)
         preview(ui, model, EditorPreviewAction::update);
     draw->PopClipRect();

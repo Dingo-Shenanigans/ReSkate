@@ -34,6 +34,7 @@
 #include "Extension/World/texture_handle_limit.h"
 #include "Extension/Console/commands.h"
 #include "Extension/UI/ui_pointer_skip.h"
+#include "Extension/UI/score_line_hud.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/profiler_labels.h"
 #include "Engine/Game/Build/supported_build.h"
@@ -58,6 +59,7 @@
 #include "Extension/Multiplayer/Hud/custom_nametags.h"
 #include "Extension/Profile/local_profile.h"
 #include "Extension/Profile/local_profile_runtime.h"
+#include "Extension/Progression/challenge_attempts.h"
 #include "Extension/Progression/fixed_stop_entitlement_provider.h"
 #include "Extension/Progression/mission_progression_override.h"
 #include "Extension/Progression/neighborhood_unlock_override.h"
@@ -264,8 +266,17 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
             const auto view = dingosdk::map_download::view();
             using Stage = dingosdk::map_download::Stage;
             dingosdk::overlay::MapDownloadCard card;
-            card.stage = view.stage == Stage::asking ? 1 : view.stage == Stage::downloading ? 2 : view.stage == Stage::installing ? 3
-                       : view.stage == Stage::applying ? 4 : view.stage == Stage::joining ? 5 : 0;
+            const auto number = [](Stage stage) {
+                return stage == Stage::asking ? 1 : stage == Stage::downloading ? 2 : stage == Stage::installing ? 3
+                     : stage == Stage::applying ? 4 : stage == Stage::joining ? 5 : 0;
+            };
+            // (Idle with a failure: the card shows it until the player puts it away.)
+            card.stage = view.stage == Stage::idle && !view.failure.empty() ? 6 : number(view.stage);
+            card.failure = view.failure;
+            card.failed_stage = number(view.failed_in);
+            card.failed_item = view.failed_item;
+            card.session = view.session;
+            card.session_map = view.session_map;
             card.map = view.map;
             card.package = view.package;
             card.author = view.author;
@@ -285,7 +296,7 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
             card.yes_bind = view.yes_bind;
             card.no_bind = view.no_bind;
             for (const auto& item : view.items)
-                card.items.push_back({item.name, item.author, item.version, item.have, item.plugin, item.installed, item.bytes});
+                card.items.push_back({item.name, item.author, item.version, item.have, item.icon, item.plugin, item.installed, item.bytes});
             card.current = view.current;
             return card;
         });
@@ -563,8 +574,10 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
                 dingosdk::effects::before_level_transition(next);
                 dingosdk::skater_events::before_level_transition(next);
                 dingosdk::local_profile_before_level_transition(next);
+                dingosdk::profile_runtime::challenge_attempts_before_level_transition(next);
                 dingosdk::world_entities::before_level_transition(base, next);
                 dingosdk::placement_physics::before_level_transition(next);
+                dingosdk::score_line::before_level_transition(base, next);
                 dingosdk::multiplayer::native_menu_before_level_transition(base, next);
                 dingosdk::multiplayer::throwdown_lab_before_level_transition(next);
             });

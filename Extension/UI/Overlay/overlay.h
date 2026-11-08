@@ -350,9 +350,17 @@ struct Model {
     };
     std::vector<PluginCommand> plugin_commands;
     float menu_scale = default_menu_scale;
-    float menu_scale_fullscreen = default_menu_scale; // the full screen menu's own size (`ui scalefull`)
-    // The ReSkate menu fills the screen, made for a controller, instead of a window (`ui fullscreen`).
-    bool menu_fullscreen = false;
+    // How the ReSkate menu is laid out (`ui layout`): menu_layout_sheet or menu_layout_hub (menu_scale.h).
+    int menu_layout = menu_layout_sheet;
+    // How the park editor is laid out (`editor layout`): park_editor_layout_hotbar or
+    // park_editor_layout_rail (menu_scale.h).
+    int park_editor_layout = park_editor_layout_hotbar;
+    // The side sheet's width and the window's size as last dragged, in pixels at 1080 lines and a menu
+    // scale of 1; 0 for the default (`ui sheetwidth`, `ui hubsize`).
+    float menu_sheet_width = 0;
+    float menu_hub_width = 0, menu_hub_height = 0;
+    // The replay editor's MP4 export quality (`replay quality`): a replay_export::Quality, 0 the game's own.
+    int replay_export_quality = 0;
     // Offline mode: no Steam, so every multiplayer page and control is hidden.
     bool steam_offline = false;
     ControllerBindingsModel bindings;
@@ -401,7 +409,7 @@ using MultiplayerQueue = bool (*)(const char *action, const char *argument, cons
 void set_multiplayer_queue(MultiplayerQueue) noexcept;
 // What the session needs being fetched, a map and plugins (Extension/Assets/map_download.h), for its card.
 struct MapDownloadCard {
-    int stage{};                // 0 none, 1 asking, 2 downloading, 3 installing, 4 applying, 5 joining
+    int stage{};                // 0 none, 1 asking, 2 downloading, 3 installing, 4 applying, 5 joining, 6 failed
     std::string map, package, author, version, description;
     std::string have;            // the version installed here, when the host's replaces it
     std::size_t step{}, steps{}; // applying: the merge's steps done of all
@@ -410,15 +418,23 @@ struct MapDownloadCard {
     std::uint64_t bytes{};       // asking: the package's size; 0 when it is not known
     std::uint64_t received{}, total{};
     std::uint32_t yes_bind{}, no_bind{};
+    // The session it is for: its name, and its map as a destination ("root|level"), whose picture
+    // the heading shows when the map itself is not needed. Either may be empty.
+    std::string session, session_map;
     // Everything asked for, the map first when it is needed, then a dedicated server's plugins.
-    // One map alone has the map's own card; anything more is listed.
     struct Item {
         std::string name, author, version, have;
+        std::string icon; // its Thunderstore icon's URL; empty for one that is here already
         bool plugin{}, installed{};
         std::uint64_t bytes{};
     };
     std::vector<Item> items;
     std::size_t current{}; // downloading, installing: the one in hand
+    // Failed (stage 6): why, the stage it failed in (as `stage` counts them) and the item it failed
+    // on (items.size() for none in particular).
+    std::string failure;
+    int failed_stage{};
+    std::size_t failed_item{};
 };
 using MapDownloadFeed = MapDownloadCard (*)();
 void set_map_download_feed(MapDownloadFeed) noexcept;
@@ -437,12 +453,22 @@ struct MapVoteIcon {
 };
 void set_map_vote_icons(const std::vector<MapVoteIcon>& icons) noexcept;
 // The menu's map grid (Map > Travel): the levels it shows ask for their pictures, which
-// Assets/map_icons.cpp finds off the game's thread (MapVoteIcon::name is then the level's asset).
+// Assets/map_icons.cpp finds off the game's thread (MapVoteIcon::name is then the level's asset),
+// at most menu_map_picture_limit of them.
 struct MenuMapWanted {
     std::string asset, name;
 };
+inline constexpr std::size_t menu_map_picture_limit = 64;
 std::vector<MenuMapWanted> take_menu_map_request() noexcept;
 void set_menu_map_pictures(const std::vector<MapVoteIcon>& pictures) noexcept;
+// When each custom map's mod was installed, found with the pictures for every level asked for, so the
+// grid can put the newest first without reading the disk while it draws. Seconds since 1970; added
+// to what is known already, by asset. Any thread.
+struct MenuMapInstalled {
+    std::string asset;
+    std::int64_t installed{};
+};
+void set_menu_map_install_times(const std::vector<MenuMapInstalled>& times) noexcept;
 // That vote's popup (map_download_card.cpp), for the runtime, which reads the controller and
 // holds the game's input while it is up: whether it is, moving the pick, voting for the pick
 // (the popup then closes), and closing it without a vote. Any thread.
@@ -473,13 +499,15 @@ void map_vote_dismiss() noexcept;
 using ChatFeed = MultiplayerChat (*)();
 void set_chat_feed(ChatFeed) noexcept;
 // The game's pause menu, as far as ReSkate's own pages in it go: whether one of them is the
-// page on screen, and which (`section` 0: Multiplayer, 1: Mod Options, 2: Mod Manager). The overlay draws
-// everything in such a page itself, its tabs too (hub_page.cpp). Read every presented frame
-// (thread-safe, cheap).
+// page on screen, and which (`section` 0: Multiplayer, 1: Mod Options, 2: Mod Manager, or
+// hub_home_section: the game's own HUB tab, with ReSkate's front page over it). The overlay draws
+// everything in such a page itself, its tabs too (hub_page.cpp, hub_home_page.cpp). Read every
+// presented frame (thread-safe, cheap).
 struct HubPage {
     bool visible{};
     int section{};
 };
+inline constexpr int hub_home_section = 3;
 using HubPageFeed = HubPage (*)();
 void set_hub_page_feed(HubPageFeed) noexcept;
 // Text the game draws with its debug text natives, where retail draws nothing (the
@@ -677,7 +705,7 @@ struct Status {
     std::uint64_t rendered_frames = 0;
 };
 bool keyboard_shortcuts_allowed() noexcept;
-// Whether the ReSkate menu is open, windowed or full screen (not the console, the park editor or a
+// Whether the ReSkate menu is open, as a side sheet or a window (not the console, the park editor or a
 // plugin's screen). Any thread, without the render lock DingoSDKOverlayGetStatus takes.
 bool menu_visible() noexcept;
 
@@ -711,20 +739,16 @@ struct Gamepad {
     unsigned buttons = 0;
 };
 Gamepad read_gamepad(int controller = -1);
-// The full screen menu's page draws its own controls with their own focus (ONLINE: the pause
-// menu's pages): the controller then drives that, not ImGui's navigation.
+// The ReSkate menu's page reads the controller itself (recording a controller bind): the pad and the
+// arrow keys then go to it, not to ImGui's navigation.
 inline std::atomic<bool>& menu_page_owns_pad() {
     static std::atomic<bool> value{false};
     return value;
 }
-// The controller is in charge of the full screen menu: the pointer is hidden (and points at
-// nothing) until the mouse moves or clicks (overlay_render.cpp sets it, cursor.cpp clears it).
+// The controller is in charge of the ReSkate menu: the pointer is hidden (and points at nothing) and
+// the menu shows the pad's button prompts, until the mouse moves or clicks (overlay_render.cpp sets
+// it, cursor.cpp clears it).
 inline std::atomic<bool>& menu_pad_in_charge() {
-    static std::atomic<bool> value{false};
-    return value;
-}
-// The menu was last drawn full screen (its controller pace, overlay_render.cpp).
-inline std::atomic<bool>& menu_fullscreen_shown() {
     static std::atomic<bool> value{false};
     return value;
 }

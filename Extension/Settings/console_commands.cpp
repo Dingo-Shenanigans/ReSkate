@@ -2,6 +2,9 @@
 #include "named_settings.h"
 #include "gameplay_settings_override.h"
 #include "Extension/Profile/local_profile_runtime.h"
+#include "Extension/Rendering/replay_export.h"
+#include <algorithm>
+#include <charconv>
 #include <format>
 namespace dingosdk::console {
 namespace {
@@ -122,39 +125,129 @@ void register_settings_commands(Commands &registry) {
     };
     registry.add(std::move(menu));
 
-    auto full_scale = argument("scale", Type::number);
-    full_scale.minimum = min_menu_scale;
-    full_scale.maximum = max_menu_scale;
-    auto menu_full = variable("ui scalefull", "Scale the full screen ReSkate menu and its text", Group::console, std::move(full_scale));
-    menu_full.execution = Execution::local;
-    menu_full.inspect = [](const Model &m) {
-        return State{true, std::format("{:.2f}", m.menu_scale_fullscreen), {}, "Saved with your profile.", false};
+    auto layout_choice = argument("sheet|hub");
+    layout_choice.choices = {"sheet", "hub"};
+    auto layout = variable("ui layout", "Lay the ReSkate menu out as a sheet on the right edge or as a window (hub)", Group::console,
+                           std::move(layout_choice));
+    layout.execution = Execution::local;
+    layout.inspect = [](const Model &m) {
+        return State{true, std::string(m.menu_layout == menu_layout_hub ? "hub" : "sheet"), {}, "Saved with your profile.", false};
     };
-    menu_full.run = [](const Model &, const Values &args, const Output &out) {
-        const auto value = static_cast<float>(std::get<double>(args[0]));
-        out(profile_runtime::set_local_menu_scale(value, true)
-                ? std::format("Full screen menu scale set to {:.2f}.", value)
-                : std::format("error: Choose a scale from {:.2f} to {:.2f}.", min_menu_scale, max_menu_scale));
+    layout.run = [](const Model &, const Values &args, const Output &out) {
+        const bool hub = lower(std::get<std::string>(args[0])) == "hub";
+        profile_runtime::set_local_menu_layout(hub ? menu_layout_hub : menu_layout_sheet);
+        out(hub ? "The ReSkate menu is a window." : "The ReSkate menu is a sheet on the right edge.");
     };
-    menu_full.reset = [](const Model &, const Output &out) {
-        profile_runtime::set_local_menu_scale(default_menu_scale, true);
-        out("Full screen menu scale reset.");
+    layout.reset = [](const Model &, const Output &out) {
+        profile_runtime::set_local_menu_layout(menu_layout_sheet);
+        out("The ReSkate menu is a sheet on the right edge.");
     };
-    registry.add(std::move(menu_full));
+    registry.add(std::move(layout));
 
-    auto fullscreen = variable("ui fullscreen", "Show the ReSkate menu full screen, made for a controller (0: a window)",
-                               Group::console, argument("0|1", Type::boolean));
-    fullscreen.execution = Execution::local;
-    fullscreen.inspect = [](const Model &m) { return boolean_state(true, m.menu_fullscreen, {}); };
-    fullscreen.run = [](const Model &, const Values &args, const Output &out) {
-        const bool on = std::get<bool>(args[0]);
-        profile_runtime::set_local_menu_fullscreen(on);
-        out(on ? "The ReSkate menu fills the screen." : "The ReSkate menu is a window.");
+    auto editor_choice = argument("hotbar|rail");
+    editor_choice.choices = {"hotbar", "rail"};
+    auto editor_layout = variable("editor layout",
+                                  "Lay the park editor out with a hotbar of objects along the bottom or a rail of tools down the left",
+                                  Group::objects, std::move(editor_choice));
+    editor_layout.execution = Execution::local;
+    editor_layout.inspect = [](const Model &m) {
+        return State{true, std::string(m.park_editor_layout == park_editor_layout_rail ? "rail" : "hotbar"), {},
+                     "Saved with your profile.", false};
     };
-    fullscreen.reset = [](const Model &, const Output &out) {
-        profile_runtime::set_local_menu_fullscreen(false);
-        out("The ReSkate menu is a window.");
+    editor_layout.run = [](const Model &, const Values &args, const Output &out) {
+        const bool rail = lower(std::get<std::string>(args[0])) == "rail";
+        profile_runtime::set_local_park_editor_layout(rail ? park_editor_layout_rail : park_editor_layout_hotbar);
+        out(rail ? "The park editor has a rail of tools down the left." : "The park editor has a hotbar along the bottom.");
     };
-    registry.add(std::move(fullscreen));
+    editor_layout.reset = [](const Model &, const Output &out) {
+        profile_runtime::set_local_park_editor_layout(park_editor_layout_hotbar);
+        out("The park editor has a hotbar along the bottom.");
+    };
+    registry.add(std::move(editor_layout));
+
+    // The menu saves these itself when its edge or corner is dragged; they are commands so that goes the
+    // way the scale does, and so a size that went wrong can be put back.
+    auto width = argument("width", Type::number);
+    width.minimum = min_menu_sheet_width;
+    width.maximum = max_menu_sheet_width;
+    auto sheet = variable("ui sheetwidth", "Width of the ReSkate menu's side sheet, in pixels at 1080 lines and scale 1", Group::console,
+                          std::move(width));
+    sheet.execution = Execution::local;
+    sheet.inspect = [](const Model &m) {
+        return State{true, m.menu_sheet_width > 0 ? std::format("{:.0f}", m.menu_sheet_width) : std::string("default"), {},
+                     "Saved with your profile.", m.menu_sheet_width > 0};
+    };
+    sheet.run = [](const Model &, const Values &args, const Output &out) {
+        const auto value = static_cast<float>(std::get<double>(args[0]));
+        out(profile_runtime::set_local_menu_sheet_width(value)
+                ? std::format("Side sheet width set to {:.0f}.", value)
+                : std::format("error: Choose a width from {:.0f} to {:.0f}.", min_menu_sheet_width, max_menu_sheet_width));
+    };
+    sheet.reset = [](const Model &, const Output &out) {
+        profile_runtime::set_local_menu_sheet_width(0);
+        out("Side sheet width reset.");
+    };
+    registry.add(std::move(sheet));
+
+    auto hub = variable("ui hubsize", "Size of the ReSkate menu's window, WIDTHxHEIGHT in pixels at 1080 lines and scale 1", Group::console,
+                        argument("WIDTHxHEIGHT"));
+    hub.execution = Execution::local;
+    hub.inspect = [](const Model &m) {
+        const bool saved = m.menu_hub_width > 0 && m.menu_hub_height > 0;
+        return State{true, saved ? std::format("{:.0f}x{:.0f}", m.menu_hub_width, m.menu_hub_height) : std::string("default"), {},
+                     "Saved with your profile.", saved};
+    };
+    hub.run = [](const Model &, const Values &args, const Output &out) {
+        // "1120x720": two whole or decimal numbers either side of an x.
+        float w = 0, h = 0;
+        const auto &text = std::get<std::string>(args[0]);
+        const auto x = text.find_first_of("xX");
+        const auto number = [](std::string_view part, float &into) {
+            const auto [end, error] = std::from_chars(part.data(), part.data() + part.size(), into);
+            return error == std::errc{} && end == part.data() + part.size();
+        };
+        const bool parsed = x != std::string::npos && number(std::string_view(text).substr(0, x), w) &&
+                            number(std::string_view(text).substr(x + 1), h);
+        out(parsed && profile_runtime::set_local_menu_hub_size(w, h)
+                ? std::format("Menu window size set to {:.0f}x{:.0f}.", w, h)
+                : std::format("error: Give a size such as 1120x720, from {:.0f}x{:.0f} to {:.0f}x{:.0f}.", min_menu_hub_width,
+                              min_menu_hub_height, max_menu_hub_side, max_menu_hub_side));
+    };
+    hub.reset = [](const Model &, const Output &out) {
+        profile_runtime::set_local_menu_hub_size(0, 0);
+        out("Menu window size reset.");
+    };
+    registry.add(std::move(hub));
+
+    // Read by the exporter as each MP4 export begins (replay_export.cpp), so a change applies to the next.
+    auto quality_choice = argument("game|low|medium|high|veryhigh");
+    for (const auto name : replay_export::quality_names) quality_choice.choices.emplace_back(name);
+    auto quality = variable("replay quality", "Quality of the replay editor's MP4 export: game keeps the game's own bitrate; low, "
+                            "medium, high and veryhigh set it from the video's size and frame rate (about 6, 12, 25 and 45 Mbit/s "
+                            "at 1080p60)",
+                            Group::graphics, std::move(quality_choice));
+    quality.execution = Execution::local;
+    quality.inspect = [](const Model &m) {
+        const auto index = static_cast<std::size_t>(std::clamp(m.replay_export_quality, 0, replay_export::quality_count - 1));
+        return State{true, std::string(replay_export::quality_names[index]), {}, "Saved with your profile.",
+                     m.replay_export_quality != replay_export::quality_game};
+    };
+    quality.run = [](const Model &, const Values &args, const Output &out) {
+        const auto chosen = lower(std::get<std::string>(args[0]));
+        const auto found = std::find(replay_export::quality_names.begin(), replay_export::quality_names.end(), chosen);
+        if (found == replay_export::quality_names.end()) {
+            out("error: Choose game, low, medium, high or veryhigh.");
+            return;
+        }
+        const int index = static_cast<int>(found - replay_export::quality_names.begin());
+        profile_runtime::set_local_replay_export_quality(index);
+        out(index == replay_export::quality_game ? std::string("Replay exports keep the game's own bitrate.")
+                                                 : std::format("Replay exports are encoded at {} quality.", chosen));
+    };
+    quality.reset = [](const Model &, const Output &out) {
+        profile_runtime::set_local_replay_export_quality(replay_export::quality_game);
+        out("Replay exports keep the game's own bitrate.");
+    };
+    registry.add(std::move(quality));
 }
 } // namespace dingosdk::console

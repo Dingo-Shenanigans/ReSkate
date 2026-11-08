@@ -10,9 +10,7 @@ namespace dingosdk::overlay::menu::multiplayer_detail {
 bool send_private(SkateMenu &menu, const char *action, const std::string &argument,
                   std::array<char, 65> &password, bool use_password = true);
 std::string map_label(const Model &model, std::string_view path);
-// Draw text within a column, preserving UTF-8 when adding an ellipsis.
-void cell_text(const std::string &text);
-// LOBBIES tab and its password prompt (multiplayer_lobbies.cpp).
+// SERVERS tab and its password prompt (multiplayer_lobbies.cpp).
 void join_page(SkateMenu &menu, const Model &model, const CallbacksV3 &callbacks);
 void password_popup(SkateMenu &menu, const Model &model);
 // SESSION and VOICE tabs (multiplayer_session.cpp).

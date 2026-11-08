@@ -168,6 +168,27 @@ std::vector<EditorObject> placed_set_objects(const ParkEditorUI &ui, const Edito
     }
     return objects;
 }
+void remember_recent(ParkEditorUI &ui, const std::string &key) {
+    // A short list, newest first: enough to go back to the few pieces a park is being built from.
+    constexpr std::size_t kept = 24;
+    std::erase(ui.recent, key);
+    ui.recent.insert(ui.recent.begin(), key);
+    if (ui.recent.size() > kept)
+        ui.recent.resize(kept);
+}
+void begin_placement(ParkEditorUI &ui, const Model &model, const std::string &key) {
+    if (ui.preview_token)
+        cancel_drag(ui, model);
+    ui.placing = key;
+    ui.placing_set.clear();
+    ui.selected = 0;
+    ui.selection.clear();
+    ui.angles = {};
+    ui.scale = 1;
+    ui.inspector_dirty = false;
+    ui.surface_confirm = false;
+    remember_recent(ui, key);
+}
 void begin_set_placement(ParkEditorUI &ui, const Model &model, const std::string &name) {
     if (ui.preview_token)
         cancel_drag(ui, model);

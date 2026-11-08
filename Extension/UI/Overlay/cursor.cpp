@@ -233,8 +233,8 @@ void update_menu_pointer() {
     const bool watching = !active && s.hub_pointer.load() && s.input_attached && !s.stop && !s.failed &&
                           game_window_foreground(s.window);
     io.AddFocusEvent(active || watching);
-    // The controller in charge of the full screen menu: no pointer until the mouse moves or a button
-    // of it is pressed.
+    // The controller in charge of the ReSkate menu: no pointer until the mouse moves or a button of it
+    // is pressed.
     // (The real pointer and buttons: these reads are the game's, faked, outside OverlayInputAccess.)
     static POINT last{LONG_MIN, LONG_MIN};
     POINT now{};
@@ -247,7 +247,7 @@ void update_menu_pointer() {
     const bool mouse_moved = have_now && last.x != LONG_MIN && (std::abs(now.x - last.x) > 2 || std::abs(now.y - last.y) > 2);
     if (have_now) last = now;
     auto& pad_in_charge = dingosdk::overlay::menu_pad_in_charge();
-    if (mouse_moved || clicked || !dingosdk::overlay::menu_fullscreen_shown().load()) pad_in_charge.store(false);
+    if (mouse_moved || clicked) pad_in_charge.store(false);
     const bool hidden = active && pad_in_charge.load();
     io.MouseDrawCursor = active && !hidden;
     if (!active && !watching) {
@@ -255,7 +255,7 @@ void update_menu_pointer() {
         s.raw_mouse_buttons.store(0);
         return;
     }
-    if (watching) io.ClearInputKeys();
+    if (watching && !s.hub_nav.load()) io.ClearInputKeys(); // (a plugin's page there has the keys: State::hub_nav)
     OverlayInputAccess access;
     POINT point{};
     // The Win32 backend only polls when it thinks WM_MOUSEMOVE tracking ended.

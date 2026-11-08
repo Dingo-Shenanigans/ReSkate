@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <cstring>
 #include <map>
 #include <mutex>
@@ -17,7 +18,7 @@
 namespace dingosdk::overlay {
 namespace {
 constexpr UINT cell = 256, columns = 8;
-constexpr std::size_t most = 64; // 4 MB of pixels at most
+constexpr std::size_t most = menu_map_picture_limit; // 4 MB of pixels at most
 
 std::string folded(std::string_view text) {
     std::string result(text);
@@ -37,6 +38,8 @@ struct Pictures {
     bool waiting{};
     unsigned serial{};
     ImTextureID texture{};
+    // When each custom map's mod was installed, by folded asset, from map_icons with the pictures.
+    std::map<std::string, std::int64_t, std::less<>> installed;
 };
 Pictures& pictures() { static auto* value = new Pictures; return *value; } // process lifetime
 }
@@ -48,7 +51,8 @@ void want_menu_map_pictures(std::vector<MenuMapWanted> levels) {
     std::lock_guard lock(p.mutex);
     if (key == p.asked) return;
     p.asked = std::move(key);
-    if (levels.size() > most) levels.resize(most);
+    // (All of them: map_icons finds pictures for the first `most` that have one, and when every
+    // custom map's mod was installed, however many there are.)
     p.request = std::move(levels);
 }
 
@@ -98,6 +102,21 @@ void set_menu_map_pictures(const std::vector<MapVoteIcon>& found) noexcept {
         p.waiting_cells = std::move(cells);
         p.waiting = true;
     } catch (...) { /* No pictures: the grid shows each map's name on a plain tile. */ }
+}
+
+void set_menu_map_install_times(const std::vector<MenuMapInstalled>& times) noexcept {
+    try {
+        auto& p = pictures();
+        std::lock_guard lock(p.mutex);
+        for (const auto& time : times) p.installed[folded(time.asset)] = time.installed;
+    } catch (...) { /* Not known: the grid orders those maps by name. */ }
+}
+
+std::int64_t menu_map_installed(const std::string& asset) {
+    auto& p = pictures();
+    std::lock_guard lock(p.mutex);
+    const auto found = p.installed.find(folded(asset));
+    return found == p.installed.end() ? 0 : found->second;
 }
 
 bool menu_map_picture(const std::string& asset, ImTextureID& texture, ImVec2& uv0, ImVec2& uv1) {

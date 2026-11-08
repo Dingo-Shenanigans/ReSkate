@@ -15,6 +15,7 @@ struct ScoreHud {
     std::string header, descriptor;
     std::uint32_t sequence_state{};
     float line_timer{}; // what is left of the line's time to keep its multiplier; 0 with no line
+    float line_shown{}; // the widget's LINE number, which stays after the line's action signals end
 };
 // Whether the HUD names a manual going on (its header or descriptor says one).
 bool names_manual(const ScoreHud& now);

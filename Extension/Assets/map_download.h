@@ -49,22 +49,37 @@ struct View {
     std::uint64_t bytes{};               // asking: what all of it downloads (Content-Length); 0 when no server said
     std::uint64_t received{}, total{};   // downloading the one in hand; total 0 when the size is not known
     std::uint32_t yes_bind{}, no_bind{}; // the vote binds, which answer the card
+    // The session it is for, as the session names it ("Sandos' Plaza"), and its map as a
+    // destination (session_model.h: MultiplayerModel::map), for the card's heading and, when the
+    // map itself is not needed, its picture. Either may be empty while the session has not said.
+    std::string session, session_map;
     // Everything asked for, the map first when it is needed: what the card lists.
     struct Item {
         std::string name;        // the map's name, or the plugin's ("FPV Drone")
         std::string author, version, description;
         std::string have;        // the version installed here, when it is replaced
+        std::string icon;        // its icon on Thunderstore (a URL); empty for one that is here already
         bool plugin{}, installed{};
         std::uint64_t bytes{};   // 0 when not known, or nothing is downloaded
     };
     std::vector<Item> items;
     std::size_t current{};       // downloading, installing: the one in hand, an index into items
+    // Idle after a download failed while its card was up: why, the stage it failed in and the
+    // item it failed on (items.size() when it was none in particular). The card shows it, with
+    // the items as they were, until the player puts it away (answer) or another need comes.
+    // Empty otherwise, and after the player called it off themselves.
+    std::string failure;
+    Stage failed_in{};
+    std::size_t failed_item{};
 };
 // Client thread: a session is waiting on what it needs. Ignored while another is in hand.
 void offer(const multiplayer::MapNeed& need);
-// Any thread. Yes downloads (when asking); no declines, or stops a download under way.
+// Any thread. Yes downloads (when asking); no declines, or stops a download under way. Either
+// puts away a failure the card shows (View::failure).
 void answer(bool download) noexcept;
 bool asking() noexcept;
+// Whether the card shows a failure, which is answered as the question is (answer).
+bool failure_shown() noexcept;
 // A controller's pick between the two answers, and what it is.
 void pick(bool download) noexcept;
 bool picked() noexcept;

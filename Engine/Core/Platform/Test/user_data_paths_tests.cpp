@@ -1,7 +1,10 @@
 // The user-data root: the normal folders without RESKATE_DATA_ROOT, everything under the requested
 // folder with it (also in a child process), and a refusal, never the normal profile, for a folder
-// that cannot be used. LOCALAPPDATA points at a scratch folder throughout, which must stay empty.
+// that cannot be used. LOCALAPPDATA points at a scratch folder throughout; later fake cache
+// canaries there must stay unchanged when the actual workers' path selectors use private data.
 #include "Engine/Core/Platform/user_data_paths.h"
+#include "Extension/News/patch_notes_cache.h"
+#include "Extension/UI/Overlay/store_icon_paths.h"
 #include <cstdio>
 #include <fstream>
 #include <functional>
@@ -30,12 +33,75 @@ struct Environment {
 void put(const wchar_t* key, const fs::path& path) {
     if (!SetEnvironmentVariableW(key, path.c_str())) throw std::runtime_error("Cannot set test environment");
 }
+// These are the selectors the actual workers call, without starting a fetch or a render worker.
+std::array<fs::path, 3> cache_files() {
+    const auto news = dingosdk::overlay::detail::store_icon_paths::folder(true);
+    const auto icons = dingosdk::overlay::detail::store_icon_paths::folder(false);
+    return {dingosdk::news::patch_notes_cache::file(),
+        news.empty() ? fs::path{} : news / L"fixture-news.png",
+        icons.empty() ? fs::path{} : icons / L"fixture-icon.png"};
+}
+std::array<fs::path, 3> expected_cache_files(const fs::path& root) {
+    return {root / L"news" / L"releases.json", root / L"news" / L"pictures" / L"fixture-news.png",
+        root / L"thunderstore" / L"icons" / L"fixture-icon.png"};
+}
+void write_fixture(const fs::path& file, const char* text) {
+    fs::create_directories(file.parent_path());
+    std::ofstream out(file, std::ios::binary | std::ios::trunc);
+    out << text;
+    check(out.good(), "synthetic cache fixture was written");
+}
+std::string read_fixture(const fs::path& file) {
+    std::ifstream in(file, std::ios::binary);
+    return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+}
+void cache_isolation(const fs::path& scratch, const fs::path& fake_local) {
+    const auto isolated = scratch / L"cache-\u03b2";
+    put(L"RESKATE_DATA_ROOT", isolated);
+    data::initialize_development_root();
+    const auto ordinary = expected_cache_files(fake_local / L"ReSkate");
+    const auto selected = cache_files();
+    const auto expected = expected_cache_files(isolated);
+    check(selected == expected, "actual patch-note/news-picture/icon selectors use the Unicode private root");
+    // A broken selector must fail the test before the fixture follows it outside its private tree.
+    if (selected != expected) return;
+    for (std::size_t i = 0; i < selected.size(); ++i) {
+        write_fixture(ordinary[i], "normal fake cache\n");
+        write_fixture(expected[i], "private cache\n");
+        check(read_fixture(selected[i]) == "private cache\n", "actual cache paths read private fixtures rather than normal canaries");
+        write_fixture(selected[i], "private cache changed\n");
+        check(read_fixture(ordinary[i]) == "normal fake cache\n", "actual cache writes leave normal fake canaries unchanged");
+    }
+    put(L"RESKATE_DATA_ROOT", fs::path(L"relative"));
+    check(cache_files() == std::array<fs::path, 3>{}, "invalid root disables all three worker caches without throwing");
+    SetEnvironmentVariableW(L"RESKATE_DATA_ROOT", L"");
+    check(cache_files() == std::array<fs::path, 3>{}, "empty requested root never selects the normal worker caches");
+    const auto blocker = scratch / L"cache-blocker";
+    std::ofstream(blocker) << "not a directory\n";
+    put(L"RESKATE_DATA_ROOT", blocker);
+    check(throws([] { data::initialize_development_root(); }), "a file root refuses startup before any cache worker");
+    for (const auto& file : cache_files()) {
+        check(file.empty() || data::detail::within(file, blocker), "a refused startup cannot redirect a cache to normal data");
+        if (!file.empty() && data::detail::within(file, blocker)) {
+            std::error_code error;
+            fs::create_directories(file.parent_path(), error);
+            std::ofstream out(file, std::ios::binary | std::ios::trunc);
+            check(!out, "a cache below the file root cannot be written");
+        }
+    }
+    for (const auto& file : ordinary)
+        check(read_fixture(file) == "normal fake cache\n", "refused roots leave every normal fake cache canary unchanged");
+}
 // Run as a child of the test: it inherits the root the parent set up, as the game does from the launcher.
 void child_check() {
     data::initialize_development_root();
     const auto root = data::root();
     check(data::known_folder_root() == root, "child Known Folder and environment consumers share the explicit root");
     check(fs::path(*data::detail::environment(L"TEMP")) == root / L"tmp", "child temporary directory stays isolated");
+    const auto selected = cache_files();
+    check(selected == expected_cache_files(root), "child worker cache selectors inherit the same private root");
+    if (selected != expected_cache_files(root)) return;
+    for (const auto& file : selected) write_fixture(file, "child private cache\n");
     std::ofstream(root / L"child-marker.txt") << "isolated\n";
 }
 }
@@ -62,6 +128,7 @@ int main(int argc, char** argv) {
         check(data::root() == fake_local / L"ReSkate", "ordinary profile path preserves LOCALAPPDATA default");
         check(data::launcher_settings(scratch / L"install") == scratch / L"install" / L"ReSkateLauncher.settings.json",
             "ordinary launcher preferences remain beside the executable");
+        check(cache_files() == expected_cache_files(fake_local / L"ReSkate"), "without an override the worker cache paths keep their normal locations");
         check(throws([] { data::validate_override(L"relative\\folder"); }), "relative override is rejected");
         check(throws([] { data::validate_override(L""); }), "empty override is rejected");
         check(throws([&] { data::validate_override(scratch.root_path().wstring()); }), "drive-root override is rejected");
@@ -117,6 +184,11 @@ int main(int argc, char** argv) {
             CloseHandle(process.hThread); CloseHandle(process.hProcess);
             check(wait == WAIT_OBJECT_0 && exit_code == 0 && fs::exists(isolated / L"child-marker.txt"),
                 "launcher-style child uses the same isolated root without touching the game");
+            const auto child_files = cache_files();
+            check(child_files == expected_cache_files(isolated), "parent still selects the private child cache paths");
+            if (child_files == expected_cache_files(isolated))
+                for (const auto& file : child_files)
+                    check(read_fixture(file) == "child private cache\n", "child writes through actual worker selectors stay private");
         }
         std::vector<std::wstring> missing{L"--dev-data-root"};
         check(throws([&] { data::consume_development_root_option(missing); }), "missing flag value is rejected");
@@ -136,6 +208,7 @@ int main(int argc, char** argv) {
         put(L"RESKATE_DATA_ROOT", blocker);
         check(throws([] { data::initialize_development_root(); }), "unwritable/not-directory override fails preflight");
         check(!fs::exists(fake_local), "failure cases still never create the normal profile");
+        cache_isolation(scratch, fake_local);
         if (!failures) {
             std::error_code ignored;
             fs::remove_all(scratch, ignored);
