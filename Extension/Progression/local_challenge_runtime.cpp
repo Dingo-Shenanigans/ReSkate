@@ -185,8 +185,9 @@ void* challenge_request(bool ending, void* out, const void* id_value, const void
         dingosdk::logging::event(dingosdk::logging::Channel::progression, dingosdk::Json{{"event", "local_challenge_request_rejected"}, {"id", request.id},
             {"reason", error.what()}}.dump().c_str());
     }
-    // A virtual participant's leave ends its entry, not the local attempt, which goes on.
-    if (!ending || !request.virtual_leave) note_attempt(ending, id_value);
+    // A virtual participant's leave ends its entry, not the local attempt, which goes on. A begin the
+    // game was refused opens no attempt (no end follows one), so it never holds score lines down.
+    if (ending ? !request.virtual_leave : !request.failed) note_attempt(ending, id_value);
     // No native pointer into the expression stack survives this call. Retain
     // the VM delegate, then commit and acknowledge on the client update thread.
     r.pending.push_back(std::move(request)); retained.value = 0;

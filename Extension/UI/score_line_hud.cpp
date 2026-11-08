@@ -93,6 +93,7 @@ struct Hud {
     std::optional<double> read_at;
     std::string status; // what the last tick found, for the next ask
     bool unsupported{}, warned{};
+    unsigned failed_makes{}; // make_model failures in a row (it is tried again until three)
     bool said_made{}, said_in{}, said_out{}, said_yield{}, said_busy{}, said_rows{}, said_rows_off{};
 };
 Hud& hud() {
@@ -334,10 +335,13 @@ bool make_model(Hud& h, const Context& c) {
         own_root.store(0, std::memory_order_release);
         destroy_quietly(c, h.model);
         h.fields = {};
-        if (!std::exchange(h.unsupported, true))
+        // A layout that differs fails every time; a create or a read that fails once (the HUD still
+        // loading, say) is tried again on a later tick. Three in a row are taken as the layout.
+        if (++h.failed_makes >= 3 && !std::exchange(h.unsupported, true))
             logging::log(logging::Level::warning, logging::Channel::ui, "Score line: skate.'s score HUD differs on this game build: {}.", error.what());
         return false;
     }
+    h.failed_makes = 0;
     h.texts_set = false;
     if (!std::exchange(h.said_made, true))
         logging::log(logging::Level::info, logging::Channel::ui, "Score line: the SDK's own score HUD model was made (handle 0x{:x}).", h.model.handle);

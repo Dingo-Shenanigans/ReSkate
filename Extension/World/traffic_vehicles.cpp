@@ -180,11 +180,13 @@ bool install(std::uintptr_t image_base) noexcept {
     base = image_base;
     if (const auto status = hook_initialize(); status != HookOk && status != HookAlreadyInitialized) return refused("hook initialize", status);
     auto* target = reinterpret_cast<void*>(base + tv::hierarchy_update);
-    HookBatch batch;
-    if (const auto status = hook_prepare(target, reinterpret_cast<void*>(&hierarchy), reinterpret_cast<void**>(&original)); status != HookOk || !original)
-        return refused("hook prepare", status);
-    if (const auto status = hook_queue_enable(target); status != HookOk) return refused("hook queue", status);
-    if (const auto status = hook_apply_queued(); status != HookOk) return refused("hook apply", status);
+    {
+        // Installed while the game runs: in a batch of its own, which attaches it as it ends.
+        HookBatch batch;
+        if (const auto status = hook_prepare(target, reinterpret_cast<void*>(&hierarchy), reinterpret_cast<void**>(&original)); status != HookOk || !original)
+            return refused("hook prepare", status);
+        if (const auto status = hook_enable(target); status != HookOk) return refused("hook enable", status);
+    }
     ready = true;
     logging::log(logging::Level::info, logging::Channel::runtime, "Traffic vehicles: the hierarchy update hook is in.");
     return true;
@@ -200,16 +202,21 @@ std::string take(std::uintptr_t image_base, std::uint64_t owner, std::uint64_t e
     // Any ECS owner may be tried: one that is not a traffic vehicle never climbs to a root with an
     // agent beside it, so it ends "not a vehicle" or "no agent".
     if (!entity) return "not a vehicle";
-    std::lock_guard lock(guard);
-    if (!install(image_base)) return "unavailable";
+    {
+        std::lock_guard lock(guard);
+        if (!install(image_base)) return "unavailable";
+    }
     // The picker's resolved root is a useful early layout check. An unresolved pick still
-    // gets the same check when hierarchy updates reveal its actual root.
+    // gets the same check when hierarchy updates reveal its actual root. (Read without the lock:
+    // the game's job threads wait on it inside the hierarchy pass, so this thread never calls into
+    // the game while it holds it.)
     if (root_hint && root_hint != entity && (root_hint >> 32) == (entity >> 32)) {
         Pose local{};
         Vec3 world{};
         if (!root_pose(root_hint, local) || !position(root_hint, tv::world_transform_type, world) ||
             !within(local.position, world, 0.5f)) return "layout differs";
     }
+    std::lock_guard lock(guard);
     unsigned held{};
     for (const auto& v : vehicles) {
         if (v.owner == owner && (v.state == State::finding || v.state == State::held)) ++held;
@@ -227,12 +234,31 @@ std::string take(std::uintptr_t image_base, std::uint64_t owner, std::uint64_t e
     refresh();
     return {};
 }
+// A held vehicle whose root the game has removed (despawned, the level gone) is lost: its root's
+// local transform is gone. Asked without the lock (see take), then marked under it.
+bool still_there(std::uint64_t owner, std::uint64_t handle) {
+    std::uint64_t root{};
+    {
+        std::lock_guard lock(guard);
+        const auto* v = find(owner, handle);
+        if (!v || v->state != State::held) return true;
+        root = v->root;
+    }
+    if (component(root, tv::local_transform_type)) return true;
+    std::lock_guard lock(guard);
+    if (auto* v = find(owner, handle); v && v->state == State::held && v->root == root) {
+        v->state = State::lost;
+        v->reason = "vehicle removed";
+        refresh();
+    }
+    return false;
+}
 Sample read(std::uint64_t owner, std::uint64_t handle) {
+    (void)still_there(owner, handle);
     std::lock_guard lock(guard);
     auto* v = find(owner, handle);
     if (!v) return {State::lost, {}, "unknown vehicle"};
     expire(*v, GetTickCount64());
-    if (v->state == State::held && !component(v->root, tv::local_transform_type)) { v->state = State::lost; v->reason = "vehicle removed"; }
     refresh();
     return {v->state, v->pose, v->reason};
 }
@@ -240,6 +266,9 @@ std::string set_pose(std::uint64_t owner, std::uint64_t handle, const Pose& pose
     Pose checked = pose;
     if (!normalize(checked.rotation) || !std::all_of(checked.position.begin(), checked.position.end(),
         [](float x) { return std::isfinite(x) && std::abs(x) <= 1e5f; })) return "invalid pose";
+    // A plugin that only ever sets the pose still learns that its vehicle has gone, and stops
+    // holding the hierarchy pass to the lock for it.
+    if (!still_there(owner, handle)) return "vehicle removed";
     std::lock_guard lock(guard);
     auto* v = find(owner, handle);
     if (!v || v->state != State::held) return "vehicle is not held";
