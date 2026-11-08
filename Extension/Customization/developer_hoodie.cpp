@@ -43,10 +43,13 @@ bool publish_materials(std::uintptr_t base, std::uintptr_t item) noexcept {
     } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 // What each of the skater's marked cosmetics does for this player: top, bottoms, shoes, ...
+// No player (0: their items are hidden, or nobody is known) has nothing; anyone else at least
+// their solid colours (item_animation).
 using Animations = std::array<developer_hoodie_detail::ItemAnimation, developer_hoodie_detail::slots.size()>;
 Animations skater_animations(std::uint64_t steam_id, const multiplayer::MarkStyles &styles) noexcept {
-    const auto mark = multiplayer::identity_mark(steam_id);
     Animations out;
+    if (!steam_id) return out;
+    const auto mark = multiplayer::identity_mark(steam_id);
     for (std::size_t i = 0; i < out.size(); ++i) out[i] = developer_hoodie_detail::item_animation(mark, styles[i]);
     return out;
 }

@@ -1,5 +1,6 @@
 #include "Engine/Core/Log/logging.h"
 #include "runtime_internal.h"
+#include "Extension/Rendering/replay_export.h"
 #include <condition_variable>
 #include <deque>
 #include <map>
@@ -300,59 +301,126 @@ bool set_local_game_option(std::string_view key, double value, bool boolean) noe
     } catch (...) { return false; }
 }
 
-// Shared with the overlay through the model; clamped to a legible range. The window and the full
-// screen menu each keep their own (ReSkate.MenuScale, ReSkate.MenuScaleFullscreen).
-std::atomic<float>& menu_scale_cache(bool fullscreen) noexcept {
-    static std::atomic<float> window{0}, full{0};
-    return fullscreen ? full : window;
-}
-const char* menu_scale_key(bool fullscreen) noexcept { return fullscreen ? "ReSkate.MenuScaleFullscreen" : "ReSkate.MenuScale"; }
+// Shared with the overlay through the model; clamped to a legible range. One scale serves both of the
+// menu's layouts (ReSkate.MenuScale).
+std::atomic<float>& menu_scale_cache() noexcept { static std::atomic<float> value{0}; return value; }
 
-float local_menu_scale(bool fullscreen) noexcept {
-    auto& cache = menu_scale_cache(fullscreen);
+float local_menu_scale() noexcept {
+    auto& cache = menu_scale_cache();
     if (const auto value = cache.load(std::memory_order_relaxed); value > 0) return value;
     float value = default_menu_scale;
     try {
         auto& s = local_runtime();
         if (s.store)
-            if (const auto saved = s.store->user_value(menu_scale_key(fullscreen)); saved && saved->is_number())
+            if (const auto saved = s.store->user_value("ReSkate.MenuScale"); saved && saved->is_number())
                 value = std::clamp(static_cast<float>(saved->get<double>()), min_menu_scale, max_menu_scale);
     } catch (...) { /* An unreadable preference just means the default scale. */ }
     cache.store(value, std::memory_order_relaxed);
     return value;
 }
 
-std::atomic<int>& menu_fullscreen_cache() noexcept { static std::atomic<int> value{-1}; return value; }
+bool set_local_menu_scale(float value) noexcept {
+    if (!(value >= min_menu_scale && value <= max_menu_scale)) return false;
+    menu_scale_cache().store(value, std::memory_order_relaxed);
+    try {
+        auto& s = local_runtime();
+        if (s.store) s.store->set_user_value("ReSkate.MenuScale", static_cast<double>(value));
+    } catch (...) { /* Saving is best effort; the runtime value already applied. */ }
+    return true;
+}
 
-bool local_menu_fullscreen() noexcept {
-    auto& cache = menu_fullscreen_cache();
-    if (const auto value = cache.load(std::memory_order_relaxed); value >= 0) return value != 0;
-    bool value = false;
+namespace {
+// A saved number of the menu's (its layout, the sheet's width, the window's size), read once and then
+// served from `cache` (below zero: not read yet). Out of range reads as `fallback`.
+float menu_number(std::atomic<float>& cache, const char* key, float fallback, float low, float high) noexcept {
+    if (const auto value = cache.load(std::memory_order_relaxed); value >= 0) return value;
+    float value = fallback;
     try {
         auto& s = local_runtime();
         if (s.store)
-            if (const auto saved = s.store->user_value("ReSkate.MenuFullscreen"); saved && saved->is_boolean())
-                value = saved->get<bool>();
-    } catch (...) { /* An unreadable preference just means a window. */ }
-    cache.store(value ? 1 : 0, std::memory_order_relaxed);
+            if (const auto saved = s.store->user_value(key); saved && saved->is_number()) {
+                const auto read = static_cast<float>(saved->get<double>());
+                if (read >= low && read <= high) value = read;
+            }
+    } catch (...) { /* An unreadable preference just means the default. */ }
+    cache.store(value, std::memory_order_relaxed);
     return value;
 }
-
-void set_local_menu_fullscreen(bool fullscreen) noexcept {
-    menu_fullscreen_cache().store(fullscreen ? 1 : 0, std::memory_order_relaxed);
+void set_menu_number(std::atomic<float>& cache, const char* key, float value) noexcept {
+    cache.store(value, std::memory_order_relaxed);
     try {
         auto& s = local_runtime();
-        if (s.store) s.store->set_user_value("ReSkate.MenuFullscreen", fullscreen);
+        if (s.store) s.store->set_user_value(key, static_cast<double>(value));
     } catch (...) { /* Saving is best effort; the runtime value already applied. */ }
 }
+std::atomic<float>& menu_layout_cache() noexcept { static std::atomic<float> value{-1}; return value; }
+std::atomic<float>& park_editor_layout_cache() noexcept { static std::atomic<float> value{-1}; return value; }
+std::atomic<float>& menu_sheet_width_cache() noexcept { static std::atomic<float> value{-1}; return value; }
+std::atomic<float>& menu_hub_width_cache() noexcept { static std::atomic<float> value{-1}; return value; }
+std::atomic<float>& menu_hub_height_cache() noexcept { static std::atomic<float> value{-1}; return value; }
+std::atomic<float>& replay_export_quality_cache() noexcept { static std::atomic<float> value{-1}; return value; }
+}
 
-bool set_local_menu_scale(float value, bool fullscreen) noexcept {
-    if (!(value >= min_menu_scale && value <= max_menu_scale)) return false;
-    menu_scale_cache(fullscreen).store(value, std::memory_order_relaxed);
-    try {
-        auto& s = local_runtime();
-        if (s.store) s.store->set_user_value(menu_scale_key(fullscreen), static_cast<double>(value));
-    } catch (...) { /* Saving is best effort; the runtime value already applied. */ }
+int local_menu_layout() noexcept {
+    return static_cast<int>(menu_number(menu_layout_cache(), "ReSkate.MenuLayout", static_cast<float>(menu_layout_sheet),
+                                        static_cast<float>(menu_layout_sheet), static_cast<float>(menu_layout_hub)));
+}
+
+bool set_local_menu_layout(int layout) noexcept {
+    if (layout != menu_layout_sheet && layout != menu_layout_hub) return false;
+    set_menu_number(menu_layout_cache(), "ReSkate.MenuLayout", static_cast<float>(layout));
+    return true;
+}
+
+int local_park_editor_layout() noexcept {
+    return static_cast<int>(menu_number(park_editor_layout_cache(), "ReSkate.ParkEditorLayout",
+                                        static_cast<float>(park_editor_layout_hotbar),
+                                        static_cast<float>(park_editor_layout_hotbar),
+                                        static_cast<float>(park_editor_layout_rail)));
+}
+
+bool set_local_park_editor_layout(int layout) noexcept {
+    if (layout != park_editor_layout_hotbar && layout != park_editor_layout_rail) return false;
+    set_menu_number(park_editor_layout_cache(), "ReSkate.ParkEditorLayout", static_cast<float>(layout));
+    return true;
+}
+
+// 0 is the default size: what an unsaved or reset size reads as, so the default can change later.
+float local_menu_sheet_width() noexcept {
+    return menu_number(menu_sheet_width_cache(), "ReSkate.MenuSheetWidth", 0, min_menu_sheet_width, max_menu_sheet_width);
+}
+
+bool set_local_menu_sheet_width(float width) noexcept {
+    if (width != 0 && !(width >= min_menu_sheet_width && width <= max_menu_sheet_width)) return false;
+    set_menu_number(menu_sheet_width_cache(), "ReSkate.MenuSheetWidth", width);
+    return true;
+}
+
+std::pair<float, float> local_menu_hub_size() noexcept {
+    const float width = menu_number(menu_hub_width_cache(), "ReSkate.MenuHubWidth", 0, min_menu_hub_width, max_menu_hub_side);
+    const float height = menu_number(menu_hub_height_cache(), "ReSkate.MenuHubHeight", 0, min_menu_hub_height, max_menu_hub_side);
+    // Half a saved size is no size: both or the default.
+    return width > 0 && height > 0 ? std::pair{width, height} : std::pair{0.0f, 0.0f};
+}
+
+bool set_local_menu_hub_size(float width, float height) noexcept {
+    const bool reset = width == 0 && height == 0;
+    if (!reset && !(width >= min_menu_hub_width && width <= max_menu_hub_side && height >= min_menu_hub_height && height <= max_menu_hub_side))
+        return false;
+    set_menu_number(menu_hub_width_cache(), "ReSkate.MenuHubWidth", width);
+    set_menu_number(menu_hub_height_cache(), "ReSkate.MenuHubHeight", height);
+    return true;
+}
+
+// Saved as a number like the menu's: the setting's place in replay_export::Quality.
+int local_replay_export_quality() noexcept {
+    constexpr auto none = static_cast<float>(replay_export::quality_game), best = static_cast<float>(replay_export::quality_count - 1);
+    return static_cast<int>(menu_number(replay_export_quality_cache(), "ReSkate.ReplayExportQuality", none, none, best));
+}
+
+bool set_local_replay_export_quality(int quality) noexcept {
+    if (quality < replay_export::quality_game || quality >= replay_export::quality_count) return false;
+    set_menu_number(replay_export_quality_cache(), "ReSkate.ReplayExportQuality", static_cast<float>(quality));
     return true;
 }
 } // namespace profile_runtime

@@ -14,10 +14,11 @@
 #include <string_view>
 #include <vector>
 
-// The cosmetics of a player on one of the backend's lists (developer_identity.h) are coloured
-// for them: whatever they wear and ride, on their own material instances, as they choose on the
-// menu's Special page. It began as the developers' rainbow hoodie and pink board, which the
-// names here still say.
+// A player's cosmetics are coloured for them: whatever they wear, on their own material
+// instances, as they choose on the Skater page's STYLE tab. Anyone may give each worn item a
+// solid colour; a player on one of the backend's lists (developer_identity.h) also has their
+// list's animation, gradients and the board. It began as the developers' rainbow hoodie and
+// pink board, which the names here still say.
 namespace dingosdk {
 namespace developer_hoodie_detail {
 // The compiled appearance preset names a skater's item controllers by their assigned CAS slot
@@ -117,18 +118,23 @@ inline Color material_color(const std::array<std::uint8_t, 3> &picked) noexcept 
         out[i] = std::max(.004f, std::pow(static_cast<float>(picked[i]) / 255.f, 2.2f) * .8f);
     return out;
 }
-// The colours the pickers start from: about where each list's own animation begins and ends.
-inline std::pair<std::array<std::uint8_t, 3>, std::array<std::uint8_t, 3>> standard_picks(multiplayer::IdentityList mark) noexcept {
+// The colours the pickers start from: about where each list's own animation begins and ends,
+// and for a player on none, white and a mid grey.
+inline std::pair<std::array<std::uint8_t, 3>, std::array<std::uint8_t, 3>>
+standard_picks(std::optional<multiplayer::IdentityList> listed) noexcept {
     using multiplayer::IdentityList;
+    if (!listed) return {{0xff, 0xff, 0xff}, {0x80, 0x80, 0x80}};
+    const auto mark = *listed;
     if (mark == IdentityList::content_creator) return {{0x88, 0x23, 0x23}, {0xff, 0x48, 0x70}};
     if (mark == IdentityList::homie) return {{0xad, 0x6c, 0x1c}, {0xff, 0xe6, 0x67}};
     if (mark == IdentityList::centrix) return {{0x1f, 0x7b, 0xff}, {0xff, 0xff, 0xff}};
     if (mark == IdentityList::staff) return {{0x10, 0x80, 0x38}, {0x6a, 0xf0, 0x8c}};
     return {{0x6e, 0x20, 0xff}, {0xb4, 0x78, 0xff}};
 }
-// What a cosmetic does for a player on `mark`'s list (nobody else's does anything) with the
-// style they chose on the Special page. Left standard, a developer's cycles the rainbow, a
-// content creator's goes from deep red through bright red to a reddish pink and back, and a
+// What a cosmetic does for a player with the style they chose on the STYLE tab. A player on no
+// list (no `mark`) has a solid colour or nothing: their standard, gradient and rainbow are
+// nothing, whatever their packets ask for. For one on `mark`'s list: left standard, a
+// developer's cycles the rainbow, a content creator's goes from deep red through bright red to a reddish pink and back, and a
 // homie's from deep gold through bright gold to yellow and back, Centrix's from blue
 // through light blue to white and back, and the staff's from deep green through bright green
 // to a light one and back. The rainbow is a developer's standard, and a style a developer or
@@ -137,7 +143,13 @@ inline ItemAnimation item_animation(std::optional<multiplayer::IdentityList> mar
     using multiplayer::IdentityList;
     using multiplayer::MarkMode;
     ItemAnimation out;
-    if (!mark || style.mode == MarkMode::off) return out;
+    if (style.mode == MarkMode::off) return out;
+    if (!mark) {
+        if (style.mode != MarkMode::solid || multiplayer::rainbow_style(style)) return out;
+        out.on = true;
+        out.stops.fill(material_color(style.from));
+        return out;
+    }
     out.on = true;
     out.rainbow = (style.mode == MarkMode::standard && *mark == IdentityList::developer) ||
                   (multiplayer::rainbow_style(style) && (*mark == IdentityList::developer || *mark == IdentityList::staff));
@@ -171,7 +183,26 @@ inline Color item_color(const ItemAnimation &animation, std::uint64_t millisecon
     return {from[0] + (to[0] - from[0]) * amount, from[1] + (to[1] - from[1]) * amount,
             from[2] + (to[2] - from[2]) * amount};
 }
-// The local player's own styles (the Special page): sent with their appearance, and kept in
+// What a player may pick for one of their marked cosmetics (MarkStyle, and the mark-style
+// command's mode: 0 their list's own, 1 off, 2 a gradient, 3 a solid colour, 4 the rainbow).
+// Anyone: off, or a solid colour for what they wear. A player on a list: their list's own and a
+// gradient too, and the board's parts. The rainbow: the staff's (a developer's own is it
+// already). What others' games show of it is item_animation's to decide, not this.
+inline bool style_offered(std::optional<multiplayer::IdentityList> mark, std::size_t item, unsigned mode) noexcept {
+    if (item >= multiplayer::mark_items || mode > 4) return false;
+    if (!mark) return item < multiplayer::skater_mark_items && (mode == 1 || mode == 3);
+    return mode != 4 || *mark == multiplayer::IdentityList::staff;
+}
+// A player's styles as those of a player on no list: their solid colours for what they wear,
+// and nothing else. For a player whose list Steam has not vouched for yet (session_internal.h:
+// item_styles), whatever list they claim then gives the same as none.
+inline multiplayer::MarkStyles unlisted_styles(multiplayer::MarkStyles styles) noexcept {
+    for (std::size_t i = 0; i < styles.size(); ++i)
+        if (i >= multiplayer::skater_mark_items || styles[i].mode != multiplayer::MarkMode::solid || multiplayer::rainbow_style(styles[i]))
+            styles[i] = {multiplayer::MarkMode::off, {}, {}, 0};
+    return styles;
+}
+// The local player's own styles (the STYLE tab): sent with their appearance, and kept in
 // their profile as text, two hex digits a byte.
 inline std::atomic<multiplayer::MarkStyles> own_styles{};
 inline std::string mark_styles_text(const multiplayer::MarkStyles &styles) {

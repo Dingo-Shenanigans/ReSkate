@@ -234,6 +234,38 @@ bool place(std::uint64_t entity, const Pose& pose, int mode) {
     s.motion(&body, mode);
     return true;
 }
+// The server copy is a live placement entity, whether or not it carries a physics body.
+bool entity_live(std::uint64_t entity) {
+    auto& r = placements_runtime();
+    if (!entity || !r.resolve || !r.valid || !r.query)
+        return false;
+    alignas(16) std::array<std::uint64_t, 2> root{};
+    alignas(16) std::array<std::uint64_t, 3> query{};
+    return r.resolve(root.data(), entity, false) == root.data() && root[0] == entity && r.valid(root.data()) &&
+           r.query(query.data(), entity) == query.data();
+}
+// Moves the server copy (server_tick only): its body too when it has one, its transform always. A copy
+// without a body is still moved, as Dynamic QuickDrop 0.3 moved it; `mode` is written only to a body.
+bool place_copy(std::uint64_t entity, const Pose& pose, int mode) {
+    auto& r = placements_runtime();
+    auto& s = state();
+    alignas(16) std::array<std::uint64_t, 3> query{};
+    std::uintptr_t source{};
+    if (!placement_geometry::finite(pose) || r.query(query.data(), entity) != query.data() ||
+        !memory::peek(s.base + addr::park_editor::transform_notification_source, source))
+        return false;
+    Body body;
+    const bool physical = body_of(entity, body);
+    if (physical) {
+        s.motion(&body, abi::motion_keyframed);
+        alignas(16) std::array<float, 8> rigid{pose[8], pose[9], pose[10], pose[0], pose[4], pose[5], pose[6], pose[7]};
+        move_placed_body(&body, rigid.data());
+    }
+    set_placed_transform(query.data(), pose.data(), source);
+    if (physical)
+        s.motion(&body, placement_motion::body_motion(mode) ? mode : abi::motion_fixed);
+    return true;
+}
 void stop(const Body& body) {
     alignas(16) const std::array<float, 4> zero{};
     state().linear(&body, zero.data());
@@ -693,7 +725,8 @@ void server_tick() noexcept {
             if (queued.motion == placement_motion::unseen)
                 continue;
             Body body;
-            if (!place(queued.server, queued.pose, queued.motion) && body_of(queued.server, body))
+            if (!place_copy(queued.server, queued.pose, queued.motion) && placement_motion::body_motion(queued.motion) &&
+                body_of(queued.server, body))
                 s.motion(&body, queued.motion);
         }
         if (s.leases.empty() || suspended())
@@ -712,19 +745,31 @@ void server_tick() noexcept {
                 // next tick, for a second; the claim on the client replica goes on meanwhile.
                 Body server;
                 const bool found = body_of(lease.server, server);
-                if (found) lease.server_motion = s.motion_type(&server);
-                if (!found ? now > lease.claimed_at + 1000 : !placement_motion::server_mirrorable(lease.server_motion)) {
+                if (found)
+                    lease.server_motion = s.motion_type(&server);
+                else if (now > lease.claimed_at + 1000 && entity_live(lease.server)) {
+                    // Live, but still no body to reach after the second a body is given to turn up (not
+                    // there yet right after a map load, say): it follows by transform (placement_motion.h).
+                    lease.server_motion = placement_motion::bodiless;
+                    if (static unsigned told{}; told < 8) {
+                        ++told;
+                        logging::log(logging::Level::info, logging::Channel::objects,
+                            "Object physics: object {}'s server copy has no physics body ReSkate can reach; it follows by its transform.", id);
+                    }
+                }
+                const bool seen = lease.server_motion != placement_motion::unseen;
+                if (!seen ? now > lease.claimed_at + 1000 : !placement_motion::server_mirrorable(lease.server_motion)) {
                     lease.server_lost = true;
                     logging::log(logging::Level::warning, logging::Channel::objects,
                         "Object physics: object {} let go: {}.", id,
-                        found ? std::format("the game moves its server copy itself (motion {})", lease.server_motion)
-                              : std::string("its server copy could not be found"));
+                        seen ? std::format("the game moves its server copy itself (motion {})", lease.server_motion)
+                             : std::string("its server copy could not be found"));
                     continue;
                 }
-                if (!found)
+                if (!seen)
                     continue;
             }
-            (void)place(lease.server, lease.pose, abi::motion_keyframed);
+            (void)place_copy(lease.server, lease.pose, abi::motion_keyframed);
         }
     } catch (...) {
     }

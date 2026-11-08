@@ -10,6 +10,7 @@
 #if defined(DINGOSDK_DEV_TOOLS)
 #include "Extension/UI/NativeMenu/native_menu_dump.h"
 #endif
+#include "Extension/UI/NativeMenu/native_menu.h"
 #include "Extension/Assets/live_mods.h"
 #include "Engine/Game/Multiplayer/session_tools.h"
 #include <algorithm>
@@ -282,6 +283,18 @@ void register_multiplayer_commands(Commands &registry) {
     };
     registry.add(std::move(dump));
 #endif
+    // The game's menu room behind the Mod Manager tab (native_backdrop.cpp).
+    auto room = argument("off|cas|store|skatepass|skatepedia", Type::text, true);
+    room.complete = [](const Model &, auto) {
+        return std::vector<std::string>{"off", "cas", "store", "skatepass", "skatepedia"};
+    };
+    auto backdrop = action("ui modbackdrop", "Which of the game's menu rooms shows behind the Mod Manager tab "
+                           "(off, cas, store, skatepass, skatepedia; store by default, not saved)",
+                           Group::console, {std::move(room)});
+    backdrop.run = [](const Model &, const Values &values, const Output &out) {
+        out(multiplayer::set_mod_backdrop(values.empty() ? std::string{} : std::get<std::string>(values[0])));
+    };
+    registry.add(std::move(backdrop));
     auto then = argument("reload", Type::text, true);
     auto apply = action("mods apply", "Apply Mods/ and mods.json now; takes effect at the next level load, "
                         "or straight away with 'reload'", Group::console, {std::move(then)});

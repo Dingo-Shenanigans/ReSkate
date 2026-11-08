@@ -31,6 +31,7 @@ add_library(dingosdk_runtime SHARED
     Extension/UI/NativeMenu/native_menu_multiplayer.cpp
     Extension/UI/NativeMenu/ui_sound.cpp
     Extension/UI/NativeMenu/native_hub.cpp
+    Extension/UI/NativeMenu/native_backdrop.cpp
     Extension/UI/NativeMenu/native_menu_data.cpp
     Extension/Multiplayer/Remote/native_skater.cpp
     Extension/Multiplayer/Remote/native_skater_spawn.cpp
@@ -61,6 +62,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Multiplayer/Hud/native_indicators.cpp
     Extension/Multiplayer/Steam/steam_transport.cpp
     Extension/Multiplayer/Steam/steam_social.cpp
+    Extension/Multiplayer/Steam/steam_avatars.cpp
     Extension/Multiplayer/Steam/steam_friend_join.cpp
     Extension/Multiplayer/Steam/steam_lobbies.cpp
     Extension/Multiplayer/Steam/steam_lobby_api.cpp
@@ -108,6 +110,7 @@ add_library(dingosdk_runtime SHARED
     Extension/World/console_commands.cpp
     Extension/World/world_entities.cpp
     Extension/World/owned_bodies.cpp
+    Extension/World/traffic_vehicles.cpp
     Extension/World/character_room.cpp
     Extension/World/guid_table_guard.cpp
     Extension/Skater/bone_cam.cpp
@@ -166,6 +169,8 @@ add_library(dingosdk_runtime SHARED
     Extension/Skater/arm_reach.cpp
     Extension/Skater/carry.cpp
     Extension/UI/hud_corner.cpp
+    Extension/UI/hud_stack.cpp
+    Extension/UI/score_line_hud.cpp
     Extension/Assets/morph_memory_pool.cpp
     Extension/Assets/native_render_resource_pool.cpp
     Extension/World/native_entity_pages.cpp
@@ -237,6 +242,8 @@ add_library(dingosdk_runtime SHARED
     Extension/Customization/local_player_card_runtime.cpp
     Extension/News/local_news_runtime.cpp
     Extension/News/live_news.cpp
+    Extension/News/patch_notes.cpp
+    Extension/News/live_patch_notes.cpp
     Extension/Objects/local_object_runtime.cpp
     Extension/Music/local_music_assets.cpp
     Extension/Music/local_music_safety.cpp

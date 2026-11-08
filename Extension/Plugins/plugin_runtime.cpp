@@ -19,8 +19,10 @@
 #include "Extension/Console/commands.h"
 #include "Extension/Profile/local_profile_runtime.h"
 #include "Extension/Skater/launches.h"
+#include "Extension/Skater/no_bail.h"
 #include "Extension/Skater/score_hud.h"
 #include "Extension/Skater/trick_watch.h"
+#include "Extension/UI/score_line_hud.h"
 #include "Extension/Trainer/trainer.h"
 #include "Extension/Throwdowns/throwdown_kit.h"
 #include <Windows.h>
@@ -246,9 +248,8 @@ std::chrono::steady_clock::time_point started_time{};
 std::string watched_level;
 std::string last_trick_name; // the score HUD's last sequence header
 
-// The score HUD into the trick watch, and what it saw to the plugins. Client thread.
-void read_tricks() {
-    const auto hud = tricks::read_score_hud(base);
+// The score HUD (this tick's reading) into the trick watch, and what it saw to the plugins. Client thread.
+void read_tricks(const std::optional<tricks::ScoreHud>& hud) {
     if (!hud) {
         environment->score_now.reset();
         return;
@@ -259,8 +260,18 @@ void read_tricks() {
     signals.line_score = hud->line_score;
     signals.multiplier = hud->multiplier;
     signals.slam = hud->slam;
-    // A wipeout is physics states 300-399.
-    signals.wipeout = skater.skater && skater.physics_state >= 300 && skater.physics_state < 400;
+    // A fall: a wipeout (physics states 300-399, often for a single tick, so its count too), a ragdoll,
+    // or a runout (a failed landing on foot, which never leaves 504). Stepping off is none of them.
+    const auto watch = watched_physics_state();
+    static std::uint64_t falls = watch.wipeouts + watch.runouts;
+    // The counts go on while no plugin wants tricks (this is not called then): after a gap, what
+    // they counted meanwhile is not a fall now.
+    static auto read_at = std::chrono::steady_clock::time_point{};
+    if (const auto at = std::chrono::steady_clock::now(); at - std::exchange(read_at, at) > std::chrono::milliseconds(500))
+        falls = watch.wipeouts + watch.runouts;
+    const bool fell = watch.wipeouts + watch.runouts != falls;
+    falls = watch.wipeouts + watch.runouts;
+    signals.wipeout = (skater.skater && skater.physics_state >= 300 && skater.physics_state < 400) || fell || (watch.valid && watch.ragdoll);
     const auto event = trick_watch.update(signals);
     environment->score_now = ScoreState{hud->line_score, hud->multiplier, trick_watch.in_trick(), hud->header, hud->descriptor,
                                         tricks::names_manual(*hud), hud->line_timer};
@@ -591,8 +602,15 @@ void on_client_tick() noexcept {
         const double dt = last_tick == std::chrono::steady_clock::time_point{} ? 0
             : std::chrono::duration<double, std::milli>(now - last_tick).count();
         last_tick = now;
-        if (host->wants_tricks()) read_tricks();
-        else environment->score_now.reset();
+        // One reading of the score HUD a tick, for the trick watch and for a plugin's score line,
+        // which yields to skate.'s own line (score_line_hud.h).
+        const bool tricks_wanted = host->wants_tricks();
+        if (tricks_wanted || score_line::wanted()) {
+            const auto hud = tricks::read_score_hud(base);
+            score_line::observe(hud);
+            if (tricks_wanted) read_tricks(hud);
+            else environment->score_now.reset();
+        } else environment->score_now.reset();
         placement_physics::client_tick();
         host->tick(dt);
         if (serving) server_host->tick(dt);

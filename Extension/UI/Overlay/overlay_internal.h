@@ -135,6 +135,10 @@ struct State {
     // keeps it. hub_typing: one of its text boxes has the keyboard, which the overlay takes
     // for that long, as for chat.
     std::atomic<bool> hub_pointer{false}, hub_typing{false};
+    // hub_nav: a plugin's page shows in it (the Mod Manager's PLUGINS tab), drawn with ImGui's own
+    // widgets, so the pad and the arrow keys go to ImGui's navigation for that long: its keys are
+    // kept from one frame to the next, and the pad fed to it, as while the ReSkate menu is open.
+    std::atomic<bool> hub_nav{false};
     // The map download card is asking (map_download_card.cpp): the overlay has the pointer, with
     // its own cursor, so the card's buttons can be clicked whatever is behind it.
     std::atomic<bool> prompt_pointer{false};
@@ -357,6 +361,8 @@ void card_image_uploaded(ImTextureID texture, unsigned serial);
 void card_image_lost();
 // Decodes a PNG to RGBA; with `side`, scaled to a square of that many pixels.
 bool decode_picture(const std::string& png, CardPixels& out, UINT side);
+// Decodes a picture to RGBA no wider than `most_width` pixels, its shape kept (a news post's picture).
+bool decode_banner(const std::string& bytes, CardPixels& out, UINT most_width);
 // The menu's map pictures (menu_map_pictures.cpp), the same way, in the SRV heap's third slot.
 bool take_menu_map_pixels(CardPixels& pixels);
 void menu_map_pixels_uploaded(ImTextureID texture, unsigned serial);
@@ -383,6 +389,13 @@ void plugin_images_lost();
 // by their URL, in the SRV heap's slots from store_icon_first_slot on.
 inline constexpr UINT store_icon_first_slot = screen_look_slot + screen_look_slots, store_icon_slots = 64;
 ImTextureID store_icon(const std::string& url);
+// The same, and whether it is still on its way (`loading`: asked for and neither there nor failed),
+// so a page can show it loading rather than as missing.
+ImTextureID store_icon(const std::string& url, bool& loading);
+// A news post's picture from ReSkate's news repository (live_news.h), the same way and in the same
+// slots, kept on disk in %LOCALAPPDATA%\ReSkate\news\pictures and decoded no wider than 1024
+// pixels, its shape kept: `size` is its size in pixels once it is there.
+ImTextureID news_picture(const std::string& url, ImVec2& size);
 // Then a viewmodel's pictures (viewmodel.h): three for each of its at most eight materials.
 inline constexpr UINT viewmodel_first_slot = store_icon_first_slot + store_icon_slots, viewmodel_slots = 24;
 struct StoreIconUpload {
@@ -393,6 +406,11 @@ struct StoreIconUpload {
 std::optional<StoreIconUpload> take_store_icon();
 void store_icon_uploaded(const std::string& url, int slot, ImTextureID id, bool later = false);
 void store_icons_lost();
+// A picture made here rather than fetched (a Steam friend's avatar, hub_page.cpp), through the same
+// slots under a `key` of its own that is not a URL: `make` fills its pixels on one of the workers, or
+// returns false while it cannot yet, and is asked again a few seconds later while it is still drawn.
+using IconMaker = bool (*)(const std::string& key, CardPixels& pixels);
+ImTextureID made_icon(const std::string& key, IconMaker make);
 // Mods being applied with the pause menu closed (hub_page.cpp): whether its card is up, and drawing it.
 bool mod_apply_card_pending();
 void draw_mod_apply_card();
@@ -430,4 +448,11 @@ bool queue_multiplayer_action(const char* action, const std::string& argument, c
 // The pause menu's Multiplayer page (hub_page.cpp): polled every presented frame.
 bool hub_page_pending();
 void draw_hub_page();
+// ReSkate's front page over the game's own HUB tab (hub_home_page.cpp), drawn by draw_hub_page in
+// `a`..`z`. Returns true when Back closed the pause menu from it.
+bool draw_home_page(ImDrawList* draw, float u, ImVec2 a, ImVec2 z, bool input, const Model& model);
+// What the front page opens on ReSkate's other pages (hub_page.cpp): the Multiplayer page's FRIENDS
+// tab, the Mod Manager's UPDATES.
+void show_friends_tab();
+void show_mod_updates();
 }

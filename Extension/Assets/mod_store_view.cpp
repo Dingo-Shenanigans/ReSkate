@@ -33,8 +33,8 @@ bool before(const ts::Package& a, const ts::Package& b, Sort sort) {
     }
     return ascii_lower(a.title()) < ascii_lower(b.title());
 }
-// The date `days` before "YYYY-MM-DD", in the same form (months taken as 30 days: close enough for
-// what counts as recent).
+} // namespace
+
 std::string days_before(std::string_view today, int days) {
     int year{}, month{}, day{};
     if (!ymd(today, year, month, day)) return {};
@@ -44,7 +44,6 @@ std::string days_before(std::string_view today, int days) {
     std::snprintf(text, sizeof(text), "%04d-%02d-%02d", total / 360, total % 360 / 30 + 1, total % 30 + 1);
     return text;
 }
-} // namespace
 
 const char* sort_label(Sort sort) {
     static constexpr std::array<const char*, sort_count> labels{"MOST DOWNLOADED", "LAST UPDATED", "NEWEST", "TOP RATED", "NAME"};
@@ -69,7 +68,7 @@ std::vector<const ts::Package*> search(std::span<const ts::Package> packages, co
         result.push_back(&package);
     }
     std::stable_sort(result.begin(), result.end(), [&](const ts::Package* a, const ts::Package* b) {
-        if (a->pinned != b->pinned) return a->pinned;
+        if (query.pinned_first && a->pinned != b->pinned) return a->pinned;
         return before(*a, *b, query.sort);
     });
     return result;

@@ -41,6 +41,7 @@ namespace board_material = dingosdk::board_material;
 namespace mods = dingosdk::mods;
 namespace owned_body = dingosdk::owned_body;
 namespace body_query = dingosdk::body_query;
+namespace traffic_vehicles = dingosdk::traffic_vehicles;
 namespace {
 void check(bool value, const std::string& message) { if (!value) throw std::runtime_error(message); }
 
@@ -568,6 +569,22 @@ struct FakeGame final : Game {
         calls.push_back(std::format("corner {} {}", plugin, hidden ? "on" : "off"));
         return {};
     }
+    // A plugin's score line: refused as told (score_refusal), else one plugin's line at a time on its
+    // 500 ms lease, as Extension/UI/score_line_hud.cpp keeps it (by `clock`, the test's time).
+    std::string score_line(std::string_view plugin, const std::optional<ScoreLine>& line) override {
+        if (!line) calls.push_back(std::format("score_line {} clear", plugin));
+        else {
+            std::string tricks;
+            for (const auto& trick : line->tricks) tricks += (tricks.empty() ? "" : "|") + trick;
+            calls.push_back(std::format("score_line {} tricks={} points={} line={} x{:.2f} timer={:.2f} closed={}", plugin, tricks, line->points,
+                line->line, line->multiplier, line->timer, line->closed ? 1 : 0));
+            if (!score_refusal.empty()) return score_refusal;
+        }
+        return score_lines.ask(plugin, line, clock ? *clock : 0);
+    }
+    dingosdk::score_line::LineOwner score_lines;
+    std::string score_refusal;
+    const double* clock{};
     std::string game_speed(std::string_view plugin, float speed) override {
         calls.push_back(std::format("slow {} {:.2f}", plugin, speed));
         return {};
@@ -781,6 +798,12 @@ struct FakeGame final : Game {
     // reskate.world.probe's ray, as told; the bounded adapter below counts its native casts.
     WorldProbe probe_result;
     unsigned probes{}, world_picks{};
+    std::uint64_t vehicle_pick_owner{};
+    std::uint64_t next_vehicle{};
+    unsigned vehicle_takes{}, vehicle_releases{}, vehicle_release_alls{};
+    std::string vehicle_take_refusal;
+    std::map<std::uint64_t, traffic_vehicles::Sample> vehicles;
+    std::map<std::uint64_t, std::uint64_t> vehicle_owners;
     Vec3 probe_from{}, probe_to{};
     WorldProbe world_probe(const Vec3& from, const Vec3& to) {
         ++probes;
@@ -802,7 +825,42 @@ struct FakeGame final : Game {
         ++world_picks;
         if (from[1] > 50) return std::nullopt; // the sky: nothing met
         WorldPick pick{{1, 0, 2}, true, std::array<float, 16>{0, 0, -1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 3, 1}, "World/Props/TrashCan_01"};
+        pick.vehicle_owner = vehicle_pick_owner;
         return pick;
+    }
+    std::string vehicle_take(std::uint64_t owner, std::uint64_t entity, std::uint64_t, std::uint64_t& handle) override {
+        ++vehicle_takes;
+        if (!vehicle_take_refusal.empty()) return vehicle_take_refusal;
+        if (!entity) return "not a vehicle";
+        unsigned active{};
+        for (const auto& [id, sample] : vehicles) if (vehicle_owners[id] == owner &&
+            (sample.state == traffic_vehicles::State::finding || sample.state == traffic_vehicles::State::held)) ++active;
+        if (active >= 4) return "too many vehicles";
+        handle = ++next_vehicle;
+        vehicle_owners[handle] = owner;
+        vehicles[handle] = {traffic_vehicles::State::finding, {{1, 0, 2}, {0, 0, 0, 1}}, {}};
+        return {};
+    }
+    traffic_vehicles::Sample vehicle_read(std::uint64_t owner, std::uint64_t handle) override {
+        if (vehicle_owners[handle] != owner) return {};
+        auto sample = vehicles.at(handle);
+        if (sample.state == traffic_vehicles::State::finding) vehicles[handle].state = traffic_vehicles::State::held;
+        return sample;
+    }
+    std::string vehicle_set_pose(std::uint64_t owner, std::uint64_t handle, const traffic_vehicles::Pose& pose) override {
+        if (vehicle_owners[handle] != owner || vehicles[handle].state != traffic_vehicles::State::held) return "vehicle is not held";
+        vehicles[handle].pose = pose;
+        return {};
+    }
+    bool vehicle_release(std::uint64_t owner, std::uint64_t handle) override {
+        if (vehicle_owners[handle] != owner) return false;
+        ++vehicle_releases;
+        vehicles[handle].state = traffic_vehicles::State::released;
+        return true;
+    }
+    void vehicle_release_all(std::uint64_t owner) override {
+        ++vehicle_release_alls;
+        for (auto& [id, sample] : vehicles) if (vehicle_owners[id] == owner) sample.state = traffic_vehicles::State::released;
     }
     void entity_clear(std::string_view plugin) override {
         std::erase_if(entities, [&](const auto& e) { return e.first.first == plugin; });
@@ -950,6 +1008,9 @@ struct FakeGame final : Game {
     std::string hold_gameplay_option(std::string_view, std::string_view name, std::optional<bool>) override { return name == "example" ? "" : "unknown option"; }
     std::optional<RailTarget> rail_target() override { return RailTarget{true, true, {0, 0, 1}}; }
     std::string select_rail_target(std::string_view, std::optional<int>, bool) override { return {}; }
+    std::optional<FlipState> flip_state_result;
+    unsigned flip_state_reads{};
+    std::optional<FlipState> flip_state() override { ++flip_state_reads; return flip_state_result; }
     std::optional<SkaterFrame> skater_frame() override { return SkaterFrame{{1, 2, 3}, {0, 0, 1}, false, true, false, false, 42}; }
     std::vector<AnimationValue> animation_values() override { return {{"Animation/Dingo/Bool.Anim.DoingTrick", 1, true, false}, {"Animation/Dingo/Float.Physics.Example", 0.5, false, true}}; }
     std::string set_animation_value(std::string_view name, double) override { return name == "Animation/Dingo/Float.Physics.Example" ? "" : "not a live numeric physics output"; }
@@ -1158,6 +1219,7 @@ struct FakeGame final : Game {
     std::vector<std::pair<std::string, std::string>> take_presses() override { return std::exchange(presses, {}); }
     void release(std::string_view plugin) override {
         released.emplace_back(plugin);
+        score_lines.release(plugin);
         entity_clear(plugin);
         effects_clear(plugin);
         viewmodel_unload(plugin);
@@ -1392,6 +1454,79 @@ Candidate package(const std::string& id, const std::map<std::string, std::string
 }
 Candidate script(const std::string& id, const std::string& main, const std::string& permissions = "") {
     return package(id, {{manifest_file, manifest(permissions)}, {"plugin/main.lua", main}});
+}
+
+void running(const Host& host, std::string_view id, const TestEnvironment& environment);
+
+void traffic_vehicles_are_permissioned_bounded_and_released() {
+    using traffic_vehicles::Quaternion;
+    Quaternion zero{};
+    check(!traffic_vehicles::normalize(zero), "a zero quaternion was accepted");
+    Quaternion double_identity{0, 0, 0, 2};
+    check(traffic_vehicles::normalize(double_identity) && double_identity[3] == 1,
+          "a finite quaternion was not normalized");
+    check(traffic_vehicles::parent_candidate(11, 12, {0, 0, 0}, {0, 0, 9}, 1) &&
+          !traffic_vehicles::parent_candidate(11, 12, {0, 0, 0}, {0, 0, 11}, 1) &&
+          !traffic_vehicles::parent_candidate(11, 12, {0, 0, 0}, {0, 0, 1}, 4),
+          "parent climb exceeded its distance or depth bounds");
+    check(traffic_vehicles::agent_candidate(0x310000000100, 0x930200000100, {0, 0, 0}, {0.2f, 0, 0}) &&
+          !traffic_vehicles::agent_candidate(0x310000000100, 0x310000000200, {0, 0, 0}, {0.2f, 0, 0}) &&
+          !traffic_vehicles::agent_candidate(0x310000000100, 0x930200000100, {0, 0, 0}, {2, 0, 0}),
+          "agent choice ignored its id range or proximity");
+
+    TestEnvironment denied_environment; Host denied(denied_environment, Side::client);
+    denied_environment.fake.vehicle_pick_owner = 0x310000000100;
+    denied.apply({script("vehicle-denied", R"(
+        local v=vector.create
+        local ok,why=pcall(reskate.world.vehicles.take,v(0,0,0),v(0,0,2))
+        assert(not ok and why:find('world.vehicles',1,true),tostring(why))
+    )")});
+    running(denied, "vehicle-denied", denied_environment);
+    check(!denied_environment.fake.vehicle_takes && !denied_environment.fake.world_picks,
+          "a plugin without world.vehicles reached the world query");
+
+    TestEnvironment environment; Host host(environment, Side::client);
+    auto& game = environment.fake;
+    game.vehicle_pick_owner = 0x310000000100;
+    host.apply({script("vehicle-holder", R"(
+        local v=vector.create
+        local V=reskate.world.vehicles
+        assert(not pcall(V.take,v(0,0,0),v(1001,0,0)),"long ray")
+        assert(not pcall(V.take,v(math.huge,0,0),v(0,0,0)),"nonfinite ray")
+        local none,why=V.take(v(0,51,0),v(0,52,0))
+        assert(none==nil and why=="nothing hit",tostring(why))
+        local car=assert(V.take(v(0,0,0),v(0,0,2)))
+        assert(car:state()=="finding" and car:state()=="held")
+        local position,rotation=car:pose()
+        assert(position and rotation[4]==1)
+        assert(not pcall(car.set_pose,car,v(1,2,3),{0,0,0,0}),"zero rotation")
+        assert(not pcall(car.set_pose,car,v(1,2,3),{0,0,0,math.huge}),"nonfinite rotation")
+        assert(car:set_pose(v(4,5,6),{0,0,0,2}))
+        position,rotation=car:pose()
+        assert(position.x==4 and rotation[4]==1,"pose reached game normalized")
+        assert(car:release() and car:state()=="released")
+        for i=1,4 do assert(V.take(v(0,0,0),v(0,0,2))) end
+        none,why=V.take(v(0,0,0),v(0,0,2))
+        assert(none==nil and why=="too many vehicles",tostring(why))
+    )", R"("world.vehicles")")});
+    running(host, "vehicle-holder", environment);
+    check(game.vehicle_takes == 6 && game.vehicle_releases == 1 && game.vehicles.size() == 5 &&
+          game.vehicles.at(1).pose.position == Vec3{4, 5, 6},
+          "vehicle pose, release or four-vehicle limit did not reach the fake game");
+    host.apply({});
+    check(game.vehicle_release_alls >= 1 && std::ranges::all_of(game.vehicles, [](const auto& item) {
+              return item.second.state == traffic_vehicles::State::released;
+          }), "unloading the plugin left vehicles held");
+
+    TestEnvironment failed_environment; Host failed(failed_environment, Side::client);
+    failed_environment.fake.vehicle_pick_owner = 0x310000000100;
+    failed_environment.fake.vehicle_take_refusal = "layout differs";
+    failed.apply({script("vehicle-refused", R"(
+        local v=vector.create
+        local car,why=reskate.world.vehicles.take(v(0,0,0),v(0,0,2))
+        assert(car==nil and why=="layout differs",tostring(why))
+    )", R"("world.vehicles")")});
+    running(failed, "vehicle-refused", failed_environment);
 }
 
 Status status_of(const Host& host, std::string_view id) {
@@ -1864,6 +1999,9 @@ void plugin_approval_follows_the_plugins_own_files() {
         if (name == "events.physics.geometry")
             check(requested_prompt.find("Follow detailed skater physics, including geometry, each step") != std::string::npos,
                   "The geometry permission says it adds detailed physics geometry");
+        if (name == "hud.score")
+            check(requested_prompt.find("its own tricks and points in skate.'s score HUD (they never count)") != std::string::npos,
+                  "The score HUD permission says what it shows never counts");
     }
 
     // Every requested permission group contributes a capability summary, while the card remains bounded.
@@ -3258,10 +3396,147 @@ void a_permission_must_be_declared() {
         assert(not ok and err:find("needs the \"input\" permission"), err)
         ok, err = pcall(reskate.input.joystick, 1)
         assert(not ok and err:find("needs the \"input\" permission"), err)
+        ok, err = pcall(reskate.hud.score_line, {points = 5})
+        assert(not ok and err:find("needs the \"hud.score\" permission"), err)
+        ok, err = pcall(reskate.hud.score_line, nil)
+        assert(not ok and err:find("needs the \"hud.score\" permission"), err)
         reskate.console.print("never")
     )")});
     stopped(host, "bare", "raised an error");
     check(environment.logged("needs the \"console\" permission"), "The error names the permission\n" + environment.all());
+}
+
+// ---- reskate.hud.score_line: a plugin's own line in skate.'s score HUD, display only.
+// "hud" alone does not give it: hud.score is a permission of its own.
+void a_score_line_needs_its_own_permission() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({script("corner", R"(
+        assert(reskate.hud.corner(false))
+        local ok, err = pcall(reskate.hud.score_line, {points = 5})
+        assert(not ok and err:find("needs the \"hud.score\" permission"), err)
+        reskate.log("hud alone is refused")
+    )", R"("hud")")});
+    running(host, "corner", environment);
+    check(environment.logged("[corner] hud alone is refused") && !environment.fake.called("score_line"),
+          "A plugin with only \"hud\" cannot show a score line\n" + environment.all());
+}
+
+// What a plugin passes is checked before the game sees it: only the keys there are, their types and
+// ranges, and no name the HUD could not show.
+void a_score_line_is_checked_before_the_game_sees_it() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    game.clock = &environment.now;
+    Host host(environment, Side::client);
+    host.apply({script("sample-line", R"(
+        assert(reskate.hud.score_line({tricks = {"First action", "Second action"}, points = 549.9, line = 4200.7, multiplier = 2.4, timer = 0.5}))
+        assert(reskate.hud.score_line({}), "every key has a default")
+        assert(reskate.hud.score_line({line = 937, closed = true}))
+        assert(reskate.hud.score_line({tricks = {"B\195\188r", string.rep("x", 63), "3", "4", "5"}, points = 999999999, multiplier = 99, timer = 0}))
+        local function refused(line, part)
+            local ok, err = pcall(reskate.hud.score_line, line)
+            assert(not ok and err:find(part, 1, true), tostring(err))
+        end
+        refused(5, "takes a table")
+        refused("First action", "takes a table")
+        refused({banner = "Landed"}, "no key \"banner\"")
+        refused({[1] = "First action"}, "a line's keys are")
+        refused({tricks = "First action"}, "tricks is a list")
+        refused({tricks = {a = "First action"}}, "tricks is a list")
+        refused({tricks = {"A", nil, "C"}}, "tricks is a list")
+        refused({tricks = {1}}, "tricks is a list")
+        refused({tricks = {"1", "2", "3", "4", "5", "6"}}, "at most 5 tricks")
+        refused({tricks = {""}}, "1 to 63 bytes")
+        refused({tricks = {string.rep("x", 64)}}, "1 to 63 bytes")
+        refused({tricks = {"First\naction"}}, "no control characters")
+        refused({tricks = {"First\127action"}}, "no control characters")
+        refused({tricks = {"First\255action"}}, "UTF-8")
+        refused({points = 0 / 0}, "points is 0 to 999999999")
+        refused({points = -1}, "points is 0 to 999999999")
+        refused({points = 1e9}, "points is 0 to 999999999")
+        refused({points = math.huge}, "points is 0 to 999999999")
+        refused({points = "5"}, "points is a number")
+        refused({line = -0.5}, "line is 0 to 999999999")
+        refused({multiplier = 0.5}, "multiplier is 1 to 99")
+        refused({multiplier = 100}, "multiplier is 1 to 99")
+        refused({timer = -0.1}, "timer is 0 to 1")
+        refused({timer = 1.1}, "timer is 0 to 1")
+        refused({closed = 1}, "closed is true or false")
+        assert(reskate.hud.score_line(nil))
+        assert(reskate.hud.score_line())
+        reskate.log("checked")
+    )", R"("hud.score")")});
+    running(host, "sample-line", environment);
+    check(environment.logged("[sample-line] checked"), "The plugin's lines were taken or refused as they should be\n" + environment.all());
+    check(game.called("score_line sample-line tricks=First action|Second action points=549 line=4200 x2.40 timer=0.50 closed=0"),
+          "A line reaches the game, its points and total floored");
+    check(game.called("score_line sample-line tricks= points=0 line=0 x1.00 timer=1.00 closed=0"), "and an empty one with every default");
+    check(game.called("score_line sample-line tricks= points=0 line=937 x1.00 timer=1.00 closed=1"), "and a closed one");
+    check(game.called("points=999999999 line=0 x99.00 timer=0.00 closed=0"), "and one at the top of each range");
+    const auto lines = std::count_if(game.calls.begin(), game.calls.end(), [](const auto& c) { return c.starts_with("score_line "); });
+    check(lines == 6 && game.called("score_line sample-line clear"), "No refused line reached the game, and nil clears it");
+}
+
+// A refusal of the game's comes back to the plugin as false and why, and the plugin goes on.
+void a_score_line_refusal_comes_back_to_the_plugin() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    game.clock = &environment.now;
+    game.score_refusal = "never during a throwdown or match";
+    Host host(environment, Side::client);
+    host.apply({script("sample-line", R"(
+        local ok, why = reskate.hud.score_line({tricks = {"First action"}, points = 5})
+        assert(ok == false and why == "never during a throwdown or match", tostring(why))
+        assert(reskate.hud.score_line(nil), "clearing is never refused")
+        reskate.log("told why")
+    )", R"("hud.score")")});
+    running(host, "sample-line", environment);
+    check(environment.logged("[sample-line] told why"), "The refusal reached the plugin\n" + environment.all());
+}
+
+// One plugin's line at a time: another is told whose is up until that one's lease of 500 ms after its
+// last call runs out, or it stops.
+void one_plugins_score_line_shows_at_a_time() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    game.clock = &environment.now;
+    Host host(environment, Side::client);
+    const auto first = script("first", R"(
+        reskate.console.command("first line", "x", function()
+            local ok, why = reskate.hud.score_line({points = 1})
+            reskate.log("first " .. tostring(ok) .. " " .. tostring(why))
+        end)
+    )", R"("hud.score", "console")");
+    host.apply({first, script("second", R"(
+        reskate.console.command("second line", "x", function()
+            local ok, why = reskate.hud.score_line({points = 2})
+            reskate.log("second " .. tostring(ok) .. " " .. tostring(why))
+        end)
+    )", R"("hud.score", "console")")});
+    running(host, "first", environment);
+    running(host, "second", environment);
+    host.run_console("first line");
+    host.run_console("second line");
+    check(environment.logged("[first] first true nil") && environment.logged("[second] second false first shows its line there"),
+          "The second plugin is told whose line is up\n" + environment.all());
+    environment.logs.clear();
+    environment.now += 500;
+    host.run_console("second line");
+    check(environment.logged("[second] second false first shows its line there"), "The first's line holds 500 ms after its last call");
+    environment.logs.clear();
+    environment.now += 1;
+    host.run_console("second line");
+    check(environment.logged("[second] second true nil"), "and then the second may show its own\n" + environment.all());
+    environment.logs.clear();
+    host.run_console("first line");
+    check(environment.logged("[first] first false second shows its line there"), "The second's line now holds");
+    // The second stopping gives its line up at once.
+    environment.logs.clear();
+    host.apply({first});
+    host.run_console("first line");
+    check(std::find(game.released.begin(), game.released.end(), "second") != game.released.end() && environment.logged("[first] first true nil"),
+          "A plugin that stops lets its line go\n" + environment.all());
 }
 
 void command_names_are_checked() {
@@ -4203,6 +4478,51 @@ void animation_values_require_occupied_typed_local_pages() {
     check(av::read(base, address(core)).empty(), "wrong descriptor types are refused");
 }
 #endif
+
+void plugins_read_flip_state() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({script("missing_flip", R"(
+        assert(reskate.skater.flip_state() == nil, "no local state is not a false underflip")
+    )", R"("skater.read")")});
+    running(host, "missing_flip", environment);
+
+    environment.fake.flip_state_result = Game::FlipState{2, false, true, std::nullopt};
+    host.apply({script("known_flip", R"(
+        local f = reskate.skater.flip_state()
+        assert(f.trick == 2 and f.underflip_anim == false and f.underflip_state == true)
+        assert(f.underflip_window == nil, "an unavailable flag is not false")
+        local count = 0
+        for key in pairs(f) do
+            assert(key == "trick" or key == "underflip_anim" or key == "underflip_state")
+            count = count + 1
+        end
+        assert(count == 3, "only public values, never native addresses")
+    )", R"("skater.read")")});
+    running(host, "known_flip", environment);
+
+    environment.fake.flip_state_result = Game::FlipState{0, true, false, false};
+    host.apply({script("idle_flip", R"(
+        local f = reskate.skater.flip_state()
+        assert(f.trick == 0 and f.underflip_anim == true)
+        assert(f.underflip_state == false and f.underflip_window == false)
+    )", R"("skater.read")")});
+    running(host, "idle_flip", environment);
+
+    environment.fake.flip_state_result = Game::FlipState{2, std::nullopt, std::nullopt, std::nullopt};
+    host.apply({script("unknown_flags", R"(
+        local f = reskate.skater.flip_state()
+        assert(f.trick == 2 and f.underflip_anim == nil and f.underflip_state == nil and f.underflip_window == nil)
+    )", R"("skater.read")")});
+    running(host, "unknown_flags", environment);
+
+    const auto reads = environment.fake.flip_state_reads;
+    host.apply({script("denied_flip", R"(
+        assert(not pcall(reskate.skater.flip_state), "skater.read is required")
+    )")});
+    running(host, "denied_flip", environment);
+    check(environment.fake.flip_state_reads == reads, "permission denial happens before reading native state");
+}
 
 void plugins_read_frames_and_hold_gameplay_options() {
     TestEnvironment environment;
@@ -6764,6 +7084,7 @@ int main() {
         run(plugins_publish_only_their_own_ui_values);
         run(plugin_approval_follows_the_plugins_own_files);
         run(an_approved_plugin_runs_only_the_source_snapshot_it_was_shown);
+        run(traffic_vehicles_are_permissioned_bounded_and_released);
         run(measured_contact_host_fixture_v1);
         run(plugins_own_typed_bodies_and_acknowledge_measured_results);
         run(plugins_pipeline_native_steps_and_select_owned_receipts);
@@ -6790,6 +7111,10 @@ int main() {
         run(object_contact_queries_are_owned_and_budgeted);
         run(a_plugin_loads_ticks_runs_its_commands_and_unloads);
         run(a_permission_must_be_declared);
+        run(a_score_line_needs_its_own_permission);
+        run(a_score_line_is_checked_before_the_game_sees_it);
+        run(a_score_line_refusal_comes_back_to_the_plugin);
+        run(one_plugins_score_line_shows_at_a_time);
         run(plugins_choose_stand_ins);
         run(plugins_read_and_hide_other_players_items);
         run(plugins_add_chat_commands);
@@ -6814,6 +7139,7 @@ int main() {
         run(plugins_have_what_a_prop_hunt_needs);
         run(plugins_write_normalized_controllers);
         run(controller_reports_preserve_non_controls);
+        run(plugins_read_flip_state);
         run(plugins_read_frames_and_hold_gameplay_options);
 #ifdef _WIN32
         run(animation_values_require_occupied_typed_local_pages);

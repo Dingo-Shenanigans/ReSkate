@@ -329,6 +329,7 @@ void Plugin::close_if_stopped() {
 }
 
 void Plugin::close() {
+    services_.game().vehicle_release_all(instance_);
     services_.game().body_release_all(instance_);
     save_storage();
     shapes_.clear();

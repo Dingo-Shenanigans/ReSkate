@@ -373,6 +373,62 @@ void cosmetics_codec() {
           "A player's cosmetic styles were lost");
     check(!valid_mark_style({static_cast<MarkMode>(4), {}, {}, 0}) && !valid_mark_style({MarkMode::standard, {}, {}, 3}),
           "A cosmetic style no menu can make was accepted");
+    // A player on no list sends their solid colours like anyone's, and they arrive as sent.
+    auto plain = p;
+    for (std::size_t i = 0; i < skater_mark_items; ++i) plain.appearance.marks[i] = {MarkMode::solid, {200, 10, static_cast<std::uint8_t>(i)}, {}, 0};
+    const auto solids = decode(encode(plain));
+    check(solids && solids->appearance == plain.appearance && solids->appearance.tag == usual_tag, "A player's solid colours were lost");
+    // Which list's tag a player shows. No choice is none on arrival, as from an older build.
+    check(kept && kept->appearance.tag == usual_tag && p.appearance.tag == usual_tag, "A tag choice came from nowhere");
+    for (const auto tag : {static_cast<std::uint8_t>(IdentityList::homie), static_cast<std::uint8_t>(IdentityList::staff), std::uint8_t{0x40}}) {
+        auto chosen = styled;
+        chosen.appearance.tag = tag;
+        const auto told = decode(encode(chosen));
+        check(told && told->appearance == chosen.appearance && told->appearance.tag == tag, "A player's tag choice was lost");
+    }
+    {
+        // It rides in the styles, which every build reads: an older one finds styles it accepts
+        // and colours as before, and only the second colour of one that ignores it differs.
+        auto chosen = styled;
+        chosen.appearance.tag = static_cast<std::uint8_t>(IdentityList::content_creator);
+        const auto wire = carry_tag(chosen.appearance.marks, chosen.appearance.tag);
+        std::size_t differ = 0;
+        for (std::size_t i = 0; i < wire.size(); ++i) {
+            const auto &sent = wire[i], &own = chosen.appearance.marks[i];
+            check(valid_mark_style(sent) && sent.mode == own.mode && sent.from == own.from && sent.speed == own.speed &&
+                      rainbow_style(sent) == rainbow_style(own) && (sent.mode != MarkMode::gradient || sent.to == own.to),
+                  "Carrying a tag choice changed how a style is shown");
+            differ += sent.to != own.to;
+        }
+        check(differ == 1 && wire.back().to == std::array<std::uint8_t, 3>{tag_marker[0], tag_marker[1], chosen.appearance.tag},
+              "A tag choice did not ride in the last style that leaves its second colour unused");
+        // The same packet as before but for that colour: the same size, and no other field.
+        auto plain_copy = chosen;
+        plain_copy.appearance.tag = usual_tag;
+        const auto with = encode(chosen), without = encode(plain_copy);
+        std::size_t bytes_differ = 0;
+        for (std::size_t i = 0; i < with.size() && with.size() == without.size(); ++i) bytes_differ += with[i] != without[i];
+        check(with.size() == without.size() && bytes_differ <= 3, "Carrying a tag choice changed the packet beyond one colour");
+        // With every style using its second colour, it is left out and the usual tag shows.
+        auto full = chosen;
+        full.appearance.marks.fill({MarkMode::gradient, {1, 2, 3}, {tag_marker[0], tag_marker[1], 5}, 1});
+        const auto crowded = decode(encode(full));
+        check(crowded && crowded->appearance.tag == usual_tag && crowded->appearance.marks == full.appearance.marks,
+              "A tag choice with no room for it changed a gradient, or was read from one");
+        // A colour of no choice that happens to look like one is not read as one.
+        auto lookalike = p;
+        lookalike.appearance.marks[3] = {MarkMode::standard, {}, {tag_marker[0], tag_marker[1], 1}, 0};
+        const auto plainly = decode(encode(lookalike));
+        check(plainly && plainly->appearance.tag == usual_tag && plainly->appearance.marks[3].mode == MarkMode::standard,
+              "A colour that looked like a tag choice was read as one");
+        // A rainbow style is never the carrier: it stays the rainbow.
+        auto rainbow = p;
+        rainbow.appearance.marks.fill({MarkMode::solid, {1, 2, 3}, rainbow_marker, 0});
+        rainbow.appearance.tag = static_cast<std::uint8_t>(IdentityList::developer);
+        const auto kept_rainbow = decode(encode(rainbow));
+        check(kept_rainbow && kept_rainbow->appearance.tag == usual_tag && rainbow_style(kept_rainbow->appearance.marks.back()),
+              "A tag choice took the rainbow's place");
+    }
     for (std::size_t n = 0; n < bytes.size(); ++n)
         check(!decode(std::span(bytes).first(n)), "Truncated cosmetics accepted");
     auto corrupt = bytes;

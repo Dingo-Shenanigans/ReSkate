@@ -436,9 +436,9 @@ inline bool dedicated_host(const Session &s) { return s.mode == Mode::join && ga
 inline bool steam_vouched(const Session &s, const Peer &peer) {
     return s.mode != Mode::join || peer.member.id == s.host_id || peer.direct_ready || official_server(s.host_id);
 }
-// Whether a player shows the tag the backend gives them, and whether the items that come with
-// it animate: not until their appearance has arrived, and not when it says they turned that
-// off (Appearance::hide_tag, Appearance::hide_items).
+// Whether a player shows the tag the backend gives them, and whether their items are coloured:
+// not until their appearance has arrived, and not when it says they turned that off
+// (Appearance::hide_tag, Appearance::hide_items).
 inline bool shows_tag(const Peer &peer) {
     const auto &look = peer.appearance.value();
     return look && !look->hide_tag;
@@ -452,6 +452,18 @@ inline const MarkStyles &mark_styles(const Peer &peer) {
     static const MarkStyles standard{};
     const auto &look = peer.appearance.value();
     return look ? look->marks : standard;
+}
+// What their items are coloured by here. A solid colour rests on nobody's word, so it shows
+// whoever they are; what comes with a list waits until Steam vouches that they are who the list
+// has (steam_vouched).
+inline MarkStyles item_styles(const Session &s, const Peer &peer) {
+    return steam_vouched(s, peer) ? mark_styles(peer) : developer_hoodie_detail::unlisted_styles(mark_styles(peer));
+}
+// Which of their lists' tags they chose to show (Appearance::tag): usual_tag until their
+// appearance says.
+inline std::uint8_t tag_choice(const Peer &peer) {
+    const auto &look = peer.appearance.value();
+    return look ? look->tag : usual_tag;
 }
 Peer *find_peer(Session &s, std::uint64_t id);
 unsigned player_count(const Session &s);
