@@ -645,7 +645,13 @@ void tick_page(std::uintptr_t base, bool loading) noexcept {
             }
             if (!active.model.handle) s.next_scan = now + 250;
         }
-        if (!active.model.handle) return;
+        if (!active.model.handle) {
+            // No pause menu (it closed for an apply, or the level was loaded again): the menu room
+            // ReSkate showed behind the Mod Manager is put back now. Left on, it hid the world behind
+            // a blank screen until the pause menu next opened.
+            if (!s.slot) update_mod_backdrop(context, false, false);
+            return;
+        }
         trim_store(context, active.model);
         if (!s.slot) {
             // A tab asked for from the front page (show_native_menu_page). The game often puts its own
