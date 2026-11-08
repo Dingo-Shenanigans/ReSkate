@@ -1,4 +1,5 @@
 #include "plugin_api.h"
+#include "Extension/Localization/text_overrides.h"
 #include "lua.h"
 #include "lualib.h"
 #include <algorithm>
@@ -236,6 +237,30 @@ int failed(lua_State* L, std::string_view why) {
     lua_pushnil(L);
     lua_pushlstring(L, why.data(), why.size());
     return 2;
+}
+const char* text_problem(std::string_view text) {
+    std::size_t units = 0;
+    for (std::size_t at = 0; at < text.size();) {
+        const auto byte = [&](std::size_t i) { return static_cast<unsigned char>(text[i]); };
+        const unsigned lead = byte(at);
+        std::size_t size = 1;
+        char32_t c = lead;
+        if (lead >= 0xc2 && lead <= 0xdf) { size = 2; c = lead & 0x1f; }
+        else if (lead >= 0xe0 && lead <= 0xef) { size = 3; c = lead & 0x0f; }
+        else if (lead >= 0xf0 && lead <= 0xf4) { size = 4; c = lead & 0x07; }
+        else if (lead >= 0x80) return "a text must be UTF-8";
+        if (!lead) return "a text cannot hold a NUL character";
+        if (at + size > text.size()) return "a text must be UTF-8";
+        for (std::size_t i = 1; i < size; ++i) {
+            if ((byte(at + i) & 0xc0) != 0x80) return "a text must be UTF-8";
+            c = c << 6 | (byte(at + i) & 0x3f);
+        }
+        if ((size == 3 && (c < 0x800 || (c >= 0xd800 && c <= 0xdfff))) || (size == 4 && (c < 0x10000 || c > 0x10ffff)))
+            return "a text must be UTF-8";
+        units += size == 4 ? 2 : 1;
+        at += size;
+    }
+    return units > text_overrides::most_units ? "a text is at most 511 characters (UTF-16 units)" : nullptr;
 }
 
 std::string checked_text(lua_State* L, int index, std::size_t most, const char* what) {

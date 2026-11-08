@@ -32,6 +32,7 @@ Feed& feed() {
     static auto* value = new Feed;
     return *value;
 }
+ui::OwnUiEntries<most_owned> owned_entries;
 // Readable text at `address`: ASCII, or UTF-16 with every other byte zero; empty when not.
 std::string text_at(std::uintptr_t address) noexcept {
     std::array<unsigned char, 96> raw{};
@@ -93,6 +94,7 @@ void ask(const std::string& owner, bool on) {
     }
 }
 bool wanted() noexcept { return feed().on.load(std::memory_order_acquire); }
+void own(const std::vector<std::uint64_t>& entries) noexcept { owned_entries.set(entries); }
 std::vector<Note> take() {
     auto& f = feed();
     std::lock_guard lock(f.mutex);
@@ -107,6 +109,7 @@ void tap(std::uintptr_t manager, std::uint64_t handle, std::uintptr_t type, cons
         member != trick_board_spin_member && member != trick_stance_member && member != trick_late_member && member != trick_darkflip_member &&
         member != trick_darkcatch_member)
         return;
+    if (owned_entries.contains(handle >> 16)) return;
     static const auto string_type = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)) + addr::engine::string_type; // the UI model's string type
     if (member == trick_name_member && type != string_type) return;
     try {

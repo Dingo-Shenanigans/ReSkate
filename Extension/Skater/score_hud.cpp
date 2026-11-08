@@ -5,7 +5,10 @@
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/engine.h"
 #include "Engine/Game/Build/20260929/hud_corner.h"
+#include "Engine/Game/Build/20260929/score_hud.h"
 #include "Extension/UI/NativeMenu/native_menu_data.h"
+#include "Extension/UI/score_line.h"
+#include "Extension/UI/score_line_hud.h"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -28,8 +31,8 @@ struct Watched {
     const char* name;
     std::uint32_t hash;
 };
-enum : std::size_t { line_score, is_slam, multiplier, action_active, sequence_header, sequence_descriptor, sequence_state, line_timer };
-constexpr std::array<Watched, 8> watched{{
+enum : std::size_t { line_score, is_slam, multiplier, action_active, sequence_header, sequence_descriptor, sequence_state, line_timer, line_shown };
+constexpr std::array<Watched, 9> watched{{
     {"LineScore", 1086322279u},
     {"IsSlam", 2943226809u},
     {"Multiplier", 1782700230u},
@@ -39,6 +42,7 @@ constexpr std::array<Watched, 8> watched{{
     {"SequenceDescriptor", 3894822438u},
     {"SequenceState", 2134799591u},
     {"LineTimer", 3181226295u}, // 0xbd9da937, found by a ui dump mid-line
+    {"LINE", addr::score_hud::line_shown}, // the widget keeps this through its LINE summary
 }};
 constexpr std::size_t value_bytes = 16; // read per field
 
@@ -121,14 +125,15 @@ bool bind_model(Hud& h, const menu_data::Context& context) {
         h.manager = context.manager;
         h.model = {};
     }
-    if (h.model.handle && context.type_of(h.model.handle) == h.model.type) return true;
+    if (h.model.handle && h.model.handle != score_line::own_model() && context.type_of(h.model.handle) == h.model.type) return true;
     h.model = {};
     const auto now = Clock::now();
     if (now < h.next_look) return false;
     h.next_look = now + std::chrono::seconds(1);
     const auto roots = context.roots({addr::hud_corner::score_view_schema});
-    if (roots.empty()) return false;
-    const auto model = roots.front().model;
+    const auto* root = score_line::pick_game_root(roots, score_line::own_model());
+    if (!root) return false;
+    const auto model = root->model;
     std::string layout;
     bool any = false;
     for (std::size_t n = 0; n < watched.size(); ++n) {
@@ -175,6 +180,7 @@ std::optional<ScoreHud> read_score_hud(std::uintptr_t image_base) noexcept {
     const auto& f = h.fields;
     ScoreHud result{flag_of(f[action_active]), flag_of(f[is_slam]), score_of(f[line_score]), score_of(f[multiplier]),
                     text_of(f[sequence_header]), text_of(f[sequence_descriptor]), enum_of(f[sequence_state]), score_of(f[line_timer])};
+    result.line_shown = score_of(f[line_shown]);
     trace_sequence(result);
     return result;
 }

@@ -171,6 +171,12 @@ commands and a `Test/` folder.
 | `NativeMenu/` | pages built into the game's own menu (hub, multiplayer, throwdowns) |
 | `Startup/` | startup window/splash |
 
+Beside them: `hud_corner` hides skate.'s bottom left HUD for `reskate.hud.corner`; `hud_stack` puts the SDK's
+own items into that corner's stack (and holds `with_ui_models`, the UI model registry under its lock, for the
+SDK's HUD code); `score_line` and `score_line_hud` show a plugin's own line (trick names,
+points, multiplier, the line's total) in skate.'s score HUD for `reskate.hud.score_line`, from a model of the
+SDK's own, display only and never counted.
+
 ### `Extension/Plugins/`
 The Luau plugin host. A plugin is a folder in `Mods/` with a `reskate-plugin.json`.
 - `plugin_discovery`, `plugin_manifest` — find and read plugins.
@@ -186,6 +192,8 @@ The Luau plugin host. A plugin is a folder in `Mods/` with a `reskate-plugin.jso
   `reskate.menu.favorites`, read-only, for plugins that filter the item grids.
 - [Other players' items](https://docs.reskate.dev/plugins/api/session#other-players-items) — `reskate.session.outfit` and
   `reskate.session.hide_items`, for plugins that choose what of other players' outfits shows.
+- `reskate.hud.score_line` (permission `hud.score`) — a plugin's own line in skate.'s score HUD at the bottom
+  left, display only; documented at its function in `plugin_api_world.cpp`, shown by `Extension/UI/score_line_hud`.
 
 ## `Runtime/`
 

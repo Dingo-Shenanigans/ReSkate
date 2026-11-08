@@ -632,6 +632,27 @@ void set_custom_activity_menu_request(Address address) noexcept {
     s.menu_trace_thread.store(GetCurrentThreadId(),std::memory_order_relaxed);
     s.menu_trace_address.store(address,std::memory_order_release);
 }
+bool local_player_in_activity(const char** why) noexcept {
+    profile_runtime::PreserveError preserve;
+    const auto unknown = [&](const char* reason) {
+        if (why) *why = reason;
+        return true;
+    };
+    try {
+        auto& s = state();
+        if (!active() || !s.player_in_activity) return unknown("the activity getter is not hooked");
+        const auto ids = sole_offline_player_ids();
+        if (!ids.participant) return unknown("there is no sole offline player");
+        std::uint32_t menu_player{};
+        if (!client_activity_variables(ids.participant, &menu_player)) return unknown("there is no verified native client player");
+        if (why) *why = nullptr;
+        return native_activity_flag(s.player_in_activity(menu_player));
+    } catch (const std::exception&) {
+        return unknown("the native player could not be read");
+    } catch (...) {
+        return unknown("the native player could not be read");
+    }
+}
 void sync_custom_activity_ui_presence(bool participant) noexcept {
     profile_runtime::PreserveError preserve;
     auto& s=state();

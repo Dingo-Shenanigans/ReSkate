@@ -5,6 +5,7 @@
 #endif
 #include "throwdown_menu.h"
 #include "Extension/UI/own_ui_writes.h"
+#include "Extension/UI/score_line_hud.h"
 #include "ui_sound.h"
 #include "Extension/Multiplayer/Session/session.h"
 #include "Extension/Multiplayer/Hud/game_ui_state.h"
@@ -693,6 +694,8 @@ void tick_page(std::uintptr_t base, bool loading) noexcept {
     s.next_render = 0;
 }
 bool prepare_native_menu_level_load(std::uintptr_t base) noexcept {
+    // A plugin's score line goes before the HUD it lies in does (score_line_hud.h).
+    score_line::before_level_load(base);
     if (!release_native_throwdown_menu(base, true)) return false;
     if (std::all_of(page_slots.begin(), page_slots.end(), [](unsigned slot) { return page_state(slot).owned_models.empty(); }))
         return true;

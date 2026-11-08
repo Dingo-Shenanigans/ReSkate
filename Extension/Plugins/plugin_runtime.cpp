@@ -21,6 +21,7 @@
 #include "Extension/Skater/launches.h"
 #include "Extension/Skater/score_hud.h"
 #include "Extension/Skater/trick_watch.h"
+#include "Extension/UI/score_line_hud.h"
 #include "Extension/Trainer/trainer.h"
 #include "Extension/Throwdowns/throwdown_kit.h"
 #include <Windows.h>
@@ -246,9 +247,8 @@ std::chrono::steady_clock::time_point started_time{};
 std::string watched_level;
 std::string last_trick_name; // the score HUD's last sequence header
 
-// The score HUD into the trick watch, and what it saw to the plugins. Client thread.
-void read_tricks() {
-    const auto hud = tricks::read_score_hud(base);
+// The score HUD (this tick's reading) into the trick watch, and what it saw to the plugins. Client thread.
+void read_tricks(const std::optional<tricks::ScoreHud>& hud) {
     if (!hud) {
         environment->score_now.reset();
         return;
@@ -591,8 +591,15 @@ void on_client_tick() noexcept {
         const double dt = last_tick == std::chrono::steady_clock::time_point{} ? 0
             : std::chrono::duration<double, std::milli>(now - last_tick).count();
         last_tick = now;
-        if (host->wants_tricks()) read_tricks();
-        else environment->score_now.reset();
+        // One reading of the score HUD a tick, for the trick watch and for a plugin's score line,
+        // which yields to skate.'s own line (score_line_hud.h).
+        const bool tricks_wanted = host->wants_tricks();
+        if (tricks_wanted || score_line::wanted()) {
+            const auto hud = tricks::read_score_hud(base);
+            score_line::observe(hud);
+            if (tricks_wanted) read_tricks(hud);
+            else environment->score_now.reset();
+        } else environment->score_now.reset();
         placement_physics::client_tick();
         host->tick(dt);
         if (serving) server_host->tick(dt);

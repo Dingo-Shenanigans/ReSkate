@@ -1,4 +1,5 @@
 #pragma once
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -20,4 +21,8 @@ std::vector<Note> take();
 // From the model write hook, on whichever thread the game writes from, under the model lock:
 // the write's model manager, handle, value type, value and flag (which of the two registries).
 void tap(std::uintptr_t manager, std::uint64_t handle, std::uintptr_t type, const void* value, std::uint8_t flag) noexcept;
+// Entry ids of the SDK's own display models, never the game's trick list. The widget can write them
+// outside OwnUiWrites; the score line publishes the root and its rows before showing them.
+inline constexpr std::size_t most_owned = 8;
+void own(const std::vector<std::uint64_t>& entries) noexcept;
 } // namespace dingosdk::tricks::feed
