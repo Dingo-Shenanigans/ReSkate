@@ -60,6 +60,7 @@
 #include "Extension/Travel/local_location_travel.h"
 #include "Extension/World/world_entities.h"
 #include "Extension/World/owned_bodies.h"
+#include "Extension/World/traffic_vehicles.h"
 #include "Extension/Skater/bone_cam.h"
 #include "Extension/Skater/pad_flight.h"
 #include "Extension/Skater/trick_feed.h"
@@ -331,9 +332,24 @@ public:
         return {{p.available, p.hit, p.position, p.fraction}, p.native_casts};
     }
     std::optional<WorldPick> world_pick(const Vec3& from, const Vec3& to) override {
-        const auto pick = local_world_pick(from, to);
+        return convert_pick(local_world_pick(from, to));
+    }
+    std::string vehicle_take(std::uint64_t owner, std::uint64_t entity, std::uint64_t root, std::uint64_t& handle) override {
+        return traffic_vehicles::take(base_, owner, entity, root, handle);
+    }
+    traffic_vehicles::Sample vehicle_read(std::uint64_t owner, std::uint64_t handle) override {
+        return traffic_vehicles::read(owner, handle);
+    }
+    std::string vehicle_set_pose(std::uint64_t owner, std::uint64_t handle, const traffic_vehicles::Pose& pose) override {
+        return traffic_vehicles::set_pose(owner, handle, pose);
+    }
+    bool vehicle_release(std::uint64_t owner, std::uint64_t handle) override { return traffic_vehicles::release(owner, handle); }
+    void vehicle_release_all(std::uint64_t owner) override { traffic_vehicles::release_all(owner); }
+    static std::optional<WorldPick> convert_pick(const std::optional<dingosdk::WorldPick>& pick) {
         if (!pick) return std::nullopt;
         WorldPick out{pick->at, pick->entity != 0 || !pick->blueprint.empty(), std::nullopt, pick->blueprint};
+        out.vehicle_owner = pick->ecs_owner;
+        out.vehicle_root = pick->entity;
         if (pick->pose) {
             // The pose: scale xyz, -, rotation xyzw, position xyz. Rows: the rotated x, y and z axes
             // times their scale (the same rotation objects.list's heading reads), then position.

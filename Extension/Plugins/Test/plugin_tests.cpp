@@ -41,6 +41,7 @@ namespace board_material = dingosdk::board_material;
 namespace mods = dingosdk::mods;
 namespace owned_body = dingosdk::owned_body;
 namespace body_query = dingosdk::body_query;
+namespace traffic_vehicles = dingosdk::traffic_vehicles;
 namespace {
 void check(bool value, const std::string& message) { if (!value) throw std::runtime_error(message); }
 
@@ -797,6 +798,12 @@ struct FakeGame final : Game {
     // reskate.world.probe's ray, as told; the bounded adapter below counts its native casts.
     WorldProbe probe_result;
     unsigned probes{}, world_picks{};
+    std::uint64_t vehicle_pick_owner{};
+    std::uint64_t next_vehicle{};
+    unsigned vehicle_takes{}, vehicle_releases{}, vehicle_release_alls{};
+    std::string vehicle_take_refusal;
+    std::map<std::uint64_t, traffic_vehicles::Sample> vehicles;
+    std::map<std::uint64_t, std::uint64_t> vehicle_owners;
     Vec3 probe_from{}, probe_to{};
     WorldProbe world_probe(const Vec3& from, const Vec3& to) {
         ++probes;
@@ -818,7 +825,42 @@ struct FakeGame final : Game {
         ++world_picks;
         if (from[1] > 50) return std::nullopt; // the sky: nothing met
         WorldPick pick{{1, 0, 2}, true, std::array<float, 16>{0, 0, -1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 1, 0, 3, 1}, "World/Props/TrashCan_01"};
+        pick.vehicle_owner = vehicle_pick_owner;
         return pick;
+    }
+    std::string vehicle_take(std::uint64_t owner, std::uint64_t entity, std::uint64_t, std::uint64_t& handle) override {
+        ++vehicle_takes;
+        if (!vehicle_take_refusal.empty()) return vehicle_take_refusal;
+        if (!entity) return "not a vehicle";
+        unsigned active{};
+        for (const auto& [id, sample] : vehicles) if (vehicle_owners[id] == owner &&
+            (sample.state == traffic_vehicles::State::finding || sample.state == traffic_vehicles::State::held)) ++active;
+        if (active >= 4) return "too many vehicles";
+        handle = ++next_vehicle;
+        vehicle_owners[handle] = owner;
+        vehicles[handle] = {traffic_vehicles::State::finding, {{1, 0, 2}, {0, 0, 0, 1}}, {}};
+        return {};
+    }
+    traffic_vehicles::Sample vehicle_read(std::uint64_t owner, std::uint64_t handle) override {
+        if (vehicle_owners[handle] != owner) return {};
+        auto sample = vehicles.at(handle);
+        if (sample.state == traffic_vehicles::State::finding) vehicles[handle].state = traffic_vehicles::State::held;
+        return sample;
+    }
+    std::string vehicle_set_pose(std::uint64_t owner, std::uint64_t handle, const traffic_vehicles::Pose& pose) override {
+        if (vehicle_owners[handle] != owner || vehicles[handle].state != traffic_vehicles::State::held) return "vehicle is not held";
+        vehicles[handle].pose = pose;
+        return {};
+    }
+    bool vehicle_release(std::uint64_t owner, std::uint64_t handle) override {
+        if (vehicle_owners[handle] != owner) return false;
+        ++vehicle_releases;
+        vehicles[handle].state = traffic_vehicles::State::released;
+        return true;
+    }
+    void vehicle_release_all(std::uint64_t owner) override {
+        ++vehicle_release_alls;
+        for (auto& [id, sample] : vehicles) if (vehicle_owners[id] == owner) sample.state = traffic_vehicles::State::released;
     }
     void entity_clear(std::string_view plugin) override {
         std::erase_if(entities, [&](const auto& e) { return e.first.first == plugin; });
@@ -1409,6 +1451,79 @@ Candidate package(const std::string& id, const std::map<std::string, std::string
 }
 Candidate script(const std::string& id, const std::string& main, const std::string& permissions = "") {
     return package(id, {{manifest_file, manifest(permissions)}, {"plugin/main.lua", main}});
+}
+
+void running(const Host& host, std::string_view id, const TestEnvironment& environment);
+
+void traffic_vehicles_are_permissioned_bounded_and_released() {
+    using traffic_vehicles::Quaternion;
+    Quaternion zero{};
+    check(!traffic_vehicles::normalize(zero), "a zero quaternion was accepted");
+    Quaternion double_identity{0, 0, 0, 2};
+    check(traffic_vehicles::normalize(double_identity) && double_identity[3] == 1,
+          "a finite quaternion was not normalized");
+    check(traffic_vehicles::parent_candidate(11, 12, {0, 0, 0}, {0, 0, 9}, 1) &&
+          !traffic_vehicles::parent_candidate(11, 12, {0, 0, 0}, {0, 0, 11}, 1) &&
+          !traffic_vehicles::parent_candidate(11, 12, {0, 0, 0}, {0, 0, 1}, 4),
+          "parent climb exceeded its distance or depth bounds");
+    check(traffic_vehicles::agent_candidate(0x310000000100, 0x930200000100, {0, 0, 0}, {0.2f, 0, 0}) &&
+          !traffic_vehicles::agent_candidate(0x310000000100, 0x310000000200, {0, 0, 0}, {0.2f, 0, 0}) &&
+          !traffic_vehicles::agent_candidate(0x310000000100, 0x930200000100, {0, 0, 0}, {2, 0, 0}),
+          "agent choice ignored its id range or proximity");
+
+    TestEnvironment denied_environment; Host denied(denied_environment, Side::client);
+    denied_environment.fake.vehicle_pick_owner = 0x310000000100;
+    denied.apply({script("vehicle-denied", R"(
+        local v=vector.create
+        local ok,why=pcall(reskate.world.vehicles.take,v(0,0,0),v(0,0,2))
+        assert(not ok and why:find('world.vehicles',1,true),tostring(why))
+    )")});
+    running(denied, "vehicle-denied", denied_environment);
+    check(!denied_environment.fake.vehicle_takes && !denied_environment.fake.world_picks,
+          "a plugin without world.vehicles reached the world query");
+
+    TestEnvironment environment; Host host(environment, Side::client);
+    auto& game = environment.fake;
+    game.vehicle_pick_owner = 0x310000000100;
+    host.apply({script("vehicle-holder", R"(
+        local v=vector.create
+        local V=reskate.world.vehicles
+        assert(not pcall(V.take,v(0,0,0),v(1001,0,0)),"long ray")
+        assert(not pcall(V.take,v(math.huge,0,0),v(0,0,0)),"nonfinite ray")
+        local none,why=V.take(v(0,51,0),v(0,52,0))
+        assert(none==nil and why=="nothing hit",tostring(why))
+        local car=assert(V.take(v(0,0,0),v(0,0,2)))
+        assert(car:state()=="finding" and car:state()=="held")
+        local position,rotation=car:pose()
+        assert(position and rotation[4]==1)
+        assert(not pcall(car.set_pose,car,v(1,2,3),{0,0,0,0}),"zero rotation")
+        assert(not pcall(car.set_pose,car,v(1,2,3),{0,0,0,math.huge}),"nonfinite rotation")
+        assert(car:set_pose(v(4,5,6),{0,0,0,2}))
+        position,rotation=car:pose()
+        assert(position.x==4 and rotation[4]==1,"pose reached game normalized")
+        assert(car:release() and car:state()=="released")
+        for i=1,4 do assert(V.take(v(0,0,0),v(0,0,2))) end
+        none,why=V.take(v(0,0,0),v(0,0,2))
+        assert(none==nil and why=="too many vehicles",tostring(why))
+    )", R"("world.vehicles")")});
+    running(host, "vehicle-holder", environment);
+    check(game.vehicle_takes == 6 && game.vehicle_releases == 1 && game.vehicles.size() == 5 &&
+          game.vehicles.at(1).pose.position == Vec3{4, 5, 6},
+          "vehicle pose, release or four-vehicle limit did not reach the fake game");
+    host.apply({});
+    check(game.vehicle_release_alls >= 1 && std::ranges::all_of(game.vehicles, [](const auto& item) {
+              return item.second.state == traffic_vehicles::State::released;
+          }), "unloading the plugin left vehicles held");
+
+    TestEnvironment failed_environment; Host failed(failed_environment, Side::client);
+    failed_environment.fake.vehicle_pick_owner = 0x310000000100;
+    failed_environment.fake.vehicle_take_refusal = "layout differs";
+    failed.apply({script("vehicle-refused", R"(
+        local v=vector.create
+        local car,why=reskate.world.vehicles.take(v(0,0,0),v(0,0,2))
+        assert(car==nil and why=="layout differs",tostring(why))
+    )", R"("world.vehicles")")});
+    running(failed, "vehicle-refused", failed_environment);
 }
 
 Status status_of(const Host& host, std::string_view id) {
@@ -6921,6 +7036,7 @@ int main() {
         run(plugins_publish_only_their_own_ui_values);
         run(plugin_approval_follows_the_plugins_own_files);
         run(an_approved_plugin_runs_only_the_source_snapshot_it_was_shown);
+        run(traffic_vehicles_are_permissioned_bounded_and_released);
         run(measured_contact_host_fixture_v1);
         run(plugins_own_typed_bodies_and_acknowledge_measured_results);
         run(plugins_pipeline_native_steps_and_select_owned_receipts);

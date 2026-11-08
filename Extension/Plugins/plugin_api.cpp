@@ -943,6 +943,7 @@ void Api::install(Plugin& plugin, lua_State* L) {
     install_ui_api(plugin, L);
     install_more_api(plugin, L);
     install_world_api(plugin, L);
+    install_vehicles_api(plugin, L);
     install_physics_api(plugin, L);
     install_services_api(plugin, L);
     install_kit_api(plugin, L);

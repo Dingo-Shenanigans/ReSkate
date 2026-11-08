@@ -228,6 +228,7 @@ std::optional<WorldPick> local_world_pick(const std::array<float, 3> &from, cons
     WorldPick pick;
     pick.at = *hit;
     pick.entity = root;
+    if (last_hit.ecs && last_hit.value) pick.ecs_owner = last_hit.value;
     static std::atomic<unsigned> steps_logged{};
     if (steps_logged.fetch_add(1) < 8)
         logging::log(logging::Level::info, logging::Channel::level,

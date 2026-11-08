@@ -24,6 +24,7 @@ void install_ui_api(Plugin& plugin, lua_State* L);
 void install_more_api(Plugin& plugin, lua_State* L);
 // The wider set's game parts (plugin_api_world.cpp), into the same table.
 void install_world_api(Plugin& plugin, lua_State* L);
+void install_vehicles_api(Plugin& plugin, lua_State* L);
 // Native bodies a plugin owns and their ray batches (plugin_api_physics.cpp), into reskate.world.
 void install_physics_api(Plugin& plugin, lua_State* L);
 // General services for a game layer: the skater's telemetry and Bone Cam, the pad and keys, the
