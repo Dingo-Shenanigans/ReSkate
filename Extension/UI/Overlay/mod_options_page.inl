@@ -381,6 +381,33 @@ void world_rows(Opts &o, OptionsContext &c) {
         }
     }
 
+    opt_heading(o, "SCREEN EFFECTS");
+    {
+        static constexpr std::array<const char *, 3> names{"Film grain", "Vignette", "Chromatic aberration"};
+        static constexpr std::array<const char *, 3> helps{"Grain over the picture. On allows the scene's authored grain amount.",
+                                                           "Darkening around the edges of the picture.", "Color fringing around the edges of the picture."};
+        const bool can = m.graphics.available && c.console;
+        for (unsigned i = 0; i < names.size(); ++i) {
+            const int choice = m.graphics.choices.effects[i];
+            const bool on = choice < 0 ? (m.graphics.ready[i] ? m.graphics.enabled[i] : true) : choice != 0;
+            auto &row = opt_toggle(o, names[i], on, can, std::string(helps[i]) + (choice < 0 ? " Following the scene now." : ""),
+                                   [&c, i](bool next) { c.run(std::string("graphics ") + graphics_keys[i] + (next ? " 1" : " 0")); });
+            row.reset = [&c, i] { c.run(std::string("graphics ") + graphics_keys[i] + " -1"); };
+            row.reset_does = "Back to what the scene asks for";
+        }
+        opt_action(o, "Restore effect defaults", "RESTORE", can, "Every effect back to what the scene asks for.", [&c] { c.run("graphics reset -1"); });
+    }
+
+    opt_heading(o, "CHALLENGES");
+    {
+        const auto &p = m.progression;
+        auto &row = opt_toggle(o, "Show challenges", !p.challenges_hidden, p.challenges_enabled && c.console,
+                               "Challenges in the world, on the compass and on the map. Hiding them keeps your progress.",
+                               [&c](bool on) { c.run(on ? "challenges 1" : "challenges 0"); });
+        row.why_not = "Challenges are not ready yet.";
+    }
+
+    // (Last: on some maps it is a very long list.)
     opt_heading(o, "WORLD LAYERS");
     {
         static int kind = 0;
@@ -410,32 +437,6 @@ void world_rows(Opts &o, OptionsContext &c) {
         auto &defaults = opt_action(o, "Restore layer defaults", "RESTORE", can, "Every layer on this map back to the game's control.",
                                     [&c] { c.run("world defaults " + std::string(world_map_key(c.m.world.map))); });
         defaults.why_not = why;
-    }
-
-    opt_heading(o, "SCREEN EFFECTS");
-    {
-        static constexpr std::array<const char *, 3> names{"Film grain", "Vignette", "Chromatic aberration"};
-        static constexpr std::array<const char *, 3> helps{"Grain over the picture. On allows the scene's authored grain amount.",
-                                                           "Darkening around the edges of the picture.", "Color fringing around the edges of the picture."};
-        const bool can = m.graphics.available && c.console;
-        for (unsigned i = 0; i < names.size(); ++i) {
-            const int choice = m.graphics.choices.effects[i];
-            const bool on = choice < 0 ? (m.graphics.ready[i] ? m.graphics.enabled[i] : true) : choice != 0;
-            auto &row = opt_toggle(o, names[i], on, can, std::string(helps[i]) + (choice < 0 ? " Following the scene now." : ""),
-                                   [&c, i](bool next) { c.run(std::string("graphics ") + graphics_keys[i] + (next ? " 1" : " 0")); });
-            row.reset = [&c, i] { c.run(std::string("graphics ") + graphics_keys[i] + " -1"); };
-            row.reset_does = "Back to what the scene asks for";
-        }
-        opt_action(o, "Restore effect defaults", "RESTORE", can, "Every effect back to what the scene asks for.", [&c] { c.run("graphics reset -1"); });
-    }
-
-    opt_heading(o, "CHALLENGES");
-    {
-        const auto &p = m.progression;
-        auto &row = opt_toggle(o, "Show challenges", !p.challenges_hidden, p.challenges_enabled && c.console,
-                               "Challenges in the world, on the compass and on the map. Hiding them keeps your progress.",
-                               [&c](bool on) { c.run(on ? "challenges 1" : "challenges 0"); });
-        row.why_not = "Challenges are not ready yet.";
     }
 }
 
