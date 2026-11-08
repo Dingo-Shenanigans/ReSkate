@@ -36,6 +36,15 @@ int main() {
     check(inherit(unseen, unseen) == unseen, "nothing owed leaves the new claim to read the copy");
     check(inherit(keyframed, fixed) == keyframed, "a claim that already read the copy keeps what it read");
 
+    // A server copy without a body (solo play) follows by transform instead of ending the claim.
+    check(server_mirrorable(bodiless), "a bodiless server copy is mirrored by its transform");
+    check(server_restore(bodiless) == bodiless, "a bodiless copy goes back to its layout pose by transform");
+    check(inherit(unseen, bodiless) == bodiless, "a new claim takes over a bodiless copy still owed its restore");
+    check(!client_claimable(bodiless), "a client replica without a body is never claimed");
+    check(bodiless != unseen, "bodiless is not mistaken for unread");
+    check(body_motion(fixed) && body_motion(keyframed) && body_motion(dynamic), "the game's motions may be written to a body");
+    check(!body_motion(bodiless) && !body_motion(unseen) && !body_motion(7), "only real motions are written to a body");
+
     if (failures) return 1;
     std::cout << "placement motion: all checks passed\n";
     return 0;
