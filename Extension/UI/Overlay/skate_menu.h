@@ -5,6 +5,8 @@
 #include <imgui.h>
 #include <optional>
 #include <map>
+#include <string>
+#include <vector>
 
 namespace dingosdk::overlay {
 struct AtmosphereEdit {
@@ -72,15 +74,35 @@ struct SkateMenu {
     bool scale_editing{};
     // Selected tab on each page; see the Page list in skate_menu_internal.h.
     int map_tab = 0, build_tab = 0, skater_tab = 0, settings_tab = 0;
-    int addon = 0; // the ADDONS page's addon (menu::Addon)
-    std::string plugin_page; // the PLUGINS section's plugin, by its id
-    // Window or full screen, as just chosen, until the saved setting comes back through the model.
-    std::optional<bool> fullscreen_pending;
-    double fullscreen_until = 0;
-    bool fullscreen_drawn = false; // the last frame was drawn full screen
+    std::string plugin_page; // the plugin whose page PLUGINS shows, by its id (menu::plugin_manager_entry: the list)
+    // The pages opened lately this run, newest first, at most three, HOME left out (HOME's PICK UP WHERE
+    // YOU LEFT OFF): the page, the tab it was on (-1: none), what to call it, and a plugin's page by its id.
+    struct RecentPage {
+        int page = -1, tab = -1;
+        std::string label, plugin;
+    };
+    std::vector<RecentPage> recent;
+    // The layout, the side sheet's width and the window's size as just chosen or dragged (the last two in
+    // pixels at 1080 lines and scale 1), until the saved setting comes back through the model.
+    std::optional<int> layout_pending;
+    double layout_until = 0;
+    int layout_drawn = -1; // the layout the last frame was drawn in
+    // The park editor's layout as just chosen on BUILD > PARK EDITOR, until `editor layout` comes back
+    // through the model.
+    std::optional<int> editor_layout_pending;
+    double editor_layout_until = 0;
+    std::optional<float> sheet_width_pending;
+    double sheet_width_until = 0;
+    bool sheet_dragging{};     // the sheet's left edge is held
+    float sheet_drag_width{};  // its width while held, in screen pixels
+    std::optional<ImVec2> hub_size_pending;
+    double hub_size_until = 0;
+    ImVec2 hub_size_applied{}; // the window size last given to ImGui, in screen pixels: a different one is the player's drag
     std::array<std::optional<int>, 3> graphics_pending{};
     std::array<double, 3> graphics_pending_until{};
     std::array<char, 128> object_search{};
+    // Map > Travel: which maps it shows (all, stock, custom) and how they are ordered (A to Z, newest installed).
+    int map_show = 0, map_sort = 0;
     int world_layer_category = 0;
     std::array<char, 128> world_layer_search{};
     int progression_tab = 0;
@@ -106,15 +128,13 @@ struct SkateMenu {
     ImFont* heading = nullptr;  // tile and section headers
     ImFont* countdown = nullptr; // full-resolution fallback countdown digits
     ImFont* mono = nullptr;
-    // The same faces drawn larger (large_font_ratio times), swapped in while the menu is full
-    // screen, where everything is scaled up: text stays sharp instead of stretched.
+    // The same faces drawn larger (large_font_ratio times), swapped in while the menu is scaled up (a
+    // large screen or a large menu size): text stays sharp instead of stretched. The big titles always
+    // draw from title_large, and plugins draw with it too (reskate.ui's "title_large").
     ImFont* body_large = nullptr;
     ImFont* bold_large = nullptr;
     ImFont* heading_large = nullptr;
     ImFont* title_large = nullptr;
-    // Full screen: the page's section rail (its first row of tabs, drawn down the left), indenting
-    // what follows it until the page is done.
-    float rail_indent = 0;
 };
 inline constexpr float large_font_ratio = 30.0f / 17.0f;
 void load_skate_fonts(SkateMenu& menu);

@@ -588,7 +588,8 @@ std::vector<std::uint8_t> encode(const Packet &p, bool compact_pose, std::uint32
         w.integer(p.appearance.card.emblem, 4);
         w.integer(p.appearance.card.title, 4);
         w.integer((p.appearance.hide_tag ? 1 : 0) | (p.appearance.hide_items ? 2 : 0), 1);
-        for (const auto &style : p.appearance.marks) {
+        // The tag a player chose rides in the styles, where older builds still read them.
+        for (const auto &style : carry_tag(p.appearance.marks, p.appearance.tag)) {
             w.integer(static_cast<std::uint8_t>(style.mode), 1);
             for (const auto part : style.from) w.integer(part, 1);
             for (const auto part : style.to) w.integer(part, 1);
@@ -964,6 +965,7 @@ std::optional<Packet> decode(std::span<const std::uint8_t> bytes) noexcept {
                 style.speed = static_cast<std::uint8_t>(r.integer(1));
                 styled = styled && valid_mark_style(style);
             }
+            p.appearance.tag = carried_tag(p.appearance.marks);
             if (flags > 3 || !styled || !p.map || !valid_appearance(p.appearance))
                 return {};
         } else if (p.kind == PacketKind::audio) {

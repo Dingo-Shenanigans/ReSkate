@@ -8,10 +8,12 @@
 #include <Windows.h>
 #include <imgui_internal.h>
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <type_traits>
 #include <array>
 #include <cstring>
+#include <format>
 #include <initializer_list>
 #include <map>
 #include <string>
@@ -23,22 +25,46 @@ using namespace menu;
 namespace menu {
 using namespace theme;
 
-// Set once per frame in draw_skate_menu, then read through px() while the menu
-// and its pages draw.
-namespace { float ui_scale = default_menu_scale; }
+namespace {
+// Set once per frame in draw_skate_menu, then read through px() while the menu and its pages draw.
+float ui_scale = default_menu_scale;
+int shown_layout = menu_layout_sheet; // the layout this frame is drawn in
+// The menu's own greys, from its mock-ups: a near-black sheet, dark tiles for cards and rows a step
+// lighter. The focus is skate.'s own (its Settings and Skaters pages): its blue with black text and
+// halftone dots (theme::focus_fill, tile_rect); what is chosen or the main action rests on the light
+// grey of skate.'s open tab, so it never reads as the focus.
+constexpr ImU32 sheet_fill = IM_COL32(16, 16, 16, 242);
+constexpr ImU32 band_fill = IM_COL32(11, 11, 11, 255);
+constexpr ImU32 window_fill = IM_COL32(20, 20, 20, 242);
+constexpr ImU32 rail_fill = IM_COL32(17, 17, 17, 255);
+// Cards and rows: the menu's greys on its own dark sheet; a page drawn in the kit over the game world
+// (draw_in_kit: a plugin's page in the pause menu) swaps in the pause pages' near black for its time.
+ImU32 card_fill = IM_COL32(29, 29, 31, 250);
+constexpr ImU32 inner_card_fill = IM_COL32(37, 37, 40, 250);
+ImU32 row_fill = IM_COL32(40, 40, 43, 255);
+constexpr ImU32 row_hover = IM_COL32(56, 57, 61, 255);
+constexpr ImU32 tab_fill = IM_COL32(35, 35, 37, 255);
+constexpr ImU32 rule_ink = IM_COL32(45, 45, 47, 255);
+constexpr ImU32 focus_ink = IM_COL32(11, 11, 11, 255);
+constexpr ImU32 primary_rest = IM_COL32(226, 227, 230, 255), primary_hover = IM_COL32(246, 246, 248, 255), primary_off = IM_COL32(226, 227, 230, 70);
+constexpr ImU32 quiet_ink = IM_COL32(138, 140, 146, 255);
+// Rows are this tall at 1080 lines; FramePadding is set so ImGui's own widgets are as tall.
+constexpr float row_size = 48, text_size = 17;
+float row_height() { return ui_scale * row_size; }
+}
 float px(float value) { return value * ui_scale; }
 
 // Heavy uppercase header over a thin rule, like the titles on skate.'s HUB tiles.
 void section(SkateMenu& menu, const char* text) {
-    ImGui::Spacing();
+    ImGui::Dummy(ImVec2(0, px(4)));
     ImGui::PushFont(menu.heading);
     ImGui::TextUnformatted(text);
     ImGui::PopFont();
     const auto at = ImGui::GetCursorScreenPos();
     auto* draw = ImGui::GetWindowDrawList();
-    draw->AddRectFilled(at, ImVec2(at.x + ImGui::GetContentRegionAvail().x, at.y + px(2)), skate_theme::tile_light);
+    draw->AddRectFilled(at, ImVec2(at.x + ImGui::GetContentRegionAvail().x, at.y + px(2)), rule_ink);
     draw->AddRectFilled(at, ImVec2(at.x + px(34), at.y + px(3)), blue);
-    ImGui::Dummy(ImVec2(0, px(8)));
+    ImGui::Dummy(ImVec2(0, px(6)));
 }
 float page_body_height(const SkateMenu& menu) {
     const bool feedback_shown = !menu.feedback.empty() && ImGui::GetTime() < menu.feedback_until;
@@ -68,17 +94,26 @@ void debug_request(SkateMenu& menu, const CallbacksV3& callbacks, DebugRequest r
     feedback(menu, result[0] ? result.data() : (queued ? "" : "Change unavailable."));
 }
 
-// ---------------------------------------------------------------- full screen controls
-// Full screen is made for a controller, so the shared controls draw differently there: tall
-// rows, on/off as a switch, a few options as "< option >" and a number as "< value >" with a bar,
-// both changed with left / right (which then never moves the focus). What the focused control
-// does shows in the bottom bar (focus_hint): a controller has no hover tooltips.
+// ---------------------------------------------------------------- the controls
+// The menu is made to be used with a controller as much as a mouse, in both layouts: tall rows, on/off
+// as a block at the row's end, a few options as "< option >" and a number as "< value >" over a bar,
+// both changed with left / right (which then never moves the focus) or a click on either half. What
+// the focused control does shows in the menu (focus_hint): a controller has no hover tooltips.
 namespace {
-bool console_mode = false;
-bool tab_switched = false; // a page or tab changed this frame (the full screen menu's tab sound)
-bool console_playstation = false; // the pad in use names LT / RT as L2 / R2
+bool tab_switched = false; // a page or tab changed this frame (the menu's tab sound)
+// The page's first row of tabs this frame (category_tabs): which is open and its name, for the
+// pages opened lately (SkateMenu::recent). -1: the page has none.
+int primary_tab = -1;
+std::string primary_tab_name;
+// What A, X and Y do on the page drawn this frame (page_prompts), for the footer; null for the usual.
+const char* prompt_a = nullptr;
+const char* prompt_x = nullptr;
+const char* prompt_y = nullptr;
+// X on the controller went down this frame. The menu keeps X from ImGui (held, ImGui would take
+// it for window switching), so it is read from the pad itself (draw_skate_menu).
+bool pad_x_down = false;
 std::string focus_hint, pending_hint;
-ImFont* console_font = nullptr; // bold, for the controls drawn by hand
+ImFont* control_font = nullptr; // bold, for the controls drawn by hand
 double next_step = 0; // set_console_step: the next stepper's step (0: a fortieth of its range)
 // Left / right this frame. A list of options moves one per press (`repeat` off); a number, held,
 // runs on after half a second, as the pause menu's sliders do. (ImGui's own repeat starts so soon
@@ -106,31 +141,43 @@ float held_for() {
         longest = std::max(longest, ImGui::GetKeyData(key)->DownDuration);
     return longest;
 }
-// The row a full screen control sits on: its fill, and a white edge while focused.
-void console_frame(ImDrawList* draw, ImVec2 at, ImVec2 end, bool focused, bool hovered, bool disabled) {
-    // As the pause menu's tiles: rough-cut, blue under the focus or the pointer.
-    skate_theme::rough_rect(draw, at, end, disabled ? IM_COL32(26, 26, 26, 160) : focused || hovered ? blue : IM_COL32(26, 26, 26, 235),
-                            static_cast<unsigned>(ImGui::GetItemID()) & 0xfff, ui_scale);
+// The item just drawn has the controller's or the keyboard's focus, shown. (After a click ImGui
+// keeps its focus on the item too, but hidden: the pointer then lights it as hovered instead.)
+bool nav_lit() { return ImGui::IsItemFocused() && ImGui::GetIO().NavVisible; }
+// The tile under a row: the focus blue under the focus, a lighter grey under the pointer, rough-cut
+// like the game's tiles.
+void row_frame(ImDrawList* draw, ImVec2 at, ImVec2 end, bool lit, bool hovered, bool disabled) {
+    const ImU32 fill = lit ? focus_fill : disabled ? IM_COL32(40, 40, 43, 130) : hovered ? row_hover : row_fill;
+    tile_rect(draw, at, end, fill, static_cast<unsigned>(ImGui::GetItemID()) & 0xfff, ui_scale);
 }
-void arrows(ImDrawList* draw, ImVec2 at, ImVec2 end, bool lit) {
+ImU32 row_ink(bool lit, bool enabled) { return lit ? focus_ink : enabled ? paper : muted; }
+void arrows(ImDrawList* draw, ImVec2 at, ImVec2 end, ImU32 colour) {
     const float h = end.y - at.y, s = px(7), mid = at.y + h * .5f;
-    const ImU32 colour = lit ? paper : muted;
     draw->AddTriangleFilled(ImVec2(at.x + px(16), mid), ImVec2(at.x + px(16) + s, mid - s), ImVec2(at.x + px(16) + s, mid + s), colour);
     draw->AddTriangleFilled(ImVec2(end.x - px(16), mid), ImVec2(end.x - px(16) - s, mid - s), ImVec2(end.x - px(16) - s, mid + s), colour);
 }
-// The stepper behind a full screen slider. A step reports the control active and edited, and
-// letting go of left / right deactivates it, so callers that save on IsItemDeactivatedAfterEdit
-// (as they do when a slider is let go) save once a run of steps ends.
+// Which of `count` options is chosen, as a row of small dashes along the bottom of a row.
+void option_dots(ImDrawList* draw, float centre, float bottom, int count, int selected, bool lit) {
+    if (count < 2 || count > 12) return;
+    const float dot = px(6), spacing = px(5), dots = count * dot + (count - 1) * spacing, left = centre - dots * .5f;
+    for (int i = 0; i < count; ++i)
+        draw->AddRectFilled(ImVec2(left + i * (dot + spacing), bottom - px(10)), ImVec2(left + i * (dot + spacing) + dot, bottom - px(6)),
+                            i == selected ? (lit ? focus_ink : blue) : lit ? IM_COL32(0, 0, 0, 50) : IM_COL32(255, 255, 255, 50));
+}
+// A value as a bar: left / right (or a click on either half, or a press and slide with the mouse)
+// step it. A step reports the control active and edited, and letting go of left / right deactivates
+// it, so callers that save on IsItemDeactivatedAfterEdit (as they do when a slider is let go) save
+// once a run of steps ends.
 template<class Value>
 bool stepper(const char* id, Value* value, Value low, Value high, const char* format, ImGuiSliderFlags flags) {
     ImGuiContext& g = *GImGui;
     const double unit = std::exchange(next_step, 0.0);
-    const float width = ImGui::CalcItemWidth(), height = px(46);
+    const float width = ImGui::CalcItemWidth(), height = row_height();
     ImGui::PushID(id);
     const auto at = ImGui::GetCursorScreenPos();
     const bool clicked = ImGui::InvisibleButton("##stepper", ImVec2(width, height), ImGuiButtonFlags_EnableNav);
     const ImGuiID item = ImGui::GetItemID();
-    const bool focused = ImGui::IsItemFocused(), hovered = ImGui::IsItemHovered();
+    const bool focused = ImGui::IsItemFocused(), hovered = ImGui::IsItemHovered(), lit = nav_lit();
     const bool disabled = (g.CurrentItemFlags & ImGuiItemFlags_Disabled) != 0;
     // Most settings go to the game and come back a few frames later: held, each step would start
     // again from the value the game has not changed yet. So the stepped value is kept, and shown,
@@ -220,27 +267,33 @@ bool stepper(const char* id, Value* value, Value low, Value high, const char* fo
     }
     auto* draw = ImGui::GetWindowDrawList();
     const ImVec2 end(at.x + width, at.y + height);
-    console_frame(draw, at, end, focused, hovered, disabled);
-    arrows(draw, at, end, focused);
+    row_frame(draw, at, end, lit, hovered, disabled);
+    arrows(draw, at, end, lit ? focus_ink : hovered ? paper : muted);
     char text[96]{};
     ImFormatString(text, sizeof(text), format && *format ? format : (std::is_integral_v<Value> ? "%d" : "%.2f"), *value);
-    ImFont* font = console_font ? console_font : ImGui::GetFont();
-    const auto size = font->CalcTextSizeA(px(17), FLT_MAX, 0, text);
-    draw->AddText(font, px(17), ImVec2(at.x + (width - size.x) * .5f, at.y + (height - size.y) * .5f - px(4)), disabled ? muted : paper, text);
+    ImFont* font = control_font ? control_font : ImGui::GetFont();
+    const auto size = font->CalcTextSizeA(px(text_size), FLT_MAX, 0, text);
+    draw->AddText(font, px(text_size), ImVec2(at.x + (width - size.x) * .5f, at.y + (height - size.y) * .5f - px(4)), row_ink(lit, !disabled), text);
     // Where the value sits in its range, in steps.
     const double fraction = fraction_of(static_cast<double>(*value));
     constexpr int ticks = 20;
     const float tick = bar_width / ticks;
     for (int i = 0; i < ticks && (unit <= 0 || (static_cast<double>(high) - low) / unit < 2000); ++i) {
-        const bool lit = (i + 0.5) / ticks <= std::clamp(fraction, 0.0, 1.0);
+        const bool on = (i + 0.5) / ticks <= std::clamp(fraction, 0.0, 1.0);
         draw->AddRectFilled(ImVec2(bar_left + tick * i + px(1), end.y - px(10)), ImVec2(bar_left + tick * (i + 1) - px(1), end.y - px(6)),
-                            lit ? (focused || hovered ? paper : blue) : IM_COL32(255, 255, 255, 40));
+                            on ? (lit ? focus_ink : blue) : lit ? IM_COL32(0, 0, 0, 40) : IM_COL32(255, 255, 255, 40));
     }
     ImGui::PopID();
     return changed;
 }
+void begin_controls_frame(ImFont* bold) {
+    control_font = bold;
+    focus_hint.clear();
+    pending_hint.clear();
+    next_step = 0;
 }
-bool console_style() { return console_mode; }
+}
+bool console_style() { return true; }
 int console_step(bool focused) {
     if (!focused) return 0;
     const int direction = left_pressed() ? -1 : right_pressed() ? 1 : 0;
@@ -250,139 +303,241 @@ int console_step(bool focused) {
 void set_console_hint(const char* hint) { focus_hint = hint ? hint : ""; }
 void set_console_step(double step) { next_step = step; }
 const std::string& console_hint() { return focus_hint; }
-void begin_console_frame(bool full, ImFont* bold, bool playstation) {
-    console_mode = full;
-    console_playstation = playstation;
-    console_font = bold;
-    focus_hint.clear();
-    pending_hint.clear();
-    next_step = 0;
-}
 
 bool toggle_row(SkateMenu& menu, const char* label, const char* hint, bool& value, bool available,
                 const char* unavailable) {
-    if (console_mode) {
-        // Full screen: a tall row, the switch at its right end.
-        ImGui::PushID(label);
-        ImGui::BeginDisabled(!available);
-        const auto at = ImGui::GetCursorScreenPos();
-        const float width = ImGui::GetContentRegionAvail().x, height = px(54);
-        const bool clicked = ImGui::Selectable("##toggle", false, ImGuiSelectableFlags_None, ImVec2(width, height));
-        const bool hovered = ImGui::IsItemHovered(), focused = ImGui::IsItemFocused();
-        if (clicked) value = !value;
-        if (focused || hovered) focus_hint = hint;
-        auto* draw = ImGui::GetWindowDrawList();
-        const ImVec2 end(at.x + width, at.y + height);
-        console_frame(draw, at, end, focused, hovered, !available);
-        const auto text = menu.bold->CalcTextSizeA(px(17), FLT_MAX, 0, label);
-        draw->PushClipRect(at, ImVec2(end.x - px(110), end.y), true);
-        draw->AddText(menu.bold, px(17), ImVec2(at.x + px(18), at.y + (height - text.y) * .5f), available ? paper : muted, label);
-        draw->PopClipRect();
-        // What it is now on the right, as the pause menu's settings show it: blue, white under the focus.
-        const char* state = available ? (value ? "ON" : "OFF") : unavailable;
-        const auto size = menu.bold->CalcTextSizeA(px(17), FLT_MAX, 0, state);
-        const ImU32 state_ink = !available ? muted : focused || hovered ? paper : value ? blue : muted;
-        draw->AddText(menu.bold, px(17), ImVec2(end.x - px(24) - size.x, at.y + (height - size.y) * .5f), state_ink, state);
-        if (hovered && *hint) ImGui::SetTooltip("%s", hint);
-        ImGui::EndDisabled();
-        ImGui::PopID();
-        return clicked;
-    }
+    // A row a setting, what it is now in a block at the right end: blue for ON.
     ImGui::PushID(label);
     ImGui::BeginDisabled(!available);
     const auto at = ImGui::GetCursorScreenPos();
-    const float width = ImGui::GetContentRegionAvail().x;
-    const float height = px(36);
-    const bool clicked = ImGui::Selectable("##toggle", false, ImGuiSelectableFlags_None, ImVec2(width, height));
-    const bool hovered = ImGui::IsItemHovered();
-    const bool focused = ImGui::IsItemFocused();
+    const float width = ImGui::GetContentRegionAvail().x, height = row_height();
+    const bool clicked = ImGui::InvisibleButton("##toggle", ImVec2(width, height), ImGuiButtonFlags_EnableNav);
+    const bool hovered = ImGui::IsItemHovered(), lit = nav_lit();
     if (clicked) value = !value;
-    // A dark tile per option with an ON/OFF block, like the game's option rows.
+    if ((lit || hovered) && hint) focus_hint = hint;
     auto* draw = ImGui::GetWindowDrawList();
-    const unsigned seed = static_cast<unsigned>(ImGui::GetItemID());
-    skate_theme::rough_rect(draw, at, ImVec2(at.x + width, at.y + height - px(3)),
-        hovered ? skate_theme::tile_light : skate_theme::tile_grey, seed, ui_scale);
-    if (!available) skate_theme::scribble(draw, at, ImVec2(at.x + width * 0.6f, at.y + height - px(3)), seed, ui_scale * 0.5f);
-    if (focused) draw->AddRect(at, ImVec2(at.x + width, at.y + height - px(3)), paper, 0, 0, px(2));
-    const auto color = available ? paper : muted;
-    const float block = px(58);
-    draw->PushClipRect(at, ImVec2(at.x + width - block - px(12), at.y + height), true);
-    draw->AddText(menu.bold, px(16), ImVec2(at.x + px(12), at.y + px(8)), color, label);
+    const ImVec2 end(at.x + width, at.y + height);
+    row_frame(draw, at, end, lit, hovered, !available);
+    if (!available) skate_theme::scribble(draw, at, ImVec2(at.x + width * 0.6f, end.y), static_cast<unsigned>(ImGui::GetItemID()), ui_scale * 0.5f);
+    const float block = px(62);
+    const auto text = menu.bold->CalcTextSizeA(px(text_size), FLT_MAX, 0, label);
+    draw->PushClipRect(at, ImVec2(end.x - block - px(20), end.y), true);
+    draw->AddText(menu.bold, px(text_size), ImVec2(at.x + px(16), at.y + (height - text.y) * .5f), row_ink(lit, available), label);
     draw->PopClipRect();
     const char* state = available ? (value ? "ON" : "OFF") : unavailable;
-    const ImVec2 box(at.x + width - block - px(6), at.y + px(6));
     const bool on = available && value;
-    draw->AddRectFilled(box, ImVec2(box.x + block, at.y + height - px(9)), on ? blue : IM_COL32(0, 0, 0, 90));
-    const auto text = menu.bold->CalcTextSizeA(px(14), FLT_MAX, 0, state);
-    draw->AddText(menu.bold, px(14), ImVec2(box.x + (block - text.x) * 0.5f, box.y + (height - px(15) - text.y) * 0.5f),
-        on ? skate_theme::black : muted, state);
-    if (*hint && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", hint);
+    const ImVec2 box(end.x - px(8) - block, at.y + px(8)), box_end(end.x - px(8), end.y - px(8));
+    if (available) draw->AddRectFilled(box, box_end, on ? (lit ? skate_theme::black : blue) : lit ? IM_COL32(0, 0, 0, 38) : IM_COL32(0, 0, 0, 110));
+    const auto size = menu.bold->CalcTextSizeA(px(14), FLT_MAX, 0, state);
+    draw->AddText(menu.bold, px(14), ImVec2(box.x + (block - size.x) * 0.5f, box.y + (box_end.y - box.y - size.y) * 0.5f),
+                  on ? paper : lit ? IM_COL32(10, 40, 82, 255) : muted, state);
+    if (hint && *hint && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", hint);
     ImGui::EndDisabled();
     ImGui::PopID();
     return clicked;
 }
 
+// ---------------------------------------------------------------- cards
+// A card is a group, not a child window: ImGui leaves out a child window that is all below the
+// screen, controls and all, so the D-pad could not move down into it (and scroll it into view). A
+// group's controls can always be reached. Its tile is drawn under it once its height is known, on a
+// draw list channel split off for it, and its controls keep inside its padding because the window's
+// work rectangle is narrowed to the card while it draws (ImGui sizes, wraps and fills to that).
 namespace {
-// The label column of field() and info(), and the width below which they stack.
-float label_column() { return px(console_mode ? 300.0f : 180.0f); }
-bool narrow() { return ImGui::GetContentRegionAvail().x < px(440); }
+constexpr float card_pad_x = 16, card_pad_y = 14, card_gap = 10;
+// A window this wide, or wider, lays a page's cards out in two columns.
+constexpr float two_column_width = 780;
+// A run of one card spans the page in a wide window, but no wider than this: across a wider card a
+// row's label and its control drift too far apart to read as one.
+constexpr float single_card_width = 900;
+// A longer run than this goes one card at a time under the shorter column: working out the best split
+// tries every way of sharing the cards between the two columns.
+constexpr std::size_t planned_run_cards = 12;
+struct CardFrame {
+    ImGuiWindow* window{};
+    ImDrawListSplitter splitter;
+    float left{}, right{}, top{};
+    float work_max{}, content_max{};
+    unsigned seed{};
+    ImGuiID id{};
+    int column = -1; // its column in a two-column run (2 for a run's only card, across the page), -1 for none
+};
+std::array<CardFrame, 6>& card_frames() {
+    static auto* frames = new std::array<CardFrame, 6>;
+    return *frames;
+}
+int card_depth = 0;
+// A run of cards as drawn: each card's id and its height with the gap under it, and the frame.
+struct CardRun {
+    std::vector<ImGuiID> cards;
+    std::vector<float> heights;
+    int frame = 0;
+};
+// The runs drawn lately, by the id of their first card. A card's height is only known once it has
+// drawn, so a run is laid out from how tall its cards were the frame before.
+std::map<ImGuiID, CardRun>& card_runs() {
+    static auto* runs = new std::map<ImGuiID, CardRun>;
+    return *runs;
+}
+// The run of cards one after another on a wide page, shared between two columns so that they end up
+// about as tall as each other. Anything drawn between two cards ends the run, so a page's own layout
+// is kept.
+struct CardFlow {
+    ImGuiWindow* window{};
+    int frame = -1;
+    ImVec2 next{};   // where a card leaves the cursor: the next card carries the run on only from there
+    float left{}, width{};
+    std::array<float, 2> bottom{};
+    ImGuiID first{};       // the run's first card, which keys its record
+    CardRun drawn;         // this frame's run so far
+    std::vector<int> plan; // each card's column from last frame's heights; empty: each under the shorter column
+    bool single = false;   // the run was one card last frame, which then spans the page
+};
+CardFlow card_flow;
+
+// Columns for a run's cards, the first top left, that leave the taller column as short as they can.
+// Used only when that beats putting each card under the shorter column by more than a row, so a page
+// keeps the usual flow unless the split is clearly better. Empty for the usual flow.
+std::vector<int> plan_card_columns(const std::vector<float>& heights) {
+    const std::size_t count = heights.size();
+    if (count < 3 || count > planned_run_cards) return {};
+    std::array<float, 2> greedy{};
+    for (const float height : heights) greedy[greedy[1] < greedy[0] ? 1 : 0] += height;
+    unsigned best = 0;
+    float best_tallest = FLT_MAX, best_spread = FLT_MAX;
+    // Bit i of a split puts card i in the right column; the first card always heads the left one.
+    for (unsigned split = 0; split < (1u << count); split += 2) {
+        std::array<float, 2> sum{};
+        for (std::size_t i = 0; i < count; ++i) sum[(split >> i) & 1u] += heights[i];
+        const float tallest = std::max(sum[0], sum[1]), spread = std::abs(sum[0] - sum[1]);
+        if (tallest < best_tallest || (tallest == best_tallest && spread < best_spread)) best = split, best_tallest = tallest, best_spread = spread;
+    }
+    if (best_tallest >= std::max(greedy[0], greedy[1]) - px(36)) return {};
+    std::vector<int> columns(count);
+    for (std::size_t i = 0; i < count; ++i) columns[i] = static_cast<int>((best >> i) & 1u);
+    return columns;
+}
 }
 void begin_card(SkateMenu& menu, const char* id, const char* title, const char* subtitle) {
-    if (console_mode) {
-        // Full screen a card is a group, not a child window: ImGui leaves out a child window that is
-        // all below the screen, controls and all, so the D-pad could not move down into it (and
-        // scroll it into view). A group's controls can always be reached.
-        ImGui::PushID(id);
-        ImGui::BeginGroup();
-        ImGui::Dummy(ImVec2(0, px(2)));
-        if (title) {
-            ImGui::PushFont(menu.heading);
-            ImGui::TextUnformatted(title);
-            ImGui::PopFont();
-            if (subtitle) {
-                ImGui::SameLine(0, px(10));
-                ImGui::AlignTextToFramePadding();
-                ImGui::PushStyleColor(ImGuiCol_Text, muted);
-                ImGui::TextUnformatted(subtitle);
-                ImGui::PopStyleColor();
+    ImGui::PushID(id);
+    ImGuiWindow* window = ImGui::GetCurrentWindow();
+    const auto cursor = ImGui::GetCursorScreenPos();
+    const float avail = ImGui::GetContentRegionAvail().x;
+    const ImGuiID card_id = ImGui::GetID("##card");
+    float left = cursor.x, right = cursor.x + avail, top = cursor.y;
+    int column = -1;
+    if (card_depth == 0 && shown_layout == menu_layout_hub && avail >= px(two_column_width)) {
+        auto& flow = card_flow;
+        const int frame_count = ImGui::GetFrameCount();
+        const bool carries_on = flow.window == window && flow.frame == frame_count && std::abs(cursor.x - flow.next.x) < 0.5f &&
+                                std::abs(cursor.y - flow.next.y) < 0.5f;
+        if (!carries_on) {
+            flow = CardFlow{window, frame_count, {}, cursor.x, avail, {cursor.y, cursor.y}, card_id, {}, {}, false};
+            flow.drawn.frame = frame_count;
+            auto& runs = card_runs();
+            if (const auto found = runs.find(card_id); found != runs.end()) {
+                flow.single = found->second.cards.size() == 1;
+                flow.plan = plan_card_columns(found->second.heights);
+                // Last frame's cards, to check the run is still the same cards as it draws.
+                if (!flow.plan.empty()) flow.drawn.cards = found->second.cards;
             }
-            ImGui::Dummy(ImVec2(0, px(4)));
+            // Runs not drawn for a minute or so, of pages long closed, are let go.
+            if (runs.size() > 256) std::erase_if(runs, [&](const auto& run) { return frame_count - run.second.frame > 3600; });
         }
-        return;
+        const std::size_t index = flow.drawn.heights.size();
+        if (!flow.plan.empty() && (index >= flow.plan.size() || flow.drawn.cards[index] != card_id)) flow.plan.clear();
+        if (flow.single && index == 0) {
+            column = 2;
+            right = left + std::min(flow.width, px(single_card_width));
+        } else {
+            column = !flow.plan.empty() ? flow.plan[index] : flow.bottom[1] < flow.bottom[0] ? 1 : 0;
+            const float half = (flow.width - px(card_gap)) * .5f;
+            left = flow.left + static_cast<float>(column) * (half + px(card_gap));
+            right = left + half;
+            top = flow.bottom[static_cast<std::size_t>(column)];
+        }
+        if (flow.drawn.cards.size() <= index) flow.drawn.cards.resize(index + 1);
+        flow.drawn.cards[index] = card_id;
     }
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, console_mode ? IM_COL32(0, 0, 0, 0) : skate_theme::tile);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, console_mode ? ImVec2(0, px(10)) : ImVec2(px(16), px(14)));
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 0);
-    // A card never scrolls itself; the wheel keeps scrolling the page around it.
-    ImGui::BeginChild(id, ImVec2(0, 0), ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding | ImGuiChildFlags_NavFlattened,
-                      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-    ImGui::PopStyleVar(2);
-    ImGui::PopStyleColor();
-    const auto at = ImGui::GetWindowPos();
-    if (!console_mode) ImGui::GetWindowDrawList()->AddRectFilled(at, ImVec2(at.x + px(4), at.y + ImGui::GetWindowHeight()), blue);
-    if (title) {
-        ImGui::PushFont(console_mode ? menu.heading : menu.bold);
-        ImGui::TextUnformatted(title);
-        ImGui::PopFont();
-        if (subtitle) {
-            ImGui::SameLine(0, px(10));
+    if (card_depth < static_cast<int>(card_frames().size())) {
+        auto& frame = card_frames()[static_cast<std::size_t>(card_depth)];
+        frame.window = window;
+        frame.left = left, frame.right = right, frame.top = top, frame.column = column;
+        frame.id = card_id;
+        frame.seed = static_cast<unsigned>(card_id) & 0xfff;
+        frame.work_max = window->WorkRect.Max.x;
+        frame.content_max = window->ContentRegionRect.Max.x;
+        frame.splitter.Split(window->DrawList, 2);
+        frame.splitter.SetCurrentChannel(window->DrawList, 1);
+        window->WorkRect.Max.x = window->ContentRegionRect.Max.x = right - px(card_pad_x);
+    }
+    ++card_depth;
+    ImGui::SetCursorScreenPos(ImVec2(left + px(card_pad_x), top + px(card_pad_y)));
+    ImGui::BeginGroup();
+    if (!title) return;
+    ImGui::PushFont(menu.heading);
+    const auto title_at = ImGui::GetCursorScreenPos();
+    ImGui::TextUnformatted(title);
+    const float title_width = ImGui::GetItemRectSize().x, title_height = ImGui::GetItemRectSize().y;
+    ImGui::PopFont();
+    if (subtitle && *subtitle) {
+        // Beside the title at the card's right end when it fits there, under it otherwise.
+        const float room = ImGui::GetContentRegionAvail().x;
+        const auto size = menu.body->CalcTextSizeA(px(15), FLT_MAX, 0, subtitle);
+        if (title_width + px(16) + size.x <= room) {
+            ImGui::GetWindowDrawList()->AddText(menu.body, px(15), ImVec2(title_at.x + room - size.x, title_at.y + title_height - size.y - px(1)),
+                                                muted, subtitle);
+        } else {
             ImGui::PushStyleColor(ImGuiCol_Text, muted);
+            ImGui::PushTextWrapPos(0);
             ImGui::TextUnformatted(subtitle);
+            ImGui::PopTextWrapPos();
             ImGui::PopStyleColor();
         }
-        ImGui::Dummy(ImVec2(0, px(4)));
     }
+    ImGui::Dummy(ImVec2(0, px(2)));
 }
 void end_card() {
-    if (console_mode) {
-        ImGui::Dummy(ImVec2(0, px(10)));
-        ImGui::EndGroup();
-        ImGui::PopID();
-        ImGui::Dummy(ImVec2(0, px(8)));
-        return;
+    // The bottom padding, inside the group so the group (and the tile) covers it.
+    ImGui::Dummy(ImVec2(0, std::max(0.0f, px(card_pad_y) - ImGui::GetStyle().ItemSpacing.y)));
+    ImGui::EndGroup();
+    --card_depth;
+    ImGuiWindow* window = ImGui::GetCurrentWindow();
+    if (card_depth >= 0 && card_depth < static_cast<int>(card_frames().size())) {
+        auto& frame = card_frames()[static_cast<std::size_t>(card_depth)];
+        const float bottom = ImGui::GetItemRectMax().y;
+        if (frame.window == window) {
+            window->WorkRect.Max.x = frame.work_max;
+            window->ContentRegionRect.Max.x = frame.content_max;
+            frame.splitter.SetCurrentChannel(window->DrawList, 0);
+            tile_rect(window->DrawList, ImVec2(frame.left, frame.top), ImVec2(frame.right, bottom), card_depth ? inner_card_fill : card_fill,
+                                    frame.seed, ui_scale);
+            frame.splitter.Merge(window->DrawList);
+        }
+        // What follows starts under the card, or under the taller column of a run.
+        float next = bottom + px(card_gap), x = frame.left;
+        if (frame.column >= 0) {
+            auto& flow = card_flow;
+            if (frame.column == 2) flow.bottom = {next, next};
+            else flow.bottom[static_cast<std::size_t>(frame.column)] = next;
+            // The run as drawn so far is what lays it out next frame.
+            const std::size_t index = flow.drawn.heights.size();
+            if (index < flow.drawn.cards.size() && flow.drawn.cards[index] == frame.id) {
+                flow.drawn.heights.push_back(next - frame.top);
+                auto& record = card_runs()[flow.first];
+                record.cards.assign(flow.drawn.cards.begin(), flow.drawn.cards.begin() + static_cast<std::ptrdiff_t>(index + 1));
+                record.heights = flow.drawn.heights;
+                record.frame = flow.drawn.frame;
+            }
+            next = std::max(flow.bottom[0], flow.bottom[1]);
+            x = flow.left;
+        }
+        ImGui::SetCursorScreenPos(ImVec2(x, next - ImGui::GetStyle().ItemSpacing.y));
+        ImGui::Dummy(ImVec2(0, 0));
+        if (frame.column >= 0) card_flow.next = ImGui::GetCursorScreenPos();
     }
-    ImGui::EndChild();
-    ImGui::Dummy(ImVec2(0, px(8)));
+    card_depth = std::max(card_depth, 0);
+    ImGui::PopID();
 }
 namespace {
 struct Folds {
@@ -419,47 +574,59 @@ bool fold_card(SkateMenu& menu, const char* id, const char* title, const char* s
     begin_card(menu, id);
     bool open = fold_open(id, open_by_default);
     const auto at = ImGui::GetCursorScreenPos();
-    const float height = ImGui::GetFrameHeight(), width = ImGui::GetContentRegionAvail().x;
-    if (ImGui::InvisibleButton("##fold", ImVec2(width, height))) {
+    const float height = px(40), width = ImGui::GetContentRegionAvail().x;
+    if (ImGui::InvisibleButton("##fold", ImVec2(width, height), ImGuiButtonFlags_EnableNav)) {
         open = !open;
         set_fold(id, open);
         folds().changed.emplace_back(id, open);
     }
-    if (ImGui::IsItemHovered()) {
-        ImGui::GetWindowDrawList()->AddRectFilled(at, ImVec2(at.x + width, at.y + height), skate_theme::tile_light);
-        ImGui::SetTooltip(open ? "Click to fold this card away." : "Click to open this card.");
-    }
-    fold_arrow(at, height, open, muted);
-    ImGui::SetCursorScreenPos(ImVec2(at.x + ImGui::GetFontSize() * 0.9f + px(4), at.y + (height - ImGui::GetFontSize()) * 0.5f));
-    ImGui::PushFont(menu.bold);
-    ImGui::TextUnformatted(title);
-    ImGui::PopFont();
+    const bool hovered = ImGui::IsItemHovered(), lit = nav_lit();
+    auto* draw = ImGui::GetWindowDrawList();
+    if (lit || hovered)
+        tile_rect(draw, at, ImVec2(at.x + width, at.y + height), lit ? focus_fill : row_hover, static_cast<unsigned>(ImGui::GetItemID()) & 0xfff,
+                                ui_scale);
+    if (hovered) ImGui::SetTooltip(open ? "Click to fold this card away." : "Click to open this card.");
+    if (lit || hovered) focus_hint = open ? "A folds this card away." : "A opens this card.";
+    fold_arrow(ImVec2(at.x + px(6), at.y), height, open, lit ? focus_ink : muted);
+    const float x = at.x + px(6) + ImGui::GetFontSize() * 0.9f + px(6);
+    const float size = px(22);
+    draw->AddText(menu.heading, size, ImVec2(x, at.y + (height - size) * .5f), lit ? focus_ink : paper, title);
     if (subtitle) {
-        ImGui::SameLine(0, px(10));
-        ImGui::PushStyleColor(ImGuiCol_Text, muted);
-        ImGui::TextUnformatted(subtitle);
-        ImGui::PopStyleColor();
+        const float after = menu.heading->CalcTextSizeA(size, FLT_MAX, 0, title).x + px(12);
+        draw->PushClipRect(at, ImVec2(at.x + width, at.y + height), true);
+        draw->AddText(menu.body, px(15), ImVec2(x + after, at.y + (height - px(15)) * .5f), lit ? IM_COL32(70, 70, 74, 255) : muted, subtitle);
+        draw->PopClipRect();
     }
-    ImGui::SetCursorScreenPos(ImVec2(at.x, at.y + height));
-    ImGui::Dummy(ImVec2(0, open ? px(4) : 0.0f));
+    if (open) ImGui::Dummy(ImVec2(0, px(2)));
     return open;
+}
+
+namespace {
+// field() and info() put the label beside what it names on a wide page, in a column this wide.
+bool wide_rows() { return ImGui::GetContentRegionAvail().x >= px(560); }
+float label_column() { return std::min(px(240), ImGui::GetContentRegionAvail().x * .4f); }
 }
 void field(SkateMenu&, const char* label, const char* tooltip) {
     pending_hint = tooltip ? tooltip : "";
-    const float start = ImGui::GetCursorPosX();
-    const bool stacked = narrow();
-    ImGui::AlignTextToFramePadding();
+    const float start = ImGui::GetCursorPosX(), column = label_column();
+    // A label too long for its column goes above the control instead of under it.
+    const bool beside = wide_rows() && ImGui::CalcTextSize(label).x <= column - ImGui::GetStyle().ItemSpacing.x;
+    if (beside) ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted(label);
-    if (tooltip && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", tooltip);
-    if (!stacked) ImGui::SameLine(start + label_column());
+    if (tooltip && *tooltip && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", tooltip);
+    if (beside) ImGui::SameLine(start + column);
     ImGui::SetNextItemWidth(-FLT_MIN);
 }
 void info(SkateMenu&, const char* label, const std::string& value) {
-    const float start = ImGui::GetCursorPosX();
+    const float start = ImGui::GetCursorPosX(), column = label_column();
+    // A value is text that wraps, not a control that needs the width, so it stays beside its label in
+    // narrower cards than a field does (a half-width card in the window, say), where a label alone on
+    // its line over its value reads as two loose lines.
+    const bool beside = ImGui::GetContentRegionAvail().x >= px(300) && ImGui::CalcTextSize(label).x <= column - ImGui::GetStyle().ItemSpacing.x;
     ImGui::PushStyleColor(ImGuiCol_Text, muted);
     ImGui::TextUnformatted(label);
     ImGui::PopStyleColor();
-    if (!narrow()) ImGui::SameLine(start + label_column());
+    if (beside) ImGui::SameLine(start + column);
     ImGui::PushTextWrapPos(0);
     ImGui::TextUnformatted(value.c_str());
     ImGui::PopTextWrapPos();
@@ -480,81 +647,41 @@ void warn(const char* text) {
 }
 bool choice(SkateMenu& menu, const char* id, int& selected, std::initializer_list<const char*> options, bool enabled,
             float total, std::initializer_list<const char*> tooltips) {
-    if (console_mode) {
-        // Full screen: one row, "< option >", left / right (or A) to change it.
-        ImGui::PushID(id);
-        ImGui::BeginDisabled(!enabled);
-        const int count = static_cast<int>(options.size());
-        const float width = total > 0 ? total : ImGui::GetContentRegionAvail().x, height = px(46);
-        const auto at = ImGui::GetCursorScreenPos();
-        const bool clicked = ImGui::InvisibleButton("##cycle", ImVec2(width, height), ImGuiButtonFlags_EnableNav);
-        const bool hovered = ImGui::IsItemHovered(), focused = ImGui::IsItemFocused();
-        int step = 0;
-        if (clicked && enabled) step = hovered && ImGui::GetIO().MouseReleased[0] && ImGui::GetIO().MousePos.x < at.x + width * .5f ? -1 : 1;
-        if (focused && enabled) {
-            if (left_pressed()) step = -1;
-            if (right_pressed()) step = 1;
-            if (step || sideways_held()) ImGui::NavMoveRequestCancel();
-        }
-        bool changed = false;
-        if (step && count > 0) {
-            selected = ((selected < 0 ? (step > 0 ? -1 : 0) : selected) + step + count) % count;
-            changed = true;
-        }
-        const char* tooltip = selected >= 0 && selected < static_cast<int>(tooltips.size()) ? tooltips.begin()[selected] : nullptr;
-        if (focused || hovered) focus_hint = tooltip ? tooltip : pending_hint;
-        auto* draw = ImGui::GetWindowDrawList();
-        const ImVec2 end(at.x + width, at.y + height);
-        console_frame(draw, at, end, focused, hovered, !enabled);
-        arrows(draw, at, end, focused);
-        const char* label = selected >= 0 && selected < count ? options.begin()[selected] : "Choose";
-        const auto size = menu.bold->CalcTextSizeA(px(17), FLT_MAX, 0, label);
-        draw->AddText(menu.bold, px(17), ImVec2(at.x + (width - size.x) * .5f, at.y + (height - size.y) * .5f - px(4)),
-                      enabled ? paper : muted, label);
-        // Which of the options this is.
-        const float dot = px(6), spacing = px(5), dots = count * dot + (count - 1) * spacing;
-        for (int i = 0; i < count; ++i)
-            draw->AddRectFilled(ImVec2(at.x + (width - dots) * .5f + i * (dot + spacing), end.y - px(10)),
-                                ImVec2(at.x + (width - dots) * .5f + i * (dot + spacing) + dot, end.y - px(6)),
-                                i == selected ? (focused || hovered ? paper : blue) : IM_COL32(255, 255, 255, 50));
-        ImGui::EndDisabled();
-        ImGui::PopID();
-        return changed;
-    }
+    // One row, "< option >": left / right, A, or a click on either half changes it.
     ImGui::PushID(id);
-    const auto count = static_cast<int>(options.size());
-    const float gap = px(4);
-    const float width = ((total > 0 ? total : ImGui::GetContentRegionAvail().x) - gap * (count - 1)) / count;
-    const float height = px(32);
-    auto* draw = ImGui::GetWindowDrawList();
-    bool changed{};
-    for (int i = 0; i < count; ++i) {
-        if (i) ImGui::SameLine(0, gap);
-        const auto at = ImGui::GetCursorScreenPos();
-        ImGui::PushID(i);
-        ImGui::BeginDisabled(!enabled);
-        if (ImGui::InvisibleButton("##choice", ImVec2(width, height), ImGuiButtonFlags_EnableNav) && selected != i) {
-            selected = i;
-            changed = true;
-        }
-        ImGui::EndDisabled();
-        const bool hovered = enabled && ImGui::IsItemHovered();
-        const char* tooltip = i < static_cast<int>(tooltips.size()) ? tooltips.begin()[i] : nullptr;
-        if (tooltip && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", tooltip);
-        if (ImGui::IsItemFocused() && ImGui::GetIO().NavVisible)
-            draw->AddRect(at, ImVec2(at.x + width, at.y + height), paper, 0, 0, px(2));
-        ImGui::PopID();
-        const bool on = selected == i;
-        const ImU32 fill = on ? (enabled ? blue : IM_COL32(1, 131, 255, 120))
-                         : hovered ? skate_theme::tile_light : skate_theme::tile_grey;
-        skate_theme::rough_rect(draw, at, ImVec2(at.x + width, at.y + height), fill, static_cast<unsigned>(i + 29), ui_scale);
-        const char* label = options.begin()[i];
-        const auto size = menu.bold->CalcTextSizeA(px(14), FLT_MAX, 0, label);
-        draw->PushClipRect(at, ImVec2(at.x + width, at.y + height), true);
-        draw->AddText(menu.bold, px(14), ImVec2(at.x + std::max(px(6), (width - size.x) * .5f), at.y + (height - size.y) * .5f),
-            on ? skate_theme::black : enabled ? paper : muted, label);
-        draw->PopClipRect();
+    ImGui::BeginDisabled(!enabled);
+    const int count = static_cast<int>(options.size());
+    const float width = total > 0 ? total : ImGui::GetContentRegionAvail().x, height = row_height();
+    const auto at = ImGui::GetCursorScreenPos();
+    const bool clicked = ImGui::InvisibleButton("##cycle", ImVec2(width, height), ImGuiButtonFlags_EnableNav);
+    const bool hovered = ImGui::IsItemHovered(), focused = ImGui::IsItemFocused(), lit = nav_lit();
+    int step = 0;
+    if (clicked && enabled) step = hovered && ImGui::GetIO().MouseReleased[0] && ImGui::GetIO().MousePos.x < at.x + width * .5f ? -1 : 1;
+    if (focused && enabled) {
+        if (left_pressed()) step = -1;
+        if (right_pressed()) step = 1;
+        if (step || sideways_held()) ImGui::NavMoveRequestCancel();
     }
+    bool changed = false;
+    if (step && count > 0) {
+        selected = ((selected < 0 ? (step > 0 ? -1 : 0) : selected) + step + count) % count;
+        changed = true;
+    }
+    const char* tooltip = selected >= 0 && selected < static_cast<int>(tooltips.size()) ? tooltips.begin()[selected] : nullptr;
+    if (lit || hovered) focus_hint = tooltip ? tooltip : pending_hint;
+    if (tooltip && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", tooltip);
+    auto* draw = ImGui::GetWindowDrawList();
+    const ImVec2 end(at.x + width, at.y + height);
+    row_frame(draw, at, end, lit, hovered, !enabled);
+    arrows(draw, at, end, lit ? focus_ink : hovered ? paper : muted);
+    const char* label = selected >= 0 && selected < count ? options.begin()[selected] : "Choose";
+    const auto size = menu.bold->CalcTextSizeA(px(text_size), FLT_MAX, 0, label);
+    draw->PushClipRect(ImVec2(at.x + px(34), at.y), ImVec2(end.x - px(34), end.y), true);
+    draw->AddText(menu.bold, px(text_size), ImVec2(at.x + std::max(px(36), (width - size.x) * .5f), at.y + (height - size.y) * .5f - px(4)),
+                  row_ink(lit, enabled), label);
+    draw->PopClipRect();
+    option_dots(draw, at.x + width * .5f, end.y, count, selected, lit);
+    ImGui::EndDisabled();
     ImGui::PopID();
     return changed;
 }
@@ -572,15 +699,25 @@ void tag(SkateMenu& menu, const char* text, ImU32 colour) {
     draw->AddText(menu.bold, px(12), ImVec2(at.x + pad.x, top + pad.y), skate_theme::black, text);
 }
 bool primary_button(SkateMenu& menu, const char* label, bool enabled) {
-    if (console_mode) return button_row(menu, label, {{label, enabled, true}}) == 0;
+    ImGui::PushID(label);
     ImGui::BeginDisabled(!enabled);
-    skate_theme::push_primary_button();
-    ImGui::PushFont(menu.bold);
-    const bool clicked = ImGui::Button(label, ImVec2(-FLT_MIN, px(40)));
-    ImGui::PopFont();
-    skate_theme::pop_primary_button();
+    const auto at = ImGui::GetCursorScreenPos();
+    const float width = ImGui::GetContentRegionAvail().x, height = row_height();
+    const bool clicked = ImGui::InvisibleButton("##primary", ImVec2(width, height), ImGuiButtonFlags_EnableNav);
     ImGui::EndDisabled();
-    return clicked;
+    const bool lit = nav_lit(), hovered = enabled && ImGui::IsItemHovered();
+    auto* draw = ImGui::GetWindowDrawList();
+    const ImVec2 end(at.x + width, at.y + height);
+    tile_rect(draw, at, end, !enabled ? primary_off : lit ? focus_fill : hovered ? primary_hover : primary_rest,
+                            static_cast<unsigned>(ImGui::GetItemID()) & 0xfff, ui_scale);
+    const char* shown_end = ImGui::FindRenderedTextEnd(label);
+    const auto size = menu.bold->CalcTextSizeA(px(text_size), FLT_MAX, 0, label, shown_end);
+    draw->PushClipRect(at, end, true);
+    draw->AddText(menu.bold, px(text_size), ImVec2(at.x + std::max(px(10), (width - size.x) * .5f), at.y + (height - size.y) * .5f),
+                  enabled || lit ? focus_ink : IM_COL32(245, 245, 245, 140), label, shown_end);
+    draw->PopClipRect();
+    ImGui::PopID();
+    return clicked && enabled;
 }
 
 namespace {
@@ -597,126 +734,89 @@ std::string box_format(const char* format, bool integer) {
     }
     return integer ? "%d" : "%.2f";
 }
-// A slider with a number box beside it for an exact value. Drawn as one group, so a caller's
-// IsItemActive / IsItemDeactivatedAfterEdit cover both: a typed value counts once the box is left.
-template<class Value, class Slide, class Type>
-bool slider_with_box(const char* id, Value* value, Value low, Value high, ImGuiSliderFlags flags, const char* format, const char* box,
-                     Slide slide, Type type) {
-    if (console_mode) {
-        // Full screen: the stepper, and a number box beside it for a mouse and keyboard (the controller's focus
-        // skips it). A typed value may go past the stepper's ends unless the caller clamps.
-        const bool boxed = !(flags & ImGuiSliderFlags_NoInput);
-        const float total = ImGui::CalcItemWidth(), box_width = px(96), gap = ImGui::GetStyle().ItemInnerSpacing.x;
-        ImGui::BeginGroup();
-        ImGui::SetNextItemWidth(boxed ? std::max(px(120), total - box_width - gap) : total);
-        bool changed = stepper(id, value, low, high, format, flags);
-        if (boxed) {
-            ImGui::SameLine(0, gap);
-            ImGui::PushID(id);
-            ImGui::PushItemFlag(ImGuiItemFlags_NoNav, true);
-            ImGui::SetNextItemWidth(box_width);
-            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + std::max(0.0f, (px(46) - ImGui::GetFrameHeight()) * 0.5f));
-            Value typed = *value;
-            type("##exact", &typed, box);
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Type an exact value and press Enter");
-            if (ImGui::IsItemDeactivatedAfterEdit()) {
-                *value = (flags & ImGuiSliderFlags_AlwaysClamp) ? std::clamp(typed, low, high) : typed;
-                changed = true;
-            }
-            ImGui::PopItemFlag();
-            ImGui::PopID();
-        }
-        ImGui::EndGroup();
-        return changed;
-    }
-    next_step = 0;
-    const float total = ImGui::CalcItemWidth();
+// The stepper, and a number box beside it for a mouse and keyboard (the controller's focus skips
+// it). Drawn as one group, so a caller's IsItemActive / IsItemDeactivatedAfterEdit cover both: a
+// typed value counts once the box is left, and may go past the stepper's ends unless the caller clamps.
+template<class Value, class Type>
+bool slider_with_box(const char* id, Value* value, Value low, Value high, ImGuiSliderFlags flags, const char* format, const char* box, Type type) {
     const bool boxed = !(flags & ImGuiSliderFlags_NoInput);
-    const float box_width = px(78), gap = ImGui::GetStyle().ItemInnerSpacing.x;
+    const float total = ImGui::CalcItemWidth(), box_width = px(96), gap = ImGui::GetStyle().ItemInnerSpacing.x;
     ImGui::BeginGroup();
-    ImGui::PushID(id);
-    ImGui::SetNextItemWidth(boxed ? std::max(px(60), total - box_width - gap) : total);
-    bool changed = slide(id, value);
+    ImGui::SetNextItemWidth(boxed ? std::max(px(120), total - box_width - gap) : total);
+    bool changed = stepper(id, value, low, high, format, flags);
     if (boxed) {
         ImGui::SameLine(0, gap);
+        ImGui::PushID(id);
+        ImGui::PushItemFlag(ImGuiItemFlags_NoNav, true);
         ImGui::SetNextItemWidth(box_width);
         Value typed = *value;
         type("##exact", &typed, box);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Type an exact value");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Type an exact value and press Enter");
         if (ImGui::IsItemDeactivatedAfterEdit()) {
             *value = (flags & ImGuiSliderFlags_AlwaysClamp) ? std::clamp(typed, low, high) : typed;
             changed = true;
         }
+        ImGui::PopItemFlag();
+        ImGui::PopID();
     }
-    ImGui::PopID();
     ImGui::EndGroup();
     return changed;
 }
 }
 bool slider_float(const char* id, float* value, float low, float high, const char* format, ImGuiSliderFlags flags) {
     return slider_with_box(id, value, low, high, flags, format, box_format(format, false).c_str(),
-        [&](const char* label, float* v) { return ImGui::SliderFloat(label, v, low, high, format, flags); },
         [](const char* label, float* v, const char* box) { return ImGui::InputFloat(label, v, 0, 0, box); });
 }
 bool slider_int(const char* id, int* value, int low, int high, const char* format, ImGuiSliderFlags flags) {
     return slider_with_box(id, value, low, high, flags, format, box_format(format, true).c_str(),
-        [&](const char* label, int* v) { return ImGui::SliderInt(label, v, low, high, format, flags); },
         [](const char* label, int* v, const char*) { return ImGui::InputInt(label, v, 0, 0); });
 }
 bool slider_double(const char* id, double* value, double low, double high, const char* format, ImGuiSliderFlags flags) {
     return slider_with_box(id, value, low, high, flags, format, box_format(format, false).c_str(),
-        [&](const char* label, double* v) { return ImGui::SliderScalar(label, ImGuiDataType_Double, v, &low, &high, format, flags); },
         [](const char* label, double* v, const char* box) { return ImGui::InputDouble(label, v, 0, 0, box); });
 }
 
-// ---------------------------------------------------------------- rows for a controller
+// ---------------------------------------------------------------- rows of buttons and lists
+namespace {
+// A button tile of button_row and button_grid: white under the focus, blue for the one that is on.
+bool button_tile(SkateMenu& menu, const char* label, ImVec2 size, bool enabled, bool on, const char* hint) {
+    const auto at = ImGui::GetCursorScreenPos();
+    ImGui::BeginDisabled(!enabled);
+    const bool pressed = ImGui::InvisibleButton("##button", size, ImGuiButtonFlags_EnableNav);
+    ImGui::EndDisabled();
+    const bool lit = nav_lit(), hovered = enabled && ImGui::IsItemHovered();
+    if ((lit || hovered) && hint) focus_hint = hint;
+    if (hint && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", hint);
+    auto* draw = ImGui::GetWindowDrawList();
+    const ImVec2 end(at.x + size.x, at.y + size.y);
+    const ImU32 fill = lit ? focus_fill : !enabled ? IM_COL32(40, 40, 43, 130) : on ? primary_rest : hovered ? row_hover : row_fill;
+    tile_rect(draw, at, end, fill, static_cast<unsigned>(ImGui::GetItemID()) & 0xfff, ui_scale);
+    const char* shown_end = ImGui::FindRenderedTextEnd(label);
+    const auto text = menu.bold->CalcTextSizeA(px(16), FLT_MAX, 0, label, shown_end);
+    draw->PushClipRect(at, end, true);
+    draw->AddText(menu.bold, px(16), ImVec2(at.x + std::max(px(10), (size.x - text.x) * .5f), at.y + (size.y - text.y) * .5f),
+                  lit || (on && enabled) ? focus_ink : enabled ? paper : muted, label, shown_end);
+    draw->PopClipRect();
+    return pressed && enabled;
+}
+}
 int button_row(SkateMenu& menu, const char* id, std::initializer_list<RowButton> buttons) {
     int pressed = -1;
-    ImGui::PushID(id);
-    if (!console_mode) {
-        // A window keeps ImGui's buttons, side by side at their own width.
-        int i = 0;
-        for (const auto& button : buttons) {
-            if (i) ImGui::SameLine();
-            ImGui::PushID(i);
-            ImGui::BeginDisabled(!button.enabled);
-            if (button.on) ImGui::PushStyleColor(ImGuiCol_Button, blue);
-            if (ImGui::Button(button.label)) pressed = i;
-            if (button.on) ImGui::PopStyleColor();
-            ImGui::EndDisabled();
-            if (button.hint && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", button.hint);
-            ImGui::PopID();
-            ++i;
-        }
-        ImGui::PopID();
-        return pressed;
-    }
-    // Full screen: one row of equal tiles as the pause menu's buttons, blue under the focus, white
-    // for the one that is on.
     const int count = static_cast<int>(buttons.size());
-    const float gap = px(10), height = px(50);
-    const float width = (ImGui::GetContentRegionAvail().x - gap * static_cast<float>(count - 1)) / static_cast<float>(count);
-    auto* draw = ImGui::GetWindowDrawList();
+    if (count == 0) return pressed;
+    ImGui::PushID(id);
+    // Equal tiles across the row; when the widest name would not fit, fewer to a row and more rows.
+    const float gap = px(6), room = ImGui::GetContentRegionAvail().x;
+    float widest = 0;
+    for (const auto& button : buttons)
+        widest = std::max(widest, menu.bold->CalcTextSizeA(px(16), FLT_MAX, 0, button.label, ImGui::FindRenderedTextEnd(button.label)).x);
+    const int across = std::clamp(static_cast<int>((room + gap) / (widest + px(28) + gap)), 1, count);
+    const float width = (room - gap * static_cast<float>(across - 1)) / static_cast<float>(across);
     int i = 0;
     for (const auto& button : buttons) {
-        if (i) ImGui::SameLine(0, gap);
+        if (i % across) ImGui::SameLine(0, gap);
         ImGui::PushID(i);
-        const auto at = ImGui::GetCursorScreenPos();
-        ImGui::BeginDisabled(!button.enabled);
-        if (ImGui::InvisibleButton("##button", ImVec2(width, height), ImGuiButtonFlags_EnableNav)) pressed = i;
-        ImGui::EndDisabled();
-        const bool focused = ImGui::IsItemFocused() && ImGui::GetIO().NavVisible, hovered = button.enabled && ImGui::IsItemHovered();
-        if ((focused || hovered) && button.hint) focus_hint = button.hint;
-        const ImVec2 end(at.x + width, at.y + height);
-        const bool lit = button.enabled && (focused || hovered);
-        const ImU32 fill = lit ? blue : button.on ? paper : button.enabled ? IM_COL32(26, 26, 26, 235) : IM_COL32(26, 26, 26, 140);
-        skate_theme::rough_rect(draw, at, end, fill, static_cast<unsigned>(ImGui::GetItemID()) & 0xfff, ui_scale);
-        const char* shown_end = ImGui::FindRenderedTextEnd(button.label);
-        const auto size = menu.bold->CalcTextSizeA(px(16), FLT_MAX, 0, button.label, shown_end);
-        draw->PushClipRect(at, end, true);
-        draw->AddText(menu.bold, px(16), ImVec2(at.x + std::max(px(10), (width - size.x) * .5f), at.y + (height - size.y) * .5f),
-                      !button.enabled ? muted : button.on && !lit ? skate_theme::black : paper, button.label, shown_end);
-        draw->PopClipRect();
+        if (button_tile(menu, button.label, ImVec2(width, row_height()), button.enabled, button.on, button.hint)) pressed = i;
         ImGui::PopID();
         ++i;
     }
@@ -728,44 +828,14 @@ int button_grid(SkateMenu& menu, const char* id, const std::vector<std::string>&
     int pressed = -1;
     ImGui::PushID(id);
     const int count = static_cast<int>(names.size());
-    if (!console_mode) {
-        const float right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
-        for (int i = 0; i < count; ++i) {
-            const auto& name = names[static_cast<std::size_t>(i)];
-            const float width = ImGui::CalcTextSize(name.c_str()).x + ImGui::GetStyle().FramePadding.x * 2 + px(8);
-            if (i) {
-                ImGui::SameLine();
-                if (ImGui::GetCursorScreenPos().x + width > right) ImGui::NewLine();
-            }
-            ImGui::PushID(i);
-            if (i == lit) ImGui::PushStyleColor(ImGuiCol_Button, blue);
-            if (ImGui::Button(name.c_str(), ImVec2(width, px(30)))) pressed = i;
-            if (i == lit) ImGui::PopStyleColor();
-            ImGui::PopID();
-        }
-        ImGui::PopID();
-        return pressed;
-    }
-    // Full screen: tiles as button_row's, at least 150 px wide, as many to a row as fit.
-    const float gap = px(10), height = px(46), room = ImGui::GetContentRegionAvail().x;
+    // At least 150 px wide, as many to a row as fit.
+    const float gap = px(6), room = ImGui::GetContentRegionAvail().x;
     const int across = std::max(1, std::min(count, static_cast<int>((room + gap) / (px(150) + gap))));
     const float width = (room - gap * static_cast<float>(across - 1)) / static_cast<float>(across);
-    auto* draw = ImGui::GetWindowDrawList();
     for (int i = 0; i < count; ++i) {
         if (i % across) ImGui::SameLine(0, gap);
         ImGui::PushID(i);
-        const auto at = ImGui::GetCursorScreenPos();
-        if (ImGui::InvisibleButton("##tile", ImVec2(width, height), ImGuiButtonFlags_EnableNav)) pressed = i;
-        const bool hot = (ImGui::IsItemFocused() && ImGui::GetIO().NavVisible) || ImGui::IsItemHovered();
-        const ImVec2 end(at.x + width, at.y + height);
-        skate_theme::rough_rect(draw, at, end, hot ? blue : i == lit ? paper : IM_COL32(26, 26, 26, 235), static_cast<unsigned>(ImGui::GetItemID()) & 0xfff,
-                                ui_scale);
-        const auto& name = names[static_cast<std::size_t>(i)];
-        const auto size = menu.bold->CalcTextSizeA(px(16), FLT_MAX, 0, name.c_str());
-        draw->PushClipRect(at, end, true);
-        draw->AddText(menu.bold, px(16), ImVec2(at.x + std::max(px(10), (width - size.x) * .5f), at.y + (height - size.y) * .5f),
-                      i == lit && !hot ? skate_theme::black : paper, name.c_str());
-        draw->PopClipRect();
+        if (button_tile(menu, names[static_cast<std::size_t>(i)].c_str(), ImVec2(width, px(44)), true, i == lit, nullptr)) pressed = i;
         ImGui::PopID();
     }
     ImGui::PopID();
@@ -780,27 +850,15 @@ bool option_row(SkateMenu& menu, const char* label, const char* hint, int& selec
     const std::string name(label, ImGui::FindRenderedTextEnd(label));
     ImGui::PushID(id ? id : label);
     bool changed = false;
-    if (!console_mode) {
-        field(menu, name.c_str(), hint);
-        ImGui::BeginDisabled(!enabled);
-        if (ImGui::BeginCombo("##option", selected >= 0 && selected < count ? options[static_cast<std::size_t>(selected)].c_str() : "Choose")) {
-            for (int i = 0; i < count; ++i)
-                if (ImGui::Selectable(options[static_cast<std::size_t>(i)].c_str(), i == selected) && i != selected) selected = i, changed = true;
-            ImGui::EndCombo();
-        }
-        ImGui::EndDisabled();
-        ImGui::PopID();
-        return changed;
-    }
-    // Full screen: the name on the left, "< option >" on the right; left / right change it, one
-    // per press. A steps on too, or, for a row that applies on A (`pressed`), applies it.
+    // The name on the left, "< option >" on the right; left / right change it, one per press. A steps
+    // on too, or, for a row that applies on A (`pressed`), applies it.
     ImGui::BeginDisabled(!enabled);
     const auto at = ImGui::GetCursorScreenPos();
-    const float width = ImGui::GetContentRegionAvail().x, height = px(54);
+    const float width = ImGui::GetContentRegionAvail().x, height = row_height();
     const bool clicked = ImGui::InvisibleButton("##option", ImVec2(width, height), ImGuiButtonFlags_EnableNav);
     ImGui::EndDisabled();
-    const bool focused = ImGui::IsItemFocused(), hovered = enabled && ImGui::IsItemHovered();
-    const float split = at.x + width * .48f;
+    const bool focused = ImGui::IsItemFocused(), lit = nav_lit(), hovered = enabled && ImGui::IsItemHovered();
+    const float split = at.x + width * .45f;
     int step = 0;
     const bool mouse = clicked && ImGui::GetIO().MouseReleased[0] && hovered;
     if (enabled && clicked) {
@@ -817,29 +875,25 @@ bool option_row(SkateMenu& menu, const char* label, const char* hint, int& selec
         selected = ((selected < 0 ? (step > 0 ? -1 : 0) : selected) + step + count) % count;
         changed = true;
     }
-    if ((focused && ImGui::GetIO().NavVisible) || hovered) focus_hint = hint ? hint : "";
+    if (lit || hovered) focus_hint = hint ? hint : "";
+    if (hint && *hint && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", hint);
     auto* draw = ImGui::GetWindowDrawList();
     const ImVec2 end(at.x + width, at.y + height);
-    const bool lit = (focused && ImGui::GetIO().NavVisible) || hovered;
-    console_frame(draw, at, end, lit, false, !enabled);
-    const auto text = menu.bold->CalcTextSizeA(px(17), FLT_MAX, 0, name.c_str());
-    draw->PushClipRect(at, ImVec2(split - px(10), end.y), true);
-    draw->AddText(menu.bold, px(17), ImVec2(at.x + px(18), at.y + (height - text.y) * .5f), enabled ? paper : muted, name.c_str());
+    row_frame(draw, at, end, lit, hovered, !enabled);
+    const auto text = menu.bold->CalcTextSizeA(px(text_size), FLT_MAX, 0, name.c_str());
+    draw->PushClipRect(at, ImVec2(split - px(8), end.y), true);
+    draw->AddText(menu.bold, px(text_size), ImVec2(at.x + px(16), at.y + (height - text.y) * .5f), row_ink(lit, enabled), name.c_str());
     draw->PopClipRect();
-    arrows(draw, ImVec2(split, at.y), end, lit);
+    arrows(draw, ImVec2(split, at.y), end, lit ? focus_ink : hovered ? paper : muted);
     const char* value = selected >= 0 && selected < count ? options[static_cast<std::size_t>(selected)].c_str() : "Choose";
     const float room = end.x - split - px(80);
-    const auto size = menu.bold->CalcTextSizeA(px(17), FLT_MAX, 0, value);
-    draw->PushClipRect(ImVec2(split + px(36), at.y), ImVec2(end.x - px(36), end.y), true);
-    draw->AddText(menu.bold, px(17), ImVec2(split + px(40) + std::max(0.0f, (room - size.x) * .5f), at.y + (height - size.y) * .5f - (count <= 12 ? px(4) : 0)),
-                  !enabled ? muted : lit ? paper : blue, value);
+    const auto size = menu.bold->CalcTextSizeA(px(text_size), FLT_MAX, 0, value);
+    draw->PushClipRect(ImVec2(split + px(34), at.y), ImVec2(end.x - px(34), end.y), true);
+    draw->AddText(menu.bold, px(text_size),
+                  ImVec2(split + px(40) + std::max(0.0f, (room - size.x) * .5f), at.y + (height - size.y) * .5f - (count > 1 && count <= 12 ? px(4) : 0)),
+                  !enabled ? muted : lit ? focus_ink : blue, value);
     draw->PopClipRect();
-    if (count > 1 && count <= 12) {
-        const float dot = px(6), spacing = px(5), dots = count * dot + (count - 1) * spacing, left = split + (end.x - split - dots) * .5f;
-        for (int i = 0; i < count; ++i)
-            draw->AddRectFilled(ImVec2(left + i * (dot + spacing), end.y - px(10)), ImVec2(left + i * (dot + spacing) + dot, end.y - px(6)),
-                                i == selected ? (lit ? paper : blue) : IM_COL32(255, 255, 255, 50));
-    }
+    option_dots(draw, split + (end.x - split) * .5f, end.y, count, selected, lit);
     ImGui::PopID();
     return changed;
 }
@@ -847,94 +901,91 @@ bool option_row(SkateMenu& menu, const char* label, const char* hint, int& selec
 bool list_row(SkateMenu& menu, const char* id, const std::string& text, const std::string& side, bool current, bool enabled) {
     ImGui::PushID(id);
     const auto at = ImGui::GetCursorScreenPos();
-    const float width = ImGui::GetContentRegionAvail().x, height = px(48);
+    const float width = ImGui::GetContentRegionAvail().x, height = row_height();
     ImGui::BeginDisabled(!enabled);
     const bool clicked = ImGui::InvisibleButton("##row", ImVec2(width, height), ImGuiButtonFlags_EnableNav);
     ImGui::EndDisabled();
-    const bool lit = enabled && ((ImGui::IsItemFocused() && ImGui::GetIO().NavVisible) || ImGui::IsItemHovered());
+    const bool lit = enabled && nav_lit(), hovered = enabled && ImGui::IsItemHovered();
     auto* draw = ImGui::GetWindowDrawList();
     const ImVec2 end(at.x + width, at.y + height);
-    skate_theme::rough_rect(draw, at, end, lit ? blue : current ? paper : IM_COL32(26, 26, 26, 200), static_cast<unsigned>(ImGui::GetItemID()) & 0xfff,
+    tile_rect(draw, at, end, lit ? focus_fill : current ? primary_rest : hovered ? row_hover : row_fill, static_cast<unsigned>(ImGui::GetItemID()) & 0xfff,
                             ui_scale);
-    const ImU32 text_ink = lit ? paper : current ? skate_theme::black : enabled ? paper : muted;
+    const ImU32 text_ink = lit || current ? focus_ink : enabled ? paper : muted;
     const auto side_size = menu.body->CalcTextSizeA(px(15), FLT_MAX, 0, side.c_str());
     draw->PushClipRect(at, ImVec2(end.x - side_size.x - px(36), end.y), true);
-    draw->AddText(menu.bold, px(17), ImVec2(at.x + px(18), at.y + (height - px(17)) * .5f), text_ink, text.c_str());
+    draw->AddText(menu.bold, px(text_size), ImVec2(at.x + px(16), at.y + (height - px(text_size)) * .5f), text_ink, text.c_str());
     draw->PopClipRect();
-    draw->AddText(menu.body, px(15), ImVec2(end.x - side_size.x - px(18), at.y + (height - side_size.y) * .5f),
-                  lit ? paper : current ? IM_COL32(40, 40, 40, 255) : muted, side.c_str());
+    draw->AddText(menu.body, px(15), ImVec2(end.x - side_size.x - px(16), at.y + (height - side_size.y) * .5f),
+                  lit ? IM_COL32(70, 70, 74, 255) : current ? paper : muted, side.c_str());
     ImGui::PopID();
     return clicked && enabled;
 }
 
 void category_tabs(SkateMenu& menu, int& selected, std::span<const char* const> tabs, const char* id) {
-    // A row of tiles like skate.'s tab bar: the selected tab is blue with black text.
-    selected = std::clamp(selected, 0, static_cast<int>(tabs.size()) - 1);
+    const int count = static_cast<int>(tabs.size());
+    if (count == 0) return;
+    selected = std::clamp(selected, 0, count - 1);
     // LT / RT on a controller step the page's first row of tabs (the one drawn first each frame),
     // not one nested in it.
     static int stepped_frame = -1;
     const bool primary = stepped_frame != ImGui::GetFrameCount();
-    if (stepped_frame != ImGui::GetFrameCount()) {
+    if (primary) {
         stepped_frame = ImGui::GetFrameCount();
-        const int count = static_cast<int>(tabs.size());
         if (!ImGui::IsAnyItemActive() && !ImGui::GetIO().WantTextInput && !menu.recording_bind && !menu.voice_bind_capture) {
             const int was = selected;
             if (ImGui::IsKeyPressed(ImGuiKey_GamepadL2, false)) selected = (selected + count - 1) % count;
             if (ImGui::IsKeyPressed(ImGuiKey_GamepadR2, false)) selected = (selected + 1) % count;
             if (selected != was) menu.feedback.clear(), tab_switched = true;
         }
+        primary_tab = selected;
+        primary_tab_name = tabs[static_cast<std::size_t>(selected)];
     }
-    // Full screen, the page's first row of tabs looks as the pause menu's do: rough tiles, the open one
-    // white with the game's blue line under it, LT and RT at the ends (they step through them).
-    if (primary && menu.fullscreen_drawn) {
-        ImGui::PushID(id);
-        auto* draw = ImGui::GetWindowDrawList();
-        // In the pause menu's own units (hub_page.cpp), so these are the ONLINE page's tabs exactly.
-        const auto display = ImGui::GetIO().DisplaySize;
-        const float u = std::min(display.x / 3840.0f, display.y / 2160.0f);
-        const float height = 84 * u, size = 44 * u;
-        const auto start = ImGui::GetCursorScreenPos();
-        float x = start.x;
-        const auto cap = [&](const char* name) {
-            x += keycap(draw, menu.bold, u * 2.2f, ImVec2(x, start.y + 20 * u), name, "") + 4 * u;
-        };
-        cap(console_playstation ? "L2" : "LT");
-        for (int i = 0; i < static_cast<int>(tabs.size()); ++i) {
-            const char* label = tabs.begin()[i];
-            const float width = menu.bold->CalcTextSizeA(size, FLT_MAX, 0, label).x + 56 * u;
-            ImGui::SetCursorScreenPos(ImVec2(x, start.y));
+    const auto pick = [&](int i) {
+        if (selected == i) return;
+        selected = i;
+        menu.feedback.clear();
+        tab_switched = true;
+    };
+    ImGui::PushID(id);
+    auto* draw = ImGui::GetWindowDrawList();
+    const auto start = ImGui::GetCursorScreenPos();
+    const float avail = ImGui::GetContentRegionAvail().x;
+    if (primary && shown_layout == menu_layout_hub) {
+        // The window: the names in a row on a thin rule, the open one white over a blue brush stroke.
+        const float size = px(18), height = px(36), gap = px(26);
+        float x = start.x, y = start.y;
+        ImVec2 open_at{}, open_end{};
+        for (int i = 0; i < count; ++i) {
+            const char* label = tabs[static_cast<std::size_t>(i)];
+            const float w = menu.bold->CalcTextSizeA(size, FLT_MAX, 0, label).x;
+            if (i && x + w > start.x + avail) x = start.x, y += height + px(4);
+            ImGui::SetCursorScreenPos(ImVec2(x - px(6), y));
             ImGui::PushID(i);
-            if (ImGui::InvisibleButton("##section", ImVec2(width, height), ImGuiButtonFlags_EnableNav) && selected != i) {
-                selected = i;
-                menu.feedback.clear();
-                tab_switched = true;
-            }
-            const bool lit = ImGui::IsItemHovered() || (ImGui::IsItemFocused() && ImGui::GetIO().NavVisible);
-            const unsigned seed = static_cast<unsigned>(ImGui::GetItemID());
+            if (ImGui::InvisibleButton("##tab", ImVec2(w + px(12), height), ImGuiButtonFlags_EnableNav)) pick(i);
+            const bool lit = nav_lit(), hovered = ImGui::IsItemHovered();
             ImGui::PopID();
             const bool on = selected == i;
-            const ImVec2 p(x, start.y), q(x + width, start.y + height);
-            skate_theme::rough_rect(draw, p, q, lit && !on ? blue : on ? paper : IM_COL32(26, 26, 26, 200), seed & 0xfff, u * 2);
-            draw->AddText(menu.bold, size, ImVec2(p.x + 28 * u, p.y + (height - size) * .5f), on ? skate_theme::black : paper, label);
-            if (on) draw->AddRectFilled(ImVec2(p.x + 6 * u, q.y + 4 * u), ImVec2(q.x - 6 * u, q.y + 14 * u), blue, 5 * u);
-            x = q.x + 20 * u;
+            if (lit)
+                tile_rect(draw, ImVec2(x - px(6), y), ImVec2(x + w + px(6), y + height - px(7)), paper, static_cast<unsigned>(i + 7), ui_scale);
+            draw->AddText(menu.bold, size, ImVec2(x, y + (height - px(7) - size) * .5f), lit ? focus_ink : on || hovered ? paper : quiet_ink, label);
+            if (on) open_at = ImVec2(x - px(4), y + height - px(5)), open_end = ImVec2(x + w + px(4), y + height);
+            x += w + gap;
         }
-        cap(console_playstation ? "R2" : "RT");
+        const float bottom = y + height;
+        draw->AddRectFilled(ImVec2(start.x, bottom - px(2)), ImVec2(start.x + avail, bottom), rule_ink);
+        // The stroke under the open tab, cut a little crooked as a brush leaves it.
+        draw->AddQuadFilled(ImVec2(open_at.x, open_at.y + px(1.5f)), ImVec2(open_end.x, open_at.y), ImVec2(open_end.x - px(1), open_end.y),
+                            ImVec2(open_at.x + px(1), open_end.y - px(1)), blue);
+        ImGui::SetCursorScreenPos(ImVec2(start.x, bottom));
+        ImGui::Dummy(ImVec2(0, px(8)));
         ImGui::PopID();
-        // The page under them where the ONLINE page's starts.
-        ImGui::SetCursorScreenPos(ImVec2(start.x, start.y + (84 + 64) * u));
-        ImGui::Dummy(ImVec2(0, 0));
         return;
     }
-    ImGui::PushID(id);
-    const float gap = px(6);
-    const float height = px(34);
-    // As many rows as it takes for every label to fit (two rows of three, say), the tabs of
-    // each row as wide as each other.
-    const int count = static_cast<int>(tabs.size());
-    const float avail = ImGui::GetContentRegionAvail().x;
+    // A segmented strip, as many rows as it takes for every label to fit (two rows of three, say),
+    // the tabs of each row as wide as each other: the open one white with dark text.
+    const float gap = px(4), height = px(34), size = px(14);
     float widest = 0;
-    for (const char* label : tabs) widest = std::max(widest, menu.bold->CalcTextSizeA(px(15), FLT_MAX, 0, label).x);
+    for (const char* label : tabs) widest = std::max(widest, menu.bold->CalcTextSizeA(size, FLT_MAX, 0, label).x);
     int columns = count;
     for (int rows = 1; rows <= count; ++rows) {
         columns = (count + rows - 1) / rows;
@@ -942,35 +993,315 @@ void category_tabs(SkateMenu& menu, int& selected, std::span<const char* const> 
     }
     const int rows = (count + columns - 1) / columns;
     const float tab_width = (avail - gap * static_cast<float>(columns - 1)) / static_cast<float>(columns);
-    const auto start = ImGui::GetCursorScreenPos();
-    auto* draw = ImGui::GetWindowDrawList();
     for (int i = 0; i < count; ++i) {
-        ImGui::SetCursorScreenPos(ImVec2(start.x + static_cast<float>(i % columns) * (tab_width + gap),
-                                         start.y + static_cast<float>(i / columns) * (height + gap)));
-        const auto at = ImGui::GetCursorScreenPos();
+        const ImVec2 at(start.x + static_cast<float>(i % columns) * (tab_width + gap), start.y + static_cast<float>(i / columns) * (height + gap));
+        ImGui::SetCursorScreenPos(at);
         ImGui::PushID(i);
-        if (ImGui::InvisibleButton("##tab", ImVec2(tab_width, height), ImGuiButtonFlags_EnableNav) && selected != i) {
-            selected = i;
-            menu.feedback.clear();
-        }
-        const bool hovered = ImGui::IsItemHovered();
-        if (ImGui::IsItemFocused() && ImGui::GetIO().NavVisible)
-            draw->AddRect(at, ImVec2(at.x + tab_width, at.y + height), paper, 0, 0, px(2));
+        if (ImGui::InvisibleButton("##tab", ImVec2(tab_width, height), ImGuiButtonFlags_EnableNav)) pick(i);
+        const bool lit = nav_lit(), hovered = ImGui::IsItemHovered();
         ImGui::PopID();
         const bool on = selected == i;
-        skate_theme::rough_rect(draw, at, ImVec2(at.x + tab_width, at.y + height),
-            on ? blue : hovered ? skate_theme::tile_light : skate_theme::tile_grey, static_cast<unsigned>(i + 11), ui_scale);
-        const char* label = tabs.begin()[i];
-        const auto size = menu.bold->CalcTextSizeA(px(15), FLT_MAX, 0, label);
-        draw->PushClipRect(at, ImVec2(at.x + tab_width, at.y + height), true);
-        draw->AddText(menu.bold, px(15), ImVec2(at.x + std::max(px(6), (tab_width - size.x) * .5f), at.y + (height - size.y) * .5f),
-            on ? skate_theme::black : paper, label);
+        const ImVec2 end(at.x + tab_width, at.y + height);
+        tile_rect(draw, at, end, lit ? focus_fill : on ? primary_rest : hovered ? row_hover : tab_fill, static_cast<unsigned>(i + 11), ui_scale);
+        // The open tab's blue brush line, as skate.'s (black on it while it has the focus).
+        if (on) draw->AddQuadFilled(ImVec2(at.x + px(6), end.y - px(2)), ImVec2(end.x - px(4), end.y - px(3)), ImVec2(end.x - px(6), end.y + px(1)),
+                                    ImVec2(at.x + px(8), end.y + px(2)), lit ? skate_theme::black : blue);
+        const char* label = tabs[static_cast<std::size_t>(i)];
+        const auto text = menu.bold->CalcTextSizeA(size, FLT_MAX, 0, label);
+        draw->PushClipRect(at, end, true);
+        draw->AddText(menu.bold, size, ImVec2(at.x + std::max(px(6), (tab_width - text.x) * .5f), at.y + (height - text.y) * .5f),
+                      on || lit ? focus_ink : hovered ? paper : quiet_ink, label);
         draw->PopClipRect();
     }
     ImGui::SetCursorScreenPos(ImVec2(start.x, start.y + static_cast<float>(rows) * height + static_cast<float>(rows - 1) * gap));
-    ImGui::Dummy(ImVec2(0, 0));
+    ImGui::Dummy(ImVec2(0, px(4)));
     ImGui::PopID();
-    ImGui::Dummy(ImVec2(0, px(6)));
+}
+
+// ---------------------------------------------------------------- rows whose actions open under them
+namespace {
+// One row of the whole menu is open at a time (a list's rows are looked at one by one), so its state
+// is kept here rather than by each page. `refocus` is a row B closed with the focus inside it, which
+// takes the focus back as it draws; `to_actions` asks for the focus on the first action, as A opens it.
+struct OpenRowState {
+    ImGuiID open{}, refocus{};
+    int drawn = -10;          // the frame the open row last drew: one not drawn is gone (another tab, a list that changed)
+    bool to_actions{}, focus_inside{};
+    ImVec2 top_left{};
+    float right{};
+};
+OpenRowState open_rows;
+}
+bool open_row(SkateMenu& menu, const char* id, const OpenRow& row) {
+    ImGui::PushID(id);
+    auto& state = open_rows;
+    const ImGuiID self = ImGui::GetID("##open-row");
+    const int frame = ImGui::GetFrameCount();
+    if (state.open == self && state.drawn < frame - 1) state.open = 0;
+    const auto at = ImGui::GetCursorScreenPos();
+    const float width = ImGui::GetContentRegionAvail().x, height = row.detail.empty() ? row_height() : px(62);
+    bool clicked = false;
+    if (row.openable) clicked = ImGui::InvisibleButton("##open-row", ImVec2(width, height), ImGuiButtonFlags_EnableNav);
+    else ImGui::Dummy(ImVec2(width, height));
+    const bool lit = row.openable && nav_lit(), hovered = row.openable && ImGui::IsItemHovered();
+    if (clicked) {
+        state.to_actions = state.open != self && lit; // lit: A on the controller or the keyboard, not a click
+        state.open = state.open == self ? 0 : self;
+    }
+    if (state.refocus == self) {
+        ImGui::FocusItem();
+        state.refocus = 0;
+    }
+    const bool open = state.open == self;
+    if (lit || hovered) focus_hint = row.hint ? row.hint : open ? "A or B closes this." : "A opens this.";
+    // Off screen (a long list scrolled away) it only takes its place.
+    if (ImGui::IsItemVisible()) {
+        auto* draw = ImGui::GetWindowDrawList();
+        const ImVec2 end(at.x + width, at.y + height);
+        tile_rect(draw, at, end, lit ? focus_fill : open || hovered ? row_hover : row_fill, static_cast<unsigned>(self) & 0xfff, ui_scale);
+        if (row.edge && !open) draw->AddRectFilled(at, ImVec2(at.x + px(4), end.y), row.edge);
+        float x = at.x + px(16);
+        if (row.swatch) {
+            const float s = px(26), y = at.y + (height - s) * .5f;
+            tile_rect(draw, ImVec2(x, y), ImVec2(x + s, y + s), row.swatch, static_cast<unsigned>(self >> 12) & 0xfff, ui_scale);
+            x += s + px(12);
+        }
+        // Right to left: the side text, then the tags after the name, then the name in what is left.
+        float right = end.x - px(16);
+        if (!row.side.empty()) {
+            const auto size = menu.bold->CalcTextSizeA(px(16), FLT_MAX, 0, row.side.c_str());
+            right -= size.x;
+            draw->AddText(menu.bold, px(16), ImVec2(right, at.y + (height - size.y) * .5f),
+                          lit ? focus_ink : row.side_colour ? row.side_colour : muted, row.side.c_str());
+            right -= px(14);
+        }
+        float tags = 0;
+        for (const auto& tag_shown : row.tags) tags += menu.bold->CalcTextSizeA(px(12), FLT_MAX, 0, tag_shown.text).x + px(14) + px(6);
+        const float line = row.detail.empty() ? at.y + (height - px(text_size)) * .5f : at.y + px(10);
+        const auto name = menu.bold->CalcTextSizeA(px(text_size), FLT_MAX, 0, row.name.c_str());
+        const float name_right = std::max(x + px(40), right - tags);
+        draw->PushClipRect(ImVec2(x, at.y), ImVec2(name_right, end.y), true);
+        draw->AddText(menu.bold, px(text_size), ImVec2(x, line), lit ? focus_ink : row.name_colour ? row.name_colour : paper, row.name.c_str());
+        draw->PopClipRect();
+        float tag_x = std::min(x + name.x, name_right) + px(10);
+        draw->PushClipRect(ImVec2(x, at.y), ImVec2(right, end.y), true);
+        for (const auto& tag_shown : row.tags) {
+            const auto size = menu.bold->CalcTextSizeA(px(12), FLT_MAX, 0, tag_shown.text);
+            const float top = line + (px(text_size) - size.y - px(6)) * .5f;
+            draw->AddRectFilled(ImVec2(tag_x, top), ImVec2(tag_x + size.x + px(14), top + size.y + px(6)), tag_shown.colour);
+            draw->AddText(menu.bold, px(12), ImVec2(tag_x + px(7), top + px(3)), skate_theme::black, tag_shown.text);
+            tag_x += size.x + px(14) + px(6);
+        }
+        if (!row.detail.empty())
+            draw->AddText(menu.body, px(15), ImVec2(x, line + px(text_size) + px(6)), lit ? IM_COL32(70, 70, 74, 255) : muted, row.detail.c_str());
+        draw->PopClipRect();
+    }
+    if (!open) {
+        ImGui::PopID();
+        return false;
+    }
+    state.drawn = frame;
+    state.top_left = at;
+    state.right = at.x + width;
+    ImGui::Indent(px(18));
+    ImGui::Dummy(ImVec2(0, px(2)));
+    if (std::exchange(state.to_actions, false)) ImGui::SetKeyboardFocusHere();
+    return true;
+}
+void end_open_row() {
+    auto& state = open_rows;
+    ImGui::Dummy(ImVec2(0, px(4)));
+    ImGui::Unindent(px(18));
+    // A blue stripe down the open row and its actions, so they read as one.
+    const float bottom = ImGui::GetCursorScreenPos().y - ImGui::GetStyle().ItemSpacing.y;
+    ImGui::GetWindowDrawList()->AddRectFilled(state.top_left, ImVec2(state.top_left.x + px(4), bottom), blue);
+    // Whether the focus is on the row or one of its actions, for B (close_open_row).
+    ImGuiContext& g = *GImGui;
+    state.focus_inside = false;
+    if (g.NavWindow && g.NavId && g.NavWindow->RootWindow == ImGui::GetCurrentWindow()->RootWindow) {
+        const ImRect focus = ImGui::WindowRectRelToAbs(g.NavWindow, g.NavWindow->NavRectRel[g.NavLayer]);
+        state.focus_inside = ImRect(state.top_left, ImVec2(state.right, bottom)).Contains(focus.GetCenter());
+    }
+    ImGui::PopID();
+}
+int action_chips(SkateMenu& menu, const char* id, std::initializer_list<RowButton> chips) {
+    int pressed = -1;
+    const int count = static_cast<int>(chips.size());
+    if (count == 0) return pressed;
+    ImGui::PushID(id);
+    const float gap = px(6), room = ImGui::GetContentRegionAvail().x;
+    float widest = 0;
+    for (const auto& chip : chips)
+        widest = std::max(widest, menu.bold->CalcTextSizeA(px(16), FLT_MAX, 0, chip.label, ImGui::FindRenderedTextEnd(chip.label)).x);
+    const int across = std::clamp(static_cast<int>((room + gap) / (widest + px(24) + gap)), 1, count);
+    const float width = (room - gap * static_cast<float>(across - 1)) / static_cast<float>(across);
+    int i = 0;
+    for (const auto& chip : chips) {
+        if (i % across) ImGui::SameLine(0, gap);
+        ImGui::PushID(i);
+        if (button_tile(menu, chip.label, ImVec2(width, px(40)), chip.enabled, chip.on, chip.hint)) pressed = i;
+        ImGui::PopID();
+        ++i;
+    }
+    ImGui::PopID();
+    return pressed;
+}
+bool close_open_row() {
+    auto& state = open_rows;
+    if (!state.open || state.drawn < ImGui::GetFrameCount() - 1 || !state.focus_inside) return false;
+    state.refocus = state.open;
+    state.open = 0;
+    return true;
+}
+
+// ---------------------------------------------------------------- rows that open
+namespace {
+// The last frame a page had a row open (expand_row): B then closes the row instead of leaving the page.
+int back_held_frame = -10;
+}
+bool page_holds_back() { return back_held_frame >= ImGui::GetFrameCount() - 1; }
+
+bool expand_row(SkateMenu& menu, const char* id, const std::string& title, const std::string& detail, const std::string& side,
+                std::string& open, bool current) {
+    ImGui::PushID(id);
+    bool is_open = !open.empty() && open == id;
+    const auto at = ImGui::GetCursorScreenPos();
+    const float width = ImGui::GetContentRegionAvail().x;
+    const float side_width = side.empty() ? 0.0f : menu.body->CalcTextSizeA(px(15), FLT_MAX, 0, side.c_str()).x + px(16);
+    const float text_left = px(40), wrap = std::max(px(80), width - text_left - side_width - px(16));
+    const float detail_height = detail.empty() ? 0.0f : menu.body->CalcTextSizeA(px(15), FLT_MAX, wrap, detail.c_str()).y + px(4);
+    const float height = detail.empty() ? row_height() : std::max(row_height(), px(26) + px(text_size) + detail_height);
+    const bool clicked = ImGui::InvisibleButton("##open", ImVec2(width, height), ImGuiButtonFlags_EnableNav);
+    const bool lit = nav_lit(), hovered = ImGui::IsItemHovered();
+    if (clicked) {
+        is_open = !is_open;
+        open = is_open ? std::string(id) : std::string();
+    } else if (is_open && ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) && !ImGui::GetIO().WantTextInput) {
+        // B closes it, and the focus comes back to the row from the actions that are going away.
+        is_open = false;
+        open.clear();
+        ImGui::SetFocusID(ImGui::GetItemID(), ImGui::GetCurrentWindow());
+    }
+    if (is_open) back_held_frame = ImGui::GetFrameCount();
+    if (lit || hovered) focus_hint = is_open ? "A or B closes it." : "A shows what you can do with it.";
+    auto* draw = ImGui::GetWindowDrawList();
+    const ImVec2 end(at.x + width, at.y + height);
+    tile_rect(draw, at, end, lit ? focus_fill : is_open || hovered ? row_hover : row_fill, static_cast<unsigned>(ImGui::GetItemID()) & 0xfff,
+                            ui_scale);
+    if (current) draw->AddRectFilled(at, ImVec2(at.x + px(4), end.y), lit ? focus_ink : blue);
+    const float title_y = detail.empty() ? at.y + (height - px(text_size)) * .5f : at.y + px(12);
+    fold_arrow(ImVec2(at.x + px(14), title_y - (row_height() - px(text_size)) * .5f), row_height(), is_open, lit ? focus_ink : muted);
+    draw->PushClipRect(at, ImVec2(end.x - side_width - px(8), end.y), true);
+    draw->AddText(menu.bold, px(text_size), ImVec2(at.x + text_left, title_y), lit ? focus_ink : paper, title.c_str());
+    if (!detail.empty())
+        draw->AddText(menu.body, px(15), ImVec2(at.x + text_left, title_y + px(text_size) + px(4)), lit ? IM_COL32(70, 70, 74, 255) : muted,
+                      detail.c_str(), nullptr, wrap);
+    draw->PopClipRect();
+    if (!side.empty())
+        draw->AddText(menu.body, px(15), ImVec2(end.x - side_width, title_y + (px(text_size) - px(15)) * .5f),
+                      lit ? IM_COL32(70, 70, 74, 255) : current ? paper : muted, side.c_str());
+    ImGui::PopID();
+    return is_open;
+}
+
+void hold_back() { back_held_frame = ImGui::GetFrameCount(); }
+bool pad_x_pressed() { return pad_x_down; }
+void page_prompts(const char* a, const char* x, const char* y) {
+    prompt_a = a;
+    prompt_x = x;
+    prompt_y = y;
+}
+
+RowPress library_row(SkateMenu& menu, const char* id, const LibraryRow& row) {
+    ImGui::PushID(id);
+    const auto at = ImGui::GetCursorScreenPos();
+    const float width = ImGui::GetContentRegionAvail().x, height = row.detail.empty() ? row_height() : px(58);
+    const bool clicked = ImGui::InvisibleButton("##library-row", ImVec2(width, height), ImGuiButtonFlags_EnableNav | ImGuiButtonFlags_MouseButtonLeft |
+                                                ImGuiButtonFlags_MouseButtonRight);
+    const bool focused = ImGui::IsItemFocused(), lit = nav_lit(), hovered = ImGui::IsItemHovered();
+    if ((lit || hovered) && row.hint) focus_hint = row.hint;
+    const ImVec2 end(at.x + width, at.y + height);
+    // Right to left: the tag, then the side text, then the name and its line in what is left.
+    float right = end.x - px(14);
+    ImVec2 tag_at{}, tag_end{};
+    if (row.tag && *row.tag) {
+        const auto size = menu.bold->CalcTextSizeA(px(14), FLT_MAX, 0, row.tag);
+        tag_end = ImVec2(right, at.y + (height + size.y) * .5f + px(3));
+        tag_at = ImVec2(right - size.x - px(16), at.y + (height - size.y) * .5f - px(3));
+        right = tag_at.x - px(12);
+    }
+    RowPress result = RowPress::none;
+    const auto& io = ImGui::GetIO();
+    if (clicked) {
+        // A click on the tag is X's, a right click Y's, anything else A's.
+        const bool on_tag = row.tag && io.MousePos.x >= tag_at.x && io.MousePos.x <= tag_end.x && io.MousePos.y >= at.y && io.MousePos.y <= end.y;
+        result = ImGui::IsMouseReleased(ImGuiMouseButton_Right) ? RowPress::y : hovered && on_tag && io.MouseReleased[0] ? RowPress::x : RowPress::a;
+    } else if (focused && !io.WantTextInput) {
+        if (pad_x_down) result = RowPress::x;
+        else if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp, false)) result = RowPress::y;
+    }
+    if (ImGui::IsItemVisible()) {
+        auto* draw = ImGui::GetWindowDrawList();
+        tile_rect(draw, at, end, lit ? focus_fill : row.open || hovered ? row_hover : row_fill, static_cast<unsigned>(ImGui::GetItemID()) & 0xfff,
+                                ui_scale);
+        if (row.edge) draw->AddRectFilled(at, ImVec2(at.x + px(4), end.y), row.edge);
+        if (row.open) draw->AddRectFilled(at, ImVec2(at.x + px(4), end.y), blue);
+        float x = at.x + px(14);
+        if (row.swatch || row.image) {
+            const float s = std::min(px(34), height - px(16)), y = at.y + (height - s) * .5f;
+            if (row.image) draw->AddImage(row.image, ImVec2(x, y), ImVec2(x + s, y + s));
+            else tile_rect(draw, ImVec2(x, y), ImVec2(x + s, y + s), row.swatch, static_cast<unsigned>(ImGui::GetItemID() >> 12) & 0xfff, ui_scale);
+            x += s + px(12);
+        }
+        if (row.tag && *row.tag) {
+            draw->AddRectFilled(tag_at, tag_end, row.tag_fill ? row.tag_fill : IM_COL32(61, 62, 66, 255));
+            draw->AddText(menu.bold, px(14), ImVec2(tag_at.x + px(8), tag_at.y + px(3)), row.tag_ink ? row.tag_ink : IM_COL32(185, 187, 192, 255), row.tag);
+        }
+        if (!row.side.empty()) {
+            const auto size = menu.body->CalcTextSizeA(px(15), FLT_MAX, 0, row.side.c_str());
+            right -= size.x;
+            draw->AddText(menu.body, px(15), ImVec2(right, at.y + (height - size.y) * .5f),
+                          lit ? IM_COL32(70, 70, 74, 255) : row.side_colour ? row.side_colour : muted, row.side.c_str());
+            right -= px(12);
+        }
+        const float line = row.detail.empty() ? at.y + (height - px(text_size)) * .5f : at.y + px(10);
+        draw->PushClipRect(ImVec2(x, at.y), ImVec2(std::max(x + px(40), right), end.y), true);
+        draw->AddText(menu.bold, px(text_size), ImVec2(x, line), lit ? focus_ink : paper, row.name.c_str());
+        if (!row.detail.empty())
+            draw->AddText(menu.body, px(14), ImVec2(x, line + px(text_size) + px(5)),
+                          lit ? IM_COL32(70, 70, 74, 255) : row.detail_colour ? row.detail_colour : muted, row.detail.c_str());
+        draw->PopClipRect();
+    }
+    ImGui::PopID();
+    return result;
+}
+
+int row_actions(SkateMenu& menu, const char* id, std::initializer_list<RowButton> actions) {
+    int pressed = -1;
+    const int count = static_cast<int>(actions.size());
+    if (count == 0) return pressed;
+    ImGui::PushID(id);
+    // Under the row's title, past its arrow; smaller tiles than button_row's, as many to a row as fit.
+    const float indent = px(40), gap = px(6);
+    ImGui::Indent(indent);
+    const float room = ImGui::GetContentRegionAvail().x;
+    float widest = 0;
+    for (const auto& action : actions)
+        widest = std::max(widest, menu.bold->CalcTextSizeA(px(16), FLT_MAX, 0, action.label, ImGui::FindRenderedTextEnd(action.label)).x);
+    const int across = std::clamp(static_cast<int>((room + gap) / (widest + px(28) + gap)), 1, count);
+    const float width = (room - gap * static_cast<float>(across - 1)) / static_cast<float>(across);
+    int i = 0;
+    for (const auto& action : actions) {
+        if (i % across) ImGui::SameLine(0, gap);
+        ImGui::PushID(i);
+        if (button_tile(menu, action.label, ImVec2(width, px(38)), action.enabled, action.on, action.hint)) pressed = i;
+        ImGui::PopID();
+        ++i;
+    }
+    ImGui::Unindent(indent);
+    ImGui::Dummy(ImVec2(0, px(4)));
+    ImGui::PopID();
+    return pressed;
 }
 }
 
@@ -993,25 +1324,11 @@ ImFont* embedded_font(const wchar_t* name, float size, const ImWchar* ranges) {
 }
 
 constexpr std::array<const char*, page_count> page_names{
-    "HOME", "MAP", "BUILD", "SKATER", "SANDBOX", "ADDONS", "PLUGINS", "ONLINE", "PROGRESS", "MODS", "SETTINGS"};
+    "HOME", "MAP", "BUILD", "SKATER", "SANDBOX", "PLUGINS", "ONLINE", "PROGRESS", "MODS", "SETTINGS"};
 constexpr std::array<const char*, page_count> page_subtitles{
     "Everything, a button away.", "Pick your spot. Set the vibe.", "Make the park yours.", "Ride it your way.",
-    "Tune it. Drill it.", "What ReSkate adds to skate.", "What your plugins add.", "Bring your crew.", "Pick up where you want.",
-    "Bring your own.", "Your controls, your screen."};
-constexpr std::array<const char*, addon_count> addon_names{"ADDONS", "MUSIC"};
-constexpr std::array<const char*, addon_count> addon_subtitles{"What ReSkate adds to skate.", "Your sound, in the game."};
-// The side rail's groups: the heading above the page that starts each.
-const char* group_of(int page) {
-    switch (page) {
-    case page_map: return "PLAY";
-    case page_skater: return "RIDE";
-    case page_addons: return "EXTRAS";
-    case page_plugins: return "PLUGINS";
-    case page_online: return "CREW";
-    case page_mods: return "SYSTEM";
-    default: return nullptr;
-    }
-}
+    "Tune it. Drill it.", "What your plugins add.", "Bring your crew.", "Pick up where you want.",
+    "Bring your own.", "Your controls, your screen, your sound."};
 }
 
 void load_skate_fonts(SkateMenu& menu) {
@@ -1042,7 +1359,8 @@ void load_skate_fonts(SkateMenu& menu) {
     static const ImWchar digits[]{'0','9',0};
     menu.countdown=embedded_font(L"FONT_BRUSH",240.f,digits);
     menu.mono = font(nullptr, "consola.ttf", 15);
-    // Full screen's larger set. The brushed titles are page and section names: plain Latin is enough.
+    // The larger set, for a menu scaled up past what the set above draws sharply (a big screen grows
+    // the menu with it). The brushed titles are page and section names: plain Latin is enough.
     static const ImWchar latin[]{0x0020, 0x00FF, 0};
     menu.body_large = font(L"FONT_BODY", "arial.ttf", 17 * large_font_ratio);
     menu.bold_large = font(L"FONT_HEADING", "arialbd.ttf", 17 * large_font_ratio);
@@ -1050,80 +1368,99 @@ void load_skate_fonts(SkateMenu& menu) {
     menu.title_large = font(L"FONT_BRUSH", "arialbi.ttf", 44 * large_font_ratio, latin);
 }
 
-namespace menu {
-bool menu_fullscreen(const SkateMenu& menu, const Model& model) { return menu.fullscreen_pending.value_or(model.menu_fullscreen); }
-void set_menu_fullscreen(SkateMenu& menu, const CallbacksV3& callbacks, bool fullscreen) {
-    menu.fullscreen_pending = fullscreen;
-    menu.fullscreen_until = ImGui::GetTime() + 3.0;
+namespace {
+// A console line of the menu's own, its reply kept off the page (the menu shows what it did).
+void quietly(const CallbacksV3& callbacks, const std::string& command) {
     if (!callbacks.queue_console_command) return;
-    std::array<char, 256> result{};
-    callbacks.queue_console_command(callbacks.user, fullscreen ? "ui fullscreen 1" : "ui fullscreen 0", result.data(), result.size());
+    std::array<char, 256> reply{};
+    callbacks.queue_console_command(callbacks.user, command.c_str(), reply.data(), reply.size());
 }
-void open_page(SkateMenu& menu, int page, int addon) {
-    if (menu.page != page || (addon >= 0 && addon != menu.addon)) tab_switched = true;
+}
+
+namespace menu {
+int menu_layout(const SkateMenu& menu, const Model& model) {
+    const int layout = menu.layout_pending.value_or(model.menu_layout);
+    return layout == menu_layout_hub ? menu_layout_hub : menu_layout_sheet;
+}
+void set_menu_layout(SkateMenu& menu, const CallbacksV3& callbacks, int layout) {
+    layout = layout == menu_layout_hub ? menu_layout_hub : menu_layout_sheet;
+    menu.layout_pending = layout;
+    menu.layout_until = ImGui::GetTime() + 3.0;
+    quietly(callbacks, layout == menu_layout_hub ? "ui layout hub" : "ui layout sheet");
+}
+void open_page(SkateMenu& menu, int page, int tab) {
+    int* tabs = page == page_map ? &menu.map_tab : page == page_build ? &menu.build_tab : page == page_skater ? &menu.skater_tab
+              : page == page_settings ? &menu.settings_tab : page == page_online ? &menu.multiplayer_tab
+              : page == page_progress ? &menu.progression_tab : nullptr;
+    if (!tabs) tab = -1;
+    if (menu.page != page || (tab >= 0 && tab != *tabs)) tab_switched = true;
     if (menu.page != page) {
         menu.recording_bind = 0;
         menu.voice_bind_capture = 0;
         menu.feedback.clear();
     }
     menu.page = page;
-    if (addon >= 0) menu.addon = addon;
+    if (tab >= 0) *tabs = tab;
 }
 }
 
 namespace {
-bool page_hidden(const SkateMenu& menu, const Model& model, int page) {
-    // Offline there is no Online. HOME is the full screen menu's: a window has its side rail instead.
-    return (page == page_home && !menu.fullscreen_drawn) || (model.steam_offline && page == page_online);
+bool page_hidden(const Model& model, int page) {
+    // Offline there is no Online.
+    return model.steam_offline && page == page_online;
 }
-// A plugin's page is titled with its name, and says whose it is.
+// A plugin's page opened from the PLUGINS list takes its plugin's name for the title.
+const plugin_ui::PageEntry* drilled_plugin_page(SkateMenu& menu) {
+    return menu.page == page_plugins && menu.plugin_page != plugin_manager_entry ? shown_plugin_page(menu) : nullptr;
+}
 const char* page_title(SkateMenu& menu) {
-    if (menu.page == page_plugins && !menu.fullscreen_drawn && !shown_plugin_page(menu)) return "PLUGIN MANAGER";
-    if (menu.page == page_plugins && !menu.fullscreen_drawn)
-        if (const auto* shown = shown_plugin_page(menu)) {
-            static std::string title;
-            title = shown->title;
-            std::transform(title.begin(), title.end(), title.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
-            return title.c_str();
-        }
-    return menu.page == page_addons && menu.addon > addon_all ? addon_names[static_cast<std::size_t>(menu.addon)] : page_names[static_cast<std::size_t>(menu.page)];
+    if (const auto* plugin = drilled_plugin_page(menu)) {
+        static std::string title;
+        title = plugin->title;
+        for (auto& c : title) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        return title.c_str();
+    }
+    return page_names[static_cast<std::size_t>(menu.page)];
 }
 const char* page_subtitle(SkateMenu& menu) {
-    if (menu.page == page_plugins && !menu.fullscreen_drawn && !shown_plugin_page(menu)) return "Which plugins may run.";
-    if (menu.page == page_plugins && !menu.fullscreen_drawn)
-        if (const auto* shown = shown_plugin_page(menu)) {
-            static std::string subtitle;
-            subtitle = "A plugin: " + shown->plugin;
-            return subtitle.c_str();
-        }
-    return menu.page == page_addons ? addon_subtitles[static_cast<std::size_t>(menu.addon)] : page_subtitles[static_cast<std::size_t>(menu.page)];
+    if (drilled_plugin_page(menu)) return "A plugin's page, opened from PLUGINS.";
+    return page_subtitles[static_cast<std::size_t>(menu.page)];
 }
 void step_page(SkateMenu& menu, const Model& model, int step) {
     int page = menu.page;
     for (int tries = 0; tries < page_count; ++tries) {
         page = (page + step + page_count) % page_count;
-        if (!page_hidden(menu, model, page)) break;
+        if (!page_hidden(model, page)) break;
     }
     open_page(menu, page);
 }
+// The big brushed titles draw from the larger face, so they stay sharp at their size.
+ImFont* title_font(const SkateMenu& menu) { return menu.title_large ? menu.title_large : menu.title; }
 
 // The brushed title, tilted like the HUB's, with its subtitle beside it.
-void brushed_title(ImDrawList* draw, SkateMenu& menu, ImVec2 at, const char* text, const char* subtitle, float size) {
+void brushed_title(ImDrawList* draw, SkateMenu& menu, ImVec2 at, const char* text, const char* subtitle, float size, float right) {
+    ImFont* font = title_font(menu);
     const int start = draw->VtxBuffer.Size;
-    draw->AddText(menu.title, size, ImVec2(at.x + px(2), at.y + px(3)), IM_COL32(0, 0, 0, 160), text);
-    draw->AddText(menu.title, size, at, paper, text);
-    const auto extent = menu.title->CalcTextSizeA(size, FLT_MAX, 0, text);
-    skate_theme::rotate_since(draw, start, -3.0f, ImVec2(at.x + extent.x * .5f, at.y + extent.y * .5f));
-    if (subtitle) draw->AddText(menu.body, px(14), ImVec2(at.x + extent.x + px(18), at.y + size * 0.5f), muted, subtitle);
+    draw->AddText(font, size, ImVec2(at.x + px(2), at.y + px(3)), IM_COL32(0, 0, 0, 160), text);
+    draw->AddText(font, size, at, paper, text);
+    const auto extent = font->CalcTextSizeA(size, FLT_MAX, 0, text);
+    skate_theme::rotate_since(draw, start, -2.0f, ImVec2(at.x + extent.x * .5f, at.y + extent.y * .5f));
+    if (subtitle && at.x + extent.x + px(18) < right) {
+        draw->PushClipRect(ImVec2(at.x, at.y), ImVec2(right, at.y + size), true);
+        draw->AddText(menu.body, px(14), ImVec2(at.x + extent.x + px(18), at.y + size - px(24)), muted, subtitle);
+        draw->PopClipRect();
+    }
 }
 
 // A controller button as the pad in use shows it: Xbox's coloured letters, or PlayStation's shapes
 // (drawn: the menu font has no ✕ ○ □ △), and the shoulders, triggers and middle buttons by name.
+// Returns its width; with no draw list it only measures.
 enum class Glyph { a, b, x, y, lb, rb, lt, rt, view, rs };
 float glyph(ImDrawList* draw, SkateMenu& menu, ImVec2 at, Glyph which, bool playstation) {
     const float size = px(22);
     const ImVec2 centre(at.x + size * .5f, at.y + size * .5f);
     const auto face = [&](ImU32 xbox_fill, const char* letter, ImU32 shape) {
+        if (!draw) return size;
         if (!playstation) {
             draw->AddCircleFilled(centre, size * .5f, xbox_fill);
             const auto text = menu.bold->CalcTextSizeA(px(13), FLT_MAX, 0, letter);
@@ -1159,8 +1496,10 @@ float glyph(ImDrawList* draw, SkateMenu& menu, ImVec2 at, Glyph which, bool play
     const char* name = (playstation ? sony : xbox)[index];
     const auto text = menu.bold->CalcTextSizeA(px(12), FLT_MAX, 0, name);
     const float width = text.x + px(14);
-    draw->AddRectFilled(at, ImVec2(at.x + width, at.y + size), IM_COL32(45, 45, 47, 255), px(4));
-    draw->AddText(menu.bold, px(12), ImVec2(at.x + px(7), at.y + (size - text.y) * .5f), paper, name);
+    if (draw) {
+        draw->AddRectFilled(at, ImVec2(at.x + width, at.y + size), paper, px(3));
+        draw->AddText(menu.bold, px(12), ImVec2(at.x + px(7), at.y + (size - text.y) * .5f), skate_theme::black, name);
+    }
     return width;
 }
 // Buttons, then what they do, as one prompt. Returns the width drawn.
@@ -1171,25 +1510,50 @@ float prompt(ImDrawList* draw, SkateMenu& menu, ImVec2 at, std::initializer_list
     return x + px(4) + menu.bold->CalcTextSizeA(px(14), FLT_MAX, 0, label).x - at.x;
 }
 
+// "TIME AND WEATHER" as "Time and weather", for a line that names a page and its tab.
+std::string sentence_case(std::string_view text) {
+    std::string out(text);
+    for (std::size_t i = 0; i < out.size(); ++i)
+        out[i] = static_cast<char>(i ? std::tolower(static_cast<unsigned char>(out[i])) : std::toupper(static_cast<unsigned char>(out[i])));
+    return out;
+}
+// The page just drawn, at the front of the pages opened lately (HOME's PICK UP WHERE YOU LEFT OFF): a
+// page once, at the tab it was last on; a plugin's page as its own.
+void note_recent_page(SkateMenu& menu) {
+    if (menu.page == page_home) return;
+    SkateMenu::RecentPage entry;
+    entry.page = menu.page;
+    if (const auto* plugin = drilled_plugin_page(menu)) {
+        entry.plugin = plugin->plugin;
+        entry.label = plugin->title;
+    } else {
+        entry.tab = primary_tab;
+        entry.label = sentence_case(page_names[static_cast<std::size_t>(menu.page)]);
+        if (primary_tab >= 0) entry.label += " \xc2\xb7 " + sentence_case(primary_tab_name);
+    }
+    auto& recent = menu.recent;
+    if (!recent.empty() && recent.front().page == entry.page && recent.front().plugin == entry.plugin) {
+        recent.front() = std::move(entry);
+        return;
+    }
+    std::erase_if(recent, [&](const SkateMenu::RecentPage& r) { return r.page == entry.page && r.plugin == entry.plugin; });
+    recent.insert(recent.begin(), std::move(entry));
+    if (recent.size() > 3) recent.resize(3);
+}
+
 void draw_page_body(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
+    card_depth = 0;
+    primary_tab = -1;
+    primary_tab_name.clear();
+    page_prompts(nullptr);
     switch (menu.page) {
     case page_home: home_page(menu, model, callbacks); break;
     case page_map: map_page(menu, model, callbacks); break;
     case page_build: build_page(menu, model, callbacks); break;
     case page_skater: skater_page(menu, model, callbacks); break;
     case page_sandbox: trainer_page(menu, model, callbacks); break;
-    case page_addons: addons_page(menu, model, callbacks); break;
     case page_plugins: plugins_page(menu); break;
-    case page_online:
-        if (console_style()) {
-            const auto at = ImGui::GetCursorScreenPos();
-            const auto room = ImGui::GetContentRegionAvail();
-            detail::draw_online_embedded(ImGui::GetWindowDrawList(), at, ImVec2(at.x + room.x, at.y + room.y), model, callbacks, true);
-            ImGui::Dummy(room);
-        } else {
-            multiplayer_page(menu, model, callbacks);
-        }
-        break;
+    case page_online: multiplayer_page(menu, model, callbacks); break;
     case page_progress: progression_page(menu, model, callbacks); break;
     case page_mods:
         ImGui::BeginChild("mods-tab", ImVec2(0, page_body_height(menu)), ImGuiChildFlags_NavFlattened);
@@ -1198,10 +1562,7 @@ void draw_page_body(SkateMenu& menu, const Model& model, const CallbacksV3& call
         break;
     case page_settings: settings_page(menu, model, callbacks); break;
     }
-    if (menu.rail_indent > 0) {
-        ImGui::Unindent(menu.rail_indent);
-        menu.rail_indent = 0;
-    }
+    note_recent_page(menu);
     if (!menu.feedback.empty() && ImGui::GetTime() < menu.feedback_until) {
         // The feedback line sits in a dark strip with a blue edge, like the game's toasts.
         ImGui::Spacing();
@@ -1212,7 +1573,7 @@ void draw_page_body(SkateMenu& menu, const Model& model, const CallbacksV3& call
         const float width = ImGui::GetContentRegionAvail().x;
         const float text_height = ImGui::CalcTextSize(result.c_str(), nullptr, false, width - px(24)).y;
         auto* page = ImGui::GetWindowDrawList();
-        page->AddRectFilled(at, ImVec2(at.x + width, at.y + text_height + px(12)), skate_theme::tile);
+        page->AddRectFilled(at, ImVec2(at.x + width, at.y + text_height + px(12)), card_fill);
         page->AddRectFilled(at, ImVec2(at.x + px(4), at.y + text_height + px(12)), blue);
         ImGui::SetCursorScreenPos(ImVec2(at.x + px(14), at.y + px(6)));
         ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + width - px(24));
@@ -1222,143 +1583,19 @@ void draw_page_body(SkateMenu& menu, const Model& model, const CallbacksV3& call
 }
 
 void wordmark(ImDrawList* draw, SkateMenu& menu, ImVec2 at, float size) {
+    ImFont* font = title_font(menu);
     const int start = draw->VtxBuffer.Size;
-    draw->AddText(menu.title, size, ImVec2(at.x + px(2), at.y + px(3)), IM_COL32(0, 0, 0, 160), "RESKATE");
-    draw->AddText(menu.title, size, at, paper, "RESKATE");
-    const auto extent = menu.title->CalcTextSizeA(size, FLT_MAX, 0, "RESKATE");
+    draw->AddText(font, size, ImVec2(at.x + px(2), at.y + px(3)), IM_COL32(0, 0, 0, 160), "RESKATE");
+    draw->AddText(font, size, at, paper, "RESKATE");
+    const float re = font->CalcTextSizeA(size, FLT_MAX, 0, "RE").x;
+    draw->AddText(font, size, ImVec2(at.x + re, at.y), blue, "SKATE");
+    const auto extent = font->CalcTextSizeA(size, FLT_MAX, 0, "RESKATE");
     skate_theme::rotate_since(draw, start, -4.0f, ImVec2(at.x + extent.x * .5f, at.y + extent.y * .5f));
 }
 
-// A window over the game, moved by dragging and resized from its edges: made for a mouse. The
-// side rail lists the pages in their groups, and every addon in EXTRAS in place of an ADDONS page:
-// the window has no overview of them, full screen's ALL ADDONS tab is that.
-void draw_windowed(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks, bool& visible, bool appearing) {
-    auto& io = ImGui::GetIO();
-    const ImVec2 maximum(std::max(px(400.0f), io.DisplaySize.x - 24), std::max(px(320.0f), io.DisplaySize.y - 24));
-    ImGui::SetNextWindowSize(ImVec2(std::min(px(1000.0f), maximum.x), std::min(px(700.0f), maximum.y)), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * .5f, io.DisplaySize.y * .5f), ImGuiCond_FirstUseEver, ImVec2(.5f, .5f));
-    ImGui::SetNextWindowSizeConstraints(ImVec2(std::min(px(680.0f), maximum.x), std::min(px(480.0f), maximum.y)), maximum);
-    if (appearing) ImGui::SetNextWindowFocus();
-    if (ImGui::Begin("ReSkate###skate-menu", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar)) {
-        const auto size = ImGui::GetWindowSize();
-        const auto current = ImGui::GetWindowPos();
-        const ImVec2 bounded(std::clamp(current.x, 0.0f, std::max(0.0f, io.DisplaySize.x - size.x)),
-            std::clamp(current.y, 0.0f, std::max(0.0f, io.DisplaySize.y - size.y)));
-        if (bounded.x != current.x || bounded.y != current.y) ImGui::SetWindowPos(bounded);
-        const auto origin = ImGui::GetWindowPos();
-        auto* draw = ImGui::GetWindowDrawList();
-        const float sidebar = px(190.0f);
-        if (menu.page == page_addons && menu.addon == addon_all) menu.addon = addon_first;
-
-        // Side rail: brushed wordmark, then the pages in their groups like the HUB's tab icons.
-        draw->AddRectFilled(origin, ImVec2(origin.x + sidebar, origin.y + size.y), IM_COL32(10, 10, 11, 250));
-        wordmark(draw, menu, ImVec2(origin.x + px(16), origin.y + px(14)), px(40));
-        draw->AddText(menu.body, px(12), ImVec2(origin.x + px(18), origin.y + px(66)), muted, "YOUR SESSION. YOUR RULES.");
-        ImGui::SetCursorPos(ImVec2(px(10), px(90)));
-        const float rail_height = size.y - px(134);
-        ImGui::BeginChild("navigation", ImVec2(sidebar - px(20), rail_height), ImGuiChildFlags_NavFlattened);
-        const float rail = sidebar - px(20);
-        // Every row is as tall as fits the rail without scrolling, from 28 to 36.
-        float row_height = px(36);
-        {
-            int rows = 0, groups = 0;
-            for (int i = 0; i < page_count; ++i) {
-                if (page_hidden(menu, model, i)) continue;
-                if (i == page_addons) rows += addon_count - addon_first;
-                else if (i == page_plugins) rows += static_cast<int>(plugin_pages()->size()) + 1;
-                else ++rows;
-                if (group_of(i)) ++groups;
-            }
-            const float spacing = ImGui::GetStyle().ItemSpacing.y;
-            ImGui::PushFont(menu.bold);
-            const float heading = px(2) + spacing + ImGui::GetTextLineHeightWithSpacing();
-            ImGui::PopFont();
-            if (rows) row_height = std::clamp((rail_height - groups * heading) / rows - spacing, px(28), px(36));
-        }
-        const auto row = [&](const char* id, const char* label, bool selected, float height, float indent, ImFont* font, float text) {
-            const auto at = ImGui::GetCursorScreenPos();
-            const bool pressed = ImGui::InvisibleButton(id, ImVec2(rail, height), ImGuiButtonFlags_EnableNav) && !selected;
-            const bool hovered = ImGui::IsItemHovered();
-            auto* nav = ImGui::GetWindowDrawList();
-            const ImVec2 end(at.x + rail, at.y + height - px(3));
-            if (selected || hovered)
-                skate_theme::rough_rect(nav, ImVec2(at.x + indent, at.y), end, selected ? blue : skate_theme::tile_grey,
-                                        static_cast<unsigned>(ImGui::GetItemID()), px(1));
-            if (ImGui::IsItemFocused() && io.NavVisible) nav->AddRect(at, end, paper, 0, 0, px(2));
-            nav->AddText(font, text, ImVec2(at.x + indent + px(12), at.y + (height - px(3) - text) * .5f),
-                selected ? skate_theme::black : paper, label);
-            return pressed;
-        };
-        for (int i = 0; i < page_count; ++i) {
-            if (page_hidden(menu, model, i)) continue;
-            if (const char* group = group_of(i)) {
-                ImGui::Dummy(ImVec2(0, px(2)));
-                ImGui::PushStyleColor(ImGuiCol_Text, muted);
-                ImGui::PushFont(menu.bold);
-                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + px(10));
-                ImGui::TextUnformatted(group);
-                ImGui::PopFont();
-                ImGui::PopStyleColor();
-            }
-            ImGui::PushID(i);
-            if (i == page_addons) {
-                for (int a = addon_first; a < addon_count; ++a) {
-                    ImGui::PushID(a);
-                    if (row("##addon", addon_names[static_cast<std::size_t>(a)], menu.page == page_addons && menu.addon == a, row_height, 0,
-                            menu.bold, px(16)))
-                        open_page(menu, page_addons, a);
-                    ImGui::PopID();
-                }
-            } else if (i == page_plugins) {
-                // The PLUGIN MANAGER first, then a row for each plugin with a page, by its name.
-                const auto pages = plugin_pages();
-                const bool manager = menu.page == page_plugins && !shown_plugin_page(menu);
-                ImGui::PushID("plugin-manager");
-                if (row("##plugin", "PLUGIN MANAGER", manager, row_height, 0, menu.bold, px(16))) {
-                    open_page(menu, page_plugins);
-                    menu.plugin_page = plugin_manager_entry;
-                }
-                ImGui::PopID();
-                for (const auto& entry : *pages) {
-                    ImGui::PushID(entry.plugin.c_str());
-                    std::string name = entry.title;
-                    std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
-                    if (row("##plugin", name.c_str(), menu.page == page_plugins && menu.plugin_page == entry.plugin, row_height, 0, menu.bold, px(16))) {
-                        open_page(menu, page_plugins);
-                        menu.plugin_page = entry.plugin;
-                    }
-                    ImGui::PopID();
-                }
-            } else if (row("##page", page_names[static_cast<std::size_t>(i)], menu.page == i, row_height, 0, menu.bold, px(16))) {
-                open_page(menu, i, -1);
-            }
-            ImGui::PopID();
-        }
-        ImGui::EndChild();
-        {
-            static const auto label = dingosdk::launcher::key_cap(dingosdk::launcher::overlay_keys().menu);
-            keycap(draw, menu.bold, px(1), ImVec2(origin.x + px(16), origin.y + size.y - px(34)), label.c_str(), "Close");
-        }
-
-        brushed_title(draw, menu, ImVec2(origin.x + sidebar + px(22), origin.y + px(12)), page_title(menu), page_subtitle(menu), px(44));
-        // Close, and beside it the full screen menu.
-        const float switch_width = ImGui::CalcTextSize("SWITCH TO FULLSCREEN").x + px(20);
-        ImGui::SetCursorPos(ImVec2(size.x - px(44) - px(6) - switch_width, px(16)));
-        if (ImGui::Button("SWITCH TO FULLSCREEN##fullscreen", ImVec2(switch_width, px(28)))) set_menu_fullscreen(menu, callbacks, true);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Full screen, made for a controller (F11)");
-        ImGui::SameLine(0, px(6));
-        if (ImGui::Button("X", ImVec2(px(28), px(28)))) visible = false;
-        ImGui::SetCursorPos(ImVec2(sidebar + px(20), px(76)));
-        ImGui::BeginChild("page", ImVec2(size.x - sidebar - px(40), size.y - px(96)), ImGuiChildFlags_NavFlattened);
-        draw_page_body(menu, model, callbacks);
-        ImGui::EndChild();
-    }
-    ImGui::End();
-}
-
-// Full screen, scrolling a page by pad: the right stick scrolls it, and up / down past its first or
-// last control scrolls on to what is above or below (text, a disabled control) that the focus
-// cannot land on. The page is the smallest scrolling part of the menu that holds the focus.
+// Scrolling a page by pad: the right stick scrolls it, and up / down past its first or last control
+// scrolls on to what is above or below (text, a disabled control) that the focus cannot land on.
+// The page is the smallest scrolling part of the menu that holds the focus.
 void pad_scroll(ImGuiWindow* root) {
     ImGuiContext& g = *GImGui;
     ImRect focus;
@@ -1389,130 +1626,333 @@ void pad_scroll(ImGuiWindow* root) {
         ImGui::SetScrollY(page, std::clamp(page->Scroll.y + stick * std::abs(stick) * px(650) * ImGui::GetIO().DeltaTime, 0.0f, page->ScrollMax.y));
 }
 
-// Fills the screen, with the pages across the top and button prompts at the bottom: made for a
-// controller. LB / RB change page, LT / RT the page's tabs, View goes back to a window.
-void draw_fullscreen(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks, bool& visible, bool appearing, bool pad,
-                     bool playstation) {
+// A press on the controller brings the focus back to the menu (after a click on the game, say), so
+// the pad never drives nothing. Not while a popup of a page is open: focusing the menu would close it.
+void take_focus_for_pad() {
+    ImGuiContext& g = *GImGui;
+    ImGuiWindow* self = ImGui::GetCurrentWindow();
+    if (ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)) return;
+    bool pad_pressed = false;
+    for (int key = ImGuiKey_GamepadStart; key <= ImGuiKey_GamepadRStickDown && !pad_pressed; ++key)
+        pad_pressed = ImGui::IsKeyPressed(static_cast<ImGuiKey>(key), false);
+    const bool ours = g.NavWindow && g.NavWindow->RootWindow == self;
+    if (!ours && (pad_pressed || !g.NavWindow) && !g.IO.WantTextInput) ImGui::FocusWindow(self);
+}
+
+// What a frame of the menu needs to know about the controller: whether it is in charge (its button
+// prompts show, else the keys'), and whether it names its buttons as a PlayStation pad does.
+struct Pad {
+    bool in_charge{};
+    bool playstation{};
+};
+
+// The prompts along the bottom of either layout: what the pad's buttons do while it is in charge,
+// the keys otherwise. A prompt that does something is a button for the pointer too. `wide` adds the
+// ones a narrow sheet has no room for, and the focused control's hint after them.
+void footer_prompts(SkateMenu& menu, const CallbacksV3& callbacks, bool& visible, ImVec2 at, float right, Pad pad, bool wide) {
+    auto* draw = ImGui::GetWindowDrawList();
+    float x = at.x;
+    const float gap = wide ? px(26) : px(16);
+    enum Action { act_none, act_back, act_close, act_layout };
+    const auto act = [&](const char* id, float width, Action action) {
+        if (action != act_none) {
+            ImGui::SetCursorScreenPos(ImVec2(x - px(4), at.y - px(4)));
+            ImGui::PushItemFlag(ImGuiItemFlags_NoNav, true);
+            const bool clicked = ImGui::InvisibleButton(id, ImVec2(width + px(8), px(30)));
+            ImGui::PopItemFlag();
+            if (ImGui::IsItemHovered()) draw->AddRectFilled(ImVec2(x - px(4), at.y - px(4)), ImVec2(x + width + px(4), at.y + px(26)), IM_COL32(255, 255, 255, 26));
+            if (clicked && action == act_back) {
+                if (menu.page != page_home) open_page(menu, page_home);
+                else visible = false;
+            }
+            if (clicked && action == act_close) visible = false;
+            if (clicked && action == act_layout) set_menu_layout(menu, callbacks, shown_layout == menu_layout_hub ? menu_layout_sheet : menu_layout_hub);
+        }
+        x += width + gap;
+    };
+    if (pad.in_charge) {
+        act("##pages", prompt(draw, menu, ImVec2(x, at.y), {Glyph::lb, Glyph::rb}, "Pages", pad.playstation), act_none);
+        // A page that says what its buttons do (page_prompts) shows that in place of Select; a narrow
+        // sheet then leaves Tabs out for the room (those pages have none).
+        const bool own = prompt_a || prompt_x || prompt_y;
+        if (wide || !own) act("##tabs", prompt(draw, menu, ImVec2(x, at.y), {Glyph::lt, Glyph::rt}, "Tabs", pad.playstation), act_none);
+        if (!own) act("##select", prompt(draw, menu, ImVec2(x, at.y), {Glyph::a}, "Select", pad.playstation), act_none);
+        if (prompt_a) act("##a", prompt(draw, menu, ImVec2(x, at.y), {Glyph::a}, prompt_a, pad.playstation), act_none);
+        if (prompt_x) act("##x", prompt(draw, menu, ImVec2(x, at.y), {Glyph::x}, prompt_x, pad.playstation), act_none);
+        if (prompt_y) act("##y", prompt(draw, menu, ImVec2(x, at.y), {Glyph::y}, prompt_y, pad.playstation), act_none);
+        act("##back", prompt(draw, menu, ImVec2(x, at.y), {Glyph::b}, menu.page == page_home ? "Close" : "Back", pad.playstation), act_back);
+        if (wide) {
+            act("##layout", prompt(draw, menu, ImVec2(x, at.y), {Glyph::view}, "Layout", pad.playstation), act_layout);
+            act("##scroll", prompt(draw, menu, ImVec2(x, at.y), {Glyph::rs}, "Scroll", pad.playstation), act_none);
+        }
+    } else {
+        // Esc and the menu's own key both close it; one prompt is enough.
+        act("##escape", keycap(draw, menu.bold, ui_scale, ImVec2(x, at.y + px(1)), "Esc", "Close"), act_close);
+        act("##f11", keycap(draw, menu.bold, ui_scale, ImVec2(x, at.y + px(1)), "F11", "Layout"), act_layout);
+    }
+    if (wide && pad.in_charge && !console_hint().empty() && x < right) {
+        draw->PushClipRect(ImVec2(x, at.y - px(4)), ImVec2(right, at.y + px(26)), true);
+        draw->AddText(menu.body, px(15), ImVec2(x, at.y + px(3)), muted, console_hint().c_str());
+        draw->PopClipRect();
+    }
+}
+
+// The side sheet: docked to the right edge at the display's full height, the game in view beside it.
+// Its left edge is dragged to make it wider (saved, `ui sheetwidth`). Pages step with LB / RB in its
+// header, where dots say which of them is open.
+void draw_sheet(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks, bool& visible, bool appearing, Pad pad) {
     auto& io = ImGui::GetIO();
-    ImGui::SetNextWindowPos(ImVec2(0, 0));
-    ImGui::SetNextWindowSize(io.DisplaySize);
+    const auto display = io.DisplaySize;
+    const float low = std::min(px(min_menu_sheet_width), display.x), high = std::max(low, display.x * .5f);
+    const float saved = menu.sheet_width_pending.value_or(model.menu_sheet_width > 0 ? model.menu_sheet_width : default_menu_sheet_width);
+    const float width = std::clamp(menu.sheet_dragging ? menu.sheet_drag_width : px(saved), low, high);
+    ImGui::SetNextWindowPos(ImVec2(display.x - width, 0));
+    ImGui::SetNextWindowSize(ImVec2(width, display.y));
     if (appearing) ImGui::SetNextWindowFocus();
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(8, 9, 11, 238));
-    const bool began = ImGui::Begin("ReSkate###skate-menu-full", nullptr,
+    // The sheet draws its own fill, its left edge leaning a little like a cut tile's.
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(0, 0, 0, 0));
+    const bool began = ImGui::Begin("ReSkate###skate-menu-sheet", nullptr,
         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
-        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings);
+        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoSavedSettings);
     ImGui::PopStyleColor();
     if (began) {
-        {
-            ImGuiContext& g = *GImGui;
-            ImGuiWindow* self = ImGui::GetCurrentWindow();
-            bool pad_pressed = false;
-            for (int key = ImGuiKey_GamepadStart; key <= ImGuiKey_GamepadRStickDown && !pad_pressed; ++key)
-                pad_pressed = ImGui::IsKeyPressed(static_cast<ImGuiKey>(key), false);
-            const bool ours = g.NavWindow && g.NavWindow->RootWindow == self;
-            if (!ours && (pad_pressed || !g.NavWindow) && !io.WantTextInput) ImGui::FocusWindow(self);
-        }
-        const auto size = ImGui::GetWindowSize();
+        take_focus_for_pad();
         const auto origin = ImGui::GetWindowPos();
+        const auto size = ImGui::GetWindowSize();
         auto* draw = ImGui::GetWindowDrawList();
-        const float bar = px(68), footer = px(56);
-        draw->AddRectFilled(origin, ImVec2(origin.x + size.x, origin.y + bar), IM_COL32(10, 10, 11, 255));
-        draw->AddRectFilled(ImVec2(origin.x, origin.y + bar - px(1)), ImVec2(origin.x + size.x, origin.y + bar), skate_theme::tile_grey);
-        wordmark(draw, menu, ImVec2(origin.x + px(26), origin.y + px(16)), px(34));
+        const float lean = px(6), band = px(104), footer = px(50), pad_x = px(26);
+        const auto edge_at = [&](float y) { return origin.x + lean * (1.0f - (y - origin.y) / std::max(1.0f, size.y)); };
+        draw->AddQuadFilled(ImVec2(origin.x + lean, origin.y), ImVec2(origin.x + size.x, origin.y), ImVec2(origin.x + size.x, origin.y + size.y),
+                            ImVec2(origin.x, origin.y + size.y), sheet_fill);
+        draw->AddQuadFilled(ImVec2(origin.x + lean, origin.y), ImVec2(origin.x + size.x, origin.y), ImVec2(origin.x + size.x, origin.y + band),
+                            ImVec2(edge_at(origin.y + band), origin.y + band), band_fill);
+        const float foot = origin.y + size.y - footer;
+        draw->AddQuadFilled(ImVec2(edge_at(foot), foot), ImVec2(origin.x + size.x, foot), ImVec2(origin.x + size.x, origin.y + size.y),
+                            ImVec2(origin.x, origin.y + size.y), band_fill);
 
-        // The pages across the top, LB and RB at their ends.
-        const float tab_height = px(42), tab_pad = px(16);
-        float tabs_width = 0;
-        for (int i = 0; i < page_count; ++i)
-            if (!page_hidden(menu, model, i))
-                tabs_width += menu.bold->CalcTextSizeA(px(16), FLT_MAX, 0, page_names[static_cast<std::size_t>(i)]).x + tab_pad * 2 + px(2);
-        const float glyphs = pad ? px(36) * 2 : 0;
-        float x = origin.x + std::max(px(220), (size.x - tabs_width - glyphs) * .5f);
-        const float tab_y = origin.y + (bar - tab_height) * .5f;
-        if (pad) x += glyph(draw, menu, ImVec2(x, tab_y + (tab_height - px(22)) * .5f), Glyph::lb, playstation) + px(12);
-        for (int i = 0; i < page_count; ++i) {
-            if (page_hidden(menu, model, i)) continue;
-            const char* name = page_names[static_cast<std::size_t>(i)];
-            const auto text = menu.bold->CalcTextSizeA(px(16), FLT_MAX, 0, name);
-            const float width = text.x + tab_pad * 2;
-            ImGui::SetCursorScreenPos(ImVec2(x, tab_y));
-            ImGui::PushID(i);
-            if (ImGui::InvisibleButton("##top-page", ImVec2(width, tab_height), ImGuiButtonFlags_EnableNav)) open_page(menu, i, i == page_addons ? addon_all : -1);
-            const bool hovered = ImGui::IsItemHovered();
-            if (ImGui::IsItemFocused() && io.NavVisible) draw->AddRect(ImVec2(x, tab_y), ImVec2(x + width, tab_y + tab_height), paper, 0, 0, px(2));
-            ImGui::PopID();
-            const bool on = menu.page == i;
-            if (on || hovered) draw->AddRectFilled(ImVec2(x, tab_y), ImVec2(x + width, tab_y + tab_height), on ? blue : skate_theme::tile_grey);
-            draw->AddText(menu.bold, px(16), ImVec2(x + tab_pad, tab_y + (tab_height - text.y) * .5f), on ? skate_theme::black : paper, name);
-            x += width + px(2);
+        // The left edge, held and dragged, sets the width; it is saved once let go.
+        ImGui::SetCursorScreenPos(origin);
+        ImGui::PushItemFlag(ImGuiItemFlags_NoNav, true);
+        ImGui::InvisibleButton("##sheet-edge", ImVec2(px(8), size.y));
+        ImGui::PopItemFlag();
+        if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+            draw->AddLine(ImVec2(edge_at(origin.y) + px(1), origin.y), ImVec2(origin.x + px(1), origin.y + size.y), blue, px(3));
         }
-        if (pad) glyph(draw, menu, ImVec2(x + px(10), tab_y + (tab_height - px(22)) * .5f), Glyph::rb, playstation);
+        if (ImGui::IsItemActive()) {
+            menu.sheet_dragging = true;
+            menu.sheet_drag_width = std::clamp(display.x - io.MousePos.x, low, high);
+        } else if (menu.sheet_dragging) {
+            menu.sheet_dragging = false;
+            const float reference = std::clamp(menu.sheet_drag_width / px(1), min_menu_sheet_width, max_menu_sheet_width);
+            menu.sheet_width_pending = reference;
+            menu.sheet_width_until = ImGui::GetTime() + 3.0;
+            quietly(callbacks, std::format("ui sheetwidth {:.0f}", reference));
+        }
 
-        // Back to a window, and close.
-        const float switch_width = ImGui::CalcTextSize("SWITCH TO WINDOWED").x + px(28);
-        ImGui::SetCursorScreenPos(ImVec2(origin.x + size.x - px(26) - px(36) - px(8) - switch_width, origin.y + (bar - px(36)) * .5f));
-        if (ImGui::Button("SWITCH TO WINDOWED##windowed", ImVec2(switch_width, px(36)))) set_menu_fullscreen(menu, callbacks, false);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("A window over the game, made for a mouse (F11)");
-        ImGui::SameLine(0, px(8));
-        if (ImGui::Button("X##close", ImVec2(px(36), px(36)))) visible = false;
+        // The header: LB, the page's name with a dot for each page under it, RB. The pointer clicks
+        // the buttons and the dots.
+        const auto page_button = [&](const char* id, ImVec2 at, Glyph which) {
+            const float w = glyph(nullptr, menu, at, which, pad.playstation);
+            ImGui::SetCursorScreenPos(ImVec2(at.x - px(6), at.y - px(6)));
+            ImGui::PushItemFlag(ImGuiItemFlags_NoNav, true);
+            const bool clicked = ImGui::InvisibleButton(id, ImVec2(w + px(12), px(34)));
+            ImGui::PopItemFlag();
+            if (ImGui::IsItemHovered()) draw->AddRectFilled(ImVec2(at.x - px(4), at.y - px(4)), ImVec2(at.x + w + px(4), at.y + px(26)), IM_COL32(255, 255, 255, 30));
+            glyph(draw, menu, at, which, pad.playstation);
+            return clicked;
+        };
+        const float cap_y = origin.y + band * .5f - px(11);
+        if (page_button("##previous-page", ImVec2(origin.x + pad_x, cap_y), Glyph::lb)) step_page(menu, model, -1);
+        const float rb_width = glyph(nullptr, menu, ImVec2(), Glyph::rb, pad.playstation);
+        if (page_button("##next-page", ImVec2(origin.x + size.x - pad_x - rb_width, cap_y), Glyph::rb)) step_page(menu, model, 1);
+        // A plugin's page opened from PLUGINS is titled with the plugin's name (page_title), so the sheet says
+        // whose page it is; the names row under it still marks PLUGINS, where B goes back to.
+        const char* name = page_title(menu);
+        ImFont* big = title_font(menu);
+        const float title = px(44);
+        const auto extent = big->CalcTextSizeA(title, FLT_MAX, 0, name);
+        const ImVec2 name_at(origin.x + (size.x + lean - extent.x) * .5f, origin.y + px(12));
+        const int start = draw->VtxBuffer.Size;
+        draw->AddText(big, title, ImVec2(name_at.x + px(2), name_at.y + px(3)), IM_COL32(0, 0, 0, 160), name);
+        draw->AddText(big, title, name_at, paper, name);
+        skate_theme::rotate_since(draw, start, -2.0f, ImVec2(name_at.x + extent.x * .5f, name_at.y + extent.y * .5f));
+        {
+            // Every page by name under the title, the open one white and underlined, the row slid so
+            // it sits in the middle: which pages LB and RB lead to reads at a glance (dots did not).
+            const float size_text = px(13), spacing = px(16), y = origin.y + px(70);
+            const float left = origin.x + pad_x + rb_width + px(14), right = origin.x + size.x - pad_x - rb_width - px(14);
+            std::vector<std::pair<int, float>> names;
+            float total = 0, before = 0;
+            for (int i = 0; i < page_count; ++i) {
+                if (page_hidden(model, i)) continue;
+                const float w = menu.bold->CalcTextSizeA(size_text, FLT_MAX, 0, page_names[static_cast<std::size_t>(i)]).x;
+                if (i == menu.page) before = total + w * .5f;
+                names.emplace_back(i, w);
+                total += w + spacing;
+            }
+            total -= spacing;
+            const float middle = (left + right) * .5f;
+            float x = total <= right - left ? middle - total * .5f : std::clamp(middle - before, right - total, left);
+            draw->PushClipRect(ImVec2(left, y - px(4)), ImVec2(right, y + px(22)), true);
+            for (const auto& [i, w] : names) {
+                const bool open = i == menu.page;
+                ImGui::SetCursorScreenPos(ImVec2(x - spacing * .5f, y - px(4)));
+                ImGui::PushID(i);
+                ImGui::PushItemFlag(ImGuiItemFlags_NoNav, true);
+                const bool visible_name = x + w > left && x < right;
+                if (visible_name && ImGui::InvisibleButton("##page-name", ImVec2(w + spacing, px(24))))
+                    open_page(menu, i);
+                const bool hovered = visible_name && ImGui::IsItemHovered();
+                ImGui::PopItemFlag();
+                ImGui::PopID();
+                draw->AddText(menu.bold, size_text, ImVec2(x, y), open ? paper : hovered ? IM_COL32(210, 212, 216, 255) : skate_theme::grey_text,
+                              page_names[static_cast<std::size_t>(i)]);
+                if (open) draw->AddRectFilled(ImVec2(x - px(2), y + px(17)), ImVec2(x + w + px(2), y + px(20)), blue);
+                x += w + spacing;
+            }
+            draw->PopClipRect();
+        }
 
-        // The page, in a column that keeps lines readable on a wide screen.
-        const float width = std::min(size.x - px(80), px(1360));
-        const float left = (size.x - width) * .5f;
-        if (menu.page != page_home)
-            brushed_title(draw, menu, ImVec2(origin.x + left, origin.y + bar + px(16)), page_title(menu), page_subtitle(menu), px(44));
-        const float top = bar + (menu.page == page_home ? px(24) : px(84));
-        ImGui::SetCursorPos(ImVec2(left, top));
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(px(16), px(13)));
-        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(px(12), px(12)));
-        ImGui::BeginChild("page", ImVec2(width, size.y - top - footer - px(12)), ImGuiChildFlags_NavFlattened);
+        // The page: its tabs, then its body, scrolling.
+        const bool hint_strip = pad.in_charge; // a controller has no hover tooltips: what the focus does shows above the prompts
+        const float hint = hint_strip ? px(30) : 0.0f, top = band + px(14);
+        ImGui::SetCursorScreenPos(ImVec2(origin.x + pad_x, origin.y + top));
+        ImGui::BeginChild("page", ImVec2(size.x - pad_x * 2, std::max(px(80), size.y - top - footer - hint - px(8))), ImGuiChildFlags_NavFlattened);
         draw_page_body(menu, model, callbacks);
         ImGui::EndChild();
-        ImGui::PopStyleVar(2);
-        if (menu.page != page_online && !menu.recording_bind) pad_scroll(ImGui::GetCurrentWindow());
+        if (!menu.recording_bind) pad_scroll(ImGui::GetCurrentWindow());
 
-        // What the buttons do: the pad's, or the keys when there is none.
-        const float foot = origin.y + size.y - footer;
-        draw->AddRectFilled(ImVec2(origin.x, foot), ImVec2(origin.x + size.x, origin.y + size.y), IM_COL32(10, 10, 11, 255));
-        draw->AddRectFilled(ImVec2(origin.x, foot), ImVec2(origin.x + size.x, foot + px(1)), skate_theme::tile_grey);
-        const ImVec2 at(origin.x + left, foot + (footer - px(22)) * .5f);
-        float across = 0;
-        if (pad) {
-            across += prompt(draw, menu, ImVec2(at.x + across, at.y), {Glyph::a}, "Select", playstation) + px(26);
-            across += prompt(draw, menu, ImVec2(at.x + across, at.y), {Glyph::b}, menu.page == page_home ? "Close" : "Back", playstation) + px(26);
-            across += prompt(draw, menu, ImVec2(at.x + across, at.y), {Glyph::lb, Glyph::rb}, "Pages", playstation) + px(26);
-            across += prompt(draw, menu, ImVec2(at.x + across, at.y), {Glyph::lt, Glyph::rt}, "Sections", playstation) + px(26);
-            across += prompt(draw, menu, ImVec2(at.x + across, at.y), {Glyph::view}, "Windowed", playstation) + px(26);
-            if (menu.page != page_online) across += prompt(draw, menu, ImVec2(at.x + across, at.y), {Glyph::rs}, "Scroll", playstation) + px(40);
-            else across += px(14);
-            if (!console_hint().empty()) {
-                draw->PushClipRect(ImVec2(at.x + across, foot), ImVec2(origin.x + size.x - px(20), origin.y + size.y), true);
-                draw->AddText(menu.body, px(15), ImVec2(at.x + across, at.y + px(3)), muted, console_hint().c_str());
-                draw->PopClipRect();
-            }
-        } else {
-            static const auto label = dingosdk::launcher::key_cap(dingosdk::launcher::overlay_keys().menu);
-            across += keycap(draw, menu.bold, px(1), ImVec2(at.x + across, at.y), "Esc", "Close") + px(26);
-            across += keycap(draw, menu.bold, px(1), ImVec2(at.x + across, at.y), "F11", "Windowed") + px(26);
-            keycap(draw, menu.bold, px(1), ImVec2(at.x + across, at.y), label.c_str(), "Close");
+        if (hint_strip && !console_hint().empty()) {
+            draw->PushClipRect(ImVec2(origin.x + pad_x, foot - hint), ImVec2(origin.x + size.x - pad_x, foot), true);
+            draw->AddText(menu.body, px(15), ImVec2(origin.x + pad_x, foot - hint + px(6)), muted, console_hint().c_str());
+            draw->PopClipRect();
         }
+        footer_prompts(menu, callbacks, visible, ImVec2(origin.x + pad_x, foot + (footer - px(22)) * .5f), origin.x + size.x - pad_x, pad, false);
     }
     ImGui::End();
 }
+
+// The hub rail: a window in the middle of the screen, the pages down its left side in the brushed
+// font. Dragging an edge or a corner resizes it (saved, `ui hubsize`); it reopens centred.
+void draw_hub(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks, bool& visible, bool appearing, Pad pad) {
+    auto& io = ImGui::GetIO();
+    const auto display = io.DisplaySize;
+    const ImVec2 maximum(std::max(px(400.0f), display.x - 24), std::max(px(320.0f), display.y - 24));
+    const ImVec2 minimum(std::min(px(min_menu_hub_width), maximum.x), std::min(px(min_menu_hub_height), maximum.y));
+    const bool saved = model.menu_hub_width > 0 && model.menu_hub_height > 0;
+    const ImVec2 reference = menu.hub_size_pending.value_or(saved ? ImVec2(model.menu_hub_width, model.menu_hub_height)
+                                                                  : ImVec2(default_menu_hub_width, default_menu_hub_height));
+    const ImVec2 wanted(std::clamp(px(reference.x), minimum.x, maximum.x), std::clamp(px(reference.y), minimum.y, maximum.y));
+    // The saved size is given to ImGui on opening and when it changes (another scale, the saved size
+    // arriving); between those the window keeps the size the player drags it to.
+    const bool differs = std::abs(wanted.x - menu.hub_size_applied.x) > 1 || std::abs(wanted.y - menu.hub_size_applied.y) > 1;
+    if (appearing || (differs && !io.MouseDown[0])) {
+        ImGui::SetNextWindowSize(wanted, ImGuiCond_Always);
+        menu.hub_size_applied = wanted;
+    }
+    ImGui::SetNextWindowPos(ImVec2(display.x * .5f, display.y * .5f), appearing ? ImGuiCond_Always : ImGuiCond_FirstUseEver, ImVec2(.5f, .5f));
+    ImGui::SetNextWindowSizeConstraints(minimum, maximum);
+    if (appearing) ImGui::SetNextWindowFocus();
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, window_fill);
+    const bool began = ImGui::Begin("ReSkate###skate-menu-hub", nullptr,
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
+        ImGuiWindowFlags_NoSavedSettings);
+    ImGui::PopStyleColor();
+    if (began) {
+        take_focus_for_pad();
+        const auto size = ImGui::GetWindowSize();
+        const auto current = ImGui::GetWindowPos();
+        const ImVec2 bounded(std::clamp(current.x, 0.0f, std::max(0.0f, display.x - size.x)),
+            std::clamp(current.y, 0.0f, std::max(0.0f, display.y - size.y)));
+        if (bounded.x != current.x || bounded.y != current.y) ImGui::SetWindowPos(bounded);
+        // A size other than the one given is the player's drag: saved once the mouse lets go.
+        if ((std::abs(size.x - menu.hub_size_applied.x) > 1 || std::abs(size.y - menu.hub_size_applied.y) > 1) && !io.MouseDown[0]) {
+            const ImVec2 dragged(std::clamp(size.x / px(1), min_menu_hub_width, max_menu_hub_side),
+                                 std::clamp(size.y / px(1), min_menu_hub_height, max_menu_hub_side));
+            menu.hub_size_pending = dragged;
+            menu.hub_size_until = ImGui::GetTime() + 3.0;
+            menu.hub_size_applied = size;
+            quietly(callbacks, std::format("ui hubsize {:.0f}x{:.0f}", dragged.x, dragged.y));
+        }
+        const auto origin = ImGui::GetWindowPos();
+        auto* draw = ImGui::GetWindowDrawList();
+
+        // The rail: the wordmark, then the pages in the brushed font, the open one white on a blue stroke.
+        const float rail = px(250);
+        draw->AddRectFilled(origin, ImVec2(origin.x + rail, origin.y + size.y), rail_fill);
+        wordmark(draw, menu, ImVec2(origin.x + px(28), origin.y + px(20)), px(42));
+        {
+            const float top = px(100), list_height = size.y - top - px(20);
+            ImGui::SetCursorScreenPos(ImVec2(origin.x + px(18), origin.y + top));
+            ImGui::BeginChild("pages", ImVec2(rail - px(18), list_height), ImGuiChildFlags_NavFlattened,
+                              ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+            int rows = 0;
+            for (int i = 0; i < page_count; ++i) rows += page_hidden(model, i) ? 0 : 1;
+            const float row = std::clamp(list_height / static_cast<float>(std::max(rows, 1)) - ImGui::GetStyle().ItemSpacing.y, px(26), px(38));
+            auto* list = ImGui::GetWindowDrawList();
+            ImFont* font = title_font(menu);
+            for (int i = 0; i < page_count; ++i) {
+                if (page_hidden(model, i)) continue;
+                const auto at = ImGui::GetCursorScreenPos();
+                ImGui::PushID(i);
+                if (ImGui::InvisibleButton("##page", ImVec2(rail - px(36), row), ImGuiButtonFlags_EnableNav)) open_page(menu, i);
+                const bool lit = nav_lit(), hovered = ImGui::IsItemHovered();
+                ImGui::PopID();
+                const bool on = menu.page == i;
+                if (on || lit) {
+                    // A brush stroke, cut crooked at its ends.
+                    const float x0 = at.x, x1 = at.x + px(200), y0 = at.y + row * .08f, y1 = at.y + row * .92f, h = y1 - y0;
+                    list->AddQuadFilled(ImVec2(x0 + px(4), y0 + h * .12f), ImVec2(x1, y0), ImVec2(x1 - px(8), y1), ImVec2(x0, y1 - h * .12f), lit && !on ? primary_rest : blue);
+                }
+                const float text = std::min(px(24), row * .8f);
+                list->AddText(font, text, ImVec2(at.x + px(10), at.y + (row - text) * .5f), lit || on ? focus_ink : hovered ? paper : quiet_ink,
+                              page_names[static_cast<std::size_t>(i)]);
+            }
+            ImGui::EndChild();
+        }
+
+        // The page: its title, its tabs and body, the prompts under it.
+        const float left = rail + px(34), right_pad = px(34), footer = px(52);
+        const float main_width = size.x - left - right_pad;
+        brushed_title(draw, menu, ImVec2(origin.x + left, origin.y + px(18)), page_title(menu), page_subtitle(menu), px(60),
+                      origin.x + size.x - right_pad - px(40));
+        {
+            // Close, for the pointer.
+            const ImVec2 at(origin.x + size.x - px(44), origin.y + px(16));
+            ImGui::SetCursorScreenPos(at);
+            ImGui::PushItemFlag(ImGuiItemFlags_NoNav, true);
+            if (ImGui::InvisibleButton("##close", ImVec2(px(28), px(28)))) visible = false;
+            ImGui::PopItemFlag();
+            const ImU32 cross = ImGui::IsItemHovered() ? paper : muted;
+            draw->AddLine(ImVec2(at.x + px(8), at.y + px(8)), ImVec2(at.x + px(20), at.y + px(20)), cross, px(2.5f));
+            draw->AddLine(ImVec2(at.x + px(20), at.y + px(8)), ImVec2(at.x + px(8), at.y + px(20)), cross, px(2.5f));
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Close");
+        }
+        const float top = px(96);
+        ImGui::SetCursorScreenPos(ImVec2(origin.x + left, origin.y + top));
+        ImGui::BeginChild("page", ImVec2(main_width, std::max(px(80), size.y - top - footer - px(8))), ImGuiChildFlags_NavFlattened);
+        draw_page_body(menu, model, callbacks);
+        ImGui::EndChild();
+        if (!menu.recording_bind) pad_scroll(ImGui::GetCurrentWindow());
+
+        const float foot = origin.y + size.y - footer;
+        draw->AddRectFilled(ImVec2(origin.x + left, foot), ImVec2(origin.x + size.x - right_pad, foot + px(2)), rule_ink);
+        footer_prompts(menu, callbacks, visible, ImVec2(origin.x + left, foot + (footer - px(22)) * .5f), origin.x + size.x - right_pad, pad, true);
+    }
+    ImGui::End();
 }
 
-namespace {
-// Full screen, the game's menu sounds as its pause menu makes them: a tab or page changing, a press
-// (A, Enter, a click on a control), the focus moving. The ONLINE page is the pause menu's own and
-// makes its own, so only the page changes are made for it.
-void menu_sounds(bool page_makes_its_own) {
+// The game's menu sounds as its pause menu makes them: a tab or page changing, a press (A, Enter, a
+// click on a control), the focus moving.
+void menu_sounds() {
     ImGuiContext& g = *GImGui;
     static ImGuiID heard{};
     static double moved_at{};
     constexpr std::uint32_t navigate = 3, select = 7, tab = 56;
     if (menu::tab_switched) {
         play_ui_sound(tab);
-    } else if (!page_makes_its_own) {
+    } else {
         const bool pressed = (g.NavId && (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceDown, false) || ImGui::IsKeyPressed(ImGuiKey_Enter, false) ||
                                           ImGui::IsKeyPressed(ImGuiKey_Space, false))) ||
                              (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && g.HoveredId);
@@ -1525,6 +1965,37 @@ void menu_sounds(bool page_makes_its_own) {
     }
     heard = g.NavId;
 }
+
+// The kit's look over ImGui's own, for the menu and for a page drawn in the kit outside it (draw_in_kit).
+// px() must already be at the scale drawn at. Returns how many colours it pushed, for pop_kit_style.
+int push_kit_style() {
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0);
+    // ImGui's own widgets on a page as tall as the kit's rows.
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(px(14), (row_height() - px(text_size)) * .5f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(px(10), px(6)));
+    ImGui::PushStyleVar(ImGuiStyleVar_GrabRounding, 0);
+    ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, 0);
+    ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarRounding, 0);
+    ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, px(10));
+    int colours = skate_theme::push_widget_colours();
+    // Raw ImGui widgets on a page in the kit's greys, and a controller's focus in white: the theme's
+    // blue vanishes on blue buttons and tabs.
+    const std::pair<ImGuiCol, ImU32> kit_colours[]{
+        {ImGuiCol_FrameBg, row_fill}, {ImGuiCol_FrameBgHovered, row_hover}, {ImGuiCol_FrameBgActive, IM_COL32(66, 67, 72, 255)},
+        {ImGuiCol_Button, row_fill}, {ImGuiCol_ButtonHovered, row_hover}, {ImGuiCol_ButtonActive, skate_theme::blue_active},
+        {ImGuiCol_Header, row_hover}, {ImGuiCol_HeaderHovered, IM_COL32(66, 67, 72, 255)}, {ImGuiCol_HeaderActive, skate_theme::blue_active},
+        {ImGuiCol_PopupBg, IM_COL32(22, 22, 24, 252)}, {ImGuiCol_Border, rule_ink}, {ImGuiCol_Separator, rule_ink},
+        {ImGuiCol_TableHeaderBg, row_fill}, {ImGuiCol_NavCursor, paper}};
+    for (const auto& [id, colour] : kit_colours) ImGui::PushStyleColor(id, colour);
+    return colours + static_cast<int>(std::size(kit_colours));
+}
+void pop_kit_style(int colours) {
+    ImGui::PopStyleColor(colours);
+    ImGui::PopStyleVar(10);
+}
 }
 
 void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks,
@@ -1536,35 +2007,45 @@ void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& cal
     if (!visible || !on_controls || !was_drawn) menu.recording_bind = 0;
     if (!visible || !on_voice || !was_drawn) menu.voice_bind_capture = 0;
     auto& io = ImGui::GetIO();
-    // Esc (B on a controller) closes the menu, unless it is busy with something else: typing in a
-    // field, an open popup, or recording a key or controller binding. Full screen, B first goes
-    // back to HOME.
+    // Esc closes the menu, and B goes back to HOME first, unless it is busy with something else:
+    // typing in a field, an open popup, or recording a key or controller binding.
     const bool idle = !io.WantTextInput && !detail::online_embedded_typing() && !menu.recording_bind && !menu.voice_bind_capture && !ImGui::IsAnyItemActive() &&
                       !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
-    if (menu.fullscreen_pending && (*menu.fullscreen_pending == model.menu_fullscreen || ImGui::GetTime() > menu.fullscreen_until))
-        menu.fullscreen_pending.reset();
-    const bool full = menu_fullscreen(menu, model);
-    const bool appearing = !was_drawn || full != menu.fullscreen_drawn;
-    menu.fullscreen_drawn = full;
-    menu_fullscreen_shown().store(full);
+    // What was just chosen or dragged shows until the saved setting comes back through the model.
+    const double now = ImGui::GetTime();
+    if (menu.layout_pending && (*menu.layout_pending == model.menu_layout || now > menu.layout_until)) menu.layout_pending.reset();
+    if (menu.sheet_width_pending && (std::abs(*menu.sheet_width_pending - model.menu_sheet_width) < 0.5f || now > menu.sheet_width_until))
+        menu.sheet_width_pending.reset();
+    if (menu.hub_size_pending && ((std::abs(menu.hub_size_pending->x - model.menu_hub_width) < 0.5f &&
+                                   std::abs(menu.hub_size_pending->y - model.menu_hub_height) < 0.5f) ||
+                                  now > menu.hub_size_until))
+        menu.hub_size_pending.reset();
+    const int layout = menu_layout(menu, model);
+    const bool appearing = !was_drawn || layout != menu.layout_drawn;
+    menu.layout_drawn = layout;
+    shown_layout = layout;
     if (visible && idle && was_drawn) {
         if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) visible = false;
-        if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false)) {
-            if (full && menu.page != page_home) open_page(menu, page_home);
+        // (B closes an open row first: one whose actions have the focus, or a page's expand_row.)
+        if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) && !close_open_row() && !page_holds_back()) {
+            if (menu.page != page_home) open_page(menu, page_home);
             else visible = false;
         }
         if (ImGui::IsKeyPressed(ImGuiKey_GamepadL1, false)) step_page(menu, model, -1);
         if (ImGui::IsKeyPressed(ImGuiKey_GamepadR1, false)) step_page(menu, model, 1);
         if (ImGui::IsKeyPressed(ImGuiKey_GamepadBack, false) || ImGui::IsKeyPressed(ImGuiKey_F11, false))
-            set_menu_fullscreen(menu, callbacks, !full);
+            set_menu_layout(menu, callbacks, layout == menu_layout_hub ? menu_layout_sheet : menu_layout_hub);
     }
     menu.last_menu_frame = ImGui::GetFrameCount();
-    // Full screen is read from the sofa: everything grows with the screen, drawn from the larger fonts.
-    const float boost = full ? std::clamp(io.DisplaySize.y / 1080.0f, 1.0f, 2.0f) * 1.3f : 1.0f;
-    // Each style keeps its own size; a slider held shows its size as it moves.
-    const float chosen = menu.scale_editing ? menu.scale : full ? model.menu_scale_fullscreen : model.menu_scale;
-    ui_scale = std::clamp(chosen, min_menu_scale, max_menu_scale) * boost;
-    const bool large = full && menu.body_large && menu.bold_large && menu.heading_large && menu.title_large;
+    // One size for both layouts, measured at 1080 lines: it grows with a bigger screen, so it reads
+    // the same at 1440p or 4K. A size slider held shows its size as it moves.
+    // The kit's rows and text are a size larger than the old window's at the same setting: 0.85 brings
+    // the default back to about what it was.
+    const float display = std::clamp(io.DisplaySize.y / 1080.0f, 1.0f, 2.0f) * 0.85f;
+    const float chosen = menu.scale_editing ? menu.scale : model.menu_scale;
+    ui_scale = std::clamp(chosen, min_menu_scale, max_menu_scale) * display;
+    // Past this the regular faces would be stretched: the larger set draws instead.
+    const bool large = ui_scale > 1.25f && menu.body_large && menu.bold_large && menu.heading_large && menu.title_large;
     const std::array<ImFont*, 4> small_fonts{menu.body, menu.bold, menu.heading, menu.title};
     if (large) {
         menu.body = menu.body_large;
@@ -1575,40 +2056,31 @@ void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& cal
     const auto restore_font_scale = io.FontGlobalScale;
     // Widget text follows the global font scale; the pixel layout below follows px().
     io.FontGlobalScale = large ? ui_scale / large_font_ratio : ui_scale;
-    menu.rail_indent = 0;
     if (trainer_page_wanted()) open_page(menu, page_sandbox);
     if (trainer_cheats_wanted()) {
         open_page(menu, page_skater);
         menu.skater_tab = 2;
     }
     menu.page = std::clamp(menu.page, 0, static_cast<int>(page_count) - 1);
-    if (page_hidden(menu, model, menu.page)) menu.page = full ? page_home : page_map;
-    menu_page_owns_pad().store(full && (menu.page == page_online || menu.recording_bind));
-    // The pad in use names its buttons in the full screen prompts.
-    const auto pad = read_gamepad();
+    if (page_hidden(model, menu.page)) menu.page = page_home;
+    menu_page_owns_pad().store(menu.recording_bind != 0);
+    // The pad in use names its buttons in the prompts, which show while it is in charge.
+    const auto gamepad = read_gamepad();
+    const Pad pad{menu_pad_in_charge().load(), gamepad.playstation};
+    // X (Square on a PlayStation pad), which pages use as a row's second action (pad_x_pressed).
+    constexpr unsigned pad_x_bit = 0x4000; // XINPUT_GAMEPAD_X
+    static unsigned pad_before{};
+    const unsigned pad_now = gamepad.valid ? gamepad.buttons : 0;
+    pad_x_down = (pad_now & pad_x_bit) && !(pad_before & pad_x_bit) && !io.WantTextInput;
+    pad_before = pad_now;
 
     ImGui::PushFont(menu.body);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(px(10), px(7)));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(px(8), px(8)));
-    ImGui::PushStyleVar(ImGuiStyleVar_GrabRounding, 0);
-    ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, 0);
-    ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarRounding, 0);
-    int colours = skate_theme::push_widget_colours();
-    // A controller's focus in white: the theme's blue vanishes on blue buttons and tabs.
-    if (full) {
-        ImGui::PushStyleColor(ImGuiCol_NavCursor, IM_COL32(245, 245, 245, 255));
-        ++colours;
-    }
-    begin_console_frame(full, menu.bold, pad.playstation);
-    if (full) draw_fullscreen(menu, model, callbacks, visible, appearing, pad.valid, pad.playstation);
-    else draw_windowed(menu, model, callbacks, visible, appearing);
-    if (full) menu_sounds(menu.page == page_online);
-    ImGui::PopStyleColor(colours);
-    ImGui::PopStyleVar(9);
+    const int colours = push_kit_style();
+    begin_controls_frame(menu.bold);
+    if (layout == menu_layout_hub) draw_hub(menu, model, callbacks, visible, appearing, pad);
+    else draw_sheet(menu, model, callbacks, visible, appearing, pad);
+    menu_sounds();
+    pop_kit_style(colours);
     ImGui::PopFont();
     io.FontGlobalScale = restore_font_scale;
     if (large) {
@@ -1617,5 +2089,59 @@ void draw_skate_menu(SkateMenu& menu, const Model& model, const CallbacksV3& cal
         menu.heading = small_fonts[2];
         menu.title = small_fonts[3];
     }
+}
+
+namespace menu {
+void draw_in_kit(SkateMenu& menu, float scale, const std::function<void()>& body) {
+    if (!menu.body || !menu.bold || !menu.heading || !menu.title) return;
+    // What the menu's own frame set, put back after: it may have drawn earlier this frame, and its
+    // footer and its record of the pages lately opened read these.
+    const float kept_scale = ui_scale;
+    const int kept_layout = shown_layout, kept_primary_tab = primary_tab;
+    const bool kept_tab_switched = tab_switched;
+    ImFont* const kept_control_font = control_font;
+    const std::string kept_focus_hint = focus_hint, kept_pending_hint = pending_hint, kept_primary_name = primary_tab_name;
+    const double kept_step = next_step;
+    // The wide layout's cards, two columns of them in a box wide enough, as on the menu's own window.
+    ui_scale = scale;
+    shown_layout = menu_layout_hub;
+    auto& io = ImGui::GetIO();
+    const bool large = ui_scale > 1.25f && menu.body_large && menu.bold_large && menu.heading_large && menu.title_large;
+    const std::array<ImFont*, 4> small_fonts{menu.body, menu.bold, menu.heading, menu.title};
+    if (large) {
+        menu.body = menu.body_large;
+        menu.bold = menu.bold_large;
+        menu.heading = menu.heading_large;
+        menu.title = menu.title_large;
+    }
+    const auto restore_font_scale = io.FontGlobalScale;
+    io.FontGlobalScale = large ? ui_scale / large_font_ratio : ui_scale;
+    // Over the game world the menu's greys read as grey cards: the pause pages' near black instead.
+    const ImU32 kept_card = card_fill, kept_row = row_fill;
+    card_fill = IM_COL32(16, 16, 16, 242), row_fill = IM_COL32(29, 29, 31, 250);
+    ImGui::PushFont(menu.body);
+    const int colours = push_kit_style();
+    begin_controls_frame(menu.bold);
+    body();
+    pop_kit_style(colours);
+    ImGui::PopFont();
+    io.FontGlobalScale = restore_font_scale;
+    if (large) {
+        menu.body = small_fonts[0];
+        menu.bold = small_fonts[1];
+        menu.heading = small_fonts[2];
+        menu.title = small_fonts[3];
+    }
+    card_fill = kept_card, row_fill = kept_row;
+    ui_scale = kept_scale;
+    shown_layout = kept_layout;
+    primary_tab = kept_primary_tab;
+    tab_switched = kept_tab_switched;
+    control_font = kept_control_font;
+    focus_hint = kept_focus_hint;
+    pending_hint = kept_pending_hint;
+    primary_tab_name = kept_primary_name;
+    next_step = kept_step;
+}
 }
 }

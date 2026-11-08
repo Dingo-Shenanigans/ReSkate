@@ -346,6 +346,10 @@ void publish_party(Session &s) {
         load_ignored(s);
         show_own_tag(profile_runtime::local_preference("IdentityTag").value_or(true));
         show_own_items(profile_runtime::local_preference("IdentityItems").value_or(true));
+        // Which list's tag shows: one of tag_list_names, or nothing for the usual.
+        const auto saved_tag = profile_runtime::local_value("IdentityTagList");
+        const auto tag_list = saved_tag && saved_tag->is_string() ? tag_list_named(saved_tag->string()) : std::nullopt;
+        choose_own_tag(tag_list ? static_cast<std::uint8_t>(*tag_list) : usual_tag);
         if (const auto saved = profile_runtime::local_value("IdentityStyles"); saved && saved->is_string())
             if (const auto styles = developer_hoodie_detail::parse_mark_styles(saved->string()))
                 developer_hoodie_detail::own_styles.store(*styles);
@@ -620,10 +624,9 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
             p.next_audio_update = 0;
         }
     };
-    // The developer hoodie and board mark an identity: only one Steam vouches for (steam_vouched).
-    const auto developer_id = [&](const Peer &p) {
-        return steam_vouched(s, p) && shows_items(p) ? p.member.id : std::uint64_t{};
-    };
+    // Whose items are coloured: nobody's while their appearance hides them. What rests on who
+    // they are waits for Steam to vouch for them (item_styles).
+    const auto developer_id = [&](const Peer &p) { return shows_items(p) ? p.member.id : std::uint64_t{}; };
     // Only players within `player_distance` get a skater: each one costs memory and frame time
     // whether or not it is in view, and on a full server most are far across the map, too small
     // to see. Checked twice a second; a player already shown stays until a little further
@@ -650,9 +653,9 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
         // the spectate position are still refreshed (sound events are released one per frame).
         if (was_visible && local.ready && !p.render_failed && p.far_interval && now < p.next_far_sample) {
             update_developer_hoodie(s.base, remote_skater_entity(), developer_id(p), remote_skater_generation(), p.developer_hoodie,
-                                    mark_styles(p));
+                                    item_styles(s, p));
             update_developer_board(s.base, remote_board_entity(), developer_id(p), remote_skater_generation(), p.developer_board,
-                                   mark_styles(p));
+                                   item_styles(s, p));
             present_audio(p);
             update_party_position(hidden_here(p.member.id)?nullptr:&p.render_pose);
             if(hidden_here(p.member.id)) {update_player_ui(s.base,nullptr,{});p.ui_visible=false;}
@@ -748,9 +751,9 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
             }
         }
         update_developer_hoodie(s.base, p.visible ? remote_skater_entity() : 0, developer_id(p),
-                                 remote_skater_generation(), p.developer_hoodie, mark_styles(p));
+                                 remote_skater_generation(), p.developer_hoodie, item_styles(s, p));
         update_developer_board(s.base, p.visible ? remote_board_entity() : 0, developer_id(p),
-                               remote_skater_generation(), p.developer_board, mark_styles(p));
+                               remote_skater_generation(), p.developer_board, item_styles(s, p));
         if (!p.visible) {
             stop_remote_audio();
             p.presented_audio.reset();

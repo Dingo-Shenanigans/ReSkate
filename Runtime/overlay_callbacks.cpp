@@ -5,6 +5,7 @@
 #include "Extension/Profile/local_profile_runtime.h"
 #include <cstdio>
 #include <memory>
+#include <tuple>
 
 namespace dingosdk::runtime::detail {
 namespace {
@@ -58,8 +59,11 @@ void read_model(void*, dingosdk::overlay::Model& output) {
     output.engine_settings = std::move(settings);
     output.console_log.clear();
     output.menu_scale = dingosdk::profile_runtime::local_menu_scale();
-    output.menu_scale_fullscreen = dingosdk::profile_runtime::local_menu_scale(true);
-    output.menu_fullscreen = dingosdk::profile_runtime::local_menu_fullscreen();
+    output.menu_layout = dingosdk::profile_runtime::local_menu_layout();
+    output.park_editor_layout = dingosdk::profile_runtime::local_park_editor_layout();
+    output.menu_sheet_width = dingosdk::profile_runtime::local_menu_sheet_width();
+    std::tie(output.menu_hub_width, output.menu_hub_height) = dingosdk::profile_runtime::local_menu_hub_size();
+    output.replay_export_quality = dingosdk::profile_runtime::local_replay_export_quality();
     output.steam_offline = dingosdk::launcher::offline_mode();
     output.multiplayer=dingosdk::multiplayer::model();
     if (dingosdk::multiplayer_controls_level(output.multiplayer)) {

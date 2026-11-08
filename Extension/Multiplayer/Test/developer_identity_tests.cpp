@@ -145,6 +145,25 @@ void lookup() {
         check(homies.on && !homies.rainbow && homies.stops[0] == homies.stops[2], "Someone else's item took the rainbow");
     }
     check(publish_identity_lists({{{dev}, {dev, homie, creator}, {dev, creator}}}), "The lists did not go back");
+    // A player on several lists shows the tag they chose while they are on that list; otherwise,
+    // or with no choice (an older build's), the first by the usual order. Their items keep their
+    // first list's privileges whichever shows.
+    check(identity_tag(dev, usual_tag) == L::developer && identity_tag(dev, static_cast<std::uint8_t>(L::homie)) == L::homie &&
+              identity_tag(dev, static_cast<std::uint8_t>(L::content_creator)) == L::content_creator &&
+              identity_tag(dev, static_cast<std::uint8_t>(L::staff)) == L::developer &&
+              identity_tag(dev, static_cast<std::uint8_t>(L::banned)) == L::developer && identity_tag(dev, 0x40) == L::developer &&
+              identity_mark(dev) == L::developer,
+          "A chosen tag was not the one shown, or one the player is not on was");
+    check(identity_tag(homie, static_cast<std::uint8_t>(L::developer)) == L::homie && !identity_tag(stranger, static_cast<std::uint8_t>(L::homie)) &&
+              !identity_tag(0, static_cast<std::uint8_t>(L::developer)),
+          "Choosing a list gave a player its tag without being on it");
+    check(tag_list_named("content_creator") == L::content_creator && tag_list_named("dev") == L::developer && !tag_list_named("banned") &&
+              !tag_list_named("") && tag_list_name(L::staff) == "staff" && tag_list_name(L::banned).empty(),
+          "A list's name for the profile and the command did not match it");
+    check(own_tag_choice() == usual_tag, "A player's tag choice did not start as the usual");
+    choose_own_tag(static_cast<std::uint8_t>(L::homie));
+    check(own_tag_choice() == static_cast<std::uint8_t>(L::homie) && own_tag_shown(), "Choosing a tag did not take, or hid it");
+    choose_own_tag(usual_tag);
     // Their tag and their items are each their own to hide.
     check(own_tag_shown() && own_items_shown(), "A player's tag or items start hidden");
     show_own_tag(false);
@@ -160,7 +179,7 @@ void lookup() {
               !identity_listed(homie, L::homie),
           "Replaced lists kept a player who was removed");
 }
-// The hoodie and board: what a list gives a cosmetic, and what a player makes of it on the Special page.
+// The hoodie and board: what a list gives a cosmetic, and what a player makes of it on the STYLE tab.
 void items() {
     using namespace dingosdk::developer_hoodie_detail;
     using dingosdk::multiplayer::MarkMode;
@@ -211,12 +230,47 @@ void items() {
     check(still.on && !still.rainbow && item_color(still, 0) == material_color({0, 255, 0}) && item_color(still, 0)[1] > .7f &&
               item_color(still, 777) == item_color(still, 0) && item_color(still, 1500) == item_color(still, 0),
           "A solid colour is not the colour picked, or does not stand still");
-    // A player on no list gets nothing, whatever style their packets carry: the styles only
-    // shape what a list already gives.
-    for (const auto mode : {MarkMode::standard, MarkMode::gradient, MarkMode::solid})
+    // A player on no list has a solid colour of their own, and nothing else their packets ask
+    // for: not a list's animation, a gradient or the rainbow.
+    for (const auto mode : {MarkMode::standard, MarkMode::gradient, MarkMode::off})
         for (const std::uint8_t speed : {std::uint8_t{0}, std::uint8_t{2}})
             check(!item_animation(std::nullopt, {mode, {255, 0, 0}, {0, 0, 255}, speed}).on,
-                  "A player on no list got colours by asking for them");
+                  "A player on no list got more than a solid colour by asking for it");
+    const auto plain = item_animation(std::nullopt, {MarkMode::solid, {0, 255, 0}, {9, 9, 9}, 2});
+    check(plain.on && !plain.rainbow && item_color(plain, 0) == material_color({0, 255, 0}) && item_color(plain, 777) == item_color(plain, 0),
+          "A player on no list did not get the solid colour they picked");
+    check(!item_animation(std::nullopt, {MarkMode::solid, {0x10, 0x80, 0x38}, dingosdk::multiplayer::rainbow_marker, 0}).on,
+          "A player on no list got the rainbow, or its stand-in colour");
+    // What each may pick (the menu and the mark-style command): off and solid for what anyone
+    // wears; a list's own and a gradient, and the board, with a list; the rainbow for the staff.
+    using dingosdk::multiplayer::skater_mark_items;
+    for (std::size_t item = 0; item < skater_mark_items; ++item)
+        check(style_offered(std::nullopt, item, 1) && style_offered(std::nullopt, item, 3) && !style_offered(std::nullopt, item, 0) &&
+                  !style_offered(std::nullopt, item, 2) && !style_offered(std::nullopt, item, 4),
+              "A player on no list was offered other than off and a solid colour");
+    check(!style_offered(std::nullopt, skater_mark_items, 3) && style_offered(L::homie, skater_mark_items, 2) &&
+              style_offered(L::homie, 0, 0) && style_offered(L::homie, 0, 2) && style_offered(L::homie, 0, 3) &&
+              !style_offered(L::homie, 0, 4) && !style_offered(L::developer, 0, 4) && style_offered(L::staff, 0, 4) &&
+              !style_offered(L::staff, 0, 5) && !style_offered(L::staff, dingosdk::multiplayer::mark_items, 1),
+          "A listed player was offered the wrong styles");
+    // A player whose list Steam has not vouched for is coloured as one on none, whatever list
+    // they claim: their solid colours for what they wear, and nothing more.
+    {
+        MarkStyles claimed{};
+        claimed[0] = {MarkMode::solid, {1, 2, 3}, {}, 0};
+        claimed[1] = {MarkMode::gradient, {1, 2, 3}, {4, 5, 6}, 0};
+        claimed[2] = {MarkMode::solid, {1, 2, 3}, dingosdk::multiplayer::rainbow_marker, 0};
+        claimed[skater_mark_items] = {MarkMode::solid, {1, 2, 3}, {}, 0};
+        const auto kept = unlisted_styles(claimed);
+        check(kept[0] == claimed[0] && kept[1].mode == MarkMode::off && kept[2].mode == MarkMode::off && kept[3].mode == MarkMode::off &&
+                  kept[skater_mark_items].mode == MarkMode::off,
+              "An unvouched player's styles kept more than their solid colours");
+        // (The board is not coloured for a player on none at all: developer_board.cpp.)
+        for (std::size_t i = 0; i < skater_mark_items; ++i)
+            for (const auto mark : {L::developer, L::staff, L::homie})
+                check(item_animation(mark, kept[i]).on == item_animation(std::nullopt, claimed[i]).on && !item_animation(mark, kept[i]).rainbow,
+                      "A claimed list gave an unvouched player more than a player on none");
+    }
     for (const auto mode : {MarkMode::standard, MarkMode::gradient, MarkMode::solid})
         check(!item_animation(L::content_creator, {mode, {}, {}, 0}).rainbow && !item_animation(L::homie, {mode, {}, {}, 0}).rainbow,
               "A style gave the rainbow to someone who is not a developer");
@@ -251,7 +305,7 @@ void items() {
 }
 
 // Whatever a player wears is coloured where the item colours itself, each cosmetic on its own;
-// turning one off (the Special page, or a list that no longer has the player) puts its own
+// turning one off (the STYLE tab, or a list that no longer has the player) puts its own
 // colours back, and publishes them the extra times the renderer needs to show them.
 void settling() {
     using namespace dingosdk::developer_hoodie_detail;

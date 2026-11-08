@@ -42,7 +42,9 @@ if(DINGOSDK_BUILD_PARK_EDITOR_TESTS AND WIN32)
     add_test(NAME park_editor COMMAND dingosdk_park_editor_tests "${CMAKE_CURRENT_BINARY_DIR}/editor-fixtures")
     add_executable(dingosdk_park_editor_ui_tests Extension/UI/Overlay/Test/park_editor_tests.cpp
         Extension/UI/Overlay/park_editor.cpp Extension/UI/Overlay/park_editor_actions.cpp
-        Extension/UI/Overlay/park_editor_panels.cpp Extension/UI/Overlay/park_editor_viewport.cpp Extension/UI/Overlay/park_previews.cpp)
+        Extension/UI/Overlay/park_editor_panels.cpp Extension/UI/Overlay/park_editor_project.cpp
+        Extension/UI/Overlay/park_editor_hotbar.cpp Extension/UI/Overlay/park_editor_rail.cpp
+        Extension/UI/Overlay/park_editor_viewport.cpp Extension/UI/Overlay/park_previews.cpp)
     target_link_libraries(dingosdk_park_editor_ui_tests PRIVATE dingosdk_imgui dingosdk_json dingosdk_game_archives dingosdk_content_cache dingosdk_logging)
     add_test(NAME park_editor_ui COMMAND dingosdk_park_editor_ui_tests "${CMAKE_CURRENT_BINARY_DIR}/editor-preview" "${DINGOSDK_TEST_GAME_ROOT}")
     add_executable(dingosdk_park_editor_transaction_tests Extension/Objects/ParkEditor/Test/park_editor_transaction_tests.cpp)
@@ -54,6 +56,12 @@ if(DINGOSDK_BUILD_PARK_EDITOR_TESTS AND WIN32)
     add_executable(dingosdk_profile_change_tests Extension/Profile/Test/profile_change_tests.cpp)
     target_link_libraries(dingosdk_profile_change_tests PRIVATE dingosdk_local_profile)
     add_test(NAME profile_changes COMMAND dingosdk_profile_change_tests)
+    # The front page in the pause menu's HUB tab: a news post's date, and the patch notes read from
+    # ReSkate's releases on GitHub (Extension/News/patch_notes.h).
+    add_executable(dingosdk_news_tests Extension/News/Test/news_tests.cpp Extension/News/patch_notes.cpp Launcher/thunderstore.cpp)
+    target_link_libraries(dingosdk_news_tests PRIVATE dingosdk_local_profile dingosdk_miniz)
+    target_include_directories(dingosdk_news_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME news COMMAND dingosdk_news_tests)
     add_executable(dingosdk_music_favorites_tests Extension/Music/Test/local_music_favorites_tests.cpp)
     target_link_libraries(dingosdk_music_favorites_tests PRIVATE dingosdk_local_profile)
     add_test(NAME music_favorites COMMAND dingosdk_music_favorites_tests)

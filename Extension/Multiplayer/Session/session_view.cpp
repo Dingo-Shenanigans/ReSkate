@@ -185,18 +185,32 @@ void publish(Session &s, const NativeFrame *local) {
         view.steam_ids_shown = identity_listed(social->local.id, IdentityList::developer) ||
                                identity_listed(social->local.id, IdentityList::staff) ||
                                identity_listed(social->local.id, IdentityList::homie);
-    if (const auto social = steam_social_snapshot())
-        if (const auto mark = identity_mark(social->local.id)) {
-            std::tie(view.identity_tag_colour, view.identity_tag) = mark_role(*mark);
+    if (const auto social = steam_social_snapshot()) {
+        const auto mark = identity_mark(social->local.id);
+        // The tag shown is the one chosen; the items' styles come from the first list.
+        if (const auto tag = identity_tag(social->local.id, own_tag_choice())) {
+            std::tie(view.identity_tag_colour, view.identity_tag) = mark_role(*tag);
+            view.identity_tag_list = std::string(tag_list_name(*tag));
+        }
+        for (const auto list : tag_lists)
+            if (identity_listed(social->local.id, list)) {
+                auto &option = view.identity_tag_lists.emplace_back();
+                option.list = std::string(tag_list_name(list));
+                std::tie(option.colour, option.tag) = mark_role(list);
+            }
+        if (mark) {
             view.identity_animation =
                 *mark == IdentityList::developer ? "RAINBOW" : *mark == IdentityList::content_creator ? "RED" :
                 *mark == IdentityList::centrix ? "BLUE" : *mark == IdentityList::staff ? "GREEN" : "GOLD";
             // A developer's standard is the rainbow already.
             view.identity_rainbow = *mark == IdentityList::staff;
+        }
+        {
+            // Everyone colours what they wear; a listed player their board as well (style_offered).
             const auto styles = developer_hoodie_detail::own_styles.load();
-            const auto standard = developer_hoodie_detail::standard_picks(*mark);
-            view.identity_styles.resize(styles.size());
-            for (std::size_t i = 0; i < styles.size(); ++i) {
+            const auto standard = developer_hoodie_detail::standard_picks(mark);
+            view.identity_styles.resize(mark ? styles.size() : skater_mark_items);
+            for (std::size_t i = 0; i < view.identity_styles.size(); ++i) {
                 // A cosmetic never given colours shows its list's own in the pickers.
                 // The rainbow has no colours of its own to show either.
                 const bool rainbow = view.identity_rainbow && rainbow_style(styles[i]);
@@ -206,11 +220,17 @@ void publish(Session &s, const NativeFrame *local) {
                 auto &shown = view.identity_styles[i];
                 shown.name = mark_item_names[i];
                 shown.mode = rainbow ? 4 : static_cast<int>(styles[i].mode);
+                // What a player on no list has left from their days on one shows as what their
+                // items now are: off (item_animation).
+                if (!developer_hoodie_detail::style_offered(mark, i, static_cast<unsigned>(shown.mode)) ||
+                    (!mark && rainbow_style(styles[i])))
+                    shown.mode = 1;
                 shown.speed = styles[i].speed;
                 for (std::size_t part = 0; part < 3; ++part)
                     shown.from[part] = static_cast<float>(from[part]) / 255.f, shown.to[part] = static_cast<float>(to[part]) / 255.f;
             }
         }
+    }
     view.identity_tag_shown = own_tag_shown();
     view.identity_items_shown = own_items_shown();
     load_host_preferences(s);
@@ -297,9 +317,11 @@ void publish(Session &s, const NativeFrame *local) {
     // Looked up as the list is shown: the team's list can arrive, or change, after a server was found.
     for (auto &server : view.lobbies) server.official = official_server(server.id);
     view.lobbies.insert(view.lobbies.end(), lobby.rows.begin(), lobby.rows.end());
-    // Steam friends by the public server or lobby their game says they are in.
+    // Steam friends by the public server or lobby their game says they are in, and every friend in
+    // the game for the FRIENDS tab (the snapshot lists those playing first).
     if (const auto social = steam_social_snapshot())
         for (const auto &player : social->friends) {
+            if (player.playing && view.friends_skating.size() < 256) view.friends_skating.push_back({player.id, player.session, player.name});
             if (!player.session) continue;
             const auto row = std::find_if(view.lobbies.begin(), view.lobbies.end(), [&](const auto &entry) { return entry.id == player.session; });
             if (row != view.lobbies.end() && row->friends.size() < 16) row->friends.push_back(player.name.empty() ? std::string("A friend") : player.name);
@@ -730,9 +752,10 @@ std::pair<std::uint32_t, std::string> player_role(Session &s, std::uint64_t send
     const auto *peer = local ? nullptr : find_peer(s, sender);
     const bool vouched = local || (peer && steam_vouched(s, *peer));
     // Who the backend says a player is comes before what they are in this lobby, unless they
-    // have turned their tag off (the Special page), which their appearance tells everyone.
+    // have turned their tag off (the STYLE tab), which their appearance tells everyone. A player
+    // on several lists shows the one they chose, while they are on it (identity_tag).
     if (marks && vouched && (local ? own_tag_shown() : shows_tag(*peer)))
-        if (const auto mark = identity_mark(sender)) return mark_role(*mark);
+        if (const auto mark = identity_tag(sender, local ? own_tag_choice() : tag_choice(*peer))) return mark_role(*mark);
     // On a dedicated server: the tag the player's role there gives them, in its colour.
     if (dedicated) {
         const auto &worn = local ? s.own_tag : peer ? peer->member.tag : std::string{};

@@ -5,10 +5,16 @@
 #include "Engine/Core/Profiling/profiler.h"
 #include "Extension/Music/local_music_playback.h"
 #include "Extension/Profile/local_profile_runtime.h"
+#include "Extension/Plugins/plugin_runtime.h"
 #include "Extension/Plugins/plugin_ui.h"
+#include "Extension/Rendering/replay_export.h"
 
 #include <algorithm>
 #include <array>
+#include <iterator>
+#include <map>
+#include <string>
+#include <vector>
 
 // The SETTINGS page.
 namespace dingosdk::overlay::menu {
@@ -35,38 +41,32 @@ void screen_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbac
     note(back.c_str());
     end_card();
 
-    // The size of the style this is drawn in: the window and full screen keep their own.
-    const bool full = console_style();
-    const char* command = full ? "ui scalefull " : "ui scale ";
-    begin_card(menu, "menu-scale", "MENU SIZE", full ? "Full screen" : "Window");
-    // Drag locally for an immediate preview, then save once on release: the
+    begin_card(menu, "menu-layout", "MENU LAYOUT");
+    int layout = menu_layout(menu, model);
+    if (choice(menu, "menu-layout", layout, {"SIDE SHEET", "WINDOW"}, callbacks.queue_console_command != nullptr, 0.0f,
+            {"Docked to the right edge, the game in view beside it. Drag its left edge to make it wider.",
+             "A window in the middle of the screen, the pages down its left side. Drag an edge or a corner to resize it."}))
+        set_menu_layout(menu, callbacks, layout);
+    note("Also F11, or View on a controller. Saved with your profile, with the size you drag either to.");
+    end_card();
+
+    // One size for both layouts.
+    begin_card(menu, "menu-scale", "MENU SIZE");
+    // Step locally for an immediate preview, then save once let go: the
     // saved value only returns through the model on a later frame.
-    if (!menu.scale_editing) menu.scale = full ? model.menu_scale_fullscreen : model.menu_scale;
-    field(menu, full ? "Full screen menu size" : "Window menu size");
-    const bool resettable = menu.scale != default_menu_scale;
-    const float reset = ImGui::CalcTextSize("Reset").x + ImGui::GetStyle().FramePadding.x * 2;
-    ImGui::SetNextItemWidth(ImGui::GetContentRegionAvail().x - reset - ImGui::GetStyle().ItemSpacing.x);
+    if (!menu.scale_editing) menu.scale = model.menu_scale;
+    field(menu, "Menu size", "Left / right to change it.");
     ::dingosdk::overlay::menu::slider_float("##menu-scale", &menu.scale, min_menu_scale, max_menu_scale, "%.2fx",
         ImGuiSliderFlags_AlwaysClamp);
     menu.scale_editing = ImGui::IsItemActive();
     if (ImGui::IsItemDeactivatedAfterEdit())
-        send_console(menu, callbacks, command + std::to_string(menu.scale));
-    if (!full) ImGui::SameLine();
-    if (button_row(menu, "scale-reset", {{full ? "RESET SIZE" : "Reset", resettable}}) == 0) {
+        send_console(menu, callbacks, "ui scale " + std::to_string(menu.scale));
+    if (button_row(menu, "scale-reset", {{"RESET SIZE", menu.scale != default_menu_scale}}) == 0) {
         menu.scale = default_menu_scale;
-        send_console(menu, callbacks, command + std::to_string(default_menu_scale));
+        send_console(menu, callbacks, "ui scale " + std::to_string(default_menu_scale));
     }
-    note(full ? "Scales the full screen menu and its text; the window keeps its own size. Saved with your profile."
-              : "Scales this window and its text; the full screen menu keeps its own size. Saved with your profile.");
-    end_card();
-
-    begin_card(menu, "menu-style", "MENU STYLE");
-    int style = menu_fullscreen(menu, model) ? 1 : 0;
-    if (choice(menu, "menu-style", style, {"Window", "Full screen"}, callbacks.queue_console_command != nullptr, 0.0f,
-            {"A window over the game you can move and resize: made for a mouse.",
-             "Fills the screen, with bigger rows and button prompts: made for a controller."}))
-        set_menu_fullscreen(menu, callbacks, style == 1);
-    note("Also the button beside the menu's close button, F11, or View on a controller. Saved with your profile.");
+    note("Scales the menu and its text in both layouts. It grows with the screen too, so a size reads the same at 1080p and 4K. "
+         "Saved with your profile.");
     end_card();
     graphics_page(menu, model, callbacks);
 }
@@ -171,14 +171,12 @@ void binds_page(SkateMenu& menu, const Model& model, const CallbacksV3& callback
     const auto record = [&](int action) {
         menu.bind_capture = {};
         menu.recording_bind = action;
-        menu.bind_capture_until = ImGui::GetTime() + (console_style() ? 10 : 30);
+        menu.bind_capture_until = ImGui::GetTime() + 10;
         menu.feedback.clear();
     };
-    const bool console = console_style();
     if (menu.recording_bind) {
-        warn(!menu.bind_capture.ready ? "Release controller buttons and keyboard keys first." :
-             console ? "Hold up to five buttons together, then let go. Nothing for 10 seconds cancels." :
-             "Hold up to five keys together, then release them. A-Z, 0-9, Space, F1-F12, Ctrl, Shift and Alt work; controller combos work too.");
+        warn(!menu.bind_capture.ready ? "Release controller buttons and keyboard keys first."
+                                      : "Hold up to five buttons or keys together, then let go. Nothing for 10 seconds cancels.");
     }
     struct Row {
         int action;
@@ -186,105 +184,72 @@ void binds_page(SkateMenu& menu, const Model& model, const CallbacksV3& callback
         std::uint32_t combo;
     };
     struct Card {
-        const char* title;
+        std::string id, title;
         std::vector<Row> rows;
+        bool plugin = false; // one plugin's binds, titled with its name
     };
     std::vector<Card> cards;
     for (const auto& group : bind_groups) {
         if (std::string_view(group.title) == "ONLINE" && model.steam_offline) continue;
-        auto& card = cards.emplace_back(Card{group.title, {}});
+        auto& card = cards.emplace_back(Card{group.title, group.title, {}});
         for (const int action : group.actions) card.rows.push_back({action, bind_name(action), bind_combo(model.bindings, action)});
     }
     if (!plugin_binds->empty()) {
-        auto& card = cards.emplace_back(Card{"PLUGINS", {}});
+        // A card for each plugin, titled with the name its manifest gives (its id while it has none), its
+        // binds under it by their own names, in the order the plugins' list gives them.
+        std::map<std::string, std::string> titles;
+        for (const auto& plugin : plugins::installed())
+            if (!plugin.title.empty()) titles[plugin.id] = plugin.title;
         for (std::size_t i = 0; i < plugin_binds->size(); ++i) {
             const auto& bind = (*plugin_binds)[i];
-            card.rows.push_back({plugin_bind_row + static_cast<int>(i), bind.plugin + ": " + bind.action, bind.combo});
+            auto card = std::find_if(cards.begin(), cards.end(), [&](const Card& c) { return c.plugin && c.id == "plugin-binds-" + bind.plugin; });
+            if (card == cards.end()) {
+                const auto title = titles.find(bind.plugin);
+                cards.push_back(Card{"plugin-binds-" + bind.plugin, title != titles.end() ? title->second : bind.plugin, {}, true});
+                card = std::prev(cards.end());
+            }
+            card->rows.push_back({plugin_bind_row + static_cast<int>(i), bind.action, bind.combo});
         }
     }
+    const auto last_plugin = std::find_if(cards.rbegin(), cards.rend(), [](const Card& c) { return c.plugin; });
+    const Card* reset_under = last_plugin != cards.rend() ? &*last_plugin : nullptr;
     for (const auto& group : cards) {
-        begin_card(menu, group.title, group.title);
-        ImGui::PushID(group.title);
-        if (console) {
-            // Full screen: a row a bind, its combo at the right end. A records, Y clears.
-            auto* draw = ImGui::GetWindowDrawList();
-            for (const auto& row : group.rows) {
-                const int action = row.action;
-                const std::uint32_t combo = row.combo;
-                const bool recording = menu.recording_bind == action;
-                ImGui::PushID(action);
-                const auto at = ImGui::GetCursorScreenPos();
-                const float width = ImGui::GetContentRegionAvail().x, height = px(54);
-                ImGui::BeginDisabled(!available || (menu.recording_bind && !recording));
-                const bool pressed = ImGui::InvisibleButton("##bind", ImVec2(width, height), ImGuiButtonFlags_EnableNav);
-                ImGui::EndDisabled();
-                const bool focused = ImGui::IsItemFocused() && ImGui::GetIO().NavVisible, hovered = ImGui::IsItemHovered();
-                if (pressed && !menu.recording_bind) record(action);
-                if (focused && !menu.recording_bind && combo && ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp, false)) save(action, 0);
-                if (focused || hovered)
-                    set_console_hint(recording ? "Hold the buttons together, then let go."
-                                               : combo ? "A records a new bind. Y clears this one." : "A records a bind.");
-                const ImVec2 end(at.x + width, at.y + height);
-                const bool lit = focused || hovered;
-                skate_theme::rough_rect(draw, at, end, recording ? paper : lit ? blue : IM_COL32(26, 26, 26, 235),
-                                        static_cast<unsigned>(ImGui::GetItemID()) & 0xfff, px(1));
-                const ImU32 text = recording ? skate_theme::black : available ? paper : muted;
-                const auto name = menu.bold->CalcTextSizeA(px(17), FLT_MAX, 0, row.name.c_str());
-                draw->AddText(menu.bold, px(17), ImVec2(at.x + px(18), at.y + (height - name.y) * .5f), text, row.name.c_str());
-                const auto label = recording ? std::string(menu.bind_capture.ready ? "Press the buttons..." : "Let go first...")
-                                             : controller_combo_label(combo, controller.style);
-                const auto size = menu.bold->CalcTextSizeA(px(17), FLT_MAX, 0, label.c_str());
-                draw->AddText(menu.bold, px(17), ImVec2(end.x - px(24) - size.x, at.y + (height - size.y) * .5f),
-                              recording ? skate_theme::black : lit ? paper : combo ? blue : muted, label.c_str());
-                ImGui::PopID();
-            }
-        } else {
-            ImGui::BeginDisabled(!available);
-            if (ImGui::BeginTable("binds", 3, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp)) {
-                ImGui::TableSetupColumn("Action", ImGuiTableColumnFlags_WidthFixed, px(150));
-                ImGui::TableSetupColumn("Controller combo / key", ImGuiTableColumnFlags_WidthStretch);
-                ImGui::TableSetupColumn("##controls", ImGuiTableColumnFlags_WidthFixed, px(170));
-                for (const auto& row : group.rows) {
-                    const int action = row.action;
-                    const std::uint32_t combo = row.combo;
-                    ImGui::PushID(action);
-                    ImGui::TableNextRow(); ImGui::TableNextColumn();
-                    ImGui::AlignTextToFramePadding(); ImGui::TextUnformatted(row.name.c_str());
-                    ImGui::TableNextColumn(); ImGui::AlignTextToFramePadding();
-                    const auto label = menu.recording_bind == action ? "Recording..." : controller_combo_label(combo, controller.style);
-                    ImGui::TextWrapped("%s", label.c_str());
-                    ImGui::TableNextColumn();
-                    if (menu.recording_bind == action) {
-                        if (ImGui::Button("Cancel", ImVec2(-1, 0))) menu.recording_bind = 0;
-                    } else {
-                        ImGui::BeginDisabled(menu.recording_bind != 0);
-                        if (ImGui::Button("Record", ImVec2(px(90), 0))) record(action);
-                        ImGui::SameLine(); ImGui::BeginDisabled(!combo);
-                        if (ImGui::Button("Clear", ImVec2(-1, 0))) save(action, 0);
-                        ImGui::EndDisabled();
-                        ImGui::EndDisabled();
-                    }
-                    ImGui::PopID();
-                }
-                ImGui::EndTable();
-            }
-            ImGui::EndDisabled();
+        begin_card(menu, group.id.c_str(), group.title.c_str());
+        ImGui::PushID(group.id.c_str());
+        // A row a bind, its combo at the right end. A records, Y clears; the row being recorded is blue
+        // while the pad belongs to the recording (menu_page_owns_pad), and the others wait.
+        for (const auto& row : group.rows) {
+            const int action = row.action;
+            const std::uint32_t combo = row.combo;
+            const bool recording = menu.recording_bind == action;
+            const auto side = recording ? std::string(menu.bind_capture.ready ? "Press the buttons..." : "Let go first...")
+                                        : controller_combo_label(combo, controller.style);
+            ImGui::PushID(action);
+            const bool pressed = list_row(menu, "##bind", row.name, side, recording, available && (!menu.recording_bind || recording));
+            const bool focused = ImGui::IsItemFocused() && ImGui::GetIO().NavVisible;
+            if (pressed && !menu.recording_bind) record(action);
+            if (focused && !menu.recording_bind && combo && ImGui::IsKeyPressed(ImGuiKey_GamepadFaceUp, false)) save(action, 0);
+            if (focused || ImGui::IsItemHovered())
+                set_console_hint(recording ? "Hold the buttons together, then let go."
+                                           : combo ? "A records a new bind. Y clears this one." : "A records a bind.");
+            ImGui::PopID();
         }
-        if (std::string_view(group.title) == "PLUGINS") {
+        // Every plugin's binds back on their own: once, under the last plugin's card.
+        if (&group == reset_under) {
             const bool changed = std::any_of(plugin_binds->begin(), plugin_binds->end(), [](const auto& b) { return b.combo != b.own; });
-            ImGui::BeginDisabled(!changed || menu.recording_bind != 0);
-            if (ImGui::Button("Plugins' own binds", ImVec2(console ? -FLT_MIN : px(200), 0))) {
+            if (button_row(menu, "plugin-binds-reset", {{"PLUGINS' OWN BINDS", changed && menu.recording_bind == 0, false,
+                                                         "Every plugin's action back on the bind the plugin gave it."}}) == 0) {
                 for (const auto& bind : *plugin_binds) plugin_ui::rebind({bind.plugin, bind.action, std::nullopt});
                 feedback(menu, "Every plugin's action is on the plugin's own bind again.");
             }
-            ImGui::EndDisabled();
         }
         ImGui::PopID();
         end_card();
     }
     if (!menu.recording_bind) {
-        note(("Record a key, keyboard chord or controller combo, such as Ctrl + F5 or " + controller_combo_label(0x300, controller.style) +
-              ". Freecam, Freecam Controller, and Noclip toggle; boosts add velocity once per press. Off-board Up Boost also works while falling or gliding; release and press again to repeat. On-board and off-board boosts can share a combo. Give toggles different combos.").c_str());
+        note(("A key, a chord such as Ctrl + F5, or a controller combo such as " + controller_combo_label(0x300, controller.style) +
+              ". Freecam, Freecam Controller and Noclip toggle: give them different combos. Boosts add speed once a press; "
+              "Off-board Up Boost also works falling or gliding, and on- and off-board boosts can share a combo.").c_str());
         note("Saved to your profile.");
         if (!model.bindings.status.empty()) note(model.bindings.status.c_str());
         if (!model.bindings.available) warn("Waiting for the local profile.");
@@ -292,14 +257,58 @@ void binds_page(SkateMenu& menu, const Model& model, const CallbacksV3& callback
     if (!model.steam_offline) note("The push-to-talk button is set in Online > Voice.");
 }
 
+// Settings > REPLAYS: the game's replay editor, as ReSkate changes it.
+void replays_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
+    // Keyframe smoothing (Extension/ReplayKeyframes/replay_keyframes.h).
+    begin_card(menu, "replay-editor", "REPLAY EDITOR");
+    bool keysmooth = model.keyframe_smoothing.enabled;
+    if (toggle_row(menu, "Keyframe smoothing",
+            "The free camera glides through its keys instead of changing speed at each one. Every key is still met, at its time.",
+            keysmooth, model.keyframe_smoothing.available && callbacks.queue_console_command))
+        send_console(menu, callbacks, keysmooth ? "keysmooth on" : "keysmooth off");
+    field(menu, "Smoothness", "100% is the smoothest that still meets every key; 0% the game's own curve.");
+    // Sent once it is let go: every change rebuilds the open replay's camera.
+    static int dragged = -1;
+    int smoothness = dragged >= 0 ? dragged : keyframe_smoothness_percent(model.keyframe_smoothing);
+    ImGui::BeginDisabled(!model.keyframe_smoothing.available || !model.keyframe_smoothing.enabled || !callbacks.queue_console_command);
+    if (slider_int("##keyframe-smoothness", &smoothness, 0, 100, "%d%%", ImGuiSliderFlags_AlwaysClamp))
+        dragged = smoothness;
+    if (ImGui::IsItemDeactivatedAfterEdit() && dragged >= 0)
+        send_console(menu, callbacks, "keysmooth amount " + std::to_string(dragged / 100.0));
+    if (!ImGui::IsItemActive()) dragged = -1;
+    ImGui::EndDisabled();
+    end_card();
+
+    // The export's bitrate (Extension/Rendering/replay_export.h): saved with the profile (`replay quality`)
+    // and read as each export begins. What was just chosen shows until the saved value comes back.
+    begin_card(menu, "replay-export", "EXPORT");
+    static int chosen = -1;
+    static double chosen_until = 0;
+    if (chosen >= 0 && (chosen == model.replay_export_quality || ImGui::GetTime() > chosen_until)) chosen = -1;
+    int quality = chosen >= 0 ? chosen : std::clamp(model.replay_export_quality, 0, replay_export::quality_count - 1);
+    static const std::vector<std::string> qualities{"Game's own", "Low", "Medium", "High", "Very high"};
+    if (option_row(menu, "Export quality",
+            "The MP4 export's bitrate. Game's own keeps the game's; Low to Very high set it from the video's size and frame rate.",
+            quality, qualities, callbacks.queue_console_command != nullptr)) {
+        chosen = quality;
+        chosen_until = ImGui::GetTime() + 3.0;
+        send_console(menu, callbacks, "replay quality " + std::string(replay_export::quality_names[static_cast<std::size_t>(quality)]));
+    }
+    note("At 1080p60: Low about 6 Mbit/s, Medium 12, High 25, Very high 45. Higher is sharper in fast motion, and a bigger file. "
+         "MP4 exports only; the next export uses it.");
+    end_card();
+}
+
 void settings_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {
-    category_tabs(menu, menu.settings_tab, {"CONTROLS", "SCREEN", "PERFORMANCE"}, "settings-tabs");
+    category_tabs(menu, menu.settings_tab, {"CONTROLS", "SCREEN", "PERFORMANCE", "MUSIC", "REPLAYS"}, "settings-tabs");
     ImGui::PushID(menu.settings_tab);
     ImGui::BeginChild("settings-tab", ImVec2(0, page_body_height(menu)), ImGuiChildFlags_NavFlattened);
     switch (menu.settings_tab) {
-    case 0: binds_page(menu, model, callbacks); break;
-    case 1: screen_page(menu, model, callbacks); break;
-    case 2: performance_page(menu, model, callbacks); break;
+    case settings_controls_tab: binds_page(menu, model, callbacks); break;
+    case settings_screen_tab: screen_page(menu, model, callbacks); break;
+    case settings_performance_tab: performance_page(menu, model, callbacks); break;
+    case settings_music_tab: music_page(menu, model, callbacks); break;
+    case settings_replays_tab: replays_page(menu, model, callbacks); break;
     }
     ImGui::EndChild();
     ImGui::PopID();

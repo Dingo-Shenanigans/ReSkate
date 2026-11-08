@@ -31,6 +31,7 @@ add_library(dingosdk_runtime SHARED
     Extension/UI/NativeMenu/native_menu_multiplayer.cpp
     Extension/UI/NativeMenu/ui_sound.cpp
     Extension/UI/NativeMenu/native_hub.cpp
+    Extension/UI/NativeMenu/native_backdrop.cpp
     Extension/UI/NativeMenu/native_menu_data.cpp
     Extension/Multiplayer/Remote/native_skater.cpp
     Extension/Multiplayer/Remote/native_skater_spawn.cpp
@@ -61,6 +62,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Multiplayer/Hud/native_indicators.cpp
     Extension/Multiplayer/Steam/steam_transport.cpp
     Extension/Multiplayer/Steam/steam_social.cpp
+    Extension/Multiplayer/Steam/steam_avatars.cpp
     Extension/Multiplayer/Steam/steam_friend_join.cpp
     Extension/Multiplayer/Steam/steam_lobbies.cpp
     Extension/Multiplayer/Steam/steam_lobby_api.cpp
@@ -240,6 +242,8 @@ add_library(dingosdk_runtime SHARED
     Extension/Customization/local_player_card_runtime.cpp
     Extension/News/local_news_runtime.cpp
     Extension/News/live_news.cpp
+    Extension/News/patch_notes.cpp
+    Extension/News/live_patch_notes.cpp
     Extension/Objects/local_object_runtime.cpp
     Extension/Music/local_music_assets.cpp
     Extension/Music/local_music_safety.cpp

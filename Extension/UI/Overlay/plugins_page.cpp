@@ -3,10 +3,12 @@
 #include "Extension/Plugins/plugin_ui.h"
 #include "Extension/UI/skate_theme.h"
 
+#include <imgui_internal.h>
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -127,7 +129,8 @@ void draw_widgets(SkateMenu& menu, const plugin_ui::Panel& panel, double now) {
         case Kind::info: info(menu, w.text.c_str(), w.help); break;
         case Kind::separator: ImGui::Separator(); break;
         case Kind::button:
-            if (w.on ? primary_button(menu, w.text.c_str()) : ImGui::Button(w.text.c_str(), ImVec2(-FLT_MIN, px(34)))) send({}, {});
+            if (w.on ? primary_button(menu, w.text.c_str()) : button_row(menu, "##button", {{w.text.c_str(), true, false, w.help.empty() ? nullptr : help}}) == 0)
+                send({}, {});
             break;
         case Kind::buttons: {
             const int pressed = button_grid(menu, "##buttons", w.choices, w.chosen - 1);
@@ -179,16 +182,9 @@ void draw_widgets(SkateMenu& menu, const plugin_ui::Panel& panel, double now) {
             if (edit != all.end() && edit->second.value == w.value) all.erase(edit);
             const char* format = w.format.empty() ? "%.2f" : w.format.c_str();
             field(menu, w.text.c_str());
-            bool changed = false;
-            // A window: - value + (ImGui's own buttons, the value typed in between). Full screen: left /
-            // right step it.
-            if (console_style()) {
-                set_console_step(w.step);
-                changed = slider_float("##stepper", &value, w.minimum, w.maximum, format, ImGuiSliderFlags_AlwaysClamp);
-            } else {
-                changed = ImGui::InputFloat("##stepper", &value, w.step, w.step * 10, format);
-            }
-            if (changed) {
+            // Left / right a step at a time; the box beside it takes a typed value.
+            set_console_step(w.step);
+            if (slider_float("##stepper", &value, w.minimum, w.maximum, format, ImGuiSliderFlags_AlwaysClamp)) {
                 const float steps = std::round((std::clamp(value, w.minimum, w.maximum) - w.minimum) / w.step);
                 value = std::clamp(w.minimum + steps * w.step, w.minimum, w.maximum);
                 plugin_ui::Action action;
@@ -201,23 +197,10 @@ void draw_widgets(SkateMenu& menu, const plugin_ui::Panel& panel, double now) {
             int chosen = edit != all.end() ? edit->second.chosen : w.chosen;
             if (edit != all.end() && edit->second.chosen == w.chosen) all.erase(edit);
             int picked = -1;
-            if (console_style()) {
-                // Full screen: a row for each, as the music page's songs; A picks one.
-                section(menu, w.text.c_str());
-                for (int i = 0; i < static_cast<int>(w.choices.size()); ++i)
-                    if (list_row(menu, ("##row" + std::to_string(i)).c_str(), w.choices[static_cast<std::size_t>(i)], "", i + 1 == chosen)) picked = i;
-            } else {
-                field(menu, w.text.c_str());
-                const float height = static_cast<float>(w.rows) * ImGui::GetTextLineHeightWithSpacing() + ImGui::GetStyle().FramePadding.y * 2;
-                if (ImGui::BeginListBox("##list", ImVec2(-FLT_MIN, height))) {
-                    for (int i = 0; i < static_cast<int>(w.choices.size()); ++i) {
-                        ImGui::PushID(i);
-                        if (ImGui::Selectable(w.choices[static_cast<std::size_t>(i)].c_str(), i + 1 == chosen)) picked = i;
-                        ImGui::PopID();
-                    }
-                    ImGui::EndListBox();
-                }
-            }
+            // A row for each, as the music page's songs; A picks one.
+            section(menu, w.text.c_str());
+            for (int i = 0; i < static_cast<int>(w.choices.size()); ++i)
+                if (list_row(menu, ("##row" + std::to_string(i)).c_str(), w.choices[static_cast<std::size_t>(i)], "", i + 1 == chosen)) picked = i;
             if (picked >= 0 && picked + 1 != chosen) {
                 plugin_ui::Action action;
                 action.chosen = picked + 1;
@@ -263,6 +246,23 @@ void draw_widgets(SkateMenu& menu, const plugin_ui::Panel& panel, double now) {
     }
     if (in_card) end_card();
 }
+
+// A plugin's page body: its page first, then its panels as cards under it. False while it has
+// neither yet (its first build has not come).
+bool draw_plugin_panels(SkateMenu& menu, const std::string& plugin, double now) {
+    const auto panels = plugin_ui::latest_panels();
+    if (!panels) return false;
+    bool any = false;
+    for (const bool page : {true, false})
+        for (const auto& panel : *panels) {
+            if (panel.screen || panel.page != page || panel.plugin != plugin) continue;
+            any = true;
+            ImGui::PushID(panel.title.c_str());
+            draw_widgets(menu, panel, now);
+            ImGui::PopID();
+        }
+    return any;
+}
 }
 
 std::shared_ptr<const std::vector<plugin_ui::PageEntry>> plugin_pages() {
@@ -282,9 +282,20 @@ const plugin_ui::PageEntry* shown_plugin_page(SkateMenu& menu) {
 }
 
 namespace {
-// Which plugins are open in the manager, by id: in memory only. One waiting for an answer starts open.
-std::map<std::string, bool>& opened() {
-    static auto* value = new std::map<std::string, bool>;
+// The list's open row (one at a time, by plugin id), and the plugins seen waiting for an answer: one
+// opens by itself the first time it is seen waiting, so a prompt that was missed is not the only way
+// to answer it. In memory only.
+std::string& open_plugin() {
+    static auto* value = new std::string;
+    return *value;
+}
+std::set<std::string>& seen_waiting() {
+    static auto* value = new std::set<std::string>;
+    return *value;
+}
+// The plugin whose page was just left with B: its row takes the focus back as the list draws.
+std::string& refocus_plugin() {
+    static auto* value = new std::string;
     return *value;
 }
 
@@ -292,195 +303,211 @@ ImU32 risk_colour(plugins::Risk risk) {
     return risk == plugins::Risk::red ? skate_theme::danger : risk == plugins::Risk::amber ? skate_theme::warning : IM_COL32(88, 90, 96, 255);
 }
 
-// One plugin: its name, its author and its switch on a line, then a chip for each kind of thing it can do
-// (the riskiest first, red then amber then grey). A click anywhere but the switch opens the plugin to
-// the plain list; one that is waiting for an answer starts open, with its buttons under the list.
-void plugin_row(SkateMenu& menu, const plugins::Installed& plugin) {
+// One plugin as a row: its name; its author and the kinds of thing it can do, or, while it waits for an
+// answer, what it asks for (amber, with an amber edge and ASKS); "Page >" when it has a page; ON or OFF
+// at the right end. A opens its page when it has one, else its details; X turns it on or off (a click on
+// ON / OFF too); Y opens its details. Its details are the plain list of what it can do, each kind in its
+// risk's colour (red, amber, grey), and the buttons that switch or answer it. One waiting for an answer
+// is only answered there, under the list of what it may do: X opens them instead of switching it.
+void plugin_row(SkateMenu& menu, const plugins::Installed& plugin, bool has_page) {
     namespace st = skate_theme;
     const bool waiting = plugin.approval == plugins::Approval::asking;
-    auto& open = opened();
-    const auto found = open.find(plugin.id);
-    const bool expanded = found != open.end() ? found->second : waiting;
-    auto* draw = ImGui::GetWindowDrawList();
-    auto* bold = menu.bold ? menu.bold : ImGui::GetFont();
-    auto* body = menu.body ? menu.body : ImGui::GetFont();
-    const float width = ImGui::GetContentRegionAvail().x;
-    const float head = px(30), chips_height = px(24), gap = px(8);
-    const char* answer = waiting ? "Waiting for your OK" : plugin.approval == plugins::Approval::on ? "ON" : "OFF";
-    const float answer_width = waiting ? bold->CalcTextSizeA(px(14), FLT_MAX, 0, answer).x : px(64);
-    const ImVec2 origin = ImGui::GetCursorScreenPos();
-    const float right = origin.x + width;
-    auto& io = ImGui::GetIO();
-
-    // Two stops for the pad and keys: the row (opens and closes it), and the switch on top of it.
-    ImGui::SetNextItemAllowOverlap();
-    const bool toggled = ImGui::InvisibleButton("##expand", ImVec2(width, head + chips_height), ImGuiButtonFlags_EnableNav);
-    const bool row_focused = ImGui::IsItemFocused() && io.NavVisible;
-    bool hovered = ImGui::IsItemHovered(), over_switch = false, switch_focused = false;
-    const ImVec2 switch_min(right - answer_width, origin.y + px(3)), switch_max(right, origin.y + head - px(3));
-    if (!waiting) {
-        ImGui::SetCursorScreenPos(switch_min);
-        if (ImGui::InvisibleButton("##switch", ImVec2(answer_width, switch_max.y - switch_min.y), ImGuiButtonFlags_EnableNav))
-            plugins::set_enabled(plugin.id, plugin.approval != plugins::Approval::on);
-        over_switch = ImGui::IsItemHovered();
-        switch_focused = ImGui::IsItemFocused() && io.NavVisible;
-    }
-    ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + head + chips_height));
-
-    if (hovered) draw->AddRectFilled(origin, ImVec2(right, origin.y + head + chips_height), IM_COL32(255, 255, 255, 12), px(4));
-    if (row_focused) draw->AddRect(origin, ImVec2(right, origin.y + head + chips_height), st::white, px(4), 0, px(2));
-    // The name takes what the author and the switch leave. The author (whoever wrote the manifest) gets at
-    // most a third of the row, cut with "...", and the name always keeps room: it is what the player trusts.
-    const float title_room_min = std::min(px(150), width * 0.4f);
-    const float by_size = px(13);
-    std::string by = plugin.author.empty() ? std::string{} : "by " + plugin.author;
-    const float by_max = std::max(0.0f, std::min(width * 0.35f, width - answer_width - gap * 3 - title_room_min));
-    const auto by_fits = [&] { return body->CalcTextSizeA(by_size, FLT_MAX, 0, by.c_str()).x <= by_max; };
-    if (!by.empty() && !by_fits()) {
-        while (by.size() > 3 && !by_fits()) {
-            by.pop_back();
-            while (!by.empty() && (static_cast<unsigned char>(by.back()) & 0xC0) == 0x80) by.pop_back(); // not mid-character
-            if (!by.empty() && (static_cast<unsigned char>(by.back()) & 0xC0) == 0xC0) by.pop_back();
-        }
+    const bool on = plugin.approval == plugins::Approval::on;
+    auto& open = open_plugin();
+    if (waiting && seen_waiting().insert(plugin.id).second && open.empty()) open = plugin.id;
+    const bool is_open = open == plugin.id;
+    // The author is whoever wrote the manifest: cut short, so a long one cannot crowd out the rest.
+    std::string by = plugin.author;
+    if (by.size() > 40) {
+        by.resize(40);
+        while (!by.empty() && (static_cast<unsigned char>(by.back()) & 0xC0) == 0x80) by.pop_back(); // not mid-character
+        if (!by.empty() && (static_cast<unsigned char>(by.back()) & 0xC0) == 0xC0) by.pop_back();
         by += "...";
-        if (!by_fits()) by.clear();
     }
-    const float by_width = by.empty() ? 0.0f : body->CalcTextSizeA(by_size, FLT_MAX, 0, by.c_str()).x;
-    const float by_x = right - answer_width - gap * 2 - by_width;
-    if (!by.empty()) draw->AddText(body, by_size, ImVec2(by_x, origin.y + (head - by_size) * 0.5f), st::grey_text, by.c_str());
-    draw->PushClipRect(origin, ImVec2(by.empty() ? right - answer_width - gap : by_x - gap, origin.y + head), true);
-    draw->AddText(bold, px(17), ImVec2(origin.x + px(6), origin.y + (head - px(17)) * 0.5f), st::white, plugin.title.c_str());
-    draw->PopClipRect();
+    std::string kinds;
+    for (const auto& group : plugin.can) kinds += (kinds.empty() ? "" : ", ") + group.category;
+    LibraryRow row;
+    row.name = plugin.title;
     if (waiting) {
-        draw->AddText(bold, px(14), ImVec2(right - answer_width, origin.y + (head - px(14)) * 0.5f), st::warning, answer);
+        row.detail = kinds.empty() ? std::string("Asks to run") : "Asks for: " + kinds;
+        row.detail_colour = st::warning;
+        row.edge = st::warning;
+        row.tag = "ASKS";
+        row.tag_fill = st::warning;
+        row.tag_ink = st::black;
+        row.hint = "A or X shows what it asks for, to answer it.";
     } else {
-        const bool on = plugin.approval == plugins::Approval::on;
-        draw->AddRectFilled(switch_min, switch_max, on ? (over_switch ? st::blue_hover : st::blue) : (over_switch ? IM_COL32(72, 73, 78, 255) : st::tile_light), px(4));
-        if (switch_focused) draw->AddRect(switch_min, switch_max, st::white, px(4), 0, px(2));
-        const auto size = bold->CalcTextSizeA(px(14), FLT_MAX, 0, answer);
-        draw->AddText(bold, px(14), ImVec2(switch_min.x + (answer_width - size.x) * 0.5f, switch_min.y + (switch_max.y - switch_min.y - size.y) * 0.5f),
-                      on ? st::black : st::white, answer);
+        row.detail = by;
+        if (!kinds.empty()) row.detail += (row.detail.empty() ? "" : " \xc2\xb7 ") + kinds;
+        row.tag = on ? "ON" : "OFF";
+        if (on) row.tag_fill = st::blue, row.tag_ink = st::white;
+        if (has_page) row.side = "Page \xe2\x80\xba";
+        row.hint = has_page ? "A opens its page. X turns it on or off. Y shows what it may do." : "A shows what it may do. X turns it on or off.";
     }
-    // The chips, as many as fit before "+N" and the open marker.
-    const float chip_size = px(11), chip_height = px(18), chip_y = origin.y + head + (chips_height - chip_height) * 0.5f;
-    float x = origin.x + px(6);
-    std::size_t shown = 0;
+    row.open = is_open;
+    const auto pressed = library_row(menu, "##plugin", row);
+    const ImGuiID row_id = ImGui::GetItemID();
+    if (refocus_plugin() == plugin.id) {
+        ImGui::SetFocusID(row_id, ImGui::GetCurrentWindow());
+        ImGui::ScrollToItem();
+        refocus_plugin().clear();
+    }
+    if (pressed == RowPress::a) {
+        if (has_page && !waiting) {
+            menu.plugin_page = plugin.id;
+            open.clear();
+        } else {
+            open = is_open ? std::string() : plugin.id;
+        }
+    } else if (pressed == RowPress::x) {
+        if (waiting) open = plugin.id;
+        else plugins::set_enabled(plugin.id, !on);
+    } else if (pressed == RowPress::y) {
+        open = is_open ? std::string() : plugin.id;
+    }
+    if (!is_open || open != plugin.id) return;
+    // B closes the details, and the focus comes back to the row from the buttons that are going away.
+    hold_back();
+    if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) && !ImGui::GetIO().WantTextInput) {
+        open.clear();
+        ImGui::SetFocusID(row_id, ImGui::GetCurrentWindow());
+        return;
+    }
+    ImGui::Indent(px(40));
     for (const auto& group : plugin.can) {
-        const float chip_width = bold->CalcTextSizeA(chip_size, FLT_MAX, 0, group.category.c_str()).x + px(14);
-        if (shown > 0 && x + chip_width > right - px(60)) break;
-        draw->AddRectFilled(ImVec2(x, chip_y), ImVec2(x + chip_width, chip_y + chip_height), risk_colour(group.risk), px(9));
-        draw->AddText(bold, chip_size, ImVec2(x + px(7), chip_y + (chip_height - chip_size) * 0.5f),
-                      group.risk == plugins::Risk::grey ? st::white : st::black, group.category.c_str());
-        x += chip_width + px(6);
-        ++shown;
+        ImGui::PushStyleColor(ImGuiCol_Text, group.risk == plugins::Risk::grey ? st::grey_text : risk_colour(group.risk));
+        ImGui::PushFont(menu.bold ? menu.bold : ImGui::GetFont());
+        ImGui::TextUnformatted(group.category.c_str());
+        ImGui::PopFont();
+        ImGui::PopStyleColor();
+        for (const auto& phrase : group.phrases) note(("\xe2\x80\xa2 " + phrase).c_str());
     }
-    if (shown < plugin.can.size()) {
-        const auto more = "+" + std::to_string(plugin.can.size() - shown);
-        draw->AddText(bold, chip_size + px(1), ImVec2(x, chip_y + (chip_height - chip_size) * 0.5f), st::grey_text, more.c_str());
-    }
-    const ImVec2 mark(right - px(14), origin.y + head + chips_height * 0.5f);
-    const float arm = px(5);
-    if (expanded) draw->AddTriangleFilled(ImVec2(mark.x - arm, mark.y - arm * 0.5f), ImVec2(mark.x + arm, mark.y - arm * 0.5f), ImVec2(mark.x, mark.y + arm * 0.7f), st::grey_text);
-    else draw->AddTriangleFilled(ImVec2(mark.x - arm * 0.5f, mark.y - arm), ImVec2(mark.x - arm * 0.5f, mark.y + arm), ImVec2(mark.x + arm * 0.7f, mark.y), st::grey_text);
-
-    if (expanded) {
-        ImGui::Indent(px(14));
-        for (const auto& group : plugin.can) {
-            ImGui::PushStyleColor(ImGuiCol_Text, group.risk == plugins::Risk::grey ? st::grey_text : risk_colour(group.risk));
-            ImGui::PushFont(bold);
-            ImGui::TextUnformatted(group.category.c_str());
-            ImGui::PopFont();
-            ImGui::PopStyleColor();
-            for (const auto& phrase : group.phrases) note(("\xe2\x80\xa2 " + phrase).c_str());
-        }
-        ImGui::Unindent(px(14));
-        if (waiting) {
-            ImGui::Spacing();
-            if (primary_button(menu, "Turn on")) plugins::set_enabled(plugin.id, true);
-            if (ImGui::Button("Keep off", ImVec2(-FLT_MIN, px(34)))) plugins::set_enabled(plugin.id, false);
+    ImGui::Unindent(px(40));
+    if (waiting) {
+        const int answer = row_actions(menu, "answer", {{"TURN ON", true, true, "Let it run."}, {"KEEP OFF", true, false, "It stays off."}});
+        if (answer >= 0) plugins::set_enabled(plugin.id, answer == 0);
+    } else {
+        const RowButton turn{on ? "TURN OFF" : "TURN ON", true, !on, on ? "Stop it." : "Let it run."};
+        const int action = has_page ? row_actions(menu, "switch", {turn, {"OPEN PAGE", true, false, "Its page, in place of this list."}})
+                                    : row_actions(menu, "switch", {turn});
+        if (action == 0) plugins::set_enabled(plugin.id, !on);
+        if (action == 1) {
+            menu.plugin_page = plugin.id;
+            open.clear();
         }
     }
-    if (toggled) open[plugin.id] = !expanded;
-    ImGui::Dummy(ImVec2(0, px(6)));
-}
 }
 
-// Every plugin that may load. One that has no answer yet says so, so a prompt that was missed is not
-// the only way to answer.
-void installed_plugins(SkateMenu& menu) {
-    begin_card(menu, "plugins-installed", "INSTALLED PLUGINS");
+// PLUGINS' list: plugin developer mode, then every installed plugin, a row each, down one column.
+void plugin_list(SkateMenu& menu, const std::vector<plugin_ui::PageEntry>& pages) {
+    ImGui::BeginChild("plugin-list", ImVec2(0, page_body_height(menu)), ImGuiChildFlags_NavFlattened);
+    page_prompts("Open page", "On / off", "Permissions");
+    bool developer = plugins::developer_mode();
+    if (toggle_row(menu, "Plugin dev mode", "Updates to plugins you already approved won't ask again.", developer))
+        plugins::set_developer_mode(developer);
     const auto list = plugins::installed();
+    section(menu, ("INSTALLED  \xc2\xb7  " + std::to_string(list.size())).c_str());
     if (list.empty())
         note("No plugin is installed. A plugin is a mod with a reskate-plugin.json: a script that runs inside the game and can add "
              "pages, modes and tools.");
+    const auto asking = std::ranges::count_if(list, [](const plugins::Installed& p) { return p.approval == plugins::Approval::asking; });
+    if (asking == 1) warn("A plugin is waiting for your OK. Open it to answer.");
+    else if (asking > 1) warn((std::to_string(asking) + " plugins are waiting for your OK. Open one to answer.").c_str());
     for (const auto& plugin : list) {
+        const bool has_page = std::ranges::any_of(pages, [&](const plugin_ui::PageEntry& p) { return p.plugin == plugin.id; });
         ImGui::PushID(plugin.id.c_str());
-        plugin_row(menu, plugin);
+        plugin_row(menu, plugin, has_page);
         ImGui::PopID();
     }
-    end_card();
-}
-
-// The first entry of PLUGINS: every installed plugin and whether it may run.
-void plugin_manager_page(SkateMenu& menu, bool no_pages) {
-    ImGui::BeginChild("plugin-manager", ImVec2(0, page_body_height(menu)), ImGuiChildFlags_NavFlattened);
-    installed_plugins(menu);
-    if (no_pages) {
-        begin_card(menu, "plugins-none", "PLUGIN PAGES");
+    note("X turns a plugin on or off from its row. A on a plugin with a page opens it full size, with the plugin's own tabs; "
+         "B comes back here. Y shows what it may do. While dev mode is on, updates to plugins you approved won't ask again.");
+    if (!list.empty() && pages.empty())
         note("No plugin has a page of its own. A plugin adds one with reskate.menu.page (it needs the \"menu\" permission). "
              "plugin list in the console lists every plugin too.");
-        end_card();
-    }
-    begin_card(menu, "plugin-developer", "PLUGIN DEVELOPMENT");
-    bool developer = plugins::developer_mode();
-    if (toggle_row(menu, "Plugin developer mode", "", developer))
-        plugins::set_developer_mode(developer);
-    note("Updates to plugins you already approved won't ask again while this is on.");
-    end_card();
     ImGui::EndChild();
+}
 }
 
 void plugins_page(SkateMenu& menu) {
     const auto pages = plugin_pages();
     const auto* shown = shown_plugin_page(menu);
-    // The PLUGIN MANAGER is the first entry, then each plugin with a page. A window lists them in its side
-    // rail; full screen has no rail, so they are tabs here (tab 0 is the manager, tab n is pages[n - 1]).
-    if (menu.fullscreen_drawn) {
-        std::vector<const char*> names{"PLUGIN MANAGER"};
-        int selected = 0;
-        for (std::size_t i = 0; i < pages->size(); ++i) {
-            names.push_back((*pages)[i].title.c_str());
-            if (shown && (*pages)[i].plugin == shown->plugin) selected = static_cast<int>(i) + 1;
-        }
-        category_tabs(menu, selected, names, "plugin-pages");
-        selected = std::clamp(selected, 0, static_cast<int>(pages->size()));
-        shown = selected == 0 ? nullptr : &(*pages)[static_cast<std::size_t>(selected - 1)];
-        menu.plugin_page = shown ? shown->plugin : plugin_manager_entry;
-    }
+    // The list, or the page of the plugin opened from it, full size: its own tabs are the page's tabs and
+    // its name the page's title (skate_menu.cpp). B goes back to the list.
     if (!shown) {
-        plugin_manager_page(menu, pages->empty());
+        plugin_list(menu, *pages);
         return;
+    }
+    hold_back();
+    if (ImGui::IsKeyPressed(ImGuiKey_GamepadFaceRight, false) && !ImGui::GetIO().WantTextInput && !ImGui::IsAnyItemActive() &&
+        !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel)) {
+        refocus_plugin() = shown->plugin;
+        menu.plugin_page = plugin_manager_entry;
+        plugin_list(menu, *pages);
+        return;
+    }
+    // Whose page this is and the way back, first on the page: B does it on a pad, but the pointer needs a
+    // button, and the page reads as one plugin's rather than as PLUGINS itself.
+    {
+        const auto back = std::string("< PLUGINS    ") + shown->title;
+        if (button_row(menu, "plugin-page-back", {{back.c_str(), true, false, "Back to the plugin list (B)."}}) == 0) {
+            refocus_plugin() = shown->plugin;
+            menu.plugin_page = plugin_manager_entry;
+            plugin_list(menu, *pages);
+            return;
+        }
     }
     plugin_ui::note_page_shown(shown->plugin);
     const double now = ImGui::GetTime();
     std::erase_if(edits(), [&](const auto& item) { return now - item.second.at > 1.0; });
     ImGui::PushID(shown->plugin.c_str());
     ImGui::BeginChild("plugin-page", ImVec2(0, page_body_height(menu)), ImGuiChildFlags_NavFlattened);
-    const auto panels = plugin_ui::latest_panels();
-    static const std::vector<plugin_ui::Panel> none;
-    const auto& list = panels ? *panels : none;
-    bool any = false;
-    // The page first, then the plugin's panels as cards under it.
-    for (const bool page : {true, false})
-        for (const auto& panel : list) {
-            if (panel.screen || panel.page != page || panel.plugin != shown->plugin) continue;
-            any = true;
-            ImGui::PushID(panel.title.c_str());
-            draw_widgets(menu, panel, now);
-            ImGui::PopID();
-        }
-    if (!any) note("Loading...");
+    if (!draw_plugin_panels(menu, shown->plugin, now)) note("Loading...");
     ImGui::EndChild();
     ImGui::PopID();
+}
+
+PausePluginPage pause_menu_plugin_page(SkateMenu& menu, const std::string& plugin, ImVec2 a, ImVec2 b, float scale, bool input, bool take_focus) {
+    PausePluginPage result;
+    const auto pages = plugin_ui::latest_pages();
+    if (!pages || std::ranges::none_of(*pages, [&](const plugin_ui::PageEntry& p) { return p.plugin == plugin; })) return result;
+    result.shown = true;
+    draw_in_kit(menu, scale, [&] {
+        // The box keeps the keyboard focus while the pause page has handed it the pad: a click on the
+        // page around it would leave ImGui's navigation with no window, and the D-pad doing nothing.
+        // (Not over a popup of its own, which has the focus while it is open.)
+        static bool focused_before = false;
+        static ImGuiID heard = 0;
+        const auto any_popup = [] { return ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel); };
+        if (input && (take_focus || (!focused_before && !any_popup()))) ImGui::SetNextWindowFocus();
+        ImGui::SetNextWindowPos(a);
+        ImGui::SetNextWindowSize(ImVec2(b.x - a.x, b.y - a.y));
+        ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+                                 ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus;
+        // Under the ReSkate menu or the console it is there to look at, as the rest of the pause page is.
+        if (!input) flags |= ImGuiWindowFlags_NoInputs;
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL32(0, 0, 0, 0));
+        if (ImGui::Begin("###pause-menu-plugin-page", nullptr, flags)) {
+            if (input && take_focus && ImGui::GetCurrentContext()->NavWindow == ImGui::GetCurrentWindow()) {
+                ImGui::NavInitWindow(ImGui::GetCurrentWindow(), true);
+                ImGui::SetNavCursorVisible(true);
+            }
+            // (The ReSkate menu over it may show another plugin's page: it has the say then.)
+            if (input) plugin_ui::note_page_shown(plugin);
+            const double now = ImGui::GetTime();
+            std::erase_if(edits(), [&](const auto& item) { return now - item.second.at > 1.0; });
+            ImGui::PushID(plugin.c_str());
+            if (!draw_plugin_panels(menu, plugin, now)) note("Loading...");
+            ImGui::PopID();
+            focused_before = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+        }
+        ImGui::End();
+        ImGui::PopStyleColor();
+        const ImGuiID now_focused = ImGui::GetFocusID();
+        result.moved = input && now_focused && now_focused != heard && ImGui::GetCurrentContext()->NavCursorVisible;
+        heard = now_focused;
+        result.typing = ImGui::GetIO().WantTextInput;
+        result.busy = result.typing || ImGui::IsAnyItemActive() || any_popup();
+    });
+    return result;
 }
 }

@@ -144,19 +144,33 @@ void set_local_preference(std::string_view key, bool value) noexcept;
 // first saved with. set_local_values saves several at once (one transaction).
 std::optional<Json> local_value(std::string_view key) noexcept;
 void set_local_values(const std::vector<std::pair<std::string, Json>>& values) noexcept;
-// ReSkate menu scale, clamped to a legible range. Cached so the overlay can
-// read it every frame without touching the database.
-// The ReSkate menu's size: the window's, or (`fullscreen`) the full screen menu's.
-float local_menu_scale(bool fullscreen = false) noexcept;
+// ReSkate menu scale, clamped to a legible range, one for both of its layouts. Cached so the overlay
+// can read it every frame without touching the database.
+float local_menu_scale() noexcept;
 // One of the game's OWN gameplay options (the ones its Settings menu edits, by the game's key for it), as the local
 // profile holds it: the same value the game's scripts are answered with. Empty while the player never changed it (the
 // game's default applies). Setting it is the same as changing it in the game's menu.
 std::optional<double> local_game_option(std::string_view key) noexcept;
 bool set_local_game_option(std::string_view key, double value, bool boolean) noexcept;
-bool set_local_menu_scale(float value, bool fullscreen = false) noexcept;
-// Whether the ReSkate menu fills the screen (made for a controller) or is a window. Cached likewise.
-bool local_menu_fullscreen() noexcept;
-void set_local_menu_fullscreen(bool fullscreen) noexcept;
+bool set_local_menu_scale(float value) noexcept;
+// How the ReSkate menu is laid out (menu_layout_sheet or menu_layout_hub, menu_scale.h). Cached likewise.
+int local_menu_layout() noexcept;
+bool set_local_menu_layout(int layout) noexcept;
+// How the park editor is laid out (park_editor_layout_hotbar or park_editor_layout_rail, menu_scale.h).
+// Cached likewise.
+int local_park_editor_layout() noexcept;
+bool set_local_park_editor_layout(int layout) noexcept;
+// The side sheet's width and the window's size as the player last dragged them, in pixels at 1080
+// lines and a menu scale of 1 (menu_scale.h); 0 (both 0 for the window) is the default size, and
+// setting 0 goes back to it. A size out of menu_scale.h's range is refused. Cached likewise.
+float local_menu_sheet_width() noexcept;
+bool set_local_menu_sheet_width(float width) noexcept;
+std::pair<float, float> local_menu_hub_size() noexcept;
+bool set_local_menu_hub_size(float width, float height) noexcept;
+// The replay editor's MP4 export quality (replay_export::Quality, Extension/Rendering/replay_export.h),
+// ReSkate.ReplayExportQuality; 0 is the game's own bitrate. One out of range is refused. Cached likewise.
+int local_replay_export_quality() noexcept;
+bool set_local_replay_export_quality(int quality) noexcept;
 // The game's camera height option (UseHighCam, true is the high camera) as the game writes it,
 // which its camera height button does: the listener returns the height to keep instead. Runs on
 // the thread that writes the option.
