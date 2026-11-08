@@ -60,6 +60,7 @@ struct Fields {
 };
 struct Row {
     std::string name;
+    std::uint64_t trick_id{};
     Value model, item;
 };
 // Client thread only.
@@ -79,6 +80,8 @@ struct Hud {
     Value model, item;
     Fields fields;
     std::vector<Row> rows; // newest first
+    std::uint64_t rows_generation{};
+    bool rows_restart{};
     LineStart line_start;  // when a line's rows start again from an empty list
     std::string points_text, multiplier_text;
     bool texts_set{};
@@ -129,6 +132,8 @@ void forget(Hud& h, Address manager) noexcept {
     h.model = h.item = {};
     h.fields = {};
     h.rows.clear();
+    h.rows_generation = 0;
+    h.rows_restart = false;
     h.line_start.out();
     h.texts_set = false;
     h.presence.registry_changed();
@@ -359,6 +364,8 @@ void destroy_ours(Hud& h, const Context& c) noexcept {
         destroy_quietly(c, row.model);
     }
     h.rows.clear();
+    h.rows_generation = 0;
+    h.rows_restart = false;
     h.line_start.out();
     h.fields = {};
     h.texts_set = false;
@@ -380,8 +387,8 @@ Address row_type_now(Hud& h, const Context& c, double now) {
     } catch (const std::exception&) {} // not loaded yet
     return h.row_type;
 }
-Row make_row(Hud& h, const Context& c, Address type, const std::string& name) {
-    Row row{name, create(h, c, type), {}};
+Row make_row(Hud& h, const Context& c, Address type, const std::string& name, std::uint64_t trick_id) {
+    Row row{name, trick_id, create(h, c, type), {}};
     try {
         // The row's handle back into a score model keeps what create gave it, never the game's.
         c.text(label_text(c, row.model, score::row_name), name);
@@ -395,11 +402,17 @@ Row make_row(Hud& h, const Context& c, Address type, const std::string& name) {
 // The trick list as `wanted` (newest first): only the rows that are new are made, at the front, as
 // the game's list takes a new row, and those that fall off the end are destroyed once the list no
 // longer holds them.
-void show_rows(Hud& h, const Context& c, const std::vector<std::string>& wanted, double now) {
+void show_rows(Hud& h, const Context& c, const std::vector<std::string>& wanted,
+    const std::vector<std::uint64_t>& wanted_ids, double now) {
     std::vector<std::string> shown;
-    for (const auto& row : h.rows) shown.push_back(row.name);
-    if (shown == wanted) return;
-    const auto fresh = fresh_rows(shown, wanted);
+    std::vector<std::uint64_t> shown_ids;
+    for (const auto& row : h.rows) {
+        shown.push_back(row.name);
+        shown_ids.push_back(row.trick_id);
+    }
+    const auto generation = owner().generation();
+    const auto fresh = fresh_rows(shown, wanted, shown_ids, wanted_ids, h.rows_restart ? 0 : h.rows_generation, generation);
+    if (!fresh && shown.size() == wanted.size() && h.rows_generation == generation && !h.rows_restart) return;
     const auto type = fresh ? row_type_now(h, c, now) : h.row_type;
     if (fresh && (!type || !h.row_blueprint)) {
         if (!std::exchange(h.said_rows, true))
@@ -410,7 +423,8 @@ void show_rows(Hud& h, const Context& c, const std::vector<std::string>& wanted,
     }
     std::vector<Row> next;
     try {
-        for (std::size_t index = 0; index < fresh; ++index) next.push_back(make_row(h, c, type, wanted[index]));
+        for (std::size_t index = 0; index < fresh; ++index)
+            next.push_back(make_row(h, c, type, wanted[index], trick_id_at(wanted_ids, index)));
     } catch (...) {
         for (auto& row : next) {
             destroy_quietly(c, row.item);
@@ -440,6 +454,10 @@ void show_rows(Hud& h, const Context& c, const std::vector<std::string>& wanted,
         destroy_quietly(c, h.rows[index].model);
     }
     h.rows = std::move(next);
+    // Only a successful native list write advances the cache. An unavailable UI pass retries the
+    // latest identities against the rows that actually remained in the model.
+    h.rows_generation = generation;
+    h.rows_restart = false;
 }
 
 // Our trick list emptied, then its rows destroyed. Rows the list still holds are not destroyed (they
@@ -456,15 +474,17 @@ void clear_rows(Hud& h, const Context& c) noexcept {
         destroy_quietly(c, row.model);
     }
     h.rows.clear();
+    h.rows_generation = 0;
 }
 // The rows are the line's least part: one that cannot be made (none has been made from this build's
 // row type outside the scorep2 launch) leaves this registry's lines without their names, and never
 // takes the points, ring or LINE down with it.
-void show_rows_or_none(Hud& h, const Context& c, const std::vector<std::string>& wanted, double now) {
+void show_rows_or_none(Hud& h, const Context& c, const std::vector<std::string>& wanted,
+    const std::vector<std::uint64_t>& wanted_ids, double now) {
     if (h.rows_off) return;
     std::string why;
     try {
-        show_rows(h, c, wanted, now);
+        show_rows(h, c, wanted, wanted_ids, now);
         return;
     } catch (const std::exception& error) {
         why = error.what();
@@ -504,10 +524,13 @@ void show(Hud& h, const Context& c, const Line& line, bool ours_in, double now) 
     }
     if (!h.model.handle && !make_model(h, c)) return;
     // A new line's rows come in as the game's do, into an empty list.
-    if (h.line_start.shown(line.closed)) clear_rows(h, c);
+    if (h.line_start.shown(line.closed)) {
+        h.rows_restart = true;
+        clear_rows(h, c);
+    }
     const auto look = look_of(line, score::action_fill_points);
     publish(h, c, look);
-    show_rows_or_none(h, c, look.rows, now);
+    show_rows_or_none(h, c, look.rows, look.trick_ids, now);
     // No write to our models is ever a trick's, whoever makes it (the widget writes ours too).
     std::vector<std::uint64_t> entries{h.model.handle >> 16};
     for (const auto& row : h.rows) entries.push_back(row.model.handle >> 16);
