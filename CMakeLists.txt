@@ -78,6 +78,25 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS)
     add_executable(dingosdk_map_fetch_policy_tests Extension/Multiplayer/Test/map_fetch_policy_tests.cpp)
     target_include_directories(dingosdk_map_fetch_policy_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME map_fetch_policy COMMAND dingosdk_map_fetch_policy_tests)
+    # Skate Synchros: share codes, their proofs, and who sees whose outfit (Extension/Multiplayer/Synchros).
+    add_executable(dingosdk_synchros_tests Extension/Multiplayer/Synchros/Test/synchros_tests.cpp
+        Extension/Multiplayer/Synchros/share_code.cpp Extension/Multiplayer/Synchros/synchros_wire.cpp
+        Extension/Multiplayer/Synchros/received.cpp Extension/Multiplayer/Synchros/wearer.cpp
+        Extension/Multiplayer/Synchros/exchange.cpp Extension/Multiplayer/Synchros/settings_file.cpp
+        Engine/Resource/bundle_ref_table.cpp)
+    target_include_directories(dingosdk_synchros_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_link_libraries(dingosdk_synchros_tests PRIVATE dingosdk_json)
+    if(WIN32)
+        target_link_libraries(dingosdk_synchros_tests PRIVATE bcrypt)
+    else()
+        target_link_libraries(dingosdk_synchros_tests PRIVATE OpenSSL::Crypto)
+    endif()
+    add_test(NAME synchros COMMAND dingosdk_synchros_tests)
+    # What Skate Synchros would send for each item of a Skate folder's enabled mods (Tools/OutfitProbe).
+    add_executable(dingosdk_outfit_probe Tools/OutfitProbe/outfit_probe.cpp)
+    target_include_directories(dingosdk_outfit_probe PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_include_directories(dingosdk_outfit_probe SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/External")
+    target_link_libraries(dingosdk_outfit_probe PRIVATE dingosdk_game_archives)
     if(WIN32)
         add_executable(dingosdk_https_download_timeout_tests Engine/Vfs/Test/https_download_timeout_tests.cpp)
         target_include_directories(dingosdk_https_download_timeout_tests PRIVATE "${PROJECT_SOURCE_DIR}")

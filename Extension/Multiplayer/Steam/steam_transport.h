@@ -122,6 +122,27 @@ class SteamTransport {
     // Every connection, measured now: one Steam call each, so for a command, not every tick.
     std::vector<TransportLink> links();
 
+    // Side connections: Skate Synchros' own (Extension/Multiplayer/Synchros), on a virtual port
+    // of their own beside the session's. Only players in the session can open one (the host's
+    // roster, or a host's own connected players), always through Steam's relays as the session's
+    // are, with their own send rate and room, so an outfit never waits behind or delays the game's
+    // packets and never counts against a session link's packet limit. A game without them (an older
+    // ReSkate) simply never answers. Messages are reliable, up to max_side_message bytes.
+    static constexpr std::size_t max_side_message = 512 * 1024;
+    static constexpr int side_send_rate = 256 * 1024;
+    bool open_side(int virtual_port);
+    void close_side();
+    bool side_connect(std::uint64_t id);
+    void side_disconnect(std::uint64_t id);
+    bool side_send(std::uint64_t id, std::span<const std::uint8_t> bytes);
+    std::vector<TransportMessage> side_receive();
+    // The players a side connection is up with now, and those whose side connection closed since
+    // the last call.
+    std::vector<std::uint64_t> side_peers() const;
+    std::vector<std::uint64_t> take_side_closed();
+    // Bytes waiting to go to that player on its side connection (0 when none, -1 when unknown).
+    std::int64_t side_pending(std::uint64_t id) const;
+
   private:
     bool bind(void *steam_api, void *sockets, void *networking_utils);
     struct Impl;

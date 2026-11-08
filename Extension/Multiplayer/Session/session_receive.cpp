@@ -1223,6 +1223,7 @@ void networking(Session &s, const NativeFrame &local, std::uint64_t now) {
     }
     update_scoring(s, now); // before the roster, so a host's own flag goes out with it
     update_presence(s, now);
+    update_synchros(s, now);
     tick_host_parties(s, now); // and the lobby's parties, which the roster carries
     if (s.mode == Mode::host && world_playing(s, local) && (s.roster_dirty || now - s.last_roster > 2000000))
         send_roster(s, now);

@@ -11,6 +11,7 @@
 #include "Extension/UI/NativeMenu/native_menu_dump.h"
 #endif
 #include "Extension/Assets/live_mods.h"
+#include "Extension/Multiplayer/Synchros/synchros_runtime.h"
 #include "Engine/Game/Multiplayer/session_tools.h"
 #include <algorithm>
 #include <array>
@@ -256,6 +257,20 @@ void register_multiplayer_commands(Commands &registry) {
         out(multiplayer::throwdown_lab_command(values.empty() ? std::string{} : std::get<std::string>(values[0]), skater));
     };
     registry.add(std::move(lab));
+    // Skate Synchros (contrib/outfit-sharing.md): share codes and groups, until the settings page.
+    auto synchros_args = argument("verb_and_arguments", Type::text, true);
+    synchros_args.rest = true;
+    synchros_args.complete = [](const Model &, auto) {
+        return std::vector<std::string>{"status", "share", "show", "code", "new-code", "add", "remove", "codes", "group",
+                                        "groups", "paired", "unpair", "block", "unblock", "cache", "empty-cache"};
+    };
+    auto synchros_command = action("synchros", "Skate Synchros: see each other's modded outfits, by share code or group "
+                                               "(status, share on|off, show on|off, code, add <code>, group create|join ...)",
+                                   Group::gameplay, {std::move(synchros_args)});
+    synchros_command.run = [](const Model &, const Values &values, const Output &out) {
+        out(multiplayer::synchros::console_command(values.empty() ? std::string{} : std::get<std::string>(values[0])));
+    };
+    registry.add(std::move(synchros_command));
     // Research aid for multiplayer coop challenges (analysis/coop-challenges-mp.md).
     auto challenge_args = argument("verb_and_arguments", Type::text, true);
     challenge_args.rest = true;
