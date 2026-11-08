@@ -524,10 +524,10 @@ if(DINGOSDK_BUILD_PLUGIN_TESTS AND WIN32)
     add_executable(dingosdk_trick_watch_tests Extension/Skater/Test/trick_watch_tests.cpp Extension/Skater/trick_watch.cpp)
     target_include_directories(dingosdk_trick_watch_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME trick_watch COMMAND dingosdk_trick_watch_tests)
-    # Which trick list writes are a trick's (Extension/Skater/trick_feed_gate.h): never the song's title.
-    add_executable(dingosdk_trick_feed_gate_tests Extension/Skater/Test/trick_feed_gate_tests.cpp)
-    target_include_directories(dingosdk_trick_feed_gate_tests PRIVATE "${PROJECT_SOURCE_DIR}")
-    add_test(NAME trick_feed_gate COMMAND dingosdk_trick_feed_gate_tests)
+    # The songs' titles the trick feed leaves out (Extension/Skater/trick_feed_songs.h): never a trick's name.
+    add_executable(dingosdk_trick_feed_songs_tests Extension/Skater/Test/trick_feed_songs_tests.cpp)
+    target_include_directories(dingosdk_trick_feed_songs_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME trick_feed_songs COMMAND dingosdk_trick_feed_songs_tests)
     # A plugin's own line in skate.'s score HUD (Extension/UI/score_line.h): one plugin's at a time, the
     # yield to skate.'s own line, the take-out that is never dropped.
     add_executable(dingosdk_score_line_tests Extension/UI/Test/score_line_tests.cpp)

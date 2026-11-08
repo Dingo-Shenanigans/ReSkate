@@ -1,11 +1,10 @@
 #include "trick_feed.h"
-#include "trick_feed_gate.h"
+#include "trick_feed_songs.h"
 #include "Extension/UI/own_ui_writes.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/memory.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/engine.h"
-#include "Engine/Game/Build/20260929/native_party.h"
 #include <Windows.h>
 #include <array>
 #include <atomic>
@@ -25,7 +24,7 @@ struct Feed {
     std::mutex mutex;
     std::vector<Note> notes;
     std::set<std::string> owners;
-    RecordGate<Note> gate; // which UI model's writes are the trick list's (trick_feed_gate.h)
+    SongTitles songs; // the songs begun, whose titles the music writes to the name's field (trick_feed_songs.h)
     unsigned left_out_logged{};
 };
 Feed& feed() {
@@ -62,24 +61,6 @@ bool readable_name(std::string_view text) noexcept {
     }
     return letter;
 }
-// The UI model record a write's handle belongs to (native_party.h's model_record, which the menu
-// readers call under the same lock), or 0 when its bytes are not the ones this build has: then
-// every write is taken, as before.
-using ModelRecord = std::uintptr_t (*)(std::uintptr_t manager, std::uint64_t handle, std::uint8_t flag);
-ModelRecord model_record() noexcept {
-    static const ModelRecord found = []() -> ModelRecord {
-        const auto base = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr));
-        for (const auto& contract : addr::native_party::native_party_contracts) {
-            if (contract.rva != addr::native_party::model_record) continue;
-            std::array<unsigned char, 32> code{};
-            if (memory::peek(base + contract.rva, code) && code == contract.bytes) return reinterpret_cast<ModelRecord>(base + contract.rva);
-        }
-        logging::log(logging::Level::warning, logging::Channel::plugins,
-            "Trick feed: the UI model lookup is not this build's, so text other models write (a song's title) can read as a trick.");
-        return nullptr;
-    }();
-    return found;
-}
 } // namespace
 
 void ask(const std::string& owner, bool on) {
@@ -88,20 +69,42 @@ void ask(const std::string& owner, bool on) {
     if (on) f.owners.insert(owner);
     else f.owners.erase(owner);
     f.on.store(!f.owners.empty(), std::memory_order_release);
-    if (f.owners.empty()) {
-        f.notes.clear();
-        f.gate.clear();
-    }
+    if (f.owners.empty()) f.notes.clear();
 }
 bool wanted() noexcept { return feed().on.load(std::memory_order_acquire); }
 void own(const std::vector<std::uint64_t>& entries) noexcept { owned_entries.set(entries); }
 std::vector<Note> take() {
     auto& f = feed();
-    std::lock_guard lock(f.mutex);
-    return std::exchange(f.notes, {});
+    std::vector<Note> notes;
+    std::vector<std::string> left_out;
+    {
+        std::lock_guard lock(f.mutex);
+        notes = std::exchange(f.notes, {});
+        // A name that reads as a song begun is the music's write, not a trick's. (Done here rather
+        // than in tap, a tick or so after the write, so a song begun on another thread at the same
+        // moment is known by then.)
+        std::erase_if(notes, [&](const Note& note) {
+            if (note.kind != 'n' || !f.songs.is_song(note.text)) return false;
+            if (f.left_out_logged < 8) {
+                ++f.left_out_logged;
+                left_out.push_back(note.text);
+            }
+            return true;
+        });
+    }
+    for (const auto& text : left_out)
+        logging::log(logging::Level::info, logging::Channel::plugins, "Trick feed: left out \"{}\": it is a song's title.", text);
+    return notes;
+}
+void song_playing(std::string_view artist, std::string_view title) noexcept {
+    try {
+        auto& f = feed();
+        std::lock_guard lock(f.mutex);
+        f.songs.add(artist, title);
+    } catch (...) {}
 }
 
-void tap(std::uintptr_t manager, std::uint64_t handle, std::uintptr_t type, const void* value, std::uint8_t flag) noexcept {
+void tap(std::uint64_t handle, std::uintptr_t type, const void* value) noexcept {
     auto& f = feed();
     if (!f.on.load(std::memory_order_acquire) || ui::writing_own_ui) return;
     const auto member = static_cast<std::uint32_t>(handle & 0xffff);
@@ -149,25 +152,8 @@ void tap(std::uintptr_t manager, std::uint64_t handle, std::uintptr_t type, cons
             text = member == trick_late_member ? "Late" : member == trick_darkflip_member ? "Darkflip" : "Dark Catch";
             kind = 'm';
         }
-        // Whose write it is: only a side, landing, stance or modifier (each checked against the game's
-        // own ids above) shows a model is the trick list's; a name or a spin waits for one.
-        const auto lookup = model_record();
-        const auto record = lookup ? lookup(manager, handle, flag) : 0;
-        const bool sure = kind == 's' || kind == 'l' || kind == 'k' || kind == 'm';
-        std::vector<Note> out, left_out;
-        {
-            std::lock_guard lock(f.mutex);
-            f.gate.add({handle >> 16, kind, std::move(text)}, record, sure, GetTickCount64(), out);
-            for (auto& note : out)
-                if (f.notes.size() < 256) f.notes.push_back(std::move(note));
-            left_out = f.gate.take_left_out();
-            if (f.left_out_logged >= 8) left_out.clear();
-            else if (left_out.size() > 8 - f.left_out_logged) left_out.resize(8 - f.left_out_logged);
-            f.left_out_logged += static_cast<unsigned>(left_out.size());
-        }
-        for (const auto& note : left_out)
-            logging::log(logging::Level::info, logging::Channel::plugins,
-                "Trick feed: left out \"{}\": the model that wrote it never wrote a trick's side, landing or stance.", note.text);
+        std::lock_guard lock(f.mutex);
+        if (f.notes.size() < 256) f.notes.push_back({handle >> 16, kind, std::move(text)});
     } catch (...) {}
 }
 } // namespace dingosdk::tricks::feed
