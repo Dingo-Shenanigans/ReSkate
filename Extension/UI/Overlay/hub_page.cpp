@@ -1312,12 +1312,31 @@ void friends_page(Ui &ui, ImVec2 a, ImVec2 z) {
     }
 }
 
+// The next (or the one before) of a setting's steps from where it is now; it stops at the ends.
+template<std::size_t N> float stepped(float current, const std::array<float, N> &steps, int direction) {
+    if (direction > 0) {
+        for (const float step : steps)
+            if (step > current + .001f) return step;
+        return steps.back();
+    }
+    for (std::size_t i = steps.size(); i-- > 0;)
+        if (steps[i] < current - .001f) return steps[i];
+    return steps.front();
+}
+std::string whole(float value, const char *unit = "") { return std::to_string(static_cast<int>(value + .5f)) + unit; }
+
+#include "mod_options_page.inl"
+
 // ---------------------------------------------------------------- hosting
 
+// HOST LOBBY: the map the lobby will be on as a big card on the left, with how the lobby will list in
+// the server browser under it; on the right the lobby's settings as a list (Mod Options' rows, the
+// D-pad's), skate.'s description card for the focused one under them, and HOST at the foot. The
+// settings start from the ones used last time (saved_host).
 void host_page(Ui &ui, ImVec2 a, ImVec2 z) {
     auto &h = ui.h;
     const auto &mp = ui.mp;
-    const float u = ui.u, bar = 96 * u, row = 104 * u, gap = 12 * u;
+    const float u = ui.u, gap = 36 * u;
     auto *draw = ui.draw;
     if (!h.host_seeded && mp.saved_host.loaded) {
         // Start from the host settings used last time.
@@ -1327,56 +1346,119 @@ void host_page(Ui &ui, ImVec2 a, ImVec2 z) {
         h.tps = mp.saved_host.tps;
         if (!mp.saved_host.lobby_name.empty()) h.host_name = mp.saved_host.lobby_name, h.host_named = true;
     }
-    if (!h.host_named && !mp.local_name.empty()) h.host_name = mp.local_name, h.host_named = true;
+    if (!h.host_named && !mp.local_name.empty()) h.host_name = mp.local_name + "'s lobby", h.host_named = true;
+    static bool password_on{};
     const bool idle = !mp.active && !mp.lobby_joining;
-    const float left_width = std::min((z.x - a.x) * .5f, 1800 * u);
-    float y = a.y;
-    draw->AddText(ui.heading, 52 * u, ImVec2(a.x, y), theme::paper, "MAKE IT YOUR SESSION");
-    y += 84 * u;
-    draw->AddText(ui.bold, 28 * u, ImVec2(a.x, y), theme::muted, "LOBBY NAME");
-    y += 44 * u;
-    field(ui, hash("host-name"), ImVec2(a.x, y), ImVec2(a.x + left_width, y + bar), h.host_name, "Your Steam name", false, 120);
-    y += bar + 40 * u;
-    draw->AddText(ui.bold, 28 * u, ImVec2(a.x, y), theme::muted, "PASSWORD (OPTIONAL)");
-    y += 44 * u;
-    field(ui, hash("host-password"), ImVec2(a.x, y), ImVec2(a.x + left_width, y + bar), h.host_password, "Leave blank for an open lobby", true);
-    y += bar + 48 * u;
-    draw->AddText(ui.bold, 28 * u, ImVec2(a.x, y), theme::muted, "MAP");
-    label(draw, ui.bold, 40 * u, ImVec2(a.x, y + 44 * u), a.x + left_width, theme::paper, view::map_name(mp.map, ui.h.full.levels));
+    const bool public_lobby = mp.hosting ? mp.public_host : h.public_lobby;
+    const unsigned capacity = mp.hosting ? static_cast<unsigned>(mp.capacity) : h.capacity;
+    const auto tps = mp.hosting ? mp.tps : h.tps;
+    const std::string busy = mp.lobby_joining ? "A join is under way." : "You are in a session: leave it (Current session) to host your own.";
 
-    const ImVec2 sa(a.x + left_width + 60 * u, a.y);
-    const float right = std::min(z.x, sa.x + 1500 * u);
-    y = sa.y;
-    draw->AddText(ui.heading, 52 * u, ImVec2(sa.x, y), theme::paper, "LOBBY SETTINGS");
-    y += 84 * u;
-    const auto setting = [&](const char *name, const std::string &value) {
-        const bool pressed = button(ui, hash(name, 3), ImVec2(sa.x, y), ImVec2(right, y + row), name, Look::tile, idle, value);
-        y += row + gap;
-        return pressed;
-    };
-    if (setting("Visibility", (mp.hosting ? mp.public_host : h.public_lobby) ? "Public" : "Join code")) h.public_lobby = !h.public_lobby;
-    if (setting("Skaters", std::to_string(mp.hosting ? static_cast<unsigned>(mp.capacity) : h.capacity))) {
-        constexpr std::array<unsigned, 5> limits{2, 4, 8, 16, static_cast<unsigned>(multiplayer_lobby_player_limit)};
-        const auto next = std::upper_bound(limits.begin(), limits.end(), h.capacity);
-        h.capacity = next == limits.end() ? limits.front() : *next;
+    // ---- left: the map, and how the lobby will list
+    const float left_w = std::clamp((z.x - a.x) * .36f, 1100 * u, 1500 * u);
+    const std::span<const Level> levels = h.full.levels;
+    if (h.grid.empty()) h.grid = grid_levels(levels);
+    if (ui.input && !std::exchange(h.pictures_asked, true)) want_grid_pictures(h.grid);
+    Row here;
+    here.map = view::map_name(mp.map, levels);
+    for (const auto &entry : levels)
+        if (view::fold(entry.asset) == view::fold(std::string(world_destination_asset(mp.map))) ||
+            (native_tools::listed(entry) && squashed(native_tools::level_name(entry)) == squashed(here.map)))
+            here.asset = entry.asset;
+    {
+        const float picture = left_w * .56f;
+        const ImVec2 ca(a.x, a.y), cz(a.x + left_w, a.y + picture + 230 * u);
+        theme::tile_rect(draw, ca, cz, skate_theme::tile, 0x7b1, u * 2);
+        map_picture(ui, ImVec2(ca.x, ca.y), ImVec2(cz.x, ca.y + picture), here);
+        const float tag_size = 26 * u, tag_w = width_of(ui.bold, tag_size, "THE MAP YOU ARE ON") + 28 * u;
+        draw->AddRectFilled(ImVec2(ca.x + 24 * u, ca.y + 24 * u), ImVec2(ca.x + 24 * u + tag_w, ca.y + 24 * u + 44 * u), skate_theme::black);
+        draw->AddText(ui.bold, tag_size, ImVec2(ca.x + 38 * u, ca.y + 24 * u + (44 * u - tag_size) * .5f), theme::paper, "THE MAP YOU ARE ON");
+        std::string title = here.map.empty() ? std::string("No map loaded") : here.map;
+        for (auto &c : title) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        label(draw, ui.heading, 72 * u, ImVec2(ca.x + 40 * u, ca.y + picture + 36 * u), cz.x - 40 * u, theme::paper, title);
+        draw->AddText(ui.body, 30 * u, ImVec2(ca.x + 40 * u, ca.y + picture + 130 * u), sub_ink,
+                      "Everyone who joins loads it. To host on another map, travel there first (Mod Options, MAPS).", nullptr, left_w - 80 * u);
+        // How it will list: a server browser row as it will read for everyone else.
+        float y = cz.y + 44 * u;
+        draw->AddText(ui.bold, 30 * u, ImVec2(a.x, y), soft, "HOW IT WILL LIST");
+        y += 50 * u;
+        const float row_h = 150 * u, pic_w = 230 * u;
+        const ImVec2 ra(a.x, y), rz(a.x + left_w, y + row_h);
+        theme::tile_rect(draw, ra, rz, skate_theme::tile, 0x7b2, u * 2);
+        map_picture(ui, ra, ImVec2(ra.x + pic_w, rz.y), here);
+        const std::string name = view::caption(h.host_name.empty() ? (mp.local_name.empty() ? std::string("Your lobby") : mp.local_name) : h.host_name, 40);
+        const std::string count = "1 / " + std::to_string(capacity);
+        const float count_w = width_of(ui.bold, 36 * u, count);
+        const char *kind = public_lobby ? "LOBBY" : "JOIN CODE";
+        const float kind_w = width_of(ui.bold, 24 * u, kind) + 24 * u;
+        const float text_left = ra.x + pic_w + 30 * u, text_right = rz.x - count_w - kind_w - 70 * u;
+        label(draw, ui.bold, 38 * u, ImVec2(text_left, ra.y + 34 * u), text_right, theme::paper, name);
+        label(draw, ui.body, 28 * u, ImVec2(text_left, ra.y + 86 * u), text_right, sub_ink,
+              (here.map.empty() ? std::string("No map") : here.map) + (password_on && !h.host_password.empty() ? "  \xc2\xb7  password" : ""));
+        draw->AddRectFilled(ImVec2(rz.x - count_w - kind_w - 50 * u, ra.y + (row_h - 40 * u) * .5f), ImVec2(rz.x - count_w - 50 * u, ra.y + (row_h + 40 * u) * .5f),
+                            public_lobby ? skate_theme::good : plate_grey, 3 * u);
+        draw->AddText(ui.bold, 24 * u, ImVec2(rz.x - count_w - kind_w - 38 * u, ra.y + (row_h - 24 * u) * .5f), public_lobby ? skate_theme::black : theme::paper, kind);
+        draw->AddText(ui.bold, 36 * u, ImVec2(rz.x - count_w - 30 * u, ra.y + (row_h - 36 * u) * .5f), theme::paper, count.c_str());
+        if (!public_lobby)
+            draw->AddText(ui.body, 26 * u, ImVec2(a.x, rz.y + 18 * u), sub_ink, "Not listed: this is how your friends see it once they use your code.", nullptr, left_w);
     }
-    if (setting("Tick rate", std::to_string(mp.hosting ? mp.tps : h.tps))) {
-        const auto next = std::upper_bound(multiplayer_tick_rates.begin(), multiplayer_tick_rates.end(), h.tps);
-        h.tps = next == multiplayer_tick_rates.end() ? multiplayer_tick_rates.front() : *next;
+
+    // ---- right: the lobby's settings, the card about the focused one, and HOST
+    const float rx = a.x + left_w + gap, host_h = 130 * u, card_h = 300 * u;
+    {
+        draw->AddText(ui.bold, 34 * u, ImVec2(rx + 4 * u, a.y), theme::paper, "YOUR LOBBY");
+        const float base = a.y + 54 * u;
+        draw->AddQuadFilled(ImVec2(rx, base - 2 * u), ImVec2(z.x, base - 5 * u), ImVec2(z.x - 6 * u, base + 3 * u), ImVec2(rx + 4 * u, base + 5 * u), theme::paper);
     }
-    label(draw, ui.body, 30 * u, ImVec2(sa.x, y + 4 * u), right, theme::muted,
-          h.public_lobby ? "Listed in the server browser for anyone to join." : "Only skaters you give your code to can join.");
-    y += 64 * u;
-    const bool ready = idle && mp.local_ready;
-    if (button(ui, hash("host"), ImVec2(sa.x, y), ImVec2(right, y + 120 * u), !idle ? "SESSION ALREADY ACTIVE" : mp.local_ready ? "HOST LOBBY" : "LOAD A MAP TO HOST",
-               Look::primary, ready)) {
+    Opts rows;
+    const auto off = [&](Opt &row) -> Opt & { row.why_not = busy; return row; };
+    off(opt_text(rows, "Lobby name", h.host_name, mp.local_name.empty() ? std::string("Your Steam name") : mp.local_name, idle,
+                 "What the lobby is called in the server browser and in your friends' Steam lists. Up to 120 characters.", 120));
+    off(opt_choice(rows, "Who can join", public_lobby ? "PUBLIC" : "JOIN CODE", idle,
+                   "Public: listed in the server browser for anyone on a compatible build. Join code: not listed; friends join with the code "
+                   "you share from Current session.",
+                   [&h](int) { h.public_lobby = !h.public_lobby; }));
+    off(opt_toggle(rows, "Password", password_on, idle, "Skaters must type a password to join, whichever way they find the lobby.",
+                   [&h](bool on) {
+                       password_on = on;
+                       if (!on) wipe(h.host_password);
+                   }));
+    if (password_on)
+        off(opt_text(rows, "The password", h.host_password, "Type one", idle, "What joining skaters must type. It is not saved.", 64, true));
+    {
+        static constexpr std::array<float, 5> limits{2.f, 4.f, 8.f, 16.f, static_cast<float>(multiplayer_lobby_player_limit)};
+        auto &row = off(opt_number(rows, "Player limit", std::to_string(capacity), fraction_of(static_cast<float>(capacity), limits), idle,
+                                   "How many skaters the lobby holds, you included.",
+                                   [&h](int way) { h.capacity = static_cast<unsigned>(stepped(static_cast<float>(h.capacity), limits, way)); }));
+        row.reset = [&h] { h.capacity = 16; };
+        row.reset_does = "16 skaters";
+    }
+    {
+        int at = 0;
+        for (std::size_t i = 0; i < multiplayer_tick_rates.size(); ++i)
+            if (multiplayer_tick_rates[i] == tps) at = static_cast<int>(i);
+        off(opt_choice(rows, "Update rate", std::to_string(tps) + " TPS", idle,
+                       "How often nearby skaters update: higher is smoother and uses more of your upload. Distant skaters update at 10 and 5.",
+                       [&h, at](int way) {
+                           h.tps = multiplayer_tick_rates[static_cast<std::size_t>(wrap_step(at, static_cast<int>(multiplayer_tick_rates.size()), way))];
+                       }));
+    }
+    const float list_top = a.y + 80 * u, card_top = z.y - host_h - 24 * u - card_h;
+    const auto focus = options_list(ui, hash("host-settings"), rows, ImVec2(rx, list_top), ImVec2(z.x, card_top - 20 * u), false);
+    options_card(ui, hash("host-card"), focus, ImVec2(rx, card_top), ImVec2(z.x, card_top + card_h), .7f);
+
+    // HOST, at the foot: what it hosts, or why it cannot.
+    const bool ready = idle && mp.local_ready && (!password_on || !h.host_password.empty());
+    const char *does = !idle ? "SESSION ALREADY ACTIVE" : !mp.local_ready ? "LOAD A MAP TO HOST" : password_on && h.host_password.empty() ? "TYPE A PASSWORD FIRST"
+                     : h.public_lobby ? "HOST PUBLIC LOBBY" : "HOST WITH JOIN CODE";
+    if (button(ui, hash("host"), ImVec2(rx, z.y - host_h), ImVec2(z.x, z.y), does, Look::primary, ready)) {
         if (h.host_name.size() > 128) say(h, "Lobby name is too long. Use a shorter name.");
         else if (send(h, "host-config", std::string(h.public_lobby ? "public " : "code ") + std::to_string(h.capacity) + " " + std::to_string(h.tps) + " " + h.host_name,
-                      h.host_password))
+                      password_on ? h.host_password : std::string()))
             wipe(h.host_password);
     }
-    y += 140 * u;
-    label(draw, ui.body, 30 * u, ImVec2(sa.x, y), right, theme::muted, view::caption(!h.notice.empty() ? h.notice : mp.status, 110));
+    if (!h.notice.empty() || !mp.status.empty())
+        label(draw, ui.body, 28 * u, ImVec2(a.x, z.y + 20 * u), a.x + left_w, theme::muted, view::caption(!h.notice.empty() ? h.notice : mp.status, 110));
 }
 
 // ---------------------------------------------------------------- the session
@@ -1622,20 +1704,6 @@ void failed_page(Ui &ui, ImVec2 a, ImVec2 z) {
 // (mod_options_page.inl), holding everything the Insert menu sets.
 enum ToolsTab : int { official_tab, custom_tab, world_tab, parks_tab, skater_tab, camera_tab, style_tab, online_tab, settings_tab };
 
-// The next (or the one before) of a setting's steps from where it is now; it stops at the ends.
-template<std::size_t N> float stepped(float current, const std::array<float, N> &steps, int direction) {
-    if (direction > 0) {
-        for (const float step : steps)
-            if (step > current + .001f) return step;
-        return steps.back();
-    }
-    for (std::size_t i = steps.size(); i-- > 0;)
-        if (steps[i] < current - .001f) return steps[i];
-    return steps.front();
-}
-std::string whole(float value, const char *unit = "") { return std::to_string(static_cast<int>(value + .5f)) + unit; }
-
-#include "mod_options_page.inl"
 
 // A column of settings that scrolls, in the Multiplayer page's look: each setting a full-width row on
 // the near-black tile with its name on the left and what it is now on the right (white under the
@@ -2200,7 +2268,7 @@ void hub_frame(Hub &h, ImDrawList *draw, float u, ImVec2 a, ImVec2 z, float tabs
         // A plugin's page on the Mod Manager has ImGui's own focus: the D-pad, the arrows and A are
         // its navigation's while it shows (State::hub_nav), and B still the page's way back.
         const bool page_nav = on_mods && mods_imgui_nav(mods_page);
-        if (direction >= 0 && !page_nav && (direction == 2 || direction == 3) && h.ring && h.page.section == 1 &&
+        if (direction >= 0 && !page_nav && (direction == 2 || direction == 3) && h.ring &&
             options_take_step(h.focus, direction == 2 ? -1 : 1)) {
             // (Held, a little slower than the focus moves: each step waits on the game.)
             if (!fresh[static_cast<std::size_t>(direction)]) h.repeat_at = tick + 160;

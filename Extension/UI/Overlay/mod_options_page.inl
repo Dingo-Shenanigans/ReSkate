@@ -14,7 +14,7 @@ constexpr ImU32 soft_ink = IM_COL32(150, 152, 158, 255), news_blue = IM_COL32(12
 
 // One row of a tab, or a heading over a group of them.
 struct Opt {
-    enum class Kind { heading, toggle, choice, number, action, bind, info };
+    enum class Kind { heading, toggle, choice, number, action, bind, info, text };
     Kind kind{};
     std::string name, value, help;
     std::string why_not;     // shown in the panel while it cannot be changed
@@ -24,6 +24,11 @@ struct Opt {
     std::function<void(int)> change; // 0 for A on a switch, an action or a bind; -1 / +1 for a step
     std::function<void()> reset;     // Y; empty: no default
     std::string reset_does;          // what Y does, said in the panel
+    // A text row: A gives it the keyboard (Enter or Escape gives it back); `value` is shown while
+    // `text` is empty.
+    std::string *text{};
+    std::size_t limit = 64;
+    bool secret{};
 };
 using Opts = std::vector<Opt>;
 
@@ -62,6 +67,15 @@ Opt &opt_action(Opts &o, std::string name, std::string does, bool enabled, std::
     o.push_back(std::move(row));
     return o.back();
 }
+Opt &opt_text(Opts &o, std::string name, std::string &text, std::string empty, bool enabled, std::string help, std::size_t limit = 64,
+             bool secret = false) {
+    Opt row;
+    row.kind = Opt::Kind::text;
+    row.name = std::move(name), row.value = std::move(empty), row.help = std::move(help), row.enabled = enabled;
+    row.text = &text, row.limit = limit, row.secret = secret;
+    o.push_back(std::move(row));
+    return o.back();
+}
 Opt &opt_info(Opts &o, std::string name, std::string value, std::string help = {}) {
     Opt row;
     row.kind = Opt::Kind::info;
@@ -86,11 +100,17 @@ bool options_take_step(std::uint32_t focus, int direction) {
 // The next of a list's entries from `at`, going round.
 int wrap_step(int at, int count, int direction) { return count <= 0 ? 0 : ((at < 0 ? 0 : at) + direction + count) % count; }
 
-// The tab: its rows on the left, the panel on the right. `y_pressed`: Y went down this frame.
-void options_page(Ui &ui, std::uint32_t tab_id, const Opts &rows, ImVec2 a, ImVec2 z, bool y_pressed) {
+// The row the focus is on, and the group it is in, for the card about it.
+struct OptionsFocus {
+    const Opt *row{};
+    std::string group;
+};
+
+// The rows in a..z, scrolling, with what A, a click, a step and Y do to them. `y_pressed`: Y went
+// down this frame. (Its rows join the steppers hub_frame asks about; a page draws one list a frame.)
+OptionsFocus options_list(Ui &ui, std::uint32_t tab_id, const Opts &rows, ImVec2 a, ImVec2 z, bool y_pressed) {
     auto &h = ui.h;
-    const float u = ui.u, gap = 40 * u, width = z.x - a.x;
-    const float list_w = std::min(std::max(width * .58f, 1500 * u), width - 900 * u);
+    const float u = ui.u, list_w = z.x - a.x;
     const float tall = 96 * u, between = 8 * u, head = 74 * u;
     auto *draw = ui.draw;
     option_steppers.clear();
@@ -130,6 +150,19 @@ void options_page(Ui &ui, std::uint32_t tab_id, const Opts &rows, ImVec2 a, ImVe
             const bool steps = row.kind == Opt::Kind::choice || row.kind == Opt::Kind::number;
             if (steps) option_steppers.push_back(id);
             if (h.focus == id) focused = &row, focused_group = group;
+            // A text row: A or a click gives it the keyboard, and Enter, Escape or a click elsewhere gives
+            // it back (as field() does).
+            bool typing = row.kind == Opt::Kind::text && h.typing == id;
+            if (row.kind == Opt::Kind::text && row.text) {
+                if (hit.press && row.enabled && !typing) set_typing(h, id), typing = true;
+                else if (typing && ui.clicked && !hit.hover) set_typing(h, 0), typing = false;
+                if (typing) {
+                    take_typing(*row.text, row.limit);
+                    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) || ImGui::IsKeyPressed(ImGuiKey_Enter, false) ||
+                        ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false))
+                        set_typing(h, 0), typing = false;
+                }
+            }
             // What happened to it this frame: A or a click, a step from hub_frame, Y.
             if (row.enabled && row.change) {
                 if (hit.press) {
@@ -143,7 +176,7 @@ void options_page(Ui &ui, std::uint32_t tab_id, const Opts &rows, ImVec2 a, ImVe
             }
             if (h.focus == id && y_pressed && row.enabled && row.reset) row.reset(), h.sound = sound_select;
             if (!drawn) continue;
-            const bool lit = hit.focus && !hit.hover;
+            const bool lit = (hit.focus && !hit.hover) || typing;
             const ImU32 fill = lit ? theme::focus_fill : hit.hover ? row_hover : tile_dark;
             const ImU32 ink = lit ? focus_ink : row.enabled ? theme::paper : theme::muted;
             theme::tile_rect(draw, p, q, fill, id & 0xfff, u * 2);
@@ -152,12 +185,21 @@ void options_page(Ui &ui, std::uint32_t tab_id, const Opts &rows, ImVec2 a, ImVe
             // arrows while it has the focus; an action's word; a bind's buttons.
             std::string value = row.value;
             if (steps && hit.focus) value = "<  " + value + "  >";
+            const bool shows_text = row.kind == Opt::Kind::text && row.text && (!row.text->empty() || typing);
+            if (shows_text) value = row.secret ? std::string(row.text->size(), '*') : *row.text;
+            if (typing && std::fmod(ImGui::GetTime(), 1.0) < .5) value += '|';
             ImU32 value_ink = lit ? focus_ink : !row.enabled ? theme::muted
+                            : row.kind == Opt::Kind::text ? (shows_text ? theme::paper : theme::muted)
                             : row.kind == Opt::Kind::toggle ? (row.on ? theme::blue : theme::muted)
                             : row.kind == Opt::Kind::info ? soft_ink : theme::blue;
-            const float value_w = width_of(ui.bold, size, value);
+            // (A long text keeps its end in view, where the typing is.)
+            const float name_w = width_of(ui.body, size, row.name), room = std::max(60 * u, q.x - p.x - name_w - 120 * u);
+            const float value_w = std::min(width_of(ui.bold, size, value), room);
             label(draw, ui.body, size, ImVec2(p.x + 30 * u, text_y), q.x - value_w - 60 * u, ink, row.name);
-            draw->AddText(ui.bold, size, ImVec2(q.x - value_w - 30 * u, text_y), value_ink, value.c_str());
+            draw->PushClipRect(ImVec2(q.x - value_w - 30 * u, top), ImVec2(q.x - 30 * u, top + tall), true);
+            const float full_w = width_of(ui.bold, size, value);
+            draw->AddText(ui.bold, size, ImVec2(q.x - 30 * u - (typing ? full_w : value_w), text_y), value_ink, value.c_str());
+            draw->PopClipRect();
             // A number's place in its range, as a thin bar along the row's foot.
             if (row.kind == Opt::Kind::number && row.fraction >= 0) {
                 const float bar_y = q.y - 12 * u, left = p.x + 30 * u, right = q.x - 30 * u;
@@ -171,14 +213,20 @@ void options_page(Ui &ui, std::uint32_t tab_id, const Opts &rows, ImVec2 a, ImVe
     // A focus that is not on any of this tab's rows (just opened, or the row went away) waits on the
     // tab strip until the D-pad comes down to the first row: hub_frame's own rule for every page.
     (void)first;
+    return {focused, focused_group};
+}
 
-    // ---- the panel: about the row the focus is on
-    const ImVec2 pa(a.x + list_w + gap - 26 * u, a.y), pz(z.x, z.y);
-    // skate.'s description card (Skatepedia's): off-white paper, black text.
+// The card about the focused row in pa..pz: skate.'s description card (Skatepedia's), off-white paper
+// and black text. `text_scale` shrinks its title and value, for a small card under a list.
+void options_card(Ui &ui, std::uint32_t seed, const OptionsFocus &focus, ImVec2 pa, ImVec2 pz, float text_scale = 1.f) {
+    const float u = ui.u;
+    auto *draw = ui.draw;
+    const Opt *focused = focus.row;
+    const std::string &focused_group = focus.group;
     constexpr ImU32 paper_card = IM_COL32(234, 234, 230, 250), card_ink = IM_COL32(16, 16, 16, 255), card_sub = IM_COL32(70, 70, 72, 255);
-    theme::tile_rect(draw, pa, pz, paper_card, hash("options-panel", tab_id) & 0xfff, u * 2);
-    const float left = pa.x + 60 * u, right = pz.x - 60 * u, wrap = right - left;
-    float y = pa.y + 56 * u;
+    theme::tile_rect(draw, pa, pz, paper_card, seed & 0xfff, u * 2);
+    const float left = pa.x + 60 * u * text_scale, right = pz.x - 60 * u * text_scale, wrap = right - left;
+    float y = pa.y + 56 * u * text_scale;
     if (!focused) {
         draw->AddText(ui.body, 36 * u, ImVec2(left, y), card_sub, "Choose a setting to see what it does.", nullptr, wrap);
         return;
@@ -190,12 +238,12 @@ void options_page(Ui &ui, std::uint32_t tab_id, const Opts &rows, ImVec2 a, ImVe
     std::string title = focused->name;
     for (auto &c : title) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
     {
-        const float size = 76 * u;
+        const float size = 76 * u * text_scale;
         const auto extent = ui.heading->CalcTextSizeA(size, FLT_MAX, wrap, title.c_str());
         draw->AddText(ui.heading, size, ImVec2(left, y), card_ink, title.c_str(), nullptr, wrap);
         y += extent.y + 30 * u;
     }
-    if (!focused->value.empty() && focused->kind != Opt::Kind::action) {
+    if (!focused->value.empty() && focused->kind != Opt::Kind::action && focused->kind != Opt::Kind::text && text_scale >= 1.f) {
         const float size = 60 * u;
         const ImU32 colour = focused->kind == Opt::Kind::toggle && !focused->on ? card_sub : focused->kind == Opt::Kind::info ? card_ink : theme::blue;
         draw->AddText(ui.bold, size, ImVec2(left, y), colour, focused->value.c_str());
@@ -226,6 +274,7 @@ void options_page(Ui &ui, std::uint32_t tab_id, const Opts &rows, ImVec2 a, ImVe
         case Opt::Kind::number: does.emplace_back(ui.pad.available ? "LEFT RIGHT" : "Left Right", "Less / more (hold to keep going)"); break;
         case Opt::Kind::action: does.emplace_back(ui.pad.available ? "A" : "Enter", focused->value.empty() ? std::string("Do it") : focused->value); break;
         case Opt::Kind::bind: does.emplace_back(ui.pad.available ? "A" : "Enter", "Record a new bind"); break;
+        case Opt::Kind::text: does.emplace_back(ui.pad.available ? "A" : "Enter", "Type it"); break;
         default: break;
         }
         if (focused->reset) does.emplace_back(ui.pad.available ? "Y" : "", focused->reset_does.empty() ? std::string("Back to its default") : focused->reset_does);
@@ -243,6 +292,14 @@ void options_page(Ui &ui, std::uint32_t tab_id, const Opts &rows, ImVec2 a, ImVe
         draw->AddText(ui.body, 32 * u, ImVec2(x, foot + 4 * u), card_sub, what.c_str());
         foot += 58 * u;
     }
+}
+
+// A Mod Options tab: its rows on the left, the card about the focused one on the right.
+void options_page(Ui &ui, std::uint32_t tab_id, const Opts &rows, ImVec2 a, ImVec2 z, bool y_pressed) {
+    const float u = ui.u, gap = 40 * u, width = z.x - a.x;
+    const float list_w = std::min(std::max(width * .58f, 1500 * u), width - 900 * u);
+    const auto focus = options_list(ui, tab_id, rows, a, ImVec2(a.x + list_w, z.y), y_pressed);
+    options_card(ui, hash("options-panel", tab_id), focus, ImVec2(a.x + list_w + gap - 26 * u, a.y), z);
 }
 
 // ---------------------------------------------------------------- what each tab holds
