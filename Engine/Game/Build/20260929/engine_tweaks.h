@@ -110,23 +110,85 @@ inline constexpr std::array<unsigned char, 6> task_queue_runner_exit_patch{
     0x0f,0x1f,0x40,0x00,0x66,0x90};          // 6-byte nop
 
 // (b) Server step shared reader lock (0x4db7ad0): tests `eax & 0xffff0000` (writer active/waiting)
-// at 0x4db7ae9 and then executes a single `lock cmpxchg [rcx+0x11640], edx` without a retry loop.
-// If two readers race on +0x11640 while no writer holds the lock, the losing reader jumps to the
-// writer-wait path (0x4db7bad), which queues a retry job on +0x11648; with no writer active
-// (+0x11650 == 0), 0x321e620 returns without scheduling the retry job and leaks the Server step
-// continuation token. Retargeting the 6-byte `jne` at +22 back to +0 (`jne 0x4db7ae9`) retries
-// the reader CAS until it succeeds or a writer sets the upper 16 bits.
+// at 0x4db7ae9 and then executes `lock cmpxchg [rcx+0x11640], edx`. When two readers race or a
+// synchronous writer (0x4e9abd0) briefly holds bit 31 of +0x11640, jumping to the lock-free
+// retry-job path (0x4db7bad) reads +0x11648 without holding +0x11610; once the writer clears
+// +0x11650 (0x321f0a0 at 0x4e9ae4c), 0x321e620 returns without scheduling the retry job and leaks
+// the continuation token. Spinning with `pause` until +0x11640 is writer-free and the reader CAS
+// succeeds avoids the racy +0x11648 job-chain path completely.
 inline constexpr std::uintptr_t server_step_reader_lock_rva = 0x4db7ae9;
 inline constexpr std::array<unsigned char, 28> server_step_reader_lock_contract{
-    0xa9,0x00,0x00,0xff,0xff,                // retry: test eax,0xffff0000
+    0xa9,0x00,0x00,0xff,0xff,                // test eax,0xffff0000
     0x0f,0x85,0xb9,0x00,0x00,0x00,           // jne wait_for_writer (0x4db7bad)
     0x8d,0x50,0x01,                          // lea edx,[rax+1]
     0xf0,0x0f,0xb1,0x91,0x40,0x16,0x01,0x00, // lock cmpxchg [rcx+0x11640],edx
     0x0f,0x85,0xa8,0x00,0x00,0x00};          // jne wait_for_writer (0x4db7bad)
-inline constexpr std::uintptr_t server_step_reader_lock_patch_offset = 22;
-inline constexpr std::array<unsigned char, 6> server_step_reader_lock_patch{
-    0x75,0xe8,                               // jne retry (0x4db7ae9)
-    0x0f,0x1f,0x40,0x00};                    // 4-byte nop
-static_assert(static_cast<signed char>(server_step_reader_lock_patch[1]) ==
-              0 - static_cast<int>(server_step_reader_lock_patch_offset + 2));
+inline constexpr std::uintptr_t server_step_reader_lock_patch_offset = 0;
+inline constexpr std::array<unsigned char, 28> server_step_reader_lock_patch{
+    0xf3,0x90,                               // spin: pause
+    0x8b,0x81,0x40,0x16,0x01,0x00,           // mov eax,[rcx+0x11640]
+    0xa9,0x00,0x00,0xff,0xff,                // check: test eax,0xffff0000
+    0x75,0xf1,                               // jne spin
+    0x8d,0x50,0x01,                          // lea edx,[rax+1]
+    0xf0,0x0f,0xb1,0x91,0x40,0x16,0x01,0x00, // lock cmpxchg [rcx+0x11640],edx
+    0x75,0xec};                              // jne check
+
+// (c) Job worker idle wait (0x3228220) and worker loops (0x3221db0, 0x3222210):
+// When EA::Thread::Semaphore::Wait (0x272afc0) returns >= 0 (at 0x3228390 on the timed branch or
+// 0x32283a8 on the infinite branch), 0x3228220 skips `lock cmpxchg [rbx+0x5c], 3` (5 -> 3) and
+// jumps over the 4 -> 3 CAS at 0x32283d1 (`eb 0f` at 0x32283c8). If Wait consumes a leftover
+// kernel semaphore token from a prior timeout/wake race, 0x3228220 returns with worker->state
+// (+0x5c) still at 5 (asleep) or 4 (entering_idle); the worker loop (`cmp eax, 3; jne exit` at
+// 0x3221e88 / 0x32222e9) treats any state other than 3 or 8 as a thread-shutdown signal and
+// permanently terminates worker[0], causing GameStall (0x18e13d2) 60s later.
+inline constexpr std::uintptr_t job_idle_wait_sem_exit_rva = 0x322838e;
+inline constexpr std::array<unsigned char, 31> job_idle_wait_sem_exit_contract{
+    0x85,0xc0,                               // test eax,eax
+    0x79,0x1b,                               // jns 0x32283ad
+    0x41,0x8b,0xc4,                          // mov eax,r12d (5)
+    0xf0,0x44,0x0f,0xb1,0x7b,0x5c,           // lock cmpxchg [rbx+0x5c],r15d (3)
+    0xeb,0x10,                               // jmp 0x32283ad
+    0x48,0x8d,0x15,0x84,0x65,0x20,0x03,      // lea rdx,[rip+0x3206584] (-1)
+    0x48,0x8d,0x4b,0x70,                     // lea rcx,[rbx+0x70]
+    0xe8,0x13,0x2c,0x50,0xff};               // call 0x272afc0
+inline constexpr std::uintptr_t job_idle_wait_sem_exit_patch_offset = 2;
+inline constexpr std::array<unsigned char, 29> job_idle_wait_sem_exit_patch{
+    0x66,0x90,                               // nop2 (always run 5 -> 3 CAS after timed wait)
+    0x41,0x8b,0xc4,                          // cas_5_to_3: mov eax,r12d (5)
+    0xf0,0x44,0x0f,0xb1,0x7b,0x5c,           // lock cmpxchg [rbx+0x5c],r15d (3)
+    0xeb,0x10,                               // jmp 0x32283ad
+    0x48,0x8d,0x4b,0x70,                     // inf_wait: lea rcx,[rbx+0x70] (rdx already -> -1)
+    0xe8,0x1a,0x2c,0x50,0xff,                // call 0x272afc0
+    0xeb,0xea,                               // jmp cas_5_to_3 (0x3228392)
+    0x0f,0x1f,0x44,0x00,0x00};               // nop5
+
+inline constexpr std::uintptr_t job_idle_wait_unreg_exit_rva = 0x32283bc;
+inline constexpr std::array<unsigned char, 29> job_idle_wait_unreg_exit_contract{
+    0x33,0xc9,                               // xor ecx,ecx
+    0xe8,0xcd,0xb5,0xff,0xff,                // call 0x3223990
+    0x4c,0x8b,0x64,0x24,0x68,                // mov r12,[rsp+0x68]
+    0xeb,0x0f,                               // jmp 0x32283d9
+    0x8b,0xc8,                               // mov ecx,eax
+    0xe8,0xbf,0xb5,0xff,0xff,                // call 0x3223990
+    0x8b,0xc6,                               // mov eax,esi (4)
+    0xf0,0x44,0x0f,0xb1,0x7b,0x5c};          // lock cmpxchg [rbx+0x5c],r15d (3)
+inline constexpr std::uintptr_t job_idle_wait_unreg_exit_patch_offset = 12;
+inline constexpr std::array<unsigned char, 2> job_idle_wait_unreg_exit_patch{
+    0xeb,0x07};                              // jmp 0x32283d1 (also run 4 -> 3 CAS)
+
+inline constexpr std::uintptr_t worker_loop_inner_state_exit_rva = 0x32221be;
+inline constexpr std::array<unsigned char, 32> worker_loop_inner_state_exit_contract{
+    0x02,0x00,0x00,0x00,0xeb,0x1a,0xc7,0x46,0x08,0x04,0x00,0x00,0x00,0xeb,0x11,0xc7,
+    0x46,0x08,0x06,0x00,0x00,0x00,0xeb,0x08,0x83,0xf8,0x09,0x75,0x03,0x89,0x56,0x08};
+inline constexpr std::uintptr_t worker_loop_inner_state_exit_patch_offset = 27;
+inline constexpr std::array<unsigned char, 2> worker_loop_inner_state_exit_patch{
+    0x75,0xd3};                              // jne 0x32221ae (recover state -> 3 unless stopping == 9)
+
+inline constexpr std::uintptr_t worker_loop_pred_state_exit_rva = 0x322264c;
+inline constexpr std::array<unsigned char, 32> worker_loop_pred_state_exit_contract{
+    0x02,0x00,0x00,0x00,0xeb,0x1e,0xc7,0x46,0x08,0x04,0x00,0x00,0x00,0xeb,0x15,0xc7,
+    0x46,0x08,0x01,0x00,0x00,0x00,0xeb,0x0c,0x83,0xf8,0x09,0x75,0x07,0xc7,0x46,0x08};
+inline constexpr std::uintptr_t worker_loop_pred_state_exit_patch_offset = 27;
+inline constexpr std::array<unsigned char, 2> worker_loop_pred_state_exit_patch{
+    0x75,0xd3};                              // jne 0x322263c (recover state -> 3 unless stopping == 9)
 }
