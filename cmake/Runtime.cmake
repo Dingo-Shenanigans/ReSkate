@@ -279,6 +279,7 @@ add_library(dingosdk_runtime SHARED
     Extension/Progression/fixed_stop_entitlement_observation.cpp
     Extension/Progression/neighborhood_unlock_override.cpp
     Extension/Boot/user_data_redirect.cpp
+    Extension/Boot/offline_local_settings.cpp
     Extension/Boot/ea_app_block.cpp
     Extension/Boot/ea_service_block.cpp
     Extension/Boot/eadp_errors_arena.cpp

@@ -41,6 +41,7 @@
 #include "Engine/Vfs/mod_catalog.h"
 #include "Extension/Assets/map_download.h"
 #include "Extension/Boot/offline_boot.h"
+#include "Extension/Boot/offline_local_settings.h"
 #include "Extension/Skater/skater_physics.h"
 #include "Extension/Skater/xray.h"
 #include "Extension/UI/hud_corner.h"
@@ -376,6 +377,11 @@ extern "C" __declspec(dllexport) BOOL WINAPI DingoSDKDebugInitialize() {
             return stop_startup(dingosdk::logging::Level::error, dingosdk::logging::Channel::runtime,
                 std::format("The offline hooks could not be installed (offline boot {}, progression guard {}).",
                     global_offline_hook ? "ready" : "failed", progression_guard_armed ? "armed" : "not armed"));
+        }
+        std::string local_settings_failure;
+        if (!dingosdk::start_offline_local_settings(r.base, local_settings_failure)) {
+            record("{\"event\":\"launcher_readiness\",\"ready\":false,\"reason\":\"offline_local_settings\"}");
+            return startup_failed(local_settings_failure);
         }
         const bool graphics_labels = dingosdk::initialize_graphics_labels(r.base,
             global_offline_hook && progression_guard_armed);

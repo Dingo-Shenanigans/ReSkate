@@ -12,5 +12,7 @@ namespace dingosdk {
 // never reads or writes the live game's files. Other modules are left alone.
 std::filesystem::path redirected_local_app_data();
 bool start_user_data_redirect(std::string& error) noexcept;
+// True only after both game folder lookups were redirected successfully.
+bool user_data_redirect_ready() noexcept;
 
 } // namespace dingosdk

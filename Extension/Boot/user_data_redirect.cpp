@@ -29,6 +29,7 @@ using KnownFolderPath = HRESULT (WINAPI*)(REFKNOWNFOLDERID, DWORD, HANDLE, PWSTR
 
 std::atomic<FolderPath> original_folder_path{};
 std::atomic<KnownFolderPath> original_known_folder_path{};
+std::atomic<bool> redirect_ready{};
 std::uintptr_t game_begin{}, game_end{};
 
 bool from_game(const void* return_address) noexcept {
@@ -125,6 +126,7 @@ fs::path redirected_local_app_data() {
 }
 
 bool start_user_data_redirect(std::string& error) noexcept {
+    redirect_ready.store(false, std::memory_order_release);
     try {
         // Checked again in the game (the launcher did it first), before anything uses the folder.
         user_data::initialize_development_root();
@@ -142,11 +144,16 @@ bool start_user_data_redirect(std::string& error) noexcept {
         hook(shell, "SHGetKnownFolderPath", reinterpret_cast<void*>(&known_folder_path), original_known_folder_path);
 #pragma warning(pop)
         error = shown_target();
+        redirect_ready.store(true, std::memory_order_release);
         return true;
     } catch (const std::exception& exception) {
         error = exception.what();
         return false;
     }
+}
+
+bool user_data_redirect_ready() noexcept {
+    return redirect_ready.load(std::memory_order_acquire);
 }
 
 } // namespace dingosdk
