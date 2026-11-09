@@ -180,15 +180,19 @@ inline constexpr std::uintptr_t worker_loop_inner_state_exit_rva = 0x32221be;
 inline constexpr std::array<unsigned char, 32> worker_loop_inner_state_exit_contract{
     0x02,0x00,0x00,0x00,0xeb,0x1a,0xc7,0x46,0x08,0x04,0x00,0x00,0x00,0xeb,0x11,0xc7,
     0x46,0x08,0x06,0x00,0x00,0x00,0xeb,0x08,0x83,0xf8,0x09,0x75,0x03,0x89,0x56,0x08};
-inline constexpr std::uintptr_t worker_loop_inner_state_exit_patch_offset = 27;
-inline constexpr std::array<unsigned char, 2> worker_loop_inner_state_exit_patch{
-    0x75,0xd3};                              // jne 0x32221ae (recover state -> 3 unless stopping == 9)
+inline constexpr std::uintptr_t worker_loop_inner_state_exit_patch_offset = 24;
+inline constexpr std::array<unsigned char, 8> worker_loop_inner_state_exit_patch{
+    0x89,0x4b,0x5c,                          // mov [rbx+0x5c],ecx (restore state -> 3)
+    0x83,0xf8,0x09,                          // cmp eax,9
+    0x75,0xdb};                              // jne 0x32221b9 (loop latch unless stopping == 9)
 
 inline constexpr std::uintptr_t worker_loop_pred_state_exit_rva = 0x322264c;
 inline constexpr std::array<unsigned char, 32> worker_loop_pred_state_exit_contract{
     0x02,0x00,0x00,0x00,0xeb,0x1e,0xc7,0x46,0x08,0x04,0x00,0x00,0x00,0xeb,0x15,0xc7,
     0x46,0x08,0x01,0x00,0x00,0x00,0xeb,0x0c,0x83,0xf8,0x09,0x75,0x07,0xc7,0x46,0x08};
-inline constexpr std::uintptr_t worker_loop_pred_state_exit_patch_offset = 27;
-inline constexpr std::array<unsigned char, 2> worker_loop_pred_state_exit_patch{
-    0x75,0xd3};                              // jne 0x322263c (recover state -> 3 unless stopping == 9)
+inline constexpr std::uintptr_t worker_loop_pred_state_exit_patch_offset = 24;
+inline constexpr std::array<unsigned char, 8> worker_loop_pred_state_exit_patch{
+    0x89,0x4b,0x5c,                          // mov [rbx+0x5c],ecx (restore state -> 3)
+    0x83,0xf8,0x09,                          // cmp eax,9
+    0x75,0xdb};                              // jne 0x3222647 (loop latch unless stopping == 9)
 }
