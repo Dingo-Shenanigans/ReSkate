@@ -1,6 +1,8 @@
 #include "Extension/UI/Overlay/scripted_pad.h"
 #include "Extension/Input/input_publication.h"
 #include "Extension/Input/native_input_capture.h"
+#include "Engine/Game/Input/playstation_report.h"
+#include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <chrono>
@@ -8,6 +10,7 @@
 #include <stdexcept>
 using namespace dingosdk::overlay;
 namespace source = dingosdk::native_input_source;
+namespace dingosdk::native_input_source::environment { void set_sdk_capture(bool active) noexcept; }
 namespace {
 unsigned checks{}, safety_writes{};
 void check(bool value, const char* why) { ++checks; if (!value) throw std::runtime_error(why); }
@@ -58,6 +61,66 @@ void sdk_navigation() {
         check(same(hostile, raw) && safety_writes == before + 1,
             "a globally active SDK script does not authorize an unrelated filtered report");
         play_pad({});
+    }
+}
+void preview_sdk_composition() {
+    for (const bool staging_sdk : {false, true}) {
+        for (const bool final_sdk : {false, true}) {
+            source::environment::set_sdk_capture(staging_sdk);
+            fresh_preview();
+            check(hold_stick("preview", 2, 0.5f, 10000), "a visible owned preview remains available behind SDK UI");
+            source::Poll poll; source::begin(true, 0, poll);
+            const auto raw = physical(); const auto separate_sdk_sample = raw; auto candidate = raw;
+            dingosdk::input::PadAuthorship authorship;
+            check(scripted_pad(0, candidate, &authorship) && authorship.preview_axis == 2 && authorship.preview_value == 16384,
+                "the exact preview report carries its issued axis, value and epoch");
+            if (staging_sdk) { candidate.Gamepad = {}; candidate.dwPacketNumber ^= 0x80000000u; }
+            else { candidate.Gamepad.wButtons = 0xffff; candidate.Gamepad.sThumbLY = 31000; }
+            source::environment::set_sdk_capture(final_sdk);
+            finish(poll, raw, candidate, authorship);
+            check(candidate.Gamepad.sThumbRX == 16384, "the authorized preview axis survives current SDK UI suppression");
+            check(candidate.Gamepad.wButtons == (final_sdk ? 0 : raw.Gamepad.wButtons) &&
+                candidate.Gamepad.bLeftTrigger == (final_sdk ? 0 : raw.Gamepad.bLeftTrigger) &&
+                candidate.Gamepad.bRightTrigger == (final_sdk ? 0 : raw.Gamepad.bRightTrigger) &&
+                candidate.Gamepad.sThumbLX == (final_sdk ? 0 : raw.Gamepad.sThumbLX) &&
+                candidate.Gamepad.sThumbLY == (final_sdk ? 0 : raw.Gamepad.sThumbLY) &&
+                candidate.Gamepad.sThumbRY == (final_sdk ? 0 : raw.Gamepad.sThumbRY),
+                "only the issued axis is composed over physical or SDK-neutral controls at finalization");
+            check(same(separate_sdk_sample, raw), "composing a game report leaves a separate physical SDK sample unchanged");
+            preview_context({}, false);
+        }
+    }
+    for (const bool sdk : {false, true}) {
+        source::environment::set_sdk_capture(sdk); fresh_preview();
+        check(hold_stick("preview", 1, 1, 10000), "a current preview prepares the SDK revocation case");
+        source::Poll poll; source::begin(true, 0, poll);
+        const auto raw = physical(); auto candidate = raw; dingosdk::input::PadAuthorship authorship;
+        check(scripted_pad(0, candidate, &authorship), "revocation case uses an actual preview-authored report");
+        preview_context({}, false);
+        finish(poll, raw, candidate, authorship);
+        check(raw_pad(candidate.Gamepad) == (sdk ? dingosdk::input_lease::Pad{} : raw_pad(raw.Gamepad)),
+            "a revoked preview axis restores physical controls or current SDK-neutral controls");
+    }
+    source::environment::set_sdk_capture(false);
+}
+void sony_preview_composition() {
+    using namespace dingosdk;
+    const std::array<std::uint8_t, 64> physical_report{1, 180, 35, 200, 45, 0x21, 0x21, 0x5a, 210, 170};
+    const auto physical_pad = *parse_playstation_report(PlayStationPad::dualshock4, false,
+        physical_report.data(), physical_report.size());
+    for (const bool sdk : {false, true}) {
+        auto report = physical_report;
+        if (sdk) (void)replace_playstation_report(PlayStationPad::dualshock4, false, report.data(), report.size(), {});
+        const auto final = input::compose_preview_pad(physical_pad, sdk, 2, std::int16_t{32767});
+        (void)replace_playstation_report(PlayStationPad::dualshock4, false, report.data(), report.size(), final);
+        const auto parsed = *parse_playstation_report(PlayStationPad::dualshock4, false, report.data(), report.size());
+        check(parsed.right_x > 32700 && parsed.buttons == (sdk ? 0 : physical_pad.buttons) &&
+            parsed.left_trigger == (sdk ? 0 : physical_pad.left_trigger) && parsed.right_trigger == (sdk ? 0 : physical_pad.right_trigger),
+            "Sony codec adds only the preview axis over SDK-neutral or physical controls");
+        check(sdk ? std::abs(int{parsed.left_x}) <= 258 && std::abs(int{parsed.left_y}) <= 258 && std::abs(int{parsed.right_y}) <= 258 :
+            parsed.left_x == physical_pad.left_x && parsed.left_y == physical_pad.left_y && parsed.right_y == physical_pad.right_y,
+            "Sony preview composition preserves every unrelated axis according to current SDK capture");
+        check(report[7] == physical_report[7] && report[10] == physical_report[10], "Sony composition preserves system and sensor bytes");
     }
 }
 }
@@ -117,6 +180,8 @@ int main() {
         preview_context({}, false);
         finish(staged, raw, candidate, preview_authorship);
         check(same(candidate, raw), "leaving preview revokes a staged axis mutation before publication");
+        preview_sdk_composition();
+        sony_preview_composition();
         sdk_navigation();
         fresh_preview(); check(hold_stick("preview", 2, 1, 10000), "hold exists before an SDK script");
         play_pad({PadStep{0, {}}});

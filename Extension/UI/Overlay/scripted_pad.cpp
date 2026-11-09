@@ -137,7 +137,8 @@ bool scripted_pad(DWORD user, XINPUT_STATE &output, input::PadAuthorship* author
         SHORT* axes[] = {&output.Gamepad.sThumbLX, &output.Gamepad.sThumbLY, &output.Gamepad.sThumbRX, &output.Gamepad.sThumbRY};
         *axes[s.stick] = s.value;
         output.dwPacketNumber = ++s.packet;
-        if (authorship) *authorship = {input::PadSource::preview_hold, s.held_epoch};
+        if (authorship) *authorship = {input::PadSource::preview_hold, s.held_epoch,
+            static_cast<std::uint8_t>(s.stick), s.value};
         return true;
     }
     // With no game ticks, time alone moves the script on.

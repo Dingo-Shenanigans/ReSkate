@@ -240,26 +240,30 @@ void filter_hid(const InputCaptureHooks::HidRead& read, DWORD size) noexcept {
 // A finished native PlayStation read of the game's: neutral while a menu holds the input, else
 // through the gamepad filter.
 void handle_hid(const InputCaptureHooks::HidRead& read, DWORD size) noexcept {
+    const bool bluetooth = playstation_bluetooth(size);
+    std::optional<PlayStationGamepad> physical;
+    if (!overlay_input_access && read.buffer && size <= read.capacity)
+        physical = parse_playstation_report(read.kind, bluetooth, static_cast<const std::uint8_t*>(read.buffer), size);
     if (block_polled_input()) { (void)native_input_source::read_pad_output(4, GetTickCount64(), false); neutral_hid(read, size); }
-    else {
-        filter_hid(read, size);
-        int stick{};
-        SHORT value{};
-        bool held_written{};
-        if (!overlay_input_access && read.buffer && size <= read.capacity) {
-            // The host can retire a preview between polls. Keep its permit check
-            // and this bounded report codec inside one publication fence.
-            native_input_source::PublicationScope publication;
-            if (held_stick(stick, value)) {
-                auto* bytes = static_cast<std::uint8_t*>(read.buffer);
-                held_written = set_playstation_stick(read.kind, playstation_bluetooth(size), bytes, size, stick, value);
-            }
+    else filter_hid(read, size);
+    bool held_written{};
+    if (physical) {
+        // Keep SDK-neutral controls while its UI owns input, with only the
+        // permitted preview axis added. SDK UI reads remain independently physical.
+        native_input_source::PublicationScope publication;
+        int stick{}; SHORT value{};
+        if (held_stick(stick, value)) {
+            auto* bytes = static_cast<std::uint8_t*>(read.buffer);
+            const auto final = input::compose_preview_pad(*physical, trusted_capture_flags(),
+                static_cast<unsigned>(stick), value);
+            held_written = replace_playstation_report(read.kind, bluetooth, bytes, size, final);
+            if (held_written) refresh_playstation_bluetooth_crc(bytes, size);
         }
-        if (held_written) {
-            static std::atomic<bool> reported{};
-            if (!reported.exchange(true)) logging::write(logging::Level::info, logging::Channel::input,
-                "Menu preview stick hold reached a native PlayStation HID read.");
-        }
+    }
+    if (held_written) {
+        static std::atomic<bool> reported{};
+        if (!reported.exchange(true)) logging::write(logging::Level::info, logging::Channel::input,
+            "Menu preview stick hold reached a native PlayStation HID read.");
     }
 }
 void complete_hid(OVERLAPPED* request, DWORD bytes, bool success, bool finished) {

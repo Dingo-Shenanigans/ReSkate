@@ -636,6 +636,33 @@ void replacement_no_write() {
     check(writes == before && receipt.phase == capture::Phase::releasing && receipt.debt && receipt.quarantined &&
         !source::capture_acknowledge(1, handle), "replacement is neither normalized/suppressed nor old-stream handback proof");
 }
+void menu_unknown_callbacks() {
+    const auto handle = start();
+    const auto identity = state(handle).key;
+    {
+        std::array<source::Poll, 129> calls;
+        for (auto& call : calls) source::begin(true, 0, call);
+        source::tick(1, 2, true, {true, true});
+        lease::Pad physical{0x1011, 190, 171, 22000, -17000, 11000, -23000};
+        const auto before = writes;
+        const auto passed = finish(calls.back(), physical, physical);
+        check(passed.packet == 7 && passed.pad == physical && writes == before,
+            "unknown callbacks cannot withhold a menu's unchanged physical report");
+        source::Poll filtered; source::begin(true, 0, filtered);
+        const auto restored = finish(filtered, physical, {});
+        const auto receipt = state(handle);
+        check(restored.packet == 7 && restored.pad == physical && writes == before + 1,
+            "unknown callbacks restore a filtered menu report with one bounded safety write");
+        check(receipt.key == identity && receipt.callbacks_unknown && receipt.debt && receipt.quarantined &&
+            receipt.polls_in_flight == 128 && !receipt.neutral_releases && receipt.publications == 1 &&
+            !source::capture_acknowledge(1, handle),
+            "menu passthrough does not erase unknown cleanup or invent a handback");
+    }
+    const auto receipt = state(handle);
+    check(receipt.callbacks_unknown && receipt.debt && !receipt.polls_in_flight &&
+        !source::capture_acknowledge(1, handle),
+        "known drain after menu passthrough still cannot acknowledge unknown duty");
+}
 void capacity() {
     const auto handle = start();
     {
@@ -685,7 +712,8 @@ int main(int argc, char** argv) {
     else if (mode == "overlay_menu") menu_revocation(true);
     else if (mode == "menu_button") menu_button();
     else if (mode == "menu_replacement") menu_replacement();
-    else if (mode == "menu_staged_restore") menu_staged_restore(); else return 2;
+    else if (mode == "menu_staged_restore") menu_staged_restore();
+    else if (mode == "menu_unknown_callbacks") menu_unknown_callbacks(); else return 2;
     std::printf("PASS %s %u constructed provider checks; no native-consumption proof\n", argv[1], checks);
     return 0;
 }

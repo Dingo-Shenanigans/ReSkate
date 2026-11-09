@@ -532,7 +532,8 @@ public:
     // Only this plugin's owned, visible character preview: `value` -1..1 of one
     // stick held for up to 300 ms, 0 lets go; 0 left x, 1 left y, 2 right x, 3 right y.
     // Host input and animation observations expire after 100 ms. Settings, unknown
-    // state, room leave and unload revoke it; menu buttons and other controls stay physical.
+    // state, room leave and unload revoke it. Other controls stay physical unless
+    // SDK UI owns input; then only this axis is added to its neutral game report.
     virtual std::string room_turn(std::string_view /*plugin*/, float /*value*/, int /*stick*/) { return unavailable; }
     struct RoomPose {
         Vec3 position{};

@@ -542,7 +542,7 @@ std::uint32_t finalize(std::uint64_t ticket, std::uint32_t fallback_user,
     const auto& key = s.capture.state().key;
     const bool trusted_capture = environment::trusted_capture();
     const bool preview_report = authorship.source == input::PadSource::preview_hold;
-    const bool preview_current = preview_report && environment::preview_report_valid(
+    const bool preview_current = preview_report && authorship.preview_axis < 4 && environment::preview_report_valid(
         authorship.preview_epoch, sampled.facts.now_ms);
     const bool sdk_navigation = authorship.source == input::PadSource::sdk_navigation;
     const auto restore_menu_input = [&]() {
@@ -554,11 +554,22 @@ std::uint32_t finalize(std::uint64_t ticket, std::uint32_t fallback_user,
             (raw_packet != returned_packet || raw != candidate))
             (void)publish(output, raw_packet, raw);
     };
+    const auto compose_preview = [&]() {
+        if (original_result != 0 || !raw_known || returned_result != 0 || !returned_known || !output || !publish) return;
+        // SDK panels sample the physical pad independently. Their game-facing
+        // neutral report can still carry this one current preview axis.
+        auto final = trusted_capture ? lease::Pad{} : raw;
+        if (preview_current) final = input::compose_preview_pad(raw, trusted_capture,
+            authorship.preview_axis, authorship.preview_value);
+        const auto packet = preview_current || trusted_capture ? returned_packet : raw_packet;
+        if (packet != returned_packet || final != candidate) (void)publish(output, packet, final);
+    };
     if (!copied.ticket) {
         // Capacity/counter failure has no accepted callback record. It never
         // supplies fresh facts or completion, and its unknown duty is not ACKable.
-        if (sdk_navigation || preview_current) return returned_result;
-        if (!current.menu_closed || preview_report) restore_menu_input();
+        if (sdk_navigation) return returned_result;
+        if (preview_report) compose_preview();
+        else if (!current.menu_closed) restore_menu_input();
         else if (fallback_user < 4 && s.callbacks_unknown && key.user == fallback_user &&
             s.sources[fallback_user].connected && s.sources[fallback_user].epoch == key.source_epoch &&
             original_result == 0 && raw_known && output && publish) {
@@ -595,13 +606,18 @@ std::uint32_t finalize(std::uint64_t ticket, std::uint32_t fallback_user,
         s.leases.observe(copied.handle, source.observation, current);
     }
     capture_sync(current);
-    if (sdk_navigation || preview_current) {
-        // This report was actually authored by the SDK walk, or by a still
-        // current owned preview. A globally active script is not this proof.
+    if (sdk_navigation) {
+        // This report was actually authored by the SDK walk. A globally active
+        // script is not this proof and a preview uses its separate axis permit.
         drain(ticket);
         return returned_result;
     }
-    if (!current.menu_closed || preview_report) {
+    if (preview_report) {
+        compose_preview();
+        drain(ticket);
+        return returned_result;
+    }
+    if (!current.menu_closed) {
         // Retained cleanup is not authority to withhold a menu's physical input.
         // Keep its debt and translator history until a later confirmed handback.
         restore_menu_input();

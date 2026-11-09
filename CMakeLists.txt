@@ -518,7 +518,7 @@ if(DINGOSDK_BUILD_PLUGIN_TESTS)
     target_include_directories(dingosdk_input_capture_source_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     foreach(mode denial cold_original publication late_drain interference replacement context_release staged_aba failed_write transport raw_final late_age renewal owner_close capacity
         held_tail handback_collision handback_partial handback_race post_ack replacement_no_write
-        packet_only_failure handback_equal_pad menu_admission menu_revocation overlay_menu menu_button menu_replacement menu_staged_restore)
+        packet_only_failure handback_equal_pad menu_admission menu_revocation overlay_menu menu_button menu_replacement menu_staged_restore menu_unknown_callbacks)
         add_test(NAME input_capture_source_${mode}
             COMMAND dingosdk_input_capture_source_tests ${mode})
         set_tests_properties(input_capture_source_${mode} PROPERTIES TIMEOUT 10)

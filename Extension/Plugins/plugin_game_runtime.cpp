@@ -1519,7 +1519,7 @@ public:
         const auto room = character_room::phase();
         const auto menu = multiplayer::sample_game_ui_state(base, true);
         const bool owned_preview = component && !room_owner_.empty() && room == character_room::Phase::arrived &&
-            menu.available && menu.in_menu && !overlay::interface_open() &&
+            menu.available && menu.in_menu &&
             character_room::is_skaters_page(character_room::menu_buttons(base));
         overlay::preview_context(room_owner_, owned_preview);
         skater_animation::show_in_room(!room_owner_.empty() && room == character_room::Phase::arrived);

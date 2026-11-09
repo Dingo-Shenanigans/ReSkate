@@ -21,7 +21,8 @@ void play_pad(std::vector<PadStep> steps);
 void pad_tick() noexcept;
 // Read-only current authorship; no native input consumption claim.
 bool scripted_pad_active() noexcept;
-// True when it wrote the script's pad to `state`.
+// True when it wrote the script's pad to `state`; authorship records this exact
+// report's SDK navigation or preview axis/value/epoch, never global script state.
 bool scripted_pad(DWORD user, XINPUT_STATE &state, input::PadAuthorship* authorship = nullptr,
     bool physical_connected = true) noexcept;
 // One physical pad stick held at `value` (-1..1) for `milliseconds` more while its
