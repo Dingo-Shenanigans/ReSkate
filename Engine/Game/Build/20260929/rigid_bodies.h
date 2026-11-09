@@ -34,6 +34,8 @@ inline constexpr Fingerprint overwrite_torque{0x25d7fe0, {
 // The physics state layout the owned-body service reads. The state is the world's store
 // (physics_bodies::store_offset). Every read reroots the current world and repeats the
 // allocation, generation and array checks.
+// Actor observations and owned bodies use the same physics store.
+inline constexpr std::uintptr_t world_state = physics_bodies::store_offset;
 inline constexpr std::uintptr_t position_ring = 0x900, body_capacity = 0x908;
 inline constexpr std::uintptr_t local_com = 0x910, rotation_ring = 0x918, local_rotation = 0x928;
 inline constexpr std::uintptr_t velocity_ring = 0x930, spin_ring = 0x940;

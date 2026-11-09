@@ -479,6 +479,17 @@ if(DINGOSDK_BUILD_PLUGIN_TESTS)
         target_include_directories(dingosdk_${test}_tests PRIVATE "${PROJECT_SOURCE_DIR}")
         add_test(NAME ${test} COMMAND dingosdk_${test}_tests)
     endforeach()
+    # Shared actor ownership and native-step observations over constructed values.
+    foreach(test actor_control actor_clock actor_context)
+        add_executable(dingosdk_${test}_tests Engine/Game/Skater/Test/${test}_tests.cpp)
+        target_include_directories(dingosdk_${test}_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+        add_test(NAME ${test} COMMAND dingosdk_${test}_tests)
+        set_tests_properties(${test} PROPERTIES TIMEOUT 15)
+    endforeach()
+    add_executable(dingosdk_callback_listeners_tests Engine/Core/Hooks/Test/callback_listeners_tests.cpp)
+    target_include_directories(dingosdk_callback_listeners_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME callback_listeners COMMAND dingosdk_callback_listeners_tests)
+    set_tests_properties(callback_listeners PROPERTIES TIMEOUT 15)
     # The plugin host apart from the game: manifests, the reskate API, storage, modules, hot reload,
     # and the sandbox against plugins written to break it. These build on Linux too, so they can be
     # run without Windows.
@@ -513,6 +524,15 @@ if(DINGOSDK_BUILD_PLUGIN_TESTS AND WIN32)
     target_compile_options(dingosdk_owned_body_source_tests PRIVATE /Gy /Gw)
     target_link_options(dingosdk_owned_body_source_tests PRIVATE /OPT:REF)
     add_test(NAME owned_body_source COMMAND dingosdk_owned_body_source_tests)
+    # A paired read of the actual SDK teleport queue and its lifecycle, including
+    # the production profile wrappers over constructed profile/placement state.
+    add_executable(dingosdk_teleport_observation_tests Engine/Game/Skater/Test/teleport_observation_tests.cpp)
+    target_include_directories(dingosdk_teleport_observation_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_compile_options(dingosdk_teleport_observation_tests PRIVATE /Gy /Gw)
+    target_link_options(dingosdk_teleport_observation_tests PRIVATE /OPT:REF)
+    target_link_libraries(dingosdk_teleport_observation_tests PRIVATE dingosdk_local_profile)
+    add_test(NAME teleport_observation COMMAND dingosdk_teleport_observation_tests)
+    set_tests_properties(teleport_observation PROPERTIES TIMEOUT 15)
     # How often reskate.entities.bounds may search every asset domain (world_entities_contract.h).
     add_executable(dingosdk_world_entities_contract_tests Extension/World/Test/world_entities_contract_tests.cpp)
     target_include_directories(dingosdk_world_entities_contract_tests PRIVATE "${PROJECT_SOURCE_DIR}")

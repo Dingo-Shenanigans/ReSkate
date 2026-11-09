@@ -18,6 +18,7 @@
 #include "Engine/Game/World/client_state.h"
 #include "Extension/Plugins/plugin_runtime.h"
 #include "Extension/Skater/skater_movement.h"
+#include "Extension/Skater/native_actions.h"
 #include "Extension/Plugins/plugin_game_runtime.h"
 #include "Engine/Game/World/load_completion.h"
 #include "Extension/ReplayKeyframes/replay_keyframes.h"
@@ -77,6 +78,7 @@ const char* state_name(DWORD state) { return dingosdk::client_state_name(state);
 // tick instead of reading the same native chains again.
 struct TickState {
     bool valid{};
+    bool actor_ready_published{};
     DWORD state{}, game_type{};
     std::optional<bool> context;             // native_context
     std::optional<const char*> camera_issue; // camera_probe_unavailable_reason, nullptr when ready
@@ -1189,7 +1191,11 @@ void update_model(std::uintptr_t client, TickState& frame) {
         dingosdk::effects::tick(r.base, client, !r.observer_failed && !loading && named_context_ready,
             r.debug_model.noclip, r.debug_model.park_editor);
     }
-    if (r.observer_failed) return; // Keep the bounded restore/telemetry path available after catalog failure.
+    if (r.observer_failed) {
+        // A skipped client observation must not leave actor admission ready.
+        dingosdk::skater_action::tick(r.base, client, false);
+        return;
+    }
     {
         // Every tick, not at the 500 ms customization pace: the item grids follow the highlight.
         DINGO_PROFILE_ZONE("tick/item browser");
@@ -1199,7 +1205,12 @@ void update_model(std::uintptr_t client, TickState& frame) {
         DINGO_PROFILE_ZONE("tick/plugins");
         // Before the plugins tick, so their owned bodies see this tick's client phase (debug_busy: a
         // level request is loading).
-        dingosdk::owned_bodies::tick(r.base, client, named_context_ready && !debug_busy);
+        bool loading{};
+        { std::lock_guard lock(r.mutex); loading = r.requests.loading(); }
+        const bool actor_ready = named_context_ready && !debug_busy && !loading;
+        dingosdk::owned_bodies::tick(r.base, client, actor_ready);
+        dingosdk::skater_action::tick(r.base, client, actor_ready);
+        frame.actor_ready_published = true;
         dingosdk::skater_movement::set_client(client);
         dingosdk::plugins::on_client_tick();
         dingosdk::plugins::tick_plugin_settings();
@@ -1617,6 +1628,8 @@ void tick(std::uintptr_t client, std::uintptr_t update) {
         {
             DINGO_PROFILE_ZONE("tick/update_model");
             update_model(client, tick_state);
+            if (!tick_state.actor_ready_published && r.engine_thread.load() == GetCurrentThreadId())
+                dingosdk::skater_action::tick(r.base, client, false);
         }
         if (r.engine_thread.load() != GetCurrentThreadId()) return;
         DWORD state{},game_type{};
@@ -1821,6 +1834,8 @@ void tick(std::uintptr_t client, std::uintptr_t update) {
         }
     }
     catch (const std::exception&) {
+        if (r.engine_thread.load() == GetCurrentThreadId())
+            dingosdk::skater_action::tick(r.base, client, false);
         if (!r.observer_failed.exchange(true)) activity_line(dingosdk::ConsoleSource::runtime,
             "Debug controller stopped after an observation error. See the runtime log.", dingosdk::ConsoleSeverity::error);
         std::lock_guard lock(r.mutex);

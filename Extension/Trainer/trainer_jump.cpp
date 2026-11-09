@@ -6,6 +6,7 @@
 #include "Engine/Game/Multiplayer/session_tools.h"
 #include "Extension/Skater/client_source_spawn.h"
 #include "Extension/Skater/no_bail.h"
+#include "Extension/Skater/native_actions.h"
 #include <windows.h>
 #include <array>
 #include <atomic>
@@ -67,6 +68,10 @@ Hooked &hooked() {
     static auto *value = new Hooked;
     return *value;
 }
+struct PreserveError {
+    DWORD value{GetLastError()};
+    ~PreserveError() { SetLastError(value); }
+};
 // The trick the game has in mind right now (the trainer's own reading is a tick old: out of a manual or a grind the
 // trick is often chosen in the tick of the pop).
 std::uint32_t live_trick(std::uintptr_t at) noexcept {
@@ -96,6 +101,8 @@ bool call_guarded(SetTrajectory function, std::uintptr_t trajectory, float *para
 // After a physics update: a pop that has to go higher after all is launched again, from where it started (it is a tick
 // or two old), with the higher upward speed. Writing the trajectory object does nothing (measured): the setter has to run.
 void raise_step() noexcept {
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer)) return;
     auto &h = hooked();
     const float up = h.raise_to.exchange(0, std::memory_order_acq_rel);
     if (!(up > 0)) return;
@@ -108,6 +115,15 @@ void raise_step() noexcept {
 void set_trajectory_hook(std::uintptr_t trajectory, float *parameters) {
     auto &h = hooked();
     const auto caller = reinterpret_cast<std::uintptr_t>(_ReturnAddress()) - h.base;
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer)) {
+        // A motion claim excludes optional trainer/plugin modifiers. The host's
+        // mandatory ollie rule still applies to the native launch on this path.
+        if (parameters && caller == ollie_call + 5 && !session_ollies_allowed() && parameters[velocity_y] > 0)
+            parameters[velocity_y] = 0;
+        if (const auto original = h.original.load(std::memory_order_acquire)) original(trajectory, parameters);
+        return;
+    }
     if (const auto modifier = h.modifier.load(std::memory_order_acquire); modifier && parameters) {
         float velocity[3]{parameters[velocity_y - 1], parameters[velocity_y], parameters[velocity_y + 1]};
         modifier(caller - 5, trajectory, velocity);
@@ -216,6 +232,8 @@ bool known_code(std::uintptr_t base) {
 bool start_trick_heights(std::uintptr_t base) noexcept {
     auto &h = hooked();
     if (h.attempted || !base) return h.ready;
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer)) return false;
     h.attempted = true;
     try {
         if (!known_code(base)) {
@@ -233,7 +251,11 @@ bool start_trick_heights(std::uintptr_t base) noexcept {
             return false;
         }
         h.original.store(reinterpret_cast<SetTrajectory>(original), std::memory_order_release);
-        if (hook_enable(target) != HookOk) return false;
+        {
+            // The trainer may first request this hook after gameplay has started.
+            HookBatch batch;
+            if (hook_enable(target) != HookOk) return false;
+        }
         set_physics_step_callback(&raise_step);
         h.ready = true;
         logging::write(logging::Level::info, logging::Channel::skater, "Trainer: no comply and boneless heights ready.");
@@ -248,6 +270,26 @@ constexpr std::uintptr_t foot_gravity = addr::launches::foot_gravity; // the ins
 constexpr float foot_gravity_stock = -9.8f;
 std::atomic<int> gravity_known{}; // 0 not looked, 1 the instruction is the known one, -1 it is not
 std::atomic<float> gravity_now{1};
+// Setters and admission share only this short native-constant boundary. Native
+// callbacks never wait for a setter or infer success from a requested value.
+SRWLOCK constant_lock = SRWLOCK_INIT;
+struct ConstantLock {
+    bool exclusive{}, held{};
+    explicit ConstantLock(bool write) noexcept : exclusive(write), held(write ?
+        TryAcquireSRWLockExclusive(&constant_lock) != FALSE : TryAcquireSRWLockShared(&constant_lock) != FALSE) {}
+    ~ConstantLock() {
+        if (!held) return;
+        if (exclusive) ReleaseSRWLockExclusive(&constant_lock);
+        else ReleaseSRWLockShared(&constant_lock);
+    }
+    ConstantLock(const ConstantLock&) = delete;
+    ConstantLock& operator=(const ConstantLock&) = delete;
+};
+struct ConstantWrite {
+    DWORD protection{};
+    bool protection_pending{}, flush_pending{};
+};
+ConstantWrite gravity_write;
 bool read_constant(std::uintptr_t at, float &value) noexcept {
     __try {
         value = *reinterpret_cast<const float *>(at);
@@ -256,24 +298,51 @@ bool read_constant(std::uintptr_t at, float &value) noexcept {
         return false;
     }
 }
-bool write_constant(std::uintptr_t at, float value) noexcept {
-    DWORD old{};
-    if (!VirtualProtect(reinterpret_cast<void *>(at), sizeof(float), PAGE_EXECUTE_READWRITE, &old)) return false;
-    bool done = false;
+bool assign_constant(std::uintptr_t at, float value) noexcept {
     __try {
         *reinterpret_cast<float *>(at) = value;
-        done = true;
+        return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) {}
-    DWORD again{};
-    VirtualProtect(reinterpret_cast<void *>(at), sizeof(float), old, &again);
-    FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<void *>(at), sizeof(float));
-    return done;
+    return false;
+}
+bool finish_constant_write(std::uintptr_t at, ConstantWrite& duty) noexcept {
+    if (duty.protection_pending) {
+        DWORD previous{};
+        if (!VirtualProtect(reinterpret_cast<void*>(at), sizeof(float), duty.protection, &previous)) return false;
+        duty.protection_pending = false;
+    }
+    if (duty.flush_pending) {
+        if (!FlushInstructionCache(GetCurrentProcess(), reinterpret_cast<void*>(at), sizeof(float))) return false;
+        duty.flush_pending = false;
+    }
+    return true;
+}
+bool write_constant(std::uintptr_t at, float value, DWORD writable, bool code, ConstantWrite& duty) noexcept {
+    // Retain the first protection if restoration fails. A second write must not
+    // mistake the temporarily writable page for its original protection.
+    if (!finish_constant_write(at, duty)) return false;
+    float current{};
+    if (!read_constant(at, current)) return false;
+    if (current == value) return true;
+    DWORD previous{};
+    if (!VirtualProtect(reinterpret_cast<void*>(at), sizeof(float), writable, &previous)) return false;
+    duty.protection = previous;
+    duty.protection_pending = true;
+    duty.flush_pending = code;
+    const bool written = assign_constant(at, value);
+    const bool restored = finish_constant_write(at, duty);
+    return written && restored && read_constant(at, current) && current == value;
 }
 } // namespace
 bool set_foot_gravity(float factor) noexcept {
+    PreserveError error;
+    if (!std::isfinite(factor) || factor < 0.02f || factor > 20.0f) factor = 1.0f;
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer) && factor != 1.0f) return false;
     const auto base = hooked().base;
     if (!base) return false;
-    if (!std::isfinite(factor) || factor < 0.02f || factor > 20.0f) factor = 1.0f;
+    ConstantLock lock(true);
+    if (!lock.held) return false;
     int known = gravity_known.load(std::memory_order_relaxed);
     if (known == 0) {
         float value{};
@@ -285,8 +354,8 @@ bool set_foot_gravity(float factor) noexcept {
             logging::write(logging::Level::warning, logging::Channel::skater, "Trainer: this game build's on-foot gravity is not where it is known to be; gravity acts on the board only.");
     }
     if (known < 0) return false;
-    if (gravity_now.load(std::memory_order_relaxed) == factor) return true;
-    if (!write_constant(base + foot_gravity, foot_gravity_stock * factor)) return false;
+    if (!write_constant(base + foot_gravity, foot_gravity_stock * factor,
+        PAGE_EXECUTE_READWRITE, true, gravity_write)) return false;
     gravity_now.store(factor, std::memory_order_relaxed);
     return true;
 }
@@ -298,12 +367,18 @@ constexpr std::uintptr_t foot_speed_cap = addr::launches::foot_speed_cap;
 constexpr float foot_speed_cap_stock = 10.0f;
 std::atomic<int> cap_known{};
 std::atomic<float> cap_now{foot_speed_cap_stock};
+ConstantWrite cap_write;
 } // namespace
 bool set_foot_speed_cap(float metres_per_second) noexcept {
-    const auto base = hooked().base;
-    if (!base) return false;
+    PreserveError error;
     if (!std::isfinite(metres_per_second) || metres_per_second < foot_speed_cap_stock) metres_per_second = foot_speed_cap_stock;
     metres_per_second = std::min(metres_per_second, 1000.0f);
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer) && metres_per_second != foot_speed_cap_stock) return false;
+    const auto base = hooked().base;
+    if (!base) return false;
+    ConstantLock lock(true);
+    if (!lock.held) return false;
     int known = cap_known.load(std::memory_order_relaxed);
     if (known == 0) {
         float value[4]{};
@@ -312,28 +387,26 @@ bool set_foot_speed_cap(float metres_per_second) noexcept {
         cap_known.store(known, std::memory_order_relaxed);
     }
     if (known < 0) return false;
-    if (cap_now.load(std::memory_order_relaxed) == metres_per_second) return true;
-    DWORD old{};
-    const auto at = base + foot_speed_cap;
-    if (!VirtualProtect(reinterpret_cast<void *>(at), sizeof(float), PAGE_READWRITE, &old)) return false;
-    bool done = false;
-    __try {
-        *reinterpret_cast<float *>(at) = metres_per_second;
-        done = true;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {}
-    DWORD again{};
-    VirtualProtect(reinterpret_cast<void *>(at), sizeof(float), old, &again);
-    if (done) cap_now.store(metres_per_second, std::memory_order_relaxed);
-    return done;
+    if (!write_constant(base + foot_speed_cap, metres_per_second, PAGE_READWRITE, false, cap_write)) return false;
+    cap_now.store(metres_per_second, std::memory_order_relaxed);
+    return true;
 }
 void set_trick_heights(float no_comply, float boneless) noexcept {
     const auto speed = [](float height) { return std::isfinite(height) && height > 0 ? std::sqrt(std::min(height, 1.0e6f)) : 1.0f; };
-    hooked().no_comply.store(speed(no_comply), std::memory_order_relaxed);
-    hooked().boneless.store(speed(boneless), std::memory_order_relaxed);
+    const auto no_comply_speed = speed(no_comply), boneless_speed = speed(boneless);
+    actor_control::IdleCall writer;
+    const bool admitted = skater_action::enter_motion_writer(writer);
+    auto& h = hooked();
+    // Neutral restoration reduces an existing duty even after a claim has
+    // closed publication; it never arms the other half of this paired setter.
+    if (admitted || no_comply_speed == 1.0f) h.no_comply.store(no_comply_speed, std::memory_order_relaxed);
+    if (admitted || boneless_speed == 1.0f) h.boneless.store(boneless_speed, std::memory_order_relaxed);
 }
 // The trajectory object, as floats (read after the setter, 2026-10-10): the start point at 44..46, the launch velocity
 // at 48..50, gravity at 52..54 and the step at 57 (0..2 looks like where it will come down).
 bool raise_flight(float up, float &was, float &time) noexcept {
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer)) { was = time = 0; return false; }
     auto &h = hooked();
     was = h.flight_up.load(std::memory_order_relaxed);
     const auto age = GetTickCount64() - h.flight_tick.load(std::memory_order_relaxed);
@@ -343,18 +416,27 @@ bool raise_flight(float up, float &was, float &time) noexcept {
     return true;
 }
 void set_flip_launch(std::uint32_t trick, float up) noexcept {
+    const float wanted = std::isfinite(up) && up > 0 ? up : 0.0f;
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer) && wanted != 0.0f) return;
     auto &h = hooked();
-    if (trick < h.flip_launch.size()) h.flip_launch[trick].store(std::isfinite(up) && up > 0 ? up : 0.0f, std::memory_order_relaxed);
+    if (trick < h.flip_launch.size()) h.flip_launch[trick].store(wanted, std::memory_order_relaxed);
 }
 void set_launch_trick(std::uint32_t trick, std::uintptr_t at) noexcept {
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer) && (trick != 0xffu || at != 0)) return;
     hooked().launch_trick.store(trick, std::memory_order_relaxed);
     hooked().trick_at.store(at, std::memory_order_relaxed);
 }
 void set_grind_side(float side, float travel_x, float travel_z, bool grinding, float push, float nudge) noexcept {
+    const float wanted_side = std::isfinite(side) ? side : 1.0f;
+    const float wanted_push = std::isfinite(push) ? push : 0.0f;
+    actor_control::IdleCall writer;
+    const bool admitted = skater_action::enter_motion_writer(writer);
     auto &h = hooked();
-    h.grind_side.store(std::isfinite(side) ? side : 1.0f, std::memory_order_relaxed);
-    h.grind_push.store(std::isfinite(push) ? push : 0.0f, std::memory_order_relaxed);
-    if (grinding && std::isfinite(travel_x) && std::isfinite(travel_z)) {
+    if (admitted || wanted_side == 1.0f) h.grind_side.store(wanted_side, std::memory_order_relaxed);
+    if (admitted || wanted_push == 0.0f) h.grind_push.store(wanted_push, std::memory_order_relaxed);
+    if (admitted && grinding && std::isfinite(travel_x) && std::isfinite(travel_z)) {
         h.travel_x.store(travel_x, std::memory_order_relaxed);
         h.travel_z.store(travel_z, std::memory_order_relaxed);
         // The stick as it was on the grind: the game's scripts put the state back to nothing when the grind ends.
@@ -371,8 +453,13 @@ bool take_grind_pop(float &along, float &side, float &nudge) noexcept {
     return true;
 }
 void set_manual_pop(float height, std::int32_t intent) noexcept {
+    const float wanted = std::isfinite(height) && height > 0 ? std::sqrt(std::min(height, 1.0e6f)) : 1.0f;
+    actor_control::IdleCall writer;
+    const bool admitted = skater_action::enter_motion_writer(writer);
+    if (!admitted && wanted != 1.0f) return;
     auto &h = hooked();
-    h.manual.store(std::isfinite(height) && height > 0 ? std::sqrt(std::min(height, 1.0e6f)) : 1.0f, std::memory_order_relaxed);
+    h.manual.store(wanted, std::memory_order_relaxed);
+    if (!admitted) return; // a neutral height cannot arm a new intent/window
     h.manual_intent.store(intent, std::memory_order_relaxed);
     // The intent goes back to none as the stick is pulled for the pop: the launch comes within half a second.
     if (intent > 0) h.manual_until.store(GetTickCount64() + 600, std::memory_order_relaxed);
@@ -392,6 +479,12 @@ bool take_trick_launch(TrickLaunch &out) noexcept {
     return true;
 }
 void set_trajectory_modifier(TrajectoryModifier modifier) noexcept {
+    (void)try_set_trajectory_modifier(modifier);
+}
+bool try_set_trajectory_modifier(TrajectoryModifier modifier) noexcept {
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer) && modifier) return false;
     hooked().modifier.store(modifier, std::memory_order_release);
+    return true;
 }
 } // namespace dingosdk::trainer

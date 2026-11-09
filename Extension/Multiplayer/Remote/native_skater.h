@@ -35,6 +35,20 @@ bool install_entity_hooks(std::uintptr_t base, std::string &detail) noexcept;
 // Called by the destruction hook before the engine frees any entity.
 using EntityDestroyed = void (*)(std::uintptr_t entity) noexcept;
 void set_entity_destroyed_listener(EntityDestroyed listener) noexcept;
+// Independent process-lifetime observers run at destruction entry, before
+// cleanup and native free. Registration is idempotent; false means null/full.
+// Removal does not wait for a snapshotted callback. Callbacks must be bounded,
+// nonblocking, allocation-free and recheck their own active owner.
+inline constexpr std::size_t entity_destroyed_listener_slots = 4;
+bool add_entity_destroyed_listener(EntityDestroyed listener) noexcept;
+void remove_entity_destroyed_listener(EntityDestroyed listener) noexcept;
+// True only after the shared hook transaction succeeded for this exact image.
+bool entity_destruction_hook_available(std::uintptr_t image_base) noexcept;
+// A stable idle epoch, false during any destruction or before installation.
+// Register before capture, then require the same epoch around owner publication;
+// the always-on hook serial also covers a destruction already in flight when
+// the observer registered. This is not a native memory/lifetime lock.
+bool entity_destruction_epoch(std::uintptr_t image_base, std::uint64_t& epoch) noexcept;
 // Called after the native animation update of every skater component that is
 // not a remote peer, once its output pose for this update is written. Requires
 // install_entity_hooks. Runs on the thread that evaluates animation.

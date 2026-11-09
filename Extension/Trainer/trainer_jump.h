@@ -49,4 +49,6 @@ bool take_trick_launch(TrickLaunch &out) noexcept;
 // nullptr for none. Requires start_trick_heights.
 using TrajectoryModifier = void (*)(std::uintptr_t caller_rva, std::uintptr_t trajectory, float (&velocity)[3]) noexcept;
 void set_trajectory_modifier(TrajectoryModifier modifier) noexcept;
+// The same publication, with an explicit result for a provider's installed flag.
+bool try_set_trajectory_modifier(TrajectoryModifier modifier) noexcept;
 } // namespace dingosdk::trainer

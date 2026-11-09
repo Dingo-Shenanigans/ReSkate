@@ -1,4 +1,5 @@
 #include "offboard_flight.h"
+#include "native_actions.h"
 #include "Engine/Core/Platform/memory.h"
 #include "Engine/Game/Build/supported_build.h"
 #include "Engine/Game/Build/addresses.h"
@@ -45,6 +46,8 @@ bool scale_offboard_up_velocity(std::uintptr_t base, std::uintptr_t core, std::u
     std::uintptr_t rig, float factor, float* before) noexcept {
     FlightLastError error;
     if (before) *before = 0;
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer)) return false;
     if (!object(base) || !object(context) || !object(rig) || !std::isfinite(factor) || factor <= 0 || factor > 20 ||
         link(core) != base + addr::no_bail::bail_core_vtable || link(core, 0x3c0) != context || link(core, 0x438) != rig) return false;
     const auto parent = link(core, 0x3b0);
@@ -64,6 +67,8 @@ bool scale_offboard_up_velocity(std::uintptr_t base, std::uintptr_t core, std::u
 bool ensure_offboard_up_velocity(std::uintptr_t base, std::uintptr_t core, std::uintptr_t context,
     std::uintptr_t rig, float minimum_up_speed) noexcept {
     FlightLastError error;
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer)) return false;
     if (!object(base) || !object(context) || !object(rig) || !std::isfinite(minimum_up_speed) ||
         minimum_up_speed <= 0 || minimum_up_speed > 100000 ||
         link(core) != base + addr::no_bail::bail_core_vtable || link(core, 0x3c0) != context || link(core, 0x438) != rig)
@@ -106,6 +111,8 @@ bool ensure_offboard_up_velocity(std::uintptr_t base, std::uintptr_t core, std::
 bool sync_offboard_flight_velocity(std::uintptr_t base, std::uintptr_t core,
     std::uintptr_t context, std::uintptr_t rig, const std::array<float, 3>& velocity) noexcept {
     FlightLastError error;
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer)) return false;
     if (!object(base) || !object(context) || !object(rig) || link(core) != base + addr::no_bail::bail_core_vtable ||
         link(core, 0x3c0) != context || link(core, 0x438) != rig ||
         link(rig) != context || link(rig, 0x4630) != core) return false;

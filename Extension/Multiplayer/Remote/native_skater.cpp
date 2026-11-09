@@ -6,6 +6,7 @@
 #include "Extension/Multiplayer/Session/peer_slots.h"
 #include "Extension/Skater/board_pose.h"
 #include "Engine/Core/Hooks/hooks.h"
+#include "Engine/Core/Hooks/callback_listeners.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Game/Build/20260929/engine.h"
 #include <algorithm>
@@ -15,6 +16,12 @@
 
 namespace dingosdk::multiplayer {
 using namespace native_skater_detail;
+namespace {
+// Constructed before any hook can run. Dispatch never initializes a registry.
+CallbackListeners<EntityDestroyed, entity_destroyed_listener_slots> destruction_listeners;
+CallbackEpoch destruction_epoch;
+std::atomic<std::uintptr_t> destruction_hook_base{};
+}
 namespace native_skater_detail {
 void require(bool value, const char *reason) {
     if (!value)
@@ -409,7 +416,10 @@ void animation_hook(std::uintptr_t component, std::uintptr_t update) {
     if (const auto listener = shared().override_listener.load(std::memory_order_acquire))
         listener(component);
 }
-void destroy_hook(std::uintptr_t entity, std::uintptr_t owner) {
+void destroy_observed(std::uintptr_t entity, std::uintptr_t owner) {
+    const auto error = GetLastError();
+    destruction_listeners.dispatch(entity);
+    SetLastError(error);
     world_entities::entity_destroyed(entity);
     if (const auto listener = shared().destroyed_listener.load(std::memory_order_acquire))
         listener(entity);
@@ -420,6 +430,13 @@ void destroy_hook(std::uintptr_t entity, std::uintptr_t owner) {
         observe_destruction(entity);
     }
     shared().original_destroy(entity, owner);
+}
+void destroy_hook(std::uintptr_t entity, std::uintptr_t owner) {
+    destruction_epoch.enter();
+    // Keep the native exceptional edge outside C++ scopes so it still advances
+    // the observation epoch without swallowing the engine exception.
+    __try { destroy_observed(entity, owner); }
+    __finally { destruction_epoch.leave(); }
 }
 } // namespace
 namespace native_skater_detail {
@@ -505,6 +522,7 @@ void install(std::uintptr_t base) {
     }
     puppet_cost::hooks_applied(savings, saving_hooks == savings.count);
     shared().hooks = true;
+    destruction_hook_base.store(base, std::memory_order_release);
 }
 } // namespace native_skater_detail
 NativeFrame capture_local(std::uintptr_t base, std::uintptr_t client, bool capture_pose) {
@@ -626,6 +644,20 @@ bool install_entity_hooks(std::uintptr_t base, std::string &detail) noexcept {
 }
 void set_entity_destroyed_listener(EntityDestroyed listener) noexcept {
     shared().destroyed_listener.store(listener, std::memory_order_release);
+}
+bool add_entity_destroyed_listener(EntityDestroyed listener) noexcept {
+    return destruction_listeners.add(listener);
+}
+void remove_entity_destroyed_listener(EntityDestroyed listener) noexcept {
+    destruction_listeners.remove(listener);
+}
+bool entity_destruction_hook_available(std::uintptr_t image_base) noexcept {
+    return image_base && destruction_hook_base.load(std::memory_order_acquire) == image_base;
+}
+bool entity_destruction_epoch(std::uintptr_t image_base, std::uint64_t& epoch) noexcept {
+    epoch = 0;
+    return entity_destruction_hook_available(image_base) && destruction_epoch.idle(epoch) &&
+        entity_destruction_hook_available(image_base);
 }
 void set_local_hidden_joint(std::uintptr_t component, std::uint16_t joint,
                             const std::array<float, 3> &scale) noexcept {

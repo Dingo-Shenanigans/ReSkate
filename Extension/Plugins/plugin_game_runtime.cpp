@@ -923,11 +923,11 @@ public:
     std::string skater_push(std::string_view, const Vec3& velocity) override {
         if (!::dingosdk::skater_push::valid(velocity)) return "a push is horizontal (y 0) and at most 120 m/s";
         if (!competition_stock_physics()) return std::string("a push ") + needs_stock_physics;
-        ::dingosdk::skater_push::request(velocity);
+        if (!::dingosdk::skater_push::try_request(velocity)) return "skater motion is owned by another action";
         return {};
     }
     std::string skater_push_wait(std::string_view) override {
-        ::dingosdk::skater_push::wait();
+        if (!::dingosdk::skater_push::try_wait()) return "skater motion is owned by another action";
         return {};
     }
     std::string skater_push_reset(std::string_view) override {
@@ -936,10 +936,10 @@ public:
     }
     std::string skater_hold(std::string_view plugin, bool on) override {
         if (on && !competition_stock_physics()) return std::string("a hold ") + needs_stock_physics;
+        if (!on && hold_owner_ != plugin) return {};
+        if (!::dingosdk::skater_push::try_hold(on)) return "skater motion is owned by another action";
         if (on) hold_owner_ = plugin;
-        else if (hold_owner_ != plugin) return {};
         else hold_owner_.clear();
-        ::dingosdk::skater_push::hold(on);
         return {};
     }
     void remove_throwdown_mode(std::string_view plugin, std::string_view id) override {
@@ -958,13 +958,13 @@ public:
     std::string cruise(std::string_view, float speed, bool may_slow) override {
         if (speed > 0 && multiplayer_session_active() && !session_boosts_allowed()) return "the host has turned boosts off";
         if (speed > 0 && multiplayer::local_throwdown_active()) return "not while a throwdown runs";
-        set_plugin_cruise(speed, may_slow);
+        if (!try_set_plugin_cruise(speed, may_slow)) return "skater motion is owned by another action";
         return {};
     }
     std::string set_velocity(std::string_view, const Vec3& velocity, bool add) override {
         if (multiplayer_session_active() && !session_boosts_allowed()) return "the host has turned boosts off";
         if (multiplayer::local_throwdown_active() && !competition_stock_physics()) return "not while a throwdown runs";
-        set_plugin_velocity(velocity, add);
+        if (!try_set_plugin_velocity(velocity, add)) return "skater motion is owned by another action";
         return {};
     }
     // A flip's speed is a trick setting like the trainer's flip speed: the host's word and no throwdown.
