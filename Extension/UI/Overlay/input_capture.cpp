@@ -1375,7 +1375,8 @@ extern "C" void DingoSDKOverlaySetGrindStickTurn(bool on, float x, float y_add, 
     turn.x.store(x, std::memory_order_relaxed);
     turn.y_add.store(y_add, std::memory_order_relaxed);
     turn.y_scale.store(y_scale, std::memory_order_relaxed);
-    turn.until.store(GetTickCount64() + dingosdk::overlay::detail::stick_lease, std::memory_order_relaxed);
+    // The trainer also refreshes disabled helpers. Idle deadlines must not revoke an input lease.
+    turn.until.store(on ? GetTickCount64() + dingosdk::overlay::detail::stick_lease : 0, std::memory_order_relaxed);
     turn.on.store(on, std::memory_order_relaxed);
 }
 // What the game's last poll saw of the right stick (x, y) and the player's own right stick up / down.
@@ -1390,7 +1391,7 @@ extern "C" void DingoSDKOverlaySetGrindStickLean(bool on, float x, float y) noex
     auto& lean = dingosdk::overlay::detail::grind_stick_lean();
     lean.x.store(x == x ? x : 0.0f, std::memory_order_relaxed);
     lean.y.store(y == y ? y : 0.0f, std::memory_order_relaxed);
-    lean.until.store(GetTickCount64() + dingosdk::overlay::detail::stick_lease, std::memory_order_relaxed);
+    lean.until.store(on ? GetTickCount64() + dingosdk::overlay::detail::stick_lease : 0, std::memory_order_relaxed);
     lean.on.store(on, std::memory_order_relaxed);
 }
 // The player's own left stick as the game's last poll had it, while the lean is on (false: it is off, read the controller).
