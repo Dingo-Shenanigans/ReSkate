@@ -529,9 +529,10 @@ public:
         std::string state, why;
     };
     virtual RoomState room_state(std::string_view /*plugin*/) { return {"idle", {}}; }
-    // The game menu's preview (the skater on the Skaters page, the board on a Board tab) turned by a
-    // stick of a stand-in pad: `value` -1..1 of the stick held for 300 ms (call it every tick), 0 lets
-    // go; `stick` 0 left x, 1 left y, 2 right x, 3 right y. Only while the game's menu is open.
+    // Only this plugin's owned, visible character preview: `value` -1..1 of one
+    // stick held for up to 300 ms, 0 lets go; 0 left x, 1 left y, 2 right x, 3 right y.
+    // Host input and animation observations expire after 100 ms. Settings, unknown
+    // state, room leave and unload revoke it; menu buttons and other controls stay physical.
     virtual std::string room_turn(std::string_view /*plugin*/, float /*value*/, int /*stick*/) { return unavailable; }
     struct RoomPose {
         Vec3 position{};

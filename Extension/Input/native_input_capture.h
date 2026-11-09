@@ -23,10 +23,12 @@ bool capture_acknowledge(std::uint64_t owner, input_lease::Handle) noexcept;
 // extension filters are permitted here. This is not a registration or Lua API.
 // staged_revision is sampled before the upstream candidate flags/filters; the
 // finalizer checks it again before writing. The begin revision is separate.
+// Authorship belongs to this exact report: fixed SDK navigation or a host-observed
+// preview epoch. A globally active script does not confer navigation authority.
 using PublishReport = bool (*)(void*, std::uint32_t, const input_lease::Pad&) noexcept;
 std::uint32_t finish_capture(Poll&, std::uint32_t original_result, bool raw_known,
     std::uint32_t raw_packet, const input_lease::Pad& raw,
     std::uint32_t returned_result, bool returned_known, std::uint32_t returned_packet,
     const input_lease::Pad& returned, std::uint64_t staged_revision,
-    void* output, PublishReport) noexcept;
+    void* output, PublishReport, input::PadAuthorship authorship = {}) noexcept;
 }

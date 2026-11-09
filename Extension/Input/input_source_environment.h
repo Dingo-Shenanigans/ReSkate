@@ -12,4 +12,6 @@ Facts sample() noexcept;
 // Current host-owned UI capture flags only. This bounded classifier runs under
 // the publication gate and must not call originals, plugins or a UI-model lock.
 bool trusted_capture() noexcept;
+// Atomic host-observed preview epoch only; never a script mutex or UI-model read.
+bool preview_report_valid(std::uint64_t epoch, std::uint64_t now_ms) noexcept;
 }

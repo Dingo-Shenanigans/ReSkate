@@ -1,18 +1,15 @@
 #include "Extension/Input/input_source_environment.h"
-#include <cstdio>
-#include <cstdlib>
+#include "Extension/UI/Overlay/scripted_pad.h"
+#include <Windows.h>
 
-// This executable links the real actor-free publication provider. Scripted-pad
-// setters need only its gate/revision/invalidation path, which never samples
-// environment facts. An accidental request/tick/raw-observation path must fail
-// the regression rather than receiving invented game or input readiness.
+// Constructed facts qualify only the real actor-free report pipeline. They do
+// not establish any native menu, controller or gameplay state.
 namespace dingosdk::native_input_source::environment {
 Facts sample() noexcept {
-    std::fputs("Unexpected passive native environment query in scripted-pad regression\n", stderr);
-    std::abort();
+    return {GetTickCount64(), GetCurrentThreadId(), true, true, true, true};
 }
-bool trusted_capture() noexcept {
-    std::fputs("Unexpected capture classification in scripted-pad regression\n", stderr);
-    std::abort();
+bool trusted_capture() noexcept { return false; }
+bool preview_report_valid(std::uint64_t epoch, std::uint64_t now_ms) noexcept {
+    return overlay::preview_report_valid(epoch, now_ms);
 }
 }

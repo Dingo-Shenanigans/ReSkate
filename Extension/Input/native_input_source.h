@@ -1,5 +1,6 @@
 #pragma once
 #include "Engine/Game/Input/input_lease.h"
+#include "Engine/Game/Input/plugin_input_policy.h"
 #include <cstdint>
 
 // Passive observation of one selected raw XInput stream. This service never
@@ -30,6 +31,8 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, NativeMenu men
 // A missing or stale native menu observation never permits a plugin to take
 // controls away from the player's settings. Polling threads read only this copy.
 bool native_menu_closed(std::uint64_t now_ms) noexcept;
+// A fresh verified client tick observed the native menu, open or closed.
+bool native_menu_observed(std::uint64_t now_ms) noexcept;
 
 // Existing XInput wrappers own the original call. The stack cookie is noncopyable;
 // abandonment drains exactly its own reservation and cannot issue a sample.
@@ -48,7 +51,8 @@ private:
         const input_lease::Pad&) noexcept;
     friend std::uint32_t finish_capture(Poll&, std::uint32_t, bool, std::uint32_t,
         const input_lease::Pad&, std::uint32_t, bool, std::uint32_t,
-        const input_lease::Pad&, std::uint64_t, void*, bool (*)(void*, std::uint32_t, const input_lease::Pad&) noexcept) noexcept;
+        const input_lease::Pad&, std::uint64_t, void*, bool (*)(void*, std::uint32_t, const input_lease::Pad&) noexcept,
+        input::PadAuthorship) noexcept;
     std::uint64_t ticket_{};
     std::uint32_t fallback_user_{4};
 };

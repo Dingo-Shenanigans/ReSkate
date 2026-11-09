@@ -197,7 +197,10 @@ struct CaptureApi {
         lua_setfield(L, -2, "sequence");
         return 1;
     }
-    // room.turn(value, stick): the game menu's preview turned by a stand-in pad's stick, held 300 ms.
+    // room.turn(value, stick): one axis held for at most 300 ms in this plugin's
+    // owned, visible character preview. Host input/animation observations expire
+    // after 100 ms; settings, unknown state, room leave and unload revoke it.
+    // Physical menu buttons and unrelated controls stay the player's.
     static int room_turn(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "room", "reskate.room.turn");

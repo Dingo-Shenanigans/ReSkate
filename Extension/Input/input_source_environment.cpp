@@ -2,6 +2,7 @@
 #include "Extension/UI/Overlay/overlay.h"
 #include "Extension/UI/Overlay/input_capture.h"
 #include "Extension/UI/NativeMenu/throwdown_menu.h"
+#include "Extension/UI/Overlay/scripted_pad.h"
 #include <Windows.h>
 namespace dingosdk::native_input_source::environment {
 Facts sample() noexcept {
@@ -17,4 +18,7 @@ Facts sample() noexcept {
     return result;
 }
 bool trusted_capture() noexcept { return overlay::detail::trusted_capture_flags(); }
+bool preview_report_valid(std::uint64_t epoch, std::uint64_t now_ms) noexcept {
+    return overlay::preview_report_valid(epoch, now_ms);
+}
 }

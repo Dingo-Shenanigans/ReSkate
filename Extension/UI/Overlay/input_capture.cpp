@@ -245,13 +245,20 @@ void handle_hid(const InputCaptureHooks::HidRead& read, DWORD size) noexcept {
         filter_hid(read, size);
         int stick{};
         SHORT value{};
-        if (!overlay_input_access && read.buffer && size <= read.capacity && held_stick(stick, value)) {
-            auto* bytes = static_cast<std::uint8_t*>(read.buffer);
-            if (set_playstation_stick(read.kind, playstation_bluetooth(size), bytes, size, stick, value)) {
-                static std::atomic<bool> reported{};
-                if (!reported.exchange(true)) logging::write(logging::Level::info, logging::Channel::input,
-                    "Menu preview stick hold reached a native PlayStation HID read.");
+        bool held_written{};
+        if (!overlay_input_access && read.buffer && size <= read.capacity) {
+            // The host can retire a preview between polls. Keep its permit check
+            // and this bounded report codec inside one publication fence.
+            native_input_source::PublicationScope publication;
+            if (held_stick(stick, value)) {
+                auto* bytes = static_cast<std::uint8_t*>(read.buffer);
+                held_written = set_playstation_stick(read.kind, playstation_bluetooth(size), bytes, size, stick, value);
             }
+        }
+        if (held_written) {
+            static std::atomic<bool> reported{};
+            if (!reported.exchange(true)) logging::write(logging::Level::info, logging::Channel::input,
+                "Menu preview stick hold reached a native PlayStation HID read.");
         }
     }
 }
@@ -470,10 +477,12 @@ DWORD WINAPI captured_front(DWORD user, XINPUT_STATE* output) {
     const auto staged_revision = native_input_source::publication_revision();
     const bool capture = block_polled_input();
     const bool menu = suppress_challenge_menu();
+    input::PadAuthorship authorship;
     const auto returned_result = [&]() -> DWORD {
     if (result == ERROR_SUCCESS && output) note_xinput(user, *output);
     // Only the game gets a scripted pad (the character room's walk): ReSkate's own reads get the real one.
-    if (outer && output && scripted_pad(user, *output)) return ERROR_SUCCESS;
+    if (outer && output && scripted_pad(user, *output, &authorship, result == ERROR_SUCCESS) &&
+        authorship.source == input::PadSource::sdk_navigation) return ERROR_SUCCESS;
     if (result == ERROR_SUCCESS && output && capture) {
         (void)native_input_source::read_pad_output(0, GetTickCount64(), false);
         const auto menu_button = !trusted_polled_capture() ? output->Gamepad.wButtons & input::menu_button : 0;
@@ -493,7 +502,7 @@ DWORD WINAPI captured_front(DWORD user, XINPUT_STATE* output) {
     const bool returned_known = returned_result == ERROR_SUCCESS && passive_copy(output, returned);
     const auto published_result = native_input_source::finish_capture(passive_poll, result, raw_known,
         raw.dwPacketNumber, passive_pad(raw.Gamepad), returned_result, returned_known,
-        returned.dwPacketNumber, passive_pad(returned.Gamepad), staged_revision, output, &capture_publish);
+        returned.dwPacketNumber, passive_pad(returned.Gamepad), staged_revision, output, &capture_publish, authorship);
     SetLastError(original_error);
     return published_result;
 }
@@ -977,10 +986,12 @@ DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
     const auto hidden = overlay_input_access ? std::uint16_t{} : static_cast<std::uint16_t>(
         (native_input_source::native_menu_closed(GetTickCount64()) ? mode_hidden_buttons.load(std::memory_order_relaxed) : 0) |
         (suppress_challenge_menu()?XINPUT_GAMEPAD_START:0));
+    input::PadAuthorship authorship;
     const auto returned_result = [&]() -> DWORD {
     if (result == ERROR_SUCCESS && output) note_xinput(user, *output);
     // Only the game gets a scripted pad (the character room's walk): ReSkate's own reads get the real one.
-    if (game_poll && output && scripted_pad(user, *output)) return ERROR_SUCCESS;
+    if (game_poll && output && scripted_pad(user, *output, &authorship, result == ERROR_SUCCESS) &&
+        authorship.source == input::PadSource::sdk_navigation) return ERROR_SUCCESS;
     if (result == ERROR_SUCCESS && output && capture) {
         (void)native_input_source::read_pad_output(0, GetTickCount64(), false);
         const auto menu_button = !trusted_polled_capture() ? output->Gamepad.wButtons & input::menu_button : 0;
@@ -1002,7 +1013,7 @@ DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
     const bool returned_known = returned_result == ERROR_SUCCESS && passive_copy(output, returned);
     const auto published_result = native_input_source::finish_capture(passive_poll, result, raw_known,
         raw.dwPacketNumber, passive_pad(raw.Gamepad), returned_result, returned_known,
-        returned.dwPacketNumber, passive_pad(returned.Gamepad), staged_revision, output, &capture_publish);
+        returned.dwPacketNumber, passive_pad(returned.Gamepad), staged_revision, output, &capture_publish, authorship);
     SetLastError(original_error);
     return published_result;
 }

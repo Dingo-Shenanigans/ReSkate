@@ -663,6 +663,7 @@ Facts sample() noexcept {
     return result;
 }
 bool trusted_capture() noexcept { return trusted_capture_active; }
+bool preview_report_valid(std::uint64_t, std::uint64_t) noexcept { return false; }
 }
 int main(int argc, char** argv) {
     if (argc != 2) return 2; const std::string_view mode = argv[1];

@@ -85,12 +85,12 @@ struct State {
     std::array<Reservation, lease::retained_capacity> reservations{};
     std::array<Callback, callback_capacity> callbacks{};
     std::atomic<std::uint64_t> revision{1};
-    std::atomic<std::uint64_t> menu_until{};
+    std::atomic<std::uint64_t> menu_until{}, menu_observed_until{};
     std::uint64_t next_ticket{1}, next_epoch{1}, next_ordinal{1};
     std::uint64_t context{}, last_now{}, eligible_at{};
     std::uintptr_t base{}, client{};
     std::uint32_t client_thread{};
-    bool ready{}, failed{}, menu_closed{};
+    bool ready{}, failed{}, menu_closed{}, menu_known{};
 };
 State& state() noexcept { static State value; return value; }
 thread_local bool publication_gate_held{};
@@ -280,6 +280,10 @@ bool native_menu_closed(std::uint64_t now_ms) noexcept {
     const auto until = state().menu_until.load(std::memory_order_acquire);
     return now_ms && until && now_ms < until && until - now_ms <= lease::maximum_age_ms;
 }
+bool native_menu_observed(std::uint64_t now_ms) noexcept {
+    const auto until = state().menu_observed_until.load(std::memory_order_acquire);
+    return now_ms && until && now_ms < until && until - now_ms <= lease::maximum_age_ms;
+}
 void tick(std::uintptr_t base, std::uintptr_t native_client, bool ready, NativeMenu menu) noexcept {
     const auto sampled = sample();
     PublicationScope scope;
@@ -288,8 +292,9 @@ void tick(std::uintptr_t base, std::uintptr_t native_client, bool ready, NativeM
     const bool publication_stable = sampled.revision == s.revision.load(std::memory_order_relaxed);
     const bool changed = base != s.base || native_client != s.client || ready != s.ready ||
         sampled.facts.thread != s.client_thread;
-    const bool menu_closed = ready && base && native_client && sampled.facts.thread && menu.known && !menu.open;
-    if (changed || menu_closed != s.menu_closed) {
+    const bool menu_known = ready && base && native_client && sampled.facts.thread && menu.known;
+    const bool menu_closed = menu_known && !menu.open;
+    if (changed || menu_closed != s.menu_closed || menu_known != s.menu_known) {
         advance_revision();
         invalidate(changed ? lease::Reason::context_changed : lease::Reason::menu_open);
     }
@@ -298,6 +303,9 @@ void tick(std::uintptr_t base, std::uintptr_t native_client, bool ready, NativeM
         else if (!s.failed) ++s.context;
     }
     s.menu_closed = menu_closed;
+    s.menu_known = menu_known;
+    s.menu_observed_until.store(menu_known && sampled.facts.now_ms <= maximum - lease::maximum_age_ms ?
+        sampled.facts.now_ms + lease::maximum_age_ms : 0, std::memory_order_release);
     s.menu_until.store(menu_closed && sampled.facts.now_ms <= maximum - lease::maximum_age_ms ?
         sampled.facts.now_ms + lease::maximum_age_ms : 0, std::memory_order_release);
     s.base = base; s.client = native_client; s.client_thread = sampled.facts.thread;
@@ -522,7 +530,8 @@ namespace {
 std::uint32_t finalize(std::uint64_t ticket, std::uint32_t fallback_user,
     std::uint32_t original_result, bool raw_known, std::uint32_t raw_packet, const lease::Pad& raw,
     std::uint32_t returned_result, bool returned_known, std::uint32_t returned_packet,
-    const lease::Pad& candidate, std::uint64_t staged_revision, void* output, PublishReport publish) noexcept {
+    const lease::Pad& candidate, std::uint64_t staged_revision, void* output, PublishReport publish,
+    input::PadAuthorship authorship) noexcept {
     if (!ticket && fallback_user >= 4) return returned_result;
     const auto sampled = sample(); PublicationScope scope;
     if (!scope.owns()) return returned_result;
@@ -532,6 +541,10 @@ std::uint32_t finalize(std::uint64_t ticket, std::uint32_t fallback_user,
     for (const auto& callback : s.callbacks) if (callback.ticket == ticket && ticket) { copied = callback; break; }
     const auto& key = s.capture.state().key;
     const bool trusted_capture = environment::trusted_capture();
+    const bool preview_report = authorship.source == input::PadSource::preview_hold;
+    const bool preview_current = preview_report && environment::preview_report_valid(
+        authorship.preview_epoch, sampled.facts.now_ms);
+    const bool sdk_navigation = authorship.source == input::PadSource::sdk_navigation;
     const auto restore_menu_input = [&]() {
         // A plugin filter may have run just before the menu opened. Restore its
         // raw candidate only when trusted SDK UI does not own this report now.
@@ -544,7 +557,8 @@ std::uint32_t finalize(std::uint64_t ticket, std::uint32_t fallback_user,
     if (!copied.ticket) {
         // Capacity/counter failure has no accepted callback record. It never
         // supplies fresh facts or completion, and its unknown duty is not ACKable.
-        if (!current.menu_closed) restore_menu_input();
+        if (sdk_navigation || preview_current) return returned_result;
+        if (!current.menu_closed || preview_report) restore_menu_input();
         else if (fallback_user < 4 && s.callbacks_unknown && key.user == fallback_user &&
             s.sources[fallback_user].connected && s.sources[fallback_user].epoch == key.source_epoch &&
             original_result == 0 && raw_known && output && publish) {
@@ -581,7 +595,13 @@ std::uint32_t finalize(std::uint64_t ticket, std::uint32_t fallback_user,
         s.leases.observe(copied.handle, source.observation, current);
     }
     capture_sync(current);
-    if (!current.menu_closed) {
+    if (sdk_navigation || preview_current) {
+        // This report was actually authored by the SDK walk, or by a still
+        // current owned preview. A globally active script is not this proof.
+        drain(ticket);
+        return returned_result;
+    }
+    if (!current.menu_closed || preview_report) {
         // Retained cleanup is not authority to withhold a menu's physical input.
         // Keep its debt and translator history until a later confirmed handback.
         restore_menu_input();
@@ -660,16 +680,16 @@ void finish(Poll& poll, std::uint32_t original_result, bool raw_known,
     bool returned_known, std::uint32_t returned_packet, const lease::Pad& returned) noexcept {
     const auto ticket = poll.ticket_; poll.ticket_ = 0;
     (void)finalize(ticket, poll.fallback_user_, original_result, raw_known, raw_packet, raw,
-        returned_result, returned_known, returned_packet, returned, publication_revision(), nullptr, nullptr);
+        returned_result, returned_known, returned_packet, returned, publication_revision(), nullptr, nullptr, {});
     poll.fallback_user_ = 4;
 }
 std::uint32_t finish_capture(Poll& poll, std::uint32_t original_result, bool raw_known,
     std::uint32_t raw_packet, const lease::Pad& raw, std::uint32_t returned_result,
     bool returned_known, std::uint32_t returned_packet, const lease::Pad& returned,
-    std::uint64_t staged_revision, void* output, PublishReport publish) noexcept {
+    std::uint64_t staged_revision, void* output, PublishReport publish, input::PadAuthorship authorship) noexcept {
     const auto ticket = poll.ticket_; poll.ticket_ = 0;
     const auto result = finalize(ticket, poll.fallback_user_, original_result, raw_known, raw_packet, raw,
-        returned_result, returned_known, returned_packet, returned, staged_revision, output, publish);
+        returned_result, returned_known, returned_packet, returned, staged_revision, output, publish, authorship);
     poll.fallback_user_ = 4;
     return result;
 }

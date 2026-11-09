@@ -229,6 +229,7 @@ void policy() {
 namespace dingosdk::native_input_source::environment {
 Facts sample() noexcept { return facts; }
 bool trusted_capture() noexcept { return false; }
+bool preview_report_valid(std::uint64_t, std::uint64_t) noexcept { return false; }
 }
 int main(int argc, char** argv) {
     if (argc != 2) return 2;

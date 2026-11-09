@@ -1517,6 +1517,11 @@ public:
         overlay::pad_tick();
         character_room::tick(base, component, component != 0, false);
         const auto room = character_room::phase();
+        const auto menu = multiplayer::sample_game_ui_state(base, true);
+        const bool owned_preview = component && !room_owner_.empty() && room == character_room::Phase::arrived &&
+            menu.available && menu.in_menu && !overlay::interface_open() &&
+            character_room::is_skaters_page(character_room::menu_buttons(base));
+        overlay::preview_context(room_owner_, owned_preview);
         skater_animation::show_in_room(!room_owner_.empty() && room == character_room::Phase::arrived);
     }
     // ---- general services for a game layer in Lua ------------------------------------------------------
@@ -1567,11 +1572,13 @@ public:
         const auto phase = character_room::phase();
         if (room_owner_ == plugin && (phase == character_room::Phase::opening || phase == character_room::Phase::arrived)) return {};
         room_owner_ = plugin;
+        overlay::preview_context({}, false);
         character_room::open();
         return {};
     }
     void room_leave(std::string_view plugin) override {
         if (room_owner_ != plugin) return;
+        overlay::preview_context({}, false);
         room_owner_.clear();
         skater_animation::show_in_room(false);
         character_room::leave();
@@ -1582,9 +1589,9 @@ public:
         if (!pose) return std::nullopt;
         return RoomPose{pose->place.position, pose->place.rotation, pose->age, pose->sequence};
     }
-    std::string room_turn(std::string_view, float value, int stick) override {
-        if (value != 0 && !multiplayer::sample_game_ui_state(base_).in_menu) return "the game's menu is not open";
-        overlay::hold_stick(stick, value, 300);
+    std::string room_turn(std::string_view plugin, float value, int stick) override {
+        if (room_owner_ != plugin) return "it does not own the character preview";
+        if (!overlay::hold_stick(plugin, stick, value, 300)) return "its character preview is not currently visible";
         return {};
     }
     GameMenu game_menu() override {
