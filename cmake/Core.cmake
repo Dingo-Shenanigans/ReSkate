@@ -149,6 +149,7 @@ add_library(dingosdk_plugins STATIC
     Extension/Plugins/plugin_api_vehicles.cpp
     Extension/Plugins/plugin_api_physics.cpp
     Extension/Plugins/plugin_api_services.cpp
+    Extension/Plugins/plugin_api_input_lease.cpp
     Extension/Plugins/plugin_api_throwdowns.cpp
     Extension/Plugins/plugin_api_capture.cpp
     Extension/Plugins/plugin_api_object_physics.cpp

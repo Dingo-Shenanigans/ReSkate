@@ -1,6 +1,8 @@
 #include "pad_hide.h"
 #include "launches.h"
 #include "Extension/UI/Overlay/overlay.h"
+#include "Extension/Input/native_input_source.h"
+#include <Windows.h>
 #include <atomic>
 #include <map>
 #include <mutex>
@@ -19,6 +21,7 @@ Control& control() {
 }
 // Any thread the game polls its pad from.
 void filter_pad(unsigned, overlay::GamepadValues& pad) noexcept {
+    if (!native_input_source::native_menu_closed(GetTickCount64())) return;
     auto& c = control();
     if (c.lt.load(std::memory_order_acquire)) pad.left_trigger = 0;
     if (c.rt.load(std::memory_order_acquire)) pad.right_trigger = 0;

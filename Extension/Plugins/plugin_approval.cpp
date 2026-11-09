@@ -66,6 +66,8 @@ constexpr Capability capabilities[] = {
     {"world.vehicles", "WORLD", Risk::red, "Take over nearby traffic vehicles and move them"},
     {"camera", "CAMERA", Risk::amber, "Control the camera"},
     {"input", "INPUT", Risk::amber, "Bind your keys, pads and mouse, and read text input"},
+    {"input.lease", "INPUT", Risk::amber, "Reserve and read one observed controller stream, without capturing or changing input"},
+    {"input.capture", "INPUT", Risk::red, "Capture one selected controller stream, with neutral-release cleanup"},
     {"input.write", "INPUT", Risk::amber, "Replace your controller input while you play"},
     // Red: it can relabel anything the game shows, its store's buttons and prices included.
     {"strings", "SCREEN", Risk::red, "Change the text the game shows, in its menus and its store"},
@@ -298,6 +300,8 @@ std::string approval_prompt(const std::vector<PermissionGroup>& groups) {
             actions.push_back("control the camera");
         } else if (group.category == "INPUT") {
             if (has("input")) actions.push_back("bind keys, pads, and mouse, and read text input");
+            if (has("input.lease")) actions.push_back("reserve and read one observed controller stream, without capturing or changing input");
+            if (has("input.capture")) actions.push_back("capture one selected controller stream, with neutral-release cleanup");
             if (has("input.write")) actions.push_back("replace your controller input while you play");
         } else if (group.category == "SCREEN") {
             if (has("strings")) actions.push_back("change the text the game shows, in its menus and its store");

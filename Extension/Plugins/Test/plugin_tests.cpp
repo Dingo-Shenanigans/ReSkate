@@ -7073,6 +7073,8 @@ void thunderstore_says_which_packages_run_plugins() {
 #include "body_prepare_host_fixture.inc"
 #include "shape_categories_host_fixture.inc"
 #include "exclusion_facts_host_fixture.inc"
+#include "input_lease_host_fixture.inc"
+#include "input_lease_capture_host_fixture.inc"
 
 int main() {
     const auto run = [](void (*test)()) { test(); };
@@ -7097,6 +7099,8 @@ int main() {
         run(owned_body_batches_select_a_named_query_preset);
         run(shape_categories_host_fixture_v1);
         run(exclusion_facts_host_fixture_v1);
+        run(passive_input_lease_host_fixture_v1);
+        run(selected_stream_capture_host_fixture_v1);
         run(owned_body_batches_share_actual_and_logical_query_limits);
         run(effects_require_resident_roots);
         run(expired_effects_return_their_quota);
