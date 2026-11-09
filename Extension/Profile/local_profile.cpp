@@ -1,4 +1,5 @@
 #include "embedded_profile_defaults.h"
+#include "Engine/Core/Platform/user_data_paths.h"
 #include "profile_internal.h"
 #include "database_codec.h"
 #include "local_profile.h"
@@ -240,10 +241,7 @@ static Snapshot decode_document(Json root) {
 Snapshot decode(std::string_view text) { return decode_document(parse_json(text)); }
 
 std::filesystem::path default_path() {
-    std::array<wchar_t, 32768> buffer{};
-    const auto n = GetEnvironmentVariableW(L"LOCALAPPDATA", buffer.data(), static_cast<DWORD>(buffer.size()));
-    require(n && n < buffer.size(), "LOCALAPPDATA is unavailable");
-    return std::filesystem::path(buffer.data()) / L"ReSkate" / L"profiles" / L"offline" / L"reskate.sqlite3";
+    return user_data::root() / L"profiles" / L"offline" / L"reskate.sqlite3";
 }
 std::filesystem::path defaults_path() {
     std::array<wchar_t, 32768> buffer{};

@@ -3,6 +3,7 @@
 #include "Engine/Game/Build/supported_build.h"
 #ifdef _WIN32
 #include <Windows.h>
+#include "Engine/Core/Platform/user_data_paths.h"
 #endif
 #include <array>
 #include <cstdlib>
@@ -19,10 +20,7 @@ const Pack& supported_pack() {
 
 std::filesystem::path directory(const Pack& pack) {
 #ifdef _WIN32
-    std::array<wchar_t, 32768> local{};
-    const auto length = GetEnvironmentVariableW(L"LOCALAPPDATA", local.data(), static_cast<DWORD>(local.size()));
-    if (!length || length >= local.size()) throw std::runtime_error("LOCALAPPDATA is unavailable");
-    return std::filesystem::path(local.data()) / L"ReSkate" / L"cache" / pack.build;
+    return user_data::root() / L"cache" / pack.build;
 #else
     // Linux: XDG cache or ~/.cache. Dedicated servers rarely need this
     // (world layers come from world-layers.json), but scan caching uses it.

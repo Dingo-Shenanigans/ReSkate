@@ -1,4 +1,5 @@
 #include "patch_notes.h"
+#include "patch_notes_cache.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/launcher_support.h"
 #include "Engine/Vfs/https_download.h"
@@ -28,12 +29,6 @@ std::shared_ptr<const PatchNotes> current = std::make_shared<const PatchNotes>()
 bool working{}, disk_read{};                                                     // under the mutex
 Clock::time_point next_fetch{};                                                  // under the mutex
 
-fs::path cache_file() {
-    std::array<wchar_t, 32768> local{};
-    const auto length = GetEnvironmentVariableW(L"LOCALAPPDATA", local.data(), static_cast<DWORD>(local.size()));
-    if (!length || length >= local.size()) return {};
-    return fs::path(local.data()) / L"ReSkate" / L"news" / L"releases.json";
-}
 template <class Change> void publish(Change change) {
     std::lock_guard lock(mutex);
     auto next = std::make_shared<PatchNotes>(*current);
@@ -45,7 +40,7 @@ template <class Change> void publish(Change change) {
 // Reads the copy on disk the first time (`from_disk`), then asks GitHub unless that copy is new
 // enough or ReSkate runs offline.
 void work(bool from_disk) {
-    const auto file = cache_file();
+    const auto file = patch_notes_cache::file();
     bool fresh{};
     if (from_disk && !file.empty()) {
         try {
