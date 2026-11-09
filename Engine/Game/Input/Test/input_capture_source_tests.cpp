@@ -509,13 +509,18 @@ void held_tail() {
     check(source::capture_release(1, handle), "release owns the same key throughout physical hold");
     lease::Pad pressed{}; pressed.buttons = 0x1000; pressed.left_trigger = 255; pressed.left_x = 20000;
     (void)report(pressed, pressed); facts.now_ms += capture::Capture::maximum_release_ms;
-    (void)report(pressed, pressed); auto receipt = state(handle);
+    const auto before_stale = writes;
+    const auto stale = report(pressed, pressed); auto receipt = state(handle);
+    check(stale.pad == pressed && writes == before_stale,
+        "an expired menu observation passes held physical controls without another cleanup write");
     check(receipt.key == identity && receipt.phase == capture::Phase::releasing && receipt.debt &&
         receipt.quarantined && !receipt.neutral_releases && !source::capture_acknowledge(1, handle),
         "1s keeps physically held capture tail reserved and refuses premature ACK");
     lease::Receipt passive; lease::Reason reason;
     check(source::lease_state(1, handle, passive, reason) && passive.capture_reserved && !passive.source_released &&
         !source::lease_acknowledge(1, handle, reason), "passive ACK cannot bypass tail work");
+    // The host must observe the menu closed again before cleanup can own another report.
+    source::tick(1, 2, true, {true, false});
     const auto before = receipt.publications; write_mode = Write::partial;
     (void)report(pressed, pressed); receipt = state(handle);
     check(receipt.phase == capture::Phase::releasing && receipt.debt && receipt.quarantined &&
