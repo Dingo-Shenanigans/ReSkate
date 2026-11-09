@@ -4,6 +4,7 @@
 #include "Extension/Plugins/plugin_content.h"
 #include "Extension/Plugins/plugin_discovery.h"
 #include "Extension/Plugins/plugin_host.h"
+#include "Extension/Plugins/plugin_joystick_policy.h"
 #include "Extension/Plugins/plugin_listing.h"
 #include "Extension/Objects/placement_geometry.h"
 #include "Extension/Plugins/plugin_manifest.h"
@@ -6235,6 +6236,47 @@ void game_menu_distinguishes_unknown_from_closed() {
           "The old button limit and call count remain unchanged\n" + environment.all());
 }
 
+void joystick_requests_survive_a_later_concurrent_timestamp() {
+    using joystick::detail::request_is_recent;
+    constexpr std::uint64_t timeout = 2000;
+    std::uint64_t clock = 10000;
+    const auto worker_now = clock;
+    // A snapshot publishes its request after the worker sampled its clock, but before it reads
+    // the request timestamp. This ordering must not clear the cache as though nobody asked.
+    const auto asked_at = ++clock;
+    check(request_is_recent(worker_now, asked_at, timeout), "a concurrent later request keeps joystick polling active");
+    check(request_is_recent(asked_at, asked_at, timeout), "a request at the current tick is recent");
+    check(request_is_recent(asked_at + timeout, asked_at, timeout), "the exact joystick request deadline is included");
+    check(!request_is_recent(asked_at + timeout + 1, asked_at, timeout), "a joystick request expires after its deadline");
+    check(!request_is_recent(10000, 7000, timeout), "a genuinely idle joystick reader still expires");
+    constexpr auto last_tick = (std::numeric_limits<std::uint64_t>::max)();
+    check(request_is_recent(last_tick, last_tick - timeout, timeout), "the deadline remains inclusive near the timestamp limit");
+    check(!request_is_recent(last_tick, last_tick - timeout - 1, timeout), "an old request near the timestamp limit expires");
+    check(request_is_recent(last_tick - 1, last_tick, timeout), "a later publication near the timestamp limit stays recent");
+    check(!request_is_recent(last_tick, 0, timeout), "a very old request does not become recent through arithmetic wrap");
+}
+
+void joystick_axis_configuration_requires_applied_properties() {
+    using joystick::detail::axis_configuration_applied;
+    // HRESULTs IDirectInputDevice8::SetProperty returns, written out so the test needs no Windows
+    // headers. plugin_joystick.cpp checks the same rule against dinput.h's own values.
+    constexpr std::int32_t di_ok = 0;                                         // DI_OK, S_OK
+    constexpr std::int32_t di_propnoeffect = 1;                               // DI_PROPNOEFFECT, S_FALSE
+    constexpr auto unsupported = static_cast<std::int32_t>(0x80004001u);      // DIERR_UNSUPPORTED
+    constexpr auto invalid_param = static_cast<std::int32_t>(0x80070057u);    // DIERR_INVALIDPARAM
+    constexpr auto object_not_found = static_cast<std::int32_t>(0x80070002u); // DIERR_OBJECTNOTFOUND
+    check(axis_configuration_applied(di_ok, di_ok), "a controller that took the range and dead zone is read");
+    check(axis_configuration_applied(di_propnoeffect, di_ok), "a range that changed nothing (DI_PROPNOEFFECT) still counts as applied");
+    check(axis_configuration_applied(di_ok, di_propnoeffect), "a zero dead zone that changed nothing (DI_PROPNOEFFECT) still counts as applied");
+    check(axis_configuration_applied(di_propnoeffect, di_propnoeffect), "DI_PROPNOEFFECT for both properties still admits the controller");
+    check(!axis_configuration_applied(unsupported, di_ok), "an unsupported range leaves the controller out");
+    check(!axis_configuration_applied(invalid_param, di_ok), "a rejected range leaves the controller out");
+    check(!axis_configuration_applied(di_ok, unsupported), "an unsupported dead zone leaves the controller out");
+    check(!axis_configuration_applied(di_propnoeffect, object_not_found), "a failed dead zone is refused beside an unchanged range");
+    check(!axis_configuration_applied(object_not_found, di_propnoeffect), "a failed range is refused beside an unchanged dead zone");
+    check(!axis_configuration_applied(unsupported, invalid_param), "two failed properties leave the controller out");
+}
+
 void the_wider_set_reaches_the_game() {
     TestEnvironment environment;
     auto& game = environment.fake;
@@ -7174,6 +7216,8 @@ int main() {
         run(plugins_call_and_hear_each_other);
         run(web_requests_go_only_to_listed_domains);
         run(game_menu_distinguishes_unknown_from_closed);
+        run(joystick_requests_survive_a_later_concurrent_timestamp);
+        run(joystick_axis_configuration_requires_applied_properties);
         run(the_wider_set_reaches_the_game);
         run(declared_board_colours_through_the_api);
         run(key_names_become_binds);
