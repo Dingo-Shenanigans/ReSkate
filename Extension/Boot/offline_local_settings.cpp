@@ -4,7 +4,6 @@
 #include "user_data_redirect.h"
 #include "Engine/Core/Hooks/hooks.h"
 #include "Engine/Core/Log/logging.h"
-#include "Engine/Core/Platform/launcher_support.h"
 #include "Engine/Core/Platform/memory.h"
 #include "Engine/Core/Platform/user_data_paths.h"
 #include "Engine/Game/Build/addresses.h"
@@ -79,7 +78,7 @@ bool selection_matches(const State& s) noexcept {
     try {
         const auto base = s.base.load(std::memory_order_acquire);
         const auto root = user_data::override_root();
-        return requested() == Request::selected && launcher::offline_mode() &&
+        return requested() == Request::selected && offline_boot_requested() &&
             offline_boot_active(base) && user_data_redirect_ready() &&
             user_data::development_requested() && root && same_path(*root, s.root) &&
             same_path(redirected_local_app_data().parent_path(), s.root);
@@ -187,10 +186,10 @@ bool start_offline_local_settings(std::uintptr_t base, std::string& error) noexc
         if (request != Request::selected)
             return fail("RESKATE_OFFLINE_LOCAL_SETTINGS requires the exact value 1, or must be absent.");
         const auto root = user_data::override_root();
-        const policy::StartupRequest admission{L"1", launcher::offline_mode(), offline_boot_active(base),
+        const policy::StartupRequest admission{L"1", offline_boot_requested(), offline_boot_active(base),
             user_data_redirect_ready(), user_data::development_requested() && root.has_value()};
         if (!s.authority.begin(admission))
-            return fail("Offline local settings requires offline mode, active offline boot and a checked redirected development root.");
+            return fail("Offline local settings requires requested and active EA-offline boot and a checked redirected development root.");
         if (!root || !same_path(redirected_local_app_data().parent_path(), *root))
             return fail("Offline local settings redirect does not match the selected development root.");
         if (!supported_build::running_image_matches(base) || !matches(base + pins::gate_rva, pins::gate_prefix) ||

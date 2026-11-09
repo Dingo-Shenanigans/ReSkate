@@ -478,6 +478,25 @@ if(DINGOSDK_BUILD_LOCAL_SETTINGS_TESTS)
         add_test(NAME local_settings_path COMMAND dingosdk_local_settings_path_tests "${CMAKE_CURRENT_BINARY_DIR}/local-settings-path-fixture")
         add_test(NAME local_settings_path_junction COMMAND dingosdk_local_settings_path_tests "${CMAKE_CURRENT_BINARY_DIR}/local-settings-junction-fixture" --junction)
         set_tests_properties(local_settings_path_junction PROPERTIES SKIP_RETURN_CODE 77)
+        # Include the actual Boot adapter once; the other object supplies only
+        # constructed isolation leaves and fatal unused dependencies. A selected
+        # startup stops at a deliberately refused image probe, before native I/O.
+        add_executable(dingosdk_local_settings_selection_tests
+            Extension/Boot/Test/local_settings_selection_tests.cpp
+            Extension/Boot/Test/local_settings_selection_stubs.cpp)
+        target_compile_features(dingosdk_local_settings_selection_tests PRIVATE cxx_std_20)
+        target_include_directories(dingosdk_local_settings_selection_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+        target_compile_options(dingosdk_local_settings_selection_tests PRIVATE /W4 /WX /Gy /Gw)
+        target_link_options(dingosdk_local_settings_selection_tests PRIVATE /OPT:REF /INCREMENTAL:NO)
+        target_link_libraries(dingosdk_local_settings_selection_tests PRIVATE shell32 ole32 uuid)
+        foreach(mode connected_startup steam_offline_startup connected_current steam_offline_current
+                global_missing_connected global_missing_steam_offline
+                global_inactive_connected global_inactive_steam_offline invalid_optin absent_optin
+                invalid_root missing_root redirect_unready redirect_mismatch root_drift global_drift optin_drift active_drift)
+            add_test(NAME local_settings_selection_${mode} COMMAND dingosdk_local_settings_selection_tests ${mode}
+                "${CMAKE_CURRENT_BINARY_DIR}/local-settings-selection-fixture")
+            set_tests_properties(local_settings_selection_${mode} PROPERTIES TIMEOUT 15)
+        endforeach()
     endif()
 endif()
 option(DINGOSDK_BUILD_CAPTURE_TESTS "Build screen capture regression tests" OFF)

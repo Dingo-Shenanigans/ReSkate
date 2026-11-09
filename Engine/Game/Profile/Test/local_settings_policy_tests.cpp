@@ -60,13 +60,13 @@ void startup_request_guards() {
     }
     for (unsigned fault = 0; fault < 4; ++fault) {
         auto request = selected_request();
-        if (fault == 0) request.offline_requested = false;
+        if (fault == 0) request.global_offline_requested = false;
         if (fault == 1) request.offline_active = false;
         if (fault == 2) request.redirect_checked = false;
         if (fault == 3) request.development_root_selected = false;
         p::Authority authority;
         check(!authority.begin(request) && authority.phase() == p::Phase::failed,
-            "missing offline, checked redirect or development selection admitted installation");
+            "missing EA-offline request, active boot, checked redirect or development selection admitted installation");
     }
     p::Authority selected;
     check(selected.phase() == p::Phase::inactive && p::selected(selected_request()), "fresh authority or complete request changed");

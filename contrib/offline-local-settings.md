@@ -1,12 +1,15 @@
-# Isolated offline native settings
+# Isolated native settings in EA-offline boot
 
 `RESKATE_OFFLINE_LOCAL_SETTINGS=1` selects a bounded native settings boot adapter for an isolated
-offline launch. The default is off. This is a launch option, not a plugin API or a requirement of
+EA-offline launch. The default is off. This is a launch option, not a plugin API or a requirement of
 any plugin. Ordinary ReSkate launches retain their existing startup path.
 
-The selected launch must use offline mode and a checked `--dev-data-root` separate from the normal
-player data. Both game folder lookups must already be redirected, and the production offline boot
-hook must actually be active. The adapter is installed only during suspended initialization,
+The selected launch must request global EA-offline boot and use a checked `--dev-data-root` separate
+from the normal player data. Both game folder lookups must already be redirected, and the production
+EA-offline boot hook must actually be active. Steam connectivity is a separate launcher choice:
+either Steam route may use this adapter. Selecting it does not change Steam connectivity or
+ReSkate's transport selection. EA-offline boot does not establish an authenticated EA session.
+The adapter is installed only during suspended initialization,
 before the native settings manager exists. An invalid explicit request stops startup with a reason;
 it never silently uses the normal profile. There is no late activation or rearming in that process.
 
@@ -41,3 +44,9 @@ observations, admission and permanent revocation, exact original/error forwardin
 installation rollback, Unicode and canonical path confinement. The junction fixture reports a skip
 when Windows cannot create a junction. Pure fixtures do not qualify native calling conventions,
 object lifetimes, native file contents or a successful game startup.
+
+The Boot selection fixture includes the production adapter and exercises its startup and ongoing
+selection checks with Steam connected and disconnected. It uses real environment parsing and
+development-root validation, then deliberately refuses the image probe before native memory or
+hooks. It also checks missing EA-offline authority and permanent revocation after selection drift.
+Passing that boundary test establishes neither native settings completion nor player readiness.

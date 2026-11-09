@@ -9,10 +9,11 @@ namespace dingosdk::local_settings_policy {
 enum class Phase : std::uint8_t { inactive, installing, active, revoked, failed };
 struct StartupRequest {
     std::wstring_view opt_in;
-    bool offline_requested{}, offline_active{}, redirect_checked{}, development_root_selected{};
+    // The global EA-offline request is independent of Steam connectivity.
+    bool global_offline_requested{}, offline_active{}, redirect_checked{}, development_root_selected{};
 };
 constexpr bool selected(const StartupRequest& request) noexcept {
-    return request.opt_in == L"1" && request.offline_requested && request.offline_active &&
+    return request.opt_in == L"1" && request.global_offline_requested && request.offline_active &&
         request.redirect_checked && request.development_root_selected;
 }
 
