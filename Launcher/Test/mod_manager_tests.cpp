@@ -16,7 +16,9 @@
 #include <iostream>
 #include <map>
 #include <optional>
+#include <set>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -656,6 +658,104 @@ int main() {
         fs::remove_all(waiting_mods / L"Held Mod");
         launcher_mods::apply_pending(waiting_mods);
         check(!fs::exists(waiting_mods / launcher_mods::pending_folder), "pending: uninstalls of mods already gone are dropped");
+    }
+
+    // Folders in Mods holding a mod the game passes by without a word, and the way out the Mods page offers.
+    {
+        const auto skip_game = root / L"skip-game";
+        const auto skip_mods = launcher_mods::mods_root(skip_game);
+        const std::wstring long_name(70, L'L');
+        write(skip_mods / L"Fine Mod" / L"layout.toc", "toc");
+        write(skip_mods / L"Owner-Pack-1.2.3 (1)" / L"layout.toc", "toc");      // Explorer's Extract All of a zip saved twice
+        write(skip_mods / L"Caf\x00e9 Park" / L"reskate-levels.json", "{}");
+        write(skip_mods / long_name / L"layout.toc", "toc");
+        write(skip_mods / L"Nested" / L"Nested" / L"layout.toc", "toc");      // unpacked into a folder of its own
+        write(skip_mods / L"Nested" / L"Nested" / L"Win32" / L"a.sb", "bundle");
+        write(skip_mods / L"Kept" / L"Kept" / L"layout.toc", "toc");
+        write(skip_mods / L"Kept" / L"__MACOSX" / L"._layout.toc", "junk");
+        write(skip_mods / L"Holder" / L"Packs" / L"Inner Mod" / L"reskate-plugin.json", "{}");
+        write(skip_mods / L"Holder" / L"notes" / L"todo.txt", "keep");
+        write(skip_mods / L"Thunder (2)" / L"manifest.json", R"({"name":"Thunder"})");
+        write(skip_mods / L"Thunder (2)" / L"icon.png", "package icon");
+        write(skip_mods / L"Thunder (2)" / L"Thunder" / L"layout.toc", "toc");
+        write(skip_mods / L"Thunder (2)" / L"Thunder" / L"icon.png", "own icon");
+        write(skip_mods / L"Dup" / L"layout.toc", "toc");
+        write(skip_mods / L"Dup-1.0.0 (1)" / L"layout.toc", "toc");
+        write(skip_mods / L"Tool Data" / L"cache" / L"state.bin", "data");     // a tool's saved data: no mod
+        write(skip_mods / L"Odd & Empty" / L"readme.txt", "no mod");
+        write(skip_mods / L".reskate-other" / L"Inner" / L"layout.toc", "toc");   // ReSkate's own
+        write(skip_mods / L"Deep" / L"a" / L"b" / L"c" / L"Mod" / L"layout.toc", "toc");   // further in than looked
+
+        const auto skipped = launcher_mods::skipped_folders(mods::scan_mods(skip_game));
+        std::map<std::string, launcher_mods::SkippedFolder> by_folder;
+        for (const auto& folder : skipped) by_folder[folder.folder] = folder;
+        const std::string cafe = "Caf\xc3\xa9 Park", long_folder(70, 'L');
+        check(skipped.size() == 8, "skipped: each folder holding a mod the game does not list is named, and only those");
+        check(!by_folder.contains("Fine Mod") && !by_folder.contains("Dup") && !by_folder.contains("Tool Data") &&
+                  !by_folder.contains("Odd & Empty") && !by_folder.contains(".reskate-other") && !by_folder.contains("Deep"),
+              "skipped: mods that load, folders with no mod in them and ReSkate's own are left out");
+        check(skipped.empty() || skipped.front().folder == cafe, "skipped: listed by folder name");
+        const auto reason = [&](const std::string& folder, std::string_view says) {
+            const auto found = by_folder.find(folder);
+            return found != by_folder.end() && found->second.reason.find(says) != std::string::npos;
+        };
+        const auto name = [&](const std::string& folder) {
+            const auto found = by_folder.find(folder);
+            return found == by_folder.end() ? std::string("(not listed)") : found->second.name;
+        };
+        check(reason("Owner-Pack-1.2.3 (1)", "has \"(\"") && name("Owner-Pack-1.2.3 (1)") == "Owner-Pack",
+              "skipped: a twice-saved zip's folder says which character, and goes in under the mod's own name");
+        check(reason(cafe, "has \"\xc3\xa9\"") && name(cafe) == "Caf__ Park", "skipped: an accent is named whole");
+        check(reason(long_folder, "70 characters") && name(long_folder) == std::string(64, 'L'), "skipped: a name too long says how long");
+        check(reason("Nested", "further in, at Nested/Nested") && name("Nested") == "Nested", "skipped: a mod one folder in");
+        check(reason("Holder", "at Holder/Packs/Inner Mod") && name("Holder") == "Inner Mod", "skipped: a mod two folders in");
+        check(by_folder.contains("Dup-1.0.0 (1)") && by_folder["Dup-1.0.0 (1)"].copy && name("Dup-1.0.0 (1)") == "Dup" &&
+                  !by_folder["Nested"].copy && !by_folder["Owner-Pack-1.2.3 (1)"].copy,
+              "skipped: a second copy of an installed mod is told apart");
+
+        const auto fix = [&](const std::string& folder) {
+            try { return launcher_mods::fix_skipped(skip_mods, folder); } catch (const std::exception& failure) { return std::string("error: ") + failure.what(); }
+        };
+        check(fix("Owner-Pack-1.2.3 (1)") == "Owner-Pack" && read(skip_mods / L"Owner-Pack" / L"layout.toc") == "toc" &&
+                  !fs::exists(skip_mods / L"Owner-Pack-1.2.3 (1)"),
+              "fix: a folder with a name the game does not take is renamed");
+        check(fix(cafe) == "Caf__ Park" && fix(long_folder) == std::string(64, 'L'), "fix: accented and long names are renamed");
+        check(fix("Nested") == "Nested" && read(skip_mods / L"Nested" / L"layout.toc") == "toc" &&
+                  read(skip_mods / L"Nested" / L"Win32" / L"a.sb") == "bundle" && !fs::exists(skip_mods / L"Nested" / L"Nested") &&
+                  !fs::exists(skip_mods / L"Nested (rest)"),
+              "fix: a mod in a folder of its own name moves up, and the empty folder it was in goes");
+        check(fix("Kept") == "Kept" && read(skip_mods / L"Kept" / L"layout.toc") == "toc" &&
+                  read(skip_mods / L"Kept (rest)" / L"__MACOSX" / L"._layout.toc") == "junk",
+              "fix: what else the folder held stays, set aside");
+        check(fix("Holder") == "Inner Mod" && fs::exists(skip_mods / L"Inner Mod" / L"reskate-plugin.json") &&
+                  read(skip_mods / L"Holder" / L"notes" / L"todo.txt") == "keep" && !fs::exists(skip_mods / L"Holder" / L"Packs" / L"Inner Mod"),
+              "fix: a mod further in moves out, and the folder it was in keeps the rest");
+        check(fix("Thunder (2)") == "Thunder" && read(skip_mods / L"Thunder" / L"icon.png") == "package icon" &&
+                  fs::exists(skip_mods / L"Thunder" / L"manifest.json") && !fs::exists(skip_mods / L"Thunder (2)"),
+              "fix: Thunderstore's package files at the top go in with the mod, as an install takes them");
+        bool copy = false;
+        try { launcher_mods::fix_skipped(skip_mods, "Dup-1.0.0 (1)"); } catch (const launcher_mods::AlreadyInstalled& existing) {
+            copy = existing.name == "Dup";
+        }
+        check(copy && read(skip_mods / L"Dup-1.0.0 (1)" / L"layout.toc") == "toc", "fix: a second copy is refused and left as it was");
+        check(fix("Fine Mod").find("loads already") != std::string::npos, "fix: a mod that loads is not moved");
+        check(fix("Tool Data").starts_with("error") && read(skip_mods / L"Tool Data" / L"cache" / L"state.bin") == "data",
+              "fix: a folder holding no mod is not touched");
+        check(fix("../elsewhere").starts_with("error") && fix(".reskate-other").starts_with("error"),
+              "fix: only folders of the Mods folder, never ReSkate's own");
+        check(!error_of([&] { launcher_mods::remove_skipped(skip_mods, "Fine Mod"); }).empty() &&
+                  !error_of([&] { launcher_mods::remove_skipped(skip_mods, "..\\elsewhere"); }).empty() &&
+                  fs::exists(skip_mods / L"Fine Mod" / L"layout.toc"),
+              "remove: a mod that loads, or anything outside the Mods folder, is refused (the Recycle Bin is not tried here)");
+
+        const auto after = mods::scan_mods(skip_game);
+        const auto left = launcher_mods::skipped_folders(after);
+        check(left.size() == 1 && left.front().folder == "Dup-1.0.0 (1)", "skipped: once fixed, only the second copy is left");
+        std::set<std::string> loading;
+        for (const auto& entry : after.entries) loading.insert(entry.mod.name);
+        for (const auto* folder : {"Owner-Pack", "Caf__ Park", "Nested", "Kept", "Inner Mod", "Thunder"})
+            check(loading.contains(folder), "fix: the moved mods are in the game's list");
+        check(loading.contains(std::string(64, 'L')), "fix: the shortened name is in the game's list");
     }
 
     std::error_code ignored;

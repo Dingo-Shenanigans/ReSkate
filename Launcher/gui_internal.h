@@ -4,6 +4,7 @@
 #include "game_settings.h"
 #include "launch.h"
 #include "text_encoding.h"
+#include "mod_manager.h"
 #include "mod_profiles.h"
 #include "start_maps.h"
 #include "thunderstore.h"
@@ -584,6 +585,8 @@ struct ModsPanel {
     bool scanned{};
     fs::path root;
     mods::ModList list;
+    // The folders in Mods holding a mod the game passes by (launcher_mods::skipped_folders), read with the list.
+    std::vector<launcher_mods::SkippedFolder> skipped;
     // What each installed mod's folder holds on disk, by folder name; measured
     // when the folder is scanned.
     std::map<std::string, std::uint64_t, std::less<>> sizes;
