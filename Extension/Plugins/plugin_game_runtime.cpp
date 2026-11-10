@@ -1256,6 +1256,8 @@ public:
         s.bars = look->bars, s.hood = look->hood, s.grade = look->grade, s.soft = look->soft, s.scanlines = look->scanlines, s.grain = look->grain;
         s.dropouts = look->dropouts, s.head_switching = look->head_switching, s.tracking = look->tracking, s.smear = look->smear, s.iris = look->iris;
         s.rolling = look->rolling;
+        s.strength = {look->bars_strength, look->hood_strength, look->grade_strength, look->soft_strength, look->scanlines_strength,
+                      look->grain_strength, look->dropouts_strength, look->head_switching_strength, look->smear_strength};
         s.text = look->text;
         screen_look::set(s);
         return {};
