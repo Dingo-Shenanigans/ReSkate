@@ -1441,9 +1441,13 @@ struct WorldApi {
         lua_pop(L, 1);
         return shown;
     }
-    // skater.carry({at = vector, rotation = {x, y, z, w}, hand, both, front, grip, weight, crouch, hunch,
-    // still, turn, step, step_phase, push_straightens, shown}): something held out in the hands and
-    // aimed, its front at `at`; for 0.3 s, so every tick. nil lets it go.
+    // skater.carry({at = vector, rotation = {x, y, z, w}, hand, both, support, exact, look_at, front, grip,
+    // weight, crouch, hunch, still, turn, step, step_phase, push_straightens, shown}): something held out in
+    // the hands and aimed, its front at `at`; for 0.3 s, so every tick. nil lets it go. `support` (a vector,
+    // at most 0.3 m each way): with both, the other hand moved from where it takes the item, in the item's
+    // frame. `exact`: the front held at `at` itself (kept out of the body and in the arm's reach) instead of
+    // where the aim puts it, for a plugin that sweeps it itself. `look_at` (a point in the world, within 3 m
+    // of `at`): the neck and head turned so the face looks at it.
     static int carry(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "skater.animation", "reskate.skater.carry");
@@ -1460,8 +1464,26 @@ struct WorldApi {
         lua_getfield(L, 1, "both");
         goal.both = lua_toboolean(L, -1);
         lua_pop(L, 1);
+        lua_getfield(L, 1, "support");
+        if (!lua_isnil(L, -1)) {
+            goal.support = position_of(L, lua_gettop(L), "a carry's support");
+            for (const auto v : goal.support)
+                if (!(std::abs(v) <= 0.3f)) luaL_error(L, "a carry's support is at most 0.3 m on each axis");
+        }
+        lua_pop(L, 1);
+        lua_getfield(L, 1, "exact");
+        goal.exact = lua_toboolean(L, -1);
+        lua_pop(L, 1);
         lua_getfield(L, 1, "at");
         goal.front = position_of(L, lua_gettop(L), "the carry's point");
+        lua_pop(L, 1);
+        lua_getfield(L, 1, "look_at");
+        if (!lua_isnil(L, -1)) {
+            const auto look = position_of(L, lua_gettop(L), "a carry's look_at");
+            const float dx = look[0] - goal.front[0], dy = look[1] - goal.front[1], dz = look[2] - goal.front[2];
+            if (!(dx * dx + dy * dy + dz * dz <= 9.0f)) luaL_error(L, "a carry's look_at is within 3 m of its point");
+            goal.look_at = look;
+        }
         lua_pop(L, 1);
         lua_getfield(L, 1, "rotation");
         if (lua_isnil(L, -1)) luaL_error(L, "a carry needs a rotation {x, y, z, w}: the way the thing held points");
