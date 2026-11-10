@@ -165,6 +165,51 @@ inline bool refresh_playstation_bluetooth_crc(std::uint8_t* report, std::size_t 
     for (std::size_t i = 0; i < 4; ++i) report[covered + i] = static_cast<std::uint8_t>(crc >> (8 * i));
     return true;
 }
+// Where the hat and face byte, then the shoulder and system byte, of an already identified report are
+// (as parse_playstation_report reads them); null for a report it does not read.
+inline std::uint8_t* playstation_button_bytes(PlayStationPad kind, bool bluetooth, std::uint8_t* report, std::size_t size) noexcept {
+    if (!parse_playstation_report(kind, bluetooth, report, size)) return nullptr;
+    const auto id = report[0];
+    if (kind == PlayStationPad::dualsense && ((id == 0x01 && !bluetooth) || id == 0x31)) return report + (id == 0x31 ? 2 : 1) + 7;
+    if (id == 0x01) return report + 5;
+    return report + 7; // DualShock 4 Bluetooth full (0x11)
+}
+// Lets go of the buttons in `hidden` (XINPUT_GAMEPAD_* bits) in a report the game is about to read, as
+// a plugin's reskate.input.game_buttons hides them from XInput: D-pad directions (the hat keeps the
+// rest of a diagonal), the face buttons, L1, R1, Share (Back), Options (Start), L3 and R3. The triggers
+// and sticks stay. Returns whether anything changed (the Bluetooth CRC is then written again).
+inline bool hide_playstation_buttons(PlayStationPad kind, bool bluetooth, std::uint8_t* report, std::size_t size,
+    std::uint16_t hidden) noexcept {
+    if (!hidden) return false;
+    auto* buttons = playstation_button_bytes(kind, bluetooth, report, size);
+    if (!buttons) return false;
+    const std::uint8_t face = buttons[0], shoulder = buttons[1];
+    // The hat as XInput's up 0x1, down 0x2, left 0x4, right 0x8, and back.
+    constexpr std::uint16_t hat_dirs[8]{0x1, 0x1 | 0x8, 0x8, 0x2 | 0x8, 0x2, 0x2 | 0x4, 0x4, 0x1 | 0x4};
+    const unsigned hat = face & 0x0fu;
+    std::uint16_t dirs = hat < 8 ? hat_dirs[hat] : 0;
+    dirs = static_cast<std::uint16_t>(dirs & ~hidden & 0x0fu);
+    unsigned new_hat = 8;
+    for (unsigned i = 0; i < 8; ++i)
+        if (hat_dirs[i] == dirs) new_hat = i;
+    std::uint8_t new_face = static_cast<std::uint8_t>((face & 0xf0u) | (hat < 8 ? new_hat : hat));
+    if (hidden & 0x4000) new_face = static_cast<std::uint8_t>(new_face & ~0x10u); // X        -> Square
+    if (hidden & 0x1000) new_face = static_cast<std::uint8_t>(new_face & ~0x20u); // A        -> Cross
+    if (hidden & 0x2000) new_face = static_cast<std::uint8_t>(new_face & ~0x40u); // B        -> Circle
+    if (hidden & 0x8000) new_face = static_cast<std::uint8_t>(new_face & ~0x80u); // Y        -> Triangle
+    std::uint8_t new_shoulder = shoulder;
+    if (hidden & 0x0100) new_shoulder = static_cast<std::uint8_t>(new_shoulder & ~0x01u); // L1
+    if (hidden & 0x0200) new_shoulder = static_cast<std::uint8_t>(new_shoulder & ~0x02u); // R1
+    if (hidden & 0x0020) new_shoulder = static_cast<std::uint8_t>(new_shoulder & ~0x10u); // Share / Create
+    if (hidden & 0x0010) new_shoulder = static_cast<std::uint8_t>(new_shoulder & ~0x20u); // Options
+    if (hidden & 0x0040) new_shoulder = static_cast<std::uint8_t>(new_shoulder & ~0x40u); // L3
+    if (hidden & 0x0080) new_shoulder = static_cast<std::uint8_t>(new_shoulder & ~0x80u); // R3
+    if (new_face == face && new_shoulder == shoulder) return false;
+    buttons[0] = new_face;
+    buttons[1] = new_shoulder;
+    refresh_playstation_bluetooth_crc(report, size);
+    return true;
+}
 // Change one menu-preview stick in an already identified report. Other input,
 // sensors, sequence counters and Windows padding stay intact.
 inline bool set_playstation_stick(PlayStationPad kind, bool bluetooth, std::uint8_t* report,
