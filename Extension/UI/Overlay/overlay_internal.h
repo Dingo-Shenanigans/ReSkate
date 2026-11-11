@@ -455,4 +455,11 @@ bool draw_home_page(ImDrawList* draw, float u, ImVec2 a, ImVec2 z, bool input, c
 // tab, the Mod Manager's UPDATES.
 void show_friends_tab();
 void show_mod_updates();
+// The pause menu's optional parts, on unless the player turned them off (saved with the profile:
+// "HubFrontPage", "ModManagerBackdrop"): ReSkate's front page over the HUB, and skate.'s Store room
+// behind the Mod Manager. Render thread.
+bool hub_front_page_on();
+void set_hub_front_page_on(bool on);
+bool mod_backdrop_on();
+void set_mod_backdrop_on(bool on);
 }
