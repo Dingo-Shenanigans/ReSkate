@@ -9,6 +9,7 @@
 #include "Extension/Boot/ea_app_block.h"
 #include "Extension/Boot/ea_service_block.h"
 #include "Extension/Boot/descriptor_heap_size.h"
+#include "Extension/Rendering/frame_generation_retain.h"
 #include "Extension/Boot/game_fatal_dump.h"
 #include "Extension/Boot/eadp_errors_arena.h"
 #include "Extension/Assets/native_patch_support.h"
@@ -85,6 +86,10 @@ bool initialize_bootstrap(std::uintptr_t base, std::string& failure) {
     // the densest levels outgrow them.)
     error.clear(); ready = start_descriptor_heap_size(base, error);
     (void)stage(Channel::graphics, "Descriptor heaps: 1,000,000, with 524,288 a frame", ready, error);
+    // (Not needed for the game to run: a mismatch leaves frame generation remaking its resources at
+    // each of the game's one-frame offs, the stalls it had before.)
+    error.clear(); ready = start_frame_generation_retain(base, error);
+    (void)stage(Channel::graphics, "Frame generation keeps its resources through one-frame offs", ready, error);
     error.clear(); ready = start_user_data_redirect(error);
     if (!stage(Channel::runtime, "Separate game user data", ready, error)) return false;
     error.clear(); ready = start_ea_app_block(error);
