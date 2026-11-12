@@ -29,9 +29,6 @@ cylinders clear of it for 0.3 s at a time.
 - **Dynamic snow speed:** `fall_speed` changes gradually. The fall is added up at each moment's speed, so a
   change of speed carries on from where the flakes are.
 - **No snow on the player:** `keep_clear` around the skater.
-- **No snow on the deck:** a board-shaped `keep_clear` place, with `length`, `forward` and `up`, follows
-  the deck in its own plane. The snowskate deck rides so low that the place around the skater took its
-  griptape for the ground.
 
 **How it is drawn:** `Extension/UI/Overlay/world_cover.{h,cpp,hlsl}` draws one full-screen pass into the
 finished scene, just before the game adds its UI, so menus and the HUD are never under it. It sees the

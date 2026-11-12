@@ -146,11 +146,7 @@ struct EffectsApi {
     }
     // keep_clear({{position = vector, radius = 0.6, height = 2}, ...}): up to three places kept clear of
     // the plugin's cover for 0.3 s, so every tick (the skater: no snow on the player); {} or nil ends it.
-    // Each an upright cylinder standing on `position`, radius 0.05 to 10 m, height 0.1 to 20 m: in it the
-    // ground keeps its cover and what stands on it does not. With a length (0.05 to 10 m), a board-shaped
-    // place instead: `position` its middle, `forward` along it and `up` out of it (vectors; up defaults to
-    // the world's), `radius` its half width and `height` its thickness, rounded at its ends; everything in
-    // it is clear (a deck lying on the ground: no cover on it, and the ground it hides needs none).
+    // Each an upright cylinder standing on `position`, radius 0.05 to 10 m, height 0.1 to 20 m.
     static int keep_clear(lua_State* L) {
         auto& p = plugin_of(L);
         need(L, p, "effects", "reskate.effects.keep_clear");
@@ -177,28 +173,7 @@ struct EffectsApi {
                     lua_pop(L, 1);
                 };
                 number("radius", place.radius, 0.05, 10, "a place's radius is 0.05 to 10 metres");
-                number("length", place.length, 0.05, 10, "a place's length is 0.05 to 10 metres");
-                if (place.length > 0) {
-                    number("height", place.height, 0.01, 20, "a place's height is 0.01 to 20 metres");
-                    const auto unit = [&](const char* name, Vec3& out) {
-                        lua_getfield(L, at, name);
-                        if (!lua_isnil(L, -1)) out = position_of(L, lua_gettop(L), "a place's direction");
-                        lua_pop(L, 1);
-                        const float n = std::sqrt(out[0] * out[0] + out[1] * out[1] + out[2] * out[2]);
-                        if (!(n > 1e-3f)) luaL_error(L, "a place's %s has a length", name);
-                        for (auto& v : out) v /= n;
-                    };
-                    unit("up", place.up);
-                    unit("forward", place.forward);
-                    // Forward made square to up, so the two are the place's own axes.
-                    const float along = place.forward[0] * place.up[0] + place.forward[1] * place.up[1] + place.forward[2] * place.up[2];
-                    for (int k = 0; k < 3; ++k) place.forward[k] -= place.up[k] * along;
-                    const float n = std::sqrt(place.forward[0] * place.forward[0] + place.forward[1] * place.forward[1] + place.forward[2] * place.forward[2]);
-                    if (!(n > 1e-3f)) luaL_error(L, "a place's forward is along its up");
-                    for (auto& v : place.forward) v /= n;
-                } else {
-                    number("height", place.height, 0.1, 20, "a place's height is 0.1 to 20 metres");
-                }
+                number("height", place.height, 0.1, 20, "a place's height is 0.1 to 20 metres");
                 places.push_back(place);
                 lua_pop(L, 1);
             }

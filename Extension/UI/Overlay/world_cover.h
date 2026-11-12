@@ -53,11 +53,6 @@ struct Clear {
     std::array<float, 3> foot{};
     float radius{0.6f};
     float height{2.0f};
-    // A board-shaped place (length > 0): `foot` its middle, `forward` and `up` its own axes (unit, square to
-    // each other), `radius` its half width, `height` its thickness. Everything in it is clear, the ground
-    // included: it stands for something lying on the ground (a deck), which hides the ground under it.
-    float length{};
-    std::array<float, 3> forward{0, 0, 1}, up{0, 1, 0};
 };
 
 // Client thread. On until clear().

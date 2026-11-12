@@ -334,12 +334,7 @@ struct FakeGame final : Game {
     std::string world_cover_clear(std::string_view plugin, const std::vector<CoverClear>& places) override {
         if (coverer != plugin) return "this plugin has no cover on the world";
         std::string line = std::format("keep clear {} {}", plugin, places.size());
-        for (const auto& p : places) {
-            line += std::format(" ({:.1f} {:.1f} {:.1f} r{:.2f} h{:.1f}", p.foot[0], p.foot[1], p.foot[2], p.radius, p.height);
-            if (p.length > 0)
-                line += std::format(" l{:.2f} f{:.1f},{:.1f},{:.1f} u{:.1f},{:.1f},{:.1f}", p.length, p.forward[0], p.forward[1], p.forward[2], p.up[0], p.up[1], p.up[2]);
-            line += ")";
-        }
+        for (const auto& p : places) line += std::format(" ({:.1f} {:.1f} {:.1f} r{:.2f} h{:.1f})", p.foot[0], p.foot[1], p.foot[2], p.radius, p.height);
         calls.push_back(line);
         return {};
     }
@@ -4818,10 +4813,6 @@ void plugins_cover_the_world() {
         assert(reskate.effects.keep_clear({{position = vector.create(1, 2, 3)}, {position = vector.create(4, 5, 6), radius = 1.5, height = 3}}))
         assert(not pcall(reskate.effects.keep_clear, {{position = vector.create(0, 0, 0), radius = 20}}), "a radius is 0.05 to 10")
         assert(not pcall(reskate.effects.keep_clear, {{radius = 1}}), "a place has a position")
-        assert(reskate.effects.keep_clear({{position = vector.create(1, 2, 3)}, {position = vector.create(0, 0, 0), length = 0.8,
-            radius = 0.1, height = 0.05, forward = vector.create(2, 1, 0)}}), "a board-shaped place")
-        assert(not pcall(reskate.effects.keep_clear, {{position = vector.create(0, 0, 0), length = 0.8, forward = vector.create(0, 3, 0)}}),
-            "a board's forward is not its up")
         local four = {}
         for i = 1, 4 do four[i] = {position = vector.create(i, 0, 0)} end
         assert(not pcall(reskate.effects.keep_clear, four), "at most three places")
@@ -4837,8 +4828,6 @@ void plugins_cover_the_world() {
           "The cover as asked, and its defaults\n" + environment.all());
     check(game.called("keep clear snow 2 (1.0 2.0 3.0 r0.60 h2.0) (4.0 5.0 6.0 r1.50 h3.0)") && game.called("keep clear snow 0"),
           "Places kept clear of the cover, with their defaults, and none\n" + environment.all());
-    check(game.called("keep clear snow 2 (1.0 2.0 3.0 r0.60 h2.0) (0.0 0.0 0.0 r0.10 h0.1 l0.80 f1.0,0.0,0.0 u0.0,1.0,0.0)"),
-          "A board-shaped place, its forward made square to its up\n" + environment.all());
     // A second plugin is told whose cover it is; nil from it does not end the first one's.
     host.apply({snow, package("sand", {{manifest_file, manifest(R"("effects")")}, {"plugin/main.lua", R"(
         local ok, why = reskate.effects.cover({colour = {r = 0.8, g = 0.7, b = 0.5}})

@@ -1293,7 +1293,7 @@ public:
     std::string world_cover_clear(std::string_view plugin, const std::vector<CoverClear>& places) override {
         if (coverer_ != plugin) return "this plugin has no cover on the world";
         std::vector<world_cover::Clear> clear;
-        for (const auto& place : places) clear.push_back({place.foot, place.radius, place.height, place.length, place.forward, place.up});
+        for (const auto& place : places) clear.push_back({place.foot, place.radius, place.height});
         world_cover::keep_clear(std::move(clear));
         return {};
     }
