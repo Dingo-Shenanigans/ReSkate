@@ -22,8 +22,13 @@ void fetch() noexcept {
     try {
         https::Download download;
         trace::Scope timing("backend.identity_lists", "http.client");
-        const auto answer = https::get_text(std::wstring(identity_lists_url.begin(), identity_lists_url.end()), max_bytes, 10,
-                                            L"ReSkate-Identity/1", &download);
+        const auto get = [&](std::string_view url) {
+            return https::get_text(std::wstring(url.begin(), url.end()), max_bytes, 10, L"ReSkate-Identity/1", &download);
+        };
+        auto answer = get(identity_lists_url);
+        // The backend out of reach: its copy on GitHub (developer_identity.h).
+        const auto backend = download;
+        if (!answer) answer = get(identity_lists_mirror_url);
         if (!answer) timing.fail();
         if (answer) {
             auto lists = parse_identity_lists(*answer);
@@ -43,12 +48,8 @@ void fetch() noexcept {
             ok = true;
         } else if (!failing) {
             logging::log(logging::Level::info, logging::Channel::runtime,
-                         "Identity lists unavailable (HTTP {}, error {}{}); trying again every minute.", download.http_status,
-                         download.error,
-                         // 12175, ERROR_WINHTTP_SECURE_FAILURE: seen on a PC whose Windows lacked the
-                         // root api.reskate.dev's certificate chains to (Windows fetches newer roots
-                         // itself unless that is turned off). Its own tags and STYLE options go too.
-                         download.error == 12175 ? ", no secure connection: this PC's Windows may be missing a root certificate" : "");
+                         "Identity lists unavailable (backend: HTTP {}, error {}; GitHub copy: HTTP {}, error {}); trying again every minute.",
+                         backend.http_status, backend.error, download.http_status, download.error);
         }
     } catch (const std::exception &e) {
         if (!failing)
