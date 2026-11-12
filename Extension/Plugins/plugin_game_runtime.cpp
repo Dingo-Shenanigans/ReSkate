@@ -1385,6 +1385,9 @@ public:
         carry::Goal g;
         g.hand = goal->left ? arm_reach::Hand::left : arm_reach::Hand::right;
         g.both = goal->both;
+        g.support = goal->support;
+        g.exact = goal->exact;
+        g.look_at = goal->look_at;
         g.front = goal->front;
         g.aim = goal->aim;
         g.front_from_grip = goal->front_from_grip;

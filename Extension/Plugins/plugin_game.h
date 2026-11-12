@@ -886,6 +886,9 @@ public:
     struct Carry {
         bool left{}, both{};
         Vec3 front{};
+        Vec3 support{}; // with both: the other hand moved from where it takes the item, in the item's frame
+        bool exact{};   // the front held at `front` itself, not on the aim's own sweep
+        std::optional<Vec3> look_at; // the face turned to look at this point
         std::array<float, 4> aim{0, 0, 0, 1};
         Vec3 front_from_grip{};
         // Worn on the hand: the item's rotation in the hand joint's frame, and its grip from the hand joint.
