@@ -1920,8 +1920,10 @@ void draw_hub(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks,
         {
             const float top = px(100), list_height = size.y - top - px(20);
             ImGui::SetCursorScreenPos(ImVec2(origin.x + px(18), origin.y + top));
-            ImGui::BeginChild("pages", ImVec2(rail - px(18), list_height), ImGuiChildFlags_NavFlattened,
-                              ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+            // It scrolls (wheel, and a thin bar shown only then) once the rows outgrow it: with plugin
+            // pages listed under PLUGINS they can, and players could not reach the last ones.
+            ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, px(6));
+            ImGui::BeginChild("pages", ImVec2(rail - px(18), list_height), ImGuiChildFlags_NavFlattened);
             int rows = 0;
             for (int i = 0; i < page_count; ++i) rows += page_hidden(model, i) ? 0 : 1;
             // Each plugin's own page as a smaller row under PLUGINS, opened with one click (they were
@@ -1972,6 +1974,7 @@ void draw_hub(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks,
                 }
             }
             ImGui::EndChild();
+            ImGui::PopStyleVar();
         }
 
         // The page: its title, its tabs and body, the prompts under it.
