@@ -1913,7 +1913,8 @@ void draw_hub(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks,
         const auto origin = ImGui::GetWindowPos();
         auto* draw = ImGui::GetWindowDrawList();
 
-        // The rail: the wordmark, then the pages in the brushed font, the open one white on a blue stroke.
+        // The rail: the wordmark, then the pages in the brushed font, the open one white on a blue bar
+        // the rail's full width.
         const float rail = px(250);
         draw->AddRectFilled(origin, ImVec2(origin.x + rail, origin.y + size.y), rail_fill);
         wordmark(draw, menu, ImVec2(origin.x + px(28), origin.y + px(20)), px(42));
@@ -1934,6 +1935,15 @@ void draw_hub(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks,
             const float row = std::clamp((list_height - plugin_rows) / static_cast<float>(std::max(rows, 1)) - spacing_y, px(26), px(38));
             auto* list = ImGui::GetWindowDrawList();
             ImFont* font = title_font(menu);
+            // The open (or focused) row's bar, edge to edge across the rail: drawn on the menu window
+            // under the list (the list itself starts in from the edge), kept to the list's area as it
+            // scrolls.
+            const ImVec2 list_min(origin.x, origin.y + top), list_max(origin.x + rail, origin.y + top + list_height);
+            const auto row_bar = [&](float y0, float y1, ImU32 colour) {
+                draw->PushClipRect(list_min, list_max, true);
+                draw->AddRectFilled(ImVec2(origin.x, y0), ImVec2(origin.x + rail, y1), colour);
+                draw->PopClipRect();
+            };
             for (int i = 0; i < page_count; ++i) {
                 if (page_hidden(model, i)) continue;
                 const auto at = ImGui::GetCursorScreenPos();
@@ -1945,11 +1955,7 @@ void draw_hub(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks,
                 const bool lit = nav_lit(), hovered = ImGui::IsItemHovered();
                 ImGui::PopID();
                 const bool on = menu.page == i && (i != page_plugins || !drilled_plugin_page(menu));
-                if (on || lit) {
-                    // A brush stroke, cut crooked at its ends.
-                    const float x0 = at.x, x1 = at.x + px(200), y0 = at.y + row * .08f, y1 = at.y + row * .92f, h = y1 - y0;
-                    list->AddQuadFilled(ImVec2(x0 + px(4), y0 + h * .12f), ImVec2(x1, y0), ImVec2(x1 - px(8), y1), ImVec2(x0, y1 - h * .12f), lit && !on ? primary_rest : blue);
-                }
+                if (on || lit) row_bar(at.y, at.y + row, lit && !on ? primary_rest : blue);
                 const float text = std::min(px(24), row * .8f);
                 list->AddText(font, text, ImVec2(at.x + px(10), at.y + (row - text) * .5f), lit || on ? focus_ink : hovered ? paper : quiet_ink,
                               page_names[static_cast<std::size_t>(i)]);
@@ -1961,11 +1967,7 @@ void draw_hub(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks,
                     const bool sub_lit = nav_lit(), sub_hovered = ImGui::IsItemHovered();
                     ImGui::PopID();
                     const bool sub_on = on_plugin_page(menu, entry.plugin);
-                    if (sub_on || sub_lit) {
-                        const float x0 = sub_at.x + px(14), x1 = sub_at.x + px(200), y0 = sub_at.y + sub * .12f, y1 = sub_at.y + sub * .88f, h = y1 - y0;
-                        list->AddQuadFilled(ImVec2(x0 + px(3), y0 + h * .12f), ImVec2(x1, y0), ImVec2(x1 - px(6), y1), ImVec2(x0, y1 - h * .12f),
-                                            sub_lit && !sub_on ? primary_rest : blue);
-                    }
+                    if (sub_on || sub_lit) row_bar(sub_at.y, sub_at.y + sub, sub_lit && !sub_on ? primary_rest : blue);
                     const float size_text = px(14);
                     list->PushClipRect(sub_at, ImVec2(sub_at.x + rail - px(40), sub_at.y + sub), true);
                     list->AddText(menu.bold, size_text, ImVec2(sub_at.x + px(24), sub_at.y + (sub - size_text) * .5f),
