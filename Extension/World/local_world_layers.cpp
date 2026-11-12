@@ -2,6 +2,7 @@
 #include "Extension/Profile/runtime_internal.h"
 #include "local_park_rotation.h"
 #include "local_world_layers.h"
+#include "time_of_day_lighting.h"
 #include "Engine/Game/Build/20260929/world_layers.h"
 
 namespace dingosdk::profile_runtime {
@@ -47,8 +48,11 @@ void capture_seasonal_node(std::uintptr_t entity) {
             logging::log(logging::Level::debug, logging::Channel::subworld,
                 "Subworld reference created: {} (instance {}).", bundle, row.identity.generation);
             SeasonalState state;
-            if (seasonal_state(row.identity, state))
-                row.progress.observe(state.requested, state.loaded, GetTickCount64(), bundle, row.identity.generation, &emit_subworld);
+            // A time layer changing: the new time's light is worked out (time_of_day_lighting.h).
+            if (seasonal_state(row.identity, state) &&
+                row.progress.observe(state.requested, state.loaded, GetTickCount64(), bundle, row.identity.generation, &emit_subworld) &&
+                time_of_day_lighting::is_time_layer(bundle))
+                time_of_day_lighting::time_layer_changed(GetTickCount64());
         } else if (++r.streaming_capacity_drops == 1) {
             logging::write(logging::Level::warning, logging::Channel::subworld,
                 "Subworld observation capacity reached (512 references); some streaming states will be omitted.");
@@ -203,8 +207,11 @@ void update_world_layers(std::uintptr_t manager, std::uint64_t now) {
             auto& [entity, row] = *next++;
             r.streaming_cursor = entity;
             SeasonalState state;
-            if (seasonal_state(row.identity, state))
-                row.progress.observe(state.requested, state.loaded, now, row.bundle, row.identity.generation, &emit_subworld);
+            // A time layer changing: the new time's light is worked out (time_of_day_lighting.h).
+            if (seasonal_state(row.identity, state) &&
+                row.progress.observe(state.requested, state.loaded, now, row.bundle, row.identity.generation, &emit_subworld) &&
+                time_of_day_lighting::is_time_layer(row.bundle))
+                time_of_day_lighting::time_layer_changed(now);
         }
     }
     std::uintptr_t event_context{}, context{};
