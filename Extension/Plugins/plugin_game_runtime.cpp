@@ -44,6 +44,7 @@
 #include "plugin_camera.h"
 #include "Extension/Multiplayer/Session/session.h"
 #include "Extension/Multiplayer/Remote/stand_ins.h"
+#include "Extension/Multiplayer/Remote/native_audio.h"
 #include "Extension/Music/external_player.h"
 #include "Extension/Music/music_inject.h"
 #include "Extension/Music/spotify_station.h"
@@ -77,6 +78,7 @@
 #include <filesystem>
 #include "Extension/UI/Overlay/overlay.h"
 #include "Extension/UI/Overlay/screen_look.h"
+#include "Extension/UI/Overlay/world_cover.h"
 #include "Extension/UI/Overlay/viewmodel.h"
 #include "Extension/UI/Overlay/scripted_pad.h"
 #include "Engine/Game/Input/pad_output.h"
@@ -366,6 +368,11 @@ public:
             out.matrix = m;
         }
         return out;
+    }
+    std::vector<std::pair<std::string, double>> world_controls() override {
+        const auto c = local_profile_world_controls().choices;
+        return {{"fog", c.fog}, {"fog_distance", c.fog_distance}, {"sky_brightness", c.sky_brightness}, {"clouds", c.clouds},
+                {"wind_strength", c.wind_strength}, {"wind_direction", c.wind_direction}, {"traffic", c.traffic}, {"pedestrians", c.pedestrians}};
     }
     std::string set_environment(std::string_view kind, std::string_view key, std::string_view value) override {
         if (kind == "tod") return time_of_day(key);
@@ -658,15 +665,15 @@ public:
         if (!kept.declared) return std::nullopt;
         return VariantState{kept.installed, mods::chosen_variant(plugin), mods::variant_in_play(plugin)};
     }
-    std::string choose_variant(std::string_view plugin, const std::filesystem::path& package, std::string_view variant) override {
+    std::string choose_variant(std::string_view plugin, const std::filesystem::path& package, std::string_view variant, bool now) override {
         const auto state = variants(plugin, package);
         if (!state) return "its mod declares no variants";
         std::string name(variant);
         for (auto& c : name) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         if (std::find(state->installed.begin(), state->installed.end(), name) == state->installed.end()) return "its mod has no variant " + name;
-        if (live_mods::busy()) return "the mods are being applied";
+        if (now && live_mods::busy()) return "the mods are being applied";
         if (!mods::save_variant(plugin, name)) return "the choice could not be saved";
-        if (name != state->in_play) (void)live_mods::apply(true);
+        if (now && name != state->in_play) (void)live_mods::apply(true);
         return {};
     }
     // ---- outfit --------------------------------------------------------------------------------------
@@ -1260,6 +1267,34 @@ public:
                       look->grain_strength, look->dropouts_strength, look->head_switching_strength, look->smear_strength};
         s.text = look->text;
         screen_look::set(s);
+        return {};
+    }
+    std::string world_cover(std::string_view plugin, std::optional<WorldCover> cover) override {
+        if (!coverer_.empty() && coverer_ != plugin) return cover ? coverer_ + " has the world's cover" : std::string{};
+        if (!cover) {
+            if (coverer_ == plugin) {
+                world_cover::clear();
+                world_cover::keep_clear({});
+                coverer_.clear();
+            }
+            return {};
+        }
+        coverer_ = plugin;
+        world_cover::Settings s;
+        s.colour = cover->colour;
+        s.amount = cover->amount, s.facing = cover->facing, s.softness = cover->softness;
+        s.brightness = cover->brightness, s.breakup = cover->breakup, s.sparkle = cover->sparkle, s.snowfall = cover->snowfall;
+        s.fall_speed = cover->fall_speed;
+        s.left = cover->left;
+        s.snowfall_stopping = cover->snowfall_stopping;
+        world_cover::set(s);
+        return {};
+    }
+    std::string world_cover_clear(std::string_view plugin, const std::vector<CoverClear>& places) override {
+        if (coverer_ != plugin) return "this plugin has no cover on the world";
+        std::vector<world_cover::Clear> clear;
+        for (const auto& place : places) clear.push_back({place.foot, place.radius, place.height});
+        world_cover::keep_clear(std::move(clear));
         return {};
     }
     // ---- viewmodel -----------------------------------------------------------------------------------
@@ -1915,6 +1950,11 @@ public:
         return camera_shown_ ? std::string{} : camera_status_.empty() ? "waiting for the game's camera" : camera_status_;
     }
     void apply_camera(std::uintptr_t base, std::uintptr_t client, bool ready, bool phase) {
+        // A plugin's world cover only over a level in play, with no game menu open (world_cover.h); and in
+        // the replay editor, whose picture is the world (with its HUD hidden, a clean shot of it), though
+        // the game counts it a menu (2026-11-12).
+        const bool replay = base && multiplayer::replay_editor_open(base);
+        world_cover::allow(base && ((ready && !multiplayer::sample_game_ui_state(base).in_menu) || replay));
         if (multiplayer::party_spectating()) {
             // Spectate has the lease now, and gives the game's camera back itself.
             camera_shown_ = camera_releasing_ = false;
@@ -1928,6 +1968,13 @@ public:
         } else if (camera_releasing_ && update_party_camera(base, client, ready, phase, nullptr, detail)) {
             camera_releasing_ = false;
         }
+    }
+    std::string skater_surface_sound(std::string_view plugin, std::optional<std::uint32_t> word, std::uint32_t fields) override {
+        if (!surfacer_.empty() && surfacer_ != plugin) return "another plugin sets the skater's surface sound";
+        multiplayer::set_surface_sound(word.value_or(0), fields);
+        if (word) surfacer_ = std::string(plugin);
+        else surfacer_.clear();
+        return {};
     }
     std::string freeze(std::string_view plugin, bool on) override {
         const bool before = !freezers_.empty();
@@ -2030,6 +2077,15 @@ public:
             screen_look::clear();
             looker_.clear();
         }
+        if (surfacer_ == plugin) {
+            multiplayer::set_surface_sound(0);
+            surfacer_.clear();
+        }
+        if (coverer_ == plugin) {
+            world_cover::clear();
+            world_cover::keep_clear({});
+            coverer_.clear();
+        }
         if (viewmodeler_ == plugin) {
             viewmodel::unload();
             viewmodeler_.clear();
@@ -2116,6 +2172,8 @@ private:
     std::string room_owner_; // the plugin in the character room (room_open)
     std::uint64_t pose_at_{};
     std::string looker_;  // the plugin whose look is on the screen (screen_look)
+    std::string surfacer_; // the plugin whose surface sound the local skater's sounds have
+    std::string coverer_; // the plugin whose cover is over the world (world_cover)
     std::string viewmodeler_; // the plugin whose viewmodel is loaded (viewmodel_load)
     std::uint64_t look_at_{};
     std::uint64_t reach_at_{};
@@ -2191,6 +2249,44 @@ private:
     }
     static std::string reply(const std::string& answer) {
         return answer.starts_with("error") || answer.find("not") != std::string::npos ? answer : std::string{};
+    }
+    std::string world_controls_text() override {
+        const auto c = local_profile_world_controls().choices;
+        std::string text;
+        const auto line = [&](std::string_view key, double value) {
+            if (value >= 0) text += std::format("{}={}\n", key, value);
+        };
+        line("fog", c.fog), line("fog_distance", c.fog_distance), line("sky_brightness", c.sky_brightness), line("clouds", c.clouds);
+        line("wind_strength", c.wind_strength), line("wind_direction", c.wind_direction);
+        for (const auto& [key, value] : c.atmosphere)
+            if (const auto* control = find_atmosphere_control(key)) text += key + "=" + atmosphere_value_text(*control, value) + "\n";
+        return text;
+    }
+    std::string set_atmosphere(const std::vector<std::pair<std::string, std::string>>& values) override {
+        for (const auto& [key, value] : values)
+            if (!set_local_atmosphere_control(key, value)) return key + " " + value + " was refused (no map, or not that value)";
+        return {};
+    }
+    std::string time_of_day_now() override {
+        static constexpr std::array<std::string_view, 8> times{"default", "morning", "noon", "afternoon", "evening", "night",
+                                                               "weatherday", "weathernight"};
+        const auto world = local_profile_world_layers();
+        if (world.map == WorldMap::none) return {};
+        unsigned forced{};
+        for (unsigned n = 1; n < times.size(); ++n) {
+            const auto prefix = std::string(world_map_key(world.map)) + "_tod_" + std::to_string(n) + "_";
+            const auto layer = std::find_if(world_layers().begin(), world_layers().end(),
+                                            [&](const auto& item) { return item.key.starts_with(prefix); });
+            if (layer == world_layers().end()) return "default";
+            const auto& choice = world.choices[static_cast<std::size_t>(layer - world_layers().begin())];
+            if (choice == "on") {
+                if (forced) return "default";
+                forced = n;
+            } else if (choice != "off") {
+                return "default";
+            }
+        }
+        return std::string(times[forced]);
     }
     // As the console's `tod`: each map has seven time layers, "<map>_tod_<n>_<name>"; one is
     // forced on and the rest off, or all seven go back to the level's own choice.

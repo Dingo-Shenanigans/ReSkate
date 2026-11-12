@@ -45,6 +45,34 @@ struct WorldApi {
         return 1;
     }
     // ---- skater.control ------------------------------------------------------------------------
+    // surface_sound(word or nil[, fields]): the local skater's sounds as on the surface that physics
+    // material word names, wherever the skater is, in the sound's material fields listed in fields
+    // (1 to 18; omitted: every one); nil gives each surface its own.
+    static int surface_sound(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "skater.control", "reskate.skater.surface_sound");
+        std::optional<std::uint32_t> word;
+        if (!lua_isnoneornil(L, 1)) {
+            const double value = luaL_checknumber(L, 1);
+            if (!(value >= 1 && value <= 4294967295.0) || value != std::floor(value)) luaL_argerror(L, 1, "not a physics material word");
+            word = static_cast<std::uint32_t>(value);
+        }
+        std::uint32_t fields = ~0U;
+        if (!lua_isnoneornil(L, 2)) {
+            luaL_checktype(L, 2, LUA_TTABLE);
+            const int count = lua_objlen(L, 2);
+            if (count < 1 || count > 18) luaL_argerror(L, 2, "1 to 18 fields");
+            fields = 0;
+            for (int i = 1; i <= count; ++i) {
+                lua_rawgeti(L, 2, i);
+                const double field = luaL_checknumber(L, -1);
+                if (!(field >= 1 && field <= 18) || field != std::floor(field)) luaL_argerror(L, 2, "fields are 1 to 18");
+                fields |= 1U << (static_cast<int>(field) - 1);
+                lua_pop(L, 1);
+            }
+        }
+        return result(L, game_of(plugin).skater_surface_sound(plugin.id(), word, fields));
+    }
     static int control(lua_State* L, const char* action) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "skater.control", "reskate.skater control");
@@ -765,6 +793,16 @@ struct WorldApi {
         return result(L, game_of(plugin).set_environment(kind, key, value));
     }
     static int set_time(lua_State* L) { return environment(L, "tod", checked_text(L, 1, 20, "a time of day"), {}); }
+    // time(): the time of day forced on the map now ("morning" ... "weathernight"), "default" for the
+    // level's own, or nil with no map.
+    static int time_now(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "world.environment", "reskate.world.time");
+        const auto now = game_of(plugin).time_of_day_now();
+        if (now.empty()) lua_pushnil(L);
+        else lua_pushlstring(L, now.data(), now.size());
+        return 1;
+    }
     static int set_control(lua_State* L) {
         const auto key = checked_text(L, 1, 30, "a world control");
         const double value = luaL_checknumber(L, 2);
@@ -772,6 +810,55 @@ struct WorldApi {
         return environment(L, "control", key, std::to_string(value));
     }
     static int set_park(lua_State* L) { return environment(L, "park", checked_text(L, 1, 30, "a lot"), checked_text(L, 2, 40, "a layout")); }
+    // controls(): {fog = n, fog_distance = n, sky_brightness = n, clouds = n, wind_strength = n,
+    // wind_direction = n, traffic = n, pedestrians = n} as the player's profile holds them (-1: the
+    // level's own), or nil without a profile; what set_control changes, so it can be put back.
+    static int controls(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "world.environment", "reskate.world.controls");
+        const auto now = game_of(plugin).world_controls();
+        if (now.empty()) {
+            lua_pushnil(L);
+            return 1;
+        }
+        lua_createtable(L, 0, static_cast<int>(now.size()));
+        for (const auto& [key, value] : now) {
+            lua_pushnumber(L, value);
+            lua_setfield(L, -2, key.c_str());
+        }
+        return 1;
+    }
+    // controls_text(): the world controls the player has set in ReSkate's menu (fog, sky, wind and the
+    // detailed atmosphere values) as text, one "key=value" a line; empty when none is set.
+    static int controls_text(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "world.environment", "reskate.world.controls_text");
+        const auto text = game_of(plugin).world_controls_text();
+        lua_pushlstring(L, text.data(), text.size());
+        return 1;
+    }
+    // set_atmosphere({["Fog.Enable"] = 1, ["Fog.FogColor"] = "0,1450,2500", ...}): atmosphere values (as
+    // controls_text names them) set together, each a number, "a,b,c" lanes, or "default" for the level's
+    // own; saved in the player's profile as the menu's are. At most 64, one change of the four a second.
+    static int set_atmosphere(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "world.environment", "reskate.world.set_atmosphere");
+        luaL_checktype(L, 1, LUA_TTABLE);
+        std::vector<std::pair<std::string, std::string>> values;
+        lua_pushnil(L);
+        while (lua_next(L, 1)) {
+            if (lua_type(L, -2) != LUA_TSTRING) luaL_error(L, "an atmosphere value's key is its name");
+            std::size_t key_length{}, value_length{};
+            const char* key = lua_tolstring(L, -2, &key_length);
+            if (lua_type(L, -1) != LUA_TSTRING && lua_type(L, -1) != LUA_TNUMBER) luaL_error(L, "an atmosphere value is a number or text");
+            const char* value = lua_tolstring(L, -1, &value_length); // a number becomes its text here
+            if (key_length > 60 || value_length > 120 || values.size() >= 64) luaL_error(L, "at most 64 atmosphere values, each a short name and value");
+            values.emplace_back(std::string(key, key_length), std::string(value, value_length));
+            lua_pop(L, 1);
+        }
+        if (!within(plugin.services_.now_ms(), plugin.environment_second_, plugin.environments_, 4)) return result(L, "more than 4 changes in a second");
+        return result(L, game_of(plugin).set_atmosphere(values));
+    }
     // ---- travel ------------------------------------------------------------------------------------
     static int locations(lua_State* L) {
         auto& plugin = plugin_of(L);
@@ -3504,7 +3591,7 @@ void WorldApi::install(Plugin& plugin, lua_State* L) {
     lua_pushstring(L, "locked");
     lua_setfield(L, -2, "__metatable");
     lua_setfield(L, LUA_REGISTRYINDEX, "reskate.permissions");
-    add_functions(L, "skater", {{"state", state}, {"noclip", noclip}, {"boost", boost}, {"freeze", freeze}, {"wipeout", wipeout}, {"xray", xray},
+    add_functions(L, "skater", {{"state", state}, {"surface_sound", surface_sound}, {"noclip", noclip}, {"boost", boost}, {"freeze", freeze}, {"wipeout", wipeout}, {"xray", xray},
                                 {"shape_launch", shape_launch}, {"hide", hide_skater}, {"reach", reach}, {"carry", carry}, {"hand", hand}, {"joint", skater_joint}, {"pose", skater_pose}});
     add_functions(L, "board", {{"motion", board_motion}, {"bones", board_bones}, {"set", board_set}, {"hide", board_hide}, {"clear", board_clear}, {"scale", board_scale},
                                {"park", board_park}, {"fit", board_fit}, {"toss", board_toss}, {"parameters", board_parameters},
@@ -3517,7 +3604,8 @@ void WorldApi::install(Plugin& plugin, lua_State* L) {
     add_functions(L, "entities", {{"set", entities_set}, {"remove", entities_remove}, {"clear", entities_clear}, {"status", entities_status},
                                   {"ready", entities_ready}, {"blueprints", entities_blueprints},
                                   {"bounds", entities_bounds}});
-    add_functions(L, "world", {{"set_time", set_time}, {"set_control", set_control}, {"set_park", set_park}, {"pick", world_pick}, {"probe", world_probe}});
+    add_functions(L, "world", {{"set_time", set_time}, {"time", time_now}, {"set_control", set_control}, {"set_park", set_park}, {"controls", controls},
+                               {"controls_text", controls_text}, {"set_atmosphere", set_atmosphere}, {"pick", world_pick}, {"probe", world_probe}});
     add_functions(L, "travel", {{"locations", locations}, {"levels", levels}, {"go", go}, {"load", load}});
     add_functions(L, "ai", {{"spawn", ai_spawn}, {"clear", ai_clear}, {"count", ai_count}});
     add_functions(L, "session", {{"skaters", skaters}, {"tag", tag}, {"nametags", nametags}, {"joint", session_joint}, {"touch", session_touch},

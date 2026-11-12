@@ -188,6 +188,9 @@ The Luau plugin host. A plugin is a folder in `Mods/` with a `reskate-plugin.jso
 - `plugin_effects`, `plugin_api_effects` — the permission, asset declarations and Lua calls for
   [plugin particles and decals](https://docs.reskate.dev/plugins/api/effects). `Extension/Rendering/plugin_effects`
   owns their native references, surface attachments and world lifetime.
+  `reskate.effects.cover` (same permission) lays a cover (snow, sand, dust) over the world's upward-facing
+  surfaces, drawn by `Extension/UI/Overlay/world_cover` into the finished scene just before the game adds
+  its UI.
 - [Item origins and favorites](https://docs.reskate.dev/plugins/api/mods) — `reskate.mods.item_origins` and
   `reskate.menu.favorites`, read-only, for plugins that filter the item grids.
 - [Other players' items](https://docs.reskate.dev/plugins/api/session#other-players-items) — `reskate.session.outfit` and

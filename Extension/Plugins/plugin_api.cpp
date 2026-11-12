@@ -530,13 +530,21 @@ struct ApiFunctions {
             if (!value->empty()) field_text(L, field, *value);
         return 1;
     }
-    // choose(name): that variant of the plugin's own mod in the game: kept as the choice, the mods
-    // applied again and the level loaded again with it. true, or false and why not.
+    // choose(name[, {now = false}]): that variant of the plugin's own mod in the game: kept as the
+    // choice, the mods applied again and the level loaded again with it. With now = false it is only
+    // kept, for the game's next launch; the variant in play stays. true, or false and why not.
     static int choose(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "variants", "reskate.package.choose");
         const std::string name = luaL_checkstring(L, 1);
-        return result(L, game_of(plugin).choose_variant(plugin.id(), plugin.directory(), name));
+        bool now = true;
+        if (!lua_isnoneornil(L, 2)) {
+            luaL_checktype(L, 2, LUA_TTABLE);
+            lua_getfield(L, 2, "now");
+            if (!lua_isnil(L, -1)) now = lua_toboolean(L, -1) != 0;
+            lua_pop(L, 1);
+        }
+        return result(L, game_of(plugin).choose_variant(plugin.id(), plugin.directory(), name, now));
     }
     static int list(lua_State* L) {
         auto& plugin = plugin_of(L);

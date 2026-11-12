@@ -1,0 +1,6 @@
+#pragma once
+// Generated from Extension/UI/Overlay/world_cover.hlsl (cmake/UI.cmake), in pieces short enough for MSVC.
+namespace dingosdk::world_cover {
+inline constexpr char world_cover_hlsl[] =
+@world_cover_hlsl_chunks@;
+}

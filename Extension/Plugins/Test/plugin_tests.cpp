@@ -329,6 +329,30 @@ struct FakeGame final : Game {
     }
     void effects_clear(std::string_view plugin) override { std::erase_if(effects, [&](const auto& e) { return e.second.owner == plugin; }); }
     std::pair<bool, std::uint64_t> effects_state() override { return {effects_ready, effect_epoch}; }
+    // One plugin's world cover at a time, as the real one.
+    std::string coverer;
+    std::string world_cover_clear(std::string_view plugin, const std::vector<CoverClear>& places) override {
+        if (coverer != plugin) return "this plugin has no cover on the world";
+        std::string line = std::format("keep clear {} {}", plugin, places.size());
+        for (const auto& p : places) line += std::format(" ({:.1f} {:.1f} {:.1f} r{:.2f} h{:.1f})", p.foot[0], p.foot[1], p.foot[2], p.radius, p.height);
+        calls.push_back(line);
+        return {};
+    }
+    std::string world_cover(std::string_view plugin, std::optional<WorldCover> c) override {
+        if (!coverer.empty() && coverer != plugin) return c ? coverer + " has the world's cover" : std::string{};
+        if (!c) {
+            if (coverer == plugin) {
+                coverer.clear();
+                calls.push_back(std::format("cover {} none", plugin));
+            }
+            return {};
+        }
+        coverer = plugin;
+        cover_asked = c;
+        calls.push_back(std::format("cover {} {:.2f} {:.2f} {:.2f} {:.2f} {:.2f} {:.2f} {:.2f} {:.2f} {:.2f} {:.2f}", plugin, c->colour[0], c->colour[1],
+                                    c->colour[2], c->amount, c->facing, c->softness, c->brightness, c->breakup, c->sparkle, c->snowfall));
+        return {};
+    }
     ObjectPhysicsClaims physics_claims;
     std::map<std::uint64_t, ObjectPhysics> object_physics_now;
     std::map<std::uint64_t, ObjectMotion> object_motion_now;
@@ -371,6 +395,27 @@ struct FakeGame final : Game {
     }
     std::optional<MarkerEvents> marker_events(std::string_view plugin) override {
         return std::exchange(marker_feed[std::string(plugin)], {});
+    }
+    std::string tod_now = "afternoon";
+    std::string time_of_day_now() override { return tod_now; }
+    std::string world_controls_text() override { return "fog=1\nfog_distance=0.5\n"; }
+    std::vector<std::pair<std::string, std::string>> atmosphere_set;
+    std::string set_atmosphere(const std::vector<std::pair<std::string, std::string>>& values) override {
+        atmosphere_set.insert(atmosphere_set.end(), values.begin(), values.end());
+        return {};
+    }
+    std::optional<WorldCover> cover_asked;
+    std::optional<std::uint32_t> surface_set;
+    std::uint32_t surface_fields{};
+    std::string skater_surface_sound(std::string_view, std::optional<std::uint32_t> word, std::uint32_t fields) override {
+        surface_set = word;
+        surface_fields = fields;
+        return {};
+    }
+    std::vector<std::pair<std::string, bool>> chosen_variants; // each choice, and whether it went in now
+    std::string choose_variant(std::string_view, const std::filesystem::path&, std::string_view variant, bool now) override {
+        chosen_variants.emplace_back(std::string(variant), now);
+        return {};
     }
     std::optional<std::uint32_t> state;
     std::uint64_t wipe{};
@@ -888,6 +933,7 @@ struct FakeGame final : Game {
         calls.push_back(std::format("env {} {} {}", kind, key, value));
         return key == "never" ? "refused" : "";
     }
+    std::vector<std::pair<std::string, double>> world_controls() override { return {{"fog", 0}, {"fog_distance", 1.5}, {"clouds", -1}}; }
     std::vector<Destination> destinations() override { return {{"bam", "BAM", "bam"}}; }
     std::vector<LevelInfo> levels() override { return {{"Levels/Game/X/X", "X", true}}; }
     std::string travel(std::string_view kind, std::string_view target) override { calls.push_back(std::format("travel {} {}", kind, target)); return {}; }
@@ -1235,6 +1281,7 @@ struct FakeGame final : Game {
         score_lines.release(plugin);
         entity_clear(plugin);
         effects_clear(plugin);
+        (void)world_cover(plugin, std::nullopt);
         viewmodel_unload(plugin);
         board_material::detail::release(declared_holds, plugin, std::nullopt, std::nullopt);
         std::vector<std::uint64_t> ids;
@@ -1470,6 +1517,62 @@ Candidate script(const std::string& id, const std::string& main, const std::stri
 }
 
 void running(const Host& host, std::string_view id, const TestEnvironment& environment);
+
+void the_time_of_day_is_read_and_the_cover_melts() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({script("melt", R"(
+        assert(reskate.world.time() == "afternoon")
+        assert(reskate.world.controls_text() == "fog=1\nfog_distance=0.5\n")
+        assert(reskate.world.set_atmosphere({["Fog.Enable"] = 1, ["Fog.FogColor"] = "0,1450,2500"}))
+        assert(not pcall(reskate.world.set_atmosphere, {["Fog.Enable"] = true}), "a value is a number or text")
+        assert(reskate.effects.cover({left = 0.25, snowfall_stopping = true}))
+        assert(not pcall(reskate.effects.cover, {left = 2}), "left is 0 to 1")
+    )", R"("world.environment", "effects")")});
+    running(host, "melt", environment);
+    check(environment.fake.cover_asked && environment.fake.cover_asked->left == 0.25f && environment.fake.cover_asked->snowfall_stopping, "a cover's melt is passed on: how much of it is left");
+    TestEnvironment denied_environment;
+    Host denied(denied_environment, Side::client);
+    denied.apply({script("melt-denied", R"(
+        assert(not pcall(reskate.world.time), "needs world.environment")
+    )")});
+    running(denied, "melt-denied", denied_environment);
+}
+
+void the_skater_surface_sound_is_set_for_some_fields() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({script("surface-sound", R"(
+        assert(reskate.skater.surface_sound(0xd60, {1, 3}))
+        assert(not pcall(reskate.skater.surface_sound, 0xd60, {19}), "fields are 1 to 18")
+        assert(not pcall(reskate.skater.surface_sound, 0.5), "a fraction is no surface")
+        assert(not pcall(reskate.skater.surface_sound, -1), "a negative is no surface")
+    )", R"("skater.control")")});
+    running(host, "surface-sound", environment);
+    check(environment.fake.surface_set == 0xd60u && environment.fake.surface_fields == 0b101u,
+          "surface_sound passes the surface word and its fields on");
+    TestEnvironment denied_environment;
+    Host denied(denied_environment, Side::client);
+    denied.apply({script("surface-denied", R"(
+        assert(not pcall(reskate.skater.surface_sound, 7), "needs skater.control")
+    )")});
+    running(denied, "surface-denied", denied_environment);
+    check(!denied_environment.fake.surface_set, "a plugin without skater.control set no surface sound");
+}
+
+void a_variant_can_wait_for_the_next_launch() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({script("variant-chooser", R"(
+        assert(reskate.package.choose("snowskate"))
+        assert(reskate.package.choose("standard", {now = false}))
+        assert(reskate.package.choose("standard", {now = true}))
+        assert(not pcall(reskate.package.choose, "standard", 7), "options are a table")
+    )", R"("variants")")});
+    running(host, "variant-chooser", environment);
+    const std::vector<std::pair<std::string, bool>> expected{{"snowskate", true}, {"standard", false}, {"standard", true}};
+    check(environment.fake.chosen_variants == expected, "choose keeps a variant for the next launch only when now is false");
+}
 
 void traffic_vehicles_are_permissioned_bounded_and_released() {
     using traffic_vehicles::Quaternion;
@@ -4655,6 +4758,69 @@ void plugins_reach_cruise_and_read_the_mouse() {
           "skater.animation, skater.read, skater.control, input and overlay are needed\n" + environment.all());
 }
 
+// A cover over the world's upward-facing surfaces (reskate.effects.cover): its values checked, one plugin's at a
+// time, ended by the plugin or by its unloading, and only with "effects".
+void plugins_cover_the_world() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    Host host(environment, Side::client);
+    const auto snow = package("snow", {{manifest_file, manifest(R"("effects")")}, {"plugin/main.lua", R"(
+        assert(reskate.effects.cover({colour = {r = 0.9, g = 0.95, b = 1}, amount = 0.8, facing = 0.6, softness = 0.1, brightness = 2,
+            breakup = 0.5, sparkle = 0.25, snowfall = 0.6}))
+        assert(not pcall(reskate.effects.cover, {snowfall = 1.5}), "a snowfall is 0 to 1")
+        assert(not pcall(reskate.effects.cover, {fall_speed = 9}), "a fall speed is 0.1 to 4")
+        assert(not pcall(reskate.effects.cover, {amount = 2}), "an amount is 0 to 1")
+        assert(not pcall(reskate.effects.cover, {facing = -0.1}), "a facing is 0 to 1")
+        assert(not pcall(reskate.effects.cover, {brightness = 9}), "a brightness is 0.25 to 4")
+        assert(not pcall(reskate.effects.cover, {colour = {r = 1, g = 2, b = 0}}), "a colour is 0 to 1 a channel")
+        assert(not pcall(reskate.effects.cover, {colour = {r = 1}}), "a colour has three channels")
+        assert(not pcall(reskate.effects.cover, 5), "a cover is a table or nil")
+        assert(reskate.effects.cover({}), "every value has a default")
+        assert(reskate.effects.keep_clear({{position = vector.create(1, 2, 3)}, {position = vector.create(4, 5, 6), radius = 1.5, height = 3}}))
+        assert(not pcall(reskate.effects.keep_clear, {{position = vector.create(0, 0, 0), radius = 20}}), "a radius is 0.05 to 10")
+        assert(not pcall(reskate.effects.keep_clear, {{radius = 1}}), "a place has a position")
+        local four = {}
+        for i = 1, 4 do four[i] = {position = vector.create(i, 0, 0)} end
+        assert(not pcall(reskate.effects.keep_clear, four), "at most three places")
+        assert(reskate.effects.keep_clear(nil))
+        reskate.log("covered")
+    )"}});
+    host.apply({snow});
+    ticks(host, environment, 1);
+    running(host, "snow", environment);
+    check(environment.logged("[snow] covered"), "A cover's values are checked\n" + environment.all());
+    check(game.called("cover snow 0.90 0.95 1.00 0.80 0.60 0.10 2.00 0.50 0.25 0.60") &&
+              game.called("cover snow 0.92 0.95 1.00 1.00 0.55 0.15 1.60 0.35 0.00 0.00"),
+          "The cover as asked, and its defaults\n" + environment.all());
+    check(game.called("keep clear snow 2 (1.0 2.0 3.0 r0.60 h2.0) (4.0 5.0 6.0 r1.50 h3.0)") && game.called("keep clear snow 0"),
+          "Places kept clear of the cover, with their defaults, and none\n" + environment.all());
+    // A second plugin is told whose cover it is; nil from it does not end the first one's.
+    host.apply({snow, package("sand", {{manifest_file, manifest(R"("effects")")}, {"plugin/main.lua", R"(
+        local ok, why = reskate.effects.cover({colour = {r = 0.8, g = 0.7, b = 0.5}})
+        reskate.log(tostring(ok) .. " " .. tostring(why))
+        local kept, not_why = reskate.effects.keep_clear({{position = vector.create(0, 0, 0)}})
+        reskate.log("keep " .. tostring(kept) .. " " .. tostring(not_why))
+        assert(reskate.effects.cover(nil))
+    )"}})});
+    ticks(host, environment, 1);
+    check(environment.logged("[sand] nil snow has the world's cover") && !game.called("cover sand none") && game.coverer == "snow",
+          "One plugin's cover at a time\n" + environment.all());
+    check(environment.logged("[sand] keep nil this plugin has no cover on the world"), "Only the cover's plugin keeps places clear of it");
+    // Without the permission it is refused.
+    host.apply({snow, package("sneaky", {{manifest_file, manifest()}, {"plugin/main.lua", R"(
+        reskate.log(tostring(pcall(reskate.effects.cover, {})) .. " " .. tostring(pcall(reskate.effects.cover, nil)) .. " " ..
+            tostring(pcall(reskate.effects.keep_clear, {})) .. " " .. tostring(pcall(reskate.world.controls)))
+    )"}})});
+    ticks(host, environment, 1);
+    check(environment.logged("[sneaky] false false false false"),
+          "effects is needed for a cover and its clear places, world.environment to read the world controls\n" + environment.all());
+    check(game.coverer == "snow", "A refused plugin does not take the cover");
+    // Unloading the plugin ends its cover.
+    host.apply({});
+    ticks(host, environment, 1);
+    check(game.called("cover snow none") && game.coverer.empty(), "Unloading the plugin ends its cover\n" + environment.all());
+}
+
 // What the Filmer's port needs besides: something carried (seen by the others only), a pose only you
 // see, a step in the camera height cycle and its event, the nametags held off, the board hidden from
 // everyone, and a camcorder in the hand wear slot.
@@ -6373,6 +6539,8 @@ void the_wider_set_reaches_the_game() {
             assert(reskate.objects.remove("42"))
             assert(not pcall(reskate.objects.remove, "not a number"))
             assert(reskate.world.set_time("night") and reskate.world.set_control("fog", 1) and reskate.world.set_park("historic", "skatepark_02"))
+            local controls = reskate.world.controls()
+            assert(controls and controls.fog == 0 and controls.fog_distance == 1.5 and controls.clouds == -1, "the world controls as they are")
             local ok, why = reskate.world.set_time("never")
             assert(not ok and why == "refused")
             assert(#reskate.travel.locations() == 1 and #reskate.travel.levels() == 1)
@@ -7140,6 +7308,9 @@ int main() {
         scratch = std::filesystem::temp_directory_path() / "reskate-plugin-tests";
         std::filesystem::remove_all(scratch);
         run(a_manifest_says_what_a_plugin_is);
+        run(a_variant_can_wait_for_the_next_launch);
+        run(the_skater_surface_sound_is_set_for_some_fields);
+        run(the_time_of_day_is_read_and_the_cover_melts);
         run(ui_value_reservations_enforce_limits_and_collisions);
         run(plugins_publish_only_their_own_ui_values);
         run(plugin_approval_follows_the_plugins_own_files);
@@ -7208,6 +7379,7 @@ int main() {
         run(plugins_set_the_flip_speed);
         run(plugins_show_a_viewmodel);
         run(plugins_carry_and_take_a_step_in_the_camera_cycle);
+        run(plugins_cover_the_world);
         run(plugins_read_joints_and_tune_physics);
         run(plugins_type_and_use_the_room);
         run(plugins_read_menu_pose);

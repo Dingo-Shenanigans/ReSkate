@@ -91,6 +91,97 @@ struct EffectsApi {
         const auto [ready, epoch] = p.services_.game().effects_state();
         lua_pushboolean(L, ready); lua_pushnumber(L, static_cast<double>(epoch)); return 2;
     }
+    // cover({colour = {r, g, b}, amount, facing, softness, brightness, breakup, sparkle, snowfall, fall_speed,
+    // left, snowfall_stopping}): a cover over
+    // every upward-facing surface of the world (snow, sand, dust), drawn into the world's picture before
+    // the game's post-processing and its UI, so menus and the HUD are never under it. On this screen,
+    // until cover(nil); one plugin at a time. Not a per-tick call, and no effect handle.
+    static int cover(lua_State* L) {
+        auto& p = plugin_of(L);
+        need(L, p, "effects", "reskate.effects.cover");
+        if (lua_isnoneornil(L, 1)) {
+            const auto why = p.services_.game().world_cover(p.id_, std::nullopt);
+            if (!why.empty()) { lua_pushnil(L); lua_pushlstring(L, why.data(), why.size()); return 2; }
+            lua_pushboolean(L, 1); return 1;
+        }
+        luaL_checktype(L, 1, LUA_TTABLE);
+        Game::WorldCover c;
+        const auto number = [&](const char* name, float& out, double low, double high, const char* why) {
+            lua_getfield(L, 1, name);
+            if (!lua_isnil(L, -1)) {
+                const double v = luaL_checknumber(L, -1);
+                if (!(v >= low && v <= high)) luaL_error(L, "%s", why);
+                out = static_cast<float>(v);
+            }
+            lua_pop(L, 1);
+        };
+        number("amount", c.amount, 0, 1, "a cover's amount is 0 to 1");
+        number("facing", c.facing, 0, 1, "a cover's facing is 0 to 1 (1: only flat ground)");
+        number("softness", c.softness, 0, 0.5, "a cover's softness is 0 to 0.5");
+        number("brightness", c.brightness, 0.25, 4, "a cover's brightness is 0.25 to 4");
+        number("breakup", c.breakup, 0, 1, "a cover's breakup is 0 to 1");
+        number("sparkle", c.sparkle, 0, 1, "a cover's sparkle is 0 to 1");
+        number("snowfall", c.snowfall, 0, 1, "a cover's snowfall is 0 to 1");
+        number("fall_speed", c.fall_speed, 0.1, 4, "a cover's fall_speed is 0.1 to 4");
+        number("left", c.left, 0, 1, "a cover's left is 0 to 1");
+        lua_getfield(L, 1, "snowfall_stopping");
+        c.snowfall_stopping = lua_toboolean(L, -1) != 0;
+        lua_pop(L, 1);
+        lua_getfield(L, 1, "colour");
+        if (!lua_isnil(L, -1)) {
+            luaL_checktype(L, -1, LUA_TTABLE);
+            const char* channels[] = {"r", "g", "b"};
+            for (std::size_t i = 0; i < 3; ++i) {
+                lua_getfield(L, -1, channels[i]);
+                const double v = lua_isnumber(L, -1) ? lua_tonumber(L, -1) : -1;
+                if (!(v >= 0 && v <= 1)) luaL_error(L, "a cover's colour is {r, g, b}, each 0 to 1");
+                c.colour[i] = static_cast<float>(v);
+                lua_pop(L, 1);
+            }
+        }
+        lua_pop(L, 1);
+        const auto why = p.services_.game().world_cover(p.id_, c);
+        if (!why.empty()) { lua_pushnil(L); lua_pushlstring(L, why.data(), why.size()); return 2; }
+        lua_pushboolean(L, 1); return 1;
+    }
+    // keep_clear({{position = vector, radius = 0.6, height = 2}, ...}): up to three places kept clear of
+    // the plugin's cover for 0.3 s, so every tick (the skater: no snow on the player); {} or nil ends it.
+    // Each an upright cylinder standing on `position`, radius 0.05 to 10 m, height 0.1 to 20 m.
+    static int keep_clear(lua_State* L) {
+        auto& p = plugin_of(L);
+        need(L, p, "effects", "reskate.effects.keep_clear");
+        std::vector<Game::CoverClear> places;
+        if (!lua_isnoneornil(L, 1)) {
+            luaL_checktype(L, 1, LUA_TTABLE);
+            const int count = static_cast<int>(lua_objlen(L, 1));
+            if (count > 3) luaL_error(L, "at most three places are kept clear");
+            for (int i = 1; i <= count; ++i) {
+                lua_rawgeti(L, 1, i);
+                if (!lua_istable(L, -1)) luaL_error(L, "a place kept clear is a table");
+                const int at = lua_gettop(L);
+                Game::CoverClear place;
+                lua_getfield(L, at, "position");
+                place.foot = position_of(L, lua_gettop(L), "a place's position");
+                lua_pop(L, 1);
+                const auto number = [&](const char* name, float& out, double low, double high, const char* why) {
+                    lua_getfield(L, at, name);
+                    if (!lua_isnil(L, -1)) {
+                        const double v = luaL_checknumber(L, -1);
+                        if (!(v >= low && v <= high)) luaL_error(L, "%s", why);
+                        out = static_cast<float>(v);
+                    }
+                    lua_pop(L, 1);
+                };
+                number("radius", place.radius, 0.05, 10, "a place's radius is 0.05 to 10 metres");
+                number("height", place.height, 0.1, 20, "a place's height is 0.1 to 20 metres");
+                places.push_back(place);
+                lua_pop(L, 1);
+            }
+        }
+        const auto why = p.services_.game().world_cover_clear(p.id_, places);
+        if (!why.empty()) { lua_pushnil(L); lua_pushlstring(L, why.data(), why.size()); return 2; }
+        lua_pushboolean(L, 1); return 1;
+    }
     static int clear(lua_State* L) {
         auto& p = caller(L);
         p.services_.game().effects_clear(p.id_); p.effect_handles_.clear(); return 0;
@@ -99,6 +190,6 @@ struct EffectsApi {
 void install_effects_api(Plugin&, lua_State* L) {
     add_functions(L, "effects", {{"particle", EffectsApi::particle}, {"decal", EffectsApi::decal},
         {"move", EffectsApi::move}, {"stop", EffectsApi::stop}, {"opacity", EffectsApi::opacity},
-        {"release", EffectsApi::release}, {"clear", EffectsApi::clear}, {"state", EffectsApi::state}});
+        {"release", EffectsApi::release}, {"clear", EffectsApi::clear}, {"state", EffectsApi::state}, {"cover", EffectsApi::cover}, {"keep_clear", EffectsApi::keep_clear}});
 }
 }
