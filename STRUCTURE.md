@@ -151,7 +151,7 @@ commands and a `Test/` folder.
 | `Trainer/` | trick trainer: waypoints, jumps, landings, presets |
 | `Travel/` | location travel |
 | `UI/` | the in-game UI (see below) |
-| `World/` | level loading, loading screens, time/atmosphere, population, park rotation, world layers, engine guards, native bodies plugins own |
+| `World/` | level loading, loading screens, time/atmosphere (and `time_of_day_lighting`: the shadow and sky caches held off after a change of time), population, park rotation, world layers, engine guards, native bodies plugins own |
 | `AnimationStudio/` | animation core |
 
 ### `Extension/Multiplayer/`
@@ -190,7 +190,8 @@ The Luau plugin host. A plugin is a folder in `Mods/` with a `reskate-plugin.jso
   owns their native references, surface attachments and world lifetime.
   `reskate.effects.cover` (same permission) lays a cover (snow, sand, dust) over the world's upward-facing
   surfaces, drawn by `Extension/UI/Overlay/world_cover` into the finished scene just before the game adds
-  its UI.
+  its UI. [contrib/snow-skate.md](contrib/snow-skate.md) says what it and the other calls Snow Skate needs
+  are for.
 - [Item origins and favorites](https://docs.reskate.dev/plugins/api/mods) — `reskate.mods.item_origins` and
   `reskate.menu.favorites`, read-only, for plugins that filter the item grids.
 - [Other players' items](https://docs.reskate.dev/plugins/api/session#other-players-items) — `reskate.session.outfit` and
