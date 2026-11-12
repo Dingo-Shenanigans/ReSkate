@@ -204,6 +204,17 @@ int main(int argc, char **argv) {
         check(center && close_float((*center)[0], 800) && close_float((*center)[1], 450),
               "Camera origin/projection differs");
         check(!camera.project({10, 3, 13}), "Points behind the camera are pickable");
+        {
+            // The game's camera matrix carries SIMD padding in each row's fourth lane, which can
+            // hold anything; the editor flew only after a pause cleared it.
+            auto padded = camera;
+            const float nan = std::numeric_limits<float>::quiet_NaN();
+            for (const std::size_t lane : {3u, 7u, 11u, 15u})
+                padded.world[lane] = nan;
+            check(padded.valid() && padded.project({10, 3, 0}).has_value(), "Padding in the camera matrix refuses the camera");
+            padded.world[12] = nan;
+            check(!padded.valid(), "A camera with no position is accepted");
+        }
         const Vec3 target{12, 1, 0};
         const auto screen = camera.project(target);
         check(screen.has_value(), "Front point rejected");
