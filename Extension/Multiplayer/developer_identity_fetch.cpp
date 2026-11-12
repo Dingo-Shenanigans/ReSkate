@@ -28,12 +28,13 @@ void fetch() noexcept {
         if (answer) {
             auto lists = parse_identity_lists(*answer);
             server_tokens_rule = parse_server_tokens_required(*answer);
-            const auto developers = lists[0].size(), homies = lists[1].size(), creators = lists[2].size(),
-                       bans = lists[static_cast<std::size_t>(IdentityList::banned)].size();
+            const auto count = [&](IdentityList list) { return lists[static_cast<std::size_t>(list)].size(); };
+            const auto developers = count(IdentityList::developer), staff = count(IdentityList::staff), centrix = count(IdentityList::centrix),
+                       homies = count(IdentityList::homie), creators = count(IdentityList::content_creator), bans = count(IdentityList::banned);
             if (publish_identity_lists(std::move(lists)) || failing)
                 logging::log(logging::Level::info, logging::Channel::runtime,
-                             "Identity lists: {} developer(s), {} homie(s), {} content creator(s), {} banned.", developers,
-                             homies, creators, bans);
+                             "Identity lists: {} developer(s), {} staff, {} Centrix, {} homie(s), {} content creator(s), {} banned.", developers,
+                             staff, centrix, homies, creators, bans);
             // The chat word lists come in the same answer (word_lists.h).
             if (const auto words = use_word_lists(*answer); words.changed)
                 logging::log(logging::Level::info, logging::Channel::runtime,
@@ -42,8 +43,12 @@ void fetch() noexcept {
             ok = true;
         } else if (!failing) {
             logging::log(logging::Level::info, logging::Channel::runtime,
-                         "Identity lists unavailable (HTTP {}, error {}); trying again every minute.", download.http_status,
-                         download.error);
+                         "Identity lists unavailable (HTTP {}, error {}{}); trying again every minute.", download.http_status,
+                         download.error,
+                         // 12175, ERROR_WINHTTP_SECURE_FAILURE: seen on a PC whose Windows lacked the
+                         // root api.reskate.dev's certificate chains to (Windows fetches newer roots
+                         // itself unless that is turned off). Its own tags and STYLE options go too.
+                         download.error == 12175 ? ", no secure connection: this PC's Windows may be missing a root certificate" : "");
         }
     } catch (const std::exception &e) {
         if (!failing)
