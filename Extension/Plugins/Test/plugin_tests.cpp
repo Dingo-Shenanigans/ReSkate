@@ -412,6 +412,13 @@ struct FakeGame final : Game {
         surface_fields = fields;
         return {};
     }
+    // Each trainer preset held (its name, and its values) or let go (nullopt).
+    std::vector<std::optional<std::pair<std::string, std::map<std::string, double, std::less<>>>>> trainer_presets;
+    std::string trainer_preset(std::string_view, std::string_view name, std::optional<std::map<std::string, double, std::less<>>> values) override {
+        if (values) trainer_presets.emplace_back(std::pair(std::string(name), std::move(*values)));
+        else trainer_presets.emplace_back(std::nullopt);
+        return {};
+    }
     std::vector<std::pair<std::string, bool>> chosen_variants; // each choice, and whether it went in now
     std::string choose_variant(std::string_view, const std::filesystem::path&, std::string_view variant, bool now) override {
         chosen_variants.emplace_back(std::string(variant), now);
@@ -1572,6 +1579,33 @@ void a_variant_can_wait_for_the_next_launch() {
     running(host, "variant-chooser", environment);
     const std::vector<std::pair<std::string, bool>> expected{{"snowskate", true}, {"standard", false}, {"standard", true}};
     check(environment.fake.chosen_variants == expected, "choose keeps a variant for the next launch only when now is false");
+}
+
+void a_plugin_holds_a_trainer_preset() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({script("preset-holder", R"(
+        assert(reskate.trainer.hold_preset("SnowSkate", {["PhysicsMode.JumpMaxHeight"] = 1.29, ["trick.gravity"] = 1.15}))
+        assert(reskate.trainer.hold_preset(nil))
+        assert(not pcall(reskate.trainer.hold_preset, "", {a = 1}), "a name is needed")
+        assert(not pcall(reskate.trainer.hold_preset, "x", {}), "a value is needed")
+        assert(not pcall(reskate.trainer.hold_preset, "x", {a = "high"}), "values are numbers")
+    )", R"("trainer")")});
+    running(host, "preset-holder", environment);
+    const auto& held = environment.fake.trainer_presets;
+    check(held.size() == 2 && held[0] && held[0]->first == "SnowSkate" && held[0]->second.size() == 2 &&
+              held[0]->second.contains("physicsmode.jumpmaxheight") && held[0]->second.at("trick.gravity") == 1.15 && !held[1],
+          "a preset is held with its values (ids in lower case), then let go");
+
+    // Without the permission it is refused.
+    TestEnvironment denied_environment;
+    Host denied(denied_environment, Side::client);
+    denied.apply({script("preset-denied", R"(
+        local ok, why = pcall(reskate.trainer.hold_preset, "SnowSkate", {a = 1})
+        assert(not ok and why:find("trainer", 1, true), tostring(why))
+    )")});
+    running(denied, "preset-denied", denied_environment);
+    check(denied_environment.fake.trainer_presets.empty(), "a plugin without trainer held a trainer preset");
 }
 
 void traffic_vehicles_are_permissioned_bounded_and_released() {
@@ -7309,6 +7343,7 @@ int main() {
         std::filesystem::remove_all(scratch);
         run(a_manifest_says_what_a_plugin_is);
         run(a_variant_can_wait_for_the_next_launch);
+        run(a_plugin_holds_a_trainer_preset);
         run(the_skater_surface_sound_is_set_for_some_fields);
         run(the_time_of_day_is_read_and_the_cover_melts);
         run(ui_value_reservations_enforce_limits_and_collisions);

@@ -320,6 +320,35 @@ struct WorldApi {
         default: return result(L, "teleporting is unavailable now");
         }
     }
+    // hold_preset(name, {[id] = number, ...}): the plugin's preset in the trainer, held: every other preset
+    // and change is off while it holds, and the player cannot change them; the player's own come back, as
+    // they were, on hold_preset(nil) or when the plugin stops. Ids as the trainer's presets name them
+    // (tuning values and its settings). Not saved, and not put among the player's presets.
+    static int hold_preset(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "trainer", "reskate.trainer.hold_preset");
+        if (lua_isnoneornil(L, 1)) return result(L, game_of(plugin).trainer_preset(plugin.id(), {}, std::nullopt));
+        std::size_t length{};
+        const char* name = luaL_checklstring(L, 1, &length);
+        if (length == 0 || length > 48) luaL_argerror(L, 1, "a preset's name is 1 to 48 characters");
+        luaL_checktype(L, 2, LUA_TTABLE);
+        std::map<std::string, double, std::less<>> values;
+        lua_pushnil(L);
+        while (lua_next(L, 2) != 0) {
+            if (lua_type(L, -2) != LUA_TSTRING) luaL_error(L, "a preset's values are {[id] = number}");
+            std::size_t key_length{};
+            const char* key = lua_tolstring(L, -2, &key_length);
+            const double value = lua_isnumber(L, -1) ? lua_tonumber(L, -1) : NAN;
+            if (key_length == 0 || key_length > 200 || !std::isfinite(value)) luaL_error(L, "a preset's values are {[id] = number}, each finite");
+            std::string id(key, key_length);
+            for (auto& c : id) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            values[std::move(id)] = value;
+            if (values.size() > 512) luaL_error(L, "a preset holds at most 512 values");
+            lua_pop(L, 1);
+        }
+        if (values.empty()) luaL_argerror(L, 2, "a preset holds at least one value");
+        return result(L, game_of(plugin).trainer_preset(plugin.id(), std::string_view(name, length), std::move(values)));
+    }
     // ---- hud ---------------------------------------------------------------------------------------
     static int hide_hud(lua_State* L) {
         auto& plugin = plugin_of(L);
@@ -3597,7 +3626,7 @@ void WorldApi::install(Plugin& plugin, lua_State* L) {
                                {"park", board_park}, {"fit", board_fit}, {"toss", board_toss}, {"parameters", board_parameters},
                                {"set_parameter", board_set_parameter}, {"clear_parameter", board_clear_parameter}, {"parameter_scopes", board_parameter_scopes}});
     add_functions(L, "camera", {{"look", camera_look}, {"set", camera_set}, {"follow", camera_follow}, {"release", camera_release}, {"held", camera_held}, {"get", camera_get}, {"cycle", camera_cycle}});
-    add_functions(L, "trainer", {{"set_point", set_point}, {"back", back}});
+    add_functions(L, "trainer", {{"set_point", set_point}, {"back", back}, {"hold_preset", hold_preset}});
     add_functions(L, "hud", {{"hide", hide_hud}, {"corner", hud_corner}, {"score_line", score_line}});
     add_functions(L, "time", {{"slow", slow}, {"speed", speed}});
     add_functions(L, "objects", {{"catalog", catalog}, {"list", objects}, {"place", place}, {"move", move}, {"remove", remove}});

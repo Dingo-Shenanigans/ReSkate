@@ -977,6 +977,9 @@ public:
     }
     virtual std::vector<Tuning> find_tuning(std::string_view /*text*/, std::size_t /*most*/) { return {}; }
     virtual std::string tune(std::string_view /*plugin*/, std::string_view /*id*/, std::optional<double> /*value*/) { return unavailable; }
+    // The plugin's preset held in the trainer (trainer::plugin_preset): no values lets go. Empty when done, else why not.
+    virtual std::string trainer_preset(std::string_view /*plugin*/, std::string_view /*name*/,
+                                       std::optional<std::map<std::string, double, std::less<>>> /*values*/) { return unavailable; }
     virtual std::string replace_trick(std::string_view /*plugin*/, std::string /*trick*/, std::string /*pop*/, ClipRef, float /*speed*/) {
         return unavailable;
     }

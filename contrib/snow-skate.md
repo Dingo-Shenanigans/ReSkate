@@ -99,6 +99,25 @@ variant of each mod is in.
 **What Snow Skate uses it for:** **Snow Skate Deck on Reboot**, which chooses whether the next launch starts
 with the snowskate deck (the mod's `snowskate` variant) or the standard one, without a reload now.
 
+## `reskate.trainer.hold_preset(name, {[id] = number, ...} | nil)`
+
+Permission: `trainer`.
+
+The plugin's own trainer preset is held, under its own name. While it holds:
+
+- every other preset and change is off;
+- the trainer is locked for the player, and its menu says which plugin holds it;
+- the player's own setup is not saved over, and their presets are never touched or overwritten.
+
+On `hold_preset(nil)`, or when the plugin stops, the player's presets and changes come back exactly as they
+were. Ids are as the trainer's own presets name them: tuning values and its settings. The preset is held
+again on each new level's copy of the tuning.
+
+**What Snow Skate uses it for:** a **SnowSkate** preset (jump heights, spin and flip speeds, grind and
+transition settings tuned for a snowskate), enforced only while the snowskate deck and tread are in.
+
+**Code:** `trainer::plugin_preset` in `Extension/Trainer/trainer.cpp`, beside `plugin_tune`.
+
 ## Time-of-day lighting
 
 This is in `Extension/World/time_of_day_lighting.{h,cpp}` and is not a plugin API.

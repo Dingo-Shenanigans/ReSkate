@@ -1481,6 +1481,10 @@ public:
     std::string tune(std::string_view plugin, std::string_view id, std::optional<double> value) override {
         return trainer::plugin_tune(plugin, id, value);
     }
+    std::string trainer_preset(std::string_view plugin, std::string_view name,
+                               std::optional<std::map<std::string, double, std::less<>>> values) override {
+        return trainer::plugin_preset(plugin, name, std::move(values));
+    }
     std::optional<JointPlace> skater_joint(std::uint64_t player, std::uint16_t joint) override {
         if (!player) {
             const auto at = skater_animation::joint(joint);
