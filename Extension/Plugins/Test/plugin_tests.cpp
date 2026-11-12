@@ -457,7 +457,8 @@ struct FakeGame final : Game {
         return found;
     }
     bool declared_holds_deck(int part) const { return declared_rules && part == 0; }
-    std::optional<std::vector<BoardParameter>> board_parameters(int part) override {
+    std::optional<std::vector<BoardParameter>> board_parameters(int part, bool preview_scope = false) override {
+        if (preview_scope) calls.push_back("preview parameters");
         if (declared_holds_deck(part)) {
             std::vector<BoardParameter> out;
             for (const auto& p : board_material::detail::listed(declared_board(), board_material::Part::deck)) {
@@ -473,7 +474,8 @@ struct FakeGame final : Game {
                                            {0xb00abec403499469ULL, "integer", {}, 13},
                                            {0xa5f9a6b8098279adULL, "switch", {}, 1}};
     }
-    std::string board_set_parameter(std::string_view plugin, int part, std::uint64_t key, std::array<float, 3> value, bool colour) override {
+    std::string board_set_parameter(std::string_view plugin, int part, std::uint64_t key, std::array<float, 3> value, bool colour, bool preview_scope = false) override {
+        if (preview_scope) calls.push_back("preview set");
         if (declared_holds_deck(part)) {
             auto why = board_material::detail::take(declared_holds, declared_board(), plugin, board_material::Part::deck, key, value, colour);
             if (why.empty()) calls.push_back(std::format("board parameter {} {} {:016x} {} {:.1f}", plugin, part, key, colour ? "colour" : "number", value[0]));
@@ -482,7 +484,8 @@ struct FakeGame final : Game {
         calls.push_back(std::format("board parameter {} {} {:016x} {} {:.1f}", plugin, part, key, colour ? "colour" : "number", value[0]));
         return {};
     }
-    void board_clear_parameter(std::string_view plugin, int part, std::optional<std::uint64_t> key) override {
+    void board_clear_parameter(std::string_view plugin, int part, std::optional<std::uint64_t> key, bool preview_scope = false) override {
+        if (preview_scope) calls.push_back("preview clear");
         calls.push_back(std::format("board parameter clear {} {} {}", plugin, part, key ? std::format("{:016x}", *key) : "all"));
         board_material::detail::release(declared_holds, plugin, part < 0 ? std::nullopt : std::optional(static_cast<board_material::Part>(part)), key);
     }
@@ -6108,6 +6111,40 @@ void web_requests_go_only_to_listed_domains() {
 }
 
 
+void preview_board_material_scope() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({script("preview_material", R"(
+        assert(reskate.board.parameter_scopes()[2] == "preview")
+        assert(#reskate.board.parameters("grip", "preview") == 4)
+        assert(reskate.board.set_parameter("grip", "graphic", {r=.3, g=.4, b=.5}, "preview"))
+        reskate.board.clear_parameter(nil, nil, "preview")
+        assert(not pcall(reskate.board.parameters, "deck", "other"))
+        assert(not pcall(reskate.board.set_parameter, "deck", "base", 1, "other"))
+        assert(not pcall(reskate.board.clear_parameter, nil, nil, "other"))
+        reskate.log("preview material routed")
+    )", R"("board", "room")"), script("preview_denied", R"(
+        local ok, why = pcall(reskate.board.parameters, "deck", "preview")
+        assert(not ok and why:find('needs the "room" permission'), tostring(why))
+        ok, why = pcall(reskate.board.set_parameter, "deck", "base", {r=0,g=0,b=0}, "preview")
+        assert(not ok and why:find('needs the "room" permission'), tostring(why))
+        ok, why = pcall(reskate.board.clear_parameter, nil, nil, "preview")
+        assert(not ok and why:find('needs the "room" permission'), tostring(why))
+        reskate.log("preview room permission enforced")
+    )", R"("board")"), script("preview_no_board", R"(
+        assert(not pcall(reskate.board.parameter_scopes))
+        assert(not pcall(reskate.board.parameters, "deck", "preview"))
+        assert(not pcall(reskate.board.set_parameter, "deck", "base", 0, "preview"))
+        assert(not pcall(reskate.board.clear_parameter, nil, nil, "preview"))
+        reskate.log("preview board permission enforced")
+    )", R"("room")")});
+    check(environment.logged("preview material routed") && environment.logged("preview room permission enforced") &&
+          environment.logged("preview board permission enforced"), "Preview scope permissions\n" + environment.all());
+    const auto& calls = environment.fake.calls;
+    for (const auto* expected : {"preview parameters", "preview set", "preview clear"})
+        check(std::count(calls.begin(), calls.end(), expected) == 1, "Preview scope dispatch once");
+}
+
 void declared_board_colours_through_the_api() {
     TestEnvironment environment;
     environment.fake.declared_rules = true;
@@ -7175,6 +7212,7 @@ int main() {
         run(web_requests_go_only_to_listed_domains);
         run(game_menu_distinguishes_unknown_from_closed);
         run(the_wider_set_reaches_the_game);
+        run(preview_board_material_scope);
         run(declared_board_colours_through_the_api);
         run(key_names_become_binds);
         run(level_events_reach_plugins);

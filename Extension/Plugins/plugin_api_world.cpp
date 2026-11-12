@@ -2035,6 +2035,23 @@ struct WorldApi {
         luaL_argerror(L, index, "a part is \"deck\", \"grip\", \"trucks\" or \"wheels\"");
         return 0;
     }
+    // Preview material access needs the room permission as well as board, and never selects an actor by pointer.
+    static int board_parameter_scopes(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "board", "reskate.board.parameter_scopes");
+        lua_createtable(L, 2, 0);
+        lua_pushstring(L, "gameplay"); lua_rawseti(L, -2, 1);
+        lua_pushstring(L, "preview"); lua_rawseti(L, -2, 2);
+        return 1;
+    }
+    static bool board_preview(lua_State* L, Plugin& plugin, int index) {
+        if (lua_isnoneornil(L, index)) return false;
+        const std::string_view scope = luaL_checkstring(L, index);
+        if (scope == "gameplay") return false;
+        if (scope != "preview") luaL_argerror(L, index, "scope is \"gameplay\" or \"preview\"");
+        need(L, plugin, "room", "preview board parameters");
+        return true;
+    }
     static std::uint64_t board_parameter_key(lua_State* L, int index) {
         std::size_t length{};
         const char* text = luaL_checklstring(L, index, &length);
@@ -2045,7 +2062,8 @@ struct WorldApi {
         if (length != 16 || error != std::errc{} || end != text + length) luaL_argerror(L, index, "a key is 16 hex digits, \"graphic\" or \"base\"");
         return key;
     }
-    // parameters(part): {{key = "873f48af36e50d59", name = "graphic", type = "colour", value = {r, g, b}}, ...}
+    // Scope defaults to gameplay; preview requires room permission and the observed preview item's own declarations.
+    // parameters(part [, scope]): {{key = "873f48af36e50d59", name = "graphic", type = "colour", value = {r, g, b}}, ...}
     // as the part's material holds them now, or nil without a board. A number's value is a number, an
     // integer's an integer, a switch's true or false. A colour or a number the equipped item's mod
     // declares (reskate-materials.json) that the material does not hold yet comes with inherited =
@@ -2053,7 +2071,7 @@ struct WorldApi {
     static int board_parameters(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "board", "reskate.board.parameters");
-        const auto found = game_of(plugin).board_parameters(board_part(L, 1));
+        const auto found = game_of(plugin).board_parameters(board_part(L, 1), board_preview(L, plugin, 2));
         if (!found) {
             lua_pushnil(L);
             return 1;
@@ -2098,7 +2116,7 @@ struct WorldApi {
         }
         return 1;
     }
-    // set_parameter(part, key, value): a colour {r, g, b} (0 to 1) or a number held on the part until
+    // set_parameter(part, key, value [, scope]): a colour {r, g, b} (0 to 1) or a number held on the part until
     // cleared, on this screen; an integer or a switch is only read. A colour the equipped item's mod
     // declares is added to the material and goes back to its declared default when let go, or when
     // that item is no longer on the board.
@@ -2122,16 +2140,16 @@ struct WorldApi {
             value[0] = static_cast<float>(luaL_checknumber(L, 3));
         }
         if (!std::all_of(value.begin(), value.end(), [](float v) { return std::isfinite(v); })) luaL_argerror(L, 3, "a value is finite");
-        return result(L, game_of(plugin).board_set_parameter(plugin.id(), part, key, value, colour));
+        return result(L, game_of(plugin).board_set_parameter(plugin.id(), part, key, value, colour, board_preview(L, plugin, 4)));
     }
-    // clear_parameter([part [, key]]): what the plugin holds there put back (every part, every key).
+    // clear_parameter([part [, key [, scope]]]): what the plugin holds there put back (every part, every key).
     static int board_clear_parameter(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "board", "reskate.board.clear_parameter");
         const int part = lua_isnoneornil(L, 1) ? -1 : board_part(L, 1);
         std::optional<std::uint64_t> key;
         if (!lua_isnoneornil(L, 2)) key = board_parameter_key(L, 2);
-        game_of(plugin).board_clear_parameter(plugin.id(), part, key);
+        game_of(plugin).board_clear_parameter(plugin.id(), part, key, board_preview(L, plugin, 3));
         return 0;
     }
     // ---- outfit ------------------------------------------------------------------------------------------
@@ -3448,7 +3466,7 @@ void WorldApi::install(Plugin& plugin, lua_State* L) {
                                 {"shape_launch", shape_launch}, {"hide", hide_skater}, {"reach", reach}, {"carry", carry}, {"hand", hand}, {"joint", skater_joint}, {"pose", skater_pose}});
     add_functions(L, "board", {{"motion", board_motion}, {"bones", board_bones}, {"set", board_set}, {"hide", board_hide}, {"clear", board_clear}, {"scale", board_scale},
                                {"park", board_park}, {"fit", board_fit}, {"toss", board_toss}, {"parameters", board_parameters},
-                               {"set_parameter", board_set_parameter}, {"clear_parameter", board_clear_parameter}});
+                               {"set_parameter", board_set_parameter}, {"clear_parameter", board_clear_parameter}, {"parameter_scopes", board_parameter_scopes}});
     add_functions(L, "camera", {{"look", camera_look}, {"set", camera_set}, {"follow", camera_follow}, {"release", camera_release}, {"held", camera_held}, {"get", camera_get}, {"cycle", camera_cycle}});
     add_functions(L, "trainer", {{"set_point", set_point}, {"back", back}});
     add_functions(L, "hud", {{"hide", hide_hud}, {"corner", hud_corner}, {"score_line", score_line}});

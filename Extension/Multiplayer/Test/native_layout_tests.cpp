@@ -431,6 +431,26 @@ void board_regression() {
     visual = read_native_board_visual(m, fixture_base, board);
     check(visual.initialized && visual.enabled && visual.meshes == 3,
           "Initialized board meshes not recognized");
+    // Relocate the constructed holder into the board allocation, as observed in both live actors.
+    const auto embedded = board + dingosdk::addr::native_skater::board_embedded_holder_offset;
+    auto render = m;
+    for (const auto& [address, byte] : m.bytes)
+        if (address >= fixture_holder && address < fixture_holder + 0x100)
+            render.bytes[embedded + address - fixture_holder] = byte;
+    render.put(board + 0xf0, embedded);
+    check(read_native_board_render_owner(render, fixture_base, embedded) == board, "Render owner not resolved");
+    for (unsigned test = 0; test < 5; ++test) {
+        auto invalid = render;
+        if (test == 0) invalid.put(board, fixture_base + engine::board_entity_vtable + 8);
+        if (test == 1) invalid.put(board + 0xf0, fixture_holder);
+        if (test == 2) invalid.put(embedded + 0x20, std::uintptr_t{0x120000});
+        if (test == 3) invalid.put(embedded + 0x30, parent + 8);
+        if (test == 4) invalid.put(mesh + 0x18, skater_collection);
+        bool rejected{};
+        try { (void)read_native_board_render_owner(invalid, fixture_base, embedded); }
+        catch (const std::exception&) { rejected = true; }
+        check(rejected, "Unowned render board accepted");
+    }
     for (unsigned test = 0; test < 7; ++test) {
         auto invalid = m;
         if (test == 0)
