@@ -1405,7 +1405,7 @@ void open_page(SkateMenu& menu, int page, int tab) {
 }
 
 namespace {
-// A plugin's own page, opened straight from the page list (the window's rail, the sheet's names), as
+// A plugin's own page, opened straight from the page list (the window's rail), as
 // it was before the PLUGINS list: players found the list's extra step a hassle. Empty `plugin`: the
 // list itself.
 void open_plugin_page(SkateMenu& menu, const std::string& plugin) {
@@ -1792,57 +1792,35 @@ void draw_sheet(SkateMenu& menu, const Model& model, const CallbacksV3& callback
             // it sits in the middle: which pages LB and RB lead to reads at a glance (dots did not).
             const float size_text = px(13), spacing = px(16), y = origin.y + px(70);
             const float left = origin.x + pad_x + rb_width + px(14), right = origin.x + size.x - pad_x - rb_width - px(14);
-            // Each plugin's own page by its name too, after PLUGINS (in the blue), opened with one click.
-            struct Name {
-                int page;
-                std::string plugin, label;
-                float w;
-            };
-            std::vector<Name> names;
+            // (Plugins' own pages are listed only in the window's rail; here PLUGINS opens their list.)
+            std::vector<std::pair<int, float>> names;
             float total = 0, before = 0;
-            const auto pages = plugin_pages();
             for (int i = 0; i < page_count; ++i) {
                 if (page_hidden(model, i)) continue;
-                const char* label = page_names[static_cast<std::size_t>(i)];
-                const float w = menu.bold->CalcTextSizeA(size_text, FLT_MAX, 0, label).x;
-                if (i == menu.page && (i != page_plugins || !drilled_plugin_page(menu))) before = total + w * .5f;
-                names.push_back({i, {}, label, w});
+                const float w = menu.bold->CalcTextSizeA(size_text, FLT_MAX, 0, page_names[static_cast<std::size_t>(i)]).x;
+                if (i == menu.page) before = total + w * .5f;
+                names.emplace_back(i, w);
                 total += w + spacing;
-                if (i == page_plugins && pages)
-                    for (const auto& entry : *pages) {
-                        std::string upper = entry.title;
-                        for (auto& c : upper) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-                        const float pw = menu.bold->CalcTextSizeA(size_text, FLT_MAX, 0, upper.c_str()).x;
-                        if (on_plugin_page(menu, entry.plugin)) before = total + pw * .5f;
-                        names.push_back({i, entry.plugin, upper, pw});
-                        total += pw + spacing;
-                    }
             }
             total -= spacing;
             const float middle = (left + right) * .5f;
             float x = total <= right - left ? middle - total * .5f : std::clamp(middle - before, right - total, left);
             draw->PushClipRect(ImVec2(left, y - px(4)), ImVec2(right, y + px(22)), true);
-            for (const auto& shown_name : names) {
-                const int i = shown_name.page;
-                const float w = shown_name.w;
-                const bool plugin = !shown_name.plugin.empty();
-                const bool open = plugin ? on_plugin_page(menu, shown_name.plugin) : i == menu.page && (i != page_plugins || !drilled_plugin_page(menu));
+            for (const auto& [i, w] : names) {
+                const bool open = i == menu.page;
                 ImGui::SetCursorScreenPos(ImVec2(x - spacing * .5f, y - px(4)));
                 ImGui::PushID(i);
-                ImGui::PushID(shown_name.plugin.c_str());
                 ImGui::PushItemFlag(ImGuiItemFlags_NoNav, true);
                 const bool visible_name = x + w > left && x < right;
                 if (visible_name && ImGui::InvisibleButton("##page-name", ImVec2(w + spacing, px(24)))) {
-                    if (i == page_plugins) open_plugin_page(menu, shown_name.plugin);
+                    if (i == page_plugins) open_plugin_page(menu, {});
                     else open_page(menu, i);
                 }
                 const bool hovered = visible_name && ImGui::IsItemHovered();
                 ImGui::PopItemFlag();
                 ImGui::PopID();
-                ImGui::PopID();
-                draw->AddText(menu.bold, size_text, ImVec2(x, y),
-                              open ? paper : hovered ? IM_COL32(210, 212, 216, 255) : plugin ? IM_COL32(110, 170, 235, 255) : skate_theme::grey_text,
-                              shown_name.label.c_str());
+                draw->AddText(menu.bold, size_text, ImVec2(x, y), open ? paper : hovered ? IM_COL32(210, 212, 216, 255) : skate_theme::grey_text,
+                              page_names[static_cast<std::size_t>(i)]);
                 if (open) draw->AddRectFilled(ImVec2(x - px(2), y + px(17)), ImVec2(x + w + px(2), y + px(20)), blue);
                 x += w + spacing;
             }
