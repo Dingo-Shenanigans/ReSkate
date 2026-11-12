@@ -1023,13 +1023,13 @@ public:
         // yet: `value` is the default its shader has; set_parameter adds it.
         bool inherited{};
     };
-    virtual std::optional<std::vector<BoardParameter>> board_parameters(int /*part*/) { return std::nullopt; }
+    virtual std::optional<std::vector<BoardParameter>> board_parameters(int /*part*/, bool /*preview*/ = false) { return std::nullopt; }
     // A colour (`colour`, all three) or a number (value[0]) held there until cleared; empty when held.
-    virtual std::string board_set_parameter(std::string_view /*plugin*/, int /*part*/, std::uint64_t, std::array<float, 3>, bool /*colour*/) {
+    virtual std::string board_set_parameter(std::string_view /*plugin*/, int /*part*/, std::uint64_t, std::array<float, 3>, bool /*colour*/, bool /*preview*/ = false) {
         return unavailable;
     }
     // Part -1: every part; no key: every key.
-    virtual void board_clear_parameter(std::string_view /*plugin*/, int /*part*/, std::optional<std::uint64_t>) {}
+    virtual void board_clear_parameter(std::string_view /*plugin*/, int /*part*/, std::optional<std::uint64_t>, bool /*preview*/ = false) {}
     // ---- variants: of the plugin's own mod (Engine/Vfs/mod_list.h Variants) -----------------------------
     struct VariantState {
         std::vector<std::string> installed; // its "order" first
