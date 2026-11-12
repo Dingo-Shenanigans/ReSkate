@@ -21,7 +21,9 @@ cbuffer constants : register(b0) {
 };
 Texture2D<float4> scene : register(t0);
 Texture2D<float> depth : register(t1);
-// The cameras ps_measure tries (world_cover.cpp's camera_candidates): each its right, up, back and eye.
+// The cameras ps_measure tries (world_cover.cpp's camera_candidates): each its right, up, back and eye;
+// then two float4s a place kept clear: a board-shaped one's forward and half length, its up and half
+// width (w 0: an upright cylinder).
 StructuredBuffer<float4> cameras : register(t3);
 #define CANDIDATES 1
 
@@ -311,6 +313,21 @@ Output ps_main(Vertex input) {
             const float3 from = here - clears[c].xyz;
             const float radius = clears[c].w;
             const float height = c == 0 ? clear_info.y : c == 1 ? clear_info.z : clear_info.w;
+            // A board-shaped place (a deck on the ground): everything in it is clear, in its own plane only,
+            // so the ground under a deck tipped up or in the air keeps its cover. Rounded at its ends, as a
+            // deck is. The ground test below took a deck riding low for the ground, and snow stayed on its
+            // griptape (2026-11-12).
+            const float4 axis = cameras[CANDIDATES * 4 + c * 2], side_axis = cameras[CANDIDATES * 4 + c * 2 + 1];
+            if (axis.w > 0) {
+                const float along = dot(from, axis.xyz), up = dot(from, side_axis.xyz);
+                const float across = length(from - axis.xyz * along - side_axis.xyz * up);
+                const float straight = max(axis.w - side_axis.w, 0);
+                const float edge = length(float2(along - clamp(along, -straight, straight), across));
+                const float in_board = (1 - smoothstep(side_axis.w - 0.01, side_axis.w, edge)) *
+                                       (1 - smoothstep(height * 0.5 - 0.005, height * 0.5, abs(up)));
+                cover *= 1 - in_board;
+                continue;
+            }
             const float inside = 1 - smoothstep(radius * 0.75, radius, length(from.xz));
             if (inside <= 0 || from.y < -0.5 || from.y > height) continue;
             float ground = here.y, ring = 0;

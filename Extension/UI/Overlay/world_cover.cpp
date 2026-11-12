@@ -48,7 +48,8 @@ constexpr std::size_t camera_candidates = 1;
 constexpr std::size_t camera_floats = 12; // right, up, back, eye
 // The cameras go to the shaders in a buffer (world_cover.hlsl's t3: four float4s a camera), one part
 // of the upload buffer per command allocator.
-constexpr UINT64 camera_slice = (camera_candidates * 4 * 16 + 255) / 256 * 256;
+// After them, two float4s a place kept clear (a board-shaped one's axes and size; nothing for a cylinder).
+constexpr UINT64 camera_slice = ((camera_candidates * 4 + most_clear * 2) * 16 + 255) / 256 * 256;
 // The measurements: one row a candidate camera, a column a point (ps_measure), read back by the CPU.
 constexpr UINT measure_columns = 32;
 constexpr UINT measure_pitch = D3D12_TEXTURE_DATA_PITCH_ALIGNMENT;
@@ -941,6 +942,18 @@ bool record_cover(Shared& s) {
             for (std::size_t v = 0; v < 4; ++v) {
                 to[v * 4] = from[v * 3], to[v * 4 + 1] = from[v * 3 + 1], to[v * 4 + 2] = from[v * 3 + 2], to[v * 4 + 3] = 0;
             }
+        }
+        // Each place kept clear: forward and half its length, then up and half its width (0: a cylinder).
+        float* const places = out + camera_candidates * 4 * 4;
+        for (std::size_t c = 0; c < most_clear; ++c) {
+            float* const to = places + c * 2 * 4;
+            const bool board = c < clear.size() && clear[c].length > 0;
+            for (std::size_t k = 0; k < 3; ++k) {
+                to[k] = board ? clear[c].forward[k] : 0;
+                to[4 + k] = board ? clear[c].up[k] : 0;
+            }
+            to[3] = board ? clear[c].length * 0.5f : 0;
+            to[7] = board ? clear[c].radius : 0;
         }
     }
     // Views: the picture's copy as the target's format reads it, and the game's depth as it is.

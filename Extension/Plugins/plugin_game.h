@@ -351,6 +351,10 @@ public:
     struct CoverClear {
         Vec3 foot{};
         float radius{0.6f}, height{2.0f};
+        // A board-shaped place (length > 0): `foot` its middle, `forward` along it and `up` out of it (unit,
+        // square to each other), `radius` its half width and `height` its thickness; everything in it is clear.
+        float length{};
+        Vec3 forward{0, 0, 1}, up{0, 1, 0};
     };
     virtual std::string world_cover_clear(std::string_view /*plugin*/, const std::vector<CoverClear>&) { return unavailable; }
 
