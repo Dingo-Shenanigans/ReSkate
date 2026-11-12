@@ -346,7 +346,7 @@ void note_targets(ID3D12GraphicsCommandList* list, UINT count, SIZE_T first_colo
                                          : std::format("{}: {} target(s), the first {}x{} in view format {} (resource format {})", how, count, desc.Width,
                                                        desc.Height, static_cast<unsigned>(view->format), static_cast<unsigned>(desc.Format));
         if (s.bindings_said.insert(kind).second)
-            logging::write(logging::Level::info, logging::Channel::graphics, "World cover: with the world's depth, " + kind + ".");
+            logging::write(logging::Level::debug, logging::Channel::graphics, "World cover: with the world's depth, " + kind + ".");
     }
     if (!fits || s.locked) return;
     auto& n = s.notes[list];
@@ -849,7 +849,7 @@ void take_measurements(Shared& s, const std::uint8_t* rows) {
         s.held_near = *half;
     }
     if (++s.measured_frames % 1800 == 300)
-        logging::printf(logging::Level::info, logging::Channel::graphics, "World cover: near distance %.5f (%zu of %u points agree).", s.held_near,
+        logging::printf(logging::Level::debug, logging::Channel::graphics, "World cover: near distance %.5f (%zu of %u points agree).", s.held_near,
                         best_count, measure_columns);
 }
 
@@ -1220,7 +1220,7 @@ void present(std::uint32_t width, std::uint32_t height) noexcept {
                     ++s.outcome_reports;
                     std::string line = "World cover: the last 600 frames:";
                     for (const auto& [what, count] : s.outcomes) line += std::format(" {} {};", what, count);
-                    logging::write(logging::Level::info, logging::Channel::graphics, line);
+                    logging::write(logging::Level::debug, logging::Channel::graphics, line);
                 }
                 s.outcomes.clear();
                 s.outcome_frames = 0;
@@ -1250,7 +1250,7 @@ void present(std::uint32_t width, std::uint32_t height) noexcept {
                 s.colour_format = best->second.format;
                 s.locked_missed = 0;
                 s.said_colour = true;
-                logging::printf(logging::Level::info, logging::Channel::graphics,
+                logging::printf(logging::Level::debug, logging::Channel::graphics,
                                 "World cover: the world's picture is the one written last after the depth in %u of %u frames (format %u).", best->second.count,
                                 s.frames_voted, static_cast<unsigned>(best->second.format));
             }
@@ -1425,7 +1425,7 @@ void on_barrier(ID3D12GraphicsCommandList* list, const D3D12_RESOURCE_BARRIER& b
                 colour_now.store(resource);
             }
             if (s.pictures_said.size() < 8 && s.pictures_said.insert(resource).second)
-                logging::printf(logging::Level::info, logging::Channel::graphics,
+                logging::printf(logging::Level::debug, logging::Channel::graphics,
                                 "World cover: a full-size float picture written (%llux%u, format %u, flags 0x%x, state 0x%x to 0x%x).",
                                 static_cast<unsigned long long>(desc.Width), desc.Height, static_cast<unsigned>(desc.Format), static_cast<unsigned>(desc.Flags),
                                 static_cast<unsigned>(b.Transition.StateBefore), static_cast<unsigned>(b.Transition.StateAfter));
