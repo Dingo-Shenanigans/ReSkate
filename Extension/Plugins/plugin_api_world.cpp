@@ -3283,8 +3283,10 @@ struct WorldApi {
         return result(L, game_of(plugin).hide_pad(plugin.id(), hidden));
     }
     // screen.look({bend, fov, bars, hood, grade, soft, scanlines, grain, age, dropouts, head_switching,
-    // tracking, smear, iris, rolling, text}): a camcorder look over the game's picture for 0.3 s, so
-    // every tick; nil ends it. One plugin at a time.
+    // tracking, smear, iris, rolling, text, strengths}): a camcorder look over the game's picture for 0.3 s,
+    // so every tick; nil ends it. One plugin at a time. `strengths` = {bars = 0..1, hood, grade, soft,
+    // scanlines, grain, dropouts, head_switching, smear}: how strongly each is drawn while it is on (1
+    // when not given; one that is off stays off).
     static int screen_look(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "overlay", "reskate.screen.look");
@@ -3314,6 +3316,24 @@ struct WorldApi {
         look.fov = static_cast<float>(number("fov", 60, 5, 170, "a look's fov is 5 to 170 degrees"));
         look.age = static_cast<float>(number("age", 0, 0, 1, "a look's tape age is 0 to 1"));
         look.rolling = number("rolling", -1, 0, 1e7, "a look's rolling is the seconds since the tape started, 0 or more");
+        lua_getfield(L, 1, "strengths");
+        if (!lua_isnil(L, -1)) {
+            luaL_checktype(L, -1, LUA_TTABLE);
+            const int strengths = lua_gettop(L);
+            const auto strength = [&](const char* name, float& into) {
+                lua_getfield(L, strengths, name);
+                if (!lua_isnil(L, -1)) {
+                    const double v = luaL_checknumber(L, -1);
+                    if (!(v >= 0 && v <= 1)) luaL_error(L, "a look's %s strength is 0 to 1", name);
+                    into = static_cast<float>(v);
+                }
+                lua_pop(L, 1);
+            };
+            strength("bars", look.bars_strength), strength("hood", look.hood_strength), strength("grade", look.grade_strength);
+            strength("soft", look.soft_strength), strength("scanlines", look.scanlines_strength), strength("grain", look.grain_strength);
+            strength("dropouts", look.dropouts_strength), strength("head_switching", look.head_switching_strength), strength("smear", look.smear_strength);
+        }
+        lua_pop(L, 1);
         lua_getfield(L, 1, "text");
         if (!lua_isnil(L, -1)) {
             luaL_checktype(L, -1, LUA_TTABLE);

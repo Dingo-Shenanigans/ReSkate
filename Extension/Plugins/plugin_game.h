@@ -1091,6 +1091,9 @@ public:
     struct ScreenLook {
         float bend{}, fov{60}, age{};
         bool bars{}, hood{}, grade{}, soft{}, scanlines{}, grain{}, dropouts{}, head_switching{}, tracking{}, smear{}, iris{};
+        // How strongly each of these is drawn while on, 0..1 (strengths = {grade = 0.6, ...}; 1 when not given).
+        float bars_strength{1}, hood_strength{1}, grade_strength{1}, soft_strength{1}, scanlines_strength{1}, grain_strength{1},
+            dropouts_strength{1}, head_switching_strength{1}, smear_strength{1};
         double rolling{-1};
         std::array<std::string, 5> text;
     };
