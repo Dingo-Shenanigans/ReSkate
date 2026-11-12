@@ -1937,11 +1937,12 @@ void draw_hub(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks,
             ImFont* font = title_font(menu);
             // The open (or focused) row's bar, edge to edge across the rail: drawn on the menu window
             // under the list (the list itself starts in from the edge), kept to the list's area as it
-            // scrolls.
-            const ImVec2 list_min(origin.x, origin.y + top), list_max(origin.x + rail, origin.y + top + list_height);
+            // scrolls, and stopping at the scroll bar while there is one.
+            const float bar_right = origin.x + rail - (ImGui::GetScrollMaxY() > 0 ? ImGui::GetStyle().ScrollbarSize : 0.0f);
+            const ImVec2 list_min(origin.x, origin.y + top), list_max(bar_right, origin.y + top + list_height);
             const auto row_bar = [&](float y0, float y1, ImU32 colour) {
                 draw->PushClipRect(list_min, list_max, true);
-                draw->AddRectFilled(ImVec2(origin.x, y0), ImVec2(origin.x + rail, y1), colour);
+                draw->AddRectFilled(ImVec2(origin.x, y0), ImVec2(bar_right, y1), colour);
                 draw->PopClipRect();
             };
             for (int i = 0; i < page_count; ++i) {
