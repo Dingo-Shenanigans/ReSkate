@@ -133,7 +133,7 @@ float trail_at(float3 here, float3 dir) {
     float pressed = 0;
     float4 a = cameras[TRAIL + 2];
     float strength_a = cameras[TRAIL + 3].x;
-    for (int i = 1; i < points; ++i) {
+    [loop] for (int i = 1; i < points; ++i) {
         const float4 b = cameras[TRAIL + 2 + i * 2];
         const float strength_b = cameras[TRAIL + 3 + i * 2].x;
         const float2 along = b.xz - a.xz;
@@ -183,12 +183,16 @@ float median_light(int2 p, float3 here, float3 normal, float near_distance, floa
         found += same ? 1 : 0;
     }
     if (found < 4) return fallback;
-    // Sorted (16 is few): those off the plane (-1) first, then the middle of the rest.
+    // Sorted (16 is few): those off the plane (-1) first, then the middle of the rest. Each pass a fixed
+    // length: Proton's shader compiler (Wine's) could not unroll an inner loop that starts at the outer's
+    // count, and the cover never came on there (Steam Deck, 2026-11-13).
     [unroll] for (int a = 1; a < 16; ++a) {
-        [unroll] for (int b = a; b > 0; --b) {
-            const float lo = min(v[b - 1], v[b]), hi = max(v[b - 1], v[b]);
-            v[b - 1] = lo;
-            v[b] = hi;
+        [unroll] for (int b = 15; b > 0; --b) {
+            if (b <= a) {
+                const float lo = min(v[b - 1], v[b]), hi = max(v[b - 1], v[b]);
+                v[b - 1] = lo;
+                v[b] = hi;
+            }
         }
     }
     return v[16 - found + found / 2];
