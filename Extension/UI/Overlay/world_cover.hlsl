@@ -409,12 +409,24 @@ Output ps_main(Vertex input) {
             // be and no trail is pressed into it. A trail under the deck showed on its griptape (2026-11-13).
             const float4 axis = cameras[PLACES + c * 3 + 1], side_axis = cameras[PLACES + c * 3 + 2];
             if (axis.w > 0) {
-                const float along = dot(from, axis.xyz), up = dot(from, side_axis.xyz);
-                const float across = length(from - axis.xyz * along - side_axis.xyz * up);
-                const float straight = max(axis.w - side_axis.w, 0);
-                const float edge = length(float2(along - clamp(along, -straight, straight), across));
-                const float in_board = (1 - smoothstep(side_axis.w - 0.01, side_axis.w, edge)) *
-                                       (1 - smoothstep(height * 0.5 - 0.005, height * 0.5, abs(up)));
+                // Where the pixel's ray meets the place's own plane, which takes only the camera: from the
+                // depth, whose scale is measured, the deck's pixels fell either side of a plane a few
+                // centimetres thick, and its own track showed on its griptape (2026-11-13). The depth only
+                // says the pixel is about that far (the place, not the ground far past its edge).
+                const float3 ray = normalize(ray_of(p));
+                const float facing_place = dot(ray, side_axis.xyz);
+                float in_board = 0;
+                if (abs(facing_place) > 1e-3) {
+                    const float reach = dot(clears[c].xyz - eye_near.xyz, side_axis.xyz) / facing_place;
+                    const float3 met = eye_near.xyz + ray * reach - clears[c].xyz;
+                    const float along = dot(met, axis.xyz);
+                    const float across = length(met - axis.xyz * along - side_axis.xyz * dot(met, side_axis.xyz));
+                    const float straight = max(axis.w - side_axis.w, 0);
+                    const float edge = length(float2(along - clamp(along, -straight, straight), across));
+                    const float seen = length(here - eye_near.xyz);
+                    in_board = reach > 0 ? (1 - smoothstep(side_axis.w - 0.01, side_axis.w, edge)) *
+                                           (1 - smoothstep(0.05, 0.1, abs(reach - seen) / max(seen, 0.1))) : 0;
+                }
                 pressed *= 1 - in_board;
                 cover = lerp(cover, untrailed * snow, in_board);
                 continue;
