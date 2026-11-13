@@ -204,6 +204,9 @@ struct Shared {
     // The cameras of this and the last two frames, newest first, and how many are known.
     std::array<std::array<float, camera_floats>, camera_history> cameras{};
     std::size_t cameras_known{};
+    // The places kept clear as each of those frames was drawn, newest first: a place on something that moves
+    // (a deck) is drawn where the picture has it, camera_delay back, like the world.
+    std::array<std::vector<Clear>, camera_history> clears{};
     // The near distance each recent frame measured, and the steady middle of them (0: none yet).
     std::deque<float> nears;
     float held_near{};
@@ -981,6 +984,39 @@ bool record_cover(Shared& s) {
         head[0] = static_cast<float>(count), head[1] = box[0], head[2] = box[1], head[3] = box[2];
         head[4] = box[3], head[5] = box[4], head[6] = box[5], head[7] = 0;
     }
+    // The places as the picture has them: camera_delay back, between the two kept either side, blended
+    // where they are the same places. With this tick's, a deck turning was ahead of the deck drawn, and the
+    // ground at its front corner took the deck's light dusting (2026-11-13).
+    for (std::size_t c = camera_history - 1; c > 0; --c) s.clears[c] = std::move(s.clears[c - 1]);
+    s.clears[0] = clear;
+    {
+        const auto& near_one = s.clears[delay];
+        const auto& far_one = s.clears[older];
+        clear = near_one;
+        if (far_one.size() == near_one.size()) {
+            const auto mix = [&](std::array<float, 3>& to, const std::array<float, 3>& from) {
+                for (std::size_t k = 0; k < 3; ++k) to[k] += (from[k] - to[k]) * blend;
+            };
+            const auto unit = [](std::array<float, 3>& v) {
+                const float length = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+                if (length > 1e-6f) v[0] /= length, v[1] /= length, v[2] /= length;
+            };
+            for (std::size_t i = 0; i < clear.size(); ++i) {
+                if ((clear[i].length > 0) != (far_one[i].length > 0)) continue;
+                mix(clear[i].foot, far_one[i].foot);
+                if (clear[i].length > 0) {
+                    mix(clear[i].forward, far_one[i].forward), mix(clear[i].up, far_one[i].up);
+                    unit(clear[i].up);
+                    // Forward square to up again, then unit.
+                    const auto& u = clear[i].up;
+                    auto& f = clear[i].forward;
+                    const float along = f[0] * u[0] + f[1] * u[1] + f[2] * u[2];
+                    for (std::size_t k = 0; k < 3; ++k) f[k] -= u[k] * along;
+                    unit(f);
+                }
+            }
+        }
+    }
     // The candidate cameras for ps_measure, into this command allocator's part of the upload buffer.
     {
         auto* const out = reinterpret_cast<float*>(s.camera_cpu + at * camera_slice);
@@ -1386,6 +1422,7 @@ void release() noexcept {
         s.measure_fresh = {};
         s.relearning = false;
         s.cameras_known = 0;
+        s.clears = {};
         s.nears.clear();
         s.held_near = 0;
         s.shown_near = 0;
