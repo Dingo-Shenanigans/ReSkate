@@ -4,7 +4,7 @@ Snow Skate is a plugin mod (not in this repository) that puts every map under sn
 into a snowskate. This change adds the general building blocks it needs. None of them knows about snow
 or snow skating, so other mods can use them for sand, dust, other weather or other surfaces.
 
-## `reskate.effects.cover(settings | nil)` and `reskate.effects.keep_clear(places)`
+## `reskate.effects.cover(settings | nil)`, `reskate.effects.keep_clear(places)` and `reskate.effects.trail(point)`
 
 Permission: `effects`.
 
@@ -12,13 +12,18 @@ Permission: `effects`.
 reskate.effects.cover({colour = {r = 0.95, g = 0.97, b = 1}, amount = 1, facing = 0.6, softness = 0.12,
     brightness = 2.2, breakup = 0.4, sparkle = 0, snowfall = 0.6, fall_speed = 1,
     left = 1, snowfall_stopping = false})
-reskate.effects.keep_clear({{position = skater_position, radius = 0.6, height = 2}}) -- every tick
+reskate.effects.keep_clear({{position = skater_position, radius = 0.6, height = 2, snow = 0}}) -- every tick
+reskate.effects.trail({position = deck_position, width = 0.22, fade = 20}) -- as it moves
 reskate.effects.cover(nil)
 ```
 
 The call lays a cover over every upward-facing surface of the world, with falling snow in front of it. It
-stays until `cover(nil)`, and one plugin may have a cover at a time. `keep_clear` keeps up to three upright
-cylinders clear of it for 0.3 s at a time.
+stays until `cover(nil)`, and one plugin may have a cover at a time.
+
+- **`keep_clear`:** keeps up to three upright cylinders clear of it for 0.3 s at a time. With `snow` (0 to
+  1) whatever stands in one shows a patchy dusting of the cover on every side instead.
+- **`trail`:** adds a point on a trail through the cover. Along the last 256 points the cover is pressed
+  down, thinner and greyer, `width` wide (each point its own), and fills back in over `fade` seconds.
 
 **What Snow Skate uses it for:**
 
@@ -29,6 +34,9 @@ cylinders clear of it for 0.3 s at a time.
 - **Dynamic snow speed:** `fall_speed` changes gradually. The fall is added up at each moment's speed, so a
   change of speed carries on from where the flakes are.
 - **No snow on the player:** `keep_clear` around the skater.
+- **Snow on the player after a tumble:** `snow` on that place, building up in a wipeout and fading after.
+- **Tracks in the snow:** `trail` under the deck as it rides, as wide as the deck is across its way (so a
+  powerslide or a revert sweeps a wide mark), and where the skater tumbles.
 
 **How it is drawn:** `Extension/UI/Overlay/world_cover.{h,cpp,hlsl}` draws one full-screen pass into the
 finished scene, just before the game adds its UI, so menus and the HUD are never under it. It sees the
