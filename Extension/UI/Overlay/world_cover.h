@@ -56,6 +56,12 @@ struct Clear {
     // How much cover shows on what stands in it (the skater after rolling in snow), 0 to 1: a patchy
     // dusting on every side. 0: none, as before.
     float snow{};
+    // A board-shaped place (length > 0): `foot` its middle, `forward` and `up` its own axes (unit, square to
+    // each other), `radius` its half width, `height` its thickness. In it, in its own plane, the cover is
+    // `snow` of what it would be and no trail is pressed into it: a deck riding low, which the upright
+    // place round the skater takes for the ground.
+    float length{};
+    std::array<float, 3> forward{0, 0, 1}, up{0, 1, 0};
 };
 
 // Client thread. On until clear().
@@ -64,7 +70,8 @@ void clear() noexcept;
 // Client thread: a point on a trail through the cover (where a board goes, or a skater rolls): the cover
 // is pressed down along the trail, `width` wide, and fills back in over `fade` seconds. At most 256 points
 // are kept, the oldest dropped first; a point closer than a few centimetres to the last is not added.
-void add_trail(const std::array<float, 3>& at, float width, float fade) noexcept;
+// `tread` (metres, 0: none): the width of a tread pressed into it, whose 13 lines show along the trail.
+void add_trail(const std::array<float, 3>& at, float width, float fade, float tread = 0) noexcept;
 // Client thread: up to three places kept clear for the next 300 ms (set them every tick); none ends it.
 // The first one also measures the depth's scale on the ground round its foot, which the cylinders
 // need; the scale is held from many frames, so they stay put while the foot is out of view.

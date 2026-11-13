@@ -46,19 +46,21 @@ constexpr UINT views_each = 2;
 // two before as well and drawing with whichever agreed best chose a different one every few seconds
 // (their agreement differed by noise), and every change moved the whole cover by a frame (2026-11-11).
 constexpr std::size_t camera_candidates = 1;
-// The world is found with the camera of two frames before this one: the camera is read as the cover is
-// drawn, and the game is that far ahead of its picture by then. With this frame's, world-fixed things (the
-// trails) swam as the camera moved; with the frame before's, less; with two before's, hardly (tried in
-// the game, 2026-11-13).
-constexpr std::size_t camera_delay = 2;
-constexpr std::size_t camera_history = camera_delay + 1; // the cameras kept, newest first
+// The world is found with the camera of 1.15 frames before this one (between the two before, blended): the
+// camera is read as the cover is drawn, and the game is about that far ahead of its picture by then. With
+// this frame's, world-fixed things (the trails) swam as the camera moved. Tried in the game (2026-11-13): two
+// frames before was better than none or one in whole frames, and finer, 1.1 to 1.25 was best; the lag varies
+// a little with the frame rate, so none is perfect.
+constexpr float camera_delay = 1.15f;
+constexpr std::size_t camera_history = 3; // the cameras kept, newest first: enough for camera_delay
 constexpr std::size_t camera_floats = 12; // right, up, back, eye
 // Trails through the cover (add_trail): at most this many points kept (world_cover.hlsl's MOST_TRAIL).
 constexpr std::size_t most_trail = 256;
 // The shaders' buffer (world_cover.hlsl's t3), one part of the upload buffer per command allocator: the
 // cameras (four float4s each), then a float4 a place kept clear (how much snow shows on what stands in
 // it), then the trails (two float4s of head, then two a point).
-constexpr UINT64 camera_slice = ((camera_candidates * 4 + most_clear + 2 + most_trail * 2) * 16 + 255) / 256 * 256;
+constexpr std::size_t place_floats4 = 3; // a place kept clear: its snow; a board's forward and half length; its up and half width
+constexpr UINT64 camera_slice = ((camera_candidates * 4 + most_clear * place_floats4 + 2 + most_trail * 2) * 16 + 255) / 256 * 256;
 // The measurements: one row a candidate camera, a column a point (ps_measure), read back by the CPU.
 constexpr UINT measure_columns = 32;
 constexpr UINT measure_pitch = D3D12_TEXTURE_DATA_PITCH_ALIGNMENT;
@@ -93,6 +95,7 @@ struct Asked {
     struct TrailPoint {
         std::array<float, 3> at{};
         float width{}, fade{};
+        float tread{}; // the width of a tread pressed into it (its lines), or 0
         std::uint64_t when{};
     };
     std::deque<TrailPoint> trail;
@@ -935,9 +938,19 @@ bool record_cover(Shared& s) {
         s.cameras[0] = {m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10], m[12], m[13], m[14]};
         s.cameras_known = std::min(s.cameras_known + 1, camera_history);
     }
-    // The camera the picture was drawn with (camera_delay): the oldest kept, until there are enough.
-    const std::size_t delay = std::min(camera_delay, s.cameras_known - 1);
-    const auto& camera = s.cameras[delay];
+    // The camera the picture was drawn with (camera_delay): between the two kept either side of it, blended
+    // (its axes made unit again); the oldest kept, until there are enough.
+    const float back = std::min(camera_delay, static_cast<float>(s.cameras_known - 1));
+    const auto delay = static_cast<std::size_t>(back);
+    const std::size_t older = std::min(delay + 1, s.cameras_known - 1);
+    const float blend = back - static_cast<float>(delay);
+    std::array<float, camera_floats> camera{};
+    for (std::size_t k = 0; k < camera_floats; ++k) camera[k] = s.cameras[delay][k] + (s.cameras[older][k] - s.cameras[delay][k]) * blend;
+    for (std::size_t axis = 0; axis < 3; ++axis) {
+        float* const v = camera.data() + axis * 3;
+        const float length = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+        if (length > 1e-6f) v[0] /= length, v[1] /= length, v[2] /= length;
+    }
 
     Settings settings;
     std::vector<Clear> clear;
@@ -952,14 +965,14 @@ bool record_cover(Shared& s) {
         // The trails, after the cameras and the places: a head (how many points, the box they lie in),
         // then each point (where, width; how strong it still is, fading to nothing over its time).
         std::erase_if(a.trail, [&](const auto& t) { return now - t.when > static_cast<std::uint64_t>(t.fade * 1000); });
-        float* const head = reinterpret_cast<float*>(s.camera_cpu + at * camera_slice) + (camera_candidates * 4 + most_clear) * 4;
+        float* const head = reinterpret_cast<float*>(s.camera_cpu + at * camera_slice) + (camera_candidates * 4 + most_clear * place_floats4) * 4;
         std::size_t count = 0;
         std::array<float, 6> box{1e30f, 1e30f, -1e30f, -1e30f, 1e30f, -1e30f}; // min x, min z, max x, max z, min y, max y
         for (const auto& t : a.trail) {
             const float strength = 1.0f - static_cast<float>(now - t.when) / (t.fade * 1000.0f);
             float* const point = head + 8 + count * 8;
             point[0] = t.at[0], point[1] = t.at[1], point[2] = t.at[2], point[3] = t.width;
-            point[4] = std::clamp(strength, 0.0f, 1.0f), point[5] = point[6] = point[7] = 0;
+            point[4] = std::clamp(strength, 0.0f, 1.0f), point[5] = t.tread, point[6] = point[7] = 0;
             box = {std::min(box[0], t.at[0]), std::min(box[1], t.at[2]), std::max(box[2], t.at[0]), std::max(box[3], t.at[2]),
                    std::min(box[4], t.at[1]), std::max(box[5], t.at[1])};
             ++count;
@@ -971,17 +984,25 @@ bool record_cover(Shared& s) {
     {
         auto* const out = reinterpret_cast<float*>(s.camera_cpu + at * camera_slice);
         for (std::size_t c = 0; c < camera_candidates; ++c) {
-            const auto& from = s.cameras[std::min(c + delay, s.cameras_known - 1)];
+            const auto& from = c == 0 ? camera : s.cameras[std::min(c + delay, s.cameras_known - 1)];
             float* const to = out + c * 4 * 4;
             for (std::size_t v = 0; v < 4; ++v) {
                 to[v * 4] = from[v * 3], to[v * 4 + 1] = from[v * 3 + 1], to[v * 4 + 2] = from[v * 3 + 2], to[v * 4 + 3] = 0;
             }
         }
-        // Each place kept clear: how much snow shows on what stands in it (0: none).
+        // Each place kept clear: how much snow shows in it (0: none); then a board-shaped one's forward and
+        // half its length, its up and half its width (0: an upright cylinder).
         float* const places = out + camera_candidates * 4 * 4;
         for (std::size_t c = 0; c < most_clear; ++c) {
-            places[c * 4] = c < clear.size() ? clear[c].snow : 0;
-            places[c * 4 + 1] = places[c * 4 + 2] = places[c * 4 + 3] = 0;
+            float* const to = places + c * place_floats4 * 4;
+            std::fill(to, to + place_floats4 * 4, 0.0f);
+            if (c >= clear.size()) continue;
+            to[0] = clear[c].snow;
+            if (clear[c].length > 0) {
+                for (std::size_t k = 0; k < 3; ++k) to[4 + k] = clear[c].forward[k], to[8 + k] = clear[c].up[k];
+                to[7] = clear[c].length * 0.5f;
+                to[11] = clear[c].radius;
+            }
         }
     }
     // Views: the picture's copy as the target's format reads it, and the game's depth as it is.
@@ -1139,7 +1160,7 @@ void set(const Settings& settings) noexcept {
     wanted.store(true);
 }
 void clear() noexcept { wanted.store(false); }
-void add_trail(const std::array<float, 3>& at, float width, float fade) noexcept {
+void add_trail(const std::array<float, 3>& at, float width, float fade, float tread) noexcept {
     try {
         auto& a = asked();
         std::lock_guard lock(a.mutex);
@@ -1148,7 +1169,7 @@ void add_trail(const std::array<float, 3>& at, float width, float fade) noexcept
             const float dx = at[0] - last[0], dy = at[1] - last[1], dz = at[2] - last[2];
             if (dx * dx + dy * dy + dz * dz < 0.05f * 0.05f) return;
         }
-        a.trail.push_back({at, width, fade, GetTickCount64()});
+        a.trail.push_back({at, width, fade, tread, GetTickCount64()});
         while (a.trail.size() > most_trail) a.trail.pop_front();
     } catch (...) {}
 }

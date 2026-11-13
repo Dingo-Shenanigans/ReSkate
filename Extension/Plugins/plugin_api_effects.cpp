@@ -148,7 +148,10 @@ struct EffectsApi {
     // the plugin's cover for 0.3 s, so every tick (the skater: no snow on the player); {} or nil ends it.
     // Each an upright cylinder standing on `position`, radius 0.05 to 10 m, height 0.1 to 20 m. `snow` (0 to
     // 1, 0 if left out): a patchy dusting of the cover on what stands in it, on every side (the skater after
-    // rolling in snow).
+    // rolling in snow). With a length (0.05 to 10 m), a board-shaped place instead: `position` its middle,
+    // `forward` along it and `up` out of it (vectors; up defaults to the world's), `radius` its half width
+    // and `height` its thickness (0.01 m up), rounded at its ends. In its plane the cover is `snow` of what
+    // it would be, and no trail is pressed into it (a deck riding low: a light dusting, no tracks on it).
     static int keep_clear(lua_State* L) {
         auto& p = plugin_of(L);
         need(L, p, "effects", "reskate.effects.keep_clear");
@@ -175,7 +178,28 @@ struct EffectsApi {
                     lua_pop(L, 1);
                 };
                 number("radius", place.radius, 0.05, 10, "a place's radius is 0.05 to 10 metres");
-                number("height", place.height, 0.1, 20, "a place's height is 0.1 to 20 metres");
+                number("length", place.length, 0.05, 10, "a place's length is 0.05 to 10 metres");
+                if (place.length > 0) {
+                    number("height", place.height, 0.01, 20, "a place's height is 0.01 to 20 metres");
+                    const auto unit = [&](const char* name, Vec3& out) {
+                        lua_getfield(L, at, name);
+                        if (!lua_isnil(L, -1)) out = position_of(L, lua_gettop(L), "a place's direction");
+                        lua_pop(L, 1);
+                        const float n = std::sqrt(out[0] * out[0] + out[1] * out[1] + out[2] * out[2]);
+                        if (!(n > 1e-3f)) luaL_error(L, "a place's %s has a length", name);
+                        for (auto& v : out) v /= n;
+                    };
+                    unit("up", place.up);
+                    unit("forward", place.forward);
+                    // Forward made square to up, so the two are the place's own axes.
+                    const float along = place.forward[0] * place.up[0] + place.forward[1] * place.up[1] + place.forward[2] * place.up[2];
+                    for (int k = 0; k < 3; ++k) place.forward[k] -= place.up[k] * along;
+                    const float n = std::sqrt(place.forward[0] * place.forward[0] + place.forward[1] * place.forward[1] + place.forward[2] * place.forward[2]);
+                    if (!(n > 1e-3f)) luaL_error(L, "a place's forward is along its up");
+                    for (auto& v : place.forward) v /= n;
+                } else {
+                    number("height", place.height, 0.1, 20, "a place's height is 0.1 to 20 metres");
+                }
                 number("snow", place.snow, 0, 1, "a place's snow is 0 to 1");
                 places.push_back(place);
                 lua_pop(L, 1);
@@ -185,10 +209,11 @@ struct EffectsApi {
         if (!why.empty()) { lua_pushnil(L); lua_pushlstring(L, why.data(), why.size()); return 2; }
         lua_pushboolean(L, 1); return 1;
     }
-    // trail({position = vector, width = 0.25, fade = 10}): a point on a trail through the plugin's cover
-    // (where a board goes, or a skater rolls): the cover is pressed down along the trail, `width` metres
-    // wide (0.05 to 3), and fills back in over `fade` seconds (0.5 to 60). Call it as the thing moves; the
-    // last 256 points are kept.
+    // trail({position = vector, width = 0.25, fade = 10, tread = 0}): a point on a trail through the plugin's
+    // cover (where a board goes, or a skater rolls): the cover is pressed down along the trail, `width`
+    // metres wide (0.05 to 3), and fills back in over `fade` seconds (0.5 to 60). `tread` (0.05 to 1 m, 0
+    // none): a tread that wide pressed into it, its 13 lines (7 light, 6 darker ridges) along the trail.
+    // Call it as the thing moves; the last 256 points are kept.
     static int trail(lua_State* L) {
         auto& p = plugin_of(L);
         need(L, p, "effects", "reskate.effects.trail");
@@ -208,6 +233,7 @@ struct EffectsApi {
         };
         number("width", point.width, 0.05, 3, "a trail's width is 0.05 to 3 metres");
         number("fade", point.fade, 0.5, 60, "a trail's fade is 0.5 to 60 seconds");
+        number("tread", point.tread, 0, 1, "a trail's tread is 0 to 1 metres");
         const auto why = p.services_.game().world_cover_trail(p.id_, point);
         if (!why.empty()) { lua_pushnil(L); lua_pushlstring(L, why.data(), why.size()); return 2; }
         lua_pushboolean(L, 1); return 1;

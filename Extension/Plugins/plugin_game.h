@@ -352,6 +352,10 @@ public:
         Vec3 foot{};
         float radius{0.6f}, height{2.0f};
         float snow{}; // how much cover shows on what stands in it, 0 to 1
+        // A board-shaped place (length > 0): `foot` its middle, `forward` along it and `up` out of it (unit,
+        // square to each other), `radius` its half width and `height` its thickness.
+        float length{};
+        Vec3 forward{0, 0, 1}, up{0, 1, 0};
     };
     virtual std::string world_cover_clear(std::string_view /*plugin*/, const std::vector<CoverClear>&) { return unavailable; }
     // A point on a trail through that cover (world_cover::add_trail): pressed down `width` wide, filling
@@ -359,6 +363,7 @@ public:
     struct CoverTrail {
         Vec3 at{};
         float width{0.25f}, fade{10};
+        float tread{}; // a tread's width pressed into it (its lines), or 0
     };
     virtual std::string world_cover_trail(std::string_view /*plugin*/, const CoverTrail&) { return unavailable; }
 

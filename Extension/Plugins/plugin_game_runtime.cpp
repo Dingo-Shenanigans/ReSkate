@@ -1293,13 +1293,14 @@ public:
     std::string world_cover_clear(std::string_view plugin, const std::vector<CoverClear>& places) override {
         if (coverer_ != plugin) return "this plugin has no cover on the world";
         std::vector<world_cover::Clear> clear;
-        for (const auto& place : places) clear.push_back({place.foot, place.radius, place.height, place.snow});
+        for (const auto& place : places)
+            clear.push_back({place.foot, place.radius, place.height, place.snow, place.length, place.forward, place.up});
         world_cover::keep_clear(std::move(clear));
         return {};
     }
     std::string world_cover_trail(std::string_view plugin, const CoverTrail& point) override {
         if (coverer_ != plugin) return "this plugin has no cover on the world";
-        world_cover::add_trail(point.at, point.width, point.fade);
+        world_cover::add_trail(point.at, point.width, point.fade, point.tread);
         return {};
     }
     // ---- viewmodel -----------------------------------------------------------------------------------
