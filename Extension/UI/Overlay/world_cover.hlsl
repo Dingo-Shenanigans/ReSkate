@@ -118,8 +118,12 @@ float3 hash3(float3 p) {
 // A cell's value, its coordinates wrapped every 289 cells first: world coordinates times the noise's
 // scale reach the millions, where hash() has no fraction left and gave flat blocks with straight edges.
 float cell_hash(float2 c) { return hash(c - 289.0 * floor(c / 289.0)); }
-// How much a trail has pressed the cover down at this point: 0 none, 1 all of it.
-float trail_at(float3 here) {
+// How much a trail has pressed the cover down at the pixel: 0 none, 1 all of it. Where the pixel lies on
+// the trail is found where its ray from the camera meets the ground at the trail's own height, which takes
+// only the camera, not the depth's scale: from the depth, the trail slid over the ground whenever the scale
+// measured changed (getting off the board, walking about, 2026-11-13). The depth only says whether the
+// pixel is that ground at all (`here`, roughly), not a rail or a leg over it.
+float trail_at(float3 here, float3 dir) {
     const float4 head = cameras[TRAIL];
     const int points = min((int)head.x, MOST_TRAIL);
     if (points < 2) return 0;
@@ -135,10 +139,15 @@ float trail_at(float3 here) {
         const float2 along = b.xz - a.xz;
         const float length_squared = dot(along, along);
         // Two points far apart are not one trail (a teleport, a respawn).
-        if (length_squared < 4.0 && strength_a > 0 && strength_b > 0) {
-            const float t = saturate(dot(here.xz - a.xz, along) / max(length_squared, 1e-6));
-            const float off = length(here.xz - (a.xz + along * t));
-            if (abs(here.y - lerp(a.y, b.y, t)) < 0.4) {
+        if (length_squared < 4.0 && strength_a > 0 && strength_b > 0 && dir.y < -1e-4) {
+            // The ray onto the ground at this stretch's height.
+            const float ground = (a.y + b.y) * 0.5;
+            const float reach = (ground - eye_near.y) / dir.y;
+            const float3 on = eye_near.xyz + dir * reach;
+            const float seen = length(here - eye_near.xyz);
+            const float t = saturate(dot(on.xz - a.xz, along) / max(length_squared, 1e-6));
+            const float off = length(on.xz - (a.xz + along * t));
+            if (reach > 0 && abs(here.y - lerp(a.y, b.y, t)) < 0.4 && abs(reach - seen) < seen * 0.15 + 0.1) {
                 const float half_width = b.w * 0.5;
                 pressed = max(pressed, (1 - smoothstep(half_width * 0.6, half_width, off)) * lerp(strength_a, strength_b, t));
             }
@@ -343,7 +352,7 @@ Output ps_main(Vertex input) {
     if (near_measured > 0 && cover > 0.002) {
         // Trails: where a board went or a skater rolled, the snow packed down, thinner and greyer, filling
         // back in as the trail fades.
-        pressed = trail_at(steady);
+        pressed = trail_at(steady, normalize(ray_of(p)));
         cover *= 1 - pressed * 0.35;
     }
     if (near_measured > 0 && (cover > 0.002 || dusted)) {
