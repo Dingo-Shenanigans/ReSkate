@@ -24,6 +24,12 @@ Texture2D<float> depth : register(t1);
 // The cameras ps_measure tries (world_cover.cpp's camera_candidates): each its right, up, back and eye.
 StructuredBuffer<float4> cameras : register(t3);
 #define CANDIDATES 1
+// After the cameras: a float4 a place kept clear (x: how much snow shows on what stands in it), then the
+// trails: [0] = (points, the box they lie in: min x, min z, max x), [1] = (max z, min y, max y, -), then two
+// a point, oldest first: (where, width), (how strong it still is, 0 to 1, -, -, -).
+#define PLACES (CANDIDATES * 4)
+#define TRAIL (PLACES + 3)
+#define MOST_TRAIL 256
 
 struct Vertex { float4 position : SV_Position; };
 struct Output {
@@ -112,6 +118,37 @@ float3 hash3(float3 p) {
 // A cell's value, its coordinates wrapped every 289 cells first: world coordinates times the noise's
 // scale reach the millions, where hash() has no fraction left and gave flat blocks with straight edges.
 float cell_hash(float2 c) { return hash(c - 289.0 * floor(c / 289.0)); }
+// How much a trail has pressed the cover down at this point: 0 none, 1 all of it.
+float trail_at(float3 here) {
+    const float4 head = cameras[TRAIL];
+    const int points = min((int)head.x, MOST_TRAIL);
+    if (points < 2) return 0;
+    const float4 box = cameras[TRAIL + 1];
+    if (here.x < head.y - 1 || here.z < head.z - 1 || here.x > head.w + 1 || here.z > box.x + 1 || here.y < box.y - 1 || here.y > box.z + 1)
+        return 0;
+    float pressed = 0;
+    float4 a = cameras[TRAIL + 2];
+    float strength_a = cameras[TRAIL + 3].x;
+    for (int i = 1; i < points; ++i) {
+        const float4 b = cameras[TRAIL + 2 + i * 2];
+        const float strength_b = cameras[TRAIL + 3 + i * 2].x;
+        const float2 along = b.xz - a.xz;
+        const float length_squared = dot(along, along);
+        // Two points far apart are not one trail (a teleport, a respawn).
+        if (length_squared < 4.0 && strength_a > 0 && strength_b > 0) {
+            const float t = saturate(dot(here.xz - a.xz, along) / max(length_squared, 1e-6));
+            const float off = length(here.xz - (a.xz + along * t));
+            if (abs(here.y - lerp(a.y, b.y, t)) < 0.4) {
+                const float half_width = b.w * 0.5;
+                pressed = max(pressed, (1 - smoothstep(half_width * 0.6, half_width, off)) * lerp(strength_a, strength_b, t));
+            }
+        }
+        a = b;
+        strength_a = strength_b;
+    }
+    return pressed;
+}
+
 float noise(float2 p) {
     const float2 i = floor(p), f = frac(p);
     const float2 u = f * f * (3 - 2 * f);
@@ -299,8 +336,17 @@ Output ps_main(Vertex input) {
         cover *= 1 - smoothstep(0.0015, 0.006, max(bend_across, bend_along) / d);
     }
 
-    // Distances are only real when measured: the places kept clear need them.
+    // Distances are only real when measured: the trails and the places kept clear need them.
+    float pressed = 0;
+    bool dusted = false; // a place kept clear shows some snow on what stands in it
+    [unroll] for (int k = 0; k < 3; ++k) dusted = dusted || (k < (int)clear_info.x && cameras[PLACES + k].x > 0);
     if (near_measured > 0 && cover > 0.002) {
+        // Trails: where a board went or a skater rolled, the snow packed down, thinner and greyer, filling
+        // back in as the trail fades.
+        pressed = trail_at(steady);
+        cover *= 1 - pressed * 0.35;
+    }
+    if (near_measured > 0 && (cover > 0.002 || dusted)) {
         // The places kept clear (the skater): upright cylinders over their feet, softened at the edge.
         // Inside one, the ground keeps its snow and whatever stands on it does not: the ground is the
         // lowest surface in a small ring round the pixel, and a point more than a centimetre or so over
@@ -333,7 +379,11 @@ Output ps_main(Vertex input) {
             // the skater and cleared, a dark circle (2026-11-11).
             const float body = 1 - smoothstep(0.32, 0.42, length(from.xz));
             const float on_it = max(smoothstep(0, 0.004, over), smoothstep(0.55, 0.65, from.y) * body);
-            cover *= 1 - inside * on_it;
+            // What stands in it has a patchy dusting of snow, on every side, where the plugin asks for some
+            // (the skater after rolling in it); the pattern goes with the place, so it moves with them.
+            const float snow = cameras[PLACES + c].x;
+            const float dust = snow > 0 ? snow * smoothstep(0.35, 0.75, noise(from.xz * 14.0 + from.y * 9.0)) : 0;
+            cover = lerp(cover, dust, inside * on_it);
         }
     }
     if (cover <= 0.002) {
@@ -369,7 +419,7 @@ Output ps_main(Vertex input) {
             return out_;
         }
     }
-    float3 lit = colour_amount.rgb * light * shape.z;
+    float3 lit = colour_amount.rgb * light * shape.z * (1 - pressed * 0.3);
     if (extra.x > 0) {
         const float glint = cell_hash(floor(steady.xz * 38.0) + floor(steady.y * 38.0));
         lit += light * extra.x * 6.0 * step(0.996, glint);

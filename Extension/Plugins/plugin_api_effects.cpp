@@ -146,7 +146,9 @@ struct EffectsApi {
     }
     // keep_clear({{position = vector, radius = 0.6, height = 2}, ...}): up to three places kept clear of
     // the plugin's cover for 0.3 s, so every tick (the skater: no snow on the player); {} or nil ends it.
-    // Each an upright cylinder standing on `position`, radius 0.05 to 10 m, height 0.1 to 20 m.
+    // Each an upright cylinder standing on `position`, radius 0.05 to 10 m, height 0.1 to 20 m. `snow` (0 to
+    // 1, 0 if left out): a patchy dusting of the cover on what stands in it, on every side (the skater after
+    // rolling in snow).
     static int keep_clear(lua_State* L) {
         auto& p = plugin_of(L);
         need(L, p, "effects", "reskate.effects.keep_clear");
@@ -174,11 +176,39 @@ struct EffectsApi {
                 };
                 number("radius", place.radius, 0.05, 10, "a place's radius is 0.05 to 10 metres");
                 number("height", place.height, 0.1, 20, "a place's height is 0.1 to 20 metres");
+                number("snow", place.snow, 0, 1, "a place's snow is 0 to 1");
                 places.push_back(place);
                 lua_pop(L, 1);
             }
         }
         const auto why = p.services_.game().world_cover_clear(p.id_, places);
+        if (!why.empty()) { lua_pushnil(L); lua_pushlstring(L, why.data(), why.size()); return 2; }
+        lua_pushboolean(L, 1); return 1;
+    }
+    // trail({position = vector, width = 0.25, fade = 10}): a point on a trail through the plugin's cover
+    // (where a board goes, or a skater rolls): the cover is pressed down along the trail, `width` metres
+    // wide (0.05 to 3), and fills back in over `fade` seconds (0.5 to 60). Call it as the thing moves; the
+    // last 256 points are kept.
+    static int trail(lua_State* L) {
+        auto& p = plugin_of(L);
+        need(L, p, "effects", "reskate.effects.trail");
+        luaL_checktype(L, 1, LUA_TTABLE);
+        Game::CoverTrail point;
+        lua_getfield(L, 1, "position");
+        point.at = position_of(L, lua_gettop(L), "a trail's position");
+        lua_pop(L, 1);
+        const auto number = [&](const char* name, float& out, double low, double high, const char* why) {
+            lua_getfield(L, 1, name);
+            if (!lua_isnil(L, -1)) {
+                const double v = luaL_checknumber(L, -1);
+                if (!(v >= low && v <= high)) luaL_error(L, "%s", why);
+                out = static_cast<float>(v);
+            }
+            lua_pop(L, 1);
+        };
+        number("width", point.width, 0.05, 3, "a trail's width is 0.05 to 3 metres");
+        number("fade", point.fade, 0.5, 60, "a trail's fade is 0.5 to 60 seconds");
+        const auto why = p.services_.game().world_cover_trail(p.id_, point);
         if (!why.empty()) { lua_pushnil(L); lua_pushlstring(L, why.data(), why.size()); return 2; }
         lua_pushboolean(L, 1); return 1;
     }
@@ -190,6 +220,7 @@ struct EffectsApi {
 void install_effects_api(Plugin&, lua_State* L) {
     add_functions(L, "effects", {{"particle", EffectsApi::particle}, {"decal", EffectsApi::decal},
         {"move", EffectsApi::move}, {"stop", EffectsApi::stop}, {"opacity", EffectsApi::opacity},
-        {"release", EffectsApi::release}, {"clear", EffectsApi::clear}, {"state", EffectsApi::state}, {"cover", EffectsApi::cover}, {"keep_clear", EffectsApi::keep_clear}});
+        {"release", EffectsApi::release}, {"clear", EffectsApi::clear}, {"state", EffectsApi::state}, {"cover", EffectsApi::cover}, {"keep_clear", EffectsApi::keep_clear},
+                                     {"trail", EffectsApi::trail}});
 }
 }

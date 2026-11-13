@@ -351,8 +351,16 @@ public:
     struct CoverClear {
         Vec3 foot{};
         float radius{0.6f}, height{2.0f};
+        float snow{}; // how much cover shows on what stands in it, 0 to 1
     };
     virtual std::string world_cover_clear(std::string_view /*plugin*/, const std::vector<CoverClear>&) { return unavailable; }
+    // A point on a trail through that cover (world_cover::add_trail): pressed down `width` wide, filling
+    // back in over `fade` seconds. Only for the plugin whose cover it is.
+    struct CoverTrail {
+        Vec3 at{};
+        float width{0.25f}, fade{10};
+    };
+    virtual std::string world_cover_trail(std::string_view /*plugin*/, const CoverTrail&) { return unavailable; }
 
     virtual std::string object_physics(std::string_view, std::uint64_t, const std::optional<ObjectPhysics>&) { return unavailable; }
     virtual std::string object_velocity(std::string_view, std::uint64_t, const Vec3&) { return unavailable; }
