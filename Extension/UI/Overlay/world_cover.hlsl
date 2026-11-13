@@ -458,6 +458,8 @@ Output ps_main(Vertex input) {
             // (the skater after rolling in it); the pattern goes with the place, so it moves with them.
             const float dust = snow > 0 ? snow * smoothstep(0.35, 0.75, noise(from.xz * 14.0 + from.y * 9.0)) : 0;
             cover = lerp(cover, dust, inside * on_it);
+            // And no trail on them: the trail's grey showed on the dusting on the skater's legs (2026-11-13).
+            pressed *= 1 - inside * on_it;
         }
     }
     if (cover <= 0.002) {
