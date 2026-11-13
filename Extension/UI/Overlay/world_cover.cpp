@@ -64,10 +64,11 @@ constexpr std::size_t place_floats4 = 3; // a place kept clear: its snow; a boar
 // float4 a cell (the highest surface over it, which cell it is: x, z, and 1 once measured), the cells
 // round the camera kept where their world position falls (x and z each modulo roof_cells), so they stay
 // as the camera moves and only the new ones are measured. One straight-down ray a cell, roof_per_tick a
-// tick: the whole map in under a second at 60 ticks a second.
-constexpr int roof_cells = 96;
-constexpr float roof_cell = 0.5f; // metres: 48 m across
-constexpr int roof_per_tick = 192;
+// tick: the whole map in about a second and a half at 60 ticks a second. 48 m across showed the snow under
+// a roof go only as the camera came within 24 m of it (2026-11-13).
+constexpr int roof_cells = 192;
+constexpr float roof_cell = 0.5f; // metres: 96 m across, 48 m each way from the camera
+constexpr int roof_per_tick = 384;
 constexpr float roof_reach = 60.0f; // metres over and under the camera the rays start and end
 constexpr UINT64 camera_slice = ((camera_candidates * 4 + most_clear * place_floats4 + 2 + most_trail * 2 + 1 +
                                   static_cast<std::size_t>(roof_cells) * roof_cells) * 16 + 255) / 256 * 256;
