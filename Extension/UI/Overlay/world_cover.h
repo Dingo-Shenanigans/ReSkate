@@ -46,8 +46,8 @@ struct Settings {
     float fall_speed{1.0f}; // 0.1..4: how fast it falls, 1 about 1.1 m/s
     float left{1.0f};       // 0..1: how much of it is left (melting), the same everywhere
     bool snowfall_stopping{}; // the snow stops falling: no new flakes, the last ones fall out
-    // false: none of the cover where something is overhead (a roof, a bridge: indoors), and no snow falling
-    // while the camera is under one. Found from the collision near the camera (measure_roofs).
+    // false: none of the cover where something is overhead (a roof, a bridge: indoors), and no flakes falling
+    // under one (outside still snows, seen from in). Found from the collision near the camera (measure_roofs).
     bool under_roofs{true};
 };
 

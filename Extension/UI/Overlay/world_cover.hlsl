@@ -72,6 +72,18 @@ float roofed_at(float3 at) {
     return lerp(lerp(under[0], under[1], f.x), lerp(under[2], under[3], f.x), f.y);
 }
 
+// Whether a falling flake is under a roof: the cell it is over has a surface over it. Flakes are hidden
+// there one by one, so indoors none fall, and through a doorway it still snows outside.
+bool roof_over(float3 at) {
+    const float4 head = cameras[ROOF];
+    if (head.x <= 0) return false;
+    const int n = (int)head.y;
+    const int2 cell = int2(floor(at.xz / head.z));
+    const int2 slot = ((cell % n) + n) % n;
+    const float4 v = cameras[ROOF + 1 + slot.x + slot.y * n];
+    return v.w > 0 && (int)v.y == cell.x && (int)v.z == cell.y && at.y < v.x;
+}
+
 float depth_at(int2 p) {
     p = clamp(p, int2(0, 0), int2(up_width.w, back_height.w) - 1);
     return depth.Load(int3(p, 0));
@@ -279,7 +291,7 @@ float flake_layer(float3 dir, float limit, float cell, float chance, float radiu
             float3 centre = c + 0.2 + seed.yzx * 0.6;
             centre.xz += float2(sin(seconds * (0.6 + seed.y) + seed.z * 6.2831853), cos(seconds * (0.5 + seed.z) + seed.y * 6.2831853)) * (0.06 / cell);
             const float3 a = centre * cell - shift - eye_near.xyz; // the flake against the camera, in metres
-            if (a.y <= top) { // above where the falling snow ends now, none falls any more
+            if (a.y <= top && !roof_over(a + eye_near.xyz)) { // above where the falling snow ends now, none falls any more; none under a roof
             // The nearest the ray comes to the flake's streak (a to a + streak).
             const float3 d = streak;
             const float dd = dot(d, d);

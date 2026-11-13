@@ -96,8 +96,8 @@ struct EffectsApi {
     // every upward-facing surface of the world (snow, sand, dust), drawn into the world's picture before
     // the game's post-processing and its UI, so menus and the HUD are never under it. On this screen,
     // until cover(nil); one plugin at a time. Not a per-tick call, and no effect handle. under_roofs = false:
-    // none of it where something is overhead (a roof, a bridge: indoors), and none falling while the camera
-    // is under one; found from the collision near the camera.
+    // none of it where something is overhead (a roof, a bridge: indoors), and no flakes falling under one
+    // (outside still snows, seen from in); found from the collision near the camera.
     static int cover(lua_State* L) {
         auto& p = plugin_of(L);
         need(L, p, "effects", "reskate.effects.cover");
