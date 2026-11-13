@@ -439,6 +439,9 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
                       settings.loose_files);
         setting_check("Discord status", "Show on your Discord profile where you are skating: the map, the server or lobby "
                       "and how many are in it. Off, the game does not talk to Discord at all.", settings.discord_status);
+        setting_check("Steam pictures on player cards", "Offers a \"Steam picture\" player card icon: a card wearing it "
+                      "shows that player's Steam profile picture. Off, it is the plain icon it is made from.",
+                      settings.steam_card_pictures);
         if (start_map_choice(settings, launcher.session(), ui)) launcher.save();
         if (!ui.plugin_developer) {
             try { ui.plugin_developer = initfs::plugin_developer_mode(paths.directory); } catch (const std::exception&) { ui.plugin_developer = false; }
