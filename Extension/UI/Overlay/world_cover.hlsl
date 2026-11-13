@@ -230,14 +230,19 @@ float roof_blend(float3 at, float clearance) {
     if (r < 0) r = roof_grid(at, ROOF + 2 + near_cells * near_cells, (int)head.w, cameras[ROOF + 1].x, clearance);
     return max(r, 0);
 }
-// The cover's edge under a roof: where the cells' blend crosses its middle, nudged by noise in the world, so the
-// outline is rounded and a little broken rather than the cells' steps, and stays put (2026-11-13).
+// The cover's edge under a roof: the roof map round the point averaged over about a metre and a half, so the
+// snow thins out gradually going under a roof instead of stopping at a line, then nudged by noise in the
+// world, a little patchy as the snow's own edges are, and staying put (2026-11-13).
 float roofed_at(float3 at) {
-    const float r = roof_blend(at, ROOF_CLEARANCE);
+    float r = roof_blend(at, ROOF_CLEARANCE) * 2;
+    [unroll] for (int k = 0; k < 4; ++k) {
+        const float2 off = float2(k & 1 ? 0.6 : -0.6, k >> 1 ? 0.6 : -0.6);
+        r += roof_blend(at + float3(off.x, 0, off.y), ROOF_CLEARANCE);
+    }
+    r /= 6;
     if (r <= 0) return 0;
-    if (r >= 1) return 1;
-    const float edge = 0.5 + (noise(at.xz * 1.7) - 0.5) * 0.35;
-    return smoothstep(edge - 0.18, edge + 0.18, r);
+    r = saturate(r + (noise(at.xz * 1.3) - 0.5) * 0.3);
+    return smoothstep(0.1, 0.9, r);
 }
 // Whether a falling flake is under a roof. Flakes are hidden there one by one, so indoors none fall, and
 // through a doorway it still snows outside.
