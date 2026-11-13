@@ -29,6 +29,7 @@ std::size_t lobby_object_count();
 bool lobby_object_limit_reached();
 inline constexpr char object_limit_notice[] = "You have placed as many objects as this session allows each player.";
 bool queue_local_park_surface(const EditorSurfaceRequest &);
+bool queue_local_park_ground(const EditorGroundRequest &);
 bool queue_local_park_preview(const EditorPreviewRequest &);
 bool queue_local_park_selection(const EditorSelectionRequest &);
 bool queue_local_park_paste(const EditorPasteRequest &);
