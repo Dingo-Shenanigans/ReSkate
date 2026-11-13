@@ -60,18 +60,27 @@ constexpr std::size_t most_trail = 256;
 // cameras (four float4s each), then a float4 a place kept clear (how much snow shows on what stands in
 // it), then the trails (two float4s of head, then two a point).
 constexpr std::size_t place_floats4 = 3; // a place kept clear: its snow; a board's forward and half length; its up and half width
-// The roof map (Settings::under_roofs), after the trails: a head (on, cells across, a cell's size), then a
-// float4 a cell (the highest surface over it, which cell it is: x, z, and 1 once measured), the cells
-// round the camera kept where their world position falls (x and z each modulo roof_cells), so they stay
-// as the camera moves and only the new ones are measured. One straight-down ray a cell, roof_per_tick a
-// tick: the whole map in about a second and a half at 60 ticks a second. 48 m across showed the snow under
-// a roof go only as the camera came within 24 m of it (2026-11-13).
-constexpr int roof_cells = 192;
-constexpr float roof_cell = 0.5f; // metres: 96 m across, 48 m each way from the camera
-constexpr int roof_per_tick = 384;
+// The roof map (Settings::under_roofs), after the trails: two float4s of head (on, the near grid's cells
+// across and cell size, the far grid's cells across; the far grid's cell size), then the near grid's cells,
+// then the far grid's, a float4 each (the highest surface over its middle, which cell it is: x, z, and 1
+// once measured). Each grid's cells round the camera are kept where their world position falls (x and z each
+// modulo its cells across), so they stay as the camera moves and only the new ones are measured. One
+// straight-down ray a cell. The near grid is fine and refreshed often, the far one coarse: one grid 48 m
+// each way showed the snow under a roof go as the camera came near it (2026-11-13).
+struct RoofGrid {
+    int cells;    // across, each way
+    float size;   // a cell, metres
+    int per_tick; // rays a tick
+};
+constexpr std::array<RoofGrid, 2> roof_grids{{
+    {128, 0.5f, 256},  // 64 m across, in about half a second
+    {128, 1.5f, 128},  // 192 m across (96 m each way), in about two seconds
+}};
+constexpr std::size_t roof_cells_of(const RoofGrid& g) { return static_cast<std::size_t>(g.cells) * static_cast<std::size_t>(g.cells); }
+constexpr std::size_t roof_floats4 = 2 + roof_cells_of(roof_grids[0]) + roof_cells_of(roof_grids[1]);
 constexpr float roof_reach = 60.0f; // metres over and under the camera the rays start and end
-constexpr UINT64 camera_slice = ((camera_candidates * 4 + most_clear * place_floats4 + 2 + most_trail * 2 + 1 +
-                                  static_cast<std::size_t>(roof_cells) * roof_cells) * 16 + 255) / 256 * 256;
+constexpr UINT64 camera_slice = ((camera_candidates * 4 + most_clear * place_floats4 + 2 + most_trail * 2 + roof_floats4) * 16 + 255) /
+                                256 * 256;
 // The measurements: one row a candidate camera, a column a point (ps_measure), read back by the CPU.
 constexpr UINT measure_columns = 32;
 constexpr UINT measure_pitch = D3D12_TEXTURE_DATA_PITCH_ALIGNMENT;
@@ -113,8 +122,9 @@ struct Asked {
     std::deque<TrailPoint> trail;
     // The roof map (measure_roofs): a cell's (highest surface over it, x, z, 1 once measured), and where the
     // camera was last drawn from.
-    std::vector<std::array<float, 4>> roofs = std::vector<std::array<float, 4>>(static_cast<std::size_t>(roof_cells) * roof_cells);
-    std::size_t roof_next{}; // the next cell of the window round the camera to measure
+    std::array<std::vector<std::array<float, 4>>, 2> roofs{std::vector<std::array<float, 4>>(roof_cells_of(roof_grids[0])),
+                                                           std::vector<std::array<float, 4>>(roof_cells_of(roof_grids[1]))};
+    std::array<std::size_t, 2> roof_next{}; // each grid's next cell of the window round the camera to measure
     std::array<float, 3> eye{};
     bool eye_known{};
 };
@@ -1002,9 +1012,12 @@ bool record_cover(Shared& s) {
         head[4] = box[3], head[5] = box[4], head[6] = box[5], head[7] = 0;
         // The roof map, after the trails (measure_roofs fills it), and where it is measured round.
         float* const roof = head + 8 + most_trail * 8;
-        roof[0] = settings.under_roofs ? 0.0f : 1.0f, roof[1] = static_cast<float>(roof_cells), roof[2] = roof_cell, roof[3] = 0;
+        roof[0] = settings.under_roofs ? 0.0f : 1.0f;
+        roof[1] = static_cast<float>(roof_grids[0].cells), roof[2] = roof_grids[0].size, roof[3] = static_cast<float>(roof_grids[1].cells);
+        roof[4] = roof_grids[1].size, roof[5] = roof[6] = roof[7] = 0;
         if (!settings.under_roofs) {
-            std::memcpy(roof + 4, a.roofs.data(), a.roofs.size() * sizeof(a.roofs[0]));
+            std::memcpy(roof + 8, a.roofs[0].data(), a.roofs[0].size() * sizeof(a.roofs[0][0]));
+            std::memcpy(roof + 8 + a.roofs[0].size() * 4, a.roofs[1].data(), a.roofs[1].size() * sizeof(a.roofs[1][0]));
         }
         a.eye = {camera[9], camera[10], camera[11]};
         a.eye_known = true;
@@ -1240,31 +1253,37 @@ void measure_roofs(GroundTop ground_top) noexcept {
         if (!ground_top || !wanted.load()) return;
         auto& a = asked();
         std::array<float, 3> eye{};
-        std::size_t next{};
+        std::array<std::size_t, 2> next{};
         {
             std::lock_guard lock(a.mutex);
             if (a.settings.under_roofs || !a.eye_known) return;
             eye = a.eye, next = a.roof_next;
         }
-        // The window of cells round the camera, measured in turn: the highest surface straight down over
-        // each cell's middle. Nothing there (collision not loaded, or open sky to below) is no roof.
-        const int first_x = static_cast<int>(std::floor(eye[0] / roof_cell)) - roof_cells / 2;
-        const int first_z = static_cast<int>(std::floor(eye[2] / roof_cell)) - roof_cells / 2;
-        constexpr auto cells = static_cast<std::size_t>(roof_cells) * roof_cells;
-        std::vector<std::pair<std::size_t, std::array<float, 4>>> found;
-        found.reserve(roof_per_tick);
-        for (int k = 0; k < roof_per_tick; ++k) {
-            const auto n = (next + static_cast<std::size_t>(k)) % cells;
-            const int cell_x = first_x + static_cast<int>(n % roof_cells), cell_z = first_z + static_cast<int>(n / roof_cells);
-            const float x = (static_cast<float>(cell_x) + 0.5f) * roof_cell, z = (static_cast<float>(cell_z) + 0.5f) * roof_cell;
-            const auto top = ground_top(x, z, eye[1] + roof_reach, eye[1] - roof_reach);
-            const auto slot = static_cast<std::size_t>(((cell_x % roof_cells) + roof_cells) % roof_cells +
-                                                       (((cell_z % roof_cells) + roof_cells) % roof_cells) * roof_cells);
-            found.push_back({slot, {top ? *top : -1e30f, static_cast<float>(cell_x), static_cast<float>(cell_z), 1.0f}});
+        // Each grid's window of cells round the camera, measured in turn: the highest surface straight down
+        // over each cell's middle. Nothing there (collision not loaded, or open sky to below) is no roof.
+        std::array<std::vector<std::pair<std::size_t, std::array<float, 4>>>, 2> found;
+        for (std::size_t g = 0; g < roof_grids.size(); ++g) {
+            const auto& grid = roof_grids[g];
+            const int first_x = static_cast<int>(std::floor(eye[0] / grid.size)) - grid.cells / 2;
+            const int first_z = static_cast<int>(std::floor(eye[2] / grid.size)) - grid.cells / 2;
+            const auto cells = roof_cells_of(grid);
+            found[g].reserve(static_cast<std::size_t>(grid.per_tick));
+            for (int k = 0; k < grid.per_tick; ++k) {
+                const auto n = (next[g] + static_cast<std::size_t>(k)) % cells;
+                const int cell_x = first_x + static_cast<int>(n % static_cast<std::size_t>(grid.cells));
+                const int cell_z = first_z + static_cast<int>(n / static_cast<std::size_t>(grid.cells));
+                const float x = (static_cast<float>(cell_x) + 0.5f) * grid.size, z = (static_cast<float>(cell_z) + 0.5f) * grid.size;
+                const auto top = ground_top(x, z, eye[1] + roof_reach, eye[1] - roof_reach);
+                const auto slot = static_cast<std::size_t>(((cell_x % grid.cells) + grid.cells) % grid.cells +
+                                                           (((cell_z % grid.cells) + grid.cells) % grid.cells) * grid.cells);
+                found[g].push_back({slot, {top ? *top : -1e30f, static_cast<float>(cell_x), static_cast<float>(cell_z), 1.0f}});
+            }
+            next[g] = (next[g] + static_cast<std::size_t>(grid.per_tick)) % cells;
         }
         std::lock_guard lock(a.mutex);
-        for (const auto& [slot, cell] : found) a.roofs[slot] = cell;
-        a.roof_next = (next + roof_per_tick) % cells;
+        for (std::size_t g = 0; g < found.size(); ++g)
+            for (const auto& [slot, cell] : found[g]) a.roofs[g][slot] = cell;
+        a.roof_next = next;
     } catch (...) {}
 }
 void keep_clear(std::vector<Clear> places) noexcept {
