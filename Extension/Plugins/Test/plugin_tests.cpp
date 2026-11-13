@@ -346,8 +346,8 @@ struct FakeGame final : Game {
     }
     std::string world_cover_trail(std::string_view plugin, const CoverTrail& point) override {
         if (coverer != plugin) return "this plugin has no cover on the world";
-        calls.push_back(std::format("trail {} {:.1f} {:.1f} {:.1f} w{:.2f} f{:.1f}{}", plugin, point.at[0], point.at[1], point.at[2], point.width, point.fade,
-                                    point.tread > 0 ? std::format(" t{:.2f}", point.tread) : std::string{}));
+        calls.push_back(std::format("trail {} {:.1f} {:.1f} {:.1f} w{:.2f} f{:.1f}{}{}", plugin, point.at[0], point.at[1], point.at[2], point.width, point.fade,
+                                    point.tread > 0 ? std::format(" t{:.2f}", point.tread) : std::string{}, point.starts ? " new" : ""));
         return {};
     }
     std::string world_cover(std::string_view plugin, std::optional<WorldCover> c) override {
@@ -4835,6 +4835,8 @@ void plugins_cover_the_world() {
         assert(reskate.effects.trail({position = vector.create(1, 0, 3), width = 0.3, fade = 12}))
         assert(reskate.effects.trail({position = vector.create(1, 0, 4), tread = 0.22}), "a trail with a tread")
         assert(not pcall(reskate.effects.trail, {position = vector.create(0, 0, 0), tread = 2}), "a tread is 0 to 1 m")
+        assert(reskate.effects.trail({position = vector.create(1, 0, 5), starts = true}), "a point starting a new trail")
+        assert(not pcall(reskate.effects.trail, {position = vector.create(0, 0, 0), starts = 1}), "starts is true or false")
         assert(not pcall(reskate.effects.trail, {position = vector.create(0, 0, 0), fade = 100}), "a fade is 0.5 to 60 s")
         assert(not pcall(reskate.effects.trail, {width = 0.2}), "a trail point has a position")
         local four = {}
@@ -4856,7 +4858,8 @@ void plugins_cover_the_world() {
     check(game.called("keep clear snow 2 (1.0 2.0 3.0 r0.60 h2.0) (0.0 0.0 0.0 r0.10 h0.1 s0.30 l0.80 f1.0,0.0,0.0 u0.0,1.0,0.0)"),
           "A board-shaped place, its forward made square to its up\n" + environment.all());
     check(game.called("trail snow 1.0 0.0 2.0 w0.25 f10.0") && game.called("trail snow 1.0 0.0 3.0 w0.30 f12.0") &&
-              game.called("trail snow 1.0 0.0 4.0 w0.25 f10.0 t0.22"),
+              game.called("trail snow 1.0 0.0 4.0 w0.25 f10.0 t0.22") &&
+              game.called("trail snow 1.0 0.0 5.0 w0.25 f10.0 new"),
           "Trail points, with their defaults\n" + environment.all());
     // A second plugin is told whose cover it is; nil from it does not end the first one's.
     host.apply({snow, package("sand", {{manifest_file, manifest(R"("effects")")}, {"plugin/main.lua", R"(

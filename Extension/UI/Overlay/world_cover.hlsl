@@ -144,10 +144,11 @@ float trail_at(float3 here, float3 dir, out float shade) {
         const float4 b = cameras[TRAIL + 2 + i * 2];
         const float4 more_b = cameras[TRAIL + 3 + i * 2];
         const float strength_b = more_b.x, tread = more_b.y;
+        const bool starts = more_b.z > 0.5; // b begins a new trail: no stretch from a
         const float2 along = b.xz - a.xz;
         const float length_squared = dot(along, along);
-        // Two points far apart are not one trail (a teleport, a respawn).
-        if (length_squared < 4.0 && length_squared > 1e-6 && strength_a > 0 && strength_b > 0 && dir.y < -1e-4) {
+        // Two points far apart are not one trail (a teleport, a respawn), nor is a point that starts a new one.
+        if (!starts && length_squared < 4.0 && length_squared > 1e-6 && strength_a > 0 && strength_b > 0 && dir.y < -1e-4) {
             // The ray onto the ground of this stretch: the plane through both its points, level across it, so it
             // follows a slope along the trail. A level plane at the stretch's middle height drew a trail up a
             // slope as steps, jumping from one to the next (2026-11-13).

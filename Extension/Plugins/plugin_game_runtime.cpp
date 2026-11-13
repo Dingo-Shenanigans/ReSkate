@@ -1300,7 +1300,7 @@ public:
     }
     std::string world_cover_trail(std::string_view plugin, const CoverTrail& point) override {
         if (coverer_ != plugin) return "this plugin has no cover on the world";
-        world_cover::add_trail(point.at, point.width, point.fade, point.tread);
+        world_cover::add_trail(point.at, point.width, point.fade, point.tread, point.starts);
         return {};
     }
     // ---- viewmodel -----------------------------------------------------------------------------------

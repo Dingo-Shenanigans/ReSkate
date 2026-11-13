@@ -29,6 +29,7 @@ stays until `cover(nil)`, and one plugin may have a cover at a time.
   down, thinner and greyer, `width` wide (each point its own), and fills back in over `fade` seconds.
   - **Tread:** with a `tread` width, a tread's 13 lines show along it (7 lighter, 6 darker ridges).
   - **Slopes:** each stretch is found on the plane through both its points, so a trail follows a slope.
+  - **`starts`:** the point begins a new trail, not joined to the point before.
 
 **What Snow Skate uses it for:**
 
@@ -43,6 +44,9 @@ stays until `cover(nil)`, and one plugin may have a cover at a time.
 - **Tracks in the snow:** `trail` under the deck as it rides, as wide as the deck is across its way (so a
   powerslide or a revert sweeps a wide mark), with the snowskate deck's tread when it rolls straight. Also
   where the skater tumbles, slides or rolls off the board.
+- **Marks under each part of the deck:** `starts` begins a new trail when another part is on the snow (the
+  middle riding, the tail in a manual, the nose in a nose manual) and for the skater's own mark, so they
+  are not joined by a line across.
 - **The deck:** a board-shaped `keep_clear` place on it. The snowskate deck rides so low that the
   skater's cylinder took its griptape for the ground: it got full snow and the board's own track. Now it
   has a light dusting and no track.

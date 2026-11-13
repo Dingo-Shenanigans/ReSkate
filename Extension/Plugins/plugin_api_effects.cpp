@@ -209,10 +209,12 @@ struct EffectsApi {
         if (!why.empty()) { lua_pushnil(L); lua_pushlstring(L, why.data(), why.size()); return 2; }
         lua_pushboolean(L, 1); return 1;
     }
-    // trail({position = vector, width = 0.25, fade = 10, tread = 0}): a point on a trail through the plugin's
+    // trail({position = vector, width = 0.25, fade = 10, tread = 0, starts = false}): a point on a trail through the plugin's
     // cover (where a board goes, or a skater rolls): the cover is pressed down along the trail, `width`
     // metres wide (0.05 to 3), and fills back in over `fade` seconds (0.5 to 60). `tread` (0.05 to 1 m, 0
     // none): a tread that wide pressed into it, its 13 lines (7 light, 6 darker ridges) along the trail.
+    // `starts`: the point begins a new trail, not joined to the one before (a mark under another part of
+    // the thing).
     // Call it as the thing moves; the last 256 points are kept.
     static int trail(lua_State* L) {
         auto& p = plugin_of(L);
@@ -234,6 +236,12 @@ struct EffectsApi {
         number("width", point.width, 0.05, 3, "a trail's width is 0.05 to 3 metres");
         number("fade", point.fade, 0.5, 60, "a trail's fade is 0.5 to 60 seconds");
         number("tread", point.tread, 0, 1, "a trail's tread is 0 to 1 metres");
+        lua_getfield(L, 1, "starts");
+        if (!lua_isnil(L, -1)) {
+            luaL_checktype(L, -1, LUA_TBOOLEAN);
+            point.starts = lua_toboolean(L, -1) != 0;
+        }
+        lua_pop(L, 1);
         const auto why = p.services_.game().world_cover_trail(p.id_, point);
         if (!why.empty()) { lua_pushnil(L); lua_pushlstring(L, why.data(), why.size()); return 2; }
         lua_pushboolean(L, 1); return 1;
