@@ -70,6 +70,7 @@ game's barriers through the existing hook in `depth_tap.cpp`, and frames end thr
 - **The camera:** it is read as the cover is drawn, by when the game is about a frame ahead of its picture.
   The world is found with the camera of 1.15 frames before, between the two before blended; with this
   frame's, world-fixed things (trails) swam as the camera turned. The value was tried in the game.
+  The kept-clear places are taken from the same moment, so a turning deck's place stays on the deck drawn.
 - **Proton (Steam Deck):**
   - a D3D12 function vkd3d-proton will not let be hooked in place is followed through its interface's
     table slot;
