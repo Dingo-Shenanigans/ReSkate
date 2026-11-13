@@ -301,6 +301,15 @@ bool queue_local_park_selection(const EditorSelectionRequest &request) {
     e.selection_time = GetTickCount64();
     return true;
 }
+bool queue_local_park_ground(const EditorGroundRequest &request) {
+    std::lock_guard lock(local_runtime().native_mutex);
+    auto &e = editor_state();
+    if (!local_runtime().active || request.generation != e.generation || !request.id ||
+        !request.radius || request.radius > editor_ground_radius_max)
+        return false;
+    e.ground_probe = request; // The latest grid replaces one not yet answered.
+    return true;
+}
 bool queue_local_park_surface(const EditorSurfaceRequest &request) {
     std::lock_guard lock(local_runtime().native_mutex);
     auto &e = editor_state();
