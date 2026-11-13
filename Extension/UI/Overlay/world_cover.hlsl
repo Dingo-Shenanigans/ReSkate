@@ -230,19 +230,26 @@ float roof_blend(float3 at, float clearance) {
     if (r < 0) r = roof_grid(at, ROOF + 2 + near_cells * near_cells, (int)head.w, cameras[ROOF + 1].x, clearance);
     return max(r, 0);
 }
-// The cover's edge under a roof: the roof map round the point averaged over about a metre and a half, so the
-// snow thins out gradually going under a roof instead of stopping at a line, then nudged by noise in the
-// world, a little patchy as the snow's own edges are, and staying put (2026-11-13).
+// The cover's edge under a roof, as snow drifts in under one: the roof map averaged over a disc about 4.5 m
+// across, so the snow carries on a metre or so in under the edge and thins out smoothly over about two
+// metres, all gone further in. A broad, gentle wander in the world keeps the edge from looking ruled, and
+// stays put. (Before: an edge a few centimetres, then one of 1.5 m with small, jagged noise, 2026-11-13.)
 float roofed_at(float3 at) {
-    float r = roof_blend(at, ROOF_CLEARANCE) * 2;
-    [unroll] for (int k = 0; k < 4; ++k) {
-        const float2 off = float2(k & 1 ? 0.6 : -0.6, k >> 1 ? 0.6 : -0.6);
-        r += roof_blend(at + float3(off.x, 0, off.y), ROOF_CLEARANCE);
+    const float centre = roof_blend(at, ROOF_CLEARANCE);
+    float outer = 0;
+    [unroll] for (int k = 0; k < 6; ++k) {
+        const float angle = k * 1.0471976;
+        outer += roof_blend(at + float3(cos(angle), 0, sin(angle)) * 2.2, ROOF_CLEARANCE);
     }
-    r /= 6;
-    if (r <= 0) return 0;
-    r = saturate(r + (noise(at.xz * 1.3) - 0.5) * 0.3);
-    return smoothstep(0.1, 0.9, r);
+    if (centre + outer <= 0) return 0; // no roof near: most of the ground
+    float inner = 0;
+    [unroll] for (int j = 0; j < 6; ++j) {
+        const float angle = j * 1.0471976 + 0.5235988;
+        inner += roof_blend(at + float3(cos(angle), 0, sin(angle)) * 1.1, ROOF_CLEARANCE);
+    }
+    float c = (centre * 2 + inner + outer) / 14;
+    c += (noise(at.xz * 0.5) - 0.5) * 0.12;
+    return smoothstep(0.5, 0.97, c);
 }
 // Whether a falling flake is under a roof. Flakes are hidden there one by one, so indoors none fall, and
 // through a doorway it still snows outside.
