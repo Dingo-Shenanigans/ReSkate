@@ -45,6 +45,12 @@ constexpr UINT views_each = 2;
 // two before as well and drawing with whichever agreed best chose a different one every few seconds
 // (their agreement differed by noise), and every change moved the whole cover by a frame (2026-11-11).
 constexpr std::size_t camera_candidates = 1;
+// The world is found with the camera of two frames before this one: the camera is read as the cover is
+// drawn, and the game is that far ahead of its picture by then. With this frame's, world-fixed things (the
+// trails) swam as the camera moved; with the frame before's, less; with two before's, hardly (tried in
+// the game, 2026-11-13).
+constexpr std::size_t camera_delay = 2;
+constexpr std::size_t camera_history = camera_delay + 1; // the cameras kept, newest first
 constexpr std::size_t camera_floats = 12; // right, up, back, eye
 // Trails through the cover (add_trail): at most this many points kept (world_cover.hlsl's MOST_TRAIL).
 constexpr std::size_t most_trail = 256;
@@ -191,7 +197,7 @@ struct Shared {
     std::array<bool, allocator_count> measure_fresh{};
     bool relearning{}; // a new camera: the next middle measured is taken, up or down
     // The cameras of this and the last two frames, newest first, and how many are known.
-    std::array<std::array<float, camera_floats>, camera_candidates> cameras{};
+    std::array<std::array<float, camera_floats>, camera_history> cameras{};
     std::size_t cameras_known{};
     // The near distance each recent frame measured, and the steady middle of them (0: none yet).
     std::deque<float> nears;
@@ -924,11 +930,13 @@ bool record_cover(Shared& s) {
     // This frame's camera, newest first (the measurements try the first camera_candidates of them).
     {
         const auto& m = projector->m;
-        for (std::size_t c = camera_candidates - 1; c > 0; --c) s.cameras[c] = s.cameras[c - 1];
+        for (std::size_t c = camera_history - 1; c > 0; --c) s.cameras[c] = s.cameras[c - 1];
         s.cameras[0] = {m[0], m[1], m[2], m[4], m[5], m[6], m[8], m[9], m[10], m[12], m[13], m[14]};
-        s.cameras_known = std::min(s.cameras_known + 1, camera_candidates);
+        s.cameras_known = std::min(s.cameras_known + 1, camera_history);
     }
-    const auto& camera = s.cameras[0];
+    // The camera the picture was drawn with (camera_delay): the oldest kept, until there are enough.
+    const std::size_t delay = std::min(camera_delay, s.cameras_known - 1);
+    const auto& camera = s.cameras[delay];
 
     Settings settings;
     std::vector<Clear> clear;
@@ -962,7 +970,7 @@ bool record_cover(Shared& s) {
     {
         auto* const out = reinterpret_cast<float*>(s.camera_cpu + at * camera_slice);
         for (std::size_t c = 0; c < camera_candidates; ++c) {
-            const auto& from = s.cameras[std::min(c, s.cameras_known - 1)];
+            const auto& from = s.cameras[std::min(c + delay, s.cameras_known - 1)];
             float* const to = out + c * 4 * 4;
             for (std::size_t v = 0; v < 4; ++v) {
                 to[v * 4] = from[v * 3], to[v * 4 + 1] = from[v * 3 + 1], to[v * 4 + 2] = from[v * 3 + 2], to[v * 4 + 3] = 0;
