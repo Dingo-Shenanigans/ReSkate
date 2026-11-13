@@ -60,7 +60,17 @@ constexpr std::size_t most_trail = 256;
 // cameras (four float4s each), then a float4 a place kept clear (how much snow shows on what stands in
 // it), then the trails (two float4s of head, then two a point).
 constexpr std::size_t place_floats4 = 3; // a place kept clear: its snow; a board's forward and half length; its up and half width
-constexpr UINT64 camera_slice = ((camera_candidates * 4 + most_clear * place_floats4 + 2 + most_trail * 2) * 16 + 255) / 256 * 256;
+// The roof map (Settings::under_roofs), after the trails: a head (on, cells across, a cell's size), then a
+// float4 a cell (the highest surface over it, which cell it is: x, z, and 1 once measured), the cells
+// round the camera kept where their world position falls (x and z each modulo roof_cells), so they stay
+// as the camera moves and only the new ones are measured. One straight-down ray a cell, roof_per_tick a
+// tick: the whole map in under a second at 60 ticks a second.
+constexpr int roof_cells = 96;
+constexpr float roof_cell = 0.5f; // metres: 48 m across
+constexpr int roof_per_tick = 192;
+constexpr float roof_reach = 60.0f; // metres over and under the camera the rays start and end
+constexpr UINT64 camera_slice = ((camera_candidates * 4 + most_clear * place_floats4 + 2 + most_trail * 2 + 1 +
+                                  static_cast<std::size_t>(roof_cells) * roof_cells) * 16 + 255) / 256 * 256;
 // The measurements: one row a candidate camera, a column a point (ps_measure), read back by the CPU.
 constexpr UINT measure_columns = 32;
 constexpr UINT measure_pitch = D3D12_TEXTURE_DATA_PITCH_ALIGNMENT;
@@ -100,6 +110,12 @@ struct Asked {
         std::uint64_t when{};
     };
     std::deque<TrailPoint> trail;
+    // The roof map (measure_roofs): a cell's (highest surface over it, x, z, 1 once measured), and where the
+    // camera was last drawn from.
+    std::vector<std::array<float, 4>> roofs = std::vector<std::array<float, 4>>(static_cast<std::size_t>(roof_cells) * roof_cells);
+    std::size_t roof_next{}; // the next cell of the window round the camera to measure
+    std::array<float, 3> eye{};
+    bool eye_known{};
 };
 Asked& asked() { static auto* value = new Asked; return *value; }
 std::atomic<bool> wanted{};
@@ -211,6 +227,8 @@ struct Shared {
     std::deque<float> nears;
     float held_near{};
     float shown_near{}; // what the shader is given: held_near, eased into over half a second
+    float under_roof{}; // how far the camera is taken to be under a roof (0 to 1, eased): no snow falls
+    std::uint64_t under_roof_at{};
     double fallen{}; // how far the snow has fallen, in seconds at the usual speed (each moment at its own speed)
     std::uint64_t fallen_at{};
     std::uint64_t shown_near_at{};
@@ -960,6 +978,7 @@ bool record_cover(Shared& s) {
     std::vector<Clear> clear;
     const std::uint64_t now = GetTickCount64();
     float stopping_seconds = -1; // how long the snowfall has been stopping, or -1 while it falls
+    bool eye_under_roof = false; // the camera is under something (the roof map)
     {
         auto& a = asked();
         std::lock_guard lock(a.mutex);
@@ -983,6 +1002,21 @@ bool record_cover(Shared& s) {
         }
         head[0] = static_cast<float>(count), head[1] = box[0], head[2] = box[1], head[3] = box[2];
         head[4] = box[3], head[5] = box[4], head[6] = box[5], head[7] = 0;
+        // The roof map, after the trails (measure_roofs fills it), and where it is measured round.
+        float* const roof = head + 8 + most_trail * 8;
+        roof[0] = settings.under_roofs ? 0.0f : 1.0f, roof[1] = static_cast<float>(roof_cells), roof[2] = roof_cell, roof[3] = 0;
+        if (!settings.under_roofs) {
+            std::memcpy(roof + 4, a.roofs.data(), a.roofs.size() * sizeof(a.roofs[0]));
+            const auto eye_x = static_cast<int>(std::floor(camera[9] / roof_cell));
+            const auto eye_z = static_cast<int>(std::floor(camera[11] / roof_cell));
+            const auto slot = static_cast<std::size_t>(((eye_x % roof_cells) + roof_cells) % roof_cells +
+                                                       (((eye_z % roof_cells) + roof_cells) % roof_cells) * roof_cells);
+            const auto& cell = a.roofs[slot];
+            eye_under_roof = cell[3] > 0 && static_cast<int>(cell[1]) == eye_x && static_cast<int>(cell[2]) == eye_z &&
+                             cell[0] > camera[10] + 0.2f;
+        }
+        a.eye = {camera[9], camera[10], camera[11]};
+        a.eye_known = true;
     }
     // The places as the picture has them: camera_delay back, between the two kept either side, blended
     // where they are the same places. With this tick's, a deck turning was ahead of the deck drawn, and the
@@ -1086,6 +1120,12 @@ bool record_cover(Shared& s) {
         if (std::abs(s.shown_near - s.held_near) < s.held_near * 1e-4f) s.shown_near = s.held_near;
     }
     s.shown_near_at = now;
+    // Under a roof the snowfall fades out over half a second, and back in outside.
+    {
+        const float step = s.under_roof_at && now > s.under_roof_at ? std::min(static_cast<float>(now - s.under_roof_at) / 500.0f, 1.0f) : 1.0f;
+        s.under_roof += ((eye_under_roof ? 1.0f : 0.0f) - s.under_roof) * step;
+        s.under_roof_at = now;
+    }
     // The snow's fall, at the speed asked for now: a change of speed carries on from where the flakes are.
     // Once an hour or so it starts again (as the time it was taken from did), so the GPU's float holds it.
     if (s.fallen_at && now > s.fallen_at) s.fallen += static_cast<double>(std::min<std::uint64_t>(now - s.fallen_at, 250)) / 1000.0 * settings.fall_speed;
@@ -1100,7 +1140,7 @@ bool record_cover(Shared& s) {
         m[9], m[10], m[11], s.shown_near, // the near distance measured (0: not yet, the shader measures its own)
         settings.colour[0], settings.colour[1], settings.colour[2], settings.amount,
         settings.facing, settings.softness, settings.brightness, settings.breakup,
-        settings.sparkle, static_cast<float>(s.fallen), settings.snowfall, settings.fall_speed,
+        settings.sparkle, static_cast<float>(s.fallen), settings.snowfall * (1.0f - s.under_roof), settings.fall_speed,
         static_cast<float>(std::min(clear.size(), most_clear)), 0, 0, 0, // then each place's height, below
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // the places' feet and radii, below
         s.last_camera[0], s.last_camera[1], s.last_camera[2], have_last ? 1.0f : 0.0f,
@@ -1208,6 +1248,38 @@ void add_trail(const std::array<float, 3>& at, float width, float fade, float tr
         }
         a.trail.push_back({at, width, fade, tread, starts, GetTickCount64()});
         while (a.trail.size() > most_trail) a.trail.pop_front();
+    } catch (...) {}
+}
+void measure_roofs(GroundTop ground_top) noexcept {
+    try {
+        if (!ground_top || !wanted.load()) return;
+        auto& a = asked();
+        std::array<float, 3> eye{};
+        std::size_t next{};
+        {
+            std::lock_guard lock(a.mutex);
+            if (a.settings.under_roofs || !a.eye_known) return;
+            eye = a.eye, next = a.roof_next;
+        }
+        // The window of cells round the camera, measured in turn: the highest surface straight down over
+        // each cell's middle. Nothing there (collision not loaded, or open sky to below) is no roof.
+        const int first_x = static_cast<int>(std::floor(eye[0] / roof_cell)) - roof_cells / 2;
+        const int first_z = static_cast<int>(std::floor(eye[2] / roof_cell)) - roof_cells / 2;
+        constexpr auto cells = static_cast<std::size_t>(roof_cells) * roof_cells;
+        std::vector<std::pair<std::size_t, std::array<float, 4>>> found;
+        found.reserve(roof_per_tick);
+        for (int k = 0; k < roof_per_tick; ++k) {
+            const auto n = (next + static_cast<std::size_t>(k)) % cells;
+            const int cell_x = first_x + static_cast<int>(n % roof_cells), cell_z = first_z + static_cast<int>(n / roof_cells);
+            const float x = (static_cast<float>(cell_x) + 0.5f) * roof_cell, z = (static_cast<float>(cell_z) + 0.5f) * roof_cell;
+            const auto top = ground_top(x, z, eye[1] + roof_reach, eye[1] - roof_reach);
+            const auto slot = static_cast<std::size_t>(((cell_x % roof_cells) + roof_cells) % roof_cells +
+                                                       (((cell_z % roof_cells) + roof_cells) % roof_cells) * roof_cells);
+            found.push_back({slot, {top ? *top : -1e30f, static_cast<float>(cell_x), static_cast<float>(cell_z), 1.0f}});
+        }
+        std::lock_guard lock(a.mutex);
+        for (const auto& [slot, cell] : found) a.roofs[slot] = cell;
+        a.roof_next = (next + roof_per_tick) % cells;
     } catch (...) {}
 }
 void keep_clear(std::vector<Clear> places) noexcept {

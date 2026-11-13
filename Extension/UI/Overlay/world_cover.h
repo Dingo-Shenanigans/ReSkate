@@ -2,6 +2,7 @@
 #include <array>
 #include <cstdint>
 #include <d3d12.h>
+#include <optional>
 #include <vector>
 
 // A cover over the world's upward-facing surfaces (reskate.effects.cover): snow, sand, dust, moss,
@@ -45,6 +46,9 @@ struct Settings {
     float fall_speed{1.0f}; // 0.1..4: how fast it falls, 1 about 1.1 m/s
     float left{1.0f};       // 0..1: how much of it is left (melting), the same everywhere
     bool snowfall_stopping{}; // the snow stops falling: no new flakes, the last ones fall out
+    // false: none of the cover where something is overhead (a roof, a bridge: indoors), and no snow falling
+    // while the camera is under one. Found from the collision near the camera (measure_roofs).
+    bool under_roofs{true};
 };
 
 // A place kept clear of the cover: an upright cylinder `radius` wide standing on `foot` (the world),
@@ -73,6 +77,11 @@ void clear() noexcept;
 // `tread` (metres, 0: none): the width of a tread pressed into it, whose 13 lines show along the trail.
 // `starts`: the point begins a new trail, not joined to the point before (added however close to it).
 void add_trail(const std::array<float, 3>& at, float width, float fade, float tread = 0, bool starts = false) noexcept;
+// The highest collision surface straight down at (x, z) between the heights `top` and `bottom`, or nothing.
+using GroundTop = std::optional<float> (*)(float x, float z, float top, float bottom);
+// Client thread, every tick: while a cover is kept from under roofs, some of the cells round the camera are
+// measured with `ground_top` (the roof map: how high the highest surface over each is).
+void measure_roofs(GroundTop ground_top) noexcept;
 // Client thread: up to three places kept clear for the next 300 ms (set them every tick); none ends it.
 // The first one also measures the depth's scale on the ground round its foot, which the cylinders
 // need; the scale is held from many frames, so they stay put while the foot is out of view.

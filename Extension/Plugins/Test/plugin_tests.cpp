@@ -1545,11 +1545,13 @@ void the_time_of_day_is_read_and_the_cover_melts() {
         assert(reskate.world.controls_text() == "fog=1\nfog_distance=0.5\n")
         assert(reskate.world.set_atmosphere({["Fog.Enable"] = 1, ["Fog.FogColor"] = "0,1450,2500"}))
         assert(not pcall(reskate.world.set_atmosphere, {["Fog.Enable"] = true}), "a value is a number or text")
-        assert(reskate.effects.cover({left = 0.25, snowfall_stopping = true}))
+        assert(reskate.effects.cover({left = 0.25, snowfall_stopping = true, under_roofs = false}))
         assert(not pcall(reskate.effects.cover, {left = 2}), "left is 0 to 1")
+        assert(not pcall(reskate.effects.cover, {under_roofs = 1}), "under_roofs is true or false")
     )", R"("world.environment", "effects")")});
     running(host, "melt", environment);
-    check(environment.fake.cover_asked && environment.fake.cover_asked->left == 0.25f && environment.fake.cover_asked->snowfall_stopping, "a cover's melt is passed on: how much of it is left");
+    check(environment.fake.cover_asked && environment.fake.cover_asked->left == 0.25f && environment.fake.cover_asked->snowfall_stopping &&
+              !environment.fake.cover_asked->under_roofs, "a cover's melt is passed on: how much of it is left, and none under roofs");
     TestEnvironment denied_environment;
     Host denied(denied_environment, Side::client);
     denied.apply({script("melt-denied", R"(

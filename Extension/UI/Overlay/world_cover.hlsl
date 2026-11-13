@@ -31,6 +31,12 @@ StructuredBuffer<float4> cameras : register(t3);
 #define PLACES (CANDIDATES * 4)
 #define TRAIL (PLACES + 9)
 #define MOST_TRAIL 256
+// After the trails, the roof map (world_cover.cpp's measure_roofs): [0] = (on, cells across, a cell's size,
+// -), then a float4 a cell, kept where its world position falls (x and z each modulo the cells across):
+// (the highest surface over the cell's middle, which cell it is: x, z, 1 once measured).
+#define ROOF (TRAIL + 2 + MOST_TRAIL * 2)
+// Something this far over a surface is a roof over it (a ceiling, a bridge), not a bench or a rail on it.
+#define ROOF_CLEARANCE 1.5
 
 struct Vertex { float4 position : SV_Position; };
 struct Output {
@@ -45,6 +51,25 @@ Vertex vs_main(uint id : SV_VertexID) {
     const float2 uv = float2((id << 1) & 2, id & 2);
     v.position = float4(uv * float2(2, -2) + float2(-1, 1), 0, 1);
     return v;
+}
+
+// How much a point is under a roof (0 to 1): the four nearest cells' middles, blended, so a roof's edge is
+// soft. A cell not measured, or measured for another place, is no roof.
+float roofed_at(float3 at) {
+    const float4 head = cameras[ROOF];
+    if (head.x <= 0) return 0;
+    const int n = (int)head.y;
+    const float2 c = at.xz / head.z - 0.5;
+    const float2 base = floor(c);
+    const float2 f = c - base;
+    float under[4];
+    [unroll] for (int k = 0; k < 4; ++k) {
+        const int2 cell = int2(base) + int2(k & 1, k >> 1);
+        const int2 slot = ((cell % n) + n) % n;
+        const float4 v = cameras[ROOF + 1 + slot.x + slot.y * n];
+        under[k] = (v.w > 0 && (int)v.y == cell.x && (int)v.z == cell.y && at.y < v.x - ROOF_CLEARANCE) ? 1 : 0;
+    }
+    return lerp(lerp(under[0], under[1], f.x), lerp(under[2], under[3], f.x), f.y);
 }
 
 float depth_at(int2 p) {
@@ -380,6 +405,8 @@ Output ps_main(Vertex input) {
         const float bend_across = min(abs(dl2 - 2 * dl + d), abs(d - 2 * dr + dr2));
         const float bend_along = min(abs(du2 - 2 * du + d), abs(d - 2 * dd + dd2));
         cover *= 1 - smoothstep(0.0015, 0.006, max(bend_across, bend_along) / d);
+        // None under a roof (indoors, under a bridge), where the plugin asks.
+        cover *= 1 - roofed_at(steady);
     }
 
     // Distances are only real when measured: the trails and the places kept clear need them.

@@ -10,6 +10,7 @@
 #include "Extension/Music/music_inject.h"
 #include "Extension/World/texture_handle_limit.h"
 #include "Extension/World/time_of_day_lighting.h"
+#include "Extension/UI/Overlay/world_cover.h"
 #include "Extension/Assets/native_render_resource_pool.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Profiling/profiler.h"
@@ -606,6 +607,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
     apply_throwdown_modes();
     apply_performance_settings();
     dingosdk::time_of_day_lighting::tick(settings_now);
+    dingosdk::world_cover::measure_roofs(&dingosdk::local_ground_height); // a cover kept from under roofs
     apply_local_connection_timeouts();
     dingosdk::job_spin::apply_default();
     apply_mesh_streaming_pool(state);
