@@ -1,6 +1,7 @@
 #include "world_cover.h"
 #include "world_cover_hlsl.h" // generated from world_cover.hlsl (cmake/UI.cmake)
 #include "Engine/Core/Hooks/hooks.h"
+#include "Engine/Core/Hooks/patches.h"
 #include "Engine/Core/Log/logging.h"
 #include "Extension/Plugins/plugin_camera.h"
 #include <d3dcompiler.h>
@@ -1195,34 +1196,42 @@ void install(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D12GraphicsComm
     }
     static std::atomic<bool> hooked{};
     if (hooked.exchange(true)) return;
-    const auto hook = [](void* target, void* detour, auto& original, const char* name) {
+    // Each function is hooked where it is; where its code cannot be (Proton's D3D12, vkd3d-proton, refused
+    // CopyDescriptors on a Steam Deck, 2026-11-13, and the cover never came on), its slot in the
+    // interface's table is pointed at ours instead: calls through the interface, which are what the game
+    // makes, come to us the same.
+    const auto hook = [](void** table, std::size_t slot, void* detour, auto& original, const char* name) {
+        using Fn = std::remove_reference_t<decltype(original.load())>;
+        void* const target = table[slot];
         void* trampoline{};
-        if (hook_prepare(target, detour, &trampoline) != HookOk) {
-            logging::printf(logging::Level::warning, logging::Channel::graphics, "World cover: %s hook could not be prepared.", name);
-            return false;
-        }
-        original.store(reinterpret_cast<std::remove_reference_t<decltype(original.load())>>(trampoline));
-        if (hook_enable(target) != HookOk) {
+        if (hook_prepare(target, detour, &trampoline) == HookOk) {
+            original.store(reinterpret_cast<Fn>(trampoline));
+            if (hook_enable(target) == HookOk) return true;
             original.store(nullptr);
-            logging::printf(logging::Level::warning, logging::Channel::graphics, "World cover: %s hook could not be enabled.", name);
-            return false;
         }
-        return true;
+        void* previous{};
+        if (patch_table_slot(name, &table[slot], target, detour, &previous) == HookOk) {
+            original.store(reinterpret_cast<Fn>(previous));
+            logging::printf(logging::Level::info, logging::Channel::graphics, "World cover: %s is followed through its table slot.", name);
+            return true;
+        }
+        logging::printf(logging::Level::warning, logging::Channel::graphics, "World cover: %s hook could not be put in place.", name);
+        return false;
     };
     auto* const device_table = *reinterpret_cast<void***>(device);
     auto* const list_table = *reinterpret_cast<void***>(list);
     auto* const queue_table = *reinterpret_cast<void***>(queue);
-    const bool ok = hook(device_table[device_create_rtv], reinterpret_cast<void*>(&hooked_rtv), original_rtv, "CreateRenderTargetView") &&
-                    hook(device_table[device_create_dsv], reinterpret_cast<void*>(&hooked_dsv), original_dsv, "CreateDepthStencilView") &&
-                    hook(device_table[device_copy_descriptors], reinterpret_cast<void*>(&hooked_copy), original_copy, "CopyDescriptors") &&
-                    hook(device_table[device_copy_simple], reinterpret_cast<void*>(&hooked_copy_simple), original_copy_simple, "CopyDescriptorsSimple") &&
-                    hook(list_table[list_set_targets], reinterpret_cast<void*>(&hooked_targets), original_targets, "OMSetRenderTargets") &&
-                    hook(queue_table[queue_execute], reinterpret_cast<void*>(&hooked_execute), original_execute, "ExecuteCommandLists");
+    const bool ok = hook(device_table, device_create_rtv, reinterpret_cast<void*>(&hooked_rtv), original_rtv, "CreateRenderTargetView") &&
+                    hook(device_table, device_create_dsv, reinterpret_cast<void*>(&hooked_dsv), original_dsv, "CreateDepthStencilView") &&
+                    hook(device_table, device_copy_descriptors, reinterpret_cast<void*>(&hooked_copy), original_copy, "CopyDescriptors") &&
+                    hook(device_table, device_copy_simple, reinterpret_cast<void*>(&hooked_copy_simple), original_copy_simple, "CopyDescriptorsSimple") &&
+                    hook(list_table, list_set_targets, reinterpret_cast<void*>(&hooked_targets), original_targets, "OMSetRenderTargets") &&
+                    hook(queue_table, queue_execute, reinterpret_cast<void*>(&hooked_execute), original_execute, "ExecuteCommandLists");
     // Render passes (ID3D12GraphicsCommandList4) bind targets too; only when the runtime's lists have them.
     ComPtr<ID3D12GraphicsCommandList4> list4;
     if (ok && SUCCEEDED(list->QueryInterface(IID_PPV_ARGS(&list4))) && list4) {
         auto* const table4 = *reinterpret_cast<void***>(list4.Get());
-        (void)hook(table4[list_begin_render_pass], reinterpret_cast<void*>(&hooked_render_pass), original_render_pass, "BeginRenderPass");
+        (void)hook(table4, list_begin_render_pass, reinterpret_cast<void*>(&hooked_render_pass), original_render_pass, "BeginRenderPass");
     }
     if (!ok) say_failed("its D3D12 hooks are not all in place.");
     else logging::write(logging::Level::info, logging::Channel::graphics, "World cover: hooks installed.");
