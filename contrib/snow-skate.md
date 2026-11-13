@@ -20,10 +20,15 @@ reskate.effects.cover(nil)
 The call lays a cover over every upward-facing surface of the world, with falling snow in front of it. It
 stays until `cover(nil)`, and one plugin may have a cover at a time.
 
-- **`keep_clear`:** keeps up to three upright cylinders clear of it for 0.3 s at a time. With `snow` (0 to
-  1) whatever stands in one shows a patchy dusting of the cover on every side instead.
+- **`keep_clear`:** keeps up to three places clear of it for 0.3 s at a time.
+  - **Upright cylinders:** with `snow` (0 to 1), whatever stands in one shows a patchy dusting of the cover
+    on every side instead.
+  - **Board-shaped places:** with a `length`, `forward` and `up`, the place is board-shaped instead. In its
+    own plane the cover is `snow` of what it would be, and no trail is pressed into it.
 - **`trail`:** adds a point on a trail through the cover. Along the last 256 points the cover is pressed
   down, thinner and greyer, `width` wide (each point its own), and fills back in over `fade` seconds.
+  - **Tread:** with a `tread` width, a tread's 13 lines show along it (7 lighter, 6 darker ridges).
+  - **Slopes:** each stretch is found on the plane through both its points, so a trail follows a slope.
 
 **What Snow Skate uses it for:**
 
@@ -36,7 +41,11 @@ stays until `cover(nil)`, and one plugin may have a cover at a time.
 - **No snow on the player:** `keep_clear` around the skater.
 - **Snow on the player after a tumble:** `snow` on that place, building up in a wipeout and fading after.
 - **Tracks in the snow:** `trail` under the deck as it rides, as wide as the deck is across its way (so a
-  powerslide or a revert sweeps a wide mark), and where the skater tumbles.
+  powerslide or a revert sweeps a wide mark), with the snowskate deck's tread when it rolls straight. Also
+  where the skater tumbles, slides or rolls off the board.
+- **The deck:** a board-shaped `keep_clear` place on it. The snowskate deck rides so low that the
+  skater's cylinder took its griptape for the ground: it got full snow and the board's own track. Now it
+  has a light dusting and no track.
 
 **How it is drawn:** `Extension/UI/Overlay/world_cover.{h,cpp,hlsl}` draws one full-screen pass into the
 finished scene, just before the game adds its UI, so menus and the HUD are never under it. It sees the
@@ -54,6 +63,13 @@ game's barriers through the existing hook in `depth_tap.cpp`, and frames end thr
   that moved with each measurement made the snow's pattern jump.
 - **When it is drawn:** it is off in menus, but a single frame of "not in play" no longer switches it off.
   It is drawn in the replay editor too, which the game counts as a menu.
+- **The camera:** it is read as the cover is drawn, by when the game is about a frame ahead of its picture.
+  The world is found with the camera of 1.15 frames before, between the two before blended; with this
+  frame's, world-fixed things (trails) swam as the camera turned. The value was tried in the game.
+- **Proton (Steam Deck):**
+  - a D3D12 function vkd3d-proton will not let be hooked in place is followed through its interface's
+    table slot;
+  - the shader avoids a loop Wine's compiler could not unroll.
 
 ## `reskate.skater.surface_sound(word | nil[, fields])`
 
