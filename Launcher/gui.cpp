@@ -121,38 +121,6 @@ float text_height(ImFont* font, float wrap, const std::string& text) {
     return text.empty() ? 0 : font->CalcTextSizeA(font->FontSize, FLT_MAX, wrap, text.c_str()).y;
 }
 
-void page_banner(const Fonts& fonts, const char* heading, const char* pill, const std::string& about,
-                 const std::string& status, ImU32 status_fill, const std::string& caption) {
-    auto* draw = ImGui::GetWindowDrawList();
-    const ImVec2 top = ImGui::GetCursorScreenPos();
-    const float width = ImGui::GetContentRegionAvail().x;
-    const float pad = S(20), side = S(230);
-    const float wrap = width - pad * 2 - side - S(20);
-    const float tall = std::max(S(100), pad + fonts.heading->FontSize + S(10) + text_height(fonts.body, wrap, about) + pad);
-    draw->AddRectFilled(top, ImVec2(top.x + width, top.y + tall), color::tile, S(6));
-    draw->AddRectFilled(top, ImVec2(top.x + S(5), top.y + tall), color::blue, S(6), ImDrawFlags_RoundCornersLeft);
-    const float text_x = top.x + pad + S(4);
-    draw->AddText(fonts.heading, fonts.heading->FontSize, ImVec2(text_x, top.y + pad), color::text, heading);
-    if (pill && *pill) {
-        const float heading_width = fonts.heading->CalcTextSizeA(fonts.heading->FontSize, FLT_MAX, 0, heading).x;
-        badge(draw, fonts, ImVec2(text_x + heading_width + S(12), top.y + pad + (fonts.heading->FontSize - fonts.caption->FontSize - S(8)) * 0.5f),
-            pill, color::blue, color::ink);
-    }
-    draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(text_x, top.y + pad + fonts.heading->FontSize + S(10)), color::muted,
-        about.c_str(), nullptr, wrap);
-    const float right = top.x + width - pad;
-    const float block = fonts.caption->FontSize + S(8) + (caption.empty() ? 0 : S(8) + fonts.caption->FontSize);
-    const float block_y = top.y + (tall - block) * 0.5f;
-    if (!status.empty()) badge(draw, fonts, ImVec2(right - badge_width(fonts, status), block_y), status, status_fill, color::ink);
-    if (!caption.empty()) {
-        const float caption_width = fonts.caption->CalcTextSizeA(fonts.caption->FontSize, FLT_MAX, 0, caption.c_str()).x;
-        draw->AddText(fonts.caption, fonts.caption->FontSize, ImVec2(right - caption_width, block_y + fonts.caption->FontSize + S(16)),
-            color::muted, caption.c_str());
-    }
-    ImGui::Dummy(ImVec2(width, tall));
-    ImGui::Dummy(ImVec2(0, S(6)));
-}
-
 void card(ImDrawList* draw, ImVec2 start, ImVec2 size, bool marked) {
     const ImVec2 end(start.x + size.x, start.y + size.y);
     const bool hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) && ImGui::IsMouseHoveringRect(start, end);

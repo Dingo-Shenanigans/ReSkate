@@ -522,7 +522,7 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
     // A mod dropped on the window opens the Mods panel and installs it.
     {
         std::lock_guard lock(g_dropped_mutex);
-        if (!g_dropped.empty() && !ui.settings && !ui.sign_in && !qr_open && !state.prompt && !mods_panel.installing) {
+        if (!g_dropped.empty() && !ui.settings && !ui.sign_in && !qr_open && !state.prompt) {
             ui.mods = true;
             mods_panel.tab = 0;
             if (!mods_panel.scanned) scan(mods_panel, launcher.session());
@@ -597,6 +597,11 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
                : !update::binary_updates_enabled() ? std::string("ReSkate development build")
                : state.config->runtime.version.empty() ? std::string("ReSkate")
                : "ReSkate " + state.config->runtime.version;
+        // Not while mods are still coming in: Skate would start on a Mods folder half written.
+        if (mods_panel.installing) {
+            enabled = false;
+            detail = "Waiting for your mods to finish installing";
+        }
         break;
     case Phase::launching: label = "LAUNCHING"; enabled = false; break;
     case Phase::failed: label = "RETRY"; break;
