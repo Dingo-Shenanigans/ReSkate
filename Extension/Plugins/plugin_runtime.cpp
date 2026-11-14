@@ -311,38 +311,42 @@ struct Row {
 };
 std::mutex rows_mutex;
 std::vector<Row> rows; // under rows_mutex: the plugins discovery found that may load
-std::atomic<bool> prompt_open{};
 
-// Asks about the first plugin that has no answer, when nothing else is being asked: one prompt at
-// a time. Called by the discovery thread, which is not the game's.
+// Asks about every plugin that has no answer, when nothing else is being asked: one card, each
+// plugin in turn with everything it may do, the answer to one bringing up the next (a card each,
+// one after another, was a wait between every two). An answer is kept as it is given, so a card
+// that is replaced or never finished leaves only the rest to ask about, the next time this is
+// called. Called by the discovery thread, which is not the game's.
 void ask_next() {
-    static std::chrono::steady_clock::time_point asked_at; // (this thread's)
-    // Ours was replaced, or never shown: the answer will not come. Five seconds from when it was last
-    // seen up, so an answer given late is not asked again before it is saved.
-    if (overlay::question_asking()) asked_at = std::chrono::steady_clock::now();
-    if (prompt_open && !overlay::question_asking() && std::chrono::steady_clock::now() - asked_at > std::chrono::seconds(5)) prompt_open = false;
-    if (prompt_open || overlay::question_asking() || overlay::message_asking()) return;
-    Row row;
+    if (overlay::question_asking() || overlay::message_asking()) return;
+    std::vector<Row> waiting;
     {
         std::lock_guard lock(rows_mutex);
-        const auto next = std::find_if(rows.begin(), rows.end(), [](const Row& r) { return approvals->state(r.id, r.fingerprint) == Approval::asking; });
-        if (next == rows.end()) return;
-        row = *next;
+        for (const auto& row : rows)
+            if (approvals->state(row.id, row.fingerprint) == Approval::asking) waiting.push_back(row);
     }
-    std::string text = approval_prompt(row.can);
-    prompt_open = true;
-    asked_at = std::chrono::steady_clock::now();
-    // A long title is cut to fit the card, not in the middle of a character.
-    auto cut = std::min<std::size_t>(row.title.size(), 37);
-    while (cut > 0 && cut < row.title.size() && (static_cast<unsigned char>(row.title[cut]) & 0xC0) == 0x80) --cut;
-    const auto title = row.title.size() > 40 ? row.title.substr(0, cut) + "..." : row.title;
-    // The first answer is Keep off, and Esc or B means it too: only a click or press on Turn on turns it on.
-    overlay::ask_question("PLUGINS", title, std::move(text), "Keep off", "Turn on", [row](bool first) {
-        approvals->set(row.id, row.fingerprint, !first);
-        if (first) forget_verified(row.id, row.fingerprint);
+    if (waiting.empty()) return;
+    std::vector<overlay::PluginQuestion> asked;
+    for (const auto& row : waiting) {
+        overlay::PluginQuestion plugin;
+        // A long title is cut to fit the card, not in the middle of a character.
+        auto cut = std::min<std::size_t>(row.title.size(), 37);
+        while (cut > 0 && cut < row.title.size() && (static_cast<unsigned char>(row.title[cut]) & 0xC0) == 0x80) --cut;
+        plugin.title = row.title.size() > 40 ? row.title.substr(0, cut) + "..." : row.title;
+        plugin.author = row.author;
+        // Everything it may do, under its categories: all of each one's phrases, not a summary.
+        for (const auto& group : row.can)
+            if (!group.phrases.empty()) plugin.can.push_back({group.category, static_cast<int>(group.risk), group.phrases});
+        asked.push_back(std::move(plugin));
+    }
+    // Keep off is the first answer, and what Esc or B means: only a click or press on Turn on turns one on.
+    overlay::ask_plugins(std::move(asked), [waiting = std::move(waiting)](std::size_t place, bool on) {
+        if (place >= waiting.size()) return;
+        const auto& row = waiting[place];
+        approvals->set(row.id, row.fingerprint, on);
+        if (!on) forget_verified(row.id, row.fingerprint);
         reapply = true;
-        prompt_open = false;
-    }, true);
+    });
 }
 
 // Thunderstore's answers about the plugins' packages (plugin_listing.h), and the ones the player

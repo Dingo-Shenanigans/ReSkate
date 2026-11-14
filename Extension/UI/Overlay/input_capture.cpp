@@ -132,8 +132,10 @@ void neutral_hid(const InputCaptureHooks::HidRead& read, DWORD size) {
     // the game's handle for this: 2.0.4 did, as the pad was first read.)
     const bool bluetooth = playstation_bluetooth(size);
     if (!parse_playstation_report(read.kind, bluetooth, bytes, size)) return;
+    // (Which layout a DualSense's report 0x01 has is told as the parser tells it, by what is in the
+    // report: playstation_report.h dualsense_usb_layout.)
     const bool sense_full = read.kind == PlayStationPad::dualsense &&
-        (bytes[0] == 0x31 || (bytes[0] == 1 && !bluetooth));
+        (bytes[0] == 0x31 || (bytes[0] == 1 && dualsense_usb_layout(bytes, size, bluetooth)));
     const unsigned offset = bytes[0] == 0x31 ? 2 : bytes[0] == 0x11 ? 3 : 1;
     auto* data = bytes + offset;
     if(!capture) {
@@ -152,9 +154,9 @@ void neutral_hid(const InputCaptureHooks::HidRead& read, DWORD size) {
     refresh_playstation_bluetooth_crc(bytes, size);
     static std::atomic<bool> reported{};
     if (capture && !reported.exchange(true)) logging::printf(logging::Level::info, logging::Channel::input,
-        "Native PlayStation HID report neutralized; overlay retains its independent input stream. (%s over %s, report 0x%02x of %lu bytes, "
-        "the game's buffer %lu.)", read.kind == PlayStationPad::dualsense ? "DualSense" : "DualShock 4",
-        bluetooth ? "Bluetooth" : "USB", bytes[0], size, read.capacity);
+        "Native PlayStation HID report neutralized; overlay retains its independent input stream. (%s over %s by its length, report 0x%02x "
+        "of %lu bytes in the %s layout, the game's buffer %lu.)", read.kind == PlayStationPad::dualsense ? "DualSense" : "DualShock 4",
+        bluetooth ? "Bluetooth" : "USB", bytes[0], size, sense_full ? "DualSense" : "DualShock 4", read.capacity);
 }
 void dark_pop_hide_hat(std::uint8_t& byte) noexcept;
 // Dark Pop: the hat nibble of a PlayStation report the game read, hidden the same way as the XInput D-pad.
@@ -163,7 +165,8 @@ void hide_hid_dpad(const InputCaptureHooks::HidRead& read, DWORD size) {
     auto* bytes = static_cast<std::uint8_t*>(read.buffer);
     const bool bluetooth = playstation_bluetooth(size);
     if (!parse_playstation_report(read.kind, bluetooth, bytes, size)) return;
-    const bool sense_full = read.kind == PlayStationPad::dualsense && (bytes[0] == 0x31 || (bytes[0] == 1 && !bluetooth));
+    const bool sense_full = read.kind == PlayStationPad::dualsense &&
+        (bytes[0] == 0x31 || (bytes[0] == 1 && dualsense_usb_layout(bytes, size, bluetooth)));
     const unsigned offset = bytes[0] == 0x31 ? 2 : bytes[0] == 0x11 ? 3 : 1;
     auto* data = bytes + offset;
     auto& hat = data[sense_full ? 7 : 4];
