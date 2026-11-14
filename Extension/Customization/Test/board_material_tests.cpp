@@ -483,7 +483,46 @@ void declarations_wait_for_the_board_to_settle() {
 }
 } // namespace
 
+void preview_uses_its_own_recipe() {
+    struct Slot { std::uint32_t slot; std::string asset; };
+    struct Recipe { std::uint32_t key; std::vector<Slot> items; };
+    Recipe preview{0x5e61aaef, {{0x66071628, "Own_Preview_Deck"}, {0x755d5ee0, "Own_Preview_Grip"},
+                             {0x976f18c4, "cutout"}, {0x0add98be, "Own_Trucks"}, {0xc83bb94e, "Own_Wheels"}}};
+    const auto items = detail::preview_items(preview);
+    check(items && (*items)[0] == "Own_Preview_Deck" && (*items)[1] == "Own_Preview_Grip" &&
+          (*items)[2] == "Own_Trucks" && (*items)[3] == "Own_Wheels", "preview uses its own parts, including a non-equipped deck");
+    preview.items[0].asset = "Own_Another_Preview";
+    check((*detail::preview_items(preview))[0] == "Own_Another_Preview", "selection change follows the actual preview recipe");
+    preview.items.push_back({0x66071628, "ambiguous"});
+    check(!detail::preview_items(preview), "duplicate preview slots fail closed");
+    preview.items.pop_back(); preview.key = 0;
+    check(!detail::preview_items(preview), "non-board preview recipe fails closed");
+    preview.key = 0x5e61aaef; preview.items[0].asset.clear();
+    check(!detail::preview_items(preview), "missing deck identity fails closed");
+
+    detail::Found live;
+    detail::Node node;
+    node.address = 3; node.parameter.key = graphic_colour; node.parameter.kind = Kind::colour;
+    node.parameter.value = {.5F, .5F, .5F};
+    live.materials.push_back({1, 2, Part::deck, {node}});
+    live.write_blocked[0] = true;
+    Kind kind{};
+    check(!detail::refusal(live, Part::deck, graphic_colour, {1, 0, 0}, true, kind).empty(),
+          "restricted or changing preview refuses even an existing material key");
+    std::vector<detail::Hold> holds{{"test", Part::deck, graphic_colour, Kind::colour, {1, 0, 0}, false}};
+    std::vector<detail::Saved> saved;
+    unsigned writes{};
+    auto write = [&](std::uintptr_t, std::uintptr_t, Kind, const Colour&) { ++writes; return true; };
+    auto publish = [](std::uintptr_t) {};
+    detail::apply(saved, holds, live, write, publish);
+    check(writes == 0, "no write reaches a restricted or transitioning preview");
+    live.write_blocked[0] = false;
+    detail::apply(saved, holds, live, write, publish);
+    check(writes == 1, "settled allowed preview can receive its held colour");
+}
+
 int main() {
+    preview_uses_its_own_recipe();
     const std::map<std::string, int> stock{{"free_stock", 1}, {"paid_stock", 1}};
     const auto not_reserved = [](std::string_view) { return false; };
     check(detail::declared_item_restricted("FREE_STOCK", true, stock, not_reserved), "free stock cannot grant declarations");

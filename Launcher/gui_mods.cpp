@@ -97,35 +97,6 @@ void save(ModsPanel& panel) {
     }
 }
 
-// Picks up a finished install: rescan and say what came in, or ask to replace. (Its details are not
-// opened: the player may be browsing on, and finds the mod in the list.)
-void collect_install(ModsPanel& panel, const launcher_app::Session& session) {
-    std::lock_guard lock(panel.mutex);
-    if (!panel.finished) return;
-    panel.finished = false;
-    panel.progress = -1;
-    if (!panel.finished_conflict.empty()) {
-        panel.conflict_name = panel.finished_conflict;
-        panel.conflict_source = panel.finished_source;
-        panel.message.clear();
-        return;
-    }
-    scan(panel, session);
-    if (!panel.finished_error.empty()) {
-        panel.message = panel.finished_error;
-        panel.message_error = true;
-        return;
-    }
-    panel.message_error = false;
-    if (!panel.finished_note.empty()) {
-        panel.message = panel.finished_note;   // Thunderstore installs say what they did and log it themselves
-        panel.finished_note.clear();
-        return;
-    }
-    panel.message = "Installed " + panel.finished_name + ". It loads the next time Skate starts.";
-    logging::write(logging::Level::info, logging::Channel::launcher, "Mod installed: " + panel.finished_name);
-}
-
 // The picker for a mod to install: a .zip, or a folder.
 fs::path pick(HWND owner, bool folder) {
     return folder ? pick_path(owner, true, L"Choose a mod folder to install", nullptr, nullptr)
@@ -149,6 +120,8 @@ std::uint64_t folder_size(const fs::path& directory) {
     return total;
 }
 
+std::string folded(std::string_view text);
+
 std::string summary(const ModsPanel& panel, const mods::Mod& mod) {
     std::vector<std::string> parts;
     if (!mod.version.empty()) parts.push_back("v" + mod.version);
@@ -160,6 +133,8 @@ std::string summary(const ModsPanel& panel, const mods::Mod& mod) {
     if (!mod.park_maps.empty()) parts.push_back(mod.park_maps.size() == 1 ? "1 park" : std::to_string(mod.park_maps.size()) + " parks");
     if (mod.provides_plugin) parts.push_back("plugin");
     if (!mods::has_content(mod)) parts.push_back("nothing to load");
+    if (const auto off = panel.items_off.find(folded(mod.name)); off != panel.items_off.end())
+        parts.push_back(off->second == 1 ? "1 item left out" : std::to_string(off->second) + " items left out");
     std::string text;
     for (const auto& part : parts) text += (text.empty() ? "" : "  /  ") + part;
     return text;
@@ -210,7 +185,7 @@ bool thunderstore_button(const Fonts& fonts, const char* label, float height) {
     return pressed;
 }
 
-bool rail(const Fonts& fonts, ModsPanel& panel, HWND window, float width,
+bool rail(const Fonts& fonts, ModsPanel& panel, float width,
           const std::vector<const thunderstore::Package*>& pending, bool installing) {
     const auto installed = panel.list.entries.size();
     const auto& store = panel.store;
@@ -235,29 +210,24 @@ bool rail(const Fonts& fonts, ModsPanel& panel, HWND window, float width,
         panel.tab = 2;
     if (panel.tab == 2) default_focus();
 
-    // UPDATE ALL is not here: it sits over the MY MODS list, next to the rows it updates.
+    // The pages and the way out, and nothing else: installing a file or a folder is ADD on MY MODS,
+    // and UPDATE ALL sits over the list, next to the rows it updates.
     ImGui::Dummy(ImVec2(0, S(8)));
-    if (ImGui::Button("Install .zip", ImVec2(-1, S(32))))
-        if (const auto path = pick(window, false); !path.empty()) start_install(panel, path, false);
-    if (ImGui::Button("Install folder", ImVec2(-1, S(32))))
-        if (const auto path = pick(window, true); !path.empty()) start_install(panel, path, false);
-    if (ImGui::Button("Open Mods folder", ImVec2(-1, S(32)))) open_path(panel.root);
-    ImGui::Dummy(ImVec2(0, S(4)));
     if (thunderstore_button(fonts, "Thunderstore##visit", S(48)))
         open_url(utf8(thunderstore::community_page(thunderstore::community())));
     ImGui::EndDisabled();
 
+    // (Plain: blue is for what a page is there to do, and leaving it is not that.)
     ImGui::SetCursorPosY(ImGui::GetWindowHeight() - S(38));
-    push_primary_button();
     if (ImGui::Button("\xe2\x86\x90  BACK", ImVec2(-1, S(34)))) leave = true;
-    pop_primary_button();
     return leave;
 }
 
 // ---------------------------------------------------------------- MY MODS
 
-constexpr std::array<const char*, 8> filter_names{"All mods", "Enabled", "Disabled", "Maps", "Game data", "Updates",
-                                                  "Problems", "Conflicts"};
+// What MY MODS shows (ModsPanel::filter), a chip each over the list.
+enum Filter : int { filter_all, filter_on, filter_off, filter_maps, filter_data, filter_updates, filter_problems, filter_conflicts,
+                    filter_plugins };
 constexpr std::array<const char*, 3> order_names{"Load order", "Name", "Largest first"};
 // What a row dragged by its handle carries: its place in the load order.
 constexpr const char* dragged_row = "RESKATE_MOD_ROW";
@@ -419,6 +389,29 @@ std::vector<std::string> categories_of(const ModsPanel& panel, const mods::Mod& 
     return found->second;
 }
 
+// A mod's name as a list shows it: Thunderstore's names have underscores for spaces.
+std::string shown_title(const mods::Mod& mod) {
+    auto title = mod.title;
+    std::replace(title.begin(), title.end(), '_', ' ');
+    return title;
+}
+
+// Whether `filter` shows this mod.
+bool filter_shows(const ModsPanel& panel, const thunderstore::Installed& installed, const mods::ModEntry& entry, int filter) {
+    const auto& mod = entry.mod;
+    switch (filter) {
+    case filter_on: return entry.enabled;
+    case filter_off: return !entry.enabled;
+    case filter_maps: return !mod.levels.empty();
+    case filter_data: return mod.levels.empty() && mod.provides_layout;
+    case filter_updates: return update_waiting(panel, installed, mod.name);
+    case filter_problems: return !mod.outdated.empty() || broken(panel, mod.name);
+    case filter_conflicts: return mod.outdated.empty() && (!conflict_winner(panel, mod.name).empty() || conflict_beats(panel, mod.name));
+    case filter_plugins: return mod.provides_plugin;
+    default: return true;
+    }
+}
+
 std::vector<int> visible_mods(const ModsPanel& panel, const thunderstore::Installed& installed, const thunderstore::CategoryFilter& categories) {
     const auto& entries = panel.list.entries;
     const auto query = folded(panel.search.data());
@@ -426,20 +419,11 @@ std::vector<int> visible_mods(const ModsPanel& panel, const thunderstore::Instal
     for (int index = 0; index < static_cast<int>(entries.size()); ++index) {
         const auto& entry = entries[static_cast<std::size_t>(index)];
         const auto& mod = entry.mod;
-        bool keep = true;
-        switch (panel.filter) {
-        case 1: keep = entry.enabled; break;
-        case 2: keep = !entry.enabled; break;
-        case 3: keep = !mod.levels.empty(); break;
-        case 4: keep = mod.levels.empty() && mod.provides_layout; break;
-        case 5: keep = update_waiting(panel, installed, mod.name); break;
-        case 6: keep = !mod.outdated.empty() || broken(panel, mod.name); break;
-        case 7: keep = mod.outdated.empty() && (!conflict_winner(panel, mod.name).empty() || conflict_beats(panel, mod.name)); break;
-        default: break;
-        }
+        bool keep = filter_shows(panel, installed, entry, panel.filter);
         if (keep && !categories.empty()) keep = thunderstore::shown_by(categories_of(panel, mod), categories);
         if (keep && !query.empty())
             keep = folded(mod.title).find(query) != std::string::npos ||
+                   folded(shown_title(mod)).find(query) != std::string::npos ||
                    folded(mod.name).find(query) != std::string::npos ||
                    folded(mod.author).find(query) != std::string::npos;
         if (keep) view.push_back(index);
@@ -578,46 +562,32 @@ void carry_out(ModsPanel& panel, const thunderstore::Installed& installed, const
 // Over the list while Thunderstore has updates, as the conflicts bar is: how many and what they
 // download, each mod's old -> new version, a switch to show only those mods, and UPDATE ALL. Mods
 // with an update are listed first, so it sits right above the rows it updates.
-void updates_bar(const Fonts& fonts, ModsPanel& panel, const thunderstore::Installed& installed,
-                 const std::vector<const thunderstore::Package*>& pending) {
+void updates_bar(const Fonts& fonts, ModsPanel& panel, const std::vector<const thunderstore::Package*>& pending) {
     if (pending.empty()) return;
     std::uint64_t download{};
     for (const auto* package : pending) download += package->latest().file_size;
-    // (The first few by name: the list itself shows every one.)
-    constexpr std::size_t named = 6;
+    // One line: how many, how much, the first few by name (the Updates chip shows every one), and the
+    // button that takes them all.
     std::string names;
-    for (std::size_t i = 0; i < pending.size() && i < named; ++i) {
-        const auto* package = pending[i];
-        const auto have = installed.find(thunderstore::folder_for(package->full_name));
-        names += (names.empty() ? "" : ",  ") + package->title() +
-                 (have != installed.end() && !have->second.empty() ? " " + have->second + " \xe2\x86\x92 " : " \xe2\x86\x92 ") +
-                 package->latest().number;
-    }
-    if (pending.size() > named) names += std::format(",  and {} more", pending.size() - named);
+    for (const auto* package : pending) names += (names.empty() ? "" : ",  ") + package->title();
+    auto* draw = ImGui::GetWindowDrawList();
+    const ImVec2 start = ImGui::GetCursorScreenPos();
+    const float width = ImGui::GetContentRegionAvail().x, tall = S(42), button = S(150);
+    const ImVec2 end(start.x + width, start.y + tall);
     const auto blue = ImGui::ColorConvertU32ToFloat4(color::blue);
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(blue.x, blue.y, blue.z, 0.07f));
-    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(blue.x, blue.y, blue.z, 0.35f));
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, S(6));
-    ImGui::BeginChild("##updates", ImVec2(0, 0),
-        ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding | ImGuiChildFlags_NavFlattened);
-    const float button = S(160), show = S(130), gap = S(8);
-    const float top = ImGui::GetCursorPosY();
-    ImGui::PushTextWrapPos(ImGui::GetContentRegionMax().x - button - gap - show - S(16));
-    ImGui::PushFont(fonts.bold);
-    auto heading = std::format("{} {} WAITING", pending.size(), pending.size() == 1 ? "UPDATE" : "UPDATES");
-    if (download) heading += "  /  " + size_text(download);
-    ImGui::TextColored(blue, "%s", heading.c_str());
-    ImGui::PopFont();
-    ImGui::TextDisabled("%s", names.c_str());
-    ImGui::PopTextWrapPos();
-    const float bottom = ImGui::GetCursorPosY();
-    const float button_y = top + (bottom - top - S(34)) * 0.5f;
-    ImGui::SetCursorPos(ImVec2(ImGui::GetContentRegionMax().x - button - gap - show, button_y));
-    const bool only = panel.filter == 5;
-    if (ImGui::Button(only ? "Show all" : "Show only these", ImVec2(show, S(34)))) panel.filter = only ? 0 : 5;
-    ImGui::SameLine(0, gap);
+    draw->AddRectFilled(start, end, ImGui::ColorConvertFloat4ToU32(ImVec4(blue.x, blue.y, blue.z, 0.08f)));
+    draw->AddRectFilled(start, ImVec2(start.x + S(3), end.y), color::blue);
+    auto heading = std::format("{} {}", pending.size(), pending.size() == 1 ? "UPDATE" : "UPDATES");
+    const float text_y = start.y + (tall - fonts.bold->FontSize) * 0.5f;
+    draw->AddText(fonts.bold, fonts.bold->FontSize, ImVec2(start.x + S(16), text_y), color::blue, heading.c_str());
+    float x = start.x + S(16) + fonts.bold->CalcTextSizeA(fonts.bold->FontSize, FLT_MAX, 0, heading.c_str()).x + S(12);
+    const auto rest = (download ? size_text(download) + "   " : std::string()) + names;
+    const ImVec4 clip(x, start.y, end.x - button - S(24), end.y);
+    draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(x, start.y + (tall - fonts.body->FontSize) * 0.5f), color::muted,
+                  rest.c_str(), nullptr, 0, &clip);
+    ImGui::SetCursorScreenPos(ImVec2(end.x - button - S(8), start.y + (tall - S(30)) * 0.5f));
     push_primary_button();
-    const bool update_all = ImGui::Button(std::format("UPDATE ALL ({})", pending.size()).c_str(), ImVec2(button, S(34)));
+    const bool update_all = ImGui::Button(std::format("UPDATE ALL ({})", pending.size()).c_str(), ImVec2(button, S(30)));
     pop_primary_button();
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("%s", download ? ("Downloads " + size_text(download) + " from Thunderstore").c_str()
@@ -627,53 +597,36 @@ void updates_bar(const Fonts& fonts, ModsPanel& panel, const thunderstore::Insta
         for (const auto* package : pending) packages.push_back(*package);
         start_store_install(panel, std::move(packages));
     }
-    ImGui::SetCursorPosY(std::max(bottom, button_y + S(34)));
-    ImGui::EndChild();
-    ImGui::PopStyleVar();
-    ImGui::PopStyleColor(2);
+    ImGui::SetCursorScreenPos(ImVec2(start.x, end.y));
+    ImGui::Dummy(ImVec2(width, 0));
 }
 
-// Where the table's columns are: from a row's left edge on the left, and the widths of those
-// at its right, which are laid out from the right edge in.
+// Where a row's parts are: from its left edge on the left, and the widths of those at its right,
+// which are laid out from the right edge in. A row starts with the handle and the switch; the box
+// that ticks it is over the handle's place and shows only when it is wanted (installed_row).
 struct Columns {
-    float tick = S(12), grip = S(44), place = S(64), on = S(108), icon = S(162), name = S(202);
-    float more = S(28), status = S(156), type = S(92), update = S(84);
+    float grip = S(12), on = S(38), icon = S(92), name = S(132);
+    float more = S(28), version = S(68), size = S(72), update = S(84);
 };
-// Where the right-hand columns of a row `width` wide start, from its left edge.
+// Where the right-hand parts of a row `width` wide start, from its left edge.
 struct RightColumns {
-    float more, status, type;
+    float more, version, size;
 };
 RightColumns right_columns(float width) {
     const Columns c;
     RightColumns r{};
     r.more = width - S(10) - c.more;
-    r.status = r.more - S(12) - c.status;
-    r.type = r.status - S(12) - c.type;
+    r.version = r.more - S(10) - c.version;
+    r.size = r.version - S(8) - c.size;
     return r;
 }
 
-// The labels over the table's columns.
-void table_header(const Fonts& fonts) {
-    auto* draw = ImGui::GetWindowDrawList();
-    const ImVec2 start = ImGui::GetCursorScreenPos();
-    const float width = ImGui::GetContentRegionAvail().x;
-    const Columns c;
-    const auto r = right_columns(width);
-    const auto label = [&](float x, const char* text) {
-        draw->AddText(fonts.caption, fonts.caption->FontSize, ImVec2(start.x + x, start.y), color::muted, text);
-    };
-    label(c.place, "#");
-    label(c.on, "ON");
-    label(c.icon, "MOD");
-    label(r.type, "TYPE");
-    label(r.status, "STATUS");
-    ImGui::Dummy(ImVec2(width, fonts.caption->FontSize + S(6)));
-}
-
-// One installed mod, a row of the table. The tick on the left picks it for the bar above the
-// list, the handle beside it drags it to another place in the load order, its number moves it to
-// a place typed in, the switch is whether it loads, and a click anywhere else opens everything
-// the mod says about itself.
+// One installed mod, a row of the list. The handle on the left drags it to another place in the
+// load order and, clicked, moves it to a place typed in; the switch is whether it loads; a click
+// anywhere else opens everything the mod says about itself. The box that ticks it for the bar
+// above the list takes the handle's place while mods are ticked, and Ctrl or Shift with a click
+// ticks as in a file list. After the name: what it is, who made it, and at the right how it
+// stands (only when there is something to say), its size and its version.
 void installed_row(const Fonts& fonts, ModsPanel& panel, const thunderstore::Installed& installed,
                    const std::vector<int>& view, int position, float tall, bool reorder, Request& request) {
     const int index = view[static_cast<std::size_t>(position)];
@@ -702,23 +655,39 @@ void installed_row(const Fonts& fonts, ModsPanel& panel, const thunderstore::Ins
     const Columns c;
     const auto r = right_columns(width);
     const float middle = start.y + tall * 0.5f;
-
-    ImGui::SetCursorScreenPos(ImVec2(start.x + c.tick, middle - ImGui::GetFrameHeight() * 0.5f));
-    bool tick = ticked;
-    if (ImGui::Checkbox("##pick", &tick)) mark(panel, view, position, tick, ImGui::GetIO().KeyShift);
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Tick mods to change several at once.\nShift-click ticks every mod in between.");
-
-    // The handle: six dots, brighter while it can be grabbed.
-    {
+    // Ticking: the box is there once any mod is ticked (by Ctrl or Shift and a click, Ctrl+A, or
+    // a controller, which has no other way), in the handle's place.
+    const bool picking = !panel.marked.empty() || ImGui::GetIO().NavVisible;
+    if (picking) {
+        // A box of the handle's size, drawn here: the usual one is a frame tall and ran under the switch.
+        const float box = S(18);
+        const ImVec2 at(start.x + c.grip - S(1), middle - box * 0.5f), corner(at.x + box, at.y + box);
+        ImGui::SetCursorScreenPos(at);
+        if (ImGui::InvisibleButton("##pick", ImVec2(box, box), ImGuiButtonFlags_EnableNav))
+            mark(panel, view, position, !ticked, ImGui::GetIO().KeyShift);
+        const bool hovered = ImGui::IsItemHovered();
+        if (hovered) ImGui::SetTooltip("Shift-click ticks every mod in between.");
+        draw->AddRectFilled(at, corner, ticked ? color::blue : rgba(255, 255, 255, hovered ? 0.16f : 0.09f), S(4));
+        if (!ticked) draw->AddRect(at, corner, rgba(255, 255, 255, hovered ? 0.5f : 0.28f), S(4));
+        else {
+            draw->AddLine(ImVec2(at.x + box * 0.24f, at.y + box * 0.52f), ImVec2(at.x + box * 0.43f, at.y + box * 0.72f), color::ink, S(2));
+            draw->AddLine(ImVec2(at.x + box * 0.43f, at.y + box * 0.72f), ImVec2(at.x + box * 0.78f, at.y + box * 0.30f), color::ink, S(2));
+        }
+    } else {
+        // The handle: six dots, brighter while it can be grabbed. Clicked, it asks for a place.
         const ImVec2 at(start.x + c.grip, start.y);
         ImGui::SetCursorScreenPos(at);
-        ImGui::InvisibleButton("##grip", ImVec2(S(16), tall));
+        if (ImGui::InvisibleButton("##grip", ImVec2(S(16), tall)) && reorder) {
+            panel.place = index + 1;
+            ImGui::OpenPopup("##place_popup");
+        }
         const bool hovered = ImGui::IsItemHovered();
         if (hovered && reorder) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
         if (hovered && !ImGui::GetDragDropPayload())
-            ImGui::SetTooltip("%s", reorder ? "Drag to move it in the load order. Ticked mods move together."
-                                            : "To drag mods into a new order, show the list in load order.");
+            ImGui::SetTooltip("%s", reorder ? std::format("Number {} in the load order. Drag to move it (ticked mods move together), "
+                                                          "or click to type a place.", index + 1).c_str()
+                                            : std::format("Number {} in the load order. To move mods, show the list in load order.",
+                                                          index + 1).c_str());
         // Dragged, the row itself follows the pointer (installed_page draws it there): no tooltip.
         if (reorder && ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceNoPreviewTooltip)) {
             ImGui::SetDragDropPayload(dragged_row, &index, sizeof index);
@@ -732,23 +701,6 @@ void installed_row(const Fonts& fonts, ModsPanel& panel, const thunderstore::Ins
         for (int row = -1; row <= 1; ++row)
             for (int column = 0; column < 2; ++column)
                 draw->AddCircleFilled(ImVec2(at.x + S(5) + column * S(6), middle + row * S(6)), S(1.6f), dots);
-    }
-
-    // Its place in the load order, whatever order the list is shown in: click to type another.
-    {
-        ImGui::SetCursorScreenPos(ImVec2(start.x + c.place, start.y));
-        if (ImGui::InvisibleButton("##place", ImVec2(S(40), tall)) && reorder) {
-            panel.place = index + 1;
-            ImGui::OpenPopup("##place_popup");
-        }
-        const bool hovered = ImGui::IsItemHovered();
-        if (hovered)
-            ImGui::SetTooltip("%s", reorder ? "Its place in the load order. Click to move it to another."
-                                            : "Its place in the load order.");
-        const auto number = std::to_string(index + 1);
-        draw->AddText(fonts.body, fonts.body->FontSize,
-            ImVec2(start.x + c.place, middle - fonts.body->FontSize * 0.5f), hovered && reorder ? color::text : color::muted,
-            number.c_str());
         if (ImGui::BeginPopup("##place_popup")) {
             ImGui::TextUnformatted("Move to position");
             ImGui::SetNextItemWidth(S(110));
@@ -775,67 +727,73 @@ void installed_row(const Fonts& fonts, ModsPanel& panel, const thunderstore::Ins
     // The same icon the store shows, so a mod looks like itself on both pages.
     mod_icon(panel, package, ImVec2(start.x + c.icon, middle - S(15)), S(30), mod.directory);
 
-    // Right to left: the menu, how it stands, and what it is.
+    const auto wide = [&](ImFont* font, const std::string& text) {
+        return font->CalcTextSizeA(font->FontSize, FLT_MAX, 0, text.c_str()).x;
+    };
+    const float body_y = middle - fonts.body->FontSize * 0.5f;
+    const float pill_y = middle - (fonts.caption->FontSize + S(8)) * 0.5f;
+
+    // Right to left: the menu, its version, its size, and how it stands.
     ImGui::SetCursorScreenPos(ImVec2(start.x + r.more, middle - c.more * 0.5f));
     if (more_button("##more", c.more)) menu = true;
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("More");
+    const auto right_text = [&](float column, float column_width, const std::string& text) {
+        if (text.empty()) return;
+        draw->AddText(fonts.body, fonts.body->FontSize,
+                      ImVec2(start.x + column + column_width - wide(fonts.body, text), body_y), color::muted, text.c_str());
+    };
+    right_text(r.version, c.version, mod.version.empty() ? std::string() : "v" + mod.version);
+    if (const auto size = panel.sizes.find(mod.name); size != panel.sizes.end() && size->second)
+        right_text(r.size, c.size, size_text(size->second));
 
-    const auto kind = kind_of(mod);
-    draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(start.x + r.type, middle - fonts.body->FontSize * 0.5f),
-        color::muted, kind.label.c_str());
-    if (ImGui::IsWindowHovered() &&
-        ImGui::IsMouseHoveringRect(ImVec2(start.x + r.type, start.y), ImVec2(start.x + r.status, start.y + tall)))
-        ImGui::SetTooltip("%s", kind.tip.c_str());
-
-    // How it stands: a pill, and on hover why.
+    // How it stands: pills, only when there is something to say, and on hover why.
+    float pills = start.x + r.size - S(6);   // the left edge of what is drawn so far
+    const auto pill = [&](const std::string& label, ImU32 fill, ImU32 ink, const std::string& tip) {
+        const float across = badge_width(fonts, label);
+        pills -= across + S(6);
+        const ImVec2 at(pills, pill_y);
+        badge(draw, fonts, at, label, fill, ink);
+        if (!tip.empty() && ImGui::IsWindowHovered() &&
+            ImGui::IsMouseHoveringRect(ImVec2(at.x, start.y), ImVec2(at.x + across, start.y + tall)))
+            ImGui::SetTooltip("%s", tip.c_str());
+    };
     {
-        const ImVec2 at(start.x + r.status, middle - (fonts.caption->FontSize + S(8)) * 0.5f);
-        std::string label, tip;
-        ImU32 fill{};
         const auto winner = conflict_winner(panel, mod.name);
         if (!mod.outdated.empty()) {
-            label = "OUTDATED", fill = color::warning;
-            tip = "Made for another version of Skate (" + mod.outdated + "): it does not load.";
+            pill("OUTDATED", color::warning, color::ink, "Made for another version of Skate (" + mod.outdated + "): it does not load.");
         } else if (!entry.enabled) {
-            label = "OFF";
-            tip = "Switched off: stays installed, does not load.";
+            // (The switch says it is off; nothing more to say.)
         } else if (!winner.empty()) {
             const bool chosen = left_out_by_choice(panel, mod.name);
-            label = chosen ? "LEFT OUT" : "CONFLICT", fill = chosen ? color::tile_grey : color::warning;
             const auto reason = conflict_reason(panel, mod.name);
-            tip = (chosen ? "Left out: you chose " + title_of(panel, winner) + " to load instead."
-                          : "Left out: it loses to " + title_of(panel, winner) + ", which is higher in the load order.") +
-                  (reason.empty() ? std::string() : " They " + reason + ".") +
-                  (chosen ? "" : " Resolve conflicts to choose which loads.");
+            pill(chosen ? "LEFT OUT" : "CONFLICT", chosen ? color::tile_grey : color::warning, chosen ? color::text : color::ink,
+                 (chosen ? "Left out: you chose " + title_of(panel, winner) + " to load instead."
+                         : "Left out: it loses to " + title_of(panel, winner) + ", which is higher in the load order.") +
+                 (reason.empty() ? std::string() : " They " + reason + ".") +
+                 (chosen ? "" : " Resolve conflicts to choose which loads."));
         } else if (broken(panel, mod.name)) {
-            label = "NOT LOADED", fill = color::danger;
-            tip = "The game could not merge it cleanly, so none of it is used. Open it to see why.";
+            pill("NOT LOADED", color::danger, color::ink, "The game could not merge it cleanly, so none of it is used. Open it to see why.");
         }
-        if (!label.empty() && fill) badge(draw, fonts, at, label, fill, fill == color::tile_grey ? color::text : color::ink);
-        else if (!label.empty())
-            draw->AddText(fonts.caption, fonts.caption->FontSize, ImVec2(at.x, at.y + S(4)), color::muted, label.c_str());
-        if (!tip.empty() && ImGui::IsWindowHovered() &&
-            ImGui::IsMouseHoveringRect(ImVec2(start.x + r.status, start.y), ImVec2(start.x + r.more, start.y + tall)))
-            ImGui::SetTooltip("%s", tip.c_str());
+        if (const auto off = panel.items_off.find(folded(mod.name)); off != panel.items_off.end())
+            pill(off->second == 1 ? "1 ITEM OFF" : std::format("{} ITEMS OFF", off->second), rgba(255, 255, 255, 0.09f), color::text,
+                 "Items of this mod you chose to leave out. Open it and press ITEMS to change them.");
     }
 
-    // The name, who made it, and its version: with an update waiting, old -> new in blue and the
-    // UPDATE button right after it, so the button sits with the change it makes. A name too long
-    // for the row is cut short before the button rather than pushing it into the Type column.
+    // The name, what it is and who made it; with an update waiting, the new version in blue and
+    // the UPDATE button right after it, so the button sits with the change it makes. A name too
+    // long for the row is cut short rather than running under what is at the right.
     {
-        const float x = start.x + c.name, limit = start.x + r.type - S(12);
-        const auto to = update ? (mod.version.empty() ? std::string() : "v" + mod.version + " ") + "\xe2\x86\x92 v" +
-                                     package->latest().number
-                               : std::string();
-        const auto by = mod.author.empty() ? std::string()
-                                           : "by " + mod.author + (mod.version.empty() || update ? std::string() : "  v" + mod.version);
-        const auto wide = [&](ImFont* font, const std::string& text) {
-            return font->CalcTextSizeA(font->FontSize, FLT_MAX, 0, text.c_str()).x;
-        };
+        const float x = start.x + c.name, limit = pills - S(10);
+        const auto title = shown_title(mod);
+        const auto kind = kind_of(mod);
+        auto kind_label = kind.label;
+        for (auto& letter : kind_label) letter = static_cast<char>(std::toupper(static_cast<unsigned char>(letter)));
+        const auto to = update ? "\xe2\x86\x92 v" + package->latest().number : std::string();
+        const float kind_width = badge_width(fonts, kind_label);
         float name_end = limit;
         if (update) {
-            const float text = wide(fonts.bold, mod.title) + S(10) + (by.empty() ? 0.0f : wide(fonts.body, by) + S(10)) +
-                               wide(fonts.body, to);
+            const float text = wide(fonts.bold, title) + S(10) + kind_width + S(10) +
+                               (mod.author.empty() ? 0.0f : wide(fonts.body, mod.author) + S(10)) + wide(fonts.body, to);
             const float button_x = std::min(x + text + S(12), limit - c.update);
             ImGui::SetCursorScreenPos(ImVec2(button_x, middle - S(13)));
             push_primary_button();
@@ -845,16 +803,20 @@ void installed_row(const Fonts& fonts, ModsPanel& panel, const thunderstore::Ins
             name_end = button_x - S(12);
         }
         const ImVec4 clip(x, start.y, name_end, start.y + tall);
-        const float y = middle - fonts.bold->FontSize * 0.5f, body_y = middle - fonts.body->FontSize * 0.5f;
-        draw->AddText(fonts.bold, fonts.bold->FontSize, ImVec2(x, y), entry.enabled ? color::text : color::muted,
-                      mod.title.c_str(), nullptr, 0, &clip);
-        float after = x + fonts.bold->CalcTextSizeA(fonts.bold->FontSize, FLT_MAX, 0, mod.title.c_str()).x + S(10);
-        if (!by.empty()) {
-            draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(after, body_y), color::muted, by.c_str(), nullptr, 0, &clip);
-            after += wide(fonts.body, by) + S(10);
+        draw->PushClipRect(ImVec2(clip.x, clip.y), ImVec2(clip.z, clip.w), true);
+        draw->AddText(fonts.bold, fonts.bold->FontSize, ImVec2(x, middle - fonts.bold->FontSize * 0.5f),
+                      entry.enabled ? color::text : color::muted, title.c_str());
+        float after = x + wide(fonts.bold, title) + S(10);
+        badge(draw, fonts, ImVec2(after, pill_y), kind_label, rgba(255, 255, 255, 0.07f), color::muted);
+        if (ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(ImVec2(after, start.y), ImVec2(std::min(after + kind_width, name_end), start.y + tall)))
+            ImGui::SetTooltip("%s", kind.tip.c_str());
+        after += kind_width + S(10);
+        if (!mod.author.empty()) {
+            draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(after, body_y), color::muted, mod.author.c_str());
+            after += wide(fonts.body, mod.author) + S(10);
         }
-        if (update)
-            draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(after, body_y), color::blue, to.c_str(), nullptr, 0, &clip);
+        if (update) draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(after, body_y), color::blue, to.c_str());
+        draw->PopClipRect();
     }
     end_row();
 
@@ -1120,41 +1082,13 @@ void resolve_popup(const Fonts& fonts, ModsPanel& panel, Request& request) {
     ImGui::EndPopup();
 }
 
-void installed_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, const thunderstore::Installed& installed,
+void installed_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, HWND window, const thunderstore::Installed& installed,
                     const std::vector<const thunderstore::Package*>& pending, float height, bool installing) {
     auto& entries = panel.list.entries;
     const float top = ImGui::GetCursorPosY();
-    {
-        const auto enabled = std::count_if(entries.begin(), entries.end(), [](const auto& entry) { return entry.enabled; });
-        // A mod left out for a conflict is no fault of its own: counted apart from the problems, and
-        // only while the player has not settled it (Resolve conflicts).
-        const auto conflicts = std::count_if(entries.begin(), entries.end(), [&](const auto& entry) {
-            return entry.enabled && entry.mod.outdated.empty() && !conflict_winner(panel, entry.mod.name).empty() &&
-                   !left_out_by_choice(panel, entry.mod.name);
-        });
-        const auto problems = std::count_if(entries.begin(), entries.end(), [&](const auto& entry) {
-            return !entry.mod.outdated.empty() || (entry.enabled && broken(panel, entry.mod.name));
-        });
-        const auto waiting = std::count_if(entries.begin(), entries.end(),
-            [&](const auto& entry) { return update_waiting(panel, installed, entry.mod.name); });
-        std::uint64_t bytes{};
-        for (const auto& [name, size] : panel.sizes) bytes += size;
-        auto caption = std::format("{} {}  /  {} on", entries.size(), entries.size() == 1 ? "mod" : "mods", enabled);
-        if (bytes) caption += "  /  " + size_text(bytes);
-        page_banner(fonts, "MY MODS", nullptr,
-            "Your installed mods. They load top to bottom: where two change the same thing, the higher one wins. "
-            "Drag a mod by its handle to move it. Changes apply the next time Skate starts.",
-            problems ? std::format("{} {}", problems, problems == 1 ? "PROBLEM" : "PROBLEMS")
-                : conflicts ? std::format("{} {}", conflicts, conflicts == 1 ? "CONFLICT" : "CONFLICTS")
-                : waiting ? std::format("{} {} WAITING", waiting, waiting == 1 ? "UPDATE" : "UPDATES")
-                : entries.empty() ? std::string("NONE YET") : std::string("ALL GOOD"),
-            problems ? color::danger : conflicts ? color::warning : waiting ? color::blue
-                : entries.empty() ? color::tile_grey : color::good, caption);
-    }
-
-    // ------------------------------------------------ search, filter, order, check, refresh
-    const float combo = S(150), check = S(160), refresh = S(96), gap = S(10);
-    ImGui::SetNextItemWidth(std::max(S(140), ImGui::GetContentRegionAvail().x - (combo + gap) * 3 - check - gap - refresh - gap));
+    // ------------------------------------------------ search, category, order, check, refresh, add
+    const float combo = S(150), check = S(150), refresh = S(90), add = S(90), gap = S(10);
+    ImGui::SetNextItemWidth(std::max(S(140), ImGui::GetContentRegionAvail().x - (combo + gap) * 2 - check - gap - refresh - gap - add - gap));
     // Ctrl+F jumps to the search, as it does in a browser.
     if (!installing && ImGui::GetIO().KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_F, false) &&
         !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId))
@@ -1170,8 +1104,6 @@ void installed_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, co
             ImGui::EndCombo();
         }
     };
-    choice("##installed_filter", filter_names, panel.filter);
-    ImGui::SameLine(0, gap);
     {
         std::vector<std::pair<std::string, int>> categories;
         for (const auto& entry : entries)
@@ -1194,6 +1126,64 @@ void installed_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, co
     }
     ImGui::SameLine(0, gap);
     if (ImGui::Button("Refresh", ImVec2(refresh, 0))) refresh_mods(launcher, panel);
+    // A mod from a file or a folder (one from Thunderstore is GET MODS), and the folder they are all in.
+    ImGui::SameLine(0, gap);
+    push_primary_button();
+    if (ImGui::Button("+  ADD", ImVec2(add, 0))) ImGui::OpenPopup("##add_mod");
+    pop_primary_button();
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Install a mod from a .zip or a folder. A .zip dropped on the window installs too.");
+    if (ImGui::BeginPopup("##add_mod")) {
+        if (ImGui::MenuItem("Install a .zip..."))
+            if (const auto path = pick(window, false); !path.empty()) start_install(panel, path, false);
+        if (ImGui::MenuItem("Install a folder..."))
+            if (const auto path = pick(window, true); !path.empty()) start_install(panel, path, false);
+        ImGui::Separator();
+        if (ImGui::MenuItem("Open the Mods folder")) open_path(panel.root);
+        ImGui::EndPopup();
+    }
+
+    // ------------------------------------------------ what to show: a chip each, with how many
+    {
+        struct Chip { int filter; const char* label; bool only_some; ImU32 tint; };
+        const std::array chips{Chip{filter_all, "All", false, 0}, Chip{filter_maps, "Maps", false, 0},
+            Chip{filter_data, "Game data", false, 0}, Chip{filter_plugins, "Plugins", true, 0}, Chip{filter_on, "On", false, 0},
+            Chip{filter_off, "Off", true, 0}, Chip{filter_updates, "Updates", true, color::blue},
+            Chip{filter_problems, "Problems", true, color::danger}, Chip{filter_conflicts, "Conflicts", true, color::warning}};
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, S(13));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(S(12), S(4)));
+        bool first = true;
+        for (const auto& chip : chips) {
+            const auto count = std::count_if(entries.begin(), entries.end(),
+                [&](const mods::ModEntry& entry) { return filter_shows(panel, installed, entry, chip.filter); });
+            const bool chosen = panel.filter == chip.filter;
+            // (One with nothing in it is not offered, unless it is the one showing.)
+            if (chip.only_some && !count && !chosen) continue;
+            if (!first) ImGui::SameLine(0, S(6));
+            first = false;
+            if (chosen) push_primary_button();
+            else if (chip.tint && count) ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(chip.tint));
+            if (ImGui::Button(std::format("{}  {}###chip{}", chip.label, count, chip.filter).c_str())) panel.filter = chosen ? filter_all : chip.filter;
+            if (chosen) pop_primary_button();
+            else if (chip.tint && count) ImGui::PopStyleColor();
+        }
+        ImGui::PopStyleVar(2);
+        // How several are picked, said where the boxes used to say it: at the end of the chips' line,
+        // while there is room and nothing is ticked yet.
+        if (panel.marked.empty() && !first) {
+            const char* hint = "Ctrl-click or Shift-click mods to select several  /  Ctrl+A selects all";
+            const float across = fonts.caption->CalcTextSizeA(fonts.caption->FontSize, FLT_MAX, 0, hint).x;
+            ImGui::SameLine();
+            if (ImGui::GetContentRegionMax().x - ImGui::GetCursorPosX() > across + S(12)) {
+                ImGui::SetCursorPosX(ImGui::GetContentRegionMax().x - across);
+                ImGui::AlignTextToFramePadding();
+                ImGui::PushFont(fonts.caption);
+                ImGui::TextDisabled("%s", hint);
+                ImGui::PopFont();
+            } else {
+                ImGui::NewLine();
+            }
+        }
+    }
 
     const auto view = visible_mods(panel, installed, {launcher.settings().installed_categories_only, launcher.settings().installed_categories_hidden});
     // Dragging, and typing a place, move a mod among the others in the load order: the order the
@@ -1211,38 +1201,33 @@ void installed_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, co
     // ------------------------------------------------ the updates waiting on Thunderstore
     if (!pending.empty()) {
         ImGui::Spacing();
-        ImGui::BeginDisabled(installing);
-        updates_bar(fonts, panel, installed, pending);
-        ImGui::EndDisabled();
+        updates_bar(fonts, panel, pending);
     }
 
-    // ------------------------------------------------ tick all, and what to do with the ticked
-    ImGui::Spacing();
+    // ------------------------------------------------ the ticked mods, and what to do with them
+    // (Nothing is ticked until Ctrl or Shift and a click, or Ctrl+A, ticks: no bar, and no boxes.)
     ImGui::BeginDisabled(installing);
-    bool all = !view.empty();
-    for (int at = 0; at < static_cast<int>(view.size()) && all; ++at) all = panel.marked.contains(shown(at));
-    ImGui::BeginDisabled(view.empty());
-    if (ImGui::Checkbox("##all", &all))
-        for (int at = 0; at < static_cast<int>(view.size()); ++at) {
-            if (all) panel.marked.insert(shown(at));
-            else panel.marked.erase(shown(at));
-        }
-    ImGui::EndDisabled();
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip(view.size() == entries.size() ? "Tick every mod" : "Tick every mod shown");
-    ImGui::SameLine(0, S(10));
-    ImGui::AlignTextToFramePadding();
+    if (!panel.marked.empty()) {
+        ImGui::Spacing();
+        bool all = !view.empty();
+        for (int at = 0; at < static_cast<int>(view.size()) && all; ++at) all = panel.marked.contains(shown(at));
+        if (ImGui::Checkbox("##all", &all))
+            for (int at = 0; at < static_cast<int>(view.size()); ++at) {
+                if (all) panel.marked.insert(shown(at));
+                else panel.marked.erase(shown(at));
+            }
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip(view.size() == entries.size() ? "Tick every mod" : "Tick every mod shown");
+        ImGui::SameLine(0, S(10));
+        ImGui::AlignTextToFramePadding();
+    }
     const auto total = [&](auto&& counted) {
         std::uint64_t bytes{};
         for (const auto& [name, size] : panel.sizes)
             if (counted(name)) bytes += size;
         return bytes;
     };
-    if (panel.marked.empty()) {
-        ImGui::TextDisabled("%s", view.size() != entries.size()
-            ? std::format("{} of {} shown", view.size(), entries.size()).c_str()
-            : "Tick mods to change several at once. Shift-click ticks a run of them, Ctrl+A every one.");
-    } else {
+    if (!panel.marked.empty()) {
         const std::vector<std::string> names(panel.marked.begin(), panel.marked.end());
         auto line = std::format("{} selected", names.size());
         if (const auto bytes = total([&](const std::string& name) { return panel.marked.contains(name); }))
@@ -1306,8 +1291,7 @@ void installed_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, co
     ImGui::PopTextWrapPos();
     ImGui::Spacing();
 
-    // ------------------------------------------------ the table
-    table_header(fonts);
+    // ------------------------------------------------ the list
     const float body = std::max(S(120), height - (ImGui::GetCursorPosY() - top));
     ImGui::BeginChild("##mod_list", ImVec2(0, body), ImGuiChildFlags_NavFlattened);
     const auto note = [](const char* first, const char* second = nullptr) {
@@ -1436,6 +1420,7 @@ void mod_overview(const Fonts& fonts, ModsPanel& panel, const thunderstore::Inst
     if (!panel.overview) {
         ImGui::OpenPopup("##mod_overview");
         panel.overview = true;
+        open_mod_items(panel, mod);
     }
     const ImVec2 extent(std::min(S(1080), size.x - S(80)), std::min(S(740), size.y - S(60)));
     ImGui::SetNextWindowPos(ImVec2((size.x - extent.x) * 0.5f, (size.y - extent.y) * 0.5f));
@@ -1444,11 +1429,13 @@ void mod_overview(const Fonts& fonts, ModsPanel& panel, const thunderstore::Inst
             ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings)) {
         panel.overview = false;        // dismissed with Escape
         panel.selected = -1;
+        close_mod_items(panel);
         return;
     }
     const auto close = [&] {
         panel.overview = false;
         panel.selected = -1;
+        close_mod_items(panel);
         ImGui::CloseCurrentPopup();
     };
     // The icon (the package's when the mod is on Thunderstore, else its own icon.png), with the name,
@@ -1470,9 +1457,10 @@ void mod_overview(const Fonts& fonts, ModsPanel& panel, const thunderstore::Inst
     ImGui::EndGroup();
     ImGui::SetCursorPosY(std::max(ImGui::GetCursorPosY(), header_top + icon) + S(14));
     if (update) {
-        ImGui::BeginDisabled(installing);
+        const auto coming = download_label(panel, package->full_name);
+        ImGui::BeginDisabled(!coming.empty());
         push_primary_button();
-        if (ImGui::Button(("UPDATE TO v" + package->latest().number).c_str(), ImVec2(0, S(34)))) {
+        if (ImGui::Button(coming.empty() ? ("UPDATE TO v" + package->latest().number).c_str() : coming.c_str(), ImVec2(0, S(34)))) {
             start_store_install(panel, {*package});
             close();
         }
@@ -1499,63 +1487,87 @@ void mod_overview(const Fonts& fonts, ModsPanel& panel, const thunderstore::Inst
     ImGui::Spacing();
 
     ImGui::Dummy(ImVec2(0, S(6)));
-    const auto columns = overview_columns(extent.y);
-    ImGui::BeginChild("##mod_overview_body", ImVec2(columns.readme, columns.height), ImGuiChildFlags_NavFlattened);
-    ImGui::PushTextWrapPos(0);
-    if (!mod.outdated.empty())
-        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::danger),
-            "Outdated: this mod does not load. It was made for another version of Skate (%s). Get an updated "
-            "version, or rebuild it with the latest ReSkate Studio.", mod.outdated.c_str());
-    if (const auto other = conflict_winner(panel, mod.name); !other.empty() && mod.outdated.empty()) {
-        const auto winner = title_of(panel, other);
-        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::warning),
-            "Not loaded: this mod changes the same parts of the game as %s, which is higher in the load order, in a "
-            "way the two cannot share, so only %s loads. To use this mod instead, move it above %s, or switch one "
-            "of them off.", winner.c_str(), winner.c_str(), winner.c_str());
-        if (const auto reason = conflict_reason(panel, mod.name); !reason.empty())
-            ImGui::TextDisabled("%s", ("They " + reason + ".").c_str());
-        else if (const auto found = panel.list.excluded.find(mod.name); found != panel.list.excluded.end() && !found->second.empty())
-            ImGui::TextDisabled("%s", found->second.front().c_str());
-    } else if (const auto* beats = conflict_beats(panel, mod.name); beats && entry.enabled) {
-        std::string names;
-        for (std::size_t at = 0; at < beats->size(); ++at)
-            names += (at == 0 ? "" : at + 1 == beats->size() ? " and " : ", ") + title_of(panel, (*beats)[at]);
-        ImGui::TextDisabled("%s", ("Loads, and leaves out " + names +
-            ": they change the same parts of the game and are lower in the load order.").c_str());
+    auto columns = overview_columns(extent.y);
+    // A mod that adds items has two pages: what it says about itself, and its items to choose from
+    // (gui_mods_items.cpp). The second is there once the items have been read, or at once for a mod
+    // the player already left items out of.
+    const bool items = mod_items_known(panel, mod) || (panel.items.mod == mod.name && panel.items_off.contains(folded(mod.name)));
+    if (!items) panel.items.tab = false;
+    if (items) {
+        const auto page = [&](const char* label, bool on) {
+            if (on) push_primary_button();
+            const bool pressed = ImGui::Button(label, ImVec2(0, S(30)));
+            if (on) pop_primary_button();
+            return pressed;
+        };
+        const auto count = mod_items_count(panel, mod);
+        if (page("ABOUT", !panel.items.tab)) panel.items.tab = false;
+        ImGui::SameLine(0, S(6));
+        if (page(count.empty() ? "ITEMS" : ("ITEMS  " + count).c_str(), panel.items.tab)) panel.items.tab = true;
+        ImGui::Dummy(ImVec2(0, S(4)));
+        columns.height = std::max(S(120), columns.height - S(30) - S(4) - ImGui::GetStyle().ItemSpacing.y * 2);
     }
-    if (const auto missing = panel.list.excluded.find(mod.name); missing != panel.list.excluded.end() && broken(panel, mod.name)) {
-        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::danger),
-            "Not loaded: the game could not merge this mod cleanly, so none of it is used. Reinstall the whole "
-            "mod folder, or rebuild it with a current ReSkate Studio.");
-        if (!missing->second.empty()) ImGui::TextDisabled("%s", missing->second.front().c_str());
-    }
-    if (!mods::has_content(mod))
-        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::warning),
-            "This folder has no layout.toc, reskate-levels.json, reskate-plugin.json or parks, so the game has "
-            "nothing to load from it.");
-    if (!readme_field(fonts, panel, package, &mod)) ImGui::TextDisabled("This mod has no README.");
-    ImGui::PopTextWrapPos();
-    ImGui::EndChild();
+    if (panel.items.tab) {
+        mod_items_tab(fonts, panel, mod, columns.height);
+    } else {
+        ImGui::BeginChild("##mod_overview_body", ImVec2(columns.readme, columns.height), ImGuiChildFlags_NavFlattened);
+        ImGui::PushTextWrapPos(0);
+        if (!mod.outdated.empty())
+            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::danger),
+                "Outdated: this mod does not load. It was made for another version of Skate (%s). Get an updated "
+                "version, or rebuild it with the latest ReSkate Studio.", mod.outdated.c_str());
+        if (const auto other = conflict_winner(panel, mod.name); !other.empty() && mod.outdated.empty()) {
+            const auto winner = title_of(panel, other);
+            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::warning),
+                "Not loaded: this mod changes the same parts of the game as %s, which is higher in the load order, in a "
+                "way the two cannot share, so only %s loads. To use this mod instead, move it above %s, or switch one "
+                "of them off.", winner.c_str(), winner.c_str(), winner.c_str());
+            if (const auto reason = conflict_reason(panel, mod.name); !reason.empty())
+                ImGui::TextDisabled("%s", ("They " + reason + ".").c_str());
+            else if (const auto found = panel.list.excluded.find(mod.name); found != panel.list.excluded.end() && !found->second.empty())
+                ImGui::TextDisabled("%s", found->second.front().c_str());
+        } else if (const auto* beats = conflict_beats(panel, mod.name); beats && entry.enabled) {
+            std::string names;
+            for (std::size_t at = 0; at < beats->size(); ++at)
+                names += (at == 0 ? "" : at + 1 == beats->size() ? " and " : ", ") + title_of(panel, (*beats)[at]);
+            ImGui::TextDisabled("%s", ("Loads, and leaves out " + names +
+                ": they change the same parts of the game and are lower in the load order.").c_str());
+        }
+        if (const auto missing = panel.list.excluded.find(mod.name); missing != panel.list.excluded.end() && broken(panel, mod.name)) {
+            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::danger),
+                "Not loaded: the game could not merge this mod cleanly, so none of it is used. Reinstall the whole "
+                "mod folder, or rebuild it with a current ReSkate Studio.");
+            if (!missing->second.empty()) ImGui::TextDisabled("%s", missing->second.front().c_str());
+        }
+        if (!mods::has_content(mod))
+            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::warning),
+                "This folder has no layout.toc, reskate-levels.json, reskate-plugin.json or parks, so the game has "
+                "nothing to load from it.");
+        if (!readme_field(fonts, panel, package, &mod)) ImGui::TextDisabled("This mod has no README.");
+        ImGui::PopTextWrapPos();
+        ImGui::EndChild();
 
-    begin_overview_details("##mod_overview_details", columns);
-    overview_fact(fonts, "VERSION", mod.version.empty() ? std::string() : "v" + mod.version);
-    overview_fact(fonts, "AUTHOR", mod.author);
-    if (package)
-        overview_fact(fonts, "THUNDERSTORE", package->full_name + (update ? "\nv" + package->latest().number + " available"
-                                                                          : std::string("\nUp to date")));
-    overview_fact(fonts, "FOLDER", "Mods\\" + mod.name);
-    if (!mod.tool.empty() || !mod.built.empty())
-        overview_fact(fonts, "BUILT WITH", mod.tool + (mod.built.empty() ? "" : (mod.tool.empty() ? "" : ", ") + mod.built));
-    std::string levels;
-    for (const auto& level : mod.levels) {
-        const auto slash = level.rfind('/');
-        levels += (levels.empty() ? "" : "\n") + (slash == std::string::npos ? level : level.substr(slash + 1));
+        begin_overview_details("##mod_overview_details", columns);
+        overview_fact(fonts, "VERSION", mod.version.empty() ? std::string() : "v" + mod.version);
+        overview_fact(fonts, "AUTHOR", mod.author);
+        if (package)
+            overview_fact(fonts, "THUNDERSTORE", package->full_name + (update ? "\nv" + package->latest().number + " available"
+                                                                              : std::string("\nUp to date")));
+        overview_fact(fonts, "FOLDER", "Mods\\" + mod.name);
+        overview_fact(fonts, "ITEMS", mod_items_count(panel, mod));
+        if (!mod.tool.empty() || !mod.built.empty())
+            overview_fact(fonts, "BUILT WITH", mod.tool + (mod.built.empty() ? "" : (mod.tool.empty() ? "" : ", ") + mod.built));
+        std::string levels;
+        for (const auto& level : mod.levels) {
+            const auto slash = level.rfind('/');
+            levels += (levels.empty() ? "" : "\n") + (slash == std::string::npos ? level : level.substr(slash + 1));
+        }
+        overview_fact(fonts, "MAPS", levels);
+        std::string parks;
+        for (const auto& map : mod.park_maps) parks += (parks.empty() ? "" : ", ") + map;
+        overview_fact(fonts, "PARKS", parks);
+        end_overview_details();
     }
-    overview_fact(fonts, "MAPS", levels);
-    std::string parks;
-    for (const auto& map : mod.park_maps) parks += (parks.empty() ? "" : ", ") + map;
-    overview_fact(fonts, "PARKS", parks);
-    end_overview_details();
 
     ImGui::SetCursorPosY(extent.y - S(24) - ImGui::GetFrameHeight());
     bool enabled = entry.enabled;
@@ -1567,64 +1579,6 @@ void mod_overview(const Fonts& fonts, ModsPanel& panel, const thunderstore::Inst
     // Escape too, and so a controller's B: the modal has no other way out but CLOSE.
     if (ImGui::Button("CLOSE", ImVec2(S(110), 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) close();
     ImGui::EndPopup();
-}
-
-// ---------------------------------------------------------------- installing
-
-// What a mod manager shows while it works: everything else dimmed, and one
-// panel saying what is being downloaded.
-void install_modal(const Fonts& fonts, ModsPanel& panel, ImVec2 size) {
-    std::string activity;
-    {
-        std::lock_guard lock(panel.mutex);
-        activity = panel.activity;
-    }
-    const float fraction = std::clamp(panel.progress.load(), 0.0f, 1.0f);
-    const auto time = static_cast<float>(ImGui::GetTime());
-    // Cancelling is not instant: the worker notices on its next chunk or file.
-    // Say so, or the button looks dead and gets pressed again.
-    const bool cancelling = panel.cancel.load();
-    // Its own window over the page: the page's own draw list renders under
-    // its children, so a panel drawn there would sit beneath the mod list.
-    ImGui::SetNextWindowPos(ImVec2(0, 0));
-    ImGui::SetNextWindowSize(size);
-    ImGui::SetNextWindowFocus();
-    ImGui::Begin("##installing", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBackground);
-    auto* draw = ImGui::GetWindowDrawList();
-    draw->AddRectFilled(ImVec2(0, 0), size, rgba(4, 6, 9, 0.72f));
-    const ImVec2 extent(S(540), S(206));
-    const ImVec2 origin((size.x - extent.x) * 0.5f, (size.y - extent.y) * 0.5f);
-    const ImVec2 end(origin.x + extent.x, origin.y + extent.y);
-    skate_theme::rough_rect(draw, origin, end, color::blue, 11, g_scale);
-    draw->AddText(fonts.tile, fonts.tile->FontSize, ImVec2(origin.x + S(26), origin.y + S(18)), color::ink,
-        cancelling ? "CANCELLING" : "INSTALLING");
-    const auto line = cancelling ? std::string("Stopping as soon as the current file is done. "
-                                               "The Mods folder is left as it was.")
-                                 : activity;
-    if (!line.empty())
-        draw->AddText(fonts.bold, fonts.bold->FontSize, ImVec2(origin.x + S(26), origin.y + S(70)),
-            rgba(0, 0, 0, 0.78f), line.c_str(), nullptr, extent.x - S(52));
-    skate_theme::striped_bar(draw, ImVec2(origin.x + S(26), origin.y + S(118)),
-        ImVec2(end.x - S(26), origin.y + S(134)), fraction, time, g_scale);
-    draw->AddText(fonts.bold, fonts.bold->FontSize, ImVec2(origin.x + S(26), origin.y + S(142)), rgba(0, 0, 0, 0.78f),
-        std::format("{:.0f}%", fraction * 100).c_str());
-    ImGui::PushStyleColor(ImGuiCol_Button, ImGui::ColorConvertU32ToFloat4(rgba(0, 0, 0, 0.38f)));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImGui::ColorConvertU32ToFloat4(rgba(0, 0, 0, 0.52f)));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImGui::ColorConvertU32ToFloat4(rgba(0, 0, 0, 0.66f)));
-    ImGui::SetCursorScreenPos(ImVec2(end.x - S(26) - S(130), end.y - S(24) - S(34)));
-    ImGui::BeginDisabled(cancelling);
-    const bool pressed = ImGui::Button(cancelling ? "CANCELLING" : "CANCEL", ImVec2(S(130), S(34)));
-    ImGui::EndDisabled();
-    ImGui::PopStyleColor(3);
-    // Escape too: the button is the only way out of this panel otherwise.
-    if (!cancelling && (pressed || ImGui::IsKeyPressed(ImGuiKey_Escape, false))) {
-        panel.cancel = true;
-        logging::write(logging::Level::info, logging::Channel::launcher,
-            pressed ? "Mod install cancelled by the Cancel button."
-                    : "Mod install cancelled with Escape.");
-    }
-    ImGui::End();
 }
 
 } // namespace
@@ -1661,6 +1615,9 @@ void prepare_mods(ModsPanel& panel, const launcher_app::Session& session) {
         read_conflict_choices(panel);
     }
     pump_conflict_check(panel);
+    // Mods go on installing with the page closed; their outcome is taken in here, so PLAY, held
+    // until they are in, comes back.
+    collect_install(panel, session);
 }
 
 void refresh_mods(Launcher& launcher, ModsPanel& panel) {
@@ -1676,46 +1633,12 @@ void scan(ModsPanel& panel, const launcher_app::Session& session) {
     read_conflict_choices(panel);
     panel.sizes.clear();
     for (const auto& entry : panel.list.entries) panel.sizes[entry.mod.name] = folder_size(entry.mod.directory);
+    read_items_left_out(panel);
     panel.scanned = true;
     if (panel.selected >= static_cast<int>(panel.list.entries.size())) panel.selected = -1;
     std::erase_if(panel.marked, [&](const std::string& name) {
         return std::none_of(panel.list.entries.begin(), panel.list.entries.end(),
             [&](const mods::ModEntry& entry) { return entry.mod.name == name; });
-    });
-}
-
-void start_install(ModsPanel& panel, const fs::path& source, bool replace) {
-    if (panel.installing) return;
-    if (panel.worker.joinable()) panel.worker.join();
-    panel.installing = true;
-    panel.cancel = false;
-    panel.progress = 0;
-    panel.message.clear();
-    panel.message_error = false;
-    {
-        std::lock_guard lock(panel.mutex);
-        panel.activity = "Installing " + utf8(source.filename().wstring());
-    }
-    const auto root = panel.root;
-    panel.worker = std::thread([&panel, root, source, replace] {
-        std::string name, error, conflict;
-        wait_for_conflict_check(panel);   // (it may be reading the mod this replaces)
-        try {
-            name = launcher_mods::install(root, source, replace,
-                [&panel](float fraction) { panel.progress = fraction; }, panel.cancel);
-        } catch (const launcher_mods::AlreadyInstalled& existing) {
-            conflict = existing.name;
-        } catch (const std::exception& failure) {
-            error = failure.what();
-        }
-        std::lock_guard lock(panel.mutex);
-        panel.finished = true;
-        panel.finished_name = name;
-        panel.finished_error = error;
-        panel.finished_conflict = conflict;
-        panel.finished_source = source;
-        panel.activity.clear();
-        panel.installing = false;
     });
 }
 
@@ -1849,7 +1772,7 @@ void mods_outdated_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, U
         for (const auto* package : pending) packages.push_back(*package);
         start_store_install(panel, std::move(packages));
         // Only promise the launch if the install really started.
-        ui.play_after_install = panel.installing;
+        ui.play_after_install = panel.installing.load();
         ui.mods_update_prompt = false;
         ui.mods = true;
         panel.tab = 0;
@@ -1885,9 +1808,11 @@ void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, Mo
     const auto frame = begin_page("##mods_panel", size);
     // Both lists draw mod icons, so both need finished ones uploaded.
     pump_icons(panel);
+    pump_mod_items(panel);
     auto* draw = ImGui::GetWindowDrawList();
     const bool installing = panel.installing;
-    hold_focus(installing);
+    const bool queue_open = panel.downloads.open;
+    panel.downloads.parallel = launcher.settings().parallel_downloads;
     auto& entries = panel.list.entries;
     const auto installed = installed_versions(panel.list);
     const auto pending = updates(panel.store, installed);
@@ -1902,7 +1827,9 @@ void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, Mo
     window_buttons(draw, window, frame);
     const float rail_x = S(28), rail_width = S(236);
     const float content_x = rail_x + rail_width + S(26);
-    const float top = S(52), bottom = frame.y - S(24);
+    // The downloads' bar, when there is one, takes the foot of the page.
+    const float dock = downloads_bar_height(panel);
+    const float top = S(52), bottom = frame.y - S(24) - dock;
     const float title_size = S(44);
     page_title(draw, fonts, ImVec2(rail_x + S(2), top - S(4)), "MOD\nMANAGER", title_size);
 
@@ -1910,7 +1837,8 @@ void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, Mo
     ImGui::SetCursorPos(ImVec2(rail_x, rail_top));
     // Flattened, so a controller's D-pad crosses from the rail into the list and back.
     ImGui::BeginChild("##rail", ImVec2(rail_width, bottom - rail_top), ImGuiChildFlags_NavFlattened);
-    const bool leave = rail(fonts, panel, window, rail_width, pending, installing);
+    // (The rail and GET MODS are not held while mods install: more can be asked for, and join the queue.)
+    const bool leave = rail(fonts, panel, rail_width, pending, false);
     ImGui::EndChild();
 
     ImGui::SetCursorPos(ImVec2(content_x, top));
@@ -1919,9 +1847,9 @@ void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, Mo
     // edge; a message takes two lines off it until it is gone.
     const float status = panel.message.empty() ? S(4) : ImGui::GetTextLineHeight() * 2 + S(12);
     const float body = ImGui::GetWindowHeight() - status;
-    if (panel.tab == 1) browse_page(launcher, fonts, panel, body, installing);
+    if (panel.tab == 1) browse_page(launcher, fonts, panel, body, false);
     else if (panel.tab == 2) profiles_page(fonts, panel, window, body, installing);
-    else installed_page(launcher, fonts, panel, installed, pending, body, installing);
+    else installed_page(launcher, fonts, panel, window, installed, pending, body, installing);
     if (!panel.message.empty()) {
         ImGui::SetCursorPosY(ImGui::GetWindowHeight() - status + S(8));
         ImGui::PushTextWrapPos(0);
@@ -1930,13 +1858,14 @@ void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, Mo
         ImGui::PopTextWrapPos();
     }
     ImGui::EndChild();
+    if (dock > 0) downloads_bar(fonts, panel, ImVec2(rail_x, bottom + S(10)), frame.x - rail_x - S(28));
 
     // Read before the overviews: one closing on Escape must not also leave the page.
     const bool popup_open = ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId);
-    if (panel.tab == 1) package_overview(fonts, panel, frame, installing);
+    if (panel.tab == 1) package_overview(fonts, panel, frame, false);
     else if (panel.tab == 0) mod_overview(fonts, panel, installed, frame, installing);
     if (leave) close();
-    if (!installing && !popup_open && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) && !ImGui::IsAnyItemActive() &&
+    if (!queue_open && !popup_open && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) && !ImGui::IsAnyItemActive() &&
         ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
         // Escape lets go of the ticked mods first, and leaves the page after that.
         if (panel.tab == 0 && !panel.marked.empty()) panel.marked.clear();
@@ -2104,7 +2033,6 @@ void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, Mo
     profile_popups(panel);
     g_drag_allowed = !ImGui::IsAnyItemHovered() && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId);
     ImGui::End();
-    if (installing) install_modal(fonts, panel, frame);
     // collect_install at the top of this frame has already taken the result, so
     // an install that is no longer running is settled: go and play, as the
     // button that sent us here said it would.

@@ -11,7 +11,7 @@ body:
     attributes:
       label: ReSkate version
       description: Shown in the launcher, and in the release's file name (ReSkate-<version>.zip).
-      placeholder: "2.1.1"
+      placeholder: "20261114"
     validations:
       required: true
   - type: dropdown

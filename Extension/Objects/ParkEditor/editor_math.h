@@ -67,8 +67,12 @@ struct Camera {
     bool valid() const {
         if (!std::isfinite(vertical_fov) || vertical_fov < 1 || vertical_fov > 175 || width < 1 || height < 1)
             return false;
-        for (auto v : world)
-            if (!std::isfinite(v))
+        // The rows' fourth lanes are SIMD padding the camera never reads, and the game leaves
+        // anything in them: after skating or turning the camera they held values that are not
+        // numbers, which made this refuse a good camera, and the editor would not fly (until a
+        // pause rewrote them).
+        for (std::size_t i = 0; i < world.size(); ++i)
+            if (i % 4 != 3 && !std::isfinite(world[i]))
                 return false;
         return true;
     }

@@ -570,26 +570,36 @@ void graphics_page(SkateMenu& menu, const Model& model, const CallbacksV3& callb
 // A time of day is seven layer changes the game takes a few frames to make, and until they are
 // all made the layers read as some other time (or none). So the time asked for is kept and shown,
 // and the next step goes on from it, until the layers say it or four seconds pass.
+// Stepping through the times only moves the choice: it goes to the game once the stepping has
+// stopped for tod_settle seconds. Each time loads its weather, and a player stepping from Default
+// to Night made the game load every one on the way (a stall each, on a slower PC).
 namespace {
 int tod_asked = -1;
 double tod_asked_until = 0;
+int tod_pending = -1;     // the time chosen and not yet sent
+double tod_pending_at = 0;
+CallbacksV3 tod_callbacks{};
+constexpr double tod_settle = 0.6;
 }
 int time_of_day_shown(const Model& model) {
+    if (tod_pending >= 0 && ImGui::GetTime() >= tod_pending_at + tod_settle) {
+        tod_asked = std::exchange(tod_pending, -1);
+        tod_asked_until = ImGui::GetTime() + 4.0;
+        if (tod_callbacks.queue_console_command)
+            for (const auto& line : dingosdk::native_tools::time_of_day_commands(model, static_cast<unsigned>(tod_asked))) {
+                std::array<char, 256> reply{};
+                tod_callbacks.queue_console_command(tod_callbacks.user, line.c_str(), reply.data(), reply.size());
+            }
+    }
+    if (tod_pending >= 0) return tod_pending;
     const int now = static_cast<int>(dingosdk::native_tools::time_of_day(model));
     if (tod_asked >= 0 && (now == tod_asked || ImGui::GetTime() > tod_asked_until)) tod_asked = -1;
     return tod_asked >= 0 ? tod_asked : now;
 }
-void set_time_of_day(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks, int next, bool quiet) {
-    tod_asked = std::clamp(next, 0, 7);
-    tod_asked_until = ImGui::GetTime() + 4.0;
-    for (const auto& line : dingosdk::native_tools::time_of_day_commands(model, static_cast<unsigned>(tod_asked))) {
-        if (!quiet) {
-            send_console(menu, callbacks, line);
-        } else if (callbacks.queue_console_command) {
-            std::array<char, 256> reply{};
-            callbacks.queue_console_command(callbacks.user, line.c_str(), reply.data(), reply.size());
-        }
-    }
+void set_time_of_day(SkateMenu&, const Model&, const CallbacksV3& callbacks, int next, bool) {
+    tod_pending = std::clamp(next, 0, 7);
+    tod_pending_at = ImGui::GetTime();
+    tod_callbacks = callbacks;
 }
 
 void time_of_day_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks) {

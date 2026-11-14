@@ -88,6 +88,11 @@ bool gameplay_input_capture() noexcept {
         now < mode_input_paused_until.load(std::memory_order_relaxed) ||
         (mode_hidden_buttons.load(std::memory_order_relaxed) & mode_held_buttons.load(std::memory_order_relaxed)));
 }
+std::uint16_t gameplay_hidden_buttons() noexcept {
+    // Every native transport must give the player's menu the same physical buttons.
+    return native_input_source::native_menu_closed(GetTickCount64()) ?
+        mode_hidden_buttons.load(std::memory_order_relaxed) : std::uint16_t{};
+}
 bool block_polled_input() {
     const auto error = GetLastError();
     const bool capture = !overlay_input_access && (trusted_polled_capture() || gameplay_input_capture());
@@ -157,8 +162,10 @@ void neutral_hid(const InputCaptureHooks::HidRead& read, DWORD size) {
     const bool bluetooth = playstation_bluetooth(size);
     const auto physical = parse_playstation_report(read.kind, bluetooth, bytes, size);
     if (!physical) return;
+    // (Which layout a DualSense's report 0x01 has is told as the parser tells it, by what is in the
+    // report: playstation_report.h dualsense_usb_layout.)
     const bool sense_full = read.kind == PlayStationPad::dualsense &&
-        (bytes[0] == 0x31 || (bytes[0] == 1 && !bluetooth));
+        (bytes[0] == 0x31 || (bytes[0] == 1 && dualsense_usb_layout(bytes, size, bluetooth)));
     const unsigned offset = bytes[0] == 0x31 ? 2 : bytes[0] == 0x11 ? 3 : 1;
     auto* data = bytes + offset;
     if(!capture) {
@@ -181,9 +188,9 @@ void neutral_hid(const InputCaptureHooks::HidRead& read, DWORD size) {
     refresh_playstation_bluetooth_crc(bytes, size);
     static std::atomic<bool> reported{};
     if (capture && !reported.exchange(true)) logging::printf(logging::Level::info, logging::Channel::input,
-        "Native PlayStation HID report neutralized; overlay retains its independent input stream. (%s over %s, report 0x%02x of %lu bytes, "
-        "the game's buffer %lu.)", read.kind == PlayStationPad::dualsense ? "DualSense" : "DualShock 4",
-        bluetooth ? "Bluetooth" : "USB", bytes[0], size, read.capacity);
+        "Native PlayStation HID report neutralized; overlay retains its independent input stream. (%s over %s by its length, report 0x%02x "
+        "of %lu bytes in the %s layout, the game's buffer %lu.)", read.kind == PlayStationPad::dualsense ? "DualSense" : "DualShock 4",
+        bluetooth ? "Bluetooth" : "USB", bytes[0], size, sense_full ? "DualSense" : "DualShock 4", read.capacity);
 }
 void dark_pop_hide_hat(std::uint8_t& byte) noexcept;
 // Dark Pop: the hat nibble of a PlayStation report the game read, hidden the same way as the XInput D-pad.
@@ -192,7 +199,8 @@ void hide_hid_dpad(const InputCaptureHooks::HidRead& read, DWORD size) {
     auto* bytes = static_cast<std::uint8_t*>(read.buffer);
     const bool bluetooth = playstation_bluetooth(size);
     if (!parse_playstation_report(read.kind, bluetooth, bytes, size)) return;
-    const bool sense_full = read.kind == PlayStationPad::dualsense && (bytes[0] == 0x31 || (bytes[0] == 1 && !bluetooth));
+    const bool sense_full = read.kind == PlayStationPad::dualsense &&
+        (bytes[0] == 0x31 || (bytes[0] == 1 && dualsense_usb_layout(bytes, size, bluetooth)));
     const unsigned offset = bytes[0] == 0x31 ? 2 : bytes[0] == 0x11 ? 3 : 1;
     auto* data = bytes + offset;
     auto& hat = data[sense_full ? 7 : 4];
@@ -200,6 +208,15 @@ void hide_hid_dpad(const InputCaptureHooks::HidRead& read, DWORD size) {
     dark_pop_hide_hat(hat);
     if (hat == before) return;
     refresh_playstation_bluetooth_crc(bytes, size);
+}
+// The buttons a plugin keeps from the game (reskate.input.game_buttons, hide_game_buttons): let go in a
+// native PlayStation report the game read too, as they are in its XInput reads. Without this a
+// DualShock 4 or DualSense read natively still reached the game with them (D-pad right opened Quick
+// Drop while the Filmer had it).
+void hide_hid_buttons(const InputCaptureHooks::HidRead& read, DWORD size) {
+    const auto hidden = gameplay_hidden_buttons();
+    if (!hidden || overlay_input_access || !read.buffer || size > read.capacity || read.kind == PlayStationPad::none) return;
+    (void)hide_playstation_buttons(read.kind, playstation_bluetooth(size), static_cast<std::uint8_t*>(read.buffer), size, hidden);
 }
 // The gamepad filter (DingoSDKOverlaySetGamepadFilter) on the game's own native PlayStation
 // reads, as filter_pad applies it to XInput: a DualShock 4 or DualSense read without Steam Input
@@ -278,6 +295,7 @@ void complete_hid(OVERLAPPED* request, DWORD bytes, bool success, bool finished)
     }
     if (success) handle_hid(read, bytes);
     if (success) hide_hid_dpad(read, bytes);
+    if (success) hide_hid_buttons(read, bytes);
 }
 BOOL WINAPI captured_read_file(HANDLE file, LPVOID buffer, DWORD size, LPDWORD bytes, LPOVERLAPPED request) {
     auto& h = input_hooks();
@@ -497,6 +515,14 @@ DWORD WINAPI captured_front(DWORD user, XINPUT_STATE* output) {
         if (outer) game_pad_read(user, output);
         if (menu) {
             output->Gamepad.wButtons=game::owned_menu_buttons(output->Gamepad.wButtons,true);
+            output->dwPacketNumber ^= 0x40000000u;
+        }
+        // The buttons a plugin keeps from the game, here too: with Steam's overlay answering the game first
+        // (Steam Input, for an Xbox pad or a PlayStation pad through it), its read goes on to XInput's own
+        // entry point inside OverlayInputAccess, where captured_xinput leaves them, so they reached the game.
+        const auto hidden = outer ? gameplay_hidden_buttons() : std::uint16_t{};
+        if (hidden && (output->Gamepad.wButtons & hidden)) {
+            output->Gamepad.wButtons = static_cast<WORD>(output->Gamepad.wButtons & ~hidden);
             output->dwPacketNumber ^= 0x40000000u;
         }
     }
@@ -988,7 +1014,7 @@ DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
     const auto staged_revision = native_input_source::publication_revision();
     const bool capture = block_polled_input();
     const auto hidden = overlay_input_access ? std::uint16_t{} : static_cast<std::uint16_t>(
-        (native_input_source::native_menu_closed(GetTickCount64()) ? mode_hidden_buttons.load(std::memory_order_relaxed) : 0) |
+        gameplay_hidden_buttons() |
         (suppress_challenge_menu()?XINPUT_GAMEPAD_START:0));
     input::PadAuthorship authorship;
     const auto returned_result = [&]() -> DWORD {
@@ -1029,6 +1055,31 @@ DWORD WINAPI captured_keystroke(DWORD user, DWORD reserved, PXINPUT_KEYSTROKE ou
         (trusted_polled_capture() || output->VirtualKey != VK_PAD_START)) { *output = {}; return ERROR_EMPTY; }
     if(result==ERROR_SUCCESS && output && suppress_challenge_menu() && output->VirtualKey==VK_PAD_START) {
         *output={};return ERROR_EMPTY;
+    }
+    // The buttons a plugin keeps from the game: their presses and releases are not the game's either (a
+    // menu of the game's that reads keystrokes, not the pad's state, still opened on them).
+    if (result == ERROR_SUCCESS && output && !overlay_input_access) {
+        if (const auto hidden = gameplay_hidden_buttons()) {
+            WORD bit = 0;
+            switch (output->VirtualKey) {
+            case VK_PAD_A: bit = XINPUT_GAMEPAD_A; break;
+            case VK_PAD_B: bit = XINPUT_GAMEPAD_B; break;
+            case VK_PAD_X: bit = XINPUT_GAMEPAD_X; break;
+            case VK_PAD_Y: bit = XINPUT_GAMEPAD_Y; break;
+            case VK_PAD_RSHOULDER: bit = XINPUT_GAMEPAD_RIGHT_SHOULDER; break;
+            case VK_PAD_LSHOULDER: bit = XINPUT_GAMEPAD_LEFT_SHOULDER; break;
+            case VK_PAD_DPAD_UP: bit = XINPUT_GAMEPAD_DPAD_UP; break;
+            case VK_PAD_DPAD_DOWN: bit = XINPUT_GAMEPAD_DPAD_DOWN; break;
+            case VK_PAD_DPAD_LEFT: bit = XINPUT_GAMEPAD_DPAD_LEFT; break;
+            case VK_PAD_DPAD_RIGHT: bit = XINPUT_GAMEPAD_DPAD_RIGHT; break;
+            case VK_PAD_START: bit = XINPUT_GAMEPAD_START; break;
+            case VK_PAD_BACK: bit = XINPUT_GAMEPAD_BACK; break;
+            case VK_PAD_LTHUMB_PRESS: bit = XINPUT_GAMEPAD_LEFT_THUMB; break;
+            case VK_PAD_RTHUMB_PRESS: bit = XINPUT_GAMEPAD_RIGHT_THUMB; break;
+            default: break;
+            }
+            if (bit & hidden) { *output = {}; return ERROR_EMPTY; }
+        }
     }
     // VK_PAD_DPAD_DOWN 0x5811, LEFT 0x5812, RIGHT 0x5813 (UP 0x5810 stays), while Dark Pop hides the D-pad.
     if (result == ERROR_SUCCESS && output && !overlay_input_access && output->VirtualKey >= 0x5811 && output->VirtualKey <= 0x5813 &&

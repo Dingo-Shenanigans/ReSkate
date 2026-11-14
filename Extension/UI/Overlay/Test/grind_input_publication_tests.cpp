@@ -1,5 +1,7 @@
 #include <Windows.h>
 #include "Extension/Input/input_source_environment.h"
+#include <array>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <string_view>
@@ -17,6 +19,9 @@ ULONGLONG WINAPI fixture_tick_count() noexcept { return fixture_now; }
 namespace source = dingosdk::native_input_source;
 namespace lease = dingosdk::input_lease;
 namespace capture_detail = dingosdk::overlay::detail;
+namespace capture_fixture {
+extern bool hid_mode, menu_capture;
+}
 namespace {
 unsigned checks{};
 void check(bool value, const char* why) {
@@ -134,6 +139,104 @@ void changes(Setter setter) {
     check(source::lease_release(1, handle, why), "the later owner releases normally");
     acknowledge(handle);
 }
+// Check the CRC independently from the production bit-at-a-time implementation.
+std::uint32_t report_crc(const std::uint8_t* bytes) {
+    std::array<std::uint32_t, 256> table{};
+    for (std::uint32_t i = 0; i < table.size(); ++i) {
+        auto value = i;
+        for (unsigned bit = 0; bit < 8; ++bit) value = (value & 1u) ? 0xedb88320u ^ (value >> 1) : value >> 1;
+        table[i] = value;
+    }
+    std::uint32_t crc = 0xffffffffu;
+    const auto feed = [&](std::uint8_t byte) { crc = table[(crc ^ byte) & 0xffu] ^ (crc >> 8); };
+    feed(0xa1);
+    for (std::size_t i = 0; i < 74; ++i) feed(bytes[i]);
+    return ~crc;
+}
+void hid_menu() {
+    capture_fixture::hid_mode = true;
+    auto& overlay = capture_detail::state();
+    client_tick();
+    // The long report 0x01 has USB buttons despite a length usually associated with Bluetooth.
+    // Include Options and another button so preserving the already-mutated pad cannot pass.
+    const auto edge_report = [] {
+        std::array<std::uint8_t, 78> bytes{0x01, 220, 10, 30, 240, 40, 90, 0x17, 0x41, 0x32};
+        bytes[12] = 0x33;
+        bytes[50] = 0x5a;
+        return bytes;
+    };
+    const auto bluetooth_report = [] {
+        std::array<std::uint8_t, 78> bytes{0x31, 0x10, 220, 10, 30, 240, 40, 90, 0x17, 0x41, 0x32};
+        bytes[12] = 0x33;
+        bytes[50] = 0x5a;
+        dingosdk::refresh_playstation_bluetooth_crc(bytes.data(), bytes.size());
+        return bytes;
+    };
+    for (const bool full_bluetooth : {false, true}) {
+        for (const bool menu_capture : {false, true}) {
+            auto bytes = full_bluetooth ? bluetooth_report() : edge_report();
+            const auto before = bytes;
+            capture_fixture::menu_capture = menu_capture;
+            overlay.freecam_controller_active.store(!menu_capture);
+            const capture_detail::InputCaptureHooks::HidRead read{nullptr, bytes.data(),
+                static_cast<DWORD>(bytes.size()), dingosdk::PlayStationPad::dualsense};
+            capture_detail::neutral_hid(read, static_cast<DWORD>(bytes.size()));
+            const auto pad = dingosdk::parse_playstation_report(read.kind, true, bytes.data(), bytes.size());
+            check(pad && pad->buttons == (menu_capture ? 0 : dingosdk::input::menu_button),
+                "gameplay capture preserves the physical Menu button, while SDK menu capture neutralizes it");
+            check(pad->left_trigger == 0 && pad->right_trigger == 0 &&
+                std::abs(int{pad->left_x}) <= 258 && std::abs(int{pad->left_y}) <= 258 &&
+                std::abs(int{pad->right_x}) <= 258 && std::abs(int{pad->right_y}) <= 258,
+                "the actual HID neutralizer clears gameplay controls in the content-selected layout");
+            const auto buttons = full_bluetooth ? std::size_t{9} : std::size_t{8};
+            check((bytes[buttons] & 0x0f) == 8 && bytes[12] == before[12] && bytes[50] == before[50],
+                "a long USB read leaves the D-pad neutral and preserves its identifying tail");
+            if (full_bluetooth) {
+                const auto stored = std::uint32_t{bytes[74]} | std::uint32_t{bytes[75]} << 8 |
+                    std::uint32_t{bytes[76]} << 16 | std::uint32_t{bytes[77]} << 24;
+                check(stored == report_crc(bytes.data()), "actual Bluetooth neutralization refreshes the wire CRC");
+            }
+        }
+    }
+    capture_fixture::menu_capture = false;
+    overlay.freecam_controller_active.store(false);
+    capture_detail::challenge_menu_capture.store(true);
+    // This tests the Options-only leaf directly. The current dispatcher calls it only while
+    // input capture is active, so this does not qualify challenge-menu dispatch.
+    auto bytes = edge_report();
+    auto expected = bytes;
+    expected[9] &= std::uint8_t{0xdf};
+    const capture_detail::InputCaptureHooks::HidRead read{nullptr, bytes.data(),
+        static_cast<DWORD>(bytes.size()), dingosdk::PlayStationPad::dualsense};
+    capture_detail::neutral_hid(read, static_cast<DWORD>(bytes.size()));
+    check(bytes == expected, "a challenge menu suppresses only Options in the long USB layout");
+    capture_detail::challenge_menu_capture.store(false);
+
+    // The extra native HID path must follow the same menu observation as XInput hiding.
+    dingosdk::overlay::hide_game_buttons(0x2000 | 0x0001 | dingosdk::input::menu_button);
+    check(!(capture_detail::mode_hidden_buttons.load() & dingosdk::input::menu_button),
+        "a plugin cannot request that the Menu button be hidden");
+    const auto check_hiding = [&](source::NativeMenu menu, bool stale, bool allowed) {
+        client_tick();
+        source::tick(1, 2, true, menu);
+        if (stale) fixture_now += lease::maximum_age_ms + 1;
+        auto report = edge_report();
+        const auto physical = dingosdk::parse_playstation_report(read.kind, true, report.data(), report.size());
+        const auto before = report;
+        const capture_detail::InputCaptureHooks::HidRead hidden_read{nullptr, report.data(),
+            static_cast<DWORD>(report.size()), read.kind};
+        capture_detail::hide_hid_buttons(hidden_read, static_cast<DWORD>(report.size()));
+        if (allowed) {
+            const auto returned = dingosdk::parse_playstation_report(read.kind, true, report.data(), report.size());
+            check(physical && returned && returned->buttons == (physical->buttons & ~(0x2000 | 0x0001)),
+                "a fresh closed menu admits hiding through the actual long-USB HID path");
+        } else check(report == before, "open, unknown and stale native menus retain every physical HID byte");
+    };
+    check_hiding({true, false}, false, true);
+    check_hiding({true, true}, false, false);
+    check_hiding({}, false, false);
+    check_hiding({true, false}, true, false);
+}
 }
 namespace dingosdk::native_input_source::environment {
 Facts sample() noexcept { return {fixture_now, 1, true, true, true, true}; }
@@ -148,6 +251,7 @@ int main(int argc, char** argv) {
     else if (mode == "both_idle") idle(true, true);
     else if (mode == "turn_changes") changes(set_turn);
     else if (mode == "lean_changes") changes(set_lean);
+    else if (mode == "hid_menu") hid_menu();
     else return 2;
     std::printf("PASS %s %u actual setter and native source checks\n", argv[1], checks);
     return 0;

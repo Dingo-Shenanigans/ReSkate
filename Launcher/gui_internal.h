@@ -9,6 +9,7 @@
 #include "thunderstore.h"
 
 #include "Engine/Vfs/mod_conflicts.h"
+#include "Engine/Vfs/mod_items.h"
 #include "Engine/Vfs/mod_list.h"
 #include "Extension/UI/skate_theme.h"
 
@@ -127,11 +128,6 @@ void badge(ImDrawList* draw, const Fonts& fonts, ImVec2 position, const std::str
            ImU32 fill = color::blue, ImU32 ink = color::ink);
 // How tall `text` is in `font`, wrapped at `wrap` (0: not wrapped); 0 for no text.
 float text_height(ImFont* font, float wrap, const std::string& text);
-// A page's banner, as wide as the page: its heading with a blue pill beside it (`pill` may be
-// empty), a line on what the page is for, and at the right how things stand: a pill in
-// `status_fill`, with `caption` under it (either may be empty). Leaves the cursor under it.
-void page_banner(const Fonts& fonts, const char* heading, const char* pill, const std::string& about,
-                 const std::string& status = {}, ImU32 status_fill = color::good, const std::string& caption = {});
 // A card behind what a page draws on it: lighter edged while hovered, with a blue edge when `marked`.
 void card(ImDrawList* draw, ImVec2 start, ImVec2 size, bool marked = false);
 // A caption over its value: the detail lines of an open list row.
@@ -143,6 +139,9 @@ bool list_row(const char* id, float width, float height, bool ticked);
 inline float row_gap() { return S(8); }
 // An on/off switch, blue while on. Returns true when it was flipped.
 bool toggle(const char* id, bool* on);
+// The switch alone, drawn at `start`, for a row that is itself what is pressed. Its size.
+inline ImVec2 switch_size() { return ImVec2(S(42), S(22)); }
+void draw_switch(ImDrawList* draw, ImVec2 start, bool on, bool hovered);
 // A square button with three dots, for a row's menu.
 bool more_button(const char* id, float size);
 
@@ -207,6 +206,8 @@ struct Settings {
     // The launcher's own text and layout, in percent of the size Windows' display scale gives
     // (interface_sizes). A size that would not fit the screen is cut to the largest that does.
     int interface_size{100};
+    // How many mods the Mod Manager downloads at once (1 to max_parallel_downloads).
+    int parallel_downloads{4};
     bool keep_open_after_launch{};
     // Off: never replace ReSkate.dll or the launcher (keeps a test build someone handed out).
     bool updates{true};
@@ -234,6 +235,7 @@ struct Settings {
     std::string shader_cache_mods;
 };
 
+inline constexpr int max_parallel_downloads = 8;
 inline constexpr std::array<int, 7> interface_sizes{75, 90, 100, 115, 125, 150, 175};
 inline constexpr std::array<const char*, 7> interface_size_names{"75%", "90%", "100%", "115%", "125%", "150%", "175%"};
 // The interface size saved for this launcher, read before its window is made.
@@ -482,6 +484,7 @@ struct Ui {
     // Thunderstore updates waiting, so PLAY can say so and ask before it
     // launches without them. Answered once a session.
     std::size_t mods_pending{};
+    std::size_t mods_enabled{};          // how many mods load, for what PLAY says it starts
     bool mods_update_prompt{};
     bool mods_updates_ignored{};
     // "Update them and play" said play: launch once the install finishes.
@@ -579,6 +582,91 @@ struct Readmes {
     }
 };
 
+// One mod being installed (gui_mods_downloads.cpp): a Thunderstore package to download and install, or
+// a .zip or folder the player gave. The queue's threads and the UI share it; what is not atomic is
+// written under Downloads::mutex before `state` says the mod is over.
+struct Download {
+    enum class State { queued, downloading, installing, done, failed, cancelled, exists };
+    std::uint64_t id{};
+    std::string title, version;          // as the queue lists it; no version for a file or folder
+    bool store{};                        // from Thunderstore (`package`), else `source`
+    thunderstore::Package package;
+    std::filesystem::path source;
+    bool replace{};                      // an installed mod of the same name is replaced
+    std::atomic<State> state{State::queued};
+    std::atomic<float> progress{0};      // of the whole of it, download and install
+    std::atomic<std::uint64_t> received{0}, expected{0};   // bytes of the download
+    std::atomic<bool> cancel{false};
+    bool update{};                       // it was installed before
+    std::string folder, error;           // where it went (exists: the mod in its way); why it failed
+    bool collected{};                    // the UI has taken its outcome in (UI thread)
+};
+// The mods waiting, coming down and done, in the order asked for.
+struct Downloads {
+    std::mutex mutex;                    // `jobs`, `working`, and each job's strings
+    std::vector<std::shared_ptr<Download>> jobs;
+    struct Worker {
+        std::thread thread;
+        std::shared_ptr<std::atomic<bool>> ended;
+    };
+    std::vector<Worker> workers;         // UI thread
+    int working{};                       // the threads taking from the queue
+    std::mutex installing;               // one install into the Mods folder at a time
+    std::uint64_t next{1};
+    int parallel{4};                     // Settings::parallel_downloads, as the page last saw it
+    // Each pack asked for and the mods its install brings in (launcher_mods::record_brought_in),
+    // noted once the queue has run out. UI thread.
+    std::vector<std::pair<std::string, std::vector<std::string>>> brought;
+    // What has finished since the queue was last empty of work.
+    struct Batch {
+        std::size_t done{}, cancelled{};
+        std::vector<std::string> failed;
+        std::string last;                // "Installed X v1"
+    } batch;
+    std::string summary;                 // what the bar says once all are done
+    bool open{};                         // the queue is shown over the page
+    bool was_open{};                     // and was when the bar was last pressed
+
+    ~Downloads();
+};
+
+// A mod overview's ITEMS tab (gui_mods_items.cpp): the items the mod adds, read from its files on a
+// worker, and the ones the player leaves out of it (mods::items_left_out).
+struct ModItemsView {
+    std::string mod;                  // the folder whose overview is open; empty when none is
+    bool tab{};                       // the overview shows ITEMS rather than ABOUT
+    bool read{};                      // the mod's items are in `list`
+    struct Item {
+        std::string key, title, category;   // category: for a player ("Tops")
+        std::string label;                  // the title as its tile shows it, without what its kind's titles all begin with
+        int cell{-1};                       // its thumbnail's place among the atlases; -1 when it has none
+    };
+    std::vector<Item> list;           // by category, then title
+    std::vector<std::pair<std::string, int>> categories;   // each kind of item the mod has, and how many
+    std::string category;             // the kind shown; empty for all
+    std::array<char, 96> search{};
+    std::set<std::string> off;        // left out; may hold keys the mod no longer has
+    std::string problem, error;       // why not all could be read; why the choice could not be saved
+    std::vector<ImTextureID> atlases; // the thumbnails, a hundred to a texture
+    // Atlases no longer shown, and the frame each was last in a draw list: freed in a later frame.
+    std::vector<std::pair<ImTextureID, int>> retired;
+
+    std::thread worker;
+    std::atomic<bool> busy{};
+    std::string wanted;               // the mod to read next (UI thread)
+    std::vector<std::filesystem::path> wanted_folders;
+    std::mutex mutex;
+    struct Result {
+        bool ready{};
+        std::string mod;
+        mods::ModItems items;
+    } result;                         // worker -> UI, under mutex
+
+    ~ModItemsView() {
+        if (worker.joinable()) worker.join();
+    }
+};
+
 // The Mods panel's list plus one background install at a time.
 struct ModsPanel {
     bool scanned{};
@@ -641,16 +729,14 @@ struct ModsPanel {
     std::vector<char> remove_extras_picked;   // per entry of remove_extras: ticked to go too
     fs::path conflict_source;            // install waiting for "Replace" confirmation
     std::string conflict_name;
+    ModItemsView items;
+    // How many items the player leaves out of each mod, by lower-case folder name; read with the folder.
+    std::map<std::string, std::size_t, std::less<>> items_off;
 
-    std::thread worker;
+    // Mods are being installed, or their outcome has not been taken in yet (collect_install).
     std::atomic<bool> installing{};
-    std::atomic<bool> cancel{};
-    std::atomic<float> progress{-1};
-    std::mutex mutex;
-    std::string activity;                // what the worker is doing, under mutex
-    bool finished{};
-    std::string finished_name, finished_error, finished_conflict, finished_note;
-    fs::path finished_source;
+    std::mutex mutex;                    // profile_result
+    Downloads downloads;
 
     Store store;
     Icons icons;
@@ -677,8 +763,6 @@ struct ModsPanel {
     ProfileResult profile_result;           // worker -> UI, under mutex
 
     ~ModsPanel() {
-        cancel = true;
-        if (worker.joinable()) worker.join();
         if (profile_worker.joinable()) profile_worker.join();
         if (conflicts.worker.joinable()) conflicts.worker.join();
     }
@@ -694,7 +778,20 @@ void prepare_mods(ModsPanel& panel, const launcher_app::Session& session);
 // Waits (at most ten seconds) for a conflict check under way to finish: it may be reading the mod
 // files an install or uninstall is about to replace. Off the UI thread where it can be.
 void wait_for_conflict_check(const ModsPanel& panel);
+// Queues a .zip or a folder to install (gui_mods_downloads.cpp). One already installed asks first,
+// unless `replace`.
 void start_install(ModsPanel& panel, const fs::path& source, bool replace);
+// Takes in the installs that have finished: the folder is read again, a mod in the way is asked
+// about, and once none is left the outcome is said. Every frame.
+void collect_install(ModsPanel& panel, const launcher_app::Session& session);
+// The bar along the bottom of the Mods page while mods are installed, and until it is dismissed:
+// how far they are, and the queue it opens. The height it needs (none when there is nothing to
+// show), and the bar drawn at `position` in the page, `width` wide.
+float downloads_bar_height(const ModsPanel& panel);
+// What a package's install button says while the package is in the queue, where it is not to be
+// pressed again: "QUEUED", "DOWNLOADING" or "INSTALLING"; empty when it is not in the queue.
+std::string download_label(ModsPanel& panel, std::string_view full_name);
+void downloads_bar(const Fonts& fonts, ModsPanel& panel, ImVec2 position, float width);
 // The Windows file (or folder) picker; empty when cancelled. A file picker shows
 // `filter_pattern` ("*.zip") under `filter_name`.
 fs::path pick_path(HWND owner, bool folder, const wchar_t* title, const wchar_t* filter_name, const wchar_t* filter_pattern);
@@ -723,7 +820,7 @@ thunderstore::Installed installed_versions(const mods::ModList& list, bool enabl
 // The package an installed mod folder came from, if the listing has it.
 const thunderstore::Package* package_for(const Store& store, std::string_view folder);
 std::vector<const thunderstore::Package*> updates(const Store& store, const thunderstore::Installed& installed);
-// Downloads and installs (or updates) each package in turn on the panel's worker.
+// Queues each package to download and install (or update), with the mods it needs.
 void start_store_install(ModsPanel& panel, std::vector<thunderstore::Package> packages);
 // The package's icon texture, or empty while it loads; uploads finished icons.
 ImTextureID package_icon(ModsPanel& panel, const thunderstore::Package& package);
@@ -756,6 +853,19 @@ OverviewColumns overview_columns(float popup_height);
 void begin_overview_details(const char* id, const OverviewColumns& columns);
 void end_overview_details();
 void overview_fact(const Fonts& fonts, const char* name, const std::string& value);
+// A mod overview's ITEMS tab (gui_mods_items.cpp). Whether a mod is of a kind that can add items
+// the player may leave out; the overview opening on a mod (its items are read on a worker) and
+// closing; every frame, taking in what was read; whether the open mod is known to add items, and
+// how many ("12", or "8 of 12 load"); and the tab itself, `height` tall.
+bool mod_may_have_items(const mods::Mod& mod);
+void open_mod_items(ModsPanel& panel, const mods::Mod& mod);
+void close_mod_items(ModsPanel& panel);
+void pump_mod_items(ModsPanel& panel);
+bool mod_items_known(const ModsPanel& panel, const mods::Mod& mod);
+std::string mod_items_count(const ModsPanel& panel, const mods::Mod& mod);
+void mod_items_tab(const Fonts& fonts, ModsPanel& panel, const mods::Mod& mod, float height);
+// How many items are left out of each mod (ModsPanel::items_off), read again.
+void read_items_left_out(ModsPanel& panel);
 // Whether `package` is ticked for the next install, and ticking it.
 bool picked(const Store& store, const std::string& full_name);
 void pick(Store& store, const std::string& full_name, bool on);

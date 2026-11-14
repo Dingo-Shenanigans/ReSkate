@@ -89,7 +89,7 @@ if(DINGOSDK_BUILD_MULTIPLAYER_TESTS)
     if(WIN32)
         add_executable(dingosdk_https_download_timeout_tests Engine/Vfs/Test/https_download_timeout_tests.cpp)
         target_include_directories(dingosdk_https_download_timeout_tests PRIVATE "${PROJECT_SOURCE_DIR}")
-        target_link_libraries(dingosdk_https_download_timeout_tests PRIVATE winhttp)
+        target_link_libraries(dingosdk_https_download_timeout_tests PRIVATE winhttp dingosdk_https_trust)
         add_test(NAME https_download_timeout COMMAND dingosdk_https_download_timeout_tests
             "${CMAKE_CURRENT_BINARY_DIR}/https-download-fixtures")
         add_executable(dingosdk_map_download_timeout_tests Extension/Assets/Test/map_download_timeout_tests.cpp
@@ -529,21 +529,23 @@ if(DINGOSDK_BUILD_PLUGIN_TESTS AND WIN32)
         Extension/Skater/pad_hide.cpp)
     target_include_directories(dingosdk_pad_hide_menu_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME pad_hide_menu COMMAND dingosdk_pad_hide_menu_tests)
-    # Exercise the actual exported stick helpers with the native input broker. Unused overlay
-    # entry points are discarded so the fixture cannot install hooks or initialize the UI.
+    # Exercise the actual stick exports and HID neutralization with the native input broker.
+    # Unused overlay entry points are discarded; the fixture cannot install hooks or draw UI.
     add_executable(dingosdk_grind_input_publication_tests
         Extension/UI/Overlay/Test/grind_input_publication_tests.cpp
         Extension/UI/Overlay/Test/grind_input_publication_stubs.cpp
         Extension/Input/native_input_source.cpp)
     target_include_directories(dingosdk_grind_input_publication_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     target_include_directories(dingosdk_grind_input_publication_tests SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/External/imgui")
-    target_link_libraries(dingosdk_grind_input_publication_tests PRIVATE dxguid)
+    target_link_libraries(dingosdk_grind_input_publication_tests PRIVATE dxguid dingosdk_imgui)
     target_compile_options(dingosdk_grind_input_publication_tests PRIVATE /Gy /Gw)
     target_link_options(dingosdk_grind_input_publication_tests PRIVATE /OPT:REF /INCREMENTAL:NO)
     foreach(mode turn_idle lean_idle both_idle turn_changes lean_changes)
         add_test(NAME grind_input_publication_${mode} COMMAND dingosdk_grind_input_publication_tests ${mode})
         set_tests_properties(grind_input_publication_${mode} PROPERTIES TIMEOUT 10)
     endforeach()
+    add_test(NAME hid_menu_capture COMMAND dingosdk_grind_input_publication_tests hid_menu)
+    set_tests_properties(hid_menu_capture PROPERTIES TIMEOUT 10)
     # The owned-body service itself (Extension/World/owned_bodies.cpp), over a constructed local
     # client, physics world and TLS: ray batches, measured contact, presets, categories,
     # preparation and re-activating a parked body. The test includes owned_bodies.cpp once and defines the hook, No Bail, session

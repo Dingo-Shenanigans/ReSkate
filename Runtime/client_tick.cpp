@@ -854,6 +854,8 @@ void update_model(std::uintptr_t client, TickState& frame) {
             if (pressed & (0x0008 | 1u << 21)) dingosdk::overlay::question_pick(false);
             if (pressed & (0x1000 | 1u << 22)) dingosdk::overlay::question_answer(dingosdk::overlay::question_picked());
             else if (pressed & (0x2000 | 1u << 23)) dingosdk::overlay::question_answer(dingosdk::overlay::question_back());
+            // The plugins asked about one after another: LB or Backspace goes to the one before.
+            else if (pressed & (0x0100 | 1u << 24)) dingosdk::overlay::question_step_back();
         }
         question_before = question_up;
         // The vote's popup: left and right move the pick, A votes for it, B closes it.

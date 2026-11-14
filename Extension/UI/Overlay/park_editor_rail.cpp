@@ -195,7 +195,10 @@ void rail_layout(ParkEditorUI &ui, EditorFrame &f) {
                 break;
             }
             ImGui::SetCursorScreenPos({o.x + (rail - button) * .5f, y});
-            if (rail_button(ui, entry, {button, button}, lit, enabled, static_cast<unsigned>(321 + i))) {
+            const bool pressed = rail_button(ui, entry, {button, button}, lit, enabled, static_cast<unsigned>(321 + i));
+            if (entry.tool == RailTool::scale && !ui.scaling_allowed && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("%s", "Scale (Y) is off in this session: its host has turned object scaling off. It is back offline and in your own lobby.");
+            if (pressed) {
                 switch (entry.tool) {
                 case RailTool::place:
                     set_rail_panel(ui, ParkRailPanel::place);

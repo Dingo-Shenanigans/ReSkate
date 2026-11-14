@@ -1,12 +1,12 @@
 if(WIN32)
     add_executable(dingosdk_launcher WIN32 Launcher/main.cpp Launcher/launch.cpp
         Launcher/gui.cpp Launcher/gui_launcher.cpp Launcher/gui_renderer.cpp Launcher/gui_home.cpp
-        Launcher/gui_settings.cpp Launcher/gui_sign_in.cpp Launcher/gui_mods.cpp Launcher/gui_mods_browse.cpp Launcher/gui_mods_profiles.cpp
+        Launcher/gui_settings.cpp Launcher/gui_sign_in.cpp Launcher/gui_mods.cpp Launcher/gui_mods_browse.cpp Launcher/gui_mods_profiles.cpp Launcher/gui_mods_items.cpp Launcher/gui_mods_downloads.cpp
         Launcher/gui_gamepad.cpp Launcher/gamepad_input.cpp Launcher/gui_changelog.cpp Launcher/gui_legal.cpp Launcher/game_settings.cpp
         Launcher/updater.cpp Launcher/mod_manager.cpp Launcher/mod_profiles.cpp Launcher/thunderstore.cpp
         Launcher/start_maps.cpp Launcher/problem.h)
     target_link_libraries(dingosdk_launcher PRIVATE dingosdk_logging dingosdk_content_cache_install dingosdk_world_layer_scan dingosdk_launcher_support dingosdk_initfs
-        dingosdk_mod_list dingosdk_custom_level_manifest dingosdk_mods dingosdk_json dingosdk_miniz dingosdk_imgui dingosdk_playstation_input winhttp shell32 dwmapi windowscodecs ole32)
+        dingosdk_mod_list dingosdk_custom_level_manifest dingosdk_mods dingosdk_json dingosdk_miniz dingosdk_imgui dingosdk_playstation_input dingosdk_https_trust winhttp shell32 dwmapi windowscodecs ole32)
     set_target_properties(dingosdk_launcher PROPERTIES OUTPUT_NAME "ReSkateLauncher")
     dingosdk_version_info(dingosdk_launcher "ReSkate launcher" "ReSkateLauncher.exe" VFT_APP)
 endif()
@@ -26,7 +26,7 @@ if(DINGOSDK_BUILD_LAUNCHER_TESTS AND WIN32)
     add_executable(dingosdk_mod_manager_tests Launcher/Test/mod_manager_tests.cpp Launcher/mod_manager.cpp
         Launcher/updater.cpp Launcher/thunderstore.cpp Engine/Vfs/builtin_packs.cpp)
     target_link_libraries(dingosdk_mod_manager_tests PRIVATE dingosdk_mod_list dingosdk_launcher_support dingosdk_logging dingosdk_json
-        dingosdk_miniz dingosdk_zstd winhttp shell32)
+        dingosdk_miniz dingosdk_zstd dingosdk_https_trust winhttp shell32)
     add_test(NAME launcher_mod_manager COMMAND dingosdk_mod_manager_tests)
     add_executable(dingosdk_thunderstore_tests Launcher/Test/thunderstore_tests.cpp Launcher/thunderstore.cpp)
     target_link_libraries(dingosdk_thunderstore_tests PRIVATE dingosdk_json dingosdk_miniz)
@@ -164,6 +164,10 @@ if(DINGOSDK_BUILD_LAUNCHER_TESTS AND WIN32)
     target_link_libraries(dingosdk_store_copies_tests PRIVATE dingosdk_mods dingosdk_content_cache)
     target_include_directories(dingosdk_store_copies_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME store_copies COMMAND dingosdk_store_copies_tests "${DINGOSDK_TEST_GAME_ROOT}")
+    add_executable(dingosdk_mod_item_choice_tests Engine/Vfs/Test/mod_item_choice_tests.cpp)
+    target_link_libraries(dingosdk_mod_item_choice_tests PRIVATE dingosdk_mods dingosdk_game_archives)
+    target_include_directories(dingosdk_mod_item_choice_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME mod_item_choice COMMAND dingosdk_mod_item_choice_tests "${DINGOSDK_TEST_GAME_ROOT}")
     # A tool, not a test: checks a mod's meshes as the GPU reads them (Engine/Vfs/Test/mod_mesh_check.cpp).
     add_executable(dingosdk_mod_mesh_check Engine/Vfs/Test/mod_mesh_check.cpp)
     target_link_libraries(dingosdk_mod_mesh_check PRIVATE dingosdk_mods dingosdk_frostbite dingosdk_game_archives)

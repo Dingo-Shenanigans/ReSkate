@@ -7,6 +7,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <map>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -80,6 +82,19 @@ std::filesystem::path variant_folder(const Mod& mod, std::string_view variant);
 // are put together, at launch and at every live apply. Saving a choice makes it this run's at once.
 std::string chosen_variant(std::string_view mod) noexcept;
 bool save_variant(std::string_view mod, std::string_view variant) noexcept;
+
+// The items a player left out of a mod (Mod::items_off), chosen in the launcher's mod manager: a
+// pack of 200 decks of which a few are wanted. Kept beside the choices of variant, in
+// %LOCALAPPDATA%\ReSkate\items-left-out.json: {"<mod folder, lower-case>": ["<item key>", ...]}, the
+// keys lower-case. By folder and not by version, so a choice outlasts the mod's updates; an item the
+// mod adds later is in until it is left out. Read afresh each time the mods are put together. A
+// mod's variants take the choices of the mod.
+using ItemsLeftOut = std::map<std::string, std::set<std::string>, std::less<>>;
+[[nodiscard]] ItemsLeftOut items_left_out() noexcept;
+[[nodiscard]] std::set<std::string> items_left_out(std::string_view mod) noexcept;
+// The mod's choices, replacing the ones it had; none removes its entry. False when they could not be kept.
+bool save_items_left_out(std::string_view mod, const std::set<std::string>& keys) noexcept;
+
 // What the mods in effect give the game: the launch's catalogue, or the one the last live apply
 // read (live_mods tells with variants_applied). Empty: none of that mod's variants is in the game.
 std::string variant_in_play(std::string_view mod) noexcept;
