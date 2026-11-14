@@ -577,6 +577,7 @@ struct FakeGame final : Game {
     std::string score_line(std::string_view plugin, const std::optional<ScoreLine>& line) override {
         if (!line) calls.push_back(std::format("score_line {} clear", plugin));
         else {
+            score_line_requests.push_back(*line);
             std::string tricks;
             for (const auto& trick : line->tricks) tricks += (tricks.empty() ? "" : "|") + trick;
             calls.push_back(std::format("score_line {} tricks={} points={} line={} x{:.2f} timer={:.2f} closed={}", plugin, tricks, line->points,
@@ -586,6 +587,7 @@ struct FakeGame final : Game {
         return score_lines.ask(plugin, line, clock ? *clock : 0);
     }
     dingosdk::score_line::LineOwner score_lines;
+    std::vector<ScoreLine> score_line_requests;
     std::string score_refusal;
     const double* clock{};
     std::string game_speed(std::string_view plugin, float speed) override {
@@ -3428,6 +3430,10 @@ void a_score_line_needs_its_own_permission() {
         assert(reskate.hud.corner(false))
         local ok, err = pcall(reskate.hud.score_line, {points = 5})
         assert(not ok and err:find("needs the \"hud.score\" permission"), err)
+        ok, err = pcall(reskate.hud.score_line, {tricks = {"Action"}, trick_ids = {1}})
+        assert(not ok and err:find("needs the \"hud.score\" permission"), err)
+        ok, err = pcall(reskate.hud.score_line, {tricks = {"Action"}, trick_ids = false})
+        assert(not ok and err:find("needs the \"hud.score\" permission"), err)
         reskate.log("hud alone is refused")
     )", R"("hud")")});
     running(host, "corner", environment);
@@ -3489,6 +3495,92 @@ void a_score_line_is_checked_before_the_game_sees_it() {
     check(game.called("points=999999999 line=0 x99.00 timer=0.00 closed=0"), "and one at the top of each range");
     const auto lines = std::count_if(game.calls.begin(), game.calls.end(), [](const auto& c) { return c.starts_with("score_line "); });
     check(lines == 6 && game.called("score_line sample-line clear"), "No refused line reached the game, and nil clears it");
+}
+
+void a_score_line_checks_parallel_row_ids() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    game.clock = &environment.now;
+    Host host(environment, Side::client);
+    host.apply({script("row-ids", R"(
+        assert(reskate.hud.score_line({tricks = {"Same action", "Same action"}, trick_ids = {1, 9007199254740991}}))
+        assert(reskate.hud.score_line({trick_ids = {}}), "an empty id list matches no tricks")
+        assert(reskate.hud.score_line({tricks = {"Legacy"}, trick_ids = nil}))
+        assert(reskate.hud.score_line({tricks = {"Legacy"}}))
+        local function refused(ids, tricks, part)
+            local ok, err = pcall(reskate.hud.score_line, {tricks = tricks, trick_ids = ids})
+            assert(not ok and err:find(part, 1, true), tostring(err))
+        end
+        for _, ids in ipairs({false, true, 1, "1"}) do
+            refused(ids, {"Action"}, "trick_ids is a dense list")
+        end
+        refused({}, {"Action"}, "trick_ids is a dense list")
+        refused({1}, {}, "trick_ids is a dense list")
+        refused({1, 2}, {"Action"}, "trick_ids is a dense list")
+        refused({[2] = 1}, {"Action"}, "trick_ids is a dense list")
+        refused({[1] = 1, [3] = 2}, {"A", "B"}, "trick_ids is a dense list")
+        refused({[0] = 1}, {"Action"}, "trick_ids is a dense list")
+        refused({[-1] = 1}, {"Action"}, "trick_ids is a dense list")
+        refused({[1.5] = 1}, {"Action"}, "trick_ids is a dense list")
+        refused({["1"] = 1}, {"Action"}, "trick_ids is a dense list")
+        refused({[false] = 1}, {"Action"}, "trick_ids is a dense list")
+        refused({1, extra = 2}, {"Action"}, "trick_ids is a dense list")
+        refused({1, 2, 3, 4, 5, 6}, {"1", "2", "3", "4", "5"}, "trick_ids is a dense list")
+        for _, id in ipairs({false, true, "1", {}}) do
+            refused({id}, {"Action"}, "trick_ids holds whole numbers")
+        end
+        for _, id in ipairs({0, -1, 0.5, 1.5, 0 / 0, math.huge, -math.huge, 9007199254740992}) do
+            refused({id}, {"Action"}, "trick_ids holds whole numbers")
+        end
+        refused({4, 4}, {"A", "B"}, "trick_ids holds no duplicate ids")
+        reskate.log("ids checked")
+    )", R"("hud.score")")});
+    running(host, "row-ids", environment);
+    check(environment.logged("[row-ids] ids checked"), "The API checks row id shape, type, bounds and uniqueness\n" + environment.all());
+    check(game.score_line_requests.size() == 4, "Only valid row id snapshots reach the game");
+    check(game.score_line_requests[0].trick_ids == std::vector<std::uint64_t>{1, 9007199254740991ULL},
+          "The API forwards the exact first and largest supported ids without narrowing them");
+    check(game.score_line_requests[1].tricks.empty() && game.score_line_requests[1].trick_ids.empty(),
+          "An empty id list is accepted for an empty trick list");
+    check(game.score_line_requests[2].tricks == std::vector<std::string>{"Legacy"} && game.score_line_requests[2].trick_ids.empty() &&
+              game.score_line_requests[3].tricks == std::vector<std::string>{"Legacy"} && game.score_line_requests[3].trick_ids.empty(),
+          "Omitted and nil ids keep the legacy name-only request");
+}
+
+// The host forwards snapshots; it does not flush native HUD rows from inside the API call.
+void a_score_line_keeps_row_ids_across_host_ticks() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    game.clock = &environment.now;
+    Host host(environment, Side::client);
+    host.apply({script("repeated-rows", R"(
+        local newest = 0
+        reskate.on("tick", function()
+            newest += 1
+            local names, ids = {}, {}
+            for id = math.max(1, newest - 4), newest do
+                table.insert(names, "Same action")
+                table.insert(ids, id)
+            end
+            assert(reskate.hud.score_line({tricks = names, trick_ids = ids}))
+        end)
+    )", R"("hud.score")")});
+    running(host, "repeated-rows", environment);
+    check(game.score_line_requests.empty(), "Registering a tick handler does not publish a score line");
+    for (std::uint64_t newest = 1; newest <= 7; ++newest) {
+        environment.now += 16;
+        host.tick(16);
+        running(host, "repeated-rows", environment);
+        check(game.score_line_requests.size() == static_cast<std::size_t>(newest), "Each host tick forwards exactly one snapshot");
+        std::vector<std::uint64_t> expected;
+        for (auto id = newest > 4 ? newest - 4 : 1; id <= newest; ++id) expected.push_back(id);
+        const auto& line = game.score_line_requests.back();
+        check(line.trick_ids == expected && line.tricks.size() == expected.size() &&
+                  std::all_of(line.tricks.begin(), line.tricks.end(), [](const auto& name) { return name == "Same action"; }),
+              "Seven identical actions keep one distinct id each while the newest five remain in order");
+        const auto* held = game.score_lines.current(environment.now);
+        check(held && held->trick_ids == expected, "The latest owner snapshot retains the forwarded ids");
+    }
 }
 
 // A refusal of the game's comes back to the plugin as false and why, and the plugin goes on.
@@ -7173,6 +7265,8 @@ int main() {
         run(a_permission_must_be_declared);
         run(a_score_line_needs_its_own_permission);
         run(a_score_line_is_checked_before_the_game_sees_it);
+        run(a_score_line_checks_parallel_row_ids);
+        run(a_score_line_keeps_row_ids_across_host_ticks);
         run(a_score_line_refusal_comes_back_to_the_plugin);
         run(one_plugins_score_line_shows_at_a_time);
         run(plugins_choose_stand_ins);

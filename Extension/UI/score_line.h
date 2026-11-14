@@ -18,6 +18,7 @@ namespace dingosdk::score_line {
 inline constexpr std::size_t most_tricks = 5;
 inline constexpr std::size_t most_trick_bytes = 63;
 inline constexpr double most_points = 999'999'999;
+inline constexpr double most_trick_id = 9'007'199'254'740'991.0;
 inline constexpr double least_multiplier = 1, most_multiplier = 99;
 // The line shows while its plugin sets it again at least this often (one call a tick is the use).
 inline constexpr double lease_ms = 500;
@@ -32,6 +33,8 @@ struct Line {
     float timer{1};                  // the ring's time left, 0 to 1
     // The game's look for a line that has ended: the ring, number and rows go and "LINE: N" stays.
     bool closed{};
+    // Optional stable identities, parallel to tricks. Empty keeps the name-only contract.
+    std::vector<std::uint64_t> trick_ids;
     bool operator==(const Line&) const = default;
 };
 
@@ -61,7 +64,11 @@ public:
             if (owner_ == who) clear();
             return {};
         }
-        if (!owner_.empty() && owner_ != who && live(now_ms)) return owner_ + " shows its line there";
+        const bool held = live(now_ms);
+        if (!owner_.empty() && owner_ != who && held) return owner_ + " shows its line there";
+        // A UI tick may miss a clear, a release or a closed line. The next acquisition or reopening
+        // must still be distinct when its caller starts its row identities again.
+        if (owner_ != who || !held || (line_ && line_->closed && !line->closed)) ++generation_;
         owner_ = std::string(who);
         line_ = std::move(line);
         asked_ms_ = now_ms;
@@ -79,6 +86,7 @@ public:
         return &*line_;
     }
     const std::string& owner() const { return owner_; }
+    std::uint64_t generation() const { return generation_; }
 
 private:
     bool live(double now_ms) const { return line_ && now_ms - asked_ms_ <= lease_ms; }
@@ -89,6 +97,7 @@ private:
     std::string owner_;
     std::optional<Line> line_;
     double asked_ms_{};
+    std::uint64_t generation_{};
 };
 
 // skate.'s own line, from its ScoringHUDViewModel root and its item in DpadScoringStack.
@@ -203,10 +212,24 @@ template <class Root> const Root* pick_game_root(const std::vector<Root>& roots,
 
 // How many of `wanted`'s rows (newest first) are new: the rest are `shown`'s newest, kept as they are
 // so only a new row comes in, as the game's list does. All of them when the two do not line up.
-inline std::size_t fresh_rows(const std::vector<std::string>& shown, const std::vector<std::string>& wanted) {
+inline std::uint64_t trick_id_at(const std::vector<std::uint64_t>& ids, std::size_t index) {
+    return index < ids.size() ? ids[index] : 0;
+}
+inline std::size_t fresh_rows(const std::vector<std::string>& shown, const std::vector<std::string>& wanted,
+    const std::vector<std::uint64_t>& shown_ids = {}, const std::vector<std::uint64_t>& wanted_ids = {},
+    std::uint64_t shown_generation = 0, std::uint64_t wanted_generation = 0) {
+    if (shown_generation != wanted_generation) return wanted.size();
     for (std::size_t fresh = 0; fresh < wanted.size(); ++fresh) {
         const auto kept = wanted.size() - fresh;
-        if (kept <= shown.size() && std::equal(wanted.begin() + static_cast<std::ptrdiff_t>(fresh), wanted.end(), shown.begin())) return fresh;
+        if (kept > shown.size()) continue;
+        bool same = true;
+        for (std::size_t index = 0; index < kept; ++index) {
+            if (wanted[fresh + index] != shown[index] || trick_id_at(wanted_ids, fresh + index) != trick_id_at(shown_ids, index)) {
+                same = false;
+                break;
+            }
+        }
+        if (same) return fresh;
     }
     return wanted.size();
 }
@@ -218,6 +241,7 @@ struct Look {
     float line_score{}, multiplier{}, timer{}, fill{};
     std::string points, multiplier_text;
     std::vector<std::string> rows; // newest first, at most most_tricks
+    std::vector<std::uint64_t> trick_ids; // parallel to rows; 0 for a legacy name-only row
     bool operator==(const Look&) const = default;
 };
 // The ring's number as the game writes it: "1.5", "2" (tenths, no ".0").
@@ -241,7 +265,11 @@ inline Look look_of(const Line& line, float fill_points) {
     look.points = std::to_string(static_cast<std::int64_t>(line.points));
     look.multiplier_text = multiplier_text(line.multiplier);
     const auto count = std::min(line.tricks.size(), most_tricks);
-    for (std::size_t i = 0; i < count; ++i) look.rows.push_back(line.tricks[line.tricks.size() - 1 - i]);
+    for (std::size_t i = 0; i < count; ++i) {
+        const auto index = line.tricks.size() - 1 - i;
+        look.rows.push_back(line.tricks[index]);
+        look.trick_ids.push_back(trick_id_at(line.trick_ids, index));
+    }
     return look;
 }
 } // namespace dingosdk::score_line

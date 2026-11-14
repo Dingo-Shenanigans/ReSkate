@@ -154,6 +154,150 @@ void only_new_rows_come_in() {
     check(fresh_rows({"First action"}, Names{}) == 0, "no rows were counted as new");
 }
 
+void row_identities_distinguish_equal_names() {
+    const std::vector<std::string> same{"Repeated action", "Repeated action"};
+    check(fresh_rows(same, same, {2, 1}, {2, 1}) == 0, "stable identities renewed rows");
+    check(fresh_rows(same, same, {2, 1}, {3, 2}) == 1, "equal names hid a new identity");
+    check(fresh_rows(same, same, {2, 1}, {4, 3}) == 2, "two new identities did not renew two rows");
+    check(fresh_rows({"Old label"}, {"New label"}, {1}, {1}) == 1, "the identity hid a changed name");
+    check(fresh_rows(same, same) == 0, "legacy name-only rows changed");
+    check(fresh_rows(same, same, {2, 1}, {}) == 2, "omitting identities reused identified rows");
+    check(fresh_rows(same, same, {}, {2, 1}) == 2, "new identities reused legacy rows");
+    auto line = sample_line();
+    line.trick_ids = {1, static_cast<std::uint64_t>(most_trick_id)};
+    const auto look = look_of(line, 400);
+    check(look.rows == std::vector<std::string>{"Second action", "First action"} &&
+        look.trick_ids == std::vector<std::uint64_t>{static_cast<std::uint64_t>(most_trick_id), 1},
+        "names and identities were not reversed together");
+    line.trick_ids.clear();
+    check(look_of(line, 400).trick_ids == std::vector<std::uint64_t>{0, 0}, "legacy identities were not absent");
+}
+
+// A constructed UI drain reads only the latest request. An unavailable registry calls nothing,
+// leaving the last successful row cache and its owner generation intact, as the HUD does.
+struct RowDrain {
+    std::vector<std::string> names;
+    std::vector<std::uint64_t> ids;
+    std::uint64_t generation{};
+    std::size_t made{};
+    LineStart start;
+    bool restart{};
+    std::size_t drain(LineOwner& owner, double now, bool available = true, bool row_update_reached = true) {
+        if (!available) return 0;
+        const auto* line = owner.current(now);
+        if (!line) {
+            start.out();
+            return 0;
+        }
+        if (start.shown(line->closed)) restart = true;
+        const auto look = look_of(*line, 400);
+        const auto fresh = fresh_rows(names, look.rows, ids, look.trick_ids, restart ? 0 : generation, owner.generation());
+        if (!row_update_reached) return 0;
+        made += fresh;
+        names = look.rows;
+        ids = look.trick_ids;
+        generation = owner.generation();
+        restart = false;
+        return fresh;
+    }
+};
+
+void append_identified_row(Line& line, std::uint64_t id) {
+    line.tricks.push_back("Repeated action");
+    line.trick_ids.push_back(id);
+    if (line.tricks.size() > most_tricks) {
+        line.tricks.erase(line.tricks.begin());
+        line.trick_ids.erase(line.trick_ids.begin());
+    }
+}
+
+void seven_equal_names_each_make_one_row() {
+    LineOwner owner;
+    RowDrain shown;
+    Line line;
+    for (std::uint64_t id = 1; id <= 7; ++id) {
+        append_identified_row(line, id);
+        const auto now = static_cast<double>(id) * 16;
+        check(owner.ask("sample-line", line, now).empty(), "an identified row was refused");
+        check(shown.drain(owner, now) == 1, "an equal name did not make exactly one new row");
+        check(shown.drain(owner, now + 1) == 0, "an unchanged snapshot duplicated its row");
+    }
+    check(shown.made == 7 && shown.ids == std::vector<std::uint64_t>{7, 6, 5, 4, 3},
+        "the latest five identities did not retain seven distinct additions");
+}
+
+void missed_ui_drains_keep_each_retained_identity() {
+    LineOwner owner;
+    RowDrain shown;
+    Line line;
+    for (std::uint64_t id = 1; id <= 5; ++id) {
+        append_identified_row(line, id);
+        owner.ask("sample-line", line, static_cast<double>(id) * 16);
+        check(shown.drain(owner, static_cast<double>(id) * 16) == 1, "initial rows differ");
+    }
+    const auto before = shown.ids;
+    append_identified_row(line, 6);
+    owner.ask("sample-line", line, 96);
+    check(shown.drain(owner, 96, false) == 0 && shown.ids == before && shown.made == 5,
+        "an unavailable registry consumed a pending snapshot");
+    append_identified_row(line, 7);
+    owner.ask("sample-line", line, 112);
+    check(shown.drain(owner, 112, false) == 0 && shown.ids == before, "another failed drain changed its cache");
+    // No four-row trim request is needed: the latest five still contain both unseen identities.
+    check(shown.drain(owner, 128) == 2 && shown.made == 7 && shown.ids == std::vector<std::uint64_t>{7, 6, 5, 4, 3},
+        "coalesced equal names lost or duplicated retained additions");
+    check(shown.drain(owner, 144) == 0 && shown.made == 7, "idle recovery duplicated rows");
+}
+
+void owner_and_closed_boundaries_survive_a_missed_drain() {
+    LineOwner owner;
+    RowDrain shown;
+    Line line;
+    append_identified_row(line, 1);
+    owner.ask("sample-line", line, 0);
+    check(shown.drain(owner, 0) == 1, "initial owner row differs");
+    const auto first_generation = owner.generation();
+    // A reload releases its owner, then a new instance can start its own row IDs at 1 before the UI runs.
+    owner.release("sample-line");
+    owner.ask("sample-line", line, 16);
+    check(owner.generation() != first_generation && shown.drain(owner, 16) == 1,
+        "a restarted owner reused the old instance's cached identity");
+    owner.ask("sample-line", std::nullopt, 32);
+    owner.ask("sample-line", line, 32);
+    check(shown.drain(owner, 32) == 1, "an unseen clear lost the next line's first row");
+    line.closed = true;
+    owner.ask("sample-line", line, 48);
+    line.closed = false;
+    owner.ask("sample-line", line, 64);
+    check(shown.drain(owner, 64) == 1, "an unseen closed line lost the next line's first row");
+    const auto previous_generation = owner.generation();
+    check(!owner.ask("other", line, 65).empty() && owner.generation() == previous_generation,
+        "a refused owner changed the row generation");
+    owner.ask("other", line, 600);
+    check(shown.drain(owner, 600) == 1 && shown.made == 5, "an expired owner kept the next owner's row identity");
+}
+
+void a_deferred_row_update_keeps_its_pending_generation() {
+    LineOwner owner;
+    RowDrain shown;
+    Line line;
+    append_identified_row(line, 1);
+    owner.ask("sample-line", line, 0);
+    shown.drain(owner, 0);
+    const auto old_generation = shown.generation;
+    owner.release("sample-line");
+    owner.ask("sample-line", line, 16);
+    // The outer UI publication can stop before the row update. This is not a thrown row-array write:
+    // that separate native safety path disables names until the registry is reset.
+    check(shown.drain(owner, 16, true, false) == 0 && shown.generation == old_generation && shown.made == 1,
+        "a deferred row update acknowledged the restarted owner");
+    check(shown.drain(owner, 32) == 1 && shown.generation == owner.generation(), "a later update lost the pending owner row");
+    // A visible line restarts after it yielded; no row update has consumed this restart yet.
+    shown.start.out();
+    check(shown.drain(owner, 48, true, false) == 0 && shown.restart, "a deferred update consumed a visible-line restart");
+    check(shown.drain(owner, 64) == 1 && !shown.restart && shown.made == 3, "recovery reused a row from before the restart");
+}
+
 // Ours is a copy of the game's root, so it is made only while nothing of the game's line is in it
 // (after a level load GameLine has seen nothing, so this is what holds the first copy back).
 void the_games_root_is_copied_only_while_idle() {
@@ -213,6 +357,11 @@ int main() {
         the_games_root_is_picked_over_ours();
         our_widget_writes_are_not_native_tricks();
         only_new_rows_come_in();
+        row_identities_distinguish_equal_names();
+        seven_equal_names_each_make_one_row();
+        missed_ui_drains_keep_each_retained_identity();
+        owner_and_closed_boundaries_survive_a_missed_drain();
+        a_deferred_row_update_keeps_its_pending_generation();
         the_games_root_is_copied_only_while_idle();
         a_new_line_starts_its_rows_again();
         a_line_looks_like_the_games();

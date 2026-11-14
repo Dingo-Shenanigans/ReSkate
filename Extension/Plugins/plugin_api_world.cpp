@@ -314,6 +314,12 @@ struct WorldApi {
     //               They show once skate. has made a trick row of its own in the level (its first
     //               scored action); until then a line shows without them. A line that opens after a
     //               closed one, or after none, starts its rows again, so a repeated name comes in anew.
+    //   trick_ids   optional dense list of the same length as tricks, in the same order: distinct
+    //               whole-number ids from 1 to 9007199254740991. Keep an id while its row stays in the
+    //               line; a new name or id makes a new row, even if the other is unchanged. Omitted
+    //               or nil keeps name-only comparison. Ids may restart after nil, a plugin restart,
+    //               or a closed line. After an unavailable UI update, the latest list is compared
+    //               with the last rows actually shown; only its retained five rows can be recovered.
     //   points      the current action's points, the big number beside the ring: 0 to 999,999,999,
     //               floored. Default 0.
     //   line        what the line has banked, shown as "LINE: N" while above 0: 0 to 999,999,999,
@@ -333,15 +339,15 @@ struct WorldApi {
         need(L, plugin, "hud.score", "reskate.hud.score_line");
         if (lua_isnoneornil(L, 1)) return result(L, game_of(plugin).score_line(plugin.id(), std::nullopt));
         if (!lua_istable(L, 1)) luaL_error(L, "reskate.hud.score_line takes a table, or nil to clear the line");
-        static constexpr std::array<std::string_view, 6> keys{"tricks", "points", "line", "multiplier", "timer", "closed"};
+        static constexpr std::array<std::string_view, 7> keys{"tricks", "trick_ids", "points", "line", "multiplier", "timer", "closed"};
         lua_pushnil(L);
         while (lua_next(L, 1)) {
-            if (lua_type(L, -2) != LUA_TSTRING) luaL_error(L, "reskate.hud.score_line: a line's keys are tricks, points, line, multiplier, timer and closed");
+            if (lua_type(L, -2) != LUA_TSTRING) luaL_error(L, "reskate.hud.score_line: a line's keys are tricks, trick_ids, points, line, multiplier, timer and closed");
             std::size_t length = 0;
             const char* name = lua_tolstring(L, -2, &length);
             if (std::find(keys.begin(), keys.end(), std::string_view(name, length)) == keys.end()) {
                 const std::string shown(name, std::min<std::size_t>(length, 32));
-                luaL_error(L, "reskate.hud.score_line: no key \"%s\" (tricks, points, line, multiplier, timer, closed)", shown.c_str());
+                luaL_error(L, "reskate.hud.score_line: no key \"%s\" (tricks, trick_ids, points, line, multiplier, timer, closed)", shown.c_str());
             }
             lua_pop(L, 1);
         }
@@ -372,6 +378,38 @@ struct WorldApi {
                 if (std::any_of(trick.begin(), trick.end(), [](char c) { return static_cast<unsigned char>(c) < 0x20 || c == 0x7f; }))
                     luaL_error(L, "reskate.hud.score_line: a trick's name holds no control characters");
                 line.tricks.emplace_back(trick);
+                lua_pop(L, 1);
+            }
+        }
+        lua_pop(L, 1);
+        lua_getfield(L, 1, "trick_ids");
+        const int ids = lua_gettop(L);
+        if (!lua_isnil(L, ids)) {
+            constexpr const char* not_list = "reskate.hud.score_line: trick_ids is a dense list matching tricks";
+            if (!lua_istable(L, ids)) luaL_error(L, "%s", not_list);
+            const auto count = static_cast<int>(line.tricks.size());
+            int entries = 0;
+            lua_pushnil(L);
+            while (lua_next(L, ids)) {
+                if (lua_type(L, -2) != LUA_TNUMBER) luaL_error(L, "%s", not_list);
+                const double index = lua_tonumber(L, -2);
+                if (!std::isfinite(index) || index < 1 || index > count || index != std::floor(index))
+                    luaL_error(L, "%s", not_list);
+                ++entries;
+                lua_pop(L, 1);
+            }
+            if (entries != count) luaL_error(L, "%s", not_list);
+            for (int index = 1; index <= count; ++index) {
+                lua_rawgeti(L, ids, index);
+                if (lua_type(L, -1) != LUA_TNUMBER)
+                    luaL_error(L, "reskate.hud.score_line: trick_ids holds whole numbers from 1 to 9007199254740991");
+                const double value = lua_tonumber(L, -1);
+                if (!std::isfinite(value) || value < 1 || value > score_line::most_trick_id || value != std::floor(value))
+                    luaL_error(L, "reskate.hud.score_line: trick_ids holds whole numbers from 1 to 9007199254740991");
+                const auto id = static_cast<std::uint64_t>(value);
+                if (std::find(line.trick_ids.begin(), line.trick_ids.end(), id) != line.trick_ids.end())
+                    luaL_error(L, "reskate.hud.score_line: trick_ids holds no duplicate ids");
+                line.trick_ids.push_back(id);
                 lua_pop(L, 1);
             }
         }
