@@ -216,17 +216,27 @@ bool settings_tile(ImDrawList* draw, const Fonts& fonts, ImVec2 position, ImVec2
     return pressed;
 }
 
-// A small tile in the bottom-left corner: what each release changed.
-bool changelog_tile(ImDrawList* draw, const Fonts& fonts, ImVec2 position, ImVec2 size, bool enabled) {
+// The tile in the bottom-left corner, as wide as what is above it: what each release changed, and
+// which release this is (`version`; empty for a build with none).
+bool changelog_tile(ImDrawList* draw, const Fonts& fonts, ImVec2 position, ImVec2 size, bool enabled, const std::string& version) {
     bool hovered{};
     const bool pressed = tile_hit("##changelog", position, size, enabled, hovered);
     const ImVec2 end(position.x + size.x, position.y + size.y);
     rough_rect(draw, position, end, hovered ? color::tile_grey : color::tile, 9);
+    draw->AddRectFilled(position, ImVec2(position.x + S(4), end.y), color::blue);
     if (hovered) draw->AddRect(ImVec2(position.x - S(3), position.y - S(3)), ImVec2(end.x + S(3), end.y + S(3)), color::text, 0, 0, S(3));
-    const char* label = "CHANGELOGS";
-    const auto extent = fonts.heading->CalcTextSizeA(fonts.heading->FontSize, FLT_MAX, 0, label);
-    draw->AddText(fonts.heading, fonts.heading->FontSize,
-        ImVec2(position.x + (size.x - extent.x) * 0.5f, position.y + (size.y - extent.y) * 0.5f), color::text, label);
+    const float pad = S(20);
+    const float block = fonts.tile->FontSize + S(6) + fonts.body->FontSize;
+    const float y = position.y + (size.y - block) * 0.5f;
+    draw->AddText(fonts.tile, fonts.tile->FontSize, ImVec2(position.x + pad, y), color::text, "WHAT'S NEW");
+    const auto line = version.empty() ? std::string("See what each release changed") : "See what changed in ReSkate " + version;
+    draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(position.x + pad, y + fonts.tile->FontSize + S(6)), color::muted, line.c_str());
+    // An arrow at the far end: it goes somewhere.
+    const ImVec2 tip(end.x - pad, position.y + size.y * 0.5f);
+    const ImU32 ink = hovered ? color::text : color::muted;
+    draw->AddLine(ImVec2(tip.x - S(16), tip.y), tip, ink, S(2));
+    draw->AddLine(ImVec2(tip.x - S(6), tip.y - S(6)), tip, ink, S(2));
+    draw->AddLine(ImVec2(tip.x - S(6), tip.y + S(6)), tip, ink, S(2));
     return pressed;
 }
 
@@ -307,6 +317,29 @@ float status_tile(const Fonts& fonts, const State& state, ImVec2 position, float
         if (update::binary_updates_enabled())
             facts.push_back({state.phase == Phase::update_available ? Icon::warning : Icon::check,
                 "ReSkate " + state.config->runtime.version});
+    }
+
+    // All is well: one line says so, with the builds beside it. The tile is for when something is
+    // being done or needs doing, where it is then the only thing on this side to look at.
+    if (state.phase == Phase::ready) {
+        std::string builds;
+        for (const auto& fact : facts) builds += (builds.empty() ? "" : "   /   ") + fact.text;
+        const float tall = S(40);
+        const float across = S(52) + fonts.bold->CalcTextSizeA(fonts.bold->FontSize, FLT_MAX, 0, "READY").x +
+                             (builds.empty() ? 0.0f : S(14) + fonts.body->CalcTextSizeA(fonts.body->FontSize, FLT_MAX, 0, builds.c_str()).x) + S(18);
+        const ImVec2 end(position.x + std::min(width, across), position.y + tall);
+        rough_rect(draw, position, end, color::tile, 5);
+        draw->AddRectFilled(position, ImVec2(position.x + S(4), end.y), color::good);
+        skate_theme::status_icon(draw, ImVec2(position.x + S(26), position.y + tall * 0.5f), Icon::check, time, g_scale);
+        draw->AddText(fonts.bold, fonts.bold->FontSize, ImVec2(position.x + S(44), position.y + (tall - fonts.bold->FontSize) * 0.5f),
+                      color::text, "READY");
+        if (!builds.empty()) {
+            const float x = position.x + S(44) + fonts.bold->CalcTextSizeA(fonts.bold->FontSize, FLT_MAX, 0, "READY").x + S(14);
+            const ImVec4 clip(x, position.y, end.x - S(10), end.y);
+            draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(x, position.y + (tall - fonts.body->FontSize) * 0.5f), color::muted,
+                          builds.c_str(), nullptr, 0, &clip);
+        }
+        return end.y;
     }
 
     const float pad = S(20), gutter = S(28);
@@ -593,10 +626,19 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
     case Phase::ready:
         label = "PLAY";
         // Release builds install the configured runtime before PLAY appears.
-        detail = !state.config ? std::string("Offline")
-               : !update::binary_updates_enabled() ? std::string("ReSkate development build")
-               : state.config->runtime.version.empty() ? std::string("ReSkate")
-               : "ReSkate " + state.config->runtime.version;
+        // What pressing it starts: the map Skate opens in and how many mods load. (The builds are
+        // in the status line.)
+        {
+            std::string map = "San Vansterdam";
+            if (const auto& chosen = launcher.settings().start_map; !chosen.empty()) {
+                const auto* known = ui.start_maps ? launcher_start_maps::find_start_map(*ui.start_maps, chosen) : nullptr;
+                map = known ? known->name : std::string();
+            }
+            const auto mods_text = ui.mods_enabled == 1 ? std::string("1 mod") : std::format("{} mods", ui.mods_enabled);
+            detail = !state.config ? std::string("Offline")
+                   : map.empty() ? (ui.mods_enabled ? "With " + mods_text : std::string("ReSkate"))
+                   : ui.mods_enabled ? "Starts in " + map + " with " + mods_text : "Starts in " + map;
+        }
         // Not while mods are still coming in: Skate would start on a Mods folder half written.
         if (mods_panel.installing) {
             enabled = false;
@@ -649,6 +691,7 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
         }
         const auto pending = updates(mods_panel.store, installed_versions(list, true)).size();
         ui.mods_pending = pending;
+        ui.mods_enabled = enabled_mods;
         ui.mods_mark_bad = !dropped.empty();
         ui.mods_mark = !dropped.empty() ? std::string("NOT LOADED")
                      : pending == 1 ? std::string("1 UPDATE")
@@ -666,8 +709,9 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
     }
 
     // Level with PLAY's bottom edge, in the opposite corner.
-    const ImVec2 changelog_size(S(200), S(52));
-    if (changelog_tile(draw, fonts, ImVec2(S(60), size.y - S(56) - changelog_size.y), changelog_size, !modal))
+    const ImVec2 changelog_size(S(430), S(72));
+    const auto release = update::binary_updates_enabled() && state.config ? state.config->runtime.version : std::string();
+    if (changelog_tile(draw, fonts, ImVec2(S(60), size.y - S(56) - changelog_size.y), changelog_size, !modal, release))
         ui.changelog = true;
 
     if (enabled && !secondary && !modal &&
