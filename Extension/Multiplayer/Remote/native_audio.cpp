@@ -49,6 +49,12 @@ struct State {
     bool attempted{}, installed{};
     std::mutex mutex;
     std::unique_ptr<NativeAudioFrame> accumulated = std::make_unique<NativeAudioFrame>();
+    // The local skater's updates as the game gave them, merged: sent whole when the surface sound goes.
+    std::unique_ptr<NativeAudioFrame> as_given = std::make_unique<NativeAudioFrame>();
+    std::atomic<std::uint32_t> surface_sound{}, surface_fields{~0U};
+    std::atomic<bool> surface_resend{}; // the whole state goes once (the surface sound changed)
+    int surface_resend_in{};            // local updates until it goes whole (0: not waiting); under mutex
+    unsigned surface_updates{};         // local updates with a surface sound, for its regular resend; under mutex
     AudioCaptureBuffer queue;
     std::string capture_issue;
     // Each slot's remote sound component, contiguous so submit_hook (every skater's
@@ -90,6 +96,25 @@ void set_remote_component(Address component) noexcept {
     }
     remote_component().store(component, std::memory_order_release);
 }
+// Whether a field is one the surface sound is for: one of its fields, naming a surface.
+bool surface_field(const State &s, std::size_t field, std::uint32_t word) {
+    return word && (s.surface_fields.load(std::memory_order_acquire) & (1U << field));
+}
+// The surface sound put into a frame's fields it is for (their own flags kept).
+void put_surface_sound(State &s, NativeAudioFrame &frame, std::uint32_t sound_word) {
+    for (std::size_t field = 0; field < audio_material_offsets.size(); ++field) {
+        const auto word = audio_value<std::uint32_t>(frame, audio_material_offsets[field]);
+        if (surface_field(s, field, word)) audio_put(frame, audio_material_offsets[field], (word & 0x3fU) | (sound_word & ~0x3fU));
+    }
+}
+// Whether a merged state still has another surface in a field the surface sound is for.
+bool surface_stale(State &s, const NativeAudioFrame &frame, std::uint32_t sound_word) {
+    for (std::size_t field = 0; field < audio_material_offsets.size(); ++field) {
+        const auto word = audio_value<std::uint32_t>(frame, audio_material_offsets[field]);
+        if (surface_field(s, field, word) && (word & ~0x3fU) != (sound_word & ~0x3fU)) return true;
+    }
+    return false;
+}
 void submit_hook(Address handle, const NativeAudioFrame *frame) {
     auto &s = state();
     // The visual-only actor submits default inputs after animation evaluation.
@@ -119,27 +144,75 @@ void submit_hook(Address handle, const NativeAudioFrame *frame) {
     SetLastError(error_before);
     if (suppress)
         return;
-    s.submit(handle, frame); // Original local audio is always forwarded unchanged.
     const auto c = s.local_component.load(std::memory_order_acquire);
-    if (!c || handle != c + 0x74)
+    if (!c || handle != c + 0x74) {
+        s.submit(handle, frame); // Every other skater's sound goes on unchanged.
         return;
+    }
+    // The local skater's: read once, its surface sound put in when one is set, and passed on.
+    NativeAudioFrame snapshot;
+    const bool read = readable(reinterpret_cast<Address>(frame), snapshot.bytes.data(), 0x218);
+    const NativeAudioFrame given = snapshot;
+    const auto sound_word = s.surface_sound.load(std::memory_order_acquire);
+    if (read && sound_word) put_surface_sound(s, snapshot, sound_word);
+    // The game sends a field only when it changes, so the component keeps what it was last sent: a
+    // surface sent before the surface sound was set (or while the skater was not followed, after a
+    // teleport or a reload) stayed until the skater reached another surface, and when the surface
+    // sound went, its surface stayed. Then the whole state goes once, every field marked, as a remote
+    // skater's does (audio_frame): the merged state with the surface sound in, or as the game gave it.
+    NativeAudioFrame full;
+    bool send_full = false;
+    std::array<std::uint32_t, 4> masks{};
+    const auto copy = reinterpret_cast<void (*)(NativeAudioFrame *, const NativeAudioFrame *, const void *)>(
+        s.base + sound::frame_copy);
+    if (read) {
+        masks = {audio_value<std::uint32_t>(snapshot, 0x164), audio_value<std::uint32_t>(snapshot, 0x130),
+                 audio_value<std::uint32_t>(snapshot, 0x124), audio_value<std::uint32_t>(snapshot, 0xc0)};
+        if (!(masks[3] & ~0x07ffffffU)) {
+            std::lock_guard lock(s.mutex);
+            bool resend = s.surface_resend.exchange(false, std::memory_order_acq_rel);
+            if (s.surface_resend_in > 0 && --s.surface_resend_in == 0) resend = true;
+            // And every 30 updates (about half a second) while a surface sound is set: the game can put
+            // its own state back without telling (a reset to a marker went back to the default
+            // surface's sound, concrete's, and stayed there; 2026-11-11), and a field it does not
+            // change is never sent again.
+            if (sound_word && ++s.surface_updates % 30 == 0) resend = true;
+            if (sound_word) {
+                full = *s.accumulated;
+                copy(&full, &snapshot, masks.data());
+                send_full = resend || surface_stale(s, full, sound_word);
+                if (send_full) put_surface_sound(s, full, sound_word);
+            } else if (resend) {
+                full = *s.as_given;
+                copy(&full, &given, masks.data());
+                send_full = true;
+            }
+            if (send_full) {
+                for (const auto off : {0x164, 0x130, 0x124})
+                    audio_put(full, off, UINT32_MAX);
+                audio_put(full, 0xc0, std::uint32_t{0x07ffffff});
+            }
+        }
+    }
+    if (send_full) s.submit(handle, &full);
+    else if (read && sound_word) s.submit(handle, &snapshot);
+    else s.submit(handle, frame); // Original local audio is forwarded unchanged.
     const auto error = GetLastError();
     std::lock_guard lock(s.mutex);
     try {
         if (c != s.local_component.load() || ptr(c) != s.base + addr::engine::skater_audio_component_vtable ||
             ptr(ptr(c, 0x18)) != s.local_entity.load() || get<std::uint16_t>(handle) < 2)
             throw std::runtime_error("Local sound capture ownership changed.");
-        NativeAudioFrame snapshot;
-        require(readable(reinterpret_cast<Address>(frame), snapshot.bytes.data(), 0x218),
-                "Native sound update is unreadable.");
-        const std::array<std::uint32_t, 4> masks{
-            audio_value<std::uint32_t>(snapshot, 0x164), audio_value<std::uint32_t>(snapshot, 0x130),
-            audio_value<std::uint32_t>(snapshot, 0x124), audio_value<std::uint32_t>(snapshot, 0xc0)};
+        require(read, "Native sound update is unreadable.");
         require(!(masks[3] & ~0x07ffffffU), "Native sound update fields differ.");
         // Pure native field copy merges partial updates into owned storage.
         // It contains only primitive fields and does not allocate or call out.
-        reinterpret_cast<void (*)(NativeAudioFrame *, const NativeAudioFrame *, const void *)>(
-            s.base + sound::frame_copy)(s.accumulated.get(), &snapshot, masks.data());
+        const NativeAudioFrame &sent = send_full ? full : snapshot;
+        const std::array<std::uint32_t, 4> sent_masks{
+            audio_value<std::uint32_t>(sent, 0x164), audio_value<std::uint32_t>(sent, 0x130),
+            audio_value<std::uint32_t>(sent, 0x124), audio_value<std::uint32_t>(sent, 0xc0)};
+        copy(s.accumulated.get(), &sent, sent_masks.data());
+        copy(s.as_given.get(), &given, masks.data());
         s.queue.push(audio_state(*s.accumulated), now_us());
         ++s.captured;
         s.capture_issue.clear();
@@ -227,6 +300,11 @@ void prepare_audio_capture(Address base, const NativeFrame &local) noexcept {
             s.queue.clear();
             *s.accumulated = {};
             reinterpret_cast<void (*)(void *)>(base + sound::frame_reset)(s.accumulated.get());
+            *s.as_given = {};
+            reinterpret_cast<void (*)(void *)>(base + sound::frame_reset)(s.as_given.get());
+            // A new component, or the same one after frames went by unfollowed: with a surface sound,
+            // sent whole once, after 30 updates have filled in what is merged here.
+            s.surface_resend_in = s.surface_sound.load(std::memory_order_acquire) ? 30 : 0;
             s.local_entity.store(local.entity);
             s.local_component.store(component, std::memory_order_release);
             s.capture_issue.clear();
@@ -234,8 +312,17 @@ void prepare_audio_capture(Address base, const NativeFrame &local) noexcept {
         s.next_local_audit = now + 1000000;
     } catch (const std::exception &e) {
         std::lock_guard lock(s.mutex);
+        if (s.capture_issue != e.what())
+            logging::log(logging::Level::warning, logging::Channel::runtime, "Skater sound: the local skater's sound is not followed: {}", e.what());
         s.capture_issue = e.what();
     }
+}
+void set_surface_sound(std::uint32_t word, std::uint32_t fields) noexcept {
+    auto &s = state();
+    s.surface_sound.store(0, std::memory_order_release);
+    s.surface_fields.store(fields, std::memory_order_release);
+    s.surface_sound.store(word, std::memory_order_release);
+    s.surface_resend.store(true, std::memory_order_release);
 }
 std::vector<AudioSample> drain_audio_capture(std::uint64_t now) {
     auto &s = state();

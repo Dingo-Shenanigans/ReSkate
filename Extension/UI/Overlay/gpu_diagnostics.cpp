@@ -14,6 +14,7 @@
 #include <atomic>
 #include <cstdarg>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 #include <map>
 #include <mutex>
@@ -290,6 +291,10 @@ struct Memory {
     std::shared_mutex ranges_mutex;
     std::map<std::uint64_t, std::pair<std::uint64_t, void*>> ranges;
     std::atomic<std::uint64_t> generation{};
+    // Every buffer with its own GPU address, committed or placed (under `mutex`): GPU address -> bytes, object.
+    // read_gpu_buffer finds one in it at once; through the heaps' ranges it went over every resource, and the
+    // camera's read each frame stalled the game (2026-11-13).
+    std::map<std::uint64_t, std::pair<std::uint64_t, void*>> buffers;
 };
 Memory& gpu_memory() { static auto* value = new Memory; return *value; }
 
@@ -309,7 +314,11 @@ void remove_range(const Allocation& a) {
     m.generation.fetch_add(1, std::memory_order_relaxed);
 }
 
+// Without RESKATE_GPU_DIAGNOSTICS the memory watch is light (world_cover reads the game's camera from its
+// upload buffers): each heap and resource with its GPU addresses, but not the code that made or freed it.
+std::atomic<bool> light_memory{};
 Frames capture_frames() noexcept {
+    if (light_memory.load(std::memory_order_relaxed)) return {};
     Frames frames;
     frames.depth = CaptureStackBackTrace(2, static_cast<DWORD>(frames.at.size()), frames.at.data(), nullptr);
     return frames;
@@ -329,6 +338,8 @@ void note_release(IUnknown* object) noexcept {
         const auto found = m.live.find(object);
         if (found == m.live.end()) return;
         remove_range(found->second);
+        if (const auto buffer = m.buffers.find(found->second.gpu); buffer != m.buffers.end() && buffer->second.second == object)
+            m.buffers.erase(buffer);
         auto& slot = m.freed[m.freed_count++ % freed_kept];
         slot = found->second;
         slot.freed = frames;
@@ -384,6 +395,8 @@ void note_resource(void** out, void* heap, std::uint64_t offset) noexcept {
         if (desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER) {
             made.bytes = desc.Width;
             made.gpu = resource->GetGPUVirtualAddress();
+        } else if (light_memory.load(std::memory_order_relaxed)) {
+            // (Light: a texture's size is not needed.)
         } else if (auto* const device = gpu_memory().device) {
             // (UINT64_MAX: the runtime could not size it.)
             if (const auto size = device->GetResourceAllocationInfo(0, 1, &desc).SizeInBytes; size != UINT64_MAX) made.bytes = size;
@@ -402,6 +415,7 @@ void note_resource(void** out, void* heap, std::uint64_t offset) noexcept {
             }
         }
         if (!heap) add_range(made);
+        if (desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER && made.gpu && made.bytes) m.buffers[made.gpu] = {made.bytes, object};
         m.live[object] = made;
         ++m.made_count;
     } catch (...) {}
@@ -592,10 +606,12 @@ void watch_device_memory(IUnknown* made) noexcept {
         on &= hook_slot(device10.Get(), 77, reinterpret_cast<void*>(&hooked_placed2), original_placed2);
         on &= hook_slot(device10.Get(), 78, reinterpret_cast<void*>(&hooked_reserved2), original_reserved2);
     }
-    on &= watch_device_views(device.Get());
+    const bool light = light_memory.load();
+    if (!light) on &= watch_device_views(device.Get());
     dingosdk::logging::write(on ? dingosdk::logging::Level::info : dingosdk::logging::Level::warning, dingosdk::logging::Channel::graphics,
-        on ? "GPU diagnostics: the code that makes and frees each GPU heap and resource is kept, for a page fault's report."
-           : "GPU diagnostics: some of the GPU memory watch could not start.");
+        !on ? "GPU diagnostics: some of the GPU memory watch could not start."
+        : light ? "GPU memory watch (light): each GPU heap and buffer's addresses are kept, for the snow to read the game's camera."
+                : "GPU diagnostics: the code that makes and frees each GPU heap and resource is kept, for a page fault's report.");
 }
 
 using CreateDevice = HRESULT (WINAPI*)(IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**);
@@ -987,10 +1003,12 @@ void watch_addresses(ID3D12GraphicsCommandList* list) noexcept {
 void watch_gpu_memory() noexcept {
     static std::atomic<bool> started{};
     const auto error = GetLastError();
-    if (!graphics_option_enabled(L"RESKATE_GPU_DIAGNOSTICS") || started.exchange(true)) {
+    if (started.exchange(true)) {
         SetLastError(error);
         return;
     }
+    // Without the diagnostics, light: only what the snow needs to read the game's camera.
+    light_memory.store(!graphics_option_enabled(L"RESKATE_GPU_DIAGNOSTICS"));
     // (d3d12.dll is ReSkate's own import, so it is loaded; the game finds D3D12CreateDevice there.)
     auto* const create = reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"d3d12.dll"), "D3D12CreateDevice"));
     void* trampoline{};
@@ -1003,6 +1021,51 @@ void watch_gpu_memory() noexcept {
     original_create_device.store(reinterpret_cast<CreateDevice>(trampoline));
     hook_enable(create);
     SetLastError(error);
+}
+
+namespace {
+// The starts of buffers read_gpu_buffer could not map (not in a CPU-visible heap): not tried again.
+std::mutex unmappable_mutex;
+std::vector<std::uint64_t> unmappable;
+}
+
+std::size_t read_gpu_buffer(std::uint64_t address, void* out, std::size_t bytes, std::uint64_t* buffer_start,
+                            std::uint64_t* buffer_length) noexcept {
+    try {
+        // The buffer holding the address, from the memory watch, held for the read.
+        std::uint64_t start{}, length{};
+        ComPtr<ID3D12Resource> resource;
+        {
+            auto& m = gpu_memory();
+            std::lock_guard lock(m.mutex);
+            auto at = m.buffers.upper_bound(address);
+            if (at == m.buffers.begin()) return 0;
+            --at;
+            if (address - at->first >= at->second.first) return 0;
+            start = at->first, length = at->second.first;
+            if (FAILED(static_cast<IUnknown*>(at->second.second)->QueryInterface(IID_PPV_ARGS(&resource))) || !resource) return 0;
+        }
+        {
+            std::lock_guard lock(unmappable_mutex);
+            if (std::find(unmappable.begin(), unmappable.end(), start) != unmappable.end()) return 0;
+        }
+        void* cpu{};
+        if (FAILED(resource->Map(0, nullptr, &cpu)) || !cpu) { // (only a CPU-visible heap maps)
+            std::lock_guard lock(unmappable_mutex);
+            if (unmappable.size() < 4096) unmappable.push_back(start);
+            return 0;
+        }
+        const auto offset = address - start;
+        const auto n = static_cast<std::size_t>(std::min<std::uint64_t>(bytes, length - offset));
+        std::memcpy(out, static_cast<const char*>(cpu) + offset, n);
+        const D3D12_RANGE written{0, 0};
+        resource->Unmap(0, &written);
+        if (buffer_start) *buffer_start = start;
+        if (buffer_length) *buffer_length = length;
+        return n;
+    } catch (...) {
+        return 0;
+    }
 }
 
 void describe_gpu_address(std::uint64_t address) noexcept {

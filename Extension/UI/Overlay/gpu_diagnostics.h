@@ -32,6 +32,7 @@ void watch_draws(ID3D12GraphicsCommandList* list) noexcept;
 // With RESKATE_GPU_DIAGNOSTICS on, before the game makes its device: every heap and resource the
 // device makes is kept with the code that made it, and the code that freed it once it goes. A
 // page fault's report (record_device_failure) then says what was at, or freed from, the address.
+// Without it, light: each heap and buffer with its GPU addresses only (read_gpu_buffer), not the code.
 void watch_gpu_memory() noexcept;
 void describe_gpu_address(std::uint64_t address) noexcept;
 // With the GPU memory watch on: every GPU address the game binds for a draw or dispatch (vertex and
@@ -39,6 +40,11 @@ void describe_gpu_address(std::uint64_t address) noexcept;
 // builds a ray-tracing structure from is checked against the memory that exists. One in nothing
 // is said in the log once per calling code, with what was there before.
 void watch_addresses(ID3D12GraphicsCommandList* list) noexcept;
+// Copies up to `bytes` bytes from a GPU address in a CPU-visible buffer the GPU memory watch knows (an upload
+// buffer, mapped for the read) into `out`: world_cover reads the camera the game drew with this way. How many
+// were copied (0: not one it can read). `start` and `length`, when given: the buffer's GPU address and size.
+std::size_t read_gpu_buffer(std::uint64_t address, void* out, std::size_t bytes, std::uint64_t* start = nullptr,
+                            std::uint64_t* length = nullptr) noexcept;
 // The graphics card the game renders on and its driver's version: said in the log once, and kept
 // for crash reports' tags (crash_report::set_gpu). Always on.
 void record_gpu_identity(ID3D12Device* device) noexcept;

@@ -159,6 +159,18 @@ struct State {
         std::uint64_t until{};
     };
     std::map<std::string, PluginFlip, std::less<>> plugin_flips;
+    // A plugin's preset (plugin_preset), held while the plugin wants it: everything else is off and the
+    // player's own changes wait in `before`, put back when it lets go. Nothing of it is saved.
+    struct PluginPreset {
+        std::string owner, name;
+        std::map<std::string, double, std::less<>> values;
+        std::uintptr_t asset{}; // the level's copy it was applied to (another level's copy: applied again)
+        struct Before {
+            std::vector<std::string> active;
+            std::map<std::string, double, std::less<>> entries, setups;
+        } before;
+    };
+    std::optional<PluginPreset> plugin_preset;
     UserPresets user;                                                                   // presets
     std::vector<std::string> active;                                                    // presets applied since Stock
     std::map<std::string, MapData, std::less<>> maps;
@@ -975,6 +987,7 @@ void adopt(const tuning::Values &live) {
     changed(false);
 }
 std::string apply_preset(std::string_view name);
+void hold_plugin_preset();
 bool editable(std::string *why = nullptr) {
     // A guest's physics are the host's while the session enforces them: the tuning
     // (physics_tuning::enforce), and what the host shares beyond it (sync_session). Writing
@@ -1087,8 +1100,10 @@ void hold(std::uint64_t now) {
         s.ready = true;
         s.status = "Ready.";
     }
+    // A plugin's preset holds on another level's copy too (adopt put the player's own values back).
+    if (s.plugin_preset && s.plugin_preset->asset != s.asset && editable()) hold_plugin_preset();
     if (!editable()) return;
-    if (s.profile_due) {
+    if (s.profile_due && !s.plugin_preset) {
         s.profile_due = false;
         if (const auto found = s.maps.find(s.map); found != s.maps.end() && !found->second.preset.empty())
             say(logging::Level::info, "Trainer: this map's preset - " + apply_preset(found->second.preset));
@@ -2495,6 +2510,11 @@ void build_view() {
     next->status = s.status;
     next->last = s.last;
     next->editable = editable(&next->blocked);
+    if (next->editable && s.plugin_preset) {
+        next->editable = false;
+        next->blocked = s.plugin_preset->owner + " holds the trainer's " + s.plugin_preset->name +
+                        " preset while it is on; your own presets and changes come back when it lets go.";
+    }
     next->session_enforced = s.enforced;
     next->session_stock = s.competition;
     next->boosts_blocked = !s.enforced && multiplayer_session_active() && !session_boosts_allowed();
@@ -2550,6 +2570,9 @@ void build_view() {
         }
     }
     for (const auto &[name, values] : s.user) next->presets.push_back({name, std::format("{} values", values.size()), false, is_active(name)});
+    if (s.plugin_preset)
+        next->presets.push_back({s.plugin_preset->name, "Held by " + s.plugin_preset->owner + " while it is on; your presets are off until it lets go.",
+                                 false, true});
     next->slot = s.slot;
     next->auto_return = s.auto_return;
     next->hippy_height = s.hippy_height;
@@ -3041,7 +3064,8 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool playing, const std::s
 #endif
         publish(s.telemetry);
         if (s.view_due) build_view();
-        if (s.save_due && now >= s.next_save) save_store();
+        // Not while a plugin's preset holds: the player's own setup stays on disk as it was.
+        if (s.save_due && now >= s.next_save && !s.plugin_preset) save_store();
     } catch (...) {}
 }
 
@@ -3852,8 +3876,69 @@ std::string plugin_flip_speed(std::string_view owner, float factor, unsigned hol
     s.plugin_flips.insert_or_assign(std::string(owner), State::PluginFlip{std::clamp(factor, flip_low, 10.0f), now + hold_ms});
     return {};
 }
+namespace {
+// The plugin's preset in force: everything else off (values the player locked, and other plugins'
+// values, stay), then its values. Nothing is remembered as the player's own.
+void hold_plugin_preset() {
+    auto &s = state();
+    if (!s.plugin_preset || !s.ready) return;
+    auto &held = *s.plugin_preset;
+    for (auto &e : s.entries)
+        if (e.touched && !is_locked(e) && !s.plugin_tunes.contains(e.key)) set_entry(e, e.stock, false);
+    (void)reset_setups();
+    for (const auto &[key, value] : held.values) {
+        if (set_setup_key(key, value)) continue;
+        if (auto *e = find_entry(key); e && !is_locked(*e) && !s.plugin_tunes.contains(e->key)) set_entry(*e, value, false);
+    }
+    s.active = {held.name};
+    held.asset = s.asset;
+    changed(false);
+}
+// The player's own back as they were before the plugin's preset.
+void let_go_plugin_preset() {
+    auto &s = state();
+    if (!s.plugin_preset) return;
+    const auto before = std::move(s.plugin_preset->before);
+    s.plugin_preset.reset();
+    for (auto &e : s.entries)
+        if (e.touched && !is_locked(e) && !s.plugin_tunes.contains(e.key)) set_entry(e, e.stock, false);
+    (void)reset_setups();
+    for (const auto &[key, value] : before.setups) (void)set_setup_key(key, value);
+    for (const auto &[key, value] : before.entries)
+        if (auto *e = find_entry(key); e && !is_locked(*e) && !s.plugin_tunes.contains(e->key)) set_entry(*e, value, false);
+    s.active = before.active;
+    changed(); // saved again from here on
+}
+} // namespace
+std::string plugin_preset(std::string_view owner, std::string_view name, std::optional<std::map<std::string, double, std::less<>>> values) {
+    auto &s = state();
+    if (s.plugin_preset && s.plugin_preset->owner != owner) return s.plugin_preset->owner + " holds the trainer's " + s.plugin_preset->name + " preset";
+    if (!values) {
+        let_go_plugin_preset();
+        return {};
+    }
+    if (s.plugin_preset && s.plugin_preset->name == name && s.plugin_preset->values == *values) return {};
+    if (!s.ready) return "the game's physics tuning is not read yet";
+    std::string why;
+    if (!editable(&why)) return why;
+    if (!s.plugin_preset) {
+        State::PluginPreset held;
+        held.before.active = s.active;
+        for (const auto &e : s.entries)
+            if (e.touched && !s.plugin_tunes.contains(e.key)) held.before.entries[e.key] = e.value;
+        for (const auto &one : setups())
+            if (off_stock(one)) held.before.setups[one.key] = one.get();
+        s.plugin_preset = std::move(held);
+    }
+    s.plugin_preset->owner = std::string(owner);
+    s.plugin_preset->name = std::string(name);
+    s.plugin_preset->values = std::move(*values);
+    hold_plugin_preset();
+    return {};
+}
 void release_plugin_tunes(std::string_view owner) {
     auto &s = state();
+    if (s.plugin_preset && s.plugin_preset->owner == owner) let_go_plugin_preset();
     if (const auto found = s.plugin_flips.find(owner); found != s.plugin_flips.end()) s.plugin_flips.erase(found);
     std::vector<std::string> mine;
     for (const auto &[key, tune] : s.plugin_tunes)
@@ -3874,6 +3959,18 @@ bool stage_import(std::string_view text) noexcept {
     }
 }
 std::string command(std::string_view verb, const std::vector<std::string> &arguments) {
+    // A plugin's preset holds: what would change the values or the presets in force waits for it to let go.
+    if (const auto &held = state().plugin_preset) {
+        static constexpr std::string_view changing[]{"set", "dial", "feel", "freeze", "grind", "option", "profile", "reset", "revert",
+                                                     "setup", "transition", "classes"};
+        const auto first = arguments.empty() ? std::string{} : ascii_lower(arguments[0]);
+        if (std::ranges::find(changing, verb) != std::end(changing) || (verb == "preset" && (first == "apply" || first == "remove"))) {
+            auto &s = state();
+            s.last = "error: " + held->owner + " holds the trainer's " + held->name + " preset while it is on.";
+            s.view_due = true;
+            return s.last;
+        }
+    }
     auto result = run(verb, arguments);
     // The menu shows the last answer, except for the ones a dragged slider sends every frame.
     if (verb != "set" || result.starts_with("error")) {
