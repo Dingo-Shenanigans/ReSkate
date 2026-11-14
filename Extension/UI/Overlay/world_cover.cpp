@@ -89,11 +89,15 @@ constexpr double roof_tick_budget_ms = 1.0;
 // How long the roof map's rays took (the update thread) and the cover took on the GPU, said every 600 frames.
 std::atomic<std::uint64_t> roof_us_total{}, roof_us_most{}, roof_ticks{}, roof_rays{};
 constexpr std::size_t roof_cells_of(const RoofGrid& g) { return static_cast<std::size_t>(g.cells) * static_cast<std::size_t>(g.cells); }
-// After the grids: for each of the near grid's cells, the highest surface over any cell within roof_near_reach
-// of it (four to a float4): a point under none of those is under no roof, from one read instead of the
-// dozens of the roof's soft edge (world_cover.hlsl, roofed_at).
-constexpr int roof_near_reach = 7; // cells: 3.5 m, past the edge's furthest look (2.2 m, and a cell's blend)
-constexpr std::size_t roof_floats4 = 2 + roof_cells_of(roof_grids[0]) + roof_cells_of(roof_grids[1]) + roof_cells_of(roof_grids[0]) / 4;
+// After the grids: for each block of the near grid's cells (roof_block across), the highest surface over it and
+// the blocks round it (four to a float4): a point under none of those is under no roof, from one read instead of
+// the dozens of the roof's soft edge (world_cover.hlsl, roofed_at). A block is 4 m, so that reaches at least 4 m,
+// past the edge's furthest look (2.2 m, and a cell's blend). Cell by cell within 3.5 m, working it out took up to
+// 9 ms of the game's update thread on a Steam Deck (2026-11-14).
+constexpr int roof_block = 8;
+constexpr int roof_blocks = 128 / roof_block; // across the near grid
+static_assert(roof_grids[0].cells == roof_blocks * roof_block, "the near grid is whole blocks");
+constexpr std::size_t roof_floats4 = 2 + roof_cells_of(roof_grids[0]) + roof_cells_of(roof_grids[1]) + roof_blocks * roof_blocks / 4;
 constexpr float roof_reach = 60.0f; // metres over and under the camera the rays start and end
 constexpr UINT64 camera_slice = ((camera_candidates * 4 + most_clear * place_floats4 + 2 + most_trail * 2 + roof_floats4) * 16 + 255) /
                                 256 * 256;
@@ -152,7 +156,7 @@ struct Asked {
     std::array<std::vector<std::array<float, 4>>, 2> roofs{std::vector<std::array<float, 4>>(roof_cells_of(roof_grids[0])),
                                                            std::vector<std::array<float, 4>>(roof_cells_of(roof_grids[1]))};
     std::array<std::size_t, 2> roof_next{}; // each grid's next cell of the window round the camera to measure again
-    std::vector<float> roof_near_top = std::vector<float>(roof_cells_of(roof_grids[0]), 1e30f); // (see roof_near_reach)
+    std::vector<float> roof_near_top = std::vector<float>(static_cast<std::size_t>(roof_blocks) * roof_blocks, 1e30f); // (see roof_block)
     std::array<int, 2> roof_near_first{}; // the near grid's first cell (x, z) when roof_near_top was worked out
     std::uint64_t roof_version{};        // counted up when any of the roof map changes
     std::array<float, 3> eye{};
@@ -265,6 +269,12 @@ struct Shared {
     UINT64 timer_frequency{};
     double gpu_ms_total{}, gpu_ms_most{};
     unsigned gpu_samples{};
+    // Light (world_cover.hlsl): fewer flakes and samples, once the cover has taken over 6 ms a frame on the GPU
+    // (120 frames together), and so for the rest of the session. On a Steam Deck it took 12 to 15 ms, and the
+    // game ran in slow motion; on a desktop card, a fraction of one (2026-11-14).
+    bool light{};
+    double light_ms{};
+    unsigned light_samples{};
     // The roof map's version in each allocator's part of the upload buffer: copied only when it changed.
     std::array<std::uint64_t, allocator_count> roof_uploaded{};
     bool relearning{}; // a new camera: the next middle measured is taken, up or down
@@ -1197,6 +1207,16 @@ bool record_cover(Shared& s) {
         if (end > start) {
             const double ms = static_cast<double>(end - start) * 1000.0 / static_cast<double>(s.timer_frequency);
             s.gpu_ms_total += ms, s.gpu_ms_most = std::max(s.gpu_ms_most, ms), ++s.gpu_samples;
+            s.light_ms += ms;
+            if (++s.light_samples >= 120) {
+                const double average = s.light_ms / s.light_samples;
+                if (!s.light && average > 6.0) {
+                    s.light = true;
+                    logging::printf(logging::Level::info, logging::Channel::graphics,
+                                    "World cover: light from now on (it took %.1f ms a frame on the GPU): fewer flakes and samples.", average);
+                }
+                s.light_ms = 0, s.light_samples = 0;
+            }
         }
     }
     s.timer_waiting[at] = false;
@@ -1419,7 +1439,7 @@ bool record_cover(Shared& s) {
         static_cast<float>(std::min(clear.size(), most_clear)), 0, 0, 0, // then each place's height, below
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // the places' feet and radii, below
         s.last_camera[0], s.last_camera[1], s.last_camera[2], have_last ? 1.0f : 0.0f,
-        s.last_camera[3], s.last_camera[4], s.last_camera[5], 0,
+        s.last_camera[3], s.last_camera[4], s.last_camera[5], s.light ? 1.0f : 0.0f, // light (world_cover.hlsl)
         s.last_camera[6], s.last_camera[7], s.last_camera[8], settings.left,
         s.last_camera[9], s.last_camera[10], s.last_camera[11], stopping_seconds};
     for (std::size_t i = 0; i < clear.size() && i < most_clear; ++i) {
@@ -1639,7 +1659,7 @@ void measure_roofs(GroundTop ground_top) noexcept {
             }
             next[g] = (next[g] + static_cast<std::size_t>(grid.again_tick)) % cells;
         }
-        // The near grid's highest surface within reach of each cell (roof_near_reach), at most four times a
+        // The near grid's highest surface over each block and those round it (roof_block), at most four times a
         // second: a cell of the window not measured yet counts as a roof over everything (unknown).
         std::vector<float> near_top;
         const auto now = GetTickCount64();
@@ -1649,29 +1669,28 @@ void measure_roofs(GroundTop ground_top) noexcept {
             const auto& grid = roof_grids[0];
             const auto& k = known[0];
             const int n = grid.cells;
-            std::vector<float> value(roof_cells_of(grid)), across(roof_cells_of(grid));
+            // The highest of each block, then of each block and those round it (blocks wrap round: across the
+            // window's edge it only takes in more, so it is never too low).
+            std::vector<float> block_top(static_cast<std::size_t>(roof_blocks) * roof_blocks, -1e30f);
             for (int sz = 0; sz < n; ++sz)
                 for (int sx = 0; sx < n; ++sx) {
                     // The window's cell in this slot.
                     const int cell_x = near_first[0] + (((sx - near_first[0]) % n) + n) % n;
                     const int cell_z = near_first[1] + (((sz - near_first[1]) % n) + n) % n;
                     const auto slot = static_cast<std::size_t>(sx + sz * n);
-                    value[slot] = k.measured[slot] && k.cell[slot] == std::array<int, 2>{cell_x, cell_z} ? k.top[slot] : 1e30f;
+                    const float value = k.measured[slot] && k.cell[slot] == std::array<int, 2>{cell_x, cell_z} ? k.top[slot] : 1e30f;
+                    auto& block = block_top[static_cast<std::size_t>(sx / roof_block + (sz / roof_block) * roof_blocks)];
+                    block = std::max(block, value);
                 }
-            // The largest along x, then along z, within reach (slots wrap round: across the window's edge it only
-            // takes in more, so it is never too low).
-            for (int sz = 0; sz < n; ++sz)
-                for (int sx = 0; sx < n; ++sx) {
+            near_top.assign(block_top.size(), -1e30f);
+            for (int bz = 0; bz < roof_blocks; ++bz)
+                for (int bx = 0; bx < roof_blocks; ++bx) {
                     float most = -1e30f;
-                    for (int d = -roof_near_reach; d <= roof_near_reach; ++d) most = std::max(most, value[static_cast<std::size_t>((((sx + d) % n) + n) % n + sz * n)]);
-                    across[static_cast<std::size_t>(sx + sz * n)] = most;
-                }
-            near_top.resize(roof_cells_of(grid));
-            for (int sz = 0; sz < n; ++sz)
-                for (int sx = 0; sx < n; ++sx) {
-                    float most = -1e30f;
-                    for (int d = -roof_near_reach; d <= roof_near_reach; ++d) most = std::max(most, across[static_cast<std::size_t>(sx + ((((sz + d) % n) + n) % n) * n)]);
-                    near_top[static_cast<std::size_t>(sx + sz * n)] = most;
+                    for (int dz = -1; dz <= 1; ++dz)
+                        for (int dx = -1; dx <= 1; ++dx)
+                            most = std::max(most, block_top[static_cast<std::size_t>((bx + dx + roof_blocks) % roof_blocks +
+                                                                                      ((bz + dz + roof_blocks) % roof_blocks) * roof_blocks)]);
+                    near_top[static_cast<std::size_t>(bx + bz * roof_blocks)] = most;
                 }
         }
         if (found[0].empty() && found[1].empty() && near_top.empty()) {

@@ -15,7 +15,7 @@ cbuffer constants : register(b0) {
     float4 clear_info;    // how many places are kept clear (0 to 3), then each one's height above its foot
     float4 clears[3];     // each: its foot in the world, and its radius
     float4 last_right;    // last frame's camera (as this frame's above), and whether it is last frame's (for the flakes' streaks)
-    float4 last_up;       // ... (w unused)
+    float4 last_up;       // ..., and 1 when light: fewer flakes and samples (the cover took too long on this GPU)
     float4 last_back;     // ..., and how much of the cover is left (melting: 1 all of it)
     float4 last_eye;      // ..., and how long the snowfall has been stopping in seconds (-1: falling)
 };
@@ -244,22 +244,27 @@ float roof_blend(float3 at, float clearance) {
 // across, so the snow carries on a metre or so in under the edge and thins out smoothly over about two
 // metres, all gone further in. A broad, gentle wander in the world keeps the edge from looking ruled, and
 // stays put. (Before: an edge a few centimetres, then one of 1.5 m with small, jagged noise, 2026-11-13.)
-float roofed_at(float3 at) {
-    // No roof near, from one read (most of the ground): the highest surface within 3.5 m of the point's cell,
-    // where its cell is in the near grid as that was worked out (world_cover.cpp, roof_near_reach).
+// Whether a point is under no roof, from one read: the highest surface over its block of the near grid and the
+// blocks round it (world_cover.cpp, roof_block) is not `clearance` over it. False where that cannot tell (the
+// point outside the near grid, or the map not on).
+bool no_roof_near(float3 at, float clearance) {
     const float4 head = cameras[ROOF];
-    if (head.x <= 0) return 0;
+    if (head.x <= 0) return true;
     const int near_cells = (int)head.y;
     const int2 cell = int2(floor(at.xz / head.z));
     const int2 first = int2(cameras[ROOF + 1].yz);
-    if (all(cell >= first) && all(cell < first + near_cells)) {
-        const int2 slot = ((cell % near_cells) + near_cells) % near_cells;
-        const int index = slot.x + slot.y * near_cells;
-        const float4 tops = cameras[ROOF + 2 + near_cells * near_cells + (int)head.w * (int)head.w + index / 4];
-        const int which = index % 4;
-        const float near_top = which == 0 ? tops.x : which == 1 ? tops.y : which == 2 ? tops.z : tops.w;
-        if (at.y >= near_top - ROOF_CLEARANCE) return 0;
-    }
+    if (!(all(cell >= first) && all(cell < first + near_cells))) return false;
+    const int2 slot = ((cell % near_cells) + near_cells) % near_cells;
+    const int blocks = near_cells / 8;
+    const int index = slot.x / 8 + (slot.y / 8) * blocks;
+    const float4 tops = cameras[ROOF + 2 + near_cells * near_cells + (int)head.w * (int)head.w + index / 4];
+    const int which = index % 4;
+    const float near_top = which == 0 ? tops.x : which == 1 ? tops.y : which == 2 ? tops.z : tops.w;
+    return at.y >= near_top - clearance;
+}
+float roofed_at(float3 at) {
+    // No roof near, from one read (most of the ground).
+    if (no_roof_near(at, ROOF_CLEARANCE)) return 0;
     const float centre = roof_blend(at, ROOF_CLEARANCE);
     float outer = 0;
     [loop] for (int k = 0; k < 6; ++k) {
@@ -267,18 +272,23 @@ float roofed_at(float3 at) {
         outer += roof_blend(at + float3(cos(angle), 0, sin(angle)) * 2.2, ROOF_CLEARANCE);
     }
     if (centre + outer <= 0) return 0; // no roof near: most of the ground
-    float inner = 0;
-    [loop] for (int j = 0; j < 6; ++j) {
-        const float angle = j * 1.0471976 + 0.5235988;
-        inner += roof_blend(at + float3(cos(angle), 0, sin(angle)) * 1.1, ROOF_CLEARANCE);
+    float c;
+    if (last_up.w > 0.5) {
+        c = (centre * 2 + outer) / 8; // light: the outer ring only
+    } else {
+        float inner = 0;
+        [loop] for (int j = 0; j < 6; ++j) {
+            const float angle = j * 1.0471976 + 0.5235988;
+            inner += roof_blend(at + float3(cos(angle), 0, sin(angle)) * 1.1, ROOF_CLEARANCE);
+        }
+        c = (centre * 2 + inner + outer) / 14;
     }
-    float c = (centre * 2 + inner + outer) / 14;
     c += (noise(at.xz * 0.5) - 0.5) * 0.12;
     return smoothstep(0.5, 0.97, c);
 }
 // Whether a falling flake is under a roof. Flakes are hidden there one by one, so indoors none fall, and
 // through a doorway it still snows outside.
-bool roof_over(float3 at) { return roof_blend(at, 0) > 0.5; }
+bool roof_over(float3 at) { return !no_roof_near(at, 0) && roof_blend(at, 0) > 0.5; }
 
 float luminance(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
 
@@ -330,8 +340,9 @@ float flake_layer(float3 dir, float limit, float cell, float chance, float radiu
     const float streak_length = length(streak);
     const float focal = right_focal.w;
     float t = 0, seen = 0;
+    const int steps = last_up.w > 0.5 ? 14 : 36; // light: fewer cells along the ray
     [loop] for (int i = 0; i < 36; ++i) {
-        if (t * cell > limit) break;
+        if (i >= steps || t * cell > limit) break;
         const float3 seed = hash3(c + salt);
         if (seed.x < chance) {
             float3 centre = c + 0.2 + seed.yzx * 0.6;
@@ -388,8 +399,9 @@ float3 snowfall(float3 colour, int2 p, float scene_distance, float exposure) {
     // so the last ones fall out of the sky instead of all going at once.
     const float top = last_eye.w < 0 ? 1e6 : 12.0 - fall * last_eye.w;
     if (top < -30.0) return colour;
-    const float near_limit = min(scene_distance, 7.0);
-    const float far_limit = min(scene_distance, 22.0);
+    const bool light = last_up.w > 0.5;
+    const float near_limit = min(scene_distance, light ? 5.0 : 7.0);
+    const float far_limit = min(scene_distance, light ? 12.0 : 22.0);
     float flakes = flake_layer(dir, near_limit, 0.45, amount * 0.45, 0.006, 0.5, shift, moved, seconds, top);
     flakes = max(flakes, flake_layer(dir, far_limit, 1.3, amount * 0.6, 0.012, 17.5, shift, moved, seconds, top) * 0.8);
     const float3 white = colour_amount.rgb * exposure * 1.6;
@@ -398,6 +410,12 @@ float3 snowfall(float3 colour, int2 p, float scene_distance, float exposure) {
 
 // The picture's brightness as a whole, for the flakes: a few points over the screen.
 float exposure_now() {
+    if (last_up.w > 0.5) // light: the middle and four round it
+        return max((luminance(scene.Load(int3(int2(up_width.w / 2, back_height.w / 2), 0)).rgb) +
+                    luminance(scene.Load(int3(int2(up_width.w / 4, back_height.w / 4), 0)).rgb) +
+                    luminance(scene.Load(int3(int2(up_width.w * 3 / 4, back_height.w / 4), 0)).rgb) +
+                    luminance(scene.Load(int3(int2(up_width.w / 4, back_height.w * 3 / 4), 0)).rgb) +
+                    luminance(scene.Load(int3(int2(up_width.w * 3 / 4, back_height.w * 3 / 4), 0)).rgb)) / 5, 1e-4);
     float sum = 0;
     [unroll] for (int y = 1; y <= 3; ++y)
         [unroll] for (int x = 1; x <= 3; ++x)
@@ -451,8 +469,8 @@ Output ps_main(Vertex input) {
         // The surface's direction from a wider look too, points 12 pixels round, where that is the same surface
         // (its direction within about 25 degrees of the near one's, blended in from about 35): a curved ramp is
         // made of flat strips, and with each strip's own direction the snow lay in steps up it, a strip at a time
-        // (2026-11-14). Across an edge the two disagree, and it stays the near one's.
-        {
+        // (2026-11-14). Across an edge the two disagree, and it stays the near one's. (Not when light.)
+        if (last_up.w <= 0.5) {
             const int2 wx = int2(12, 0), wy = int2(0, 12);
             const float3 wide_across = world_at(p + wx, depth_at(p + wx), near_distance) - world_at(p - wx, depth_at(p - wx), near_distance);
             const float3 wide_along = world_at(p + wy, depth_at(p + wy), near_distance) - world_at(p - wy, depth_at(p - wy), near_distance);
