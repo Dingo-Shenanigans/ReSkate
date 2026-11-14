@@ -448,6 +448,22 @@ Output ps_main(Vertex input) {
         normal *= rsqrt(length_squared);
         // Facing the camera: the side the pixel is seen from.
         if (dot(normal, eye_near.xyz - here) < 0) normal = -normal;
+        // The surface's direction from a wider look too, points 12 pixels round, where that is the same surface
+        // (its direction within about 25 degrees of the near one's, blended in from about 35): a curved ramp is
+        // made of flat strips, and with each strip's own direction the snow lay in steps up it, a strip at a time
+        // (2026-11-14). Across an edge the two disagree, and it stays the near one's.
+        {
+            const int2 wx = int2(12, 0), wy = int2(0, 12);
+            const float3 wide_across = world_at(p + wx, depth_at(p + wx), near_distance) - world_at(p - wx, depth_at(p - wx), near_distance);
+            const float3 wide_along = world_at(p + wy, depth_at(p + wy), near_distance) - world_at(p - wy, depth_at(p - wy), near_distance);
+            float3 wide = cross(wide_along, wide_across);
+            const float wide_squared = dot(wide, wide);
+            if (wide_squared > 1e-20) {
+                wide *= rsqrt(wide_squared);
+                if (dot(wide, eye_near.xyz - here) < 0) wide = -wide;
+                normal = normalize(lerp(normal, wide, smoothstep(0.82, 0.9, dot(wide, normal))));
+            }
+        }
 
         // Patchy where it thins: large, slow noise over the ground, in the world, so it stays put.
         const float patch = noise(steady.xz * 0.45) * 0.65 + noise(steady.xz * 1.9) * 0.35;
@@ -462,7 +478,12 @@ Output ps_main(Vertex input) {
         const float du2 = depth_at(p - int2(0, 2)), dd2 = depth_at(p + int2(0, 2));
         const float bend_across = min(abs(dl2 - 2 * dl + d), abs(d - 2 * dr + dr2));
         const float bend_along = min(abs(du2 - 2 * du + d), abs(d - 2 * dd + dd2));
-        cover *= 1 - smoothstep(0.0015, 0.006, max(bend_across, bend_along) / d);
+        // And only where it bends sharply for how steeply it already slopes on the screen: where a ramp's flat
+        // strips meet, a little, it is still flat; leaves, wires and edges bend sharply. With the bend alone
+        // the snow thinned along every join up a ramp (2026-11-14).
+        const float slope_across = max(abs(dr - dl) * 0.5, d * 1e-4), slope_along = max(abs(dd - du) * 0.5, d * 1e-4);
+        const float sharp = max(bend_across / slope_across, bend_along / slope_along);
+        cover *= 1 - smoothstep(0.0015, 0.006, max(bend_across, bend_along) / d) * smoothstep(0.2, 0.5, sharp);
         // None under a roof (indoors, under a bridge), where the plugin asks.
         cover *= 1 - roofed_at(steady);
     }
