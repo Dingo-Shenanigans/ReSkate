@@ -101,7 +101,7 @@ The virtual file system and modding pipeline:
 - `initfs`, `game_archives`, `game_bundles`, `game_textures`, `native_db` — reading the game's data.
 - `mod_list`, `mod_catalog`, `mod_item_sources`, `mod_conflicts`, `mod_scoring` — the `Mods/` folder and `mods.json`.
 - `variant_additions_*` — explicit variant cooperation, native admission and private-asset projection planning.
-- `mod_merge*` — merging mods into the game's data (overrides, combine, grid, textures, loading screens, CAS store, scan cache, build stamp).
+- `mod_merge*` — merging mods into the game's data (overrides, combine, grid, textures, loading screens, layout, CAS store, the scan of each mod and its cache, build stamp).
 - `content_cache*`, `content_catalogs` — the merged-content cache and its install.
 - `thunderstore_package`, `https_download` — Thunderstore packages.
 - `mod_music`, `item_thumbnails`, `world_layer_scan`, `builtin_packs`.

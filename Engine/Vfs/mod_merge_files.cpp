@@ -11,11 +11,24 @@
 #include <cstdio>
 #include <fstream>
 #include <stdexcept>
+#include <thread>
 
 namespace dingosdk::mods::detail {
 namespace {
 constexpr std::size_t maximumTocBytes = 64 * 1024 * 1024;
 } // namespace
+
+void run_on_threads(std::size_t threads, bool background, const std::function<void()>& body) {
+    std::vector<std::jthread> workers;
+    try {
+        for (std::size_t index = 0; index < threads; ++index)
+            workers.emplace_back([&] {
+                if (background) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+                body();
+            });
+    } catch (const std::system_error&) {} // fewer threads, or none: this one does the rest
+    body();
+}
 
 std::vector<std::byte> read_file(const fs::path& path) {
     std::ifstream input(path, std::ios::binary | std::ios::ate);

@@ -334,26 +334,7 @@ public:
                 read.note = "The game's " + bundles[at]->name + " could not be read for " + std::string(store_copies_check) + " (" + failure.what() + ")";
             }
         };
-        {
-            std::atomic<std::size_t> next{0};
-            const auto work = [&] {
-                for (;;) {
-                    const auto mine = next.fetch_add(1);
-                    if (mine >= bundles.size()) return;
-                    read_bundle(mine);
-                }
-            };
-            std::vector<std::jthread> workers;
-            try {
-                // Threads of their own, not the system's pool (see the superbundles in mod_merge.cpp).
-                for (std::size_t index = 0; index < threads && bundles.size() > 1; ++index)
-                    workers.emplace_back([&] {
-                        if (background) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
-                        work();
-                    });
-            } catch (const std::system_error&) {} // fewer threads, or none: this one does the rest
-            work();
-        }
+        for_each_index(bundles.size(), threads, background, read_bundle);
         GameCounts counts;
         for (auto& read : reads) {
             if (!read.note.empty()) note(std::move(read.note));
@@ -636,30 +617,14 @@ StoreCopies check_store_copies(const Catalog& catalog, const StoreItem& sold, st
                 if (mod.provides_layout) asked.push_back(&mod);
             std::vector<Added> reads(asked.size());
             std::vector<std::vector<std::string>> said(asked.size());
-            std::atomic<std::size_t> next{0};
-            const auto work = [&] {
-                for (;;) {
-                    const auto mine = next.fetch_add(1);
-                    if (mine >= asked.size()) return;
-                    const Scan::NotesFor kept(said[mine]);
-                    try {
-                        reads[mine] = {asked[mine], scan.read_mod(*asked[mine]), scan.read_mod_meshes(*asked[mine])};
-                    } catch (...) {
-                        reads[mine] = {asked[mine], {}, {}};   // (neither reader throws; a mod that cannot be read adds nothing)
-                    }
-                }
-            };
-            {
-                std::vector<std::jthread> workers;
+            for_each_index(asked.size(), threads, background, [&](std::size_t mine) {
+                const Scan::NotesFor kept(said[mine]);
                 try {
-                    for (std::size_t index = 0; index < threads && asked.size() > 1; ++index)
-                        workers.emplace_back([&] {
-                            if (background) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
-                            work();
-                        });
-                } catch (const std::system_error&) {} // fewer threads, or none: this one does the rest
-                work();
-            }
+                    reads[mine] = {asked[mine], scan.read_mod(*asked[mine]), scan.read_mod_meshes(*asked[mine])};
+                } catch (...) {
+                    reads[mine] = {asked[mine], {}, {}};   // (neither reader throws; a mod that cannot be read adds nothing)
+                }
+            });
             for (std::size_t index = 0; index < asked.size(); ++index) {
                 StoreCopies::Added keys{asked[index]->name, {}};
                 for (const auto& item : reads[index].items) keys.keys.push_back(ascii_lower(item.key));

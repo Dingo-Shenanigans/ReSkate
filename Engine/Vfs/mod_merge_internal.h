@@ -7,9 +7,12 @@
 #include "Engine/Resource/toc.h"
 #include "Engine/Core/Text/ascii.h"
 
+#include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <memory>
@@ -46,6 +49,24 @@ void link_or_copy(const fs::path& from, const fs::path& to);
 // that would land outside it (absolute, or climbing out with ..) throws: nothing the merge writes
 // may reach a mod's own folder or the game's.
 fs::path inside(const fs::path& output, const fs::path& relative);
+
+// Runs `body` on this thread and on up to `threads` others at once, and comes back when all of
+// them have. Threads of the merge's own, not the system's pool: the launcher holds the pool's
+// threads back while the game starts (see world_layer_scan.cpp). `background`: at a priority
+// under the game's, for a merge while it runs, so the merge shows as a wait and not as stutter.
+// Fewer threads than asked for, or none, only means this one does more. `body` must not throw.
+void run_on_threads(std::size_t threads, bool background, const std::function<void()>& body);
+// `work(index)` for every index below `count`, each once, spread over those threads.
+template <class Work> void for_each_index(std::size_t count, std::size_t threads, bool background, Work&& work) {
+    std::atomic<std::size_t> next{0};
+    run_on_threads(count > 1 ? std::min(threads, count - 1) : 0, background, [&] {
+        for (;;) {
+            const auto mine = next.fetch_add(1);
+            if (mine >= count) return;
+            work(mine);
+        }
+    });
+}
 
 struct RelativeFiles {
     std::vector<std::string> tocs;     // Win32/... .toc, generic separators
@@ -173,6 +194,11 @@ public:
     void shift(fb::CasIdentifier& location, std::uint32_t& offset,
                const ArchivePlacement* placement) const;
 
+    // The patch's own archives stay open from the first payload written to each until this:
+    // everything written is then in the files, or it throws. Called before anything reads them
+    // or goes by their sizes (the game, the stamp).
+    void finish();
+
 private:
     // Appends to one of the patch's own archives; returns where the bytes start.
     std::uint64_t append(const fs::path& path, std::span<const std::byte> encoded);
@@ -180,6 +206,9 @@ private:
 
     fs::path output_;
     std::map<std::wstring, std::uint64_t> offsets_;
+    // The archives being written (the store that settles; a waiting one writes none).
+    struct Writers;
+    std::shared_ptr<Writers> writers_;
     // A waiting store: what it holds for each archive file, the one archive index it
     // was asked to write to, and where each file's bytes went once settled.
     struct Held {
@@ -247,7 +276,8 @@ std::string sdk_stamp();
 // Mods/.reskate-scan.txt by each mod's fingerprint (mod_fingerprint) and the ReSkate that found it,
 // so a merge reads again only the mods whose files changed: checking a big map's every EBX and mesh
 // was most of a merge (a minute and more), on every merge, whichever mod had changed (2026-10-18).
-// The superbundle jobs share one (thread-safe).
+// What it has nothing for is read before the superbundles are merged (scan_mods). The threads
+// that read and the superbundle jobs share one (thread-safe).
 class ScanCache {
 public:
     struct Mesh {
@@ -268,16 +298,44 @@ public:
     // By mod folder name and "superbundle|bundle" (lower case).
     [[nodiscard]] std::optional<Bundle> find(const std::string& mod, const std::string& key) const;
     void keep(const std::string& mod, const std::string& key, Bundle bundle);
+    // Whether every bundle of the mod's superbundle TOC (lower case) has been read: each then has
+    // what was found in it, but one that could not be read whole, which the merge reads itself.
+    [[nodiscard]] bool covers(const std::string& mod, const std::string& toc) const;
+    void cover(const std::string& mod, const std::string& toc);
     // Writes it again, with the mods given only. Never throws.
     void save() const noexcept;
 
 private:
     fs::path file_;
     std::map<std::string, std::string, std::less<>> fingerprints_;
+    struct Read {
+        std::set<std::string, std::less<>> tocs;              // the TOCs read whole (cover)
+        std::map<std::string, Bundle, std::less<>> bundles;
+    };
     mutable std::mutex mutex_;
-    std::map<std::string, std::map<std::string, Bundle, std::less<>>, std::less<>> known_;
+    std::map<std::string, Read, std::less<>> known_;
 };
 inline constexpr wchar_t scan_cache_file[] = L".reskate-scan.txt";
+
+// One copy of a bundle read for a ScanCache. `whole` is false when something in it could not be
+// read: what was found is then for this merge only, the EBX that could not be read among those to
+// repair, so that the merge reads them again and says why it cannot.
+struct BundleScan {
+    ScanCache::Bundle found;
+    bool whole{true};
+};
+class MeshSizes;
+// `key` is the bundle's name in lower case, `listed` the region file of its first EBX, and
+// `tocChunks` the chunks its TOC lists. `manifest` and `files` are left as the pass over the
+// textures leaves them (stream_resident_textures): give it copies of anything read afterwards.
+BundleScan scan_bundle(const CasStore& store, const fs::path& root, std::string_view key, fb::BinaryBundle& manifest,
+                       std::vector<fb::BundleFileInfo>& files, std::size_t listed, const std::set<fb::Guid>* tocChunks,
+                       const fs::path& gameRoot, MeshSizes* sizes = nullptr);
+// Reads every bundle of `tocs` (a mod, and one of its superbundle TOCs as the mod's folder has
+// it) that `scans` does not cover, on `threads` threads beside this one (`background`: at a
+// priority under the game's). Never throws: what could not be read is left to the merge.
+void scan_mods(const std::vector<std::pair<const Mod*, std::string>>& tocs, const CasStore& store, const fs::path& baseRoot,
+               const fs::path& gameRoot, ScanCache& scans, std::size_t threads, bool background) noexcept;
 
 // The loading screens the mods add (the rows of the game's loading-screen
 // configuration each one appends). Never throws; an unreadable mod is noted.
@@ -309,9 +367,16 @@ struct GridPlan {
 
 // Reads every mod's copy of the grid and the game's own, and combines them.
 // Never throws for one bad mod: its surfaces fall back to the default one.
+// The mods' files are read on up to `threads` threads beside this one (`background`: at a
+// priority under the game's); what they add is then combined in the mods' order.
+// `kept`, when given, is a file the combined grid is kept in between merges
+// (Mods/.reskate-grid.bin): combining is the same work whenever the same mods' grids come in the
+// same order, and with a dozen maps that author surfaces it was seconds of every merge.
+inline constexpr wchar_t grid_cache_file[] = L".reskate-grid.bin";
 GridPlan plan_material_grid(const std::vector<const Mod*>& mods,
                             const std::map<const Mod*, RelativeFiles>& modFiles, const CasStore& store,
-                            const fs::path& baseRoot, const fs::path& gameRoot, MergeReport& report);
+                            const fs::path& baseRoot, const fs::path& gameRoot, MergeReport& report,
+                            std::size_t threads = 0, bool background = false, const fs::path& kept = {});
 
 // An EBX asset a mod changed from the game's own copy. Maps carry the game's
 // copies of what their levels need (a level's camera framing, for one), and
@@ -434,6 +499,14 @@ struct ChunkRecord {
                                                           std::size_t game = ChunkRecord::none,
                                                           std::span<const fb::Guid> shipped = {},
                                                           std::vector<std::size_t>* rows = nullptr);
+
+// Makes `layout` (the installed game's, as read) the merged patch's: every superbundle the mods'
+// own layouts list is added to its list and to the install chunk the mod puts it in
+// (`layoutSources`: the mods whose layouts are taken, the enabled ones or, with none, one
+// disabled), `report.superbundle_chunks` gets what the enabled mods assign, and the patch
+// archives the merge used are declared under their install chunks.
+void merge_layout(native_db::Node& layout, const std::vector<const Mod*>& mods, const std::vector<const Mod*>& layoutSources,
+                  const ArchiveUse& used, MergeReport& report);
 
 fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                         std::vector<Source>& sources, MergeReport& report,

@@ -4,17 +4,13 @@
 #include "Engine/Resource/ebx_merge.h"
 #include "Engine/Resource/ebx_writer.h"
 
-#include <Windows.h>
-
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <cstring>
 #include <exception>
 #include <mutex>
 #include <set>
 #include <stdexcept>
-#include <thread>
 
 namespace dingosdk::mods::detail {
 
@@ -282,30 +278,13 @@ AssetOverrides collect_asset_overrides(const std::vector<const Mod*>& mods,
     Shared<GameToc> gameTocs;
     Shared<GameBundle> gameBundles;
     std::vector<ModRead> reads(asked.size());
-    {
-        std::atomic<std::size_t> next{0};
-        const auto work = [&] {
-            for (;;) {
-                const auto mine = next.fetch_add(1);
-                if (mine >= asked.size()) return;
-                try {
-                    reads[mine] = read_mod(*asked[mine].first, *asked[mine].second, store, baseRoot, gameRoot, gameTocs, gameBundles);
-                } catch (...) {
-                    reads[mine].failure = std::current_exception();
-                }
-            }
-        };
-        std::vector<std::jthread> workers;
+    for_each_index(asked.size(), threads, background, [&](std::size_t mine) {
         try {
-            // Threads of their own, not the system's pool (see the superbundles in mod_merge.cpp).
-            for (std::size_t index = 0; index < std::min(threads, asked.size()) && asked.size() > 1; ++index)
-                workers.emplace_back([&] {
-                    if (background) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
-                    work();
-                });
-        } catch (const std::system_error&) {} // fewer threads, or none: this one does the rest
-        work();
-    }
+            reads[mine] = read_mod(*asked[mine].first, *asked[mine].second, store, baseRoot, gameRoot, gameTocs, gameBundles);
+        } catch (...) {
+            reads[mine].failure = std::current_exception();
+        }
+    });
 
     const auto decoded = [&](std::span<const std::byte> encoded) {
         return fb::ebx::read_document(fb::decode_cas(encoded, {gameRoot}));
