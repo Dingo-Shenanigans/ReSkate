@@ -103,7 +103,8 @@ void host_page(SkateMenu &menu, const Model &model, const CallbacksV3 &) {
     begin_card(menu, "host-settings", "PLAYERS AND SPEED");
     ImGui::BeginDisabled(!editable);
     field(menu, "Player limit", "Includes you.");
-    ::dingosdk::overlay::menu::slider_int("##player-limit", &capacity, 2, multiplayer_lobby_player_limit, "%d players");
+    ::dingosdk::overlay::menu::slider_int("##player-limit", &capacity, 2, multiplayer_lobby_player_limit, "%d players",
+                                       ImGuiSliderFlags_AlwaysClamp);
     menu.multiplayer_capacity = capacity;
     ImGui::EndDisabled();
     {
