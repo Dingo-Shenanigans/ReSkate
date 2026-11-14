@@ -158,19 +158,22 @@ bool list_row(const char* id, float width, float height, bool ticked) {
     return pressed;
 }
 
+void draw_switch(ImDrawList* draw, ImVec2 start, bool on, bool hovered) {
+    const auto size = switch_size();
+    const float radius = size.y * 0.5f;
+    draw->AddRectFilled(start, ImVec2(start.x + size.x, start.y + size.y),
+        on ? color::blue : rgba(255, 255, 255, hovered ? 0.2f : 0.13f), radius);
+    draw->AddCircleFilled(ImVec2(start.x + (on ? size.x - radius : radius), start.y + radius), radius - S(3),
+        on ? color::ink : rgba(196, 202, 212));
+}
+
 bool toggle(const char* id, bool* on) {
-    const ImVec2 size(S(42), S(22));
     const ImVec2 start = ImGui::GetCursorScreenPos();
-    const bool pressed = ImGui::InvisibleButton(id, size, ImGuiButtonFlags_EnableNav);
+    const bool pressed = ImGui::InvisibleButton(id, switch_size(), ImGuiButtonFlags_EnableNav);
     if (pressed) *on = !*on;
     const bool hovered = ImGui::IsItemHovered();
     if (hovered) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-    auto* draw = ImGui::GetWindowDrawList();
-    const float radius = size.y * 0.5f;
-    draw->AddRectFilled(start, ImVec2(start.x + size.x, start.y + size.y),
-        *on ? color::blue : rgba(255, 255, 255, hovered ? 0.2f : 0.13f), radius);
-    draw->AddCircleFilled(ImVec2(start.x + (*on ? size.x - radius : radius), start.y + radius), radius - S(3),
-        *on ? color::ink : rgba(196, 202, 212));
+    draw_switch(ImGui::GetWindowDrawList(), start, *on, hovered);
     return pressed;
 }
 

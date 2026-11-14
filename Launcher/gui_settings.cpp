@@ -19,36 +19,56 @@ void setting_note(const char* text) {
     ImGui::Spacing();
 }
 
-// A checkbox with its label and a muted explanation stacked beside the box,
-// so the explanation sits right under the label instead of under the box.
+// An on/off setting, a card as wide as the page: its label with a muted explanation under it, and
+// at the right the switch the mod manager's rows have. The whole card is what is pressed.
 void setting_check(const char* label, const char* note, bool& value) {
     ImGui::PushID(label);
-    const auto start = ImGui::GetCursorPos();
-    ImGui::Checkbox("##check", &value);
-    const float below_box = ImGui::GetCursorPosY();
-    // Not SameLine: that would drop the text to the box's frame padding. The
-    // label's top lines up with the box's top.
-    ImGui::SetCursorPos(ImVec2(start.x + ImGui::GetFrameHeight() + ImGui::GetStyle().ItemSpacing.x, start.y));
-    ImGui::BeginGroup();
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, S(1)));
-    ImGui::TextUnformatted(label);
-    if (ImGui::IsItemClicked()) value = !value;
-    if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-    ImGui::PushTextWrapPos(0);
-    ImGui::TextDisabled("%s", note);
-    ImGui::PopTextWrapPos();
-    ImGui::PopStyleVar();
-    ImGui::EndGroup();
-    if (ImGui::GetCursorPosY() < below_box) ImGui::SetCursorPosY(below_box);
+    const float width = ImGui::GetContentRegionAvail().x, pad = S(14);
+    const auto mark = switch_size();
+    const float text_width = width - pad * 2 - mark.x - S(18);
+    const float label_height = ImGui::GetTextLineHeight();
+    const float note_height = *note ? ImGui::CalcTextSize(note, nullptr, false, text_width).y : 0.0f;
+    const float tall = std::max(S(48), pad * 2 + label_height + (note_height > 0 ? S(3) + note_height : 0.0f));
+    const ImVec2 start = ImGui::GetCursorScreenPos(), end(start.x + width, start.y + tall);
+    if (ImGui::InvisibleButton("##card", ImVec2(width, tall), ImGuiButtonFlags_EnableNav)) value = !value;
+    const bool hovered = ImGui::IsItemHovered();
+    if (hovered) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    auto* draw = ImGui::GetWindowDrawList();
+    draw->AddRectFilled(start, end, color::tile, S(6));
+    if (hovered) draw->AddRectFilled(start, end, rgba(255, 255, 255, 0.035f), S(6));
+    draw->AddRect(start, end, hovered ? rgba(255, 255, 255, 0.22f) : color::outline, S(6));
+    const float text_y = start.y + (tall - label_height - (note_height > 0 ? S(3) + note_height : 0.0f)) * 0.5f;
+    draw->AddText(ImVec2(start.x + pad, text_y), color::text, label);
+    if (note_height > 0)
+        draw->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(start.x + pad, text_y + label_height + S(3)), color::muted, note,
+                      nullptr, text_width);
+    draw_switch(draw, ImVec2(end.x - pad - mark.x, start.y + (tall - mark.y) * 0.5f), value, hovered);
     ImGui::PopID();
-    ImGui::Spacing();
-    ImGui::Spacing();
+    ImGui::Dummy(ImVec2(0, S(2)));
+}
+
+// A card around other controls (a folder and its buttons, a choice and what it means): begin_card
+// ... end_card, the controls between them laid out as on the page.
+void begin_card(const char* id) {
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImGui::ColorConvertU32ToFloat4(color::tile));
+    ImGui::PushStyleColor(ImGuiCol_Border, ImGui::ColorConvertU32ToFloat4(color::outline));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, S(6));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(S(14), S(12)));
+    ImGui::BeginChild(id, ImVec2(0, 0),
+        ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_AlwaysUseWindowPadding | ImGuiChildFlags_NavFlattened);
+}
+void end_card() {
+    ImGui::EndChild();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(2);
+    ImGui::Dummy(ImVec2(0, S(2)));
 }
 
 void section_caption(const Fonts& fonts, const char* text) {
     ImGui::PushFont(fonts.caption);
     ImGui::TextDisabled("%s", text);
     ImGui::PopFont();
+    ImGui::Dummy(ImVec2(0, S(1)));
 }
 
 // ---------------------------------------------------------------- skate.'s own settings
@@ -395,9 +415,10 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
                                                       "GRAPHICS", "AUDIO", "CAMERA", "CONTROLS", "REPLAY"};
     constexpr int game_pages = 4;
     ImGui::BeginDisabled(binding);
+    section_caption(fonts, "LAUNCHER");
     for (int i = 0; i < static_cast<int>(names.size()); ++i) {
         if (i == game_pages) {
-            ImGui::Dummy(ImVec2(0, S(4)));
+            ImGui::Dummy(ImVec2(0, S(10)));
             section_caption(fonts, "SKATE. SETTINGS");
         }
         if (nav_tile(fonts, rail_width, names[static_cast<std::size_t>(i)], ui.settings_tab == i))
@@ -405,32 +426,38 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
         // A controller starts on the open tab's tile.
         if (ui.settings_tab == i) default_focus();
     }
+    // (Plain, as in the mod manager: blue is for what a page is there to do.)
     ImGui::SetCursorPosY(ImGui::GetWindowHeight() - S(38));
-    push_primary_button();
     if (ImGui::Button("\xe2\x86\x90  BACK", ImVec2(-1, S(34)))) open = false;
-    pop_primary_button();
     ImGui::EndDisabled();
     ImGui::EndChild();
 
     // ------------------------------------------------ the open tab
-    // Kept to a readable column: settings are sentences, not a table.
+    // Cards across the page, up to a width a sentence still reads at.
     ImGui::SetCursorPos(ImVec2(content_x, top));
     ImGui::BeginChild("##settings_content",
-        ImVec2(std::min(S(760), frame.x - content_x - S(28)), bottom - top), ImGuiChildFlags_NavFlattened);
+        ImVec2(std::min(S(980), frame.x - content_x - S(28)), bottom - top), ImGuiChildFlags_NavFlattened);
     const float footer = ImGui::GetTextLineHeight() + S(16);
     ImGui::BeginChild("##settings_page", ImVec2(0, ImGui::GetWindowHeight() - footer), ImGuiChildFlags_NavFlattened);
     switch (ui.settings_tab) {
     case 0: {
         section_caption(fonts, "GAME FOLDER");
-        ImGui::PushTextWrapPos(0);
-        ImGui::TextUnformatted(utf8(paths.directory.wstring()).c_str());
-        ImGui::PopTextWrapPos();
-        if (ImGui::Button("Open folder")) open_path(paths.directory);
-        ImGui::SameLine();
-        ImGui::BeginDisabled(busy);
-        if (ImGui::Button("Verify game files")) { open = false; open_sign_in(launcher, ui, true); }
-        ImGui::EndDisabled();
-        ImGui::Spacing();
+        begin_card("##game_folder");
+        {
+            // The folder, with what can be done to it at the far end of its line.
+            const float open_width = S(110), verify_width = S(150), gap = S(8);
+            ImGui::AlignTextToFramePadding();
+            ImGui::PushTextWrapPos(ImGui::GetContentRegionMax().x - open_width - verify_width - gap * 2);
+            ImGui::TextUnformatted(utf8(paths.directory.wstring()).c_str());
+            ImGui::PopTextWrapPos();
+            ImGui::SameLine(ImGui::GetContentRegionMax().x - open_width - verify_width - gap);
+            if (ImGui::Button("Open folder", ImVec2(open_width, 0))) open_path(paths.directory);
+            ImGui::SameLine(0, gap);
+            ImGui::BeginDisabled(busy);
+            if (ImGui::Button("Verify game files", ImVec2(verify_width, 0))) { open = false; open_sign_in(launcher, ui, true); }
+            ImGui::EndDisabled();
+        }
+        end_card();
         ImGui::Spacing();
         section_caption(fonts, "PLAY");
         setting_check("Offline mode", "Play without Steam as Unknown Player; multiplayer is hidden. "
@@ -439,7 +466,9 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
                       settings.loose_files);
         setting_check("Discord status", "Show on your Discord profile where you are skating: the map, the server or lobby "
                       "and how many are in it. Off, the game does not talk to Discord at all.", settings.discord_status);
+        begin_card("##start_map_card");
         if (start_map_choice(settings, launcher.session(), ui)) launcher.save();
+        end_card();
         if (!ui.plugin_developer) {
             try { ui.plugin_developer = initfs::plugin_developer_mode(paths.directory); } catch (const std::exception&) { ui.plugin_developer = false; }
         }
@@ -454,12 +483,14 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
         }
         ImGui::Spacing();
         section_caption(fonts, "EXTRA GAME ARGUMENTS");
+        begin_card("##arguments_card");
         std::array<char, 1024> arguments{};
         std::copy_n(settings.arguments.begin(), std::min(settings.arguments.size(), arguments.size() - 1), arguments.begin());
         ImGui::SetNextItemWidth(-1);
         if (ImGui::InputTextWithHint("##arguments", "Arguments for Skate.exe", arguments.data(), arguments.size()))
             settings.arguments = arguments.data();
         setting_note("Passed to Skate.exe as they are.");
+        end_card();
         break;
     }
     case 1:

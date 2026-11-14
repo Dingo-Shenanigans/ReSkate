@@ -139,6 +139,9 @@ bool list_row(const char* id, float width, float height, bool ticked);
 inline float row_gap() { return S(8); }
 // An on/off switch, blue while on. Returns true when it was flipped.
 bool toggle(const char* id, bool* on);
+// The switch alone, drawn at `start`, for a row that is itself what is pressed. Its size.
+inline ImVec2 switch_size() { return ImVec2(S(42), S(22)); }
+void draw_switch(ImDrawList* draw, ImVec2 start, bool on, bool hovered);
 // A square button with three dots, for a row's menu.
 bool more_button(const char* id, float size);
 
@@ -481,6 +484,7 @@ struct Ui {
     // Thunderstore updates waiting, so PLAY can say so and ask before it
     // launches without them. Answered once a session.
     std::size_t mods_pending{};
+    std::size_t mods_enabled{};          // how many mods load, for what PLAY says it starts
     bool mods_update_prompt{};
     bool mods_updates_ignored{};
     // "Update them and play" said play: launch once the install finishes.
