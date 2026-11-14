@@ -1,8 +1,10 @@
 #include "runtime_internal.h"
+#include "local_teleport_observation.h"
 #include "Engine/Game/Build/20260929/local_placements.h"
 #include "Extension/Objects/local_placements_runtime.h"
 #include "Extension/Objects/ParkEditor/park_editor_runtime.h"
 #include "Extension/Objects/ParkEditor/park_editor_surface.h"
+#include "Extension/Skater/native_actions.h"
 #include <cmath>
 #include "Extension/World/local_world_layers.h"
 
@@ -55,13 +57,14 @@ bool teleport_local_skater(const std::array<float, 3>& position) {
 }
 bool teleport_local_skater_transform(const std::array<float,16>& transform, std::optional<bool> on_board) {
     std::lock_guard lock(local_runtime().native_mutex);
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer)) return false;
     auto& r = placements_runtime();
     if (!local_runtime().active || !r.teleport || !r.transition_ctor || !r.transition_destroy) return false;
     for (const auto v : transform)
         if (!std::isfinite(v) || std::abs(v) > 1e6f) return false;
-    r.position_teleport = transform;
-    r.position_teleport_on_board = on_board;
-    r.position_teleport_at = GetTickCount64();
+    auto queue = r.teleport_queue.mutate();
+    queue.write().set_position(transform, on_board, GetTickCount64());
     return true;
 }
 // Upright at the spot, facing `heading` (radians about world up): the root's rows are right
@@ -73,11 +76,68 @@ bool teleport_local_skater_heading(const std::array<float, 3>& position, float h
 }
 bool local_skater_teleport_pending() {
     std::lock_guard lock(local_runtime().native_mutex);
-    const auto& r = placements_runtime();
-    if (r.position_teleport) return true;
+    auto& r = placements_runtime();
+    auto queue = r.teleport_queue.mutate();
+    if (queue.dispatching() || queue.read().position_teleport) return true;
     std::uintptr_t manager{}; std::uint32_t phase{};
     return read(local_runtime().base + addr::local_placements::teleport_manager, manager) && manager &&
         read(manager, phase) && phase != 0;
+}
+namespace {
+bool observe_local_skater_teleport_impl(bool& pending, LocalTeleportObservation& observation,
+    teleport_observation::Result& result, bool include_placement_token) noexcept;
+}
+bool try_local_skater_teleport_pending(bool& pending) noexcept {
+    LocalTeleportObservation observation;
+    return try_local_skater_teleport_pending(pending, observation);
+}
+bool try_local_skater_teleport_pending(bool& pending, LocalTeleportObservation& observation) noexcept {
+    teleport_observation::Result result;
+    // Keep the existing position/native-dispatch query independent of an
+    // accepted placement token. Actor qualification observes both queues below.
+    return observe_local_skater_teleport_impl(pending, observation, result, false);
+}
+namespace {
+bool observe_local_skater_teleport_impl(bool& pending, LocalTeleportObservation& observation,
+    teleport_observation::Result& result, bool include_placement_token) noexcept {
+    const auto saved_error = GetLastError();
+    struct Restore { DWORD value; ~Restore() { SetLastError(value); } } restore{saved_error};
+    pending = true;
+    observation = LocalTeleportObservation::not_attempted;
+    result = {};
+    try {
+        auto& runtime = local_runtime();
+        // An active profile constructed the placement queue before publishing
+        // active. Inactive callbacks must not lazily allocate it here.
+        if (!runtime.active.load(std::memory_order_acquire)) {
+            observation = LocalTeleportObservation::inactive;
+            return false;
+        }
+        struct Reader {
+            profile_runtime::LocalRuntime& runtime;
+            std::uint32_t get_error() const noexcept { return GetLastError(); }
+            void set_error(std::uint32_t value) const noexcept { SetLastError(value); }
+            teleport_observation::Identity identity() const noexcept {
+                const auto active = runtime.active.load(std::memory_order_acquire);
+                return {active, active ? runtime.base : 0};
+            }
+            bool read_manager(std::uintptr_t base, std::uintptr_t& value) const noexcept {
+                return read(base + addr::local_placements::teleport_manager, value);
+            }
+            bool read_phase(std::uintptr_t manager, std::uint32_t& value) const noexcept { return read(manager, value); }
+        } reader{runtime};
+        result = placements_runtime().teleport_queue.observe(reader, include_placement_token);
+        pending = result.pending;
+        static_assert(static_cast<unsigned>(LocalTeleportObservation::queue_exhausted) ==
+            static_cast<unsigned>(teleport_observation::Observation::queue_exhausted));
+        observation = static_cast<LocalTeleportObservation>(result.observation);
+        return result.known;
+    } catch (...) { observation = LocalTeleportObservation::exception; return false; }
+}
+}
+bool profile_runtime::observe_local_skater_teleport(bool& pending, LocalTeleportObservation& observation,
+    teleport_observation::Result& result) noexcept {
+    return observe_local_skater_teleport_impl(pending, observation, result, true);
 }
 
 std::optional<float> local_ground_height(float x, float z, float top, float bottom) {
@@ -165,10 +225,13 @@ LocalSurfaceProbe probe_local_surface_counted(const std::array<float, 3>& from, 
 }
 bool teleport_to_local_placed_object(std::string_view map, std::uint64_t token) {
     std::lock_guard lock(local_runtime().native_mutex);
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer)) return false;
     auto& r = placements_runtime();
     if (!local_runtime().active || !placement_session_ready() || r.map != map || r.clearing ||
         std::none_of(r.rows.begin(), r.rows.end(), [&](const auto& row) { return row.token == token; })) return false;
-    r.teleport_token = token; r.teleport_queued_at = GetTickCount64();
+    { auto queue = r.teleport_queue.mutate();
+      queue.write().teleport_token = token; queue.write().teleport_queued_at = GetTickCount64(); }
     r.status = "Teleport queued...";
     return true;
 }

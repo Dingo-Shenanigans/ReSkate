@@ -1,4 +1,16 @@
 #include "no_bail.h"
+#include "native_actions.h"
+#include "actor_control.h"
+#include "Engine/Game/Skater/native_action_policy.h"
+#include "Engine/Game/Skater/actor_control_policy.h"
+#include "Engine/Game/Build/20260929/native_actions.h"
+#include "Engine/Game/Build/20260929/rigid_bodies.h"
+#include "Extension/Multiplayer/Remote/native_skater.h"
+#include "Extension/UI/Overlay/overlay.h"
+#include "Extension/UI/NativeMenu/throwdown_menu.h"
+#include "Extension/Profile/local_profile_runtime.h"
+#include "Extension/Profile/local_teleport_observation.h"
+#include "Engine/Game/Skater/teleport_observation.h"
 #include "Extension/Skater/skater_events.h"
 #include "Engine/Game/Input/controller_bindings.h"
 #include "Engine/Core/Hooks/hooks.h"
@@ -58,6 +70,26 @@ struct BoardLock {
     Owner owner;
     std::uint64_t until{};
 };
+struct ActionBinding {
+    Owner owner;
+    std::uintptr_t game_context{}, world{}, world_state{};
+    std::uint64_t world_generation{}, lifetime_epoch{}, actor_epoch{};
+    bool operator==(const ActionBinding&) const = default;
+};
+struct Actions {
+    ActionBinding published;
+    std::uint64_t tick_at{}, world_generation{}, context_generation{};
+    DWORD client_thread{};
+    bool ready{}, world_contract{}, listener{}, context_valid{true};
+    actor_control::Arbiter motion_claim;
+    actor_control_native::Actor claimed_actor;
+    std::uint64_t claim_owner{}, claim_sequence{};
+    std::atomic<std::uint64_t> clock_enabled_ticket{};
+    std::uint64_t clock_started_ticket{};
+    std::atomic<std::uint64_t> destruction_notice{};
+    std::atomic<std::uintptr_t> watched_entity{};
+    std::atomic<std::uint64_t> actor_destruction{};
+};
 struct Protection {
     std::uintptr_t base{};
     bool mount_test{}; // the selector's mount request test is the known one
@@ -71,6 +103,11 @@ struct Protection {
     std::atomic<bool> ready{};
     SRWLOCK lock = SRWLOCK_INIT;
     Lease lease;
+    Actions actions;
+    SRWLOCK clock_lock = SRWLOCK_INIT;
+    actor_clock::Ledger<actor_control_native::Actor> claim_clock;
+    std::uint64_t clock_revision{};
+    bool clock_revision_valid{true};
     std::array<std::atomic<NoBailStepObserver>, no_bail_step_listener_slots> listeners{};
 };
 Protection& protection() { static auto* value = new Protection; return *value; }
@@ -216,6 +253,209 @@ bool resolve(std::uintptr_t client, std::uintptr_t entity, Owner& o) noexcept {
     o.entity = entity;
     return true;
 }
+namespace action_addr = addr::native_actions;
+bool dark_pop_protecting(std::uint64_t now) noexcept;
+bool action_world(std::uintptr_t context, std::uintptr_t& world) noexcept {
+    using World = std::uintptr_t (*)(std::uintptr_t);
+    __try {
+        world = reinterpret_cast<World>(protection().base + action_addr::physics_world.rva)(context);
+        return world >= 0x10000 && world <= highest - action_addr::world_state - sizeof(std::uintptr_t);
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+bool action_capture(const Owner& expected, ActionBinding& binding, std::uint64_t& epoch) noexcept {
+    const auto base = protection().base;
+    std::uint64_t after{};
+    binding.actor_epoch = protection().actions.actor_destruction.load(std::memory_order_acquire);
+    if (!multiplayer::entity_destruction_epoch(base, epoch) ||
+        !resolve(expected.client, expected.entity, binding.owner) || binding.owner != expected) return false;
+    binding.game_context = pointer(expected.entity, action_addr::entity_context);
+    if (!binding.game_context || pointer(expected.client, action_addr::client_context) != binding.game_context ||
+        !action_world(binding.game_context, binding.world)) return false;
+    binding.world_state = pointer(binding.world, action_addr::world_state);
+    binding.lifetime_epoch = epoch;
+    return binding.world_state && multiplayer::entity_destruction_epoch(base, after) && epoch == after &&
+        binding.actor_epoch == protection().actions.actor_destruction.load(std::memory_order_acquire);
+}
+ActionBinding context_binding(const actor_control_native::Actor& actor) noexcept {
+    return {{actor.client, actor.entity, actor.player, actor.player_handle, actor.component, actor.core,
+        actor.context, actor.selector, actor.causes, actor.rig}, actor.game_context, actor.world,
+        actor.world_state, actor.world_generation, actor.lifetime_epoch, actor.actor_epoch};
+}
+bool observed_actor_fence(const ActionBinding& expected) noexcept {
+    const auto& a = protection().actions;
+    return a.watched_entity.load(std::memory_order_acquire) == expected.owner.entity &&
+        a.actor_destruction.load(std::memory_order_acquire) == expected.actor_epoch;
+}
+bool observed_capture(const actor_control_native::Actor& actor, ActionBinding& live, std::uint64_t& epoch) noexcept {
+    const auto expected = context_binding(actor);
+    return actor.base == protection().base && observed_actor_fence(expected) && action_capture(expected.owner, live, epoch) &&
+        actor_context::observed_identity(expected, live,
+            protection().actions.watched_entity.load(std::memory_order_acquire),
+            protection().actions.actor_destruction.load(std::memory_order_acquire));
+}
+bool observed_epoch(const actor_control_native::Actor& actor, std::uint64_t epoch) noexcept {
+    std::uint64_t after{};
+    return actor.base == protection().base && observed_actor_fence(context_binding(actor)) &&
+        multiplayer::entity_destruction_epoch(actor.base, after) && actor_context::same_observation(epoch, after);
+}
+bool observed_close(const actor_control_native::Actor& actor, std::uint64_t epoch) noexcept {
+    ActionBinding live; std::uint64_t after{};
+    return observed_capture(actor, live, after) && actor_context::same_observation(epoch, after) && observed_epoch(actor, epoch);
+}
+struct ActionStateWitness {
+    skater_action::State state;
+    std::uintptr_t trick{}, offboard{};
+    bool operator==(const ActionStateWitness&) const = default;
+};
+ActionStateWitness action_state(const Owner& owner) noexcept {
+    ActionStateWitness result; auto& state = result.state;
+    state.known = read(owner.context + action_addr::physics_state, state.value);
+    if (!state.known || state.value != offboard_physics_state) return result;
+    result.trick = pointer(owner.core, action_addr::trick_state);
+    result.offboard = pointer(result.trick, action_addr::offboard_state);
+    const auto offboard = result.offboard;
+    std::uint8_t ragdoll{}, air{};
+    if (offboard && read(offboard + action_addr::ragdoll, ragdoll) && ragdoll <= 1) {
+        state.ragdoll_known = true; state.ragdoll = ragdoll != 0;
+    }
+    if (offboard && read(offboard + action_addr::in_air, air) && air <= 1) {
+        state.in_air_known = true; state.in_air = air != 0;
+    }
+    return result;
+}
+skater_action::Reason action_check(actor_control_native::Observation* observation,
+    actor_observation::Phase phase, skater_action::Reason reason) noexcept {
+    if (observation) *observation = {phase, reason};
+    return reason;
+}
+constexpr actor_observation::Phase profile_observation_phase(LocalTeleportObservation observation) noexcept {
+    switch (observation) {
+    case LocalTeleportObservation::lock_refused: return actor_observation::Phase::controls_profile_lock;
+    case LocalTeleportObservation::inactive: return actor_observation::Phase::controls_profile_inactive;
+    case LocalTeleportObservation::manager_read_failed: return actor_observation::Phase::controls_profile_manager_read;
+    case LocalTeleportObservation::manager_null: return actor_observation::Phase::controls_profile_manager_null;
+    case LocalTeleportObservation::phase_read_failed: return actor_observation::Phase::controls_profile_phase_read;
+    case LocalTeleportObservation::exception: return actor_observation::Phase::controls_profile_exception;
+    case LocalTeleportObservation::queue_changed:
+    case LocalTeleportObservation::queue_exhausted:
+    case LocalTeleportObservation::not_attempted:
+    case LocalTeleportObservation::known: break;
+    }
+    return actor_observation::Phase::controls_profile;
+}
+skater_action::Reason action_controls(actor_control_native::Observation* observation = nullptr,
+    teleport_observation::Result* teleport_view = nullptr) noexcept {
+    if (teleport_view) *teleport_view = {};
+    DWORD process{};
+    const auto window = GetForegroundWindow();
+    if (!window || !GetWindowThreadProcessId(window, &process) || process != GetCurrentProcessId() ||
+        overlay::interface_open() || !multiplayer::native_throwdown_gameplay_input_allowed())
+        return action_check(observation, actor_observation::Phase::controls_focus, skater_action::Reason::focus_changed);
+    bool teleporting{};
+    LocalTeleportObservation profile_observation;
+    teleport_observation::Result local_teleport;
+    auto& teleport_result = teleport_view ? *teleport_view : local_teleport;
+    if (!profile_runtime::observe_local_skater_teleport(teleporting, profile_observation, teleport_result))
+        return action_check(observation, profile_observation_phase(profile_observation), skater_action::Reason::unavailable);
+    if (teleporting)
+        return action_check(observation, actor_observation::Phase::controls_teleport, skater_action::Reason::teleporting);
+    return skater_action::Reason::none;
+}
+bool action_protection_locked(const Owner& owner, std::uint64_t now) noexcept {
+    const auto& p = protection();
+    return (p.lease.owner == owner && p.lease.active(now)) ||
+        (p.board.owner == owner && now < p.board.until);
+}
+
+void action_destroyed(std::uintptr_t entity) noexcept {
+    // No blocking or dropped callback. The native hook's global idle epoch is
+    // retained in every binding and rechecked at every admission/use edge.
+    protection().actions.destruction_notice.fetch_add(1, std::memory_order_release);
+    auto& actions = protection().actions;
+    if (entity && actions.watched_entity.load(std::memory_order_acquire) == entity)
+        actions.actor_destruction.fetch_add(1, std::memory_order_release);
+}
+void action_snapshot_facts(const ActionBinding& expected, const ActionBinding& captured,
+    actor_control_native::InspectionFacts* facts) noexcept {
+    if (!facts) return;
+    using Check = actor_control_native::InspectionCheck;
+    const auto compared = [](bool equal) noexcept { return equal ? Check::equal : Check::different; };
+    auto& snapshot = facts->opening_snapshot;
+    // Compare values already captured by the original path. This does not
+    // evaluate, repeat or qualify any later guard or perform native reads.
+    snapshot.owner = compared(captured.owner == expected.owner);
+    snapshot.game_context = compared(captured.game_context == expected.game_context);
+    snapshot.world = compared(captured.world == expected.world);
+    snapshot.world_state = compared(captured.world_state == expected.world_state);
+    snapshot.generation = compared(captured.world_generation == expected.world_generation);
+    snapshot.global_epoch = compared(captured.lifetime_epoch == expected.lifetime_epoch);
+    snapshot.actor_epoch = compared(captured.actor_epoch == expected.actor_epoch);
+    // These are SDK-owned destruction counters from those same bindings. No
+    // additional counter/native read or lifetime decision is made here.
+    snapshot.global_epoch_values = {expected.lifetime_epoch, captured.lifetime_epoch, true};
+}
+skater_action::Reason action_validate(const ActionBinding& expected, ActionBinding& live,
+                                     skater_action::State& state, std::uint64_t& epoch,
+                                     bool nonblocking = false,
+                                     actor_control_native::Observation* observation = nullptr,
+                                      actor_context::Continuity continuity = actor_context::Continuity::native_lifetime,
+                                      actor_control_native::InspectionFacts* facts = nullptr) noexcept {
+    teleport_observation::Result opening_teleport;
+    if (const auto issue = action_controls(observation, &opening_teleport); issue != skater_action::Reason::none) return issue;
+    auto& p = protection();
+    if (nonblocking) {
+        if (!TryAcquireSRWLockShared(&p.lock))
+            return action_check(observation, actor_observation::Phase::validation_owner_lock, skater_action::Reason::unavailable);
+    } else AcquireSRWLockShared(&p.lock);
+    const auto ready = p.actions.ready && p.actions.world_contract &&
+        (continuity == actor_context::Continuity::native_lifetime || p.actions.context_valid) &&
+        GetTickCount64() - p.actions.tick_at < skater_action::offer_timeout_ms;
+    const auto generation = actor_context::generation(continuity, p.actions.world_generation, p.actions.context_generation);
+    const auto lease = p.lease; const auto board = p.board;
+    ReleaseSRWLockShared(&p.lock);
+    if (!ready) return action_check(observation, actor_observation::Phase::readiness, skater_action::Reason::unavailable);
+    if ((continuity == actor_context::Continuity::observed_context && !observed_actor_fence(expected)) ||
+        !action_capture(expected.owner, live, epoch))
+        return action_check(observation, actor_observation::Phase::capture, skater_action::Reason::actor_changed);
+    live.world_generation = generation;
+    action_snapshot_facts(expected, live, facts);
+    if (live.actor_epoch != expected.actor_epoch)
+        return action_check(observation, actor_observation::Phase::actor_epoch, skater_action::Reason::actor_destroyed);
+    if (continuity == actor_context::Continuity::native_lifetime) {
+        if (const auto fence = skater_action::lifetime_fence(expected.lifetime_epoch, live.lifetime_epoch,
+            expected.world_generation, live.world_generation); fence != skater_action::Reason::none)
+            return action_check(observation, actor_observation::Phase::lifetime, fence);
+    }
+    if (live.game_context != expected.game_context || live.world != expected.world ||
+        live.world_state != expected.world_state || live.world_generation != expected.world_generation)
+        return action_check(observation, actor_observation::Phase::world, skater_action::Reason::world_changed);
+    const auto now = GetTickCount64();
+    if (dark_pop_protecting(now) || (lease.owner == expected.owner && lease.active(now)) ||
+        (board.owner == expected.owner && now < board.until))
+        return action_check(observation, actor_observation::Phase::protection, skater_action::Reason::protection_conflict);
+    const auto first_state = action_state(live.owner);
+    ActionBinding after; std::uint64_t after_epoch{};
+    if (!action_capture(expected.owner, after, after_epoch))
+        return action_check(observation, actor_observation::Phase::recapture, skater_action::Reason::actor_changed);
+    after.world_generation = generation;
+    if (after != live || epoch != after_epoch || action_state(after.owner) != first_state)
+        return action_check(observation, actor_observation::Phase::context, skater_action::Reason::context_changed);
+    if (continuity == actor_context::Continuity::observed_context && !observed_actor_fence(expected))
+        return action_check(observation, actor_observation::Phase::lifetime, skater_action::Reason::native_lifetime_changed);
+    if (!first_state.state.known) {
+        state = first_state.state;
+        return action_check(observation, actor_observation::Phase::state, skater_action::Reason::unsupported_state);
+    }
+    // Close the current controls/teleport observation after full owner/world
+    // recapture. This witness is local to this call, never an actor/clock key.
+    teleport_observation::Result closing_teleport;
+    if (const auto issue = action_controls(observation, &closing_teleport); issue != skater_action::Reason::none) return issue;
+    if (!teleport_observation::same_idle(opening_teleport, closing_teleport))
+        return action_check(observation, actor_observation::Phase::controls_profile, skater_action::Reason::unavailable);
+    state = first_state.state;
+    return action_check(observation, actor_observation::Phase::qualified, skater_action::Reason::none);
+}
+
 // Dark Pop borrows this protection around armed landings and the pops they make (defined with Dark Pop below).
 bool dark_pop_protecting(std::uint64_t now) noexcept;
 bool protected_owner(std::uintptr_t object, std::uintptr_t Owner::* member, Owner* owner = nullptr) noexcept {
@@ -248,18 +488,122 @@ bool local_owner(std::uintptr_t object, std::uintptr_t Owner::* member, Owner* o
     return true;
 }
 // The published owner, its chain resolved again now; when `rig` is given, only if it is that owner's.
-bool published_skater(std::uintptr_t rig, NoBailSkater& skater) noexcept {
+bool published_skater(std::uintptr_t rig, NoBailSkater& skater, bool nonblocking = false,
+    std::uintptr_t* observed_client = nullptr) noexcept {
+    if (observed_client) *observed_client = 0;
     auto& p = protection();
     if (!p.ready.load(std::memory_order_acquire)) return false;
-    AcquireSRWLockShared(&p.lock);
+    if (nonblocking) {
+        if (!TryAcquireSRWLockShared(&p.lock)) return false;
+    } else AcquireSRWLockShared(&p.lock);
     const auto published = p.lease.owner;
     ReleaseSRWLockShared(&p.lock);
     Owner current;
-    if (!published.entity || (rig && rig != published.rig) || !resolve(published.client, published.entity, current) ||
-        current != published) return false;
+    if (!published.entity || (rig && rig != published.rig) ||
+        !resolve(published.client, published.entity, current) || current != published) return false;
     skater = {p.base, current.entity, current.core, current.context, current.rig};
+    if (observed_client) *observed_client = current.client;
     return true;
 }
+using ClaimClockKey = actor_clock::Key<actor_control_native::Actor>;
+ClaimClockKey claim_clock_key(std::uint64_t owner, std::uint64_t sequence,
+    const actor_control_native::Actor& actor) noexcept {
+    return {owner, sequence, actor.ticket.generation, actor};
+}
+bool clock_owned_locked(std::uint64_t owner, std::uint64_t sequence,
+    const actor_control_native::Actor& actor, bool ready) noexcept {
+    const auto& a = protection().actions;
+    if (!actor_context::valid(actor.continuity) || !owner || !sequence || !actor.ticket || a.claim_owner != owner || a.claim_sequence != sequence ||
+        a.claimed_actor != actor || !a.motion_claim.owns(owner, actor.ticket, actor_control::Domain::equipment)) return false;
+    if (!ready) return true;
+    const ActionBinding expected{{actor.client, actor.entity, actor.player, actor.player_handle,
+        actor.component, actor.core, actor.context, actor.selector, actor.causes, actor.rig},
+        actor.game_context, actor.world, actor.world_state, actor.world_generation, actor.lifetime_epoch, actor.actor_epoch};
+    if (actor.continuity == actor_control_native::Continuity::observed_context)
+        return a.ready && a.context_valid && a.context_generation == actor.world_generation &&
+            actor_context::published(a.motion_claim.snapshot(), owner, actor.ticket) &&
+            actor_context::observed_identity(expected, a.published,
+                a.watched_entity.load(std::memory_order_acquire), a.actor_destruction.load(std::memory_order_acquire));
+    return a.ready && a.world_generation == actor.world_generation && a.published == expected;
+}
+bool clock_lifetime(const actor_control_native::Actor& actor) noexcept {
+    std::uint64_t epoch{};
+    return multiplayer::entity_destruction_epoch(actor.base, epoch) && epoch == actor.lifetime_epoch &&
+        protection().actions.actor_destruction.load(std::memory_order_acquire) == actor.actor_epoch;
+}
+void advance_clock_revision() noexcept {
+    auto& p = protection();
+    if (!actor_context::advance(p.clock_revision)) p.clock_revision_valid = false;
+}
+bool observed_clock_owner(std::uint64_t owner, std::uint64_t sequence,
+    const actor_control_native::Actor& actor) noexcept {
+    auto& p = protection();
+    if (!TryAcquireSRWLockShared(&p.lock)) return false;
+    const bool matching = clock_owned_locked(owner, sequence, actor, true) &&
+        p.actions.clock_enabled_ticket.load(std::memory_order_acquire) == actor.ticket.generation;
+    ReleaseSRWLockShared(&p.lock);
+    return matching;
+}
+bool commit_observed_clock(std::uint64_t owner, const actor_control_native::Actor& actor, std::uint64_t epoch,
+    std::uint64_t revision, const actor_clock::Ledger<actor_control_native::Actor>& candidate) noexcept {
+    auto& p = protection();
+    if (!p.clock_revision_valid || p.clock_revision != revision || !observed_epoch(actor, epoch) ||
+        !actor_context::published(p.actions.motion_claim.snapshot(), owner, actor.ticket)) return false;
+    const auto previous = p.claim_clock;
+    p.claim_clock = candidate;
+    // Readers hold this same lock, so a rejected candidate never becomes visible.
+    if (!observed_epoch(actor, epoch) || !actor_context::published(p.actions.motion_claim.snapshot(), owner, actor.ticket)) {
+        p.claim_clock = previous; return false;
+    }
+    if (!actor_context::advance(p.clock_revision)) {
+        p.clock_revision_valid = false; p.claim_clock = previous; return false;
+    }
+    return true;
+}
+void feed_observed_clock(std::uint64_t owner, std::uint64_t sequence,
+    const actor_control_native::Actor& actor, float seconds) noexcept {
+    auto& p = protection();
+    ActionBinding live; std::uint64_t epoch{};
+    if (!observed_capture(actor, live, epoch) || !TryAcquireSRWLockExclusive(&p.clock_lock)) return;
+    auto candidate = p.claim_clock;
+    const auto revision = p.clock_revision;
+    actor_clock::Feed<actor_control_native::Actor> feed;
+    const bool staged = p.clock_revision_valid && candidate.begin(claim_clock_key(owner, sequence, actor), feed) &&
+        candidate.publish(feed, seconds, GetTickCount64());
+    ReleaseSRWLockExclusive(&p.clock_lock);
+    if (!staged || !observed_close(actor, epoch) || !observed_clock_owner(owner, sequence, actor) ||
+        !TryAcquireSRWLockExclusive(&p.clock_lock)) return;
+    if (p.actions.clock_enabled_ticket.load(std::memory_order_acquire) == actor.ticket.generation)
+        (void)commit_observed_clock(owner, actor, epoch, revision, candidate);
+    ReleaseSRWLockExclusive(&p.clock_lock);
+}
+void feed_claim_clock(const NoBailSkater& source, float seconds) noexcept {
+    auto& p = protection(); auto& a = p.actions;
+    const auto enabled = a.clock_enabled_ticket.load(std::memory_order_acquire);
+    if (!enabled) return;
+    LastError error;
+    if (!TryAcquireSRWLockShared(&p.lock)) return;
+    const auto actor = a.claimed_actor;
+    const auto key = claim_clock_key(a.claim_owner, a.claim_sequence, actor);
+    const bool matching = enabled == actor.ticket.generation &&
+        a.clock_enabled_ticket.load(std::memory_order_acquire) == enabled &&
+        clock_owned_locked(key.owner, key.sequence, actor, true) &&
+        source.base == actor.base && source.entity == actor.entity && source.core == actor.core &&
+        source.context == actor.context && source.rig == actor.rig;
+    ReleaseSRWLockShared(&p.lock);
+    if (actor.continuity == actor_control_native::Continuity::observed_context) {
+        if (matching) feed_observed_clock(key.owner, key.sequence, actor, seconds);
+        return;
+    }
+    if (!matching || !clock_lifetime(actor) || !TryAcquireSRWLockExclusive(&p.clock_lock)) return;
+    actor_clock::Feed<actor_control_native::Actor> feed;
+    if (a.clock_enabled_ticket.load(std::memory_order_acquire) == enabled && clock_lifetime(actor) &&
+        p.claim_clock.begin(key, feed))
+        (void)p.claim_clock.publish(feed, seconds, GetTickCount64());
+    advance_clock_revision();
+    ReleaseSRWLockExclusive(&p.clock_lock);
+}
+
 bool cancel_request(std::uintptr_t context, std::uintptr_t offset, LONG mask) noexcept {
     const auto address = context + offset;
     if (context < 0x10000 || context > highest - offset - sizeof(LONG) ||
@@ -288,6 +632,8 @@ bool reset_pending_causes(std::uintptr_t causes) noexcept {
 }
 bool filter_requests(std::uintptr_t object, std::uintptr_t Owner::* member) noexcept {
     LastError error;
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer)) return false;
     Owner owner;
     // Native collision/landing checks also write the collector inline. Reset
     // it at each consumer, after those writes, before either animation's bail
@@ -297,6 +643,8 @@ bool filter_requests(std::uintptr_t object, std::uintptr_t Owner::* member) noex
 }
 bool suppress_cause(std::uintptr_t causes, std::int32_t reason, std::uintptr_t caller) noexcept {
     LastError error;
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer)) return false;
     Owner owner;
     if (!protected_owner(causes, &Owner::causes, &owner)) return false;
     for (const auto& impact : impact_bail_calls) {
@@ -306,11 +654,13 @@ bool suppress_cause(std::uintptr_t causes, std::int32_t reason, std::uintptr_t c
     return true;
 }
 void record_cause(std::uintptr_t causes, std::int32_t reason, float magnitude) {
+    actor_control::IdleCall writer;
+    const bool optional_allowed = skater_action::enter_motion_writer(writer);
     const auto caller = reinterpret_cast<std::uintptr_t>(_ReturnAddress());
     if (causes == state_watch().causes.load(std::memory_order_acquire)) {
         skater_events::note_cause(reason, magnitude);
     }
-    const bool protect = suppress_cause(causes, reason, caller);
+    const bool protect = optional_allowed && suppress_cause(causes, reason, caller);
     // Do not force the native recovery/stumble predicate (recovery_predicate). Its
     // result is also exported to animation at +0x9e, even without a collision.
     // Stop new causes before they reach either the wipeout or runout decision;
@@ -669,6 +1019,7 @@ struct DarkPop {
     std::atomic<float> last_hold_blend{};
 };
 DarkPop& dark_pop() { static auto* value = new DarkPop; return *value; }
+
 // The board's up axis, height part: about +1 riding normally, about -1 upside down. False if it cannot be read.
 bool dark_pop_board_up(float& up) noexcept {
     const auto board = dark_pop().board.load(std::memory_order_relaxed);
@@ -749,6 +1100,8 @@ std::atomic<PlacementEntry> placement_original{};
 std::uint64_t __fastcall placement_entry(std::uintptr_t self, std::uintptr_t arg, std::uintptr_t r8, std::uintptr_t r9) noexcept {
     auto& d = dark_pop();
     const auto original = placement_original.load(std::memory_order_acquire);
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer)) return original ? original(self, arg, r8, r9) : 0;
     bool mine = false;
     if (d.enabled.load(std::memory_order_relaxed)) {
         std::uintptr_t context{};
@@ -1059,6 +1412,8 @@ bool feet_clear_attach(std::uintptr_t self) noexcept {
 void __fastcall footplant_tick_hook(std::uintptr_t self, std::uintptr_t out) noexcept {
     auto& d = dark_pop();
     const auto original = footplant_tick_original.load(std::memory_order_acquire);
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer)) { if (original) original(self, out); return; }
     if (d.enabled.load(std::memory_order_relaxed)) {
         std::uintptr_t context{};
         const auto want = d.context.load(std::memory_order_relaxed);
@@ -1998,7 +2353,9 @@ void fast_probe_record(std::uintptr_t selector, std::uint32_t current, std::uint
     f.head.store(head + 1, std::memory_order_release);
 }
 std::uint32_t choose_state(std::uintptr_t selector, std::uint32_t current) {
-    {
+    actor_control::IdleCall writer;
+    const bool optional_allowed = skater_action::enter_motion_writer(writer);
+    if (optional_allowed) {
         LastError error;
         hold_off_board(selector, current);
         dark_pop_before(selector, current);
@@ -2006,7 +2363,7 @@ std::uint32_t choose_state(std::uintptr_t selector, std::uint32_t current) {
     // A wipeout asked for (no_bail_request_wipeout): its cause goes in as the game's contact tests
     // record theirs, and the pick is Wipeout, as some of those tests return it directly.
     bool force_wipeout{};
-    if (auto& wanted = wanted_wipeout(); wanted.until.load(std::memory_order_acquire) &&
+    if (auto& wanted = wanted_wipeout(); optional_allowed && wanted.until.load(std::memory_order_acquire) &&
         selector == state_watch().selector.load(std::memory_order_acquire)) {
         LastError error;
         if (const auto until = wanted.until.exchange(0, std::memory_order_acq_rel); GetTickCount64() < until)
@@ -2026,7 +2383,7 @@ std::uint32_t choose_state(std::uintptr_t selector, std::uint32_t current) {
         next = wipeout_physics_state;
     }
     auto chosen = filtered && next == wipeout_physics_state && protected_owner(selector, &Owner::selector) ? current : next;
-    chosen = dark_pop_after(selector, current, chosen);
+    if (optional_allowed) chosen = dark_pop_after(selector, current, chosen);
     fast_probe_record(selector, current, next, chosen);
     auto& w = state_watch();
     if (selector == w.selector.load(std::memory_order_acquire) && GetTickCount64() < w.until.load(std::memory_order_acquire)) {
@@ -2047,25 +2404,34 @@ std::uint32_t choose_state(std::uintptr_t selector, std::uint32_t current) {
     return chosen;
 }
 void skeleton_response(std::uintptr_t rig, float seconds, bool wipeout) {
+    actor_control::IdleCall writer;
+    const bool optional_allowed = skater_action::enter_motion_writer(writer);
     // The state post-update can raise another request after the selector ran.
     // Filter at this consumer, then let native constraints and recovery run.
-    if (filter_requests(rig, &Owner::rig)) wipeout = false;
+    if (optional_allowed && filter_requests(rig, &Owner::rig)) wipeout = false;
     std::array<NoBailStepObserver, no_bail_step_listener_slots> listeners{};
     bool any = false;
     for (std::size_t i = 0; i < listeners.size(); ++i) {
         listeners[i] = protection().listeners[i].load(std::memory_order_acquire);
         any = any || listeners[i];
     }
+    const bool clock_enabled = protection().actions.clock_enabled_ticket.load(std::memory_order_acquire) != 0;
     if (any) {
         LastError error;
         NoBailSkater skater;
         if (published_skater(rig, skater)) {
+            if (clock_enabled) feed_claim_clock(skater, seconds);
             for (const auto listener : listeners)
                 if (listener) listener(skater, seconds, wipeout);
         }
+    } else if (clock_enabled) {
+        LastError error;
+        NoBailSkater skater;
+        if (published_skater(rig, skater, true)) feed_claim_clock(skater, seconds);
     }
     protection().skeleton_original(rig, seconds, wipeout);
 }
+
 bool clear_contact_output(std::uintptr_t contacts) noexcept {
     if (contacts < 0x10000 || contacts > highest - body_contact_output_offset) return false;
     __try {
@@ -2210,13 +2576,18 @@ bool update_no_bail(std::uintptr_t client, std::uintptr_t entity, bool manual,
     LastError error;
     auto& p = protection();
     Lease next;
-    const bool available = p.ready.load(std::memory_order_acquire) && resolve(client, entity, next.owner);
+    bool available = p.ready.load(std::memory_order_acquire) && resolve(client, entity, next.owner);
     if (available) {
         const auto now = GetTickCount64();
         next.manual_until = manual ? now + 500 : 0;
         next.flight_until = flying ? flight_expires : 0;
     }
     AcquireSRWLockExclusive(&p.lock);
+    actor_control::IdleCall writer;
+    if (available && next.active(GetTickCount64()) && !p.actions.motion_claim.enter_idle(writer)) {
+        ReleaseSRWLockExclusive(&p.lock);
+        return false;
+    }
     p.lease = available ? next : Lease{};
     ReleaseSRWLockExclusive(&p.lock);
     return available;
@@ -2232,6 +2603,8 @@ bool set_teleport_on_board(std::uintptr_t component) noexcept {
 }
 bool prepare_on_board_teleport(std::uintptr_t client, std::uintptr_t entity) noexcept {
     LastError error;
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer)) return false;
     Owner owner;
     if(!protection().ready.load(std::memory_order_acquire) || !resolve(client,entity,owner))return false;
     std::uint8_t board{};
@@ -2243,6 +2616,8 @@ bool prepare_on_board_teleport(std::uintptr_t client, std::uintptr_t entity) noe
 }
 bool prepare_teleport_equipment(const NoBailSkater& expected, bool on_board) noexcept {
     LastError error;
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer)) return false;
     auto& p = protection();
     if (!p.ready.load(std::memory_order_acquire) || !TryAcquireSRWLockShared(&p.lock)) return false;
     struct Unlock { SRWLOCK& lock; ~Unlock() { ReleaseSRWLockShared(&lock); } } unlock{p.lock};
@@ -2268,6 +2643,8 @@ void update_board_lock(std::uintptr_t client, std::uintptr_t entity, bool locked
     auto& p = protection();
     if (!p.ready.load(std::memory_order_acquire)) return;
     if (locked) {
+        actor_control::IdleCall writer;
+        if (!skater_action::enter_motion_writer(writer)) return;
         // The owner does not resolve while a teleport is under way: the last one stands
         // until it expires.
         BoardLock next;
@@ -2301,7 +2678,15 @@ void clear_no_bail() noexcept {
 bool no_bail_skater(NoBailSkater& skater) noexcept { return published_skater(0, skater); }
 void dark_pop_update(bool enabled, std::uintptr_t board, bool unpatch, bool hold, bool one_press,
     unsigned route_stay, unsigned route_guard, bool keep_speed, bool catch_dismount, bool feet, bool adaptive, bool catch_timeout, float pop_strength, bool hold_landing, bool dark_exit, bool full_flight, bool hold_flight, unsigned stay_physical, bool early_physics, bool reaim, bool hide_dpad) noexcept {
+    LastError error;
+    auto& p = protection();
     auto& d = dark_pop();
+    actor_control::IdleCall writer;
+    AcquireSRWLockExclusive(&p.lock);
+    if (enabled && !p.actions.motion_claim.enter_idle(writer)) {
+        ReleaseSRWLockExclusive(&p.lock);
+        return;
+    }
     d.hide_dpad.store(hide_dpad, std::memory_order_relaxed);
     d.reaim.store(reaim, std::memory_order_relaxed);
     d.early_physics.store(early_physics, std::memory_order_relaxed);
@@ -2322,13 +2707,23 @@ void dark_pop_update(bool enabled, std::uintptr_t board, bool unpatch, bool hold
     d.unpatch.store(unpatch, std::memory_order_relaxed);
     d.hold.store(hold, std::memory_order_relaxed);
     d.board.store(enabled ? board : 0, std::memory_order_relaxed);
-    d.enabled.store(enabled, std::memory_order_relaxed);
+    d.enabled.store(enabled, std::memory_order_release);
+    ReleaseSRWLockExclusive(&p.lock);
 }
 void dark_pop_publish_bodies(const std::uintptr_t* parts, std::size_t count) noexcept {
+    LastError error;
+    auto& p = protection();
     auto& d = dark_pop();
     const auto n = std::min(count, body_parts);
+    actor_control::IdleCall writer;
+    AcquireSRWLockExclusive(&p.lock);
+    if (n && !p.actions.motion_claim.enter_idle(writer)) {
+        ReleaseSRWLockExclusive(&p.lock);
+        return;
+    }
     for (std::size_t i = 0; i < body_parts; ++i) d.parts[i].store(i < n && parts ? parts[i] : 0, std::memory_order_relaxed);
     d.part_count.store(static_cast<unsigned>(n), std::memory_order_relaxed);
+    ReleaseSRWLockExclusive(&p.lock);
 }
 DarkPopLast dark_pop_last() noexcept {
     auto& d = dark_pop();
@@ -2463,6 +2858,9 @@ std::size_t fast_probe_drain(FastProbeRow* rows, std::size_t capacity) noexcept 
     return count;
 }
 void no_bail_request_wipeout(float magnitude) noexcept {
+    LastError error;
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer)) return;
     auto& wanted = wanted_wipeout();
     wanted.magnitude.store(magnitude, std::memory_order_relaxed);
     wanted.until.store(GetTickCount64() + 250, std::memory_order_release);
@@ -2544,3 +2942,386 @@ RevertLanding last_revert_landing() noexcept {
     return landing;
 }
 }
+
+
+namespace dingosdk::skater_action {
+
+
+bool enter_motion_writer(actor_control::IdleCall& call) noexcept {
+    LastError error;
+    return protection().actions.motion_claim.enter_idle(call);
+}
+
+void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
+    LastError error;
+    auto& p = protection();
+    bool listener = p.actions.listener, contract = p.actions.world_contract;
+    if (ready && p.ready.load(std::memory_order_acquire) && p.base == base) {
+        if (!listener) {
+            std::string detail;
+            listener = multiplayer::install_entity_hooks(base, detail) &&
+                multiplayer::add_entity_destroyed_listener(&action_destroyed) &&
+                multiplayer::entity_destruction_hook_available(base);
+        }
+        if (!contract) {
+            std::array<unsigned char, 32> bytes{};
+            contract = memory::peek(base + action_addr::physics_world.rva, bytes) && bytes == action_addr::physics_world.bytes;
+        }
+    }
+    Owner owner;
+    AcquireSRWLockShared(&p.lock);
+    owner = p.lease.owner;
+    ReleaseSRWLockShared(&p.lock);
+    ActionBinding binding; std::uint64_t epoch{}, after{};
+    ready = ready && p.ready.load(std::memory_order_acquire) && listener && contract && p.base == base && owner.client == client &&
+        action_capture(owner, binding, epoch);
+    AcquireSRWLockExclusive(&p.lock);
+    auto& a = p.actions;
+    const auto previous_context = a.published;
+    const auto previous_ready = a.ready;
+    a.listener = listener; a.world_contract = contract;
+    if (!ready || binding.owner != a.published.owner || binding.game_context != a.published.game_context ||
+        binding.world != a.published.world || binding.world_state != a.published.world_state ||
+        binding.lifetime_epoch != a.published.lifetime_epoch) {
+        ++a.world_generation;
+    }
+    binding.world_generation = a.world_generation;
+    a.published = binding; a.ready = ready; a.tick_at = GetTickCount64(); a.client_thread = GetCurrentThreadId();
+    if (ready && (!multiplayer::entity_destruction_epoch(base, after) || after != epoch)) {
+        a.ready = false;
+    }
+    if (actor_context::generation_changed(previous_ready, a.ready, previous_context, a.published) &&
+        !actor_context::advance(a.context_generation)) a.context_valid = false;
+    ReleaseSRWLockExclusive(&p.lock);
+}
+} // namespace dingosdk::skater_action
+
+namespace dingosdk::actor_control_native {
+namespace {
+Actor captured_actor(const ActionBinding& binding, actor_control::Ticket ticket,
+    Continuity continuity = Continuity::native_lifetime,
+    actor_control::Domain domain = actor_control::Domain::equipment) noexcept {
+    const auto& o = binding.owner;
+    return {protection().base, o.client, o.entity, o.player, o.handle, o.component, o.core, o.context,
+        o.selector, o.causes, o.rig, binding.game_context, binding.world, binding.world_state,
+        binding.world_generation, binding.lifetime_epoch, binding.actor_epoch, ticket, continuity, domain};
+}
+ActionBinding actor_binding(const Actor& actor) noexcept {
+    return context_binding(actor);
+}
+bool owned_locked(std::uint64_t owner, std::uint64_t sequence, const Actor& actor) noexcept {
+    const auto& a = protection().actions;
+    return actor_context::valid(actor.continuity) && owner && sequence && a.claim_owner == owner && a.claim_sequence == sequence &&
+        a.claimed_actor == actor && actor.ticket &&
+        actor.domain == actor_control::Domain::equipment &&
+        a.motion_claim.owns(owner, actor.ticket, actor.domain);
+}
+
+
+}
+
+
+bool acquire(std::uint64_t owner, std::uint64_t sequence, Admission admission,
+    Actor& actor, Reason& reason, Continuity continuity) noexcept {
+    LastError error; actor = {}; reason = Reason::none;
+    if (!owner || !sequence) { reason = Reason::invalid_owner; return false; }
+    if (!admission || !actor_context::valid(continuity)) { reason = Reason::unavailable; return false; }
+    auto& p = protection(); auto& a = p.actions;
+    actor_control::Ticket ticket;
+    // Reserve before provider inspection. A cooperating motion provider sees
+    // the admission and cannot publish while this capture is in progress.
+    if (!a.motion_claim.reserve(owner, actor_control::Domain::equipment, ticket)) {
+        reason = Reason::busy; return false;
+    }
+    ActionBinding expected;
+    AcquireSRWLockShared(&p.lock);
+    const auto ready = a.ready && GetCurrentThreadId() == a.client_thread;
+    expected = a.published;
+    if (continuity == Continuity::observed_context) expected.world_generation = a.context_generation;
+    ReleaseSRWLockShared(&p.lock);
+    if (ready) a.watched_entity.store(expected.owner.entity, std::memory_order_release);
+    ActionBinding live; skater_action::State state; std::uint64_t epoch{}, after{};
+    reason = ready ? action_validate(expected, live, state, epoch, false, nullptr, continuity) : Reason::unavailable;
+    if (reason == Reason::none && !admission(state))
+        reason = Reason::unsupported_state;
+    // Equipment request bits belong to the game; this path neither inserts nor clears them.
+    AcquireSRWLockExclusive(&p.lock);
+    const auto now = GetTickCount64();
+    if (reason == Reason::none && action_protection_locked(live.owner, now)) reason = Reason::protection_conflict;
+    const bool published_matches = continuity == Continuity::native_lifetime ? a.published == expected :
+        a.context_valid && a.context_generation == expected.world_generation &&
+        actor_context::observed_identity(expected, a.published,
+            a.watched_entity.load(std::memory_order_acquire), a.actor_destruction.load(std::memory_order_acquire));
+    if (reason == Reason::none && (!a.ready || !published_matches ||
+        !multiplayer::entity_destruction_epoch(p.base, after) || after != epoch)) reason = Reason::actor_changed;
+    bool accepted{};
+    if (reason == Reason::none) {
+        const auto captured = captured_actor(live, ticket, continuity);
+        if (a.motion_claim.publish(owner, ticket)) {
+            a.claim_owner = owner; a.claim_sequence = sequence;
+            a.claimed_actor = captured; actor = captured; accepted = true;
+        } else reason = Reason::motion_owned;
+    }
+    if (!accepted) {
+        (void)a.motion_claim.abandon(owner, ticket);
+        if (!a.claim_owner) a.watched_entity.store(0, std::memory_order_release);
+    }
+    ReleaseSRWLockExclusive(&p.lock);
+    return accepted;
+}
+
+
+namespace {
+
+}
+
+
+bool inspect(std::uint64_t owner, std::uint64_t sequence, const Actor& expected,
+    Actor& actor, State& state, Reason& reason, bool cleanup) noexcept {
+    Observation observation;
+    return inspect(owner, sequence, expected, actor, state, reason, observation, cleanup);
+}
+
+bool inspect(std::uint64_t owner, std::uint64_t sequence, const Actor& expected,
+    Actor& actor, State& state, Reason& reason, Observation& observation, bool cleanup) noexcept {
+    InspectionFacts facts;
+    return inspect(owner, sequence, expected, actor, state, reason, observation, facts, cleanup);
+}
+bool inspect(std::uint64_t owner, std::uint64_t sequence, const Actor& expected,
+    Actor& actor, State& state, Reason& reason, Observation& observation,
+    InspectionFacts& facts, bool cleanup) noexcept {
+    LastError error; actor = {}; state = {}; reason = Reason::none; observation = {}; facts = {};
+    const auto noted = [](InspectionCheck& fact, bool equal) noexcept {
+        fact = equal ? InspectionCheck::equal : InspectionCheck::different;
+        return equal;
+    };
+    auto& p = protection(); auto& a = p.actions;
+    if (!TryAcquireSRWLockShared(&p.lock)) {
+        reason = action_check(&observation, actor_observation::Phase::inspect_owner_lock, Reason::unavailable); return false;
+    }
+    const bool owned = owned_locked(owner, sequence, expected);
+    const auto generation = actor_context::generation(expected.continuity, a.world_generation, a.context_generation);
+    ReleaseSRWLockShared(&p.lock);
+    if (!owned) {
+        reason = action_check(&observation, actor_observation::Phase::inspect_ownership, Reason::motion_owned); return false;
+    }
+    const auto binding = actor_binding(expected);
+    ActionBinding first, second; skater_action::State observed; std::uint64_t epoch{}, after{};
+    if (!cleanup) {
+        reason = action_validate(binding, first, observed, epoch, true, &observation, expected.continuity, &facts);
+        if (reason != Reason::none) return false;
+    } else {
+        // Cancellation, an open menu, lost focus or a new protection lease
+        // cannot cancel the service's outstanding cleanup obligation. The
+        // exact actor and world still have to survive both fresh captures.
+        if ((expected.continuity == Continuity::observed_context && !observed_actor_fence(binding)) ||
+            !action_capture(binding.owner, first, epoch)) {
+            reason = action_check(&observation, actor_observation::Phase::capture, Reason::actor_changed); return false;
+        }
+        first.world_generation = generation;
+        action_snapshot_facts(binding, first, &facts);
+        const auto native_changed = [&]() noexcept {
+            const bool changed = first != binding;
+            (void)noted(facts.binding, !changed);
+            return changed;
+        };
+        if (expected.continuity == Continuity::native_lifetime ? native_changed() :
+            !actor_context::same_identity(first, binding) || generation != expected.world_generation) {
+            reason = action_check(&observation, actor_observation::Phase::lifetime, Reason::native_lifetime_changed); return false;
+        }
+        const auto before = action_state(first.owner);
+        if (!action_capture(binding.owner, second, after)) {
+            reason = action_check(&observation, actor_observation::Phase::recapture, Reason::actor_changed); return false;
+        }
+        second.world_generation = generation;
+        if (first != second || epoch != after || action_state(second.owner) != before) {
+            reason = action_check(&observation, actor_observation::Phase::context, Reason::context_changed); return false;
+        }
+        observed = before.state;
+    }
+    if (!TryAcquireSRWLockShared(&p.lock)) {
+        reason = action_check(&observation, actor_observation::Phase::final_owner_lock, Reason::unavailable); return false;
+    }
+    const bool unchanged = noted(facts.closing_owner, owned_locked(owner, sequence, expected)) &&
+        noted(facts.closing_generation,
+            actor_context::generation(expected.continuity, a.world_generation, a.context_generation) == generation) &&
+        (expected.continuity == Continuity::native_lifetime ||
+            (expected.base == p.base && a.context_valid && observed_actor_fence(binding))) &&
+        noted(facts.closing_epoch_read, multiplayer::entity_destruction_epoch(p.base, after)) &&
+        noted(facts.closing_epoch, after == epoch);
+    ReleaseSRWLockShared(&p.lock);
+    if (!unchanged) {
+        reason = action_check(&observation, actor_observation::Phase::final_lifetime, Reason::native_lifetime_changed); return false;
+    }
+    actor = expected.continuity == Continuity::observed_context ? expected : captured_actor(first, expected.ticket, expected.continuity, expected.domain);
+    if (actor != expected) {
+        actor = {}; reason = action_check(&observation, actor_observation::Phase::identity, Reason::actor_changed); return false;
+    }
+    state = observed;
+    observation = {actor_observation::Phase::qualified, Reason::none};
+    return true;
+}
+
+bool enter(std::uint64_t owner, std::uint64_t sequence,
+    const Actor& actor, actor_control::Call& call) noexcept {
+    Observation observation;
+    return enter(owner, sequence, actor, call, observation);
+}
+
+bool enter(std::uint64_t owner, std::uint64_t sequence,
+    const Actor& actor, actor_control::Call& call, Observation& observation) noexcept {
+    observation = {};
+    auto& p = protection();
+    if (!TryAcquireSRWLockShared(&p.lock)) {
+        observation = {actor_observation::Phase::enter_owner_lock, Reason::unavailable}; return false;
+    }
+    const bool owned = owned_locked(owner, sequence, actor);
+    const bool entered = owned && p.actions.motion_claim.enter(owner, actor.ticket, call);
+    ReleaseSRWLockShared(&p.lock);
+    observation = !owned ? Observation{actor_observation::Phase::enter_ownership, Reason::motion_owned} :
+        !entered ? Observation{actor_observation::Phase::enter_claim, Reason::busy} :
+        Observation{actor_observation::Phase::qualified, Reason::none};
+    return entered;
+}
+
+bool retire(std::uint64_t owner, std::uint64_t sequence,
+    const Actor& actor, bool duty_resolved) noexcept {
+    LastError error; auto& p = protection(); auto& a = p.actions;
+    if (actor.domain != actor_control::Domain::equipment || !actor_context::valid(actor.continuity)) return false;
+    std::uint64_t epoch{};
+    const bool exact_retired = !duty_resolved &&
+        a.watched_entity.load(std::memory_order_acquire) == actor.entity &&
+        a.actor_destruction.load(std::memory_order_acquire) != actor.actor_epoch &&
+        multiplayer::entity_destruction_epoch(actor.base, epoch);
+    if (!duty_resolved && !exact_retired) return false;
+    AcquireSRWLockExclusive(&p.lock);
+    const bool retired = owned_locked(owner, sequence, actor) &&
+        a.motion_claim.revoke(owner, actor.ticket) && a.motion_claim.retire(owner, actor.ticket);
+    if (retired) {
+        if (a.clock_enabled_ticket.load(std::memory_order_acquire) == actor.ticket.generation)
+            a.clock_enabled_ticket.store(0, std::memory_order_release);
+        a.claimed_actor = {}; a.claim_owner = a.claim_sequence = 0;
+        a.watched_entity.store(0, std::memory_order_release);
+    }
+    ReleaseSRWLockExclusive(&p.lock);
+    return retired;
+}
+
+bool enable_clock(std::uint64_t owner, std::uint64_t sequence,
+    const Actor& actor, Reason& reason) noexcept {
+    LastError error; reason = Reason::unavailable;
+    if (!actor_context::valid(actor.continuity)) return false;
+    auto& p = protection(); auto& a = p.actions;
+    if (actor.continuity == Continuity::observed_context) {
+        ActionBinding live; std::uint64_t epoch{};
+        if (!observed_capture(actor, live, epoch)) return false;
+        AcquireSRWLockShared(&p.lock);
+        const auto enabled = a.clock_enabled_ticket.load(std::memory_order_acquire);
+        const bool matching = GetCurrentThreadId() == a.client_thread && clock_owned_locked(owner, sequence, actor, true) &&
+            (!enabled || enabled == actor.ticket.generation) &&
+            (a.clock_started_ticket != actor.ticket.generation || enabled == actor.ticket.generation);
+        ReleaseSRWLockShared(&p.lock);
+        if (!matching) return false;
+        AcquireSRWLockExclusive(&p.clock_lock);
+        auto candidate = p.claim_clock;
+        const auto revision = p.clock_revision;
+        const bool initialized = p.clock_revision_valid && candidate.enable(claim_clock_key(owner, sequence, actor));
+        ReleaseSRWLockExclusive(&p.clock_lock);
+        if (!initialized || !observed_close(actor, epoch)) return false;
+        AcquireSRWLockExclusive(&p.clock_lock);
+        const bool committed = commit_observed_clock(owner, actor, epoch, revision, candidate);
+        ReleaseSRWLockExclusive(&p.clock_lock);
+        if (!committed) return false;
+        AcquireSRWLockExclusive(&p.lock);
+        const auto current = a.clock_enabled_ticket.load(std::memory_order_acquire);
+        bool unchanged = GetCurrentThreadId() == a.client_thread && clock_owned_locked(owner, sequence, actor, true) &&
+            (!current || current == actor.ticket.generation) &&
+            (a.clock_started_ticket != actor.ticket.generation || current == actor.ticket.generation) && observed_epoch(actor, epoch);
+        if (unchanged) {
+            a.clock_started_ticket = actor.ticket.generation;
+            a.clock_enabled_ticket.store(actor.ticket.generation, std::memory_order_release);
+            unchanged = observed_epoch(actor, epoch) && actor_context::published(a.motion_claim.snapshot(), owner, actor.ticket);
+            if (!unchanged) a.clock_enabled_ticket.store(0, std::memory_order_release);
+            else reason = Reason::none;
+        }
+        ReleaseSRWLockExclusive(&p.lock);
+        return unchanged;
+    }
+    // This one-time client-phase admission may wait for SDK bookkeeping.
+    // Never nest the owner and clock locks; native feed/read paths stay Try-only.
+    AcquireSRWLockShared(&p.lock);
+    const auto enabled = a.clock_enabled_ticket.load(std::memory_order_acquire);
+    const bool matching = GetCurrentThreadId() == a.client_thread && clock_owned_locked(owner, sequence, actor, true) &&
+        (!enabled || enabled == actor.ticket.generation) &&
+        (a.clock_started_ticket != actor.ticket.generation || enabled == actor.ticket.generation);
+    ReleaseSRWLockShared(&p.lock);
+    if (!matching || !clock_lifetime(actor)) return false;
+    AcquireSRWLockExclusive(&p.clock_lock);
+    const auto key = claim_clock_key(owner, sequence, actor);
+    const bool initialized = p.claim_clock.enable(key);
+    advance_clock_revision();
+    ReleaseSRWLockExclusive(&p.clock_lock);
+    if (!initialized || !clock_lifetime(actor)) return false;
+    AcquireSRWLockExclusive(&p.lock);
+    const auto current = a.clock_enabled_ticket.load(std::memory_order_acquire);
+    const bool unchanged = GetCurrentThreadId() == a.client_thread && clock_owned_locked(owner, sequence, actor, true) &&
+        (!current || current == actor.ticket.generation) &&
+        (a.clock_started_ticket != actor.ticket.generation || current == actor.ticket.generation) && clock_lifetime(actor);
+    if (unchanged) {
+        a.clock_started_ticket = actor.ticket.generation;
+        a.clock_enabled_ticket.store(actor.ticket.generation, std::memory_order_release);
+        reason = Reason::none;
+    }
+    ReleaseSRWLockExclusive(&p.lock);
+    return unchanged;
+}
+
+bool read_clock(std::uint64_t owner, std::uint64_t sequence,
+    const Actor& actor, Clock& value) noexcept {
+    LastError error; value = {};
+    if (!actor_context::valid(actor.continuity)) return false;
+    auto& p = protection(); auto& a = p.actions;
+    if (actor.continuity == Continuity::observed_context) {
+        ActionBinding live; std::uint64_t epoch{};
+        if (!observed_capture(actor, live, epoch) || !observed_clock_owner(owner, sequence, actor) ||
+            !TryAcquireSRWLockShared(&p.clock_lock)) return false;
+        Clock observed;
+        const bool sampled = p.clock_revision_valid && p.claim_clock.read(claim_clock_key(owner, sequence, actor), GetTickCount64(), observed);
+        ReleaseSRWLockShared(&p.clock_lock);
+        if (!sampled || !observed_close(actor, epoch) || !observed_clock_owner(owner, sequence, actor) ||
+            !observed_epoch(actor, epoch) || !actor_context::published(a.motion_claim.snapshot(), owner, actor.ticket)) return false;
+        value = observed; return true;
+    }
+    if (!clock_lifetime(actor) || !TryAcquireSRWLockShared(&p.lock)) return false;
+    const bool matching = clock_owned_locked(owner, sequence, actor, true) &&
+        a.clock_enabled_ticket.load(std::memory_order_acquire) == actor.ticket.generation;
+    ReleaseSRWLockShared(&p.lock);
+    if (!matching || !TryAcquireSRWLockShared(&p.clock_lock)) return false;
+    Clock observed;
+    const bool sampled = p.claim_clock.read(claim_clock_key(owner, sequence, actor), GetTickCount64(), observed);
+    ReleaseSRWLockShared(&p.clock_lock);
+    if (!sampled || !clock_lifetime(actor) || !TryAcquireSRWLockShared(&p.lock)) return false;
+    const bool unchanged = clock_owned_locked(owner, sequence, actor, true) &&
+        a.clock_enabled_ticket.load(std::memory_order_acquire) == actor.ticket.generation;
+    ReleaseSRWLockShared(&p.lock);
+    if (!unchanged || !clock_lifetime(actor)) return false;
+    value = observed; return true;
+}
+
+bool disable_clock(std::uint64_t owner, std::uint64_t sequence,
+    const Actor& actor) noexcept {
+    LastError error;
+    auto& p = protection(); auto& a = p.actions;
+    if (!TryAcquireSRWLockExclusive(&p.lock)) return false;
+    const auto enabled = a.clock_enabled_ticket.load(std::memory_order_acquire);
+    const bool matching = clock_owned_locked(owner, sequence, actor, false) &&
+        a.clock_started_ticket == actor.ticket.generation && (!enabled || enabled == actor.ticket.generation);
+    if (matching) a.clock_enabled_ticket.store(0, std::memory_order_release);
+    ReleaseSRWLockExclusive(&p.lock);
+    if (!matching || !TryAcquireSRWLockExclusive(&p.clock_lock)) return false;
+    const bool disabled = p.claim_clock.disable(claim_clock_key(owner, sequence, actor));
+    if (disabled) advance_clock_revision();
+    ReleaseSRWLockExclusive(&p.clock_lock);
+    return disabled;
+}
+} // namespace dingosdk::actor_control_native

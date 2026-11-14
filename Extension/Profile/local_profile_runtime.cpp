@@ -621,7 +621,11 @@ bool initialize_local_profile(std::uintptr_t base, bool authored_offline,
         initialize_placement_store(path);
         initialize_park_editor(path.parent_path());
         set_park_mods_root(mods::engine_data_root());
-        s.active.store(true, std::memory_order_release);
+        {
+            auto queue = placements_runtime().teleport_queue.mutate();
+            queue.lifecycle_changed();
+            s.active.store(true, std::memory_order_release);
+        }
         start_world_layers();
         start_park_rotation();
         start_world_controls();
@@ -632,7 +636,16 @@ bool initialize_local_profile(std::uintptr_t base, bool authored_offline,
         dingosdk::logging::event(dingosdk::logging::Channel::profile, "{\"event\":\"local_profile_initialized\",\"active\":true,\"schema\":1,\"format\":\"sqlite\"}");
         return true;
     } catch (const std::exception& e) {
-        s.active.store(false, std::memory_order_release);
+        {
+            // A true profile already constructed the queue before publication.
+            // An earlier initialization failure stays inactive without allocating
+            // a placement runtime from the error path.
+            if (s.active.load(std::memory_order_acquire)) {
+                auto queue = placements_runtime().teleport_queue.mutate();
+                queue.lifecycle_changed();
+                s.active.store(false, std::memory_order_release);
+            } else s.active.store(false, std::memory_order_release);
+        }
         deactivate_music_playback();
         set_local_profile_event_provider(base, false);
         set_local_object_browser_provider(base, nullptr);

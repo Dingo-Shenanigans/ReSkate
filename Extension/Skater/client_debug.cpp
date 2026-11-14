@@ -1,6 +1,7 @@
 #include "client_source_spawn.h"
 #include "client_source_spawn_internal.h"
 #include "no_bail.h"
+#include "native_actions.h"
 #include "skater_animation.h"
 #include "offboard_flight.h"
 #include "Engine/Core/Log/logging.h"
@@ -671,6 +672,12 @@ void load_saved_debug(InteractiveDebug& debug) noexcept {
 
 void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, bool phase,
                   const overlay::DebugRequest& request, DWORD error) {
+    actor_control::IdleCall activation;
+    const bool starts_motion = request.enabled &&
+        (request.action == overlay::DebugAction::set_noclip || request.action == overlay::DebugAction::set_no_bail ||
+         request.action == overlay::DebugAction::set_dark_pop_enabled || request.action == overlay::DebugAction::set_park_editor);
+    if (starts_motion)
+        source_require(skater_action::enter_motion_writer(activation), "Skater motion is owned by another action.");
     auto& debug = trial.debug;
     if (request.action == overlay::DebugAction::set_park_editor) {
         source_require(!request.enabled || lobby_object_placement_allowed(),
@@ -1011,6 +1018,8 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
     }
     source_require(can_control, "Wait for an active local level before changing debug settings.");
     if (request.action == overlay::DebugAction::add_forward_velocity || request.action == overlay::DebugAction::add_up_velocity || request.action == overlay::DebugAction::add_offboard_up_velocity) {
+        actor_control::IdleCall writer;
+        source_require(skater_action::enter_motion_writer(writer), "Skater motion is owned by another action.");
         source_require(session_boosts_allowed(), "The host has turned off boosts in this session.");
         const bool offboard_boost = request.action == overlay::DebugAction::add_offboard_up_velocity;
         const bool up = request.action == overlay::DebugAction::add_up_velocity || offboard_boost;

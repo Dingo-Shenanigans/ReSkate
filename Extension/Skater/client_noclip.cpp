@@ -2,6 +2,7 @@
 #include "skater_push.h"
 #include "client_source_spawn_internal.h"
 #include "no_bail.h"
+#include "native_actions.h"
 #include "Engine/Game/Multiplayer/session_tools.h"
 #include "offboard_flight.h"
 #include "Engine/Core/Hooks/hooks.h"
@@ -1074,6 +1075,8 @@ void trainer_transition(std::uintptr_t core) noexcept {
 void noclip_physics_update(std::uintptr_t core) {
     const auto original = source_state().velocity_update_original.load(std::memory_order_acquire);
     if (original) original(core);
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer)) return;
     noclip_apply_velocity(core);
     trainer_apply_jump_scale(core);
     if (const auto callback = physics_step_callback.load(std::memory_order_acquire)) callback();
@@ -1167,6 +1170,11 @@ bool noclip_motion_target(std::uintptr_t rig, std::uintptr_t context,
 void noclip_skater_motion(std::uintptr_t rig, std::uintptr_t context,
     const std::array<float,16>* supplied, std::uint8_t flags) {
     const auto original = source_state().motion_original.load(std::memory_order_acquire);
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer)) {
+        if (original) original(rig, context, supplied, flags);
+        return;
+    }
     alignas(16) std::array<float,16> target{};
     const auto* motion = noclip_motion_target(rig, context, supplied, target) ? &target : supplied;
     if (original) original(rig, context, motion, flags);
@@ -1184,6 +1192,8 @@ namespace dingosdk {
 using namespace client_source::detail;
 
 bool queue_skater_push_velocity(std::uintptr_t client,std::uintptr_t entity,const std::array<float,3>& velocity) noexcept {
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer)) return false;
     try {
         auto& state=source_state();auto& request=push_velocity();
         if(!competition_stock_physics() || !start_client_noclip_velocity(state.trial.base) ||
@@ -1203,8 +1213,14 @@ bool queue_skater_push_velocity(std::uintptr_t client,std::uintptr_t entity,cons
         request.pending.store(true,std::memory_order_release);return true;
     }catch(...){return false;}
 }
-void set_physics_step_callback(void (*callback)() noexcept) noexcept { physics_step_callback.store(callback, std::memory_order_release); }
+void set_physics_step_callback(void (*callback)() noexcept) noexcept {
+    actor_control::IdleCall writer;
+    if (callback && !skater_action::enter_motion_writer(writer)) return;
+    physics_step_callback.store(callback, std::memory_order_release);
+}
 bool queue_jump_scale(std::uintptr_t client, std::uintptr_t entity, float factor) noexcept {
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer)) return false;
     SourceLastError error;
     try {
         auto& state = source_state();
@@ -1223,20 +1239,34 @@ bool queue_jump_scale(std::uintptr_t client, std::uintptr_t entity, float factor
     } catch (...) { return false; }
 }
 void set_plugin_velocity(const std::array<float, 3>& velocity, bool add) noexcept {
+    (void)try_set_plugin_velocity(velocity, add);
+}
+bool try_set_plugin_velocity(const std::array<float, 3>& velocity, bool add) noexcept {
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer)) return false;
     auto& v = client_source::detail::plugin_velocity();
     std::lock_guard lock(v.mutex);
     v.velocity = velocity;
     v.add = add;
     v.expires = GetTickCount64() + 500;
     v.pending.store(true, std::memory_order_release);
+    return true;
 }
 void set_plugin_cruise(float speed, bool may_slow) noexcept {
+    (void)try_set_plugin_cruise(speed, may_slow);
+}
+bool try_set_plugin_cruise(float speed, bool may_slow) noexcept {
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer) && speed > 0) return false;
     auto& p = push_speed();
     p.plugin.store(speed > 0 && speed <= 30 ? speed : 0.0f, std::memory_order_relaxed);
     p.plugin_slow.store(may_slow, std::memory_order_relaxed);
     p.plugin_expires.store(speed > 0 ? GetTickCount64() + 300 : 0, std::memory_order_release);
+    return true;
 }
 void set_push_speed(std::uintptr_t client, std::uintptr_t entity, float factor, float stock, float cruise) noexcept {
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer)) return;
     auto& p = push_speed();
     p.client = client;
     p.entity = entity;
@@ -1246,6 +1276,8 @@ void set_push_speed(std::uintptr_t client, std::uintptr_t entity, float factor, 
     p.expires.store(GetTickCount64() + 500, std::memory_order_release);
 }
 void set_air_gravity(std::uintptr_t client, std::uintptr_t entity, float factor, float landing, float timing) noexcept {
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer)) return;
     auto& g = air_gravity();
     g.landing.store(std::isfinite(landing) && landing >= 0.02f && landing <= 20.0f ? landing : 0.0f, std::memory_order_relaxed);
     g.timing.store(std::isfinite(timing) ? std::clamp(timing, 0.0f, 1.0f) : 0.0f, std::memory_order_relaxed);
@@ -1267,6 +1299,8 @@ void note_flight_record(std::uintptr_t trajectory) noexcept {
     g.records[g.noted.fetch_add(1, std::memory_order_relaxed) % g.records.size()].store(trajectory, std::memory_order_relaxed);
 }
 void set_pump_power(std::uintptr_t client, std::uintptr_t entity, float factor, bool pumping) noexcept {
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer)) return;
     auto& p = pump_power();
     p.client = client;
     p.entity = entity;
@@ -1275,6 +1309,8 @@ void set_pump_power(std::uintptr_t client, std::uintptr_t entity, float factor, 
     p.expires.store(GetTickCount64() + 500, std::memory_order_release);
 }
 void set_revert_boost(std::uintptr_t client, std::uintptr_t entity, float strength, const RevertTuning &tuning) noexcept {
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer)) return;
     auto& r = revert_boost();
     AcquireSRWLockExclusive(&r.report_lock);
     r.tuning = tuning;
@@ -1285,6 +1321,8 @@ void set_revert_boost(std::uintptr_t client, std::uintptr_t entity, float streng
     r.expires.store(GetTickCount64() + 500, std::memory_order_release);
 }
 void set_transition_assist(std::uintptr_t client, std::uintptr_t entity, const TransitionAssist &assist) noexcept {
+    actor_control::IdleCall writer;
+    if (!skater_action::enter_motion_writer(writer)) return;
     auto& r = transition_run();
     r.client = client;
     r.entity = entity;
