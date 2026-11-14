@@ -625,8 +625,8 @@ public:
         if (!fit) return board_pose::fit(plugin, std::nullopt);
         return board_pose::fit(plugin, board_pose::Fit{fit->plates, fit->axle});
     }
-    std::optional<std::vector<BoardParameter>> board_parameters(int part) override {
-        const auto found = board_material::read(static_cast<board_material::Part>(part));
+    std::optional<std::vector<BoardParameter>> board_parameters(int part, bool preview = false) override {
+        const auto found = board_material::read(static_cast<board_material::Part>(part), preview);
         if (!found) return std::nullopt;
         std::vector<BoardParameter> out;
         for (const auto& p : *found) {
@@ -637,11 +637,11 @@ public:
         }
         return out;
     }
-    std::string board_set_parameter(std::string_view plugin, int part, std::uint64_t key, std::array<float, 3> value, bool colour) override {
-        return board_material::set(plugin, static_cast<board_material::Part>(part), key, value, colour);
+    std::string board_set_parameter(std::string_view plugin, int part, std::uint64_t key, std::array<float, 3> value, bool colour, bool preview = false) override {
+        return board_material::set(plugin, static_cast<board_material::Part>(part), key, value, colour, preview);
     }
-    void board_clear_parameter(std::string_view plugin, int part, std::optional<std::uint64_t> key) override {
-        board_material::clear(plugin, part < 0 ? std::nullopt : std::optional(static_cast<board_material::Part>(part)), key);
+    void board_clear_parameter(std::string_view plugin, int part, std::optional<std::uint64_t> key, bool preview = false) override {
+        board_material::clear(plugin, part < 0 ? std::nullopt : std::optional(static_cast<board_material::Part>(part)), key, preview);
     }
     // ---- variants ------------------------------------------------------------------------------------
     // The mod's folder is read again at most every 2 s: a menu page asks every frame.
@@ -1256,6 +1256,8 @@ public:
         s.bars = look->bars, s.hood = look->hood, s.grade = look->grade, s.soft = look->soft, s.scanlines = look->scanlines, s.grain = look->grain;
         s.dropouts = look->dropouts, s.head_switching = look->head_switching, s.tracking = look->tracking, s.smear = look->smear, s.iris = look->iris;
         s.rolling = look->rolling;
+        s.strength = {look->bars_strength, look->hood_strength, look->grade_strength, look->soft_strength, look->scanlines_strength,
+                      look->grain_strength, look->dropouts_strength, look->head_switching_strength, look->smear_strength};
         s.text = look->text;
         screen_look::set(s);
         return {};
@@ -1385,6 +1387,9 @@ public:
         carry::Goal g;
         g.hand = goal->left ? arm_reach::Hand::left : arm_reach::Hand::right;
         g.both = goal->both;
+        g.support = goal->support;
+        g.exact = goal->exact;
+        g.look_at = goal->look_at;
         g.front = goal->front;
         g.aim = goal->aim;
         g.front_from_grip = goal->front_from_grip;

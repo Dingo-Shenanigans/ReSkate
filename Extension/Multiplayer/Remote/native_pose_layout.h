@@ -7,6 +7,7 @@
 #include <string_view>
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/engine.h"
+#include "Engine/Game/Build/20260929/native_skater.h"
 
 namespace dingosdk::multiplayer {
 struct NativePoseLayout {
@@ -102,6 +103,15 @@ NativeBoardVisual read_native_board_visual(Read &&read, std::uintptr_t base, std
     require((flags & 0x40) == 0, "Skateboard animation resource cannot use normal initialization.");
     return {holder, mesh, static_cast<std::uint32_t>((end - begin) / 8), (flags & 8) != 0,
             value<std::uint8_t>(read, add(holder, 0x94), "board resources enabled") != 0};
+}
+// Recover a render callback's board only after proving the entity owns this exact holder.
+template <class Read>
+std::uintptr_t read_native_board_render_owner(Read&& read, std::uintptr_t base, std::uintptr_t holder) {
+    using namespace native_pose_detail;
+    const auto entity = add(holder, -static_cast<std::int64_t>(addr::native_skater::board_embedded_holder_offset));
+    require(read_native_board_visual(read, base, entity).holder == holder,
+            "Skateboard render holder backlink differs.");
+    return entity;
 }
 // The native board lookup (addr::native_skater::board_from_component) follows the
 // skater component's +0x60 backlink to a separate ClientSkateboardEntity. Its

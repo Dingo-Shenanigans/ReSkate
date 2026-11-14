@@ -1441,9 +1441,13 @@ struct WorldApi {
         lua_pop(L, 1);
         return shown;
     }
-    // skater.carry({at = vector, rotation = {x, y, z, w}, hand, both, front, grip, weight, crouch, hunch,
-    // still, turn, step, step_phase, push_straightens, shown}): something held out in the hands and
-    // aimed, its front at `at`; for 0.3 s, so every tick. nil lets it go.
+    // skater.carry({at = vector, rotation = {x, y, z, w}, hand, both, support, exact, look_at, front, grip,
+    // weight, crouch, hunch, still, turn, step, step_phase, push_straightens, shown}): something held out in
+    // the hands and aimed, its front at `at`; for 0.3 s, so every tick. nil lets it go. `support` (a vector,
+    // at most 0.3 m each way): with both, the other hand moved from where it takes the item, in the item's
+    // frame. `exact`: the front held at `at` itself (kept out of the body and in the arm's reach) instead of
+    // where the aim puts it, for a plugin that sweeps it itself. `look_at` (a point in the world, within 3 m
+    // of `at`): the neck and head turned so the face looks at it.
     static int carry(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "skater.animation", "reskate.skater.carry");
@@ -1460,8 +1464,26 @@ struct WorldApi {
         lua_getfield(L, 1, "both");
         goal.both = lua_toboolean(L, -1);
         lua_pop(L, 1);
+        lua_getfield(L, 1, "support");
+        if (!lua_isnil(L, -1)) {
+            goal.support = position_of(L, lua_gettop(L), "a carry's support");
+            for (const auto v : goal.support)
+                if (!(std::abs(v) <= 0.3f)) luaL_error(L, "a carry's support is at most 0.3 m on each axis");
+        }
+        lua_pop(L, 1);
+        lua_getfield(L, 1, "exact");
+        goal.exact = lua_toboolean(L, -1);
+        lua_pop(L, 1);
         lua_getfield(L, 1, "at");
         goal.front = position_of(L, lua_gettop(L), "the carry's point");
+        lua_pop(L, 1);
+        lua_getfield(L, 1, "look_at");
+        if (!lua_isnil(L, -1)) {
+            const auto look = position_of(L, lua_gettop(L), "a carry's look_at");
+            const float dx = look[0] - goal.front[0], dy = look[1] - goal.front[1], dz = look[2] - goal.front[2];
+            if (!(dx * dx + dy * dy + dz * dz <= 9.0f)) luaL_error(L, "a carry's look_at is within 3 m of its point");
+            goal.look_at = look;
+        }
         lua_pop(L, 1);
         lua_getfield(L, 1, "rotation");
         if (lua_isnil(L, -1)) luaL_error(L, "a carry needs a rotation {x, y, z, w}: the way the thing held points");
@@ -2035,6 +2057,23 @@ struct WorldApi {
         luaL_argerror(L, index, "a part is \"deck\", \"grip\", \"trucks\" or \"wheels\"");
         return 0;
     }
+    // Preview material access needs the room permission as well as board, and never selects an actor by pointer.
+    static int board_parameter_scopes(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "board", "reskate.board.parameter_scopes");
+        lua_createtable(L, 2, 0);
+        lua_pushstring(L, "gameplay"); lua_rawseti(L, -2, 1);
+        lua_pushstring(L, "preview"); lua_rawseti(L, -2, 2);
+        return 1;
+    }
+    static bool board_preview(lua_State* L, Plugin& plugin, int index) {
+        if (lua_isnoneornil(L, index)) return false;
+        const std::string_view scope = luaL_checkstring(L, index);
+        if (scope == "gameplay") return false;
+        if (scope != "preview") luaL_argerror(L, index, "scope is \"gameplay\" or \"preview\"");
+        need(L, plugin, "room", "preview board parameters");
+        return true;
+    }
     static std::uint64_t board_parameter_key(lua_State* L, int index) {
         std::size_t length{};
         const char* text = luaL_checklstring(L, index, &length);
@@ -2045,7 +2084,8 @@ struct WorldApi {
         if (length != 16 || error != std::errc{} || end != text + length) luaL_argerror(L, index, "a key is 16 hex digits, \"graphic\" or \"base\"");
         return key;
     }
-    // parameters(part): {{key = "873f48af36e50d59", name = "graphic", type = "colour", value = {r, g, b}}, ...}
+    // Scope defaults to gameplay; preview requires room permission and the observed preview item's own declarations.
+    // parameters(part [, scope]): {{key = "873f48af36e50d59", name = "graphic", type = "colour", value = {r, g, b}}, ...}
     // as the part's material holds them now, or nil without a board. A number's value is a number, an
     // integer's an integer, a switch's true or false. A colour or a number the equipped item's mod
     // declares (reskate-materials.json) that the material does not hold yet comes with inherited =
@@ -2053,7 +2093,7 @@ struct WorldApi {
     static int board_parameters(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "board", "reskate.board.parameters");
-        const auto found = game_of(plugin).board_parameters(board_part(L, 1));
+        const auto found = game_of(plugin).board_parameters(board_part(L, 1), board_preview(L, plugin, 2));
         if (!found) {
             lua_pushnil(L);
             return 1;
@@ -2098,7 +2138,7 @@ struct WorldApi {
         }
         return 1;
     }
-    // set_parameter(part, key, value): a colour {r, g, b} (0 to 1) or a number held on the part until
+    // set_parameter(part, key, value [, scope]): a colour {r, g, b} (0 to 1) or a number held on the part until
     // cleared, on this screen; an integer or a switch is only read. A colour the equipped item's mod
     // declares is added to the material and goes back to its declared default when let go, or when
     // that item is no longer on the board.
@@ -2122,16 +2162,16 @@ struct WorldApi {
             value[0] = static_cast<float>(luaL_checknumber(L, 3));
         }
         if (!std::all_of(value.begin(), value.end(), [](float v) { return std::isfinite(v); })) luaL_argerror(L, 3, "a value is finite");
-        return result(L, game_of(plugin).board_set_parameter(plugin.id(), part, key, value, colour));
+        return result(L, game_of(plugin).board_set_parameter(plugin.id(), part, key, value, colour, board_preview(L, plugin, 4)));
     }
-    // clear_parameter([part [, key]]): what the plugin holds there put back (every part, every key).
+    // clear_parameter([part [, key [, scope]]]): what the plugin holds there put back (every part, every key).
     static int board_clear_parameter(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "board", "reskate.board.clear_parameter");
         const int part = lua_isnoneornil(L, 1) ? -1 : board_part(L, 1);
         std::optional<std::uint64_t> key;
         if (!lua_isnoneornil(L, 2)) key = board_parameter_key(L, 2);
-        game_of(plugin).board_clear_parameter(plugin.id(), part, key);
+        game_of(plugin).board_clear_parameter(plugin.id(), part, key, board_preview(L, plugin, 3));
         return 0;
     }
     // ---- outfit ------------------------------------------------------------------------------------------
@@ -3243,8 +3283,10 @@ struct WorldApi {
         return result(L, game_of(plugin).hide_pad(plugin.id(), hidden));
     }
     // screen.look({bend, fov, bars, hood, grade, soft, scanlines, grain, age, dropouts, head_switching,
-    // tracking, smear, iris, rolling, text}): a camcorder look over the game's picture for 0.3 s, so
-    // every tick; nil ends it. One plugin at a time.
+    // tracking, smear, iris, rolling, text, strengths}): a camcorder look over the game's picture for 0.3 s,
+    // so every tick; nil ends it. One plugin at a time. `strengths` = {bars = 0..1, hood, grade, soft,
+    // scanlines, grain, dropouts, head_switching, smear}: how strongly each is drawn while it is on (1
+    // when not given; one that is off stays off).
     static int screen_look(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "overlay", "reskate.screen.look");
@@ -3274,6 +3316,24 @@ struct WorldApi {
         look.fov = static_cast<float>(number("fov", 60, 5, 170, "a look's fov is 5 to 170 degrees"));
         look.age = static_cast<float>(number("age", 0, 0, 1, "a look's tape age is 0 to 1"));
         look.rolling = number("rolling", -1, 0, 1e7, "a look's rolling is the seconds since the tape started, 0 or more");
+        lua_getfield(L, 1, "strengths");
+        if (!lua_isnil(L, -1)) {
+            luaL_checktype(L, -1, LUA_TTABLE);
+            const int strengths = lua_gettop(L);
+            const auto strength = [&](const char* name, float& into) {
+                lua_getfield(L, strengths, name);
+                if (!lua_isnil(L, -1)) {
+                    const double v = luaL_checknumber(L, -1);
+                    if (!(v >= 0 && v <= 1)) luaL_error(L, "a look's %s strength is 0 to 1", name);
+                    into = static_cast<float>(v);
+                }
+                lua_pop(L, 1);
+            };
+            strength("bars", look.bars_strength), strength("hood", look.hood_strength), strength("grade", look.grade_strength);
+            strength("soft", look.soft_strength), strength("scanlines", look.scanlines_strength), strength("grain", look.grain_strength);
+            strength("dropouts", look.dropouts_strength), strength("head_switching", look.head_switching_strength), strength("smear", look.smear_strength);
+        }
+        lua_pop(L, 1);
         lua_getfield(L, 1, "text");
         if (!lua_isnil(L, -1)) {
             luaL_checktype(L, -1, LUA_TTABLE);
@@ -3448,7 +3508,7 @@ void WorldApi::install(Plugin& plugin, lua_State* L) {
                                 {"shape_launch", shape_launch}, {"hide", hide_skater}, {"reach", reach}, {"carry", carry}, {"hand", hand}, {"joint", skater_joint}, {"pose", skater_pose}});
     add_functions(L, "board", {{"motion", board_motion}, {"bones", board_bones}, {"set", board_set}, {"hide", board_hide}, {"clear", board_clear}, {"scale", board_scale},
                                {"park", board_park}, {"fit", board_fit}, {"toss", board_toss}, {"parameters", board_parameters},
-                               {"set_parameter", board_set_parameter}, {"clear_parameter", board_clear_parameter}});
+                               {"set_parameter", board_set_parameter}, {"clear_parameter", board_clear_parameter}, {"parameter_scopes", board_parameter_scopes}});
     add_functions(L, "camera", {{"look", camera_look}, {"set", camera_set}, {"follow", camera_follow}, {"release", camera_release}, {"held", camera_held}, {"get", camera_get}, {"cycle", camera_cycle}});
     add_functions(L, "trainer", {{"set_point", set_point}, {"back", back}});
     add_functions(L, "hud", {{"hide", hide_hud}, {"corner", hud_corner}, {"score_line", score_line}});

@@ -340,17 +340,22 @@ void world_rows(Opts &o, OptionsContext &c) {
     {
         const bool can = native_tools::time_of_day_available(m, c.cb);
         const int now = static_cast<int>(native_tools::time_of_day(m));
-        static int asked = -1;
-        static ULONGLONG asked_until{};
+        static int asked = -1, pending = -1;
+        static ULONGLONG asked_until{}, pending_at{};
+        // Stepping only moves the choice; it goes to the game once the stepping has stopped for
+        // 600 ms, so the game does not load the weather of every time stepped past.
+        if (pending >= 0 && GetTickCount64() >= pending_at + 600) {
+            asked = std::exchange(pending, -1), asked_until = GetTickCount64() + 4000;
+            for (const auto &line : native_tools::time_of_day_commands(m, static_cast<unsigned>(asked))) c.run(line);
+        }
         if (asked >= 0 && (asked == now || GetTickCount64() > asked_until)) asked = -1;
-        const int shown = asked >= 0 ? asked : now;
+        const int shown = pending >= 0 ? pending : asked >= 0 ? asked : now;
         const int count = static_cast<int>(native_tools::time_of_day_labels.size());
         auto &row = opt_choice(o, "Time of day", native_tools::time_of_day_labels[static_cast<std::size_t>(std::clamp(shown, 0, count - 1))], can,
                                "Default follows the level's own time. Your choice saves and comes back when you load this map again.",
-                               [&c, shown, count](int way) {
-                                   const int next = wrap_step(shown, count, way);
-                                   asked = next, asked_until = GetTickCount64() + 4000;
-                                   for (const auto &line : native_tools::time_of_day_commands(c.m, static_cast<unsigned>(next))) c.run(line);
+                               [shown, count](int way) {
+                                   pending = wrap_step(shown, count, way);
+                                   pending_at = GetTickCount64();
                                });
         row.why_not = m.world.controlled_by_host ? (server_can(m.multiplayer, "tod") ? "" : "The lobby host controls world layers, including time of day.")
                     : !loaded ? load_first : "Time of day is not available on this map right now.";
@@ -1040,6 +1045,12 @@ void settings_rows(Opts &o, OptionsContext &c) {
                                 "Keep the view clear for riding and captures. The ReSkate menu's key always brings it back.",
                                 [&c](bool on) { c.debug({DebugAction::set_game_ui_hidden, on}); });
         hide.why_not = "Not available right now.";
+        opt_toggle(o, "HUB front page", hub_front_page_on(), true,
+                   "ReSkate's news, patch notes and profile over the HUB tab. Off: the HUB as the game shows it.",
+                   [](bool on) { set_hub_front_page_on(on); });
+        opt_toggle(o, "Store room behind Mod Manager", mod_backdrop_on(), true,
+                   "skate.'s Store room behind the Mod Manager tab. Off: the world, dimmed, as on the other tabs.",
+                   [](bool on) { set_mod_backdrop_on(on); });
         const bool hub_layout = m.menu_layout == menu_layout_hub;
         opt_choice(o, "Insert menu layout", hub_layout ? "WINDOW" : "SIDE SHEET", c.console,
                    hub_layout ? "The Insert menu as a window in the middle of the screen, its pages down its left side."

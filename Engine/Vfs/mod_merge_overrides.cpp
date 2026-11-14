@@ -4,17 +4,13 @@
 #include "Engine/Resource/ebx_merge.h"
 #include "Engine/Resource/ebx_writer.h"
 
-#include <Windows.h>
-
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <cstring>
 #include <exception>
 #include <mutex>
 #include <set>
 #include <stdexcept>
-#include <thread>
 
 namespace dingosdk::mods::detail {
 
@@ -29,6 +25,7 @@ struct GameBundle {
     std::map<std::string, std::pair<fb::Sha1, std::size_t>, std::less<>> original;
     std::map<std::string, const fb::BundleAsset*, std::less<>> scripts;
     std::set<std::string, std::less<>> resources;
+    std::set<fb::Guid> chunks;
 };
 struct GameToc {
     fb::TocDocument document;
@@ -86,7 +83,7 @@ struct ModRead {
     // own, it could arrive in another mod's bundle without the resources
     // and chunks it was added with.
     std::vector<std::pair<std::string, AssetAddition>> candidates, companions;
-    struct BundleChunk { std::string bundle; AssetAddition addition; fb::BundleFileInfo file; };
+    struct BundleChunk { std::string bundle; AssetAddition addition; fb::BundleFileInfo file; bool added{}; };
     std::vector<BundleChunk> bundleChunks;
     std::map<std::string,AssetOverrides::ChunkDefaults,std::less<>> chunkDefaults;
     std::vector<bool> unreadable;                                    // per candidate: never follows
@@ -97,19 +94,51 @@ struct ModRead {
     std::vector<Script> scripts;
     std::vector<std::string> notes;
     std::exception_ptr failure;
+    // For the items a player left out of a mod (leave_out), read only when some mod has any: what
+    // each candidate refers to, by its place among them, and what every other document of the mod
+    // that could name one refers to (its changes to the game's assets, its own bundles).
+    std::vector<AssetLinks> links, referrers;
+    // Something of the mod's could not be read for that, so what it names is not known.
+    bool unsure{};
+    // The documents left out of the mod: its changed item lists do not name them in other mods' copies.
+    std::set<fb::Guid> gone;
 };
 
+// `linked`: some mod has items left out (Mod::items_off), so what the documents refer to is kept too.
 ModRead read_mod(const Mod& mod, const RelativeFiles& files, const CasStore& store, const fs::path& baseRoot,
-                 const fs::path& gameRoot, Shared<GameToc>& gameTocs, Shared<GameBundle>& gameBundles) {
+                 const fs::path& gameRoot, Shared<GameToc>& gameTocs, Shared<GameBundle>& gameBundles, bool linked) {
     ModRead read;
-    auto& [candidates, companions, bundleChunks, chunkDefaults, unreadable, addedIn, newChunks, imported, changes, scripts, notes, failure] = read;
+    auto& [candidates, companions, bundleChunks, chunkDefaults, unreadable, addedIn, newChunks, imported, changes, scripts, notes, failure,
+           links, referrers, unsure, gone] = read;
     const auto decoded = [&](std::span<const std::byte> encoded) {
         return fb::ebx::read_document(fb::decode_cas(encoded, {gameRoot}));
     };
+    // A bundle of the mod's own (the game ships none of that name): nothing in it is left out, but a
+    // document in it may name what is. Read only for a mod with items left out.
+    const auto refer = [&](const fb::TocBundle& bundle) {
+        try {
+            const auto region = fb::read_bundle_region(bundle.region);
+            if (std::none_of(region.files.begin(), region.files.end(), [](const fb::BundleFileInfo& file) { return file.location.patch; }))
+                return;
+            const auto listing = list_bundle(store, mod.directory, baseRoot, bundle, gameRoot);
+            if (!listing) { unsure = true; return; }
+            for (std::size_t index = 0; index < listing->manifest.ebx.size(); ++index) {
+                const auto at = listing->first + index;
+                if (at >= listing->files.size() || !listing->files[at].location.patch) continue;
+                referrers.push_back(asset_links(fb::ebx::read_document(read_asset(store, mod.directory, baseRoot, *listing, index, gameRoot))));
+            }
+        } catch (const std::exception&) { unsure = true; }
+    };
+    const bool choosing = linked && !mod.items_off.empty();
     for (const auto& relative : files.tocs) {
         std::error_code error;
         const auto baseToc = baseRoot / fs::path(relative);
-        if (!fs::is_regular_file(baseToc, error)) continue;
+        if (!fs::is_regular_file(baseToc, error)) {
+            if (choosing) try {
+                for (const auto& bundle : fb::read_toc(read_file(mod.directory / fs::path(relative))).bundles) refer(bundle);
+            } catch (const std::exception&) { unsure = true; }
+            continue;
+        }
         try {
             const auto own = fb::read_toc(read_file(mod.directory / fs::path(relative)));
             const auto tocKey = ascii_lower(relative);
@@ -123,7 +152,10 @@ ModRead read_mod(const Mod& mod, const RelativeFiles& files, const CasStore& sto
             for (const auto& bundle : own.bundles) {
                 const auto bundleName = ascii_lower(bundle.name);
                 const auto shipped = game.bundles.find(bundleName);
-                if (shipped == game.bundles.end()) continue;
+                if (shipped == game.bundles.end()) {
+                    if (choosing) refer(bundle);
+                    continue;
+                }
                 const auto modListing = list_bundle(store, mod.directory, baseRoot, bundle, gameRoot);
                 const auto& known = gameBundles.get(tocKey + '|' + bundleName, [&](GameBundle& made) {
                     made.listing = list_bundle(store, baseRoot, baseRoot, *shipped->second, gameRoot);
@@ -138,8 +170,13 @@ ModRead read_mod(const Mod& mod, const RelativeFiles& files, const CasStore& sto
                         if (asset.resourceType == luaScriptResourceType) made.scripts.emplace(ascii_lower(asset.name), &asset);
                         made.resources.insert(ascii_lower(asset.name));
                     }
+                    for (const auto& asset : manifest.chunks) made.chunks.insert(asset.guid);
                 });
-                if (!modListing || !known.listing) continue;
+                if (!modListing || !known.listing) {
+                    // (A copy that cannot be listed passes through whole or is left out whole.)
+                    if (choosing && !modListing) unsure = true;
+                    continue;
+                }
                 if (!known.listing->manifest.chunkMetadata.empty() && !chunkDefaults.contains(bundleName)) {
                     AssetOverrides::ChunkDefaults defaults;
                     defaults.metadata=known.listing->manifest.chunkMetadata;
@@ -172,9 +209,16 @@ ModRead read_mod(const Mod& mod, const RelativeFiles& files, const CasStore& sto
                     }
                     auto encodedPayload = payload();
                     try {
-                        for (const auto& reference : decoded(encodedPayload).imports)
+                        const auto document = decoded(encodedPayload);
+                        for (const auto& reference : document.imports)
                             imported.insert(reference.fileGuid);
-                    } catch (const std::exception&) {}
+                        if (linked) {
+                            referrers.push_back(asset_links(document));
+                            referrers.back().item_list = item_list_name(name);
+                        }
+                    } catch (const std::exception&) {
+                        if (choosing) unsure = true;
+                    }
                     std::optional<fb::BundleFileInfo> gameFile;
                     if (const auto gameAt = gameListing->first + game_copy->second.second;
                         gameAt < gameListing->files.size())
@@ -223,7 +267,8 @@ ModRead read_mod(const Mod& mod, const RelativeFiles& files, const CasStore& sto
                     addition.asset.name = addition.asset.guid.string();
                     addition.chunk_metadata = chunkMetadata;
                     addition.chunk_index = index;
-                    bundleChunks.push_back({bundleName, std::move(addition), modListing->files[at]});
+                    const bool added = !known.chunks.contains(chunks[index].guid);
+                    bundleChunks.push_back({bundleName, std::move(addition), modListing->files[at], added});
                 }
                 // Resources the mod adds, kept to go with an added EBX of the same name
                 // (a wave's sound-bank resource registers the wave with the audio system).
@@ -239,10 +284,12 @@ ModRead read_mod(const Mod& mod, const RelativeFiles& files, const CasStore& sto
         } catch (const std::exception& failed) {
             notes.push_back(mod.name + ": " + relative +
                 ": its changes could not be read for other mods' copies (" + failed.what() + ")");
+            if (choosing) unsure = true;
         }
     }
     // Each added document's guid, and the guids of the documents it refers to in turn.
     unreadable.assign(candidates.size(), false);
+    if (linked) links.resize(candidates.size());
     for (std::size_t index = 0; index < candidates.size(); ++index) {
         auto& addition = candidates[index].second;
         try {
@@ -253,10 +300,132 @@ ModRead read_mod(const Mod& mod, const RelativeFiles& files, const CasStore& sto
             // Assets the mod's plugin selects at run time (its world objects, HUD variants picked
             // by size) have no import naming them: its resident list keeps them, as imported
             // additions are kept, when a map replaces their bundle.
-            if (resident_root(mod, candidates[index].first, addition.asset.name)) imported.insert(addition.file);
+            const bool resident = resident_root(mod, candidates[index].first, addition.asset.name);
+            if (resident) imported.insert(addition.file);
+            if (linked) {
+                links[index] = asset_links(document);
+                links[index].name = ascii_lower(addition.asset.name);
+                links[index].resident = resident;
+            }
         } catch (const std::exception&) { unreadable[index] = true; }
     }
     return read;
+}
+
+// A mod's added chunks, found by their ids in an asset's bytes: as stored, or with the first three
+// fields the other way round (a mesh names its chunks that way).
+class ChunkNames final {
+public:
+    void add(const fb::Guid& id) {
+        alias(id, id);
+        auto swapped = id;
+        std::reverse(swapped.bytes.begin(), swapped.bytes.begin() + 4);
+        std::reverse(swapped.bytes.begin() + 4, swapped.bytes.begin() + 6);
+        std::reverse(swapped.bytes.begin() + 6, swapped.bytes.begin() + 8);
+        alias(swapped, id);
+    }
+    [[nodiscard]] bool empty() const noexcept { return aliases_.empty(); }
+    void find(std::span<const std::byte> bytes, std::set<fb::Guid>& into) const {
+        for (std::size_t at = 0; at + sizeof(fb::Guid) <= bytes.size(); ++at) {
+            if (!starts_[std::to_integer<std::size_t>(bytes[at]) << 8 | std::to_integer<std::size_t>(bytes[at + 1])]) continue;
+            fb::Guid key;
+            std::memcpy(key.bytes.data(), bytes.data() + at, key.bytes.size());
+            if (const auto found = aliases_.find(key); found != aliases_.end()) into.insert(found->second);
+        }
+    }
+
+private:
+    void alias(const fb::Guid& bytes, const fb::Guid& id) {
+        aliases_.emplace(bytes, id);
+        starts_[std::to_integer<std::size_t>(bytes.bytes[0]) << 8 | std::to_integer<std::size_t>(bytes.bytes[1])] = true;
+    }
+    std::map<fb::Guid, fb::Guid> aliases_;
+    std::vector<bool> starts_ = std::vector<bool>(0x10000);
+};
+
+// The items the player left out of `mod` (Mod::items_off): they, and what only they use, are taken
+// out of what was read of the mod, so nothing of them follows into other mods' copies, and are
+// listed in `out` for the merge of the mod's own bundles (combine), which then reads each copy
+// without them. What goes is decided by plan_left_out; a resource goes with the added document of
+// its name unless something that stays names it by id, and an added chunk when an asset that goes
+// names it and none that stays does. `others`: what every other document refers to. Anything that
+// cannot be read leaves the mod whole: an item too many is better than an asset too few.
+void leave_out(const Mod& mod, ModRead& read, std::span<const AssetLinks* const> others, const fs::path& gameRoot,
+               AssetOverrides& out, MergeReport& report) {
+    auto& [candidates, companions, bundleChunks, chunkDefaults, unreadable, addedIn, newChunks, imported, changes, scripts, notes, failure,
+           links, referrers, unsure, gone] = read;
+    const auto whole = [&](const std::string& why) {
+        report.notes.push_back(mod.name + ": the items left out of it are loaded all the same: " + why);
+    };
+    if (unsure || std::find(unreadable.begin(), unreadable.end(), true) != unreadable.end())
+        return whole("not all of the mod could be read to tell what they use");
+    const auto plan = plan_left_out(links, others, mod.items_off);
+    for (const auto& key : plan.stayed)
+        report.notes.push_back(mod.name + ": " + key + " was left out of the mod but stays: another asset names it");
+    if (std::find(plan.gone.begin(), plan.gone.end(), true) == plan.gone.end()) return;
+
+    // The resources named by what stays, and the names of the documents that go.
+    std::set<std::uint64_t> wanted;
+    for (const auto* other : others)
+        if (other) wanted.insert(other->resources.begin(), other->resources.end());
+    std::set<std::pair<std::string, std::string>> goneNames;
+    for (std::size_t index = 0; index < candidates.size(); ++index) {
+        if (plan.gone[index]) goneNames.emplace(candidates[index].first, links[index].name);
+        else wanted.insert(links[index].resources.begin(), links[index].resources.end());
+    }
+    std::vector<bool> goneResource(companions.size());
+    for (std::size_t index = 0; index < companions.size(); ++index) {
+        const auto& [bundle, companion] = companions[index];
+        goneResource[index] = goneNames.contains({bundle, ascii_lower(companion.asset.name)}) && !wanted.contains(companion.asset.resourceId);
+    }
+    // The chunks the mod added that an asset that goes names, less those one that stays names.
+    ChunkNames ids;
+    for (const auto& chunk : bundleChunks)
+        if (chunk.added) ids.add(chunk.addition.asset.guid);
+    std::set<fb::Guid> namedGone, namedKept;
+    if (!ids.empty()) try {
+        for (std::size_t index = 0; index < candidates.size(); ++index)
+            ids.find(fb::decode_cas(candidates[index].second.encoded, {gameRoot}), plan.gone[index] ? namedGone : namedKept);
+        for (std::size_t index = 0; index < companions.size(); ++index)
+            ids.find(fb::decode_cas(companions[index].second.encoded, {gameRoot}), goneResource[index] ? namedGone : namedKept);
+        for (const auto& change : changes) ids.find(fb::decode_cas(change.encoded, {gameRoot}), namedKept);
+    } catch (const std::exception& failed) {
+        return whole(std::string("an asset could not be read to tell which chunks they use (") + failed.what() + ")");
+    }
+
+    // Decided; now taken out.
+    auto& skipped = out.left_out[mod.name];
+    auto& keys = out.left_out_items[mod.name];
+    std::size_t documents{}, resources{}, chunks{};
+    for (std::size_t index = 0; index < candidates.size(); ++index) {
+        if (!plan.gone[index]) continue;
+        const auto& [bundle, addition] = candidates[index];
+        skipped[bundle].insert(asset_key_text(addition.asset));
+        unreadable[index] = true;   // never follows into another mod's copy
+        if (const auto beside = addedIn.find(bundle); beside != addedIn.end()) beside->second.erase(addition.file);
+        gone.insert(addition.file);
+        out.left_out_documents.insert(addition.file);
+        if (!links[index].item.empty()) keys.insert(links[index].item);
+        ++documents;
+    }
+    for (std::size_t index = companions.size(); index-- > 0;) {
+        if (!goneResource[index]) continue;
+        skipped[companions[index].first].insert(asset_key_text(companions[index].second.asset));
+        companions.erase(companions.begin() + static_cast<std::ptrdiff_t>(index));
+        ++resources;
+    }
+    std::erase_if(bundleChunks, [&](const ModRead::BundleChunk& chunk) {
+        const auto& id = chunk.addition.asset.guid;
+        if (!chunk.added || !namedGone.contains(id) || namedKept.contains(id)) return false;
+        auto listed = chunk.addition.asset;
+        listed.kind = fb::AssetKind::chunk;
+        skipped[chunk.bundle].insert(asset_key_text(listed));
+        ++chunks;
+        return true;
+    });
+    report.notes.push_back(mod.name + ": " + std::to_string(plan.items) + " item(s) left out of it, as the player chose, with what only they use: " +
+        std::to_string(documents) + " document(s), " + std::to_string(resources) + " resource(s) and " + std::to_string(chunks) +
+        " chunk(s) are not merged");
 }
 
 } // namespace
@@ -282,29 +451,32 @@ AssetOverrides collect_asset_overrides(const std::vector<const Mod*>& mods,
     Shared<GameToc> gameTocs;
     Shared<GameBundle> gameBundles;
     std::vector<ModRead> reads(asked.size());
-    {
-        std::atomic<std::size_t> next{0};
-        const auto work = [&] {
-            for (;;) {
-                const auto mine = next.fetch_add(1);
-                if (mine >= asked.size()) return;
-                try {
-                    reads[mine] = read_mod(*asked[mine].first, *asked[mine].second, store, baseRoot, gameRoot, gameTocs, gameBundles);
-                } catch (...) {
-                    reads[mine].failure = std::current_exception();
-                }
-            }
-        };
-        std::vector<std::jthread> workers;
+    // Items a player left out of a mod (Mod::items_off): what every document refers to is read too.
+    const bool linked = std::ranges::any_of(mods, [](const Mod* mod) { return !mod->items_off.empty(); });
+    for_each_index(asked.size(), threads, background, [&](std::size_t mine) {
         try {
-            // Threads of their own, not the system's pool (see the superbundles in mod_merge.cpp).
-            for (std::size_t index = 0; index < std::min(threads, asked.size()) && asked.size() > 1; ++index)
-                workers.emplace_back([&] {
-                    if (background) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
-                    work();
-                });
-        } catch (const std::system_error&) {} // fewer threads, or none: this one does the rest
-        work();
+            reads[mine] = read_mod(*asked[mine].first, *asked[mine].second, store, baseRoot, gameRoot, gameTocs, gameBundles, linked);
+        } catch (...) {
+            reads[mine].failure = std::current_exception();
+        }
+    });
+    if (linked) {
+        for (const auto* mod : mods)
+            if (!mod->items_off.empty() && std::ranges::none_of(asked, [&](const auto& one) { return one.first == mod; }))
+                report.notes.push_back(mod->name + ": the items left out of it are loaded all the same: a mod that adds levels is merged whole");
+        // Each such mod in turn, before any is settled: what a mod leaves out depends on what the
+        // other mods' documents name, not on what follows whom.
+        for (std::size_t slot = 0; slot < asked.size(); ++slot) {
+            if (asked[slot].first->items_off.empty() || reads[slot].failure) continue;
+            std::vector<const AssetLinks*> others;
+            for (std::size_t other = 0; other < reads.size(); ++other) {
+                if (reads[other].failure) continue;
+                for (const auto& links : reads[other].referrers) others.push_back(&links);
+                if (other != slot)
+                    for (const auto& links : reads[other].links) others.push_back(&links);
+            }
+            leave_out(*asked[slot].first, reads[slot], others, gameRoot, out, report);
+        }
     }
 
     const auto decoded = [&](std::span<const std::byte> encoded) {
@@ -315,7 +487,8 @@ AssetOverrides collect_asset_overrides(const std::vector<const Mod*>& mods,
         const auto* mod = asked[slot].first;
         auto& read = reads[slot];
         if (read.failure) std::rethrow_exception(read.failure);
-        auto& [candidates, companions, bundleChunks, chunkDefaults, unreadable, addedIn, newChunks, imported, changes, scripts, notes, failure] = read;
+        auto& [candidates, companions, bundleChunks, chunkDefaults, unreadable, addedIn, newChunks, imported, changes, scripts, notes, failure,
+               links, referrers, unsure, gone] = read;
         for (auto& [bundle,defaults]:chunkDefaults) out.bundle_chunk_defaults.try_emplace(bundle,std::move(defaults));
         std::size_t changed{};
         // A higher mod's version of an asset, which this mod's change is combined with
@@ -455,18 +628,26 @@ AssetOverrides collect_asset_overrides(const std::vector<const Mod*>& mods,
             const auto beside = addedIn.find(change.bundle);
             try {
                 auto document = decoded(change.encoded);
-                const auto stays = [&](const fb::ebx::ImportReference& reference) {
+                // (The items the player left out of this mod are not in those copies either.)
+                const auto chosen = [&](const fb::ebx::ImportReference& reference) {
+                    return !gone.contains(reference.fileGuid); };
+                const auto found = [&](const fb::ebx::ImportReference& reference) {
                     return !lost.contains(reference.fileGuid); };
-                if (!std::ranges::all_of(document.imports, stays))
-                    if (const auto gone = fb::ebx::drop_root_references(document, stays)) {
+                const auto stays = [&](const fb::ebx::ImportReference& reference) { return chosen(reference) && found(reference); };
+                if (!std::ranges::all_of(document.imports, stays)) {
+                    const auto left = std::ranges::all_of(document.imports, chosen) ? std::size_t{} : fb::ebx::drop_root_references(document, chosen);
+                    const auto missing = std::ranges::all_of(document.imports, found) ? std::size_t{} : fb::ebx::drop_root_references(document, found);
+                    if (left || missing) {
                         const auto rebuilt = fb::ebx::write_document(document);
                         change.sha1 = sha1_of(rebuilt);
                         change.originalSize = rebuilt.size();
                         change.encoded = fb::encode_cas(rebuilt, {gameRoot});
-                        report.notes.push_back(mod->name + ": " + change.asset + ": " + std::to_string(gone) +
+                    }
+                    if (missing)
+                        report.notes.push_back(mod->name + ": " + change.asset + ": " + std::to_string(missing) +
                             " entry(ies) left out of the copies other mods carry, where another mod's asset of "
                             "the same name stands in for what they name");
-                    }
+                }
                 if (beside != addedIn.end())
                     for (const auto& reference : document.imports)
                         if (beside->second.contains(reference.fileGuid) && stays(reference))

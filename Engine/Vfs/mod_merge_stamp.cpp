@@ -79,6 +79,8 @@ std::string merge_fingerprint(const Catalog& catalog, const std::vector<const Mo
             for (const auto& key : keys) inputs += key + '\n';
         }
         for (const auto& [bundle, target] : mod->variant_targets) inputs += "variant target " + bundle + ' ' + target + '\n';
+        // Leaving an item out of a mod, or taking it back, changes what the patch holds of it.
+        for (const auto& key : mod->items_off) inputs += "item left out " + key + '\n';
         std::vector<fs::path> files;
         std::error_code error;
         for (fs::recursive_directory_iterator it(mod->directory, error), end; it != end && !error;
