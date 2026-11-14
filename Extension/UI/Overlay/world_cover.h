@@ -49,6 +49,8 @@ struct Settings {
     // false: none of the cover where something is overhead (a roof, a bridge: indoors), and no flakes falling
     // under one (outside still snows, seen from in). Found from the collision near the camera (measure_roofs).
     bool under_roofs{true};
+    // true: light from the start (fewer flakes and samples), as it goes by itself on a GPU it takes too long on.
+    bool light{};
 };
 
 // A place kept clear of the cover: an upright cylinder `radius` wide standing on `foot` (the world),

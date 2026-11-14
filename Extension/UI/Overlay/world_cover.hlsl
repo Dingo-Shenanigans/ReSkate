@@ -35,7 +35,9 @@ StructuredBuffer<float4> cameras : register(t3);
 // its cell size, the far grid's cells across), [1] = (the far grid's cell size, -, -, -), then the near grid's
 // cells, then the far grid's, a float4 a cell kept where its world position falls (x and z each modulo its
 // cells across): (the highest surface over the cell's middle, which cell it is: x, z, 1 once measured).
-#define ROOF (TRAIL + 2 + MOST_TRAIL * 2)
+// After the points, a box a run of 8 of them lies in (world_cover.cpp, trail_run): min x, min z, max x, max z.
+#define TRAIL_RUNS (TRAIL + 2 + MOST_TRAIL * 2)
+#define ROOF (TRAIL_RUNS + MOST_TRAIL / 8)
 // Something this far over a surface is a roof over it (a ceiling, a bridge), not a bench or a rail on it.
 #define ROOF_CLEARANCE 1.5
 
@@ -145,61 +147,67 @@ float trail_at(float3 here, float3 dir, out float shade) {
         return 0;
     if (dir.y >= -1e-4) return 0; // a ray not going down meets no ground
     float pressed = 0;
-    float4 a = cameras[TRAIL + 2];
-    float strength_a = cameras[TRAIL + 3].x;
     float lines_strength = 0, lines_at = 0;
-    [loop] for (int i = 1; i < points; ++i) {
-        const float4 b = cameras[TRAIL + 2 + i * 2];
-        const float4 more_b = cameras[TRAIL + 3 + i * 2];
-        const float strength_b = more_b.x, tread = more_b.y;
-        const bool starts = more_b.z > 0.5; // b begins a new trail: no stretch from a
-        const float2 along = b.xz - a.xz;
-        const float length_squared = dot(along, along);
-        // Two points far apart are not one trail (a teleport, a respawn), nor is a point that starts a new one.
-        // Far from this stretch (from the point the depth gives, on the ground): none of the work below. Every
-        // pixel went through all of it for every point (2026-11-14).
-        const float2 from_a = here.xz - a.xz;
-        const float2 nearest = from_a - along * saturate(dot(from_a, along) / max(length_squared, 1e-6));
-        const float reach_out = b.w * 0.5 + 0.5;
-        if (!starts && length_squared < 4.0 && length_squared > 1e-6 && strength_a > 0 && strength_b > 0 &&
-            dot(nearest, nearest) < reach_out * reach_out) {
-            // The ray onto the ground of this stretch: the plane through both its points, level across it, so it
-            // follows a slope along the trail. A level plane at the stretch's middle height drew a trail up a
-            // slope as steps, jumping from one to the next (2026-11-13).
-            const float3 sideways = normalize(float3(-along.y, 0, along.x));
-            float3 ground_up = normalize(cross(b.xyz - a.xyz, sideways));
-            if (ground_up.y < 0) ground_up = -ground_up;
-            const float facing_ground = dot(dir, ground_up);
-            const float reach = facing_ground < -1e-4 ? dot(a.xyz - eye_near.xyz, ground_up) / facing_ground : -1;
-            const float3 on = eye_near.xyz + dir * reach;
-            const float seen = length(here - eye_near.xyz);
-            const float t = saturate(dot(on.xz - a.xz, along) / max(length_squared, 1e-6));
-            const float2 to = on.xz - (a.xz + along * t);
-            const float off = length(to);
-            if (reach > 0 && abs(here.y - lerp(a.y, b.y, t)) < 0.4 && abs(reach - seen) < seen * 0.15 + 0.1) {
-                const float half_width = b.w * 0.5;
-                const float here_pressed = (1 - smoothstep(half_width * 0.6, half_width, off)) * lerp(strength_a, strength_b, t);
-                if (here_pressed > pressed) {
-                    pressed = here_pressed;
-                    lines_strength = 0;
-                    if (tread > 0) {
-                        // Across the trail, signed, in pairs of lines (a light one and a ridge): the middle of a
-                        // light one at the trail's middle, 13 lines across the tread's width.
-                        const float pair = tread / 6.5;
-                        const float across = (along.x * to.y - along.y * to.x) * rsqrt(max(length_squared, 1e-6));
-                        const float f = frac(across / pair + 0.5);
-                        // A ridge where f is far from a light line's middle (0.5): 44% of each pair.
-                        lines_at = smoothstep(0.26, 0.3, abs(f - 0.5));
-                        // A pixel this far off covers reach / focal metres: none finer than about two of them,
-                        // and none past the tread's edge.
-                        const float pixel = reach / right_focal.w;
-                        lines_strength = (1 - smoothstep(pair * 0.22, pair * 0.4, pixel)) * (1 - smoothstep(tread * 0.5, tread * 0.5 + 0.005, abs(across)));
+    // A run's points only where the pixel is in its box: every pixel in the trails' box read every point, and on
+    // a Steam Deck the cover took 16 ms a frame on the GPU (2026-11-14).
+    [loop] for (int r = 0; r < MOST_TRAIL / 8; ++r) {
+        if (r * 8 >= points) break;
+        const float4 run = cameras[TRAIL_RUNS + r];
+        if (here.x < run.x || here.z < run.y || here.x > run.z || here.z > run.w) continue;
+        const int last = min(r * 8 + 8, points);
+        [loop] for (int i = max(r * 8, 1); i < last; ++i) {
+            const float4 a = cameras[TRAIL + 2 + (i - 1) * 2];
+            const float strength_a = cameras[TRAIL + 3 + (i - 1) * 2].x;
+            const float4 b = cameras[TRAIL + 2 + i * 2];
+            const float4 more_b = cameras[TRAIL + 3 + i * 2];
+            const float strength_b = more_b.x, tread = more_b.y;
+            const bool starts = more_b.z > 0.5; // b begins a new trail: no stretch from a
+            const float2 along = b.xz - a.xz;
+            const float length_squared = dot(along, along);
+            // Two points far apart are not one trail (a teleport, a respawn), nor is a point that starts a new one.
+            // Far from this stretch (from the point the depth gives, on the ground): none of the work below. Every
+            // pixel went through all of it for every point (2026-11-14).
+            const float2 from_a = here.xz - a.xz;
+            const float2 nearest = from_a - along * saturate(dot(from_a, along) / max(length_squared, 1e-6));
+            const float reach_out = b.w * 0.5 + 0.5;
+            if (!starts && length_squared < 4.0 && length_squared > 1e-6 && strength_a > 0 && strength_b > 0 &&
+                dot(nearest, nearest) < reach_out * reach_out) {
+                // The ray onto the ground of this stretch: the plane through both its points, level across it, so it
+                // follows a slope along the trail. A level plane at the stretch's middle height drew a trail up a
+                // slope as steps, jumping from one to the next (2026-11-13).
+                const float3 sideways = normalize(float3(-along.y, 0, along.x));
+                float3 ground_up = normalize(cross(b.xyz - a.xyz, sideways));
+                if (ground_up.y < 0) ground_up = -ground_up;
+                const float facing_ground = dot(dir, ground_up);
+                const float reach = facing_ground < -1e-4 ? dot(a.xyz - eye_near.xyz, ground_up) / facing_ground : -1;
+                const float3 on = eye_near.xyz + dir * reach;
+                const float seen = length(here - eye_near.xyz);
+                const float t = saturate(dot(on.xz - a.xz, along) / max(length_squared, 1e-6));
+                const float2 to = on.xz - (a.xz + along * t);
+                const float off = length(to);
+                if (reach > 0 && abs(here.y - lerp(a.y, b.y, t)) < 0.4 && abs(reach - seen) < seen * 0.15 + 0.1) {
+                    const float half_width = b.w * 0.5;
+                    const float here_pressed = (1 - smoothstep(half_width * 0.6, half_width, off)) * lerp(strength_a, strength_b, t);
+                    if (here_pressed > pressed) {
+                        pressed = here_pressed;
+                        lines_strength = 0;
+                        if (tread > 0) {
+                            // Across the trail, signed, in pairs of lines (a light one and a ridge): the middle of a
+                            // light one at the trail's middle, 13 lines across the tread's width.
+                            const float pair = tread / 6.5;
+                            const float across = (along.x * to.y - along.y * to.x) * rsqrt(max(length_squared, 1e-6));
+                            const float f = frac(across / pair + 0.5);
+                            // A ridge where f is far from a light line's middle (0.5): 44% of each pair.
+                            lines_at = smoothstep(0.26, 0.3, abs(f - 0.5));
+                            // A pixel this far off covers reach / focal metres: none finer than about two of them,
+                            // and none past the tread's edge.
+                            const float pixel = reach / right_focal.w;
+                            lines_strength = (1 - smoothstep(pair * 0.22, pair * 0.4, pixel)) * (1 - smoothstep(tread * 0.5, tread * 0.5 + 0.005, abs(across)));
+                        }
                     }
                 }
             }
         }
-        a = b;
-        strength_a = strength_b;
     }
     shade = lerp(1, lerp(0.55, 1.3, lines_at), lines_strength);
     return pressed;

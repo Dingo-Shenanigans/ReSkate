@@ -1288,6 +1288,7 @@ public:
         s.left = cover->left;
         s.snowfall_stopping = cover->snowfall_stopping;
         s.under_roofs = cover->under_roofs;
+        s.light = cover->light;
         world_cover::set(s);
         return {};
     }

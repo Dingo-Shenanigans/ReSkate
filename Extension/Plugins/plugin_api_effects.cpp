@@ -92,7 +92,7 @@ struct EffectsApi {
         lua_pushboolean(L, ready); lua_pushnumber(L, static_cast<double>(epoch)); return 2;
     }
     // cover({colour = {r, g, b}, amount, facing, softness, brightness, breakup, sparkle, snowfall, fall_speed,
-    // left, snowfall_stopping, under_roofs}): a cover over
+    // left, snowfall_stopping, under_roofs, light}): a cover over
     // every upward-facing surface of the world (snow, sand, dust), drawn into the world's picture before
     // the game's post-processing and its UI, so menus and the HUD are never under it. On this screen,
     // until cover(nil); one plugin at a time. Not a per-tick call, and no effect handle. under_roofs = false:
@@ -133,6 +133,13 @@ struct EffectsApi {
         if (!lua_isnil(L, -1)) {
             luaL_checktype(L, -1, LUA_TBOOLEAN);
             c.under_roofs = lua_toboolean(L, -1) != 0;
+        }
+        lua_pop(L, 1);
+        // light = true: fewer flakes and samples from the start (it goes light by itself on a GPU it is slow on).
+        lua_getfield(L, 1, "light");
+        if (!lua_isnil(L, -1)) {
+            luaL_checktype(L, -1, LUA_TBOOLEAN);
+            c.light = lua_toboolean(L, -1) != 0;
         }
         lua_pop(L, 1);
         lua_getfield(L, 1, "colour");

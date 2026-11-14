@@ -335,6 +335,7 @@ public:
         float left{1}; // how much of it is left (melting), 0..1, the same everywhere
         bool snowfall_stopping{}; // the snow stops falling: no new flakes, the last ones fall out
         bool under_roofs{true}; // false: none of it where something is overhead (indoors), nor falling there
+        bool light{};           // true: light from the start (fewer flakes and samples), for a slow GPU
     };
     virtual std::string world_cover(std::string_view /*plugin*/, std::optional<WorldCover>) { return unavailable; }
     // The time of day forced on the map now (morning, noon, afternoon, evening, night, weatherday,

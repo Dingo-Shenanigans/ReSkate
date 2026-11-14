@@ -99,7 +99,13 @@ constexpr int roof_blocks = 128 / roof_block; // across the near grid
 static_assert(roof_grids[0].cells == roof_blocks * roof_block, "the near grid is whole blocks");
 constexpr std::size_t roof_floats4 = 2 + roof_cells_of(roof_grids[0]) + roof_cells_of(roof_grids[1]) + roof_blocks * roof_blocks / 4;
 constexpr float roof_reach = 60.0f; // metres over and under the camera the rays start and end
-constexpr UINT64 camera_slice = ((camera_candidates * 4 + most_clear * place_floats4 + 2 + most_trail * 2 + roof_floats4) * 16 + 255) /
+// After the trail's points, a box a run of trail_run of them (and the one before) lies in on the ground, widened
+// by how far a pixel can be from them and still be on their trail: a pixel reads the points only of the runs
+// whose box it is in. Every pixel in the trails' box read all of them, two float4s a point, and on a Steam Deck
+// the cover took 16 ms a frame on the GPU (2026-11-14).
+constexpr std::size_t trail_run = 8;
+constexpr std::size_t trail_runs = most_trail / trail_run;
+constexpr UINT64 camera_slice = ((camera_candidates * 4 + most_clear * place_floats4 + 2 + most_trail * 2 + trail_runs + roof_floats4) * 16 + 255) /
                                 256 * 256;
 // The measurements: one row a candidate camera, a column a point (ps_measure), read back by the CPU.
 constexpr UINT measure_columns = 32;
@@ -1286,7 +1292,10 @@ bool record_cover(Shared& s) {
         float* const head = reinterpret_cast<float*>(s.camera_cpu + at * camera_slice) + (camera_candidates * 4 + most_clear * place_floats4) * 4;
         std::size_t count = 0;
         std::array<float, 6> box{1e30f, 1e30f, -1e30f, -1e30f, 1e30f, -1e30f}; // min x, min z, max x, max z, min y, max y
+        std::array<std::array<float, 3>, most_trail> flat{}; // each point's x, z and reach, for the runs' boxes (the upload
+                                                            // buffer is slow to read back)
         for (const auto& t : a.trail) {
+            if (count < most_trail) flat[count] = {t.at[0], t.at[2], t.width * 0.5f + 0.5f};
             const float strength = 1.0f - static_cast<float>(now - t.when) / (t.fade * 1000.0f);
             float* const point = head + 8 + count * 8;
             point[0] = t.at[0], point[1] = t.at[1], point[2] = t.at[2], point[3] = t.width;
@@ -1297,8 +1306,20 @@ bool record_cover(Shared& s) {
         }
         head[0] = static_cast<float>(count), head[1] = box[0], head[2] = box[1], head[3] = box[2];
         head[4] = box[3], head[5] = box[4], head[6] = box[5], head[7] = 0;
+        // Each run's box: its points and the one before (its first stretch's start), widened as the shader's
+        // nearness test is (half the width, and half a metre). An empty run's box is the wrong way round.
+        float* const runs = head + 8 + most_trail * 8;
+        for (std::size_t r = 0; r < trail_runs; ++r) {
+            std::array<float, 4> run{1e30f, 1e30f, -1e30f, -1e30f};
+            const std::size_t from = r * trail_run > 0 ? r * trail_run - 1 : 0, to = std::min((r + 1) * trail_run, count);
+            for (std::size_t i = from; i < to; ++i) {
+                const auto& [x, z, reach] = flat[i];
+                run = {std::min(run[0], x - reach), std::min(run[1], z - reach), std::max(run[2], x + reach), std::max(run[3], z + reach)};
+            }
+            std::copy(run.begin(), run.end(), runs + r * 4);
+        }
         // The roof map, after the trails (measure_roofs fills it), and where it is measured round.
-        float* const roof = head + 8 + most_trail * 8;
+        float* const roof = runs + trail_runs * 4;
         roof[0] = settings.under_roofs ? 0.0f : 1.0f;
         roof[1] = static_cast<float>(roof_grids[0].cells), roof[2] = roof_grids[0].size, roof[3] = static_cast<float>(roof_grids[1].cells);
         roof[4] = roof_grids[1].size, roof[5] = static_cast<float>(a.roof_near_first[0]), roof[6] = static_cast<float>(a.roof_near_first[1]);
@@ -1439,7 +1460,7 @@ bool record_cover(Shared& s) {
         static_cast<float>(std::min(clear.size(), most_clear)), 0, 0, 0, // then each place's height, below
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, // the places' feet and radii, below
         s.last_camera[0], s.last_camera[1], s.last_camera[2], have_last ? 1.0f : 0.0f,
-        s.last_camera[3], s.last_camera[4], s.last_camera[5], s.light ? 1.0f : 0.0f, // light (world_cover.hlsl)
+        s.last_camera[3], s.last_camera[4], s.last_camera[5], s.light || settings.light ? 1.0f : 0.0f, // light (world_cover.hlsl)
         s.last_camera[6], s.last_camera[7], s.last_camera[8], settings.left,
         s.last_camera[9], s.last_camera[10], s.last_camera[11], stopping_seconds};
     for (std::size_t i = 0; i < clear.size() && i < most_clear; ++i) {
