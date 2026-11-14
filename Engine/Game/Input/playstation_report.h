@@ -62,13 +62,28 @@ inline PlayStationGamepad playstation_common(const std::uint8_t* sticks, const s
 inline constexpr bool playstation_bluetooth(std::size_t input_report_length) noexcept {
     return input_report_length > 64;
 }
+// A DualSense's report 0x01 is one of two things with the buttons in different places: its
+// 64-byte USB report, or the 10-byte simple report it sends over Bluetooth until full reports are
+// asked for, which Windows pads with zeros to the length of a read. The length of the read says
+// which only while the pad's longest input report is the one expected (64 over USB): a pad that
+// reads longer over USB was taken for Bluetooth, and neutralising it for a menu wrote the D-pad's
+// byte of the USB layout as "up" (a DualSense Edge returned to the session marker for as long as
+// the menu or the chat was open, 2026-11-14). So what is in the report says first: a USB report
+// has its counter, sensors and status after the buttons, and the simple report has only padding
+// there. A report with nothing there goes by the length, as before.
+inline bool dualsense_usb_layout(const std::uint8_t* report, std::size_t size, bool bluetooth) noexcept {
+    if (size < 11) return false;
+    for (std::size_t at = 11; at < std::min<std::size_t>(size, 64); ++at)
+        if (report[at]) return true;
+    return !bluetooth;
+}
 // `report` includes the report id byte, as ReadFile returns it.
 inline std::optional<PlayStationGamepad> parse_playstation_report(PlayStationPad kind, bool bluetooth,
     const std::uint8_t* report, std::size_t size) noexcept {
     if (!report || !size || kind == PlayStationPad::none) return {};
     const auto id = report[0];
     // DualSense USB (0x01) and Bluetooth full (0x31): triggers precede the buttons.
-    if (kind == PlayStationPad::dualsense && ((id == 0x01 && !bluetooth && size >= 11) || (id == 0x31 && size >= 12))) {
+    if (kind == PlayStationPad::dualsense && ((id == 0x01 && dualsense_usb_layout(report, size, bluetooth)) || (id == 0x31 && size >= 12))) {
         const auto* data = report + (id == 0x31 ? 2 : 1);
         return detail::playstation_common(data, data + 7, data[4], data[5]);
     }
@@ -95,7 +110,7 @@ inline bool replace_playstation_report(PlayStationPad kind, bool bluetooth, std:
     // R2 0x08 digital bits) and the two analog triggers.
     std::uint8_t *sticks{}, *shoulder{}, *left{}, *right{};
     const auto id = bytes[0];
-    if (kind == PlayStationPad::dualsense && ((id == 0x01 && !bluetooth) || id == 0x31)) {
+    if (kind == PlayStationPad::dualsense && ((id == 0x01 && dualsense_usb_layout(bytes, size, bluetooth)) || id == 0x31)) {
         auto* data = bytes + (id == 0x31 ? 2 : 1);
         sticks = data; left = data + 4; right = data + 5; shoulder = data + 8;
     } else if (id == 0x01) {
@@ -170,7 +185,8 @@ inline bool refresh_playstation_bluetooth_crc(std::uint8_t* report, std::size_t 
 inline std::uint8_t* playstation_button_bytes(PlayStationPad kind, bool bluetooth, std::uint8_t* report, std::size_t size) noexcept {
     if (!parse_playstation_report(kind, bluetooth, report, size)) return nullptr;
     const auto id = report[0];
-    if (kind == PlayStationPad::dualsense && ((id == 0x01 && !bluetooth) || id == 0x31)) return report + (id == 0x31 ? 2 : 1) + 7;
+    if (kind == PlayStationPad::dualsense && ((id == 0x01 && dualsense_usb_layout(report, size, bluetooth)) || id == 0x31))
+        return report + (id == 0x31 ? 2 : 1) + 7;
     if (id == 0x01) return report + 5;
     return report + 7; // DualShock 4 Bluetooth full (0x11)
 }

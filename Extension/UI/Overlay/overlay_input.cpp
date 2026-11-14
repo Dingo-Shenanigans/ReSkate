@@ -558,14 +558,14 @@ extern "C" unsigned DingoSDKOverlayReadPromptKeys() {
     const bool typing = s.visible.load() || s.console_visible.load() || s.editor_visible.load() || s.chat_visible.load() || s.hub_typing.load();
     if (!window || s.stop.load() || s.failed.load() || typing || !game_window_foreground(window)) return 0;
     unsigned keys{};
-    constexpr int wanted[]{VK_LEFT, VK_RIGHT, VK_RETURN, VK_ESCAPE};
+    constexpr int wanted[]{VK_LEFT, VK_RIGHT, VK_RETURN, VK_ESCAPE, VK_BACK};
     if (std::array<std::uint64_t, 4> held{}; sampled_keys(window, held)) {
-        for (unsigned bit = 0; bit < 4; ++bit)
+        for (unsigned bit = 0; bit < std::size(wanted); ++bit)
             if (held[wanted[bit] / 64] >> (wanted[bit] % 64) & 1) keys |= 1u << bit;
         return keys;
     }
     OverlayInputAccess access;
-    for (unsigned bit = 0; bit < 4; ++bit)
+    for (unsigned bit = 0; bit < std::size(wanted); ++bit)
         if (GetAsyncKeyState(wanted[bit]) & 0x8000) keys |= 1u << bit;
     return keys;
 }
