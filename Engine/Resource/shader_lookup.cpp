@@ -152,6 +152,48 @@ ProgramRows read_program_rows(const Table& table) {
     return rows;
 }
 
+// A table's program rows where they lie in its bytes, in the order of their keys: what
+// read_program_rows reads, without a list made for each row. A root level has a copy of its
+// table from every map, each with the game's thousands of rows, and reading every copy into a
+// map of lists was most of what combining them took (3.4 s for 93 maps; 2026-11-14).
+// `repeated`: a key is listed more than once, which only read_program_rows puts together.
+struct ListedRow {
+    std::uint64_t key{};
+    std::size_t at{};          // where its values start
+    std::uint32_t values{};    // how many
+};
+struct ListedRows {
+    std::vector<ListedRow> rows;
+    bool repeated{};
+};
+ListedRows list_program_rows(const Table& table) {
+    auto offset = lookup_offset(table);
+    const auto count = read<std::uint32_t>(table.resource, offset);
+    offset += 4;
+    ListedRows listed;
+    for (std::uint32_t index = 0; index < count; ++index) {
+        const auto key = read<std::uint64_t>(table.resource, offset);
+        const auto values = read<std::uint32_t>(table.resource, offset + 8);
+        offset += 12;
+        if (!values || values > 4096 ||
+            static_cast<std::uint64_t>(values) * 4 > table.resource.size() - offset)
+            throw std::runtime_error("Program lookup rows are invalid");
+        listed.rows.push_back({key, offset, values});
+        offset += static_cast<std::size_t>(values) * 4;
+    }
+    if (offset != table.resource.size())
+        throw std::runtime_error("Program lookup has trailing data");
+    std::ranges::stable_sort(listed.rows, {}, &ListedRow::key);
+    listed.repeated = std::ranges::adjacent_find(listed.rows, {}, &ListedRow::key) != listed.rows.end();
+    return listed;
+}
+// Whether a row read into a list is the row listed at `row` of `table`. (Both are the table's
+// own bytes, a value after another.)
+bool same_values(const std::vector<std::uint32_t>& values, const Table& table, const ListedRow& row) {
+    return values.size() == row.values &&
+           std::memcmp(values.data(), table.resource.data() + row.at, static_cast<std::size_t>(row.values) * 4) == 0;
+}
+
 TextureRows read_texture_rows(const Table& table) {
     if (table.resource.size() % 16)
         throw std::runtime_error("Texture lookup does not have its native layout");
@@ -214,18 +256,48 @@ MergedTable merge_program_lookup(const Table& base, const std::span<const Table>
             const bool sameGraph = same_graph(base, edit);
             const bool stockGraph = stockPreserved && (same_graph(stock, edit) || preserves_stock(edit, stock));
             const auto available = sameGraph ? records : stockRecords;
-            for (const auto& [key, values] : read_program_rows(edit)) {
-                if (const auto held = baseRows.find(key); held != baseRows.end()) {
-                    if (held->second != values) ++merged.conflicts;
+            const auto listed = list_program_rows(edit);
+            if (listed.repeated) {
+                for (const auto& [key, values] : read_program_rows(edit)) {
+                    if (const auto held = baseRows.find(key); held != baseRows.end()) {
+                        if (held->second != values) ++merged.conflicts;
+                        continue;
+                    }
+                    if ((!sameGraph && !stockGraph) || std::any_of(values.begin(), values.end(), [&](std::uint32_t index) { return index >= available; })) {
+                        ++merged.outside;
+                        continue;
+                    }
+                    const auto [row, inserted] = rows.try_emplace(key, values);
+                    if (inserted) ++merged.added;
+                    else if (row->second != values) ++merged.conflicts;
+                }
+                continue;
+            }
+            // The same, row by row where the rows lie: both are in the order of their keys, so
+            // the base's are gone through beside the edit's rather than searched for each.
+            auto held = baseRows.begin();
+            for (const auto& listedRow : listed.rows) {
+                while (held != baseRows.end() && held->first < listedRow.key) ++held;
+                if (held != baseRows.end() && held->first == listedRow.key) {
+                    if (!same_values(held->second, edit, listedRow)) ++merged.conflicts;
                     continue;
                 }
-                if ((!sameGraph && !stockGraph) || std::any_of(values.begin(), values.end(), [&](std::uint32_t index) { return index >= available; })) {
+                bool outside = !sameGraph && !stockGraph;
+                for (std::uint32_t value = 0; !outside && value < listedRow.values; ++value)
+                    outside = read<std::uint32_t>(edit.resource, listedRow.at + static_cast<std::size_t>(value) * 4) >= available;
+                if (outside) {
                     ++merged.outside;
                     continue;
                 }
-                const auto [row, inserted] = rows.try_emplace(key, values);
-                if (inserted) ++merged.added;
-                else if (row->second != values) ++merged.conflicts;
+                const auto row = rows.lower_bound(listedRow.key);
+                if (row != rows.end() && row->first == listedRow.key) {
+                    if (!same_values(row->second, edit, listedRow)) ++merged.conflicts;
+                    continue;
+                }
+                std::vector<std::uint32_t> values(listedRow.values);
+                std::memcpy(values.data(), edit.resource.data() + listedRow.at, static_cast<std::size_t>(listedRow.values) * 4);
+                rows.emplace_hint(row, listedRow.key, std::move(values));
+                ++merged.added;
             }
         } catch (const std::exception&) {
             // A malformed edit is not permission to discard a verified graph.
@@ -252,9 +324,23 @@ MergedTable merge_texture_lookup(const Table& base, const std::span<const Table>
     const auto baseRows = rows;
 
     MergedTable merged;
+    // Each edit's rows in the order of their keys, the first of any key listed twice (as
+    // read_texture_rows keeps them), gone through beside the base's.
+    std::vector<std::pair<std::uint64_t, std::uint64_t>> listed;
     for (const auto& edit : edits) {
-        for (const auto& [key, value] : read_texture_rows(edit)) {
-            if (baseRows.contains(key)) continue;
+        if (edit.resource.size() % 16)
+            throw std::runtime_error("Texture lookup does not have its native layout");
+        listed.clear();
+        listed.reserve(edit.resource.size() / 16);
+        for (std::size_t offset = 0; offset < edit.resource.size(); offset += 16)
+            listed.emplace_back(read<std::uint64_t>(edit.resource, offset), read<std::uint64_t>(edit.resource, offset + 8));
+        std::ranges::stable_sort(listed, {}, &std::pair<std::uint64_t, std::uint64_t>::first);
+        auto held = baseRows.begin();
+        for (std::size_t index = 0; index < listed.size(); ++index) {
+            const auto& [key, value] = listed[index];
+            if (index && listed[index - 1].first == key) continue;
+            while (held != baseRows.end() && held->first < key) ++held;
+            if (held != baseRows.end() && held->first == key) continue;
             const auto [row, inserted] = rows.try_emplace(key, value);
             if (inserted) ++merged.added;
             else if (row->second != value) ++merged.conflicts;

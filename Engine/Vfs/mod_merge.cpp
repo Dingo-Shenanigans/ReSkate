@@ -431,7 +431,8 @@ MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, co
         // (https://github.com/Dingo-Shenanigans/ReSkate/issues/138).
         advance("Planning the material grid");
         // rootMods belongs to providers; finish using it before erasing its node.
-        const auto grid = plan_material_grid(rootMods, modFiles, store, baseRoot, gameRoot, report);
+        const auto grid = plan_material_grid(rootMods, modFiles, store, baseRoot, gameRoot, report, readers - 1, options.live,
+                                             catalog.root / grid_cache_file);
         if (rootMods.empty()) {
             providers.erase(std::string(root_level));
             std::erase_if(superbundles, [](const std::string& relative) { return ascii_lower(relative) == root_level; });
@@ -452,7 +453,7 @@ MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, co
         lap("asset overrides");
         // The count above missed the root level when only a disabled map brings it, and
         // that is merged too: from here each superbundle is a step, then the layout.
-        progress.total = progress.done + superbundles.size() + 1;
+        progress.total = progress.done + superbundles.size() + 2;
 
         // Each superbundle is merged by itself: it reads the game's and the mods' files and
         // what was worked out above, and what it writes waits in its own copy of the store
@@ -465,6 +466,21 @@ MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, co
         for (const auto* mod : mods) fingerprints.emplace(mod->name, mod_fingerprint(mod->directory));
         for (const auto& mod : catalog.inactive) fingerprints.emplace(mod.name, mod_fingerprint(mod.directory));
         ScanCache scans(catalog.root / scan_cache_file, std::move(fingerprints));
+        // What it has nothing for is read first, on every thread: none of it waits on another
+        // mod, where a superbundle is merged by one thread from start to end. (The threads read
+        // one small payload at a time and hold next to nothing, so there may be more of them
+        // than of the superbundle jobs, which each hold a superbundle.)
+        {
+            std::vector<std::pair<const Mod*, std::string>> unread;
+            for (const auto& relative : superbundles) {
+                if (keepRoot && ascii_lower(relative) == root_level) continue;
+                for (const auto* mod : providers.at(ascii_lower(relative))) unread.emplace_back(mod, relative);
+            }
+            advance("Reading the mods");
+            scan_mods(unread, store, baseRoot, gameRoot, scans,
+                      (options.live ? readers : std::min<std::size_t>(cores, 16)) - 1, options.live);
+            lap("reading the mods");
+        }
         struct Job {
             std::string relative;
             std::optional<CasStore> store;   // waiting: what the merge wrote
@@ -517,6 +533,15 @@ MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, co
                 job.failure = std::current_exception();
             }
         };
+        // The order the threads take them in: the superbundles most mods ship first. Every map
+        // ships the root level, which makes it the longest to merge by far, and started in its
+        // turn it was still being merged when everything else had finished. (They are settled
+        // in their own order whichever is merged first.)
+        std::vector<std::size_t> startOrder(jobs.size());
+        for (std::size_t index = 0; index < startOrder.size(); ++index) startOrder[index] = index;
+        std::ranges::stable_sort(startOrder, [&](std::size_t left, std::size_t right) {
+            return providers.at(ascii_lower(jobs[left].relative)).size() > providers.at(ascii_lower(jobs[right].relative)).size();
+        });
         std::mutex jobsMutex;
         std::condition_variable jobDone;
         std::atomic<std::size_t> nextJob{0};
@@ -538,8 +563,9 @@ MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, co
                     // (Under the game's own threads, so a merge shows as a wait and not as stutter.)
                     if (options.live) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
                     for (;;) {
-                        const auto mine = nextJob.fetch_add(1);
-                        if (mine >= jobs.size() || stopJobs) return;
+                        const auto turn = nextJob.fetch_add(1);
+                        if (turn >= jobs.size() || stopJobs) return;
+                        const auto mine = startOrder[turn];
                         run(jobs[mine]);
                         {
                             std::lock_guard lock(jobsMutex);
@@ -549,6 +575,44 @@ MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, co
                     }
                 });
         } catch (const std::system_error&) {} // fewer threads, or none: this one does the rest
+        // Once a superbundle's bytes are placed, writing its TOC waits on nothing else. The ones
+        // placed while the next was still being merged are written together, on several
+        // threads: with a hundred maps, nearly all of them have been merged by the time the root
+        // level has, and writing and reading back their TOCs one after another was a quarter of
+        // the wait for the superbundles (2026-11-14).
+        std::vector<Job*> placed;
+        const auto publish = [&] {
+            std::mutex failureMutex;
+            std::exception_ptr failure;
+            for_each_index(placed.size(), wantedWorkers, options.live, [&](std::size_t at) {
+                try {
+                    auto& job = *placed[at];
+                    for (auto& [index, region] : job.held) {
+                        for (auto& file : region.files) job.store->settled(file.location, file.offset);
+                        job.merged.bundles[index].region = fb::write_bundle_region(region.files, region.inlineManifest);
+                    }
+                    for (auto& chunk : job.merged.chunks) job.store->settled(chunk.location, chunk.offset);
+                    auto bytes = fb::write_patch_toc(job.merged.bundles, job.merged.chunks, job.merged.flags);
+                    // Read the result back before publishing it: a TOC whose perfect
+                    // hash does not resolve would take the game down at load time.
+                    const auto check = fb::read_toc(bytes);
+                    fb::verify_toc(check);
+                    if (check.bundles.size() != job.merged.bundles.size() ||
+                        check.chunks.size() != job.merged.chunks.size())
+                        throw std::runtime_error("Merged TOC did not round-trip: " + job.relative);
+                    write_file(inside(output, fs::path(job.relative)), bytes);
+                    // Done with: a big merge would otherwise hold every superbundle's until the end.
+                    job.merged = {};
+                    job.held = {};
+                    job.store.reset();
+                } catch (...) {
+                    std::lock_guard lock(failureMutex);
+                    if (!failure) failure = std::current_exception();
+                }
+            });
+            placed.clear();
+            if (failure) std::rethrow_exception(failure);
+        };
         std::size_t settledJobs{};
         for (const auto& relative : superbundles) {
             if (keepRoot && ascii_lower(relative) == root_level) {
@@ -569,13 +633,9 @@ MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, co
                 jobDone.wait(lock, [&] { return job.done; });
             }
             if (job.failure) std::rethrow_exception(job.failure);
-            // What it wrote goes into the patch's archives now, and what points at it follows.
+            // What it wrote goes into the patch's archives now, and what points at it follows
+            // (publish).
             store.settle(*job.store);
-            for (auto& [index, region] : job.held) {
-                for (auto& file : region.files) job.store->settled(file.location, file.offset);
-                job.merged.bundles[index].region = fb::write_bundle_region(region.files, region.inlineManifest);
-            }
-            for (auto& chunk : job.merged.chunks) job.store->settled(chunk.location, chunk.offset);
             for (const auto& [installChunk, archive] : job.used)
                 used.emplace(installChunk, CasStore::placeholder(archive) ? manifestArchive : archive);
             report.mergedBundles += job.report.mergedBundles;
@@ -599,21 +659,16 @@ MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, co
                 for (auto& area : row.areas)
                     if (std::ranges::find(same->areas, area) == same->areas.end()) same->areas.push_back(std::move(area));
             }
-            auto bytes = fb::write_patch_toc(job.merged.bundles, job.merged.chunks, job.merged.flags);
-            // Read the result back before publishing it: a TOC whose perfect
-            // hash does not resolve would take the game down at load time.
-            const auto check = fb::read_toc(bytes);
-            fb::verify_toc(check);
-            if (check.bundles.size() != job.merged.bundles.size() ||
-                check.chunks.size() != job.merged.chunks.size())
-                throw std::runtime_error("Merged TOC did not round-trip: " + relative);
-            write_file(inside(output, fs::path(relative)), bytes);
             ++report.superbundles;
-            // Done with: a big merge would otherwise hold every superbundle's until the end.
-            job.merged = {};
-            job.held = {};
-            job.store.reset();
+            placed.push_back(&job);
+            // (The next one merged already is placed first, and written with this one.)
+            const bool nextMerged = !workers.empty() && settledJobs < jobs.size() && [&] {
+                std::lock_guard lock(jobsMutex);
+                return jobs[settledJobs].done;
+            }();
+            if (!nextMerged) publish();
         }
+        publish();
 
         // A live merge takes out the TOCs of superbundles no enabled mod ships
         // any more, so the next load reads the game's own copy instead.
@@ -630,152 +685,20 @@ MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, co
             write_placements(placementsPath, record);
             write_map_meshes(output / map_meshes_file, report.map_meshes);
         }
+        store.finish();
         scans.save();
         lap("superbundles");
 
         // The layout lists every superbundle the merged layer now provides.
         advance("Writing the layout");
-        auto* list = layout.field("superBundles");
-        if (!list || list->type != 1) throw std::runtime_error("layout.toc has no superBundles list");
-        std::set<std::string, std::less<>> known;
-        for (const auto& row : list->children) {
-            const auto* name = row.field("name");
-            if (name && name->type == 7) known.emplace(ascii_lower(name->text));
-        }
-        // A mod's own layout.toc. A damaged one is that mod's problem: the merge runs again without it.
-        const auto mod_layout = [&](const Mod& mod) -> std::optional<vfs::Layout> {
-            try {
-                return vfs::read_layout(mod.directory / L"layout.toc");
-            } catch (const std::exception& error) {
-                report.problems[mod.name].push_back(std::string("layout.toc could not be read: ") + error.what());
-                return std::nullopt;
-            }
-        };
-        for (const auto* mod : mods) {
-            const auto ownLayout = mod_layout(*mod);
-            if (!ownLayout) continue;
-            const auto& own = ownLayout->root;
-            const auto* ownManifest = own.field("installManifest");
-            const auto* ownChunks = ownManifest ? ownManifest->field("installChunks") : nullptr;
-            if (!ownChunks) continue;
-            for (const auto& chunk : ownChunks->children) {
-                const auto* chunkName = chunk.field("name");
-                const auto* held = chunk.field("superbundles");
-                if (!chunkName || !held) continue;
-                for (const auto& entry : held->children)
-                    if (entry.type == 7) report.superbundle_chunks.emplace_back(entry.text, chunkName->text);
-            }
-        }
-        for (const auto* mod : layoutSources) {
-            const auto otherLayout = mod_layout(*mod);
-            if (!otherLayout) continue;
-            const auto& other = otherLayout->root;
-            const auto* otherList = other.field("superBundles");
-            if (!otherList) continue;
-            for (const auto& row : otherList->children) {
-                const auto* name = row.field("name");
-                if (!name || name->type != 7 || !known.emplace(ascii_lower(name->text)).second) continue;
-                // The list is ordered by name and the engine searches it that
-                // way, so an entry appended at the end is never found.
-                const auto key = ascii_lower(name->text);
-                auto at = list->children.begin();
-                for (; at != list->children.end(); ++at) {
-                    const auto* existing = at->field("name");
-                    if (existing && existing->type == 7 && ascii_lower(existing->text) > key) break;
-                }
-                list->children.insert(at, native_db::make_named_record("name", name->text));
-                report.notes.push_back("Merged layout adds " + name->text + " from " + mod->name);
-            }
-
-            // The superbundle list is only half of it: each install chunk in the
-            // manifest names the superbundles it holds, and that is what tells
-            // the engine where a bundle's data lives. Without it the level is
-            // requested and then waits for content that is never located.
-            auto* chunks = layout.field("installManifest")
-                ? layout.field("installManifest")->field("installChunks") : nullptr;
-            const auto* otherManifest = other.field("installManifest");
-            const auto* otherChunks = otherManifest ? otherManifest->field("installChunks") : nullptr;
-            if (!chunks || !otherChunks) continue;
-            for (const auto& source : otherChunks->children) {
-                const auto* sourceName = source.field("name");
-                const auto* sourceList = source.field("superbundles");
-                if (!sourceName || !sourceList) continue;
-                Node* target{};
-                for (auto& candidate : chunks->children) {
-                    const auto* candidateName = candidate.field("name");
-                    if (candidateName && candidateName->text == sourceName->text) { target = &candidate; break; }
-                }
-                auto* targetList = target ? target->field("superbundles") : nullptr;
-                if (!targetList) continue;
-                for (const auto& entry : sourceList->children) {
-                    if (entry.type != 7) continue;
-                    const auto key = ascii_lower(entry.text);
-                    bool held{};
-                    for (const auto& existing : targetList->children)
-                        if (existing.type == 7 && ascii_lower(existing.text) == key) { held = true; break; }
-                    if (held) continue;
-                    auto position = targetList->children.begin();
-                    for (; position != targetList->children.end(); ++position)
-                        if (position->type == 7 && ascii_lower(position->text) > key) break;
-                    Node added;
-                    added.type = 7;
-                    added.text = entry.text;
-                    // A string node is written from its payload, terminator included.
-                    added.owned.assign(entry.text.begin(), entry.text.end());
-                    added.owned.push_back(0);
-                    targetList->children.insert(position, std::move(added));
-                    report.notes.push_back("Merged layout puts " + entry.text + " in " + sourceName->text);
-                }
-            }
-        }
-        // Declare the re-indexed archives, and only under the install chunks the
-        // merged patch really reads them from: a record for an install chunk
-        // that has no such file sends the engine looking for one that is absent.
-        const auto declare = [&](const char* field) {
-            auto* node = layout.field(field);
-            if (!node || node->type != 19) return;
-            const auto source = node->payload();
-            if (source.size() % 8) throw std::runtime_error(std::string(field) + " is not a record table");
-            std::vector<unsigned char> table(source.begin(), source.end());
-            std::size_t added{};
-            for (const auto& [installChunk, archive] : used) {
-                const std::array<unsigned char, 4> id{
-                    static_cast<unsigned char>(installChunk & 0xFF),
-                    static_cast<unsigned char>((installChunk >> 8) & 0xFF),
-                    static_cast<unsigned char>((installChunk >> 16) & 0xFF),
-                    static_cast<unsigned char>((installChunk >> 24) & 0xFF)};
-                // The table is grouped by install chunk and every group the game
-                // ships is ordered by archive index, so a new archive goes inside
-                // its own group and in that order, not after it and not last.
-                std::size_t insertAt{};
-                bool owns{}, already{}, placed{};
-                for (std::size_t at = 0; at + 8 <= table.size(); at += 8) {
-                    if (std::memcmp(table.data() + at + 2, id.data(), id.size())) continue;
-                    owns = true;
-                    const auto current = static_cast<std::uint16_t>(table[at] | (table[at + 1] << 8));
-                    if (current == archive) already = true;
-                    if (!placed && current > archive) { insertAt = at; placed = true; }
-                    if (!placed) insertAt = at + 8;
-                }
-                if (!owns || already) continue;
-                std::array<unsigned char, 8> record{};
-                record[0] = static_cast<unsigned char>(archive & 0xFF);
-                record[1] = static_cast<unsigned char>(archive >> 8);
-                std::memcpy(record.data() + 2, id.data(), id.size());
-                table.insert(table.begin() + static_cast<std::ptrdiff_t>(insertAt),
-                             record.begin(), record.end());
-                ++added;
-            }
-            if (!added) return;
-            report.notes.push_back(std::string(field) + ": declared " + std::to_string(added) +
-                " patch archive(s)");
-            node->owned = std::move(table);
-            node->bytes = {};
-        };
-        declare("layeredInstallChunkFiles");
-        declare("unlayeredInstallChunkFiles");
+        merge_layout(layout, mods, layoutSources, used, report);
 
         if (itemSources) {
+            // An item the player left out of a mod is not from it: the game does not have it.
+            for (auto& source : *itemSources)
+                if (const auto left = overrides.left_out_items.find(source.mod); left != overrides.left_out_items.end())
+                    std::erase_if(source.keys, [&](const std::string& key) { return left->second.contains(key); });
+            std::erase_if(*itemSources, [](const ItemSource& source) { return source.keys.empty(); });
             try {
                 write_item_sources(output / item_sources_file, *itemSources);
             } catch (const std::exception& failure) {

@@ -59,6 +59,7 @@ ObjectPersistenceModel local_profile_object_persistence();
 ParkEditorModel local_park_editor();
 void set_park_mod_list_visible(bool visible) noexcept;
 bool queue_local_park_surface(const EditorSurfaceRequest &);
+bool queue_local_park_ground(const EditorGroundRequest &);
 bool queue_local_park_preview(const EditorPreviewRequest &);
 bool queue_local_park_selection(const EditorSelectionRequest &);
 bool queue_local_park_paste(const EditorPasteRequest &);

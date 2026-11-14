@@ -552,7 +552,7 @@ void update_remote_cosmetics(std::uintptr_t base, const NativeFrame &local, cons
         };
         try {
             if (!r.skater_appearance || *r.skater_appearance != appearance.skater || (r.skater_hidden != hidden_now && turn)) {
-                apply_cosmetic_recipe(base, r.entity, local.entity, appearance.skater, hidden);
+                apply_cosmetic_recipe(base, r.entity, local.entity, appearance.skater, hidden, player);
                 r.skater_appearance = appearance.skater;
                 r.skater_hidden = hidden_now;
             }
@@ -563,7 +563,7 @@ void update_remote_cosmetics(std::uintptr_t base, const NativeFrame &local, cons
                 return;
             }
             if (!r.board_appearance || *r.board_appearance != appearance.board || (r.board_hidden != hidden_now && turn)) {
-                apply_cosmetic_recipe(base, r.board_entity, local.board_entity, appearance.board, hidden);
+                apply_cosmetic_recipe(base, r.board_entity, local.board_entity, appearance.board, hidden, player);
                 r.board_appearance = appearance.board;
                 r.board_hidden = hidden_now;
             }

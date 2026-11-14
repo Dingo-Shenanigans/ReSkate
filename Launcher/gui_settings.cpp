@@ -516,6 +516,15 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
         setting_note("Makes the launcher's text and layout bigger or smaller. A size too big for this screen is cut to "
                      "the largest that fits. Applies when the launcher starts again.");
         ImGui::Spacing();
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Mod downloads at once");
+        ImGui::SameLine(S(200));
+        ImGui::SetNextItemWidth(S(160));
+        if (ImGui::SliderInt("##parallel_downloads", &settings.parallel_downloads, 1, max_parallel_downloads, "%d", ImGuiSliderFlags_AlwaysClamp))
+            launcher.save();
+        setting_note("How many mods the Mod Manager downloads at the same time. Each is installed as its download ends. "
+                     "Fewer suits a slow connection.");
+        ImGui::Spacing();
         setting_check("Keep the launcher open after launch",
                       "Hide while you play and return when Skate closes. Turn off to close after a successful launch.",
                       settings.keep_open_after_launch);

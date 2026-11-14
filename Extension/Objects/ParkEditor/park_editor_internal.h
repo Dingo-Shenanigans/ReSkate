@@ -75,6 +75,8 @@ struct EditorRuntime {
     editor::NativePickingApi picking_api;
     std::optional<EditorSurfaceRequest> probe;
     EditorSurfaceHit surface;
+    std::optional<EditorGroundRequest> ground_probe;
+    EditorGroundGrid ground;
     std::uint64_t last_preview_token{};
     editor::NativeHighlightApi highlight_api;
     struct HighlightLease {

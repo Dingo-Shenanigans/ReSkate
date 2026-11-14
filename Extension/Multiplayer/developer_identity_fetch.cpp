@@ -22,18 +22,24 @@ void fetch() noexcept {
     try {
         https::Download download;
         trace::Scope timing("backend.identity_lists", "http.client");
-        const auto answer = https::get_text(std::wstring(identity_lists_url.begin(), identity_lists_url.end()), max_bytes, 10,
-                                            L"ReSkate-Identity/1", &download);
+        const auto get = [&](std::string_view url) {
+            return https::get_text(std::wstring(url.begin(), url.end()), max_bytes, 10, L"ReSkate-Identity/1", &download);
+        };
+        auto answer = get(identity_lists_url);
+        // The backend out of reach: its copy on GitHub (developer_identity.h).
+        const auto backend = download;
+        if (!answer) answer = get(identity_lists_mirror_url);
         if (!answer) timing.fail();
         if (answer) {
             auto lists = parse_identity_lists(*answer);
             server_tokens_rule = parse_server_tokens_required(*answer);
-            const auto developers = lists[0].size(), homies = lists[1].size(), creators = lists[2].size(),
-                       bans = lists[static_cast<std::size_t>(IdentityList::banned)].size();
+            const auto count = [&](IdentityList list) { return lists[static_cast<std::size_t>(list)].size(); };
+            const auto developers = count(IdentityList::developer), staff = count(IdentityList::staff), centrix = count(IdentityList::centrix),
+                       homies = count(IdentityList::homie), creators = count(IdentityList::content_creator), bans = count(IdentityList::banned);
             if (publish_identity_lists(std::move(lists)) || failing)
                 logging::log(logging::Level::info, logging::Channel::runtime,
-                             "Identity lists: {} developer(s), {} homie(s), {} content creator(s), {} banned.", developers,
-                             homies, creators, bans);
+                             "Identity lists: {} developer(s), {} staff, {} Centrix, {} homie(s), {} content creator(s), {} banned.", developers,
+                             staff, centrix, homies, creators, bans);
             // The chat word lists come in the same answer (word_lists.h).
             if (const auto words = use_word_lists(*answer); words.changed)
                 logging::log(logging::Level::info, logging::Channel::runtime,
@@ -42,8 +48,8 @@ void fetch() noexcept {
             ok = true;
         } else if (!failing) {
             logging::log(logging::Level::info, logging::Channel::runtime,
-                         "Identity lists unavailable (HTTP {}, error {}); trying again every minute.", download.http_status,
-                         download.error);
+                         "Identity lists unavailable (backend: HTTP {}, error {}; GitHub copy: HTTP {}, error {}); trying again every minute.",
+                         backend.http_status, backend.error, download.http_status, download.error);
         }
     } catch (const std::exception &e) {
         if (!failing)

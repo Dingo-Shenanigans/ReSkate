@@ -659,6 +659,8 @@ void request_depth_probe(const wchar_t *folder) noexcept;
 #endif
 using ParkSurfaceQueue = bool (*)(const EditorSurfaceRequest &);
 void set_park_surface_queue(ParkSurfaceQueue) noexcept;
+using ParkGroundQueue = bool (*)(const EditorGroundRequest &);
+void set_park_ground_queue(ParkGroundQueue) noexcept;
 using ParkPreviewQueue = bool (*)(const EditorPreviewRequest &);
 void set_park_preview_queue(ParkPreviewQueue) noexcept;
 using ParkSelectionQueue = bool (*)(const EditorSelectionRequest &);

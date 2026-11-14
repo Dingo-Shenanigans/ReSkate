@@ -248,11 +248,8 @@ void settle_profile(ModsPanel& panel) {
         panel.profiles = profiles::load(panel.root);
         panel.profiles_loaded = true;
     }
+    // (`installing` goes off once collect_install has read the folder again.)
     if (panel.profile_settle.empty() || panel.installing) return;
-    {
-        std::lock_guard lock(panel.mutex);
-        if (panel.finished) return;   // collect_install has not rescanned yet
-    }
     const auto name = std::exchange(panel.profile_settle, {});
     const auto* profile = panel.profiles.find(name);
     if (!profile) return;
@@ -320,16 +317,6 @@ void profiles_page(const Fonts& fonts, ModsPanel& panel, HWND window, float heig
     const profiles::Profile* using_now = nullptr;
     for (const auto& profile : panel.profiles.list)
         if (!using_now && profiles::in_use(profile, panel.list, panel.profiles.keep_others)) using_now = &profile;
-    page_banner(fonts, "PROFILES", nullptr,
-        panel.profiles.keep_others
-            ? "A profile remembers which of your mods are on and in what order. Every mod stays installed once; loading a "
-              "profile switches its mods on and leaves your other mods as they are. Share one as a code or a file, with "
-              "ReSkate or r2modman."
-            : "A profile remembers which of your mods are on and in what order. Every mod stays installed once; loading a "
-              "profile switches the rest off. Share one as a code or a file, with ReSkate or r2modman.",
-        using_now ? "IN USE: " + using_now->name : "NO PROFILE IN USE", using_now ? color::good : color::tile_grey,
-        std::format("{} of {} saved", panel.profiles.list.size(), profiles::max_profiles));
-
     // ------------------------------------------------ new, and the two ways in, a card each
     {
         auto* draw = ImGui::GetWindowDrawList();
