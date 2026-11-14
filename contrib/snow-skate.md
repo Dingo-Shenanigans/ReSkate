@@ -77,8 +77,8 @@ game's barriers through the existing hook in `depth_tap.cpp`, and frames end thr
   between updates), so no fixed delay fits. The cover uses the camera the game drew the frame with: its
   compute constant buffers bound at root parameter 0 begin with it (found in the game with the GPU
   diagnostics). Each frame the newest 32 are read; of those close to the camera read from the game, the
-  one most hold. In the replay editor, where the camera read is not the one drawn with, the one most hold.
-  Where none is found, the camera 1.15 frames back, as before.
+  one most hold. Where none is found (the replay editor, whose camera read is not the one drawn with), the
+  camera 1.15 frames back, as before.
   - The buffers are read through the GPU memory watch (`gpu_diagnostics`), which is now on without
     `RESKATE_GPU_DIAGNOSTICS` too, light: each heap and buffer's GPU addresses only.
   - The places kept clear (the deck) are taken from as many frames back as the drawn camera is found to be.
