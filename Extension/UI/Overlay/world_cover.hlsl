@@ -143,6 +143,7 @@ float trail_at(float3 here, float3 dir, out float shade) {
     const float4 box = cameras[TRAIL + 1];
     if (here.x < head.y - 1 || here.z < head.z - 1 || here.x > head.w + 1 || here.z > box.x + 1 || here.y < box.y - 1 || here.y > box.z + 1)
         return 0;
+    if (dir.y >= -1e-4) return 0; // a ray not going down meets no ground
     float pressed = 0;
     float4 a = cameras[TRAIL + 2];
     float strength_a = cameras[TRAIL + 3].x;
@@ -155,7 +156,13 @@ float trail_at(float3 here, float3 dir, out float shade) {
         const float2 along = b.xz - a.xz;
         const float length_squared = dot(along, along);
         // Two points far apart are not one trail (a teleport, a respawn), nor is a point that starts a new one.
-        if (!starts && length_squared < 4.0 && length_squared > 1e-6 && strength_a > 0 && strength_b > 0 && dir.y < -1e-4) {
+        // Far from this stretch (from the point the depth gives, on the ground): none of the work below. Every
+        // pixel went through all of it for every point (2026-11-14).
+        const float2 from_a = here.xz - a.xz;
+        const float2 nearest = from_a - along * saturate(dot(from_a, along) / max(length_squared, 1e-6));
+        const float reach_out = b.w * 0.5 + 0.5;
+        if (!starts && length_squared < 4.0 && length_squared > 1e-6 && strength_a > 0 && strength_b > 0 &&
+            dot(nearest, nearest) < reach_out * reach_out) {
             // The ray onto the ground of this stretch: the plane through both its points, level across it, so it
             // follows a slope along the trail. A level plane at the stretch's middle height drew a trail up a
             // slope as steps, jumping from one to the next (2026-11-13).
@@ -238,6 +245,21 @@ float roof_blend(float3 at, float clearance) {
 // metres, all gone further in. A broad, gentle wander in the world keeps the edge from looking ruled, and
 // stays put. (Before: an edge a few centimetres, then one of 1.5 m with small, jagged noise, 2026-11-13.)
 float roofed_at(float3 at) {
+    // No roof near, from one read (most of the ground): the highest surface within 3.5 m of the point's cell,
+    // where its cell is in the near grid as that was worked out (world_cover.cpp, roof_near_reach).
+    const float4 head = cameras[ROOF];
+    if (head.x <= 0) return 0;
+    const int near_cells = (int)head.y;
+    const int2 cell = int2(floor(at.xz / head.z));
+    const int2 first = int2(cameras[ROOF + 1].yz);
+    if (all(cell >= first) && all(cell < first + near_cells)) {
+        const int2 slot = ((cell % near_cells) + near_cells) % near_cells;
+        const int index = slot.x + slot.y * near_cells;
+        const float4 tops = cameras[ROOF + 2 + near_cells * near_cells + (int)head.w * (int)head.w + index / 4];
+        const int which = index % 4;
+        const float near_top = which == 0 ? tops.x : which == 1 ? tops.y : which == 2 ? tops.z : tops.w;
+        if (at.y >= near_top - ROOF_CLEARANCE) return 0;
+    }
     const float centre = roof_blend(at, ROOF_CLEARANCE);
     float outer = 0;
     [loop] for (int k = 0; k < 6; ++k) {

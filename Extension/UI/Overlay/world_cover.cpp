@@ -71,16 +71,23 @@ constexpr std::size_t place_floats4 = 3; // a place kept clear: its snow; a boar
 // straight-down ray a cell. The near grid is fine and refreshed often, the far one coarse: one grid 48 m
 // each way showed the snow under a roof go as the camera came near it (2026-11-13).
 struct RoofGrid {
-    int cells;    // across, each way
-    float size;   // a cell, metres
-    int per_tick; // rays a tick
+    int cells;     // across, each way
+    float size;    // a cell, metres
+    int new_tick;  // rays a tick for cells not measured yet, the nearest first
+    int again_tick; // and for measuring the others again, in turn (what changes: little)
 };
+// Measuring every cell over and over took a few hundred rays every tick, standing still too; only the cells
+// new to the window, then a few again a tick, the same once the camera has looked round (2026-11-14).
 constexpr std::array<RoofGrid, 2> roof_grids{{
-    {128, 0.5f, 256},  // 64 m across, in about half a second
-    {128, 1.5f, 128},  // 192 m across (96 m each way), in about two seconds
+    {128, 0.5f, 128, 16},  // 64 m across
+    {128, 1.5f, 64, 8},    // 192 m across (96 m each way)
 }};
 constexpr std::size_t roof_cells_of(const RoofGrid& g) { return static_cast<std::size_t>(g.cells) * static_cast<std::size_t>(g.cells); }
-constexpr std::size_t roof_floats4 = 2 + roof_cells_of(roof_grids[0]) + roof_cells_of(roof_grids[1]);
+// After the grids: for each of the near grid's cells, the highest surface over any cell within roof_near_reach
+// of it (four to a float4): a point under none of those is under no roof, from one read instead of the
+// dozens of the roof's soft edge (world_cover.hlsl, roofed_at).
+constexpr int roof_near_reach = 7; // cells: 3.5 m, past the edge's furthest look (2.2 m, and a cell's blend)
+constexpr std::size_t roof_floats4 = 2 + roof_cells_of(roof_grids[0]) + roof_cells_of(roof_grids[1]) + roof_cells_of(roof_grids[0]) / 4;
 constexpr float roof_reach = 60.0f; // metres over and under the camera the rays start and end
 constexpr UINT64 camera_slice = ((camera_candidates * 4 + most_clear * place_floats4 + 2 + most_trail * 2 + roof_floats4) * 16 + 255) /
                                 256 * 256;
@@ -138,7 +145,10 @@ struct Asked {
     // camera was last drawn from.
     std::array<std::vector<std::array<float, 4>>, 2> roofs{std::vector<std::array<float, 4>>(roof_cells_of(roof_grids[0])),
                                                            std::vector<std::array<float, 4>>(roof_cells_of(roof_grids[1]))};
-    std::array<std::size_t, 2> roof_next{}; // each grid's next cell of the window round the camera to measure
+    std::array<std::size_t, 2> roof_next{}; // each grid's next cell of the window round the camera to measure again
+    std::vector<float> roof_near_top = std::vector<float>(roof_cells_of(roof_grids[0]), 1e30f); // (see roof_near_reach)
+    std::array<int, 2> roof_near_first{}; // the near grid's first cell (x, z) when roof_near_top was worked out
+    std::uint64_t roof_version{};        // counted up when any of the roof map changes
     std::array<float, 3> eye{};
     bool eye_known{};
 };
@@ -241,6 +251,8 @@ struct Shared {
     // Whether that frame was drawn with its own depth: one drawn with an older copy (the camera moved
     // since) measured the near distance too short, and it was held (0.056 m for 0.060, 2026-11-12).
     std::array<bool, allocator_count> measure_fresh{};
+    // The roof map's version in each allocator's part of the upload buffer: copied only when it changed.
+    std::array<std::uint64_t, allocator_count> roof_uploaded{};
     bool relearning{}; // a new camera: the next middle measured is taken, up or down
     // The cameras of this and the last two frames, newest first, and how many are known.
     std::array<std::array<float, camera_floats>, camera_history> cameras{};
@@ -1213,10 +1225,17 @@ bool record_cover(Shared& s) {
         float* const roof = head + 8 + most_trail * 8;
         roof[0] = settings.under_roofs ? 0.0f : 1.0f;
         roof[1] = static_cast<float>(roof_grids[0].cells), roof[2] = roof_grids[0].size, roof[3] = static_cast<float>(roof_grids[1].cells);
-        roof[4] = roof_grids[1].size, roof[5] = roof[6] = roof[7] = 0;
-        if (!settings.under_roofs) {
-            std::memcpy(roof + 8, a.roofs[0].data(), a.roofs[0].size() * sizeof(a.roofs[0][0]));
-            std::memcpy(roof + 8 + a.roofs[0].size() * 4, a.roofs[1].data(), a.roofs[1].size() * sizeof(a.roofs[1][0]));
+        roof[4] = roof_grids[1].size, roof[5] = static_cast<float>(a.roof_near_first[0]), roof[6] = static_cast<float>(a.roof_near_first[1]);
+        roof[7] = 0;
+        // (Its version and one: a part never written holds whatever the buffer had, so it is written once.)
+        if (!settings.under_roofs && s.roof_uploaded[at] != a.roof_version + 1) {
+            s.roof_uploaded[at] = a.roof_version + 1;
+            float* to = roof + 8;
+            std::memcpy(to, a.roofs[0].data(), a.roofs[0].size() * sizeof(a.roofs[0][0]));
+            to += a.roofs[0].size() * 4;
+            std::memcpy(to, a.roofs[1].data(), a.roofs[1].size() * sizeof(a.roofs[1][0]));
+            to += a.roofs[1].size() * 4;
+            std::memcpy(to, a.roof_near_top.data(), a.roof_near_top.size() * sizeof(float));
         }
         a.eye = {camera[9], camera[10], camera[11]};
         a.eye_known = true;
@@ -1461,31 +1480,139 @@ void measure_roofs(GroundTop ground_top) noexcept {
             if (a.settings.under_roofs || !a.eye_known) return;
             eye = a.eye, next = a.roof_next;
         }
-        // Each grid's window of cells round the camera, measured in turn: the highest surface straight down
-        // over each cell's middle. Nothing there (collision not loaded, or open sky to below) is no roof.
+        // What this thread has measured, by slot: which cell, and its highest surface (the same as a.roofs,
+        // without its lock). And each grid's window offsets, nearest the middle first.
+        struct Known {
+            std::vector<std::array<int, 2>> cell;
+            std::vector<float> top;
+            std::vector<bool> measured;
+            std::vector<std::array<int, 2>> nearest_first;
+            std::array<int, 2> complete_at{}; // the window's first cell when all of it was last found measured
+            bool complete{};
+        };
+        static std::array<Known, 2> known;
+        static std::uint64_t near_top_at{};
+        static bool near_changed{};
+        // Out of play (a menu, a level loading), all of it is forgotten: another level's roofs are not this one's.
+        if (!allowed.load()) {
+            if (!known[0].measured.empty() && std::find(known[0].measured.begin(), known[0].measured.end(), true) != known[0].measured.end()) {
+                for (auto& k : known) {
+                    std::fill(k.measured.begin(), k.measured.end(), false);
+                    k.complete = false;
+                }
+                std::lock_guard lock(a.mutex);
+                for (auto& grid_cells : a.roofs) std::fill(grid_cells.begin(), grid_cells.end(), std::array<float, 4>{});
+                std::fill(a.roof_near_top.begin(), a.roof_near_top.end(), 1e30f);
+                ++a.roof_version;
+            }
+            return;
+        }
         std::array<std::vector<std::pair<std::size_t, std::array<float, 4>>>, 2> found;
+        std::array<int, 2> near_first{};
         for (std::size_t g = 0; g < roof_grids.size(); ++g) {
             const auto& grid = roof_grids[g];
+            const auto cells = roof_cells_of(grid);
+            auto& k = known[g];
+            if (k.cell.empty()) {
+                k.cell.assign(cells, {0, 0});
+                k.top.assign(cells, -1e30f);
+                k.measured.assign(cells, false);
+                for (int dz = 0; dz < grid.cells; ++dz)
+                    for (int dx = 0; dx < grid.cells; ++dx) k.nearest_first.push_back({dx, dz});
+                const int middle = grid.cells / 2;
+                std::stable_sort(k.nearest_first.begin(), k.nearest_first.end(), [&](const auto& p, const auto& q) {
+                    return (p[0] - middle) * (p[0] - middle) + (p[1] - middle) * (p[1] - middle) <
+                           (q[0] - middle) * (q[0] - middle) + (q[1] - middle) * (q[1] - middle);
+                });
+            }
             const int first_x = static_cast<int>(std::floor(eye[0] / grid.size)) - grid.cells / 2;
             const int first_z = static_cast<int>(std::floor(eye[2] / grid.size)) - grid.cells / 2;
-            const auto cells = roof_cells_of(grid);
-            found[g].reserve(static_cast<std::size_t>(grid.per_tick));
-            for (int k = 0; k < grid.per_tick; ++k) {
-                const auto n = (next[g] + static_cast<std::size_t>(k)) % cells;
-                const int cell_x = first_x + static_cast<int>(n % static_cast<std::size_t>(grid.cells));
-                const int cell_z = first_z + static_cast<int>(n / static_cast<std::size_t>(grid.cells));
+            if (g == 0) near_first = {first_x, first_z};
+            const auto slot_of = [&](int cell_x, int cell_z) {
+                return static_cast<std::size_t>(((cell_x % grid.cells) + grid.cells) % grid.cells +
+                                                (((cell_z % grid.cells) + grid.cells) % grid.cells) * grid.cells);
+            };
+            const auto measure = [&](int cell_x, int cell_z) {
                 const float x = (static_cast<float>(cell_x) + 0.5f) * grid.size, z = (static_cast<float>(cell_z) + 0.5f) * grid.size;
                 const auto top = ground_top(x, z, eye[1] + roof_reach, eye[1] - roof_reach);
-                const auto slot = static_cast<std::size_t>(((cell_x % grid.cells) + grid.cells) % grid.cells +
-                                                           (((cell_z % grid.cells) + grid.cells) % grid.cells) * grid.cells);
-                found[g].push_back({slot, {top ? *top : -1e30f, static_cast<float>(cell_x), static_cast<float>(cell_z), 1.0f}});
+                const auto slot = slot_of(cell_x, cell_z);
+                const float value = top ? *top : -1e30f;
+                if (k.measured[slot] && k.cell[slot] == std::array<int, 2>{cell_x, cell_z} && k.top[slot] == value) return; // no change
+                k.cell[slot] = {cell_x, cell_z}, k.top[slot] = value, k.measured[slot] = true;
+                found[g].push_back({slot, {value, static_cast<float>(cell_x), static_cast<float>(cell_z), 1.0f}});
+                if (g == 0) near_changed = true;
+            };
+            // The window's cells not measured yet, the nearest first (none to look for while the window has not
+            // moved since all of it was).
+            if (!k.complete || k.complete_at != std::array<int, 2>{first_x, first_z}) {
+                int left = grid.new_tick;
+                for (const auto& [dx, dz] : k.nearest_first) {
+                    if (left <= 0) break;
+                    const int cell_x = first_x + dx, cell_z = first_z + dz;
+                    const auto slot = slot_of(cell_x, cell_z);
+                    if (k.measured[slot] && k.cell[slot] == std::array<int, 2>{cell_x, cell_z}) continue;
+                    measure(cell_x, cell_z);
+                    --left;
+                }
+                k.complete = left > 0;
+                k.complete_at = {first_x, first_z};
             }
-            next[g] = (next[g] + static_cast<std::size_t>(grid.per_tick)) % cells;
+            // And some again, in turn.
+            for (int again = 0; again < grid.again_tick; ++again) {
+                const auto n = (next[g] + static_cast<std::size_t>(again)) % cells;
+                measure(first_x + static_cast<int>(n % static_cast<std::size_t>(grid.cells)), first_z + static_cast<int>(n / static_cast<std::size_t>(grid.cells)));
+            }
+            next[g] = (next[g] + static_cast<std::size_t>(grid.again_tick)) % cells;
+        }
+        // The near grid's highest surface within reach of each cell (roof_near_reach), at most four times a
+        // second: a cell of the window not measured yet counts as a roof over everything (unknown).
+        std::vector<float> near_top;
+        const auto now = GetTickCount64();
+        if (near_changed && now - near_top_at >= 250) {
+            near_changed = false;
+            near_top_at = now;
+            const auto& grid = roof_grids[0];
+            const auto& k = known[0];
+            const int n = grid.cells;
+            std::vector<float> value(roof_cells_of(grid)), across(roof_cells_of(grid));
+            for (int sz = 0; sz < n; ++sz)
+                for (int sx = 0; sx < n; ++sx) {
+                    // The window's cell in this slot.
+                    const int cell_x = near_first[0] + (((sx - near_first[0]) % n) + n) % n;
+                    const int cell_z = near_first[1] + (((sz - near_first[1]) % n) + n) % n;
+                    const auto slot = static_cast<std::size_t>(sx + sz * n);
+                    value[slot] = k.measured[slot] && k.cell[slot] == std::array<int, 2>{cell_x, cell_z} ? k.top[slot] : 1e30f;
+                }
+            // The largest along x, then along z, within reach (slots wrap round: across the window's edge it only
+            // takes in more, so it is never too low).
+            for (int sz = 0; sz < n; ++sz)
+                for (int sx = 0; sx < n; ++sx) {
+                    float most = -1e30f;
+                    for (int d = -roof_near_reach; d <= roof_near_reach; ++d) most = std::max(most, value[static_cast<std::size_t>((((sx + d) % n) + n) % n + sz * n)]);
+                    across[static_cast<std::size_t>(sx + sz * n)] = most;
+                }
+            near_top.resize(roof_cells_of(grid));
+            for (int sz = 0; sz < n; ++sz)
+                for (int sx = 0; sx < n; ++sx) {
+                    float most = -1e30f;
+                    for (int d = -roof_near_reach; d <= roof_near_reach; ++d) most = std::max(most, across[static_cast<std::size_t>(sx + ((((sz + d) % n) + n) % n) * n)]);
+                    near_top[static_cast<std::size_t>(sx + sz * n)] = most;
+                }
+        }
+        if (found[0].empty() && found[1].empty() && near_top.empty()) {
+            std::lock_guard lock(a.mutex);
+            a.roof_next = next;
+            return;
         }
         std::lock_guard lock(a.mutex);
         for (std::size_t g = 0; g < found.size(); ++g)
             for (const auto& [slot, cell] : found[g]) a.roofs[g][slot] = cell;
+        if (!near_top.empty()) {
+            a.roof_near_top = std::move(near_top);
+            a.roof_near_first = near_first;
+        }
         a.roof_next = next;
+        ++a.roof_version;
     } catch (...) {}
 }
 void keep_clear(std::vector<Clear> places) noexcept {
