@@ -23,6 +23,7 @@
 #include "Extension/World/world_pool_usage.h"
 #include "Extension/World/physics_world_size.h"
 #include "Extension/World/spatial_cull_ids.h"
+#include <algorithm>
 #include <format>
 #include <string>
 
@@ -84,7 +85,14 @@ bool initialize_bootstrap(std::uintptr_t base, std::string& failure) {
     // (Not needed for the game to run: a mismatch leaves the heaps at the game's size, and only
     // the densest levels outgrow them.)
     error.clear(); ready = start_descriptor_heap_size(base, error);
-    (void)stage(Channel::graphics, "Descriptor heaps: 1,000,000, with 524,288 a frame", ready, error);
+    {
+        const auto single_frame = std::min(frame_descriptor_cap, (heap_descriptor_total - persistent_descriptors) / frames_in_flight);
+        const auto line = single_heap_layout
+            ? std::format("Descriptor heaps: one heap of {}, with {} a frame", heap_descriptor_total, single_frame)
+            : std::format("Descriptor heaps: {} each, with {} a frame", persistent_descriptors + split_frame_descriptor_cap,
+                  split_frame_descriptor_cap);
+        (void)stage(Channel::graphics, line.c_str(), ready, error);
+    }
     error.clear(); ready = start_user_data_redirect(error);
     if (!stage(Channel::runtime, "Separate game user data", ready, error)) return false;
     error.clear(); ready = start_ea_app_block(error);
