@@ -13,8 +13,10 @@
 #include <algorithm>
 #include <array>
 #include <cstdio>
+#include <deque>
 #include <fstream>
 #include <optional>
+#include <set>
 #include <string_view>
 #include <vector>
 
@@ -621,6 +623,189 @@ void remove(const fs::path& mods, const std::string& name) {
     const auto target = mods / from_utf8(name);
     std::error_code error;
     if (!fs::is_directory(target, error)) fail("\"" + name + "\" is not installed.");
+    recycle(target);
+}
+
+namespace {
+// How many folders into a skipped folder its mod is looked for (pack/Mods/Name/layout.toc, as
+// release zips have it), and at most how many of its files are read: enough to find a mod
+// unpacked into a folder of its own, without reading all of a big folder that holds none.
+constexpr int skipped_depth = 3;
+constexpr std::size_t skipped_files = 4096;
+
+// A folder's files down to skipped_depth folders, named as install() names a folder's, never
+// read through a link. A level at a time, so the files nearest the top are in before the cap.
+std::vector<std::string> shallow_files(const fs::path& folder) {
+    std::vector<std::string> files;
+    std::deque<std::pair<fs::path, int>> folders{{folder, 0}};
+    while (!folders.empty() && files.size() < skipped_files) {
+        const auto [at, depth] = std::move(folders.front());
+        folders.pop_front();
+        std::error_code error;
+        for (fs::directory_iterator it(at, fs::directory_options::skip_permission_denied, error), end;
+             !error && it != end && files.size() < skipped_files; it.increment(error)) {
+            std::error_code entry;
+            if (links_elsewhere(it->path())) continue;
+            if (it->is_directory(entry)) {
+                if (depth < skipped_depth) folders.emplace_back(it->path(), depth + 1);
+                continue;
+            }
+            if (!it->is_regular_file(entry)) continue;
+            if (auto name = safe_entry(utf8(it->path().lexically_relative(folder).generic_wstring())); name && !name->empty())
+                files.push_back(std::move(*name));
+        }
+    }
+    return files;
+}
+
+// Why the game does not take `name` (UTF-8) for a mod folder's (mods::valid_mod_name), in words
+// for the player; empty when it does.
+std::string name_problem(const std::string& name) {
+    if (mods::valid_mod_name(name)) return {};
+    for (std::size_t at = 0; at < name.size(); ++at) {
+        const auto ch = static_cast<unsigned char>(name[at]);
+        if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') ||
+            ch == '_' || ch == '-' || ch == '.' || ch == ' ')
+            continue;
+        auto end = at + 1;   // all of a character that UTF-8 spells in more than one byte
+        while (ch >= 0xc0 && end < name.size() && (static_cast<unsigned char>(name[end]) & 0xc0) == 0x80) ++end;
+        return "its name has \"" + name.substr(at, end - at) +
+               "\", and only letters, digits, spaces, _, - and . can be in a mod folder's name";
+    }
+    if (name.size() > mods::maximum_mod_name)
+        return "its name is " + std::to_string(name.size()) + " characters long, and a mod folder's can be " +
+               std::to_string(mods::maximum_mod_name) + " at most";
+    return "the game does not take its name for a mod folder's";
+}
+
+// A folder the game passes by, looked into: where install() would find its mod, if it holds one.
+struct Look {
+    SkippedFolder skipped;
+    Root root;
+    std::vector<std::string> files;
+};
+std::optional<Look> look_into(const fs::path& mods, const std::string& folder) {
+    Look look;
+    look.files = shallow_files(mods / from_utf8(folder));
+    const auto root = mod_root(look.files);
+    if (!root || !root->content) return std::nullopt;
+    look.root = *root;
+    auto& skipped = look.skipped;
+    skipped.folder = folder;
+    if (!root->folder.empty()) {
+        skipped.reason = "its mod is a folder further in, at " + folder + "/" + root->folder.substr(0, root->folder.size() - 1);
+    } else {
+        skipped.reason = name_problem(folder);
+        // (A folder with a name the game takes and its mod at its top loads: it came in after the list was read.)
+        if (skipped.reason.empty()) return std::nullopt;
+    }
+    skipped.name = mod_name(*root, folder, {});
+    std::error_code error;
+    skipped.copy = lower(skipped.name) != lower(folder) && fs::exists(mods / from_utf8(skipped.name), error);
+    return look;
+}
+
+// Whether anything but folders is in `folder`, all the way down. A link counts: it is the
+// player's, and what it leads to is not ReSkate's to remove.
+bool holds_anything(const fs::path& folder) {
+    std::error_code error;
+    for (fs::recursive_directory_iterator it(folder, error), end; !error && it != end; it.increment(error)) {
+        std::error_code entry;
+        if (links_elsewhere(it->path()) || !it->is_directory(entry)) return true;
+    }
+    return static_cast<bool>(error);   // (one that cannot be read may hold anything)
+}
+
+void move_folder(const fs::path& from, const fs::path& to) {
+    if (MoveFileExW(from.c_str(), to.c_str(), MOVEFILE_WRITE_THROUGH)) return;
+    const auto code = GetLastError();
+    fail("Could not move " + utf8(from.filename().wstring()) + " to " + utf8(to.filename().wstring()) +
+         ": close anything using its files and try again (Windows error " + std::to_string(code) + ").");
+}
+
+// Only a folder of the Mods folder itself, named as it is there, and never one of ReSkate's own.
+void need_skipped_name(const std::string& folder) {
+    if (folder.empty() || folder.front() == '.' || folder.find_first_of("/\\:") != std::string::npos)
+        fail("\"" + folder + "\" is not a folder of the Mods folder.");
+}
+
+bool listed(const mods::ModList& list, const std::string& folder) {
+    return std::any_of(list.entries.begin(), list.entries.end(),
+        [&](const mods::ModEntry& entry) { return lower(entry.mod.name) == lower(folder); });
+}
+} // namespace
+
+std::vector<SkippedFolder> skipped_folders(const mods::ModList& list) noexcept {
+    std::vector<SkippedFolder> result;
+    try {
+        std::set<std::string> names;
+        for (const auto& entry : list.entries) names.insert(lower(entry.mod.name));
+        std::error_code error;
+        for (fs::directory_iterator it(list.root, error), end; !error && it != end; it.increment(error)) {
+            std::error_code entry;
+            if (!it->is_directory(entry) || links_elsewhere(it->path())) continue;
+            const auto folder = utf8(it->path().filename().wstring());
+            if (folder.empty() || folder.front() == '.' || names.contains(lower(folder))) continue;
+            if (auto look = look_into(list.root, folder)) result.push_back(std::move(look->skipped));
+        }
+        std::sort(result.begin(), result.end(),
+            [](const SkippedFolder& a, const SkippedFolder& b) { return lower(a.folder) < lower(b.folder); });
+    } catch (...) {
+        result.clear();
+    }
+    return result;
+}
+
+std::string fix_skipped(const fs::path& mods, const std::string& folder) {
+    need_skipped_name(folder);
+    if (listed(mods::scan_mods(mods.parent_path()), folder)) fail(folder + " loads already.");
+    const auto look = look_into(mods, folder);
+    if (!look) fail(folder + " holds no mod for the game to load.");
+    const auto& skipped = look->skipped;
+    if (skipped.copy) throw AlreadyInstalled(skipped.name);
+    const auto source = mods / from_utf8(folder), target = mods / from_utf8(skipped.name);
+    if (look->root.folder.empty()) {
+        move_folder(source, target);
+        return skipped.name;
+    }
+    // The mod is further in. When it takes the name of the folder it is in, that folder steps aside
+    // first, keeping what else it holds.
+    auto outer = source;
+    if (lower(skipped.name) == lower(folder)) {
+        std::error_code error;
+        for (int n = 1;; ++n) {
+            outer = mods / from_utf8(folder + (n == 1 ? std::string(" (rest)") : " (rest " + std::to_string(n) + ")"));
+            if (!fs::exists(outer, error)) break;
+            if (n == 9) fail("Could not move " + folder + " aside: rename or remove the " + folder + " (rest) folders first.");
+        }
+        move_folder(source, outer);
+    }
+    auto inner = outer / from_utf8(look->root.folder.substr(0, look->root.folder.size() - 1));
+    inner.make_preferred();
+    try {
+        move_folder(inner, target);
+    } catch (...) {
+        if (outer != source) MoveFileExW(outer.c_str(), source.c_str(), MOVEFILE_WRITE_THROUGH);
+        throw;
+    }
+    // Thunderstore's package files at the top go in with it, over the mod's own copies, as an install takes them.
+    for (const auto& file : look->files)
+        if (file.find('/') == std::string::npos && carried(look->root, look->files, file))
+            MoveFileExW((outer / from_utf8(file)).c_str(), (target / from_utf8(file)).c_str(),
+                        MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+    // Nothing but empty folders left behind goes; anything else stays where the player can find it.
+    std::error_code error;
+    if (!holds_anything(outer)) fs::remove_all(outer, error);
+    return skipped.name;
+}
+
+void remove_skipped(const fs::path& mods, const std::string& folder) {
+    need_skipped_name(folder);
+    if (listed(mods::scan_mods(mods.parent_path()), folder))
+        fail(folder + " is a mod the game loads: uninstall it from the list instead.");
+    const auto target = mods / from_utf8(folder);
+    std::error_code error;
+    if (!fs::is_directory(target, error) || links_elsewhere(target)) fail("\"" + folder + "\" is not a folder of the Mods folder.");
     recycle(target);
 }
 

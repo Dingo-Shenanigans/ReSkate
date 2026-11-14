@@ -8,6 +8,10 @@
 #include <string>
 #include <vector>
 
+namespace dingosdk::mods {
+struct ModList;
+}
+
 // The launcher's side of the Mods folder: installing mods from a .zip or a
 // folder, and removing them. Order and enabled state live in mods.json
 // (Engine/Vfs/mod_list.h), which the runtime reads when the game starts.
@@ -53,6 +57,32 @@ std::string install(const std::filesystem::path& mods_root, const std::filesyste
 
 // Moves Mods/<name> to the Recycle Bin. Throws a user-facing message.
 void remove(const std::filesystem::path& mods_root, const std::string& name);
+
+// A folder in the Mods folder holding a mod the game passes by without a word. mods::scan_mods
+// lists only a folder whose name it takes (mods::valid_mod_name) and that holds a file of its own
+// or a parks folder, so a name with an accent, "&" or "(1)" in it, a name over 64 characters, or a
+// mod unpacked into a folder of its own (Mods/Pack/Pack/layout.toc) is never seen.
+struct SkippedFolder {
+    std::string folder;   // its name in the Mods folder (UTF-8)
+    std::string reason;   // why the game does not load it, for the player: "its name has "&", and ..."
+    std::string name;     // the folder fix_skipped moves the mod to
+    bool copy{};          // a folder of that name is in Mods already: this is most likely a second copy
+};
+// The folders in `list`'s Mods folder (mods::scan_mods) that it does not list, and that hold game
+// content (layout.toc, reskate-levels.json, reskate-plugin.json or parks/<map>.park.json) within
+// three folders of their top: where install() would find a mod in them. ReSkate's own folders (a
+// leading '.'), links, and folders with nothing the game loads (a tool's saved data) are left out.
+// By folder name. Never throws.
+std::vector<SkippedFolder> skipped_folders(const mods::ModList& list) noexcept;
+// Moves a skipped folder's mod to Mods/<name>, where the game loads it: the folder renamed, or the
+// mod's own folder moved out of it, with Thunderstore's package files from the top as install()
+// takes them. Nothing is copied or deleted: a folder left holding only empty folders is removed,
+// one holding anything else stays (when the mod takes its name, as "<folder> (rest)"). Returns the
+// new name. Throws a user-facing message, or AlreadyInstalled when a folder of that name is in Mods.
+std::string fix_skipped(const std::filesystem::path& mods_root, const std::string& folder);
+// Moves a skipped folder to the Recycle Bin: a second copy of a mod that is installed. Throws a
+// user-facing message.
+void remove_skipped(const std::filesystem::path& mods_root, const std::string& folder);
 
 // Which mods a mod pack brought in: the dependencies a Thunderstore install of it downloaded that
 // were not installed before (theirs too), kept by the launcher in Mods/brought-in.json, pack folder

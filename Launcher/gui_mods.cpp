@@ -1095,6 +1095,28 @@ void resolve_popup(const Fonts& fonts, ModsPanel& panel, Request& request) {
     ImGui::EndPopup();
 }
 
+// A skipped folder's Fix or Remove (launcher_mods::fix_skipped, remove_skipped), and the list read again.
+void settle_skipped(Launcher& launcher, ModsPanel& panel, const launcher_mods::SkippedFolder& skipped) {
+    std::string message;
+    bool error = false;
+    try {
+        if (skipped.copy) {
+            launcher_mods::remove_skipped(panel.root, skipped.folder);
+            message = "Moved " + skipped.folder + " to the Recycle Bin.";
+        } else {
+            const auto name = launcher_mods::fix_skipped(panel.root, skipped.folder);
+            message = "Moved " + skipped.folder + " to " + name + ". It loads the next time Skate starts.";
+        }
+        logging::write(logging::Level::info, logging::Channel::launcher, message);
+    } catch (const std::exception& failure) {
+        message = failure.what();
+        error = true;
+    }
+    scan(panel, launcher.session());
+    panel.message = message;
+    panel.message_error = error;
+}
+
 void installed_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, const thunderstore::Installed& installed,
                     const std::vector<const thunderstore::Package*>& pending, float height, bool installing) {
     auto& entries = panel.list.entries;
@@ -1248,6 +1270,25 @@ void installed_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, co
         for (const auto& name : panel.list.missing) missing += (missing.empty() ? "" : ", ") + name;
         ImGui::TextDisabled("mods.json also lists folders that are not installed: %s", missing.c_str());
     }
+    // Folders the game passes by without a word (launcher_mods::skipped_folders): a name it does not
+    // take, or a mod unpacked into a folder of its own. Each has its way out beside it: Fix moves the
+    // mod to where it loads, and a second copy of an installed mod can go to the Recycle Bin.
+    std::optional<launcher_mods::SkippedFolder> skipped_action;
+    for (const auto& skipped : panel.skipped) {
+        ImGui::PushID(skipped.folder.c_str());
+        ImGui::BeginDisabled(installing);
+        if (ImGui::SmallButton(skipped.copy ? "Remove" : "Fix")) skipped_action = skipped;
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+            if (skipped.copy) ImGui::SetTooltip("Moves %s to the Recycle Bin.", skipped.folder.c_str());
+            else ImGui::SetTooltip("Moves it to Mods\\%s, where the game loads it.", skipped.name.c_str());
+        }
+        ImGui::SameLine();
+        const auto line = skipped.folder + " does not load: " + skipped.reason +
+            (skipped.copy ? ". It looks like a second copy of " + skipped.name + ", which is in the Mods folder already." : ".");
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::warning), "%s", line.c_str());
+        ImGui::PopID();
+    }
     ImGui::PopTextWrapPos();
     ImGui::Spacing();
 
@@ -1364,6 +1405,8 @@ void installed_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, co
     }
     resolve_popup(fonts, panel, request);
     if (request.kind != Request::Kind::none) carry_out(panel, installed, request);
+    // (Last, as the list is read again: the rows above were drawn from the one before.)
+    if (skipped_action) settle_skipped(launcher, panel, *skipped_action);
 }
 
 // Everything an installed mod says about itself, in a popup over the page.
@@ -1572,6 +1615,7 @@ void prepare_mods(ModsPanel& panel, const launcher_app::Session& session) {
     if (panel.root.empty()) {
         panel.root = launcher_mods::mods_root(session.paths.directory);
         panel.list = mods::scan_mods(panel.root.parent_path());
+        panel.skipped = launcher_mods::skipped_folders(panel.list);
         want_conflict_check(panel, 0);
         read_conflict_choices(panel);
     }
@@ -1590,6 +1634,7 @@ void refresh_mods(Launcher& launcher, ModsPanel& panel) {
 void scan(ModsPanel& panel, const launcher_app::Session& session) {
     panel.root = launcher_mods::mods_root(session.paths.directory);
     panel.list = mods::scan_mods(panel.root.parent_path());
+    panel.skipped = launcher_mods::skipped_folders(panel.list);
     want_conflict_check(panel, 0);
     read_conflict_choices(panel);
     panel.sizes.clear();
