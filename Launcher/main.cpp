@@ -1,6 +1,7 @@
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Debug/trace.h"
 #include "Engine/Core/Platform/game_instance.h"
+#include "Engine/Core/Platform/user_data_paths.h"
 #include "crash_reporter.h"
 #include "gui.h"
 #include "launch.h"
@@ -164,6 +165,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     int result = 0;
     fs::path logs;
     try {
+        // A separate user-data root comes first: everything below reads or writes there.
+        dingosdk::user_data::consume_development_root_option(arguments);
+        dingosdk::user_data::initialize_development_root();
         std::string log_level = "info";
         if (headless) log_level = dingosdk::launcher::parse_launch_options(
             [&] { auto copy = arguments; take_flag(copy, L"--no-update"); take_flag(copy, L"--reskate-updated"); return copy; }()).log_level;

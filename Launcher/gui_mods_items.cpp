@@ -121,7 +121,7 @@ void start_read(ModsPanel& panel) {
 void save(ModsPanel& panel, const mods::Mod& mod) {
     auto& view = panel.items;
     if (!mods::save_items_left_out(mod.name, view.off)) {
-        view.error = "The choice could not be saved (%LOCALAPPDATA%\\ReSkate\\items-left-out.json).";
+        view.error = "The choice could not be saved in the selected data folder.";
         return;
     }
     view.error.clear();

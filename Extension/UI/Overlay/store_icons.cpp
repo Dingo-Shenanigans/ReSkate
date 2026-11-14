@@ -1,4 +1,5 @@
 #include "overlay_internal.h"
+#include "store_icon_paths.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Vfs/https_download.h"
 #include "Engine/Core/Platform/clock.h"
@@ -56,12 +57,6 @@ Cache& cache() {
     static auto* value = new Cache;
     return *value;
 }
-fs::path icon_folder(bool news) {
-    std::array<wchar_t, 32768> local{};
-    const auto length = GetEnvironmentVariableW(L"LOCALAPPDATA", local.data(), static_cast<DWORD>(local.size()));
-    if (!length || length >= local.size()) return {};
-    return news ? fs::path(local.data()) / L"ReSkate" / L"news" / L"pictures" : fs::path(local.data()) / L"ReSkate" / L"thunderstore" / L"icons";
-}
 // Icon URLs end in Namespace-Name-1.2.3.png, so a file named after that never goes stale.
 std::wstring icon_file(std::string_view url) {
     const auto slash = url.rfind('/');
@@ -114,7 +109,7 @@ void decode_loop() {
             }
         } else try {
             const bool news = news_host(url);
-            const auto folder = icon_folder(news);
+            const auto folder = store_icon_paths::folder(news);
             const auto cached = folder.empty() ? fs::path() : folder / icon_file(url);
             std::string bytes;
             std::error_code error;
