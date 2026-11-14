@@ -27,7 +27,12 @@ stays until `cover(nil)`, and one plugin may have a cover at a time.
     own plane the cover is `snow` of what it would be, and no trail is pressed into it.
 - **`trail`:** adds a point on a trail through the cover. Along the last 256 points the cover is pressed
   down, thinner and greyer, `width` wide (each point its own), and fills back in over `fade` seconds.
-  - **Tread:** with a `tread` width, a tread's 13 lines show along it (7 lighter, 6 darker ridges).
+  - **`under_roofs = false`:** none of the cover where something is overhead (indoors, under a bridge),
+    thinning out over about two metres in under the edge, and no flakes falling under one (outside still
+    snows, seen from in). A roof map round the camera finds it: one straight-down ray into the client
+    collision a cell, a fine grid (0.5 m, 64 m across) and a coarse one (1.5 m, 192 m across), a few
+    hundred rays a tick, kept where each cell falls so only new cells are measured as the camera moves.
+- **Tread:** with a `tread` width, a tread's 13 lines show along it (7 lighter, 6 darker ridges).
   - **Slopes:** each stretch is found on the plane through both its points, so a trail follows a slope.
   - **`starts`:** the point begins a new trail, not joined to the point before.
 
@@ -47,6 +52,7 @@ stays until `cover(nil)`, and one plugin may have a cover at a time.
 - **Marks under each part of the deck:** `starts` begins a new trail when another part is on the snow (the
   middle riding, the tail in a manual, the nose in a nose manual) and for the skater's own mark, so they
   are not joined by a line across.
+- **No snow indoors:** `under_roofs = false`.
 - **The deck:** a board-shaped `keep_clear` place on it. The snowskate deck rides so low that the
   skater's cylinder took its griptape for the ground: it got full snow and the board's own track. Now it
   has a light dusting and no track.
@@ -67,9 +73,17 @@ game's barriers through the existing hook in `depth_tap.cpp`, and frames end thr
   that moved with each measurement made the snow's pattern jump.
 - **When it is drawn:** it is off in menus, but a single frame of "not in play" no longer switches it off.
   It is drawn in the replay editor too, which the game counts as a menu.
-- **The camera:** it is read as the cover is drawn, by when the game is about a frame ahead of its picture.
-  The world is found with the camera of 1.15 frames before, between the two before blended; with this
-  frame's, world-fixed things (trails) swam as the camera turned. The value was tried in the game.
+- **The camera:** the game's picture is 0 to 2 frames behind the camera ReSkate reads (it eases its camera
+  between updates), so no fixed delay fits. The cover uses the camera the game drew the frame with: its
+  compute constant buffers bound at root parameter 0 begin with it (found in the game with the GPU
+  diagnostics). Each frame the newest 32 are read; of those close to the camera read from the game, the
+  one most hold. In the replay editor, where the camera read is not the one drawn with, the one most hold.
+  Where none is found, the camera 1.15 frames back, as before.
+  - The buffers are read through the GPU memory watch (`gpu_diagnostics`), which is now on without
+    `RESKATE_GPU_DIAGNOSTICS` too, light: each heap and buffer's GPU addresses only.
+  - The places kept clear (the deck) are taken from as many frames back as the drawn camera is found to be.
+- **Its shaders** compile on a thread of their own as the hooks go in: compiled as the snow first came on,
+  on the game's drawing thread, the game showed a black screen and left the level.
   The kept-clear places are taken from the same moment, so a turning deck's place stays on the deck drawn.
 - **Proton (Steam Deck):**
   - a D3D12 function vkd3d-proton will not let be hooked in place is followed through its interface's

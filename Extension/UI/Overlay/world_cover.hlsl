@@ -205,20 +205,23 @@ float noise(float2 p) {
 }
 
 // One grid of the roof map round a point: how much it is under a roof (0 to 1, the four nearest cells' middles
-// blended), or -1 where one of them is not measured, or measured for another place.
+// blended), or -1 where one of them is not measured, or measured for another place. Loops, not unrolled: the
+// shader compiled for 25 s with the roof checks written out (2026-11-14).
 float roof_grid(float3 at, int base, int n, float size, float clearance) {
     const float2 c = at.xz / size - 0.5;
     const float2 corner = floor(c);
     const float2 f = c - corner;
-    float under[4];
-    [unroll] for (int k = 0; k < 4; ++k) {
-        const int2 cell = int2(corner) + int2(k & 1, k >> 1);
+    float under = 0;
+    [loop] for (int k = 0; k < 4; ++k) {
+        const int2 which = int2(k & 1, k >> 1);
+        const int2 cell = int2(corner) + which;
         const int2 slot = ((cell % n) + n) % n;
         const float4 v = cameras[base + slot.x + slot.y * n];
         if (!(v.w > 0 && (int)v.y == cell.x && (int)v.z == cell.y)) return -1;
-        under[k] = at.y < v.x - clearance ? 1 : 0;
+        const float weight = (which.x ? f.x : 1 - f.x) * (which.y ? f.y : 1 - f.y);
+        under += (at.y < v.x - clearance ? 1 : 0) * weight;
     }
-    return lerp(lerp(under[0], under[1], f.x), lerp(under[2], under[3], f.x), f.y);
+    return under;
 }
 // How much a point is under a roof (0 to 1): from the fine near grid, else the coarse far one, else none.
 // `clearance`: how far over the point something must be to count (a bench or a rail on the ground does not).
@@ -237,13 +240,13 @@ float roof_blend(float3 at, float clearance) {
 float roofed_at(float3 at) {
     const float centre = roof_blend(at, ROOF_CLEARANCE);
     float outer = 0;
-    [unroll] for (int k = 0; k < 6; ++k) {
+    [loop] for (int k = 0; k < 6; ++k) {
         const float angle = k * 1.0471976;
         outer += roof_blend(at + float3(cos(angle), 0, sin(angle)) * 2.2, ROOF_CLEARANCE);
     }
     if (centre + outer <= 0) return 0; // no roof near: most of the ground
     float inner = 0;
-    [unroll] for (int j = 0; j < 6; ++j) {
+    [loop] for (int j = 0; j < 6; ++j) {
         const float angle = j * 1.0471976 + 0.5235988;
         inner += roof_blend(at + float3(cos(angle), 0, sin(angle)) * 1.1, ROOF_CLEARANCE);
     }
