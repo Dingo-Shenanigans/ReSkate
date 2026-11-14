@@ -457,7 +457,8 @@ struct FakeGame final : Game {
         return found;
     }
     bool declared_holds_deck(int part) const { return declared_rules && part == 0; }
-    std::optional<std::vector<BoardParameter>> board_parameters(int part) override {
+    std::optional<std::vector<BoardParameter>> board_parameters(int part, bool preview_scope = false) override {
+        if (preview_scope) calls.push_back("preview parameters");
         if (declared_holds_deck(part)) {
             std::vector<BoardParameter> out;
             for (const auto& p : board_material::detail::listed(declared_board(), board_material::Part::deck)) {
@@ -473,7 +474,8 @@ struct FakeGame final : Game {
                                            {0xb00abec403499469ULL, "integer", {}, 13},
                                            {0xa5f9a6b8098279adULL, "switch", {}, 1}};
     }
-    std::string board_set_parameter(std::string_view plugin, int part, std::uint64_t key, std::array<float, 3> value, bool colour) override {
+    std::string board_set_parameter(std::string_view plugin, int part, std::uint64_t key, std::array<float, 3> value, bool colour, bool preview_scope = false) override {
+        if (preview_scope) calls.push_back("preview set");
         if (declared_holds_deck(part)) {
             auto why = board_material::detail::take(declared_holds, declared_board(), plugin, board_material::Part::deck, key, value, colour);
             if (why.empty()) calls.push_back(std::format("board parameter {} {} {:016x} {} {:.1f}", plugin, part, key, colour ? "colour" : "number", value[0]));
@@ -482,7 +484,8 @@ struct FakeGame final : Game {
         calls.push_back(std::format("board parameter {} {} {:016x} {} {:.1f}", plugin, part, key, colour ? "colour" : "number", value[0]));
         return {};
     }
-    void board_clear_parameter(std::string_view plugin, int part, std::optional<std::uint64_t> key) override {
+    void board_clear_parameter(std::string_view plugin, int part, std::optional<std::uint64_t> key, bool preview_scope = false) override {
+        if (preview_scope) calls.push_back("preview clear");
         calls.push_back(std::format("board parameter clear {} {} {}", plugin, part, key ? std::format("{:016x}", *key) : "all"));
         board_material::detail::release(declared_holds, plugin, part < 0 ? std::nullopt : std::optional(static_cast<board_material::Part>(part)), key);
     }
@@ -613,6 +616,11 @@ struct FakeGame final : Game {
                                         c->front_from_grip[2], c->worn.has_value(), c->weight, c->crouch, c->hunch, c->turn, c->step,
                                         c->still ? " still" : "", c->push_straightens ? " push" : "", shown_name(c->shown))
                           : std::format("carry {} none", plugin));
+        if (c && (c->support[0] != 0 || c->support[1] != 0 || c->support[2] != 0))
+            calls.push_back(std::format("carry support {} {:.2f} {:.2f} {:.2f}", plugin, c->support[0], c->support[1], c->support[2]));
+        if (c && (c->exact || c->look_at))
+            calls.push_back(std::format("carry held {}{} look {}", plugin, c->exact ? " exact" : "",
+                                        c->look_at ? std::format("{:.1f} {:.1f} {:.1f}", (*c->look_at)[0], (*c->look_at)[1], (*c->look_at)[2]) : "none"));
         return {};
     }
     std::string skater_pose(std::string_view plugin, const std::vector<JointOffset>& offsets, float weight, Shown shown) override {
@@ -684,6 +692,11 @@ struct FakeGame final : Game {
                                         l->grade, l->soft, l->scanlines, l->grain, l->dropouts, l->head_switching, l->tracking, l->smear, l->iris, l->rolling,
                                         l->text[0], l->text[1], l->text[2], l->text[3], l->text[4])
                           : std::format("look {} none", plugin));
+        if (l && (l->bars_strength != 1 || l->hood_strength != 1 || l->grade_strength != 1 || l->soft_strength != 1 || l->scanlines_strength != 1 ||
+                  l->grain_strength != 1 || l->dropouts_strength != 1 || l->head_switching_strength != 1 || l->smear_strength != 1))
+            calls.push_back(std::format("look strengths {} {:.2f} {:.2f} {:.2f} {:.2f} {:.2f} {:.2f} {:.2f} {:.2f} {:.2f}", plugin, l->bars_strength,
+                                        l->hood_strength, l->grade_strength, l->soft_strength, l->scanlines_strength, l->grain_strength,
+                                        l->dropouts_strength, l->head_switching_strength, l->smear_strength));
         return {};
     }
     // One plugin's viewmodel at a time, as the real one.
@@ -4612,6 +4625,9 @@ void plugins_reach_cruise_and_read_the_mouse() {
         assert(not pcall(reskate.screen.look, {text = {"far too long a line"}}), "12 characters")
         assert(not pcall(reskate.screen.look, {text = {"{}"}}), "the camcorder's characters")
         assert(not pcall(reskate.screen.look, {text = {"a", "b", "c", "d", "e", "f"}}), "5 lines")
+        assert(reskate.screen.look({grade = true, grain = true, strengths = {grade = 0.6, grain = 0.25, smear = 0}}))
+        assert(not pcall(reskate.screen.look, {grade = true, strengths = {grade = 1.5}}), "a strength is 0 to 1")
+        assert(not pcall(reskate.screen.look, {strengths = {hood = "half"}}), "a strength is a number")
         reskate.log("filmed")
     )";
     host.apply({package("filmer", {{manifest_file, manifest(R"("skater.animation", "skater.read", "skater.control", "input", "overlay")")}, {"plugin/main.lua", main}})});
@@ -4627,6 +4643,8 @@ void plugins_reach_cruise_and_read_the_mouse() {
     check(game.called("look filmer 0.80 110 0.35 truetruetruefalsefalsetruefalsefalsefalsefalsetrue 2.0 [#REC|0:00:02||4:05 PM|OCT.20 2026]") &&
               game.called("slap filmer") && game.called("look filmer none"),
           "A camcorder look on the screen, its text in capitals, a slap, and off\n" + environment.all());
+    check(game.called("look strengths filmer 1.00 1.00 0.60 1.00 1.00 0.25 1.00 1.00 0.00"),
+          "A look's effects at part strength reach the game, 1 for those not given\n" + environment.all());
     // Each needs its permission.
     host.apply({package("sneaky", {{manifest_file, manifest()}, {"plugin/main.lua", R"(
         reskate.log(tostring(pcall(reskate.skater.reach, {at = vector.create(0, 0, 0)})) .. " " .. tostring(pcall(reskate.skater.hand)) .. " " ..
@@ -4651,6 +4669,12 @@ void plugins_carry_and_take_a_step_in_the_camera_cycle() {
             grip = {rotation = {0.5, -0.5, 0.5, 0.5}, offset = vector.create(0.12, 0.04, -0.03)}, crouch = 0.22, hunch = 1.0, turn = 0.5,
             step = 0.5, step_phase = 1.25, still = true, push_straightens = true, weight = 0.75, shown = "others"}))
         assert(reskate.skater.carry({hand = "left", at = vector.create(0, 1, 0), rotation = {0, 0, 0, 1}}))
+        assert(reskate.skater.carry({at = vector.create(0, 1, 0), rotation = {0, 0, 0, 1}, both = true, support = vector.create(0.02, -0.05, 0.1)}))
+        assert(not pcall(reskate.skater.carry, {at = vector.create(0, 1, 0), rotation = {0, 0, 0, 1}, support = vector.create(0, 0.5, 0)}),
+            "a support is at most 0.3 m each way")
+        assert(reskate.skater.carry({at = vector.create(0, 1, 0), rotation = {0, 0, 0, 1}, exact = true, look_at = vector.create(0, 1.2, -0.1)}))
+        assert(not pcall(reskate.skater.carry, {at = vector.create(0, 1, 0), rotation = {0, 0, 0, 1}, look_at = vector.create(0, 9, 0)}),
+            "a look_at is within 3 m")
         assert(reskate.skater.carry(nil))
         assert(not pcall(reskate.skater.carry, {at = vector.create(0, 1, 0)}), "a carry needs a rotation")
         assert(not pcall(reskate.skater.carry, {at = vector.create(0, 1, 0), rotation = {0, 0, 0, 1}, crouch = 1}), "a crouch is 0 to 0.6 m")
@@ -4680,6 +4704,8 @@ void plugins_carry_and_take_a_step_in_the_camera_cycle() {
               game.called("carry filmer left 0.0 1.0 0.0 front 0.00 grip false w 1.00 crouch 0.00 hunch 0.00 turn 0.00 step 0.00 everyone") &&
               game.called("carry filmer none"),
           "Carried in both hands for the others, in one, and let go\n" + environment.all());
+    check(game.called("carry support filmer 0.02 -0.05 0.10"), "The other hand moved where it takes the item\n" + environment.all());
+    check(game.called("carry held filmer exact look 0.0 1.2 -0.1"), "Held where asked, the face on it\n" + environment.all());
     check(game.called("pose filmer 1.00 me 48:0.00,0.00,0.00,1.00x0.00") && game.called("reach filmer right 1.0 2.0 3.0 false 1.00 others"),
           "A pose only you see, a reach only the others see\n" + environment.all());
     check(game.called("cycle filmer ready") && game.called("cycle filmer active") && game.called("cycle filmer out"), "In the cycle, on, and out");
@@ -6108,6 +6134,40 @@ void web_requests_go_only_to_listed_domains() {
 }
 
 
+void preview_board_material_scope() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({script("preview_material", R"(
+        assert(reskate.board.parameter_scopes()[2] == "preview")
+        assert(#reskate.board.parameters("grip", "preview") == 4)
+        assert(reskate.board.set_parameter("grip", "graphic", {r=.3, g=.4, b=.5}, "preview"))
+        reskate.board.clear_parameter(nil, nil, "preview")
+        assert(not pcall(reskate.board.parameters, "deck", "other"))
+        assert(not pcall(reskate.board.set_parameter, "deck", "base", 1, "other"))
+        assert(not pcall(reskate.board.clear_parameter, nil, nil, "other"))
+        reskate.log("preview material routed")
+    )", R"("board", "room")"), script("preview_denied", R"(
+        local ok, why = pcall(reskate.board.parameters, "deck", "preview")
+        assert(not ok and why:find('needs the "room" permission'), tostring(why))
+        ok, why = pcall(reskate.board.set_parameter, "deck", "base", {r=0,g=0,b=0}, "preview")
+        assert(not ok and why:find('needs the "room" permission'), tostring(why))
+        ok, why = pcall(reskate.board.clear_parameter, nil, nil, "preview")
+        assert(not ok and why:find('needs the "room" permission'), tostring(why))
+        reskate.log("preview room permission enforced")
+    )", R"("board")"), script("preview_no_board", R"(
+        assert(not pcall(reskate.board.parameter_scopes))
+        assert(not pcall(reskate.board.parameters, "deck", "preview"))
+        assert(not pcall(reskate.board.set_parameter, "deck", "base", 0, "preview"))
+        assert(not pcall(reskate.board.clear_parameter, nil, nil, "preview"))
+        reskate.log("preview board permission enforced")
+    )", R"("room")")});
+    check(environment.logged("preview material routed") && environment.logged("preview room permission enforced") &&
+          environment.logged("preview board permission enforced"), "Preview scope permissions\n" + environment.all());
+    const auto& calls = environment.fake.calls;
+    for (const auto* expected : {"preview parameters", "preview set", "preview clear"})
+        check(std::count(calls.begin(), calls.end(), expected) == 1, "Preview scope dispatch once");
+}
+
 void declared_board_colours_through_the_api() {
     TestEnvironment environment;
     environment.fake.declared_rules = true;
@@ -7175,6 +7235,7 @@ int main() {
         run(web_requests_go_only_to_listed_domains);
         run(game_menu_distinguishes_unknown_from_closed);
         run(the_wider_set_reaches_the_game);
+        run(preview_board_material_scope);
         run(declared_board_colours_through_the_api);
         run(key_names_become_binds);
         run(level_events_reach_plugins);

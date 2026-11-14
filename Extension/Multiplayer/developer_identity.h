@@ -20,6 +20,12 @@ namespace dingosdk::multiplayer {
 enum class IdentityList : std::uint8_t { developer, homie, content_creator, centrix, banned, official_server, staff, blocked_server, banned_host, count };
 using IdentityLists = std::array<std::vector<std::uint64_t>, static_cast<std::size_t>(IdentityList::count)>;
 inline constexpr std::string_view identity_lists_url = "https://api.reskate.dev/api/v1/steam-ids";
+// A copy of the same answer in the ReSkateCache repository, kept by a scheduled GitHub Action
+// there (.github/workflows/mirror-identity-lists.yml, every ten minutes, committed on change).
+// Read when the backend cannot be reached: some players' Windows refuses api.reskate.dev's
+// connection (WinHTTP 12175) while GitHub works for them.
+inline constexpr std::string_view identity_lists_mirror_url =
+    "https://raw.githubusercontent.com/Dingo-Shenanigans/ReSkateCache/main/config/backend/steam-ids.json";
 
 // The game's way of reading them (the dedicated server's is Server/global_bans.h). Called
 // every client tick: reads the lists in the background, at startup and every ten

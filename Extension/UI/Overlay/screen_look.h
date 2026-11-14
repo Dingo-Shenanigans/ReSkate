@@ -27,6 +27,10 @@ struct Settings {
     bool smear{};        // reds trail to the right
     bool iris{};         // an auto-iris that lags the scene
     double rolling{-1};  // seconds since the tape started rolling (the tracking band); < 0 none
+    // How strongly each overlaid effect is drawn, 0..1, while its switch is on (1: in full).
+    struct Strengths {
+        float bars{1}, hood{1}, grade{1}, soft{1}, scanlines{1}, grain{1}, dropouts{1}, head_switching{1}, smear{1};
+    } strength;
     // Burnt in: top left, top right, bottom left, then two lines bottom right; at most 12 characters
     // each, ASCII 32 to 95 (lower case is shown in capitals; '#' is the record dot, "[=]" a battery).
     // The right-hand lines are right-aligned.

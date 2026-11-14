@@ -7,7 +7,9 @@
 #include "launcher_update_config.h"
 #include "text_encoding.h"
 #include "Engine/Core/Platform/path_text.h"
+#include "Engine/Vfs/https_trust.h"
 
+#include <wincrypt.h>
 #include <winhttp.h>
 #include <miniz.h>
 
@@ -104,18 +106,51 @@ void http_get(const std::wstring& url, std::uint64_t limit, int timeout_ms,
         if (parts.dwExtraInfoLength) resource.append(parts.lpszExtraInfo, parts.dwExtraInfoLength);
         Internet connection{WinHttpConnect(session.value, host.c_str(), parts.nPort, 0)};
         if (!connection.value) win32("WinHttpConnect");
-        Internet request{WinHttpOpenRequest(connection.value, L"GET", resource.c_str(), nullptr, nullptr,
-                                          WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE)};
-        if (!request.value) win32("WinHttpOpenRequest");
-        DWORD redirects = WINHTTP_DISABLE_REDIRECTS;
-        DWORD logon = WINHTTP_AUTOLOGON_SECURITY_LEVEL_HIGH;
-        if (!WinHttpSetOption(request.value, WINHTTP_OPTION_DISABLE_FEATURE, &redirects, sizeof(redirects)) ||
-            !WinHttpSetOption(request.value, WINHTTP_OPTION_AUTOLOGON_POLICY, &logon, sizeof(logon))) win32("WinHttpSetOption");
+        // `builtin_roots`: the second try after Windows refused the server's certificate (12175), with
+        // its verdict set aside for the handshake; the answer is kept only when the certificate
+        // chains to one of ReSkate's own roots for this host (Engine/Vfs/https_trust.h). Some
+        // players' Windows refused api.reskate.dev's Let's Encrypt chain that their browsers took.
+        const auto open_request = [&](bool builtin_roots) {
+            HINTERNET opened = WinHttpOpenRequest(connection.value, L"GET", resource.c_str(), nullptr, nullptr,
+                                                  WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+            if (!opened) win32("WinHttpOpenRequest");
+            DWORD redirects = WINHTTP_DISABLE_REDIRECTS;
+            DWORD logon = WINHTTP_AUTOLOGON_SECURITY_LEVEL_HIGH;
+            DWORD ignore = SECURITY_FLAG_IGNORE_UNKNOWN_CA | SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
+                           SECURITY_FLAG_IGNORE_CERT_CN_INVALID | SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
+            if (!WinHttpSetOption(opened, WINHTTP_OPTION_DISABLE_FEATURE, &redirects, sizeof(redirects)) ||
+                !WinHttpSetOption(opened, WINHTTP_OPTION_AUTOLOGON_POLICY, &logon, sizeof(logon)) ||
+                (builtin_roots && !WinHttpSetOption(opened, WINHTTP_OPTION_SECURITY_FLAGS, &ignore, sizeof(ignore)))) {
+                const auto error = GetLastError();
+                WinHttpCloseHandle(opened);
+                SetLastError(error);
+                win32("WinHttpSetOption");
+            }
+            return opened;
+        };
         std::wstring headers = L"Cache-Control: no-cache\r\n";
         if (host == L"api.github.com")
             headers += L"X-GitHub-Api-Version: 2022-11-28\r\nAccept: application/vnd.github+json\r\n";
-        if (!WinHttpSendRequest(request.value, headers.c_str(), static_cast<DWORD>(-1L), nullptr, 0, 0, 0) ||
-            !WinHttpReceiveResponse(request.value, nullptr)) win32("HTTPS request");
+        const auto send = [&](HINTERNET opened) {
+            return WinHttpSendRequest(opened, headers.c_str(), static_cast<DWORD>(-1L), nullptr, 0, 0, 0) &&
+                   WinHttpReceiveResponse(opened, nullptr);
+        };
+        Internet request{open_request(false)};
+        if (!send(request.value)) {
+            if (GetLastError() != ERROR_WINHTTP_SECURE_FAILURE) win32("HTTPS request");
+            WinHttpCloseHandle(std::exchange(request.value, nullptr));
+            request.value = open_request(true);
+            if (!send(request.value)) win32("HTTPS request");
+            PCCERT_CONTEXT certificate{};
+            DWORD bytes = sizeof(certificate);
+            const bool trusted = WinHttpQueryOption(request.value, WINHTTP_OPTION_SERVER_CERT_CONTEXT, &certificate, &bytes) &&
+                                 dingosdk::https::chains_to_builtin_root(certificate, host);
+            if (certificate) CertFreeCertificateContext(certificate);
+            if (!trusted) {
+                SetLastError(ERROR_WINHTTP_SECURE_FAILURE);
+                win32("HTTPS request");
+            }
+        }
         DWORD status{}, size = sizeof(status);
         if (!WinHttpQueryHeaders(request.value, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
                 nullptr, &status, &size, nullptr)) win32("WinHttpQueryHeaders");

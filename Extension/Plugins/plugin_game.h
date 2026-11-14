@@ -886,6 +886,9 @@ public:
     struct Carry {
         bool left{}, both{};
         Vec3 front{};
+        Vec3 support{}; // with both: the other hand moved from where it takes the item, in the item's frame
+        bool exact{};   // the front held at `front` itself, not on the aim's own sweep
+        std::optional<Vec3> look_at; // the face turned to look at this point
         std::array<float, 4> aim{0, 0, 0, 1};
         Vec3 front_from_grip{};
         // Worn on the hand: the item's rotation in the hand joint's frame, and its grip from the hand joint.
@@ -1023,13 +1026,13 @@ public:
         // yet: `value` is the default its shader has; set_parameter adds it.
         bool inherited{};
     };
-    virtual std::optional<std::vector<BoardParameter>> board_parameters(int /*part*/) { return std::nullopt; }
+    virtual std::optional<std::vector<BoardParameter>> board_parameters(int /*part*/, bool /*preview*/ = false) { return std::nullopt; }
     // A colour (`colour`, all three) or a number (value[0]) held there until cleared; empty when held.
-    virtual std::string board_set_parameter(std::string_view /*plugin*/, int /*part*/, std::uint64_t, std::array<float, 3>, bool /*colour*/) {
+    virtual std::string board_set_parameter(std::string_view /*plugin*/, int /*part*/, std::uint64_t, std::array<float, 3>, bool /*colour*/, bool /*preview*/ = false) {
         return unavailable;
     }
     // Part -1: every part; no key: every key.
-    virtual void board_clear_parameter(std::string_view /*plugin*/, int /*part*/, std::optional<std::uint64_t>) {}
+    virtual void board_clear_parameter(std::string_view /*plugin*/, int /*part*/, std::optional<std::uint64_t>, bool /*preview*/ = false) {}
     // ---- variants: of the plugin's own mod (Engine/Vfs/mod_list.h Variants) -----------------------------
     struct VariantState {
         std::vector<std::string> installed; // its "order" first
@@ -1088,6 +1091,9 @@ public:
     struct ScreenLook {
         float bend{}, fov{60}, age{};
         bool bars{}, hood{}, grade{}, soft{}, scanlines{}, grain{}, dropouts{}, head_switching{}, tracking{}, smear{}, iris{};
+        // How strongly each of these is drawn while on, 0..1 (strengths = {grade = 0.6, ...}; 1 when not given).
+        float bars_strength{1}, hood_strength{1}, grade_strength{1}, soft_strength{1}, scanlines_strength{1}, grain_strength{1},
+            dropouts_strength{1}, head_switching_strength{1}, smear_strength{1};
         double rolling{-1};
         std::array<std::string, 5> text;
     };

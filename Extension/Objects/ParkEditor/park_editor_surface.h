@@ -7,8 +7,10 @@
 #include "Engine/Game/World/body_contact_read.h"
 #include "Engine/Game/World/body_query.h"
 #include <algorithm>
+#include <limits>
 #include <optional>
 #include <span>
+#include <vector>
 
 namespace dingosdk::editor {
 using SurfaceOwner = std::uint64_t (*)(std::uintptr_t, std::uint32_t, std::uintptr_t);
@@ -307,6 +309,39 @@ inline EditorSurfaceHit probe_surface(const NativeSurfaceApi &api, std::uintptr_
         result.hit = true;
         result.position = *hit;
     }
+    return result;
+}
+// The ground under the snap grid (EditorGroundRequest): one ray straight down per point with the
+// camera ray's filter, the one surface placement uses, so the grid lies on top of whatever is
+// there. (The Terrain preset found nothing in game: no grid showed.) A refused request comes back
+// unavailable with no heights; a point with nothing below is NaN.
+inline EditorGroundGrid probe_ground(const NativeSurfaceApi &api, std::uintptr_t context,
+                                     const EditorGroundRequest &request) {
+    EditorGroundGrid result{request.generation, request.id};
+    result.center_x = request.center_x;
+    result.center_z = request.center_z;
+    result.spacing = request.spacing;
+    result.radius = request.radius;
+    const auto bounded = [](float value) { return std::isfinite(value) && std::abs(value) <= 100000; };
+    if (!api.ready || !context || !request.id || !request.radius || request.radius > editor_ground_radius_max ||
+        !std::isfinite(request.spacing) || request.spacing < .05f || request.spacing > 100 || !bounded(request.center_x) ||
+        !bounded(request.center_z) || !bounded(request.top) || !bounded(request.bottom) || request.top <= request.bottom)
+        return result;
+    const auto world = api.world(context);
+    if (!world)
+        return result;
+    result.available = true;
+    const auto side = 2 * request.radius + 1;
+    result.heights.assign(static_cast<std::size_t>(side) * side, std::numeric_limits<float>::quiet_NaN());
+    for (std::uint32_t row = 0; row < side; ++row)
+        for (std::uint32_t column = 0; column < side; ++column) {
+            const float x = request.center_x + (static_cast<float>(column) - static_cast<float>(request.radius)) * request.spacing;
+            const float z = request.center_z + (static_cast<float>(row) - static_cast<float>(request.radius)) * request.spacing;
+            std::vector<SurfaceBody> discovered;
+            if (const auto hit = cast_surface_once(api, world, {x, request.top, z}, {x, request.bottom, z}, nullptr, {},
+                                                   nullptr, {}, discovered, nullptr))
+                result.heights[static_cast<std::size_t>(row) * side + column] = (*hit)[1];
+        }
     return result;
 }
 } // namespace dingosdk::editor

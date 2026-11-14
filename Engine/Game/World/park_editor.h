@@ -28,6 +28,22 @@ struct EditorSurfaceRequest {
     float grid{};
     bool picking{};
 };
+// The ground under the editor's snap grid: points `spacing` apart around (center_x, center_z),
+// `radius` points each way, each cast straight down from `top` to `bottom`.
+struct EditorGroundRequest {
+    std::uint64_t generation{}, id{};
+    float center_x{}, center_z{}, spacing{}, top{}, bottom{};
+    std::uint32_t radius{};
+};
+// Its answer: (2 * radius + 1) squared heights, x across then z down, NaN where no ground was hit.
+struct EditorGroundGrid {
+    std::uint64_t generation{}, id{};
+    bool available{};
+    float center_x{}, center_z{}, spacing{};
+    std::uint32_t radius{};
+    std::vector<float> heights;
+};
+inline constexpr std::uint32_t editor_ground_radius_max = 16;
 struct EditorSelectionRequest {
     std::uint64_t generation{};
     std::vector<std::uint64_t> objects;
@@ -88,6 +104,7 @@ struct ParkEditorModel {
     std::string project;                   // mod folder the editor saves to; empty = unsaved
     bool can_load_parks{};                 // false for multiplayer guests: only the host loads parks
     EditorSurfaceHit surface;
+    EditorGroundGrid ground;
     std::uint64_t preview_token{};
     std::shared_ptr<const std::vector<EditorObjectSet>> object_sets;
 };

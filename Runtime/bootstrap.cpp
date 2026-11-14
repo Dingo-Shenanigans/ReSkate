@@ -24,6 +24,7 @@
 #include "Extension/World/world_pool_usage.h"
 #include "Extension/World/physics_world_size.h"
 #include "Extension/World/spatial_cull_ids.h"
+#include <algorithm>
 #include <format>
 #include <string>
 
@@ -90,6 +91,14 @@ bool initialize_bootstrap(std::uintptr_t base, std::string& failure) {
     // each of the game's one-frame offs, the stalls it had before.)
     error.clear(); ready = start_frame_generation_retain(base, error);
     (void)stage(Channel::graphics, "Frame generation keeps its resources through one-frame offs", ready, error);
+    {
+        const auto single_frame = std::min(frame_descriptor_cap, (heap_descriptor_total - persistent_descriptors) / frames_in_flight);
+        const auto line = single_heap_layout
+            ? std::format("Descriptor heaps: one heap of {}, with {} a frame", heap_descriptor_total, single_frame)
+            : std::format("Descriptor heaps: {} each, with {} a frame", persistent_descriptors + split_frame_descriptor_cap,
+                  split_frame_descriptor_cap);
+        (void)stage(Channel::graphics, line.c_str(), ready, error);
+    }
     error.clear(); ready = start_user_data_redirect(error);
     if (!stage(Channel::runtime, "Separate game user data", ready, error)) return false;
     error.clear(); ready = start_ea_app_block(error);

@@ -66,6 +66,9 @@ struct State {
     std::string layer_note, logged_note, logged_wait; // the notes last put in the log
     std::map<std::string, std::string> found; // installed items by ending
     bool own{}, dirty{}, worn{};
+    // Ours were worn when the skater was made again (back to a marker, a bail, a join): the new one can
+    // come with the recipe ours were in, still on a recipe of its own. Given back to the game on it.
+    bool orphan{};
     std::uintptr_t skater{}, component{}, slots_of{};
     std::map<std::string, int> slot_index; // by slot name, for slots_of
     std::optional<skater_items::Feed> feed; // how the game fed the skater before a recipe of ours
@@ -491,7 +494,7 @@ std::vector<Slot> slots() {
 
 void tick() noexcept {
     auto& s = state();
-    if (s.wanted.empty() && s.layers.empty() && !s.own) {
+    if (s.wanted.empty() && s.layers.empty() && !s.own && !s.orphan) {
         if (!s.placed.empty()) layer_materials::set({});
         s.placed.clear();
         s.layer_note.clear();
@@ -500,10 +503,12 @@ void tick() noexcept {
     try {
         NoBailSkater skater;
         if (!no_bail_skater(skater)) {
-            // A respawn or a level change: the next skater comes from the profile, with nothing of ours.
+            // A respawn or a level change: the next skater comes from the profile, with nothing of ours,
+            // or (a camcorder stuck in the hand, seen after In Hand) a copy of the recipe ours were in.
+            if (s.own) s.orphan = true;
             s.skater = s.slots_of = 0;
             s.own = s.worn = false;
-            s.feed.reset();
+            if (!s.orphan) s.feed.reset();
             s.placed.clear();
             s.trial.reset();
             s.dirty = true;
@@ -520,8 +525,11 @@ void tick() noexcept {
             const bool inherited = s.skater && s.feed && still_ours(s, m, skater.entity);
             s.skater = skater.entity;
             if (!inherited) {
+                // Not still ours, but ours were worn: the new skater can come with the recipe they were in,
+                // so it is handed back to the outfit below (orphan) rather than forgotten.
+                if (s.own) s.orphan = true;
                 s.own = false;
-                s.feed.reset();
+                if (!s.orphan) s.feed.reset();
                 s.placed.clear();
             }
             s.trial.reset();
@@ -530,6 +538,24 @@ void tick() noexcept {
         const bool menu = multiplayer::sample_game_ui_state(skater.base).in_menu;
         if (menu) s.menu_seen = now;
         const bool nothing = s.wanted.empty() && s.layers.empty();
+        // Made again while ours were worn: with nothing of ours wanted now and the new skater still on a
+        // recipe of its own, it is handed back to the outfit (else what was worn stays on for good). Still
+        // wanted: wearing them again takes it over. (hand_back throws while its items are still updating:
+        // tried again next tick.)
+        if (s.orphan) {
+            const auto component = m.component(skater.entity);
+            if (!nothing || !s.feed || skater_items::feed(m, component).follows_outfit()) {
+                s.orphan = false;
+            } else {
+                skater_items::hand_back(m, component, *s.feed);
+                s.given_back = now;
+                s.orphan = false;
+                s.feed.reset();
+                s.status = "given back to the outfit after the skater was made again";
+                logging::log(logging::Level::info, logging::Channel::skater, "Outfit overlay: the skater was made again with ours on; given back to the outfit.");
+                return;
+            }
+        }
         if (nothing || menu) {
             if (s.own) give_back(s, m, skater.entity, now);
             s.status = nothing ? "nothing worn" : "a game menu is up: the outfit is the game's";
