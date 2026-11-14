@@ -31,10 +31,16 @@ stays until `cover(nil)`, and one plugin may have a cover at a time.
     thinning out over about two metres in under the edge, and no flakes falling under one (outside still
     snows, seen from in). A roof map round the camera finds it: one straight-down ray into the client
     collision a cell, a fine grid (0.5 m, 64 m across) and a coarse one (1.5 m, 192 m across). Only cells new
-    to the map are measured (the nearest first, about two hundred rays a tick at most), and two dozen again
-    a tick; it is forgotten out of play, and copied to the GPU only when it changed. For each fine cell the
-    highest surface within 3.5 m is kept too, so most of the ground finds it is under no roof from one read.
+    to the map are measured (the nearest first, 72 a tick at most), and 12 again a tick, never more than 1 ms
+    a tick: the rays run on the game's update thread, and on a Steam Deck more made the game run in slow
+    motion. It is forgotten out of play, and copied to the GPU only when it changed. For each 4 m block of the
+    fine grid the highest surface over it and the blocks round it is kept too, so most of the ground finds it
+    is under no roof from one read.
+  - **`light = true`:** fewer falling flakes and samples from the start. The cover goes light by itself once it
+    takes over 6 ms a frame on the GPU (on a Steam Deck it took 12 to 20; on a desktop card, a fraction of one).
 - **Tread:** with a `tread` width, a tread's 13 lines show along it (7 lighter, 6 darker ridges).
+  - **Runs:** a box each run of 8 points lies in goes with them, and a pixel reads the points only of the runs
+    whose box it is in.
   - **Slopes:** each stretch is found on the plane through both its points, so a trail follows a slope.
   - **`starts`:** the point begins a new trail, not joined to the point before.
 
