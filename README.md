@@ -308,7 +308,7 @@ Useful launcher flags:
 
 | Option | Default | Effect |
 |---|---|---|
-| `DINGOSDK_VERSION` | `0.0.0` | version stamped into the binaries |
+| `DINGOSDK_VERSION` | `00000000` | eight digit build number (`YYYYMMDD`) stamped into the binaries |
 | `DINGOSDK_LAUNCHER_AUTO_UPDATE` | `OFF` | let the launcher replace itself and `ReSkate.dll`, and the server replace itself (release builds) |
 | `DINGOSDK_RELEASE_REPO` | `Dingo-Shenanigans/ReSkate` | public GitHub repository whose latest release carries `launcher.json` and the files it pins |
 | `DINGOSDK_CRASH_REPORT_URL` | the project's endpoint | Sentry minidump endpoint URL; empty turns crash uploads off |
