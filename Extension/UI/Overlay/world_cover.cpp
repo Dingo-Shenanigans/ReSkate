@@ -9,6 +9,7 @@
 #include <wrl/client.h>
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <deque>
@@ -79,9 +80,14 @@ struct RoofGrid {
 // Measuring every cell over and over took a few hundred rays every tick, standing still too; only the cells
 // new to the window, then a few again a tick, the same once the camera has looked round (2026-11-14).
 constexpr std::array<RoofGrid, 2> roof_grids{{
-    {128, 0.5f, 128, 16},  // 64 m across
-    {128, 1.5f, 64, 8},    // 192 m across (96 m each way)
+    {128, 0.5f, 48, 8},  // 64 m across
+    {128, 1.5f, 24, 4},  // 192 m across (96 m each way)
 }};
+// And at most this long a tick: the rays run on the game's update thread, and on a Steam Deck (Proton) the game
+// ran in slow motion with the snow on (2026-11-14).
+constexpr double roof_tick_budget_ms = 1.0;
+// How long the roof map's rays took (the update thread) and the cover took on the GPU, said every 600 frames.
+std::atomic<std::uint64_t> roof_us_total{}, roof_us_most{}, roof_ticks{}, roof_rays{};
 constexpr std::size_t roof_cells_of(const RoofGrid& g) { return static_cast<std::size_t>(g.cells) * static_cast<std::size_t>(g.cells); }
 // After the grids: for each of the near grid's cells, the highest surface over any cell within roof_near_reach
 // of it (four to a float4): a point under none of those is under no roof, from one read instead of the
@@ -251,6 +257,14 @@ struct Shared {
     // Whether that frame was drawn with its own depth: one drawn with an older copy (the camera moved
     // since) measured the near distance too short, and it was held (0.056 m for 0.060, 2026-11-12).
     std::array<bool, allocator_count> measure_fresh{};
+    // The cover's time on the GPU: a timestamp before and after each allocator's list, read back when it is free.
+    ComPtr<ID3D12QueryHeap> timer_heap;
+    ComPtr<ID3D12Resource> timer_readback;
+    const std::uint64_t* timer_cpu{};
+    std::array<bool, allocator_count> timer_waiting{};
+    UINT64 timer_frequency{};
+    double gpu_ms_total{}, gpu_ms_most{};
+    unsigned gpu_samples{};
     // The roof map's version in each allocator's part of the upload buffer: copied only when it changed.
     std::array<std::uint64_t, allocator_count> roof_uploaded{};
     bool relearning{}; // a new camera: the next middle measured is taken, up or down
@@ -786,6 +800,29 @@ bool build_list(Shared& s) {
         }
         s.measure_cpu = static_cast<const std::uint8_t*>(read);
     }
+    // Timestamps for the cover's time on the GPU (only said in the log; none, and it is still drawn).
+    if (!s.timer_heap && s.queue && SUCCEEDED(s.queue->GetTimestampFrequency(&s.timer_frequency)) && s.timer_frequency) {
+        D3D12_QUERY_HEAP_DESC queries{};
+        queries.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+        queries.Count = static_cast<UINT>(allocator_count * 2);
+        D3D12_HEAP_PROPERTIES readback{};
+        readback.Type = D3D12_HEAP_TYPE_READBACK;
+        D3D12_RESOURCE_DESC bytes{};
+        bytes.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        bytes.Width = allocator_count * 2 * sizeof(std::uint64_t);
+        bytes.Height = 1, bytes.DepthOrArraySize = 1, bytes.MipLevels = 1, bytes.SampleDesc.Count = 1;
+        bytes.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        void* read{};
+        if (FAILED(s.device->CreateQueryHeap(&queries, IID_PPV_ARGS(&s.timer_heap))) ||
+            FAILED(s.device->CreateCommittedResource(&readback, D3D12_HEAP_FLAG_NONE, &bytes, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                     IID_PPV_ARGS(&s.timer_readback))) ||
+            FAILED(s.timer_readback->Map(0, nullptr, &read)) || !read) {
+            s.timer_heap.Reset();
+            s.timer_readback.Reset();
+        } else {
+            s.timer_cpu = static_cast<const std::uint64_t*>(read);
+        }
+    }
     return true;
 }
 
@@ -1154,8 +1191,18 @@ bool record_cover(Shared& s) {
     // What this allocator's last list measured: the GPU is done with it.
     if (s.measure_waiting[at] && s.measure_fresh[at] && s.measure_cpu) take_measurements(s, s.measure_cpu + at * measure_slice);
     s.measure_waiting[at] = false;
+    // And how long its cover took on the GPU.
+    if (s.timer_waiting[at] && s.timer_cpu && s.timer_frequency) {
+        const auto start = s.timer_cpu[at * 2], end = s.timer_cpu[at * 2 + 1];
+        if (end > start) {
+            const double ms = static_cast<double>(end - start) * 1000.0 / static_cast<double>(s.timer_frequency);
+            s.gpu_ms_total += ms, s.gpu_ms_most = std::max(s.gpu_ms_most, ms), ++s.gpu_samples;
+        }
+    }
+    s.timer_waiting[at] = false;
     s.why = "recording failed";
     if (FAILED(s.allocators[at]->Reset()) || FAILED(s.list->Reset(s.allocators[at].Get(), nullptr))) return false;
+    if (s.timer_heap) s.list->EndQuery(s.timer_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, static_cast<UINT>(at * 2));
     s.next_allocator = (at + 1) % s.allocators.size();
     // This frame's camera, newest first (the measurements try the first camera_candidates of them).
     {
@@ -1192,6 +1239,15 @@ bool record_cover(Shared& s) {
                             s.game_camera_frames, camera_delay);
         }
         s.camera_frames = s.game_camera_frames = 0;
+        // What it costs: on the GPU a frame, and the roof map's rays on the game's update thread a tick.
+        const auto ticks = roof_ticks.exchange(0), rays = roof_rays.exchange(0), roof_us = roof_us_total.exchange(0), roof_most = roof_us_most.exchange(0);
+        logging::printf(logging::Level::info, logging::Channel::graphics,
+                        "World cover cost: on the GPU %.2f ms a frame (at most %.2f) over %u frames; the roof map %.2f ms a tick (at most %.2f), %.1f rays a tick, over %llu ticks.",
+                        s.gpu_samples ? s.gpu_ms_total / s.gpu_samples : 0.0, s.gpu_ms_most, s.gpu_samples,
+                        ticks ? static_cast<double>(roof_us) / 1000.0 / static_cast<double>(ticks) : 0.0, static_cast<double>(roof_most) / 1000.0,
+                        ticks ? static_cast<double>(rays) / static_cast<double>(ticks) : 0.0, static_cast<unsigned long long>(ticks));
+        s.gpu_ms_total = s.gpu_ms_most = 0;
+        s.gpu_samples = 0;
     }
 
     Settings settings;
@@ -1424,6 +1480,12 @@ bool record_cover(Shared& s) {
 
     transition(list, s.colour, D3D12_RESOURCE_STATE_RENDER_TARGET, before);
     transition(list, s.picture.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
+    if (s.timer_heap) {
+        list->EndQuery(s.timer_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, static_cast<UINT>(at * 2 + 1));
+        list->ResolveQueryData(s.timer_heap.Get(), D3D12_QUERY_TYPE_TIMESTAMP, static_cast<UINT>(at * 2), 2, s.timer_readback.Get(),
+                               at * 2 * sizeof(std::uint64_t));
+        s.timer_waiting[at] = true;
+    }
     if (FAILED(list->Close())) return false;
     s.last_drawn_frame = s.frame;
     s.why = nullptr;
@@ -1507,6 +1569,17 @@ void measure_roofs(GroundTop ground_top) noexcept {
             }
             return;
         }
+        // This tick's rays: at most roof_tick_budget_ms of them, and how long they took (said every 600 frames).
+        struct Timed {
+            std::chrono::steady_clock::time_point began = std::chrono::steady_clock::now();
+            std::uint64_t rays{};
+            double ms() const { return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - began).count(); }
+            ~Timed() {
+                const auto us = static_cast<std::uint64_t>(ms() * 1000.0);
+                roof_us_total.fetch_add(us), roof_rays.fetch_add(rays), roof_ticks.fetch_add(1);
+                for (auto most = roof_us_most.load(); us > most && !roof_us_most.compare_exchange_weak(most, us);) {}
+            }
+        } timed;
         std::array<std::vector<std::pair<std::size_t, std::array<float, 4>>>, 2> found;
         std::array<int, 2> near_first{};
         for (std::size_t g = 0; g < roof_grids.size(); ++g) {
@@ -1533,6 +1606,8 @@ void measure_roofs(GroundTop ground_top) noexcept {
                                                 (((cell_z % grid.cells) + grid.cells) % grid.cells) * grid.cells);
             };
             const auto measure = [&](int cell_x, int cell_z) {
+                if (timed.ms() >= roof_tick_budget_ms) return; // the rest next tick
+                ++timed.rays;
                 const float x = (static_cast<float>(cell_x) + 0.5f) * grid.size, z = (static_cast<float>(cell_z) + 0.5f) * grid.size;
                 const auto top = ground_top(x, z, eye[1] + roof_reach, eye[1] - roof_reach);
                 const auto slot = slot_of(cell_x, cell_z);
@@ -1547,14 +1622,14 @@ void measure_roofs(GroundTop ground_top) noexcept {
             if (!k.complete || k.complete_at != std::array<int, 2>{first_x, first_z}) {
                 int left = grid.new_tick;
                 for (const auto& [dx, dz] : k.nearest_first) {
-                    if (left <= 0) break;
+                    if (left <= 0 || timed.ms() >= roof_tick_budget_ms) break;
                     const int cell_x = first_x + dx, cell_z = first_z + dz;
                     const auto slot = slot_of(cell_x, cell_z);
                     if (k.measured[slot] && k.cell[slot] == std::array<int, 2>{cell_x, cell_z}) continue;
                     measure(cell_x, cell_z);
                     --left;
                 }
-                k.complete = left > 0;
+                k.complete = left > 0 && timed.ms() < roof_tick_budget_ms;
                 k.complete_at = {first_x, first_z};
             }
             // And some again, in turn.
@@ -1829,6 +1904,10 @@ void release() noexcept {
         s.measure_pipeline.Reset();
         s.measure_waiting = {};
         s.measure_fresh = {};
+        s.timer_heap.Reset();
+        s.timer_readback.Reset();
+        s.timer_cpu = nullptr;
+        s.timer_waiting = {};
         s.relearning = false;
         s.cameras_known = 0;
         s.clears = {};
