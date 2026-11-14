@@ -61,6 +61,8 @@ stays until `cover(nil)`, and one plugin may have a cover at a time.
   middle riding, the tail in a manual, the nose in a nose manual) and for the skater's own mark, so they
   are not joined by a line across.
 - **No snow indoors:** `under_roofs = false`.
+- **Performance Mode:** `light = true`, and the roof map off (`under_roofs` left on), for slower PCs and the
+  Steam Deck.
 - **The deck:** a board-shaped `keep_clear` place on it. The snowskate deck rides so low that the
   skater's cylinder took its griptape for the ground: it got full snow and the board's own track. Now it
   has a light dusting and no track.
