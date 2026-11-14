@@ -11,6 +11,7 @@
 #include "Engine/Vfs/mod_conflicts.h"
 #include "Engine/Vfs/mod_items.h"
 #include "Engine/Vfs/mod_list.h"
+#include "Engine/Vfs/mod_vram.h"
 #include "Extension/UI/skate_theme.h"
 
 #include <Windows.h>
@@ -667,6 +668,24 @@ struct ModItemsView {
     }
 };
 
+// MY MODS: what each installed mod can take of the graphics card's memory (gui_mods_vram.cpp), read
+// from the mods' files on a worker.
+struct ModVramScan {
+    std::map<std::string, mods::ModVram, std::less<>> known;   // by folder name; UI thread
+    std::size_t waiting{};            // the mods still to be read
+
+    std::thread worker;
+    std::atomic<bool> running{}, stop{};
+    std::atomic<bool> interrupted{};  // stopped for an install or uninstall: to be read again
+    std::mutex mutex;
+    std::vector<std::pair<std::string, mods::ModVram>> done;   // worker -> UI, under mutex
+
+    ~ModVramScan() {
+        stop = true;
+        if (worker.joinable()) worker.join();
+    }
+};
+
 // The Mods panel's list plus one background install at a time.
 struct ModsPanel {
     bool scanned{};
@@ -730,6 +749,7 @@ struct ModsPanel {
     fs::path conflict_source;            // install waiting for "Replace" confirmation
     std::string conflict_name;
     ModItemsView items;
+    ModVramScan vram;
     // How many items the player leaves out of each mod, by lower-case folder name; read with the folder.
     std::map<std::string, std::size_t, std::less<>> items_off;
 
@@ -866,6 +886,17 @@ std::string mod_items_count(const ModsPanel& panel, const mods::Mod& mod);
 void mod_items_tab(const Fonts& fonts, ModsPanel& panel, const mods::Mod& mod, float height);
 // How many items are left out of each mod (ModsPanel::items_off), read again.
 void read_items_left_out(ModsPanel& panel);
+// What the mods can take of the graphics card's memory (gui_mods_vram.cpp). The mods are read on
+// a worker each time the folder is (start), and taken in every frame (pump); a read under way is
+// stopped before mods are installed or removed (it holds their files open), and starts again
+// after. A mod's figures (null until it is read, or when it could not be), the most it takes as a
+// row says it ("1.64 GB"; empty when nothing), and the lines that say what of it loads when.
+void start_vram_scan(ModsPanel& panel);
+void pump_vram_scan(ModsPanel& panel);
+void wait_for_vram_scan(ModsPanel& panel);
+const mods::ModVram* mod_vram(const ModsPanel& panel, std::string_view name);
+std::string mod_vram_text(const ModsPanel& panel, const mods::Mod& mod);
+std::string mod_vram_detail(const ModsPanel& panel, const mods::Mod& mod);
 // Whether `package` is ticked for the next install, and ticking it.
 bool picked(const Store& store, const std::string& full_name);
 void pick(Store& store, const std::string& full_name, bool on);

@@ -129,6 +129,7 @@ void run_job(ModsPanel& panel, Download& job, const fs::path& root) {
 void work(ModsPanel& panel, fs::path root, std::shared_ptr<std::atomic<bool>> ended) {
     auto& queue = panel.downloads;
     wait_for_conflict_check(panel);   // (it may be reading the mods these replace)
+    wait_for_vram_scan(panel);
     for (;;) {
         std::shared_ptr<Download> job;
         {

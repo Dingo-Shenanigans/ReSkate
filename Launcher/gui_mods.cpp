@@ -606,11 +606,11 @@ void updates_bar(const Fonts& fonts, ModsPanel& panel, const std::vector<const t
 // that ticks it is over the handle's place and shows only when it is wanted (installed_row).
 struct Columns {
     float grip = S(12), on = S(38), icon = S(92), name = S(132);
-    float more = S(28), version = S(68), size = S(72), update = S(84);
+    float more = S(28), version = S(68), size = S(72), vram = S(112), update = S(84);
 };
 // Where the right-hand parts of a row `width` wide start, from its left edge.
 struct RightColumns {
-    float more, version, size;
+    float more, version, size, vram;
 };
 RightColumns right_columns(float width) {
     const Columns c;
@@ -618,6 +618,7 @@ RightColumns right_columns(float width) {
     r.more = width - S(10) - c.more;
     r.version = r.more - S(10) - c.version;
     r.size = r.version - S(8) - c.size;
+    r.vram = r.size - S(8) - c.vram;
     return r;
 }
 
@@ -745,9 +746,16 @@ void installed_row(const Fonts& fonts, ModsPanel& panel, const thunderstore::Ins
     right_text(r.version, c.version, mod.version.empty() ? std::string() : "v" + mod.version);
     if (const auto size = panel.sizes.find(mod.name); size != panel.sizes.end() && size->second)
         right_text(r.size, c.size, size_text(size->second));
+    // What it can take of the graphics card's memory, and on hover what of it loads when.
+    if (const auto vram = mod_vram_text(panel, mod); !vram.empty()) {
+        right_text(r.vram, c.vram, vram + " VRAM");
+        if (ImGui::IsWindowHovered() &&
+            ImGui::IsMouseHoveringRect(ImVec2(start.x + r.vram, start.y), ImVec2(start.x + r.vram + c.vram, start.y + tall)))
+            ImGui::SetTooltip("Video memory (an estimate)\n%s", mod_vram_detail(panel, mod).c_str());
+    }
 
     // How it stands: pills, only when there is something to say, and on hover why.
-    float pills = start.x + r.size - S(6);   // the left edge of what is drawn so far
+    float pills = start.x + r.vram - S(6);   // the left edge of what is drawn so far
     const auto pill = [&](const std::string& label, ImU32 fill, ImU32 ink, const std::string& tip) {
         const float across = badge_width(fonts, label);
         pills -= across + S(6);
@@ -1555,6 +1563,7 @@ void mod_overview(const Fonts& fonts, ModsPanel& panel, const thunderstore::Inst
                                                                               : std::string("\nUp to date")));
         overview_fact(fonts, "FOLDER", "Mods\\" + mod.name);
         overview_fact(fonts, "ITEMS", mod_items_count(panel, mod));
+        overview_fact(fonts, "VIDEO MEMORY", mod_vram_detail(panel, mod));
         if (!mod.tool.empty() || !mod.built.empty())
             overview_fact(fonts, "BUILT WITH", mod.tool + (mod.built.empty() ? "" : (mod.tool.empty() ? "" : ", ") + mod.built));
         std::string levels;
@@ -1634,6 +1643,7 @@ void scan(ModsPanel& panel, const launcher_app::Session& session) {
     panel.sizes.clear();
     for (const auto& entry : panel.list.entries) panel.sizes[entry.mod.name] = folder_size(entry.mod.directory);
     read_items_left_out(panel);
+    start_vram_scan(panel);
     panel.scanned = true;
     if (panel.selected >= static_cast<int>(panel.list.entries.size())) panel.selected = -1;
     std::erase_if(panel.marked, [&](const std::string& name) {
@@ -1809,6 +1819,7 @@ void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, Mo
     // Both lists draw mod icons, so both need finished ones uploaded.
     pump_icons(panel);
     pump_mod_items(panel);
+    pump_vram_scan(panel);
     auto* draw = ImGui::GetWindowDrawList();
     const bool installing = panel.installing;
     const bool queue_open = panel.downloads.open;
@@ -1968,6 +1979,7 @@ void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, Mo
             std::vector<std::string> removed;
             std::string failure;
             wait_for_conflict_check(panel);   // (it may be reading these mods' files; a second or two at most)
+            wait_for_vram_scan(panel);
             for (const auto& name : names) {
                 try {
                     launcher_mods::remove(panel.root, name);
