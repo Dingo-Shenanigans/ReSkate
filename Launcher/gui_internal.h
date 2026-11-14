@@ -9,6 +9,7 @@
 #include "thunderstore.h"
 
 #include "Engine/Vfs/mod_conflicts.h"
+#include "Engine/Vfs/mod_items.h"
 #include "Engine/Vfs/mod_list.h"
 #include "Extension/UI/skate_theme.h"
 
@@ -579,6 +580,43 @@ struct Readmes {
     }
 };
 
+// A mod overview's ITEMS tab (gui_mods_items.cpp): the items the mod adds, read from its files on a
+// worker, and the ones the player leaves out of it (mods::items_left_out).
+struct ModItemsView {
+    std::string mod;                  // the folder whose overview is open; empty when none is
+    bool tab{};                       // the overview shows ITEMS rather than ABOUT
+    bool read{};                      // the mod's items are in `list`
+    struct Item {
+        std::string key, title, category;   // category: for a player ("Tops")
+        std::string label;                  // the title as its tile shows it, without what its kind's titles all begin with
+        int cell{-1};                       // its thumbnail's place among the atlases; -1 when it has none
+    };
+    std::vector<Item> list;           // by category, then title
+    std::vector<std::pair<std::string, int>> categories;   // each kind of item the mod has, and how many
+    std::string category;             // the kind shown; empty for all
+    std::array<char, 96> search{};
+    std::set<std::string> off;        // left out; may hold keys the mod no longer has
+    std::string problem, error;       // why not all could be read; why the choice could not be saved
+    std::vector<ImTextureID> atlases; // the thumbnails, a hundred to a texture
+    // Atlases no longer shown, and the frame each was last in a draw list: freed in a later frame.
+    std::vector<std::pair<ImTextureID, int>> retired;
+
+    std::thread worker;
+    std::atomic<bool> busy{};
+    std::string wanted;               // the mod to read next (UI thread)
+    std::vector<std::filesystem::path> wanted_folders;
+    std::mutex mutex;
+    struct Result {
+        bool ready{};
+        std::string mod;
+        mods::ModItems items;
+    } result;                         // worker -> UI, under mutex
+
+    ~ModItemsView() {
+        if (worker.joinable()) worker.join();
+    }
+};
+
 // The Mods panel's list plus one background install at a time.
 struct ModsPanel {
     bool scanned{};
@@ -641,6 +679,9 @@ struct ModsPanel {
     std::vector<char> remove_extras_picked;   // per entry of remove_extras: ticked to go too
     fs::path conflict_source;            // install waiting for "Replace" confirmation
     std::string conflict_name;
+    ModItemsView items;
+    // How many items the player leaves out of each mod, by lower-case folder name; read with the folder.
+    std::map<std::string, std::size_t, std::less<>> items_off;
 
     std::thread worker;
     std::atomic<bool> installing{};
@@ -756,6 +797,19 @@ OverviewColumns overview_columns(float popup_height);
 void begin_overview_details(const char* id, const OverviewColumns& columns);
 void end_overview_details();
 void overview_fact(const Fonts& fonts, const char* name, const std::string& value);
+// A mod overview's ITEMS tab (gui_mods_items.cpp). Whether a mod is of a kind that can add items
+// the player may leave out; the overview opening on a mod (its items are read on a worker) and
+// closing; every frame, taking in what was read; whether the open mod is known to add items, and
+// how many ("12", or "8 of 12 load"); and the tab itself, `height` tall.
+bool mod_may_have_items(const mods::Mod& mod);
+void open_mod_items(ModsPanel& panel, const mods::Mod& mod);
+void close_mod_items(ModsPanel& panel);
+void pump_mod_items(ModsPanel& panel);
+bool mod_items_known(const ModsPanel& panel, const mods::Mod& mod);
+std::string mod_items_count(const ModsPanel& panel, const mods::Mod& mod);
+void mod_items_tab(const Fonts& fonts, ModsPanel& panel, const mods::Mod& mod, float height);
+// How many items are left out of each mod (ModsPanel::items_off), read again.
+void read_items_left_out(ModsPanel& panel);
 // Whether `package` is ticked for the next install, and ticking it.
 bool picked(const Store& store, const std::string& full_name);
 void pick(Store& store, const std::string& full_name, bool on);

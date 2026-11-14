@@ -149,6 +149,8 @@ std::uint64_t folder_size(const fs::path& directory) {
     return total;
 }
 
+std::string folded(std::string_view text);
+
 std::string summary(const ModsPanel& panel, const mods::Mod& mod) {
     std::vector<std::string> parts;
     if (!mod.version.empty()) parts.push_back("v" + mod.version);
@@ -160,6 +162,8 @@ std::string summary(const ModsPanel& panel, const mods::Mod& mod) {
     if (!mod.park_maps.empty()) parts.push_back(mod.park_maps.size() == 1 ? "1 park" : std::to_string(mod.park_maps.size()) + " parks");
     if (mod.provides_plugin) parts.push_back("plugin");
     if (!mods::has_content(mod)) parts.push_back("nothing to load");
+    if (const auto off = panel.items_off.find(folded(mod.name)); off != panel.items_off.end())
+        parts.push_back(off->second == 1 ? "1 item left out" : std::to_string(off->second) + " items left out");
     std::string text;
     for (const auto& part : parts) text += (text.empty() ? "" : "  /  ") + part;
     return text;
@@ -1436,6 +1440,7 @@ void mod_overview(const Fonts& fonts, ModsPanel& panel, const thunderstore::Inst
     if (!panel.overview) {
         ImGui::OpenPopup("##mod_overview");
         panel.overview = true;
+        open_mod_items(panel, mod);
     }
     const ImVec2 extent(std::min(S(1080), size.x - S(80)), std::min(S(740), size.y - S(60)));
     ImGui::SetNextWindowPos(ImVec2((size.x - extent.x) * 0.5f, (size.y - extent.y) * 0.5f));
@@ -1444,11 +1449,13 @@ void mod_overview(const Fonts& fonts, ModsPanel& panel, const thunderstore::Inst
             ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings)) {
         panel.overview = false;        // dismissed with Escape
         panel.selected = -1;
+        close_mod_items(panel);
         return;
     }
     const auto close = [&] {
         panel.overview = false;
         panel.selected = -1;
+        close_mod_items(panel);
         ImGui::CloseCurrentPopup();
     };
     // The icon (the package's when the mod is on Thunderstore, else its own icon.png), with the name,
@@ -1499,63 +1506,87 @@ void mod_overview(const Fonts& fonts, ModsPanel& panel, const thunderstore::Inst
     ImGui::Spacing();
 
     ImGui::Dummy(ImVec2(0, S(6)));
-    const auto columns = overview_columns(extent.y);
-    ImGui::BeginChild("##mod_overview_body", ImVec2(columns.readme, columns.height), ImGuiChildFlags_NavFlattened);
-    ImGui::PushTextWrapPos(0);
-    if (!mod.outdated.empty())
-        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::danger),
-            "Outdated: this mod does not load. It was made for another version of Skate (%s). Get an updated "
-            "version, or rebuild it with the latest ReSkate Studio.", mod.outdated.c_str());
-    if (const auto other = conflict_winner(panel, mod.name); !other.empty() && mod.outdated.empty()) {
-        const auto winner = title_of(panel, other);
-        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::warning),
-            "Not loaded: this mod changes the same parts of the game as %s, which is higher in the load order, in a "
-            "way the two cannot share, so only %s loads. To use this mod instead, move it above %s, or switch one "
-            "of them off.", winner.c_str(), winner.c_str(), winner.c_str());
-        if (const auto reason = conflict_reason(panel, mod.name); !reason.empty())
-            ImGui::TextDisabled("%s", ("They " + reason + ".").c_str());
-        else if (const auto found = panel.list.excluded.find(mod.name); found != panel.list.excluded.end() && !found->second.empty())
-            ImGui::TextDisabled("%s", found->second.front().c_str());
-    } else if (const auto* beats = conflict_beats(panel, mod.name); beats && entry.enabled) {
-        std::string names;
-        for (std::size_t at = 0; at < beats->size(); ++at)
-            names += (at == 0 ? "" : at + 1 == beats->size() ? " and " : ", ") + title_of(panel, (*beats)[at]);
-        ImGui::TextDisabled("%s", ("Loads, and leaves out " + names +
-            ": they change the same parts of the game and are lower in the load order.").c_str());
+    auto columns = overview_columns(extent.y);
+    // A mod that adds items has two pages: what it says about itself, and its items to choose from
+    // (gui_mods_items.cpp). The second is there once the items have been read, or at once for a mod
+    // the player already left items out of.
+    const bool items = mod_items_known(panel, mod) || (panel.items.mod == mod.name && panel.items_off.contains(folded(mod.name)));
+    if (!items) panel.items.tab = false;
+    if (items) {
+        const auto page = [&](const char* label, bool on) {
+            if (on) push_primary_button();
+            const bool pressed = ImGui::Button(label, ImVec2(0, S(30)));
+            if (on) pop_primary_button();
+            return pressed;
+        };
+        const auto count = mod_items_count(panel, mod);
+        if (page("ABOUT", !panel.items.tab)) panel.items.tab = false;
+        ImGui::SameLine(0, S(6));
+        if (page(count.empty() ? "ITEMS" : ("ITEMS  " + count).c_str(), panel.items.tab)) panel.items.tab = true;
+        ImGui::Dummy(ImVec2(0, S(4)));
+        columns.height = std::max(S(120), columns.height - S(30) - S(4) - ImGui::GetStyle().ItemSpacing.y * 2);
     }
-    if (const auto missing = panel.list.excluded.find(mod.name); missing != panel.list.excluded.end() && broken(panel, mod.name)) {
-        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::danger),
-            "Not loaded: the game could not merge this mod cleanly, so none of it is used. Reinstall the whole "
-            "mod folder, or rebuild it with a current ReSkate Studio.");
-        if (!missing->second.empty()) ImGui::TextDisabled("%s", missing->second.front().c_str());
-    }
-    if (!mods::has_content(mod))
-        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::warning),
-            "This folder has no layout.toc, reskate-levels.json, reskate-plugin.json or parks, so the game has "
-            "nothing to load from it.");
-    if (!readme_field(fonts, panel, package, &mod)) ImGui::TextDisabled("This mod has no README.");
-    ImGui::PopTextWrapPos();
-    ImGui::EndChild();
+    if (panel.items.tab) {
+        mod_items_tab(fonts, panel, mod, columns.height);
+    } else {
+        ImGui::BeginChild("##mod_overview_body", ImVec2(columns.readme, columns.height), ImGuiChildFlags_NavFlattened);
+        ImGui::PushTextWrapPos(0);
+        if (!mod.outdated.empty())
+            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::danger),
+                "Outdated: this mod does not load. It was made for another version of Skate (%s). Get an updated "
+                "version, or rebuild it with the latest ReSkate Studio.", mod.outdated.c_str());
+        if (const auto other = conflict_winner(panel, mod.name); !other.empty() && mod.outdated.empty()) {
+            const auto winner = title_of(panel, other);
+            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::warning),
+                "Not loaded: this mod changes the same parts of the game as %s, which is higher in the load order, in a "
+                "way the two cannot share, so only %s loads. To use this mod instead, move it above %s, or switch one "
+                "of them off.", winner.c_str(), winner.c_str(), winner.c_str());
+            if (const auto reason = conflict_reason(panel, mod.name); !reason.empty())
+                ImGui::TextDisabled("%s", ("They " + reason + ".").c_str());
+            else if (const auto found = panel.list.excluded.find(mod.name); found != panel.list.excluded.end() && !found->second.empty())
+                ImGui::TextDisabled("%s", found->second.front().c_str());
+        } else if (const auto* beats = conflict_beats(panel, mod.name); beats && entry.enabled) {
+            std::string names;
+            for (std::size_t at = 0; at < beats->size(); ++at)
+                names += (at == 0 ? "" : at + 1 == beats->size() ? " and " : ", ") + title_of(panel, (*beats)[at]);
+            ImGui::TextDisabled("%s", ("Loads, and leaves out " + names +
+                ": they change the same parts of the game and are lower in the load order.").c_str());
+        }
+        if (const auto missing = panel.list.excluded.find(mod.name); missing != panel.list.excluded.end() && broken(panel, mod.name)) {
+            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::danger),
+                "Not loaded: the game could not merge this mod cleanly, so none of it is used. Reinstall the whole "
+                "mod folder, or rebuild it with a current ReSkate Studio.");
+            if (!missing->second.empty()) ImGui::TextDisabled("%s", missing->second.front().c_str());
+        }
+        if (!mods::has_content(mod))
+            ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(color::warning),
+                "This folder has no layout.toc, reskate-levels.json, reskate-plugin.json or parks, so the game has "
+                "nothing to load from it.");
+        if (!readme_field(fonts, panel, package, &mod)) ImGui::TextDisabled("This mod has no README.");
+        ImGui::PopTextWrapPos();
+        ImGui::EndChild();
 
-    begin_overview_details("##mod_overview_details", columns);
-    overview_fact(fonts, "VERSION", mod.version.empty() ? std::string() : "v" + mod.version);
-    overview_fact(fonts, "AUTHOR", mod.author);
-    if (package)
-        overview_fact(fonts, "THUNDERSTORE", package->full_name + (update ? "\nv" + package->latest().number + " available"
-                                                                          : std::string("\nUp to date")));
-    overview_fact(fonts, "FOLDER", "Mods\\" + mod.name);
-    if (!mod.tool.empty() || !mod.built.empty())
-        overview_fact(fonts, "BUILT WITH", mod.tool + (mod.built.empty() ? "" : (mod.tool.empty() ? "" : ", ") + mod.built));
-    std::string levels;
-    for (const auto& level : mod.levels) {
-        const auto slash = level.rfind('/');
-        levels += (levels.empty() ? "" : "\n") + (slash == std::string::npos ? level : level.substr(slash + 1));
+        begin_overview_details("##mod_overview_details", columns);
+        overview_fact(fonts, "VERSION", mod.version.empty() ? std::string() : "v" + mod.version);
+        overview_fact(fonts, "AUTHOR", mod.author);
+        if (package)
+            overview_fact(fonts, "THUNDERSTORE", package->full_name + (update ? "\nv" + package->latest().number + " available"
+                                                                              : std::string("\nUp to date")));
+        overview_fact(fonts, "FOLDER", "Mods\\" + mod.name);
+        overview_fact(fonts, "ITEMS", mod_items_count(panel, mod));
+        if (!mod.tool.empty() || !mod.built.empty())
+            overview_fact(fonts, "BUILT WITH", mod.tool + (mod.built.empty() ? "" : (mod.tool.empty() ? "" : ", ") + mod.built));
+        std::string levels;
+        for (const auto& level : mod.levels) {
+            const auto slash = level.rfind('/');
+            levels += (levels.empty() ? "" : "\n") + (slash == std::string::npos ? level : level.substr(slash + 1));
+        }
+        overview_fact(fonts, "MAPS", levels);
+        std::string parks;
+        for (const auto& map : mod.park_maps) parks += (parks.empty() ? "" : ", ") + map;
+        overview_fact(fonts, "PARKS", parks);
+        end_overview_details();
     }
-    overview_fact(fonts, "MAPS", levels);
-    std::string parks;
-    for (const auto& map : mod.park_maps) parks += (parks.empty() ? "" : ", ") + map;
-    overview_fact(fonts, "PARKS", parks);
-    end_overview_details();
 
     ImGui::SetCursorPosY(extent.y - S(24) - ImGui::GetFrameHeight());
     bool enabled = entry.enabled;
@@ -1676,6 +1707,7 @@ void scan(ModsPanel& panel, const launcher_app::Session& session) {
     read_conflict_choices(panel);
     panel.sizes.clear();
     for (const auto& entry : panel.list.entries) panel.sizes[entry.mod.name] = folder_size(entry.mod.directory);
+    read_items_left_out(panel);
     panel.scanned = true;
     if (panel.selected >= static_cast<int>(panel.list.entries.size())) panel.selected = -1;
     std::erase_if(panel.marked, [&](const std::string& name) {
@@ -1885,6 +1917,7 @@ void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, Mo
     const auto frame = begin_page("##mods_panel", size);
     // Both lists draw mod icons, so both need finished ones uploaded.
     pump_icons(panel);
+    pump_mod_items(panel);
     auto* draw = ImGui::GetWindowDrawList();
     const bool installing = panel.installing;
     hold_focus(installing);

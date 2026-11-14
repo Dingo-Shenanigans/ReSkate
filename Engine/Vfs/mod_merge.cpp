@@ -694,6 +694,11 @@ MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, co
         merge_layout(layout, mods, layoutSources, used, report);
 
         if (itemSources) {
+            // An item the player left out of a mod is not from it: the game does not have it.
+            for (auto& source : *itemSources)
+                if (const auto left = overrides.left_out_items.find(source.mod); left != overrides.left_out_items.end())
+                    std::erase_if(source.keys, [&](const std::string& key) { return left->second.contains(key); });
+            std::erase_if(*itemSources, [](const ItemSource& source) { return source.keys.empty(); });
             try {
                 write_item_sources(output / item_sources_file, *itemSources);
             } catch (const std::exception& failure) {

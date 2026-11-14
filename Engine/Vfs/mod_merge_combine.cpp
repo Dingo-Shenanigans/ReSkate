@@ -98,15 +98,7 @@ struct AssetKeyHash {
 template <class Value> using ByAsset = std::unordered_map<AssetKey, Value, AssetKeyHash>;
 
 AssetKey asset_key(const fb::BundleAsset& asset) {
-    auto text = std::to_string(static_cast<int>(asset.kind));
-    text += ':';
-    if (asset.kind == fb::AssetKind::chunk) {
-        text += asset.guid.string();
-    } else {
-        text.reserve(text.size() + asset.name.size());
-        for (const auto c : asset.name) text += c >= 'A' && c <= 'Z' ? static_cast<char>(c + ('a' - 'A')) : c;
-    }
-    return AssetKey(std::move(text));
+    return AssetKey(asset_key_text(asset));
 }
 
 constexpr std::string_view item_list_type = "delmaritemcollectionasset";
@@ -215,6 +207,13 @@ public:
         if (!shipped_ && !unsure_) { read(true); shipped_ = true; }
         // A copy that could not be read may be the very one asked about.
         return unsure_ || guids_.contains(guid);
+    }
+    // Whether a mod's addition that the bundle holds is known to be the document with this guid. For
+    // an item the player left out of a mod (AssetOverrides::left_out_documents): its entry stays only
+    // when another mod's copy of the item is certainly here, never on a copy that could not be read.
+    [[nodiscard]] bool added(const fb::Guid& guid) {
+        if (!added_) { read(false); added_ = true; }
+        return guids_.contains(guid);
     }
 
     // The asset that took the place of the one with this guid, when it was a
@@ -532,7 +531,14 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
         // naming an item the bundle does not hold (a pack that kept the entry of an item it no
         // longer ships, 2026-11-04), which passed through whole was a crash on every launch.
         const auto itemList = overrides.item_list_bundles.contains(key);
-        const auto needed = shared || gridBundle || renumber || cooperative || itemList;
+        // The assets of this copy that are not merged: the items the player left out of the mod and
+        // what only they use (AssetOverrides::left_out). The copy is read even where the mod alone
+        // ships the bundle, and its other assets go in as they are.
+        const std::set<std::string, std::less<>>* skipped{};
+        if (contributor)
+            if (const auto mod = overrides.left_out.find(contributor->name); mod != overrides.left_out.end())
+                if (const auto here = mod->second.find(key); here != mod->second.end() && !here->second.empty()) skipped = &here->second;
+        const auto needed = shared || gridBundle || renumber || cooperative || itemList || skipped;
 
         // A mod's payloads have to lie inside the archives it ships. A bundle
         // pointing past the end of one, or into one that is not there, means
@@ -888,7 +894,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
             }
         }
         // Nothing moved in this bundle: it passes through whole, as before.
-        if (casBacked && !shared && !gridBundle && !cooperative && !itemList && renumbered.empty() && overridden.empty() &&
+        if (casBacked && !shared && !gridBundle && !cooperative && !itemList && !skipped && renumbered.empty() && overridden.empty() &&
             repaired.empty() && !offsetsRepaired && !resized && additions.empty())
             casBacked = false;
 
@@ -1074,6 +1080,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
         for (std::size_t position = 0; position < flat.size(); ++position) {
             auto& entry = flat[position];
             if (admitted && !admitted->contains(asset_key(entry.asset).text)) continue;
+            if (skipped && skipped->contains(asset_key_text(entry.asset))) continue;
             entry.slot = state.slot_of(entry.asset, position, ahead);
             auto& known = state.slots[entry.slot];
             entry.base = isBase;
@@ -1359,11 +1366,16 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                         // under its name, or the mod was built on top of a mod that
                         // is not installed) the entry goes: the mod loses that item,
                         // which it had already lost, and the game still starts.
+                        // An item the player left out of its mod goes the same way: its
+                        // asset was not merged from that mod's copy, so its entry stays
+                        // only where another mod's copy of the item is in the bundle.
                         const fb::ebx::CarryImport inBundle = [&](const fb::ebx::ImportReference& item) {
                             // What the game's own list names is the game's to answer for.
-                            return std::ranges::any_of(baseDocument.imports, [&](const fb::ebx::ImportReference& known) {
-                                       return known.fileGuid == item.fileGuid; }) ||
-                                   held.holds(item.fileGuid);
+                            if (std::ranges::any_of(baseDocument.imports, [&](const fb::ebx::ImportReference& known) {
+                                    return known.fileGuid == item.fileGuid; }))
+                                return true;
+                            if (overrides.left_out_documents.contains(item.fileGuid)) return held.added(item.fileGuid);
+                            return held.holds(item.fileGuid);
                         };
                         // Any other list loses an entry only when what it names was in
                         // this bundle and another mod's asset of the same name took its
@@ -1417,7 +1429,14 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                                 ": the merged copy has what this mod added to it, but not its changes to what "
                                 "the game's copy already held");
                         std::map<std::size_t, std::vector<fb::Guid>> left;   // by edit
-                        for (const auto& gone : summary.dropped) left[gone.edit].push_back(gone.target.fileGuid);
+                        std::map<std::size_t, std::size_t> chosen;           // by edit: the items the player left out
+                        for (const auto& gone : summary.dropped) {
+                            if (overrides.left_out_documents.contains(gone.target.fileGuid)) ++chosen[gone.edit];
+                            else left[gone.edit].push_back(gone.target.fileGuid);
+                        }
+                        for (const auto& [index, count] : chosen)
+                            report.notes.push_back(mod_of(index) + ": " + entry.asset.name + ": " + std::to_string(count) +
+                                " item(s) the player left out are not in the list");
                         for (const auto& [index, guids] : left) {
                             // Name the mod whose asset took the item's name, when that is why.
                             const Asset* taken{};

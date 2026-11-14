@@ -24,6 +24,10 @@
 #include <utility>
 #include <vector>
 
+namespace dingosdk::frostbite::ebx {
+struct Document;
+}
+
 // Shared by the mod merge's source files; nothing outside them uses it.
 namespace dingosdk::mods::detail {
 namespace fs = std::filesystem;
@@ -446,9 +450,63 @@ struct AssetOverrides {
     // By lower-case name: the bundles in which a mod changed one of the game's item lists
     // (item_list_name). Each is merged with the game's copy even where one mod alone ships it.
     std::set<std::string, std::less<>> item_list_bundles;
+    // The items a player left out of a mod (Mod::items_off) and what only they use, by mod name and
+    // then lower-case bundle name: the assets of that mod's copy of the bundle that are not merged
+    // (asset_key_text). The copy is read as if the mod had been built without them.
+    std::map<std::string, std::map<std::string, std::set<std::string, std::less<>>, std::less<>>, std::less<>> left_out;
+    // Those items' documents, which an item list's entries name; and their lower-case keys by mod.
+    std::set<fb::Guid> left_out_documents;
+    std::map<std::string, std::set<std::string, std::less<>>, std::less<>> left_out_items;
 
     [[nodiscard]] bool empty() const noexcept { return changed.empty() && scripts.empty() && added.empty(); }
 };
+
+// What an asset is known by in a bundle: its kind, and its name without case or, for a chunk, its guid.
+inline std::string asset_key_text(const fb::BundleAsset& asset) {
+    auto text = std::to_string(static_cast<int>(asset.kind));
+    text += ':';
+    if (asset.kind == fb::AssetKind::chunk) {
+        text += asset.guid.string();
+    } else {
+        text.reserve(text.size() + asset.name.size());
+        for (const auto c : asset.name) text += c >= 'A' && c <= 'Z' ? static_cast<char>(c + ('a' - 'A')) : c;
+    }
+    return text;
+}
+
+// What one EBX document refers to, for telling which of a mod's added assets only the items a
+// player left out use (plan_left_out). Read from real packs (2026-11-14): an item names its
+// thumbnails by import, and what it looks like by the last part of an asset's name in a string (an
+// appearance preset "..._ap", a mesh's blueprint "..._geometry", a morph preset, a sticker's
+// texture); a preset, a blueprint or a mesh variation database names its textures and mesh by
+// import; a texture or mesh names its resource by id and has one of its own name.
+struct AssetLinks {
+    fb::Guid file;
+    std::string name;      // lower case; for one of the mod's additions
+    std::string type;      // the root's type, lower case
+    std::string item;      // its key in lower case, when it is an item
+    bool item_list{};      // one of the game's item lists, as a mod changed it
+    bool resident{};       // the mod's resident list names it: its plugin asks for it by name
+    std::vector<fb::Guid> imports;
+    std::vector<std::string> strings;       // lower case, each once
+    std::vector<std::uint64_t> resources;   // the resources it names by id
+};
+[[nodiscard]] AssetLinks asset_links(const fb::ebx::Document& document);
+
+// Which of a mod's added EBX (`own`) go with the items whose keys are in `off`: those items, what
+// they name, what that names in turn, and a mesh variation database nothing names that describes
+// only meshes that go. Anything named from outside that set stays, with all it names: by another
+// of the mod's additions, by `others` (every other document that could name one: the mod's changes
+// to the game's assets, its own bundles, the other mods' additions and changes) or by the mod's
+// resident list. An item list's entry is no reason for an item to stay. Nothing that stays names
+// anything that goes. Additions with one guid (one document in several bundles) go or stay together.
+struct LeftOutPlan {
+    std::vector<bool> gone;             // by place in `own`
+    std::vector<std::string> stayed;    // the keys in `off` whose items stay, being named from elsewhere
+    std::size_t items{};                // the items that go
+};
+[[nodiscard]] LeftOutPlan plan_left_out(std::span<const AssetLinks> own, std::span<const AssetLinks* const> others,
+                                        const std::set<std::string>& off);
 
 // The changes and additions asset mods (mods that add no levels) make to the
 // game's own EBX and Lua scripts, the highest-priority mod's version winning. Never throws: an
