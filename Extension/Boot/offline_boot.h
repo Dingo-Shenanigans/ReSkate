@@ -16,6 +16,8 @@ struct OfflineBootObservation {
 // exactly once, on the first initialization attempt. A successfully activated
 // hook is retained for the process lifetime.
 bool start_offline_boot(std::uintptr_t image_base) noexcept;
+// A dependent boot adapter must use the installed gate, not just the launcher's request.
+bool offline_boot_active(std::uintptr_t image_base) noexcept;
 // Whether the launcher asked for the offline boot path: RESKATE_GLOBAL_OFFLINE=1,
 // or RESKATE_DEBUG_TEST_GLOBAL_OFFLINE=1, the name launchers set before it was
 // renamed, so a new ReSkate.dll started by an older launcher still boots offline.
