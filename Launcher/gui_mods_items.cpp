@@ -40,12 +40,14 @@ std::string item_title(std::string_view key) {
 // Wheels. One this does not know is its own name made readable.
 std::string category_label(std::string_view category) {
     struct Known { const char* word; const char* label; };
+    // The board's parts first: a deck's graphic is its bottom ("board_..._bottom"), which is not
+    // the skater's Bottoms, the trousers. Anything else of the board's is a deck's.
     static constexpr Known known[] = {
+        {"sticker", "Stickers"}, {"grip", "Grip tape"}, {"wheel", "Wheels"}, {"truck", "Trucks"}, {"deck", "Decks"}, {"board", "Decks"},
         {"fullbodycostume", "Costumes"}, {"costume", "Costumes"}, {"outfit", "Outfits"}, {"top", "Tops"}, {"bottom", "Bottoms"},
         {"shoe", "Shoes"}, {"sock", "Socks"}, {"hat", "Headwear"}, {"headwear", "Headwear"}, {"eyewear", "Eyewear"},
         {"earwear", "Earwear"}, {"handwear", "Gloves"}, {"face_accessory", "Face"}, {"hair", "Hair"}, {"beard", "Facial hair"},
-        {"tattoo", "Tattoos"}, {"sticker", "Stickers"}, {"grip", "Grip tape"}, {"wheel", "Wheels"}, {"truck", "Trucks"},
-        {"deck", "Decks"}, {"gesture", "Gestures"}, {"emote", "Gestures"}, {"playercard", "Player cards"}, {"icon", "Player icons"},
+        {"tattoo", "Tattoos"}, {"gesture", "Gestures"}, {"emote", "Gestures"}, {"playercard", "Player cards"}, {"icon", "Player icons"},
         {"background", "Player cards"}, {"bkobject", "Objects"}};
     const auto text = folded_text(category);
     for (const auto& entry : known)
