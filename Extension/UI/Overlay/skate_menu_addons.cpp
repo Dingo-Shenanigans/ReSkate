@@ -214,7 +214,11 @@ void home_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbacks
         static constexpr std::array<const char*, 8> times{"Default", "Morning", "Noon", "Afternoon", "Evening", "Night", "Weather day", "Weather night"};
         const bool tod_available = tod::time_of_day_available(model, callbacks);
         const int now = time_of_day_shown(model);
-        const int step = home_tile(menu, "##time", "TIME", times[static_cast<std::size_t>(std::clamp(now, 0, 7))], cell(), tod_available, now != 0,
+        // Default on a custom map that names its own time shows that time.
+        const auto map_time = model.world.map_time_of_day;
+        const std::string shown = now == 0 && map_time >= 1 && map_time <= 7 ? std::string(times[map_time]) + " (map)"
+                                                                              : times[static_cast<std::size_t>(std::clamp(now, 0, 7))];
+        const int step = home_tile(menu, "##time", "TIME", shown, cell(), tod_available, now != 0,
                                    true, "Press A to change the time of day. Default follows the level's own.");
         // One time a press, on from the one last asked for.
         if (step) set_time_of_day(menu, model, callbacks, (now + step + 8) % 8, true);

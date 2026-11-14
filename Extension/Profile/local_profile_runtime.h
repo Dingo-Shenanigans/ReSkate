@@ -193,6 +193,9 @@ void apply_host_world_layers(bool forced, const WorldLayerChoices& choices);
 // Runtime-only hint for a manifest-backed standalone level whose deliberately
 // reduced donor graph has no canonical retail map anchor.
 void set_local_world_layer_map_hint(WorldMap map) noexcept;
+// Runtime-only: the active custom map's own time of day (1..7, 0 for none), which loads while the
+// player's time of day is Default. Never saved to the profile.
+void set_local_world_layer_map_time(unsigned time) noexcept;
 bool set_local_world_layer(std::string_view layer, std::string_view mode);
 bool restore_local_world_layers(std::string_view map);
 // Execute on the already-verified client update thread, including transitions.

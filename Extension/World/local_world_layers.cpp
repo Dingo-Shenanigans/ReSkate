@@ -95,7 +95,7 @@ void reset_world_layer_session() {
     r.context = 0; r.root_generation = 0; r.next_poll = 0;
     r.original.assign(world_layer_nodes().size(), std::nullopt);
     r.managed.assign(world_layer_nodes().size(), false); r.model.map = WorldMap::none;
-    r.model.ready = false; r.model.clear_live();
+    r.model.ready = false; r.model.map_time_of_day = 0; r.model.clear_live();
 }
 
 bool seasonal_state(const SeasonalNode& node, SeasonalState& state) {
@@ -246,6 +246,9 @@ void update_world_layers(std::uintptr_t manager, std::uint64_t now) {
             {"canonical_anchor", selection.canonical}}.dump().c_str());
     }
     r.model.ready = true; r.model.map = map;
+    r.model.map_time_of_day = r.map_time.load(std::memory_order_acquire);
+    // A custom map's own time stands in for the player's Default, never saved (world_layers.h).
+    const auto effective = with_map_time_of_day(r.model.choices, map, r.model.map_time_of_day);
     // Publish a separate native snapshot for Default checkboxes. Compute it
     // before dispatch, which can synchronously destroy captured references.
     std::vector<std::optional<bool>> observed(targets.size());
@@ -286,7 +289,7 @@ void update_world_layers(std::uintptr_t manager, std::uint64_t now) {
     std::vector<bool> disabled(targets.size());
     // A layer ReSkate keeps off (world_layers.h) is "off" whatever the player or a host chose.
     const auto choice_of = [&](unsigned i) -> std::string_view {
-        return world_layer_kept_off(world_layers()[i].key) ? std::string_view("off") : std::string_view(r.model.choices[i]);
+        return world_layer_kept_off(world_layers()[i].key) ? std::string_view("off") : std::string_view(effective[i]);
     };
     for (unsigned i = 0; i < world_layers().size(); ++i)
         if (world_layers()[i].map == map && choice_of(i) == "off") {

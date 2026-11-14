@@ -130,6 +130,9 @@ WorldLayersModel local_profile_world_layers() {
 void set_local_world_layer_map_hint(WorldMap map) noexcept {
     world_layers_runtime().map_hint.store(map, std::memory_order_release);
 }
+void set_local_world_layer_map_time(unsigned time) noexcept {
+    world_layers_runtime().map_time.store(time, std::memory_order_release);
+}
 void apply_host_world_layers(bool forced, const WorldLayerChoices& choices) {
     auto& s = local_runtime(); auto& r = world_layers_runtime();
     std::lock_guard lock(s.native_mutex);
