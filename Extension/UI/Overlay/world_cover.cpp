@@ -248,8 +248,7 @@ struct Shared {
     // The game's own camera (game_camera): the binds already looked through, and how many frames found it.
     std::uint64_t bound_seen{};
     unsigned game_camera_frames{}, camera_frames{}, camera_reports{};
-    std::array<float, 3> camera_signs{1, 1, 1}; // which way round each of its axes is against ours, once learnt
-    bool camera_signs_known{};
+    std::array<float, 3> camera_signs{1, 1, 1}; // which way round each of its axes is against ours
     float places_back = camera_delay; // how many frames back the places are taken (the drawn camera's, as found)
     // The places kept clear as each of those frames was drawn, newest first: a place on something that moves
     // (a deck) is drawn where the picture has it, camera_delay back, like the world.
@@ -981,14 +980,13 @@ void STDMETHODCALLTYPE hooked_compute_cbv(ID3D12GraphicsCommandList* list, UINT 
 }
 
 // The camera the game drew this frame with, from the compute constant buffers bound since the last frame
-// (the newest 16): those that hold a camera, unit axes as rows from 16 bytes in, where it is in the fourth row.
-//  1. Of those close to `camera` (the one read from the game, delayed: within about 14 degrees and 2 m), the
-//     one most of them hold, the newest of any as many. A frame's buffers hold two or three cameras a little
-//     apart (the game easing its camera between updates); the newest close one was now one, now another, and
-//     the trails jiggled as the camera moved (2026-11-14). Which way round each of its axes is against ours is
-//     learnt from it.
-//  2. Else, once those ways round are known, the one most of them hold, if two or more do: in the replay
-//     editor the camera read from the game is not the one it draws with, and the trails swam (2026-11-14).
+// (the newest 32): those that hold a camera, unit axes as rows from 16 bytes in, where it is in the fourth row.
+// Of those close to `camera` (the one read from the game, delayed: within about 14 degrees and 2 m), the one
+// most of them hold, the newest of any as many: a frame's buffers hold two or three cameras a little apart
+// (the game easing its camera between updates), and with the newest close one, now one, now another, the
+// trails jiggled as the camera moved (2026-11-14). Each axis is taken the way round `camera` has it. (In the
+// replay editor, whose camera read from the game is not the one it draws with, none is close: the trails
+// there were not helped by taking the one most held, 2026-11-14.)
 // Its buffer is read through the GPU memory watch (gpu_diagnostics.h). False when there is none.
 bool game_camera(Shared& s, std::array<float, camera_floats>& camera) {
     const auto end = bound_count.load();
@@ -1040,7 +1038,7 @@ bool game_camera(Shared& s, std::array<float, camera_floats>& camera) {
         }
         return std::pair{best, best_count};
     };
-    // 1. Close to the camera read from the game.
+    // Those close to the camera read from the game.
     std::vector<std::size_t> close_ones;
     std::array<float, 3> close_signs{};
     for (std::size_t i = 0; i < held.size(); ++i) {
@@ -1060,18 +1058,10 @@ bool game_camera(Shared& s, std::array<float, camera_floats>& camera) {
     }
     if (!close_ones.empty()) {
         s.camera_signs = close_signs;
-        s.camera_signs_known = true;
         camera = turned(held[most_held(close_ones).first]);
         return true;
     }
-    // 2. The one most of them hold.
-    if (!s.camera_signs_known || held.size() < 2) return false;
-    std::vector<std::size_t> all(held.size());
-    for (std::size_t i = 0; i < all.size(); ++i) all[i] = i;
-    const auto [best, best_count] = most_held(all);
-    if (best_count < 2) return false;
-    camera = turned(held[best]);
-    return true;
+    return false;
 }
 
 // How many frames back the camera the game drew with is among those read from the game (blended between the
