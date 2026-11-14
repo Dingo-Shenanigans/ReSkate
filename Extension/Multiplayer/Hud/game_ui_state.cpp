@@ -63,11 +63,11 @@ GameUiState read(Address base, State &s) {
 }
 } // namespace
 
-GameUiState sample_game_ui_state(std::uintptr_t base) noexcept {
+GameUiState sample_game_ui_state(std::uintptr_t base, bool fresh) noexcept {
     auto &s = state();
     std::lock_guard lock(s.mutex);
     if (!base) return s.latest = {};
-    if (const auto now = Clock::now(); now >= s.next_sample) {
+    if (const auto now = Clock::now(); fresh || now >= s.next_sample) {
         s.next_sample = now + std::chrono::milliseconds(100);
         try { s.latest = read(base, s); } catch (...) { s.screen = {}; s.latest = {}; }
     }

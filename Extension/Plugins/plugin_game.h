@@ -2,6 +2,8 @@
 #include "plugin_ui_values.h"
 #include "plugin_effects.h"
 #include "plugin_wave.h"
+#include "Engine/Game/Input/input_lease.h"
+#include "Engine/Game/Input/input_lease_capture.h"
 #include "plugin_object_physics.h"
 #include "plugin_skater_movement.h"
 #include "Extension/World/traffic_vehicles.h"
@@ -295,6 +297,20 @@ struct Progress {
 class Game {
 public:
     virtual ~Game() = default;
+    // One VM's passive reservation of an observed XInput stream. No report is
+    // suppressed or changed, and none of these observations controls an actor.
+    virtual bool input_lease_request(std::uint64_t, std::uint32_t, input_lease::Handle&, input_lease::Reason& reason) noexcept { reason = input_lease::Reason::unavailable; return false; }
+    virtual bool input_lease_read(std::uint64_t, input_lease::Handle, input_lease::Snapshot&, input_lease::Reason& reason) noexcept { reason = input_lease::Reason::unavailable; return false; }
+    virtual bool input_lease_renew(std::uint64_t, input_lease::Handle, const input_lease::Snapshot&, input_lease::Reason& reason) noexcept { reason = input_lease::Reason::unavailable; return false; }
+    virtual bool input_lease_release(std::uint64_t, input_lease::Handle, input_lease::Reason& reason) noexcept { reason = input_lease::Reason::unavailable; return false; }
+    virtual bool input_lease_state(std::uint64_t, input_lease::Handle, input_lease::Receipt&, input_lease::Reason& reason) noexcept { reason = input_lease::Reason::unavailable; return false; }
+    virtual bool input_lease_acknowledge(std::uint64_t, input_lease::Handle, input_lease::Reason& reason) noexcept { reason = input_lease::Reason::unavailable; return false; }
+    virtual void input_lease_release_all(std::uint64_t) noexcept {}
+    // Selected-stream capture is a separate permission and owns no native actor.
+    virtual bool input_lease_capture_request(std::uint64_t, input_lease::Handle, const input_lease::Snapshot&, input_lease_capture::Reason& why) noexcept { why = input_lease_capture::Reason::unavailable; return false; }
+    virtual bool input_lease_capture_state(std::uint64_t, input_lease::Handle, input_lease_capture::Receipt&) noexcept { return false; }
+    virtual bool input_lease_capture_release(std::uint64_t, input_lease::Handle) noexcept { return false; }
+    virtual bool input_lease_capture_acknowledge(std::uint64_t, input_lease::Handle) noexcept { return false; }
     // Publish incremental, plugin-owned float models for authored game UI; unavailable on dedicated servers.
     virtual std::string publish_ui_values(std::string_view, const ui_values::Values&) { return unavailable; }
     // ---- native bodies a plugin owns (reskate.world.physics; Extension/World/owned_bodies.h) ------
@@ -513,9 +529,11 @@ public:
         std::string state, why;
     };
     virtual RoomState room_state(std::string_view /*plugin*/) { return {"idle", {}}; }
-    // The game menu's preview (the skater on the Skaters page, the board on a Board tab) turned by a
-    // stick of a stand-in pad: `value` -1..1 of the stick held for 300 ms (call it every tick), 0 lets
-    // go; `stick` 0 left x, 1 left y, 2 right x, 3 right y. Only while the game's menu is open.
+    // Only this plugin's owned, visible character preview: `value` -1..1 of one
+    // stick held for up to 300 ms, 0 lets go; 0 left x, 1 left y, 2 right x, 3 right y.
+    // Host input and animation observations expire after 100 ms. Settings, unknown
+    // state, room leave and unload revoke it. Other controls stay physical unless
+    // SDK UI owns input; then only this axis is added to its neutral game report.
     virtual std::string room_turn(std::string_view /*plugin*/, float /*value*/, int /*stick*/) { return unavailable; }
     struct RoomPose {
         Vec3 position{};

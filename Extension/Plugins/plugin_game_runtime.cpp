@@ -1,4 +1,7 @@
 #include "plugin_game_runtime.h"
+#include "Extension/Input/native_input_source.h"
+#include "Extension/Input/native_input_capture.h"
+#include "Extension/Input/pad_output_publication.h"
 #include "plugin_ui_values.h"
 #include "Extension/Rendering/plugin_effects.h"
 #include "Extension/Objects/placement_physics.h"
@@ -188,6 +191,17 @@ std::filesystem::path game_folder() {
 class RealGame final : public Game {
 public:
     explicit RealGame(std::uintptr_t base) : base_(base) {}
+    bool input_lease_request(std::uint64_t owner, std::uint32_t user, input_lease::Handle& h, input_lease::Reason& why) noexcept override { return native_input_source::lease_request(owner, user, h, why); }
+    bool input_lease_read(std::uint64_t owner, input_lease::Handle h, input_lease::Snapshot& s, input_lease::Reason& why) noexcept override { return native_input_source::lease_read(owner, h, s, why); }
+    bool input_lease_renew(std::uint64_t owner, input_lease::Handle h, const input_lease::Snapshot& s, input_lease::Reason& why) noexcept override { return native_input_source::lease_renew(owner, h, s, why); }
+    bool input_lease_release(std::uint64_t owner, input_lease::Handle h, input_lease::Reason& why) noexcept override { return native_input_source::lease_release(owner, h, why); }
+    bool input_lease_state(std::uint64_t owner, input_lease::Handle h, input_lease::Receipt& s, input_lease::Reason& why) noexcept override { return native_input_source::lease_state(owner, h, s, why); }
+    bool input_lease_acknowledge(std::uint64_t owner, input_lease::Handle h, input_lease::Reason& why) noexcept override { return native_input_source::lease_acknowledge(owner, h, why); }
+    void input_lease_release_all(std::uint64_t owner) noexcept override { native_input_source::lease_release_all(owner); }
+    bool input_lease_capture_request(std::uint64_t owner, input_lease::Handle h, const input_lease::Snapshot& s, input_lease_capture::Reason& why) noexcept override { return native_input_source::capture_request(owner, h, s, why); }
+    bool input_lease_capture_state(std::uint64_t owner, input_lease::Handle h, input_lease_capture::Receipt& r) noexcept override { return native_input_source::capture_state(owner, h, r); }
+    bool input_lease_capture_release(std::uint64_t owner, input_lease::Handle h) noexcept override { return native_input_source::capture_release(owner, h); }
+    bool input_lease_capture_acknowledge(std::uint64_t owner, input_lease::Handle h) noexcept override { return native_input_source::capture_acknowledge(owner, h); }
     std::string publish_ui_values(std::string_view plugin, const ui_values::Values& values) override {
         return ui_values::publish(base_, plugin, values);
     }
@@ -975,6 +989,8 @@ public:
     }
     std::string hide_pad(std::string_view plugin, const PadHidden& h) override {
         if (!pad_hide::available()) return "hiding pad controls is unavailable for this game build";
+        if ((h.left_trigger || h.right_trigger || h.left_x_grinding || h.right_stick ||
+            h.left_stick_click || h.right_stick_click) && !input_allowed()) return "gameplay input is unavailable";
         pad_hide::hide(plugin, {h.left_trigger, h.right_trigger, h.left_x_grinding, h.right_stick, h.left_stick_click, h.right_stick_click});
         return {};
     }
@@ -1143,13 +1159,13 @@ public:
         return PadInput{pad.left_x, pad.left_y, pad.right_x, pad.right_y, pad.left_trigger, pad.right_trigger, pad.buttons, pad.playstation};
     }
     std::string write_pad(std::string_view plugin, unsigned controller, std::optional<PadInput> pad) override {
-        if (!pad) return input::pad_outputs().write(plugin, controller, std::nullopt, GetTickCount64());
+        if (!pad) return native_input_source::write_pad_output(plugin, controller, std::nullopt, GetTickCount64());
         if (!input_allowed()) return "the game does not have gameplay input";
         const auto axis = [](float v) { return static_cast<std::int16_t>(std::round(v * (v < 0 ? 32768.0f : 32767.0f))); };
         const input::PadOutput out{static_cast<std::uint16_t>(pad->buttons),
             static_cast<std::uint8_t>(std::round(pad->left_trigger * 255)), static_cast<std::uint8_t>(std::round(pad->right_trigger * 255)),
             axis(pad->left_x), axis(pad->left_y), axis(pad->right_x), axis(pad->right_y)};
-        return input::pad_outputs().write(plugin, controller, out, GetTickCount64());
+        return native_input_source::write_pad_output(plugin, controller, out, GetTickCount64());
     }
     std::optional<StickInput> joystick(int device) override {
         if (!joystick::game_in_foreground()) return std::nullopt;
@@ -1169,13 +1185,16 @@ public:
             if (capturer_ == plugin) capturer_.clear();
             return {};
         }
+        if (!input_allowed()) return "gameplay input is unavailable";
         if (!camera_mine(plugin)) return "only while the plugin's camera is shown";
         capturer_ = plugin;
         capture_until_ = GetTickCount64() + 250;
         return {};
     }
     bool capturing() const noexcept {
-        return !capturer_.empty() && camera_mine(capturer_) && GetTickCount64() < capture_until_;
+        const auto now = GetTickCount64();
+        return native_input_source::native_menu_closed(now) && !capturer_.empty() &&
+            camera_mine(capturer_) && now < capture_until_;
     }
     // ---- skater.animation ---------------------------------------------------------------------------
     // The game's own clips, read in the background from the first ask.
@@ -1503,6 +1522,11 @@ public:
         overlay::pad_tick();
         character_room::tick(base, component, component != 0, false);
         const auto room = character_room::phase();
+        const auto menu = multiplayer::sample_game_ui_state(base, true);
+        const bool owned_preview = component && !room_owner_.empty() && room == character_room::Phase::arrived &&
+            menu.available && menu.in_menu &&
+            character_room::is_skaters_page(character_room::menu_buttons(base));
+        overlay::preview_context(room_owner_, owned_preview);
         skater_animation::show_in_room(!room_owner_.empty() && room == character_room::Phase::arrived);
     }
     // ---- general services for a game layer in Lua ------------------------------------------------------
@@ -1553,11 +1577,13 @@ public:
         const auto phase = character_room::phase();
         if (room_owner_ == plugin && (phase == character_room::Phase::opening || phase == character_room::Phase::arrived)) return {};
         room_owner_ = plugin;
+        overlay::preview_context({}, false);
         character_room::open();
         return {};
     }
     void room_leave(std::string_view plugin) override {
         if (room_owner_ != plugin) return;
+        overlay::preview_context({}, false);
         room_owner_.clear();
         skater_animation::show_in_room(false);
         character_room::leave();
@@ -1568,9 +1594,9 @@ public:
         if (!pose) return std::nullopt;
         return RoomPose{pose->place.position, pose->place.rotation, pose->age, pose->sequence};
     }
-    std::string room_turn(std::string_view, float value, int stick) override {
-        if (value != 0 && !multiplayer::sample_game_ui_state(base_).in_menu) return "the game's menu is not open";
-        overlay::hold_stick(stick, value, 300);
+    std::string room_turn(std::string_view plugin, float value, int stick) override {
+        if (room_owner_ != plugin) return "it does not own the character preview";
+        if (!overlay::hold_stick(plugin, stick, value, 300)) return "its character preview is not currently visible";
         return {};
     }
     GameMenu game_menu() override {
@@ -1739,12 +1765,14 @@ public:
         return out;
     }
     void game_buttons(std::string_view plugin, std::uint16_t hidden, std::uint16_t held, bool paused) override {
+        if ((hidden || held || paused) && !input_allowed()) return;
         buttons_owner_ = plugin;
         overlay::hide_game_buttons(hidden);
         overlay::hold_game_buttons(held);
         if (paused) overlay::pause_game_input(true);
     }
     void game_keys(std::string_view plugin, std::vector<std::uint8_t> keys) override {
+        if (!keys.empty() && !input_allowed()) return;
         if (keys.empty() && keys_owner_ != plugin) return;
         keys_owner_ = keys.empty() ? std::string{} : std::string(plugin);
         overlay::hide_game_keys(keys);
@@ -1753,7 +1781,8 @@ public:
         DWORD process{};
         const auto window = GetForegroundWindow();
         const bool focused = window && GetWindowThreadProcessId(window, &process) && process == GetCurrentProcessId();
-        return focused && !overlay::interface_open() && multiplayer::native_throwdown_gameplay_input_allowed();
+        return focused && native_input_source::native_menu_closed(GetTickCount64()) &&
+            !overlay::interface_open() && multiplayer::native_throwdown_gameplay_input_allowed();
     }
     std::string free_camera(std::string_view plugin, bool on) override {
         if (on) free_camera_owner_ = plugin;
@@ -1963,7 +1992,7 @@ public:
         return done > 32 ? std::string{} : std::string("the folder could not be opened");
     }
     void release(std::string_view plugin) override {
-        input::pad_outputs().release(plugin);
+        native_input_source::release_pad_output(plugin);
         grind_target::release(plugin);
         input::gameplay_options().release(plugin);
         placement_physics::release(plugin);

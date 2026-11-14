@@ -950,6 +950,7 @@ void Api::install(Plugin& plugin, lua_State* L) {
     install_capture_api(plugin, L);
     install_effects_api(plugin, L);
     install_viewmodel_api(plugin, L);
+    install_input_lease_api(plugin, L);
     install_object_physics_api(plugin, L);
     install_values_api(plugin, L);
     readonly();

@@ -13,9 +13,9 @@ struct GameUiState {
     bool available{};         // false until the native screen model was actually resolved
 };
 
-// Client thread only (it takes the UI model lock): reads the state at most every 100 ms and
-// returns the latest. Before the model is found it reports no menu and nothing hidden.
-GameUiState sample_game_ui_state(std::uintptr_t base) noexcept;
+// Client thread only (it takes the UI model lock): normally caches for 100 ms;
+// fresh bypasses that cache when publishing input authority. Missing models are unavailable.
+GameUiState sample_game_ui_state(std::uintptr_t base, bool fresh = false) noexcept;
 
 // Whether the replay editor is open: the game's replay session holds its lease on the session
 // manager (Engine/Game/Build/<build>/replay_activity.h), the same check plugin effects stop on
