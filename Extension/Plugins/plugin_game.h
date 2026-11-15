@@ -340,6 +340,8 @@ public:
         bool fall_stopping{}; // the fall stops: no new flakes, the last ones fall out
         bool under_roofs{true}; // false: none of it where something is overhead (indoors), nor falling there
         bool light{};           // true: light from the start (fewer flakes and samples), for a slow GPU
+        // A trail's tread as grooves at their own places: (centre, width), shares of the tread's width; at most 8.
+        std::vector<std::array<float, 2>> tread_grooves;
     };
     virtual std::string world_cover(std::string_view /*plugin*/, std::optional<WorldCover>) { return unavailable; }
     // The time of day forced on the map now (morning, noon, afternoon, evening, night, weatherday,

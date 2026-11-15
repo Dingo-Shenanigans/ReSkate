@@ -1292,6 +1292,8 @@ public:
         s.fall_stopping = cover->fall_stopping;
         s.under_roofs = cover->under_roofs;
         s.light = cover->light;
+        s.tread_groove_count = static_cast<int>(std::min<std::size_t>(cover->tread_grooves.size(), s.tread_grooves.size()));
+        for (int g = 0; g < s.tread_groove_count; ++g) s.tread_grooves[static_cast<std::size_t>(g)] = cover->tread_grooves[static_cast<std::size_t>(g)];
         world_cover::set(s);
         return {};
     }

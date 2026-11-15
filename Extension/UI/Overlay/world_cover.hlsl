@@ -27,7 +27,7 @@ StructuredBuffer<float4> cameras : register(t3);
 // After the cameras: three float4s a place kept clear: (how much of the cover shows in it, -, -, -), then a
 // board-shaped one's (forward, half its length) and (up, half its width), w 0 for an upright cylinder.
 // Then the trails: [0] = (points, the box they lie in: min x, min z, max x), [1] = (max z, min y, max y,
-// -), then two a point, oldest first: (where, width), (how strong it still is, 0 to 1, its tread's width, whether it starts a trail, its tread's lines).
+// how many grooves the tread has (GROOVES); 0: its lines evenly spaced), then two a point, oldest first: (where, width), (how strong it still is, 0 to 1, its tread's width, whether it starts a trail, its tread's lines).
 #define PLACES (CANDIDATES * 4)
 #define TRAIL (PLACES + 9)
 #define MOST_TRAIL 256
@@ -37,7 +37,11 @@ StructuredBuffer<float4> cameras : register(t3);
 // cells across): (the highest surface over the cell's middle, which cell it is: x, z, 1 once measured).
 // After the points, a box a run of 8 of them lies in (world_cover.cpp, trail_run): min x, min z, max x, max z.
 #define TRAIL_RUNS (TRAIL + 2 + MOST_TRAIL * 2)
-#define ROOF (TRAIL_RUNS + MOST_TRAIL / 8)
+// Then the tread's grooves (Settings::tread_grooves), two a float4: (centre, width, centre, width), each a share of
+// the tread's width from one edge.
+#define GROOVES (TRAIL_RUNS + MOST_TRAIL / 8)
+#define MOST_GROOVES 8
+#define ROOF (GROOVES + MOST_GROOVES / 2)
 // Something this far over a surface is a roof over it (a ceiling, a bridge), not a bench or a rail on it.
 #define ROOF_CLEARANCE 1.5
 
@@ -133,7 +137,8 @@ float cell_hash(float2 c) { return hash(c - 289.0 * floor(c / 289.0)); }
 // only the camera, not the depth's scale: from the depth, the trail slid over the ground whenever the scale
 // measured changed (getting off the board, walking about, 2026-11-13). The depth only says whether the
 // pixel is that ground at all (`here`, roughly), not a rail or a leg over it.
-// `shade`: how grey the pressed snow is at the pixel against the trail's own (1). Where a point has a tread
+// `shade`: how grey the pressed snow is at the pixel against the trail's own (1). With grooves given (GROOVES), the
+// tread's raised strips are pressed darker and its grooves lighter, at their own places and widths. Where a point has a tread
 // (its second float4's y, the tread's width), the tread's lines (its w, as many as the plugin asked for: 13 for
 // 7 lighter and 6 ridges) run along the trail across that width, centred on it: lighter ones (0.55), with the
 // tread's raised ridges between them pressed darker (1.3), the ridges a little narrower; outside the tread, and
@@ -149,6 +154,7 @@ float trail_at(float3 here, float3 dir, out float shade) {
     if (dir.y >= -1e-4) return 0; // a ray not going down meets no ground
     float pressed = 0;
     float lines_strength = 0, lines_at = 0;
+    const int grooves = min((int)cameras[TRAIL + 1].w, MOST_GROOVES);
     // A run's points only where the pixel is in its box: every pixel in the trails' box read every point, and on
     // a Steam Deck the cover took 16 ms a frame on the GPU (2026-11-14).
     [loop] for (int r = 0; r < MOST_TRAIL / 8; ++r) {
@@ -192,7 +198,24 @@ float trail_at(float3 here, float3 dir, out float shade) {
                     if (here_pressed > pressed) {
                         pressed = here_pressed;
                         lines_strength = 0;
-                        if (tread > 0) {
+                        if (tread > 0 && grooves > 0) {
+                            // Across the trail, signed, as a share of the tread's width from its edge: in a groove lighter,
+                            // on a strip darker; each edge over about a pixel, none finer than about two pixels.
+                            const float across = (along.x * to.y - along.y * to.x) * rsqrt(max(length_squared, 1e-6));
+                            const float q = across / tread + 0.5;
+                            const float pixel = reach / right_focal.w;
+                            const float edge = max(pixel / tread, 1e-4);
+                            float in_groove = 0, narrowest = 1;
+                            [loop] for (int g = 0; g < grooves; ++g) {
+                                const float4 pair = cameras[GROOVES + g / 2];
+                                const float2 cw = (g & 1) ? pair.zw : pair.xy;
+                                narrowest = min(narrowest, cw.y);
+                                in_groove = max(in_groove, 1 - smoothstep(cw.y * 0.5 - edge, cw.y * 0.5 + edge, abs(q - cw.x)));
+                            }
+                            lines_at = 1 - in_groove;
+                            lines_strength = (1 - smoothstep(narrowest * tread * 0.25, narrowest * tread * 0.5, pixel)) *
+                                             (1 - smoothstep(tread * 0.5, tread * 0.5 + 0.005, abs(across)));
+                        } else if (tread > 0) {
                             // Across the trail, signed, in pairs of lines (a light one and a ridge): the middle of a
                             // light one at the trail's middle, tread_lines lines across the tread's width.
                             const float pair = tread / (tread_lines * 0.5);

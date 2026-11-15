@@ -105,7 +105,10 @@ constexpr float roof_reach = 60.0f; // metres over and under the camera the rays
 // the cover took 16 ms a frame on the GPU (2026-11-14).
 constexpr std::size_t trail_run = 8;
 constexpr std::size_t trail_runs = most_trail / trail_run;
-constexpr UINT64 camera_slice = ((camera_candidates * 4 + most_clear * place_floats4 + 2 + most_trail * 2 + trail_runs + roof_floats4) * 16 + 255) /
+// After the runs, the tread's grooves (Settings::tread_grooves): two a float4.
+constexpr std::size_t most_grooves = 8;
+constexpr std::size_t groove_floats4 = most_grooves / 2;
+constexpr UINT64 camera_slice = ((camera_candidates * 4 + most_clear * place_floats4 + 2 + most_trail * 2 + trail_runs + groove_floats4 + roof_floats4) * 16 + 255) /
                                 256 * 256;
 // The measurements: one row a candidate camera, a column a point (ps_measure), read back by the CPU.
 constexpr UINT measure_columns = 32;
@@ -1123,7 +1126,8 @@ bool record_cover(Shared& s) {
             ++count;
         }
         head[0] = static_cast<float>(count), head[1] = box[0], head[2] = box[1], head[3] = box[2];
-        head[4] = box[3], head[5] = box[4], head[6] = box[5], head[7] = 0;
+        head[4] = box[3], head[5] = box[4], head[6] = box[5];
+        head[7] = static_cast<float>(std::clamp(settings.tread_groove_count, 0, static_cast<int>(most_grooves)));
         // Each run's box: its points and the one before (its first stretch's start), widened as the shader's
         // nearness test is (half the width, and half a metre). An empty run's box is the wrong way round.
         float* const runs = head + 8 + most_trail * 8;
@@ -1136,8 +1140,14 @@ bool record_cover(Shared& s) {
             }
             std::copy(run.begin(), run.end(), runs + r * 4);
         }
-        // The roof map, after the trails (measure_roofs fills it), and where it is measured round.
-        float* const roof = runs + trail_runs * 4;
+        // The tread's grooves, after the runs.
+        float* const grooves = runs + trail_runs * 4;
+        for (std::size_t g = 0; g < most_grooves; ++g) {
+            grooves[g * 2] = settings.tread_grooves[g][0];
+            grooves[g * 2 + 1] = settings.tread_grooves[g][1];
+        }
+        // The roof map, after the grooves (measure_roofs fills it), and where it is measured round.
+        float* const roof = grooves + groove_floats4 * 4;
         roof[0] = settings.under_roofs ? 0.0f : 1.0f;
         roof[1] = static_cast<float>(roof_grids[0].cells), roof[2] = roof_grids[0].size, roof[3] = static_cast<float>(roof_grids[1].cells);
         roof[4] = roof_grids[1].size, roof[5] = static_cast<float>(a.roof_near_first[0]), roof[6] = static_cast<float>(a.roof_near_first[1]);

@@ -116,7 +116,7 @@ struct EffectsApi {
         lua_pushboolean(L, ready); lua_pushnumber(L, static_cast<double>(epoch)); return 2;
     }
     // cover({colour = {r, g, b}, amount, facing, softness, brightness, breakup, sparkle, fall, fall_speed,
-    // left, fall_stopping, under_roofs, light}): a cover over
+    // left, fall_stopping, under_roofs, light, tread_grooves}): a cover over
     // every upward-facing surface of the world (snow, sand, dust), with `fall` its flakes falling in front of
     // it (`fall_stopping`: no new ones, the last fall out), drawn into the world's picture before
     // the game's post-processing and its UI, so menus and the HUD are never under it. On this screen,
@@ -165,6 +165,26 @@ struct EffectsApi {
         if (!lua_isnil(L, -1)) {
             luaL_checktype(L, -1, LUA_TBOOLEAN);
             c.light = lua_toboolean(L, -1) != 0;
+        }
+        lua_pop(L, 1);
+        // tread_grooves = {{centre, width}, ...}: a trail's tread as grooves at their own places, each a share of the
+        // tread's width from one edge (centre 0 to 1, width 0.005 to 0.5), at most 8; the strips between are pressed
+        // darker, the grooves lighter. Left out: the tread's lines evenly spaced (a trail point's tread_lines).
+        lua_getfield(L, 1, "tread_grooves");
+        if (!lua_isnil(L, -1)) {
+            luaL_checktype(L, -1, LUA_TTABLE);
+            const int count = static_cast<int>(lua_objlen(L, -1));
+            if (count > 8) luaL_error(L, "a cover's tread_grooves are at most 8");
+            for (int g = 1; g <= count; ++g) {
+                lua_rawgeti(L, -1, g);
+                if (!lua_istable(L, -1)) luaL_error(L, "a tread groove is {centre, width}");
+                lua_rawgeti(L, -1, 1); lua_rawgeti(L, -2, 2);
+                const double centre = lua_isnumber(L, -2) ? lua_tonumber(L, -2) : -1, width = lua_isnumber(L, -1) ? lua_tonumber(L, -1) : -1;
+                if (!(centre >= 0 && centre <= 1) || !(width >= 0.005 && width <= 0.5))
+                    luaL_error(L, "a tread groove is {centre 0 to 1, width 0.005 to 0.5}, shares of the tread's width");
+                c.tread_grooves.push_back({static_cast<float>(centre), static_cast<float>(width)});
+                lua_pop(L, 3);
+            }
         }
         lua_pop(L, 1);
         lua_getfield(L, 1, "colour");

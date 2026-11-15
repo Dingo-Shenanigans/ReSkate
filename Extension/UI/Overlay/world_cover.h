@@ -51,6 +51,11 @@ struct Settings {
     bool under_roofs{true};
     // true: light from the start (fewer flakes and samples), as it goes by itself on a GPU it takes too long on.
     bool light{};
+    // A trail's tread (add_trail's tread) as grooves at their own places: each (centre, width) a share of the tread's
+    // width from one edge, at most 8; the raised strips between are pressed darker, the grooves lighter. None: the
+    // tread's lines evenly spaced (tread_lines).
+    std::array<std::array<float, 2>, 8> tread_grooves{};
+    int tread_groove_count{};
 };
 
 // A place kept clear of the cover: an upright cylinder `radius` wide standing on `foot` (the world),

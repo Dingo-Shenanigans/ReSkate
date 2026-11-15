@@ -1551,15 +1551,24 @@ void the_time_of_day_is_read_and_the_cover_melts() {
         assert(reskate.world.controls_text() == "fog=1\nfog_distance=0.5\n")
         assert(reskate.world.set_atmosphere({["Fog.Enable"] = 1, ["Fog.FogColor"] = "0,1450,2500"}))
         assert(not pcall(reskate.world.set_atmosphere, {["Fog.Enable"] = true}), "a value is a number or text")
-        assert(reskate.effects.cover({left = 0.25, fall_stopping = true, under_roofs = false, light = true}))
+        assert(reskate.effects.cover({left = 0.25, fall_stopping = true, under_roofs = false, light = true,
+            tread_grooves = {{0.075, 0.045}, {0.5, 0.085}}}))
         assert(not pcall(reskate.effects.cover, {left = 2}), "left is 0 to 1")
         assert(not pcall(reskate.effects.cover, {under_roofs = 1}), "under_roofs is true or false")
         assert(not pcall(reskate.effects.cover, {light = "yes"}), "light is true or false")
+        assert(not pcall(reskate.effects.cover, {tread_grooves = {{0.5, 0.9}}}), "a groove's width is 0.005 to 0.5")
+        assert(not pcall(reskate.effects.cover, {tread_grooves = {{1.5, 0.1}}}), "a groove's centre is 0 to 1")
+        local nine = {}
+        for i = 1, 9 do nine[i] = {i / 10, 0.02} end
+        assert(not pcall(reskate.effects.cover, {tread_grooves = nine}), "at most 8 grooves")
     )", R"("world.environment", "effects")")});
     running(host, "melt", environment);
     check(environment.fake.cover_asked && environment.fake.cover_asked->left == 0.25f && environment.fake.cover_asked->fall_stopping &&
               !environment.fake.cover_asked->under_roofs && environment.fake.cover_asked->light,
           "a cover's melt is passed on: how much of it is left, none under roofs, and light");
+    check(environment.fake.cover_asked && environment.fake.cover_asked->tread_grooves.size() == 2 &&
+              environment.fake.cover_asked->tread_grooves[1][0] == 0.5f && environment.fake.cover_asked->tread_grooves[1][1] == 0.085f,
+          "a cover's tread grooves are passed on");
     TestEnvironment denied_environment;
     Host denied(denied_environment, Side::client);
     denied.apply({script("melt-denied", R"(
