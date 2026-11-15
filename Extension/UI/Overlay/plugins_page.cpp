@@ -339,8 +339,11 @@ void plugin_row(SkateMenu& menu, const plugins::Installed& plugin, bool has_page
     } else {
         row.detail = by;
         if (!kinds.empty()) row.detail += (row.detail.empty() ? "" : " \xc2\xb7 ") + kinds;
-        row.tag = on ? "ON" : "OFF";
-        if (on) row.tag_fill = st::blue, row.tag_ink = st::white;
+        // A server's own plugin that is on waits for a server that requires it: SERVER, not ON.
+        const bool waits = on && plugin.server_only && !plugin.required;
+        if (plugin.server_only) row.detail += std::string(row.detail.empty() ? "" : " \xc2\xb7 ") + "Only on servers that require it";
+        row.tag = waits ? "SERVER" : on ? "ON" : "OFF";
+        if (on && !waits) row.tag_fill = st::blue, row.tag_ink = st::white;
         if (has_page) row.side = "Page \xe2\x80\xba";
         row.hint = has_page ? "A opens its page. X turns it on or off. Y shows what it may do." : "A shows what it may do. X turns it on or off.";
     }
@@ -387,11 +390,18 @@ void plugin_row(SkateMenu& menu, const plugins::Installed& plugin, bool has_page
         const int answer = row_actions(menu, "answer", {{"TURN ON", true, true, "Let it run."}, {"KEEP OFF", true, false, "It stays off."}});
         if (answer >= 0) plugins::set_enabled(plugin.id, answer == 0);
     } else {
+        if (plugin.server_only)
+            note(plugin.required ? "A server brought this plugin here. It runs because the server you are on requires it, and stops when you leave."
+                                 : "A server brought this plugin here. It runs only while you are on a server that requires it.");
         const RowButton turn{on ? "TURN OFF" : "TURN ON", true, !on, on ? "Stop it." : "Let it run."};
-        const int action = has_page ? row_actions(menu, "switch", {turn, {"OPEN PAGE", true, false, "Its page, in place of this list."}})
-                                    : row_actions(menu, "switch", {turn});
+        // Where it runs: a server's own can be kept as the player's, and one of the player's left to servers.
+        const RowButton where = plugin.server_only ? RowButton{"RUN EVERYWHERE", true, false, "Keep it as your own: it runs off servers too."}
+                                                   : RowButton{"SERVERS ONLY", true, false, "It runs only on servers that require it."};
+        const int action = has_page ? row_actions(menu, "switch", {turn, where, {"OPEN PAGE", true, false, "Its page, in place of this list."}})
+                                    : row_actions(menu, "switch", {turn, where});
         if (action == 0) plugins::set_enabled(plugin.id, !on);
-        if (action == 1) {
+        if (action == 1) plugins::set_server_only(plugin.id, !plugin.server_only);
+        if (action == 2) {
             menu.plugin_page = plugin.id;
             open.clear();
         }
