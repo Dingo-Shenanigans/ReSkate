@@ -1630,22 +1630,22 @@ void expired_effects_return_their_quota() {
         local fx = reskate.effects
         local m = {1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1}
         reskate.console.command("fxfill", "", function()
-            for i=1,24 do assert(fx.particle("effects/reskate/test/ebp_spark", m)) end
+            for i=1,64 do assert(fx.particle("effects/reskate/test/ebp_spark", m)) end
             for i=1,2048 do assert(fx.decal("world/materials/decal/reskate_test/stain_dv", m)) end
             assert(fx.particle("effects/reskate/test/ebp_spark", m) == nil)
             assert(fx.decal("world/materials/decal/reskate_test/stain_dv", m) == nil)
         end)
     )"}})});
     auto& game = environment.fake;
-    check(host.run_console("fxfill") && game.effects.size() == 2072, "Both effect quotas can be filled");
+    check(host.run_console("fxfill") && game.effects.size() == 2112, "Both effect quotas can be filled");
     game.effects.clear(); // Ten-minute native expiry, with no change to the world epoch.
     ticks(host, environment, 1);
-    check(host.run_console("fxfill") && game.effects.size() == 2072, "Expiry returns both quotas without Lua release/clear");
+    check(host.run_console("fxfill") && game.effects.size() == 2112, "Expiry returns both quotas without Lua release/clear");
     ticks(host, environment, 1);
     game.effects.clear();
     ++game.effect_epoch;
     // A console call can arrive after the native reset but before Plugin::tick.
-    check(host.run_console("fxfill") && game.effects.size() == 2072, "A reset returns quota even before the next VM tick");
+    check(host.run_console("fxfill") && game.effects.size() == 2112, "A reset returns quota even before the next VM tick");
     running(host, "effects-expire", environment);
 }
 
@@ -1757,7 +1757,7 @@ void plugins_render_private_effects() {
         broken=table.clone(m); broken[1]=0
         assert(not pcall(fx.particle,p,broken))
         assert(not pcall(fx.decal,d,m,{lift=2}))
-        for i=1,24 do assert(fx.particle(p,m)) end
+        for i=1,64 do assert(fx.particle(p,m)) end
         assert(fx.particle(p,m)==nil,"particle quota")
         for i=1,2048 do assert(fx.decal(d,m,{attach=true,lift=.04})) end
         assert(fx.decal(d,m)==nil,"decal quota")

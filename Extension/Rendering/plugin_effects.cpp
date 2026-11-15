@@ -222,11 +222,11 @@ std::uint64_t create(std::string_view plugin, const plugins::EffectRequest& r) {
     const auto total = std::count_if(s.entries.begin(), s.entries.end(), [&](const auto& e) {
         return (e.second.decal.id != 0) == r.decal;
     });
-    if (total >= (r.decal ? 4096 : 64)) return 0;
+    if (total >= (r.decal ? 4096 : 192)) return 0;
     const auto mine = std::count_if(s.entries.begin(), s.entries.end(), [&](const auto& e) {
         return e.second.owner == plugin && (e.second.decal.id != 0) == r.decal;
     });
-    if (mine >= (r.decal ? 2048 : 24)) return 0;
+    if (mine >= (r.decal ? 2048 : 64)) return 0;
     const auto found = DINGOSDK_EFFECT_ASSET(s, r.asset);
     if (!asset_is_resident(found) || !asset_type_matches(found, r.decal)) return 0;
     Entry e; e.owner = plugin; e.expires = GetTickCount64() + 600000;

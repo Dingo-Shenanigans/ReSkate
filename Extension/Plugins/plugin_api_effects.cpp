@@ -59,7 +59,7 @@ struct EffectsApi {
         }
         const auto full = [&] {
             return std::count_if(p.effect_handles_.begin(), p.effect_handles_.end(),
-                [decal](const auto& h) { return h.second == decal; }) >= (decal ? 2048 : 24);
+                [decal](const auto& h) { return h.second == decal; }) >= (decal ? 2048 : 64);
         };
         // Console/event callbacks can run before the next VM tick.
         if (full()) {
