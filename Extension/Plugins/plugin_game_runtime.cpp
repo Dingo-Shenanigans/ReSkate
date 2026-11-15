@@ -1545,7 +1545,9 @@ public:
         if (!pad.available) return std::nullopt;
         return pad.buttons;
     }
-    bool key_down(int virtual_key) override { return overlay::key_down(virtual_key); }
+    // Only while the game's own window is in front, as the pad is read: a key held in another
+    // program is not the game's (a plugin's keys fired while the player typed elsewhere).
+    bool key_down(int virtual_key) override { return joystick::game_in_foreground() && overlay::key_down(virtual_key); }
     int mouse_wheel() override { return overlay::take_mouse_wheel(); }
     // One read of the overlay's mouse a call, shared out: every plugin that read it in the last two
     // seconds gets the movement, so two plugins never take it from each other.
