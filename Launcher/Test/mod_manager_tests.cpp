@@ -565,6 +565,18 @@ int main() {
         manifest("Me-Other", R"(["team-b-2.0.0"])");
         manifest("Team-D", "[]");
         const std::vector<std::string> all{"Team-D", "Team-Had", "Team-C", "Me-Other", "Team-B", "Team-A", "Me-Pack"};
+        // Uninstalling several stops at the first that is no mod folder here, before anything goes.
+        // (One that goes is moved to the Recycle Bin, which a test does not fill.)
+        {
+            std::string why;
+            check(launcher_mods::remove_many(packs, {"..\\Team-D", "Team-D"}, why).empty() && why.find("not a mod folder") != std::string::npos &&
+                      fs::is_directory(packs / L"Team-D"),
+                  "A name that is no mod folder stops the uninstall before the mods after it");
+            check(launcher_mods::remove_many(packs, {"Team-Gone", "Team-D"}, why).empty() && why.find("not installed") != std::string::npos &&
+                      fs::is_directory(packs / L"Team-D"),
+                  "A mod that is not installed stops the uninstall before the mods after it");
+            check(launcher_mods::remove_many(packs, {}, why).empty() && why.empty(), "Uninstalling nothing is not a failure");
+        }
         check(launcher_mods::orphaned_dependencies(packs, {"Me-Pack"}, all).empty(), "A pack with no record offered mods");
         // Team-Had was installed before the pack: its install brought in A, B and C only.
         launcher_mods::record_brought_in(packs, "Me-Pack", {"Team-A", "Team-C"});
