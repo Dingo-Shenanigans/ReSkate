@@ -117,6 +117,11 @@ constexpr UINT64 measure_slice = UINT64{measure_pitch} * camera_candidates;
 // Command allocators: the depth's copy and the cover each take one a frame, and the GPU runs frames
 // behind; with eight a frame now and then found none free and went without the snow (2026-11-11).
 constexpr std::size_t allocator_count = 16;
+// A smaller screen-shaped depth takes the world's place only once the one known has been missed this many presents
+// (a render scale below 100%, a smaller screen). At 30, the game's half-size depth (960x540 at 1080p) took over for a
+// moment as the time of day's shadow and sky caches came back on (the full one is made anew then), and the near
+// distance measured on it shifted the snow (2026-11-15).
+constexpr unsigned smaller_after = 300;
 
 using ExecuteFn = void(STDMETHODCALLTYPE*)(ID3D12CommandQueue*, UINT, ID3D12CommandList* const*);
 
@@ -1978,7 +1983,7 @@ void on_barrier(ID3D12GraphicsCommandList* list, const D3D12_RESOURCE_BARRIER& b
         if (!depth_shaped(desc, s.width, s.height)) return;
         // The largest such buffer is the world's: the game keeps smaller, screen-shaped ones too (a
         // 960x540 one at 1080p, 2026-11-10). A smaller one takes over only once the one known has
-        // not been seen for 30 presents (the screen got smaller).
+        // not been seen for smaller_after presents (the screen got smaller, or a render scale below 100%).
         // One of the same size takes over once the one known has been missed for two presents and it has
         // been seen in three frames in a row: the game makes the world's depth anew when some of its
         // settings change (the shadow and sky caches, held off after a change of time of day), and the
@@ -1992,14 +1997,14 @@ void on_barrier(ID3D12GraphicsCommandList* list, const D3D12_RESOURCE_BARRIER& b
             else if (s.candidate_frame != s.frame) s.candidate_run = 1;
             s.candidate_frame = s.frame;
             if (s.main_missed < 2 || s.candidate_run < 3) return;
-        } else if (s.main_depth && desc.Width * desc.Height <= UINT64{s.depth_width} * s.depth_height && s.main_missed < 30) {
+        } else if (s.main_depth && desc.Width * desc.Height <= UINT64{s.depth_width} * s.depth_height && s.main_missed < smaller_after) {
             return;
         }
         s.candidate = nullptr;
         s.candidate_run = 0;
         // None yet (the cover was resting): the screen's own size first; the 960x540 one came by first
         // and the cover went into a picture of another size until the big one took over (2026-11-11).
-        if (!s.main_depth && desc.Width < s.width && s.main_missed < 30) return;
+        if (!s.main_depth && desc.Width < s.width && s.main_missed < smaller_after) return;
         // A new main depth buffer (a resize, a level): its views are looked for afresh.
         if (s.main_depth_hold) s.retiring.push_back({s.fence_value, s.main_depth_hold});
         s.main_depth_hold = resource;
