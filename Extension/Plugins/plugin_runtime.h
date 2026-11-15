@@ -50,8 +50,14 @@ struct Installed {
     std::string id, title, author; // read by a player; the author is empty when unknown
     std::vector<PermissionGroup> can; // what it can do, in plain words by category
     Approval approval;
+    // A dedicated server brought it here (plugin_server_scope.h): it runs only on servers that
+    // require it. `required`: the server this PC is on does, so it runs now when it is on.
+    bool server_only{}, required{};
 };
 std::vector<Installed> installed();
 // The player turning a plugin on or off (it is applied on the next client tick). Any thread.
 void set_enabled(std::string_view id, bool on);
+// The player making a plugin a server's (it runs only on servers that require it) or their own (it
+// runs everywhere). Applied on the next client tick. Any thread.
+void set_server_only(std::string_view id, bool on);
 }

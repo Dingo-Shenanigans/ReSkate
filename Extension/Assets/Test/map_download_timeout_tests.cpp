@@ -681,6 +681,8 @@ void tests() {
     wait([] { return download::view().stage == Stage::joining; }, "plugin install did not reach joining");
     drain();
     require(downloads.load() == 1 && installs.load() == 1 && applies.load() == 0, "a plugin alone needs no live merge");
+    require(dingosdk::plugins::server_scope::read(root / "Mods") == dingosdk::plugins::server_scope::Folders{"team-plug"},
+        "a plugin the server brought is marked as the server's, to run only on servers that require it");
     fetching.store(false);
     session.connected = true;
     clock.fetch_add(2500000);
@@ -696,6 +698,8 @@ void tests() {
         "the card lists the map first, then the plugin");
     applying();
     require(downloads.load() == 2 && installs.load() == 2, "both are downloaded and installed");
+    require(dingosdk::plugins::server_scope::read(root / "Mods") == dingosdk::plugins::server_scope::Folders{"team-plug"},
+        "the plugin is marked as the server's, and the map is not");
     joined();
 
     // A package that is not a plugin on Thunderstore (a cosmetic) is never fetched for a server.
@@ -715,6 +719,7 @@ void tests() {
     drain();
     require(removals.load() == 1 && !fs::exists(root / "Mods" / "Team-Fake") && noticed("is not a plugin"),
         "a package that installs as no plugin is removed");
+    require(dingosdk::plugins::server_scope::read(root / "Mods").empty(), "and is not marked as a server's plugin");
 
     reset();
     download::tick();

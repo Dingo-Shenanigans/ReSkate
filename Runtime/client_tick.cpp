@@ -857,6 +857,8 @@ void update_model(std::uintptr_t client, TickState& frame) {
             if (pressed & (0x0008 | 1u << 21)) dingosdk::overlay::question_pick(false);
             if (pressed & (0x1000 | 1u << 22)) dingosdk::overlay::question_answer(dingosdk::overlay::question_picked());
             else if (pressed & (0x2000 | 1u << 23)) dingosdk::overlay::question_answer(dingosdk::overlay::question_back());
+            // The plugins asked about one after another: LB or Backspace goes to the one before.
+            else if (pressed & (0x0100 | 1u << 24)) dingosdk::overlay::question_step_back();
         }
         question_before = question_up;
         // The vote's popup: left and right move the pick, A votes for it, B closes it.
@@ -1190,8 +1192,10 @@ void update_model(std::uintptr_t client, TickState& frame) {
         bool loading{};
         { std::lock_guard lock(r.mutex); loading = r.requests.loading(); }
         // Invalidate old-world handles before any plugin callback can use them.
+        // A plugin holding the skater still (reskate.skater.freeze) is noclip underneath, but
+        // it is the plugin's own scene, a vehicle it flies say, and its effects belong in it.
         dingosdk::effects::tick(r.base, client, !r.observer_failed && !loading && named_context_ready,
-            r.debug_model.noclip, r.debug_model.park_editor);
+            r.debug_model.noclip && !dingosdk::plugins::plugin_freeze_active(), r.debug_model.park_editor);
     }
     if (r.observer_failed) return; // Keep the bounded restore/telemetry path available after catalog failure.
     {
@@ -1305,6 +1309,17 @@ void update_model(std::uintptr_t client, TickState& frame) {
     // graph to identify its family without weakening native-map detection.
     dingosdk::set_local_world_layer_map_hint(
         manifest_custom_active ? dingosdk::WorldMap::bam : dingosdk::WorldMap::none);
+    // (world_layers.h: a custom map may use the layers ReSkate keeps off on the game's own maps.
+    // Any map a mod declares counts, also one the game's level list holds by itself: a level
+    // ported whole registers there, so it is `custom` without being `manifest_only`.)
+    const auto played_custom = description.lm_level.empty() ? catalog.levels.end() :
+        std::find_if(catalog.levels.begin(), catalog.levels.end(), [&](const auto& level) {
+            return level.custom && equals(level.asset, description.lm_level);
+        });
+    dingosdk::world_layers_custom_level.store(played_custom != catalog.levels.end(), std::memory_order_release);
+    // (and what that map says its layers are, for the ones the player left at "default")
+    dingosdk::set_world_layer_map_defaults(
+        played_custom != catalog.levels.end() ? played_custom->world_layers : std::vector<std::pair<std::string, std::string>>{});
     dingosdk::ConsoleActivity activity;
     activity.state = state;
     activity.native_loading_logging = r.native_loading_logging;

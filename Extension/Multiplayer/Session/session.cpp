@@ -166,6 +166,7 @@ void stop(Session &s, std::string reason) {
     s.map_label.clear();
     s.map_package.clear();
     s.required_plugins.clear();
+    session_detail::set_required_plugins(s.required_plugins);
     s.plugins_ready = s.fetching_with_map = false;
     s.fetching_since = 0;
     s.map_fetch_deadline = 0;

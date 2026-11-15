@@ -560,8 +560,8 @@ struct ChunkRecord {
 
 // Makes `layout` (the installed game's, as read) the merged patch's: every superbundle the mods'
 // own layouts list is added to its list and to the install chunk the mod puts it in
-// (`layoutSources`: the mods whose layouts are taken, the enabled ones or, with none, one
-// disabled), `report.superbundle_chunks` gets what the enabled mods assign, and the patch
+// (`layoutSources`: the mods whose layouts are taken, the enabled ones),
+// `report.superbundle_chunks` gets what the enabled mods assign, and the patch
 // archives the merge used are declared under their install chunks.
 void merge_layout(native_db::Node& layout, const std::vector<const Mod*>& mods, const std::vector<const Mod*>& layoutSources,
                   const ArchiveUse& used, MergeReport& report);

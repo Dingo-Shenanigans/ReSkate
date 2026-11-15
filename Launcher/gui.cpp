@@ -158,19 +158,66 @@ bool list_row(const char* id, float width, float height, bool ticked) {
     return pressed;
 }
 
+void draw_switch(ImDrawList* draw, ImVec2 start, bool on, bool hovered) {
+    const auto size = switch_size();
+    const float radius = size.y * 0.5f;
+    draw->AddRectFilled(start, ImVec2(start.x + size.x, start.y + size.y),
+        on ? color::blue : rgba(255, 255, 255, hovered ? 0.2f : 0.13f), radius);
+    draw->AddCircleFilled(ImVec2(start.x + (on ? size.x - radius : radius), start.y + radius), radius - S(3),
+        on ? color::ink : rgba(196, 202, 212));
+}
+
 bool toggle(const char* id, bool* on) {
-    const ImVec2 size(S(42), S(22));
     const ImVec2 start = ImGui::GetCursorScreenPos();
-    const bool pressed = ImGui::InvisibleButton(id, size, ImGuiButtonFlags_EnableNav);
+    const bool pressed = ImGui::InvisibleButton(id, switch_size(), ImGuiButtonFlags_EnableNav);
     if (pressed) *on = !*on;
     const bool hovered = ImGui::IsItemHovered();
     if (hovered) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    draw_switch(ImGui::GetWindowDrawList(), start, *on, hovered);
+    return pressed;
+}
+
+bool tick_box(const char* id, ImVec2 at, bool ticked) {
+    const float box = tick_box_size();
+    const ImVec2 corner(at.x + box, at.y + box);
+    ImGui::SetCursorScreenPos(at);
+    const bool pressed = ImGui::InvisibleButton(id, ImVec2(box, box), ImGuiButtonFlags_EnableNav);
+    const bool hovered = ImGui::IsItemHovered();
+    if (hovered) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
     auto* draw = ImGui::GetWindowDrawList();
-    const float radius = size.y * 0.5f;
-    draw->AddRectFilled(start, ImVec2(start.x + size.x, start.y + size.y),
-        *on ? color::blue : rgba(255, 255, 255, hovered ? 0.2f : 0.13f), radius);
-    draw->AddCircleFilled(ImVec2(start.x + (*on ? size.x - radius : radius), start.y + radius), radius - S(3),
-        *on ? color::ink : rgba(196, 202, 212));
+    draw->AddRectFilled(at, corner, ticked ? color::blue : rgba(255, 255, 255, hovered ? 0.16f : 0.09f), S(4));
+    if (!ticked) draw->AddRect(at, corner, rgba(255, 255, 255, hovered ? 0.5f : 0.28f), S(4));
+    else {
+        draw->AddLine(ImVec2(at.x + box * 0.24f, at.y + box * 0.52f), ImVec2(at.x + box * 0.43f, at.y + box * 0.72f), color::ink, S(2));
+        draw->AddLine(ImVec2(at.x + box * 0.43f, at.y + box * 0.72f), ImVec2(at.x + box * 0.78f, at.y + box * 0.30f), color::ink, S(2));
+    }
+    return pressed;
+}
+
+bool segment(const Fonts& fonts, const char* id, const char* label, const std::string& count, bool chosen, SegmentPlace place,
+             float tall) {
+    const auto wide = [](ImFont* font, const char* text) { return font->CalcTextSizeA(font->FontSize, FLT_MAX, 0, text).x; };
+    if (tall <= 0) tall = ImGui::GetFontSize() + S(8);
+    const float label_width = wide(fonts.body, label);
+    const float width = S(14) * 2 + label_width + (count.empty() ? 0.0f : S(7) + wide(fonts.caption, count.c_str()));
+    const ImVec2 start = ImGui::GetCursorScreenPos(), end(start.x + width, start.y + tall);
+    const bool pressed = ImGui::InvisibleButton(id, ImVec2(width, tall), ImGuiButtonFlags_EnableNav);
+    const bool hovered = ImGui::IsItemHovered();
+    if (hovered) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    const ImDrawFlags corners = place == SegmentPlace::only ? ImDrawFlags_RoundCornersAll
+        : place == SegmentPlace::first ? ImDrawFlags_RoundCornersLeft
+        : place == SegmentPlace::last ? ImDrawFlags_RoundCornersRight : ImDrawFlags_RoundCornersNone;
+    auto* draw = ImGui::GetWindowDrawList();
+    draw->AddRectFilled(start, end, chosen ? color::blue : hovered ? color::tile_grey : color::tile, S(6), corners);
+    if (!chosen) draw->AddRect(start, end, color::outline, S(6), corners);
+    const float label_x = start.x + S(14);
+    draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(label_x, start.y + (tall - fonts.body->FontSize) * 0.5f),
+                  chosen ? color::ink : color::text, label);
+    if (!count.empty())
+        draw->AddText(fonts.caption, fonts.caption->FontSize,
+                      ImVec2(label_x + label_width + S(7), start.y + (tall - fonts.caption->FontSize) * 0.5f),
+                      chosen ? rgba(0, 0, 0, 0.6f) : color::muted, count.c_str());
+    ImGui::SameLine(0, 0);
     return pressed;
 }
 

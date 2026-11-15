@@ -28,7 +28,7 @@ namespace dingosdk::plugins {
 enum class LogLevel { info, warn, error };
 
 struct Limits {
-    std::size_t memory = 64u << 20;     // the VM's heap
+    std::size_t memory = 128u << 20;    // the VM's heap (64 MB until 2.1.4)
     double call_ms = 50;                // one call into the plugin (load, a handler, a command): past it, said...
     double hang_ms = 1000;              // ...and past this, stopped as a hang
     double io_ms = 250;                 // ReSkate's own reading and compiling in one call, kept out of call_ms up to this
@@ -53,12 +53,14 @@ struct Limits {
     std::size_t images = 32; // different pictures a plugin draws
     std::size_t clip_bytes = 48u << 20; // the clips a plugin holds, as poses (40 bytes a joint a frame)
     // Different waves a plugin holds at once, each at most 30 s, and their decoded samples together
-    // (16 kHz mono 16-bit, so 30 s is about 0.9 MB). Past either, the wave played longest ago that
+    // (48 kHz mono 16-bit, so 30 s is about 2.9 MB). Past either, the wave played longest ago that
     // no sound still plays is let go; only when every one is still playing is a new one refused.
-    // A plugin plays at most 8 sounds at once (plugin_sound.cpp), so 32 always leaves one to let go,
-    // and 32 waves of 30 s keep a plugin's samples near 30 MB, well inside sound_bytes.
-    std::size_t sounds = 32;
-    std::size_t sound_bytes = 64u << 20;
+    // 96 waves, most of them a few seconds, stay inside sound_bytes (64 MB until 2.1.4, when a wave was
+    // kept at 16 kHz and a third the size). A plugin may play more sounds at once than it holds
+    // waves (plugin_sound.cpp), many of them the same wave: 96 different ones all playing at once
+    // refuses a 97th.
+    std::size_t sounds = 96;            // (32 until 2.1.4)
+    std::size_t sound_bytes = 128u << 20;
     std::size_t preloads = 8;           // clips and sounds being read at once (reskate.animation.preload, reskate.audio.preload)
     int toasts = 3;                     // in 5 s
     int sounds_per_second = 10;

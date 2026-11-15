@@ -62,6 +62,7 @@ constexpr Capability capabilities[] = {
     {"world.entities", "WORLD", Risk::amber, "Spawn objects that only you see"},
     {"world.ai", "WORLD", Risk::amber, "Spawn and clear AI skaters"},
     {"effects", "WORLD", Risk::amber, "Draw particle effects and decals in the world"},
+    {"effects.game", "WORLD", Risk::amber, "Play the game's own particle effects, including ones its store sells"},
     {"world.raycast", "WORLD", Risk::grey, "Cast rays and pick objects in the world"},
     {"world.vehicles", "WORLD", Risk::red, "Take over nearby traffic vehicles and move them"},
     {"camera", "CAMERA", Risk::amber, "Control the camera"},
@@ -292,6 +293,7 @@ std::string approval_prompt(const std::vector<PermissionGroup>& groups) {
             if (has("world.entities")) actions.push_back("spawn objects visible only to you");
             if (has("world.ai")) actions.push_back("spawn or clear AI skaters");
             if (has("effects")) actions.push_back("draw particle effects and decals");
+            if (has("effects.game")) actions.push_back("play the game's own particle effects");
             if (has("world.raycast")) actions.push_back("probe the world and pick objects");
             if (has("world.vehicles")) actions.push_back("take over nearby traffic vehicles and move them");
         } else if (group.category == "CAMERA") {

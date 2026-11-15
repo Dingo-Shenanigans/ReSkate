@@ -184,6 +184,7 @@ The Luau plugin host. A plugin is a folder in `Mods/` with a `reskate-plugin.jso
 - `plugin_api*.cpp` — the `reskate.*` API (game, world, physics, UI, more); `plugin_game*`, `plugin_camera`, `plugin_joystick`.
 - `Test/` — the host tests, and in `Test/fixtures/` the plugins they load.
 - `plugin_ui`, `plugin_sound`, `plugin_wave`, `plugin_http`, `plugin_session_feed`, `plugin_wire` — pages, audio, HTTP, multiplayer messages.
+- `plugin_server_scope` — the plugins a dedicated server brought here, which run only on servers that require them.
 - `plugin_commands` — the `plugin` console command.
 - `plugin_effects`, `plugin_api_effects` — the permission, asset declarations and Lua calls for
   [plugin particles and decals](https://docs.reskate.dev/plugins/api/effects). `Extension/Rendering/plugin_effects`

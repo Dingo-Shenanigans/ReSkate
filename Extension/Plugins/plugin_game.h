@@ -319,6 +319,10 @@ public:
     virtual void body_release_all(std::uint64_t) {}
     // Client-only particles and projected materials. Handles are owned by their plugin.
     virtual std::uint64_t effect_create(std::string_view, const EffectRequest&) { return 0; }
+    // Asks for one of the game's effect bundles, so the named effect in it can be played.
+    virtual EffectBundleState effect_bundle(std::string_view, std::string_view /*bundle*/, std::string_view /*asset*/) {
+        return EffectBundleState::unavailable;
+    }
     virtual void effect_move(std::string_view, std::uint64_t, const EffectMatrix&) {}
     virtual void effect_stop(std::string_view, std::uint64_t) {}
     virtual void effect_opacity(std::string_view, std::uint64_t, float) {}

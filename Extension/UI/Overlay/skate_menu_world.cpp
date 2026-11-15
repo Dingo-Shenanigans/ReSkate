@@ -468,7 +468,7 @@ void world_layers_page(SkateMenu& menu, const Model& model, const CallbacksV3& c
     unsigned shown{};
     for (unsigned i = 0; i < world_layers().size(); ++i) {
         const auto& layer = world_layers()[i];
-        if (layer.map != model.world.map || !model.world.supported[i] || world_layer_kept_off(layer.key)) continue;
+        if (layer.map != model.world.map || !model.world.supported[i] || world_layer_withheld(layer.key)) continue;
         if (menu.world_layer_category && layer.category != kinds[static_cast<std::size_t>(menu.world_layer_category)]) continue;
         if (!found(world_layer_title(layer.label)) && !found(layer.key)) continue;
         ++shown;

@@ -1,7 +1,7 @@
 if(WIN32)
     add_executable(dingosdk_launcher WIN32 Launcher/main.cpp Launcher/launch.cpp
         Launcher/gui.cpp Launcher/gui_launcher.cpp Launcher/gui_renderer.cpp Launcher/gui_home.cpp
-        Launcher/gui_settings.cpp Launcher/gui_sign_in.cpp Launcher/gui_mods.cpp Launcher/gui_mods_browse.cpp Launcher/gui_mods_profiles.cpp Launcher/gui_mods_items.cpp Launcher/gui_mods_downloads.cpp
+        Launcher/gui_settings.cpp Launcher/gui_sign_in.cpp Launcher/gui_mods.cpp Launcher/gui_mods_browse.cpp Launcher/gui_mods_profiles.cpp Launcher/gui_mods_items.cpp Launcher/gui_mods_vram.cpp Launcher/gui_mods_downloads.cpp
         Launcher/gui_gamepad.cpp Launcher/gamepad_input.cpp Launcher/gui_changelog.cpp Launcher/gui_legal.cpp Launcher/game_settings.cpp
         Launcher/updater.cpp Launcher/mod_manager.cpp Launcher/mod_profiles.cpp Launcher/thunderstore.cpp
         Launcher/start_maps.cpp Launcher/problem.h)
@@ -168,6 +168,11 @@ if(DINGOSDK_BUILD_LAUNCHER_TESTS AND WIN32)
     target_link_libraries(dingosdk_mod_item_choice_tests PRIVATE dingosdk_mods dingosdk_game_archives)
     target_include_directories(dingosdk_mod_item_choice_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME mod_item_choice COMMAND dingosdk_mod_item_choice_tests "${DINGOSDK_TEST_GAME_ROOT}")
+    # What a mod costs in video memory, as the launcher's mod manager says it (Engine/Vfs/mod_vram.h).
+    add_executable(dingosdk_mod_vram_tests Engine/Vfs/Test/mod_vram_tests.cpp)
+    target_link_libraries(dingosdk_mod_vram_tests PRIVATE dingosdk_mods)
+    target_include_directories(dingosdk_mod_vram_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME mod_vram COMMAND dingosdk_mod_vram_tests)
     # A tool, not a test: checks a mod's meshes as the GPU reads them (Engine/Vfs/Test/mod_mesh_check.cpp).
     add_executable(dingosdk_mod_mesh_check Engine/Vfs/Test/mod_mesh_check.cpp)
     target_link_libraries(dingosdk_mod_mesh_check PRIVATE dingosdk_mods dingosdk_frostbite dingosdk_game_archives)

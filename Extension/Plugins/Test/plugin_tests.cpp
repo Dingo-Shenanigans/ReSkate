@@ -7,6 +7,7 @@
 #include "Extension/Plugins/plugin_listing.h"
 #include "Extension/Objects/placement_geometry.h"
 #include "Extension/Plugins/plugin_manifest.h"
+#include "Extension/Plugins/plugin_server_scope.h"
 #include "Extension/Plugins/plugin_session_feed.h"
 #include "Extension/Plugins/plugin_wire.h"
 #include "Extension/Throwdowns/challenge_registry.h"
@@ -304,6 +305,11 @@ struct FakeGame final : Game {
     std::map<std::uint64_t, Effect> effects;
     std::uint64_t effect_serial{}, effect_epoch{1};
     bool effects_ready{true};
+    std::vector<std::pair<std::string, std::string>> effect_bundles;   // bundle, asset: each one asked for
+    EffectBundleState effect_bundle(std::string_view, std::string_view bundle, std::string_view asset) override {
+        effect_bundles.emplace_back(std::string(bundle), std::string(asset));
+        return effect_bundles.size() == 1 ? EffectBundleState::loading : EffectBundleState::ready;
+    }
     std::uint64_t effect_create(std::string_view plugin, const EffectRequest& request) override {
         if (!effects_ready) return 0;
         const auto id = ++effect_serial;
@@ -1796,6 +1802,58 @@ void expired_effects_return_their_quota() {
     running(host, "effects-expire", environment);
 }
 
+void game_effects_need_their_own_permission() {
+    // effects.game cannot stand alone, and is a known permission.
+    bool refused = false;
+    try { (void)parse_manifest(manifest(R"("effects.game")")); } catch (const std::exception&) { refused = true; }
+    check(refused, "effects.game without effects is refused");
+    check(parse_manifest(manifest(R"("effects", "effects.game")")).permissions.contains("effects.game"), "effects.game is a permission");
+    check(game_effect_asset("effects/environments/effectblueprints/ebp_env_thick_smoke_popup") &&
+          !game_effect_asset("effects/reskate/test/ebp_spark") && !game_effect_asset("world/materials/decal/reskate_test/stain_dv") &&
+          !game_effect_asset("/effects/a") && !game_effect_asset("effects//a") && !game_effect_asset("Effects/A") && !game_effect_asset(""),
+          "A game effect's name is a plain asset path that is not a mod's own");
+
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    // Without effects.game, a plugin with effects still cannot name one of the game's.
+    host.apply({package("fx-private-only", {{manifest_file, manifest(R"("effects", "console")")}, {"plugin/main.lua", R"(
+        local m = {1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1}
+        reskate.console.command("fxstock", "", function()
+            local ok, why = pcall(reskate.effects.particle, "effects/environments/effectblueprints/ebp_env_thick_smoke_popup", m)
+            assert(not ok and why:find("effects.game"), tostring(why))
+            ok, why = pcall(reskate.effects.load, "win32/effects/gestures/effectblueprints/ebp_x_bundle", "effects/gestures/effectblueprints/ebp_x")
+            assert(not ok and why:find("effects.game"), tostring(why))
+        end)
+    )"}})});
+    check(host.run_console("fxstock") && environment.fake.effects.empty() && environment.fake.effect_bundles.empty(),
+          "A plugin without effects.game cannot play the game's effects or ask for its bundles");
+
+    // With it, the game's particle effects play; decals and the plugin's own undeclared names do not.
+    host.apply({package("fx-game", {{manifest_file, manifest(R"("effects", "effects.game", "console")")}, {"plugin/main.lua", R"(
+        local m = {1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1}
+        reskate.console.command("fxgame", "", function()
+            assert(reskate.effects.particle("effects/environments/effectblueprints/ebp_env_thick_smoke_popup", m))
+            assert(not pcall(reskate.effects.decal, "world/materials/decal/some_game_decal", m))
+            assert(not pcall(reskate.effects.particle, "effects/reskate/test/undeclared", m))
+            assert(not pcall(reskate.effects.particle, "Effects/Upper", m))
+            -- One of the game's effect bundles can be asked for; only those under win32/effects/.
+            local bundle = "win32/effects/gestures/effectblueprints/ebp_gesture_metaldance_flameburst_bundle"
+            local effect = "effects/gestures/effectblueprints/ebp_gesture_metaldance_flameburst"
+            assert(reskate.effects.load(bundle, effect) == "loading")
+            assert(reskate.effects.load(bundle, effect) == "ready")
+            assert(not pcall(reskate.effects.load, "win32/levels/game/bam_levelroot/bam_levelroot", effect))
+            assert(not pcall(reskate.effects.load, bundle, "effects/reskate/test/ebp_spark"))
+        end)
+    )"}})});
+    check(host.run_console("fxgame") && environment.fake.effects.size() == 1 &&
+          environment.fake.effects.begin()->second.request.game &&
+          environment.fake.effects.begin()->second.request.asset == "effects/environments/effectblueprints/ebp_env_thick_smoke_popup",
+          "A plugin with effects.game plays one of the game's particle effects, marked as the game's");
+    check(environment.fake.effect_bundles.size() == 2 &&
+          environment.fake.effect_bundles.front().first == "win32/effects/gestures/effectblueprints/ebp_gesture_metaldance_flameburst_bundle",
+          "It can ask for one of the game's effect bundles, and nothing outside win32/effects/ reaches the game");
+}
+
 void plugins_render_private_effects() {
     TestEnvironment environment;
     // Filling every decal slot tests the resource quota, with room for a busy CI machine.
@@ -2156,6 +2214,7 @@ void plugin_approval_follows_the_plugins_own_files() {
         auto requested = std::string("\"") + std::string(name) + "\"";
         if (name == "events.physics.geometry") requested = R"("events.physics", "events.physics.geometry")";
         if (name == "world.physics.reuse") requested = R"("world.physics", "world.physics.reuse")";
+        if (name == "effects.game") requested = R"("effects", "effects.game")";
         const auto requested_prompt = approval_prompt(permission_groups(parse_manifest(manifest(requested))));
         check(requested_prompt.find("\n- ") != std::string::npos && requested_prompt.find("No special permissions") == std::string::npos,
               "A request for " + std::string(name) + " has a capability summary");
@@ -3974,7 +4033,7 @@ void a_runaway_plugin_is_stopped_and_the_rest_go_on() {
             pcall(function() local t = {} while true do t[#t + 1] = string.rep("y", 8000000) end end)
             reskate.log("survived the memory bomb")
         )"),
-        script("huge", R"(local s = string.rep("x", 100000000))"),
+        script("huge", R"(local s = string.rep("x", 200000000))"),
         script("buffer", R"(local b = buffer.create(1e9))"),
         script("errors", R"(reskate.on("tick", function() error("boom") end))"),
         script("timers", R"(
@@ -3988,7 +4047,7 @@ void a_runaway_plugin_is_stopped_and_the_rest_go_on() {
     });
     for (const auto* id : {"loop", "catches"}) stopped(host, id, "ran longer than 50 ms");
     stopped(host, "coroutines", ""); // its time or its memory, whichever runs out first
-    for (const auto* id : {"memory", "memory_caught", "huge", "buffer"}) stopped(host, id, "more than 64 MB");
+    for (const auto* id : {"memory", "memory_caught", "huge", "buffer"}) stopped(host, id, "more than 128 MB");
     check(!environment.logged("survived the memory bomb"), "A memory bomb cannot be caught and carried on from");
     running(host, "tick_loop", environment);
     ticks(host, environment, 1);
@@ -5553,8 +5612,8 @@ std::string adpcm_file(unsigned channels, unsigned bits, unsigned block_align, c
     put(20, 4);
     put(0x11, 2);
     put(channels, 2);
-    put(16000, 4);
-    put(16000 * block_align / 9, 4);
+    put(wave_rate, 4);
+    put(wave_rate * block_align / 9, 4);
     put(block_align, 2);
     put(bits, 2);
     put(2, 2);
@@ -5595,7 +5654,7 @@ void plugins_play_ima_adpcm_sounds() {
     same = wave && wave->samples.size() == 9;
     for (std::size_t i = 0; same && i < 9; ++i) same = wave->samples[i] == 0;
     check(same, "and its channels are mixed to mono, each from its own bytes: " + error);
-    check(!decode(adpcm_file(1, 4, 8, mono, 13), 0.0005f, error) && error.find("longer than") != std::string::npos,
+    check(!decode(adpcm_file(1, 4, 8, mono, 13), 0.0002f, error) && error.find("longer than") != std::string::npos,
           "A long IMA ADPCM sound is refused");
     check(!decode(adpcm_file(1, 3, 8, mono), 30, error) && !decode(adpcm_file(1, 4, 6, mono), 30, error) &&
               error == "its format is not 8 to 32-bit PCM, 32-bit float or IMA ADPCM",
@@ -5606,7 +5665,7 @@ void plugins_play_their_own_sounds() {
     std::string error;
     const auto bytes = wave_file(8000, 4000);
     const auto wave = decode_wave(std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size()), 30, error);
-    check(wave && wave->samples.size() == 8000, "Half a second at 8 kHz is half a second at 16 kHz: " + error);
+    check(wave && wave->samples.size() == 24000, "Half a second at 8 kHz is half a second at 48 kHz: " + error);
     check(!decode_wave(std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size()), 0.25f, error),
           "and a sound longer than allowed is refused");
     TestEnvironment environment;
@@ -5628,7 +5687,7 @@ void plugins_play_their_own_sounds() {
     running(host, "noisy", environment);
     host.run_console("noise");
     check(environment.logged("[noisy] sounded"), "A plugin plays its own sounds\n" + environment.all());
-    for (const auto* call : {"sound noisy 8000 0.50 2.00 true at 1 2 3", "sound noisy motor 1.00 1.00 false", "change noisy 2 0.9 skater", "stop sound noisy 1"})
+    for (const auto* call : {"sound noisy 24000 0.50 2.00 true at 1 2 3", "sound noisy motor 1.00 1.00 false", "change noisy 2 0.9 skater", "stop sound noisy 1"})
         check(environment.fake.called(call), std::string("The game was asked: ") + call + "\n" + environment.all());
 }
 
@@ -5642,8 +5701,8 @@ void plugins_play_any_number_of_different_sounds() {
             end
         end)
     )";
-    const std::map<std::string, std::string> files{{manifest_file, manifest(R"("console", "audio")")}, {"sounds/a.wav", wave_file(16000, 1000)},
-                                                   {"sounds/b.wav", wave_file(16000, 2000)}, {"sounds/c.wav", wave_file(16000, 3000)},
+    const std::map<std::string, std::string> files{{manifest_file, manifest(R"("console", "audio")")}, {"sounds/a.wav", wave_file(wave_rate, 1000)},
+                                                   {"sounds/b.wav", wave_file(wave_rate, 2000)}, {"sounds/c.wav", wave_file(wave_rate, 3000)},
                                                    {"plugin/main.lua", play}};
     {
         TestEnvironment environment;
@@ -6253,7 +6312,7 @@ void plugins_preload_clips_and_sounds() {
         end)
     )";
     host.apply({package("preloader", {{manifest_file, manifest(R"("console", "skater.animation", "audio")")}, {"plugin/main.lua", main},
-                                      {"clips/spin.fas", std::string(bytes.begin(), bytes.end())}, {"sounds/beep.wav", wave_file(16000, 1000)},
+                                      {"clips/spin.fas", std::string(bytes.begin(), bytes.end())}, {"sounds/beep.wav", wave_file(wave_rate, 1000)},
                                       {"notes.txt", "x"}})});
     running(host, "preloader", environment);
     host.run_console("warm");
@@ -6885,6 +6944,51 @@ void discovery_finds_the_plugins_among_the_mods_left_on() {
     check(again[0].fingerprint != before, "A changed file changes the fingerprint, which reloads it");
 }
 
+// A plugin a dedicated server brought here is the server's: it runs only on servers that require it.
+void a_servers_plugin_runs_only_on_servers_that_require_it() {
+    namespace scope = server_scope;
+    const auto mods = scratch / "server-scope-game" / "Mods";
+    std::filesystem::create_directories(mods);
+    check(scope::read(mods).empty(), "No plugin is a server's before one brings any");
+    check(scope::set(mods, "Team-Drone", true) && scope::set(mods, "neekgate-FPV_Drone", true) && scope::set(mods, "Team-Drone", true),
+          "A plugin a server brought is marked as the server's");
+    const auto marked = scope::read(mods);
+    check(marked == scope::Folders{"team-drone", "neekgate-fpv_drone"}, "The mark is kept by mod folder, whatever its case, once each");
+
+    // The player's own plugins run everywhere, in a session or not.
+    check(scope::runs(marked, {}, "Team-Filmer", "Filmer", "Team") && scope::runs(marked, {"Team-Drone"}, "Team-Filmer", "Filmer", "Team"),
+          "A plugin of the player's own was held back");
+    // A server's own: nowhere but on a server that requires it.
+    check(!scope::runs(marked, {}, "Team-Drone", "Drone", "Team"), "A server's plugin ran outside any server");
+    check(!scope::runs(marked, {"Team-Filmer", "Other-Drone"}, "Team-Drone", "Drone", "Team"),
+          "A server's plugin ran on a server that does not require it");
+    check(scope::runs(marked, {"Team-Filmer", "team-drone"}, "Team-Drone", "Drone", "Team") &&
+              scope::runs(marked, {"Team-Drone-1.2.0"}, "TEAM-DRONE", "", ""),
+          "A server's plugin did not run on a server that requires it");
+    // A package is the mod in its folder, or the one with its name and author (map_download.h).
+    check(scope::names("neekgate-FPV_Drone-2.0.1", "neekgate-FPV_Drone", "", "") && scope::names("neekgate-FPV_Drone", "drone-dev", "FPV_Drone", "Neekgate"),
+          "A required package did not name its plugin");
+    check(!scope::names("neekgate-FPV_Drone", "drone-dev", "FPV_Drone", "") && !scope::names("neekgate-FPV_Drone", "neekgate-FPV", "FPV", "other") &&
+              !scope::names("", "", "", ""),
+          "A required package named a plugin that is not its own");
+    check(scope::runs(marked, {"neekgate-FPV_Drone"}, "neekgate-FPV_Drone", "FPV Drone", "neekgate"), "A marked plugin is known by its folder");
+
+    // The player makes one their own; a mod that is taken out is forgotten.
+    check(scope::set(mods, "TEAM-DRONE", false) && scope::read(mods) == scope::Folders{"neekgate-fpv_drone"}, "A plugin made the player's own stayed the server's");
+    check(scope::runs(scope::read(mods), {}, "Team-Drone", "Drone", "Team"), "and runs everywhere again");
+    scope::keep_only(mods, {"Neekgate-FPV_Drone", "Team-Drone"});
+    check(scope::read(mods).size() == 1, "A plugin still in Mods was forgotten");
+    scope::keep_only(mods, {"Team-Drone"});
+    check(scope::read(mods).empty() && !std::filesystem::exists(mods / scope::file_name), "A plugin taken out of Mods is forgotten, and the file with the last");
+
+    // A file that is not the list marks nothing, so every plugin runs as before.
+    write(mods / scope::file_name, R"({"Team-Drone": true})");
+    check(scope::read(mods).empty(), "A file that is no list marked a plugin");
+    write(mods / scope::file_name, "not json");
+    check(scope::read(mods).empty() && scope::set(mods, "Team-Drone", true) && scope::read(mods) == scope::Folders{"team-drone"},
+          "A broken file is replaced by the next mark");
+}
+
 void discovery_can_recheck_sources_when_mod_metadata_is_unchanged() {
     const auto root = scratch / "same-metadata-game";
     const auto mods = root / "Mods";
@@ -7404,6 +7508,7 @@ int main() {
         run(owned_body_batches_share_actual_and_logical_query_limits);
         run(effects_require_resident_roots);
         run(expired_effects_return_their_quota);
+        run(game_effects_need_their_own_permission);
         run(plugins_render_private_effects);
         run(failed_plugin_startup_releases_effects);
         run(plugins_track_effect_lifetimes);
@@ -7489,6 +7594,7 @@ int main() {
         run(a_package_with_a_program_or_on_the_wrong_side_is_not_loaded);
         run(discovery_finds_the_plugins_among_the_mods_left_on);
         run(discovery_can_recheck_sources_when_mod_metadata_is_unchanged);
+        run(a_servers_plugin_runs_only_on_servers_that_require_it);
         run(plugins_change_the_games_text);
         run(a_plugin_reads_the_content_folder_it_names);
         run(content_is_read_from_the_mod_folders);

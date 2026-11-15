@@ -710,6 +710,9 @@ public:
         return multiplayer::stand_ins::set(std::move(policy));
     }
     std::uint64_t effect_create(std::string_view plugin, const EffectRequest& request) override { return effects::create(plugin, request); }
+    EffectBundleState effect_bundle(std::string_view plugin, std::string_view bundle, std::string_view asset) override {
+        return effects::load_bundle(plugin, bundle, asset);
+    }
     void effect_move(std::string_view plugin, std::uint64_t id, const EffectMatrix& transform) override { effects::move(plugin, id, transform); }
     void effect_stop(std::string_view plugin, std::uint64_t id) override { effects::stop(plugin, id); }
     void effect_opacity(std::string_view plugin, std::uint64_t id, float value) override { effects::opacity(plugin, id, value); }
@@ -1589,7 +1592,9 @@ public:
         if (!pad.available) return std::nullopt;
         return pad.buttons;
     }
-    bool key_down(int virtual_key) override { return overlay::key_down(virtual_key); }
+    // Only while the game's own window is in front, as the pad is read: a key held in another
+    // program is not the game's (a plugin's keys fired while the player typed elsewhere).
+    bool key_down(int virtual_key) override { return joystick::game_in_foreground() && overlay::key_down(virtual_key); }
     int mouse_wheel() override { return overlay::take_mouse_wheel(); }
     // One read of the overlay's mouse a call, shared out: every plugin that read it in the last two
     // seconds gets the movement, so two plugins never take it from each other.

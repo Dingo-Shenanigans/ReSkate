@@ -108,6 +108,7 @@ if(WIN32)
         Engine/Vfs/mod_merge_layout.cpp
         Engine/Vfs/mod_merge_left_out.cpp
         Engine/Vfs/mod_items.cpp
+        Engine/Vfs/mod_vram.cpp
         Engine/Vfs/mod_merge_scan.cpp
         Engine/Vfs/mod_merge_scan_cache.cpp
         Engine/Vfs/mod_merge_textures.cpp
@@ -148,6 +149,7 @@ add_library(dingosdk_plugins STATIC
     Extension/Plugins/plugin_manifest.cpp
     Extension/Plugins/plugin_approval.cpp
     Extension/Plugins/plugin_listing.cpp
+    Extension/Plugins/plugin_server_scope.cpp
     Extension/Plugins/plugin_vm.cpp
     Extension/Plugins/plugin_api.cpp
     Extension/Plugins/plugin_api_ui.cpp

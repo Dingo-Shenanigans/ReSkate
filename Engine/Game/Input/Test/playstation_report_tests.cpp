@@ -94,6 +94,24 @@ int main() {
         check(pad && pad->buttons == (0x1000 | 0x200), "DualSense Bluetooth simple report uses the DS4 layout");
         check(!parse_playstation_report(PlayStationPad::dualsense, false, simple.data(), 5), "Short reports are rejected");
 
+        // A DualSense whose reads over USB are longer than 64 bytes (a DualSense Edge returned to the
+        // session marker while a menu held the input): its report 0x01 is the USB one all the same,
+        // told by what follows the buttons, and the D-pad is where the USB report has it.
+        {
+            std::array<std::uint8_t, 78> edge{0x01, 128, 128, 128, 128, 0, 90, 0x17, 0x48, 0x12};
+            edge[12] = 0x33;   // (the report's counter: something after the buttons)
+            check(dualsense_usb_layout(edge.data(), edge.size(), true), "A USB report read longer than 64 bytes is still told as one");
+            pad = parse_playstation_report(PlayStationPad::dualsense, true, edge.data(), edge.size());
+            check(pad && pad->buttons == (0x2000 | 0x20 | 0x200) && pad->right_trigger == 90, "and is read in the USB layout");
+            auto* buttons = playstation_button_bytes(PlayStationPad::dualsense, true, edge.data(), edge.size());
+            check(buttons == edge.data() + 8, "its buttons are where the USB report has them");
+            check(hide_playstation_buttons(PlayStationPad::dualsense, true, edge.data(), edge.size(), 0x2000) && !(edge[8] & 0x40) &&
+                  (edge[8] & 0x0f) == 8, "a hidden button goes from there, and the D-pad stays let go");
+            check(!dualsense_usb_layout(simple.data(), simple.size(), true), "The padded simple report is not taken for one");
+            check(dualsense_usb_layout(ds5.data(), ds5.size(), false) && !dualsense_usb_layout(ds5.data(), 10, false),
+                  "A report with nothing after its buttons goes by the length of the read");
+        }
+
         // A changed full Bluetooth report needs a new CRC, or the game's reader discards it. A
         // DualShock 4 read over Bluetooth is padded to 547 bytes: its CRC was left stale.
         std::array<std::uint8_t, 547> ds4bt{};
