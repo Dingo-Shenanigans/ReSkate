@@ -426,7 +426,7 @@ void world_rows(Opts &o, OptionsContext &c) {
         unsigned shown{};
         for (unsigned i = 0; i < world_layers().size(); ++i) {
             const auto &layer = world_layers()[i];
-            if (layer.map != m.world.map || !m.world.supported[i] || world_layer_kept_off(layer.key)) continue;
+            if (layer.map != m.world.map || !m.world.supported[i] || world_layer_withheld(layer.key)) continue;
             if (kind && layer.category != kinds[static_cast<std::size_t>(kind)]) continue;
             ++shown;
             const bool follows = m.world.choices[i] == "default";
