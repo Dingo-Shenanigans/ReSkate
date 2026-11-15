@@ -288,18 +288,36 @@ struct FakeGame final : Game {
         body_releases.push_back(owner);
         for (auto& [id, b] : owned) { (void)id; if (b.owner == owner) { b.released = true; b.mailbox.cancel(); } }
     }
-    void body_producer_step(bool complete = true) {
+    // The clock edge alone: the physics step that publishes every body's next sample.
+    void body_clock_step() {
         for (auto& [id, b] : owned) {
             (void)id;
             if (b.released || b.quarantined) continue;
             ++b.sample.epoch.serial;
             b.sample.epoch.time += b.sample.epoch.seconds;
+        }
+    }
+    // One synchronizer call on a listed wrapper: it takes a body's pending command only when the
+    // clock reads the step after that command's epoch. Returns how many commands it took.
+    unsigned body_synchronizer_call(bool complete = true) {
+        unsigned taken{};
+        for (auto& [id, b] : owned) {
+            (void)id;
+            if (b.released || b.quarantined) continue;
             owned_body::Command out;
             if (b.mailbox.consume(b.sample.epoch, 1, out)) {
+                ++taken;
                 (void)b.mailbox.finish(true, complete, complete);
                 if (!complete) b.quarantined = true;
             }
         }
+        return taken;
+    }
+    // The full-rate order: the edge, then the synchronizer, and the plugin's tick after both.
+    // A test of the half-rate order ticks the host between body_clock_step and body_synchronizer_call.
+    void body_producer_step(bool complete = true) {
+        body_clock_step();
+        (void)body_synchronizer_call(complete);
     }
     struct Effect { std::string owner; EffectRequest request; bool stopped{}; float alpha{1}; };
     std::map<std::uint64_t, Effect> effects;
@@ -2281,6 +2299,75 @@ void plugins_can_inspect_later_partial_failure_without_acknowledging_unmeasured_
     running(host, "body-pipeline-failure", environment);
     check(environment.logged("later partial body receipt is inspectable"), environment.all());
     check(environment.fake.body_submissions == 2 && environment.fake.owned.at(1).mailbox.failed, "partial command was replayed or failed mailbox reopened");
+}
+
+// A plugin that reads, acknowledges and submits on every tick, driven through frames in the two
+// orders the game runs them in, as counted there per frame. 'f' is the full-rate order: clock
+// edge, three synchronizer calls on listed wrappers, tick, three more calls. 'h' is the half-rate
+// order: clock edge, tick, three calls, where the tick that reads sample N+1 still finds its
+// command for N queued. Either way, and across changes of order, every tick's command is
+// accepted and one is applied on every step, each in the step after its own epoch.
+void plugins_command_every_step_when_the_tick_precedes_the_synchronizer() {
+    for (const std::string_view order : {"ffffffff", "hhhhhhhh", "hhhffffhhhhfff", "fhfhhffhhf"}) {
+        TestEnvironment environment;
+        Host host(environment, Side::client);
+        host.apply({script("body-every-step", R"(
+            local P, v = reskate.world.physics, vector.create
+            local h = assert(P.create({mass = 12, inertia = v(2, 3, 4), position = v(0, 2, 0), rotation = {0, 0, 0, 1},
+                capsules = {{a = v(0, 0, 0), b = v(0, .5, 0), radius = .1}}}))
+            local last_produced, acknowledged, most_rows = nil, 0, 0
+            local waiting = {}
+            reskate.on("tick", function()
+                local sample = assert(P.read(h))
+                while #waiting > 0 do
+                    local r = assert(P.receipt(h))
+                    assert(r.sequence == waiting[1], "the oldest receipt is not the oldest command")
+                    if r.outcome == "queued" then break end
+                    assert(r.outcome == "applied" and r.force_attempted and r.torque_attempted, "a command ended as " .. r.outcome)
+                    if not r.successor then break end
+                    local produced = tonumber(r.produced_serial)
+                    assert(produced == tonumber(r.requested_serial) + 1, "a command was applied on another step than the one after its epoch")
+                    assert(last_produced == nil or produced == last_produced + 1, "a step went without a command")
+                    last_produced = produced
+                    assert(P.acknowledge(h, r.sequence))
+                    table.remove(waiting, 1)
+                    acknowledged += 1
+                end
+                local ok, why, id = P.submit(h, sample.epoch, {force = v(0, 20, 0)})
+                assert(ok and why == nil, "a tick's command was refused: " .. tostring(why))
+                table.insert(waiting, id)
+                most_rows = math.max(most_rows, #waiting)
+                assert(not P.submit(h, sample.epoch, {}), "one measured epoch was commanded twice")
+                reskate.log("every-step acknowledged=" .. acknowledged .. " most_rows=" .. most_rows)
+            end)
+        )", R"("world.physics")")});
+        running(host, "body-every-step", environment);
+        auto& fake = environment.fake;
+        unsigned taken{};
+        for (const char kind : order) {
+            fake.body_clock_step();
+            // Of a frame's calls at most one takes a command: the first before a full-rate
+            // frame's tick, or the first after a half-rate frame's.
+            if (kind != 'h') for (unsigned call = 0; call < 3; ++call) taken += fake.body_synchronizer_call();
+            ticks(host, environment, 1);
+            const auto before = taken;
+            for (unsigned call = 0; call < 3; ++call) taken += fake.body_synchronizer_call();
+            check(kind == 'h' || taken == before, "order " + std::string(order) + ": a call after the tick took the command for the step it read");
+            running(host, "body-every-step", environment);
+        }
+        const auto frames = static_cast<unsigned>(order.size());
+        const auto& box = fake.owned.at(1).mailbox;
+        check(fake.body_submissions == frames && taken == frames - 1 && box.last_serial == fake.owned.at(1).sample.epoch.serial - 1,
+            "order " + std::string(order) + ": submitted " + std::to_string(fake.body_submissions) + " commands, applied " + std::to_string(taken) +
+            " in " + std::to_string(frames) + " frames\n" + environment.all());
+        // A result is acknowledged two ticks after its command, and the plugin never holds more
+        // than two receipts after its submit: the same in both orders.
+        check(environment.logged("every-step acknowledged=" + std::to_string(frames - 2) + " most_rows=2"), "order " + std::string(order) + "\n" + environment.all());
+        for (std::size_t i = 0; i < box.count; ++i) {
+            const auto outcome = box.receipts[(box.head + i) % box.receipts.size()].outcome;
+            check(outcome == owned_body::Outcome::applied || outcome == owned_body::Outcome::queued, "a command expired or was rejected");
+        }
+    }
 }
 
 // create(definition, {reuse = true}) through the binding: it forwards this VM's own instance and
@@ -7195,6 +7282,7 @@ int main() {
         run(plugins_own_typed_bodies_and_acknowledge_measured_results);
         run(plugins_pipeline_native_steps_and_select_owned_receipts);
         run(plugins_can_inspect_later_partial_failure_without_acknowledging_unmeasured_head);
+        run(plugins_command_every_step_when_the_tick_precedes_the_synchronizer);
         run(plugins_reuse_their_own_parked_bodies);
         run(native_body_permission_and_client_boundary_are_enforced);
         run(body_prepare_host_fixture_v1);
