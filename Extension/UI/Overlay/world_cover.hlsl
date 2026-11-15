@@ -151,7 +151,9 @@ float trail_at(float3 here, float3 dir, out float shade) {
     const float4 box = cameras[TRAIL + 1];
     if (here.x < head.y - 1 || here.z < head.z - 1 || here.x > head.w + 1 || here.z > box.x + 1 || here.y < box.y - 1 || here.y > box.z + 1)
         return 0;
-    if (dir.y >= -1e-4) return 0; // a ray not going down meets no ground
+    // (Not only rays going down: up a ramp from its foot, the ramp is over the camera, and its trail was cut off at the
+    // camera's height, more of it the higher the camera; 2026-11-15. Each stretch asks whether the ray meets its own
+    // slope, below.)
     float pressed = 0;
     float lines_strength = 0, lines_at = 0;
     const int grooves = min((int)cameras[TRAIL + 1].w, MOST_GROOVES);
