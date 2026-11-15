@@ -283,6 +283,8 @@ struct Shared {
     std::uint64_t fallen_at{};
     std::uint64_t shown_near_at{};
     unsigned near_disagreed{}; // frames in a row far from held_near
+    float last_focal{};        // the camera's focal length last frame, and the frame it last changed (a new camera)
+    std::uint64_t focal_changed_frame{};
     std::uint64_t measured_frames{};
     std::size_t next_allocator{};
     ComPtr<ID3D12GraphicsCommandList> list;
@@ -958,8 +960,13 @@ void take_measurements(Shared& s, const std::uint8_t* rows) {
     // A frame far from the distance held is let be, unless twenty in a row say so (a new camera): one
     // that measured the wrong thing moved the whole cover for a moment, and the snow at the bottom of the
     // screen thinned out with it (2026-11-11).
+    // Twenty only within two seconds of the camera's field of view changing (a new camera); else five seconds' worth.
+    // The points go straight up from the skater's place, and a skater leaning into a steep transition is not there:
+    // they all measured the ramp behind, agreed, and were taken for a new camera; the distance went wrong, every
+    // trail failed its test against it, and they all went for a second until it was learnt again (2026-11-15).
     if (!s.relearning && s.held_near > 0 && std::abs(measured - s.held_near) > s.held_near * 0.2f) {
-        if (++s.near_disagreed < 20) return;
+        const bool new_camera = s.frame - s.focal_changed_frame < 240;
+        if (++s.near_disagreed < (new_camera ? 20u : 500u)) return;
         // A new camera: its own distance, from the start. The one held stays until the new one is known
         // (and is then eased into): set to nothing meanwhile, the snow went to each frame's own guess and
         // jumped (2026-11-12).
@@ -1030,6 +1037,8 @@ bool record_cover(Shared& s) {
         s.why = "no camera";
         return false;
     }
+    if (std::abs(projector->focal - s.last_focal) > s.last_focal * 0.01f) s.focal_changed_frame = s.frame;
+    s.last_focal = projector->focal;
     if (!build_resources(s, colour_desc) || !build_pipeline(s, s.colour_format) ||
         !build_single(s, "ps_measure", DXGI_FORMAT_R32_FLOAT, s.measure_pipeline))
         return false;
@@ -1828,6 +1837,8 @@ void release() noexcept {
         s.held_near = 0;
         s.shown_near = 0;
         s.near_disagreed = 0;
+        s.last_focal = 0;
+        s.focal_changed_frame = 0;
         s.measured_frames = 0;
         s.depth_copied_frame = ~std::uint64_t{0};
         s.chosen_format = DXGI_FORMAT_UNKNOWN;
