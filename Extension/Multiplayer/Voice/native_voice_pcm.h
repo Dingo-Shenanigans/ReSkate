@@ -8,7 +8,10 @@
 #include <span>
 
 namespace dingosdk::multiplayer {
-inline constexpr unsigned native_voice_rate = 16000;
+// The rate ReSkate gives the game's voice sound its samples at: the game's own is 16 kHz, and
+// native_voice.cpp patches the sound to take 48 kHz (it is not used unless that patch is in).
+// The game still takes them 320 at a time: 6.67 ms a block at this rate.
+inline constexpr unsigned native_voice_rate = 48000;
 inline constexpr std::size_t native_voice_samples = 320;
 using NativeVoiceBlock = std::array<std::int16_t, native_voice_samples>;
 

@@ -21,7 +21,7 @@ struct Voice {
     bool loop{};
     std::optional<std::array<float, 3>> position; // empty: at the local skater
 };
-// Its id, or 0 when there is no room (at most 8 a plugin, 48 in all).
+// Its id, or 0 when there is no room (at most 128 a plugin, 256 in all).
 std::uint64_t start(Voice voice);
 // The voice of `owner`, to change while it plays; null once it has finished.
 Voice* find(std::uint64_t id, std::string_view owner);

@@ -3880,7 +3880,7 @@ void a_runaway_plugin_is_stopped_and_the_rest_go_on() {
             pcall(function() local t = {} while true do t[#t + 1] = string.rep("y", 8000000) end end)
             reskate.log("survived the memory bomb")
         )"),
-        script("huge", R"(local s = string.rep("x", 100000000))"),
+        script("huge", R"(local s = string.rep("x", 200000000))"),
         script("buffer", R"(local b = buffer.create(1e9))"),
         script("errors", R"(reskate.on("tick", function() error("boom") end))"),
         script("timers", R"(
@@ -3894,7 +3894,7 @@ void a_runaway_plugin_is_stopped_and_the_rest_go_on() {
     });
     for (const auto* id : {"loop", "catches"}) stopped(host, id, "ran longer than 50 ms");
     stopped(host, "coroutines", ""); // its time or its memory, whichever runs out first
-    for (const auto* id : {"memory", "memory_caught", "huge", "buffer"}) stopped(host, id, "more than 64 MB");
+    for (const auto* id : {"memory", "memory_caught", "huge", "buffer"}) stopped(host, id, "more than 128 MB");
     check(!environment.logged("survived the memory bomb"), "A memory bomb cannot be caught and carried on from");
     running(host, "tick_loop", environment);
     ticks(host, environment, 1);
@@ -5374,8 +5374,8 @@ std::string adpcm_file(unsigned channels, unsigned bits, unsigned block_align, c
     put(20, 4);
     put(0x11, 2);
     put(channels, 2);
-    put(16000, 4);
-    put(16000 * block_align / 9, 4);
+    put(wave_rate, 4);
+    put(wave_rate * block_align / 9, 4);
     put(block_align, 2);
     put(bits, 2);
     put(2, 2);
@@ -5416,7 +5416,7 @@ void plugins_play_ima_adpcm_sounds() {
     same = wave && wave->samples.size() == 9;
     for (std::size_t i = 0; same && i < 9; ++i) same = wave->samples[i] == 0;
     check(same, "and its channels are mixed to mono, each from its own bytes: " + error);
-    check(!decode(adpcm_file(1, 4, 8, mono, 13), 0.0005f, error) && error.find("longer than") != std::string::npos,
+    check(!decode(adpcm_file(1, 4, 8, mono, 13), 0.0002f, error) && error.find("longer than") != std::string::npos,
           "A long IMA ADPCM sound is refused");
     check(!decode(adpcm_file(1, 3, 8, mono), 30, error) && !decode(adpcm_file(1, 4, 6, mono), 30, error) &&
               error == "its format is not 8 to 32-bit PCM, 32-bit float or IMA ADPCM",
@@ -5427,7 +5427,7 @@ void plugins_play_their_own_sounds() {
     std::string error;
     const auto bytes = wave_file(8000, 4000);
     const auto wave = decode_wave(std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size()), 30, error);
-    check(wave && wave->samples.size() == 8000, "Half a second at 8 kHz is half a second at 16 kHz: " + error);
+    check(wave && wave->samples.size() == 24000, "Half a second at 8 kHz is half a second at 48 kHz: " + error);
     check(!decode_wave(std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size()), 0.25f, error),
           "and a sound longer than allowed is refused");
     TestEnvironment environment;
@@ -5449,7 +5449,7 @@ void plugins_play_their_own_sounds() {
     running(host, "noisy", environment);
     host.run_console("noise");
     check(environment.logged("[noisy] sounded"), "A plugin plays its own sounds\n" + environment.all());
-    for (const auto* call : {"sound noisy 8000 0.50 2.00 true at 1 2 3", "sound noisy motor 1.00 1.00 false", "change noisy 2 0.9 skater", "stop sound noisy 1"})
+    for (const auto* call : {"sound noisy 24000 0.50 2.00 true at 1 2 3", "sound noisy motor 1.00 1.00 false", "change noisy 2 0.9 skater", "stop sound noisy 1"})
         check(environment.fake.called(call), std::string("The game was asked: ") + call + "\n" + environment.all());
 }
 
@@ -5463,8 +5463,8 @@ void plugins_play_any_number_of_different_sounds() {
             end
         end)
     )";
-    const std::map<std::string, std::string> files{{manifest_file, manifest(R"("console", "audio")")}, {"sounds/a.wav", wave_file(16000, 1000)},
-                                                   {"sounds/b.wav", wave_file(16000, 2000)}, {"sounds/c.wav", wave_file(16000, 3000)},
+    const std::map<std::string, std::string> files{{manifest_file, manifest(R"("console", "audio")")}, {"sounds/a.wav", wave_file(wave_rate, 1000)},
+                                                   {"sounds/b.wav", wave_file(wave_rate, 2000)}, {"sounds/c.wav", wave_file(wave_rate, 3000)},
                                                    {"plugin/main.lua", play}};
     {
         TestEnvironment environment;
@@ -6074,7 +6074,7 @@ void plugins_preload_clips_and_sounds() {
         end)
     )";
     host.apply({package("preloader", {{manifest_file, manifest(R"("console", "skater.animation", "audio")")}, {"plugin/main.lua", main},
-                                      {"clips/spin.fas", std::string(bytes.begin(), bytes.end())}, {"sounds/beep.wav", wave_file(16000, 1000)},
+                                      {"clips/spin.fas", std::string(bytes.begin(), bytes.end())}, {"sounds/beep.wav", wave_file(wave_rate, 1000)},
                                       {"notes.txt", "x"}})});
     running(host, "preloader", environment);
     host.run_console("warm");

@@ -21,6 +21,19 @@ inline constexpr std::uintptr_t samples_remove = 0x45c240;
 inline constexpr std::array<unsigned char, 14> samples_remove_prefix{
     0x48,0x89,0x5c,0x24,0x18,0x48,0x89,0x6c,0x24,0x20,0x56,0x57,0x41,0x56};
 
+// The rate the voice sound takes its samples at. Its setup (0x44dae0) makes a resampler from
+// two rates, each given by a function that loads one float: this one the samples' own rate,
+// 16000.0 (the float at 0x607c584), and 0x458710 the output's, 48000.0 (the float 4 bytes on,
+// at 0x607c588). It is called from nowhere else. Found in the decompile and read back from the
+// game's file. With the load's displacement moved those 4 bytes (0x7c to 0x80) the sound takes
+// 48 kHz samples; the 16000.0 itself is left alone, as other code may read it.
+inline constexpr std::uintptr_t source_rate = 0x458e00;
+inline constexpr std::array<unsigned char, 9> source_rate_prefix{
+    0xc5,0xfa,0x10,0x05,0x7c,0x37,0xc2,0x05,0xc3};
+inline constexpr std::array<unsigned char, 9> source_rate_48k{
+    0xc5,0xfa,0x10,0x05,0x80,0x37,0xc2,0x05,0xc3};
+inline constexpr std::uintptr_t output_rate_value = 0x607c588;
+
 // Globals and vtables
 // Pointer to the sound manager.
 inline constexpr std::uintptr_t sound_manager = 0x72c75c8;

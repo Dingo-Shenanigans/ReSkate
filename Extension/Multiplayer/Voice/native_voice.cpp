@@ -1,5 +1,6 @@
 #include "native_voice.h"
 #include "Extension/Multiplayer/Session/peer_slots.h"
+#include "Engine/Core/Hooks/patches.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/native_voice.h"
@@ -23,8 +24,17 @@ template<std::size_t N> bool matches(Address address, const std::array<unsigned 
     __try { return std::memcmp(reinterpret_cast<const void *>(address), bytes.data(), N) == 0; }
     __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
+// The voice sound made to take its samples at 48 kHz (see source_rate in the build's header).
+// True when the patch is in, by this call or an earlier one; false leaves the game's sound
+// alone and unused, as samples at ReSkate's rate would play at a third of their speed in it.
+bool takes_48k(Address base) noexcept {
+    if (matches(base + voice::source_rate, voice::source_rate_48k)) return true;
+    if (read<float>(base + voice::output_rate_value) != 48000.0f) return false;
+    return patch_code("voice sound source rate", base + voice::source_rate, voice::source_rate_prefix,
+        voice::source_rate_48k) == HookOk;
+}
 bool supported(Address base) noexcept {
-    return matches(base + voice::sound_create, voice::sound_create_prefix) &&
+    return takes_48k(base) && matches(base + voice::sound_create, voice::sound_create_prefix) &&
         matches(base + voice::sound_destroy, voice::sound_destroy_prefix) &&
         matches(base + voice::sound_set_input, voice::sound_set_input_prefix) &&
         matches(base + voice::samples_submit, voice::samples_submit_prefix) &&
@@ -157,11 +167,12 @@ struct NativeVoicePlayback::Impl {
                 if (sound.queued_until > now + std::chrono::milliseconds(240)) continue;
                 if (!submit_samples(base, provider, sound.source, block))
                     throw std::runtime_error("Native voice sample submission failed");
-                sound.queued_until = std::max(now, sound.queued_until) + std::chrono::milliseconds(20);
+                sound.queued_until = std::max(now, sound.queued_until) +
+                    std::chrono::microseconds(1000000LL * native_voice_samples / native_voice_rate);
                 if (!logged) {
                     logged = true;
                     logging::log(logging::Level::info, logging::Channel::runtime,
-                        "Voice playback uses Frostbite's spatialized VOIP sound (16 kHz PCM, native obstruction/reverb traits).");
+                        "Voice playback uses Frostbite's spatialized VOIP sound (48 kHz PCM, native obstruction/reverb traits).");
                 }
             }
         }

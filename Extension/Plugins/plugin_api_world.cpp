@@ -2496,7 +2496,7 @@ struct WorldApi {
         sound_options(L, 2, &start, nullptr);
         if (!within(plugin.services_.now_ms(), plugin.wave_second_, plugin.wave_starts_, 20)) return result(L, "more than 20 sounds in a second");
         const auto id = game_of(plugin).play_sound(plugin.id(), std::move(start));
-        if (!id) return result(L, "it plays 8 sounds already, or there is no level");
+        if (!id) return result(L, "it plays 128 sounds already, or there is no level");
         lua_pushnumber(L, static_cast<double>(id));
         return 1;
     }
