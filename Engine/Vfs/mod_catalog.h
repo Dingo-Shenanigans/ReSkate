@@ -24,8 +24,9 @@ struct Catalog {
     std::vector<Mod> mods;
     // Folders present on disk that mods.json disables, in folder-name order.
     std::vector<std::string> disabled;
-    // Disabled mods that ship a layout. Their archives are placed in the
-    // launch's merge too, so one can be enabled while the game runs.
+    // Disabled mods that ship a layout. The launch's merge takes nothing of
+    // them; a merge while the game runs keeps what the game has loaded of one
+    // disabled since (mod_merge.cpp).
     std::vector<Mod> inactive;
     // True once Mods/.reskate holds the merged patch every mod was combined
     // into. Empty catalogues never generate one.
@@ -69,8 +70,8 @@ std::uint64_t active_sources_revision() noexcept;
 // holds it as <mod's folder>#<variant>, with that mod's build stamp; mods.json and the mod list only
 // know the mod. One variant of each such mod loads, the one the player chose (else the first of its
 // "order", else the first there is), first in the load order whatever mods.json says: what would
-// fight it is set aside, whole, and its archives are placed like a disabled mod's, so another variant
-// can be chosen while the game runs. The variant a mod's entry stands for, and the mod that holds
+// fight it is set aside, whole, as a disabled mod is: nothing of it is in the patch. Another variant
+// chosen while the game runs is placed as a mod installed since launch is. The variant a mod's entry stands for, and the mod that holds
 // it, or nothing (no folder has a # in its name):
 std::string variant_of(std::string_view mod);
 std::string variant_owner(std::string_view mod);
