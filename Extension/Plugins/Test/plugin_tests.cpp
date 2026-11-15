@@ -342,7 +342,7 @@ struct FakeGame final : Game {
         std::string line = std::format("keep clear {} {}", plugin, places.size());
         for (const auto& p : places) {
             line += std::format(" ({:.1f} {:.1f} {:.1f} r{:.2f} h{:.1f}", p.foot[0], p.foot[1], p.foot[2], p.radius, p.height);
-            if (p.snow > 0) line += std::format(" s{:.2f}", p.snow);
+            if (p.dusting > 0) line += std::format(" s{:.2f}", p.dusting);
             if (p.length > 0)
                 line += std::format(" l{:.2f} f{:.1f},{:.1f},{:.1f} u{:.1f},{:.1f},{:.1f}", p.length, p.forward[0], p.forward[1], p.forward[2], p.up[0], p.up[1], p.up[2]);
             line += ")";
@@ -353,7 +353,7 @@ struct FakeGame final : Game {
     std::string world_cover_trail(std::string_view plugin, const CoverTrail& point) override {
         if (coverer != plugin) return "this plugin has no cover on the world";
         calls.push_back(std::format("trail {} {:.1f} {:.1f} {:.1f} w{:.2f} f{:.1f}{}{}", plugin, point.at[0], point.at[1], point.at[2], point.width, point.fade,
-                                    point.tread > 0 ? std::format(" t{:.2f}", point.tread) : std::string{}, point.starts ? " new" : ""));
+                                    point.tread > 0 ? std::format(" t{:.2f}x{}", point.tread, point.tread_lines) : std::string{}, point.starts ? " new" : ""));
         return {};
     }
     std::string world_cover(std::string_view plugin, std::optional<WorldCover> c) override {
@@ -368,7 +368,7 @@ struct FakeGame final : Game {
         coverer = plugin;
         cover_asked = c;
         calls.push_back(std::format("cover {} {:.2f} {:.2f} {:.2f} {:.2f} {:.2f} {:.2f} {:.2f} {:.2f} {:.2f} {:.2f}", plugin, c->colour[0], c->colour[1],
-                                    c->colour[2], c->amount, c->facing, c->softness, c->brightness, c->breakup, c->sparkle, c->snowfall));
+                                    c->colour[2], c->amount, c->facing, c->softness, c->brightness, c->breakup, c->sparkle, c->fall));
         return {};
     }
     ObjectPhysicsClaims physics_claims;
@@ -1551,21 +1551,24 @@ void the_time_of_day_is_read_and_the_cover_melts() {
         assert(reskate.world.controls_text() == "fog=1\nfog_distance=0.5\n")
         assert(reskate.world.set_atmosphere({["Fog.Enable"] = 1, ["Fog.FogColor"] = "0,1450,2500"}))
         assert(not pcall(reskate.world.set_atmosphere, {["Fog.Enable"] = true}), "a value is a number or text")
-        assert(reskate.effects.cover({left = 0.25, snowfall_stopping = true, under_roofs = false, light = true}))
+        assert(reskate.effects.cover({left = 0.25, fall_stopping = true, under_roofs = false, light = true}))
         assert(not pcall(reskate.effects.cover, {left = 2}), "left is 0 to 1")
         assert(not pcall(reskate.effects.cover, {under_roofs = 1}), "under_roofs is true or false")
         assert(not pcall(reskate.effects.cover, {light = "yes"}), "light is true or false")
     )", R"("world.environment", "effects")")});
     running(host, "melt", environment);
-    check(environment.fake.cover_asked && environment.fake.cover_asked->left == 0.25f && environment.fake.cover_asked->snowfall_stopping &&
+    check(environment.fake.cover_asked && environment.fake.cover_asked->left == 0.25f && environment.fake.cover_asked->fall_stopping &&
               !environment.fake.cover_asked->under_roofs && environment.fake.cover_asked->light,
           "a cover's melt is passed on: how much of it is left, none under roofs, and light");
     TestEnvironment denied_environment;
     Host denied(denied_environment, Side::client);
     denied.apply({script("melt-denied", R"(
         assert(not pcall(reskate.world.time), "needs world.environment")
+        assert(not pcall(reskate.world.controls_text), "needs world.environment")
+        assert(not pcall(reskate.world.set_atmosphere, {["Fog.Enable"] = 0}), "needs world.environment")
     )")});
     running(denied, "melt-denied", denied_environment);
+    check(denied_environment.fake.atmosphere_set.empty(), "a plugin without world.environment set no atmosphere");
 }
 
 void the_skater_surface_sound_is_set_for_some_fields() {
@@ -1576,6 +1579,11 @@ void the_skater_surface_sound_is_set_for_some_fields() {
         assert(not pcall(reskate.skater.surface_sound, 0xd60, {19}), "fields are 1 to 18")
         assert(not pcall(reskate.skater.surface_sound, 0.5), "a fraction is no surface")
         assert(not pcall(reskate.skater.surface_sound, -1), "a negative is no surface")
+        assert(not pcall(reskate.skater.surface_sound, 116 * 64), "material slot 116 is past the game's grid")
+        assert(not pcall(reskate.skater.surface_sound, 116 * 524288), "property slot 116 is past the game's grid")
+        assert(not pcall(reskate.skater.surface_sound, 0xffffffff), "a word of every bit names no surface")
+        assert(reskate.skater.surface_sound(115 * 64 + 115 * 524288), "the grid's last slots are surfaces")
+        assert(reskate.skater.surface_sound(0xd60, {1, 3}))
     )", R"("skater.control")")});
     running(host, "surface-sound", environment);
     check(environment.fake.surface_set == 0xd60u && environment.fake.surface_fields == 0b101u,
@@ -1601,6 +1609,15 @@ void a_variant_can_wait_for_the_next_launch() {
     running(host, "variant-chooser", environment);
     const std::vector<std::pair<std::string, bool>> expected{{"snowskate", true}, {"standard", false}, {"standard", true}};
     check(environment.fake.chosen_variants == expected, "choose keeps a variant for the next launch only when now is false");
+    // Without the permission it is refused, for the next launch as well as now.
+    TestEnvironment denied_environment;
+    Host denied(denied_environment, Side::client);
+    denied.apply({script("variant-denied", R"(
+        assert(not pcall(reskate.package.choose, "standard", {now = false}), "needs variants")
+        assert(not pcall(reskate.package.choose, "standard"), "needs variants")
+    )")});
+    running(denied, "variant-denied", denied_environment);
+    check(denied_environment.fake.chosen_variants.empty(), "a plugin without variants chose no variant");
 }
 
 void a_plugin_holds_a_trainer_preset() {
@@ -4875,8 +4892,8 @@ void plugins_cover_the_world() {
     Host host(environment, Side::client);
     const auto snow = package("snow", {{manifest_file, manifest(R"("effects")")}, {"plugin/main.lua", R"(
         assert(reskate.effects.cover({colour = {r = 0.9, g = 0.95, b = 1}, amount = 0.8, facing = 0.6, softness = 0.1, brightness = 2,
-            breakup = 0.5, sparkle = 0.25, snowfall = 0.6}))
-        assert(not pcall(reskate.effects.cover, {snowfall = 1.5}), "a snowfall is 0 to 1")
+            breakup = 0.5, sparkle = 0.25, fall = 0.6}))
+        assert(not pcall(reskate.effects.cover, {fall = 1.5}), "a fall is 0 to 1")
         assert(not pcall(reskate.effects.cover, {fall_speed = 9}), "a fall speed is 0.1 to 4")
         assert(not pcall(reskate.effects.cover, {amount = 2}), "an amount is 0 to 1")
         assert(not pcall(reskate.effects.cover, {facing = -0.1}), "a facing is 0 to 1")
@@ -4888,16 +4905,19 @@ void plugins_cover_the_world() {
         assert(reskate.effects.keep_clear({{position = vector.create(1, 2, 3)}, {position = vector.create(4, 5, 6), radius = 1.5, height = 3}}))
         assert(not pcall(reskate.effects.keep_clear, {{position = vector.create(0, 0, 0), radius = 20}}), "a radius is 0.05 to 10")
         assert(not pcall(reskate.effects.keep_clear, {{radius = 1}}), "a place has a position")
-        assert(reskate.effects.keep_clear({{position = vector.create(7, 0, 7), snow = 0.4}}), "snow on what stands in a place")
+        assert(reskate.effects.keep_clear({{position = vector.create(7, 0, 7), dusting = 0.4}}), "a dusting on what stands in a place")
         assert(reskate.effects.keep_clear({{position = vector.create(1, 2, 3)}, {position = vector.create(0, 0, 0), length = 0.8,
-            radius = 0.1, height = 0.05, snow = 0.3, forward = vector.create(2, 1, 0)}}), "a board-shaped place")
+            radius = 0.1, height = 0.05, dusting = 0.3, forward = vector.create(2, 1, 0)}}), "a board-shaped place")
         assert(not pcall(reskate.effects.keep_clear, {{position = vector.create(0, 0, 0), length = 0.8, forward = vector.create(0, 3, 0)}}),
             "a board's forward is not its up")
-        assert(not pcall(reskate.effects.keep_clear, {{position = vector.create(0, 0, 0), snow = 2}}), "a place's snow is 0 to 1")
+        assert(not pcall(reskate.effects.keep_clear, {{position = vector.create(0, 0, 0), dusting = 2}}), "a place's dusting is 0 to 1")
         assert(reskate.effects.trail({position = vector.create(1, 0, 2)}))
         assert(reskate.effects.trail({position = vector.create(1, 0, 3), width = 0.3, fade = 12}))
         assert(reskate.effects.trail({position = vector.create(1, 0, 4), tread = 0.22}), "a trail with a tread")
         assert(not pcall(reskate.effects.trail, {position = vector.create(0, 0, 0), tread = 2}), "a tread is 0 to 1 m")
+        assert(reskate.effects.trail({position = vector.create(1, 0, 6), tread = 0.3, tread_lines = 5}), "a tread of five lines")
+        assert(not pcall(reskate.effects.trail, {position = vector.create(0, 0, 0), tread = 0.3, tread_lines = 40}), "tread_lines is 1 to 31")
+        assert(not pcall(reskate.effects.trail, {position = vector.create(0, 0, 0), tread = 0.3, tread_lines = 2.5}), "tread_lines is whole")
         assert(reskate.effects.trail({position = vector.create(1, 0, 5), starts = true}), "a point starting a new trail")
         assert(not pcall(reskate.effects.trail, {position = vector.create(0, 0, 0), starts = 1}), "starts is true or false")
         assert(not pcall(reskate.effects.trail, {position = vector.create(0, 0, 0), fade = 100}), "a fade is 0.5 to 60 s")
@@ -4921,7 +4941,7 @@ void plugins_cover_the_world() {
     check(game.called("keep clear snow 2 (1.0 2.0 3.0 r0.60 h2.0) (0.0 0.0 0.0 r0.10 h0.1 s0.30 l0.80 f1.0,0.0,0.0 u0.0,1.0,0.0)"),
           "A board-shaped place, its forward made square to its up\n" + environment.all());
     check(game.called("trail snow 1.0 0.0 2.0 w0.25 f10.0") && game.called("trail snow 1.0 0.0 3.0 w0.30 f12.0") &&
-              game.called("trail snow 1.0 0.0 4.0 w0.25 f10.0 t0.22") &&
+              game.called("trail snow 1.0 0.0 4.0 w0.25 f10.0 t0.22x13") && game.called("trail snow 1.0 0.0 6.0 w0.25 f10.0 t0.30x5") &&
               game.called("trail snow 1.0 0.0 5.0 w0.25 f10.0 new"),
           "Trail points, with their defaults\n" + environment.all());
     // A second plugin is told whose cover it is; nil from it does not end the first one's.

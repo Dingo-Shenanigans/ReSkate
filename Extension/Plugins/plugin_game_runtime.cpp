@@ -1286,10 +1286,10 @@ public:
         world_cover::Settings s;
         s.colour = cover->colour;
         s.amount = cover->amount, s.facing = cover->facing, s.softness = cover->softness;
-        s.brightness = cover->brightness, s.breakup = cover->breakup, s.sparkle = cover->sparkle, s.snowfall = cover->snowfall;
+        s.brightness = cover->brightness, s.breakup = cover->breakup, s.sparkle = cover->sparkle, s.fall = cover->fall;
         s.fall_speed = cover->fall_speed;
         s.left = cover->left;
-        s.snowfall_stopping = cover->snowfall_stopping;
+        s.fall_stopping = cover->fall_stopping;
         s.under_roofs = cover->under_roofs;
         s.light = cover->light;
         world_cover::set(s);
@@ -1299,13 +1299,13 @@ public:
         if (coverer_ != plugin) return "this plugin has no cover on the world";
         std::vector<world_cover::Clear> clear;
         for (const auto& place : places)
-            clear.push_back({place.foot, place.radius, place.height, place.snow, place.length, place.forward, place.up});
+            clear.push_back({place.foot, place.radius, place.height, place.dusting, place.length, place.forward, place.up});
         world_cover::keep_clear(std::move(clear));
         return {};
     }
     std::string world_cover_trail(std::string_view plugin, const CoverTrail& point) override {
         if (coverer_ != plugin) return "this plugin has no cover on the world";
-        world_cover::add_trail(point.at, point.width, point.fade, point.tread, point.starts);
+        world_cover::add_trail(point.at, point.width, point.fade, point.tread, point.starts, point.tread_lines);
         return {};
     }
     // ---- viewmodel -----------------------------------------------------------------------------------

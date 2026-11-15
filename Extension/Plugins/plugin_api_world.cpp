@@ -4,6 +4,8 @@
 #include "plugin_session_feed.h"
 #include "Extension/Multiplayer/Remote/cosmetics.h"
 #include "Extension/Multiplayer/Remote/stand_ins.h"
+#include "Engine/Game/Build/addresses.h"
+#include "Engine/Game/Build/20260929/native_audio.h"
 #include "lua.h"
 #include "lualib.h"
 #include <algorithm>
@@ -47,7 +49,10 @@ struct WorldApi {
     // ---- skater.control ------------------------------------------------------------------------
     // surface_sound(word or nil[, fields]): the local skater's sounds as on the surface that physics
     // material word names, wherever the skater is, in the sound's material fields listed in fields
-    // (1 to 18; omitted: every one); nil gives each surface its own.
+    // (1 to 18; omitted: every one); nil gives each surface its own. Only a surface of the game's own
+    // material grid: both of the word's slots (material, bits 6-18; property, bits 19-31) one the root
+    // level's grid has (a slot past them is read from other memory, and the game crashes on contact). Its
+    // flags (bits 0-5) are not used: each field keeps its own.
     static int surface_sound(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "skater.control", "reskate.skater.surface_sound");
@@ -55,7 +60,11 @@ struct WorldApi {
         if (!lua_isnoneornil(L, 1)) {
             const double value = luaL_checknumber(L, 1);
             if (!(value >= 1 && value <= 4294967295.0) || value != std::floor(value)) luaL_argerror(L, 1, "not a physics material word");
-            word = static_cast<std::uint32_t>(value);
+            const auto packed = static_cast<std::uint32_t>(value);
+            const std::uint32_t material = (packed >> 6) & 0x1fffU, property = packed >> 19;
+            if (material >= addr::native_audio::material_slots || property >= addr::native_audio::material_slots)
+                luaL_argerror(L, 1, "not a surface of the game's material grid (its material and property slots are 0 to 115)");
+            word = packed;
         }
         std::uint32_t fields = ~0U;
         if (!lua_isnoneornil(L, 2)) {

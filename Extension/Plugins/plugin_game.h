@@ -335,9 +335,9 @@ public:
     // screen only, until ended; empty ends it. One plugin at a time.
     struct WorldCover {
         std::array<float, 3> colour{0.92f, 0.95f, 1.0f};
-        float amount{1}, facing{0.55f}, softness{0.15f}, brightness{1.6f}, breakup{0.35f}, sparkle{0}, snowfall{0}, fall_speed{1};
+        float amount{1}, facing{0.55f}, softness{0.15f}, brightness{1.6f}, breakup{0.35f}, sparkle{0}, fall{0}, fall_speed{1};
         float left{1}; // how much of it is left (melting), 0..1, the same everywhere
-        bool snowfall_stopping{}; // the snow stops falling: no new flakes, the last ones fall out
+        bool fall_stopping{}; // the fall stops: no new flakes, the last ones fall out
         bool under_roofs{true}; // false: none of it where something is overhead (indoors), nor falling there
         bool light{};           // true: light from the start (fewer flakes and samples), for a slow GPU
     };
@@ -357,7 +357,7 @@ public:
     struct CoverClear {
         Vec3 foot{};
         float radius{0.6f}, height{2.0f};
-        float snow{}; // how much cover shows on what stands in it, 0 to 1
+        float dusting{}; // how much cover shows on what stands in it, 0 to 1
         // A board-shaped place (length > 0): `foot` its middle, `forward` along it and `up` out of it (unit,
         // square to each other), `radius` its half width and `height` its thickness.
         float length{};
@@ -370,6 +370,7 @@ public:
         Vec3 at{};
         float width{0.25f}, fade{10};
         float tread{}; // a tread's width pressed into it (its lines), or 0
+        int tread_lines{13}; // the tread's lines across it, 1 to 31
         bool starts{}; // begins a new trail, not joined to the point before
     };
     virtual std::string world_cover_trail(std::string_view /*plugin*/, const CoverTrail&) { return unavailable; }

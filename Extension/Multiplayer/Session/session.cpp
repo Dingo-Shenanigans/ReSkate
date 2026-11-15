@@ -1221,10 +1221,10 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, std::string_vi
                 try {solo=capture_local(base,client,false);if(solo.ready)note_local_skater(solo.pose.root);}
                 catch(...) {}
             }
-            // The local skater's sound is followed outside a session too, from the start: a surface sound
-            // (reskate.skater.surface_sound) needs what the game sent before it was set, as the game
-            // sends a field again only when it changes.
-            if (solo.ready) prepare_audio_capture(base, solo);
+            // Once a plugin has set a surface sound (reskate.skater.surface_sound), the local skater's sound is
+            // followed outside a session too, for the rest of the run: the game sends a field again only when it
+            // changes, so giving each surface its own sound back needs what the game last sent for each.
+            if (solo.ready && surface_sound_used()) prepare_audio_capture(base, solo);
             relay_throwdowns(s, ready, &solo);
             if (competition_stock_physics() && solo.ready) {
                 physics_tuning::prepare();physics_tuning::enforce(base,solo.entity,{});

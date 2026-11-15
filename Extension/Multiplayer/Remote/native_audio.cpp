@@ -53,6 +53,9 @@ struct State {
     std::unique_ptr<NativeAudioFrame> as_given = std::make_unique<NativeAudioFrame>();
     std::atomic<std::uint32_t> surface_sound{}, surface_fields{~0U};
     std::atomic<bool> surface_resend{}; // the whole state goes once (the surface sound changed)
+    // A plugin has set a surface sound in this run: from then on the local skater's sound is followed (outside
+    // a session too) and read before it is passed on. Until then nothing of it changes from before.
+    std::atomic<bool> surface_used{};
     int surface_resend_in{};            // local updates until it goes whole (0: not waiting); under mutex
     unsigned surface_updates{};         // local updates with a surface sound, for its regular resend; under mutex
     AudioCaptureBuffer queue;
@@ -149,54 +152,65 @@ void submit_hook(Address handle, const NativeAudioFrame *frame) {
         s.submit(handle, frame); // Every other skater's sound goes on unchanged.
         return;
     }
-    // The local skater's: read once, its surface sound put in when one is set, and passed on.
-    NativeAudioFrame snapshot;
-    const bool read = readable(reinterpret_cast<Address>(frame), snapshot.bytes.data(), 0x218);
-    const NativeAudioFrame given = snapshot;
-    const auto sound_word = s.surface_sound.load(std::memory_order_acquire);
-    if (read && sound_word) put_surface_sound(s, snapshot, sound_word);
-    // The game sends a field only when it changes, so the component keeps what it was last sent: a
-    // surface sent before the surface sound was set (or while the skater was not followed, after a
-    // teleport or a reload) stayed until the skater reached another surface, and when the surface
-    // sound went, its surface stayed. Then the whole state goes once, every field marked, as a remote
-    // skater's does (audio_frame): the merged state with the surface sound in, or as the game gave it.
-    NativeAudioFrame full;
-    bool send_full = false;
+    // The local skater's. Until a plugin first sets a surface sound (surface_used), it goes on as the game
+    // gave it and is only read afterwards, for a session's capture, as before. From then on it is read
+    // first, its surface sound put in while one is set, and passed on.
+    const bool shaping = s.surface_used.load(std::memory_order_acquire);
+    NativeAudioFrame snapshot, given, full;
+    bool read = false, send_full = false;
     std::array<std::uint32_t, 4> masks{};
     const auto copy = reinterpret_cast<void (*)(NativeAudioFrame *, const NativeAudioFrame *, const void *)>(
         s.base + sound::frame_copy);
-    if (read) {
-        masks = {audio_value<std::uint32_t>(snapshot, 0x164), audio_value<std::uint32_t>(snapshot, 0x130),
-                 audio_value<std::uint32_t>(snapshot, 0x124), audio_value<std::uint32_t>(snapshot, 0xc0)};
-        if (!(masks[3] & ~0x07ffffffU)) {
-            std::lock_guard lock(s.mutex);
-            bool resend = s.surface_resend.exchange(false, std::memory_order_acq_rel);
-            if (s.surface_resend_in > 0 && --s.surface_resend_in == 0) resend = true;
-            // And every 30 updates (about half a second) while a surface sound is set: the game can put
-            // its own state back without telling (a reset to a marker went back to the default
-            // surface's sound, concrete's, and stayed there; 2026-11-11), and a field it does not
-            // change is never sent again.
-            if (sound_word && ++s.surface_updates % 30 == 0) resend = true;
-            if (sound_word) {
-                full = *s.accumulated;
-                copy(&full, &snapshot, masks.data());
-                send_full = resend || surface_stale(s, full, sound_word);
-                if (send_full) put_surface_sound(s, full, sound_word);
-            } else if (resend) {
-                full = *s.as_given;
-                copy(&full, &given, masks.data());
-                send_full = true;
-            }
-            if (send_full) {
-                for (const auto off : {0x164, 0x130, 0x124})
-                    audio_put(full, off, UINT32_MAX);
-                audio_put(full, 0xc0, std::uint32_t{0x07ffffff});
+    const auto read_masks = [](const NativeAudioFrame &f) {
+        return std::array<std::uint32_t, 4>{audio_value<std::uint32_t>(f, 0x164), audio_value<std::uint32_t>(f, 0x130),
+                                            audio_value<std::uint32_t>(f, 0x124), audio_value<std::uint32_t>(f, 0xc0)};
+    };
+    if (!shaping) {
+        s.submit(handle, frame); // Original local audio is forwarded unchanged.
+        read = readable(reinterpret_cast<Address>(frame), snapshot.bytes.data(), 0x218);
+        if (read) masks = read_masks(snapshot);
+    } else {
+        read = readable(reinterpret_cast<Address>(frame), snapshot.bytes.data(), 0x218);
+        given = snapshot;
+        const auto sound_word = s.surface_sound.load(std::memory_order_acquire);
+        if (read && sound_word) put_surface_sound(s, snapshot, sound_word);
+        // The game sends a field only when it changes, so the component keeps what it was last sent: a
+        // surface sent before the surface sound was set (or while the skater was not followed, after a
+        // teleport or a reload) stayed until the skater reached another surface, and when the surface
+        // sound went, its surface stayed. Then the whole state goes once, every field marked, as a remote
+        // skater's does (audio_frame): the merged state with the surface sound in, or as the game gave it.
+        if (read) {
+            masks = read_masks(snapshot);
+            if (!(masks[3] & ~0x07ffffffU)) {
+                std::lock_guard lock(s.mutex);
+                bool resend = s.surface_resend.exchange(false, std::memory_order_acq_rel);
+                if (s.surface_resend_in > 0 && --s.surface_resend_in == 0) resend = true;
+                // And every 30 updates (about half a second) while a surface sound is set: the game can put
+                // its own state back without telling (a reset to a marker went back to the default
+                // surface's sound, concrete's, and stayed there; 2026-11-11), and a field it does not
+                // change is never sent again.
+                if (sound_word && ++s.surface_updates % 30 == 0) resend = true;
+                if (sound_word) {
+                    full = *s.accumulated;
+                    copy(&full, &snapshot, masks.data());
+                    send_full = resend || surface_stale(s, full, sound_word);
+                    if (send_full) put_surface_sound(s, full, sound_word);
+                } else if (resend) {
+                    full = *s.as_given;
+                    copy(&full, &given, masks.data());
+                    send_full = true;
+                }
+                if (send_full) {
+                    for (const auto off : {0x164, 0x130, 0x124})
+                        audio_put(full, off, UINT32_MAX);
+                    audio_put(full, 0xc0, std::uint32_t{0x07ffffff});
+                }
             }
         }
+        if (send_full) s.submit(handle, &full);
+        else if (read && sound_word) s.submit(handle, &snapshot);
+        else s.submit(handle, frame); // Original local audio is forwarded unchanged.
     }
-    if (send_full) s.submit(handle, &full);
-    else if (read && sound_word) s.submit(handle, &snapshot);
-    else s.submit(handle, frame); // Original local audio is forwarded unchanged.
     const auto error = GetLastError();
     std::lock_guard lock(s.mutex);
     try {
@@ -208,11 +222,8 @@ void submit_hook(Address handle, const NativeAudioFrame *frame) {
         // Pure native field copy merges partial updates into owned storage.
         // It contains only primitive fields and does not allocate or call out.
         const NativeAudioFrame &sent = send_full ? full : snapshot;
-        const std::array<std::uint32_t, 4> sent_masks{
-            audio_value<std::uint32_t>(sent, 0x164), audio_value<std::uint32_t>(sent, 0x130),
-            audio_value<std::uint32_t>(sent, 0x124), audio_value<std::uint32_t>(sent, 0xc0)};
-        copy(s.accumulated.get(), &sent, sent_masks.data());
-        copy(s.as_given.get(), &given, masks.data());
+        copy(s.accumulated.get(), &sent, (send_full ? read_masks(sent) : masks).data());
+        if (shaping) copy(s.as_given.get(), &given, masks.data());
         s.queue.push(audio_state(*s.accumulated), now_us());
         ++s.captured;
         s.capture_issue.clear();
@@ -319,11 +330,19 @@ void prepare_audio_capture(Address base, const NativeFrame &local) noexcept {
 }
 void set_surface_sound(std::uint32_t word, std::uint32_t fields) noexcept {
     auto &s = state();
+    if (word && !s.surface_used.load(std::memory_order_acquire)) {
+        // What the game has sent so far, as it gave it (nothing was changed until now): given back when the
+        // surface sound goes.
+        std::lock_guard lock(s.mutex);
+        *s.as_given = *s.accumulated;
+        s.surface_used.store(true, std::memory_order_release);
+    }
     s.surface_sound.store(0, std::memory_order_release);
     s.surface_fields.store(fields, std::memory_order_release);
     s.surface_sound.store(word, std::memory_order_release);
     s.surface_resend.store(true, std::memory_order_release);
 }
+bool surface_sound_used() noexcept { return state().surface_used.load(std::memory_order_acquire); }
 std::vector<AudioSample> drain_audio_capture(std::uint64_t now) {
     auto &s = state();
     std::lock_guard lock(s.mutex);

@@ -115,13 +115,14 @@ struct EffectsApi {
         const auto [ready, epoch] = p.services_.game().effects_state();
         lua_pushboolean(L, ready); lua_pushnumber(L, static_cast<double>(epoch)); return 2;
     }
-    // cover({colour = {r, g, b}, amount, facing, softness, brightness, breakup, sparkle, snowfall, fall_speed,
-    // left, snowfall_stopping, under_roofs, light}): a cover over
-    // every upward-facing surface of the world (snow, sand, dust), drawn into the world's picture before
+    // cover({colour = {r, g, b}, amount, facing, softness, brightness, breakup, sparkle, fall, fall_speed,
+    // left, fall_stopping, under_roofs, light}): a cover over
+    // every upward-facing surface of the world (snow, sand, dust), with `fall` its flakes falling in front of
+    // it (`fall_stopping`: no new ones, the last fall out), drawn into the world's picture before
     // the game's post-processing and its UI, so menus and the HUD are never under it. On this screen,
     // until cover(nil); one plugin at a time. Not a per-tick call, and no effect handle. under_roofs = false:
     // none of it where something is overhead (a roof, a bridge: indoors), and no flakes falling under one
-    // (outside still snows, seen from in); found from the collision near the camera.
+    // (outside it still falls, seen from in); found from the collision near the camera.
     static int cover(lua_State* L) {
         auto& p = plugin_of(L);
         need(L, p, "effects", "reskate.effects.cover");
@@ -147,11 +148,11 @@ struct EffectsApi {
         number("brightness", c.brightness, 0.25, 4, "a cover's brightness is 0.25 to 4");
         number("breakup", c.breakup, 0, 1, "a cover's breakup is 0 to 1");
         number("sparkle", c.sparkle, 0, 1, "a cover's sparkle is 0 to 1");
-        number("snowfall", c.snowfall, 0, 1, "a cover's snowfall is 0 to 1");
+        number("fall", c.fall, 0, 1, "a cover's fall is 0 to 1");
         number("fall_speed", c.fall_speed, 0.1, 4, "a cover's fall_speed is 0.1 to 4");
         number("left", c.left, 0, 1, "a cover's left is 0 to 1");
-        lua_getfield(L, 1, "snowfall_stopping");
-        c.snowfall_stopping = lua_toboolean(L, -1) != 0;
+        lua_getfield(L, 1, "fall_stopping");
+        c.fall_stopping = lua_toboolean(L, -1) != 0;
         lua_pop(L, 1);
         lua_getfield(L, 1, "under_roofs");
         if (!lua_isnil(L, -1)) {
@@ -184,12 +185,12 @@ struct EffectsApi {
         lua_pushboolean(L, 1); return 1;
     }
     // keep_clear({{position = vector, radius = 0.6, height = 2}, ...}): up to three places kept clear of
-    // the plugin's cover for 0.3 s, so every tick (the skater: no snow on the player); {} or nil ends it.
-    // Each an upright cylinder standing on `position`, radius 0.05 to 10 m, height 0.1 to 20 m. `snow` (0 to
-    // 1, 0 if left out): a patchy dusting of the cover on what stands in it, on every side (the skater after
-    // rolling in snow). With a length (0.05 to 10 m), a board-shaped place instead: `position` its middle,
+    // the plugin's cover for 0.3 s, so every tick (the skater: none of it on the player); {} or nil ends it.
+    // Each an upright cylinder standing on `position`, radius 0.05 to 10 m, height 0.1 to 20 m. `dusting` (0
+    // to 1, 0 if left out): a patchy dusting of the cover on what stands in it, on every side (the skater after
+    // rolling in it). With a length (0.05 to 10 m), a board-shaped place instead: `position` its middle,
     // `forward` along it and `up` out of it (vectors; up defaults to the world's), `radius` its half width
-    // and `height` its thickness (0.01 m up), rounded at its ends. In its plane the cover is `snow` of what
+    // and `height` its thickness (0.01 m up), rounded at its ends. In its plane the cover is `dusting` of what
     // it would be, and no trail is pressed into it (a deck riding low: a light dusting, no tracks on it).
     static int keep_clear(lua_State* L) {
         auto& p = plugin_of(L);
@@ -239,7 +240,7 @@ struct EffectsApi {
                 } else {
                     number("height", place.height, 0.1, 20, "a place's height is 0.1 to 20 metres");
                 }
-                number("snow", place.snow, 0, 1, "a place's snow is 0 to 1");
+                number("dusting", place.dusting, 0, 1, "a place's dusting is 0 to 1");
                 places.push_back(place);
                 lua_pop(L, 1);
             }
@@ -248,10 +249,11 @@ struct EffectsApi {
         if (!why.empty()) { lua_pushnil(L); lua_pushlstring(L, why.data(), why.size()); return 2; }
         lua_pushboolean(L, 1); return 1;
     }
-    // trail({position = vector, width = 0.25, fade = 10, tread = 0, starts = false}): a point on a trail through the plugin's
+    // trail({position = vector, width = 0.25, fade = 10, tread = 0, tread_lines = 13, starts = false}): a point on a trail through the plugin's
     // cover (where a board goes, or a skater rolls): the cover is pressed down along the trail, `width`
     // metres wide (0.05 to 3), and fills back in over `fade` seconds (0.5 to 60). `tread` (0.05 to 1 m, 0
-    // none): a tread that wide pressed into it, its 13 lines (7 light, 6 darker ridges) along the trail.
+    // none): a tread that wide pressed into it, `tread_lines` lines across it (1 to 31, 13 if left out:
+    // lighter ones and darker ridges in turn, a lighter one in the middle) along the trail.
     // `starts`: the point begins a new trail, not joined to the one before (a mark under another part of
     // the thing).
     // Call it as the thing moves; the last 256 points are kept.
@@ -275,6 +277,13 @@ struct EffectsApi {
         number("width", point.width, 0.05, 3, "a trail's width is 0.05 to 3 metres");
         number("fade", point.fade, 0.5, 60, "a trail's fade is 0.5 to 60 seconds");
         number("tread", point.tread, 0, 1, "a trail's tread is 0 to 1 metres");
+        lua_getfield(L, 1, "tread_lines");
+        if (!lua_isnil(L, -1)) {
+            const double lines = luaL_checknumber(L, -1);
+            if (!(lines >= 1 && lines <= 31) || lines != std::floor(lines)) luaL_error(L, "a trail's tread_lines is a whole number, 1 to 31");
+            point.tread_lines = static_cast<int>(lines);
+        }
+        lua_pop(L, 1);
         lua_getfield(L, 1, "starts");
         if (!lua_isnil(L, -1)) {
             luaL_checktype(L, -1, LUA_TBOOLEAN);
