@@ -2173,8 +2173,12 @@ void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, Mo
 
     // The foot: the way back and, on MY MODS, the list added up.
     // (BACK is plain: blue is for what a page is there to do, and leaving it is not that.)
+    // (Not while a mod's items are being chosen: that page has its own way back, MY MODS at its
+    // head and DONE at its foot, and a BACK under those read as a third one, when it left the
+    // Mod Manager altogether.)
     ImGui::SetCursorPos(ImVec2(edge, bottom - foot));
-    const bool leave = ImGui::Button("\xe2\x86\x90  BACK", ImVec2(S(130), foot));
+    const bool choosing_items = panel.tab == 0 && panel.items.tab;
+    const bool leave = !choosing_items && ImGui::Button("\xe2\x86\x90  BACK", ImVec2(S(130), foot));
     if (panel.tab == 0)
         if (const auto totals = mods_totals(panel); !totals.empty()) {
             const float wide = fonts.body->CalcTextSizeA(fonts.body->FontSize, FLT_MAX, 0, totals.c_str()).x;
