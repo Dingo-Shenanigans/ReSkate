@@ -66,6 +66,9 @@ std::vector<ReleaseNote> parse_release_feed(std::string_view feed);
 // The newest release of the repo the launcher updates from (with `prereleases`, the newest
 // pre-release when it is newer). Throws when GitHub cannot be reached.
 ReleaseNote fetch_release_note(bool prereleases = false);
+// That release first, then the ones before it from the releases page's feed, `most` in all at
+// most: what someone who skipped a few updates missed. Throws when GitHub cannot be reached.
+std::vector<ReleaseNote> fetch_release_notes(bool prereleases = false, std::size_t most = 12);
 // That repo's releases page on GitHub.
 std::string releases_page();
 

@@ -1126,9 +1126,19 @@ void mod_side_panel(const Fonts& fonts, ModsPanel& panel, const thunderstore::In
     }
 
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(S(18), S(16)));
+    // A slim scrollbar, for a mod with more to say than the panel is tall.
+    const float scrollbar = S(8);
+    ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, scrollbar);
+    ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarRounding, S(4));
+    ImGui::PushStyleColor(ImGuiCol_ScrollbarBg, ImVec4(0, 0, 0, 0));
     ImGui::BeginChild("##mod_side", size, ImGuiChildFlags_AlwaysUseWindowPadding | ImGuiChildFlags_NavFlattened);
     auto* draw = ImGui::GetWindowDrawList();
-    const float inner = ImGui::GetContentRegionAvail().x;
+    // As wide as the panel less its padding and the scrollbar's place, whether the scrollbar is there
+    // or not. By the room the window says it has, the panel was a little narrower with the scrollbar
+    // and so a little shorter (the items' thumbnails are as tall as they are wide), which took the
+    // scrollbar away again, which made it wider and taller: it shook between the two every frame.
+    const float inner = size.x - S(18) * 2 - scrollbar;
+    const float left = ImGui::GetCursorPosX();
     const auto divider = [&] {
         ImGui::Dummy(ImVec2(0, S(6)));
         const ImVec2 line = ImGui::GetCursorScreenPos();
@@ -1140,7 +1150,7 @@ void mod_side_panel(const Fonts& fonts, ModsPanel& panel, const thunderstore::In
         ImGui::TextDisabled("%s", text);
         ImGui::PopFont();
     };
-    ImGui::PushTextWrapPos(0);
+    ImGui::PushTextWrapPos(left + inner);
     if (panel.selected < 0) {
         ImGui::PushFont(fonts.bold);
         ImGui::TextUnformatted("NO MOD PICKED");
@@ -1193,7 +1203,7 @@ void mod_side_panel(const Fonts& fonts, ModsPanel& panel, const thunderstore::In
 
         // What a row has no room for, side by side. (How many items it adds is on their card, below.)
         ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(0, S(3)));
-        if (ImGui::BeginTable("##facts", 3, ImGuiTableFlags_SizingStretchSame)) {
+        if (ImGui::BeginTable("##facts", 3, ImGuiTableFlags_SizingStretchSame, ImVec2(inner, 0))) {
             const auto fact = [&](const char* name, const std::string& value, const std::string& note = {}) {
                 ImGui::TableNextColumn();
                 caption(name);
@@ -1222,7 +1232,7 @@ void mod_side_panel(const Fonts& fonts, ModsPanel& panel, const thunderstore::In
             const auto count = mod_items_count(panel, mod);
             const auto standing = count.find(" of ") == std::string::npos ? "All " + count + " on" : count;
             ImGui::SameLine();
-            ImGui::SetCursorPosX(ImGui::GetContentRegionMax().x - ImGui::CalcTextSize(standing.c_str()).x);
+            ImGui::SetCursorPosX(left + inner - ImGui::CalcTextSize(standing.c_str()).x);
             ImGui::TextDisabled("%s", standing.c_str());
             ImGui::Dummy(ImVec2(0, S(2)));
             mod_items_strip(fonts, panel, mod, inner);
@@ -1280,7 +1290,8 @@ void mod_side_panel(const Fonts& fonts, ModsPanel& panel, const thunderstore::In
     }
     ImGui::PopTextWrapPos();
     ImGui::EndChild();
-    ImGui::PopStyleVar();
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar(3);
 }
 
 // The whole list added up, for the page's foot: how many mods load, the video memory they can

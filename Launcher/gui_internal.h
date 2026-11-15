@@ -237,8 +237,9 @@ struct Settings {
     bool steam_prefer_code{};
     // The versions of the privacy policy and the terms of service the player agreed to (0: none).
     std::uint64_t accepted_privacy{}, accepted_terms{};
-    // The version of the home screen's announcement the player hid (0: none): one newer shows.
-    std::uint64_t announcement_hidden{};
+    // The version of an important announcement that has opened itself once (0: none): it is a line
+    // on the home screen after that.
+    std::uint64_t announcement_opened{};
     // GET MODS: the Thunderstore categories shown only, and those hidden (thunderstore.h CategoryFilter).
     std::vector<std::string> mod_categories_only, mod_categories_hidden;
     // MY MODS: the same for the installed mods, by their Thunderstore categories ("No category" for a
@@ -374,21 +375,23 @@ private:
     void run_play();
 };
 
-// The CHANGELOGS panel's release, the newest: fetched on a worker the first time the panel
-// opens and kept while the launcher runs. `note` and `text` belong to the UI thread.
+// The releases the CHANGELOGS panel lists, newest first, and the home screen's WHAT'S NEW says the
+// newest of: fetched on a worker as the launcher starts and kept while it runs. `notes`, `texts`
+// and `shown` belong to the UI thread.
 struct Changelog {
     std::thread worker;
     std::atomic<bool> loading{};
     std::mutex mutex;
     bool arrived{};                                  // worker -> UI, under mutex
-    update::ReleaseNote incoming;
+    std::vector<update::ReleaseNote> incoming;
     std::string incoming_error;
 
     bool loaded{};
     std::string error;                               // why the last fetch failed
-    update::ReleaseNote note;
-    thunderstore::Readme text;
-    // Whether pre-releases are wanted (the setting), and whether `note` was fetched with them.
+    std::vector<update::ReleaseNote> notes;
+    std::vector<thunderstore::Readme> texts;         // each release's notes, as lines
+    int shown{};                                     // the release the panel is showing
+    // Whether pre-releases are wanted (the setting), and whether `notes` were fetched with them.
     bool prereleases{}, fetched_prereleases{};
 
     ~Changelog() {
@@ -426,6 +429,7 @@ struct Legal {
     std::thread versions_worker;
     bool versions_started{}, versions_arrived{};   // arrived: worker -> UI, under the mutex
     std::array<std::uint64_t, count> current{};
+    std::array<std::string, count> updated;     // and when each was last changed (YYYY-MM-DD), for the agreement
     bool agreement{};                           // the agreement window is up
 
     ~Legal() {
@@ -474,6 +478,7 @@ struct Ui {
     GamePages game;
     bool changelog{};
     Changelog notes;
+    bool news{};                // the announcement is open in full
     Legal legal;
     int settings_tab{};         // GAME, DISPLAY, KEYS, ADVANCED, then the game's own pages
     // The maps Settings offers to start in, read from the Mods folder when GAME is first drawn
@@ -944,8 +949,23 @@ void sign_in_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui)
 void prompt_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, const update::Prompt& prompt, Ui& ui);
 void qr_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, const std::vector<std::string>& rows);
 void steam_offline_window(const Fonts& fonts, ImVec2 size, Ui& ui);
-// What the newest release changed: its notes on GitHub.
-void changelog_window(const Fonts& fonts, ImVec2 size, Ui& ui);
+// Every frame: fetches the releases' notes when they are not here yet (or the pre-release setting
+// changed), and takes them in when they arrive.
+void pump_changelog(Changelog& log);
+// Markdown as the launcher's own notes are set (a release's, an announcement's): a heading stands
+// apart with a blue mark before it, body text is a shade softer than a name, and a bullet has a
+// round mark. With `leads`, a bullet's first sentence is in bold and what explains it follows in
+// grey. A first line that is just `tag` (the release's own name) is left out.
+void draw_notes(const Fonts& fonts, const thunderstore::Readme& readme, const std::string& tag = {}, bool leads = true);
+// What each release changed: the releases at the left, the chosen one's notes beside them.
+// `installed`: the release this is, marked in the list; empty for a build with none.
+void changelog_window(const Fonts& fonts, ImVec2 size, Ui& ui, const std::string& installed);
+// The map the game starts in (Settings > GAME, and the home screen): the maps to choose from, read
+// when they are first asked for; the chosen one's name; and the choices themselves, for a combo or
+// a popup. True when the choice changed, so the caller can save.
+const std::vector<launcher_start_maps::StartMap>& start_map_list(const launcher_app::Session& session, Ui& ui);
+std::string start_map_name(const Settings& settings, const launcher_app::Session& session, Ui& ui);
+bool start_map_items(Settings& settings, const launcher_app::Session& session, Ui& ui);
 // The privacy policy or the terms of service (ui.legal.open), with a switch between them.
 void legal_window(const Fonts& fonts, ImVec2 size, Ui& ui);
 // Each frame: the backend's versions of both, looked up once; a newer one than the player
