@@ -128,6 +128,9 @@ struct Asked {
     Settings settings;
     std::vector<Clear> clear;
     std::uint64_t clear_until{}; // keep_clear holds for 300 ms
+    // The places as each keep_clear set them, with when (steady clock, microseconds): the newest few, for the
+    // places at the drawn picture's own moment (places_at).
+    std::deque<std::pair<std::uint64_t, std::vector<Clear>>> clear_history;
     std::uint64_t stopping_since{}; // when the fall began to stop (GetTickCount64), 0 while it falls
     struct TrailPoint {
         std::array<float, 3> at{};
@@ -150,6 +153,9 @@ struct Asked {
     bool eye_known{};
 };
 Asked& asked() { static auto* value = new Asked; return *value; }
+std::uint64_t now_us() {
+    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+}
 std::atomic<bool> wanted{};
 std::atomic<bool> allowed{};     // the world has been in play for a moment (allow)
 std::atomic<bool> retired{};     // the game's frame is not one the cover can safely go into
@@ -262,9 +268,8 @@ struct Shared {
     std::array<std::array<float, camera_floats>, camera_history> cameras{};
     std::size_t cameras_known{};
     unsigned cost_frames{}; // frames since the cost was last said
-    // The places kept clear as each of those frames was drawn, newest first: a place on something that moves
-    // (a deck) is drawn where the picture has it, camera_delay back, like the world.
-    std::array<std::vector<Clear>, camera_history> clears{};
+    double frame_us{};             // how long a frame takes, eased (present to present)
+    std::uint64_t last_present_us{};
     // The near distance each recent frame measured, and the steady middle of them (0: none yet).
     std::deque<float> nears;
     float held_near{};
@@ -1098,13 +1103,14 @@ bool record_cover(Shared& s) {
 
     Settings settings;
     std::vector<Clear> clear;
+    std::deque<std::pair<std::uint64_t, std::vector<Clear>>> clear_history;
     const std::uint64_t now = GetTickCount64();
     float stopping_seconds = -1; // how long the fall has been stopping, or -1 while it falls
     {
         auto& a = asked();
         std::lock_guard lock(a.mutex);
         settings = a.settings;
-        if (now < a.clear_until) clear = a.clear;
+        if (now < a.clear_until) { clear = a.clear; clear_history = a.clear_history; }
         if (a.stopping_since) stopping_seconds = static_cast<float>(now - a.stopping_since) / 1000.0f;
         // The trails, after the cameras and the places: a head (how many points, the box they lie in),
         // then each point (where, width; how strong it still is, fading to nothing over its time).
@@ -1165,38 +1171,46 @@ bool record_cover(Shared& s) {
         a.eye = {camera[9], camera[10], camera[11]};
         a.eye_known = true;
     }
-    // The places as the picture has them: camera_delay back, between the two kept either side, blended
-    // where they are the same places. With this tick's, a deck turning was ahead of the deck drawn, and the
-    // ground at its front corner took the deck's light dusting (2026-11-13).
-    for (std::size_t c = camera_history - 1; c > 0; --c) s.clears[c] = std::move(s.clears[c - 1]);
-    s.clears[0] = clear;
-    {
-        const float places_back = std::min(camera_delay, static_cast<float>(s.cameras_known - 1));
-        const auto places_at = static_cast<std::size_t>(places_back);
-        const float places_blend = places_back - static_cast<float>(places_at);
-        const auto& near_one = s.clears[places_at];
-        const auto& far_one = s.clears[std::min(places_at + 1, s.cameras_known - 1)];
-        clear = near_one;
-        if (far_one.size() == near_one.size()) {
-            const auto mix = [&](std::array<float, 3>& to, const std::array<float, 3>& from) {
-                for (std::size_t k = 0; k < 3; ++k) to[k] += (from[k] - to[k]) * places_blend;
-            };
-            const auto unit = [](std::array<float, 3>& v) {
-                const float length = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
-                if (length > 1e-6f) v[0] /= length, v[1] /= length, v[2] /= length;
-            };
-            for (std::size_t i = 0; i < clear.size(); ++i) {
-                if ((clear[i].length > 0) != (far_one[i].length > 0)) continue;
-                mix(clear[i].foot, far_one[i].foot);
-                if (clear[i].length > 0) {
-                    mix(clear[i].forward, far_one[i].forward), mix(clear[i].up, far_one[i].up);
-                    unit(clear[i].up);
-                    // Forward square to up again, then unit.
-                    const auto& u = clear[i].up;
-                    auto& f = clear[i].forward;
-                    const float along = f[0] * u[0] + f[1] * u[1] + f[2] * u[2];
-                    for (std::size_t k = 0; k < 3; ++k) f[k] -= u[k] * along;
-                    unit(f);
+    // The places as the picture has them: camera_delay frames back in time, between the two keep_clear calls either
+    // side of that moment, blended where they are the same places. A plugin sets them each of its ticks, fewer than
+    // the frames drawn: taken a frame at a time, the same places held for a few frames and then jumped, and the deck's
+    // place jittered against the deck in a grind (2026-11-15). With this tick's, a deck turning was ahead of the deck
+    // drawn, and the ground at its front corner took the deck's light dusting (2026-11-13).
+    if (clear_history.size() >= 2) {
+        const double frame_time = s.frame_us > 0 ? s.frame_us : 16667.0;
+        const auto back_us = static_cast<std::uint64_t>(camera_delay * frame_time);
+        const std::uint64_t now_time = now_us();
+        const std::uint64_t target = now_time > back_us ? now_time - back_us : 0;
+        std::size_t after = 0;
+        while (after < clear_history.size() && clear_history[after].first <= target) ++after;
+        if (after == 0) clear = clear_history.front().second;
+        else if (after == clear_history.size()) clear = clear_history.back().second;
+        else {
+            const auto& [t0, near_one] = clear_history[after - 1];
+            const auto& [t1, far_one] = clear_history[after];
+            const float places_blend = t1 > t0 ? static_cast<float>(static_cast<double>(target - t0) / static_cast<double>(t1 - t0)) : 0.0f;
+            clear = near_one;
+            if (far_one.size() == near_one.size()) {
+                const auto mix = [&](std::array<float, 3>& to, const std::array<float, 3>& from) {
+                    for (std::size_t k = 0; k < 3; ++k) to[k] += (from[k] - to[k]) * places_blend;
+                };
+                const auto unit = [](std::array<float, 3>& v) {
+                    const float length = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+                    if (length > 1e-6f) v[0] /= length, v[1] /= length, v[2] /= length;
+                };
+                for (std::size_t i = 0; i < clear.size(); ++i) {
+                    if ((clear[i].length > 0) != (far_one[i].length > 0)) continue;
+                    mix(clear[i].foot, far_one[i].foot);
+                    if (clear[i].length > 0) {
+                        mix(clear[i].forward, far_one[i].forward), mix(clear[i].up, far_one[i].up);
+                        unit(clear[i].up);
+                        // Forward square to up again, then unit.
+                        const auto& u = clear[i].up;
+                        auto& f = clear[i].forward;
+                        const float along = f[0] * u[0] + f[1] * u[1] + f[2] * u[2];
+                        for (std::size_t k = 0; k < 3; ++k) f[k] -= u[k] * along;
+                        unit(f);
+                    }
                 }
             }
         }
@@ -1625,8 +1639,10 @@ void keep_clear(std::vector<Clear> places) noexcept {
         if (places.size() > most_clear) places.resize(most_clear);
         auto& a = asked();
         std::lock_guard lock(a.mutex);
-        a.clear = std::move(places);
+        a.clear = places;
         a.clear_until = a.clear.empty() ? 0 : GetTickCount64() + 300;
+        a.clear_history.emplace_back(now_us(), std::move(places));
+        while (a.clear_history.size() > 8) a.clear_history.pop_front();
     } catch (...) {}
 }
 void allow(bool playing) noexcept {
@@ -1706,6 +1722,11 @@ void present(std::uint32_t width, std::uint32_t height) noexcept {
                            "World cover: the world's last drawing was in the frame's last batch, so the cover had no place before post-processing.");
         }
         s.width = width, s.height = height;
+        if (const auto t = now_us(); s.last_present_us && t > s.last_present_us && t - s.last_present_us < 200000) {
+            const double step = static_cast<double>(t - s.last_present_us);
+            s.frame_us = s.frame_us > 0 ? s.frame_us + (step - s.frame_us) * 0.1 : step;
+        }
+        s.last_present_us = now_us();
         s.main_missed = s.main_seen ? 0 : s.main_missed + 1;
         // How this frame went, counted; every 600 frames (the first eight times) said in the log.
         if (s.main_depth) {
@@ -1798,7 +1819,6 @@ void release() noexcept {
         s.timer_waiting = {};
         s.relearning = false;
         s.cameras_known = 0;
-        s.clears = {};
         s.nears.clear();
         s.held_near = 0;
         s.shown_near = 0;
