@@ -156,7 +156,7 @@ void pump_vram_scan(ModsPanel& panel) {
         scan.done.clear();
     }
     // Stopped for an install or an uninstall: read again once the folder is still.
-    if (scan.interrupted && !scan.running && !panel.installing) start_vram_scan(panel);
+    if (scan.interrupted && !scan.running && !panel.installing && !panel.removal.busy) start_vram_scan(panel);
 }
 
 void wait_for_vram_scan(ModsPanel& panel) {

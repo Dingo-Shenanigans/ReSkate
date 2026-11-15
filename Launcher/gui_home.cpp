@@ -643,6 +643,9 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
         if (mods_panel.installing) {
             enabled = false;
             detail = "Waiting for your mods to finish installing";
+        } else if (mods_panel.removal.busy) {
+            enabled = false;
+            detail = "Waiting for your mods to finish uninstalling";
         }
         break;
     case Phase::launching: label = "LAUNCHING"; enabled = false; break;

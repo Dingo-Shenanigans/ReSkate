@@ -14,6 +14,7 @@ namespace dingosdk::mods {
 
 struct ModItem {
     std::string key;        // lower case, as items_left_out keeps it
+    std::string name;       // its Key as the mod wrote it ("OWN_My_Shirt"): the name its maker gave it
     std::string asset;      // the item's asset, lower case: "items/cust_tops/own_my_shirt"
     std::string category;   // the folder of that: "cust_tops", "board_deck", "type_boardsticker"
     // Its thumbnail as the game's item grid shows it, `side` x `side`; empty when the mod has none

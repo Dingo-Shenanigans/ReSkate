@@ -145,6 +145,19 @@ inline ImVec2 switch_size() { return ImVec2(S(42), S(22)); }
 void draw_switch(ImDrawList* draw, ImVec2 start, bool on, bool hovered);
 // A square button with three dots, for a row's menu.
 bool more_button(const char* id, float size);
+// One part of a control made of joined parts, one of which is chosen (blue): its label, and after
+// it a count. `place` rounds the control's outer corners; `tall` zero is a chip's height. The next
+// part goes straight after it on the same line. Returns true when it was pressed.
+enum class SegmentPlace { first, middle, last, only };
+inline SegmentPlace segment_place(std::size_t at, std::size_t count) {
+    return count == 1 ? SegmentPlace::only : at == 0 ? SegmentPlace::first : at + 1 == count ? SegmentPlace::last : SegmentPlace::middle;
+}
+bool segment(const Fonts& fonts, const char* id, const char* label, const std::string& count, bool chosen, SegmentPlace place,
+             float tall = 0);
+// A small box at `at` that ticks a row for what is done to several at once, blue with a check
+// while ticked. Returns true when it was pressed.
+inline float tick_box_size() { return S(18); }
+bool tick_box(const char* id, ImVec2 at, bool ticked);
 
 // Draws only the rows a scrolling child actually shows. Unlike ImGuiListClipper
 // this copes with rows of different heights, which one open row needs.
@@ -635,7 +648,7 @@ struct Downloads {
 // worker, and the ones the player leaves out of it (mods::items_left_out).
 struct ModItemsView {
     std::string mod;                  // the folder whose overview is open; empty when none is
-    bool tab{};                       // the overview shows ITEMS rather than ABOUT
+    bool tab{};                       // the item chooser is open: it takes MY MODS' page (mod_items_page)
     bool read{};                      // the mod's items are in `list`
     struct Item {
         std::string key, title, category;   // category: for a player ("Tops")
@@ -694,13 +707,15 @@ struct ModsPanel {
     // What each installed mod's folder holds on disk, by folder name; measured
     // when the folder is scanned.
     std::map<std::string, std::uint64_t, std::less<>> sizes;
-    int selected{-1};                    // the mod whose overview is open
+    int selected{-1};                    // the mod the panel beside the list is about
+    bool details{};                      // its overview popup (README, items) is wanted
     bool overview{};                     // the overview popup is showing
     int tab{};                           // 0 MY MODS, 1 GET MODS
     // MY MODS: what the list is narrowed to and ordered by, and the mods ticked
     // to be changed together (folder names).
     std::array<char, 96> search{};
-    int filter{};
+    int filter{};                        // the kind of mod shown: all, or one kind
+    unsigned filter_states{};            // and, together, how they stand: a bit for each state chip pressed
     int order{};
     // Each Thunderstore package's categories by the folder it installs into, made again when a listing arrives.
     std::map<std::string, std::vector<std::string>, std::less<>> categories_by_folder;
@@ -753,6 +768,21 @@ struct ModsPanel {
     // How many items the player leaves out of each mod, by lower-case folder name; read with the folder.
     std::map<std::string, std::size_t, std::less<>> items_off;
 
+    // Mods being uninstalled (gui_mods.cpp: the Uninstall popup), off the UI thread: the Recycle Bin
+    // takes about 50 ms a folder however small (measured 2026-11-14), and the scans reading those
+    // folders have to stop first. The window is not held for either; the popup shows how far it is.
+    struct Removal {
+        bool busy{};                      // UI thread: started, and its outcome not taken in yet
+        std::thread worker;
+        std::atomic<bool> running{};
+        std::atomic<std::size_t> done{};  // folders dealt with so far
+        std::size_t total{};
+        // The worker's, read by the UI thread once `running` is false.
+        std::vector<std::string> removed;
+        std::string failure;
+        double waited{}, took{};          // seconds: for the scans to stop, and in the Recycle Bin
+    } removal;
+
     // Mods are being installed, or their outcome has not been taken in yet (collect_install).
     std::atomic<bool> installing{};
     std::mutex mutex;                    // profile_result
@@ -770,6 +800,7 @@ struct ModsPanel {
     std::array<char, 64> profile_renamed{}; // typed in the rename popup
     std::string profile_rename;             // the profile being renamed
     std::string profile_delete;             // the profile awaiting "Delete" confirmation
+    std::string profile_load;               // the profile awaiting "Load" confirmation
     // Loaded while its missing mods download: put in its order again once they are in.
     std::string profile_settle;
     // Talking to Thunderstore's profile service, off the UI thread.
@@ -783,6 +814,7 @@ struct ModsPanel {
     ProfileResult profile_result;           // worker -> UI, under mutex
 
     ~ModsPanel() {
+        if (removal.worker.joinable()) removal.worker.join();
         if (profile_worker.joinable()) profile_worker.join();
         if (conflicts.worker.joinable()) conflicts.worker.join();
     }
@@ -851,12 +883,16 @@ ImTextureID folder_icon(ModsPanel& panel, const std::filesystem::path& folder);
 void mod_icon(ModsPanel& panel, const thunderstore::Package* package, ImVec2 position, float size,
     const std::filesystem::path& folder = {});
 void pump_icons(ModsPanel& panel);
-// A category menu for a list of mods (GET MODS, MY MODS): each category shown only, hidden, or either,
-// a click going round them, with how many mods are in each (category_count adds to that). One chosen
-// before that no mod has now stays in the menu. True when the player changed what is chosen.
+// A category menu for a list of mods (GET MODS, MY MODS): each category's box ticks it to be shown
+// only, and the eye at its right hides it, with how many mods are in each (category_count adds to
+// that), the fullest first. One chosen before that no mod has now stays in the menu. True when the
+// player changed what is chosen.
 int& category_count(std::vector<std::pair<std::string, int>>& categories, const std::string& category);
 bool category_menu(const char* id, std::vector<std::string>& only, std::vector<std::string>& hidden,
                    std::vector<std::pair<std::string, int>> categories, float width);
+// What is chosen there, a chip each on a line of its own under the page's toolbar, pressed to let
+// it go; nothing drawn when nothing is chosen. True when the player changed what is chosen.
+bool category_chips(std::vector<std::string>& only, std::vector<std::string>& hidden);
 // The GET MODS page body, under the page header.
 void browse_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, float height, bool installing);
 // Everything Thunderstore knows about one package, in a popup over the page.
@@ -873,17 +909,19 @@ OverviewColumns overview_columns(float popup_height);
 void begin_overview_details(const char* id, const OverviewColumns& columns);
 void end_overview_details();
 void overview_fact(const Fonts& fonts, const char* name, const std::string& value);
-// A mod overview's ITEMS tab (gui_mods_items.cpp). Whether a mod is of a kind that can add items
-// the player may leave out; the overview opening on a mod (its items are read on a worker) and
-// closing; every frame, taking in what was read; whether the open mod is known to add items, and
-// how many ("12", or "8 of 12 load"); and the tab itself, `height` tall.
+// A mod's items (gui_mods_items.cpp). Whether a mod is of a kind that can add items the player may
+// leave out; a mod being picked (its items are read on a worker) and let go of; every frame, taking
+// in what was read; whether the picked mod is known to add items, and how many ("12", or "8 of 12
+// load"); its first few items' thumbnails in a strip `width` across, for the panel beside the list;
+// and the item chooser, which takes MY MODS' page, `height` tall, while ModItemsView::tab is set.
 bool mod_may_have_items(const mods::Mod& mod);
 void open_mod_items(ModsPanel& panel, const mods::Mod& mod);
 void close_mod_items(ModsPanel& panel);
 void pump_mod_items(ModsPanel& panel);
 bool mod_items_known(const ModsPanel& panel, const mods::Mod& mod);
 std::string mod_items_count(const ModsPanel& panel, const mods::Mod& mod);
-void mod_items_tab(const Fonts& fonts, ModsPanel& panel, const mods::Mod& mod, float height);
+void mod_items_strip(const Fonts& fonts, ModsPanel& panel, const mods::Mod& mod, float width);
+void mod_items_page(const Fonts& fonts, ModsPanel& panel, const thunderstore::Package* package, const mods::Mod& mod, float height);
 // How many items are left out of each mod (ModsPanel::items_off), read again.
 void read_items_left_out(ModsPanel& panel);
 // What the mods can take of the graphics card's memory (gui_mods_vram.cpp). The mods are read on
