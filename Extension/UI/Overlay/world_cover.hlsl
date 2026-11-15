@@ -187,8 +187,14 @@ float trail_at(float3 here, float3 dir, out float shade) {
                 if (ground_up.y < 0) ground_up = -ground_up;
                 const float facing_ground = dot(dir, ground_up);
                 const float reach = facing_ground < -1e-4 ? dot(a.xyz - eye_near.xyz, ground_up) / facing_ground : -1;
-                const float3 on = eye_near.xyz + dir * reach;
                 const float seen = length(here - eye_near.xyz);
+                // Looking along the ground (a trail seen from far off, or back up a ramp), the ray meets the trail's
+                // plane at a slant: a centimetre between the trail's height and the ground drawn moved where the ray
+                // met it by up to a metre, and the trail far off slid off itself and popped in and out as the camera
+                // tipped (2026-11-15). There the depth says where the pixel is (its scale's error along a slanting ray
+                // is short across the ground); looking down onto the ground, the ray onto the plane, as before.
+                const float slant = 1 - smoothstep(0.17, 0.42, -facing_ground); // about 10 to 25 degrees over the ground
+                const float3 on = eye_near.xyz + dir * (reach > 0 ? lerp(reach, seen, slant) : reach);
                 const float t = saturate(dot(on.xz - a.xz, along) / max(length_squared, 1e-6));
                 const float2 to = on.xz - (a.xz + along * t);
                 const float off = length(to);
