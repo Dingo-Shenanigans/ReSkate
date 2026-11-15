@@ -635,8 +635,28 @@ Output ps_main(Vertex input) {
     // sixteen, and the samples turn a different way at every pixel, so nothing lines up into a copy.
     const float own = luminance(under.rgb);
     const float spin = hash(float2(p) * 0.618034) * 6.2831853; // the same each frame: no shimmer
-    const float close = median_light(p, here, normal, near_distance, max(back_height.w * 0.008, 3.0), max(0.004, view_distance * 0.002), spin, own);
-    const float wide = median_light(p, here, normal, near_distance, back_height.w * 0.03, max(0.02, view_distance * 0.01), spin + 0.2, close);
+    // Cheaper further away, where a pixel covers more ground than the ground's own pattern and the samples round it
+    // add little: past about 30 m the wide samples go, past about 60 m the close ones too, for the average of the
+    // pixel and its four neighbours. Each eased over 10 to 20 m (both worked out only there), so no line shows
+    // where one stops. The two medians (64 reads) were most of the cover's cost on far ground (2026-11-15).
+    const float only_close = smoothstep(25.0, 35.0, view_distance);
+    const float only_cheap = smoothstep(50.0, 70.0, view_distance);
+    float close = own;
+    if (only_cheap > 0) {
+        const int2 size = int2(up_width.w, back_height.w);
+        const float cheap = (own + luminance(scene.Load(int3(clamp(p + int2(1, 0), int2(0, 0), size - 1), 0)).rgb) +
+                             luminance(scene.Load(int3(clamp(p - int2(1, 0), int2(0, 0), size - 1), 0)).rgb) +
+                             luminance(scene.Load(int3(clamp(p + int2(0, 1), int2(0, 0), size - 1), 0)).rgb) +
+                             luminance(scene.Load(int3(clamp(p - int2(0, 1), int2(0, 0), size - 1), 0)).rgb)) / 5;
+        close = cheap;
+    }
+    if (only_cheap < 1) {
+        const float sampled = median_light(p, here, normal, near_distance, max(back_height.w * 0.008, 3.0), max(0.004, view_distance * 0.002), spin, own);
+        close = lerp(sampled, close, only_cheap);
+    }
+    float wide = close;
+    if (only_close < 1)
+        wide = lerp(median_light(p, here, normal, near_distance, back_height.w * 0.03, max(0.02, view_distance * 0.01), spin + 0.2, close), close, only_close);
     // Not darker than about 60% of the snow round about: the picture still has the game's motion blur
     // and smear in it, faint dark copies of moving things (and the skater's soft contact shadow) that
     // showed on the snow as ghost outlines and a dark disc. Snow scatters light: its shadows are pale.
