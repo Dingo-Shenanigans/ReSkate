@@ -112,6 +112,14 @@ std::vector<Body> find_bodies(std::uintptr_t base, std::uintptr_t entity, std::u
             }
         }
     }
+    // What is reached from an entity is not all the entity's: another object's body can be two
+    // pointers away (seen in game: a plugin's drawn-only pieces each "had" the body of the
+    // solid collision piece placed with them, and ghosted it, so the collision was gone). Only
+    // a body whose owner keeps this entity's own physics component is its own, as for the rays.
+    if (p.component) {
+        const auto own = ptr(entity, addr::physics_bodies::entity_physics_component);
+        std::erase_if(found, [&](const Body& body) { return !detail::own_body(own, p.component(body)); });
+    }
     if (found.empty() || found.size() > 16) return {};
     const auto owner = p.owner(found.front());
     for (const auto& body : found)
@@ -621,13 +629,24 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
                 bodies_for(base, key, l->second, w, now);
                 // Move a resident object in place: recreating restarts its effects and makes it jump.
                 // Joint attachments and non-solid visuals follow changed transforms every client tick.
+                bool remake = false;
                 if (detail::movement_due(l->second.matrix != w.matrix, w.solid, w.attach.has_value(),
                     now, l->second.moved)) {
-                    move(base, l->second, w.matrix);
-                    std::lock_guard lock(s.mutex);
-                    if (const auto at = s.live.find(key); at != s.live.end()) at->second.matrix = w.matrix, at->second.moved = now;
+                    if (detail::collision_stays(w.solid, w.attach.has_value(),
+                            ptr(l->second.entity, addr::physics_bodies::entity_physics_component))) {
+                        // Its collision would stay behind: it is made again there (below).
+                        remake = now >= l->second.moved + detail::remake_wait_ms;
+                    } else {
+                        move(base, l->second, w.matrix);
+                        std::lock_guard lock(s.mutex);
+                        if (const auto at = s.live.find(key); at != s.live.end()) at->second.matrix = w.matrix, at->second.moved = now;
+                    }
                 }
-                continue;
+                if (!remake) continue;
+                destroy(base, l->second);
+                live.erase(l);
+                std::lock_guard lock(s.mutex);
+                s.live.erase(key);
             }
             const auto asset = resolved[w.asset];
             if (!asset) continue;
