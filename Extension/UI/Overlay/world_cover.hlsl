@@ -204,7 +204,7 @@ float trail_at(float3 here, float3 dir, out float shade) {
                             const float across = (along.x * to.y - along.y * to.x) * rsqrt(max(length_squared, 1e-6));
                             const float q = across / tread + 0.5;
                             const float pixel = reach / right_focal.w;
-                            const float edge = max(pixel / tread, 1e-4);
+                            const float edge = max(0.5 * pixel / tread, 1e-4); // (half a pixel each side: a narrow groove kept its depth)
                             float in_groove = 0, narrowest = 1;
                             [loop] for (int g = 0; g < grooves; ++g) {
                                 const float4 pair = cameras[GROOVES + g / 2];
@@ -213,7 +213,10 @@ float trail_at(float3 here, float3 dir, out float shade) {
                                 in_groove = max(in_groove, 1 - smoothstep(cw.y * 0.5 - edge, cw.y * 0.5 + edge, abs(q - cw.x)));
                             }
                             lines_at = 1 - in_groove;
-                            lines_strength = (1 - smoothstep(narrowest * tread * 0.25, narrowest * tread * 0.5, pixel)) *
+                            // Faded out only once a pixel is most of the narrowest groove, about where the evenly spaced
+                            // lines fade (at 0.25 to 0.5 of it, looking straight down from a standing camera, about 4 mm
+                            // a pixel, the pattern was gone; 2026-11-15).
+                            lines_strength = (1 - smoothstep(narrowest * tread * 0.75, narrowest * tread * 1.4, pixel)) *
                                              (1 - smoothstep(tread * 0.5, tread * 0.5 + 0.005, abs(across)));
                         } else if (tread > 0) {
                             // Across the trail, signed, in pairs of lines (a light one and a ridge): the middle of a
