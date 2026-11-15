@@ -305,6 +305,11 @@ struct FakeGame final : Game {
     std::map<std::uint64_t, Effect> effects;
     std::uint64_t effect_serial{}, effect_epoch{1};
     bool effects_ready{true};
+    std::vector<std::pair<std::string, std::string>> effect_bundles;   // bundle, asset: each one asked for
+    EffectBundleState effect_bundle(std::string_view, std::string_view bundle, std::string_view asset) override {
+        effect_bundles.emplace_back(std::string(bundle), std::string(asset));
+        return effect_bundles.size() == 1 ? EffectBundleState::loading : EffectBundleState::ready;
+    }
     std::uint64_t effect_create(std::string_view plugin, const EffectRequest& request) override {
         if (!effects_ready) return 0;
         const auto id = ++effect_serial;
@@ -1644,6 +1649,58 @@ void expired_effects_return_their_quota() {
     running(host, "effects-expire", environment);
 }
 
+void game_effects_need_their_own_permission() {
+    // effects.game cannot stand alone, and is a known permission.
+    bool refused = false;
+    try { (void)parse_manifest(manifest(R"("effects.game")")); } catch (const std::exception&) { refused = true; }
+    check(refused, "effects.game without effects is refused");
+    check(parse_manifest(manifest(R"("effects", "effects.game")")).permissions.contains("effects.game"), "effects.game is a permission");
+    check(game_effect_asset("effects/environments/effectblueprints/ebp_env_thick_smoke_popup") &&
+          !game_effect_asset("effects/reskate/test/ebp_spark") && !game_effect_asset("world/materials/decal/reskate_test/stain_dv") &&
+          !game_effect_asset("/effects/a") && !game_effect_asset("effects//a") && !game_effect_asset("Effects/A") && !game_effect_asset(""),
+          "A game effect's name is a plain asset path that is not a mod's own");
+
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    // Without effects.game, a plugin with effects still cannot name one of the game's.
+    host.apply({package("fx-private-only", {{manifest_file, manifest(R"("effects", "console")")}, {"plugin/main.lua", R"(
+        local m = {1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1}
+        reskate.console.command("fxstock", "", function()
+            local ok, why = pcall(reskate.effects.particle, "effects/environments/effectblueprints/ebp_env_thick_smoke_popup", m)
+            assert(not ok and why:find("effects.game"), tostring(why))
+            ok, why = pcall(reskate.effects.load, "win32/effects/gestures/effectblueprints/ebp_x_bundle", "effects/gestures/effectblueprints/ebp_x")
+            assert(not ok and why:find("effects.game"), tostring(why))
+        end)
+    )"}})});
+    check(host.run_console("fxstock") && environment.fake.effects.empty() && environment.fake.effect_bundles.empty(),
+          "A plugin without effects.game cannot play the game's effects or ask for its bundles");
+
+    // With it, the game's particle effects play; decals and the plugin's own undeclared names do not.
+    host.apply({package("fx-game", {{manifest_file, manifest(R"("effects", "effects.game", "console")")}, {"plugin/main.lua", R"(
+        local m = {1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1}
+        reskate.console.command("fxgame", "", function()
+            assert(reskate.effects.particle("effects/environments/effectblueprints/ebp_env_thick_smoke_popup", m))
+            assert(not pcall(reskate.effects.decal, "world/materials/decal/some_game_decal", m))
+            assert(not pcall(reskate.effects.particle, "effects/reskate/test/undeclared", m))
+            assert(not pcall(reskate.effects.particle, "Effects/Upper", m))
+            -- One of the game's effect bundles can be asked for; only those under win32/effects/.
+            local bundle = "win32/effects/gestures/effectblueprints/ebp_gesture_metaldance_flameburst_bundle"
+            local effect = "effects/gestures/effectblueprints/ebp_gesture_metaldance_flameburst"
+            assert(reskate.effects.load(bundle, effect) == "loading")
+            assert(reskate.effects.load(bundle, effect) == "ready")
+            assert(not pcall(reskate.effects.load, "win32/levels/game/bam_levelroot/bam_levelroot", effect))
+            assert(not pcall(reskate.effects.load, bundle, "effects/reskate/test/ebp_spark"))
+        end)
+    )"}})});
+    check(host.run_console("fxgame") && environment.fake.effects.size() == 1 &&
+          environment.fake.effects.begin()->second.request.game &&
+          environment.fake.effects.begin()->second.request.asset == "effects/environments/effectblueprints/ebp_env_thick_smoke_popup",
+          "A plugin with effects.game plays one of the game's particle effects, marked as the game's");
+    check(environment.fake.effect_bundles.size() == 2 &&
+          environment.fake.effect_bundles.front().first == "win32/effects/gestures/effectblueprints/ebp_gesture_metaldance_flameburst_bundle",
+          "It can ask for one of the game's effect bundles, and nothing outside win32/effects/ reaches the game");
+}
+
 void plugins_render_private_effects() {
     TestEnvironment environment;
     // Filling every decal slot tests the resource quota, with room for a busy CI machine.
@@ -2004,6 +2061,7 @@ void plugin_approval_follows_the_plugins_own_files() {
         auto requested = std::string("\"") + std::string(name) + "\"";
         if (name == "events.physics.geometry") requested = R"("events.physics", "events.physics.geometry")";
         if (name == "world.physics.reuse") requested = R"("world.physics", "world.physics.reuse")";
+        if (name == "effects.game") requested = R"("effects", "effects.game")";
         const auto requested_prompt = approval_prompt(permission_groups(parse_manifest(manifest(requested))));
         check(requested_prompt.find("\n- ") != std::string::npos && requested_prompt.find("No special permissions") == std::string::npos,
               "A request for " + std::string(name) + " has a capability summary");
@@ -7206,6 +7264,7 @@ int main() {
         run(owned_body_batches_share_actual_and_logical_query_limits);
         run(effects_require_resident_roots);
         run(expired_effects_return_their_quota);
+        run(game_effects_need_their_own_permission);
         run(plugins_render_private_effects);
         run(failed_plugin_startup_releases_effects);
         run(plugins_track_effect_lifetimes);

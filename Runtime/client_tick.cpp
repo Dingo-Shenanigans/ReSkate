@@ -1188,8 +1188,10 @@ void update_model(std::uintptr_t client, TickState& frame) {
         bool loading{};
         { std::lock_guard lock(r.mutex); loading = r.requests.loading(); }
         // Invalidate old-world handles before any plugin callback can use them.
+        // A plugin holding the skater still (reskate.skater.freeze) is noclip underneath, but
+        // it is the plugin's own scene, a vehicle it flies say, and its effects belong in it.
         dingosdk::effects::tick(r.base, client, !r.observer_failed && !loading && named_context_ready,
-            r.debug_model.noclip, r.debug_model.park_editor);
+            r.debug_model.noclip && !dingosdk::plugins::plugin_freeze_active(), r.debug_model.park_editor);
     }
     if (r.observer_failed) return; // Keep the bounded restore/telemetry path available after catalog failure.
     {

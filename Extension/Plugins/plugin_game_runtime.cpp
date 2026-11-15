@@ -703,6 +703,9 @@ public:
         return multiplayer::stand_ins::set(std::move(policy));
     }
     std::uint64_t effect_create(std::string_view plugin, const EffectRequest& request) override { return effects::create(plugin, request); }
+    EffectBundleState effect_bundle(std::string_view plugin, std::string_view bundle, std::string_view asset) override {
+        return effects::load_bundle(plugin, bundle, asset);
+    }
     void effect_move(std::string_view plugin, std::uint64_t id, const EffectMatrix& transform) override { effects::move(plugin, id, transform); }
     void effect_stop(std::string_view plugin, std::uint64_t id) override { effects::stop(plugin, id); }
     void effect_opacity(std::string_view plugin, std::uint64_t id, float value) override { effects::opacity(plugin, id, value); }
