@@ -339,7 +339,7 @@ struct Session {
     // Host settings remembered between sessions and game restarts.
     struct HostPreferences {
         bool loaded{}, public_lobby{true}, password_required{}, world_layer_sync{};
-        unsigned capacity = max_players, tps = multiplayer_default_tps;
+        unsigned capacity = multiplayer_lobby_player_limit, tps = multiplayer_default_tps;
         std::string lobby_name;
         MultiplayerDistances distances;
         ObjectPlacement placement = ObjectPlacement::everyone;
