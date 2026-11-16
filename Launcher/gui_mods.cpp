@@ -1415,7 +1415,8 @@ void installed_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, HW
         // How they stand, a chip each: pressed together they narrow the kind shown to the mods that
         // are all of them. One with nothing in it is not offered, unless it is pressed.
         struct Chip { int filter; const char* label; const char* tip; ImU32 tint; };
-        const std::array chips{Chip{filter_off, "Turned off", "Installed, and not loaded", 0},
+        const std::array chips{Chip{filter_on, "Turned on", "Loaded when Skate starts", 0},
+            Chip{filter_off, "Turned off", "Installed, and not loaded", 0},
             Chip{filter_updates, "Update ready", "Thunderstore has a newer version", color::blue},
             Chip{filter_problems, "Problems", "Outdated, or could not be merged: not loaded", color::danger},
             Chip{filter_conflicts, "Conflicts", "Changes the same parts of the game as another enabled mod", color::warning}};
@@ -1431,7 +1432,12 @@ void installed_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, HW
             first = false;
             if (pressed) push_primary_button();
             else if (chip.tint) ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(chip.tint));
-            if (ImGui::Button(std::format("{}  {}###chip{}", chip.label, count, chip.filter).c_str())) panel.filter_states ^= bit;
+            if (ImGui::Button(std::format("{}  {}###chip{}", chip.label, count, chip.filter).c_str())) {
+                panel.filter_states ^= bit;
+                // On and off together would show nothing: pressing one lets the other go.
+                if (chip.filter == filter_on) panel.filter_states &= ~(1u << filter_off);
+                if (chip.filter == filter_off) panel.filter_states &= ~(1u << filter_on);
+            }
             if (pressed) pop_primary_button();
             else if (chip.tint) ImGui::PopStyleColor();
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", chip.tip);
