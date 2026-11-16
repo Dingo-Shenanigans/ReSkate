@@ -289,6 +289,8 @@ public:
     const std::string& reason() const noexcept { return reason_; }
     std::size_t memory() const noexcept { return memory_; }
     double tick_ms() const noexcept { return last_window_ms_; }
+    // Its limits from now on (the player's own choice of how strict: Host::set_limits).
+    void set_limits(const Limits& limits) noexcept { limits_ = limits; }
     // Its console commands, and the subcommands each declared ("prop random", run by "prop"'s
     // function): the name, its arguments as help shows them, and its help.
     std::vector<CommandInfo> commands() const;

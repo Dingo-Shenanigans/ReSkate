@@ -43,6 +43,23 @@ std::string switch_on(std::string_view id);
 // keeps it when its files change. False from set_developer_mode when it could not be saved. Any thread.
 bool developer_mode();
 bool set_developer_mode(bool on) noexcept;
+// How strict ReSkate is with the plugins on this PC (the menu's PLUGINS, LIMITS; kept in
+// ReSkate.settings.json): whether a plugin that takes too long a tick is stopped and how long that
+// is, whether one that keeps raising errors is, and how much memory a plugin may use. The limits are
+// there to keep the game smooth, and the player decides how much of that to trade for a heavy plugin
+// that would otherwise be stopped; they are not what keeps a plugin in its sandbox, and no plugin can
+// change them. A single call that hangs for a second still stops a plugin whatever is chosen. Server
+// copies of plugins (while this game hosts a lobby) keep the strict limits. False from
+// set_limit_choices when it could not be saved. Any thread.
+struct LimitChoices {
+    bool stop_slow{true};
+    double tick_ms{6};      // 6 to 50
+    bool stop_errors{true};
+    int memory_mb{128};     // 128 to 1024
+    bool operator==(const LimitChoices&) const = default;
+};
+LimitChoices limit_choices();
+bool set_limit_choices(const LimitChoices& choices) noexcept;
 // The plugins that may load, for the menu: each one is asking, on or off for the files it has now.
 // Those waiting for an answer come first, then on, then off, each by title.
 // Any thread.

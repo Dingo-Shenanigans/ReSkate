@@ -100,6 +100,8 @@ public:
 
     // The plugins discovery found now: new ones load, changed ones reload, missing ones unload.
     void apply(const std::vector<Candidate>& found);
+    // The limits of every plugin here, those running now and those loaded after.
+    void set_limits(const Limits& limits);
     void tick(double dt_ms);
     void set_level(std::string level);
     // A trick of the local skater, to every plugin with events.tricks.

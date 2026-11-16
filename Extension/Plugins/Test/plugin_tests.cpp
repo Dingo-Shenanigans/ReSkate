@@ -4133,6 +4133,33 @@ void a_runaway_plugin_is_stopped_and_the_rest_go_on() {
     check(total < 20, "and none of it hangs the host: " + std::to_string(total) + " s");
 }
 
+// The player's own limits (plugins::LimitChoices, as the host takes them): a slow plugin runs on
+// where the player has slow plugins left alone, or allowed longer; one already running takes the new
+// limits; and with ReSkate's own given back, it is stopped as before.
+void the_player_sets_how_strict_the_limits_are() {
+    TestEnvironment environment;
+    Limits lenient;
+    lenient.tick_ms = std::numeric_limits<double>::infinity();
+    lenient.errors = std::numeric_limits<int>::max();
+    Host host(environment, Side::client, lenient);
+    host.apply({script("busy", R"(reskate.on("tick", function() local s = os.clock() while os.clock() - s < 0.008 do end end))"),
+        script("faulty", R"(reskate.on("tick", function() error("again") end))")});
+    ticks(host, environment, 60 * 7);
+    running(host, "busy", environment);
+    running(host, "faulty", environment);
+    // Allowed 10 ms a tick, 8 ms is within it.
+    Limits longer;
+    longer.tick_ms = 10;
+    host.set_limits(longer);
+    ticks(host, environment, 60 * 7);
+    running(host, "busy", environment);
+    stopped(host, "faulty", "more than 5 errors");
+    // ReSkate's own again: the one running is held to them from then on.
+    host.set_limits({});
+    ticks(host, environment, 60 * 7);
+    stopped(host, "busy", "ms a tick for 5 s, over its 6 ms");
+}
+
 void a_plugin_over_its_time_budget_is_stopped() {
     TestEnvironment environment;
     Host host(environment, Side::client);
@@ -7529,6 +7556,7 @@ int main() {
         run(a_steam_id_reaches_the_game_exactly);
         run(reskates_own_reading_is_not_a_plugins_time);
         run(a_plugin_over_its_time_budget_is_stopped);
+        run(the_player_sets_how_strict_the_limits_are);
         run(a_plugin_reloads_when_its_files_change);
         run(the_skater_can_be_read_moved_and_the_world_probed);
         run(teleport_equipment_choices_keep_permissions_and_host_limits);

@@ -408,9 +408,59 @@ void plugin_row(SkateMenu& menu, const plugins::Installed& plugin, bool has_page
     }
 }
 
+// PLUGINS' LIMITS: how strict ReSkate is with plugins on this PC (plugins::LimitChoices). The limits
+// keep the game smooth; a player with a heavy plugin that is being stopped can trade some of that
+// for it here. They are theirs to set, and no plugin's.
+void plugin_limits(SkateMenu& menu) {
+    auto choices = plugins::limit_choices();
+    const auto before = choices;
+    begin_card(menu, "plugin-limits-time", "SLOW PLUGINS", "A plugin is given a few milliseconds of every frame. One that takes more, five seconds running, is stopped.");
+    toggle_row(menu, "Stop slow plugins", "Off, a plugin is never stopped for being slow: the game may run slower with it.", choices.stop_slow);
+    {
+        constexpr std::array<double, 4> times{6, 10, 16, 25};
+        int chosen = 0;
+        for (std::size_t i = 0; i < times.size(); ++i)
+            if (choices.tick_ms >= times[i] - 0.5) chosen = static_cast<int>(i);
+        field(menu, "Time allowed", "How long a plugin may take a frame, on average, before it is stopped. 6 ms is ReSkate's own; a frame at 60 a second is 16.7 ms.");
+        if (choice(menu, "plugin-limit-time", chosen, {"6 ms (strict)", "10 ms", "16 ms", "25 ms (loose)"}, choices.stop_slow))
+            choices.tick_ms = times[static_cast<std::size_t>(std::clamp(chosen, 0, 3))];
+    }
+    end_card();
+    begin_card(menu, "plugin-limits-errors", "FAILING PLUGINS", "A plugin that raises more than five errors in ten seconds is stopped.");
+    toggle_row(menu, "Stop plugins that keep failing", "Off, a plugin goes on however often it fails: its errors are still written to the log.", choices.stop_errors);
+    end_card();
+    begin_card(menu, "plugin-limits-memory", "MEMORY", "How much memory one plugin may use.");
+    {
+        constexpr std::array<int, 4> sizes{128, 256, 512, 1024};
+        int chosen = 0;
+        for (std::size_t i = 0; i < sizes.size(); ++i)
+            if (choices.memory_mb >= sizes[i]) chosen = static_cast<int>(i);
+        field(menu, "Memory allowed", "A plugin that asks for more than this is stopped.");
+        if (choice(menu, "plugin-limit-memory", chosen, {"128 MB", "256 MB", "512 MB", "1 GB"}))
+            choices.memory_mb = sizes[static_cast<std::size_t>(std::clamp(chosen, 0, 3))];
+    }
+    end_card();
+    if (!(choices == before) && !plugins::set_limit_choices(choices)) warn("That could not be saved.");
+    const plugins::LimitChoices defaults;
+    if (!(choices == defaults)) {
+        if (button_row(menu, "plugin-limits-reset", {{"BACK TO RESKATE'S OWN", true, false, "Every limit as ReSkate sets it."}}) == 0)
+            plugins::set_limit_choices(defaults);
+    }
+    note("These are yours to set, on this PC only: no plugin can change them. A plugin that hangs the game for a whole second is "
+         "always stopped, and a plugin already stopped starts again when it is turned off and on. Plugins a lobby's host runs for "
+         "everyone keep ReSkate's own limits.");
+}
+
 // PLUGINS' list: plugin developer mode, then every installed plugin, a row each, down one column.
 void plugin_list(SkateMenu& menu, const std::vector<plugin_ui::PageEntry>& pages) {
     ImGui::BeginChild("plugin-list", ImVec2(0, page_body_height(menu)), ImGuiChildFlags_NavFlattened);
+    static int list_tab = 0;
+    category_tabs(menu, list_tab, {"INSTALLED", "LIMITS"}, "plugin-list-tabs");
+    if (list_tab == 1) {
+        plugin_limits(menu);
+        ImGui::EndChild();
+        return;
+    }
     page_prompts("Open page", "On / off", "Permissions");
     bool developer = plugins::developer_mode();
     if (toggle_row(menu, "Plugin dev mode", "Updates to plugins you already approved won't ask again.", developer))

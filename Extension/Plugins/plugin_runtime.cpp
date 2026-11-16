@@ -46,6 +46,18 @@ std::uintptr_t base{};
 // What the player let run (plugin_approval.h), and that it changed: the host reads it again.
 Approvals* approvals{};
 std::atomic<bool> reapply{};
+// The player's limits (plugin_runtime.h LimitChoices): set from the menu on any thread, given to the
+// player's host on the client thread.
+std::mutex limits_mutex;
+LimitChoices limit_choices_now;
+std::atomic<bool> limits_changed{};
+Limits limits_of(const LimitChoices& c) {
+    Limits limits;
+    limits.tick_ms = c.stop_slow ? std::clamp(c.tick_ms, 6.0, 50.0) : std::numeric_limits<double>::infinity();
+    limits.errors = c.stop_errors ? limits.errors : std::numeric_limits<int>::max();
+    limits.memory = static_cast<std::size_t>(std::clamp(c.memory_mb, 128, 1024)) << 20;
+    return limits;
+}
 // id and plugin fingerprint of the files the discovery thread has hashed again since they were answered for.
 std::mutex verified_mutex;
 std::set<std::string> verified; // under verified_mutex
@@ -557,7 +569,12 @@ bool start(std::uintptr_t image_base) noexcept {
         try { approvals->set_developer(initfs::plugin_developer_mode(data_root)); } catch (const std::exception&) {}
         server_environment = new GameEnvironment(storage / L"server", true);
         environment = new GameEnvironment(std::move(storage), false);
-        host = new Host(*environment, Side::client);
+        try {
+            const auto kept = initfs::plugin_limits(data_root);
+            std::lock_guard lock(limits_mutex);
+            limit_choices_now = {kept.stop_slow, kept.tick_ms, kept.stop_errors, kept.memory_mb};
+        } catch (const std::exception&) {}
+        host = new Host(*environment, Side::client, limits_of(limit_choices()));
         server_host = new Host(*server_environment, Side::server, {}, "@server");
         std::thread(watch).detach();
         std::thread(look_up_listings).detach();
@@ -616,6 +633,7 @@ void on_client_tick() noexcept {
                 latest = to_run(latest);
                 host->apply(latest);
             }
+            if (limits_changed.exchange(false)) host->set_limits(limits_of(limit_choices()));
             if (reapply.exchange(false)) {
                 std::vector<Candidate> now;
                 {
@@ -884,6 +902,25 @@ std::string switch_on(std::string_view id) {
     return text;
 }
 bool developer_mode() { return approvals && approvals->developer(); }
+
+LimitChoices limit_choices() {
+    std::lock_guard lock(limits_mutex);
+    return limit_choices_now;
+}
+bool set_limit_choices(const LimitChoices& wanted) noexcept {
+    LimitChoices choices = wanted;
+    choices.tick_ms = std::clamp(choices.tick_ms, 6.0, 50.0);
+    choices.memory_mb = std::clamp(choices.memory_mb, 128, 1024);
+    try {
+        initfs::set_plugin_limits(data_root, {choices.stop_slow, choices.tick_ms, choices.stop_errors, choices.memory_mb});
+    } catch (const std::exception&) { return false; }
+    {
+        std::lock_guard lock(limits_mutex);
+        limit_choices_now = choices;
+    }
+    limits_changed = true;
+    return true;
+}
 
 bool set_developer_mode(bool on) noexcept {
     if (!approvals) return false;
