@@ -1771,6 +1771,34 @@ struct WorldApi {
         const auto player = player_id(L, 1, "not a player");
         return result(L, game_of(plugin).hide_player(plugin.id(), player, lua_isnone(L, 2) || lua_toboolean(L, 2)));
     }
+    // session.place(player, {position = vector, rotation = {x, y, z, w}, joint = joint, board = false}):
+    // that player's skater drawn somewhere else on this screen, its board with it (board = false: without
+    // its board): turned to `rotation` (left out: as it is) and moved so that `joint` (left out: where it
+    // stands) is at `position`; their name and map marker go with it. Until place(player, nil) or the
+    // plugin stops. Only what this screen draws changes: where the player is stays theirs.
+    static int session_place(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "session.skaters", "reskate.session.place");
+        const auto player = player_id(L, 1, "not a player");
+        std::optional<Game::SkaterPlacement> placement;
+        if (!lua_isnoneornil(L, 2)) {
+            luaL_checktype(L, 2, LUA_TTABLE);
+            placement.emplace();
+            lua_getfield(L, 2, "position");
+            placement->position = position_of(L, lua_gettop(L), "where the skater is drawn");
+            lua_pop(L, 1);
+            lua_getfield(L, 2, "rotation");
+            if (!lua_isnil(L, -1)) placement->rotation = quaternion_at(L, lua_gettop(L));
+            lua_pop(L, 1);
+            lua_getfield(L, 2, "joint");
+            if (!lua_isnil(L, -1)) placement->joint = joint_of(L, lua_gettop(L));
+            lua_pop(L, 1);
+            lua_getfield(L, 2, "board");
+            if (!lua_isnil(L, -1)) placement->board = lua_toboolean(L, -1) != 0;
+            lua_pop(L, 1);
+        }
+        return result(L, game_of(plugin).place_player(plugin.id(), player, std::move(placement)));
+    }
     // session.outfit(player): {skater = {names}, board = {names}}, the items that player wears as their
     // game sent them; nil before their outfit arrives, or for a player not in the session.
     static int session_outfit(lua_State* L) {
@@ -3521,7 +3549,7 @@ void WorldApi::install(Plugin& plugin, lua_State* L) {
     add_functions(L, "travel", {{"locations", locations}, {"levels", levels}, {"go", go}, {"load", load}});
     add_functions(L, "ai", {{"spawn", ai_spawn}, {"clear", ai_clear}, {"count", ai_count}});
     add_functions(L, "session", {{"skaters", skaters}, {"tag", tag}, {"nametags", nametags}, {"joint", session_joint}, {"touch", session_touch},
-                                 {"touching", session_touching}, {"hide", session_hide}, {"hidden", session_hidden},
+                                 {"touching", session_touching}, {"hide", session_hide}, {"hidden", session_hidden}, {"place", session_place},
                                  {"outfit", session_outfit}, {"hide_items", session_hide_items},
                                  {"raycast", session_raycast}});
     add_functions(L, "voice", {{"set_volume", voice_volume}});

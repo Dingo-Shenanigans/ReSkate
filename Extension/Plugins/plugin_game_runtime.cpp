@@ -449,6 +449,11 @@ public:
         return plugin_feed::hide(std::string(plugin), player, hidden) ? std::string{} : "at most 256 players are hidden";
     }
     std::vector<std::uint64_t> hidden_players(std::string_view plugin) override { return plugin_feed::hidden_by(std::string(plugin)); }
+    std::string place_player(std::string_view plugin, std::uint64_t player, std::optional<SkaterPlacement> placement) override {
+        std::optional<plugin_feed::Placement> wanted;
+        if (placement) wanted = plugin_feed::Placement{placement->position, placement->rotation, placement->joint, placement->board};
+        return plugin_feed::place(std::string(plugin), player, std::move(wanted)) ? std::string{} : "at most 64 players are placed";
+    }
     std::optional<PlayerOutfit> player_outfit(std::uint64_t player) override {
         auto outfit = plugin_feed::outfit_of(player);
         if (!outfit) return std::nullopt;
@@ -1979,6 +1984,7 @@ public:
         }
         if (hold_owner_ == plugin) (void)skater_hold(plugin, false);
         plugin_feed::release_hidden(std::string(plugin));
+        plugin_feed::release_placements(std::string(plugin));
         plugin_feed::release_hidden_items(std::string(plugin));
         world_entities::clear(plugin);
         throwdown_flag_leave(plugin);

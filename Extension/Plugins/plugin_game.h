@@ -432,6 +432,17 @@ public:
     // any plugin hides them (at most 256 between them).
     virtual std::string hide_player(std::string_view /*plugin*/, std::uint64_t, bool /*hidden*/) { return unavailable; }
     virtual std::vector<std::uint64_t> hidden_players(std::string_view /*plugin*/) { return {}; }
+    // Another player's skater drawn somewhere else on this screen: the whole skater and its board
+    // turned to `rotation` (left out: as it is) and moved so that `joint` (left out: where it stands)
+    // is at `position`; nothing: where their game has it again. Only what is drawn here changes (at
+    // most 64 between the plugins).
+    struct SkaterPlacement {
+        Vec3 position{};
+        std::optional<std::array<float, 4>> rotation;
+        std::optional<std::uint16_t> joint;
+        bool board{true}; // false: their board is not drawn
+    };
+    virtual std::string place_player(std::string_view /*plugin*/, std::uint64_t, std::optional<SkaterPlacement>) { return unavailable; }
     // What another player wears, as their game sent it: the item names of their skater and of their
     // board. Nothing until their outfit has arrived.
     struct PlayerOutfit {

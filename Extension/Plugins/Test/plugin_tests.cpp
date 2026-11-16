@@ -915,6 +915,14 @@ struct FakeGame final : Game {
             if (owner == plugin) out.push_back(who);
         return out;
     }
+    std::string place_player(std::string_view plugin, std::uint64_t player, std::optional<SkaterPlacement> placement) override {
+        if (!placement) calls.push_back(std::format("place {} {} back", plugin, player));
+        else
+            calls.push_back(std::format("place {} {} at {:.1f} {:.1f} {:.1f} turned {} joint {}{}", plugin, player, placement->position[0], placement->position[1],
+                                        placement->position[2], placement->rotation ? std::format("{:.2f}", (*placement->rotation)[3]) : "no",
+                                        placement->joint ? std::to_string(*placement->joint) : "none", placement->board ? "" : " no board"));
+        return {};
+    }
     std::map<std::uint64_t, PlayerOutfit> outfits; // what player_outfit() reads
     std::optional<PlayerOutfit> player_outfit(std::uint64_t player) override {
         const auto found = outfits.find(player);
@@ -4915,6 +4923,16 @@ void plugins_touch_hide_and_ray_at_players() {
         assert(not pcall(reskate.session.raycast, vector.create(0, 0, 0), vector.create(2000, 0, 0)), "too long")
         assert(reskate.session.hide("12") and reskate.session.hidden()[1] == "12")
         assert(reskate.session.hide({id = "12"}, false) and #reskate.session.hidden() == 0)
+        -- A player's skater drawn somewhere else: where it stands, or one of its joints, put at a place.
+        assert(reskate.session.place("12", {position = vector.create(1, 2, 3)}))
+        assert(reskate.session.place({id = "12"}, {position = vector.create(4, 5, 6), rotation = {0, 0, 0, 2}, joint = "hips"}))
+        assert(reskate.session.place("12", {position = vector.create(7, 8, 9), board = false}))
+        assert(reskate.session.place("12", nil))
+        assert(not pcall(reskate.session.place, "12", {}), "a place has a position")
+        assert(not pcall(reskate.session.place, "12", {position = vector.create(0 / 0, 0, 0)}), "a finite position")
+        assert(not pcall(reskate.session.place, "12", {position = vector.create(0, 0, 0), rotation = {0, 0, 0, 0}}), "a rotation has a length")
+        assert(not pcall(reskate.session.place, "12", {position = vector.create(0, 0, 0), joint = 999}), "a joint of the skeleton")
+        assert(not pcall(reskate.session.place, "nobody", {position = vector.create(0, 0, 0)}), "a player")
         assert(not pcall(reskate.session.touch, true, 2), "a reach is 0 to 1 m")
         reskate.session.touch(true)
         reskate.on("touch", function(e)
@@ -4928,6 +4946,9 @@ void plugins_touch_hide_and_ray_at_players() {
     running(host, "tag", environment);
     check(environment.logged("[tag] rayed") && game.called("hide tag 12 on") && game.called("hide tag 12 off"),
           "Rays at players and a player hidden and shown\n" + environment.all());
+    check(game.called("place tag 12 at 1.0 2.0 3.0 turned no joint none") && game.called("place tag 12 at 4.0 5.0 6.0 turned 1.00 joint 7") &&
+              game.called("place tag 12 at 7.0 8.0 9.0 turned no joint none no board") && game.called("place tag 12 back"),
+          "A player's skater placed, by a joint and turned, and put back\n" + environment.all());
     check(!environment.logged("[tag] touch "), "Nobody within reach\n" + environment.all());
     const auto count = [&](std::string_view part) {
         return std::count_if(environment.logs.begin(), environment.logs.end(), [&](const auto& line) { return line.find(part) != std::string::npos; });
@@ -4949,10 +4970,12 @@ void plugins_touch_hide_and_ray_at_players() {
     host.apply({package("sneaky", {{manifest_file, manifest(R"("skater.read")")}, {"plugin/main.lua", R"(
         reskate.log(tostring(pcall(reskate.session.touch, true)) .. " " .. tostring(pcall(reskate.session.hide, "9")) .. " " ..
             tostring(pcall(reskate.session.raycast, vector.create(0, 1, 0), vector.create(1, 1, 0))) .. " " ..
-            tostring(pcall(reskate.on, "touch", function() end)))
+            tostring(pcall(reskate.on, "touch", function() end)) .. " " ..
+            tostring(pcall(reskate.session.place, "9", {position = vector.create(0, 0, 0)})))
     )"}})});
     ticks(host, environment, 1);
-    check(environment.logged("[sneaky] false false false false"), "session.skaters is needed\n" + environment.all());
+    check(environment.logged("[sneaky] false false false false false") && !game.called("place sneaky 9 at 0.0 0.0 0.0 turned no joint none"),
+          "session.skaters is needed\n" + environment.all());
 }
 
 // Menu pose observation is permission-gated and never writes board bones.
