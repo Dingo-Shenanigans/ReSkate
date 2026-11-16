@@ -153,6 +153,15 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
         const bool release = message == WM_KEYUP || message == WM_SYSKEYUP;
         if((key || release) && challenge_menu_key(static_cast<int>(wp)))return 0;
         if (key && wp < 256 && key_hidden(static_cast<unsigned>(wp))) return 0;
+        // A hidden mouse button's press (and the double click that is one), as a hidden key's.
+        {
+            unsigned button = 0;
+            if (message == WM_LBUTTONDOWN || message == WM_LBUTTONDBLCLK) button = VK_LBUTTON;
+            else if (message == WM_RBUTTONDOWN || message == WM_RBUTTONDBLCLK) button = VK_RBUTTON;
+            else if (message == WM_MBUTTONDOWN || message == WM_MBUTTONDBLCLK) button = VK_MBUTTON;
+            else if (message == WM_XBUTTONDOWN || message == WM_XBUTTONDBLCLK) button = GET_XBUTTON_WPARAM(wp) == XBUTTON1 ? VK_XBUTTON1 : VK_XBUTTON2;
+            if (button && key_hidden(button)) return 0;
+        }
         if (console_character(message) && s.console_character_pending.exchange(false)) return 0;
         if (console_character(message) && s.chat_character_pending.exchange(false)) return 0;
         if (console_character(message) && s.item_search_character_pending.exchange(false)) return 0;
@@ -558,14 +567,14 @@ extern "C" unsigned DingoSDKOverlayReadPromptKeys() {
     const bool typing = s.visible.load() || s.console_visible.load() || s.editor_visible.load() || s.chat_visible.load() || s.hub_typing.load();
     if (!window || s.stop.load() || s.failed.load() || typing || !game_window_foreground(window)) return 0;
     unsigned keys{};
-    constexpr int wanted[]{VK_LEFT, VK_RIGHT, VK_RETURN, VK_ESCAPE};
+    constexpr int wanted[]{VK_LEFT, VK_RIGHT, VK_RETURN, VK_ESCAPE, VK_BACK};
     if (std::array<std::uint64_t, 4> held{}; sampled_keys(window, held)) {
-        for (unsigned bit = 0; bit < 4; ++bit)
+        for (unsigned bit = 0; bit < std::size(wanted); ++bit)
             if (held[wanted[bit] / 64] >> (wanted[bit] % 64) & 1) keys |= 1u << bit;
         return keys;
     }
     OverlayInputAccess access;
-    for (unsigned bit = 0; bit < 4; ++bit)
+    for (unsigned bit = 0; bit < std::size(wanted); ++bit)
         if (GetAsyncKeyState(wanted[bit]) & 0x8000) keys |= 1u << bit;
     return keys;
 }

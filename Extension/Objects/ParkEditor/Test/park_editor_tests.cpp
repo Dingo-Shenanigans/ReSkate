@@ -104,6 +104,53 @@ void test() {
     check(!probe_surface(api, 9, request).hit && before == calls, "Invalid ray reached native physics");
 }
 } // namespace surface_fixture
+namespace ground_fixture {
+using namespace dingosdk;
+using namespace dingosdk::editor;
+unsigned calls{}, wrong_filter{};
+// Ground y = .5 * x where x <= 3; nothing beyond, so those points find no ground.
+NativeSurfaceApi api{
+    [](std::uintptr_t) -> std::uintptr_t { return 1234; },
+    [](std::uintptr_t world, NativeSurfaceResult *out, const NativeSurfaceRay *ray, const char *) -> void * {
+        ++calls;
+        if (ray->filter != addr::park_editor::camera_query_filter)
+            ++wrong_filter;
+        static float fraction{};
+        static std::array<std::uintptr_t, 7> data{0, reinterpret_cast<std::uintptr_t>(&fraction)};
+        const float height = .5f * ray->start[0];
+        fraction = (ray->start[1] - height) / (ray->start[1] - ray->end[1]);
+        out->world = world;
+        out->data = reinterpret_cast<std::uintptr_t>(data.data());
+        out->count = ray->start[0] <= 3.01f ? 1U : 0U;
+        out->allocator = 1;
+        return out;
+    },
+    []() -> std::uintptr_t { return 0; },
+    [](void *, std::uintptr_t) {}, true};
+void test() {
+    // Three points each way from (2, 0), a metre apart: x = -1 .. 5.
+    const EditorGroundRequest request{4, 9, 2, 0, 1, 50, -50, 3};
+    const auto grid = probe_ground(api, 9, request);
+    check(grid.available && grid.id == 9 && grid.generation == 4 && grid.heights.size() == 49,
+          "The ground grid was not answered at its size");
+    check(calls == 49 && !wrong_filter, "The ground grid did not cast one camera-filter ray per point");
+    bool heights = true;
+    for (std::uint32_t row = 0; row < 7; ++row)
+        for (std::uint32_t column = 0; column < 7; ++column) {
+            const float x = -1.0f + static_cast<float>(column);
+            const float height = grid.heights[row * 7 + column];
+            heights = heights && (x <= 3 ? close_float(height, .5f * x) : std::isnan(height));
+        }
+    check(heights, "The ground grid's heights differ from the ground, or a point with none below has one");
+    auto refused = request;
+    refused.radius = editor_ground_radius_max + 1;
+    check(!probe_ground(api, 9, refused).available, "An oversized ground grid was cast");
+    refused = request;
+    refused.top = refused.bottom;
+    check(!probe_ground(api, 9, refused).available, "A ground grid with no height to cast through was cast");
+    check(!probe_ground(api, 0, request).available, "A ground grid was cast with no physics context");
+}
+} // namespace ground_fixture
 namespace closest_surface_fixture {
 using namespace dingosdk;
 using namespace dingosdk::editor;
@@ -198,12 +245,24 @@ int main(int argc, char **argv) {
         using namespace editor;
         surface_fixture::test();
         closest_surface_fixture::test();
+        ground_fixture::test();
         highlight_fixture::test();
         const Camera camera{{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 10, 3, 12, 1}, 60, 1600, 900};
         const auto center = camera.project({10, 3, 0});
         check(center && close_float((*center)[0], 800) && close_float((*center)[1], 450),
               "Camera origin/projection differs");
         check(!camera.project({10, 3, 13}), "Points behind the camera are pickable");
+        {
+            // The game's camera matrix carries SIMD padding in each row's fourth lane, which can
+            // hold anything; the editor flew only after a pause cleared it.
+            auto padded = camera;
+            const float nan = std::numeric_limits<float>::quiet_NaN();
+            for (const std::size_t lane : {3u, 7u, 11u, 15u})
+                padded.world[lane] = nan;
+            check(padded.valid() && padded.project({10, 3, 0}).has_value(), "Padding in the camera matrix refuses the camera");
+            padded.world[12] = nan;
+            check(!padded.valid(), "A camera with no position is accepted");
+        }
         const Vec3 target{12, 1, 0};
         const auto screen = camera.project(target);
         check(screen.has_value(), "Front point rejected");

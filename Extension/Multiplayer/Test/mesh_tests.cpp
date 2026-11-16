@@ -1167,6 +1167,54 @@ void object_sync_checks() {
     }
     std::cout << "32-player objects: late join, matching owner IDs, full parks, deltas, delete, spoof rejection, disconnect and world reset passed.\n";
 }
+void host_preferences_checks() {
+    auto &configured = session();
+    stop(configured, "Host preferences fixture");
+    const auto original_profile = profile_runtime::simulated_profile;
+    const auto original_preferences = configured.host_preferences;
+    struct CapacityCase {
+        const char *name;
+        std::optional<Json> stored;
+        unsigned expected;
+    };
+    const std::array<CapacityCase, 11> cases{{
+        {"missing", std::nullopt, 32},
+        {"wrong type", Json("250"), 32},
+        {"negative", Json(-1), 32},
+        {"zero", Json(0), 32},
+        {"one", Json(1), 32},
+        {"above wire limit", Json(251), 32},
+        {"minimum", Json(2), 2},
+        {"saved lobby", Json(16), 16},
+        {"lobby maximum", Json(32), 32},
+        {"old larger lobby", Json(33), 32},
+        {"old wire maximum", Json(250), 32},
+    }};
+    for (const auto &entry : cases) {
+        profile_runtime::simulated_profile.clear();
+        if (entry.stored) profile_runtime::simulated_profile["ReSkate.Host.Capacity"] = *entry.stored;
+        configured.host_preferences = {};
+        // Menus publish the remembered limit before the user changes any host option.
+        publish(configured);
+        const auto &saved = configured.view.saved_host;
+        check(saved.loaded && saved.capacity == static_cast<int>(entry.expected),
+              (std::string(entry.name) + ": host menu published an invalid remembered limit").c_str());
+        const auto result = command("host-config", "code " + std::to_string(saved.capacity) + " 30 Preference fixture");
+        check(configured.mode == Mode::host && configured.capacity == entry.expected,
+              (std::string(entry.name) + ": remembered host limit was refused by the real command parser").c_str());
+        (void)result;
+        stop(configured, "Host preferences fixture");
+    }
+    for (const auto invalid : {1U, 33U, 250U}) {
+        const auto result = command("host-config", "code " + std::to_string(invalid) + " 30 Invalid limit");
+        check(configured.mode == Mode::off && result == "Choose a player limit from 2 to 32.",
+              "A player-hosted lobby accepted a limit outside 2 to 32");
+    }
+    profile_runtime::simulated_profile = original_profile;
+    configured.host_preferences = original_preferences;
+    publish(configured);
+    std::cout << "Host preferences: 11 missing, invalid, saved and legacy capacity cases and 3 command refusals passed.\n";
+}
 void tick_settings_checks() {
     auto& configured = session();
     stop(configured, "TPS fixture");
@@ -2502,6 +2550,7 @@ int main(int argc, char **argv) {
         dingosdk::simulated_host_layers = {};
         dingosdk::multiplayer::join_tick_checks();
         dingosdk::multiplayer::tick_settings_checks();
+        dingosdk::multiplayer::host_preferences_checks();
         if (argc == 2 && std::string_view(argv[1]) == "--parks-only") {
             dingosdk::multiplayer::random_park_sync_checks(); return 0;
         }

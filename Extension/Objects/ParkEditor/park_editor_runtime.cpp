@@ -300,6 +300,8 @@ void reset_park_editor() {
     e.status.clear();
     e.probe.reset();
     e.surface = {};
+    e.ground_probe.reset();
+    e.ground = {};
     e.last_preview_token = 0;
     e.selection.clear();
     e.selection_time = 0;
@@ -482,6 +484,13 @@ void update_park_editor() {
             if (probe->picking && !e.picking_api.ready)
                 e.surface.available = false;
         }
+    }
+    // The snap grid's ground: answered here, on the client update, like the surface probe.
+    if (const auto ground = std::exchange(e.ground_probe, std::nullopt); ground && ground->generation == e.generation) {
+        std::array<std::uintptr_t, 2> context{};
+        if (r.context)
+            r.context(context.data());
+        e.ground = editor::probe_ground(e.surface_api, context[0], *ground);
     }
     // placement_session_ready may have reset the editor after a world transition.
     if (!e.transaction)
@@ -680,6 +689,7 @@ ParkEditorModel local_park_editor() {
     model.project = e.project;
     model.can_load_parks = !is_lobby_guest();
     model.surface = e.surface;
+    model.ground = e.ground;
     model.object_sets = e.object_sets;
     if (e.transaction && e.transaction->preview)
         model.preview_token = e.transaction->preview->token;

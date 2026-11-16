@@ -10,6 +10,8 @@
 #include "Engine/Vfs/material_declaration_refresh.h"
 #include "Engine/Core/Platform/shared_file.h"
 #include "Extension/Multiplayer/Remote/native_pose_layout.h"
+#include "Extension/Multiplayer/Remote/native_cosmetics_layout.h"
+#include "Extension/Skater/skater_animation.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
 #include <Windows.h>
 #include <format>
@@ -22,6 +24,7 @@
 namespace dingosdk::board_material {
 namespace {
 struct State {
+    bool preview{};
     std::uintptr_t base{}, client{};
     std::vector<detail::Hold> holds;
     std::vector<detail::Saved> saved;
@@ -39,9 +42,11 @@ struct State {
     std::array<std::string, part_names.size()> reported_items;
     std::array<std::size_t, part_names.size()> reported_counts{};
 };
-State& state() {
-    static auto* value = new State; // what is held may still be out at exit
-    return *value;
+State& state(bool preview = false) {
+    static auto* gameplay = new State; // what is held may still be out at exit
+    static auto* room = new State;
+    room->preview = true;
+    return preview ? *room : *gameplay;
 }
 const auto peek = [](std::uintptr_t address, void* out, std::size_t size) { return memory::peek_bytes(address, out, size); };
 
@@ -221,7 +226,7 @@ void declare(State& s, detail::Found& found) {
         return;
     }
     const auto now = GetTickCount64();
-    if (now - s.worn_at >= 250 || s.worn.empty()) {
+    if (!s.preview && (now - s.worn_at >= 250 || s.worn.empty())) {
         s.worn = worn_items::worn_board(false);
         s.worn_at = now;
     }
@@ -234,8 +239,10 @@ void declare(State& s, detail::Found& found) {
             if (static_cast<std::size_t>(m.part) == part) { material = m.address; break; }
         if (!detail::settled(s.gates[part], item, material, now) || found.pending) {
             found.declarations_pending[part] = true;
+            found.write_blocked[part] = s.preview;
             continue;
         }
+        found.write_blocked[part] = s.preview && (item.empty() || sold(item));
         auto is_sold = [](std::string_view i) { return sold(i); };
         const auto owner = mods::item_source_owner(all->sources, item);
 
@@ -255,10 +262,32 @@ void declare(State& s, detail::Found& found) {
 std::optional<detail::Found> board(State& s) {
     if (!s.base || !s.client) return std::nullopt;
     try {
-        const auto local = multiplayer::capture_local(s.base, s.client, false);
-        if (!local.ready) return std::nullopt;
-        const auto entity = multiplayer::read_native_board(peek, s.base, local.entity).entity;
-        if (!entity) return std::nullopt;
+        std::uintptr_t entity{};
+        if (s.preview) {
+            entity = skater_animation::preview_board_entity();
+            if (!entity) return std::nullopt;
+            const multiplayer::CosmeticMemory<decltype(peek)> cosmetics{peek, s.base};
+            const auto items = detail::preview_items(cosmetics.capture(entity));
+            if (!items) return std::nullopt;
+            std::vector<worn_items::Worn> worn;
+            for (std::size_t part = 0; part < items->size(); ++part)
+                if (!(*items)[part].empty()) worn.push_back({std::string(worn_slots[part]), (*items)[part], {}});
+            const bool changed = worn.size() != s.worn.size() ||
+                !std::equal(worn.begin(), worn.end(), s.worn.begin(), [](const auto& a, const auto& b) {
+                    return a.slot == b.slot && a.item == b.item;
+                });
+            if (changed) {
+                // A new preview must never inherit a previous item's held values.
+                s.holds.clear();
+                s.saved.clear();
+                s.worn = std::move(worn);
+            }
+        } else {
+            const auto local = multiplayer::capture_local(s.base, s.client, false);
+            if (!local.ready) return std::nullopt;
+            entity = multiplayer::read_native_board(peek, s.base, local.entity).entity;
+            if (!entity) return std::nullopt;
+        }
         auto found = detail::walk(peek, s.base, entity);
         declare(s, found);
         return found;
@@ -273,15 +302,16 @@ std::optional<detail::Found> board(State& s) {
 }
 } // namespace
 
-std::optional<std::vector<Parameter>> read(Part part) {
-    auto& s = state();
+std::optional<std::vector<Parameter>> read(Part part, bool preview) {
+    auto& s = state(preview);
     const auto found = board(s);
     if (!found) return std::nullopt;
+    if (found->write_blocked[static_cast<std::size_t>(part)]) return std::nullopt;
     return detail::listed(*found, part);
 }
 
-std::string set(std::string_view owner, Part part, std::uint64_t key, const Colour& value, bool colour) {
-    auto& s = state();
+std::string set(std::string_view owner, Part part, std::uint64_t key, const Colour& value, bool colour, bool preview) {
+    auto& s = state(preview);
     const auto found = board(s);
     if (!found) return "there is no board in play";
     Kind kind{};
@@ -292,13 +322,13 @@ std::string set(std::string_view owner, Part part, std::uint64_t key, const Colo
     return detail::take(s.holds, *found, owner, part, key, value, colour);
 }
 
-void clear(std::string_view owner, std::optional<Part> part, std::optional<std::uint64_t> key) {
-    detail::release(state().holds, owner, part, key);
+void clear(std::string_view owner, std::optional<Part> part, std::optional<std::uint64_t> key, std::optional<bool> preview) {
+    if (!preview || !*preview) detail::release(state(false).holds, owner, part, key);
+    if (!preview || *preview) detail::release(state(true).holds, owner, part, key);
 }
 
-void tick(std::uintptr_t base, std::uintptr_t client) noexcept {
+void tick_state(State& s, std::uintptr_t base, std::uintptr_t client) noexcept {
     try {
-        auto& s = state();
         s.base = base, s.client = client;
         if (s.holds.empty() && s.saved.empty()) return;
         if (!functions_match(s)) return;
@@ -328,9 +358,13 @@ void tick(std::uintptr_t base, std::uintptr_t client) noexcept {
         if ((inserted || refused || publish_failed) && GetTickCount64() - s.apply_reported >= 5000) {
             s.apply_reported = GetTickCount64();
             logging::log(logging::Level::info, logging::Channel::customization,
-                         "Board parameter apply: {} inserted, {} refused, {} published, {} publication failures.",
-                         inserted, refused, published, publish_failed);
+                         "{} board parameter apply: {} inserted, {} refused, {} published, {} publication failures.",
+                         s.preview ? "Preview" : "Gameplay", inserted, refused, published, publish_failed);
         }
     } catch (...) {}
+}
+void tick(std::uintptr_t base, std::uintptr_t client) noexcept {
+    tick_state(state(false), base, client);
+    tick_state(state(true), base, client);
 }
 } // namespace dingosdk::board_material

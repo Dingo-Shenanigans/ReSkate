@@ -2431,7 +2431,37 @@ void hub_frame(Hub &h, ImDrawList *draw, float u, ImVec2 a, ImVec2 z, float tabs
     }
 }
 
+// The saved choices, read every 2 s (the profile loads after the overlay starts) and passed to the
+// pause menu's code; a change from a menu goes at once.
+namespace {
+bool choice_on(std::string_view key) {
+    const auto saved = dingosdk::profile_runtime::local_value(key);
+    return !saved || !saved->is_boolean() || saved->get<bool>();
+}
+void pass_pause_choices() {
+    static ULONGLONG next{};
+    const auto now = GetTickCount64();
+    if (now < next) return;
+    next = now + 2000;
+    dingosdk::multiplayer::set_hub_front_page(choice_on("HubFrontPage"));
+    static int backdrop = -1;
+    if (const int on = choice_on("ModManagerBackdrop") ? 1 : 0; on != backdrop)
+        backdrop = on, (void)dingosdk::multiplayer::set_mod_backdrop(on ? "store" : "off");
+}
+}
+bool hub_front_page_on() { return choice_on("HubFrontPage"); }
+void set_hub_front_page_on(bool on) {
+    dingosdk::profile_runtime::set_local_preference("HubFrontPage", on);
+    dingosdk::multiplayer::set_hub_front_page(on);
+}
+bool mod_backdrop_on() { return choice_on("ModManagerBackdrop"); }
+void set_mod_backdrop_on(bool on) {
+    dingosdk::profile_runtime::set_local_preference("ModManagerBackdrop", on);
+    (void)dingosdk::multiplayer::set_mod_backdrop(on ? "store" : "off");
+}
+
 void draw_hub_page() {
+    pass_pause_choices();
     auto &h = hub();
     if (!h.shown) return;
     auto &s = state();

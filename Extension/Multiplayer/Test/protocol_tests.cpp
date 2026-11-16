@@ -1367,6 +1367,18 @@ void dedicated_server_codec() {
     }
     check(!read_server_tags(tags, player), "A player's ID read as a server");
     check(!read_server_tags("reskate,v1,k1,c4", server), "An incompatible server version listed");
+
+    // A server Steam's list leaves out stays in the browser through one miss, and through
+    // misses close together; it goes after two in a row and five minutes, or a quarter of an hour.
+    constexpr std::uint64_t second = 1000000, minute = 60 * second;
+    check(!server_listing_gone(true, 1, 10 * second) && !server_listing_gone(true, 1, 10 * minute),
+          "A server one search left out was dropped");
+    check(!server_listing_gone(true, 2, 20 * second) && !server_listing_gone(true, 9, 4 * minute),
+          "A server left out by searches close together was dropped");
+    check(server_listing_gone(true, 2, 5 * minute + second), "A server gone for five minutes and two searches stayed");
+    check(!server_listing_gone(false, 0, 14 * minute) && server_listing_gone(false, 0, 15 * minute + second) &&
+              server_listing_gone(true, 1, 15 * minute + second),
+          "A server not listed for a quarter of an hour: kept until then, dropped after");
 }
 int main() {
     try {

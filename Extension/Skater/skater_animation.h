@@ -94,6 +94,8 @@ struct PreviewPose {
     std::uint64_t sequence{};
 };
 std::optional<PreviewPose> preview_pose(bool skater);
+// Internal only: fresh, ownership-checked menu board; never exposed to plugins.
+std::uintptr_t preview_board_entity();
 void watch_room(bool on) noexcept;
 bool room_skater_seen() noexcept;
 void show_in_room(bool on) noexcept;

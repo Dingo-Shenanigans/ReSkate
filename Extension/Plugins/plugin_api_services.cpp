@@ -269,7 +269,8 @@ int game_buttons(lua_State* L) {
     return 0;
 }
 // input.game_keys(keys): the keys (names, as key() takes them, or virtual keys) whose presses the game
-// does not see until the next call; nil or {} gives them back. Not Escape, nor the mouse's buttons.
+// does not see until the next call; nil or {} gives them back. The mouse's buttons are keys here
+// ("LeftMouse", ...). Not Escape: a player can always get to the game's menu.
 int game_keys(lua_State* L) {
     auto& plugin = permitted(L, "input", "reskate.input.game_keys");
     std::vector<std::uint8_t> keys;
@@ -281,8 +282,7 @@ int game_keys(lua_State* L) {
             lua_rawgeti(L, 1, i);
             const int vk = key_code(L, lua_gettop(L));
             lua_pop(L, 1);
-            if (vk == 27 || (vk >= 1 && vk <= 6 && vk != 3)) // Escape; the mouse buttons (3 is Cancel)
-                luaL_argerror(L, 1, "Escape and the mouse's buttons always reach the game");
+            if (vk == 27) luaL_argerror(L, 1, "Escape always reaches the game");
             keys.push_back(static_cast<std::uint8_t>(vk));
         }
     }

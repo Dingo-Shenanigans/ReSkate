@@ -186,6 +186,7 @@ bool take_over_hub(const Context &c) {
 constexpr std::string_view hub_tab_label = "ID_MENU_HUB";
 // Set while the Hub's lists were last found and emptied; the front page is only drawn then.
 bool hub_taken{};
+std::atomic<bool> front_page_on{true}; // set_hub_front_page
 // The Hub tab's content is not a page model but a StackScreen (UI dumps of 2026-09-19: the Hub's tab
 // shows UI/Foundations/Components/Stack/StackScreen, the Social tab Page_Widget): a stack whose items
 // are pages, the Hub's own page (Page_Widget, a page model with the brushed title) first and what is
@@ -505,11 +506,26 @@ bool update_hub_front_page(const Context &c, Value menu, bool in_menu) {
         profile = {};
         logging::log(logging::Level::warning, logging::Channel::ui, "Front page: EDIT PROFILE could not navigate ({}).", e.what());
     }
-    const bool on_hub = hub && hub_taken && !away;
+    // The game's side menu (pause pressed again) and what opens from it (Settings, Skatepedia, the
+    // Appearance screens) go over the Hub without changing the tab: the Hub's page has no focus then
+    // (its index is -1), as ReSkate's own pages check (native_menu.cpp). The front page steps aside
+    // for that long; it was drawn over those screens.
+    bool covered{};
+    try {
+        if (hub && hub->handle)
+            if (const auto own_page = hub_page(c, *hub); own_page.handle)
+                covered = read<int>(c.address(c.path(own_page, {0xfafda1a6, 0x20a39d92, 0x6b01fd01}))) < 0;
+    } catch (const std::exception &e) {
+        static bool said{};
+        if (!std::exchange(said, true))
+            logging::log(logging::Level::warning, logging::Channel::ui, "Front page: the Hub's focus could not be read ({}); it stays up over the game's side menu.", e.what());
+    } catch (...) {}
+    const bool on_hub = hub && hub_taken && !away && !covered && front_page_on.load(std::memory_order_relaxed);
     {
         // Said when it changes: whether it is drawn, and why not (the profile says so itself).
         static std::string said;
-        const auto now_said = !hub ? std::string() : on_hub ? std::string("drawn") : away ? std::string("profile") : std::string("lists");
+        const auto now_said = !hub ? std::string() : on_hub ? std::string("drawn") : away ? std::string("profile") : covered ? std::string("covered")
+                                                                                                                         : std::string("lists");
         if (now_said != said) {
             if (on_hub) logging::log(logging::Level::info, logging::Channel::ui, "Front page: drawn over the Hub{}.", said.empty() ? "" : " again");
             else if (now_said == "lists")
@@ -549,5 +565,6 @@ void restore_hub_title(const Context &c) noexcept {
 }
 
 void open_native_profile() noexcept { profile_wanted = true; }
+void set_hub_front_page(bool on) noexcept { front_page_on.store(on, std::memory_order_relaxed); }
 void hold_hub_back(bool held) noexcept { back_wanted_until.store(held ? GetTickCount64() + 300 : 0, std::memory_order_relaxed); }
 } // namespace dingosdk::multiplayer

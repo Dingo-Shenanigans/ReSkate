@@ -150,65 +150,6 @@ std::string count_text(std::uint64_t value) {
 
 std::string date_text(const std::string& iso) { return iso.substr(0, std::min<std::size_t>(iso.size(), 10)); }
 
-void set_activity(ModsPanel& panel, std::string text) {
-    std::lock_guard lock(panel.mutex);
-    panel.activity = std::move(text);
-}
-
-// Downloads one package into Mods/.reskate-download, then installs it over any
-// installed copy (which is deleted, its place in mods.json kept).
-std::string install_package(ModsPanel& panel, const fs::path& root, const ts::Package& package) {
-    const auto& version = package.latest();
-    const auto folder = root / L".reskate-download";
-    const auto archive = folder / (wide(package.full_name) + L".zip");
-    std::error_code error;
-    fs::create_directories(folder, error);
-    struct Cleanup {
-        fs::path folder, archive;
-        ~Cleanup() { std::error_code ignored; fs::remove(archive, ignored); fs::remove(folder, ignored); }
-    } cleanup{folder, archive};
-
-    trace::Scope timing("launcher.mod_install", "task");
-    timing.tag("package", package.full_name);
-    timing.tag("version", version.number);
-    set_activity(panel, "Downloading " + package.title() + " v" + version.number +
-        (version.file_size ? "  (" + size_text(version.file_size) + ")" : std::string()));
-    panel.progress = 0;
-    {
-        FILE* file{};
-        if (_wfopen_s(&file, archive.c_str(), L"wb") || !file)
-            throw std::runtime_error("Could not write the download into the Mods folder.");
-        std::uint64_t received = 0;
-        const auto expected = version.file_size;
-        try {
-            launcher_update::http_stream(wide(version.download_url), expected ? expected + (1 << 20) : 8ull << 30,
-                download_timeout_ms, [&](const char* data, DWORD size) {
-                    if (panel.cancel) throw std::runtime_error("Install cancelled.");
-                    if (std::fwrite(data, 1, size, file) != size)
-                        throw std::runtime_error("Could not write the download (is the disk full?).");
-                    received += size;
-                    if (expected) panel.progress = static_cast<float>(static_cast<double>(received) / static_cast<double>(expected));
-                });
-        } catch (...) {
-            std::fclose(file);
-            throw;
-        }
-        std::fclose(file);
-        if (expected && received != expected)
-            throw std::runtime_error(std::format("The download of {} stopped early ({} of {}).", package.title(),
-                size_text(received), size_text(expected)));
-    }
-
-    set_activity(panel, "Installing " + package.title() + " v" + version.number);
-    panel.progress = 0;
-    launcher_mods::InstallOptions options;
-    options.folder = ts::folder_for(package.full_name);
-    options.author = package.owner;
-    options.require_content = true;
-    return launcher_mods::install(root, archive, true, [&panel](float fraction) { panel.progress = fraction; },
-        panel.cancel, options);
-}
-
 // Search, category and the sort order, pinned packages first like the site.
 // Not safe for work: Thunderstore's own mark on the package, or a category of that name.
 bool nsfw(const ts::Package& package) {
@@ -280,62 +221,169 @@ bool category_menu(const char* id, std::vector<std::string>& only, std::vector<s
     // One chosen before that no mod has now stays in the list, so it can be put back.
     for (const auto* list : {&only, &hidden})
         for (const auto& category : *list) (void)category_count(categories, category);
-    std::sort(categories.begin(), categories.end(), [](const auto& a, const auto& b) { return lower(a.first) < lower(b.first); });
+    // The fullest first: where most of the mods are is what is looked for most.
+    std::sort(categories.begin(), categories.end(), [](const auto& a, const auto& b) {
+        return a.second != b.second ? a.second > b.second : lower(a.first) < lower(b.first);
+    });
     const auto in = [](const std::vector<std::string>& list, const std::string& name) { return std::find(list.begin(), list.end(), name) != list.end(); };
     std::string shown;
     if (only.empty() && hidden.empty()) shown = "All categories";
-    else if (hidden.empty()) shown = only.size() == 1 ? "Only " + only.front() : std::format("Only {} categories", only.size());
-    else if (only.empty()) shown = hidden.size() == 1 ? "Hiding " + hidden.front() : std::format("Hiding {} categories", hidden.size());
-    else shown = std::format("Only {}, hiding {}", only.size(), hidden.size());
+    else if (hidden.empty()) shown = only.size() == 1 ? only.front() : std::format("{} categories", only.size());
+    else if (only.empty()) shown = hidden.size() == 1 ? "Not " + hidden.front() : std::format("{} hidden", hidden.size());
+    else shown = std::format("{}, {} hidden", only.size() == 1 ? only.front() : std::format("{} categories", only.size()), hidden.size());
     ImGui::SetNextItemWidth(width);
-    if (!ImGui::BeginCombo(id, shown.c_str(), ImGuiComboFlags_HeightLarge)) {
-        if (ImGui::IsItemHovered() && !(only.empty() && hidden.empty())) {
-            std::string tip;
-            if (!only.empty()) {
-                tip = "Showing only:";
-                for (const auto& category : only) tip += "\n  " + category;
-            }
-            if (!hidden.empty()) {
-                tip += std::string(tip.empty() ? "" : "\n") + "Hiding:";
-                for (const auto& category : hidden) tip += "\n  " + category;
-            }
-            ImGui::SetTooltip("%s", tip.c_str());
-        }
-        return false;
-    }
+    // Wider than its button: a row holds a box, the name, how many mods and the eye.
+    const float across = std::max(width, S(310));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(across, 0), ImVec2(across, S(660)));
+    if (!ImGui::BeginCombo(id, shown.c_str(), ImGuiComboFlags_HeightLarge)) return false;
     bool changed = false;
-    ImGui::PushStyleColor(ImGuiCol_Text, color::muted);
-    ImGui::TextUnformatted("Click a category to show only it,");
-    ImGui::TextUnformatted("again to hide it, again for either.");
-    ImGui::PopStyleColor();
-    if (ImGui::Selectable("Every category", only.empty() && hidden.empty(), ImGuiSelectableFlags_DontClosePopups)) {
-        changed = !only.empty() || !hidden.empty();
-        only.clear();
-        hidden.clear();
+    // What is typed narrows the rows; forgotten each time the menu opens. (One menu is open at a time.)
+    static std::array<char, 48> find{};
+    if (ImGui::IsWindowAppearing()) {
+        find.fill(0);
+        if (!ImGui::GetIO().NavVisible) ImGui::SetKeyboardFocusHere();
     }
-    ImGui::Separator();
+    ImGui::SetNextItemWidth(-1);
+    ImGui::InputTextWithHint("##find", "Find a category", find.data(), find.size());
+    ImGui::Dummy(ImVec2(0, S(2)));
+    const auto query = lower(find.data());
+    int most = 1;
+    for (const auto& entry : categories) most = std::max(most, entry.second);
+    auto* draw = ImGui::GetWindowDrawList();
+    ImFont* font = ImGui::GetFont();
+    const float size = ImGui::GetFontSize();
+    const float tall = S(30), box = S(16), eye = S(26);
+    bool any = false;
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, S(2)));
     for (const auto& [category, mods] : categories) {
+        if (!query.empty() && lower(category).find(query) == std::string::npos) continue;
+        any = true;
         const bool is_only = in(only, category), is_hidden = in(hidden, category);
-        const auto label = std::format("{}  {}  ({})##{}", is_only ? "+" : is_hidden ? "-" : " ", category, mods, category);
-        ImGui::PushStyleColor(ImGuiCol_Text, is_only ? color::good : is_hidden ? color::danger : color::text);
-        if (ImGui::Selectable(label.c_str(), is_only || is_hidden, ImGuiSelectableFlags_DontClosePopups)) {
-            // Either, then shown only, then hidden, then either again.
-            if (is_only) {
+        ImGui::PushID(category.c_str());
+        const ImVec2 start = ImGui::GetCursorScreenPos();
+        const float row = ImGui::GetContentRegionAvail().x;
+        // The row ticks its box; the eye at its right, drawn over it, hides the category.
+        ImGui::SetNextItemAllowOverlap();
+        const bool pressed = ImGui::InvisibleButton("##row", ImVec2(row, tall), ImGuiButtonFlags_EnableNav);
+        const bool over = ImGui::IsItemHovered();
+        const ImVec2 next = ImGui::GetCursorPos();
+        const ImVec2 eye_at(start.x + row - eye - S(2), start.y + (tall - eye) * 0.5f);
+        ImGui::SetCursorScreenPos(eye_at);
+        const bool hide = ImGui::InvisibleButton("##hide", ImVec2(eye, eye), ImGuiButtonFlags_EnableNav);
+        const bool over_eye = ImGui::IsItemHovered();
+        ImGui::SetCursorPos(next);
+        if (over_eye) ImGui::SetTooltip("%s", is_hidden ? "Hidden. Click to show it again." : "Hide this category");
+        else if (over) ImGui::SetTooltip("%s", is_hidden ? "Hidden. Click to show it again."
+                                           : is_only ? "Shown only. Click to show every category again."
+                                                     : "Show only this category, and any others ticked");
+        if (hide) {
+            if (is_hidden) std::erase(hidden, category);
+            else {
                 std::erase(only, category);
                 hidden.push_back(category);
-            } else if (is_hidden) {
-                std::erase(hidden, category);
-            } else {
-                only.push_back(category);
             }
             changed = true;
+        } else if (pressed) {
+            if (is_hidden) std::erase(hidden, category);
+            else if (is_only) std::erase(only, category);
+            else only.push_back(category);
+            changed = true;
         }
-        ImGui::PopStyleColor();
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip("%s", is_only ? "Shown only. Click to hide it." : is_hidden ? "Hidden. Click to show it as any other." : "Click to show only this category (and any others shown only).");
+
+        const float middle = start.y + tall * 0.5f;
+        if (over || over_eye) draw->AddRectFilled(start, ImVec2(start.x + row, start.y + tall), rgba(255, 255, 255, 0.06f), S(4));
+        const ImVec2 at(start.x + S(8), middle - box * 0.5f), corner(at.x + box, at.y + box);
+        if (is_only) {
+            draw->AddRectFilled(at, corner, color::blue, S(4));
+            draw->AddLine(ImVec2(at.x + box * 0.24f, at.y + box * 0.52f), ImVec2(at.x + box * 0.43f, at.y + box * 0.72f), color::ink, S(2));
+            draw->AddLine(ImVec2(at.x + box * 0.43f, at.y + box * 0.72f), ImVec2(at.x + box * 0.78f, at.y + box * 0.30f), color::ink, S(2));
+        } else {
+            draw->AddRectFilled(at, corner, rgba(255, 255, 255, is_hidden ? 0.03f : 0.09f), S(4));
+            draw->AddRect(at, corner, rgba(255, 255, 255, is_hidden ? 0.12f : over ? 0.5f : 0.28f), S(4));
+        }
+        const float name_x = corner.x + S(10), count_end = eye_at.x - S(8);
+        const auto count = std::to_string(mods);
+        const float count_width = font->CalcTextSizeA(size, FLT_MAX, 0, count.c_str()).x;
+        const ImVec4 clip(name_x, start.y, count_end - count_width - S(8), start.y + tall);
+        const float text_y = middle - size * 0.5f - S(2);
+        draw->AddText(font, size, ImVec2(name_x, text_y), is_hidden ? color::muted : color::text, category.c_str(), nullptr, 0, &clip);
+        if (is_hidden) {
+            const float name_end = std::min(clip.z, name_x + font->CalcTextSizeA(size, FLT_MAX, 0, category.c_str()).x);
+            draw->AddLine(ImVec2(name_x, text_y + size * 0.55f), ImVec2(name_end, text_y + size * 0.55f), color::muted, S(1));
+        }
+        draw->AddText(font, size, ImVec2(count_end - count_width, text_y), color::muted, count.c_str());
+        // How full it is beside the fullest: a line under the name.
+        const float full = (count_end - name_x) * static_cast<float>(mods) / static_cast<float>(most);
+        draw->AddRectFilled(ImVec2(name_x, start.y + tall - S(5)), ImVec2(name_x + std::max(S(2), full), start.y + tall - S(3)),
+                            is_only ? color::blue : rgba(255, 255, 255, is_hidden ? 0.06f : 0.16f), S(1));
+        // The eye: open, or struck through in red while the category is hidden.
+        const ImVec2 centre(eye_at.x + eye * 0.5f, eye_at.y + eye * 0.5f);
+        const ImU32 ink = is_hidden ? color::danger : over_eye ? color::text : rgba(255, 255, 255, 0.3f);
+        draw->AddEllipse(centre, ImVec2(S(7.5f), S(4.5f)), ink, 0, 0, S(1.5f));
+        draw->AddCircleFilled(centre, S(2), ink);
+        if (is_hidden) draw->AddLine(ImVec2(centre.x - S(7), centre.y + S(6)), ImVec2(centre.x + S(7), centre.y - S(6)), ink, S(1.6f));
+        ImGui::PopID();
     }
+    ImGui::PopStyleVar();
+    if (!any) ImGui::TextDisabled("No category by that name.");
+    ImGui::Separator();
+    ImGui::BeginDisabled(only.empty() && hidden.empty());
+    if (ImGui::SmallButton("Clear all")) {
+        only.clear();
+        hidden.clear();
+        changed = true;
+    }
+    ImGui::EndDisabled();
+    const auto standing = only.empty() && hidden.empty() ? std::string("Every category shown")
+        : std::format("{}{}{}", only.empty() ? std::string() : std::format("{} shown only", only.size()),
+                      only.empty() || hidden.empty() ? "" : ", ", hidden.empty() ? std::string() : std::format("{} hidden", hidden.size()));
+    ImGui::SameLine();
+    ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), ImGui::GetContentRegionMax().x - ImGui::CalcTextSize(standing.c_str()).x));
+    ImGui::TextDisabled("%s", standing.c_str());
     ImGui::EndCombo();
     return changed;
+}
+
+bool category_chips(std::vector<std::string>& only, std::vector<std::string>& hidden) {
+    if (only.empty() && hidden.empty()) return false;
+    // (Let go of after the loop: the chips are drawn from the lists they change.)
+    const std::string* gone = nullptr;
+    bool gone_hidden = false;
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, S(13));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(S(12), S(4)));
+    auto* draw = ImGui::GetWindowDrawList();
+    const float edge = ImGui::GetContentRegionMax().x, cross = S(7);
+    bool first = true;
+    const auto chip = [&](const std::string& category, bool is_hidden) {
+        // Room at its right end for the cross drawn there.
+        const auto label = std::format("{}{}      ###category_chip_{}", is_hidden ? "Not " : "", category, category);
+        const float chip_width = ImGui::CalcTextSize(label.c_str(), nullptr, true).x + S(24);
+        if (!first) {
+            ImGui::SameLine(0, S(6));
+            if (ImGui::GetCursorPosX() + chip_width > edge) ImGui::NewLine();
+        }
+        first = false;
+        if (is_hidden) ImGui::PushStyleColor(ImGuiCol_Text, ImGui::ColorConvertU32ToFloat4(color::danger));
+        if (ImGui::Button(label.c_str())) {
+            gone = &category;
+            gone_hidden = is_hidden;
+        }
+        if (is_hidden) ImGui::PopStyleColor();
+        const bool over = ImGui::IsItemHovered();
+        if (over) ImGui::SetTooltip("%s", is_hidden ? "Hidden. Click to show it again." : "Shown only. Click to let it go.");
+        const ImVec2 low = ImGui::GetItemRectMin(), high = ImGui::GetItemRectMax();
+        const ImVec2 centre(high.x - S(12) - cross * 0.5f, (low.y + high.y) * 0.5f);
+        const ImU32 ink = is_hidden ? color::danger : over ? color::text : color::muted;
+        draw->AddLine(ImVec2(centre.x - cross * 0.5f, centre.y - cross * 0.5f), ImVec2(centre.x + cross * 0.5f, centre.y + cross * 0.5f), ink, S(1.5f));
+        draw->AddLine(ImVec2(centre.x - cross * 0.5f, centre.y + cross * 0.5f), ImVec2(centre.x + cross * 0.5f, centre.y - cross * 0.5f), ink, S(1.5f));
+    };
+    for (const auto& category : only) chip(category, false);
+    for (const auto& category : hidden) chip(category, true);
+    ImGui::PopStyleVar(2);
+    if (!gone) return false;
+    const auto name = *gone;   // a copy: it is in the list it leaves
+    std::erase(gone_hidden ? hidden : only, name);
+    return true;
 }
 
 // Placed by hand: a row lays its own icon, text and badges out.
@@ -419,119 +467,6 @@ std::vector<const thunderstore::Package*> updates(const Store& store, const thun
     return result;
 }
 
-void start_store_install(ModsPanel& panel, std::vector<thunderstore::Package> packages) {
-    if (panel.installing || packages.empty()) return;
-    // Each package asked for, with the mods its install brings in (launcher_mods::record_brought_in).
-    std::vector<std::pair<std::string, std::vector<std::string>>> brought;
-    {
-        // A package brings what it needs with it (a mod pack is nothing else), needed mods first.
-        const auto have = installed_versions(panel.list);
-        // The installed folders as Windows tells them apart, ignoring case: one installed by hand or by another
-        // manager may be spelt differently from Thunderstore's name, and is still a mod the player had.
-        const auto folded = [](std::string text) {
-            std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-            return text;
-        };
-        std::set<std::string> had;
-        std::map<std::string, std::string> version_of;   // folded folder -> its installed version
-        for (const auto& [folder, version] : have) {
-            had.insert(folded(folder));
-            version_of.emplace(folded(folder), version);
-        }
-        // So a dependency installed under another spelling counts as installed (at its version) and is not
-        // downloaded again: each package whose folder is one of those, under Thunderstore's own spelling.
-        auto installed = have;
-        for (const auto& known : panel.store.packages) {
-            const auto folder = ts::folder_for(known.full_name);
-            if (installed.contains(folder)) continue;
-            if (const auto found = version_of.find(folded(folder)); found != version_of.end()) installed.emplace(folder, found->second);
-        }
-        std::vector<thunderstore::Package> expanded;
-        for (const auto& package : packages) {
-            std::vector<std::string> brings;
-            for (auto& needed : thunderstore::with_dependencies(package, panel.store.packages, installed)) {
-                // What it brings in: a dependency that is not installed at all now (one only updated was there before).
-                const auto folder = ts::folder_for(needed.full_name);
-                if (needed.full_name != package.full_name && !had.contains(folded(folder))) brings.push_back(folder);
-                if (std::none_of(expanded.begin(), expanded.end(),
-                        [&](const auto& queued) { return queued.full_name == needed.full_name; }))
-                    expanded.push_back(std::move(needed));
-            }
-            if (!brings.empty()) brought.emplace_back(ts::folder_for(package.full_name), std::move(brings));
-        }
-        packages = std::move(expanded);
-    }
-    if (panel.worker.joinable()) panel.worker.join();
-    panel.installing = true;
-    panel.cancel = false;
-    panel.progress = 0;
-    panel.message.clear();
-    set_activity(panel, "Starting download...");
-    const auto root = panel.root;
-    panel.worker = std::thread([&panel, root, packages = std::move(packages), brought = std::move(brought)] {
-        std::string name, error, note;
-        wait_for_conflict_check(panel);   // (it may be reading the mods these replace)
-        std::size_t done = 0;
-        // One that fails does not stop the ones after it: each is its own download, and the
-        // list ends with what could not be installed. Cancelling does stop the rest.
-        std::vector<std::string> failed;
-        for (const auto& package : packages) {
-            if (panel.cancel) break;
-            try {
-                const bool update = fs::exists(root / wide(ts::folder_for(package.full_name)));
-                name = install_package(panel, root, package);
-                ++done;
-                log(logging::Level::info, std::format("Mod {} from Thunderstore: {} v{} into Mods\\{}",
-                    update ? "updated" : "installed", package.full_name, package.latest().number, name));
-                note = packages.size() > 1
-                    ? std::format("Installed or updated {} mods. Changes apply the next time Skate starts.", done)
-                    : std::format("{} {} v{}. It loads the next time Skate starts.", update ? "Updated" : "Installed",
-                                  package.title(), package.latest().number);
-            } catch (const std::exception& failure) {
-                log(logging::Level::warning, "Thunderstore install of " + package.full_name + " failed: " + failure.what());
-                if (panel.cancel) {
-                    error = package.title() + ": " + failure.what();
-                    break;
-                }
-                failed.push_back(package.title() + ": " + failure.what());
-            }
-        }
-        // A pack that installed remembers what it brought in, so its uninstall can offer exactly those.
-        for (const auto& [pack, brings] : brought) {
-            std::error_code missing;
-            if (!fs::is_directory(root / wide(pack), missing)) continue;
-            std::vector<std::string> present;
-            for (const auto& folder : brings)
-                if (fs::is_directory(root / wide(folder), missing)) present.push_back(folder);
-            try {
-                launcher_mods::record_brought_in(root, pack, present);
-            } catch (const std::exception& failure) {
-                log(logging::Level::warning, "Could not note what " + pack + " brought in: " + failure.what());
-            }
-        }
-        if (error.empty() && !failed.empty()) {
-            // The first few by name and reason; the log has every one.
-            constexpr std::size_t shown = 3;
-            error = packages.size() == 1 ? failed.front()
-                : std::format("{} of {} could not be installed{}. ", failed.size(), packages.size(),
-                              done ? std::format(" ({} were)", done) : std::string());
-            if (packages.size() > 1) {
-                for (std::size_t i = 0; i < failed.size() && i < shown; ++i) error += (i ? " | " : "") + failed[i];
-                if (failed.size() > shown) error += std::format(" | and {} more", failed.size() - shown);
-            }
-        }
-        std::lock_guard lock(panel.mutex);
-        panel.finished = true;
-        panel.finished_name = name;
-        panel.finished_error = error;
-        panel.finished_conflict.clear();
-        panel.finished_note = note;
-        panel.finished_source.clear();
-        panel.activity.clear();
-        panel.installing = false;
-    });
-}
-
 namespace {
 // The texture for an icon URL (or local_icon_prefix and a path), or empty while the worker loads it.
 ImTextureID icon_texture(Icons& icons, const std::string& url) {
@@ -605,20 +540,6 @@ void browse_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, float
     const auto installed = installed_versions(panel.list);
 
     const float top = ImGui::GetCursorPosY();
-    {
-        const auto waiting = store.loaded ? updates(store, installed).size() : 0;
-        const auto have = std::count_if(store.packages.begin(), store.packages.end(),
-            [&](const ts::Package& package) { return installed.contains(ts::folder_for(package.full_name)); });
-        page_banner(fonts, "GET MODS", nullptr,
-            "Mods for ReSkate from Thunderstore. Open one to read about it, or tick several and install them together.",
-            !store.loaded ? (store.loading || store.error.empty() ? "LOADING" : "OFFLINE")
-                : waiting ? std::format("{} {} WAITING", waiting, waiting == 1 ? "UPDATE" : "UPDATES")
-                          : std::format("{} INSTALLED", have),
-            !store.loaded ? (store.loading || store.error.empty() ? color::blue : color::danger) : waiting ? color::blue : color::good,
-            !store.loaded ? (store.loading || store.error.empty() ? "Reading Thunderstore..." : "Thunderstore could not be reached")
-                          : std::format("{} mods on Thunderstore", count_text(store.packages.size())));
-    }
-
     // ------------------------------------------------ search, category, sort, refresh
     const float combo = S(190), refresh = S(110);
     ImGui::SetNextItemWidth(std::max(S(140),
@@ -641,6 +562,8 @@ void browse_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, float
     ImGui::BeginDisabled(store.loading);
     if (ImGui::Button("Refresh", ImVec2(refresh, 0))) refresh_mods(launcher, panel);
     ImGui::EndDisabled();
+    // What the category menu is set to, where it can be seen with the menu shut.
+    if (category_chips(launcher.settings().mod_categories_only, launcher.settings().mod_categories_hidden)) launcher.save();
 
     // ------------------------------------------------ what is ticked
     if (!store.picked.empty()) {
@@ -713,7 +636,9 @@ void browse_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, float
         note("No mods match your search.");
     }
 
-    const float row = S(80) + row_gap();
+    // A row: the box that ticks it and its icon at the left, its name over two lines of what it
+    // says it is, and at the right one column, the same width in every row, for what is done to it.
+    const float row = S(98) + row_gap();
     ImGui::BeginDisabled(installing);
     virtual_rows(static_cast<int>(packages.size()), [&](int) { return row; }, [&](int index, float slot) {
         const float tall = slot - row_gap();
@@ -723,7 +648,7 @@ void browse_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, float
         const bool update = ts::update_available(package, installed);
         // Tools (Blender add-ons, utilities) are not game mods: their page has the download.
         const bool tool = package.in_category("Tools") && !package.in_category("Mods");
-        bool ticked = picked(store, package.full_name);
+        const bool ticked = picked(store, package.full_name);
 
         ImGui::PushID(package.full_name.c_str());
         auto* draw = ImGui::GetWindowDrawList();
@@ -737,52 +662,61 @@ void browse_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, float
         }
         row_buttons();
         const float right = start.x + width;
-        const float text_x = start.x + S(82);
-        mod_icon(panel, &package, ImVec2(start.x + S(14), start.y + S(11)), S(56));
+        const float icon = S(64), icon_x = start.x + S(46), text_x = icon_x + icon + S(16);
+        // Ticked, to install with the others ticked (a tool has no box: its page has the download).
+        if (!tool) {
+            if (tick_box("##pick", ImVec2(start.x + S(14), start.y + (tall - tick_box_size()) * 0.5f), ticked))
+                pick(store, package.full_name, !ticked);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tick to install this with the others you tick");
+        }
+        mod_icon(panel, &package, ImVec2(icon_x, start.y + (tall - icon) * 0.5f), icon);
+
+        // ------------------------------------------- what is done to it, in a column at the right
+        const float button = S(132), button_tall = S(32);
+        const float button_x = right - S(16) - button;
+        ImGui::SetCursorScreenPos(ImVec2(button_x, start.y + (tall - button_tall) * 0.5f));
+        if (tool) {
+            if (ImGui::Button("STORE PAGE", ImVec2(button, button_tall))) open_url(package.package_url);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("A tool, not a game mod: get it from its Thunderstore page.");
+        } else if (const auto coming = download_label(panel, package.full_name); !coming.empty()) {
+            // In the queue already: the button says where it is, and is not to be pressed again.
+            ImGui::BeginDisabled();
+            ImGui::Button(coming.c_str(), ImVec2(button, button_tall));
+            ImGui::EndDisabled();
+        } else if (update) {
+            push_primary_button();
+            if (ImGui::Button("UPDATE", ImVec2(button, button_tall))) start_store_install(panel, {package});
+            pop_primary_button();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Thunderstore has v%s", version.number.c_str());
+        } else if (found == installed.end()) {
+            push_primary_button();
+            if (ImGui::Button("INSTALL", ImVec2(button, button_tall))) start_store_install(panel, {package});
+            pop_primary_button();
+        } else {
+            // Installed and up to date: said in the middle of the column, where the button would be.
+            const auto mark = "INSTALLED";
+            badge(draw, fonts, ImVec2(button_x + (button - badge_width(fonts, mark)) * 0.5f,
+                start.y + (tall - fonts.caption->FontSize - S(8)) * 0.5f), mark, color::good, color::ink);
+        }
+
+        const float limit = button_x - S(18);
+        const ImVec4 title_clip(text_x, start.y, limit, start.y + tall);
         draw->AddText(fonts.bold, fonts.bold->FontSize, ImVec2(text_x, start.y + S(10)), color::text,
-            package.title().c_str());
+            package.title().c_str(), nullptr, 0, &title_clip);
         const float title_width =
             fonts.bold->CalcTextSizeA(fonts.bold->FontSize, FLT_MAX, 0, package.title().c_str()).x;
         draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(text_x + title_width + S(8), start.y + S(12)),
-            color::muted, ("by " + package.owner).c_str());
-
-        // ------------------------------------------- tick and install, at the right
-        const float box = ImGui::GetFrameHeight();
-        const float tick_x = right - S(16) - box;
-        const float button = S(118);
-        const float button_x = tick_x - S(12) - button;
-        ImGui::SetCursorScreenPos(ImVec2(tick_x, start.y + (tall - box) * 0.5f));
-        ImGui::BeginDisabled(tool);
-        if (ImGui::Checkbox("##pick", &ticked)) pick(store, package.full_name, ticked);
-        ImGui::EndDisabled();
-        if (ImGui::IsItemHovered())
-            ImGui::SetTooltip(tool ? "A tool, not a game mod: get it from its Thunderstore page."
-                                   : "Tick to install this with the others you tick");
-        ImGui::SetCursorScreenPos(ImVec2(button_x, start.y + (tall - S(32)) * 0.5f));
-        if (tool) {
-            if (ImGui::Button("THUNDERSTORE", ImVec2(button, S(32)))) open_url(package.package_url);
-        } else if (update) {
-            push_primary_button();
-            if (ImGui::Button("UPDATE", ImVec2(button, S(32)))) start_store_install(panel, {package});
-            pop_primary_button();
-        } else if (found == installed.end()) {
-            push_primary_button();
-            if (ImGui::Button("INSTALL", ImVec2(button, S(32)))) start_store_install(panel, {package});
-            pop_primary_button();
-        } else {
-            const auto mark = "INSTALLED";
-            badge(draw, fonts, ImVec2(button_x + button - badge_width(fonts, mark),
-                start.y + (tall - fonts.caption->FontSize - S(8)) * 0.5f), mark, color::good, color::ink);
-        }
+            color::muted, ("by " + package.owner).c_str(), nullptr, 0, &title_clip);
 
         auto line = version.description;
         std::replace_if(line.begin(), line.end(),
             [](char ch) { return ch == 0x0a || ch == 0x0d || ch == 0x09; }, ' ');
-        // One line, clipped rather than wrapped, so every row is the same height.
-        const ImVec4 clip(text_x, start.y, button_x - S(14), start.y + tall);
-        draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(text_x, start.y + S(32)), color::text, line.c_str(),
-            nullptr, 0, &clip);
-        draw->AddText(fonts.caption, fonts.caption->FontSize, ImVec2(text_x, start.y + S(55)), color::muted,
+        // Two lines, wrapped, and cut off after them, so every row is the same height.
+        const float described = start.y + S(33);
+        const ImVec4 clip(text_x, described, limit, described + fonts.body->FontSize * 2 + S(1));
+        draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(text_x, described), color::text, line.c_str(),
+            nullptr, limit - text_x, &clip);
+        draw->AddText(fonts.caption, fonts.caption->FontSize, ImVec2(text_x, start.y + tall - fonts.caption->FontSize - S(10)), color::muted,
             std::format("v{}{}  /  {} downloads  /  {}", version.number,
                 version.file_size ? "  /  " + size_text(version.file_size) : std::string(),
                 count_text(package.downloads), date_text(package.date_updated)).c_str());
@@ -1008,9 +942,10 @@ void package_overview(const Fonts& fonts, ModsPanel& panel, ImVec2 size, bool in
         if (ImGui::Button("GET IT ON THUNDERSTORE", ImVec2(0, S(34)))) open_url(package.package_url);
         pop_primary_button();
     } else {
-        ImGui::BeginDisabled(installing);
+        const auto coming = download_label(panel, package.full_name);
+        ImGui::BeginDisabled(installing || !coming.empty());
         push_primary_button();
-        if (ImGui::Button(action_label(package, installed).c_str(), ImVec2(0, S(34)))) {
+        if (ImGui::Button(coming.empty() ? action_label(package, installed).c_str() : coming.c_str(), ImVec2(0, S(34)))) {
             start_store_install(panel, {package});
             close();
         }

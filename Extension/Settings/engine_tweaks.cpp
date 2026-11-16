@@ -23,7 +23,6 @@ namespace {
 namespace et = addr::engine_tweaks;
 using Fingerprint = game::build::Fingerprint;
 constexpr std::size_t tweak_count = 5;
-constexpr double macos_wine_default_job_wake_us = 50.0;
 std::uintptr_t base{};
 std::atomic<bool> installed{};
 std::array<std::atomic<bool>, tweak_count> ready{};
@@ -69,10 +68,19 @@ void install_macos_wine_stall_guards() noexcept {
         et::task_queue_runner_exit_patch_offset, et::task_queue_runner_exit_patch);
     const bool server_ok = apply_inline_guard(et::server_step_reader_lock_rva, et::server_step_reader_lock_contract,
         et::server_step_reader_lock_patch_offset, et::server_step_reader_lock_patch);
-    if (!runner_ok || !server_ok)
+    const bool worker_ok =
+        apply_inline_guard(et::job_idle_wait_sem_exit_rva, et::job_idle_wait_sem_exit_contract,
+            et::job_idle_wait_sem_exit_patch_offset, et::job_idle_wait_sem_exit_patch) &&
+        apply_inline_guard(et::job_idle_wait_unreg_exit_rva, et::job_idle_wait_unreg_exit_contract,
+            et::job_idle_wait_unreg_exit_patch_offset, et::job_idle_wait_unreg_exit_patch) &&
+        apply_inline_guard(et::worker_loop_inner_state_exit_rva, et::worker_loop_inner_state_exit_contract,
+            et::worker_loop_inner_state_exit_patch_offset, et::worker_loop_inner_state_exit_patch) &&
+        apply_inline_guard(et::worker_loop_pred_state_exit_rva, et::worker_loop_pred_state_exit_contract,
+            et::worker_loop_pred_state_exit_patch_offset, et::worker_loop_pred_state_exit_patch);
+    if (!runner_ok || !server_ok || !worker_ok)
         logging::log(logging::Level::warning, logging::Channel::runtime,
-            "Engine tweaks: macOS Wine simulation stall guards differ for this build (TaskQueue runner {}, Server reader lock {}).",
-            runner_ok ? "patched" : "skipped", server_ok ? "patched" : "skipped");
+            "Engine tweaks: macOS Wine simulation stall guards differ for this build (TaskQueue runner {}, Server reader lock {}, Job worker state {}).",
+            runner_ok ? "patched" : "skipped", server_ok ? "patched" : "skipped", worker_ok ? "patched" : "skipped");
 }
 
 // Counting on hot paths: a per-thread tally folded into the shared total every 256 counts, so
@@ -387,7 +395,7 @@ bool install(std::uintptr_t b) noexcept {
 
 double default_value(Tweak tweak) noexcept {
     if (tweak == Tweak::dirty_skip) return 1;
-    if (under_macos_wine()) return tweak == Tweak::job_wake ? macos_wine_default_job_wake_us : 0;
+    if (under_macos_wine()) return 0;
     return tweak == Tweak::main_sleep ? 1 : 0;
 }
 

@@ -69,6 +69,7 @@ Settings load_settings(const fs::path& path) {
         if (const int size = json.value("interface_size", settings.interface_size);
             std::ranges::find(interface_sizes, size) != interface_sizes.end())
             settings.interface_size = size;
+        settings.parallel_downloads = std::clamp(json.value("parallel_downloads", settings.parallel_downloads), 1, max_parallel_downloads);
         // Keep the original settings key so existing launcher preferences survive.
         settings.keep_open_after_launch = !json.value("close_on_launch", !settings.keep_open_after_launch);
         settings.updates = json.value("updates", settings.updates);
@@ -80,7 +81,7 @@ Settings load_settings(const fs::path& path) {
         settings.steam_prefer_code = json.value("steam_prefer_code", settings.steam_prefer_code);
         settings.accepted_privacy = json.value("accepted_privacy_version", settings.accepted_privacy);
         settings.accepted_terms = json.value("accepted_terms_version", settings.accepted_terms);
-        settings.announcement_hidden = json.value("announcement_hidden", settings.announcement_hidden);
+        settings.announcement_opened = json.value("announcement_opened", settings.announcement_opened);
         // At most 64 categories each, every one a short name.
         const auto categories = [&](const char* key) {
             std::vector<std::string> list;
@@ -116,6 +117,7 @@ void save_settings(const fs::path& path, const Settings& settings) {
     json["log_level"] = log_levels[static_cast<std::size_t>(settings.log_level)];
     json["arguments"] = settings.arguments;
     json["interface_size"] = settings.interface_size;
+    json["parallel_downloads"] = settings.parallel_downloads;
     json["close_on_launch"] = !settings.keep_open_after_launch;
     json["updates"] = settings.updates;
     json["crash_reports"] = settings.crash_reports;
@@ -125,7 +127,7 @@ void save_settings(const fs::path& path, const Settings& settings) {
     json["steam_remember"] = settings.steam_remember;
     json["steam_prefer_code"] = settings.steam_prefer_code;
     json["accepted_privacy_version"] = settings.accepted_privacy;
-    json["announcement_hidden"] = settings.announcement_hidden;
+    json["announcement_opened"] = settings.announcement_opened;
     json["accepted_terms_version"] = settings.accepted_terms;
     json["mod_categories_only"] = settings.mod_categories_only;
     json["mod_categories_hidden"] = settings.mod_categories_hidden;

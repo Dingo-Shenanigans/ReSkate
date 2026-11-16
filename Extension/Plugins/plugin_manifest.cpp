@@ -26,7 +26,7 @@ namespace {
 // "outfit.stand_ins" what this PC shows in place of other players' items it does not have
 // (reskate.outfit.stand_ins, Extension/Multiplayer/Remote/stand_ins.h); never a paid store item.
 // "world.physics" native rigid bodies the plugin
-// owns (reskate.world.physics: create, read, submit, receipt, acknowledge, release, prepare) and,
+// owns (reskate.world.physics: create, read, submit, receipt, acknowledge, release, prepare, limits) and,
 // with "world.raycast", ray batches beside one (probe_batch). "world.physics.observe" adds
 // probe_batch's passive diagnostics on top of those two: include_shape_categories (a read-time
 // category mask), include_hit_owner (an equality-only token for a hit shape's owner slot) and
@@ -49,14 +49,14 @@ namespace {
 // "hud" so plugins approved for "hud" are not given a new thing on screen without being asked.
 // "replay" grants nothing yet: no API checks it. It stays known so a manifest that lists it still
 // loads (an unknown permission refuses the whole manifest).
-constexpr std::array<std::string_view, 64> permissions{
+constexpr std::array<std::string_view, 65> permissions{
     "console", "storage", "overlay", "menu", "ui.screen", "input", "input.write", "hud", "events.tricks", "events.skater",
     "skater.read", "skater.teleport", "skater.control", "skater.animation", "trainer", "camera",
     "world.raycast", "world.vehicles", "world.physics", "world.physics.observe", "world.physics.reuse", "world.objects", "world.entities", "world.environment", "world.ai", "travel", "session.read",
     "session.skaters", "session.nametags", "net.session", "net.http", "voice.control", "chat.read",
     "chat.send", "chat.local", "chat.commands", "server", "server.parks", "throwdowns", "replay", "music", "progression.read", "settings.read", "audio.ui", "audio", "outfit", "board", "mods.read",
     "events.physics", "game.speed", "files", "variants", "settings.write", "room", "capture", "effects", "events.physics.geometry", "viewmodel", "strings", "outfit.stand_ins",
-    "objects.physics", "marker.read", "ui.models", "hud.score"};
+    "objects.physics", "marker.read", "ui.models", "hud.score", "effects.game"};
 }
 
 bool known_permission(std::string_view name) noexcept {
@@ -134,6 +134,8 @@ Manifest parse_manifest(std::string_view text) {
         throw std::runtime_error("events.physics.geometry also needs the events.physics permission");
     if (result.permissions.contains("world.physics.reuse") && !result.permissions.contains("world.physics"))
         throw std::runtime_error("world.physics.reuse also needs the world.physics permission");
+    if (result.permissions.contains("effects.game") && !result.permissions.contains("effects"))
+        throw std::runtime_error("effects.game also needs the effects permission");
     if (json.contains("effects")) {
         const auto& list = json.at("effects");
         if (!result.permissions.contains("effects") || !list.is_array() || list.size() > 128)

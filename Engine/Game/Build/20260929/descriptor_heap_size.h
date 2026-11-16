@@ -28,4 +28,22 @@ inline constexpr std::array<std::uint8_t, 9> total_cap{0x83, 0xbe, 0xa4, 0x07, 0
 inline constexpr std::uintptr_t cap_load_rva = 0x0410eaee;
 inline constexpr std::array<std::uint8_t, 14> cap_load{
     0x41, 0x8b, 0x4e, 0x08, 0x41, 0xf7, 0xf1, 0x8b, 0xf8, 0xb8, 0xff, 0xff, 0xff, 0xff};
+// Layout choice: one heap with a region per frame (sil = 0) or a heap per frame (sil = 1, PC).
+inline constexpr std::uintptr_t layout_rva = 0x0410eabb;
+inline constexpr std::array<std::uint8_t, 8> layout{0x48, 0x85, 0xc0, 0x74, 0x1f, 0x0f, 0xb6, 0x40};
+// Heap object constructor. Per-heap EASTL fixed vectors (4 inline): heaps +0x08, CPU starts +0x50,
+// GPU starts +0x98. +0xf4: frame regions per heap.
+inline constexpr std::uintptr_t heap_constructor_rva = 0x040e1f00;
+inline constexpr std::array<std::uint8_t, 15> heap_constructor{
+    0x4c, 0x89, 0x4c, 0x24, 0x20, 0x4c, 0x89, 0x44, 0x24, 0x18, 0x48, 0x89, 0x4c, 0x24, 0x08};
+inline constexpr std::size_t heap_vectors[]{0x08, 0x50, 0x98};
+inline constexpr std::size_t heap_regions = 0xf4;
+// Heap object's begin-frame (vtable slot 6): sets the frame's start (+0x100) and cursor (+0x108),
+// then moves to the next region. +0xf0: descriptors per frame region.
+inline constexpr std::uintptr_t begin_frame_rva = 0x040e2520;
+inline constexpr std::array<std::uint8_t, 14> begin_frame{
+    0x44, 0x8b, 0x81, 0xf0, 0x00, 0x00, 0x00, 0x4c, 0x8b, 0xc9, 0x44, 0x0f, 0xaf, 0x81};
+inline constexpr std::size_t heap_per_frame = 0xf0;
+inline constexpr std::size_t heap_frame_start = 0x100;
+inline constexpr std::size_t heap_cursor = 0x108;
 } // namespace dingosdk::game::build::v20260929::descriptor_heap_size

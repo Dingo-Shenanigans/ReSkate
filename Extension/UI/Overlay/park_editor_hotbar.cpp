@@ -47,11 +47,10 @@ void hotbar_layout(ParkEditorUI &ui, EditorFrame &f) {
     // The tools, the divider (6 + 2 + 6), SNAP and its arrow, ON SURFACES, as the bar draws them.
     float tool_bar = pad * 2 + P(14) + chip_width(ui, snap.c_str()) + P(28) + chip_gap + chip_width(ui, "ON SURFACES");
     int tool_count = 0;
-    for (const auto &tool : tools)
-        if (tool.mode != ParkTransformMode::scale || ui.scaling_allowed) {
-            tool_bar += chip_width(ui, tool.label) + (tool_count ? chip_gap : 0);
-            ++tool_count;
-        }
+    for (const auto &tool : tools) {
+        tool_bar += chip_width(ui, tool.label) + (tool_count ? chip_gap : 0);
+        ++tool_count;
+    }
     const std::array<const char *, 6> actions{"UNDO", "REDO", "SAVE", "TEST PARK", "LAYOUT", "EXIT"};
     float action_bar = pad * 2 + chip_gap * static_cast<float>(actions.size() - 1);
     for (const auto *label : actions)
@@ -123,16 +122,17 @@ void hotbar_layout(ParkEditorUI &ui, EditorFrame &f) {
         ImGui::BeginDisabled(f.busy);
         bool first = true;
         for (std::size_t i = 0; i < tools.size(); ++i) {
-            if (tools[i].mode == ParkTransformMode::scale && !ui.scaling_allowed)
-                continue; // the server has it off
             if (!first)
                 ImGui::SameLine();
             first = false;
+            // SCALE stays in the bar, greyed, while the session's host has object scaling off, so it
+            // does not look as if the tool were gone (players took its absence for it being removed).
+            const bool off = tools[i].mode == ParkTransformMode::scale && !ui.scaling_allowed;
             if (chip(ui, tools[i].label, ui.mode == tools[i].mode ? Chip::blue : Chip::plain, chip_height,
-                     static_cast<unsigned>(41 + i)))
+                     static_cast<unsigned>(41 + i), !off))
                 set_mode(ui, tools[i].mode);
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("%s", i == 0 ? "Move along the handles (T)." : i == 1 ? "Turn on the rings (R)." : "Scale (Y).");
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("%s", off ? "Scale (Y) is off in this session: its host has turned object scaling off. It is back offline and in your own lobby." : i == 0 ? "Move along the handles (T)." : i == 1 ? "Turn on the rings (R)." : "Scale (Y).");
         }
         ImGui::EndDisabled();
         ImGui::SameLine(0, P(6));

@@ -7,6 +7,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <map>
+#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -22,8 +24,9 @@ struct Catalog {
     std::vector<Mod> mods;
     // Folders present on disk that mods.json disables, in folder-name order.
     std::vector<std::string> disabled;
-    // Disabled mods that ship a layout. Their archives are placed in the
-    // launch's merge too, so one can be enabled while the game runs.
+    // Disabled mods that ship a layout. The launch's merge takes nothing of
+    // them; a merge while the game runs keeps what the game has loaded of one
+    // disabled since (mod_merge.cpp).
     std::vector<Mod> inactive;
     // True once Mods/.reskate holds the merged patch every mod was combined
     // into. Empty catalogues never generate one.
@@ -67,8 +70,8 @@ std::uint64_t active_sources_revision() noexcept;
 // holds it as <mod's folder>#<variant>, with that mod's build stamp; mods.json and the mod list only
 // know the mod. One variant of each such mod loads, the one the player chose (else the first of its
 // "order", else the first there is), first in the load order whatever mods.json says: what would
-// fight it is set aside, whole, and its archives are placed like a disabled mod's, so another variant
-// can be chosen while the game runs. The variant a mod's entry stands for, and the mod that holds
+// fight it is set aside, whole, as a disabled mod is: nothing of it is in the patch. Another variant
+// chosen while the game runs is placed as a mod installed since launch is. The variant a mod's entry stands for, and the mod that holds
 // it, or nothing (no folder has a # in its name):
 std::string variant_of(std::string_view mod);
 std::string variant_owner(std::string_view mod);
@@ -80,6 +83,19 @@ std::filesystem::path variant_folder(const Mod& mod, std::string_view variant);
 // are put together, at launch and at every live apply. Saving a choice makes it this run's at once.
 std::string chosen_variant(std::string_view mod) noexcept;
 bool save_variant(std::string_view mod, std::string_view variant) noexcept;
+
+// The items a player left out of a mod (Mod::items_off), chosen in the launcher's mod manager: a
+// pack of 200 decks of which a few are wanted. Kept beside the choices of variant, in
+// %LOCALAPPDATA%\ReSkate\items-left-out.json: {"<mod folder, lower-case>": ["<item key>", ...]}, the
+// keys lower-case. By folder and not by version, so a choice outlasts the mod's updates; an item the
+// mod adds later is in until it is left out. Read afresh each time the mods are put together. A
+// mod's variants take the choices of the mod.
+using ItemsLeftOut = std::map<std::string, std::set<std::string>, std::less<>>;
+[[nodiscard]] ItemsLeftOut items_left_out() noexcept;
+[[nodiscard]] std::set<std::string> items_left_out(std::string_view mod) noexcept;
+// The mod's choices, replacing the ones it had; none removes its entry. False when they could not be kept.
+bool save_items_left_out(std::string_view mod, const std::set<std::string>& keys) noexcept;
+
 // What the mods in effect give the game: the launch's catalogue, or the one the last live apply
 // read (live_mods tells with variants_applied). Empty: none of that mod's variants is in the game.
 std::string variant_in_play(std::string_view mod) noexcept;

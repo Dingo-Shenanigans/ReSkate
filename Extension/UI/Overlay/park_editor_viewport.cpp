@@ -36,20 +36,87 @@ void wire_preview(ImDrawList *draw, const Camera &camera, ImVec2 origin, Vec3 p,
             if (!(i & bit) && points[i] && points[i | bit])
                 draw->AddLine(*points[i], *points[i | bit], color, 1.8f);
 }
-void draw_grid(ImDrawList *draw, const Camera &camera, ImVec2 origin, float height, float spacing) {
-    spacing = std::max(1.0f, spacing);
+// The snap grid laid on the ground (EditorGroundGrid, answered on the game thread): a line between
+// each two neighbouring points that both found ground, faded towards the edge, every fourth line
+// brighter. It replaced a flat grid at one height drawn over everything. Asked for again when the
+// view's aim crosses into another cell or the grid size changes; the last answer is drawn meanwhile.
+void ground_grid(ParkEditorUI &ui, const Model &model, ImDrawList *draw, const Camera &camera, ImVec2 origin) {
+    const float spacing = std::max(ui.grid, .05f);
+    const auto radius = static_cast<std::uint32_t>(
+        std::clamp(std::ceil(6.0f / spacing), 6.0f, static_cast<float>(editor_ground_radius_max)));
+    const auto &ground = model.editor.ground;
+    const bool current = ground.available && ground.generation == model.editor.generation && ground.radius &&
+                         ground.heights.size() ==
+                             static_cast<std::size_t>(2 * ground.radius + 1) * (2 * ground.radius + 1);
+    // Centred where the middle of the view meets the ground (the last answer's middle, else the
+    // editor's plane) within 60 m, else under the camera.
     const auto c = camera.origin();
-    const float x = snapped(c[0], spacing), z = snapped(c[2], spacing), radius = spacing * 12;
-    for (int i = -12; i <= 12; ++i) {
-        const float offset = static_cast<float>(i) * spacing;
-        for (unsigned axis = 0; axis < 2; ++axis) {
-            Vec3 a = axis ? Vec3{x - radius, height, z + offset} : Vec3{x + offset, height, z - radius};
-            Vec3 b = axis ? Vec3{x + radius, height, z + offset} : Vec3{x + offset, height, z + radius};
-            const auto pa = project(camera, origin, a), pb = project(camera, origin, b);
-            if (pa && pb)
-                draw->AddLine(*pa, *pb, IM_COL32(130, 156, 188, 45));
-        }
+    float level = ui.plane_height;
+    if (current) {
+        const auto middle = ground.heights[ground.heights.size() / 2];
+        if (std::isfinite(middle))
+            level = middle;
     }
+    Vec3 aim{c[0], level, c[2]};
+    if (const auto hit = plane_hit(c, mul(camera.basis(2), -1), {0, level, 0}, {0, 1, 0});
+        hit && dot(sub(*hit, c), sub(*hit, c)) <= 60 * 60)
+        aim = *hit;
+    const float cx = snapped(aim[0], spacing), cz = snapped(aim[2], spacing);
+    const auto &asked = ui.ground_request;
+    const bool same = asked.id && asked.generation == model.editor.generation && asked.center_x == cx &&
+                      asked.center_z == cz && asked.spacing == spacing && asked.radius == radius;
+    const bool answered = ground.id == asked.id && ground.generation == asked.generation;
+    const double now = ImGui::GetTime();
+    if (!same && now >= ui.next_ground_request && (answered || now >= ui.next_ground_request + 1))
+        if (const auto queue = ground_queue.load()) {
+            const EditorGroundRequest request{model.editor.generation, asked.id + 1, cx, cz, spacing,
+                                              c[1] + 50, c[1] - 250, radius};
+            if (queue(request)) {
+                ui.ground_request = request;
+                ui.next_ground_request = now + .1;
+            }
+        }
+    if (!current)
+        return;
+    const auto side = 2 * ground.radius + 1;
+    const float reach = ground.spacing * static_cast<float>(ground.radius);
+    const auto point = [&](std::uint32_t column, std::uint32_t row) -> std::optional<Vec3> {
+        const float height = ground.heights[static_cast<std::size_t>(row) * side + column];
+        if (!std::isfinite(height))
+            return {};
+        // A little above the ground, so the line is not lost in it.
+        return Vec3{ground.center_x + (static_cast<float>(column) - static_cast<float>(ground.radius)) * ground.spacing,
+                    height + .03f,
+                    ground.center_z + (static_cast<float>(row) - static_cast<float>(ground.radius)) * ground.spacing};
+    };
+    const auto major = [&](float coordinate) {
+        return std::llround(coordinate / ground.spacing) % 4 == 0;
+    };
+    for (std::uint32_t row = 0; row < side; ++row)
+        for (std::uint32_t column = 0; column < side; ++column) {
+            const auto a = point(column, row);
+            if (!a)
+                continue;
+            for (unsigned along = 0; along < 2; ++along) {
+                if ((along == 0 && column + 1 >= side) || (along == 1 && row + 1 >= side))
+                    continue;
+                const auto b = along == 0 ? point(column + 1, row) : point(column, row + 1);
+                // A step this tall is a wall or a drop, not ground a line can lie on.
+                if (!b || std::abs((*b)[1] - (*a)[1]) > ground.spacing * 2)
+                    continue;
+                const float mx = ((*a)[0] + (*b)[0]) * .5f - ground.center_x;
+                const float mz = ((*a)[2] + (*b)[2]) * .5f - ground.center_z;
+                const float edge = std::max(std::abs(mx), std::abs(mz)) / std::max(reach, .001f);
+                const float fade = std::clamp(1 - edge * edge, 0.0f, 1.0f);
+                const bool bright = along == 0 ? major((*a)[2]) : major((*a)[0]);
+                const auto alpha = static_cast<int>((bright ? 150.0f : 80.0f) * fade);
+                if (alpha < 4)
+                    continue;
+                const auto pa = project(camera, origin, *a), pb = project(camera, origin, *b);
+                if (pa && pb)
+                    draw->AddLine(*pa, *pb, IM_COL32(150, 186, 228, alpha), bright ? 1.6f : 1.1f);
+            }
+        }
 }
 } // namespace
 void viewport(ParkEditorUI &ui, const Model &model, ImVec2 screen_origin, ImVec2 screen_size, bool blocked) {
@@ -83,8 +150,8 @@ void viewport(ParkEditorUI &ui, const Model &model, ImVec2 screen_origin, ImVec2
         draw->PopClipRect();
         return;
     }
-    if (!ui.surface_mode)
-        draw_grid(draw, camera, screen_origin, ui.plane_height, ui.grid);
+    if (ui.show_grid)
+        ground_grid(ui, model, draw, camera, screen_origin);
     const auto ray = camera.ray(mouse.x - screen_origin.x, mouse.y - screen_origin.y);
     const bool own_preview = ui.preview_token && model.editor.preview_token == ui.preview_token;
     const bool can_edit =

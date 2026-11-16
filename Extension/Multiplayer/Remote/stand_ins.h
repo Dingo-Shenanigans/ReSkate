@@ -117,10 +117,16 @@ inline std::uint64_t text_hash(std::string_view text, std::uint64_t h = 14695981
     for (unsigned char c : text) h = (h ^ c) * 1099511628211ULL;
     return h;
 }
+// Who is being dressed, for order(): the player (their id, from the session), or without one the
+// outfit (a hash of everything they wear). A player's stand-in for one item then stays while they
+// change another: the outfit alone would give every slot a new one at each change.
+inline std::uint64_t who(std::uint64_t player, std::uint64_t outfit) {
+    return player ? mix(player ^ 0x7374616e642d696eULL) : outfit;
+}
 // The candidates for one missing item in the order they are tried. "first": as given. "random":
-// shuffled by a seed made of the outfit (`outfit`, a hash of everything the peer wears), the slot,
-// the missing item and the policy's seed, so a player keeps the same stand-ins for as long as they
-// wear the same outfit (no flicker each time it is put on again), different players and slots get
+// shuffled by a seed made of who is dressed (`who`, above), the slot, the missing item and the
+// policy's seed, so a player keeps a stand-in for as long as they wear that item, whatever else
+// they change (no flicker each time it is put on again), different players and slots get
 // different ones, and a new seed gives everybody new ones.
 // The same order for any list of that length: the engine thread orders positions in its lists.
 template <class T>

@@ -16,6 +16,8 @@ struct Settings {
     float fov{60};       // the game camera's vertical field of view (degrees), which the bend squeezes
     bool bars{};         // 4:3, black at the sides
     bool hood{};         // the hood's dark round edge in the corners
+    float edge_blur{};   // 0..1: the picture soft towards its edges, sharp in the middle; 0 none
+    float edge_start{0.45f}; // 0..1: how far out from the middle (1: the corners) the softness begins
     bool grade{};        // the camcorder's colour: punchy, warm, a little crushed (SDR only)
     bool soft{};         // standard definition: soft, with a sharpening halo
     bool scanlines{};    // interlaced fields
@@ -27,6 +29,10 @@ struct Settings {
     bool smear{};        // reds trail to the right
     bool iris{};         // an auto-iris that lags the scene
     double rolling{-1};  // seconds since the tape started rolling (the tracking band); < 0 none
+    // How strongly each overlaid effect is drawn, 0..1, while its switch is on (1: in full).
+    struct Strengths {
+        float bars{1}, hood{1}, grade{1}, soft{1}, scanlines{1}, grain{1}, dropouts{1}, head_switching{1}, smear{1};
+    } strength;
     // Burnt in: top left, top right, bottom left, then two lines bottom right; at most 12 characters
     // each, ASCII 32 to 95 (lower case is shown in capitals; '#' is the record dot, "[=]" a battery).
     // The right-hand lines are right-aligned.

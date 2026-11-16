@@ -76,6 +76,7 @@
 #include "Extension/UI/NativeMenu/throwdown_menu.h"
 #include <filesystem>
 #include "Extension/UI/Overlay/overlay.h"
+#include "Extension/UI/Overlay/game_map.h"
 #include "Extension/UI/Overlay/screen_look.h"
 #include "Extension/UI/Overlay/viewmodel.h"
 #include "Extension/UI/Overlay/scripted_pad.h"
@@ -248,7 +249,25 @@ public:
         const bool now = !hud_hiders_.empty();
         if (now == before) return;
         if (now) hud_was_hidden_ = base_ && multiplayer::sample_game_ui_state(base_).ui_hidden;
-        if (!hud_was_hidden_) queue(overlay::DebugAction::set_game_ui_hidden, now);
+        if (hud_was_hidden_) return;
+        // (Asked while a menu is up: hidden once it closes, tick_hud. Let go while one is up: it
+        // is shown already.)
+        const bool menu = multiplayer::native_pause_menu_open();
+        if (now) hud_shown_for_menu_ = menu;
+        if (!menu || !now) {
+            if (!(hud_shown_for_menu_ && !now)) queue(overlay::DebugAction::set_game_ui_hidden, now);
+            if (!now) hud_shown_for_menu_ = false;
+        }
+    }
+    // `hideui` hides the game's menus with its HUD, the pause menu too: a player whose HUD a plugin
+    // hid pressed Start and saw nothing. So while a game menu is up the UI is shown again, and hidden
+    // once more when the menu closes. Each client tick.
+    void tick_hud() {
+        if (hud_hiders_.empty() || hud_was_hidden_) return;
+        const bool menu = multiplayer::native_pause_menu_open();
+        if (menu == hud_shown_for_menu_) return;
+        hud_shown_for_menu_ = menu;
+        queue(overlay::DebugAction::set_game_ui_hidden, !menu);
     }
 
     // ---- the world -------------------------------------------------------------------------------
@@ -331,6 +350,11 @@ public:
         // world. Its native identities stay here; this is not an ownership or epoch receipt.
         const auto p = probe_local_surface_counted(from, to);
         return {{p.available, p.hit, p.position, p.fraction}, p.native_casts};
+    }
+    std::optional<MapArea> map_area() override {
+        const auto area = overlay::game_map_area();
+        if (!area) return std::nullopt;
+        return MapArea{{area->centre_x, 0, area->centre_z}, {area->width, 0, area->height}};
     }
     std::optional<WorldPick> world_pick(const Vec3& from, const Vec3& to) override {
         return convert_pick(local_world_pick(from, to));
@@ -449,6 +473,11 @@ public:
         return plugin_feed::hide(std::string(plugin), player, hidden) ? std::string{} : "at most 256 players are hidden";
     }
     std::vector<std::uint64_t> hidden_players(std::string_view plugin) override { return plugin_feed::hidden_by(std::string(plugin)); }
+    std::string place_player(std::string_view plugin, std::uint64_t player, std::optional<SkaterPlacement> placement) override {
+        std::optional<plugin_feed::Placement> wanted;
+        if (placement) wanted = plugin_feed::Placement{placement->position, placement->rotation, placement->joint, placement->board};
+        return plugin_feed::place(std::string(plugin), player, std::move(wanted)) ? std::string{} : "at most 64 players are placed";
+    }
     std::optional<PlayerOutfit> player_outfit(std::uint64_t player) override {
         auto outfit = plugin_feed::outfit_of(player);
         if (!outfit) return std::nullopt;
@@ -625,8 +654,8 @@ public:
         if (!fit) return board_pose::fit(plugin, std::nullopt);
         return board_pose::fit(plugin, board_pose::Fit{fit->plates, fit->axle});
     }
-    std::optional<std::vector<BoardParameter>> board_parameters(int part) override {
-        const auto found = board_material::read(static_cast<board_material::Part>(part));
+    std::optional<std::vector<BoardParameter>> board_parameters(int part, bool preview = false) override {
+        const auto found = board_material::read(static_cast<board_material::Part>(part), preview);
         if (!found) return std::nullopt;
         std::vector<BoardParameter> out;
         for (const auto& p : *found) {
@@ -637,11 +666,11 @@ public:
         }
         return out;
     }
-    std::string board_set_parameter(std::string_view plugin, int part, std::uint64_t key, std::array<float, 3> value, bool colour) override {
-        return board_material::set(plugin, static_cast<board_material::Part>(part), key, value, colour);
+    std::string board_set_parameter(std::string_view plugin, int part, std::uint64_t key, std::array<float, 3> value, bool colour, bool preview = false) override {
+        return board_material::set(plugin, static_cast<board_material::Part>(part), key, value, colour, preview);
     }
-    void board_clear_parameter(std::string_view plugin, int part, std::optional<std::uint64_t> key) override {
-        board_material::clear(plugin, part < 0 ? std::nullopt : std::optional(static_cast<board_material::Part>(part)), key);
+    void board_clear_parameter(std::string_view plugin, int part, std::optional<std::uint64_t> key, bool preview = false) override {
+        board_material::clear(plugin, part < 0 ? std::nullopt : std::optional(static_cast<board_material::Part>(part)), key, preview);
     }
     // ---- variants ------------------------------------------------------------------------------------
     // The mod's folder is read again at most every 2 s: a menu page asks every frame.
@@ -703,6 +732,9 @@ public:
         return multiplayer::stand_ins::set(std::move(policy));
     }
     std::uint64_t effect_create(std::string_view plugin, const EffectRequest& request) override { return effects::create(plugin, request); }
+    EffectBundleState effect_bundle(std::string_view plugin, std::string_view bundle, std::string_view asset) override {
+        return effects::load_bundle(plugin, bundle, asset);
+    }
     void effect_move(std::string_view plugin, std::uint64_t id, const EffectMatrix& transform) override { effects::move(plugin, id, transform); }
     void effect_stop(std::string_view plugin, std::uint64_t id) override { effects::stop(plugin, id); }
     void effect_opacity(std::string_view plugin, std::uint64_t id, float value) override { effects::opacity(plugin, id, value); }
@@ -975,7 +1007,7 @@ public:
     }
     std::string hide_pad(std::string_view plugin, const PadHidden& h) override {
         if (!pad_hide::available()) return "hiding pad controls is unavailable for this game build";
-        pad_hide::hide(plugin, {h.left_trigger, h.right_trigger, h.left_x_grinding, h.right_stick, h.left_stick_click, h.right_stick_click});
+        pad_hide::hide(plugin, {h.left_trigger, h.right_trigger, h.left_x_grinding, h.right_stick, h.left_stick_click, h.right_stick_click, h.buttons});
         return {};
     }
     std::optional<Vec3> board_spin() override { return skater_events::board_spin(); }
@@ -1005,6 +1037,7 @@ public:
         voice.speed = sound.speed;
         voice.loop = sound.loop;
         voice.position = sound.position;
+        voice.listener = sound.listener;
         return plugin_sound::start(std::move(voice));
     }
     bool change_sound(std::string_view plugin, std::uint64_t id, const SoundChange& change) override {
@@ -1016,6 +1049,7 @@ public:
         if (change.throttle) voice->throttle = *change.throttle;
         if (change.speed) voice->speed = *change.speed;
         if (change.position) voice->position = *change.position;
+        if (change.listener) voice->listener = *change.listener;
         return true;
     }
     void stop_sound(std::string_view plugin, std::uint64_t id) override { plugin_sound::stop(id, plugin); }
@@ -1253,9 +1287,12 @@ public:
         look_at_ = now;
         screen_look::Settings s;
         s.bend = look->bend, s.fov = look->fov, s.age = look->age;
+        s.edge_blur = look->edge_blur, s.edge_start = look->edge_start;
         s.bars = look->bars, s.hood = look->hood, s.grade = look->grade, s.soft = look->soft, s.scanlines = look->scanlines, s.grain = look->grain;
         s.dropouts = look->dropouts, s.head_switching = look->head_switching, s.tracking = look->tracking, s.smear = look->smear, s.iris = look->iris;
         s.rolling = look->rolling;
+        s.strength = {look->bars_strength, look->hood_strength, look->grade_strength, look->soft_strength, look->scanlines_strength,
+                      look->grain_strength, look->dropouts_strength, look->head_switching_strength, look->smear_strength};
         s.text = look->text;
         screen_look::set(s);
         return {};
@@ -1385,6 +1422,9 @@ public:
         carry::Goal g;
         g.hand = goal->left ? arm_reach::Hand::left : arm_reach::Hand::right;
         g.both = goal->both;
+        g.support = goal->support;
+        g.exact = goal->exact;
+        g.look_at = goal->look_at;
         g.front = goal->front;
         g.aim = goal->aim;
         g.front_from_grip = goal->front_from_grip;
@@ -1537,7 +1577,9 @@ public:
         if (!pad.available) return std::nullopt;
         return pad.buttons;
     }
-    bool key_down(int virtual_key) override { return overlay::key_down(virtual_key); }
+    // Only while the game's own window is in front, as the pad is read: a key held in another
+    // program is not the game's (a plugin's keys fired while the player typed elsewhere).
+    bool key_down(int virtual_key) override { return joystick::game_in_foreground() && overlay::key_down(virtual_key); }
     int mouse_wheel() override { return overlay::take_mouse_wheel(); }
     // One read of the overlay's mouse a call, shared out: every plugin that read it in the last two
     // seconds gets the movement, so two plugins never take it from each other.
@@ -1969,6 +2011,7 @@ public:
         }
         if (hold_owner_ == plugin) (void)skater_hold(plugin, false);
         plugin_feed::release_hidden(std::string(plugin));
+        plugin_feed::release_placements(std::string(plugin));
         plugin_feed::release_hidden_items(std::string(plugin));
         world_entities::clear(plugin);
         throwdown_flag_leave(plugin);
@@ -2223,6 +2266,7 @@ private:
     std::set<std::string, std::less<>> freezers_;
     std::set<std::string, std::less<>> hud_hiders_;
     bool hud_was_hidden_{};
+    bool hud_shown_for_menu_{}; // the UI a plugin hid is shown for now: a game menu is up
     bool music_started_{};
     std::map<BindKey, Bind> binds_;
     std::map<BindKey, std::uint32_t> overrides_;
@@ -2246,6 +2290,9 @@ bool plugin_freeze_active() noexcept { return the_game && the_game->frozen(); }
 bool plugin_input_capture() noexcept { return the_game && the_game->capturing(); }
 void tick_plugin_sounds(std::uintptr_t image_base, std::uintptr_t client, bool ready) noexcept {
     plugin_sound::tick(image_base, client, ready);
+    try {
+        if (the_game) the_game->tick_hud();
+    } catch (...) {}
 }
 void tick_plugin_animation(std::uintptr_t image_base, std::uintptr_t client) noexcept {
     try {

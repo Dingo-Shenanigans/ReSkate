@@ -7,6 +7,8 @@
 #include <cstring>
 #include <string_view>
 #include <stdexcept>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace dingosdk::mods::detail {
 namespace {
@@ -44,21 +46,59 @@ StreamedTextures stream_resident_textures(const CasStore& store, const fs::path&
                                           const std::set<fb::Guid>& tocChunks, const fs::path& gameRoot,
                                           const std::vector<std::uint32_t>* only) {
     StreamedTextures result;
-    if (manifest.chunks.empty() || manifest.chunkMetadata.empty()) return result;
+    if (manifest.chunks.empty() || manifest.chunkMetadata.empty() || (only && only->empty())) return result;
+    // The bundle's chunk records, read when the first texture that would stream needs its own: a
+    // level bundle has thousands, and reading them for each bundle that turned out to have no
+    // such texture was most of a merge of a map already read once (2.4 of 3.2 s; 2026-11-14).
+    // A list that cannot be read changes nothing.
     std::optional<native_db::Node> records;
-    try {
-        const std::span<const unsigned char> list(reinterpret_cast<const unsigned char*>(manifest.chunkMetadata.data()),
-                                                  manifest.chunkMetadata.size());
-        records = native_db::read(list, "chunk metadata", nullptr, {.unique_fields = false, .max_entries = list.size()});
-    } catch (const std::exception&) {
-        return result;
-    }
+    bool unreadable{};
+    const auto chunk_records = [&]() -> native_db::Node* {
+        if (!records && !unreadable) try {
+            const std::span<const unsigned char> list(reinterpret_cast<const unsigned char*>(manifest.chunkMetadata.data()),
+                                                      manifest.chunkMetadata.size());
+            records = native_db::read(list, "chunk metadata", nullptr, {.unique_fields = false, .max_entries = list.size()});
+        } catch (const std::exception&) {
+            unreadable = true;
+        }
+        return records ? &*records : nullptr;
+    };
+    // A texture's record is found by its name's hash and its pixels by their chunk's guid: looked
+    // up, where each texture used to go through every record and every chunk for its own (the
+    // first of each, as going through them found). Made when the first texture asks.
+    std::optional<std::unordered_map<std::uint64_t, std::size_t>> recordAt;
+    const auto record_of = [&](std::string_view name) -> native_db::Node* {
+        auto* list = chunk_records();
+        if (!list) return nullptr;
+        if (!recordAt) {
+            recordAt.emplace();
+            for (std::size_t row = 0; row < list->children.size(); ++row)
+                if (const auto* hash = list->children[row].field("h64"); hash && hash->payload().size() == 8) {
+                    std::uint64_t value{};
+                    std::memcpy(&value, hash->payload().data(), 8);
+                    recordAt->try_emplace(value, row);
+                }
+        }
+        const auto found = recordAt->find(owner_hash(name));
+        return found == recordAt->end() ? nullptr : &list->children[found->second];
+    };
+    std::optional<std::map<fb::Guid, std::size_t>> chunkAt;
+    const auto chunk_of = [&](const fb::Guid& guid) {
+        if (!chunkAt) {
+            chunkAt.emplace();
+            for (std::size_t at = 0; at < manifest.chunks.size(); ++at) chunkAt->try_emplace(manifest.chunks[at].guid, at);
+        }
+        const auto found = chunkAt->find(guid);
+        return found == chunkAt->end() ? manifest.chunks.end() : manifest.chunks.begin() + static_cast<std::ptrdiff_t>(found->second);
+    };
+    const std::unordered_set<std::uint32_t> wanted = only ? std::unordered_set<std::uint32_t>(only->begin(), only->end())
+                                                          : std::unordered_set<std::uint32_t>{};
     const auto resourcesAt = first + manifest.ebx.size();
     const auto chunksAt = resourcesAt + manifest.resources.size();
     for (std::size_t index = 0; index < manifest.resources.size(); ++index) {
         auto& asset = manifest.resources[index];
         if (asset.resourceType != fb::texture_resource_type || resourcesAt + index >= files.size()) continue;
-        if (only && std::ranges::find(*only, static_cast<std::uint32_t>(resourcesAt + index)) == only->end()) continue;
+        if (only && !wanted.contains(static_cast<std::uint32_t>(resourcesAt + index))) continue;
         const auto& file = files[resourcesAt + index];
         if (!file.location.patch) continue;   // the game's own texture
         try {
@@ -90,9 +130,9 @@ StreamedTextures stream_resident_textures(const CasStore& store, const fs::path&
                 std::uint64_t streamedBytes{};
                 for (std::size_t mip = 0; mip < texture.first_mip; ++mip) streamedBytes += texture.mip_sizes[mip];
                 if (!streamedBytes || (streamedBytes & 0xffffu)) continue;
-                const auto chunk = std::ranges::find_if(manifest.chunks, [&](const fb::BundleAsset& c) { return c.guid == texture.chunk; });
+                const auto chunk = chunk_of(texture.chunk);
                 if (chunk == manifest.chunks.end() || !tocChunks.contains(texture.chunk)) continue;
-                if (chunk->logicalOffset != 0 || chunk->logicalSize != total - streamedBytes) continue;
+                if (chunk->logicalOffset != 0 || chunk->logicalSize != total - streamedBytes || !chunk_records()) continue;
                 chunk->logicalOffset = static_cast<std::uint32_t>(streamedBytes);
                 chunk->originalSize = (chunk->logicalOffset & 0xFFFFU) | chunk->logicalSize;
                 result.offsets.push_back(resourcesAt + index);
@@ -109,7 +149,7 @@ StreamedTextures stream_resident_textures(const CasStore& store, const fs::path&
             if (!firstMip) continue;
             // Its pixels: a chunk of this bundle that holds the whole chain, which the TOC lists
             // in full for the mips that stream.
-            const auto chunk = std::ranges::find_if(manifest.chunks, [&](const fb::BundleAsset& c) { return c.guid == texture.chunk; });
+            const auto chunk = chunk_of(texture.chunk);
             if (chunk == manifest.chunks.end() || !tocChunks.contains(texture.chunk)) continue;
             const auto chunkIndex = chunksAt + static_cast<std::size_t>(chunk - manifest.chunks.begin());
             if (chunkIndex >= files.size()) continue;
@@ -119,13 +159,7 @@ StreamedTextures stream_resident_textures(const CasStore& store, const fs::path&
             const auto range = block_at(encoded, start);
             if (!range) continue;
             // Its record, by its name's hash, says the same first mip.
-            native_db::Node* record{};
-            for (auto& row : records->children)
-                if (const auto* hash = row.field("h64"); hash && hash->payload().size() == 8) {
-                    std::uint64_t value{};
-                    std::memcpy(&value, hash->payload().data(), 8);
-                    if (value == owner_hash(asset.name)) { record = &row; break; }
-                }
+            auto* record = record_of(asset.name);
             auto* meta = record ? record->field("meta") : nullptr;
             auto* mip = meta ? meta->field("firstMip") : nullptr;
             if (!mip || mip->payload().size() != 4) continue;

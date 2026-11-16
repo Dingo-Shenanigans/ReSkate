@@ -59,7 +59,7 @@ struct Shape {
     // halftone: a screen-print of `columns` x `rows` dots from points[0]. scribble: the dry-brush
     // scribble over points[0] to [1]. clip: what follows is clipped to points[0] to [1], until unclip.
     enum class Kind { text, rect, line, circle, poly, world_text, world_line, world_circle, image, world_image, game_image, gradient, skeleton,
-                      rough_rect, halftone, scribble, clip, unclip } kind{Kind::text};
+                      rough_rect, halftone, scribble, clip, unclip, game_map } kind{Kind::text};
     std::vector<Vec3> points;
     float radius{};
     std::string text;
@@ -68,6 +68,10 @@ struct Shape {
     int fit{};
     float edge{};
     int frame{}; // game_image: a flipbook's frame (the loading board's, 0 to 26)
+    // game_map: the game's own map of the level in the box points[0] to [1], about the world place
+    // points[2]; `radius` the metres from the box's middle to its side, `turn` the heading that is
+    // upward (radians).
+    float turn{};
     std::uint32_t seed{};
     int columns{}, rows{};
 };

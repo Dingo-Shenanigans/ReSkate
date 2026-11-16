@@ -218,6 +218,33 @@ void set_plugin_developer_mode(const fs::path& root, bool on) {
     write_atomic(root, root / L"ReSkate.settings.json", std::span(reinterpret_cast<const unsigned char*>(text.data()), text.size()), true);
 }
 
+PluginLimits plugin_limits(const fs::path& root) {
+    PluginLimits limits;
+    const auto settings = read_preferences(root);
+    if (!settings.contains("plugin_limits") || !settings["plugin_limits"].is_object()) return limits;
+    const auto& kept = settings["plugin_limits"];
+    const auto flag = [&](const char* name, bool& into) {
+        if (kept.contains(name) && kept[name].is_boolean()) into = kept[name].get<bool>();
+    };
+    flag("stop_slow", limits.stop_slow);
+    flag("stop_errors", limits.stop_errors);
+    if (kept.contains("tick_ms") && kept["tick_ms"].is_number()) limits.tick_ms = std::clamp(kept["tick_ms"].get<double>(), 6.0, 50.0);
+    if (kept.contains("memory_mb") && kept["memory_mb"].is_number())
+        limits.memory_mb = static_cast<int>(std::clamp(kept["memory_mb"].get<double>(), 128.0, 1024.0));
+    return limits;
+}
+void set_plugin_limits(const fs::path& root, const PluginLimits& limits) {
+    auto settings = read_preferences(root);
+    Json kept = Json::object();
+    kept["stop_slow"] = limits.stop_slow;
+    kept["tick_ms"] = std::clamp(limits.tick_ms, 6.0, 50.0);
+    kept["stop_errors"] = limits.stop_errors;
+    kept["memory_mb"] = std::clamp(limits.memory_mb, 128, 1024);
+    settings["plugin_limits"] = std::move(kept);
+    const auto text = settings.dump(2);
+    write_atomic(root, root / L"ReSkate.settings.json", std::span(reinterpret_cast<const unsigned char*>(text.data()), text.size()), true);
+}
+
 fs::path utf8_path(std::string_view text) {
     return fs::path(std::u8string(reinterpret_cast<const char8_t*>(text.data()), text.size()));
 }

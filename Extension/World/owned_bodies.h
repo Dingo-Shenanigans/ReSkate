@@ -31,6 +31,10 @@ std::string create(std::uint64_t owner, const owned_body::Definition&, owned_bod
     owned_body::CreateReport& report) noexcept;
 std::string read(std::uint64_t owner, const owned_body::Handle&, owned_body::Sample&) noexcept;
 body_query::Result probe_batch(std::uint64_t owner, const owned_body::Handle&, const body_query::Request&, unsigned allowance) noexcept;
+// One command for the body's latest measured epoch. While that command is still pending, the
+// command for exactly the next step is queued behind it (owned_body::pending_capacity) and a
+// third is refused. Each is produced only in the step after its own epoch and has its own
+// receipt, deadline and outcome.
 std::string submit(std::uint64_t owner, const owned_body::Handle&, const owned_body::Command&, std::uint64_t& sequence) noexcept;
 std::string receipt(std::uint64_t owner, const owned_body::Handle&, std::uint64_t sequence, owned_body::Receipt&) noexcept;
 std::string acknowledge(std::uint64_t owner, const owned_body::Handle&, std::uint64_t sequence) noexcept;

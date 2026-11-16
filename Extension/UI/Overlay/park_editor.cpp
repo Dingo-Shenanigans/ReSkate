@@ -213,6 +213,9 @@ void status_line(ParkEditorUI &ui, EditorFrame &frame, ImVec2 at, ImVec2 size, s
 void set_park_surface_queue(ParkSurfaceQueue queue) noexcept {
     surface_queue.store(queue);
 }
+void set_park_ground_queue(ParkGroundQueue queue) noexcept {
+    ground_queue.store(queue);
+}
 void set_park_preview_queue(ParkPreviewQueue queue) noexcept {
     preview_queue.store(queue);
 }
@@ -271,6 +274,7 @@ bool draw_park_editor(ParkEditorUI &ui, const Model &model, const CallbacksV3 &c
         ui.initialized = false;
         ui.surface_confirm = false;
         ui.surface_request = {};
+        ui.ground_request = {};
     }
     if (!ui.initialized) {
         ui.plane_height = model.debug.skater_position_valid ? model.debug.skater_position[1]

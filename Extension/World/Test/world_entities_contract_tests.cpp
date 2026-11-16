@@ -78,6 +78,10 @@ int main() {
         check(cache.get("a", 6000, search) == 2, "and is searched again once there is room");
     }
     {
+        using dingosdk::world_entities::detail::collision_stays;
+        check(collision_stays(true, false, 0x1000) && !collision_stays(false, false, 0x1000) &&
+              !collision_stays(true, true, 0x1000) && !collision_stays(true, false, 0),
+              "Only a solid, unattached object with collision of its own is made again where it moves to");
         using dingosdk::world_entities::detail::movement_due;
         check(!movement_due(false, false, false, 2000, 1000) &&
               !movement_due(false, false, true, 2000, 1000) &&

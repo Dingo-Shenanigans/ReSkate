@@ -293,6 +293,7 @@ bool room_facing_valid{};
 std::atomic<double> preview_until{};
 struct PreviewSample {
     Joint place;
+    std::uintptr_t entity{};
     double at{-1e9};
     std::uint64_t sequence{};
 };
@@ -367,8 +368,16 @@ void observe_preview(std::uintptr_t animation_interface, bool skater) {
     // The same measured room bounds used by hide_in_room; gameplay rigs are excluded.
     for (std::size_t i = 0; i < 3; ++i)
         if (!(std::abs(place.position[i] - room_spot[i]) < room_reach[i])) return;
+    std::uintptr_t entity{};
+    if (!skater) {
+        try {
+            entity = multiplayer::read_native_board_render_owner(peek, live().base.load(std::memory_order_acquire),
+                animation_interface - addr::native_skater::render_animation_interface_offset);
+        } catch (...) {} // Pose observation remains available when material ownership cannot be proved.
+    }
     std::lock_guard lock(preview_mutex);
     auto& sample = preview_samples[skater ? 1 : 0];
+    sample.entity = entity;
     sample.place = place;
     sample.at = now;
     ++sample.sequence;
@@ -1299,6 +1308,13 @@ std::optional<PreviewPose> preview_pose(bool skater) {
     const auto& sample = preview_samples[skater ? 1 : 0];
     if (now - sample.at > 0.25) return std::nullopt;
     return PreviewPose{sample.place, now - sample.at, sample.sequence};
+}
+std::uintptr_t preview_board_entity() {
+    const double now = now_seconds();
+    preview_until.store(now + 0.5, std::memory_order_release);
+    std::lock_guard lock(preview_mutex);
+    const auto& sample = preview_samples[0];
+    return now - sample.at <= 0.25 ? sample.entity : 0;
 }
 std::optional<Joint> joint(std::uint16_t index) {
     if (index >= 395) return std::nullopt;

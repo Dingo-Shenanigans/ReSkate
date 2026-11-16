@@ -166,6 +166,7 @@ void stop(Session &s, std::string reason) {
     s.map_label.clear();
     s.map_package.clear();
     s.required_plugins.clear();
+    session_detail::set_required_plugins(s.required_plugins);
     s.plugins_ready = s.fetching_with_map = false;
     s.fetching_since = 0;
     s.map_fetch_deadline = 0;
@@ -460,6 +461,36 @@ Pose out_of_sight(Pose pose) {
     offset_pose(pose, {0.0f, -2000.0f, 0.0f});
     return pose;
 }
+// A skater a plugin draws somewhere else (reskate.session.place): the whole pose turned and moved as
+// one piece, so that the joint named (or where it stands) is at the place asked for. What is in the
+// world's frame moves (the root, the skater's placement joint 1, the board entity and the board rig's
+// anchor, as offset_pose has them); the joints under those follow by themselves.
+Pose placed_by(Pose pose, const plugin_feed::Placement &placement) {
+    using namespace anim_studio;
+    auto anchor = pose.root.position;
+    if (placement.joint && *placement.joint < pose.skater.size()) {
+        std::vector<Joint> joints;
+        joints.reserve(pose.skater.size());
+        for (const auto &t : pose.skater) joints.push_back({t.scale, t.rotation, t.position});
+        if (const auto at = world(joints, *placement.joint); finite(at)) anchor = at.position;
+    }
+    const Quat turn = placement.rotation ? normalised(multiply(*placement.rotation, conjugate(pose.root.rotation))) : Quat{0, 0, 0, 1};
+    const auto move = [&](Transform &t) {
+        const auto arm = rotate(turn, Vec3{t.position[0] - anchor[0], t.position[1] - anchor[1], t.position[2] - anchor[2]});
+        for (std::size_t i = 0; i < 3; ++i) t.position[i] = placement.position[i] + arm[i];
+        t.rotation = normalised(multiply(turn, t.rotation));
+    };
+    move(pose.root);
+    if (pose.skater.size() > 1) move(pose.skater[1]);
+    if (!pose.board.empty()) move(pose.board.front());
+    if (pose.board.size() > 2) move(pose.board[2]);
+    // Without their board: it goes where a hidden skater goes, far below the world.
+    if (!placement.board) {
+        if (!pose.board.empty()) pose.board.front().position[1] -= 2000.0f;
+        if (pose.board.size() > 2) pose.board[2].position[1] -= 2000.0f;
+    }
+    return valid_pose(pose) ? pose : Pose{};
+}
 // How often a player's pose is sampled for their skater, from how far they are from both the
 // local skater and the camera: every frame within 200 m, 20 Hz past it, 10 Hz past 350 m, and
 // every frame again once back inside 190 m. Between samples the skater keeps its pose, which
@@ -554,9 +585,10 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
     };
     // Who is talking, as last published for the UI (10 Hz), without copying the voice model.
     const auto &voices = s.view.voice.players;
-    const auto label = [&](const Peer &p) {
+    // (at: where their skater is drawn, when a plugin draws it somewhere else.)
+    const auto label = [&](const Peer &p, const Pose *at = nullptr) {
         NametagPlayer tag;
-        tag.head = p.render_pose.root.position;
+        tag.head = (at ? *at : p.render_pose).root.position;
         tag.head[1] += 1.0f;
         tag.name = p.member.name.empty() ? s.transport.name(p.member.id) : p.member.name;
         // The same role colour and badge the player's chat lines get.
@@ -637,7 +669,8 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
         const bool everyone = s.player_distance >= player_distance_unlimited;
         for (auto &p : active_peers(s)) {
             if (!p.member.id || (dedicated_host(s) && p.member.id == s.host_id)) continue;
-            p.shown_wanted = everyone || !p.placed ||
+            // (One a plugin draws somewhere else is drawn there, however far off they stand.)
+            p.shown_wanted = everyone || !p.placed || plugin_feed::placement_of(p.member.id) ||
                              nearest_distance(p, local, view) <= s.player_distance * (p.visible ? 1.15f : 1.f);
         }
     }
@@ -691,11 +724,23 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
                 const bool hidden = throwdown_relay_hides(p.member.id) || hidden_here(p.member.id);
                 const auto spot = hidden ? std::nullopt
                                          : throwdown_relay_celebration_offset(p.member.id, p.render_pose.root.position);
+                // Drawn where a plugin has them (reskate.session.place): the skater shown moves, and
+                // their name, map marker and spectate position with it. Their sound stays where they
+                // are, and they are solid nowhere.
+                auto elsewhere = hidden || spot ? std::nullopt : plugin_feed::placement_of(p.member.id);
+                Pose placed;
+                if (elsewhere) {
+                    placed = placed_by(p.render_pose, *elsewhere);
+                    if (placed.skater.empty()) elsewhere.reset();
+                }
                 p.visible = show_remote(s.base, client, local,
-                                        hidden ? out_of_sight(p.render_pose) : spot ? moved_by(p.render_pose, *spot) : p.render_pose,
+                                        hidden ? out_of_sight(p.render_pose)
+                                        : spot ? moved_by(p.render_pose, *spot)
+                                        : elsewhere ? placed : p.render_pose,
                                         p.native_status);
                 const auto distance = nearest_distance(p, local, view);
-                p.far_interval = p.visible && !hidden ? far_sample_interval(p, distance) : 0;
+                // (Placed, they are drawn every frame: the place may move every frame.)
+                p.far_interval = p.visible && !hidden && !elsewhere ? far_sample_interval(p, distance) : 0;
                 p.next_far_sample = now + p.far_interval;
                 // The native work a far player's skater may skip (puppet_cost.cpp).
                 if (p.visible) note_remote_distance(distance);
@@ -705,7 +750,7 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
                 const float reach2 = (at[0] - me[0]) * (at[0] - me[0]) + (at[1] - me[1]) * (at[1] - me[1]) +
                                      (at[2] - me[2]) * (at[2] - me[2]);
                 update_remote_collision(s.base, local.context, p.render_pose,
-                                        p.visible && !hidden && s.mode != Mode::echo && s.local_player_collision &&
+                                        p.visible && !hidden && !elsewhere && s.mode != Mode::echo && s.local_player_collision &&
                                             p.player_collision && reach2 < 40.f * 40.f,
                                         now);
                 if (p.visible && hidden) {
@@ -723,12 +768,13 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
                     apply_cosmetics(p, spawning);
                     // The spectate camera follows this every frame; the map and
                     // indicators below only need network-rate updates.
-                    update_party_position(hidden_here(p.member.id)?nullptr:&p.render_pose);
-                    if (labels && !hidden_here(p.member.id)) label(p);
+                    const Pose &drawn = elsewhere ? placed : p.render_pose;
+                    update_party_position(hidden_here(p.member.id)?nullptr:&drawn);
+                    if (labels && !hidden_here(p.member.id)) label(p, &drawn);
                     if(hidden_here(p.member.id)) {
                         update_player_ui(s.base,nullptr,{});p.ui_visible=false;
                     } else if (!p.ui_visible || now >= p.next_ui_update) {
-                        update_player_ui(s.base, &p.render_pose, p.member.name);
+                        update_player_ui(s.base, &drawn, p.member.name);
                         p.ui_visible = true;
                         p.next_ui_update = now + network_tick_us;
                     }
