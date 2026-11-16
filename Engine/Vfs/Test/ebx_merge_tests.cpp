@@ -8,7 +8,10 @@
 //   * an exported instance is found by its guid wherever the edit keeps it, and internal
 //     instances that do not line up are reported as not looked at;
 //   * a reference two edits both append is listed once, and one edit's own repeat is left alone;
-//   * drop_root_references takes entries out of the root's lists with the imports they used.
+//   * drop_root_references takes entries out of the root's lists with the imports they used;
+//   * a boxed value read through its type merges like any other value: a change inside it comes
+//     across, a list inside it grows at its end, an added instance brings its boxes along, and a
+//     box written afresh is marked so; one read only as bytes is reported as not looked at.
 #include "Engine/Resource/ebx_carry.h"
 #include "Engine/Resource/ebx_merge.h"
 
@@ -257,6 +260,135 @@ void dropped_references() {
     expect(ebx::drop_root_references(untouched, [](const ebx::ImportReference&) { return true; }) == 0 &&
            untouched.imports.size() == 2, "dropped: nothing goes when every entry is kept");
 }
+
+// Boxed values, read through their type: a UI panel boxed on the root. Its type is one the
+// document only names in its EFIX list (no signature), as a UI type defined in another asset is.
+// Slot 0 is never a box's type: a box whose code is 0 is an empty one.
+const Guid panel_type = guid(0xB0);
+
+ebx::Value box(std::shared_ptr<ebx::Object> content, std::uint32_t slot) {
+    auto boxed = std::make_shared<ebx::BoxedValue>();
+    boxed->kind = ebx::BoxedValue::Kind::structure;
+    boxed->type = panel_type;
+    boxed->descriptor = detail_type;
+    boxed->value = value_of(std::move(content));
+    ebx::BoxedReference reference;
+    reference.encodedType = slot << 2;
+    reference.dataOffset = 0;
+    reference.content = std::move(boxed);
+    return value_of(std::move(reference));
+}
+std::shared_ptr<ebx::Object> panel(ebx::Value::Array rows, double scale, std::int32_t link) {
+    return object(detail_type, {{"Rows", list(std::move(rows))}, {"Scale", real(scale)}, {"Link", outside(link)}});
+}
+// Its EFIX list: the entry type it describes (with a signature), then two it only names.
+ebx::Document boxed_game() {
+    auto document = game();
+    document.types[entry_type].guid = guid(0xE1);
+    document.types[entry_type].signature = 7;
+    document.fixupTypeGuids = {guid(0xE1), guid(0xAF), panel_type};
+    document.fixupTypeSignatures = {7};
+    document.instances[0].object->fields.push_back({document.instances[0].object->fields.size(), "Panel", box(panel({number(1), number(2)}, 1.0, 0), 2)});
+    return document;
+}
+ebx::BoxedReference& panel_box(ebx::Document& document, std::size_t at = 0, std::string_view name = "Panel") {
+    return std::get<ebx::BoxedReference>(field(document, at, name).data);
+}
+ebx::Object& panel_of(ebx::Document& document, std::size_t at = 0, std::string_view name = "Panel") {
+    return *std::get<std::shared_ptr<ebx::Object>>(panel_box(document, at, name).content->value.data);
+}
+std::vector<std::int64_t> rows(ebx::Object& content) {
+    std::vector<std::int64_t> result;
+    for (const auto& row : std::get<ebx::Value::Array>(field(content, "Rows").data)) result.push_back(std::get<std::int64_t>(row.data));
+    return result;
+}
+
+// A value changed inside a box comes across like any other, a list inside one grows at its end
+// with what each edit appended (once, when two append the same), and the box is then written afresh.
+void boxed_values_change_and_grow() {
+    auto base = boxed_game();
+    auto first = copy(base), second = copy(base), third = copy(base);
+    field(panel_of(first), "Scale") = real(2.0);
+    std::get<ebx::Value::Array>(field(panel_of(second), "Rows").data).push_back(number(3));
+    std::get<ebx::Value::Array>(field(panel_of(third), "Rows").data).push_back(number(3));
+    std::get<ebx::Value::Array>(field(panel_of(third), "Rows").data).push_back(number(4));
+    ebx::MergeSummary summary;
+    auto merged = merge(base, {&first, &second, &third}, summary);
+    expect(std::get<double>(field(panel_of(merged), "Scale").data) == 2.0, "boxed: a value changed inside a box is taken");
+    expect((rows(panel_of(merged)) == std::vector<std::int64_t>{1, 2, 3, 4}), "boxed: rows appended inside a box come across, a repeat once");
+    expect(panel_box(merged).rewritten, "boxed: the changed box is written afresh");
+    expect(summary.values == 1 && summary.arrayEntries == 2 && summary.repeated == 1 && summary.exact(),
+           "boxed: one value and two entries taken, one repeat left out (" + std::to_string(summary.arrayEntries) + " entries)");
+    expect(rows(panel_of(base)).size() == 2 && !panel_box(base).rewritten, "boxed: the game's copy is untouched");
+    auto quiet = copy(base);
+    const auto unchanged = merge(base, {&quiet}, summary);
+    expect(!std::get<ebx::BoxedReference>(field(*unchanged.instances[0].object, "Panel").data).rewritten,
+           "boxed: a box nobody changed keeps its bytes");
+}
+
+// An instance an edit added comes across with its box: the box's type found again by guid in the
+// result's EFIX list, and what the box points at numbered as the result numbers it.
+void boxed_value_carried() {
+    auto base = boxed_game();
+    auto edit = copy(base);
+    edit.fixupTypeGuids = {guid(0xE1), guid(0xAF), guid(0xB1), panel_type};   // the edit numbers the panel type 3
+    edit.imports.push_back({guid(0x30), guid(0xC0)});
+    const auto added = guid(0x40);
+    auto content = object(entry_type, {{"Cost", number(1)}, {"Detail", value_of(ebx::PointerReference{})},
+                                        {"Look", box(panel({number(5)}, 3.0, 2), 3)}});
+    edit.instances.push_back(instance(entry_type, std::move(content), &added));
+    ebx::MergeSummary summary;
+    auto merged = merge(base, {&edit}, summary);
+    const auto at = find(merged, added);
+    auto& carried = panel_box(merged, at, "Look");
+    expect(summary.instances == 1 && summary.uncarried.empty(), "carried: the added instance came across");
+    expect(carried.rewritten && carried.encodedType == (2U << 2), "carried: its box is the result's slot for the panel type (code " +
+           std::to_string(carried.encodedType) + (carried.rewritten ? ", rewritten)" : ")"));
+    expect((rows(panel_of(merged, at, "Look")) == std::vector<std::int64_t>{5}), "carried: the box's content came across");
+    const auto link = std::get<ebx::PointerReference>(field(panel_of(merged, at, "Look"), "Link").data);
+    expect(link.kind == ebx::PointerKind::external && merged.imports.at(static_cast<std::size_t>(link.index)).fileGuid == guid(0x30),
+           "carried: what the box points at is numbered as the result numbers it");
+    expect(merged.fixupTypeGuids.size() == 3 && panel_box(merged).encodedType == (2U << 2),
+           "carried: the game's own box still names the panel type");
+
+    // A carried instance of a type the base does not describe would move the named types: refused.
+    auto undescribed = boxed_game();
+    undescribed.fixupTypeGuids = {guid(0xAF), panel_type};
+    undescribed.fixupTypeSignatures.clear();
+    std::get<ebx::BoxedReference>(field(undescribed, 0, "Panel").data).encodedType = 1U << 2;
+    auto adds = copy(undescribed);
+    adds.instances.push_back(instance(entry_type, object(entry_type, {{"Cost", number(1)}}), &added));
+    bool refused = false;
+    try {
+        static_cast<void>(merge(undescribed, {&adds}, summary));
+    } catch (const std::exception&) {
+        refused = true;
+    }
+    expect(refused, "carried: a type that would move the named ones is refused");
+}
+
+// A reference pointed elsewhere inside a box cannot be taken, as outside one; a box that could not
+// be read on either side is only reported as not looked at.
+void boxed_values_that_cannot_be_taken() {
+    auto base = boxed_game();
+    auto edit = copy(base);
+    field(panel_of(edit), "Link") = outside(1);
+    field(panel_of(edit), "Scale") = real(9.0);
+    ebx::MergeSummary summary;
+    auto merged = merge(base, {&edit}, summary);
+    expect(std::get<double>(field(panel_of(merged), "Scale").data) == 1.0 && summary.uncarried == std::vector<std::size_t>{0},
+           "boxed: a retargeted reference inside a box keeps all the edit's values out");
+
+    auto unread = game();
+    ebx::BoxedReference bytes;
+    bytes.encodedType = 4;
+    bytes.dataOffset = 16;
+    unread.instances[0].object->fields.push_back({unread.instances[0].object->fields.size(), "Raw", value_of(bytes)});
+    auto other = copy(unread);
+    std::get<ebx::BoxedReference>(field(other, 0, "Raw").data).dataOffset = 32;
+    const auto kept = merge(unread, {&other}, summary);
+    expect(summary.unread == std::vector<std::size_t>{0} && summary.uncarried.empty(), "boxed: a box read as bytes only is not looked at");
+}
 } // namespace
 
 int main() try {
@@ -268,6 +400,9 @@ int main() try {
     internal_instances_that_do_not_line_up();
     appended_references();
     dropped_references();
+    boxed_values_change_and_grow();
+    boxed_value_carried();
+    boxed_values_that_cannot_be_taken();
     if (failures) {
         std::cerr << failures << " failure(s)\n";
         return 1;

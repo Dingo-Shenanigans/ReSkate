@@ -92,6 +92,12 @@ std::string type_or_none(const Document& document, std::int32_t descriptor) {
         ? document.types[static_cast<std::size_t>(descriptor)].name : std::string{};
 }
 
+// The type a type reference or box names: its code counts in the EFIX type list.
+Guid fixup_guid(const Document& document, std::uint32_t encoded) {
+    const auto index = encoded >> 2;
+    return index < document.fixupTypeGuids.size() ? document.fixupTypeGuids[index] : Guid{};
+}
+
 constexpr auto unmatched = static_cast<std::size_t>(-1);
 
 // Which of an edit's instances each of the base's is: the root is the root, an
@@ -147,7 +153,18 @@ public:
 
     void apply() {
         for (const auto& [to, from] : changes_) to->data = from->data;
+        for (auto* box : touched_) box->rewritten = true;
     }
+
+    // Entries an edit appended to a list inside a boxed value: carried once the edit's other
+    // changes are known to come across, because they may point into the edit's own document.
+    struct Append {
+        Value::Array* target{};
+        const Value::Array* source{};
+        std::size_t from{};
+        BoxedReference* box{};
+    };
+    std::vector<Append> appends;
 
     std::size_t values{};     // values the edit changed from the base
     std::size_t contested{};  // of those, ones the result already had changed to something else
@@ -155,6 +172,8 @@ public:
     bool unread{};            // somewhere a change could not be looked for
 
 private:
+    std::vector<BoxedReference*> boxes_;    // the result's boxes the walk is inside, innermost last
+    std::vector<BoxedReference*> touched_;  // the result's boxes a change was taken into
     template <typename Type> bool plain(const Value& base, const Value& edit, Value& result) {
         const auto* before = std::get_if<Type>(&base.data);
         if (!before) return false;
@@ -165,6 +184,7 @@ private:
         if (same(current, after)) return true;
         if (!same(current, *before)) ++contested;
         changes_.emplace_back(&result, &edit);
+        touch();
         return true;
     }
 
@@ -190,28 +210,48 @@ private:
         if (const auto* before = std::get_if<Value::Array>(&base.data)) {
             const auto& after = std::get<Value::Array>(edit.data);
             auto& mine = std::get<Value::Array>(result.data);
-            // Only a list on the root grows at its end, and what was appended
-            // comes across on its own. A list that shrank, or one deeper in
-            // that changed length, has entries no longer told apart by place.
-            if (rootList ? after.size() < before->size() : after.size() != before->size()) { uncarried = true; return; }
+            // Only a list on the root, or one inside a boxed value, grows at its end, and what was
+            // appended comes across on its own. A list that shrank, or one elsewhere that changed
+            // length, has entries no longer told apart by place.
+            const bool grows = rootList || !boxes_.empty();
+            if (grows ? after.size() < before->size() : after.size() != before->size()) { uncarried = true; return; }
             if (mine.size() < before->size()) { uncarried = true; return; }
             for (std::size_t index = 0; index < before->size(); ++index)
                 value((*before)[index], after[index], mine[index], false);
+            if (!rootList && after.size() > before->size()) {
+                appends.push_back({&mine, &after, before->size(), boxes_.back()});
+                touch();
+            }
             return;
         }
         if (const auto* before = std::get_if<TypeReference>(&base.data)) {
             const auto& after = std::get<TypeReference>(edit.data);
             if (before->primitive != after.primitive) uncarried = true;
             else if (before->primitive) uncarried |= before->primitiveType != after.primitiveType;
-            else uncarried |= type_or_none(base_, before->descriptor) != type_or_none(edit_, after.descriptor);
+            else uncarried |= fixup_guid(base_, before->encoded) != fixup_guid(edit_, after.encoded);
             return;
         }
         if (const auto* before = std::get_if<BoxedReference>(&base.data)) {
             const auto& after = std::get<BoxedReference>(edit.data);
-            // What a boxed value holds is not read, so a change inside one is not seen.
-            if ((before->encodedType == 0) != (after.encodedType == 0)) uncarried = true;
-            else if (before->encodedType != 0) unread = true;
+            auto& mine = std::get<BoxedReference>(result.data);
+            if ((before->encodedType == 0) != (after.encodedType == 0)) { uncarried = true; return; }
+            if (before->encodedType == 0) return;
+            // A box whose content could not be read on every side: a change inside it is not seen.
+            if (!before->content || !after.content || !mine.content) { unread = true; return; }
+            const auto& was = *before->content;
+            const auto& now = *after.content;
+            if (was.kind != now.kind || was.type != now.type || was.primitiveType != now.primitiveType) { uncarried = true; return; }
+            // A change inside comes across like any other, and the box is then written afresh.
+            boxes_.push_back(&mine);
+            value(was.value, now.value, mine.content->value, false);
+            boxes_.pop_back();
         }
+    }
+
+    // A change taken inside a boxed value: every box around it is written afresh.
+    void touch() {
+        for (auto* box : boxes_)
+            if (std::ranges::find(touched_, box) == touched_.end()) touched_.push_back(box);
     }
 
     // A reference still has to lead to the same place; one pointed elsewhere
@@ -239,8 +279,48 @@ private:
     std::vector<std::pair<Value*, const Value*>> changes_;
 };
 
+// Whether two values of one document say the same: used to list an entry two edits both append once.
+bool same_value(const Value& left, const Value& right) {
+    if (left.data.index() != right.data.index()) return false;
+    if (const auto* x = std::get_if<std::shared_ptr<Object>>(&left.data)) {
+        const auto& y = std::get<std::shared_ptr<Object>>(right.data);
+        if (!*x || !y) return !*x && !y;
+        if ((*x)->fields.size() != y->fields.size()) return false;
+        for (std::size_t index = 0; index < y->fields.size(); ++index)
+            if (!same_value((*x)->fields[index].value, y->fields[index].value)) return false;
+        return true;
+    }
+    if (const auto* x = std::get_if<Value::Array>(&left.data)) {
+        const auto& y = std::get<Value::Array>(right.data);
+        return x->size() == y.size() && std::ranges::equal(*x, y, same_value);
+    }
+    if (const auto* x = std::get_if<BoxedReference>(&left.data)) {
+        const auto& y = std::get<BoxedReference>(right.data);
+        if (!x->content || !y.content) return x->encodedType == y.encodedType && x->dataOffset == y.dataOffset;
+        return x->encodedType == y.encodedType && same_value(x->content->value, y.content->value);
+    }
+    if (const auto* x = std::get_if<PointerReference>(&left.data)) {
+        const auto& y = std::get<PointerReference>(right.data);
+        return x->kind == y.kind && x->index == y.index;
+    }
+    if (const auto* x = std::get_if<TypeReference>(&left.data)) return x->encoded == std::get<TypeReference>(right.data).encoded;
+    if (const auto* x = std::get_if<double>(&left.data)) return same(*x, std::get<double>(right.data));
+    if (const auto* x = std::get_if<ResourceReference>(&left.data)) return same(*x, std::get<ResourceReference>(right.data));
+    if (const auto* x = std::get_if<bool>(&left.data)) return *x == std::get<bool>(right.data);
+    if (const auto* x = std::get_if<std::int64_t>(&left.data)) return *x == std::get<std::int64_t>(right.data);
+    if (const auto* x = std::get_if<std::uint64_t>(&left.data)) return *x == std::get<std::uint64_t>(right.data);
+    if (const auto* x = std::get_if<std::string>(&left.data)) return *x == std::get<std::string>(right.data);
+    if (const auto* x = std::get_if<Guid>(&left.data)) return *x == std::get<Guid>(right.data);
+    if (const auto* x = std::get_if<Sha1>(&left.data)) return *x == std::get<Sha1>(right.data);
+    return true;
+}
+
 template <typename Visit> void each_pointer(Value& value, const Visit& visit) {
     if (auto* pointer = std::get_if<PointerReference>(&value.data)) { visit(*pointer); return; }
+    if (auto* box = std::get_if<BoxedReference>(&value.data)) {
+        if (box->content) each_pointer(box->content->value, visit);
+        return;
+    }
     if (auto* nested = std::get_if<std::shared_ptr<Object>>(&value.data)) {
         if (*nested) for (auto& field : (*nested)->fields) each_pointer(field.value, visit);
         return;
@@ -323,6 +403,54 @@ std::int32_t Carrier::import(std::int32_t index) {
     return static_cast<std::int32_t>(to_.imports.size() - 1);
 }
 
+std::uint32_t Carrier::fixup_slot(const std::uint32_t index) {
+    if (index >= from_.fixupTypeGuids.size()) throw std::runtime_error("EBX type slot is out of range");
+    const auto& guid = from_.fixupTypeGuids[index];
+    // The EFIX list holds the types the document describes first, each with its signature, then
+    // the ones it only names (a UI type defined in another asset, a list type, a class), which
+    // have none. A described type must already be among the target's, as an instance's type must
+    // (Carrier::type); a named one is found by guid or added at the very end, which moves no slot.
+    if (index < from_.fixupTypeSignatures.size()) {
+        const auto signature = from_.fixupTypeSignatures[index];
+        const auto described = std::min(to_.fixupTypeGuids.size(), to_.fixupTypeSignatures.size());
+        for (std::size_t at = 0; at < described; ++at)
+            if (to_.fixupTypeGuids[at] == guid && to_.fixupTypeSignatures[at] == signature) return static_cast<std::uint32_t>(at);
+        throw std::runtime_error("EBX merge needs a type the base does not describe: " + guid.string());
+    }
+    for (auto at = to_.fixupTypeSignatures.size(); at < to_.fixupTypeGuids.size(); ++at)
+        if (to_.fixupTypeGuids[at] == guid) return static_cast<std::uint32_t>(at);
+    to_.fixupTypeGuids.push_back(guid);
+    return static_cast<std::uint32_t>(to_.fixupTypeGuids.size() - 1);
+}
+
+BoxedReference Carrier::boxed(const BoxedReference& source) {
+    BoxedReference result;
+    if (source.encodedType == 0) return result;
+    if (!source.content) throw std::runtime_error("EBX merge cannot carry a boxed value it could not read");
+    const auto& from = *source.content;
+    auto content = std::make_shared<BoxedValue>();
+    content->kind = from.kind;
+    content->primitiveType = from.primitiveType;
+    content->type = from.type;
+    content->signature = from.signature;
+    content->record = from.record;
+    content->listRecord = from.listRecord;
+    // EBXX entries name their type's EFIX slot: the writer takes a described type's from the
+    // target; another's (a list of references, a class only named) is mapped here.
+    if (content->record.classRef != 0xFFFF && content->record.classRef < from_.fixupTypeGuids.size())
+        content->record.classRef = static_cast<std::uint16_t>(fixup_slot(content->record.classRef));
+    if (content->listRecord.classRef != 0xFFFF && content->listRecord.classRef < from_.fixupTypeGuids.size())
+        content->listRecord.classRef = static_cast<std::uint16_t>(fixup_slot(content->listRecord.classRef));
+    content->descriptor = from.descriptor >= 0 ? type(from.descriptor) : -1;
+    content->value = value(from.value);
+    result.encodedType = (source.encodedType & 0x80000000U) != 0
+        ? source.encodedType
+        : (fixup_slot(source.encodedType >> 2) << 2) | (source.encodedType & 3U);
+    result.content = std::move(content);
+    result.rewritten = true;
+    return result;
+}
+
 std::shared_ptr<Object> Carrier::object(const Object& source) {
     auto result = std::make_shared<Object>();
     result->descriptor = type(source.descriptor);
@@ -355,13 +483,21 @@ Value Carrier::value(const Value& source) {
         return result;
     }
     if (const auto* reference = std::get_if<TypeReference>(&source.data)) {
+        // A type reference counts in the EFIX type list, as a box's type does: the slot is found
+        // again by guid, so a type defined in another asset (a UI type) comes across as well.
         auto copy = *reference;
-        if (!reference->primitive && reference->descriptor >= 0) copy.descriptor = type(reference->descriptor);
+        if (!reference->primitive && reference->encoded != 0) {
+            const auto slot = fixup_slot(reference->encoded >> 2);
+            copy.encoded = (slot << 2) | (reference->encoded & 3U);
+            copy.descriptor = static_cast<std::int32_t>(slot);
+        }
         result.data = copy;
         return result;
     }
-    if (std::holds_alternative<BoxedReference>(source.data))
-        throw std::runtime_error("EBX merge cannot carry a boxed value yet");
+    if (const auto* box = std::get_if<BoxedReference>(&source.data)) {
+        result.data = boxed(*box);
+        return result;
+    }
     result = source;
     return result;
 }
@@ -377,6 +513,14 @@ std::shared_ptr<Object> clone_object(const Object& source) {
 
 Value clone_value(const Value& source) {
     Value result;
+    if (const auto* box = std::get_if<BoxedReference>(&source.data); box && box->content) {
+        auto copy = *box;
+        auto content = std::make_shared<BoxedValue>(*box->content);
+        content->value = clone_value(box->content->value);
+        copy.content = std::move(content);
+        result.data = std::move(copy);
+        return result;
+    }
     if (const auto* nested = std::get_if<std::shared_ptr<Object>>(&source.data)) {
         result.data = *nested ? clone_object(**nested) : nullptr;
         return result;
@@ -445,6 +589,10 @@ void sort_instances(Document& document) {
             if (*nested) for (auto& field : (*nested)->fields) self(self, field.value);
             return;
         }
+        if (auto* box = std::get_if<BoxedReference>(&value.data)) {
+            if (box->content) self(self, box->content->value);
+            return;
+        }
         if (auto* list = std::get_if<Value::Array>(&value.data))
             for (auto& element : *list) self(self, element);
     };
@@ -508,6 +656,24 @@ Document merge_documents(const Document& base, const std::span<const Document* c
 
         detail::Carrier mapper(*edit, result);
         std::map<std::string, std::set<std::pair<PointerKind, std::int32_t>>, std::less<>> mine;
+
+        // Entries the edit appended to lists inside boxed values, when its changes came across.
+        // The same entry appended by two edits is listed once.
+        if (!changes.uncarried) {
+            for (const auto& append : changes.appends) {
+                const auto had = append.target->size();
+                for (auto at = append.from; at < append.source->size(); ++at) {
+                    auto carried = mapper.value((*append.source)[at]);
+                    if (std::ranges::any_of(*append.target, [&](const Value& existing) { return same_value(existing, carried); })) {
+                        ++totals.repeated;
+                        continue;
+                    }
+                    append.target->push_back(std::move(carried));
+                    ++totals.arrayEntries;
+                }
+                if (append.target->size() != had) append.box->rewritten = true;
+            }
+        }
 
         // Whatever an edit appended to one of the root's arrays comes across,
         // pulling in the instances those entries point at.

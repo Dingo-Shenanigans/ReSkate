@@ -12,6 +12,7 @@
 #include <stdexcept>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace dingosdk::frostbite::ebx {
 
@@ -212,6 +213,16 @@ private:
                 pointerOffsets_.push_back(checked_u32(position, "EBX array slot"));
                 static const Value::Array empty;
                 const auto* array = value ? std::get_if<Value::Array>(&value->data) : nullptr;
+                if (const auto placed = array ? preplaced_.find(array) : preplaced_.end(); placed != preplaced_.end()) {
+                    put_number(position, static_cast<std::uint32_t>(placed->second - position));
+                    continue;
+                }
+                if (writingFresh_) {
+                    // Every list a fresh box holds was placed in the array section (place_fresh_arrays).
+                    if (array && !array->empty()) throw std::runtime_error("EBX boxed value has a list that was not placed");
+                    put_number(position, static_cast<std::uint32_t>(emptyArrayTarget_ - position));
+                    continue;
+                }
                 arraysPending_.push_back({checked_u32(position, "EBX array slot"), array ? array : &empty,
                                           descriptorIndex, value ? value->arrayHash : std::nullopt,
                                           object ? object->descriptor : static_cast<std::int32_t>(typeIndex)});
@@ -294,7 +305,8 @@ private:
             const auto encoded = reference ? reference->encoded : 0U;
             put_number(position, encoded);
             put_number(position + 4, std::uint32_t{});
-            if (encoded != 0 && field.type() == FieldType::typeRef) {
+            // The game lists a delegate's type slot too where one sits inside a boxed value.
+            if (encoded != 0 && (field.type() == FieldType::typeRef || freshContent_)) {
                 typeInfoOffsets_.push_back(checked_u32(position, "EBX type-info slot"));
             }
             break;
@@ -311,6 +323,7 @@ private:
             typeInfoOffsets_.push_back(checked_u32(position, "EBX boxed type slot"));
             pointerOffsets_.push_back(checked_u32(position + 8, "EBX boxed pointer slot"));
             boxesPending_.push_back({checked_u32(position, "EBX boxed slot"), *reference});
+            if (reference->rewritten && reference->content) note_fresh(*reference->content);
             break;
         }
         default:
@@ -393,6 +406,8 @@ private:
             if (*nested) collect_hashes(**nested);
         } else if (const auto* array = std::get_if<Value::Array>(&value.data)) {
             for (const auto& element : *array) collect_value(element);
+        } else if (const auto* box = std::get_if<BoxedReference>(&value.data); box && box->content) {
+            collect_value(box->content->value);
         }
     }
 
@@ -404,6 +419,7 @@ private:
             if (!arraysPending_[index].emitted) emit_array(index);
         }
         carry_boxed_arrays();
+        place_fresh_arrays();
     }
 
     // What a boxed value points at is not in the document's values: its bytes are carried as they
@@ -580,16 +596,185 @@ private:
         }
         for (const auto& [slot, target] : boxedTargets_)
             put_number(slot, static_cast<std::uint32_t>(boxedOffset_ + (target - document_.boxedValuesOffset) - slot));
+        write_fresh_boxes();
         for (const auto& pending : boxesPending_) {
             put_number(pending.slot, pending.value.encodedType);
             put_number(static_cast<std::size_t>(pending.slot) + 4, std::uint32_t{});
-            const auto found = moved.find(static_cast<std::uint32_t>(pending.value.dataOffset));
-            const auto relative = found == moved.end()
-                ? pending.value.relativeOffset
-                : static_cast<std::int64_t>(found->second) - static_cast<std::int64_t>(pending.slot + 8);
+            std::int64_t relative = pending.value.relativeOffset;
+            if (pending.value.rewritten && pending.value.content) {
+                relative = static_cast<std::int64_t>(freshOffsets_.at(pending.value.content.get())) -
+                           static_cast<std::int64_t>(pending.slot + 8);
+            } else if (const auto found = moved.find(static_cast<std::uint32_t>(pending.value.dataOffset)); found != moved.end()) {
+                relative = static_cast<std::int64_t>(found->second) - static_cast<std::int64_t>(pending.slot + 8);
+            }
             put_number(static_cast<std::size_t>(pending.slot) + 8, relative);
         }
     }
+
+    // ---- boxed values laid down afresh (BoxedReference::rewritten) -------------------------------
+    // A box read from this document is carried as its bytes. One a merge changed, or carried in
+    // from another document, is written from its content: its lists go in the array section with
+    // the others (place_fresh_arrays), then its record goes in the boxed section after the carried
+    // ones (write_fresh_boxes), each with an EBXX entry taken from the one it was read with.
+
+    struct Element {
+        FieldType type{};
+        std::uint16_t descriptor{0xFFFF};   // a struct element's type
+    };
+
+    std::size_t element_size(const Element& element) const {
+        if (element.type == FieldType::structure)
+            return std::max<std::size_t>(document_.types.at(element.descriptor).size, 1);
+        return scalar_size(element.type);
+    }
+
+    std::size_t element_align(const Element& element) const {
+        if (element.type == FieldType::structure)
+            return std::max<std::size_t>(document_.types.at(element.descriptor).alignment, 1);
+        return std::max<std::size_t>(std::min<std::size_t>(element_size(element), 8), 1);
+    }
+
+    void write_element(const Element& element, const std::size_t at, const Value& value) {
+        if (element.type == FieldType::structure) {
+            const auto* object = std::get_if<std::shared_ptr<Object>>(&value.data);
+            write_type(element.descriptor, at, object && *object ? object->get() : nullptr);
+            return;
+        }
+        FieldDescriptor field;
+        field.encodedType = static_cast<std::uint16_t>(static_cast<std::uint16_t>(element.type) << 4);
+        write_scalar(field, at, &value);
+    }
+
+    void note_fresh(const BoxedValue& box) {
+        if (freshSeen_.insert(&box).second) fresh_.push_back(&box);
+    }
+
+    // The EBXX entry for a fresh box or list: the one it was read with, with its type slot taken
+    // from this document. One read without an entry (a list that was empty: every empty list points
+    // at the same place, which has none) borrows the entry of another of the same element type, and
+    // is refused when the document has none.
+    template <typename Record>
+    Record entry(const Record& read, const std::int32_t descriptor, const std::vector<Record>& known) const {
+        Record result = read;
+        const auto slot = descriptor >= 0 ? fixup_slot_for_descriptor(static_cast<std::uint16_t>(descriptor)) : read.classRef;
+        if (result.hash == 0 && result.encodedType == 0) {
+            const auto same = std::ranges::find_if(known, [&](const Record& other) { return other.classRef == slot && slot != 0xFFFF; });
+            if (same == known.end()) throw std::runtime_error("EBX boxed value has no table entry of its type to copy");
+            result = *same;
+        }
+        result.classRef = slot;
+        return result;
+    }
+
+    std::uint32_t place_list(const Value::Array& values, const Element& element, const ArrayRecord& read) {
+        if (values.empty()) return emptyArrayTarget_;
+        const auto data = align_up(payload_.size() + 4, element_align(element));
+        const auto stride = element_size(element);
+        put_number(data - 4, checked_u32(values.size(), "EBX array count"));
+        grow(data + stride * values.size());
+        for (std::size_t index = 0; index < values.size(); ++index) write_element(element, data + index * stride, values[index]);
+        auto record = entry(read, element.type == FieldType::structure ? static_cast<std::int32_t>(element.descriptor) : -1,
+                            document_.arrays);
+        record.offset = checked_u32(data, "EBX array data");
+        record.count = checked_u32(values.size(), "EBX array count");
+        arrays_.push_back(record);
+        return record.offset;
+    }
+
+    void emit_pending_arrays() {
+        for (std::size_t index = 0; index < arraysPending_.size(); ++index)
+            if (!arraysPending_[index].emitted) emit_array(index);
+    }
+
+    // The lists of a struct a fresh box holds, placed now; boxes it holds directly are noted.
+    void place_struct_lists(const std::size_t typeIndex, const Object* object) {
+        const auto& type = document_.types.at(typeIndex);
+        for (std::size_t ordinal = 0; ordinal < type.fieldCount; ++ordinal) {
+            const auto descriptorIndex = static_cast<std::size_t>(type.fieldIndex) + ordinal;
+            const auto& field = document_.fields.at(descriptorIndex);
+            if (field.type() == FieldType::inherited) {
+                place_struct_lists(field.classRef, object);
+                continue;
+            }
+            const auto* value = value_for(object, descriptorIndex);
+            if (field.category() == FieldCategory::array) {
+                const auto* array = value ? std::get_if<Value::Array>(&value->data) : nullptr;
+                if (!array || preplaced_.contains(array)) continue;
+                const Element element{field.type(), field.type() == FieldType::structure ? field.classRef : std::uint16_t{0xFFFF}};
+                ArrayRecord read;
+                read.hash = value->arrayHash ? *value->arrayHash : array_hash(field);
+                read.encodedType = static_cast<std::uint16_t>(field.encodedType << 1);
+                read.classRef = 0xFFFF;
+                preplaced_[array] = place_list(*array, element, read);
+            } else if (field.type() == FieldType::structure) {
+                const auto* nested = value ? std::get_if<std::shared_ptr<Object>>(&value->data) : nullptr;
+                place_struct_lists(field.classRef, nested && *nested ? nested->get() : nullptr);
+            } else if (field.type() == FieldType::boxedValueRef && value) {
+                if (const auto* box = std::get_if<BoxedReference>(&value->data); box && box->rewritten && box->content)
+                    note_fresh(*box->content);
+            }
+        }
+    }
+
+    void place_fresh_arrays() {
+        freshContent_ = true;
+        struct Leave { bool& flag; ~Leave() { flag = false; } } leave{freshContent_};
+        for (std::size_t next = 0; next < fresh_.size(); ++next) {
+            const auto& box = *fresh_[next];
+            if (box.kind == BoxedValue::Kind::structure) {
+                const auto* object = std::get_if<std::shared_ptr<Object>>(&box.value.data);
+                place_struct_lists(static_cast<std::size_t>(box.descriptor), object && *object ? object->get() : nullptr);
+            } else if (box.kind == BoxedValue::Kind::list || box.kind == BoxedValue::Kind::primitiveList) {
+                const auto& values = std::get<Value::Array>(box.value.data);
+                const Element element = box.kind == BoxedValue::Kind::primitiveList ? Element{box.primitiveType}
+                    : box.descriptor >= 0 ? Element{FieldType::structure, static_cast<std::uint16_t>(box.descriptor)}
+                                          : Element{FieldType::pointer};
+                preplaced_[&values] = place_list(values, element, box.listRecord);
+            }
+            emit_pending_arrays();
+        }
+    }
+
+    void write_fresh_boxes() {
+        writingFresh_ = true;
+        freshContent_ = true;
+        for (const auto* box : fresh_) {
+            const std::size_t alignment = box->kind == BoxedValue::Kind::structure
+                ? std::max<std::size_t>(document_.types.at(static_cast<std::size_t>(box->descriptor)).alignment, 1) : 8;
+            const auto at = align_up(payload_.size(), alignment);
+            switch (box->kind) {
+            case BoxedValue::Kind::structure: {
+                const auto* object = std::get_if<std::shared_ptr<Object>>(&box->value.data);
+                write_type(static_cast<std::size_t>(box->descriptor), at, object && *object ? object->get() : nullptr);
+                break;
+            }
+            case BoxedValue::Kind::list:
+            case BoxedValue::Kind::primitiveList:
+                grow(at + 8);
+                put_number(at, static_cast<std::uint32_t>(preplaced_.at(&std::get<Value::Array>(box->value.data)) - at));
+                pointerOffsets_.push_back(checked_u32(at, "EBX boxed list slot"));
+                break;
+            case BoxedValue::Kind::reference:
+                write_element(Element{FieldType::pointer}, at, box->value);
+                break;
+            case BoxedValue::Kind::primitive:
+                write_element(Element{box->primitiveType}, at, box->value);
+                break;
+            }
+            auto record = entry(box->record, box->kind == BoxedValue::Kind::structure ? box->descriptor : -1,
+                                document_.boxedValues);
+            record.offset = checked_u32(at, "EBX boxed value");
+            if (record.count == 0) record.count = 1;
+            record.rawBytes.clear();
+            freshOffsets_[box] = record.offset;
+            boxed_.push_back(std::move(record));
+        }
+        writingFresh_ = false;
+        freshContent_ = false;
+        if (std::ranges::any_of(arraysPending_, [](const PendingArray& pending) { return !pending.emitted; }))
+            throw std::runtime_error("EBX boxed value left a list unplaced");
+    }
+
 
     void write_strings() {
         std::unordered_map<std::string, std::uint32_t> offsets;
@@ -748,6 +933,12 @@ private:
     std::unordered_map<std::uint32_t, std::uint32_t> oldInstances_;
     std::unordered_map<std::uint32_t, std::uint32_t> carried_;
     std::vector<std::pair<std::uint32_t, std::uint32_t>> boxedTargets_;
+    std::vector<const BoxedValue*> fresh_;
+    std::unordered_set<const BoxedValue*> freshSeen_;
+    std::unordered_map<const Value::Array*, std::uint32_t> preplaced_;
+    std::unordered_map<const BoxedValue*, std::uint32_t> freshOffsets_;
+    bool writingFresh_{};
+    bool freshContent_{};
     bool refuse_{};
     bool knownWalked_{};
     std::map<std::pair<std::int32_t, std::size_t>, std::uint32_t> knownHashes_;   // (holder, field) -> hash
@@ -769,6 +960,12 @@ std::uint16_t ensure_fixup_type(Document& document, const std::int32_t descripto
         }
     }
     if (count >= std::numeric_limits<std::uint16_t>::max()) throw std::overflow_error("EBX type slot overflow");
+    // Described types come first, each with a signature; the ones the document only names (a UI type
+    // defined in another asset, a list type) follow without one. A new described type goes at the end
+    // of the first part, which would move every named one along while boxes, type references and the
+    // bytes of carried boxed values still name them by their old slot: refused instead.
+    if (document.fixupTypeGuids.size() > count)
+        throw std::runtime_error("EBX type " + type.name + " would move the types the document only names");
     document.fixupTypeGuids.insert(document.fixupTypeGuids.begin() + static_cast<std::ptrdiff_t>(count), type.guid);
     document.fixupTypeSignatures.push_back(type.signature);
     return static_cast<std::uint16_t>(count);

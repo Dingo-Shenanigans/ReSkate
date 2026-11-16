@@ -389,7 +389,154 @@ public:
         }
     }
 
+    // Reads what every boxed field holds, through the type the box names, so a merge can compare
+    // and carry it like any other value. A box whose type cannot be laid out, or whose bytes do not
+    // read as that type, is left as it was: carried as bytes, its content unknown.
+    void read_boxed_values() {
+        for (const auto& record : document_.boxedValues) boxedRecords_.emplace(record.offset, &record);
+        for (const auto& record : document_.arrays) arrayRecords_.emplace(record.offset, &record);
+        for (auto& instance : document_.instances)
+            if (instance.object)
+                for (auto& field : instance.object->fields) read_boxes_in(field.value);
+    }
+
 private:
+    void read_boxes_in(Value& value) {
+        if (auto* box = std::get_if<BoxedReference>(&value.data)) {
+            if (box->content || box->encodedType == 0) return;
+            const Nesting nesting(depth_);
+            box->content = read_box(*box);
+            if (box->content) read_boxes_in(box->content->value);
+            return;
+        }
+        if (auto* object = std::get_if<std::shared_ptr<Object>>(&value.data)) {
+            if (*object)
+                for (auto& field : (*object)->fields) read_boxes_in(field.value);
+            return;
+        }
+        if (auto* list = std::get_if<Value::Array>(&value.data))
+            for (auto& element : *list) read_boxes_in(element);
+    }
+
+    // The reflection type with this guid, or -1.
+    [[nodiscard]] std::int32_t described(const Guid& guid) const {
+        for (std::size_t index = 0; index < document_.types.size(); ++index)
+            if (document_.types[index].guid == guid) return static_cast<std::int32_t>(index);
+        return -1;
+    }
+
+    // A list's elements, from the 32-bit displacement at `position` to the count-prefixed data.
+    template <typename ReadElement>
+    [[nodiscard]] std::optional<Value::Array> read_list(const std::size_t position, const std::size_t stride,
+                                                        BoxedValue& content, const ReadElement& element) {
+        reader_.seek(position);
+        const auto displacement = reader_.i32();
+        const auto target = static_cast<std::int64_t>(position) + displacement;
+        if (target < static_cast<std::int64_t>(document_.dataStart + 4) || target > static_cast<std::int64_t>(document_.dataEnd))
+            return std::nullopt;
+        reader_.seek(static_cast<std::size_t>(target) - 4);
+        const auto count = reader_.i32();
+        if (count < 0 || static_cast<std::size_t>(count) * stride > document_.dataEnd - static_cast<std::size_t>(target))
+            return std::nullopt;
+        const auto record = arrayRecords_.find(static_cast<std::uint32_t>(static_cast<std::size_t>(target) - document_.dataStart));
+        if (record != arrayRecords_.end()) content.listRecord = *record->second;
+        Value::Array values;
+        values.reserve(static_cast<std::size_t>(count));
+        for (std::int32_t index = 0; index < count; ++index)
+            values.push_back(element(static_cast<std::size_t>(target) + static_cast<std::size_t>(index) * stride));
+        return values;
+    }
+
+    // One value at a position: read_value reads from wherever the reader stands.
+    [[nodiscard]] Value read_at(const FieldType type, const std::size_t position) {
+        reader_.seek(position);
+        return read_value(type, 0, position);
+    }
+
+    [[nodiscard]] std::shared_ptr<BoxedValue> read_box(const BoxedReference& box) {
+        if (box.dataOffset < 0 || static_cast<std::size_t>(box.dataOffset) >= document_.dataEnd - document_.dataStart) return nullptr;
+        const auto position = document_.dataStart + static_cast<std::size_t>(box.dataOffset);
+        auto content = std::make_shared<BoxedValue>();
+        if (const auto record = boxedRecords_.find(static_cast<std::uint32_t>(box.dataOffset)); record != boxedRecords_.end()) {
+            content->record = *record->second;
+            content->record.rawBytes.clear();
+        }
+        try {
+            if ((box.encodedType & 0x80000000U) != 0) {
+                content->primitiveType = static_cast<FieldType>((box.encodedType >> 5) & 0x1F);
+                // Bit 3 marks a list of the primitive (0x80000248: a list of int64, its record a list pointer).
+                if ((box.encodedType & 0x8U) != 0) {
+                    const auto type = content->primitiveType;
+                    const auto stride = type == FieldType::boolean || type == FieldType::int8 || type == FieldType::uint8 ? 1U
+                        : type == FieldType::int16 || type == FieldType::uint16 ? 2U
+                        : type == FieldType::int32 || type == FieldType::uint32 || type == FieldType::float32 ||
+                          type == FieldType::enumeration ? 4U : 8U;
+                    auto values = read_list(position, stride, *content, [&](std::size_t at) { return read_at(type, at); });
+                    if (!values) return nullptr;
+                    content->kind = BoxedValue::Kind::primitiveList;
+                    content->value.data = std::move(*values);
+                } else {
+                    content->kind = BoxedValue::Kind::primitive;
+                    content->value = read_at(content->primitiveType, position);
+                }
+                return content;
+            }
+            const auto index = box.encodedType >> 2;
+            if (index >= document_.fixupTypeGuids.size()) return nullptr;
+            content->type = document_.fixupTypeGuids[index];
+            if (index < document_.fixupTypeSignatures.size()) content->signature = document_.fixupTypeSignatures[index];
+            if (const auto descriptor = described(content->type); descriptor >= 0) {
+                const auto& type = document_.types[static_cast<std::size_t>(descriptor)];
+                content->descriptor = descriptor;
+                if (type.type() == FieldType::structure) {
+                    content->kind = BoxedValue::Kind::structure;
+                    content->value.data = read_object(descriptor, position);
+                } else if (type.type() == FieldType::enumeration || type.type() == FieldType::delegate ||
+                           type.type() == FieldType::typeRef) {
+                    // A described type that is one value: kept as that value, the box keeps its type.
+                    content->kind = BoxedValue::Kind::primitive;
+                    content->primitiveType = type.type();
+                    content->value = read_at(type.type(), position);
+                } else if (type.type() == FieldType::pointer || type.type() == FieldType::dbObject) {
+                    content->kind = BoxedValue::Kind::reference;
+                    content->value = read_at(FieldType::pointer, position);
+                } else {
+                    return nullptr;
+                }
+                return content;
+            }
+            // Not described here: a list (its element's guid with the last byte one higher), or a
+            // reference to an object of a class the document only names.
+            auto element = content->type;
+            element.bytes[15] = static_cast<std::byte>(std::to_integer<std::uint8_t>(element.bytes[15]) - 1);
+            const auto elementDescriptor = described(element);
+            const bool elementNamed = std::ranges::find(document_.fixupTypeGuids, element) != document_.fixupTypeGuids.end();
+            if (elementDescriptor >= 0 && document_.types[static_cast<std::size_t>(elementDescriptor)].type() == FieldType::structure) {
+                const auto& type = document_.types[static_cast<std::size_t>(elementDescriptor)];
+                auto values = read_list(position, std::max<std::size_t>(type.size, 1), *content,
+                                        [&](std::size_t at) { return Value{read_object(elementDescriptor, at)}; });
+                if (!values) return nullptr;
+                content->kind = BoxedValue::Kind::list;
+                content->descriptor = elementDescriptor;
+                content->value.data = std::move(*values);
+            } else if (elementNamed || elementDescriptor >= 0) {
+                auto values = read_list(position, 8, *content, [&](std::size_t at) { return read_at(FieldType::pointer, at); });
+                if (!values) return nullptr;
+                content->kind = BoxedValue::Kind::list;
+                content->value.data = std::move(*values);
+            } else {
+                content->kind = BoxedValue::Kind::reference;
+                content->value = read_at(FieldType::pointer, position);
+            }
+            return content;
+        } catch (const std::exception&) {
+            // Bytes that do not read as the type the box names: leave the box as bytes.
+            return nullptr;
+        }
+    }
+
+    std::unordered_map<std::uint32_t, const BoxedValueRecord*> boxedRecords_;
+    std::unordered_map<std::uint32_t, const ArrayRecord*> arrayRecords_;
     // A type can name itself as its base or as a member: bound the nesting so a bad
     // file fails to parse instead of overflowing the stack.
     class Nesting final {
@@ -642,7 +789,9 @@ Document read_document(const std::span<const std::byte> bytes) {
     result.payload.assign(bytes.begin() + static_cast<std::ptrdiff_t>(result.dataStart),
                           bytes.begin() + static_cast<std::ptrdiff_t>(result.dataEnd));
     map_instances(result, fixup, reflectionIds);
-    ValueReader(bytes, result).read_instances();
+    ValueReader values(bytes, result);
+    values.read_instances();
+    values.read_boxed_values();
     std::ranges::sort(result.boxedValues, {}, &BoxedValueRecord::offset);
     for (std::size_t index = 0; index < result.boxedValues.size(); ++index) {
         auto& value = result.boxedValues[index];

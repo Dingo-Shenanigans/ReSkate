@@ -145,10 +145,20 @@ struct ResourceReference {
     std::uint64_t id{};
 };
 
+struct BoxedValue;
+
+// A boxed field: its type code (an index into the document's EFIX type list, times four, or a
+// primitive with bit 31 set) and where its value lies in the boxed section.
 struct BoxedReference {
     std::uint32_t encodedType{};
     std::int64_t dataOffset{-1};
     std::int64_t relativeOffset{};
+    // What the box holds, read through its type when the document lays that type out
+    // (read_document). Null for a box whose type it does not, which then only travels as bytes.
+    std::shared_ptr<BoxedValue> content;
+    // Set when `content` was changed or carried in from another document: the writer then lays
+    // the content down afresh instead of carrying the bytes the box was read from.
+    bool rewritten{};
 };
 
 struct Value {
@@ -174,6 +184,23 @@ struct Object {
     std::vector<FieldValue> fields;
 
     [[nodiscard]] const FieldValue* find(std::string_view name) const;
+};
+
+// A boxed value read through its type. The type is named by its guid and signature, which is
+// what two documents agree on (each numbers its own EFIX type list). A list type's guid is its
+// element type's with the last byte one higher: that is how a boxed list is told apart, and its
+// elements are structs the document describes or references to objects.
+struct BoxedValue {
+    enum class Kind { primitive, primitiveList, structure, list, reference };
+    Kind kind{};
+    FieldType primitiveType{};      // primitive and primitiveList: what each value is
+    Guid type;                      // structure, list and reference: the boxed type
+    std::uint32_t signature{};
+    std::int32_t descriptor{-1};    // structure: its struct; list: its element struct, or -1 for references
+    Value value;                    // an Object, an Array, a PointerReference or a scalar
+    // The EBXX entries the box and its list were read with (count, hash, kind, type slot).
+    BoxedValueRecord record;
+    ArrayRecord listRecord;
 };
 
 struct Document {
