@@ -855,19 +855,34 @@ private:
         // are listed by that rule. Fields inside bytes carried as they were keep their entry, at
         // their new place. (Matching old entries to new fields by rank went wrong as soon as a box
         // was added or written afresh.)
-        // A type the file only names (a list of a class it does not describe) can't be looked into:
-        // it is listed when the file listed it before.
-        std::set<Guid> listedBefore;
-        for (const auto old : document_.boxedReferenceOffsets) {
-            if (static_cast<std::size_t>(old) + 4 > document_.payload.size()) continue;
+        // Other assets (ECS prefabs, for one) list other types, so the file's own table comes first: a type
+        // the file held is listed exactly when the file listed it. The rule only decides for a type the
+        // file never held (one carried in from another document).
+        const auto type_key = [&](const std::uint32_t code) -> std::optional<Guid> {
+            if (code == 0 || (code & 0x80000000U) != 0 || (code >> 2) >= document_.fixupTypeGuids.size()) return std::nullopt;
+            return document_.fixupTypeGuids[code >> 2];
+        };
+        const auto code_at = [&](const std::uint32_t old) {
             std::uint32_t code{};
-            std::memcpy(&code, document_.payload.data() + old, sizeof(code));
-            if (code != 0 && (code & 0x80000000U) == 0 && (code >> 2) < document_.fixupTypeGuids.size())
-                listedBefore.insert(document_.fixupTypeGuids[code >> 2]);
+            if (static_cast<std::size_t>(old) + 4 <= document_.payload.size())
+                std::memcpy(&code, document_.payload.data() + old, sizeof(code));
+            return code;
+        };
+        std::set<Guid> heldBefore, listedBefore;
+        std::set<std::uint32_t> heldCodes, listedCodes;   // primitives and anything without a type slot
+        for (const auto old : document_.boxedValueSlots) {
+            const auto code = code_at(old);
+            if (const auto key = type_key(code)) heldBefore.insert(*key);
+            else heldCodes.insert(code);
+        }
+        for (const auto old : document_.boxedReferenceOffsets) {
+            const auto code = code_at(old);
+            if (const auto key = type_key(code)) listedBefore.insert(*key);
+            else listedCodes.insert(code);
         }
         const auto listed = [&](const std::uint32_t code) {
-            return carries_type_info(code) || (code != 0 && (code & 0x80000000U) == 0 && (code >> 2) < document_.fixupTypeGuids.size() &&
-                                               listedBefore.contains(document_.fixupTypeGuids[code >> 2]));
+            if (const auto key = type_key(code)) return heldBefore.contains(*key) ? listedBefore.contains(*key) : carries_type_info(code);
+            return heldCodes.contains(code) && listedCodes.contains(code);
         };
         std::vector<std::uint32_t> trailing;
         for (const auto& pending : boxesPending_)
