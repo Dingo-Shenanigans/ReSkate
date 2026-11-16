@@ -26,6 +26,7 @@
 #include <chrono>
 #include <thread>
 #include <cmath>
+#include <cstring>
 #include <format>
 #include <fstream>
 #include <iostream>
@@ -742,6 +743,37 @@ struct FakeGame final : Game {
         if (left) return std::nullopt;
         return HandPlace{{1, 2, 3}, {0, 0, 0, 1}};
     }
+    std::string screen_shader(std::string_view plugin, std::optional<ScreenShader> s) override {
+        if (!s) {
+            calls.push_back(std::format("shader {} none", plugin));
+            return {};
+        }
+        calls.push_back(std::format("shader {} {} {} {} {:.2f} {:.2f} {:.2f}", plugin, s->file, static_cast<int>(s->kind), s->bytes ? s->bytes->size() : 0,
+                                    s->values[0], s->values[1], s->values[47]));
+        // As the overlay answers one that took too long on the GPU.
+        if (s->file == "shaders/slow.hlsl") return "it took 9.00 ms a frame on the GPU (at most 3.0)";
+        return {};
+    }
+    std::string world_shader(std::string_view plugin, std::optional<WorldShader> s) override {
+        if (!s) {
+            calls.push_back(std::format("world {} none", plugin));
+            return {};
+        }
+        calls.push_back(std::format("world {} {} {} {} {} {:.2f} {:.2f}", plugin, s->file, static_cast<int>(s->kind), s->bytes ? s->bytes->size() : 0,
+                                    s->heights, s->values[0], s->values[47]));
+        return {};
+    }
+    std::string world_shader_data(std::string_view plugin, std::shared_ptr<const std::string> bytes) override {
+        float first = 0;
+        if (bytes && bytes->size() >= 4) std::memcpy(&first, bytes->data(), 4);
+        calls.push_back(bytes ? std::format("world data {} {} {:.2f}", plugin, bytes->size(), first) : std::format("world data {} none", plugin));
+        return {};
+    }
+    void world_shader_anchor(std::string_view plugin, std::optional<Vec3> at) override {
+        calls.push_back(at ? std::format("world anchor {} {:.1f} {:.1f} {:.1f}", plugin, (*at)[0], (*at)[1], (*at)[2]) : std::format("world anchor {} none", plugin));
+    }
+    std::optional<double> world_shader_cost(std::string_view) override { return 4.5; }
+    double world_shader_clock() override { return 123.25; }
     std::string screen_look(std::string_view plugin, std::optional<ScreenLook> l) override {
         calls.push_back(l ? std::format("look {} {:.2f} {:.0f} {:.2f} {}{}{}{}{}{}{}{}{}{}{} {:.1f} [{}|{}|{}|{}|{}]", plugin, l->bend, l->fov, l->age, l->bars, l->hood,
                                         l->grade, l->soft, l->scanlines, l->grain, l->dropouts, l->head_switching, l->tracking, l->smear, l->iris, l->rolling,
@@ -5065,6 +5097,161 @@ void plugins_read_frames_and_hold_gameplay_options() {
     check(options.observe("example", true, 1401, false), "stop releases preferences");
 }
 
+// A compiled shader container as a compiler writes one: "DXBC", a hash (zero: not signed), its size, then one part of
+// shader code whose first word is the program's kind and version (pixel shaders are kind 0).
+std::string shader_container(std::string_view code, std::uint32_t version, bool signed_hash = true) {
+    std::string bytes = "DXBC";
+    const auto word = [&](std::uint32_t value) { bytes.append(reinterpret_cast<const char*>(&value), 4); };
+    for (int i = 0; i < 4; ++i) word(signed_hash ? 0x1234567u + static_cast<std::uint32_t>(i) : 0);
+    word(1);  // the container's version
+    word(0);  // its size, below
+    word(1);  // one part
+    word(36); // at 36
+    bytes += code;
+    word(8);  // the part's size: its program header
+    word(version);
+    word(0);
+    const auto size = static_cast<std::uint32_t>(bytes.size());
+    std::memcpy(bytes.data() + 24, &size, 4);
+    return bytes;
+}
+
+void screen_shader_files_are_checked() {
+    using namespace dingosdk::screen_shader;
+    Kind kind{};
+    check(check_file("shaders/look.hlsl", "float4 main() : SV_Target { return 1; }", kind).empty() && kind == Kind::hlsl, "HLSL source is taken");
+    check(check_file("shaders/LOOK.HLSL", "x", kind).empty(), "an extension in capitals too");
+    check(!check_file("shaders/look.hlsl", "", kind).empty(), "not an empty one");
+    check(!check_file("shaders/look.hlsl", std::string("a\0b", 3), kind).empty(), "source is text");
+    check(!check_file("shaders/look.hlsl", std::string(most_source_bytes + 1, 'x'), kind).empty(), "at most 256 KB of source");
+    check(!check_file("shaders/look.txt", "x", kind).empty(), "only .hlsl, .cso, .dxbc or .dxil");
+    check(check_file("shaders/look.dxil", shader_container("DXIL", 0x00000060), kind).empty() && kind == Kind::dxil, "signed DXIL, a pixel shader");
+    check(check_file("shaders/look.cso", shader_container("SHEX", 0x00000050), kind).empty() && kind == Kind::dxbc, "DXBC, a pixel shader");
+    check(check_file("shaders/look.dxil", shader_container("DXIL", 0x00010060), kind).find("not a pixel shader") != std::string::npos,
+          "a vertex shader is refused");
+    check(check_file("shaders/look.dxil", shader_container("DXIL", 0x00000060, false), kind).find("not signed") != std::string::npos,
+          "unsigned DXIL is refused");
+    check(!check_file("shaders/look.cso", shader_container("RDEF", 0x00000050), kind).empty(), "a container with no shader code is refused");
+    auto short_one = shader_container("DXIL", 0x00000060);
+    short_one.pop_back();
+    check(!check_file("shaders/look.dxil", short_one, kind).empty(), "a container whose size is not the file's is refused");
+    check(!check_file("shaders/look.dxil", "not a shader at all, but long enough to be read", kind).empty(), "not a container");
+    auto past = shader_container("DXIL", 0x00000060);
+    const std::uint32_t beyond = 4096; // (not "far": a Windows macro)
+    std::memcpy(past.data() + 32, &beyond, 4);
+    check(!check_file("shaders/look.dxil", past, kind).empty(), "a part past the file's end is refused");
+}
+
+// reskate.screen.shader: the plugin's file read from its package and checked, its values given, nil ending it; refused
+// without "screen.shader".
+void plugins_run_a_screen_shader() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    Host host(environment, Side::client);
+    const std::map<std::string, std::string> files{
+        {manifest_file, manifest(R"("screen.shader")")},
+        {"shaders/tint.hlsl", "float4 main(float4 p : SV_Position, float2 uv : TEXCOORD0) : SV_Target { return reskate_frame.Sample(reskate_linear, uv) * reskate_values[0]; }"},
+        {"shaders/slow.hlsl", "float4 main() : SV_Target { return 0; }"},
+        {"shaders/tint.dxil", shader_container("DXIL", 0x00000060)},
+        {"shaders/vertex.dxil", shader_container("DXIL", 0x00010060)},
+        {"shaders/notes.txt", "not a shader"},
+        {"plugin/main.lua", R"(
+        local values = {}
+        for i = 1, 48 do values[i] = i / 4 end
+        assert(reskate.screen.shader("shaders/tint.hlsl", values))
+        assert(reskate.screen.shader("shaders/tint.dxil", {0.5}))
+        assert(reskate.screen.shader("shaders/tint.hlsl"))
+        assert(reskate.screen.shader(nil))
+        local ok, why = reskate.screen.shader("shaders/slow.hlsl")
+        assert(ok == false and why:find("on the GPU"), tostring(why))
+        local too_many = {}
+        for i = 1, 49 do too_many[i] = 0 end
+        assert(not pcall(reskate.screen.shader, "shaders/tint.hlsl", too_many), "at most 48 values")
+        assert(not pcall(reskate.screen.shader, "shaders/tint.hlsl", {"half"}), "values are numbers")
+        assert(not pcall(reskate.screen.shader, "shaders/tint.hlsl", {0 / 0}), "values are finite")
+        assert(not pcall(reskate.screen.shader, "shaders/vertex.dxil"), "a pixel shader")
+        assert(not pcall(reskate.screen.shader, "shaders/notes.txt"), "a shader file")
+        assert(not pcall(reskate.screen.shader, "shaders/missing.hlsl"), "a file in the package")
+        assert(not pcall(reskate.screen.shader, "../outside.hlsl"), "inside the package")
+        reskate.log("shaded")
+    )"}};
+    host.apply({package("shader", files)});
+    ticks(host, environment, 1);
+    running(host, "shader", environment);
+    check(environment.logged("[shader] shaded"), "A screen shader's calls work\n" + environment.all());
+    const auto hlsl_size = files.at("shaders/tint.hlsl").size(), dxil_size = files.at("shaders/tint.dxil").size();
+    check(game.called(std::format("shader shader shaders/tint.hlsl 0 {} 0.25 0.50 12.00", hlsl_size)),
+          "HLSL reaches the game with its 48 values\n" + environment.all());
+    check(game.called(std::format("shader shader shaders/tint.dxil 2 {} 0.50 0.00 0.00", dxil_size)),
+          "DXIL reaches the game as DXIL, values not given are 0\n" + environment.all());
+    check(game.called("shader shader none"), "nil ends it");
+    check(!game.called("shaders/vertex.dxil") && !game.called("shaders/notes.txt"), "files that are not screen shaders never reach the game");
+    // It needs its permission: "overlay" is not enough.
+    host.apply({package("sneaky", {{manifest_file, manifest(R"("overlay")")}, {"shaders/tint.hlsl", files.at("shaders/tint.hlsl")}, {"plugin/main.lua", R"(
+        reskate.log("shader " .. tostring(pcall(reskate.screen.shader, "shaders/tint.hlsl")) .. " " .. tostring(pcall(reskate.screen.shader, nil)))
+    )"}})});
+    ticks(host, environment, 1);
+    check(environment.logged("[sneaky] shader false false"), "screen.shader is needed\n" + environment.all());
+    check(!game.called("shader sneaky"), "Nothing of a plugin without it reaches the game");
+}
+
+// reskate.world.shader: the plugin's file checked as a screen shader's is, its values and heights, its data as a buffer
+// of float4s, its anchor and its cost; refused without "world.shader" ("screen.shader" is not enough).
+void plugins_run_a_world_shader() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    Host host(environment, Side::client);
+    const std::map<std::string, std::string> files{
+        {manifest_file, manifest(R"("world.shader")")},
+        {"shaders/tint.hlsl", "float4 main(float4 p : SV_Position, float2 uv : TEXCOORD0) : SV_Target { return reskate_picture.Sample(reskate_point, uv); }"},
+        {"shaders/tint.dxil", shader_container("DXIL", 0x00000060)},
+        {"shaders/vertex.dxil", shader_container("DXIL", 0x00010060)},
+        {"plugin/main.lua", R"(
+        local values = {}
+        for i = 1, 48 do values[i] = i / 2 end
+        assert(reskate.world.shader("shaders/tint.hlsl", {values = values, heights = true}))
+        assert(reskate.world.shader("shaders/tint.dxil"))
+        local data = buffer.create(32)
+        buffer.writef32(data, 0, 1.5)
+        assert(reskate.world.shader_data(data))
+        assert(reskate.world.shader_data(nil))
+        reskate.world.shader_anchor(vector.create(1, 2, 3))
+        reskate.world.shader_anchor(nil)
+        assert(reskate.world.shader_cost() == 4.5)
+        assert(reskate.world.shader_clock() == 123.25)
+        assert(not pcall(reskate.world.shader_data, buffer.create(20)), "whole float4s")
+        assert(not pcall(reskate.world.shader_data, buffer.create(65536 + 16)), "at most 64 KB")
+        assert(not pcall(reskate.world.shader_data, "not a buffer"), "a buffer")
+        assert(not pcall(reskate.world.shader, "shaders/tint.hlsl", {heights = "yes"}), "heights is true or false")
+        assert(not pcall(reskate.world.shader, "shaders/tint.hlsl", {values = {"a"}}), "values are numbers")
+        assert(not pcall(reskate.world.shader, "shaders/vertex.dxil"), "a pixel shader")
+        assert(not pcall(reskate.world.shader_anchor, "here"), "an anchor is a position")
+        assert(reskate.world.shader(nil))
+        reskate.log("snowed")
+    )"}};
+    host.apply({package("world", files)});
+    ticks(host, environment, 1);
+    running(host, "world", environment);
+    check(environment.logged("[world] snowed"), "A world shader's calls work\n" + environment.all());
+    check(game.called(std::format("world world shaders/tint.hlsl 0 {} true 0.50 24.00", files.at("shaders/tint.hlsl").size())),
+          "HLSL reaches the game with its values and the heights asked for\n" + environment.all());
+    check(game.called(std::format("world world shaders/tint.dxil 2 {} false 0.00 0.00", files.at("shaders/tint.dxil").size())),
+          "DXIL reaches the game as DXIL, with no heights unless asked\n" + environment.all());
+    check(game.called("world data world 32 1.50") && game.called("world data world none"), "Its data as float4s, and none");
+    check(game.called("world anchor world 1.0 2.0 3.0") && game.called("world anchor world none"), "Its anchor, and none");
+    check(game.called("world world none"), "nil ends it");
+    check(!game.called("world data world 20") && !game.called("shaders/vertex.dxil"), "Data and files that are not right never reach the game");
+    host.apply({package("sneaky", {{manifest_file, manifest(R"("screen.shader")")}, {"shaders/tint.hlsl", files.at("shaders/tint.hlsl")}, {"plugin/main.lua", R"(
+        reskate.log("world " .. tostring(pcall(reskate.world.shader, "shaders/tint.hlsl")) .. " " .. tostring(pcall(reskate.world.shader_data, nil)) .. " " ..
+            tostring(pcall(reskate.world.shader_anchor, nil)) .. " " .. tostring(pcall(reskate.world.shader_cost)) .. " " ..
+            tostring(pcall(reskate.world.shader_clock)))
+    )"}})});
+    ticks(host, environment, 1);
+    check(environment.logged("[sneaky] world false false false false false"), "world.shader is needed\n" + environment.all());
+    check(!game.called("world sneaky") && !game.called("world data sneaky") && !game.called("world anchor sneaky"),
+          "Nothing of a plugin without it reaches the game");
+}
+
 void plugins_reach_cruise_and_read_the_mouse() {
     TestEnvironment environment;
     auto& game = environment.fake;
@@ -7767,6 +7954,9 @@ int main() {
         run(plugins_set_the_flip_speed);
         run(plugins_show_a_viewmodel);
         run(plugins_carry_and_take_a_step_in_the_camera_cycle);
+        run(screen_shader_files_are_checked);
+        run(plugins_run_a_screen_shader);
+        run(plugins_run_a_world_shader);
         run(plugins_read_joints_and_tune_physics);
         run(plugins_type_and_use_the_room);
         run(plugins_read_menu_pose);

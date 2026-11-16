@@ -11,6 +11,7 @@
 #include "Extension/Skater/pose_place.h"
 #include "Extension/Throwdowns/throwdown_kit.h"
 #include "Extension/UI/score_line.h"
+#include "Extension/UI/Overlay/screen_shader_file.h"
 #include <array>
 #include <cstdint>
 #include <filesystem>
@@ -1149,6 +1150,34 @@ public:
         std::array<std::string, 5> text;
     };
     virtual std::string screen_look(std::string_view /*plugin*/, std::optional<ScreenLook>) { return unavailable; }
+    // The plugin's own pixel shader over the game's picture (reskate.screen.shader; Extension/UI/Overlay/screen_shader.h):
+    // `file` its path in the package, `bytes` its content as checked (screen_shader::check_file), `values` the numbers
+    // it is given. None: the plugin's ends. Empty, or why it is not drawn.
+    struct ScreenShader {
+        std::string file;
+        std::shared_ptr<const std::string> bytes;
+        screen_shader::Kind kind{};
+        std::array<float, screen_shader::value_count> values{};
+    };
+    virtual std::string screen_shader(std::string_view /*plugin*/, std::optional<ScreenShader>) { return unavailable; }
+    // The plugin's own pixel shader in the game's lit picture of the world, before its UI (reskate.world.shader;
+    // Extension/UI/Overlay/world_shader.h): as ScreenShader, and whether the ground heights are measured for it. On until
+    // none. Empty, or why it is not drawn.
+    struct WorldShader {
+        std::string file;
+        std::shared_ptr<const std::string> bytes;
+        screen_shader::Kind kind{};
+        std::array<float, screen_shader::value_count> values{};
+        bool heights{};
+    };
+    virtual std::string world_shader(std::string_view /*plugin*/, std::optional<WorldShader>) { return unavailable; }
+    // Its data (float4s, at most 64 KB; none: none), where its near distance is measured (for 300 ms), and its average
+    // time a frame on the GPU (milliseconds), once known.
+    virtual std::string world_shader_data(std::string_view /*plugin*/, std::shared_ptr<const std::string>) { return unavailable; }
+    virtual void world_shader_anchor(std::string_view /*plugin*/, std::optional<Vec3>) {}
+    virtual std::optional<double> world_shader_cost(std::string_view /*plugin*/) { return std::nullopt; }
+    // The world shader's clock (its reskate_clock.x): seconds, from 0 again every 1000.
+    virtual double world_shader_clock() { return 0; }
     // A hand slaps the lens, while this plugin has the look.
     virtual std::string screen_slap(std::string_view /*plugin*/) { return unavailable; }
     // The skater bails as from a slam of `force` (0.5 to 3); not in a throwdown. While No Bail protects

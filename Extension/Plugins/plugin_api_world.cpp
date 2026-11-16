@@ -3553,6 +3553,123 @@ struct WorldApi {
         lua_pop(L, 1);
         return result(L, game_of(plugin).screen_look(plugin.id(), look));
     }
+    // screen.shader(file, values): the plugin's own pixel shader (a file in its package: .hlsl, or a compiled .cso,
+    // .dxbc or .dxil; Extension/UI/Overlay/screen_shader_file.h says what it is given) over the game's picture for
+    // 0.3 s, so every tick; nil ends it. `values`: up to 48 numbers, the shader's reskate_values (four to a float4).
+    // One plugin's at a time. True, or false and why it is not drawn (another plugin's is on, or this one did not
+    // compile, was refused or took too long on the GPU, which keeps it off for the run). A file that is not a screen
+    // shader at all, or values that are not numbers, are an error.
+    // A shader's numbers (screen.shader's and world.shader's values): up to 48, finite.
+    static void shader_values(lua_State* L, int index, std::array<float, screen_shader::value_count>& values, const char* what) {
+        if (lua_isnoneornil(L, index)) return;
+        luaL_checktype(L, index, LUA_TTABLE);
+        const auto count = lua_objlen(L, index);
+        if (count > static_cast<int>(screen_shader::value_count))
+            luaL_error(L, "a %s takes at most %d values", what, static_cast<int>(screen_shader::value_count));
+        for (int i = 1; i <= count; ++i) {
+            lua_rawgeti(L, index, i);
+            if (lua_type(L, -1) != LUA_TNUMBER) luaL_error(L, "a %s's values are numbers", what);
+            const double v = lua_tonumber(L, -1);
+            if (!std::isfinite(v) || std::abs(v) > 1e30) luaL_error(L, "a %s's values are finite numbers", what);
+            values[static_cast<std::size_t>(i - 1)] = static_cast<float>(v);
+            lua_pop(L, 1);
+        }
+    }
+    // A shader file of the plugin's package, read and checked once (screen_shader::check_file), kept with a few others.
+    static const Plugin::CachedShader& shader_file(lua_State* L, Plugin& plugin, const std::string& path, const char* what) {
+        auto found = plugin.shader_files_.find(path);
+        if (found == plugin.shader_files_.end()) {
+            const Plugin::Untimed untimed{plugin}; // reading it
+            std::string error;
+            auto bytes = read_package_file(package_file(L, plugin, path), screen_shader::most_compiled_bytes, error);
+            if (bytes.empty()) luaL_error(L, "the %s %s cannot be read: %s", what, path.c_str(), error.empty() ? "it is empty" : error.c_str());
+            screen_shader::Kind kind{};
+            if (const auto why = screen_shader::check_file(path, bytes, kind); !why.empty())
+                luaL_error(L, "the %s %s cannot be used: %s", what, path.c_str(), why.c_str());
+            if (plugin.shader_files_.size() >= 8) plugin.shader_files_.clear(); // a few kept, not every one ever used
+            found = plugin.shader_files_.emplace(path, Plugin::CachedShader{std::make_shared<const std::string>(std::move(bytes)), kind}).first;
+        }
+        return found->second;
+    }
+    static int screen_shader(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "screen.shader", "reskate.screen.shader");
+        if (lua_isnoneornil(L, 1)) return result(L, game_of(plugin).screen_shader(plugin.id(), std::nullopt));
+        const std::string path = luaL_checkstring(L, 1);
+        Game::ScreenShader shader;
+        shader.file = path;
+        shader_values(L, 2, shader.values, "screen shader");
+        const auto& file = shader_file(L, plugin, path, "screen shader");
+        shader.bytes = file.bytes;
+        shader.kind = file.kind;
+        return result(L, game_of(plugin).screen_shader(plugin.id(), std::move(shader)));
+    }
+    // world.shader(file, {values = {...}, heights = bool}): the plugin's own pixel shader in the game's lit picture of
+    // the world, before its UI (Extension/UI/Overlay/world_shader.h says what it is given), on until nil. One plugin's at
+    // a time. `heights`: the ground heights round the camera are measured for it (t3). True, or false and why it is not
+    // drawn; a file that is not a shader at all, or options that are not as said, are an error.
+    static int world_shader_set(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "world.shader", "reskate.world.shader");
+        if (lua_isnoneornil(L, 1)) return result(L, game_of(plugin).world_shader(plugin.id(), std::nullopt));
+        const std::string path = luaL_checkstring(L, 1);
+        Game::WorldShader shader;
+        shader.file = path;
+        if (!lua_isnoneornil(L, 2)) {
+            luaL_checktype(L, 2, LUA_TTABLE);
+            lua_getfield(L, 2, "values");
+            shader_values(L, lua_gettop(L), shader.values, "world shader");
+            lua_pop(L, 1);
+            lua_getfield(L, 2, "heights");
+            if (!lua_isnil(L, -1) && lua_type(L, -1) != LUA_TBOOLEAN) luaL_error(L, "a world shader's heights is true or false");
+            shader.heights = lua_toboolean(L, -1) != 0;
+            lua_pop(L, 1);
+        }
+        const auto& file = shader_file(L, plugin, path, "world shader");
+        shader.bytes = file.bytes;
+        shader.kind = file.kind;
+        return result(L, game_of(plugin).world_shader(plugin.id(), std::move(shader)));
+    }
+    // world.shader_data(buffer | nil): the plugin's data for its world shader (t2): a buffer of float4s (16 bytes
+    // each, little-endian floats, as buffer.writef32 writes them), at most 64 KB; kept until replaced.
+    static int world_shader_data(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "world.shader", "reskate.world.shader_data");
+        std::shared_ptr<const std::string> bytes;
+        if (!lua_isnoneornil(L, 1)) {
+            if (!lua_isbuffer(L, 1)) luaL_argerror(L, 1, "a buffer of float4s");
+            std::size_t length = 0;
+            const void* data = lua_tobuffer(L, 1, &length);
+            if (length % 16 != 0 || length > screen_shader::world_data_most_bytes) luaL_error(L, "a world shader's data is whole float4s (16 bytes each), at most 64 KB");
+            bytes = std::make_shared<const std::string>(static_cast<const char*>(data), length);
+        }
+        return result(L, game_of(plugin).world_shader_data(plugin.id(), std::move(bytes)));
+    }
+    // world.shader_anchor(position | nil): where the world's depth's scale is measured, for 0.3 s (so every tick): a
+    // place on screen the plugin knows, standing about two metres tall over it (the skater's place).
+    static int world_shader_anchor(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "world.shader", "reskate.world.shader_anchor");
+        if (lua_isnoneornil(L, 1)) game_of(plugin).world_shader_anchor(plugin.id(), std::nullopt);
+        else game_of(plugin).world_shader_anchor(plugin.id(), position_of(L, 1, "the anchor"));
+        return 0;
+    }
+    // world.shader_cost(): the plugin's world shader's average time a frame on the GPU (ms), or nil until known.
+    // world.shader_clock(): the world shader's clock (its reskate_clock.x), seconds from 0 again every 1000, to stamp
+    // the plugin's data with (when a mark was made) for its shader to work out how long ago, frame by frame.
+    static int world_shader_clock(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "world.shader", "reskate.world.shader_clock");
+        lua_pushnumber(L, game_of(plugin).world_shader_clock());
+        return 1;
+    }
+    static int world_shader_cost(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "world.shader", "reskate.world.shader_cost");
+        if (const auto ms = game_of(plugin).world_shader_cost(plugin.id())) lua_pushnumber(L, *ms);
+        else lua_pushnil(L);
+        return 1;
+    }
     static int screen_slap(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "overlay", "reskate.screen.slap");
@@ -3716,7 +3833,9 @@ void WorldApi::install(Plugin& plugin, lua_State* L) {
                                   {"ready", entities_ready}, {"blueprints", entities_blueprints},
                                   {"bounds", entities_bounds}});
     add_functions(L, "world", {{"set_time", set_time}, {"time", time_now}, {"set_control", set_control}, {"set_park", set_park}, {"controls", controls},
-                               {"controls_text", controls_text}, {"set_atmosphere", set_atmosphere}, {"pick", world_pick}, {"probe", world_probe}, {"map", world_map}});
+                               {"controls_text", controls_text}, {"set_atmosphere", set_atmosphere}, {"pick", world_pick}, {"probe", world_probe}, {"map", world_map},
+                               {"shader", world_shader_set}, {"shader_data", world_shader_data}, {"shader_anchor", world_shader_anchor},
+                               {"shader_cost", world_shader_cost}, {"shader_clock", world_shader_clock}});
     add_functions(L, "travel", {{"locations", locations}, {"levels", levels}, {"go", go}, {"load", load}});
     add_functions(L, "ai", {{"spawn", ai_spawn}, {"clear", ai_clear}, {"count", ai_count}});
     add_functions(L, "session", {{"skaters", skaters}, {"tag", tag}, {"nametags", nametags}, {"joint", session_joint}, {"touch", session_touch},
@@ -3747,7 +3866,7 @@ void WorldApi::install(Plugin& plugin, lua_State* L) {
                                {"write", input_write}, {"hide", input_hide}, {"cursor", input_cursor}, {"text", input_text}});
     add_functions(L, "room", {{"open", room_open}, {"leave", room_leave}, {"state", room_state}});
     add_functions(L, "ui", {{"screen", screen}, {"open", open}, {"close", close}});
-    add_functions(L, "screen", {{"look", screen_look}, {"slap", screen_slap}});
+    add_functions(L, "screen", {{"look", screen_look}, {"slap", screen_slap}, {"shader", screen_shader}});
 }
 
 std::uint32_t combo_of(std::string_view name) {
