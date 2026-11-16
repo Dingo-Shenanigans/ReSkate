@@ -143,8 +143,11 @@ struct FakeGame final : Game {
         ++body_submit_entries; // Count entry even when the backend rejects a zero/invalid packet.
         sequence = 0;
         auto* b = body_of(owner, h);
-        if (!b || b->released || body_command_sequence == std::numeric_limits<std::uint64_t>::max() ||
-            !b->mailbox.submit(command, b->sample.epoch, 0, body_command_sequence + 1)) return "owner, generation or packet";
+        if (!b || b->released || body_command_sequence == std::numeric_limits<std::uint64_t>::max()) return "owner, generation or packet";
+        // A command the inbox refuses is answered in the service's own words (submit in
+        // Extension/World/owned_bodies.cpp), so a host test can show a plugin is handed them as they are.
+        if (!b->mailbox.submit(command, b->sample.epoch, 0, body_command_sequence + 1))
+            return "body command invalid, repeated, stopped, pending or receipt ring full";
         sequence = ++body_command_sequence;
         ++body_submissions;
         return {};
@@ -288,18 +291,36 @@ struct FakeGame final : Game {
         body_releases.push_back(owner);
         for (auto& [id, b] : owned) { (void)id; if (b.owner == owner) { b.released = true; b.mailbox.cancel(); } }
     }
-    void body_producer_step(bool complete = true) {
+    // The clock edge alone: the physics step that publishes every body's next sample.
+    void body_clock_step() {
         for (auto& [id, b] : owned) {
             (void)id;
             if (b.released || b.quarantined) continue;
             ++b.sample.epoch.serial;
             b.sample.epoch.time += b.sample.epoch.seconds;
+        }
+    }
+    // One synchronizer call on a listed wrapper: it takes a body's pending command only when the
+    // clock reads the step after that command's epoch. Returns how many commands it took.
+    unsigned body_synchronizer_call(bool complete = true) {
+        unsigned taken{};
+        for (auto& [id, b] : owned) {
+            (void)id;
+            if (b.released || b.quarantined) continue;
             owned_body::Command out;
             if (b.mailbox.consume(b.sample.epoch, 1, out)) {
+                ++taken;
                 (void)b.mailbox.finish(true, complete, complete);
                 if (!complete) b.quarantined = true;
             }
         }
+        return taken;
+    }
+    // The full-rate order: the edge, then the synchronizer, and the plugin's tick after both.
+    // A test of the half-rate order ticks the host between body_clock_step and body_synchronizer_call.
+    void body_producer_step(bool complete = true) {
+        body_clock_step();
+        (void)body_synchronizer_call(complete);
     }
     struct Effect { std::string owner; EffectRequest request; bool stopped{}; float alpha{1}; };
     std::map<std::uint64_t, Effect> effects;
@@ -2347,6 +2368,189 @@ void plugins_can_inspect_later_partial_failure_without_acknowledging_unmeasured_
     running(host, "body-pipeline-failure", environment);
     check(environment.logged("later partial body receipt is inspectable"), environment.all());
     check(environment.fake.body_submissions == 2 && environment.fake.owned.at(1).mailbox.failed, "partial command was replayed or failed mailbox reopened");
+}
+
+// A plugin that reads, acknowledges and submits on every tick, driven through frames in the two
+// orders the game runs them in, as counted there per frame. 'f' is the full-rate order: clock
+// edge, three synchronizer calls on listed wrappers, tick, three more calls. 'h' is the half-rate
+// order: clock edge, tick, three calls, where the tick that reads sample N+1 still finds its
+// command for N queued. Either way, and across changes of order, every tick's command is
+// accepted and one is applied on every step, each in the step after its own epoch.
+void plugins_command_every_step_when_the_tick_precedes_the_synchronizer() {
+    for (const std::string_view order : {"ffffffff", "hhhhhhhh", "hhhffffhhhhfff", "fhfhhffhhf"}) {
+        TestEnvironment environment;
+        Host host(environment, Side::client);
+        host.apply({script("body-every-step", R"(
+            local P, v = reskate.world.physics, vector.create
+            local h = assert(P.create({mass = 12, inertia = v(2, 3, 4), position = v(0, 2, 0), rotation = {0, 0, 0, 1},
+                capsules = {{a = v(0, 0, 0), b = v(0, .5, 0), radius = .1}}}))
+            local last_produced, acknowledged, most_rows = nil, 0, 0
+            local waiting = {}
+            reskate.on("tick", function()
+                local sample = assert(P.read(h))
+                while #waiting > 0 do
+                    local r = assert(P.receipt(h))
+                    assert(r.sequence == waiting[1], "the oldest receipt is not the oldest command")
+                    if r.outcome == "queued" then break end
+                    assert(r.outcome == "applied" and r.force_attempted and r.torque_attempted, "a command ended as " .. r.outcome)
+                    if not r.successor then break end
+                    local produced = tonumber(r.produced_serial)
+                    assert(produced == tonumber(r.requested_serial) + 1, "a command was applied on another step than the one after its epoch")
+                    assert(last_produced == nil or produced == last_produced + 1, "a step went without a command")
+                    last_produced = produced
+                    assert(P.acknowledge(h, r.sequence))
+                    table.remove(waiting, 1)
+                    acknowledged += 1
+                end
+                local ok, why, id = P.submit(h, sample.epoch, {force = v(0, 20, 0)})
+                assert(ok and why == nil, "a tick's command was refused: " .. tostring(why))
+                table.insert(waiting, id)
+                most_rows = math.max(most_rows, #waiting)
+                assert(not P.submit(h, sample.epoch, {}), "one measured epoch was commanded twice")
+                reskate.log("every-step acknowledged=" .. acknowledged .. " most_rows=" .. most_rows)
+            end)
+        )", R"("world.physics")")});
+        running(host, "body-every-step", environment);
+        auto& fake = environment.fake;
+        unsigned taken{};
+        for (const char kind : order) {
+            fake.body_clock_step();
+            // Of a frame's calls at most one takes a command: the first before a full-rate
+            // frame's tick, or the first after a half-rate frame's.
+            if (kind != 'h') for (unsigned call = 0; call < 3; ++call) taken += fake.body_synchronizer_call();
+            ticks(host, environment, 1);
+            const auto before = taken;
+            for (unsigned call = 0; call < 3; ++call) taken += fake.body_synchronizer_call();
+            check(kind == 'h' || taken == before, "order " + std::string(order) + ": a call after the tick took the command for the step it read");
+            running(host, "body-every-step", environment);
+        }
+        const auto frames = static_cast<unsigned>(order.size());
+        const auto& box = fake.owned.at(1).mailbox;
+        check(fake.body_submissions == frames && taken == frames - 1 && box.last_serial == fake.owned.at(1).sample.epoch.serial - 1,
+            "order " + std::string(order) + ": submitted " + std::to_string(fake.body_submissions) + " commands, applied " + std::to_string(taken) +
+            " in " + std::to_string(frames) + " frames\n" + environment.all());
+        // A result is acknowledged two ticks after its command, and the plugin never holds more
+        // than two receipts after its submit: the same in both orders.
+        check(environment.logged("every-step acknowledged=" + std::to_string(frames - 2) + " most_rows=2"), "order " + std::string(order) + "\n" + environment.all());
+        for (std::size_t i = 0; i < box.count; ++i) {
+            const auto outcome = box.receipts[(box.head + i) % box.receipts.size()].outcome;
+            check(outcome == owned_body::Outcome::applied || outcome == owned_body::Outcome::queued, "a command expired or was rejected");
+        }
+    }
+}
+// How a plugin learns, before it relies on it, that this runtime queues a second command:
+// reskate.world.physics.limits() returns {pending_commands = 2}. A runtime whose inbox holds one
+// command has no limits function. It needs world.physics like every other call there, runs on
+// the client only, and nothing readable without the permission says the number.
+void plugins_read_how_many_commands_a_body_holds_pending() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({script("physics-limits", R"(
+        local P, v = reskate.world.physics, vector.create
+        local limits = P.limits()
+        assert(type(limits) == "table" and getmetatable(limits) == nil, "limits is a plain table")
+        assert(type(limits.pending_commands) == "number" and limits.pending_commands == 2, "limits did not say the inbox holds two pending commands")
+        local count = 0
+        for key in limits do assert(key == "pending_commands", key); count += 1 end
+        assert(count == 1, "limits says more than it was asked to")
+        limits.pending_commands = 9
+        assert(P.limits().pending_commands == 2, "a plugin changed what limits returns")
+        assert(not pcall(P.limits, 1) and not pcall(P.limits, {}), "limits takes no arguments")
+        -- What it says is true of submit: the next sample's command queues behind a pending one.
+        local h = assert(P.create({mass = 12, inertia = v(2, 3, 4), position = v(0, 2, 0), rotation = {0, 0, 0, 1},
+            capsules = {{a = v(0, 0, 0), b = v(0, .5, 0), radius = .1}}}))
+        local first = assert(P.read(h))
+        assert(first.pending_commands == nil and first.limits == nil, "read's sample grew a field")
+        local refusal = "body command invalid, repeated, stopped, pending or receipt ring full"
+        local _, _, first_id = assert(P.submit(h, first.epoch, {}))
+        local second_id, second_serial, stage = nil, nil, 0
+        -- A refused command comes back as false and the game's own words, with no sequence.
+        local function refused(epoch, why)
+            local results = table.pack(P.submit(h, epoch, {}))
+            assert(results.n == 2 and results[1] == false and results[2] == refusal, why .. ": " .. tostring(results[2]))
+        end
+        -- Read by its sequence, a command's receipt is its own; with no sequence it is the oldest.
+        local function both_queued()
+            local own = assert(P.receipt(h, second_id))
+            assert(own.sequence == second_id and own.outcome == "queued" and own.requested_serial == second_serial and
+                own.produced_serial == "0" and own.successor == nil and not own.force_attempted and not own.torque_attempted,
+                "receipt(h, sequence) is not the second command's own queued receipt")
+            local oldest = assert(P.receipt(h))
+            assert(oldest.sequence == first_id and oldest.outcome == "queued" and oldest.requested_serial == first.serial,
+                "receipt(h) is not the oldest command's receipt")
+            local same = assert(P.receipt(h, first_id))
+            assert(same.sequence == first_id and same.outcome == "queued", "receipt(h, sequence) lost the first command's receipt")
+        end
+        reskate.on("tick", function()
+            local sample = assert(P.read(h))
+            if sample.serial == first.serial then return end
+            stage += 1
+            if stage == 1 then
+                -- The clock reads the step after the first command's epoch and no call has taken it.
+                assert(assert(P.receipt(h)).outcome == "queued", "this case needs the first command still pending")
+                local held = 1
+                local ok, why, id = P.submit(h, sample.epoch, {})
+                if ok then held += 1 end
+                assert(held == P.limits().pending_commands, "the inbox held " .. held .. " pending commands")
+                assert(why == nil and tonumber(id) == tonumber(first_id) + 1, "the second command did not get the next sequence")
+                second_id, second_serial = id, sample.serial
+                both_queued()
+                refused(sample.epoch, "a second command for one epoch was not refused in the game's words")
+                both_queued()
+                reskate.log("physics limits read")
+            elseif stage == 2 then
+                -- The clock moved on again with both still pending: this sample's command would be a third.
+                assert(sample.serial ~= second_serial, "this case needs a third step")
+                refused(sample.epoch, "a third pending command was not refused in the game's words")
+                both_queued()
+                reskate.log("physics limits third refused")
+            elseif stage == 3 then
+                -- A call has read this step: the first command's step was missed, the second was applied.
+                local expired, applied = assert(P.receipt(h)), assert(P.receipt(h, second_id))
+                assert(expired.sequence == first_id and expired.outcome == "expired" and expired.produced_serial == "0",
+                    "the first command did not expire on its own: " .. expired.outcome)
+                assert(applied.sequence == second_id and applied.outcome == "applied" and applied.produced_serial == sample.serial,
+                    "the second command was not applied in the step after its epoch: " .. applied.outcome)
+                -- Neither refusal spent a sequence: the next command accepted is numbered after the second.
+                local ok, why, id = P.submit(h, sample.epoch, {})
+                assert(ok and why == nil and tonumber(id) == tonumber(second_id) + 1, "a refused command spent a sequence")
+                reskate.log("physics limits sequence kept")
+            end
+        end)
+    )", R"("world.physics")"), script("physics-limits-denied", R"(
+        local P = reskate.world.physics
+        local ok, why = pcall(P.limits)
+        assert(not ok and string.find(why, "world.physics", 1, true), tostring(why))
+        for name, value in P do assert(type(value) == "function", name .. " is a value a plugin can read without the permission") end
+        reskate.log("physics limits denied")
+    )")});
+    running(host, "physics-limits", environment);
+    running(host, "physics-limits-denied", environment);
+    // The half-rate order: the clock moves on and the tick comes before any synchronizer call.
+    environment.fake.body_clock_step();
+    ticks(host, environment, 1);
+    running(host, "physics-limits", environment);
+    check(environment.logged("physics limits read") && environment.logged("physics limits denied"), environment.all());
+    check(environment.fake.body_creates == 1 && environment.fake.body_submissions == 2, "the inbox did not hold what limits said");
+    // Another clock edge with both commands still pending: the tick's command would be a third.
+    environment.fake.body_clock_step();
+    ticks(host, environment, 1);
+    running(host, "physics-limits", environment);
+    check(environment.logged("physics limits third refused"), environment.all());
+    check(environment.fake.body_submissions == 2 && environment.fake.body_command_sequence == 2 && environment.fake.body_submit_entries == 4 &&
+        environment.fake.owned.at(1).mailbox.count == 2, "a refused command reached the inbox or spent a sequence");
+    // A synchronizer call reads that step: it is the second command's, and the first's has gone.
+    check(environment.fake.body_synchronizer_call() == 1, "the second command was not taken in the step after its epoch");
+    ticks(host, environment, 1);
+    running(host, "physics-limits", environment);
+    check(environment.logged("physics limits sequence kept") && environment.fake.body_command_sequence == 3, environment.all());
+    TestEnvironment server_environment;
+    Host server(server_environment, Side::server);
+    server.apply({package("server-limits", {{manifest_file, manifest(R"("world.physics")", "server")}, {"plugin/main.lua", R"(
+        local ok, why = pcall(reskate.world.physics.limits)
+        assert(not ok and string.find(why, "client phase only"), tostring(why))
+    )"}})});
+    running(server, "server-limits", server_environment);
 }
 
 // create(definition, {reuse = true}) through the binding: it forwards this VM's own instance and
@@ -7276,6 +7480,8 @@ int main() {
         run(plugins_own_typed_bodies_and_acknowledge_measured_results);
         run(plugins_pipeline_native_steps_and_select_owned_receipts);
         run(plugins_can_inspect_later_partial_failure_without_acknowledging_unmeasured_head);
+        run(plugins_read_how_many_commands_a_body_holds_pending);
+        run(plugins_command_every_step_when_the_tick_precedes_the_synchronizer);
         run(plugins_reuse_their_own_parked_bodies);
         run(native_body_permission_and_client_boundary_are_enforced);
         run(body_prepare_host_fixture_v1);

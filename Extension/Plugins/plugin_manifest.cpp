@@ -26,7 +26,7 @@ namespace {
 // "outfit.stand_ins" what this PC shows in place of other players' items it does not have
 // (reskate.outfit.stand_ins, Extension/Multiplayer/Remote/stand_ins.h); never a paid store item.
 // "world.physics" native rigid bodies the plugin
-// owns (reskate.world.physics: create, read, submit, receipt, acknowledge, release, prepare) and,
+// owns (reskate.world.physics: create, read, submit, receipt, acknowledge, release, prepare, limits) and,
 // with "world.raycast", ray batches beside one (probe_batch). "world.physics.observe" adds
 // probe_batch's passive diagnostics on top of those two: include_shape_categories (a read-time
 // category mask), include_hit_owner (an equality-only token for a hit shape's owner slot) and
