@@ -13,7 +13,7 @@ cbuffer Look : register(b0)
     // (Each overlaid effect's value is its strength: 0 off, up to 1 in full.)
     float4 L3; // transfer (0 SDR), exposure, output width, output height
     float4 L4; // hand centre x, y (half heights, y down), angle (rad), size (0: no hand)
-    float4 L5; // hand mirrored, hand blur (hand units), unused, unused
+    float4 L5; // hand mirrored, hand blur (hand units), edge blur 0..1, where it starts (0 the middle, 1 the corners)
     float4 L6; // text pixel (half heights), text white, text on, unused
     float4 L7; // tape age 0..1, dropouts, head switching, red smear
     float4 L8; // seconds since this clip started recording (tracking; < 0: none), tracking, auto-iris, seconds since the last frame
@@ -255,6 +255,25 @@ float4 ps_main(Interpolated i) : SV_Target
         else
         {
             colour = fetch(uv);
+        }
+        // Soft towards the edges: sharp in the middle, blurred more the further out, as a picture
+        // focused on what is in its middle is. Taps on a spiral, as wide as 20 pixels of a 1080 line
+        // picture at the corners in full.
+        if (L5.z > 0.0)
+        {
+            float out_there = smoothstep(L5.w, 1.0, r / length(float2(screen_aspect, 1.0))) * L5.z;
+            if (out_there > 0.002)
+            {
+                float2 reach = texel * (L3.w / 1080.0) * 20.0 * out_there;
+                float3 sum = colour;
+                for (int tap = 0; tap < 24; ++tap)
+                {
+                    float turn = (float)tap * 2.39996323;
+                    float ring = sqrt(((float)tap + 0.5) / 24.0);
+                    sum += fetch(uv + float2(cos(turn), sin(turn)) * ring * reach);
+                }
+                colour = sum / 25.0;
+            }
         }
         // Reds smear on tape: they trail to the right.
         if (L7.w > 0.0)

@@ -1261,6 +1261,7 @@ public:
         look_at_ = now;
         screen_look::Settings s;
         s.bend = look->bend, s.fov = look->fov, s.age = look->age;
+        s.edge_blur = look->edge_blur, s.edge_start = look->edge_start;
         s.bars = look->bars, s.hood = look->hood, s.grade = look->grade, s.soft = look->soft, s.scanlines = look->scanlines, s.grain = look->grain;
         s.dropouts = look->dropouts, s.head_switching = look->head_switching, s.tracking = look->tracking, s.smear = look->smear, s.iris = look->iris;
         s.rolling = look->rolling;

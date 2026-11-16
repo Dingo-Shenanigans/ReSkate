@@ -3311,8 +3311,10 @@ struct WorldApi {
         return result(L, game_of(plugin).hide_pad(plugin.id(), hidden));
     }
     // screen.look({bend, fov, bars, hood, grade, soft, scanlines, grain, age, dropouts, head_switching,
-    // tracking, smear, iris, rolling, text, strengths}): a camcorder look over the game's picture for 0.3 s,
-    // so every tick; nil ends it. One plugin at a time. `strengths` = {bars = 0..1, hood, grade, soft,
+    // tracking, smear, iris, rolling, text, strengths, edge_blur, edge_start}): a camcorder look over the
+    // game's picture for 0.3 s, so every tick; nil ends it. One plugin at a time. edge_blur (0 to 1) is
+    // by itself too: the picture sharp in the middle and soft towards its edges, from edge_start of the
+    // way out to the corners (0 to 0.95, 0.45 when not given). `strengths` = {bars = 0..1, hood, grade, soft,
     // scanlines, grain, dropouts, head_switching, smear}: how strongly each is drawn while it is on (1
     // when not given; one that is off stays off).
     static int screen_look(lua_State* L) {
@@ -3343,6 +3345,8 @@ struct WorldApi {
         look.bend = static_cast<float>(number("bend", 0, 0, 1, "a look's bend is 0 to 1"));
         look.fov = static_cast<float>(number("fov", 60, 5, 170, "a look's fov is 5 to 170 degrees"));
         look.age = static_cast<float>(number("age", 0, 0, 1, "a look's tape age is 0 to 1"));
+        look.edge_blur = static_cast<float>(number("edge_blur", 0, 0, 1, "a look's edge blur is 0 to 1"));
+        look.edge_start = static_cast<float>(number("edge_start", 0.45, 0, 0.95, "a look's edge blur starts 0 to 0.95 of the way out"));
         look.rolling = number("rolling", -1, 0, 1e7, "a look's rolling is the seconds since the tape started, 0 or more");
         lua_getfield(L, 1, "strengths");
         if (!lua_isnil(L, -1)) {

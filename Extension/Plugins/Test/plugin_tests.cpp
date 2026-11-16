@@ -719,6 +719,7 @@ struct FakeGame final : Game {
                                         l->grade, l->soft, l->scanlines, l->grain, l->dropouts, l->head_switching, l->tracking, l->smear, l->iris, l->rolling,
                                         l->text[0], l->text[1], l->text[2], l->text[3], l->text[4])
                           : std::format("look {} none", plugin));
+        if (l && l->edge_blur > 0) calls.push_back(std::format("look edge {} {:.2f} {:.2f}", plugin, l->edge_blur, l->edge_start));
         if (l && (l->bars_strength != 1 || l->hood_strength != 1 || l->grade_strength != 1 || l->soft_strength != 1 || l->scanlines_strength != 1 ||
                   l->grain_strength != 1 || l->dropouts_strength != 1 || l->head_switching_strength != 1 || l->smear_strength != 1))
             calls.push_back(std::format("look strengths {} {:.2f} {:.2f} {:.2f} {:.2f} {:.2f} {:.2f} {:.2f} {:.2f} {:.2f}", plugin, l->bars_strength,
@@ -4893,6 +4894,10 @@ void plugins_reach_cruise_and_read_the_mouse() {
             rolling = 2, text = {"#rec", "0:00:02", nil, "4:05 PM", "OCT.20 2026"}}))
         assert(reskate.screen.slap() and reskate.screen.look(nil))
         assert(not pcall(reskate.screen.look, {bend = 2}), "a bend is 0 to 1")
+        -- Soft towards the edges, by itself or with the rest.
+        assert(reskate.screen.look({edge_blur = 0.7}) and reskate.screen.look({edge_blur = 0.5, edge_start = 0.25, hood = true}))
+        assert(not pcall(reskate.screen.look, {edge_blur = 1.5}), "an edge blur is 0 to 1")
+        assert(not pcall(reskate.screen.look, {edge_blur = 0.5, edge_start = 1}), "it starts short of the corners")
         assert(not pcall(reskate.screen.look, {text = {"far too long a line"}}), "12 characters")
         assert(not pcall(reskate.screen.look, {text = {"{}"}}), "the camcorder's characters")
         assert(not pcall(reskate.screen.look, {text = {"a", "b", "c", "d", "e", "f"}}), "5 lines")
@@ -4914,6 +4919,8 @@ void plugins_reach_cruise_and_read_the_mouse() {
     check(game.called("look filmer 0.80 110 0.35 truetruetruefalsefalsetruefalsefalsefalsefalsetrue 2.0 [#REC|0:00:02||4:05 PM|OCT.20 2026]") &&
               game.called("slap filmer") && game.called("look filmer none"),
           "A camcorder look on the screen, its text in capitals, a slap, and off\n" + environment.all());
+    check(game.called("look edge filmer 0.70 0.45") && game.called("look edge filmer 0.50 0.25"),
+          "A look soft towards its edges reaches the game, from 0.45 of the way out when not said" + std::string(1, 10) + environment.all());
     check(game.called("look strengths filmer 1.00 1.00 0.60 1.00 1.00 0.25 1.00 1.00 0.00"),
           "A look's effects at part strength reach the game, 1 for those not given\n" + environment.all());
     // Each needs its permission.

@@ -16,6 +16,8 @@ struct Settings {
     float fov{60};       // the game camera's vertical field of view (degrees), which the bend squeezes
     bool bars{};         // 4:3, black at the sides
     bool hood{};         // the hood's dark round edge in the corners
+    float edge_blur{};   // 0..1: the picture soft towards its edges, sharp in the middle; 0 none
+    float edge_start{0.45f}; // 0..1: how far out from the middle (1: the corners) the softness begins
     bool grade{};        // the camcorder's colour: punchy, warm, a little crushed (SDR only)
     bool soft{};         // standard definition: soft, with a sharpening halo
     bool scanlines{};    // interlaced fields
