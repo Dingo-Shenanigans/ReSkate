@@ -9,8 +9,10 @@
 #include <map>
 #include <optional>
 #include <ranges>
+#include <set>
 #include <stdexcept>
 #include <string_view>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -501,6 +503,7 @@ private:
     }
 
     void relocate(const std::uint32_t oldStart, const std::size_t length, const std::size_t newStart) {
+        moved_.emplace_back(oldStart, length, newStart);
         const auto moved = [&](const std::uint32_t old) {
             return checked_u32(newStart + (old - oldStart), "EBX carried relocation");
         };
@@ -845,21 +848,101 @@ private:
         writer.u32(boxedOffset_);
         writer.u32(stringOffset);
 
-        auto oldSlots = document_.boxedValueSlots;
-        std::vector<std::uint32_t> newSlots;
-        newSlots.reserve(boxesPending_.size());
-        for (const auto& pending : boxesPending_) newSlots.push_back(pending.slot);
-        std::ranges::sort(oldSlots);
-        std::ranges::sort(newSlots);
-        std::vector<std::uint32_t> trailing;
+        // The boxed fields the engine fixes up as it loads the asset. In the game's data these are
+        // exactly the boxed fields whose value carries type information of its own (a TypeInfoRef:
+        // data-defined struct, enum and type-instance values, and lists of them); a field missing
+        // from the table, or a table entry on the wrong field, crashes the game. Fields written here
+        // are listed by that rule. Fields inside bytes carried as they were keep their entry, at
+        // their new place. (Matching old entries to new fields by rank went wrong as soon as a box
+        // was added or written afresh.)
+        // A type the file only names (a list of a class it does not describe) can't be looked into:
+        // it is listed when the file listed it before.
+        std::set<Guid> listedBefore;
         for (const auto old : document_.boxedReferenceOffsets) {
-            const auto found = std::ranges::lower_bound(oldSlots, old);
-            if (found == oldSlots.end() || *found != old) continue;
-            const auto index = static_cast<std::size_t>(found - oldSlots.begin());
-            if (index < newSlots.size()) trailing.push_back(newSlots[index]);
+            if (static_cast<std::size_t>(old) + 4 > document_.payload.size()) continue;
+            std::uint32_t code{};
+            std::memcpy(&code, document_.payload.data() + old, sizeof(code));
+            if (code != 0 && (code & 0x80000000U) == 0 && (code >> 2) < document_.fixupTypeGuids.size())
+                listedBefore.insert(document_.fixupTypeGuids[code >> 2]);
         }
+        const auto listed = [&](const std::uint32_t code) {
+            return carries_type_info(code) || (code != 0 && (code & 0x80000000U) == 0 && (code >> 2) < document_.fixupTypeGuids.size() &&
+                                               listedBefore.contains(document_.fixupTypeGuids[code >> 2]));
+        };
+        std::vector<std::uint32_t> trailing;
+        for (const auto& pending : boxesPending_)
+            if (listed(pending.value.encodedType)) trailing.push_back(pending.slot);
+        // Old bytes still in use: the records of boxes written as they were, and whatever their
+        // pointers lead to. A box written afresh leaves its old record behind unused; its entries go.
+        std::map<std::uint32_t, std::size_t> recordSize;
+        for (const auto& record : document_.boxedValues) recordSize.emplace(record.offset, record.rawBytes.size());
+        std::vector<std::pair<std::uint32_t, std::size_t>> live;
+        std::set<std::uint32_t> visited;
+        const auto visit = [&](auto&& self, const std::uint32_t start, const std::size_t length) -> void {
+            if (!visited.insert(start).second) return;
+            live.emplace_back(start, length);
+            for (const auto slot : old_slots(start, length, document_.pointerOffsets)) {
+                const auto [kind, key] = old_target(slot);
+                if (kind == Target::array) {
+                    const auto& record = oldArrays_.at(key);
+                    self(self, key, array_element(record).first * record.count);
+                } else if (kind == Target::boxed) {
+                    if (const auto found = recordSize.find(key); found != recordSize.end()) self(self, key, found->second);
+                }
+            }
+        };
+        if (!document_.payload.empty())
+            for (const auto& pending : boxesPending_)
+                if (!(pending.value.rewritten && pending.value.content) && pending.value.dataOffset >= 0)
+                    if (const auto found = recordSize.find(static_cast<std::uint32_t>(pending.value.dataOffset)); found != recordSize.end())
+                        visit(visit, found->first, found->second);
+        for (const auto old : document_.boxedReferenceOffsets) {
+            if (std::ranges::none_of(live, [&](const auto& range) { return old >= range.first && old - range.first < range.second; }))
+                continue;
+            for (const auto& [from, length, to] : moved_)
+                if (old >= from && old - from < length) {
+                    trailing.push_back(checked_u32(to + (old - from), "EBX boxed reference"));
+                    break;
+                }
+        }
+        std::ranges::sort(trailing);
+        trailing.erase(std::unique(trailing.begin(), trailing.end()), trailing.end());
         write_table(writer, std::move(trailing));
         return writer.take();
+    }
+
+    // Whether a boxed value of this type code carries a TypeInfoRef: its type, or the element type of
+    // a list (whose guid is the element's with the last byte one higher), holds one somewhere in its
+    // own fields, structs, bases or struct lists. A boxed TypeInfoRef on its own is not listed.
+    bool carries_type_info(const std::uint32_t encoded) const {
+        if (encoded == 0 || (encoded & 0x80000000U) != 0) return false;
+        const auto index = encoded >> 2;
+        if (index >= document_.fixupTypeGuids.size()) return false;
+        auto guid = document_.fixupTypeGuids[index];
+        for (int pass = 0; pass < 2; ++pass) {
+            for (std::size_t type = 0; type < document_.types.size(); ++type)
+                if (document_.types[type].guid == guid) return holds_type_info(type, 0);
+            guid.bytes[15] = static_cast<std::byte>(std::to_integer<std::uint8_t>(guid.bytes[15]) - 1);
+        }
+        return false;
+    }
+
+    bool holds_type_info(const std::size_t descriptor, const unsigned depth) const {
+        if (descriptor >= document_.types.size() || depth > 32) return false;
+        if (const auto known = typeInfoHeld_.find(descriptor); known != typeInfoHeld_.end()) return known->second;
+        typeInfoHeld_[descriptor] = false;   // a type that holds itself does not loop
+        const auto& type = document_.types[descriptor];
+        bool holds = false;
+        for (std::size_t ordinal = 0; !holds && ordinal < type.fieldCount; ++ordinal) {
+            const auto& field = document_.fields.at(static_cast<std::size_t>(type.fieldIndex) + ordinal);
+            if (field.type() == FieldType::structure && field.classRef < document_.types.size() &&
+                document_.types[field.classRef].name == "TypeInfoRef")
+                holds = true;
+            else if (field.type() == FieldType::inherited || field.type() == FieldType::structure)
+                holds = holds_type_info(field.classRef, depth + 1);
+        }
+        typeInfoHeld_[descriptor] = holds;
+        return holds;
     }
 
     std::vector<std::byte> write_extra() const {
@@ -937,6 +1020,9 @@ private:
     std::unordered_set<const BoxedValue*> freshSeen_;
     std::unordered_map<const Value::Array*, std::uint32_t> preplaced_;
     std::unordered_map<const BoxedValue*, std::uint32_t> freshOffsets_;
+    // Bytes carried as they were: (old start, length, new start), for finding a boxed field inside them again.
+    std::vector<std::tuple<std::uint32_t, std::size_t, std::size_t>> moved_;
+    mutable std::map<std::size_t, bool> typeInfoHeld_;
     bool writingFresh_{};
     bool freshContent_{};
     bool refuse_{};
