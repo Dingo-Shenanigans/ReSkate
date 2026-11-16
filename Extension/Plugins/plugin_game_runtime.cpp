@@ -76,6 +76,7 @@
 #include "Extension/UI/NativeMenu/throwdown_menu.h"
 #include <filesystem>
 #include "Extension/UI/Overlay/overlay.h"
+#include "Extension/UI/Overlay/game_map.h"
 #include "Extension/UI/Overlay/screen_look.h"
 #include "Extension/UI/Overlay/viewmodel.h"
 #include "Extension/UI/Overlay/scripted_pad.h"
@@ -248,7 +249,25 @@ public:
         const bool now = !hud_hiders_.empty();
         if (now == before) return;
         if (now) hud_was_hidden_ = base_ && multiplayer::sample_game_ui_state(base_).ui_hidden;
-        if (!hud_was_hidden_) queue(overlay::DebugAction::set_game_ui_hidden, now);
+        if (hud_was_hidden_) return;
+        // (Asked while a menu is up: hidden once it closes, tick_hud. Let go while one is up: it
+        // is shown already.)
+        const bool menu = multiplayer::native_pause_menu_open();
+        if (now) hud_shown_for_menu_ = menu;
+        if (!menu || !now) {
+            if (!(hud_shown_for_menu_ && !now)) queue(overlay::DebugAction::set_game_ui_hidden, now);
+            if (!now) hud_shown_for_menu_ = false;
+        }
+    }
+    // `hideui` hides the game's menus with its HUD, the pause menu too: a player whose HUD a plugin
+    // hid pressed Start and saw nothing. So while a game menu is up the UI is shown again, and hidden
+    // once more when the menu closes. Each client tick.
+    void tick_hud() {
+        if (hud_hiders_.empty() || hud_was_hidden_) return;
+        const bool menu = multiplayer::native_pause_menu_open();
+        if (menu == hud_shown_for_menu_) return;
+        hud_shown_for_menu_ = menu;
+        queue(overlay::DebugAction::set_game_ui_hidden, !menu);
     }
 
     // ---- the world -------------------------------------------------------------------------------
@@ -331,6 +350,11 @@ public:
         // world. Its native identities stay here; this is not an ownership or epoch receipt.
         const auto p = probe_local_surface_counted(from, to);
         return {{p.available, p.hit, p.position, p.fraction}, p.native_casts};
+    }
+    std::optional<MapArea> map_area() override {
+        const auto area = overlay::game_map_area();
+        if (!area) return std::nullopt;
+        return MapArea{{area->centre_x, 0, area->centre_z}, {area->width, 0, area->height}};
     }
     std::optional<WorldPick> world_pick(const Vec3& from, const Vec3& to) override {
         return convert_pick(local_world_pick(from, to));
@@ -983,7 +1007,7 @@ public:
     }
     std::string hide_pad(std::string_view plugin, const PadHidden& h) override {
         if (!pad_hide::available()) return "hiding pad controls is unavailable for this game build";
-        pad_hide::hide(plugin, {h.left_trigger, h.right_trigger, h.left_x_grinding, h.right_stick, h.left_stick_click, h.right_stick_click});
+        pad_hide::hide(plugin, {h.left_trigger, h.right_trigger, h.left_x_grinding, h.right_stick, h.left_stick_click, h.right_stick_click, h.buttons});
         return {};
     }
     std::optional<Vec3> board_spin() override { return skater_events::board_spin(); }
@@ -1013,6 +1037,7 @@ public:
         voice.speed = sound.speed;
         voice.loop = sound.loop;
         voice.position = sound.position;
+        voice.listener = sound.listener;
         return plugin_sound::start(std::move(voice));
     }
     bool change_sound(std::string_view plugin, std::uint64_t id, const SoundChange& change) override {
@@ -1024,6 +1049,7 @@ public:
         if (change.throttle) voice->throttle = *change.throttle;
         if (change.speed) voice->speed = *change.speed;
         if (change.position) voice->position = *change.position;
+        if (change.listener) voice->listener = *change.listener;
         return true;
     }
     void stop_sound(std::string_view plugin, std::uint64_t id) override { plugin_sound::stop(id, plugin); }
@@ -2240,6 +2266,7 @@ private:
     std::set<std::string, std::less<>> freezers_;
     std::set<std::string, std::less<>> hud_hiders_;
     bool hud_was_hidden_{};
+    bool hud_shown_for_menu_{}; // the UI a plugin hid is shown for now: a game menu is up
     bool music_started_{};
     std::map<BindKey, Bind> binds_;
     std::map<BindKey, std::uint32_t> overrides_;
@@ -2263,6 +2290,9 @@ bool plugin_freeze_active() noexcept { return the_game && the_game->frozen(); }
 bool plugin_input_capture() noexcept { return the_game && the_game->capturing(); }
 void tick_plugin_sounds(std::uintptr_t image_base, std::uintptr_t client, bool ready) noexcept {
     plugin_sound::tick(image_base, client, ready);
+    try {
+        if (the_game) the_game->tick_hud();
+    } catch (...) {}
 }
 void tick_plugin_animation(std::uintptr_t image_base, std::uintptr_t client) noexcept {
     try {

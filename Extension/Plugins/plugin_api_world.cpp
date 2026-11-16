@@ -687,6 +687,24 @@ struct WorldApi {
     }
     // world.pick(from, to): where the ray meets the world, and the object it meets: {position,
     // object = {blueprint?, position, heading, transform = {matrix}}?}, or nil when it is clear.
+    // world.map(): what the game's own map of the loaded level covers, {centre, size} in metres (its
+    // right is +x, its top -z; y is 0), or nil where the level has none or it is still being read.
+    // The draw handler's d:game_map draws a part of it.
+    static int world_map(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "overlay", "reskate.world.map");
+        const auto area = game_of(plugin).map_area();
+        if (!area) {
+            lua_pushnil(L);
+            return 1;
+        }
+        lua_createtable(L, 0, 2);
+        push_position(L, area->centre);
+        lua_setfield(L, -2, "centre");
+        push_position(L, area->size);
+        lua_setfield(L, -2, "size");
+        return 1;
+    }
     static int world_pick(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "world.raycast", "reskate.world.pick");
@@ -2481,7 +2499,8 @@ struct WorldApi {
             plugin.call(2, "its preload callback", plugin.limits_.call_ms);
         }
     }
-    // volume, pitch, range, throttle, speed, loop, position (a vector, or "skater").
+    // volume, pitch, range, throttle, speed, loop, position (a vector, "skater", or "listener": at
+    // the camera itself, as loud as its volume wherever the camera is, for the player's own sounds).
     static void sound_options(lua_State* L, int index, SoundStart* start, SoundChange* change) {
         if (lua_isnoneornil(L, index)) return;
         luaL_checktype(L, index, LUA_TTABLE);
@@ -2507,10 +2526,12 @@ struct WorldApi {
         lua_getfield(L, index, "position");
         if (!lua_isnil(L, -1)) {
             std::optional<Vec3> at;
-            if (lua_isstring(L, -1) && std::string_view(lua_tostring(L, -1)) == "skater") at = std::nullopt;
+            const std::string_view word = lua_isstring(L, -1) ? std::string_view(lua_tostring(L, -1)) : std::string_view{};
+            const bool listener = word == "listener";
+            if (listener || word == "skater") at = std::nullopt;
             else at = position_of(L, lua_gettop(L), "a sound's position");
-            if (start) start->position = at;
-            else change->position = at;
+            if (start) start->position = at, start->listener = listener;
+            else change->position = at, change->listener = listener;
         }
         lua_pop(L, 1);
     }
@@ -3307,6 +3328,26 @@ struct WorldApi {
                 hidden.left_x_grinding = true;
             }
             lua_pop(L, 1);
+            // buttons = {"y", "b"}: those read to the game as up. Start is not offered: it is the
+            // player's way to the pause menu, as Escape is on the keyboard.
+            lua_getfield(L, 1, "buttons");
+            if (!lua_isnil(L, -1)) {
+                constexpr std::array<std::pair<std::string_view, std::uint16_t>, 11> names{{
+                    {"up", 0x1}, {"down", 0x2}, {"left", 0x4}, {"right", 0x8}, {"back", 0x20},
+                    {"lb", 0x100}, {"rb", 0x200}, {"a", 0x1000}, {"b", 0x2000}, {"x", 0x4000}, {"y", 0x8000},
+                }};
+                if (!lua_istable(L, -1)) luaL_error(L, "buttons is a list of names: buttons = {\"y\", \"b\"}");
+                const int count = lua_objlen(L, -1);
+                for (int i = 1; i <= count; ++i) {
+                    lua_rawgeti(L, -1, i);
+                    const std::string_view name = lua_type(L, -1) == LUA_TSTRING ? lua_tostring(L, -1) : "";
+                    const auto found = std::find_if(names.begin(), names.end(), [&](const auto& n) { return n.first == name; });
+                    if (found == names.end()) luaL_error(L, "a hidden button is a, b, x, y, lb, rb, up, down, left, right or back");
+                    hidden.buttons = static_cast<std::uint16_t>(hidden.buttons | found->second);
+                    lua_pop(L, 1);
+                }
+            }
+            lua_pop(L, 1);
         }
         return result(L, game_of(plugin).hide_pad(plugin.id(), hidden));
     }
@@ -3549,7 +3590,7 @@ void WorldApi::install(Plugin& plugin, lua_State* L) {
     add_functions(L, "entities", {{"set", entities_set}, {"remove", entities_remove}, {"clear", entities_clear}, {"status", entities_status},
                                   {"ready", entities_ready}, {"blueprints", entities_blueprints},
                                   {"bounds", entities_bounds}});
-    add_functions(L, "world", {{"set_time", set_time}, {"set_control", set_control}, {"set_park", set_park}, {"pick", world_pick}, {"probe", world_probe}});
+    add_functions(L, "world", {{"set_time", set_time}, {"set_control", set_control}, {"set_park", set_park}, {"pick", world_pick}, {"probe", world_probe}, {"map", world_map}});
     add_functions(L, "travel", {{"locations", locations}, {"levels", levels}, {"go", go}, {"load", load}});
     add_functions(L, "ai", {{"spawn", ai_spawn}, {"clear", ai_clear}, {"count", ai_count}});
     add_functions(L, "session", {{"skaters", skaters}, {"tag", tag}, {"nametags", nametags}, {"joint", session_joint}, {"touch", session_touch},

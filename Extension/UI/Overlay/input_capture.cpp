@@ -40,13 +40,23 @@ bool challenge_panel_owns_input() noexcept {
     return challenge_native_panel.load(std::memory_order_relaxed);
 }
 // Keys kept from the game (hide_game_keys): their presses are dropped from every way it reads the
-// keyboard. Releases pass, so a key the game saw go down still comes up.
+// keyboard. Releases pass, so a key the game saw go down still comes up. The mouse's buttons are
+// kept the same way, by their virtual keys: out of the raw packets, the polled state and the
+// window's messages.
 std::array<std::atomic<std::uint64_t>, 4> hidden_keys{};
 bool key_hidden(unsigned key) noexcept {
     return key < 256 && !overlay_input_access && (hidden_keys[key / 64].load(std::memory_order_relaxed) >> (key % 64) & 1) != 0;
 }
 namespace {
 bool hidden_press(const RAWKEYBOARD& keyboard) noexcept { return !(keyboard.Flags & RI_KEY_BREAK) && key_hidden(keyboard.VKey); }
+// The presses of hidden buttons taken out of a raw mouse packet; its movement, wheel and releases stay.
+void hide_mouse_presses(RAWMOUSE& mouse) noexcept {
+    static constexpr std::array<unsigned, 5> keys{VK_LBUTTON, VK_RBUTTON, VK_MBUTTON, VK_XBUTTON1, VK_XBUTTON2};
+    static constexpr std::array<unsigned, 5> downs{RI_MOUSE_BUTTON_1_DOWN, RI_MOUSE_BUTTON_2_DOWN, RI_MOUSE_BUTTON_3_DOWN,
+                                                   RI_MOUSE_BUTTON_4_DOWN, RI_MOUSE_BUTTON_5_DOWN};
+    for (std::size_t i = 0; i < keys.size(); ++i)
+        if ((mouse.usButtonFlags & downs[i]) && key_hidden(keys[i])) mouse.usButtonFlags = static_cast<USHORT>(mouse.usButtonFlags & ~downs[i]);
+}
 // The DirectInput keyboard's scan code (DIK_) of a hidden key.
 bool scan_hidden(DWORD scan) noexcept {
     const auto key = MapVirtualKeyW(scan, MAPVK_VSC_TO_VK_EX);
@@ -509,6 +519,7 @@ UINT WINAPI captured_raw_data(HRAWINPUT input, UINT command, LPVOID data, PUINT 
         const bool mouse = raw->header.dwType == RIM_TYPEMOUSE && result >= offsetof(RAWINPUT, data) + sizeof(RAWMOUSE);
         const bool keyboard =
             raw->header.dwType == RIM_TYPEKEYBOARD && result >= offsetof(RAWINPUT, data) + sizeof(RAWKEYBOARD);
+        if (mouse) hide_mouse_presses(raw->data.mouse);
         if(keyboard && (challenge_menu_key(raw->data.keyboard.VKey) || hidden_press(raw->data.keyboard))) {
             raw->data.keyboard={};raw->data.keyboard.VKey=255;
             raw->data.keyboard.Flags=RI_KEY_BREAK;raw->data.keyboard.Message=WM_KEYUP;
@@ -655,6 +666,7 @@ UINT WINAPI captured_raw_buffer(PRAWINPUT data, PUINT size, UINT header_size) {
             const bool mouse = record->header.dwType == RIM_TYPEMOUSE && bytes >= offsetof(RAWINPUT, data) + sizeof(RAWMOUSE);
             const bool keyboard =
                 record->header.dwType == RIM_TYPEKEYBOARD && bytes >= offsetof(RAWINPUT, data) + sizeof(RAWKEYBOARD);
+            if (mouse) hide_mouse_presses(record->data.mouse);
             if(keyboard && (challenge_menu_key(record->data.keyboard.VKey) || hidden_press(record->data.keyboard))) {
                 record->data.keyboard={};record->data.keyboard.VKey=255;
                 record->data.keyboard.Flags=RI_KEY_BREAK;record->data.keyboard.Message=WM_KEYUP;

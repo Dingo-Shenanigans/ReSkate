@@ -20,6 +20,9 @@ struct Voice {
     float throttle{}, speed{};                 // the motor's
     bool loop{};
     std::optional<std::array<float, 3>> position; // empty: at the local skater
+    // At the listener itself (the camera), wherever that is: as loud as its volume, never fallen
+    // off with distance. A sound of the player's own, as a gun in their hands.
+    bool listener{};
 };
 // Its id, or 0 when there is no room (at most 128 a plugin, 256 in all).
 std::uint64_t start(Voice voice);

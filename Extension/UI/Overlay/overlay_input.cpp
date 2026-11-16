@@ -153,6 +153,15 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
         const bool release = message == WM_KEYUP || message == WM_SYSKEYUP;
         if((key || release) && challenge_menu_key(static_cast<int>(wp)))return 0;
         if (key && wp < 256 && key_hidden(static_cast<unsigned>(wp))) return 0;
+        // A hidden mouse button's press (and the double click that is one), as a hidden key's.
+        {
+            unsigned button = 0;
+            if (message == WM_LBUTTONDOWN || message == WM_LBUTTONDBLCLK) button = VK_LBUTTON;
+            else if (message == WM_RBUTTONDOWN || message == WM_RBUTTONDBLCLK) button = VK_RBUTTON;
+            else if (message == WM_MBUTTONDOWN || message == WM_MBUTTONDBLCLK) button = VK_MBUTTON;
+            else if (message == WM_XBUTTONDOWN || message == WM_XBUTTONDBLCLK) button = GET_XBUTTON_WPARAM(wp) == XBUTTON1 ? VK_XBUTTON1 : VK_XBUTTON2;
+            if (button && key_hidden(button)) return 0;
+        }
         if (console_character(message) && s.console_character_pending.exchange(false)) return 0;
         if (console_character(message) && s.chat_character_pending.exchange(false)) return 0;
         if (console_character(message) && s.item_search_character_pending.exchange(false)) return 0;

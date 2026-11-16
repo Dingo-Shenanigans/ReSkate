@@ -100,10 +100,12 @@ struct SoundStart {
     float volume{1}, pitch{1}, range{40}, throttle{}, speed{};
     bool loop{};
     std::optional<Vec3> position; // empty: at the local skater
+    bool listener{};              // at the listener itself: no falling off with distance
 };
 struct SoundChange {
     std::optional<float> volume, pitch, range, throttle, speed;
     std::optional<std::optional<Vec3>> position;
+    std::optional<bool> listener; // set with a position: whether it is "listener"
 };
 // What the local skater's physics did since the last tick (events.skater).
 struct SkaterNews {
@@ -406,6 +408,13 @@ public:
         std::uint64_t vehicle_root{};
     };
     virtual std::optional<WorldPick> world_pick(const Vec3& /*from*/, const Vec3& /*to*/) { return std::nullopt; }
+    // What the game's own map of the loaded level covers (reskate.world.map; the draw handler's
+    // d:game_map draws a part of it): its middle and its size in metres, its right the world's +x and
+    // its top the world's -z. Nothing for a level the game has no map of, or while it is being read.
+    struct MapArea {
+        Vec3 centre{}, size{};
+    };
+    virtual std::optional<MapArea> map_area() { return std::nullopt; }
     virtual std::string vehicle_take(std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t&) { return unavailable; }
     virtual traffic_vehicles::Sample vehicle_read(std::uint64_t, std::uint64_t) { return {}; }
     virtual std::string vehicle_set_pose(std::uint64_t, std::uint64_t, const traffic_vehicles::Pose&) { return unavailable; }
@@ -1096,9 +1105,11 @@ public:
     // Flip tricks in the air turn at `factor` times their speed for the next 300 ms (1 ends it).
     virtual std::string flip_speed(std::string_view /*plugin*/, float /*factor*/) { return unavailable; }
     // What of the pad the game does not see (reskate.input.hide): the triggers, the left stick's
-    // sideways while grinding, the right stick and the stick clicks.
+    // sideways while grinding, the right stick, the stick clicks, and buttons (XInput's bits; never
+    // Start, which stays the player's way to the pause menu).
     struct PadHidden {
         bool left_trigger{}, right_trigger{}, left_x_grinding{}, right_stick{}, left_stick_click{}, right_stick_click{};
+        std::uint16_t buttons{};
     };
     virtual std::string hide_pad(std::string_view /*plugin*/, const PadHidden&) { return unavailable; }
     // A camcorder look over the game's picture (reskate.screen.look; Extension/UI/Overlay/screen_look.h

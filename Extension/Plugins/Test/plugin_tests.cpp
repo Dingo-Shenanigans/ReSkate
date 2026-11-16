@@ -628,7 +628,8 @@ struct FakeGame final : Game {
     std::string hide_pad(std::string_view plugin, const PadHidden& h) override {
         calls.push_back(std::format("hide {} {} {} {}", plugin, h.left_trigger, h.right_trigger, h.left_x_grinding) +
                         (h.right_stick || h.left_stick_click || h.right_stick_click
-                             ? std::format(" stick {} {} {}", h.right_stick, h.left_stick_click, h.right_stick_click) : std::string{}));
+                             ? std::format(" stick {} {} {}", h.right_stick, h.left_stick_click, h.right_stick_click) : std::string{}) +
+                        (h.buttons ? std::format(" buttons {:04x}", h.buttons) : std::string{}));
         return {};
     }
     std::string cruise(std::string_view plugin, float speed, bool may_slow) override {
@@ -862,6 +863,9 @@ struct FakeGame final : Game {
     // The counted queries' native cost per ray (batch rays, world.probe), and the native casts
     // they spent. world.pick and world.raycast are not counted.
     unsigned query_cast_cost{1}, probe_cast_cost{1}, native_casts{};
+    // The loaded level's map: none until a test gives it one.
+    std::optional<MapArea> the_map;
+    std::optional<MapArea> map_area() override { return the_map; }
     std::optional<WorldPick> world_pick(const Vec3& from, const Vec3&) override {
         ++world_picks;
         if (from[1] > 50) return std::nullopt; // the sky: nothing met
@@ -1085,7 +1089,7 @@ struct FakeGame final : Game {
     std::vector<std::shared_ptr<const Wave>> held_waves;
     std::uint64_t play_sound(std::string_view plugin, SoundStart sound) override {
         calls.push_back(std::format("sound {} {} {:.2f} {:.2f} {}{}", plugin, sound.wave ? std::to_string(sound.wave->samples.size()) : "motor", sound.volume,
-                                    sound.pitch, sound.loop, sound.position ? std::format(" at {} {} {}", (*sound.position)[0], (*sound.position)[1], (*sound.position)[2]) : ""));
+                                    sound.pitch, sound.loop, sound.position ? std::format(" at {} {} {}", (*sound.position)[0], (*sound.position)[1], (*sound.position)[2]) : sound.listener ? " at listener" : ""));
         if (hold_waves && sound.wave) held_waves.push_back(std::move(sound.wave));
         return ++sound_ids;
     }
@@ -4488,6 +4492,46 @@ void plugins_draw_pictures() {
           "and in the world, so many metres tall, a part of it");
 }
 
+void plugins_draw_the_games_map() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    const std::string main = R"(
+        reskate.on("draw", function(d)
+            local map = reskate.world.map()
+            reskate.log(map and string.format("map %d %d, %d x %d", map.centre.x, map.centre.z, map.size.x, map.size.z) or "no map")
+            d:game_map(vector.create(10, 20, 0), vector.create(210, 220, 0), {centre = vector.create(5, 1, -7), range = 60, heading = 0.5, colour = 0xffffffc0})
+            d:game_map(vector.create(0, 0, 0), vector.create(100, 100, 0), {centre = vector.create(0, 0, 0), range = 2000})
+            assert(not pcall(d.game_map, d, vector.create(0, 0, 0), vector.create(1, 1, 0), {centre = vector.create(0, 0, 0)}), "a range")
+            assert(not pcall(d.game_map, d, vector.create(0, 0, 0), vector.create(1, 1, 0), {centre = vector.create(0, 0, 0), range = 3}), "5 metres at least")
+            assert(not pcall(d.game_map, d, vector.create(0, 0, 0), vector.create(1, 1, 0), {centre = vector.create(0, 0, 0), range = 2001}), "2000 at most")
+            assert(not pcall(d.game_map, d, vector.create(0, 0, 0), vector.create(1, 1, 0), {range = 60}), "a centre")
+            assert(not pcall(d.game_map, d, vector.create(0, 0, 0), vector.create(1, 1, 0)), "its options")
+            reskate.log("drew")
+        end)
+    )";
+    host.apply({package("radar", {{manifest_file, manifest(R"("overlay")")}, {"plugin/main.lua", main}}),
+                package("blind", {{manifest_file, manifest(R"("console")")}, {"plugin/main.lua", R"(
+        local ok, why = pcall(reskate.world.map)
+        reskate.log(ok and "read the map" or tostring(why))
+    )"}})});
+    ticks(host, environment, 1);
+    running(host, "radar", environment);
+    check(environment.logged("[radar] no map") && environment.logged("[radar] drew"), "A level with no map has none, and drawing it is no error\n" + environment.all());
+    check(environment.layers.size() == 1 && environment.layers[0].shapes.size() == 2, "The map is drawn as a shape\n" + environment.all());
+    if (environment.layers.size() == 1 && environment.layers[0].shapes.size() == 2) {
+        const auto& map = environment.layers[0].shapes[0];
+        check(map.kind == plugin_ui::Shape::Kind::game_map && map.points.size() == 3 && map.points[0][0] == 10 && map.points[1][1] == 220 &&
+                  map.points[2][0] == 5 && map.points[2][2] == -7 && map.radius == 60 && map.turn == 0.5f && map.style.colour == 0xc0ffffff,
+              "in its box, about a place in the world, so many metres to its side, turned and tinted");
+        check(environment.layers[0].shapes[1].turn == 0 && environment.layers[0].shapes[1].radius == 2000, "unturned when no heading is given");
+    }
+    check(environment.logged("[blind]") && !environment.logged("[blind] read the map") && environment.all().find("\"overlay\"") != std::string::npos,
+          "A plugin without the overlay permission is not told the map\n" + environment.all());
+    environment.fake.the_map = Game::MapArea{{300, 0, 1444}, {2206, 0, 1241}};
+    ticks(host, environment, 1);
+    check(environment.logged("[radar] map 300 1444, 2206 x 1241"), "Its middle and size, where the level has one\n" + environment.all());
+}
+
 void plugins_place_world_entities() {
     TestEnvironment environment;
     auto& game = environment.fake;
@@ -4917,6 +4961,15 @@ void plugins_reach_cruise_and_read_the_mouse() {
         local m = reskate.input.mouse()
         assert(m and m.x == 3 and m.y == -2 and m.wheel == 1, "the mouse")
         assert(reskate.input.hide({right_stick = true, right_stick_click = true}))
+        -- Buttons kept from the game by name; Start never is.
+        assert(reskate.input.hide({buttons = {"y", "b"}}))
+        assert(not pcall(reskate.input.hide, {buttons = {"start"}}), "Start always reaches the game")
+        assert(not pcall(reskate.input.hide, {buttons = "y"}), "buttons is a list")
+        assert(reskate.input.hide({right_stick = true, right_stick_click = true}))
+        -- Keys kept from the game: the mouse's buttons are keys too, Escape never is.
+        reskate.input.game_keys({"R", "LeftMouse", "RightMouse", "MiddleMouse"})
+        assert(not pcall(reskate.input.game_keys, {"R", "Escape"}), "Escape always reaches the game")
+        reskate.input.game_keys(nil)
         assert(reskate.screen.look({bend = 0.8, fov = 110, bars = true, hood = true, grade = true, grain = true, age = 0.35, iris = true,
             rolling = 2, text = {"#rec", "0:00:02", nil, "4:05 PM", "OCT.20 2026"}}))
         assert(reskate.screen.slap() and reskate.screen.look(nil))
@@ -4943,6 +4996,7 @@ void plugins_reach_cruise_and_read_the_mouse() {
     check(game.called("cruise filmer 8.0 true") && game.called("cruise filmer 0.0 false"), "Cruise control on and off");
     check(game.called("velocity filmer 1.0 5.0 -2.0") && game.called("velocity filmer 0.0 3.0 0.0 add"), "A velocity set, and one added");
     check(game.called("hide filmer false false false stick true false true"), "The right stick and its click kept from the game");
+    check(game.called("hide filmer false false false buttons a000"), "Y and B kept from the game");
     check(game.called("look filmer 0.80 110 0.35 truetruetruefalsefalsetruefalsefalsefalsefalsetrue 2.0 [#REC|0:00:02||4:05 PM|OCT.20 2026]") &&
               game.called("slap filmer") && game.called("look filmer none"),
           "A camcorder look on the screen, its text in capitals, a slap, and off\n" + environment.all());
@@ -5698,6 +5752,9 @@ void plugins_play_their_own_sounds() {
         reskate.console.command("noise", "x", function()
             local beep = assert(reskate.audio.play("sounds/beep.wav", {volume = 0.5, pitch = 2, loop = true, position = vector.create(1, 2, 3)}))
             local motor = assert(reskate.audio.play("motor", {throttle = 0.4, speed = 10}))
+            -- A sound of the player's own: at the listener, not a place in the world.
+            assert(reskate.audio.play("sounds/beep.wav", {volume = 0.25, position = "listener"}))
+            assert(not pcall(reskate.audio.play, "sounds/beep.wav", {position = "nowhere"}), "a position is a vector, skater or listener")
             assert(reskate.audio.set(motor, {throttle = 0.9, position = "skater"}))
             assert(reskate.audio.playing(beep))
             reskate.audio.stop(beep)
@@ -5710,7 +5767,8 @@ void plugins_play_their_own_sounds() {
     running(host, "noisy", environment);
     host.run_console("noise");
     check(environment.logged("[noisy] sounded"), "A plugin plays its own sounds\n" + environment.all());
-    for (const auto* call : {"sound noisy 24000 0.50 2.00 true at 1 2 3", "sound noisy motor 1.00 1.00 false", "change noisy 2 0.9 skater", "stop sound noisy 1"})
+    for (const auto* call : {"sound noisy 24000 0.50 2.00 true at 1 2 3", "sound noisy motor 1.00 1.00 false", "sound noisy 24000 0.25 1.00 false at listener",
+                             "change noisy 2 0.9 skater", "stop sound noisy 1"})
         check(environment.fake.called(call), std::string("The game was asked: ") + call + "\n" + environment.all());
 }
 
@@ -7564,6 +7622,7 @@ int main() {
         run(tricks_reach_plugins_that_ask_for_them);
         run(plugins_draw_on_the_overlay);
         run(plugins_draw_pictures);
+        run(plugins_draw_the_games_map);
         run(plugins_place_world_entities);
         run(plugins_have_what_a_prop_hunt_needs);
         run(plugins_write_normalized_controllers);

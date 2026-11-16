@@ -2,6 +2,7 @@
 #include "Extension/Plugins/plugin_camera.h"
 #include "Extension/Plugins/plugin_ui.h"
 #include "Extension/UI/Overlay/game_images.h"
+#include "Extension/UI/Overlay/game_map.h"
 #include "Extension/UI/Overlay/overlay_internal.h"
 #include "Extension/UI/Overlay/input_capture.h"
 #include "Extension/UI/Overlay/xray_overlay.h"
@@ -450,6 +451,7 @@ Cover cover(const plugin_ui::Layer& layer, ImVec2 display) {
             break;
         case Kind::image:
         case Kind::game_image:
+        case Kind::game_map:
         case Kind::rough_rect:
             if (p.size() >= 2) add(share(p[0], p[1], display), shape.style.colour);
             break;
@@ -606,6 +608,9 @@ void draw_plugins() {
             case Kind::game_image:
                 (void)draw_game_image(draw, shape.text, at(p[0]), at(p[1]), style.colour, static_cast<GameImageFit>(std::clamp(shape.fit, 0, 2)),
                                       shape.edge * k, shape.frame);
+                break;
+            case Kind::game_map:
+                if (p.size() >= 3) (void)draw_game_map(draw, at(p[0]), at(p[1]), p[2][0], p[2][2], shape.radius, shape.turn, style.colour);
                 break;
             case Kind::gradient:
                 if (shape.colours.size() == 4)

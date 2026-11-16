@@ -124,6 +124,42 @@ ImTextureID plugin_image(const std::string& path, ImVec2& size) {
     return entry.id;
 }
 
+bool plugin_pixels(const std::string& key, CardPixels pixels) {
+    auto& c = cache();
+    std::lock_guard lock(c.mutex);
+    auto found = c.entries.find(key);
+    if (found == c.entries.end()) {
+        if (c.entries.size() >= most_pictures) {
+            // Make room as a file's picture does: one that failed, or idle and not on the GPU.
+            const double now = steady_seconds();
+            auto oldest = c.entries.end();
+            for (auto it = c.entries.begin(); it != c.entries.end(); ++it)
+                if (it->second.stage == Entry::Stage::failed ||
+                    (now - it->second.drawn >= idle_seconds && it->second.slot < 0 && (oldest == c.entries.end() || it->second.drawn < oldest->second.drawn)))
+                    oldest = it;
+            if (oldest == c.entries.end()) return false;
+            c.entries.erase(oldest);
+        }
+        found = c.entries.emplace(key, Entry{}).first;
+    }
+    // (One already on the GPU gives its slot up: the new pixels go to a slot of their own, so the
+    // frames still drawing the old texture are not disturbed.)
+    found->second = Entry{};
+    found->second.pixels = std::move(pixels);
+    found->second.stage = Entry::Stage::decoded;
+    found->second.drawn = steady_seconds();
+    return true;
+}
+
+ImTextureID plugin_pixels_id(const std::string& key) {
+    auto& c = cache();
+    std::lock_guard lock(c.mutex);
+    const auto found = c.entries.find(key);
+    if (found == c.entries.end()) return {};
+    found->second.drawn = steady_seconds();
+    return found->second.stage == Entry::Stage::uploaded ? found->second.id : ImTextureID{};
+}
+
 std::optional<PluginImageUpload> take_plugin_image() {
     auto& c = cache();
     std::lock_guard lock(c.mutex);

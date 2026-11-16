@@ -385,6 +385,12 @@ std::optional<PluginImageUpload> take_plugin_image();
 // id 0: it failed; `later`: the slot was busy, so it waits for another frame.
 void plugin_image_uploaded(const std::string& path, int slot, ImTextureID id, bool later = false);
 void plugin_images_lost();
+// A picture made in memory instead of read from a file (the game's map, game_map.cpp), kept and
+// sent to the GPU with the plugins' own under a name no file has; given again, it takes the place
+// of the one before. False when there is no room. plugin_pixels_id: its id once it is on the GPU
+// (0 until then, and when it has been let go), counted as drawn.
+bool plugin_pixels(const std::string& key, CardPixels pixels);
+ImTextureID plugin_pixels_id(const std::string& key);
 // Thunderstore packages' icons for the pause menu's Mod Manager page (store_icons.cpp), the same way,
 // by their URL, in the SRV heap's slots from store_icon_first_slot on.
 inline constexpr UINT store_icon_first_slot = screen_look_slot + screen_look_slots, store_icon_slots = 64;

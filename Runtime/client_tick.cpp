@@ -17,6 +17,7 @@
 #include "Extension/Settings/replay_drafts.h"
 #include "Engine/Game/World/client_state.h"
 #include "Extension/Plugins/plugin_runtime.h"
+#include "Extension/UI/Overlay/game_map.h"
 #include "Extension/Skater/skater_movement.h"
 #include "Extension/Plugins/plugin_game_runtime.h"
 #include "Engine/Game/World/load_completion.h"
@@ -1216,6 +1217,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
     const auto& current_level = description.lm_level.empty() ? description.level : description.lm_level;
     dingosdk::live_mods::set_current_level(current_level);
     dingosdk::plugins::set_level(current_level);
+    dingosdk::overlay::set_game_map_level(current_level);
     dingosdk::replay_drafts::on_client_tick(r.base, state);
     // A live mod apply hands over the destinations its mods declare. A map
     // being played that is no longer among them (its mod disabled or deleted)

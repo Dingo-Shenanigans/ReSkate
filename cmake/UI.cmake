@@ -31,6 +31,7 @@ add_library(dingosdk_overlay STATIC
     Extension/UI/Overlay/plugin_overlay.cpp
     Extension/UI/Overlay/scripted_pad.cpp
     Extension/UI/Overlay/game_images.cpp
+    Extension/UI/Overlay/game_map.cpp
     Extension/UI/Overlay/xray_overlay.cpp
     Extension/UI/Overlay/plugin_images.cpp
     Extension/UI/Overlay/store_icons.cpp

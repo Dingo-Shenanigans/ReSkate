@@ -111,7 +111,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
         }
         const std::array<float, 3> ear{camera[12], camera[13], camera[14]};
         std::optional<std::array<float, 3>> skater;
-        if (std::any_of(p.voices.begin(), p.voices.end(), [](const auto& v) { return !v.second.voice.position; })) {
+        if (std::any_of(p.voices.begin(), p.voices.end(), [](const auto& v) { return !v.second.voice.position && !v.second.voice.listener; })) {
             const auto frame = multiplayer::capture_local(base, client, false);
             if (frame.ready) skater = std::array<float, 3>{frame.pose.root.position[0], frame.pose.root.position[1] + 0.3f, frame.pose.root.position[2]};
         }
@@ -119,7 +119,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
         for (auto it = p.voices.begin(); it != p.voices.end();) {
             auto& [id, playing] = *it;
             auto& v = playing.voice;
-            const auto at = v.position ? *v.position : skater ? *skater : ear;
+            const auto at = v.listener ? ear : v.position ? *v.position : skater ? *skater : ear;
             const float d = distance(ear, at), range = std::max(v.range, 1.0f);
             const float fall = std::clamp(1.0f - d / range, 0.0f, 1.0f);
             const float gain = std::clamp(v.volume, 0.0f, 1.0f) * fall * fall;
