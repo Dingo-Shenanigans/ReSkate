@@ -1366,6 +1366,7 @@ void load_skate_fonts(SkateMenu& menu) {
     menu.bold_large = font(L"FONT_HEADING", "arialbd.ttf", 17 * large_font_ratio);
     menu.heading_large = font(L"FONT_HEADING", "arialbd.ttf", 22 * large_font_ratio);
     menu.title_large = font(L"FONT_BRUSH", "arialbi.ttf", 44 * large_font_ratio, latin);
+    menu.display = font(L"FONT_HEADING", "arialbd.ttf", 76, latin);
 }
 
 namespace {
