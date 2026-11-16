@@ -399,6 +399,33 @@ struct FakeGame final : Game {
     std::optional<MarkerEvents> marker_events(std::string_view plugin) override {
         return std::exchange(marker_feed[std::string(plugin)], {});
     }
+    std::string tod_now = "afternoon";
+    std::string time_of_day_now() override { return tod_now; }
+    std::string world_controls_text() override { return "fog=1\nfog_distance=0.5\n"; }
+    std::vector<std::pair<std::string, std::string>> atmosphere_set;
+    std::string set_atmosphere(const std::vector<std::pair<std::string, std::string>>& values) override {
+        atmosphere_set.insert(atmosphere_set.end(), values.begin(), values.end());
+        return {};
+    }
+    std::optional<std::uint32_t> surface_set;
+    std::uint32_t surface_fields{};
+    std::string skater_surface_sound(std::string_view, std::optional<std::uint32_t> word, std::uint32_t fields) override {
+        surface_set = word;
+        surface_fields = fields;
+        return {};
+    }
+    // Each trainer preset held (its name, and its values) or let go (nullopt).
+    std::vector<std::optional<std::pair<std::string, std::map<std::string, double, std::less<>>>>> trainer_presets;
+    std::string trainer_preset(std::string_view, std::string_view name, std::optional<std::map<std::string, double, std::less<>>> values) override {
+        if (values) trainer_presets.emplace_back(std::pair(std::string(name), std::move(*values)));
+        else trainer_presets.emplace_back(std::nullopt);
+        return {};
+    }
+    std::vector<std::pair<std::string, bool>> chosen_variants; // each choice, and whether it went in now
+    std::string choose_variant(std::string_view, const std::filesystem::path&, std::string_view variant, bool now) override {
+        chosen_variants.emplace_back(std::string(variant), now);
+        return {};
+    }
     std::optional<std::uint32_t> state;
     std::uint64_t wipe{};
     std::vector<std::string> calls;
@@ -920,6 +947,7 @@ struct FakeGame final : Game {
         calls.push_back(std::format("env {} {} {}", kind, key, value));
         return key == "never" ? "refused" : "";
     }
+    std::vector<std::pair<std::string, double>> world_controls() override { return {{"fog", 0}, {"fog_distance", 1.5}, {"clouds", -1}}; }
     std::vector<Destination> destinations() override { return {{"bam", "BAM", "bam"}}; }
     std::vector<LevelInfo> levels() override { return {{"Levels/Game/X/X", "X", true}}; }
     std::string travel(std::string_view kind, std::string_view target) override { calls.push_back(std::format("travel {} {}", kind, target)); return {}; }
@@ -1510,6 +1538,103 @@ Candidate script(const std::string& id, const std::string& main, const std::stri
 }
 
 void running(const Host& host, std::string_view id, const TestEnvironment& environment);
+
+void the_time_of_day_and_world_controls_are_read() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({script("melt", R"(
+        assert(reskate.world.time() == "afternoon")
+        assert(reskate.world.controls_text() == "fog=1\nfog_distance=0.5\n")
+        assert(reskate.world.set_atmosphere({["Fog.Enable"] = 1, ["Fog.FogColor"] = "0,1450,2500"}))
+        assert(not pcall(reskate.world.set_atmosphere, {["Fog.Enable"] = true}), "a value is a number or text")
+    )", R"("world.environment")")});
+    running(host, "melt", environment);
+    TestEnvironment denied_environment;
+    Host denied(denied_environment, Side::client);
+    denied.apply({script("melt-denied", R"(
+        assert(not pcall(reskate.world.time), "needs world.environment")
+        assert(not pcall(reskate.world.controls_text), "needs world.environment")
+        assert(not pcall(reskate.world.set_atmosphere, {["Fog.Enable"] = 0}), "needs world.environment")
+    )")});
+    running(denied, "melt-denied", denied_environment);
+    check(denied_environment.fake.atmosphere_set.empty(), "a plugin without world.environment set no atmosphere");
+}
+
+void the_skater_surface_sound_is_set_for_some_fields() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({script("surface-sound", R"(
+        assert(reskate.skater.surface_sound(0xd60, {1, 3}))
+        assert(not pcall(reskate.skater.surface_sound, 0xd60, {19}), "fields are 1 to 18")
+        assert(not pcall(reskate.skater.surface_sound, 0.5), "a fraction is no surface")
+        assert(not pcall(reskate.skater.surface_sound, -1), "a negative is no surface")
+        assert(not pcall(reskate.skater.surface_sound, 116 * 64), "material slot 116 is past the game's grid")
+        assert(not pcall(reskate.skater.surface_sound, 116 * 524288), "property slot 116 is past the game's grid")
+        assert(not pcall(reskate.skater.surface_sound, 0xffffffff), "a word of every bit names no surface")
+        assert(reskate.skater.surface_sound(115 * 64 + 115 * 524288), "the grid's last slots are surfaces")
+        assert(reskate.skater.surface_sound(0xd60, {1, 3}))
+    )", R"("skater.control")")});
+    running(host, "surface-sound", environment);
+    check(environment.fake.surface_set == 0xd60u && environment.fake.surface_fields == 0b101u,
+          "surface_sound passes the surface word and its fields on");
+    TestEnvironment denied_environment;
+    Host denied(denied_environment, Side::client);
+    denied.apply({script("surface-denied", R"(
+        assert(not pcall(reskate.skater.surface_sound, 7), "needs skater.control")
+    )")});
+    running(denied, "surface-denied", denied_environment);
+    check(!denied_environment.fake.surface_set, "a plugin without skater.control set no surface sound");
+}
+
+void a_variant_can_wait_for_the_next_launch() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({script("variant-chooser", R"(
+        assert(reskate.package.choose("snowskate"))
+        assert(reskate.package.choose("standard", {now = false}))
+        assert(reskate.package.choose("standard", {now = true}))
+        assert(not pcall(reskate.package.choose, "standard", 7), "options are a table")
+    )", R"("variants")")});
+    running(host, "variant-chooser", environment);
+    const std::vector<std::pair<std::string, bool>> expected{{"snowskate", true}, {"standard", false}, {"standard", true}};
+    check(environment.fake.chosen_variants == expected, "choose keeps a variant for the next launch only when now is false");
+    // Without the permission it is refused, for the next launch as well as now.
+    TestEnvironment denied_environment;
+    Host denied(denied_environment, Side::client);
+    denied.apply({script("variant-denied", R"(
+        assert(not pcall(reskate.package.choose, "standard", {now = false}), "needs variants")
+        assert(not pcall(reskate.package.choose, "standard"), "needs variants")
+    )")});
+    running(denied, "variant-denied", denied_environment);
+    check(denied_environment.fake.chosen_variants.empty(), "a plugin without variants chose no variant");
+}
+
+void a_plugin_holds_a_trainer_preset() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({script("preset-holder", R"(
+        assert(reskate.trainer.hold_preset("SnowSkate", {["PhysicsMode.JumpMaxHeight"] = 1.29, ["trick.gravity"] = 1.15}))
+        assert(reskate.trainer.hold_preset(nil))
+        assert(not pcall(reskate.trainer.hold_preset, "", {a = 1}), "a name is needed")
+        assert(not pcall(reskate.trainer.hold_preset, "x", {}), "a value is needed")
+        assert(not pcall(reskate.trainer.hold_preset, "x", {a = "high"}), "values are numbers")
+    )", R"("trainer")")});
+    running(host, "preset-holder", environment);
+    const auto& held = environment.fake.trainer_presets;
+    check(held.size() == 2 && held[0] && held[0]->first == "SnowSkate" && held[0]->second.size() == 2 &&
+              held[0]->second.contains("physicsmode.jumpmaxheight") && held[0]->second.at("trick.gravity") == 1.15 && !held[1],
+          "a preset is held with its values (ids in lower case), then let go");
+
+    // Without the permission it is refused.
+    TestEnvironment denied_environment;
+    Host denied(denied_environment, Side::client);
+    denied.apply({script("preset-denied", R"(
+        local ok, why = pcall(reskate.trainer.hold_preset, "SnowSkate", {a = 1})
+        assert(not ok and why:find("trainer", 1, true), tostring(why))
+    )")});
+    running(denied, "preset-denied", denied_environment);
+    check(denied_environment.fake.trainer_presets.empty(), "a plugin without trainer held a trainer preset");
+}
 
 void traffic_vehicles_are_permissioned_bounded_and_released() {
     using traffic_vehicles::Quaternion;
@@ -6751,6 +6876,8 @@ void the_wider_set_reaches_the_game() {
             assert(reskate.objects.remove("42"))
             assert(not pcall(reskate.objects.remove, "not a number"))
             assert(reskate.world.set_time("night") and reskate.world.set_control("fog", 1) and reskate.world.set_park("historic", "skatepark_02"))
+            local controls = reskate.world.controls()
+            assert(controls and controls.fog == 0 and controls.fog_distance == 1.5 and controls.clouds == -1, "the world controls as they are")
             local ok, why = reskate.world.set_time("never")
             assert(not ok and why == "refused")
             assert(#reskate.travel.locations() == 1 and #reskate.travel.levels() == 1)
@@ -7563,6 +7690,10 @@ int main() {
         scratch = std::filesystem::temp_directory_path() / "reskate-plugin-tests";
         std::filesystem::remove_all(scratch);
         run(a_manifest_says_what_a_plugin_is);
+        run(a_variant_can_wait_for_the_next_launch);
+        run(a_plugin_holds_a_trainer_preset);
+        run(the_skater_surface_sound_is_set_for_some_fields);
+        run(the_time_of_day_and_world_controls_are_read);
         run(ui_value_reservations_enforce_limits_and_collisions);
         run(plugins_publish_only_their_own_ui_values);
         run(plugin_approval_follows_the_plugins_own_files);

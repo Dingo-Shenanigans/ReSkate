@@ -332,6 +332,16 @@ public:
     virtual std::vector<std::uint64_t> effects_live(std::string_view) { return {}; }
     virtual void effects_clear(std::string_view) {}
     virtual std::pair<bool, std::uint64_t> effects_state() { return {false, 0}; }
+    // The time of day forced on the map now (morning, noon, afternoon, evening, night, weatherday,
+    // weathernight), "default" for the level's own, or empty with no map.
+    virtual std::string time_of_day_now() { return {}; }
+    // The world controls the player has set in ReSkate's menu (fog, sky, wind and the detailed
+    // atmosphere values), one "key=value" a line; those at the level's own are left out.
+    virtual std::string world_controls_text() { return {}; }
+    // Atmosphere values (the detailed fog, sky and wind ones, as world_controls_text names them) set
+    // together, each a value as text or "default" for the level's own; saved in the player's profile
+    // as the menu's are. Empty, or what was refused.
+    virtual std::string set_atmosphere(const std::vector<std::pair<std::string, std::string>>&) { return unavailable; }
 
     virtual std::string object_physics(std::string_view, std::uint64_t, const std::optional<ObjectPhysics>&) { return unavailable; }
     virtual std::string object_velocity(std::string_view, std::uint64_t, const Vec3&) { return unavailable; }
@@ -424,6 +434,10 @@ public:
     // "control" (key: fog, fog_distance, sky_brightness, clouds, wind_strength, wind_direction,
     // traffic, pedestrians; value a number, -1 the default) or "park" (key: a lot, value a layout).
     virtual std::string set_environment(std::string_view, std::string_view, std::string_view) { return unavailable; }
+    // The world controls as the player's profile holds them now (the "control" keys above, -1 each one
+    // left to the level), so a plugin that changes one can put the player's own value back; empty
+    // without a profile.
+    virtual std::vector<std::pair<std::string, double>> world_controls() { return {}; }
     virtual std::vector<Destination> destinations() { return {}; }
     virtual std::vector<LevelInfo> levels() { return {}; }
     // kind "location" (a destination's id) or "level" (a level's asset); a guest is refused.
@@ -777,6 +791,11 @@ public:
     virtual std::vector<CycleNews> take_camera_cycle() { return {}; }
     // Holds the skater where it is (noclip, with no input), while any plugin asks.
     virtual std::string freeze(std::string_view /*plugin*/, bool) { return unavailable; }
+    // The local skater's sounds as on the surface a physics material word names, wherever it is, in the
+    // sound's material fields `fields` (bit i: field i + 1); nothing: each surface its own. One plugin at a time.
+    virtual std::string skater_surface_sound(std::string_view /*plugin*/, std::optional<std::uint32_t>, std::uint32_t /*fields*/ = ~0U) {
+        return unavailable;
+    }
     // ---- the session's authority (plugins' server copies) --------------------------------------------
     // Drops a player from the session; a chat line to everyone; one to one player (a dedicated
     // server's only: a lobby has no private chat); moves a player's skater (their game does the move).
@@ -965,6 +984,9 @@ public:
     }
     virtual std::vector<Tuning> find_tuning(std::string_view /*text*/, std::size_t /*most*/) { return {}; }
     virtual std::string tune(std::string_view /*plugin*/, std::string_view /*id*/, std::optional<double> /*value*/) { return unavailable; }
+    // The plugin's preset held in the trainer (trainer::plugin_preset): no values lets go. Empty when done, else why not.
+    virtual std::string trainer_preset(std::string_view /*plugin*/, std::string_view /*name*/,
+                                       std::optional<std::map<std::string, double, std::less<>>> /*values*/) { return unavailable; }
     virtual std::string replace_trick(std::string_view /*plugin*/, std::string /*trick*/, std::string /*pop*/, ClipRef, float /*speed*/) {
         return unavailable;
     }
@@ -1065,8 +1087,10 @@ public:
     };
     // Empty when the mod declares no variants.
     virtual std::optional<VariantState> variants(std::string_view /*plugin*/, const std::filesystem::path& /*package*/) { return std::nullopt; }
-    // The variant saved as the mod's choice, the mods applied again and the level loaded again with it.
-    virtual std::string choose_variant(std::string_view /*plugin*/, const std::filesystem::path& /*package*/, std::string_view /*variant*/) {
+    // The variant saved as the mod's choice, and (now) the mods applied again and the level loaded
+    // again with it; without now, it only waits for the next launch.
+    virtual std::string choose_variant(std::string_view /*plugin*/, const std::filesystem::path& /*package*/, std::string_view /*variant*/,
+                                       bool /*now*/ = true) {
         return unavailable;
     }
     // ---- the skater's physics -----------------------------------------------------------------------
