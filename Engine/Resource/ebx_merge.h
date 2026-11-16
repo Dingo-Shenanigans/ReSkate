@@ -22,8 +22,9 @@ struct MergeSummary {
     std::size_t repeated{};    // appended references an earlier entry had already added, left out
     std::size_t values{};      // plain values an edit changed in place, taken from it
     std::size_t contested{};   // of those, values an earlier edit had changed to something else
+    std::size_t taken{};       // instances only one edit changed, in a way that cannot be combined, taken whole from it
     // Edits (indices into `edits`) with a change that did not come across: a reference
-    // pointed somewhere else, a list resized anywhere but at the root's end, an instance gone.
+    // pointed somewhere else, a list that shrank, an instance gone.
     std::vector<std::size_t> uncarried;
     // Edits whose in-place changes could not all be looked for, because their internal
     // instances do not line up with the base's or the document holds boxed values.
@@ -31,6 +32,8 @@ struct MergeSummary {
 
     // Every edit's in-place changes are in the result, as far as anyone can tell.
     [[nodiscard]] bool exact() const noexcept { return uncarried.empty() && unread.empty(); }
+    // Something an edit changed in place is in the result: a value, or an instance taken whole.
+    [[nodiscard]] bool changed_in_place() const noexcept { return values || taken; }
 };
 
 // Whether a root array entry an edit appended comes across, asked for an entry
@@ -40,12 +43,14 @@ using CarryImport = std::function<bool(const ImportReference&)>;
 
 // Combines several independently edited copies of one EBX asset with the base
 // they were all derived from. Each edit contributes the instances it added, the
-// entries it appended to the root's arrays (a reference two edits both append is
-// listed once), and the plain values it changed in place: a number, a string, a
-// guid. Two edits to one value cannot both be honoured, so edits are applied in
-// the order given and the last one wins. A change of any other shape (a
-// reference pointed elsewhere, a list resized in the middle of the document)
-// stays as the base had it, and the summary names the edit it was in.
+// entries it appended to any list (a reference two edits both append to the
+// root's arrays is listed once), and the plain values it changed in place: a
+// number, a string, a guid. Two edits to one value cannot both be honoured, so
+// edits are applied in the order given and the last one wins. A change of any
+// other shape (a reference pointed elsewhere, a list that shrank) is taken with
+// its whole instance when no other edit changed that instance (the root
+// excepted); otherwise it stays as the base had it, and the summary names the
+// edit it was in.
 [[nodiscard]] Document merge_documents(const Document& base,
                                        std::span<const Document* const> edits,
                                        MergeSummary* summary = nullptr,

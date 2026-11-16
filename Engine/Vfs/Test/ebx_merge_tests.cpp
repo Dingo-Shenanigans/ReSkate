@@ -3,8 +3,10 @@
 // Several mods each ship their own copy of one of the game's assets. merge_documents puts the
 // copies together over the game's: what each added, and what each changed in place. The cases:
 //   * values two edits changed in place both arrive, and one both changed is the later edit's;
+//   * a list grows at its end wherever it is, and what each edit appended comes across;
 //   * an edit that also changed something that cannot be taken (a reference pointed elsewhere, a
-//     list resized) has none of its values taken, and the summary names it;
+//     list that shrank) has none of its values taken, and the summary names it, unless that change
+//     is in an exported instance no other edit changed: then the instance is taken whole;
 //   * an exported instance is found by its guid wherever the edit keeps it, and internal
 //     instances that do not line up are reported as not looked at;
 //   * a reference two edits both append is listed once, and one edit's own repeat is left alone;
@@ -164,14 +166,14 @@ void one_value_from_two_edits(bool same) {
 // What cannot be taken: the edit that made such a change keeps all its values out, so the result
 // never has half of what a mod did to the game's own content.
 void a_change_that_cannot_be_taken(int kind) {
-    static constexpr std::array labels{"retargeted reference", "shorter root list", "resized nested list", "instance gone"};
+    static constexpr std::array labels{"retargeted reference", "shorter root list", "shorter nested list", "instance gone"};
     const std::string label = labels[static_cast<std::size_t>(kind)];
     const auto base = game();
     auto reshaped = copy(base), plain = copy(base);
     field(reshaped, 0, "Volume") = number(9);
     if (kind == 0) items(reshaped)[0] = outside(1);
     else if (kind == 1) items(reshaped).pop_back();
-    else if (kind == 2) std::get<ebx::Value::Array>(field(tuning(reshaped), "Weights").data).push_back(number(3));
+    else if (kind == 2) std::get<ebx::Value::Array>(field(tuning(reshaped), "Weights").data).pop_back();
     else {
         // The exported instance is not in the edit: the root points at the internal one instead.
         reshaped.instances.erase(reshaped.instances.begin() + 1);
@@ -185,6 +187,79 @@ void a_change_that_cannot_be_taken(int kind) {
     expect(summary.uncarried == std::vector<std::size_t>{0} && !summary.exact() && summary.values == 1,
            label + ": the summary names the edit");
     expect(named(merged) == named(base), label + ": the game's list is as it was");
+}
+
+// A change that cannot be combined, made to an exported instance no other edit changed, is taken
+// with the whole instance: nothing of another edit's is lost by it. When another edit changed that
+// instance too, the edit's changes are all kept out, as above.
+void an_instance_only_one_edit_reshaped(bool alsoChangedElsewhere) {
+    const std::string label = alsoChangedElsewhere ? "reshaped and contested" : "reshaped alone";
+    const auto base = game();
+    auto reshaped = copy(base), plain = copy(base);
+    field(reshaped, 0, "Volume") = number(9);
+    // The game's entry now points at an instance the edit added, not at the game's detail.
+    const auto added = guid(0xD0);
+    reshaped.instances.push_back(instance(detail_type, object(detail_type, {{"Depth", number(6)}}), &added));
+    field(reshaped, 1, "Detail") = inside(static_cast<std::int32_t>(reshaped.instances.size() - 1));
+    field(plain, 0, "Title") = text("plain");
+    if (alsoChangedElsewhere) field(plain, 1, "Cost") = number(11);
+    ebx::MergeSummary summary;
+    auto merged = merge(base, {&reshaped, &plain}, summary);
+    const auto entry = find(merged, entry_guid);
+    expect(read<std::string>(merged, 0, "Title") == "plain", label + ": the other edit's value is in");
+    if (!alsoChangedElsewhere) {
+        const auto detail = read<ebx::PointerReference>(merged, entry, "Detail");
+        expect(detail.kind == ebx::PointerKind::internal && static_cast<std::size_t>(detail.index) == find(merged, added),
+               label + ": the entry is the edit's, pointing at the instance it added");
+        expect(read<std::int64_t>(merged, find(merged, added), "Depth") == 6, label + ": the added instance came across");
+        expect(read<std::int64_t>(merged, 0, "Volume") == 9, label + ": the edit's other values are taken");
+        expect(summary.taken == 1 && summary.exact() && summary.changed_in_place(), label + ": one instance taken whole, nothing left out");
+    } else {
+        expect(read<std::int64_t>(merged, 0, "Volume") == 5 && read<std::int64_t>(merged, entry, "Cost") == 11,
+               label + ": none of the reshaping edit's values are taken, the other edit's are");
+        const auto detail = read<ebx::PointerReference>(merged, entry, "Detail");
+        expect(detail.kind == ebx::PointerKind::internal && merged.instances.at(static_cast<std::size_t>(detail.index)).exported == false,
+               label + ": the entry still points at the game's detail");
+        expect(summary.taken == 0 && summary.uncarried == std::vector<std::size_t>{0}, label + ": the summary names the edit");
+    }
+}
+
+// A list below the root's own grows at its end as one on the root does: an authored recipe keeps its
+// equips in a list inside a struct on the root, and every mod that adds a slot to the recipe's
+// template appends one there.
+void a_nested_list_grows() {
+    const auto base = game();
+    auto first = copy(base), second = copy(base), third = copy(base);
+    auto weights = [](ebx::Document& document) -> ebx::Value::Array& { return std::get<ebx::Value::Array>(field(tuning(document), "Weights").data); };
+    weights(first).push_back(number(3));
+    weights(second).push_back(number(4));
+    weights(second).push_back(number(3));   // the first edit's as well, after its own
+    field(third, 0, "Volume") = number(9);
+    ebx::MergeSummary summary;
+    auto merged = merge(base, {&first, &second, &third}, summary);
+    std::vector<std::int64_t> got;
+    for (const auto& weight : weights(merged)) got.push_back(std::get<std::int64_t>(weight.data));
+    expect((got == std::vector<std::int64_t>{1, 2, 3, 4}), "nested list: what each edit appended is in, a repeat once (" +
+           std::to_string(got.size()) + " entries)");
+    expect(read<std::int64_t>(merged, 0, "Volume") == 9 && summary.exact() && summary.arrayEntries == 2 && summary.repeated == 1,
+           "nested list: the other edit's value is in and nothing is left out");
+}
+
+// The instance an earlier edit took whole no longer looks like the base's in the result. A later
+// edit that left it alone still has its own changes taken.
+void a_later_edit_beside_an_instance_taken_whole() {
+    const auto base = game();
+    auto reshaped = copy(base), later = copy(base);
+    field(reshaped, 1, "Detail") = value_of(ebx::PointerReference{});
+    field(*reshaped.instances[1].object, "Cost") = number(12);
+    reshaped.instances[1].object->fields.push_back({2, "Extra", number(1)});   // a field the base's lacks
+    field(later, 0, "Volume") = number(7);
+    ebx::MergeSummary summary;
+    auto merged = merge(base, {&reshaped, &later}, summary);
+    const auto entry = find(merged, entry_guid);
+    expect(read<std::int64_t>(merged, entry, "Cost") == 12 && read<std::int64_t>(merged, 0, "Volume") == 7,
+           "beside a taken instance: both edits' changes are in");
+    expect(summary.taken == 1 && summary.exact(), "beside a taken instance: nothing left out");
 }
 
 // An edit that added an exported instance has moved the game's along; they are still found.
@@ -396,6 +471,10 @@ int main() try {
     one_value_from_two_edits(false);
     one_value_from_two_edits(true);
     for (int kind = 0; kind < 4; ++kind) a_change_that_cannot_be_taken(kind);
+    an_instance_only_one_edit_reshaped(false);
+    an_instance_only_one_edit_reshaped(true);
+    a_later_edit_beside_an_instance_taken_whole();
+    a_nested_list_grows();
     instances_found_by_guid();
     internal_instances_that_do_not_line_up();
     appended_references();

@@ -156,13 +156,29 @@ public:
         for (auto* box : touched_) box->rewritten = true;
     }
 
-    // Entries an edit appended to a list inside a boxed value: carried once the edit's other
+    // Takes in what was found in another instance of the same edit, so that the edit's changes
+    // are still applied, or kept out, together.
+    void absorb(InPlace&& other) {
+        changes_.insert(changes_.end(), other.changes_.begin(), other.changes_.end());
+        for (auto* box : other.touched_)
+            if (std::ranges::find(touched_, box) == touched_.end()) touched_.push_back(box);
+        appends.insert(appends.end(), other.appends.begin(), other.appends.end());
+        values += other.values;
+        contested += other.contested;
+        uncarried |= other.uncarried;
+        unread |= other.unread;
+    }
+
+    // Whether the walk saw any change at all.
+    [[nodiscard]] bool changed() const noexcept { return values || uncarried || unread || !appends.empty(); }
+
+    // Entries an edit appended to a list below the root's own: carried once the edit's other
     // changes are known to come across, because they may point into the edit's own document.
     struct Append {
         Value::Array* target{};
         const Value::Array* source{};
         std::size_t from{};
-        BoxedReference* box{};
+        BoxedReference* box{};   // the innermost box around the list, if any: written afresh
     };
     std::vector<Append> appends;
 
@@ -210,16 +226,15 @@ private:
         if (const auto* before = std::get_if<Value::Array>(&base.data)) {
             const auto& after = std::get<Value::Array>(edit.data);
             auto& mine = std::get<Value::Array>(result.data);
-            // Only a list on the root, or one inside a boxed value, grows at its end, and what was
-            // appended comes across on its own. A list that shrank, or one elsewhere that changed
-            // length, has entries no longer told apart by place.
-            const bool grows = rootList || !boxes_.empty();
-            if (grows ? after.size() < before->size() : after.size() != before->size()) { uncarried = true; return; }
+            // A list grows at its end, wherever it is, and what was appended comes across on its
+            // own (an authored recipe's equips, for one, are a list inside a struct on the root).
+            // A list that shrank has entries no longer told apart by place.
+            if (after.size() < before->size()) { uncarried = true; return; }
             if (mine.size() < before->size()) { uncarried = true; return; }
             for (std::size_t index = 0; index < before->size(); ++index)
                 value((*before)[index], after[index], mine[index], false);
             if (!rootList && after.size() > before->size()) {
-                appends.push_back({&mine, &after, before->size(), boxes_.back()});
+                appends.push_back({&mine, &after, before->size(), boxes_.empty() ? nullptr : boxes_.back()});
                 touch();
             }
             return;
@@ -620,6 +635,29 @@ Document merge_documents(const Document& base, const std::span<const Document* c
     MergeSummary totals;
     // The references the edits so far appended to each root array.
     std::map<std::string, std::set<std::pair<PointerKind, std::int32_t>>, std::less<>> appended;
+
+    // Where each edit's instances are among the base's, worked out up front: whether an edit's
+    // reshaped instance can be taken whole depends on whether any other edit changed it too.
+    std::vector<std::vector<std::size_t>> matches;
+    matches.reserve(edits.size());
+    for (const auto* edit : edits) matches.push_back(edit ? match_instances(base, *edit) : std::vector<std::size_t>{});
+    // Whether an edit changed one of the base's instances at all, judged against the base alone.
+    const auto changed_by = [&](std::size_t edit, std::size_t at) {
+        const auto& match = matches[edit];
+        if (match[at] == unmatched) return true;
+        const auto& theirs = edits[edit]->instances[match[at]];
+        if (!theirs.object || !base.instances[at].object) return true;
+        // Only compared, never applied, so the base can stand in for the result.
+        InPlace probe(base, *edits[edit], match);
+        probe.fields(*base.instances[at].object, *theirs.object, const_cast<Object&>(*base.instances[at].object), at == 0);
+        return probe.changed();
+    };
+    const auto changed_by_another = [&](std::size_t self, std::size_t at) {
+        for (std::size_t other = 0; other < edits.size(); ++other)
+            if (other != self && edits[other] && changed_by(other, at)) return true;
+        return false;
+    };
+
     for (std::size_t index = 0; index < edits.size(); ++index) {
         const auto* edit = edits[index];
         if (!edit) continue;
@@ -629,8 +667,13 @@ Document merge_documents(const Document& base, const std::span<const Document* c
         // What the edit changed in place. The result's first instances are still
         // the base's, in the base's order: carried ones are added behind them,
         // and nothing is sorted until every edit is in.
-        const auto match = match_instances(base, *edit);
+        const auto& match = matches[index];
         InPlace changes(base, *edit, match);
+        // An exported instance this edit changed in a way that cannot be combined (a reference
+        // pointed elsewhere, a list resized) is taken as the edit has it, when no other edit
+        // changed it at all: then nothing of anyone's is lost by doing so. The root is never
+        // taken whole, since the lists on it are where every edit adds its entries.
+        std::vector<std::size_t> whole;
         for (std::size_t at = 0; at < base.instances.size(); ++at) {
             const auto& before = base.instances[at];
             if (match[at] == unmatched) {
@@ -643,10 +686,22 @@ Document merge_documents(const Document& base, const std::span<const Document* c
                 changes.unread |= before.object || after.object;
                 continue;
             }
-            changes.fields(*before.object, *after.object, *result.instances[at].object, at == 0);
+            InPlace one(base, *edit, match);
+            one.fields(*before.object, *after.object, *result.instances[at].object, at == 0);
+            if (one.uncarried) {
+                // An instance an earlier edit took whole no longer has the base's shape in the
+                // result; one this edit left as the base had it is no change of this edit's.
+                if (!changed_by(index, at)) continue;
+                if (at != 0 && before.exported && !changed_by_another(index, at)) {
+                    whole.push_back(at);
+                    continue;
+                }
+            }
+            changes.absorb(std::move(one));
         }
         if (changes.uncarried) {
             totals.uncarried.push_back(index);
+            whole.clear();
         } else {
             changes.apply();
             totals.values += changes.values;
@@ -657,7 +712,7 @@ Document merge_documents(const Document& base, const std::span<const Document* c
         detail::Carrier mapper(*edit, result);
         std::map<std::string, std::set<std::pair<PointerKind, std::int32_t>>, std::less<>> mine;
 
-        // Entries the edit appended to lists inside boxed values, when its changes came across.
+        // Entries the edit appended to lists below the root's own, when its changes came across.
         // The same entry appended by two edits is listed once.
         if (!changes.uncarried) {
             for (const auto& append : changes.appends) {
@@ -671,7 +726,7 @@ Document merge_documents(const Document& base, const std::span<const Document* c
                     append.target->push_back(std::move(carried));
                     ++totals.arrayEntries;
                 }
-                if (append.target->size() != had) append.box->rewritten = true;
+                if (append.target->size() != had && append.box) append.box->rewritten = true;
             }
         }
 
@@ -731,6 +786,22 @@ Document merge_documents(const Document& base, const std::span<const Document* c
         }
         totals.instances += mapper.instances;
         totals.renumbered += mapper.renumbered;
+
+        // The instances taken whole. What they point at in the edit is found again in the
+        // result: the base's instances where they line up (internal ones by place), and what
+        // the edit added by guid, carried above or here.
+        if (!whole.empty()) {
+            detail::Carrier taker(*edit, result);
+            for (std::size_t at = 0; at < match.size(); ++at)
+                if (match[at] != unmatched) taker.alias(match[at], at);
+            for (const auto at : whole) {
+                auto& target = result.instances[at];
+                target.object = taker.object(*edit->instances[match[at]].object);
+                ++totals.taken;
+            }
+            totals.instances += taker.instances;
+            totals.renumbered += taker.renumbered;
+        }
     }
     detail::sort_instances(result);
     if (summary) *summary = totals;

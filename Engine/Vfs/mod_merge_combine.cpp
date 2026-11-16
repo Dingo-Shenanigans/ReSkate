@@ -1397,7 +1397,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                             // Values changed in place combine; when that is not all of
                             // some mod's change, the copy already kept stays whole, and
                             // the others' changes to it are not in the game.
-                            if (!summary.values || !summary.exact()) {
+                            if (!summary.changed_in_place() || !summary.exact()) {
                                 std::set<std::string> others;
                                 for (std::size_t index = 0; index < edits.size(); ++index)
                                     if (edits[index]->sha1 != entry.asset.sha1) others.insert(mod_of(index));
@@ -1418,6 +1418,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                         what = std::to_string(summary.instances) + " instance(s), " +
                                std::to_string(summary.arrayEntries) + " list entries";
                         if (summary.values) what += ", " + std::to_string(summary.values) + " changed value(s)";
+                        if (summary.taken) what += ", " + std::to_string(summary.taken) + " instance(s) taken whole";
                         if (summary.contested) what += ", " + std::to_string(summary.contested) + " disagreed";
                         if (summary.repeated)
                             what += ", " + std::to_string(summary.repeated) + " repeated entry(ies) listed once";
