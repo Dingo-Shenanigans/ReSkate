@@ -1,5 +1,6 @@
 #include "world_shader.h"
 #include "screen_shader_vs_dxil.h"
+#include "plugin_shader_compile.h"
 #include "Engine/Core/Hooks/hooks.h"
 #include "Engine/Core/Hooks/patches.h"
 #include "Engine/Core/Log/logging.h"
@@ -162,7 +163,9 @@ void refuse(Program& program, std::string_view name, std::string why) {
 }
 std::atomic<bool> wanted{};
 std::atomic<bool> allowed{};     // the world has been in play for a moment (allow)
-std::atomic<bool> retired{};     // the game's frame is not one the shader can safely go into
+// The calls followed on the game's lists while a world shader is on (each list's, counted in as it is next reset):
+// what the following costs the game's recording threads, which the GPU's budget does not see. Said with the cost.
+std::atomic<std::uint64_t> followed_calls{};
 std::uint64_t playing_since{};   // client thread: when play began, 0 out of play
 bool hdr_format(DXGI_FORMAT f) {
     return f == DXGI_FORMAT_R11G11B10_FLOAT || f == DXGI_FORMAT_R16G16B16A16_FLOAT || f == DXGI_FORMAT_R32G32B32A32_FLOAT;
@@ -282,6 +285,7 @@ struct Shared {
     std::uint64_t budget_key{}; // the shader the sums below are for
     double budget_ms{};
     unsigned budget_frames{};
+    unsigned budget_long{}; // its frames over world_frame_most_ms in this stretch (world_long_frames of them: off)
     // The heights' and the data's versions in each allocator's part of the upload buffer: copied only when they changed.
     std::array<std::uint64_t, allocator_count> heights_uploaded{}, data_uploaded{};
     std::array<std::uint64_t, inside_ring> inside_heights_uploaded{}, inside_data_uploaded{};
@@ -292,6 +296,7 @@ struct Shared {
     std::array<std::array<float, camera_floats>, camera_history> cameras{};
     std::size_t cameras_known{};
     unsigned cost_frames{}; // frames since the cost was last said
+    std::uint64_t cost_said_frame{}; // the frame it was last said in (the calls followed since are over these frames)
     double frame_us{};             // how long a frame takes, eased (present to present)
     std::uint64_t last_present_us{};
     // The near distance each recent frame measured, and the steady middle of them (0: none yet).
@@ -1341,15 +1346,20 @@ bool record_shader(Shared& s) {
         if (end > start && program != a.programs.end()) {
             const double ms = static_cast<double>(end - start) * 1000.0 / static_cast<double>(s.timer_frequency);
             s.gpu_ms_total += ms, s.gpu_ms_most = std::max(s.gpu_ms_most, ms), ++s.gpu_samples;
-            if (key != s.budget_key) s.budget_key = key, s.budget_ms = 0, s.budget_frames = 0;
+            if (key != s.budget_key) s.budget_key = key, s.budget_ms = 0, s.budget_frames = 0, s.budget_long = 0;
             const std::string name = key == a.key ? a.name : std::string("(an earlier one)");
             if (ms > world_frame_most_ms) {
-                refuse(*program->second, name, std::format("one frame of it took {:.1f} ms on the GPU (at most {:.0f})", ms, world_frame_most_ms));
+                // Not at the first: the time is the GPU's from the list's start to its end, and one frame of it can be
+                // long for a reason that is not the shader's (the game's window left and come back to, another program
+                // on the GPU). A long frame is left out of the average, and counted.
+                if (++s.budget_long >= world_long_frames)
+                    refuse(*program->second, name, std::format("{} frames of it in {} took over {:.0f} ms on the GPU (the last {:.1f})", world_long_frames,
+                                                               world_budget_frames, world_frame_most_ms, ms));
             } else {
                 s.budget_ms += ms;
                 if (++s.budget_frames >= world_budget_frames) {
                     const double average = s.budget_ms / s.budget_frames;
-                    s.budget_ms = 0, s.budget_frames = 0;
+                    s.budget_ms = 0, s.budget_frames = 0, s.budget_long = 0;
                     if (key == a.key) a.cost_ms = average;
                     if (average > world_budget_ms)
                         refuse(*program->second, name, std::format("it took {:.2f} ms a frame on the GPU (at most {:.1f})", average, world_budget_ms));
@@ -1379,12 +1389,18 @@ bool record_shader(Shared& s) {
         // What it costs: on the GPU a frame, and the heights' rays on the game's update thread a tick.
         const auto ticks = height_ticks.exchange(0), rays = height_rays.exchange(0), height_us = height_us_total.exchange(0),
                    height_most = height_us_most.exchange(0);
+        // And the following of the game's lists, on its recording threads: how many of their calls a frame.
+        const auto followed = followed_calls.exchange(0);
+        const auto followed_frames = s.frame > s.cost_said_frame ? s.frame - s.cost_said_frame : 0;
+        s.cost_said_frame = s.frame;
         logging::printf(logging::Level::info, logging::Channel::graphics,
                         "World shader cost: on the GPU %.2f ms a frame (at most %.2f) over %u frames; the ground heights %.2f ms a tick (at most %.2f), "
-                        "%.1f rays a tick, over %llu ticks. The light given: the picture's %.4f (this frame %.4f), the sky's %.4f%s.",
+                        "%.1f rays a tick, over %llu ticks; %.0f calls on the game's lists followed a frame. The light given: the picture's %.4f "
+                        "(this frame %.4f), the sky's %.4f%s.",
                         s.gpu_samples ? s.gpu_ms_total / s.gpu_samples : 0.0, s.gpu_ms_most, s.gpu_samples,
                         ticks ? static_cast<double>(height_us) / 1000.0 / static_cast<double>(ticks) : 0.0, static_cast<double>(height_most) / 1000.0,
                         ticks ? static_cast<double>(rays) / static_cast<double>(ticks) : 0.0, static_cast<unsigned long long>(ticks),
+                        followed_frames ? static_cast<double>(followed) / static_cast<double>(followed_frames) : 0.0,
                         static_cast<double>(s.light), static_cast<double>(s.light_raw), static_cast<double>(s.far_light),
                         s.far_known ? "" : " (no sky seen yet)");
         s.gpu_ms_total = s.gpu_ms_most = 0;
@@ -1579,6 +1595,7 @@ HRESULT STDMETHODCALLTYPE hooked_reset(ID3D12GraphicsCommandList* list, ID3D12Co
     const HRESULT result = original_reset.load()(list, allocator, pipeline);
     if (following()) {
         auto& st = state_of(list);
+        followed_calls.fetch_add(st.calls, std::memory_order_relaxed);
         st = ListState{};
         st.complete = SUCCEEDED(result);
         st.reset = note_reset(list);
@@ -1907,12 +1924,14 @@ static void ensure_hooks() noexcept {
                 if (hook_enable(target) == HookOk) return true; // (queued: the batch attaches it)
                 original.store(nullptr);
             }
-            void* previous{};
-            if (patch_table_slot(name, &table[slot], target, detour, &previous) == HookOk) {
-                original.store(reinterpret_cast<Fn>(previous));
+            // What the detour passes on to, stored before the slot is pointed at the detour: the game's render threads
+            // come through these slots thousands of times a frame, and one that came between the two called nothing.
+            original.store(reinterpret_cast<Fn>(target));
+            if (patch_table_slot(name, &table[slot], target, detour) == HookOk) {
                 logging::printf(logging::Level::info, logging::Channel::graphics, "World shader: %s is followed through its table slot.", name);
                 return true;
             }
+            original.store(nullptr);
             logging::printf(logging::Level::warning, logging::Channel::graphics, "World shader: %s hook could not be put in place.", name);
             return false;
         };
@@ -1972,32 +1991,22 @@ static void ensure_hooks() noexcept {
 // HLSL compiled on a thread of its own; the program is ready or refused when it is done.
 static void compile(std::shared_ptr<Program> program, std::string name, std::shared_ptr<const std::string> bytes) {
     std::thread([program = std::move(program), name = std::move(name), bytes = std::move(bytes)] {
-        std::string why, code;
+        // As the screen shader's is (plugin_shader_compile.h): DXIL with the game's own compiler where it loads, else
+        // DXBC. It was DXBC with the older compiler always, which took 65 s on a large shader (2026-11-15).
+        plugin_shader_compile::Result made;
         try {
-            const std::string source = std::string(prelude) + *bytes;
-            ComPtr<ID3DBlob> blob, error;
-            if (FAILED(D3DCompile(source.data(), source.size(), name.c_str(), nullptr, nullptr, "main", "ps_5_0",
-                                  D3DCOMPILE_ENABLE_STRICTNESS | D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &blob, &error)) || !blob) {
-                why = "it did not compile";
-                if (error) {
-                    std::string text(static_cast<const char*>(error->GetBufferPointer()), error->GetBufferSize());
-                    while (!text.empty() && (text.back() == '\0' || text.back() == '\n' || text.back() == '\r')) text.pop_back();
-                    if (text.size() > 600) text = text.substr(0, 600) + "...";
-                    why += ": " + text;
-                }
-            } else {
-                code.assign(static_cast<const char*>(blob->GetBufferPointer()), blob->GetBufferSize());
-            }
+            made = plugin_shader_compile::compile_pixel_shader(std::string(prelude) + *bytes, name);
         } catch (...) {
-            why = "it did not compile (an exception was raised)";
+            made.error = "an exception was raised";
         }
         auto& a = asked();
         std::lock_guard lock(a.mutex);
-        if (why.empty()) {
-            program->code = std::move(code);
+        if (!made.code.empty()) {
+            program->code = std::move(made.code);
+            program->dxil = made.dxil; // (its pipeline takes the DXIL vertex shader then: plugin_pipeline)
             program->state = Program::State::ready;
         } else {
-            refuse(*program, name, std::move(why));
+            refuse(*program, name, "it did not compile: " + made.error);
         }
     }).detach();
 }
@@ -2301,7 +2310,7 @@ void present(std::uint32_t width, std::uint32_t height) noexcept {
     try {
         auto& s = shared();
         std::lock_guard lock(s.mutex);
-        const bool ready = original_execute.load() && !s.failed && s.queue && !retired.load();
+        const bool ready = original_execute.load() && !s.failed && s.queue;
         active.store(ready && wanted.load() && allowed.load());
         tracking.store(active.load() && lists_followed.load());
         if (!active.load()) {
@@ -2477,7 +2486,7 @@ void release() noexcept {
         s.inside_data_uploaded = {};
         s.inside_frame = ~std::uint64_t{0};
         s.timer_key = {};
-        s.budget_key = 0, s.budget_ms = 0, s.budget_frames = 0;
+        s.budget_key = 0, s.budget_ms = 0, s.budget_frames = 0, s.budget_long = 0;
         s.device = nullptr;
         s.queue = nullptr;
         s.colour = nullptr;

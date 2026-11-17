@@ -61,7 +61,7 @@ namespace {
 // Extension/Multiplayer/Session/skater_copy.h): this game's alone, never in a session, nothing sent.
 // "replay" grants nothing yet: no API checks it. It stays known so a manifest that lists it still
 // loads (an unknown permission refuses the whole manifest).
-constexpr std::array<std::string_view, 67> permissions{
+constexpr std::array<std::string_view, 69> permissions{
     "console", "storage", "overlay", "menu", "ui.screen", "input", "input.write", "hud", "events.tricks", "events.skater",
     "skater.read", "skater.teleport", "skater.control", "skater.animation", "trainer", "camera",
     "world.raycast", "world.vehicles", "world.physics", "world.physics.observe", "world.physics.reuse", "world.objects", "world.entities", "world.environment", "world.ai", "travel", "session.read",

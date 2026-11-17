@@ -26,8 +26,8 @@
 // All of it is seen through ResourceBarrier (the depth tap's hook) and ExecuteCommandLists, which is hooked (in a
 // HookBatch) only when a plugin first asks for a world shader. Anything not as expected draws nothing that frame.
 //
-// The shader. It may be HLSL source (.hlsl, compiled by ReSkate with `prelude` in front of it: ps_5_0, entry
-// `main`), or a compiled pixel shader container (.cso or .dxbc: DXBC; .dxil: DXIL, signed), as screen_shader_file.h
+// The shader. It may be HLSL source (.hlsl, compiled by ReSkate with `prelude` in front of it, entry `main`:
+// plugin_shader_compile.h says with what), or a compiled pixel shader container (.cso or .dxbc: DXBC; .dxil: DXIL, signed), as screen_shader_file.h
 // checks. Its bindings, which ReSkate gives it and nothing else:
 //   b0  the cbuffer in `prelude` (the camera the picture was drawn with, last frame's, the measured near distance,
 //       an anchor, a clock, the plugin's 48 values, and the picture's brightness eased);
@@ -41,12 +41,14 @@
 // replaces the pixel of the world's picture (alpha is not blended).
 //
 // It runs on the GPU in the game's frame, so it is watched there: each frame is timed, and one that takes more than
-// world_budget_ms a frame on average (or any one frame over world_frame_most_ms) is turned off for the rest of the
-// run, as is one that does not compile or that the driver refuses. Nothing it draws is read back for the plugin.
+// world_budget_ms a frame on average (or world_long_frames frames over world_frame_most_ms in one stretch: one alone
+// can be the game's window left and come back to) is turned off for the rest of the run, as is one that does not
+// compile or that the driver refuses. Nothing it draws is read back for the plugin.
 namespace dingosdk::world_shader {
 inline constexpr double world_budget_ms = 12.0;     // on average, over world_budget_frames frames
 inline constexpr unsigned world_budget_frames = 120;
-inline constexpr double world_frame_most_ms = 100.0; // any one frame
+inline constexpr double world_frame_most_ms = 100.0; // a long frame: left out of the average, and counted
+inline constexpr unsigned world_long_frames = 3;     // long frames in one stretch of world_budget_frames that turn it off
 inline constexpr std::size_t most_data_bytes = screen_shader::world_data_most_bytes; // the plugin's data: 4096 float4s
 
 // In front of a plugin's HLSL source. A compiled shader declares the same itself (the bindings are what count).

@@ -100,6 +100,7 @@ struct Graphics {
     std::uint64_t timed_key{};   // the shader the sums below are for
     double timed_ms{};
     unsigned timed_frames{};
+    unsigned timed_long{};       // its frames over shader_frame_most_ms in this stretch
     double last_seconds{};
     bool failed{};
 };
@@ -321,12 +322,17 @@ void read_times(const Target &t, Asked &a) {
             g.timed_key = slot.key;
             g.timed_ms = 0;
             g.timed_frames = 0;
+            g.timed_long = 0;
         }
         const auto found = a.programs.find(slot.key);
         if (found == a.programs.end()) continue;
         const std::string name = slot.key == a.key ? a.name : std::string("(an earlier one)");
         if (ms > shader_frame_most_ms) {
-            refuse(*found->second, name, std::format("one frame of it took {:.1f} ms on the GPU (at most {:.0f})", ms, shader_frame_most_ms));
+            // Not at the first: one frame can be long for a reason that is not the shader's (the game's window left and
+            // come back to, another program on the GPU). A long frame is left out of the average, and counted.
+            if (++g.timed_long >= shader_long_frames)
+                refuse(*found->second, name, std::format("{} frames of it in {} took over {:.0f} ms on the GPU (the last {:.1f})", shader_long_frames,
+                                                         shader_budget_frames, shader_frame_most_ms, ms));
             continue;
         }
         g.timed_ms += ms;
@@ -334,6 +340,7 @@ void read_times(const Target &t, Asked &a) {
             const double average = g.timed_ms / g.timed_frames;
             g.timed_ms = 0;
             g.timed_frames = 0;
+            g.timed_long = 0;
             if (average > shader_budget_ms)
                 refuse(*found->second, name, std::format("it took {:.2f} ms a frame on the GPU (at most {:.1f})", average, shader_budget_ms));
         }
@@ -476,5 +483,6 @@ void release() noexcept {
     g.timed_key = 0;
     g.timed_ms = 0;
     g.timed_frames = 0;
+    g.timed_long = 0;
 }
 } // namespace dingosdk::screen_shader

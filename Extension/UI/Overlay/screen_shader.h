@@ -13,13 +13,14 @@
 // through the shader, ahead of the overlay's own drawing. One plugin's at a time.
 //
 // It runs on the GPU in the game's frame, so it is watched there: each frame it is drawn is timed on the GPU, and one
-// that takes more than shader_budget_ms a frame on average (or any one frame over shader_frame_most_ms) is turned
-// off for the rest of the run, as is one that does not compile or that the driver refuses. The plugin is told why
+// that takes more than shader_budget_ms a frame on average (or shader_long_frames frames over shader_frame_most_ms
+// in one stretch: one alone can be the game's window left and come back to) is turned off for the rest of the run, as is one that does not compile or that the driver refuses. The plugin is told why
 // (set's answer). Nothing it draws is ever read back for the plugin: its only output is the picture.
 namespace dingosdk::screen_shader {
 inline constexpr double shader_budget_ms = 3.0;     // on average, over shader_budget_frames frames
 inline constexpr unsigned shader_budget_frames = 30;
-inline constexpr double shader_frame_most_ms = 50.0; // any one frame
+inline constexpr double shader_frame_most_ms = 50.0; // a long frame: left out of the average, and counted
+inline constexpr unsigned shader_long_frames = 3;    // long frames in one stretch of shader_budget_frames that turn it off
 
 // Client thread. The shader for the next 300 ms (set it every tick): `name` the plugin's file, `bytes` its content,
 // checked by check_file as `kind`. Empty, or why it is not drawn (it did not compile, the driver refused it, it took
