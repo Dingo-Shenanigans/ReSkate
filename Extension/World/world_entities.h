@@ -57,6 +57,19 @@ struct Physics {
 };
 // Test only: the next client tick runs the named per-body setter on every live object's bodies.
 void test_bodies(std::string name);
+// A set piece: one of the game's own prefab blueprints (a light rig, a menu's backdrop) made in the
+// world at a transform, with everything in it (the CAS character light rig is ten spot lights and
+// their aiming; a backdrop its meshes, decals and visual environment). Found 2026-11-16: the game's
+// blueprint creation makes a prefab as it makes a world object, into a sublevel of its own, when it
+// is handed a creation list and the list is initialized after, as the game's own callers do. The
+// game lights its menu's character room with such a rig, made by the menu; a set piece is the same
+// rig, with no menu. A piece cannot be moved: one given another transform is made again there.
+// At most 8 an owner. Only a SpatialPrefabBlueprint is made (a layer crashed the creation).
+// False and why when it cannot be kept.
+std::string set_piece(std::string_view owner, std::uint32_t id, std::string asset, const Matrix& matrix);
+void remove_piece(std::string_view owner, std::uint32_t id);
+// Whether the piece is in the world now.
+bool piece_ready(std::string_view owner, std::uint32_t id);
 void set_physics(const Physics& physics) noexcept;
 // Where a skater's joint is in the world now, or empty (set by the runtime: the local skater's pose
 // and the session's drawn poses). Called on the client thread.
@@ -89,5 +102,8 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept;
 void before_level_transition(std::uintptr_t base, unsigned next) noexcept;
 void entity_destroyed(std::uintptr_t entity) noexcept;
 
-inline constexpr std::size_t max_per_owner = 512, max_total = 1024;
+// (No limit on how many objects an owner, or all of them, may have. There was one until 2026-11-17,
+// 512 an owner and 1024 in all: a plugin that draws a canopy in 160 pieces, its own gun and the guns
+// of the other players, each some thirty pieces, had to ration them, and Zee had it taken out. What
+// is left to stop a plugin filling the world is the game's own memory.)
 } // namespace dingosdk::world_entities

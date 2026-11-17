@@ -42,6 +42,7 @@
 #include "Extension/Throwdowns/custom_modes.h"
 #include "Extension/Throwdowns/throwdown_kit.h"
 #include "plugin_camera.h"
+#include "Extension/Multiplayer/Session/skater_copy.h"
 #include "Extension/Multiplayer/Session/session.h"
 #include "Extension/Multiplayer/Remote/stand_ins.h"
 #include "Extension/Multiplayer/Remote/native_audio.h"
@@ -266,6 +267,20 @@ public:
     // hid pressed Start and saw nothing. So while a game menu is up the UI is shown again, and hidden
     // once more when the menu closes. Each client tick.
     void tick_hud() {
+        keep_hold();
+        // A room opened quietly: the game's interface stays hidden with its menu up, until the walk back
+        // is done (or the room failed); then it is as it was, or as the plugins that hide the HUD have it.
+        if (room_quiet_) {
+            const auto phase = character_room::phase();
+            const bool held = !room_owner_.empty() && (phase == character_room::Phase::opening || phase == character_room::Phase::arrived);
+            if (held || phase == character_room::Phase::leaving) return;
+            room_quiet_ = false;
+            const bool menu = multiplayer::native_pause_menu_open();
+            const bool hidden = room_ui_was_hidden_ || (!hud_hiders_.empty() && !hud_was_hidden_ && !menu);
+            hud_shown_for_menu_ = menu;
+            queue(overlay::DebugAction::set_game_ui_hidden, hidden);
+            return;
+        }
         if (hud_hiders_.empty() || hud_was_hidden_) return;
         const bool menu = multiplayer::native_pause_menu_open();
         if (menu == hud_shown_for_menu_) return;
@@ -336,6 +351,26 @@ public:
         }
     }
     void entity_remove(std::string_view plugin, std::uint32_t id) override { world_entities::remove(plugin, id); }
+    // Which of the game's prefabs a plugin may place: its light rigs and its menus' backdrops. Nothing
+    // with gameplay in it: a prefab can hold any logic the game has (a store, a challenge, a spawner).
+    std::string piece_set(std::string_view plugin, std::uint32_t id, std::string_view prefab, const std::array<float, 16>& matrix) override {
+        std::string name(prefab);
+        std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        const bool allowed = (name.starts_with("lighting/prefabs/") || name.starts_with("presentation/assets/prefabs/backgrounds/prefab_background_")) &&
+                             name.find("..") == std::string::npos;
+        if (!allowed) return "only the game's light rigs (lighting/prefabs/) and menu backdrops (presentation/assets/prefabs/backgrounds/prefab_background_) are set pieces";
+        return world_entities::set_piece(plugin, id, std::move(name), matrix);
+    }
+    void piece_remove(std::string_view plugin, std::uint32_t id) override { world_entities::remove_piece(plugin, id); }
+    std::string skater_copy(std::string_view plugin, std::optional<SkaterCopyPlace> place) override {
+        if (!place) return multiplayer::set_skater_copy(plugin, std::nullopt);
+        multiplayer::SkaterCopy copy;
+        copy.position = place->position;
+        copy.board = place->board;
+        return multiplayer::set_skater_copy(plugin, copy);
+    }
+    bool skater_copy_shown() override { return multiplayer::skater_copy_shown(); }
+    bool piece_ready(std::string_view plugin, std::uint32_t id) override { return world_entities::piece_ready(plugin, id); }
     void entity_clear(std::string_view plugin) override { world_entities::clear(plugin); }
     int entity_status(std::string_view plugin, std::uint32_t id) override { return static_cast<int>(world_entities::status(plugin, id)); }
     bool entities_ready(std::string_view plugin) override { return world_entities::ready(plugin); }
@@ -1001,6 +1036,16 @@ public:
         set_plugin_cruise(speed, may_slow);
         return {};
     }
+    bool skater_held(std::string_view plugin) override { return freezers_.contains(std::string(plugin)) && noclip_active(); }
+    std::string fly(std::string_view plugin, std::optional<Vec3> velocity) override {
+        if (!velocity) {
+            set_plugin_flight({}, false);
+            return {};
+        }
+        if (!freezers_.contains(std::string(plugin))) return "the skater is not held: reskate.skater.freeze(true) first";
+        set_plugin_flight(*velocity, true);
+        return {};
+    }
     std::string set_velocity(std::string_view, const Vec3& velocity, bool add) override {
         if (multiplayer_session_active() && !session_boosts_allowed()) return "the host has turned boosts off";
         if (multiplayer::local_throwdown_active() && !competition_stock_physics()) return "not while a throwdown runs";
@@ -1027,6 +1072,14 @@ public:
         const auto slam = skater_events::last_slam();
         if (!slam.at) return std::nullopt;
         return SlamNews{slam.force, slam.cause, static_cast<double>(GetTickCount64() - slam.at)};
+    }
+    std::string skydive() override {
+        if (multiplayer::local_throwdown_active()) return "not while a throwdown runs";
+        if (!input_allowed()) return "gameplay input is unavailable";
+        NoBailSkater skater;
+        if (!no_bail_skater(skater)) return "the local skater is unavailable";
+        no_bail_request_skydive();
+        return {};
     }
     std::string wipeout(float force) override {
         if (multiplayer::local_throwdown_active()) return "not while a throwdown runs";
@@ -1299,6 +1352,8 @@ public:
         s.bars = look->bars, s.hood = look->hood, s.grade = look->grade, s.soft = look->soft, s.scanlines = look->scanlines, s.grain = look->grain;
         s.dropouts = look->dropouts, s.head_switching = look->head_switching, s.tracking = look->tracking, s.smear = look->smear, s.iris = look->iris;
         s.rolling = look->rolling;
+        s.tone = look->tone, s.tone_dark = look->tone_dark, s.tone_bright = look->tone_bright;
+        s.tone_curve = look->tone_curve, s.tone_noise = look->tone_noise;
         s.strength = {look->bars_strength, look->hood_strength, look->grade_strength, look->soft_strength, look->scanlines_strength,
                       look->grain_strength, look->dropouts_strength, look->head_switching_strength, look->smear_strength};
         s.text = look->text;
@@ -1389,10 +1444,15 @@ public:
     static skater_animation::Shown shown_of(Shown shown) {
         return shown == Shown::others ? skater_animation::Shown::others : shown == Shown::me ? skater_animation::Shown::me : skater_animation::Shown::everyone;
     }
-    std::string skater_pose(std::string_view plugin, const std::vector<JointOffset>& offsets, float weight, Shown shown) override {
+    std::string skater_pose(std::string_view plugin, const std::vector<JointOffset>& offsets, float weight, Shown shown, bool still) override {
         const auto now = GetTickCount64();
         if (!poser_.empty() && poser_ != plugin && now < pose_at_ + 300) return offsets.empty() ? std::string{} : poser_ + " poses the skater";
         if (offsets.empty()) {
+            // (The others' own pose let go: the pose drawn here stays, and whose it is.)
+            if (shown == Shown::others) {
+                if (poser_ == plugin) skater_animation::pose({}, 1, skater_animation::Shown::others);
+                return {};
+            }
             if (poser_ == plugin) {
                 skater_animation::pose({}, 1);
                 poser_.clear();
@@ -1403,7 +1463,7 @@ public:
         pose_at_ = now;
         std::vector<skater_animation::PoseOffset> out;
         for (const auto& o : offsets) out.push_back({o.joint, o.rotation, o.scale, o.offset, o.place, o.keep_children});
-        skater_animation::pose(std::move(out), weight, shown_of(shown));
+        skater_animation::pose(std::move(out), weight, shown_of(shown), still);
         return {};
     }
     std::string camera_cycle(std::string_view plugin, CycleCamera state) override {
@@ -1570,7 +1630,8 @@ public:
         overlay::pad_tick();
         character_room::tick(base, component, component != 0, false);
         const auto room = character_room::phase();
-        skater_animation::show_in_room(!room_owner_.empty() && room == character_room::Phase::arrived);
+        skater_animation::show_in_room((!room_owner_.empty() && room == character_room::Phase::arrived) ||
+                                       (!set_owner_.empty() && set_skater_ && character_room::set_shown()));
     }
     // ---- general services for a game layer in Lua ------------------------------------------------------
     std::optional<SkaterTelemetry> skater_telemetry(std::string_view plugin) override {
@@ -1611,17 +1672,27 @@ public:
     }
     // Only while the game's own window is in front, as the pad is read: a key held in another
     // program is not the game's (a plugin's keys fired while the player typed elsewhere).
-    bool key_down(int virtual_key) override { return joystick::game_in_foreground() && overlay::key_down(virtual_key); }
+    // And not while chat, the console or a search box is typed in: reskate.input.key is read by
+    // plugins that never ask reskate.input.allowed, and a letter of a chat message opened their
+    // menus and drove their vehicles (binds were always held back there, take_presses above).
+    bool key_down(int virtual_key) override {
+        return joystick::game_in_foreground() && !overlay::text_entry_open() && overlay::key_down(virtual_key);
+    }
     int mouse_wheel() override { return overlay::take_mouse_wheel(); }
     // One read of the overlay's mouse a call, shared out: every plugin that read it in the last two
     // seconds gets the movement, so two plugins never take it from each other.
     std::string typed_text(bool capture) override { return overlay::take_plugin_text(capture); }
-    std::string room_open(std::string_view plugin) override {
+    std::string room_open(std::string_view plugin, bool quiet) override {
         if (!room_owner_.empty() && room_owner_ != plugin) return room_owner_ + " has the character room";
         if (multiplayer::local_throwdown_active()) return "not while a throwdown runs";
         const auto phase = character_room::phase();
         if (room_owner_ == plugin && (phase == character_room::Phase::opening || phase == character_room::Phase::arrived)) return {};
         room_owner_ = plugin;
+        if (quiet && !room_quiet_) {
+            room_quiet_ = true;
+            room_ui_was_hidden_ = base_ && multiplayer::sample_game_ui_state(base_).ui_hidden;
+            queue(overlay::DebugAction::set_game_ui_hidden, true);
+        }
         character_room::open();
         return {};
     }
@@ -1631,6 +1702,23 @@ public:
         skater_animation::show_in_room(false);
         character_room::leave();
     }
+    std::string room_show(std::string_view plugin, bool on, bool skater) override {
+        if (!on) {
+            if (set_owner_ != plugin) return {};
+            set_owner_.clear();
+            set_skater_ = false;
+            character_room::show_set(false);
+            return {};
+        }
+        if (!set_owner_.empty() && set_owner_ != plugin) return set_owner_ + " has the character room";
+        if (!room_owner_.empty() && room_owner_ != plugin) return room_owner_ + " has the character room";
+        if (multiplayer::local_throwdown_active()) return "not while a throwdown runs";
+        set_owner_ = plugin;
+        set_skater_ = skater;
+        character_room::show_set(true);
+        return {};
+    }
+    std::array<float, 3> room_place() override { return skater_animation::room_floor_spot(); }
     std::optional<RoomPose> room_pose(bool skater) override {
         if (!game_menu().open) return std::nullopt;
         const auto pose = skater_animation::preview_pose(skater);
@@ -1790,9 +1878,9 @@ public:
         if (!overlay::read_plugin_cursor(c)) return std::nullopt;
         return Cursor{c.x, c.y, c.wheel, c.left, c.right, c.middle, c.over_screen};
     }
-    std::optional<MouseMotion> mouse_motion(std::string_view plugin) override {
+    std::optional<MouseMotion> mouse_motion(std::string_view plugin, bool hold) override {
         overlay::MouseLook look;
-        const bool live = overlay::read_mouse_look(look);
+        const bool live = overlay::read_mouse_look(look, hold);
         const auto now = GetTickCount64();
         std::erase_if(mouse_readers_, [&](const auto& entry) { return now - entry.second.at > 2000; });
         for (auto& [who, reader] : mouse_readers_) {
@@ -2016,13 +2104,28 @@ public:
             if (!before && !session_noclip_allowed()) return "the host has turned noclip off";
             freezers_.insert(std::string(plugin));
         } else freezers_.erase(std::string(plugin));
+        // (A velocity the plugin was flying it at is left to run out, 300 ms at most: letting go takes
+        // the game a moment, and the skater is to leave the hold moving as it was, not stopped dead.)
         const bool now = !freezers_.empty();
+        set_noclip_hold(now);
         if (now == before) return {};
         const auto why = queue(overlay::DebugAction::set_noclip, now);
+        hold_asked_ = GetTickCount64();
         if (!why.empty() && now) freezers_.erase(std::string(plugin));
         return why;
     }
     bool frozen() const noexcept { return !freezers_.empty(); }
+    // A hold the game dropped is taken again: a teleport ends noclip ("A teleport started; flight
+    // stopped"), and so does a level's start, while the plugin still asks for the skater held. Before,
+    // a plugin that teleported the skater it held had it loose from then on, and asking again did
+    // nothing (it was held already, as far as this knew).
+    void keep_hold() {
+        if (freezers_.empty() || noclip_active()) return;
+        const auto now = GetTickCount64();
+        if (now - hold_asked_ < 250) return;
+        hold_asked_ = now;
+        (void)queue(overlay::DebugAction::set_noclip, true);
+    }
     std::vector<WornItem> outfit_worn() override {
         std::vector<WornItem> out;
         for (auto& w : worn_items::worn_outfit()) out.push_back({std::move(w.slot), std::move(w.item), std::move(w.title)});
@@ -2136,6 +2239,8 @@ public:
         }
         hide_nametags(plugin, false);
         if (room_owner_ == plugin) room_leave(plugin);
+        if (set_owner_ == plugin) (void)room_show(plugin, false, false);
+        (void)multiplayer::set_skater_copy(plugin, std::nullopt);
         if (const auto seen = telemetry_seen_.find(plugin); seen != telemetry_seen_.end()) telemetry_seen_.erase(seen);
         plugin_feed::release_tags(std::string(plugin));
         if (std::erase_if(binds_, [&](const auto& item) { return item.first.first == plugin; })) publish_binds();
@@ -2202,6 +2307,10 @@ private:
     std::string cycler_; // the plugin whose camera is in the camera height cycle (camera_cycle)
     std::uint64_t cycle_at_{};
     std::string room_owner_; // the plugin in the character room (room_open)
+    bool room_quiet_{};         // the game's interface is hidden for that room (tick_hud gives it back)
+    bool room_ui_was_hidden_{}; // as the interface was before
+    std::string set_owner_;  // the plugin that has the room's set shown without the menu (room_show)
+    bool set_skater_{};      // and whether its skater is drawn in it
     std::uint64_t pose_at_{};
     std::string looker_;  // the plugin whose look is on the screen (screen_look)
     std::string surfacer_; // the plugin whose surface sound the local skater's sounds have
@@ -2353,6 +2462,7 @@ private:
     float camera_fov_{};
     bool camera_shown_{}, camera_releasing_{};
     std::set<std::string, std::less<>> freezers_;
+    ULONGLONG hold_asked_{}; // when noclip was last asked for, for a hold (keep_hold)
     std::set<std::string, std::less<>> hud_hiders_;
     bool hud_was_hidden_{};
     bool hud_shown_for_menu_{}; // the UI a plugin hid is shown for now: a game menu is up

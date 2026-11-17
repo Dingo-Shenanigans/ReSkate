@@ -664,7 +664,13 @@ struct FakeGame final : Game {
         calls.push_back(std::format("cruise {} {:.1f} {}", plugin, speed, may_slow));
         return {};
     }
-    std::optional<MouseMotion> mouse_motion(std::string_view) override { return MouseMotion{3, -2, 1}; }
+    // (The 1 key, 0x31, is the one held: a string "1" must ask for it, and the number 1 for the left mouse button.)
+    bool key_down(int key) override { return key == 0x31; }
+    bool mouse_held{};
+    std::optional<MouseMotion> mouse_motion(std::string_view, bool hold) override {
+        mouse_held = hold;
+        return MouseMotion{3, -2, 1};
+    }
     static const char* shown_name(Shown shown) { return shown == Shown::others ? "others" : shown == Shown::me ? "me" : "everyone"; }
     std::string skater_carry(std::string_view plugin, std::optional<Carry> c) override {
         calls.push_back(c ? std::format("carry {} {}{} {:.1f} {:.1f} {:.1f} front {:.2f} grip {} w {:.2f} crouch {:.2f} hunch {:.2f} turn {:.2f} step {:.2f}{}{} {}",
@@ -679,9 +685,10 @@ struct FakeGame final : Game {
                                         c->look_at ? std::format("{:.1f} {:.1f} {:.1f}", (*c->look_at)[0], (*c->look_at)[1], (*c->look_at)[2]) : "none"));
         return {};
     }
-    std::string skater_pose(std::string_view plugin, const std::vector<JointOffset>& offsets, float weight, Shown shown) override {
+    std::string skater_pose(std::string_view plugin, const std::vector<JointOffset>& offsets, float weight, Shown shown, bool still) override {
         std::string text = std::format("pose {} {:.2f}", plugin, weight);
         if (shown != Shown::everyone) text += std::format(" {}", shown_name(shown));
+        if (still) text += " still";
         auto sorted = offsets;
         std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { return a.joint < b.joint; });
         for (const auto& o : sorted) {
@@ -710,8 +717,9 @@ struct FakeGame final : Game {
     std::string typed = "";
     std::string typed_text(bool capture) override { return capture ? std::exchange(typed, {}) : std::string{}; }
     std::string room_phase = "idle";
-    std::string room_open(std::string_view plugin) override {
+    std::string room_open(std::string_view plugin, bool quiet) override {
         calls.push_back("room open " + std::string(plugin));
+        if (quiet) calls.push_back("room quiet " + std::string(plugin));
         room_phase = "open";
         return {};
     }
@@ -720,8 +728,18 @@ struct FakeGame final : Game {
         room_phase = "idle";
     }
     RoomState room_state(std::string_view) override { return {room_phase, {}}; }
+    std::string room_show(std::string_view plugin, bool on, bool skater) override {
+        calls.push_back(std::format("room show {} {} {}", plugin, on, skater));
+        return {};
+    }
+    std::array<float, 3> room_place() override { return {1.0f, -69.99f, -5.25f}; }
     std::string set_setting(std::string_view plugin, std::string_view name, std::optional<std::string> value) override {
         calls.push_back(std::format("setting {} {} {}", plugin, name, value ? *value : std::string("none")));
+        return {};
+    }
+    bool skater_held(std::string_view plugin) override { return plugin == "flipper"; }
+    std::string fly(std::string_view plugin, std::optional<Vec3> v) override {
+        calls.push_back(v ? std::format("fly {} {:.1f} {:.1f} {:.1f}", plugin, (*v)[0], (*v)[1], (*v)[2]) : std::format("fly {} none", plugin));
         return {};
     }
     std::string set_velocity(std::string_view plugin, const Vec3& v, bool add) override {
@@ -780,6 +798,8 @@ struct FakeGame final : Game {
                                         l->text[0], l->text[1], l->text[2], l->text[3], l->text[4])
                           : std::format("look {} none", plugin));
         if (l && l->edge_blur > 0) calls.push_back(std::format("look edge {} {:.2f} {:.2f}", plugin, l->edge_blur, l->edge_start));
+        if (l && l->tone) calls.push_back(std::format("look tone {} {:.2f} {:.2f} {:.2f} {:.2f} {:.2f}", plugin, l->tone_dark[2], l->tone_bright[0],
+                                                      l->tone_bright[1], l->tone_curve, l->tone_noise));
         if (l && (l->bars_strength != 1 || l->hood_strength != 1 || l->grade_strength != 1 || l->soft_strength != 1 || l->scanlines_strength != 1 ||
                   l->grain_strength != 1 || l->dropouts_strength != 1 || l->head_switching_strength != 1 || l->smear_strength != 1))
             calls.push_back(std::format("look strengths {} {:.2f} {:.2f} {:.2f} {:.2f} {:.2f} {:.2f} {:.2f} {:.2f} {:.2f}", plugin, l->bars_strength,
@@ -863,6 +883,10 @@ struct FakeGame final : Game {
     std::optional<SlamNews> last_slam() override { return SlamNews{7.5f, 12, 100}; }
     std::string wipeout(float force) override {
         calls.push_back(std::format("wipeout {:.1f}", force));
+        return {};
+    }
+    std::string skydive() override {
+        calls.push_back("skydive");
         return {};
     }
     std::string control(std::string_view action) override { calls.push_back("control " + std::string(action)); return {}; }
@@ -966,6 +990,21 @@ struct FakeGame final : Game {
         ++vehicle_release_alls;
         for (auto& [id, sample] : vehicles) if (vehicle_owners[id] == owner) sample.state = traffic_vehicles::State::released;
     }
+    std::string skater_copy(std::string_view plugin, std::optional<SkaterCopyPlace> place) override {
+        calls.push_back(place ? std::format("copy {} at {:.0f} {:.0f} {:.0f} board {}", plugin, place->position[0], place->position[1], place->position[2], place->board)
+                              : std::format("copy {} gone", plugin));
+        copy_on = place.has_value();
+        return {};
+    }
+    bool copy_on{};
+    bool skater_copy_shown() override { return copy_on; }
+    std::string piece_set(std::string_view plugin, std::uint32_t id, std::string_view prefab, const std::array<float, 16>& m) override {
+        if (!prefab.starts_with("lighting/prefabs/")) return "only the game's light rigs";
+        calls.push_back(std::format("piece {} {} {} at {:.0f} {:.0f} {:.0f}", plugin, id, prefab, m[12], m[13], m[14]));
+        return {};
+    }
+    void piece_remove(std::string_view plugin, std::uint32_t id) override { calls.push_back(std::format("piece remove {} {}", plugin, id)); }
+    bool piece_ready(std::string_view, std::uint32_t id) override { return id == 1; }
     void entity_clear(std::string_view plugin) override {
         std::erase_if(entities, [&](const auto& e) { return e.first.first == plugin; });
         calls.push_back("entities clear " + std::string(plugin));
@@ -3667,8 +3706,9 @@ void plugins_read_and_hide_other_players_items() {
         crowd[tostring(101)] = nil
         assert(reskate.session.hide_items({players = crowd}), "64 players is fine")
         assert(reskate.session.hide_items({items = {"Own_A"}}))
+        for _ = 1, 20 do reskate.session.hide_items({items = {"Own_C"}}) end
         local ok, why = reskate.session.hide_items({items = {"Own_B"}})
-        assert(ok == false and why == "asked more than 4 times in a second", why)
+        assert(ok == false and why == "asked more than 20 times in a second", why)
         reskate.log("hid")
       end)
       reskate.console.command("again", "x", function()
@@ -3697,7 +3737,7 @@ void plugins_read_and_hide_other_players_items() {
           "A list on everyone and on one player, then none\n" + environment.all());
     check(game.called("hide-items filter Own_A") && game.called("hide-items filter Own_B") &&
               std::ranges::count(game.calls, std::string("hide-items filter Own_B")) == 1,
-          "The fifth change in a second is refused and reaches nothing; a second later it goes through\n" + environment.all());
+          "A change past the twentieth in a second is refused and reaches nothing; a second later it goes through\n" + environment.all());
     check(!game.called("hide-items reader") && !game.called("hide-items hider Own_Hat"), "A plugin without the permission hides nothing");
 }
 
@@ -4689,6 +4729,68 @@ void plugins_draw_the_games_map() {
     check(environment.logged("[radar] map 300 1444, 2206 x 1241"), "Its middle and size, where the level has one\n" + environment.all());
 }
 
+// A copy of the local skater, drawn somewhere else, with "skater.copy".
+void plugins_show_a_skater_copy() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    Host host(environment, Side::client);
+    const std::string main = R"(
+        assert(not reskate.skater.copy_shown())
+        assert(reskate.skater.copy({position = vector.create(1, -70, -5)}))
+        assert(reskate.skater.copy_shown())
+        assert(reskate.skater.copy({position = vector.create(1, -70, -5), board = true}))
+        assert(not pcall(reskate.skater.copy, {position = "here"}), "a position is a vector")
+        assert(not pcall(reskate.skater.copy, {position = vector.create(0, 0, 0), board = 1}), "board is true or false")
+        assert(reskate.skater.copy(nil))
+        assert(not reskate.skater.copy_shown())
+        reskate.log("copied")
+    )";
+    host.apply({package("booth", {{manifest_file, manifest(R"("skater.copy")")}, {"plugin/main.lua", main}})});
+    ticks(host, environment, 1);
+    running(host, "booth", environment);
+    check(environment.logged("[booth] copied"), "A plugin shows a copy of the skater\n" + environment.all());
+    check(game.called("copy booth at 1 -70 -5 board false") && game.called("copy booth at 1 -70 -5 board true") && game.called("copy booth gone"),
+          "The copy is placed, with its board or not, and let go\n" + environment.all());
+    host.apply({package("sneaky", {{manifest_file, manifest(R"("skater.read")")}, {"plugin/main.lua", R"(
+        reskate.log(tostring(pcall(reskate.skater.copy, {position = vector.create(0, 0, 0)})) .. " " .. tostring(pcall(reskate.skater.copy_shown)))
+    )"}})});
+    ticks(host, environment, 1);
+    check(environment.logged("[sneaky] false false"), "skater.copy is needed\n" + environment.all());
+}
+
+// The game's own set pieces: a light rig or a backdrop prefab, placed with "world.sets".
+void plugins_place_set_pieces() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    Host host(environment, Side::client);
+    const std::string main = R"(
+        local rig = "lighting/prefabs/character/pf_lightrig_cas_character"
+        assert(reskate.entities.piece(1, rig, {position = vector.create(1, 2, 3)}))
+        assert(reskate.entities.piece_ready(1) and not reskate.entities.piece_ready(2))
+        local ok, why = reskate.entities.piece(2, "gameplay/store/prefab_store", {position = vector.create(0, 0, 0)})
+        assert(ok == false and string.find(why, "light rigs", 1, true), "only the game's lights and backdrops: " .. tostring(why))
+        assert(not pcall(reskate.entities.piece, 0, rig, {position = vector.create(0, 0, 0)}), "ids start at 1")
+        assert(not pcall(reskate.entities.piece, 3, rig, {position = vector.create(0 / 0, 0, 0)}), "a finite position")
+        reskate.entities.piece_remove(1)
+        reskate.log("lit")
+    )";
+    host.apply({package("studio", {{manifest_file, manifest(R"("world.sets")")}, {"plugin/main.lua", main}})});
+    ticks(host, environment, 1);
+    running(host, "studio", environment);
+    check(environment.logged("[studio] lit"), "A plugin places a set piece\n" + environment.all());
+    check(game.called("piece studio 1 lighting/prefabs/character/pf_lightrig_cas_character at 1 2 3") && game.called("piece remove studio 1"),
+          "The piece is placed and taken away\n" + environment.all());
+    host.apply({});
+    check(game.called("entities clear studio"), "A plugin's set pieces go with it, with its objects\n" + environment.all());
+    // Without the permission, refused: world.entities is not enough.
+    host.apply({package("props", {{manifest_file, manifest(R"("world.entities")")}, {"plugin/main.lua", R"(
+        reskate.log(tostring(pcall(reskate.entities.piece, 1, "lighting/prefabs/character/pf_lightrig_cas_character", {position = vector.create(0, 0, 0)})) .. " " ..
+                    tostring(pcall(reskate.entities.piece_remove, 1)) .. " " .. tostring(pcall(reskate.entities.piece_ready, 1)))
+    )"}})});
+    ticks(host, environment, 1);
+    check(environment.logged("[props] false false false"), "world.sets is needed\n" + environment.all());
+}
+
 void plugins_place_world_entities() {
     TestEnvironment environment;
     auto& game = environment.fake;
@@ -4844,6 +4946,10 @@ void plugins_set_the_flip_speed() {
     Host host(environment, Side::client);
     host.apply({package("flipper", {{manifest_file, manifest(R"("skater.control")")}, {"plugin/main.lua", R"(
         assert(reskate.skater.flip_speed(0.3) and reskate.skater.flip_speed(2) and reskate.skater.flip_speed() and reskate.skater.flip_speed(1))
+        assert(reskate.skater.fly(vector.create(3, -4.5, 9)) and reskate.skater.fly(), "the held skater flown, and let go of")
+        assert(not pcall(reskate.skater.fly, vector.create(0, -151, 0)), "150 m/s an axis")
+        assert(reskate.skater.held() == true, "the skater is held")
+        assert(not pcall(reskate.skater.fly, vector.create(0 / 0, 0, 0)), "a number")
         assert(not pcall(reskate.skater.flip_speed, 0.01) and not pcall(reskate.skater.flip_speed, 11), "0.05 to 10")
         assert(not pcall(reskate.skater.flip_speed, 0 / 0), "a number")
         reskate.log("flipped")
@@ -4853,13 +4959,20 @@ void plugins_set_the_flip_speed() {
     check(environment.logged("[flipper] flipped"), "flip_speed takes 0.05 to 10\n" + environment.all());
     check(game.called("flip speed flipper 0.30") && game.called("flip speed flipper 2.00") && game.called("flip speed flipper 1.00"),
           "A slower flip, a faster one, and let go\n" + environment.all());
+    check(game.called("fly flipper 3.0 -4.5 9.0") && game.called("fly flipper none"), "The held skater flown, and let go of\n" + environment.all());
     // Without skater.control, not.
     host.apply({package("sneaky", {{manifest_file, manifest()}, {"plugin/main.lua", R"(
         reskate.log(tostring(pcall(reskate.skater.flip_speed, 0.5)))
+        reskate.log("fly " .. tostring(pcall(reskate.skater.fly, vector.create(0, 1, 0))))
+        reskate.log("held " .. tostring(pcall(reskate.skater.held)))
+        reskate.log("skydive " .. tostring(pcall(reskate.skater.skydive)))
     )"}})});
     ticks(host, environment, 1);
     check(environment.logged("[sneaky] false"), "skater.control is needed\n" + environment.all());
     check(!game.called("flip speed sneaky 0.50"), "Nothing reached the game");
+    check(environment.logged("[sneaky] held false"), "Asking whether the skater is held needs skater.control\n" + environment.all());
+    check(environment.logged("[sneaky] fly false") && !game.called("fly sneaky 0.0 1.0 0.0"), "Flying the skater needs skater.control too\n" + environment.all());
+    check(environment.logged("[sneaky] skydive false") && !game.called("skydive"), "And so does the game's skydive\n" + environment.all());
 }
 
 // What a camera mode needs (the Filmer): an arm that reaches, where the hand is, cruise control, the
@@ -5271,6 +5384,10 @@ void plugins_reach_cruise_and_read_the_mouse() {
         assert(not pcall(reskate.skater.set_velocity, vector.create(0, 101, 0)), "100 m/s an axis")
         assert(not pcall(reskate.skater.cruise, 0.5) and not pcall(reskate.skater.cruise, 31), "1 to 30 m/s")
         local m = reskate.input.mouse()
+        -- A digit's name is its key, not a key code: "1" is the 1 key, 1 the left mouse button.
+        assert(reskate.input.key("1") == true and reskate.input.key(1) == false and reskate.input.key(0x31) == true and reskate.input.key("A") == false)
+        -- (Held: the pointer kept in the window while the plugin reads the mouse.)
+        assert(reskate.input.mouse({hold = true}) and not pcall(reskate.input.mouse, {hold = 1}), "hold is true or false")
         assert(m and m.x == 3 and m.y == -2 and m.wheel == 1, "the mouse")
         assert(reskate.input.hide({right_stick = true, right_stick_click = true}))
         -- Buttons kept from the game by name; Start never is.
@@ -5289,6 +5406,12 @@ void plugins_reach_cruise_and_read_the_mouse() {
         -- Soft towards the edges, by itself or with the rest.
         assert(reskate.screen.look({edge_blur = 0.7}) and reskate.screen.look({edge_blur = 0.5, edge_start = 0.25, hood = true}))
         assert(not pcall(reskate.screen.look, {edge_blur = 1.5}), "an edge blur is 0 to 1")
+        -- The picture by its brightness alone, between two colours: whatever the plugin makes of it.
+        assert(reskate.screen.look({tone = {}}) and reskate.screen.look({tone = {dark = 0x000033, bright = 0xff8000, curve = 1.4, noise = 0.3}, hood = true}))
+        assert(not pcall(reskate.screen.look, {tone = {dark = "black"}}), "a colour is a number")
+        assert(not pcall(reskate.screen.look, {tone = {bright = 0x1000000}}), "0xRRGGBB")
+        assert(not pcall(reskate.screen.look, {tone = {curve = 9}}), "a curve is 0.2 to 5")
+        assert(not pcall(reskate.screen.look, {tone = {noise = 2}}), "a noise is 0 to 1")
         assert(not pcall(reskate.screen.look, {edge_blur = 0.5, edge_start = 1}), "it starts short of the corners")
         assert(not pcall(reskate.screen.look, {text = {"far too long a line"}}), "12 characters")
         assert(not pcall(reskate.screen.look, {text = {"{}"}}), "the camcorder's characters")
@@ -5351,6 +5474,13 @@ void plugins_carry_and_take_a_step_in_the_camera_cycle() {
         assert(not pcall(reskate.skater.carry, {at = vector.create(0, 1, 0), rotation = {0, 0, 0, 1}, crouch = 1}), "a crouch is 0 to 0.6 m")
         assert(not pcall(reskate.skater.carry, {at = vector.create(0, 1, 0), rotation = {0, 0, 0, 1}, shown = "them"}), "shown is everyone, others or me")
         assert(reskate.skater.pose({[48] = {scale = 0}}, 1, {shown = "me"}))
+        -- A pose for the others beside it, in the same tick: a whole body for the others, the arms for me.
+        assert(reskate.skater.pose({[47] = {angles = vector.create(0, 90, 0)}}, 1, {shown = "others"}))
+        assert(reskate.skater.pose_others({[276] = {angles = vector.create(0, 90, 0)}}), "the call of its own for it")
+        assert(not pcall(reskate.skater.pose_others, {[1] = {scale = 0}}), "the same joints as pose takes")
+        -- The game's animation held still under a pose.
+        assert(reskate.skater.pose({[48] = {scale = 0}}, 1, {still = true}))
+        assert(not pcall(reskate.skater.pose, {[48] = {scale = 0}}, 1, {still = "yes"}), "still is true or false")
         assert(reskate.skater.reach({at = vector.create(1, 2, 3), shown = "others"}))
         assert(reskate.camera.cycle("ready") and reskate.camera.cycle("active") and reskate.camera.cycle(nil))
         assert(not pcall(reskate.camera.cycle, "on"), "ready or active")
@@ -5379,6 +5509,8 @@ void plugins_carry_and_take_a_step_in_the_camera_cycle() {
     check(game.called("carry held filmer exact look 0.0 1.2 -0.1"), "Held where asked, the face on it\n" + environment.all());
     check(game.called("pose filmer 1.00 me 48:0.00,0.00,0.00,1.00x0.00") && game.called("reach filmer right 1.0 2.0 3.0 false 1.00 others"),
           "A pose only you see, a reach only the others see\n" + environment.all());
+    check(game.called("pose filmer 1.00 others 47:0.00,0.71,0.00,0.71x1.00"), "And a pose only the others see, asked for beside it\n" + environment.all());
+    check(game.called("pose filmer 1.00 others 276:0.00,0.71,0.00,0.71x1.00"), "By the call of its own as well\n" + environment.all());
     check(game.called("cycle filmer ready") && game.called("cycle filmer active") && game.called("cycle filmer out"), "In the cycle, on, and out");
     check(game.called("nametags filmer off") && game.called("nametags filmer on"), "The nametags held off and given back");
     check(game.called("board hide filmer 2 everyone"), "The board hidden from everyone");
@@ -5666,6 +5798,16 @@ void plugins_type_and_use_the_room() {
         assert(reskate.room.state() == "open")
         reskate.room.leave()
         assert(reskate.room.state() == "idle")
+        assert(reskate.room.open({quiet = true}))
+        assert(not pcall(reskate.room.open, {quiet = 1}), "quiet is true or false")
+        reskate.room.leave()
+        assert(reskate.room.show(true))
+        assert(reskate.room.show(true, {skater = false}))
+        assert(reskate.room.show(false))
+        assert(not pcall(reskate.room.show), "on or off is said")
+        assert(not pcall(reskate.room.show, true, {skater = 1}), "skater is true or false")
+        local at = reskate.room.place()
+        assert(math.abs(at.x - 1) < 1e-3 and math.abs(at.y + 69.99) < 1e-3 and math.abs(at.z + 5.25) < 1e-3, "where the room is")
         reskate.log("typed")
     )";
     game.typed = "ab";
@@ -5674,11 +5816,15 @@ void plugins_type_and_use_the_room() {
     running(host, "editor", environment);
     check(environment.logged("[editor] typed"), "A plugin takes typing and the room\n" + environment.all());
     check(game.called("room open editor") && game.called("room leave editor"), "The room is walked to and from\n" + environment.all());
+    check(game.called("room quiet editor"), "The room is opened with the game's interface hidden\n" + environment.all());
+    check(game.called("room show editor true true") && game.called("room show editor true false") && game.called("room show editor false true"),
+          "The room's set is shown without the menu, with the skater or not, and taken away\n" + environment.all());
     host.apply({package("sneaky", {{manifest_file, manifest(R"("input")")}, {"plugin/main.lua", R"(
-        reskate.log(tostring(pcall(reskate.room.open)) .. " " .. tostring(pcall(reskate.room.state)))
+        reskate.log(tostring(pcall(reskate.room.open)) .. " " .. tostring(pcall(reskate.room.state)) .. " " ..
+                    tostring(pcall(reskate.room.show, true)) .. " " .. tostring(pcall(reskate.room.place)))
     )"}})});
     ticks(host, environment, 1);
-    check(environment.logged("[sneaky] false false"), "room is needed\n" + environment.all());
+    check(environment.logged("[sneaky] false false false false"), "room is needed\n" + environment.all());
 }
 
 // The game's own clips: listed once they are read, each a "game:" clip like any other.
@@ -6074,11 +6220,20 @@ void plugins_play_their_own_sounds() {
             assert(not pcall(reskate.audio.play, "../x/beep.wav"), "its own package")
             assert(not pcall(reskate.audio.play, "sounds/beep.wav", {volume = 3}), "a sane volume")
             reskate.log("sounded")
+            -- A burst (automatic fire, each shot several layers): sixty in a second, and the next is refused.
+            local played, why = 0, nil
+            for _ = 1, 80 do
+                local id, reason = reskate.audio.play("sounds/beep.wav")
+                if id then played += 1 else why = reason break end
+            end
+            assert(played >= 50 and played <= 60, "played " .. played)
+            reskate.log("burst: " .. tostring(why))
         end)
     )"}})});
     running(host, "noisy", environment);
     host.run_console("noise");
     check(environment.logged("[noisy] sounded"), "A plugin plays its own sounds\n" + environment.all());
+    check(environment.logged("[noisy] burst: more than 60 sounds in a second"), "sixty a second, and the next is refused\n" + environment.all());
     for (const auto* call : {"sound noisy 24000 0.50 2.00 true at 1 2 3", "sound noisy motor 1.00 1.00 false", "sound noisy 24000 0.25 1.00 false at listener",
                              "change noisy 2 0.9 skater", "stop sound noisy 1"})
         check(environment.fake.called(call), std::string("The game was asked: ") + call + "\n" + environment.all());
@@ -6648,9 +6803,9 @@ void plugins_animate_the_skater() {
             local rec = reskate.animation.recorded()
             assert(rec == "rec:1", tostring(rec))
             assert(reskate.animation.recorded() == nil, "one recording, once")
-            for i = 1, 3 do reskate.animation.play(rec) end
-            local fifth, why = reskate.animation.play(rec)
-            assert(not fifth and why:find("4 times"), "4 a second")
+            for i = 1, 19 do reskate.animation.play(rec) end
+            local over, why = reskate.animation.play(rec)
+            assert(not over and why:find("20 times"), "20 a second")
             assert(reskate.animation.trick() == "kickflip")
             reskate.animation.forget(rec)
             assert(not pcall(reskate.animation.play, rec), "a forgotten recording is gone")
@@ -7039,8 +7194,10 @@ void the_wider_set_reaches_the_game() {
             assert(math.abs(m.deck.position.y - 0.1) < 1e-6, "and its deck, on the board's place")
             assert(reskate.skater.wipeout(2))
             local again, two = reskate.skater.wipeout(2)
-            assert(not again and two:find("2 s"), "one wipeout every 2 s")
+            assert(not again and two:find("four wipeouts a second"), "four wipeouts a second at most")
             assert(not pcall(reskate.skater.wipeout, 10), "a gentle force")
+            assert(reskate.skater.skydive(), "the game's skydive")
+            assert(reskate.skater.skydive(), "asked every tick: no limit of its own")
             reskate.log("physics fine")
         end)
         reskate.on("chat", function(line) reskate.log("chat " .. line.name .. ": " .. line.text) end)
@@ -7173,6 +7330,7 @@ void the_wider_set_reaches_the_game() {
           "and holds its shader parameters\n" + environment.all());
     host.run_console("physics");
     check(environment.logged("[wide] physics fine") && game.called("wipeout 2.0"), "The board's motion reads, and a wipeout is asked for\n" + environment.all());
+    check(game.called("skydive"), "The game's skydive is asked for\n" + environment.all());
     ticks(host, environment, 10);
     const auto screen = std::find_if(environment.panels.begin(), environment.panels.end(), [](const auto& p) { return p.screen; });
     check(screen != environment.panels.end() && screen->title == "Big" && screen->widgets.size() == 2, "Its open screen is built, without the menu");
@@ -7942,6 +8100,8 @@ int main() {
         run(plugins_draw_pictures);
         run(plugins_draw_the_games_map);
         run(plugins_place_world_entities);
+        run(plugins_place_set_pieces);
+        run(plugins_show_a_skater_copy);
         run(plugins_have_what_a_prop_hunt_needs);
         run(plugins_write_normalized_controllers);
         run(controller_reports_preserve_non_controls);

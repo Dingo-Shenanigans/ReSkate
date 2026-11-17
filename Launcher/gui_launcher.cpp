@@ -54,6 +54,9 @@ Settings load_settings(const fs::path& path) {
         settings.discord_status = json.value("discord_status", settings.discord_status);
         settings.offline = json.value("offline", settings.offline);
         settings.start_map = json.value("start_map", std::string());
+        if (const int pool = json.value("map_mesh_pool_mb", 0);
+            std::ranges::find(map_mesh_pools, pool) != map_mesh_pools.end())
+            settings.map_mesh_pool_mb = pool;
         settings.menu_key = json.value("menu_key", settings.menu_key);
         settings.console_key = json.value("console_key", settings.console_key);
         if (!launcher::bindable_key(static_cast<unsigned>(settings.menu_key)) ||
@@ -112,6 +115,7 @@ void save_settings(const fs::path& path, const Settings& settings) {
     json["discord_status"] = settings.discord_status;
     json["offline"] = settings.offline;
     json["start_map"] = settings.start_map;
+    json["map_mesh_pool_mb"] = settings.map_mesh_pool_mb;
     json["menu_key"] = settings.menu_key;
     json["console_key"] = settings.console_key;
     json["log_level"] = log_levels[static_cast<std::size_t>(settings.log_level)];
@@ -219,6 +223,8 @@ void Launcher::save() {
     // launcher's own crash reporting follows the setting from its next start.
     SetEnvironmentVariableW(L"RESKATE_CRASH_REPORTING", settings_.crash_reports ? nullptr : L"0");
     SetEnvironmentVariableW(L"RESKATE_TRACING", settings_.performance_timings ? L"1" : L"0");
+    SetEnvironmentVariableW(L"RESKATE_MAP_MESH_POOL_MB",
+        settings_.map_mesh_pool_mb ? std::to_wstring(settings_.map_mesh_pool_mb).c_str() : nullptr);
 }
 
 void Launcher::check_again_if_update_choices_changed() {
@@ -665,6 +671,9 @@ void apply_crash_report_setting() noexcept {
         // A RESKATE_TRACING already set (to test with, or to refuse) is left alone.
         if (settings.performance_timings && !GetEnvironmentVariableW(L"RESKATE_TRACING", nullptr, 0))
             SetEnvironmentVariableW(L"RESKATE_TRACING", L"1");
+        // A RESKATE_MAP_MESH_POOL_MB already set (to test with) is left alone too.
+        if (settings.map_mesh_pool_mb && !GetEnvironmentVariableW(L"RESKATE_MAP_MESH_POOL_MB", nullptr, 0))
+            SetEnvironmentVariableW(L"RESKATE_MAP_MESH_POOL_MB", std::to_wstring(settings.map_mesh_pool_mb).c_str());
     } catch (...) {}
 }
 } // namespace dingosdk::launcher_gui

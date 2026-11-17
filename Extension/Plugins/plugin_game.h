@@ -386,6 +386,19 @@ public:
         return unavailable;
     }
     virtual void entity_remove(std::string_view /*plugin*/, std::uint32_t) {}
+    // A copy of the local skater drawn with its root at a place (skater_copy.h; reskate.skater.copy), with
+    // its board or not; nullopt lets it go. Why not, or an empty text. Whether it is drawn now.
+    struct SkaterCopyPlace {
+        std::array<float, 3> position{};
+        bool board{};
+    };
+    virtual std::string skater_copy(std::string_view /*plugin*/, std::optional<SkaterCopyPlace>) { return unavailable; }
+    virtual bool skater_copy_shown() { return false; }
+    // A set piece of the game's own (world_entities.h set_piece; reskate.entities.piece): a light rig or a
+    // menu backdrop prefab at a transform, everything in it made. Why not, or an empty text.
+    virtual std::string piece_set(std::string_view /*plugin*/, std::uint32_t, std::string_view /*prefab*/, const std::array<float, 16>&) { return unavailable; }
+    virtual void piece_remove(std::string_view /*plugin*/, std::uint32_t) {}
+    virtual bool piece_ready(std::string_view /*plugin*/, std::uint32_t) { return false; }
     virtual void entity_clear(std::string_view /*plugin*/) {}
     virtual int entity_status(std::string_view /*plugin*/, std::uint32_t) { return 0; }
     virtual bool entities_ready(std::string_view /*plugin*/) { return false; }
@@ -531,7 +544,9 @@ public:
     struct MouseMotion {
         double x{}, y{}, wheel{};
     };
-    virtual std::optional<MouseMotion> mouse_motion(std::string_view /*plugin*/) { return std::nullopt; }
+    // `hold`: the pointer is kept at the middle of the game's window while it is read (it cannot
+    // leave the window), and its own movement is the look where the game takes no raw mouse.
+    virtual std::optional<MouseMotion> mouse_motion(std::string_view /*plugin*/, bool /*hold*/ = false) { return std::nullopt; }
     // The mouse over the game window while a plugin's screen is open (reskate.input.cursor): where
     // (pixels from the top left), its buttons, the wheel's notches since the last read, and whether
     // it is over the screen's own panel.
@@ -546,12 +561,20 @@ public:
     // The game menu's character room (Extension/World/character_room.h; reskate.room): walked to, the
     // local skater shown in it once there, and walked back from. One plugin at a time. state: "idle",
     // "opening", "open", "leaving" or "failed" (with why).
-    virtual std::string room_open(std::string_view /*plugin*/) { return unavailable; }
+    // `quiet`: the game's own interface is not drawn while the plugin has the room (its menu is walked
+    // and stays open, unseen), for a plugin that shows a screen of its own over the room.
+    virtual std::string room_open(std::string_view /*plugin*/, bool /*quiet*/ = false) { return unavailable; }
     virtual void room_leave(std::string_view /*plugin*/) {}
     struct RoomState {
         std::string state, why;
     };
     virtual RoomState room_state(std::string_view /*plugin*/) { return {"idle", {}}; }
+    // The room's set and lights shown without the game's menu (character_room::show_set; reskate.room.show):
+    // `skater`, the local skater is drawn on its floor as well. One plugin at a time, the one that has
+    // the room if one has. Returns why not, or an empty text.
+    virtual std::string room_show(std::string_view /*plugin*/, bool /*on*/, bool /*skater*/) { return unavailable; }
+    // The spot on the room's floor where its skater stands.
+    virtual std::array<float, 3> room_place() { return {}; }
     // The game menu's preview (the skater on the Skaters page, the board on a Board tab) turned by a
     // stick of a stand-in pad: `value` -1..1 of the stick held for 300 ms (call it every tick), 0 lets
     // go; `stick` 0 left x, 1 left y, 2 right x, 3 right y. Only while the game's menu is open.
@@ -954,7 +977,9 @@ public:
         bool keep_children{};                   // its children stay where they were in the world
     };
     // The joints come in the order they are posed in (pose_place::order).
-    virtual std::string skater_pose(std::string_view /*plugin*/, const std::vector<JointOffset>&, float /*weight*/, Shown /*shown*/) {
+    // `still`: the game's animation is held under the pose (the body as it stood when the pose first
+    // asked), so none of the game's idle moves a joint the pose leaves alone.
+    virtual std::string skater_pose(std::string_view /*plugin*/, const std::vector<JointOffset>&, float /*weight*/, Shown /*shown*/, bool /*still*/ = false) {
         return unavailable;
     }
     // Where a hand joint of the local skater is in the world, as last evaluated (after any reach).
@@ -1127,6 +1152,11 @@ public:
     // The board's velocity set (or `add`ed to) by the next physics step with the skater on its board,
     // within 500 ms.
     virtual std::string set_velocity(std::string_view /*plugin*/, const Vec3& /*velocity*/, bool /*add*/) { return unavailable; }
+    // The skater this plugin holds (freeze) flown at `velocity` (m/s, in the world) for the next 300 ms;
+    // nothing: let go of, hovering as held.
+    virtual std::string fly(std::string_view /*plugin*/, std::optional<Vec3> /*velocity*/) { return unavailable; }
+    // This plugin asked for the skater held (freeze) and the game has it held now.
+    virtual bool skater_held(std::string_view /*plugin*/) { return false; }
     // Flip tricks in the air turn at `factor` times their speed for the next 300 ms (1 ends it).
     virtual std::string flip_speed(std::string_view /*plugin*/, float /*factor*/) { return unavailable; }
     // What of the pad the game does not see (reskate.input.hide): the triggers, the left stick's
@@ -1147,6 +1177,10 @@ public:
         float bars_strength{1}, hood_strength{1}, grade_strength{1}, soft_strength{1}, scanlines_strength{1}, grain_strength{1},
             dropouts_strength{1}, head_switching_strength{1}, smear_strength{1};
         double rolling{-1};
+        // tone = {dark, bright, curve, noise}: the picture by its brightness alone, between two colours.
+        bool tone{};
+        std::array<float, 3> tone_dark{}, tone_bright{1, 1, 1};
+        float tone_curve{1}, tone_noise{};
         std::array<std::string, 5> text;
     };
     virtual std::string screen_look(std::string_view /*plugin*/, std::optional<ScreenLook>) { return unavailable; }
@@ -1183,6 +1217,8 @@ public:
     // The skater bails as from a slam of `force` (0.5 to 3); not in a throwdown. While No Bail protects
     // the skater the wipeout is dropped, as any other is.
     virtual std::string wipeout(float /*force*/) { return unavailable; }
+    // The game's skydive for a skater falling on foot; asked every tick.
+    virtual std::string skydive() { return unavailable; }
     // ---- audio: plugins' own sounds, in a level ---------------------------------------------------------
     // Its id, or 0 when the plugin plays 8 already (or there is no level).
     virtual std::uint64_t play_sound(std::string_view /*plugin*/, SoundStart) { return 0; }

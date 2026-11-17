@@ -15,6 +15,16 @@ void open();
 void leave() noexcept;
 // Any thread.
 [[nodiscard]] Phase phase() noexcept;
+// The room's set and lights without the game's menu. The menu's Skaters page shows them by a global
+// event of the game's UI (UI/Foundations/Layers/Backgrounds/EnterCasEnvironment, and
+// ExitCasEnvironment when it is left): the level's Prefab_3DMenuSetup has its CAS background and the
+// character's light rig made for it (found 2026-11-16 in the game's data: the prefab's switches are
+// its interface's, one a background, and the two events are beside the UI's background layers).
+// show_set posts the same events itself, from tick: nothing of the menu opens. The room's visual
+// environment is the prefab's own doing, while the camera is inside the room. Any thread.
+void show_set(bool on) noexcept;
+// Whether the event that shows the set was posted on this map (and the one that takes it away was not, since).
+[[nodiscard]] bool set_shown() noexcept;
 // Why the last walk failed, as a sentence.
 [[nodiscard]] std::string failure();
 // Client thread, after the native client tick. `skater` changes with a respawn or a new map, which stops a walk.

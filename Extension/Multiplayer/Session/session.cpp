@@ -1,4 +1,6 @@
 #include "session_internal.h"
+#include "skater_copy.h"
+#include "Extension/Multiplayer/Remote/native_cosmetics.h"
 #include "Extension/Throwdowns/throwdown_kit.h"
 #include "Extension/Skater/skater_push.h"
 #include "Extension/Throwdowns/throwdown_lab.h"
@@ -490,6 +492,69 @@ Pose placed_by(Pose pose, const plugin_feed::Placement &placement) {
         if (pose.board.size() > 2) pose.board[2].position[1] -= 2000.0f;
     }
     return valid_pose(pose) ? pose : Pose{};
+}
+// The local skater's copy (skater_copy.h): the last slot, which a player has only in a full session.
+constexpr std::size_t copy_slot = max_remote_players - 1;
+struct CopyState {
+    std::mutex mutex;
+    std::string owner;                 // under mutex
+    std::optional<SkaterCopy> wanted;  // under mutex
+    std::atomic<bool> shown{};
+    // Client thread:
+    bool made{};
+    std::uint64_t dressed_generation{}, next_look{};
+    std::optional<Appearance> dressed;
+    std::string status;
+};
+CopyState &copy_state() { static auto *value = new CopyState; return *value; }
+// Client thread, every tick. `session`: one is on, and the copy is not drawn.
+void tick_skater_copy(std::uintptr_t base, std::uintptr_t client, bool ready, bool session) {
+    auto &c = copy_state();
+    std::optional<SkaterCopy> wanted;
+    {
+        std::lock_guard lock(c.mutex);
+        wanted = c.wanted;
+    }
+    const PeerScope scope(copy_slot);
+    const auto drop = [&] {
+        if (c.made) remove_remote(base);
+        c.made = false;
+        c.dressed.reset();
+        c.dressed_generation = 0;
+        c.shown.store(false, std::memory_order_release);
+    };
+    if (!wanted || session || !ready) return drop();
+    try {
+        const auto local = capture_local(base, client, true);
+        if (!local.ready) return drop();
+        plugin_feed::Placement placement;
+        placement.position = wanted->position;
+        placement.rotation = wanted->rotation;
+        placement.board = wanted->board;
+        const auto pose = placed_by(local.pose, placement);
+        if (pose.skater.empty()) return drop();
+        const bool visible = show_remote(base, client, local, pose, c.status);
+        c.made = c.made || visible || remote_skater_entity() != 0;
+        c.shown.store(visible, std::memory_order_release);
+        if (!visible) return;
+        // Its outfit: the local skater's, looked at twice a second, put on when the actor is new or it changed.
+        const auto now = now_us();
+        const auto generation = remote_skater_generation();
+        if (now < c.next_look && generation == c.dressed_generation) return;
+        c.next_look = now + 500000;
+        auto look = capture_cosmetics(base, local, c.status);
+        if (!look) return;
+        if (generation == c.dressed_generation && c.dressed && *c.dressed == *look) return;
+        update_remote_cosmetics(base, local, *look, 2ULL, c.status);
+        c.dressed = std::move(look);
+        c.dressed_generation = generation;
+    } catch (const std::exception &error) {
+        if (c.status != error.what()) {
+            c.status = error.what();
+            logging::log(logging::Level::warning, logging::Channel::runtime, "Skater copy: {}", c.status);
+        }
+        drop();
+    }
 }
 // How often a player's pose is sampled for their skater, from how far they are from both the
 // local skater and the camera: every frame within 200 m, 20 Hz past it, 10 Hz past 350 m, and
@@ -1271,6 +1336,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, std::string_vi
             // changes, so giving each surface its own sound back needs what the game last sent for each.
             if (solo.ready && surface_sound_used()) prepare_audio_capture(base, solo);
             relay_throwdowns(s, ready, &solo);
+            tick_skater_copy(base, client, ready && !map_name.empty() && solo.ready, false);
             if (competition_stock_physics() && solo.ready) {
                 physics_tuning::prepare();physics_tuning::enforce(base,solo.entity,{});
             } else if (!competition_stock_physics()) physics_tuning::release(base);
@@ -1284,6 +1350,8 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, std::string_vi
             }
             return;
         }
+        // (In a session the local skater's copy is not drawn: its slot may be a player's.)
+        tick_skater_copy(base, client, false, true);
         // Both queued joins and completed browser joins set join_started inside
         // command(). An earlier frame timestamp would underflow timeout checks.
         const auto now = now_us();
@@ -1429,4 +1497,23 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, std::string_vi
         publish(s);
     }
 }
+std::string set_skater_copy(std::string_view owner, std::optional<SkaterCopy> copy) {
+    auto &c = copy_state();
+    std::lock_guard lock(c.mutex);
+    if (!copy) {
+        if (c.owner == owner) {
+            c.owner.clear();
+            c.wanted.reset();
+        }
+        return {};
+    }
+    if (!c.owner.empty() && c.owner != owner) return c.owner + " has the skater's copy";
+    if (session().mode != Mode::off) return "not in a session: every skater there may be a player's";
+    for (const auto v : copy->position)
+        if (!std::isfinite(v) || std::abs(v) > 1e6f) return "a copy's place is finite";
+    c.owner = owner;
+    c.wanted = copy;
+    return {};
+}
+bool skater_copy_shown() noexcept { return copy_state().shown.load(std::memory_order_acquire); }
 } // namespace dingosdk::multiplayer

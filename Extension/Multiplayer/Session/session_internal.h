@@ -54,8 +54,12 @@ struct ChatBudget {
 // Throwdown messages per sender per 5 s: offers, joins, starts and ~4 scores a second.
 inline constexpr unsigned throwdown_burst = 60;
 // Plugin messages (Extension/Plugins/plugin_wire.h) ride the same packets on a budget of their own:
-// a plugin may send a few a second for a whole session (a drone's place, a game mode's state).
-inline constexpr unsigned plugin_burst = 200;
+// what a player's plugins may send between them, 240 a second (a vehicle's place every frame at
+// 60 to 120 frames a second, with a game mode's state beside it). It was 200 in 5 s, 40 a second:
+// a plugin telling the others where its vehicle is every frame had two messages in three dropped
+// here, with nothing said to it, and the others saw the vehicle stutter. What a plugin can send is
+// already held to 16 KB a second where it is sent (plugin_vm.h).
+inline constexpr unsigned plugin_burst = 1200;
 // The party the echo test shows its mirrored player in (a real lobby has none until its
 // players form one).
 inline constexpr std::uint32_t lobby_party = 1;

@@ -296,6 +296,9 @@ void move(std::string_view plugin, std::uint64_t id, const Matrix& matrix) {
     if (!plugins::valid_effect_matrix(matrix)) return;
     auto& s = state(); std::lock_guard lock(s.mutex);
     if (auto* e = owned(s, plugin, id)) {
+        // (Moved, it is in use: its ten minutes start again. One carried along with something for
+        // longer than that used to vanish while it was still being moved.)
+        e->expires = GetTickCount64() + 600000;
         if (e->particle) { alignas(16) const auto m = matrix; function<void(*)(std::uintptr_t*, const float*)>(s, fx::move.rva)(&e->particle, m.data()); }
         else if (!e->receiver[0]) decal::set_transform(s.base, s.manager, e->decal.id, matrix);
     }

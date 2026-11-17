@@ -275,6 +275,13 @@ struct Plan {
     float offsets_weight{1};
     double offsets_until{};
     Shown offsets_shown{};
+    bool offsets_still{};                   // the game's animation held under the pose
+    // A pose for the other players alone, kept beside the one above: a first-person plugin draws its
+    // own arms on its own screen and sends the others a whole third-person body. While it is live,
+    // the pose above is drawn here and not sent.
+    std::vector<PoseOffset> others_offsets; // pose(.., Shown::others), until others_until
+    float others_weight{1};
+    double others_until{};
 };
 // The game menu's character room (PR 297's studio room): the spot of the menu's skater, how far from
 // it a rig counts as in the room, and the room's floor (measured 2026-10-10 on Stadium 1 and San
@@ -327,6 +334,10 @@ struct Live {
     std::vector<NativeBone> bones;
     std::vector<Joint> pose, custom, scratch;
     std::vector<Joint> sent; // the pose the others are sent, when it is not the one drawn (Shown)
+    // A pose that asked for the body held still: the pose the game had when it first asked, and when
+    // it was last used (taken again after half a second without).
+    std::vector<Joint> still;
+    double still_at{-1};
     float carry_push{};      // how much a foot is down pushing, eased (carry's push_straightens)
     // In the room: the placement written for the last render, and the game's own one before it.
     Joint room_written, game_placement;
@@ -614,9 +625,12 @@ void on_animation(std::uintptr_t component) noexcept {
         const bool reaching = snap->reach && now < snap->reach_until;
         const bool joints_wanted = now < snap->joints_until && !snap->joints_read.empty();
         const bool posing = !snap->offsets.empty() && now < snap->offsets_until;
+        const bool posing_others = !snap->others_offsets.empty() && now < snap->others_until;
+        // (With a pose of their own for the others, the pose for everyone is this screen's alone.)
+        const Shown offsets_shown = posing_others && snap->offsets_shown == Shown::everyone ? Shown::me : snap->offsets_shown;
         const bool carrying = snap->carry && now < snap->carry_until;
         const bool in_room = room_shown.load(std::memory_order_acquire);
-        if (!busy && !reaching && !carrying && !joints_wanted && !posing && !in_room &&
+        if (!busy && !reaching && !carrying && !joints_wanted && !posing && !posing_others && !in_room &&
             (!snap->allowed || (!snap->play && snap->replacements.empty()))) {
             std::lock_guard lock(pending().mutex);
             pending().clear_pose();
@@ -766,6 +780,16 @@ void on_animation(std::uintptr_t component) noexcept {
         }
 
         std::size_t first = 0, last = 0; // [first, last) of l.pose written
+        // A pose over a body held still: every joint but the skater's placement as the game had it
+        // when the pose first asked, so that none of the game's idle shows under it. The whole body
+        // is then written, as a clip's is.
+        if (posing && snap->offsets_still && !in_room) {
+            if (l.still.size() != layout.count || at - l.still_at > 0.5) l.still = l.pose;
+            l.still_at = at;
+            for (std::size_t i = 2; i < layout.count; ++i) l.pose[i] = l.still[i];
+            first = 2;
+            last = layout.count;
+        }
         Joint board_target;
         float board_weight = 0;
         if (clip && t >= 0 && weight > 0) {
@@ -813,6 +837,10 @@ void on_animation(std::uintptr_t component) noexcept {
             const auto changed = pose_replay::apply(pose, snap->offsets, snap->offsets_weight);
             if (changed.last > changed.first) widen(first, last, changed.first, changed.last);
         };
+        const auto pose_others = [&](std::vector<Joint>& pose, std::size_t& first, std::size_t& last) {
+            const auto changed = pose_replay::apply(pose, snap->others_offsets, snap->others_weight);
+            if (changed.last > changed.first) widen(first, last, changed.first, changed.last);
+        };
         if (carrying && snap->carry_push) {
             // Pushing on the board: the knees mostly straighten while the foot is down (eased, from the
             // pose as the animation left it).
@@ -836,13 +864,13 @@ void on_animation(std::uintptr_t component) noexcept {
         // With no other layer to bake, keep the requests until drawing. Physics changes both the
         // joints and their placement after animation; cached local bones lose those changes and a
         // world goal moves with the newer placement. Other layers retain their existing baked path.
-        const bool at_draw = posing && snap->offsets_shown != Shown::others && last <= first && !in_room &&
+        const bool at_draw = posing && offsets_shown != Shown::others && last <= first && !in_room &&
                               !(carrying && snap->carry_shown != Shown::others) && !(reaching && snap->reach_shown != Shown::others);
-        if (for_everyone(posing, snap->offsets_shown)) pose_joints(l.pose, first, last);
+        if (for_everyone(posing, offsets_shown)) pose_joints(l.pose, first, last);
         if (for_everyone(carrying, snap->carry_shown)) carry_item(l.pose, first, last);
         if (for_everyone(reaching, snap->reach_shown)) reach_arm(l.pose, first, last);
         // What only the others see goes on a copy that is sent; what only you see, on the pose drawn.
-        const bool split = (posing && snap->offsets_shown != Shown::everyone) || (carrying && snap->carry_shown != Shown::everyone) ||
+        const bool split = (posing && offsets_shown != Shown::everyone) || posing_others || (carrying && snap->carry_shown != Shown::everyone) ||
                            (reaching && snap->reach_shown != Shown::everyone);
         std::size_t sent_from = first, sent_to = last;
         if (split) {
@@ -853,7 +881,8 @@ void on_animation(std::uintptr_t component) noexcept {
                 else step(l.pose, first, last);
             };
             for (const auto who : {Shown::others, Shown::me}) {
-                apply(who, posing, snap->offsets_shown, pose_joints);
+                apply(who, posing, offsets_shown, pose_joints);
+                apply(who, posing_others, Shown::others, pose_others);
                 apply(who, carrying, snap->carry_shown, carry_item);
                 apply(who, reaching, snap->reach_shown, reach_arm);
             }
@@ -1235,6 +1264,7 @@ std::uint64_t serial{};
 void watch_room(bool on) noexcept { room_watch.store(on, std::memory_order_release); }
 bool room_skater_seen() noexcept { return now_seconds() - room_seen_at.load(std::memory_order_acquire) < 0.5; }
 bool shown_in_room() noexcept { return room_shown.load(std::memory_order_acquire); }
+std::array<float, 3> room_floor_spot() noexcept { return {room_spot[0], room_floor, room_spot[2]}; }
 void show_in_room(bool on) noexcept {
     if (room_shown.exchange(on, std::memory_order_acq_rel) && !on) room_restore_until.store(now_seconds() + 3, std::memory_order_release);
 }
@@ -1281,10 +1311,24 @@ void pause(bool paused) {
 bool playing() noexcept {
     return plan_draft.play.has_value() && finished_serial.load(std::memory_order_acquire) != plan_draft.serial;
 }
-void pose(std::vector<PoseOffset> offsets, float weight, Shown shown) {
+void pose(std::vector<PoseOffset> offsets, float weight, Shown shown, bool still) {
+    // For the others alone: kept beside the pose drawn here, which it leaves as it is.
+    if (shown == Shown::others) {
+        plan_draft.others_offsets = std::move(offsets);
+        plan_draft.others_weight = weight;
+        plan_draft.others_until = plan_draft.others_offsets.empty() ? 0 : now_seconds() + 0.3;
+        publish();
+        return;
+    }
+    // (Let go for everyone: the others' own pose with it.)
+    if (offsets.empty() && shown == Shown::everyone) {
+        plan_draft.others_offsets.clear();
+        plan_draft.others_until = 0;
+    }
     plan_draft.offsets = std::move(offsets);
     plan_draft.offsets_weight = weight;
     plan_draft.offsets_shown = shown;
+    plan_draft.offsets_still = still;
     plan_draft.offsets_until = plan_draft.offsets.empty() ? 0 : now_seconds() + 0.3;
     publish();
 }
@@ -1322,8 +1366,7 @@ std::optional<Joint> joint(std::uint16_t index) {
     std::erase_if(joints_asked, [&](const auto& asked) { return now - asked.second > 2.0; });
     const auto asked = std::find_if(joints_asked.begin(), joints_asked.end(), [&](const auto& a) { return a.first == index; });
     if (asked != joints_asked.end()) asked->second = now;
-    else if (joints_asked.size() < 32) joints_asked.emplace_back(index, now);
-    else return std::nullopt;
+    else joints_asked.emplace_back(index, now);      // (any of the 395: there was a limit of 32 until 2026-11-17)
     std::vector<std::uint16_t> read;
     for (const auto& a : joints_asked) read.push_back(a.first);
     std::sort(read.begin(), read.end());
@@ -1414,7 +1457,8 @@ void tick(std::uintptr_t base, std::uintptr_t component, bool allowed) {
     const bool wanted = plan_draft.play || !plan_draft.replacements.empty() || recording() ||
                         (plan_draft.reach && now < plan_draft.reach_until) || (plan_draft.carry && now < plan_draft.carry_until) ||
                         now < plan_draft.joints_until || now < preview_until.load(std::memory_order_acquire) ||
-                        (!plan_draft.offsets.empty() && now < plan_draft.offsets_until) || room_watch.load(std::memory_order_acquire) ||
+                        (!plan_draft.offsets.empty() && now < plan_draft.offsets_until) ||
+                        (!plan_draft.others_offsets.empty() && now < plan_draft.others_until) || room_watch.load(std::memory_order_acquire) ||
                         room_shown.load(std::memory_order_acquire) || now < room_restore_until.load(std::memory_order_acquire);
     if (wanted && !hooked && base) {
         std::string detail;

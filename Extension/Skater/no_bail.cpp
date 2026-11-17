@@ -8,12 +8,15 @@
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/engine.h"
 #include "Engine/Game/Build/20260929/no_bail.h"
+#include "Engine/Game/Build/20260929/offboard_flight.h"
 #include "Engine/Game/Build/20260929/skater_state.h"
 #include <array>
 #include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <cstring>
+#include <format>
+#include <string>
 #include <initializer_list>
 #include <intrin.h>
 
@@ -268,6 +271,16 @@ bool cancel_request(std::uintptr_t context, std::uintptr_t offset, LONG mask) no
     // even when another producer updates the same word.
     __try {
         _InterlockedAnd(reinterpret_cast<volatile LONG*>(address), ~mask);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+// The other way: raises one, as the game's own producers do, leaving the word's other flags alone.
+bool raise_request(std::uintptr_t context, std::uintptr_t offset, LONG mask) noexcept {
+    const auto address = context + offset;
+    if (context < 0x10000 || context > highest - offset - sizeof(LONG) ||
+        (address & (alignof(LONG) - 1)) != 0) return false;
+    __try {
+        _InterlockedOr(reinterpret_cast<volatile LONG*>(address), mask);
         return true;
     } __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
@@ -1997,6 +2010,118 @@ void fast_probe_record(std::uintptr_t selector, std::uint32_t current, std::uint
     for (int i = 0; i < 10; ++i) { unsigned word{}; row.words[8 + i] = read(owner.context + 0x140c + 4 * i, word) ? word : 0u; }
     f.head.store(head + 1, std::memory_order_release);
 }
+// A wipeout asked for while the skater is on foot. The selector's Wipeout does nothing there: its
+// caller remaps it to Offboard, the state the skater is in already (seen in a plugin's game: sixteen
+// asks in five seconds, each logged, and the skater stood). What makes a body on foot a ragdoll is
+// the animation being told to bail, which the game's own collision code does with two requests in
+// the context: +13c4 bit 15 (exported to the animation as its explicit bail) and +13d4 bit 27 (its
+// independent one). They are the two No Bail takes away; here they are raised, in the selector, so
+// that this step's skeleton response and animation publisher find them. Offboard then follows the
+// animation into its ragdoll state by itself (offboard_flight.h).
+// Seen in game with the requests raised in the selector alone (2026-11-16, 22:10): "the animation
+// was last told 0 and 0", the flags still on its feet. The requests do not live from the selector
+// to PostPhysicsUpdate2, where the skeleton response (47da350) and then the publisher (47da450)
+// read them, so they are raised again there, for as long as the ask is fresh: in the publisher's
+// hook just before the game's own, and the skeleton response is run as a wipeout.
+std::atomic<std::uint64_t>& foot_ragdoll_until() { static std::atomic<std::uint64_t> value; return value; }
+// The bail is told (the requests raised, the skeleton response run as a wipeout) only as a hold
+// begins: told at every step, the fall would begin again at every step.
+std::atomic<std::uint64_t>& foot_ragdoll_told_until() { static std::atomic<std::uint64_t> value; return value; }
+bool foot_ragdoll_telling() noexcept {
+    const auto until = foot_ragdoll_told_until().load(std::memory_order_acquire);
+    return until && GetTickCount64() < until;
+}
+// The watched skater's context while it is on foot (its state object is Offboard), or 0.
+std::uintptr_t foot_context(std::uintptr_t core) noexcept {
+    namespace flight = addr::offboard_flight;
+    if (!core || core != state_watch().core.load(std::memory_order_acquire)) return 0;
+    const auto context = pointer(core, flight::core_context_offset);
+    const auto offboard = pointer(core, flight::core_offboard_offset);
+    if (!context || !offboard || pointer(offboard) != protection().base + flight::offboard_flight_vtable ||
+        pointer(offboard, 8) != context) return 0;
+    return context;
+}
+bool foot_ragdoll_wanted() noexcept {
+    const auto until = foot_ragdoll_until().load(std::memory_order_acquire);
+    return until && GetTickCount64() < until;
+}
+// Offboard's update, for a wipeout asked for on foot: the on-its-feet flag is cleared and the bail
+// raised just before the state's own update reads them, as the player's own ragdoll leaves them
+// (offboard_flight.h). Offboard then goes to its ragdoll state by itself, and stays in it for as
+// long as the ask is fresh.
+using OffboardUpdate = void (*)(std::uintptr_t);
+std::atomic<OffboardUpdate>& offboard_update_original() { static std::atomic<OffboardUpdate> value; return value; }
+void offboard_update(std::uintptr_t offboard) {
+    if (foot_ragdoll_wanted()) {
+        LastError error;
+        const auto core = state_watch().core.load(std::memory_order_acquire);
+        if (core && pointer(core, addr::offboard_flight::core_offboard_offset) == offboard)
+            if (const auto context = foot_context(core)) {
+                // (Off its feet, and the ragdoll the limp one: offboard_flight.h.)
+                (void)cancel_request(context, addr::offboard_flight::mode_flags_offset, static_cast<LONG>(addr::offboard_flight::on_feet_mask));
+                (void)raise_request(context, addr::offboard_flight::mode_flags_offset, static_cast<LONG>(addr::offboard_flight::simulated_ragdoll_mask));
+                if (foot_ragdoll_telling()) (void)raise_request(context, impact_request_offset, impact_request_mask);
+            }
+    }
+    if (const auto original = offboard_update_original().load(std::memory_order_acquire)) original(offboard);
+}
+bool start_foot_ragdoll(std::uintptr_t base) noexcept {
+    static std::atomic<bool> hooked{};
+    if (hooked.load(std::memory_order_acquire)) return true;
+    const auto& contract = addr::offboard_flight::offboard_update_contract;
+    std::array<unsigned char, 32> actual{};
+    if (!read(base + contract.rva, actual) || actual != contract.bytes) {
+        logging::write(logging::Level::warning, logging::Channel::skater,
+            "A wipeout asked for on foot is unavailable: Offboard's update did not match its fingerprint.");
+        return false;
+    }
+    auto* target = reinterpret_cast<void*>(base + contract.rva);
+    void* original{};
+    auto status = hook_prepare(target, reinterpret_cast<void*>(&offboard_update), &original);
+    if (status == HookOk && original) {
+        offboard_update_original().store(reinterpret_cast<OffboardUpdate>(original), std::memory_order_release);
+        status = hook_enable(target);
+        if (status == HookOk) {
+            hooked.store(true, std::memory_order_release);
+            logging::write(logging::Level::info, logging::Channel::skater,
+                "A wipeout asked for on foot is ready: Offboard's update hooked (the on-its-feet flag is cleared for it).");
+            return true;
+        }
+    }
+    (void)hook_remove(target);
+    logging::log(logging::Level::warning, logging::Channel::skater,
+        "A wipeout asked for on foot is unavailable: Offboard's update could not be hooked (status {}).", static_cast<LONG>(status));
+    return false;
+}
+void ragdoll_on_foot(std::uintptr_t selector) noexcept {
+    namespace flight = addr::offboard_flight;
+    const auto core = state_watch().core.load(std::memory_order_acquire);
+    if (!core || pointer(core, flight::core_selector_offset) != selector) return;
+    const auto context = foot_context(core);
+    const auto offboard = pointer(core, flight::core_offboard_offset);
+    if (!context || context != pointer(selector, 8)) return;
+    // (A plugin that keeps a body down asks again a few times a second: a second covers the gap,
+    // and the body is let up within a second of the last ask. A hold that begins tells the bail.)
+    const auto now = GetTickCount64();
+    const auto held = foot_ragdoll_until().load(std::memory_order_acquire);
+    if (!held || now >= held) foot_ragdoll_told_until().store(now + 250, std::memory_order_release);
+    foot_ragdoll_until().store(now + 1000, std::memory_order_release);
+    // (Read before the raise: a plugin keeps asking, so each line also says what came of the ask
+    // before it, in what the animation was told and in the flags it gave back.)
+    std::uint32_t flags{};
+    (void)read(context + flight::mode_flags_offset, flags);
+    std::uint8_t told_impact{0xff}, told_bail{0xff}, told_manual{0xff};
+    if (const auto told = pointer(pointer(core, flight::core_animation_offset), flight::animation_block_offset)) {
+        (void)read(told + flight::told_impact_offset, told_impact);
+        (void)read(told + flight::told_bail_offset, told_bail);
+        (void)read(told + flight::told_manual_offset, told_manual);
+    }
+    const bool raised = !foot_ragdoll_telling() || (raise_request(context, impact_request_offset, impact_request_mask) &&
+        raise_request(context, animation_request_offset, animation_request_mask));
+    logging::log(logging::Level::debug, logging::Channel::skater,
+        "No Bail: a wipeout was asked for on foot: the bail requests were {} (on-foot flags {:#x}, Offboard state +{:#x}, the animation was last told {} and {}, and the player's own bail {}).",
+        raised ? "raised" : "not raised", flags, pointer(offboard, flight::state_now_offset) - offboard, told_impact, told_bail, told_manual);
+}
 std::uint32_t choose_state(std::uintptr_t selector, std::uint32_t current) {
     {
         LastError error;
@@ -2025,6 +2150,8 @@ std::uint32_t choose_state(std::uintptr_t selector, std::uint32_t current) {
         logging::log(logging::Level::debug, logging::Channel::skater, "No Bail: a wipeout was asked for (state {} would have been {}).", current, next);
         next = wipeout_physics_state;
     }
+    // (On foot that pick changes nothing: the animation is told to bail, as a collision tells it.)
+    if (force_wipeout && current == offboard_physics_state) ragdoll_on_foot(selector);
     auto chosen = filtered && next == wipeout_physics_state && protected_owner(selector, &Owner::selector) ? current : next;
     chosen = dark_pop_after(selector, current, chosen);
     fast_probe_record(selector, current, next, chosen);
@@ -2050,6 +2177,13 @@ void skeleton_response(std::uintptr_t rig, float seconds, bool wipeout) {
     // The state post-update can raise another request after the selector ran.
     // Filter at this consumer, then let native constraints and recovery run.
     if (filter_requests(rig, &Owner::rig)) wipeout = false;
+    else if (!wipeout && foot_ragdoll_telling()) {
+        // (A wipeout asked for on foot: the game works this out from the request the publisher's
+        // hook raises below, one call too late for this one.)
+        LastError error;
+        NoBailSkater skater;
+        if (published_skater(rig, skater)) wipeout = true;
+    }
     std::array<NoBailStepObserver, no_bail_step_listener_slots> listeners{};
     bool any = false;
     for (std::size_t i = 0; i < listeners.size(); ++i) {
@@ -2091,13 +2225,113 @@ void filter_contact_animation(std::uintptr_t core) noexcept {
     if (clear_contact_output(contacts))
         (void)cancel_request(owner.context, body_contact_context_offset, body_contact_context_mask);
 }
+#if defined(DINGOSDK_DEV_TOOLS)
+// Research: what a fall off the board asks of the animation. The game's skydive begins on a move
+// made in the air (RB among them), and Offboard goes to its animated ragdoll state when the
+// animation's flags come back with bit 28 set (offboard_flight.h). Which of the context's requests
+// that move raises is not known: this logs, while the watched skater is off the board and in the
+// air, each change in the six request words (context +13c4 to +13d8), in the flags the animation
+// gave back (+9c0), in Offboard's state, and in what the animation was told (its block's +80 to
+// +a0), so that one fall with one press of RB names it. At most 300 lines a fall.
+struct FallWatch {
+    std::array<std::uint32_t, 6> requests{};
+    std::uint32_t flags{};
+    std::uintptr_t state{};
+    std::array<std::uint8_t, 0x21> told{};
+    unsigned lines{};
+};
+FallWatch& fall_watch() { static FallWatch value; return value; }
+void fall_watch_step(std::uintptr_t core, bool after) noexcept {
+    namespace flight = addr::offboard_flight;
+    LastError error;
+    const auto context = foot_context(core);
+    auto& w = fall_watch();
+    if (!context) { w.state = 0; return; }
+    const auto offboard = pointer(core, flight::core_offboard_offset);
+    const auto state = pointer(offboard, flight::state_now_offset) - offboard;
+    FallWatch now = w;
+    now.state = state;
+    for (std::size_t i = 0; i < now.requests.size(); ++i) (void)read(context + 0x13c4 + i * 4, now.requests[i]);
+    (void)read(context + flight::mode_flags_offset, now.flags);
+    if (after)
+        if (const auto told = pointer(pointer(core, flight::core_animation_offset), flight::animation_block_offset))
+            for (std::size_t i = 0; i < now.told.size(); ++i) (void)read(told + 0x80 + i, now.told[i]);
+    // (On its feet, state +60 or +1c0: only kept up with, so that the fall's first line shows what changed.)
+    const bool in_air = state >= 0x5b0;
+    if (in_air && w.state < 0x5b0) now.lines = 0;
+    const bool changed = now.requests != w.requests || now.flags != w.flags || now.state != w.state || now.told != w.told;
+    if (in_air && changed && now.lines < 300) {
+        ++now.lines;
+        std::string told;
+        for (std::size_t i = 0; i < now.told.size(); ++i)
+            if (now.told[i] != w.told[i]) told += std::format(" +{:x}:{}>{}", 0x80 + i, w.told[i], now.told[i]);
+        logging::log(logging::Level::debug, logging::Channel::skater,
+            "Fall watch ({}): Offboard +{:#x}, flags {:#x} (was {:#x}), requests {:#x} {:#x} {:#x} {:#x} {:#x} {:#x} (changed bits {:#x} {:#x} {:#x} {:#x} {:#x} {:#x}), told{}",
+            after ? "after the publisher" : "before it", state, now.flags, w.flags,
+            now.requests[0], now.requests[1], now.requests[2], now.requests[3], now.requests[4], now.requests[5],
+            now.requests[0] ^ w.requests[0], now.requests[1] ^ w.requests[1], now.requests[2] ^ w.requests[2],
+            now.requests[3] ^ w.requests[3], now.requests[4] ^ w.requests[4], now.requests[5] ^ w.requests[5],
+            told.empty() ? std::string(" nothing new") : told);
+    }
+    w = now;
+}
+#endif
+// A skydive asked for (no_bail_request_skydive). On foot and in the air, the game's dive is the
+// player's own bail: the request at context +13d8 bit 9 (offboard_flight.h), which the game copies
+// from the player's action each step and the publisher hands to the animation. While the ask is
+// fresh it is raised here, just before the game's own publication, for the watched skater while
+// Offboard has it in Falling: not on its feet (there it is a fall to the ground, which is
+// no_bail_request_wipeout's), and not once the dive has begun.
+// (What did not do it, each tried in game on 2026-11-16: the animation's FlumpTrickType written to
+// 7 by itself, held 3.5 s through a plain fall, changed nothing; its ForceFollowRagdoll written
+// true with it put Offboard into FollowAnimatedRagdoll (+8e0) and held the skater still in mid
+// air, for good, as nothing writes that flag back. Both are what the animation gives the game once
+// a dive has begun, not what begins one.)
+struct WantedSkydive {
+    std::atomic<std::uint64_t> until{};
+    std::atomic<std::uint64_t> said{};
+};
+WantedSkydive& wanted_skydive() { static WantedSkydive value; return value; }
+void raise_skydive(std::uintptr_t core) {
+    namespace flight = addr::offboard_flight;
+    auto& wanted = wanted_skydive();
+    const auto until = wanted.until.load(std::memory_order_acquire);
+    const auto now = GetTickCount64();
+    if (!until || now >= until) return;
+    LastError error;
+    const auto context = foot_context(core);
+    if (!context) return;
+    const auto offboard = pointer(core, flight::core_offboard_offset);
+    const auto state = pointer(offboard, flight::state_now_offset) - offboard;
+    if (state != flight::falling_state_offset) return;
+    const bool raised = raise_request(context, flight::manual_bail_offset, flight::manual_bail_mask);
+    // (Said once an ask, not every step it is raised.)
+    if (now - wanted.said.exchange(now, std::memory_order_acq_rel) > 1000)
+        logging::log(logging::Level::debug, logging::Channel::skater,
+            "No Bail: a skydive was asked for: the player's own bail was {} for a skater falling on foot.",
+            raised ? "raised" : "not raised");
+}
 void publish_animation(std::uintptr_t core) {
     // Animation also reads requests without consulting the cause collector.
     // Clear flags and pending causes before native publication, including
     // its early recovery query and cause export. Leave the native query result
     // unchanged: forcing it true used to put the skater into a stumbling state.
     (void)filter_requests(core, &Owner::core);
+    if (foot_ragdoll_telling())
+        if (const auto context = foot_context(core)) {
+            (void)raise_request(context, impact_request_offset, impact_request_mask);
+            (void)raise_request(context, animation_request_offset, animation_request_mask);
+            // (And the player's own bail, the one request the animation takes on foot.)
+            (void)raise_request(context, addr::offboard_flight::manual_bail_offset, addr::offboard_flight::manual_bail_mask);
+        }
+    raise_skydive(core);
+#if defined(DINGOSDK_DEV_TOOLS)
+    fall_watch_step(core, false);
+#endif
     protection().publish_original(core);
+#if defined(DINGOSDK_DEV_TOOLS)
+    fall_watch_step(core, true);
+#endif
     filter_contact_animation(core);
     // Sample the game's own failed-landing/runout result at its publication
     // boundary. It may be true for only one physics frame, between mode ticks.
@@ -2193,6 +2427,7 @@ bool start_no_bail(std::uintptr_t base) noexcept {
                 (void)start_dark_pop_hold(base);
                 (void)start_dark_pop_feet(base);
                 (void)start_dark_pop_mover(base);
+                (void)start_foot_ragdoll(base);
                 return true;
             }
         }
@@ -2461,6 +2696,9 @@ std::size_t fast_probe_drain(FastProbeRow* rows, std::size_t capacity) noexcept 
     while (tail != head && count < capacity) rows[count++] = f.rows[tail++ % fast_probe_capacity];
     f.tail.store(tail, std::memory_order_release);
     return count;
+}
+void no_bail_request_skydive() noexcept {
+    wanted_skydive().until.store(GetTickCount64() + 250, std::memory_order_release);
 }
 void no_bail_request_wipeout(float magnitude) noexcept {
     auto& wanted = wanted_wipeout();

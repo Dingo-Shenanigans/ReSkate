@@ -9,6 +9,7 @@
 #include "Engine/Game/Build/20260929/engine.h"
 #include "Engine/Game/Build/20260929/physics_bodies.h"
 #include "Engine/Game/Build/20260929/skater_entities.h"
+#include "Engine/Game/Build/20260929/native_skater.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
 #include <Windows.h>
 #include <intrin.h>
@@ -22,6 +23,7 @@
 #include <optional>
 #include <set>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 // The native calls are SmokeyDawg58's (from his fork's world objects): a bus under the
@@ -214,6 +216,168 @@ void destroy(std::uintptr_t base, const Live& l) {
     if (ptr(l.entity, 0x20) == l.context && ptr(l.entity, 0x40) == l.owner)
         reinterpret_cast<void (*)(std::uintptr_t, std::uintptr_t)>(base + e::destroy_entity)(l.entity, l.owner);
 }
+// Set pieces (world_entities.h set_piece).
+struct PieceWanted {
+    std::string asset;
+    Matrix matrix{};
+};
+struct PieceLive {
+    std::string asset;
+    Matrix matrix{};
+    std::uintptr_t sublevel{}, context{};
+    std::vector<std::uintptr_t> entities; // every entity the prefab made, in the order made
+    std::uint64_t made{};
+};
+std::mutex pieces_mutex;
+std::map<Key, PieceWanted> pieces_wanted;      // under pieces_mutex
+std::map<Key, PieceLive> pieces_live;          // under pieces_mutex
+std::map<Key, std::uint64_t> pieces_retry;     // client thread: when a piece that could not be made is tried again
+std::atomic<bool> pieces_active{};             // any wanted or live: the tick has something to do
+// BlueprintCreationParams+0x158 points at this (Extension/Multiplayer/Remote/native_creation_list.h):
+// pages of 60 entity pointers from +0x10; bit 0 of a page's first word says it is the last, whose +8
+// is its count (else the next page).
+struct CreationList {
+    std::uintptr_t allocator{}, head{}, tail{}, spare{};
+    std::uint32_t pages{}, spare_pages{};
+};
+// The SpatialPrefabBlueprint type (an asset's +8; the type of both prefabs first made, 2026-11-16).
+// A LayerData (0x74fe160, the Skatepedia backdrop's) crashed the creation: only this type is made.
+constexpr std::uintptr_t prefab_blueprint_type = 0x75044c8;
+// As create(), for a prefab: no one entity comes back; its entities come in the creation list, which
+// is initialized after (without that they are made and never shown: seen), and the sublevel that
+// holds them is kept.
+PieceLive create_piece(std::uintptr_t base, std::uintptr_t parent, std::uintptr_t asset, const Matrix& matrix) {
+    prefix(base, addr::native_skater::initialize_creation_list, addr::native_skater::initialize_creation_list_prefix);
+    prefix(base, addr::native_skater::free_creation_page, addr::native_skater::free_creation_page_prefix);
+    using CreateBus = std::uintptr_t (*)(std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uintptr_t, std::uint8_t, std::uintptr_t);
+    const auto bus = reinterpret_cast<CreateBus>(base + b::create_bus)(ptr(ptr(parent, 8), 0x48), parent, 0, 0, 0, 0);
+    require(bus != 0, "Set piece entity bus unavailable.");
+    reinterpret_cast<int (*)(std::uintptr_t)>(base + b::acquire_bus)(bus);
+    struct BusScope {
+        std::uintptr_t base, bus;
+        ~BusScope() { reinterpret_cast<void (*)(std::uintptr_t)>(base + e::release_reference)(bus); }
+    } bus_scope{base, bus};
+    alignas(16) std::array<unsigned char, 0x190> descriptor{};
+    reinterpret_cast<void* (*)(void*, std::uintptr_t, std::uintptr_t, const void*)>(base + e::descriptor_init)(descriptor.data(), 0, bus, matrix.data());
+    struct Scope {
+        std::uintptr_t base;
+        void* data;
+        ~Scope() { reinterpret_cast<void (*)(void*)>(base + e::descriptor_destroy)(static_cast<unsigned char*>(data) + 0x10); }
+    } scope{base, descriptor.data()};
+    const std::uint32_t id = 255;
+    std::memcpy(descriptor.data() + 0x38, &id, 4);
+    descriptor[0x151] = 0;
+    CreationList list;
+    CreationList* const list_at = &list;
+    std::memcpy(descriptor.data() + 0x158, &list_at, sizeof(list_at));
+    std::array<std::uintptr_t, 3> result{};
+    reinterpret_cast<void* (*)(void*, void*, std::uintptr_t, std::uintptr_t, std::uintptr_t)>(base + e::create_entity)(result.data(), descriptor.data(), asset, 0, 0);
+    PieceLive made;
+    made.sublevel = result[1];
+    std::vector<std::uintptr_t> pages;
+    for (auto page = list.head; page && pages.size() < 64;) {
+        pages.push_back(page);
+        const bool last = (ptr(page) & 1) != 0;
+        const auto count = last ? std::min<std::uint32_t>(get<std::uint32_t>(page + 8), 60) : 60;
+        for (std::uint32_t i = 0; i < count; ++i) made.entities.push_back(ptr(page, 0x10 + std::uintptr_t(i) * 8));
+        page = last ? 0 : ptr(page, 8);
+    }
+    if (list.head) reinterpret_cast<void (*)(void*)>(base + addr::native_skater::initialize_creation_list)(&list);
+    for (const auto page : pages) {
+        // (The pages hold borrowed pointers: emptied and given back, as the remote skateboard spawn does.)
+        const std::uint32_t empty = 0;
+        std::memcpy(reinterpret_cast<void*>(page + 8), &empty, sizeof(empty));
+        reinterpret_cast<void (*)(void*, std::uintptr_t, std::size_t)>(base + addr::native_skater::free_creation_page)(&list, page, 0x1f0);
+    }
+    return made;
+}
+// A piece taken out of the world: each of its entities destroyed, last made first, by the sublevel
+// that holds them, then the sublevel let go. (The game's destroy is (owner + 8)'s own, called with the
+// entity: an entity's +0x40 is not that owner for every kind of entity in a prefab. Destroyed by it,
+// the first probe's clear crashed at the call, 2026-11-16.) No lock held: the shared destroy hook
+// calls entity_destroyed back, which takes each entity off the piece as it goes.
+void destroy_piece(std::uintptr_t base, const Key& key, std::uintptr_t context) {
+    std::uintptr_t sublevel{};
+    std::vector<std::uintptr_t> entities;
+    {
+        std::lock_guard lock(pieces_mutex);
+        const auto at = pieces_live.find(key);
+        if (at == pieces_live.end()) return;
+        sublevel = at->second.sublevel;
+        entities = at->second.entities;
+        if (at->second.context != context) {
+            // (Another world's: its entities went with that world.)
+            pieces_live.erase(at);
+            return;
+        }
+    }
+    const auto creator = sublevel ? ptr(sublevel, 8) : 0;
+    const auto code = creator ? ptr(ptr(creator), 0x18) : 0;
+    const bool can = code >= base && code < base + 0x10000000;
+    if (!can) logging::log(logging::Level::warning, logging::Channel::runtime, "World objects: a set piece's sublevel has no destroyer; {} is left in the world.", key.second);
+    for (auto entity = entities.rbegin(); can && entity != entities.rend(); ++entity) {
+        {
+            // (Gone already, with one destroyed before it: the hook took it off the piece.)
+            std::lock_guard lock(pieces_mutex);
+            const auto at = pieces_live.find(key);
+            if (at == pieces_live.end() || std::find(at->second.entities.begin(), at->second.entities.end(), *entity) == at->second.entities.end()) continue;
+        }
+        const auto vtable = ptr(*entity);
+        if (vtable < base || vtable >= base + 0x10000000 || ptr(*entity, 0x20) != context) continue;
+        reinterpret_cast<void (*)(std::uintptr_t, std::uintptr_t)>(base + e::destroy_entity)(*entity, sublevel);
+    }
+    if (sublevel && can) reinterpret_cast<void (*)(std::uintptr_t)>(base + e::release_reference)(sublevel);
+    std::lock_guard lock(pieces_mutex);
+    pieces_live.erase(key);
+}
+void pieces_tick(std::uintptr_t base, std::uintptr_t context, std::uint64_t now) {
+    std::map<Key, PieceWanted> wanted;
+    std::vector<Key> drop;
+    std::vector<Key> live;
+    {
+        std::lock_guard lock(pieces_mutex);
+        wanted = pieces_wanted;
+        for (const auto& [key, l] : pieces_live) {
+            const auto w = wanted.find(key);
+            // (Moved: made again there, a quarter of a second after it was made at the soonest.)
+            if (w == wanted.end() || w->second.asset != l.asset || l.context != context || (w->second.matrix != l.matrix && now >= l.made + 250)) drop.push_back(key);
+            else live.push_back(key);
+        }
+    }
+    for (const auto& key : drop) destroy_piece(base, key, context);
+    const auto find = game::native_data().find_asset;
+    unsigned created{};
+    for (const auto& [key, w] : wanted) {
+        if (std::find(live.begin(), live.end(), key) != live.end() || created >= 2) continue;
+        {
+            std::lock_guard lock(pieces_mutex);
+            if (pieces_live.contains(key)) continue; // (waiting to be made again)
+        }
+        if (const auto retry = pieces_retry.find(key); retry != pieces_retry.end() && now < retry->second) continue;
+        pieces_retry[key] = now + 1000;
+        std::uintptr_t asset{};
+        if (find)
+            for (std::uint16_t domain = 0; domain < 0xbbf && !asset; ++domain) {
+                if (!ptr(base + addr::engine::domain_owners, std::uintptr_t(domain) * 8)) continue;
+                if (const auto found = find(domain, w.asset.c_str()); found && ptr(found, 8) == base + prefab_blueprint_type) asset = found;
+            }
+        if (!asset) continue;
+        const auto parent = parent_bus(base, context);
+        if (!parent) continue;
+        auto made = create_piece(base, parent, asset, w.matrix);
+        made.asset = w.asset;
+        made.matrix = w.matrix;
+        made.context = context;
+        made.made = now;
+        ++created;
+        logging::log(logging::Level::info, logging::Channel::runtime, "World objects: set piece {} {} made, {} entities.", key.first, w.asset, made.entities.size());
+        pieces_retry.erase(key);
+        std::lock_guard lock(pieces_mutex);
+        pieces_live[key] = std::move(made);
+    }
+    std::lock_guard lock(pieces_mutex);
+    pieces_active.store(!pieces_wanted.empty() || !pieces_live.empty(), std::memory_order_release);
+}
 void destroy_all(std::uintptr_t base) {
     auto& s = state();
     std::map<Key, Live> old;
@@ -222,6 +386,12 @@ void destroy_all(std::uintptr_t base) {
         old.swap(s.live);
     }
     for (const auto& [key, l] : old) destroy(base, l);
+    std::vector<Key> pieces;
+    {
+        std::lock_guard lock(pieces_mutex);
+        for (const auto& [key, l] : pieces_live) pieces.push_back(key);
+    }
+    for (const auto& key : pieces) destroy_piece(base, key, s.context);
 }
 // A blueprint by name: in a domain already known (validated each time), else looked for in every
 // loaded domain at most once a second. UI and world bundles live in child domains, so the skater's
@@ -391,6 +561,29 @@ std::optional<Box> blueprint_bounds(std::uintptr_t base, std::string_view bluepr
     }, level_content_active());
 }
 
+std::string set_piece(std::string_view owner, std::uint32_t id, std::string asset, const Matrix& matrix) {
+    if (asset.empty() || asset.size() > 200) return "a set piece's name is 1 to 200 characters";
+    if (!finite(matrix)) return "a set piece's transform is finite";
+    std::lock_guard lock(pieces_mutex);
+    const Key key{std::string(owner), id};
+    if (!pieces_wanted.contains(key) &&
+        std::count_if(pieces_wanted.begin(), pieces_wanted.end(), [&](const auto& w) { return w.first.first == owner; }) >= 8)
+        return "at most 8 set pieces at once";
+    pieces_wanted[key] = {std::move(asset), matrix};
+    pieces_active.store(true, std::memory_order_release);
+    return {};
+}
+void remove_piece(std::string_view owner, std::uint32_t id) {
+    std::lock_guard lock(pieces_mutex);
+    pieces_wanted.erase(Key{std::string(owner), id});
+}
+bool piece_ready(std::string_view owner, std::uint32_t id) {
+    std::lock_guard lock(pieces_mutex);
+    const Key key{std::string(owner), id};
+    const auto w = pieces_wanted.find(key);
+    const auto l = pieces_live.find(key);
+    return w != pieces_wanted.end() && l != pieces_live.end() && l->second.asset == w->second.asset;
+}
 void set_joint_source(JointSource source) noexcept { joint_source.store(source, std::memory_order_release); }
 void test_bodies(std::string name) {
     std::lock_guard lock(test_mutex);
@@ -412,11 +605,6 @@ std::string set(std::string_view owner, std::uint32_t id, std::string asset, con
     auto& s = state();
     std::lock_guard lock(s.mutex);
     const Key key{std::string(owner), id};
-    if (!s.wanted.contains(key)) {
-        const auto mine = std::count_if(s.wanted.begin(), s.wanted.end(), [&](const auto& w) { return w.first.first == owner; });
-        if (static_cast<std::size_t>(mine) >= max_per_owner) return std::format("at most {} objects", max_per_owner);
-        if (s.wanted.size() >= max_total) return "the world holds as many objects as ReSkate keeps";
-    }
     s.wanted[key] = {std::move(asset), matrix, hidden, attach, solid};
     return {};
 }
@@ -429,6 +617,8 @@ void clear(std::string_view owner) {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     std::erase_if(s.wanted, [&](const auto& w) { return w.first.first == owner; });
+    std::lock_guard pieces_lock(pieces_mutex);
+    std::erase_if(pieces_wanted, [&](const auto& w) { return w.first.first == owner; });
 }
 Status status(std::string_view owner, std::uint32_t id) {
     auto& s = state();
@@ -470,17 +660,36 @@ void entity_destroyed(std::uintptr_t entity) noexcept {
     auto& s = state();
     std::lock_guard lock(s.mutex);
     std::erase_if(s.live, [&](const auto& l) { return l.second.entity == entity; });
+    if (!pieces_active.load(std::memory_order_acquire)) return;
+    std::lock_guard pieces_lock(pieces_mutex);
+    for (auto& [key, l] : pieces_live) std::erase(l.entities, entity);
 }
 
 namespace {
 // An object's bodies, looked for while it is new (its physics may come a few frames after it), for
 // the floor below it and for being made not solid; then ghosted or made solid as it is wanted.
+// How many objects' bodies may be looked for in one tick (set at the tick's start). A look walks up
+// to 512 of the entity's blocks, a kilobyte each, and may scan the asset domains for the blueprint's
+// box: a plugin that made a hundred objects at once had all of them looked at in the same tick,
+// every quarter of a second for five seconds, and the game stuttered for as long (a canopy of 187
+// shapes, 2026-11-16).
+unsigned look_budget = 0;
 void bodies_for(std::uintptr_t base, const Key& key, Live& l, const Wanted& w, std::uint64_t now) {
     auto& p = physics();
     if (!physics_set.load(std::memory_order_acquire) || !p.world) return;
     const bool needed = !w.solid || (w.attach && w.attach->ground > 0);
     if (!needed && !l.ghosted) return;
-    if (l.bodies.empty() && !l.looked && now >= l.next_look) {
+    // An entity with no physics component has no bodies to find: given a second for one to come (it
+    // may come a few frames after the entity), it is not looked through at all. Most of what a
+    // plugin places is only drawn, and each such object was searched twenty times over.
+    if (l.bodies.empty() && !l.looked && now >= l.made + 1000 &&
+        !ptr(l.entity, addr::physics_bodies::entity_physics_component)) {
+        l.looked = true;
+        logging::log(logging::Level::debug, logging::Channel::runtime, "World objects: {} {} has no physics.", key.first, l.asset);
+    }
+    if (l.bodies.empty() && !l.looked && now >= l.next_look && look_budget > 0 &&
+        ptr(l.entity, addr::physics_bodies::entity_physics_component)) {
+        --look_budget;
         l.next_look = now + 250;
         if (const auto world = p.world()) l.bodies = find_bodies(base, l.entity, world);
         // Not kept in the entity where they were looked for: rays into the object's own box, the
@@ -533,7 +742,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
         {
             std::lock_guard lock(s.mutex);
             if (s.lifetime.blocked()) return;
-            if (s.wanted.empty() && s.live.empty()) return;
+            if (s.wanted.empty() && s.live.empty() && !pieces_active.load(std::memory_order_acquire)) return;
         }
         const auto context = ptr(client, 8);
         const auto now = GetTickCount64();
@@ -543,6 +752,8 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
             s.live.clear();
             s.assets.clear();
             s.context = 0;
+            std::lock_guard pieces_lock(pieces_mutex);
+            pieces_live.clear();
         }
         if (!ready || !context) return note(s, "waiting for local client world readiness");
         const auto tls_array = static_cast<std::uintptr_t>(__readgsqword(0x58));
@@ -565,6 +776,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
             require(multiplayer::install_entity_hooks(base, detail), "Native entity lifetime hooks unavailable.");
             s.verified = true;
         }
+        if (pieces_active.load(std::memory_order_acquire)) pieces_tick(base, context, now);
 
         std::map<Key, Wanted> wanted;
         std::map<Key, Live> live;
@@ -597,7 +809,17 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
             }
         }
         std::erase_if(s.lost, [&](const auto& l) { return !wanted.contains(l.first); });
-        // Gone or hidden, or a different blueprint now: taken away.
+        // A hidden object that is in the world stays in it, out of sight 2 km under where it was: taken
+        // out, it was some frames in coming back when shown again, so plugins that swap one shape for
+        // another kept everything they hid far below themselves. One with collision is still taken
+        // out (its shape would be solid down there), and one never shown is not made for hiding.
+        for (auto& [key, w] : wanted)
+            if (w.hidden && !w.solid && live.contains(key)) {
+                w.hidden = false;
+                w.attach.reset();
+                w.matrix[13] -= 2000.f;
+            }
+        // Gone or hidden (and not kept, above), or a different blueprint now: taken away.
         std::vector<Key> drop;
         for (const auto& [key, l] : live) {
             const auto w = wanted.find(key);
@@ -605,6 +827,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
             if (w == wanted.end() || w->second.hidden || w->second.asset != l.asset || gone || !intact(l)) drop.push_back(key);
         }
         // A blueprint whose bundle streamed out: its objects come back once it resolves again.
+        look_budget = 8;
         unsigned lookups = 4;
         std::map<std::string, std::uintptr_t> resolved;
         for (const auto& [key, w] : wanted) {
@@ -709,6 +932,12 @@ void before_level_transition(std::uintptr_t base, unsigned next) noexcept {
     s.assets.clear();
     s.lost.clear();
     s.context = 0;
+    {
+        std::lock_guard pieces_lock(pieces_mutex);
+        pieces_wanted.clear();
+        pieces_live.clear();
+        pieces_active.store(false, std::memory_order_release);
+    }
     logging::log(logging::Level::info, logging::Channel::runtime, "World objects retired before native state {}.", next);
 }
 } // namespace dingosdk::world_entities

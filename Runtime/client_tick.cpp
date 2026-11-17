@@ -275,15 +275,23 @@ Card largest_card() {
     factory->Release();
     return card;
 }
-// RESKATE_MESH_POOL_MB: the pool's size for this session in MB, whatever the card (520 to 3584);
-// for finding what size a map that fails needs.
-std::uint32_t override_kb() {
+// A pool size in MB from the environment, in KiB (520 to 3584 MB); 0 when not set.
+std::uint32_t size_from(const wchar_t* variable) {
     wchar_t value[16]{};
-    const auto length = GetEnvironmentVariableW(L"RESKATE_MESH_POOL_MB", value, 16);
+    const auto length = GetEnvironmentVariableW(variable, value, 16);
     if (!length || length >= 16) return 0;
     const auto megabytes = std::wcstoul(value, nullptr, 10);
     return megabytes ? static_cast<std::uint32_t>(std::clamp<std::uint64_t>(std::uint64_t{megabytes} * 1024, stock_kb, most_kb)) : 0;
 }
+// RESKATE_MESH_POOL_MB: the pool's size for this session in MB, whatever the card and the map;
+// for finding what size a map that fails needs.
+std::uint32_t override_kb() { return size_from(L"RESKATE_MESH_POOL_MB"); }
+// RESKATE_MAP_MESH_POOL_MB: the player's size for custom maps, from the launcher (Settings, GAME).
+// The automatic size is at most half the video memory free, which starves a big map on a small
+// card: on a 6 GB RTX 2060 a map with 6.6 GB of meshes got 1438 MB and took 77 s to show the
+// skater, and 15 s with 1600 MB (reported by its maker, 2026-11-16). Nothing checks that the card
+// has room for it. San Van keeps the game's own pool.
+std::uint32_t player_kb() { return size_from(L"RESKATE_MAP_MESH_POOL_MB"); }
 // What Windows lets this process use of the card's own memory now, and what it uses: the budget
 // (DXGI 1.4) and the current usage, in bytes. Nothing when the driver does not say.
 struct Budget { std::uint64_t budget{}, usage{}; };
@@ -451,7 +459,7 @@ std::uint32_t custom_pool_kb(const mesh_pool::Budget& budget, std::uint32_t curr
 // Just before a level load is submitted (the pools are re-created at its start, from the setting):
 // for a custom map, what its meshes need (mesh_pool_map_kb), at most half the video memory free
 // now (or by the card's size when the driver reports no budget); the game's own for any other.
-// RESKATE_MESH_POOL_MB sets it for every load.
+// RESKATE_MESH_POOL_MB sets it for every load, and the launcher's setting for every custom map.
 // Measured here, the map being left still holds its textures and meshes: from one custom map to the
 // next the pool came out smaller each time (1846 MB down to 1253 MB over five maps on an 8 GB
 // RTX 5050), until The Mashup loaded to a black screen (2026-10-17). So a custom map's pool is
@@ -482,7 +490,10 @@ void mesh_pool_for_load(bool custom, std::string_view level) {
         }
         const auto current = mesh_pool_wanted_kb ? mesh_pool_wanted_kb : mesh_pool::stock_kb;
         const auto needs = bytes ? std::format("its meshes {} MB, ", bytes >> 20) : std::string();
-        if (const auto budget = mesh_pool::budget_of(card)) {
+        if (const auto chosen = mesh_pool::player_kb()) {
+            kb = chosen;
+            how = needs + "the size set in the launcher";
+        } else if (const auto budget = mesh_pool::budget_of(card)) {
             kb = custom_pool_kb(*budget, current, short_of_room);
             how = std::format("{}{} MB free of a {} MB budget", needs,
                               (budget->budget - (std::min)(budget->budget, budget->usage)) >> 20, budget->budget >> 20);
@@ -1212,6 +1223,9 @@ void update_model(std::uintptr_t client, TickState& frame) {
         dingosdk::skater_movement::set_client(client);
         dingosdk::plugins::on_client_tick();
         dingosdk::plugins::tick_plugin_settings();
+        // A teleport a plugin asked for this tick starts this tick (the features' update, every 500 ms,
+        // was all that sent one).
+        dingosdk::send_waiting_teleport();
     }
     if (!has_request && now < r.next_model && state == r.previous_state) return;
     r.next_model = now + 500;

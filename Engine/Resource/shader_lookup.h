@@ -30,6 +30,7 @@ struct MergedTable {
     std::size_t conflicts{};   // disagreements: retained graph wins, then first edit
     std::size_t outside{};     // rows left out: they point past the base's programs
     std::size_t removed{};     // invalid rows removed from the retained table itself
+    std::size_t imported{};    // programs of other graphs brought into the retained one
 };
 
 // The selected bundle contributor owns the retained program graph. Merge only
@@ -44,7 +45,22 @@ struct MergedTable {
 [[nodiscard]] bool preserves_stock_programs(const Table& candidate, const Table& stock);
 [[nodiscard]] bool same_program_graph(const Table& candidate, const Table& other);
 [[nodiscard]] bool only_stock_aliases(const Table& candidate, const Table& stock);
-[[nodiscard]] MergedTable merge_program_lookup(const Table& base, std::span<const Table> edits, const Table& stock = {});
+// `importable` (beside `edits`, or empty): that edit's own programs may be brought into the
+// retained graph. Two mods with shader programs of their own in one bundle could not both be
+// had (a plugin's wall beside a map with its own shaders, 2026-11-16: the wall's materials were
+// left out and drawn by nothing). Where the retained graph and such an edit both keep the stock
+// heap whole and add to it, the edit's added bytes are copied after the retained heap, their
+// pointers moved by as much, and a new record array is made of the retained records followed by
+// the edit's own; its rows are renumbered to match. The caller says so only for a mod whose
+// compiled programs the bundle really has (as for the retained one). Anything about an edit that
+// does not read as expected leaves its rows out, as before.
+[[nodiscard]] MergedTable merge_program_lookup(const Table& base, std::span<const Table> edits, const Table& stock = {},
+                                               std::span<const bool> importable = {});
+
+// Whether `grown` is `retained` with other graphs' programs brought into it by the merge above:
+// the retained heap kept byte for byte, its pointers all still set, its records leading the new
+// record array, and every record's lists inside the heap. (For the audit of a merge.)
+[[nodiscard]] bool grown_from(const Table& grown, const Table& retained);
 
 [[nodiscard]] MergedTable merge_texture_lookup(const Table& base, std::span<const Table> edits);
 

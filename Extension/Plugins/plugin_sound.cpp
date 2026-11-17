@@ -38,6 +38,7 @@ struct Playing {
     float gain{};      // the gain its last samples were made at: the next ramp from it
     float tail{};
     bool ended{};
+    bool started{};    // its first samples have been made
     audio::MotorSynth synth{static_cast<int>(native_voice_rate)};
 };
 struct Player {
@@ -138,7 +139,17 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept {
                 ++it;
                 continue;
             }
-            playing.ahead -= passed;
+            // A sound's first frame: none of it has played, so no time has gone by for it, and a
+            // recording starts at its own volume. (It was treated as run dry and faded in: the
+            // frame's length was skipped from its start and the rest came up from silence over the
+            // first block, which took the crack off every gunshot: its first 17 ms at 60 frames a
+            // second. The engine sound still comes up from silence: it has no start to keep.)
+            if (!playing.started) {
+                playing.started = true;
+                if (v.wave) playing.gain = gain;
+            } else {
+                playing.ahead -= passed;
+            }
             const double step_rate = v.wave ? std::clamp(static_cast<double>(v.pitch), 0.25, 4.0) * native_voice_rate : 0.0;
             if (silent) {
                 // Nothing is held for it: it goes on in time, unheard, and starts with a lead again.

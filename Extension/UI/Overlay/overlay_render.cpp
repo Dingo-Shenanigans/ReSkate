@@ -997,6 +997,9 @@ void render(IDXGISwapChain* presented, UINT flags) {
         look.transfer = output_transfer;
         look.wait_idle = [] { return completed(state().next_fence, render_fence_timeout_ms); };
         (void)screen_look::record(look);
+    } else {
+        // (Made ready ahead: the first frame a look is wanted on does not wait for its pipeline.)
+        screen_look::warm(s.device.Get(), frame.buffer->GetDesc().Format);
     }
     D3D12_RESOURCE_BARRIER barrier{};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;

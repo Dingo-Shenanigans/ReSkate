@@ -97,6 +97,13 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
     } native_input;
     auto& s = state();
     if (message == WM_MOUSEWHEEL) s.look_wheel_message.fetch_add(GET_WHEEL_DELTA_WPARAM(wp));
+    // A plugin holds the pointer for a view of its own (reskate.input.mouse{hold}): no pointer is shown
+    // over the picture. (Skate shows one whenever it takes the player to be on mouse and keyboard.)
+    if (message == WM_SETCURSOR && LOWORD(lp) == HTCLIENT && GetTickCount64() < s.pointer_held_until.load(std::memory_order_relaxed)) {
+        OverlayInputAccess access;
+        SetCursor(nullptr);
+        return TRUE;
+    }
     WNDPROC previous{};
     {
         std::lock_guard lock(s.window_hook_mutex);
@@ -153,6 +160,8 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
         const bool release = message == WM_KEYUP || message == WM_SYSKEYUP;
         if((key || release) && challenge_menu_key(static_cast<int>(wp)))return 0;
         if (key && wp < 256 && key_hidden(static_cast<unsigned>(wp))) return 0;
+        // (And a hidden key's release, when the game never had its press: see hidden_press.)
+        if (release && wp < 256 && wp < s.game_keys.size() && key_hidden(static_cast<unsigned>(wp)) && !s.game_keys[wp]) return 0;
         // A hidden mouse button's press (and the double click that is one), as a hidden key's.
         {
             unsigned button = 0;
@@ -619,7 +628,7 @@ static bool raw_mouse_live(const State& s) {
 }
 
 namespace dingosdk::overlay {
-bool read_mouse_look(MouseLook& output) noexcept {
+bool read_mouse_look(MouseLook& output, bool hold) noexcept {
     struct PreserveError { DWORD value = GetLastError(); ~PreserveError() { SetLastError(value); } } preserve_error;
     output = {};
     auto& s = state();
@@ -630,6 +639,57 @@ bool read_mouse_look(MouseLook& output) noexcept {
     if (!window || s.stop.load() || s.failed.load() || interactive_visible(s) || !game_window_foreground(window)) return false;
     output.x = x;
     output.y = y;
+    // Skate hands the mouse over in two ways, by the input it thinks the player uses. On a controller
+    // it takes raw packets and stops Windows' own pointer; on mouse and keyboard it lets the raw mouse
+    // go, and the pointer is free (seen 2026-11-16: a plugin's own view could not be turned with the
+    // mouse there, and a click went to whatever window the free pointer was over, which took the
+    // keyboard with it). Held, the pointer is kept at the window's middle, and with no raw movement
+    // its own movement from there is the look. (Client thread only, as the flight look's is.)
+    thread_local POINT previous{};
+    thread_local bool holding = false;
+    POINT current{};
+    if (hold && GetCursorPos(&current)) {
+        const auto time = s.raw_mouse_time.load();
+        // (Whenever no raw movement came this read: waiting 150 ms after the last raw packet, as it
+        // did, lost the pointer's movement each time Skate changed how it takes the mouse.)
+        // With no raw packets coming, the pointer's own movement is all there is, and it must be free to
+        // move. Skate keeps the pointer in a rectangle a pixel or so across while it takes the mouse raw;
+        // the overlay remembers that rectangle when its console or menu takes the pointer and puts it
+        // back when they close, by when Skate may have let the raw mouse go and will not set another
+        // (seen 2026-11-16: after the console or the Insert menu a plugin's view could not be turned with
+        // the mouse again). So a rectangle too small to move in is opened to the game's window, once
+        // raw packets have stopped. (Seldom: ClipCursor takes Windows' input lock.)
+        if (!time || GetTickCount64() > time + 300) {
+            RECT clip{};
+            RECT client{};
+            POINT corner{};
+            if (GetClipCursor(&clip) && (clip.right - clip.left < 64 || clip.bottom - clip.top < 64) && GetClientRect(window, &client) &&
+                ClientToScreen(window, &corner)) {
+                OffsetRect(&client, corner.x, corner.y);
+                ClipCursor(&client);
+            }
+        }
+        if (holding && x == 0 && y == 0) {
+            output.x = current.x - previous.x;
+            output.y = current.y - previous.y;
+        }
+        previous = current;
+        holding = true;
+        // (At the window's middle, with room to move every way. Held at its corner, to be out of the
+        // picture, it could not be moved right or down and the view would not turn that way. So it is
+        // not shown instead: while held, the window answers WM_SETCURSOR with no pointer, window_proc.)
+        s.pointer_held_until.store(GetTickCount64() + 300);
+        RECT bounds{};
+        if (GetClientRect(window, &bounds)) {
+            POINT center{(bounds.left + bounds.right) / 2, (bounds.top + bounds.bottom) / 2};
+            // (Where the pointer then is, not where it was sent: Skate confines it on a controller,
+            // and the difference, taken for movement every tick, pushed the view steadily one way.)
+            POINT landed{};
+            if (ClientToScreen(window, &center) && SetCursorPos(center.x, center.y)) previous = GetCursorPos(&landed) ? landed : center;
+        }
+    } else {
+        holding = false;
+    }
     // The same notch can arrive both ways: the raw count where raw packets come in, else the message's.
     output.wheel = raw_mouse_live(s) && wheel_raw != 0 ? wheel_raw : wheel_message;
     return true;
