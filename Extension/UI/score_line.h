@@ -215,10 +215,19 @@ template <class Root> const Root* pick_game_root(const std::vector<Root>& roots,
 inline std::uint64_t trick_id_at(const std::vector<std::uint64_t>& ids, std::size_t index) {
     return index < ids.size() ? ids[index] : 0;
 }
+inline bool rows_identified(const std::vector<std::uint64_t>& ids) {
+    for (const auto id : ids)
+        if (id) return true;
+    return false;
+}
+// An owner generation keeps one caller's row identities apart from the next caller's, which may
+// start its ids again. Rows with no identity have none to keep apart: across a generation they
+// line up by name alone, as they did before identities, so a caller that sends only names keeps
+// the rows it had when no UI pass saw its lease lapse, its clear or its closed line.
 inline std::size_t fresh_rows(const std::vector<std::string>& shown, const std::vector<std::string>& wanted,
     const std::vector<std::uint64_t>& shown_ids = {}, const std::vector<std::uint64_t>& wanted_ids = {},
     std::uint64_t shown_generation = 0, std::uint64_t wanted_generation = 0) {
-    if (shown_generation != wanted_generation) return wanted.size();
+    if (shown_generation != wanted_generation && (rows_identified(shown_ids) || rows_identified(wanted_ids))) return wanted.size();
     for (std::size_t fresh = 0; fresh < wanted.size(); ++fresh) {
         const auto kept = wanted.size() - fresh;
         if (kept > shown.size()) continue;

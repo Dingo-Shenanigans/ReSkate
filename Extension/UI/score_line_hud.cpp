@@ -412,7 +412,13 @@ void show_rows(Hud& h, const Context& c, const std::vector<std::string>& wanted,
     }
     const auto generation = owner().generation();
     const auto fresh = fresh_rows(shown, wanted, shown_ids, wanted_ids, h.rows_restart ? 0 : h.rows_generation, generation);
-    if (!fresh && shown.size() == wanted.size() && h.rows_generation == generation && !h.rows_restart) return;
+    if (!fresh && shown.size() == wanted.size()) {
+        // The list already is what is wanted: nothing is made, retired or written. The cache still
+        // takes the owner generation, so rows that lined up by name across one are not asked about again.
+        h.rows_generation = generation;
+        h.rows_restart = false;
+        return;
+    }
     const auto type = fresh ? row_type_now(h, c, now) : h.row_type;
     if (fresh && (!type || !h.row_blueprint)) {
         if (!std::exchange(h.said_rows, true))

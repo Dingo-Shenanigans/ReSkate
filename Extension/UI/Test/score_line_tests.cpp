@@ -189,7 +189,12 @@ struct RowDrain {
             start.out();
             return 0;
         }
-        if (start.shown(line->closed)) restart = true;
+        if (start.shown(line->closed)) {
+            // A line that starts again empties the HUD's list (clear_rows), whatever its rows carry.
+            restart = true;
+            names.clear();
+            ids.clear();
+        }
         const auto look = look_of(*line, 400);
         const auto fresh = fresh_rows(names, look.rows, ids, look.trick_ids, restart ? 0 : generation, owner.generation());
         if (!row_update_reached) return 0;
@@ -298,6 +303,63 @@ void a_deferred_row_update_keeps_its_pending_generation() {
     check(shown.drain(owner, 64) == 1 && !shown.restart && shown.made == 3, "recovery reused a row from before the restart");
 }
 
+// A caller that sends names alone keeps the rows that still match by name when no UI drain saw its
+// lease lapse, its clear, its release or its closed line, as it did before rows had identities. The
+// same boundaries start every row again for a caller that sends identities, and a boundary the drain
+// did see starts the rows again for both.
+void name_only_rows_survive_unseen_owner_boundaries() {
+    using Boundary = void (*)(LineOwner&, Line&);
+    const Boundary boundaries[] = {
+        [](LineOwner& owner, Line& line) { owner.ask("sample-line", line, 600); }, // past its 500 ms lease
+        [](LineOwner& owner, Line& line) {
+            owner.ask("sample-line", std::nullopt, 16);
+            owner.ask("sample-line", line, 16);
+        },
+        [](LineOwner& owner, Line& line) {
+            owner.release("sample-line");
+            owner.ask("sample-line", line, 16);
+        },
+        [](LineOwner& owner, Line& line) {
+            line.closed = true;
+            owner.ask("sample-line", line, 16);
+            line.closed = false;
+            owner.ask("sample-line", line, 32);
+        },
+    };
+    for (const auto boundary : boundaries) {
+        for (const bool identified : {false, true}) {
+            LineOwner owner;
+            auto line = sample_line();
+            if (identified) line.trick_ids = {1, 2};
+            check(owner.ask("sample-line", line, 0).empty(), "the first line was refused");
+            const auto before = look_of(line, 400);
+            const auto generation = owner.generation();
+            boundary(owner, line); // no drain and no current() between: the UI saw none of it
+            const auto after = look_of(line, 400);
+            check(owner.generation() != generation, "an owner boundary did not start a new generation");
+            const auto fresh = fresh_rows(before.rows, after.rows, before.trick_ids, after.trick_ids, generation, owner.generation());
+            check(fresh == (identified ? 2u : 0u), identified ? "identified rows were kept across an owner boundary"
+                                                             : "rows sent by name alone were remade across an unseen owner boundary");
+        }
+    }
+    // One more name on a name-only line after an unseen lapse is one new row, not three.
+    check(fresh_rows({"Second action", "First action"}, {"Third action", "Second action", "First action"}, {}, {}, 1, 2) == 1,
+        "a name added across an unseen owner boundary renewed the older rows");
+    // A drain that saw the line go starts its rows again, with or without identities.
+    for (const bool identified : {false, true}) {
+        LineOwner owner;
+        RowDrain shown;
+        auto line = sample_line();
+        if (identified) line.trick_ids = {1, 2};
+        owner.ask("sample-line", line, 0);
+        check(shown.drain(owner, 0) == 2, "the first rows differ");
+        check(shown.drain(owner, 600) == 0, "a lapsed line made rows");
+        owner.ask("sample-line", line, 616);
+        check(shown.drain(owner, 616) == 2 && shown.made == 4, "a lapse the drain saw kept the old line's rows");
+        check(shown.drain(owner, 632) == 0 && shown.made == 4, "an unchanged line after a restart made rows again");
+    }
+}
+
 // Ours is a copy of the game's root, so it is made only while nothing of the game's line is in it
 // (after a level load GameLine has seen nothing, so this is what holds the first copy back).
 void the_games_root_is_copied_only_while_idle() {
@@ -362,6 +424,7 @@ int main() {
         missed_ui_drains_keep_each_retained_identity();
         owner_and_closed_boundaries_survive_a_missed_drain();
         a_deferred_row_update_keeps_its_pending_generation();
+        name_only_rows_survive_unseen_owner_boundaries();
         the_games_root_is_copied_only_while_idle();
         a_new_line_starts_its_rows_again();
         a_line_looks_like_the_games();
