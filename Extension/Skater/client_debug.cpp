@@ -417,7 +417,7 @@ void debug_restore_ui(SourceTrial& trial) {
 }
 void debug_restore_camera(SourceTrial& trial, std::uintptr_t client, bool phase, DWORD error) {
     auto& debug = trial.debug;
-    debug_stop_noclip(debug);
+    if (!noclip_held()) debug_stop_noclip(debug); // (a plugin's hold needs no camera: set_noclip_hold)
     source_require(!debug.camera_ambiguous, "Native camera call had an uncertain result; restart before changing camera mode.");
     if (!debug.camera_owned) { debug.first_person = false; debug.first_person_saved_fov = 0; return; }
     source_require(phase, "Waiting for the native camera update phase.");
@@ -464,13 +464,18 @@ void debug_flight_tick(SourceTrial& trial, std::uintptr_t client, bool ready, bo
     const auto camera = source_camera_snapshot(trial, client);
     taken = camera;
     if (debug.noclip) {
-        source_require(camera.identity == debug.camera_identity && camera.mode == 0 && camera.view_enabled && !camera.input_active,
-            "Player camera changed; flight stopped.");
+        // A plugin's hold (set_noclip_hold) is not flown by the view: it hovers, or goes where the
+        // plugin flies it (set_plugin_flight, read each physics step), whatever camera is up.
+        const bool held = noclip_held();
+        if (!held)
+            source_require(camera.identity == debug.camera_identity && camera.mode == 0 && camera.view_enabled && !camera.input_active,
+                "Player camera changed; flight stopped.");
         const auto bodies = debug_noclip_bodies(trial.base, client, debug.noclip_entity);
-        const auto view = debug_view_matrix(trial, camera);
-        debug.noclip_velocity = {client, debug.noclip_entity, bodies.core, GetTickCount64() + 250,
-            flight_velocity(view, input ? *input : idle, debug.flight_speed), true};
-        return;
+        std::array<float, 3> velocity{};
+        if (!held) velocity = flight_velocity(debug_view_matrix(trial, camera), input ? *input : idle, debug.flight_speed);
+        debug.noclip_velocity = {client, debug.noclip_entity, bodies.core, GetTickCount64() + 250, velocity, true};
+        // (Held with the free camera up as well, a plugin's view: that camera's own step is below.)
+        if (!held || !debug.camera_owned) return;
     }
     if (!debug.flight_ready) return;
     source_require(camera.identity == debug.camera_identity && camera.mode == 1 && camera.active == camera.identity.camera,
@@ -1122,12 +1127,17 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
         source_require(reader.value<std::uint8_t>(skater.skater_identity, 0x7e0) == 0,
             "Wait for the current teleport before enabling flight.");
         reader.verify();
-        if (debug.camera_owned) debug_restore_camera(trial, client, phase, error);
+        // (A plugin's hold keeps the camera that is up, a plugin's own view among them: it is not
+        // flown by the view, so it needs none.)
+        const bool held = noclip_held();
+        if (debug.camera_owned && !held) debug_restore_camera(trial, client, phase, error);
         const auto camera = source_camera_snapshot(trial, client);
-        source_require(camera.mode == 0 && camera.view_enabled && !camera.input_active,
-            "Noclip needs the normal player camera.");
-        (void)debug_view_matrix(trial, camera);
-        debug.camera_identity = camera.identity;
+        if (!held) {
+            source_require(camera.mode == 0 && camera.view_enabled && !camera.input_active,
+                "Noclip needs the normal player camera.");
+            (void)debug_view_matrix(trial, camera);
+        }
+        if (!debug.camera_owned) debug.camera_identity = camera.identity;
         debug.noclip_entity = skater.skater_identity;
         debug.flight_time = source_flight_now();
         debug.noclip_velocity_updates = debug.noclip_motion_updates = 0;
@@ -1199,7 +1209,7 @@ void debug_action(SourceTrial& trial, std::uintptr_t client, bool can_control, b
         return;
     }
     if (request.action == overlay::DebugAction::set_free_camera) {
-        debug_stop_noclip(debug);
+        if (!noclip_held()) debug_stop_noclip(debug);
         if (!request.enabled) {
             source_require(!camera.mode || debug.camera_owned, "This free camera is owned by another experiment.");
             debug_restore_camera(trial, client, phase, error);

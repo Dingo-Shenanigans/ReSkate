@@ -71,6 +71,13 @@ bool teleport_local_skater_heading(const std::array<float, 3>& position, float h
     const float sh = std::sin(heading), ch = std::cos(heading);
     return teleport_local_skater_transform({ch, 0, -sh, 0, 0, 1, 0, 0, sh, 0, ch, 0, position[0], position[1], position[2], 1}, on_board);
 }
+void send_waiting_teleport() noexcept {
+    try {
+        std::lock_guard lock(local_runtime().native_mutex);
+        if (!placements_runtime().position_teleport) return;
+        update_position_teleport();
+    } catch (...) {}
+}
 bool local_skater_teleport_pending() {
     std::lock_guard lock(local_runtime().native_mutex);
     const auto& r = placements_runtime();

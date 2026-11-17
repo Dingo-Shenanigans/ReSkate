@@ -215,7 +215,9 @@ int pad_bits(lua_State* L) {
     return 1;
 }
 int key_code(lua_State* L, int index) {
-    if (lua_isnumber(L, index)) {
+    // (A number, not a string that reads as one: "1" is the 1 key. lua_isnumber takes such a string for
+    // a number, and "1" and "2" were read as key codes 1 and 2, the left and right mouse buttons.)
+    if (lua_type(L, index) == LUA_TNUMBER) {
         const int vk = static_cast<int>(lua_tonumber(L, index));
         if (vk < 1 || vk > 254) luaL_argerror(L, index, "a virtual key from 1 to 254");
         return vk;
@@ -242,7 +244,18 @@ int wheel(lua_State* L) {
 // front or a menu is open.
 int mouse(lua_State* L) {
     auto& plugin = permitted(L, "input", "reskate.input.mouse");
-    const auto motion = game_of(plugin).mouse_motion(plugin.id());
+    // options = {hold = true}: the pointer is kept in the window while the plugin reads the mouse.
+    bool hold = false;
+    if (!lua_isnoneornil(L, 1)) {
+        luaL_checktype(L, 1, LUA_TTABLE);
+        lua_getfield(L, 1, "hold");
+        if (!lua_isnil(L, -1)) {
+            luaL_checktype(L, -1, LUA_TBOOLEAN);
+            hold = lua_toboolean(L, -1) != 0;
+        }
+        lua_pop(L, 1);
+    }
+    const auto motion = game_of(plugin).mouse_motion(plugin.id(), hold);
     if (!motion) {
         lua_pushnil(L);
         return 1;

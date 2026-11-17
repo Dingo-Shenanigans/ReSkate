@@ -12,6 +12,23 @@ void register_object_commands(Commands &registry) {
         out("Queued; the log says which bodies it ran on.");
     };
     registry.add(std::move(body_test));
+    // Research only: one of the game's prefab blueprints made where the camera is, as a set piece
+    // (world_entities.h set_piece) with no check of which prefab. `prefab clear` takes them away.
+    auto prefab = action("prefab", "Research: make a game prefab at the camera (prefab clear takes them away)", Group::objects, {argument("asset|clear")});
+    prefab.run = [](const Model &m, const Values &args, const Output &out) {
+        static std::uint32_t next = 1;
+        const auto asset = std::get<std::string>(args[0]);
+        if (asset == "clear") {
+            world_entities::clear("prefab probe");
+            next = 1;
+            return out("Taken away.");
+        }
+        if (!m.debug.camera_position_valid) return out("error: the camera's position is not known.");
+        const auto& at = m.debug.camera_position;
+        const auto why = world_entities::set_piece("prefab probe", next++, asset, {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, at[0], at[1], at[2], 1});
+        out(why.empty() ? "Asked for at the camera; the log (set piece) says when it is made." : "error: " + why);
+    };
+    registry.add(std::move(prefab));
 #endif
     auto enabled = variable("objects enabled", "Persist placed objects between sessions", Group::objects,
                             argument("0|1", Type::boolean));

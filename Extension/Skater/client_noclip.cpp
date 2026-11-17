@@ -54,6 +54,8 @@ template<class T> void body_write(std::uintptr_t address, const T& value) {
     source_require(memory::peek(address, written) && written == value, "Debug setting write could not be verified.");
 }
 }
+std::atomic<bool>& noclip_hold_flag() { static std::atomic<bool> value{}; return value; }
+bool noclip_held() noexcept { return noclip_hold_flag().load(std::memory_order_acquire); }
 void debug_stop_noclip(InteractiveDebug& debug) noexcept {
     debug.noclip = false;
     debug.noclip_entity = 0;
@@ -107,6 +109,7 @@ NoclipBodies debug_noclip_bodies(std::uintptr_t base, std::uintptr_t client, std
     return result;
 }
 namespace {
+std::array<float, 3> flown_velocity(const std::array<float, 3>& keys) noexcept;
 void noclip_apply_velocity(std::uintptr_t core) noexcept {
     SourceLastError error;
     auto& state = source_state();
@@ -211,10 +214,14 @@ void noclip_apply_velocity(std::uintptr_t core) noexcept {
         }
         debug.noclip_altitude_valid = true;
         debug.noclip_altitude = std::clamp(debug.noclip_altitude, height - 3.0f, height + 3.0f);
-        auto velocity = request.velocity;
+        // (A plugin flying the skater it holds, reskate.skater.fly: its velocity, read each step, so
+        // the skater moves as the plugin says between the ticks the flight keys are read on.)
+        const auto wanted = flown_velocity(request.velocity);
+        for (float v : wanted) source_require(std::isfinite(v) && std::abs(v) <= 6000, "Invalid flight input.");
+        auto velocity = wanted;
         // Correct gravity drift without changing world gravity or teleporting.
         velocity[1] += std::clamp((debug.noclip_altitude - height) * 12.0f, -8.0f, 8.0f);
-        debug.noclip_altitude += request.velocity[1] * bodies.seconds;
+        debug.noclip_altitude += wanted[1] * bodies.seconds;
         // Match native velocity writers: XYZ at +70 and dirty bit 8 at +60.
         // Preserve W, angular velocity, transforms, contacts and other flags.
         // Runs after the simulation's movement-state update.
@@ -430,6 +437,18 @@ struct PluginVelocity {
     std::atomic<bool> pending{};
 };
 PluginVelocity& plugin_velocity() { static auto* value = new PluginVelocity; return *value; }
+// A plugin flying the held skater (set_plugin_flight): read by the physics thread each step.
+struct PluginFlight {
+    std::atomic<float> x{}, y{}, z{};
+    std::atomic<ULONGLONG> expires{};
+};
+PluginFlight& plugin_flight() { static auto* value = new PluginFlight; return *value; }
+// The velocity a plugin flies the held skater at, while it is asking; else the flight keys' own.
+std::array<float, 3> flown_velocity(const std::array<float, 3>& keys) noexcept {
+    auto& f = plugin_flight();
+    if (GetTickCount64() >= f.expires.load(std::memory_order_acquire)) return keys;
+    return {f.x.load(std::memory_order_relaxed), f.y.load(std::memory_order_relaxed), f.z.load(std::memory_order_relaxed)};
+}
 void apply_plugin_velocity(std::uintptr_t core) noexcept {
     auto& v = plugin_velocity();
     if (!v.pending.load(std::memory_order_acquire)) return;
@@ -448,22 +467,30 @@ void apply_plugin_velocity(std::uintptr_t core) noexcept {
     SourceBusyScope scope{state.busy};
     try {
         const auto bodies = debug_noclip_bodies(state.trial.base, p.client, p.entity);
-        if (bodies.core != core || bodies.offboard || bodies.parts.empty()) return;
+        // Off the board (on foot, falling, through a bail) it is the skeleton's bodies that carry the
+        // skater, from the tenth on, as the flight keys' own velocity is given them; the board,
+        // carried or left behind, is not thrown with it. (It was refused off the board, with ok said.)
+        const std::size_t first = bodies.offboard ? 9 : 0;
+        if (bodies.core != core || bodies.parts.size() <= first) return;
         SourceReader reader;
         if (reader.value<std::uint8_t>(p.entity, 0x7e0) != 0) return; // teleporting
         std::array<std::array<float, 3>, 32> velocities{};
         std::array<std::uint32_t, 32> flags{};
         const auto count = std::min<std::size_t>(bodies.parts.size(), velocities.size());
-        for (std::size_t i = 0; i < count; ++i) {
+        for (std::size_t i = first; i < count; ++i) {
             velocities[i] = reader.value<std::array<float, 3>>(bodies.parts[i], 0x70);
             flags[i] = reader.value<std::uint32_t>(bodies.parts[i], 0x60);
         }
         reader.verify();
-        for (std::size_t i = 0; i < count; ++i) {
+        for (std::size_t i = first; i < count; ++i) {
             for (std::size_t a = 0; a < 3; ++a) velocities[i][a] = v.add ? velocities[i][a] + v.velocity[a] : v.velocity[a];
             body_write(bodies.parts[i] + 0x70, velocities[i]);
             body_write(bodies.parts[i] + 0x60, flags[i] | 8u);
         }
+        // (Off the board the game's own fall, dive or glide carries on from a velocity it keeps of
+        // its own: that one too, or the bodies are pulled back to it the next step.)
+        if (bodies.offboard && !v.add && bodies.context && bodies.rig_wrapper)
+            (void)set_offboard_velocity(state.trial.base, core, bodies.context, bodies.rig_wrapper, v.velocity);
         v.pending.store(false, std::memory_order_release);
     } catch (...) {}
 }
@@ -1149,14 +1176,15 @@ bool noclip_motion_target(std::uintptr_t rig, std::uintptr_t context,
         // skater outran the camera) and the ragdoll snapped back on release.
         // Anchoring to the root bounds the stretch to one step and leaves no
         // stored energy when the input stops.
+        const auto wanted = flown_velocity(request.velocity);
         for (std::size_t i = 0; i < 3; ++i) {
-            source_require(std::isfinite(request.velocity[i]) && std::abs(request.velocity[i]) <= 6000, "Invalid flight input.");
+            source_require(std::isfinite(wanted[i]) && std::abs(wanted[i]) <= 6000, "Invalid flight input.");
             source_require(std::isfinite(bodies.root[i]) && std::abs(bodies.root[i]) <= 1000000, "Invalid skater root position.");
-            target[12+i] = bodies.root[i] + request.velocity[i] * bodies.seconds;
+            target[12+i] = bodies.root[i] + wanted[i] * bodies.seconds;
         }
         source_require(valid_flight_transform(target), "Flight motion target is out of bounds.");
         reader.verify();
-        source_require(sync_offboard_flight_velocity(state.trial.base, bodies.core, context, rig, request.velocity),
+        source_require(set_offboard_velocity(state.trial.base, bodies.core, context, rig, wanted),
             "Off-board flight velocity ownership changed; flight stopped.");
         ++debug.noclip_motion_updates;
         return true;
@@ -1225,11 +1253,23 @@ bool queue_jump_scale(std::uintptr_t client, std::uintptr_t entity, float factor
 void set_plugin_velocity(const std::array<float, 3>& velocity, bool add) noexcept {
     auto& v = client_source::detail::plugin_velocity();
     std::lock_guard lock(v.mutex);
-    v.velocity = velocity;
+    // (Two added before one physics step add up: the second used to replace the first, unsaid.)
+    if (add && v.add && v.pending.load(std::memory_order_acquire) && GetTickCount64() < v.expires)
+        for (std::size_t a = 0; a < 3; ++a) v.velocity[a] += velocity[a];
+    else v.velocity = velocity;
     v.add = add;
     v.expires = GetTickCount64() + 500;
     v.pending.store(true, std::memory_order_release);
 }
+void set_plugin_flight(const std::array<float, 3>& velocity, bool on) noexcept {
+    auto& f = client_source::detail::plugin_flight();
+    f.x.store(velocity[0], std::memory_order_relaxed);
+    f.y.store(velocity[1], std::memory_order_relaxed);
+    f.z.store(velocity[2], std::memory_order_relaxed);
+    f.expires.store(on ? GetTickCount64() + 300 : 0, std::memory_order_release);
+}
+void set_noclip_hold(bool held) noexcept { client_source::detail::noclip_hold_flag().store(held, std::memory_order_release); }
+bool noclip_active() noexcept { return client_source::detail::source_state().trial.debug.noclip; }
 void set_plugin_cruise(float speed, bool may_slow) noexcept {
     auto& p = push_speed();
     p.plugin.store(speed > 0 && speed <= 30 ? speed : 0.0f, std::memory_order_relaxed);

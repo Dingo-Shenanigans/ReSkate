@@ -59,7 +59,9 @@ struct Limits {
     // kept at 16 kHz and a third the size). A plugin may play more sounds at once than it holds
     // waves (plugin_sound.cpp), many of them the same wave: 96 different ones all playing at once
     // refuses a 97th.
-    std::size_t sounds = 96;            // (32 until 2.1.4)
+    std::size_t sounds = 256;           // (32 until 2.1.4, 96 until 2.1.5: a kit of two guns, a vehicle's set and
+                                        // the rest passed 96 different waves, and the one put out to make room was
+                                        // read from disk again, on the game's own thread, the next time it played)
     std::size_t sound_bytes = 128u << 20;
     std::size_t preloads = 8;           // clips and sounds being read at once (reskate.animation.preload, reskate.audio.preload)
     int toasts = 3;                     // in 5 s
@@ -459,6 +461,11 @@ private:
     std::map<std::uint64_t, int> http_pending_; // request id: its callback
     double control_second_{}, edit_second_{}, environment_second_{}, voice_second_{}, music_second_{};
     int controls_{}, edits_{}, environments_{}, voices_{}, musics_{};
+    // What the control calls share a second (noclip, boost, freeze, camera.follow, animation.play,
+    // board.toss, the outfit's, capture.start...). It was 4: a plugin that held the skater, played a
+    // clip and followed with the camera in one second was refused the fourth thing it did, and a
+    // call the game refused had used one up too.
+    static constexpr int control_budget = 20;
     double travel_at_{-1e9}, chat_at_{-1e9}, local_chat_second_{}, server_second_{}, host_at_{-1e9}, wipeout_at_{-1e9};
     int local_chats_{}, server_calls_{};
     double files_second_{}, dialog_second_{}, reveal_second_{};

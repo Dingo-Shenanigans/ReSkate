@@ -5,6 +5,7 @@
 #include "Engine/Vfs/mod_catalog.h"
 #include "Engine/Vfs/mod_list.h"
 #include "Extension/UI/Overlay/overlay_internal.h"
+#include <utility>
 #include <algorithm>
 #include <cmath>
 #include <condition_variable>
@@ -98,6 +99,12 @@ void work() {
                 pixels.width = image.width;
                 pixels.height = image.height;
             }
+        } catch (const std::exception& error) {
+            // (Said once a level: a part of the map that cannot be made left the minimap empty with no word of why.)
+            static std::uint64_t said = 0;
+            if (std::exchange(said, generation) != generation)
+                logging::log(logging::Level::warning, logging::Channel::plugins, "The game's map of {}: a part of it could not be made: {}.", level, error.what());
+            pixels = {};
         } catch (...) {
             pixels = {};
         }

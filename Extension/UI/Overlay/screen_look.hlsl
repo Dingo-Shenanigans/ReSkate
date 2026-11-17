@@ -14,9 +14,11 @@ cbuffer Look : register(b0)
     float4 L3; // transfer (0 SDR), exposure, output width, output height
     float4 L4; // hand centre x, y (half heights, y down), angle (rad), size (0: no hand)
     float4 L5; // hand mirrored, hand blur (hand units), edge blur 0..1, where it starts (0 the middle, 1 the corners)
-    float4 L6; // text pixel (half heights), text white, text on, unused
+    float4 L6; // text pixel (half heights), text white, text on, tone on
     float4 L7; // tape age 0..1, dropouts, head switching, red smear
     float4 L8; // seconds since this clip started recording (tracking; < 0: none), tracking, auto-iris, seconds since the last frame
+    float4 L9; // tone: the colour of black (rgb), the curve
+    float4 L10; // tone: the colour of white (rgb), the noise 0..1
     uint4 T[4]; // five lines of twelve characters, four to a uint: top left, top right, bottom left, bottom right x2
 };
 Texture2D source : register(t0);
@@ -412,6 +414,15 @@ float4 ps_main(Interpolated i) : SV_Target
     {
         float n = frac(sin(dot(floor(i.uv * float2(720.0, 480.0)) + frac(L1.w * 37.0) * 91.0, float2(12.9898, 78.233))) * 43758.5453) - 0.5;
         colour += n * 0.045 * L2.z;
+    }
+    // Tone: the picture by its brightness alone, from the colour given for black to the one given
+    // for white along a curve, with a coarse noise that changes every frame.
+    if (L6.w > 0.5)
+    {
+        float unit = sdr ? 1.0 : L6.y;
+        float level = pow(saturate(dot(colour, float3(0.299, 0.587, 0.114)) / unit), L9.w);
+        level += (hash12(floor(i.uv * float2(640.0, 480.0)) + frac(L1.w * 29.0) * 57.0) - 0.5) * 0.12 * L10.w;
+        colour = lerp(L9.rgb, L10.rgb, saturate(level)) * unit;
     }
     colour *= 1.0 - bar;
     return float4(colour, 1.0);

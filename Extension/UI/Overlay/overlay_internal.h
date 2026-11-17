@@ -119,6 +119,9 @@ struct State {
     std::atomic<long> look_mouse_x{0}, look_mouse_y{0}, look_wheel_raw{0}, look_wheel_message{0};
     std::atomic<unsigned> raw_mouse_buttons{0}; // physical: 1 left, 2 right, 4 middle
     std::atomic<ULONGLONG> raw_mouse_time{0};
+    // A plugin holds the pointer in the window (read_mouse_look's hold) until this tick count: the
+    // window shows no pointer while it does.
+    std::atomic<ULONGLONG> pointer_held_until{0};
     // The mouse registration in effect has RIDEV_NOLEGACY: Windows does not
     // move the cursor, so the overlay moves it from raw input while it owns it.
     std::atomic<bool> mouse_legacy_blocked{false};

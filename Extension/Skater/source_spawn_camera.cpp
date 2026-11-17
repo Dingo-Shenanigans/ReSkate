@@ -160,7 +160,9 @@ bool update_party_camera(std::uintptr_t base, std::uintptr_t client, bool ready,
         source_require(ready && valid_flight_transform(*transform), "Spectate target is unavailable on this map.");
         source_require(!lease.uncertain, "Spectate camera activation was not verified; exit Spectate to restore it.");
         if (!lease.owned) {
-            source_require(!trial.debug.camera_owned && !trial.debug.noclip && camera.mode == 0 &&
+            // (Noclip as a plugin's hold of the skater is no bar: it is not flown by the view, and a plugin
+            // that holds the skater and shows its own view needs both. set_noclip_hold.)
+            source_require(!trial.debug.camera_owned && (!trial.debug.noclip || noclip_held()) && camera.mode == 0 &&
                            camera.view_enabled && !camera.input_active,
                            "Exit Freecam or Noclip before spectating a party member.");
             lease.identity = camera.identity; lease.owned = lease.uncertain = true;

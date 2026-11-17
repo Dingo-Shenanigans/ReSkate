@@ -39,6 +39,9 @@ constexpr std::uint32_t button_action = 0xa2b71c93, button_navigation = 0xb1e14c
 // UI/Legacy/Flow/State/StateNavigationChanged.
 constexpr std::uint32_t navigation_queue = 0xcc4776b5, navigation_current = 0xf3ba9cf8, navigation_queued = 0xf437b255;
 constexpr std::uint32_t navigation_changed_event = 0xcb03d3ec;
+// UI/Foundations/Layers/Backgrounds/EnterCasEnvironment and ExitCasEnvironment: global events with no
+// fields (their TypeNameHash, from the game's data, 2026-11-16). See show_set.
+constexpr std::uint32_t enter_cas_event = 1546104285u, exit_cas_event = 2164282401u;
 // UI manager -> model manager.
 constexpr std::uintptr_t ui_model_manager = 0x140;
 
@@ -62,6 +65,9 @@ enum class Way { none, look, wait_closed, open, wait_open, tab, wait_tab, wait_s
 struct State {
     std::mutex mutex;
     std::atomic<std::uintptr_t> navigation_type{};
+    std::atomic<std::uintptr_t> enter_type{}, exit_type{};
+    std::atomic<bool> set_wanted{}, set_sent{};
+    std::uint64_t next_set_post{};
     std::atomic<bool> scanning{};
     std::atomic<Phase> phase{Phase::idle};
     std::uint64_t generation{}; // a new skater (a respawn, a new map) makes the found event type stale
@@ -164,11 +170,12 @@ bool announce(std::uintptr_t base, std::uintptr_t type) noexcept {
         return false;
     }
 }
-bool still_navigation_type(std::uintptr_t type) noexcept {
+bool still_type(std::uintptr_t type, std::uint32_t wanted) noexcept {
     std::uintptr_t record{};
     std::uint32_t hash{};
-    return memory::peek(type, record) && memory::peek(record, hash) && hash == navigation_changed_event;
+    return memory::peek(type, record) && memory::peek(record, hash) && hash == wanted;
 }
+bool still_navigation_type(std::uintptr_t type) noexcept { return still_type(type, navigation_changed_event); }
 std::string_view navigate(std::uintptr_t base, State& s, std::string_view name, bool warn = true) noexcept {
     std::string_view why;
     const auto type = s.navigation_type.load(std::memory_order_acquire);
@@ -189,12 +196,16 @@ void start_scan(State& s) noexcept {
     try {
         std::thread([generation = s.generation] {
             auto& l = state();
-            std::array<multiplayer::NativeTypeQuery, 1> query{{{navigation_changed_event, 0, 2}}};
+            std::array<multiplayer::NativeTypeQuery, 3> query{{{navigation_changed_event, 0, 2}, {enter_cas_event, 0, 2}, {exit_cas_event, 0, 2}}};
             (void)multiplayer::find_native_types(query, true);
             {
                 // A scan that ran through a new map found the type of the map before.
                 std::lock_guard lock(l.mutex);
-                if (l.generation == generation) l.navigation_type.store(query[0].object, std::memory_order_release);
+                if (l.generation == generation) {
+                    l.navigation_type.store(query[0].object, std::memory_order_release);
+                    l.enter_type.store(query[1].object, std::memory_order_release);
+                    l.exit_type.store(query[2].object, std::memory_order_release);
+                }
             }
             l.scanning.store(false);
         }).detach();
@@ -347,6 +358,8 @@ void leave() noexcept {
     s.phase.store(Phase::leaving, std::memory_order_release);
 }
 Phase phase() noexcept { return state().phase.load(std::memory_order_acquire); }
+void show_set(bool on) noexcept { state().set_wanted.store(on, std::memory_order_release); }
+bool set_shown() noexcept { return state().set_sent.load(std::memory_order_acquire); }
 std::string failure() {
     auto& s = state();
     std::lock_guard lock(s.mutex);
@@ -362,6 +375,9 @@ void tick(std::uintptr_t base, std::uintptr_t skater, bool ready, bool prepare) 
             if (s.skater) {
                 ++s.generation;
                 s.navigation_type.store(0, std::memory_order_release);
+                s.enter_type.store(0, std::memory_order_release);
+                s.exit_type.store(0, std::memory_order_release);
+                s.set_sent.store(false, std::memory_order_release); // (a new map's room is as the game made it: not shown)
                 s.scans = 0;
                 if (s.way != Way::none) fail(s, "the map changed");
                 s.leave_steps_left = 0;
@@ -380,7 +396,21 @@ void tick(std::uintptr_t base, std::uintptr_t skater, bool ready, bool prepare) 
         const auto p = s.phase.load(std::memory_order_acquire);
         // The scan is not cheap: for a walk, or once a map ahead of one, a few times at most.
         const bool ahead = prepare && p == Phase::idle && s.scans == 0 && now > s.skater_since + 10000;
-        if ((ahead || p == Phase::opening || p == Phase::leaving) && !s.navigation_type.load(std::memory_order_acquire) && !s.scanning.load() &&
+        // The set, shown or taken away: the event is posted once, when its type is found.
+        const bool set_wanted = s.set_wanted.load(std::memory_order_acquire);
+        const bool set_due = set_wanted != s.set_sent.load(std::memory_order_acquire);
+        const auto set_type = (set_wanted ? s.enter_type : s.exit_type).load(std::memory_order_acquire);
+        if (set_due && set_type && now >= s.next_set_post) {
+            s.next_set_post = now + post_retry_ms;
+            if (!still_type(set_type, set_wanted ? enter_cas_event : exit_cas_event)) {
+                (set_wanted ? s.enter_type : s.exit_type).store(0, std::memory_order_release);
+                s.next_scan = 0;
+            } else if (multiplayer::native_ui_event_code_known(base) && announce(base, set_type)) {
+                s.set_sent.store(set_wanted, std::memory_order_release);
+                logging::log(Level::info, Channel::skater, "Character room: the set is {} (the game's own event, no menu).", set_wanted ? "shown" : "taken away");
+            }
+        }
+        if ((ahead || p == Phase::opening || p == Phase::leaving || (set_due && !set_type)) && !s.navigation_type.load(std::memory_order_acquire) && !s.scanning.load() &&
             now >= s.next_scan && s.scans < max_scans) {
             s.next_scan = now + scan_gap_ms;
             ++s.scans;

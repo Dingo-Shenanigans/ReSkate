@@ -60,6 +60,8 @@ constexpr Capability capabilities[] = {
     {"travel", "WORLD", Risk::red, "Travel to locations and levels"},
     {"world.environment", "WORLD", Risk::red, "Change the time of day, world controls and parks"},
     {"world.entities", "WORLD", Risk::amber, "Spawn objects that only you see"},
+    {"world.sets", "WORLD", Risk::grey, "Place the game's studio lights and backdrops, for you only"},
+    {"skater.copy", "WORLD", Risk::grey, "Show a copy of your skater somewhere else, for you only"},
     {"world.ai", "WORLD", Risk::amber, "Spawn and clear AI skaters"},
     {"effects", "WORLD", Risk::amber, "Draw particle effects and decals in the world"},
     {"effects.game", "WORLD", Risk::amber, "Play the game's own particle effects, including ones its store sells"},
@@ -291,6 +293,8 @@ std::string approval_prompt(const std::vector<PermissionGroup>& groups) {
             if (has("travel")) actions.push_back("travel to locations and levels");
             if (has("world.environment")) actions.push_back("change parks, world controls, and time of day");
             if (has("world.entities")) actions.push_back("spawn objects visible only to you");
+            if (has("world.sets")) actions.push_back("place the game's studio lights and backdrops");
+            if (has("skater.copy")) actions.push_back("show a copy of your skater somewhere else");
             if (has("world.ai")) actions.push_back("spawn or clear AI skaters");
             if (has("effects")) actions.push_back("draw particle effects and decals");
             if (has("effects.game")) actions.push_back("play the game's own particle effects");
