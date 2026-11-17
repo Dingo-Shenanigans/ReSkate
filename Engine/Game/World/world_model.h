@@ -17,6 +17,9 @@ struct LevelInfo {
     bool manifest_only{};
     // Declared by a mod's reskate-levels.json (a custom map).
     bool custom{};
+    // A manifest row's own time of day ("timeOfDay"), 1..7 as time_of_day_names counts them,
+    // used while the player's time is Default; 0 when it names none.
+    std::uint8_t time_of_day{};
     // What the map's manifest row says its world layers are when the player has left them at
     // "default": a layer key and "on" or "off" (reskate-levels.json, worldLayers).
     std::vector<std::pair<std::string, std::string>> world_layers;

@@ -40,6 +40,8 @@ struct WorldLayersRuntime {
     Event original_event{};
     std::atomic<bool> active{};
     std::atomic<WorldMap> map_hint{WorldMap::none};
+    // The active custom map's own time of day (LevelInfo::time_of_day), 0 for none.
+    std::atomic<unsigned> map_time{};
     // Constructors/destructors only use this lock, never native_mutex. Hold it
     // across dispatch so a captured reference cannot begin destruction mid-call.
     std::recursive_mutex lifetime_mutex;

@@ -99,7 +99,7 @@ void reset_world_layer_session() {
     r.context = 0; r.root_generation = 0; r.next_poll = 0;
     r.original.assign(world_layer_nodes().size(), std::nullopt);
     r.managed.assign(world_layer_nodes().size(), false); r.model.map = WorldMap::none;
-    r.model.ready = false; r.model.clear_live();
+    r.model.ready = false; r.model.map_time_of_day = 0; r.model.clear_live();
 }
 
 bool seasonal_state(const SeasonalNode& node, SeasonalState& state) {
@@ -253,6 +253,9 @@ void update_world_layers(std::uintptr_t manager, std::uint64_t now) {
             {"canonical_anchor", selection.canonical}}.dump().c_str());
     }
     r.model.ready = true; r.model.map = map;
+    r.model.map_time_of_day = r.map_time.load(std::memory_order_acquire);
+    // A custom map's own time stands in for the player's Default, never saved (world_layers.h).
+    const auto effective = with_map_time_of_day(r.model.choices, map, r.model.map_time_of_day);
     // Publish a separate native snapshot for Default checkboxes. Compute it
     // before dispatch, which can synchronously destroy captured references.
     std::vector<std::optional<bool>> observed(targets.size());
@@ -297,7 +300,7 @@ void update_world_layers(std::uintptr_t manager, std::uint64_t now) {
     // (its manifest row's worldLayers): a map made of a seasonal layer's content has it on.
     const auto choice_of = [&](unsigned i) -> std::string {
         const auto& key = world_layers()[i].key;
-        std::string choice = r.model.choices[i];
+        std::string choice = effective[i];
         if (choice == "default")
             if (auto declared = world_layer_map_default(key); !declared.empty()) choice = std::move(declared);
         if (!world_layer_kept_off(key)) return choice;

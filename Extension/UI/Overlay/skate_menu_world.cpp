@@ -606,7 +606,9 @@ void time_of_day_page(SkateMenu& menu, const Model& model, const CallbacksV3& ca
     namespace tod = dingosdk::native_tools;
     begin_card(menu, "time-of-day", "TIME OF DAY");
     const bool available = tod::time_of_day_available(model, callbacks);
-    static const std::vector<std::string> times{"Default", "Morning", "Noon", "Afternoon", "Evening", "Night", "Weather day", "Weather night"};
+    std::vector<std::string> times{"Default", "Morning", "Noon", "Afternoon", "Evening", "Night", "Weather day", "Weather night"};
+    // Default on a custom map that names its own time says which time that is.
+    times[0] = tod::time_of_day_label(model, 0);
     int chosen = time_of_day_shown(model);
     if (option_row(menu, "Time of day", "Left / right to change it. Default follows the level's own time.", chosen, times, available))
         set_time_of_day(menu, model, callbacks, chosen, false);

@@ -351,7 +351,7 @@ void world_rows(Opts &o, OptionsContext &c) {
         if (asked >= 0 && (asked == now || GetTickCount64() > asked_until)) asked = -1;
         const int shown = pending >= 0 ? pending : asked >= 0 ? asked : now;
         const int count = static_cast<int>(native_tools::time_of_day_labels.size());
-        auto &row = opt_choice(o, "Time of day", native_tools::time_of_day_labels[static_cast<std::size_t>(std::clamp(shown, 0, count - 1))], can,
+        auto &row = opt_choice(o, "Time of day", native_tools::time_of_day_label(m, static_cast<unsigned>(std::clamp(shown, 0, count - 1))), can,
                                "Default follows the level's own time. Your choice saves and comes back when you load this map again.",
                                [shown, count](int way) {
                                    pending = wrap_step(shown, count, way);
