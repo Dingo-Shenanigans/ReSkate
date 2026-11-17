@@ -504,7 +504,7 @@ if(DINGOSDK_BUILD_PLUGIN_TESTS)
     target_include_directories(dingosdk_viewmodel_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME viewmodel COMMAND dingosdk_viewmodel_tests "${PROJECT_SOURCE_DIR}/contrib/plugins/fps/viewmodel/pistol.rsvm")
     add_executable(dingosdk_input_lease_source_tests
-        Engine/Game/Input/Test/input_lease_source_tests.cpp
+        Extension/Input/Test/input_lease_source_tests.cpp
         Extension/Input/native_input_source.cpp)
     target_include_directories(dingosdk_input_lease_source_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     foreach(mode admission raw cleanup publication environment lifetime overlap capacity policy)
@@ -513,7 +513,7 @@ if(DINGOSDK_BUILD_PLUGIN_TESTS)
         set_tests_properties(input_lease_source_${mode} PROPERTIES TIMEOUT 10)
     endforeach()
     add_executable(dingosdk_input_capture_source_tests
-        Engine/Game/Input/Test/input_capture_source_tests.cpp
+        Extension/Input/Test/input_capture_source_tests.cpp
         Extension/Input/native_input_source.cpp)
     target_include_directories(dingosdk_input_capture_source_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     foreach(mode denial cold_original publication late_drain interference replacement context_release staged_aba failed_write transport raw_final late_age renewal owner_close capacity
