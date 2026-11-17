@@ -213,6 +213,9 @@ struct Settings {
     bool offline{};
     // The map the game starts in, by its level asset (start_maps.h); empty: San Vansterdam.
     std::string start_map;
+    // The mesh streaming pool for custom maps, in MB (map_mesh_pools); 0: the runtime sizes it
+    // from the video memory free as the map loads.
+    int map_mesh_pool_mb{};
     int menu_key{static_cast<int>(launcher::default_menu_key)};
     int console_key{static_cast<int>(launcher::default_console_key)};
     int log_level{2};
@@ -252,6 +255,9 @@ struct Settings {
 
 inline constexpr int max_parallel_downloads = 8;
 inline constexpr std::array<int, 7> interface_sizes{75, 90, 100, 115, 125, 150, 175};
+// Settings::map_mesh_pool_mb's choices: automatic, then sizes between the game's own 520 MB and
+// the engine's limit of 3584 MB.
+inline constexpr std::array<int, 9> map_mesh_pools{0, 800, 1000, 1200, 1400, 1600, 2000, 2500, 3000};
 inline constexpr std::array<const char*, 7> interface_size_names{"75%", "90%", "100%", "115%", "125%", "150%", "175%"};
 // The interface size saved for this launcher, read before its window is made.
 int saved_interface_size(const launcher_app::Session& session);

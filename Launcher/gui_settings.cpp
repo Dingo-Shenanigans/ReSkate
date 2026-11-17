@@ -478,6 +478,21 @@ void page_game(Launcher& launcher, Ui& ui, bool& open) {
             end_row();
         }
     }
+    if (begin_row("Custom map mesh memory", "Raise it if a big map loads slowly or never finishes.",
+            "Video memory kept for a custom map's meshes. Automatic takes what the map needs, at most half of what is free as it "
+            "loads; a big map on a card of 6 GB or less can need more than that. Too much leaves no room for textures, and the "
+            "game can run out of video memory. San Vansterdam is not changed.")) {
+        const auto name = [](int mb) { return mb ? std::format("{} MB", mb) : std::string("Automatic"); };
+        if (ImGui::BeginCombo("##map_mesh_pool", name(settings.map_mesh_pool_mb).c_str())) {
+            for (const int mb : map_mesh_pools)
+                if (ImGui::Selectable(name(mb).c_str(), mb == settings.map_mesh_pool_mb) && mb != settings.map_mesh_pool_mb) {
+                    settings.map_mesh_pool_mb = mb;
+                    launcher.save();
+                }
+            ImGui::EndCombo();
+        }
+        end_row();
+    }
     row_switch("Discord status", "Show where you are skating on your Discord profile.", settings.discord_status,
                "Show on your Discord profile where you are skating: the map, the server or lobby and how many are in it. "
                "Off, the game does not talk to Discord at all.");
