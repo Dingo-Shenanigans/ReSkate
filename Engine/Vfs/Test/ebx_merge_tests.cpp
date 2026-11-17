@@ -6,7 +6,8 @@
 //   * a list grows at its end wherever it is, and what each edit appended comes across;
 //   * an edit that also changed something that cannot be taken (a reference pointed elsewhere, a
 //     list that shrank) has none of its values taken, and the summary names it, unless that change
-//     is in an exported instance no other edit changed: then the instance is taken whole;
+//     is in an exported instance no other edit changed: then the instance is taken whole; or in an
+//     entry of a list below the root's own that no other edit changed: then the entry is;
 //   * an exported instance is found by its guid wherever the edit keeps it, and internal
 //     instances that do not line up are reported as not looked at;
 //   * a reference two edits both append is listed once, and one edit's own repeat is left alone;
@@ -245,6 +246,44 @@ void a_nested_list_grows() {
            "nested list: the other edit's value is in and nothing is left out");
 }
 
+// An entry of a list below the root's own that one edit changed in a way that cannot be combined (a
+// reference pointed elsewhere) comes across whole, beside what another edit appended to the same list,
+// in either order: a mod that moves buttons between the skater page's tile lists does that. When the
+// other edit pointed the same entry elsewhere too, the later of the two is kept out.
+void a_list_entry_only_one_edit_changed(bool reversed, bool contested) {
+    const std::string label = std::string("entry taken whole") + (reversed ? ", other order" : "") + (contested ? ", contested" : "");
+    auto base = game();
+    base.instances[1].object->fields.push_back({2, "Links", list({outside(0), outside(1)})});
+    auto links = [](ebx::Document& document) -> ebx::Value::Array& {
+        return std::get<ebx::Value::Array>(field(document, find(document, entry_guid), "Links").data);
+    };
+    auto moved = copy(base), grown = copy(base);
+    moved.imports.push_back({guid(0x30), guid(0xC0)});
+    links(moved)[0] = outside(2);
+    field(moved, 0, "Volume") = number(9);
+    grown.imports.push_back({guid(0x31), guid(0xC0)});
+    links(grown).push_back(outside(2));
+    if (contested) {
+        grown.imports.push_back({guid(0x32), guid(0xC0)});
+        links(grown)[0] = outside(3);
+    }
+    ebx::MergeSummary summary;
+    auto merged = reversed ? merge(base, {&grown, &moved}, summary) : merge(base, {&moved, &grown}, summary);
+    std::vector<Guid> got;
+    for (const auto& link : links(merged))
+        got.push_back(merged.imports.at(static_cast<std::size_t>(std::get<ebx::PointerReference>(link.data).index)).fileGuid);
+    if (!contested) {
+        expect((got == std::vector<Guid>{guid(0x30), guid(0x11), guid(0x31)}), label + ": the moved entry and the appended one are both in");
+        expect(read<std::int64_t>(merged, 0, "Volume") == 9 && summary.entries == 1 && summary.taken == 0 && summary.exact() &&
+               summary.arrayEntries == 1, label + ": the moving edit's other value is in and nothing is left out");
+    } else {
+        const auto expected = reversed ? std::vector<Guid>{guid(0x32), guid(0x11), guid(0x31)} : std::vector<Guid>{guid(0x30), guid(0x11)};
+        expect(got == expected, label + ": the earlier edit's entry is the one kept, with that edit's own changes");
+        expect(read<std::int64_t>(merged, 0, "Volume") == (reversed ? 5 : 9) && summary.uncarried == std::vector<std::size_t>{1},
+               label + ": the later edit's changes are all kept out, and the summary names it");
+    }
+}
+
 // The instance an earlier edit took whole no longer looks like the base's in the result. A later
 // edit that left it alone still has its own changes taken.
 void a_later_edit_beside_an_instance_taken_whole() {
@@ -474,6 +513,8 @@ int main() try {
     an_instance_only_one_edit_reshaped(false);
     an_instance_only_one_edit_reshaped(true);
     a_later_edit_beside_an_instance_taken_whole();
+    for (const bool reversed : {false, true})
+        for (const bool contested : {false, true}) a_list_entry_only_one_edit_changed(reversed, contested);
     a_nested_list_grows();
     instances_found_by_guid();
     internal_instances_that_do_not_line_up();

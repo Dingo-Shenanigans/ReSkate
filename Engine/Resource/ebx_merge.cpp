@@ -138,10 +138,17 @@ template <typename Type> bool same(const Type& left, const Type& right) { return
 // same shape, and may already hold what an earlier edit changed. Nothing is
 // written until the whole edit has been seen, so an edit either has all its
 // values taken or none of them.
+// A list entry in the result, by its list and place: an entry an edit took whole is kept apart from
+// the changes later edits made to the base's entry there.
+using EntryPlace = std::pair<const Value::Array*, std::size_t>;
+
+bool same_value(const Value& left, const Value& right);
+
 class InPlace final {
 public:
-    InPlace(const Document& base, const Document& edit, const std::vector<std::size_t>& match)
-        : base_(base), edit_(edit), match_(match) {}
+    InPlace(const Document& base, const Document& edit, const std::vector<std::size_t>& match,
+            const std::set<EntryPlace>* taken = nullptr)
+        : base_(base), edit_(edit), match_(match), taken_(taken) {}
 
     void fields(const Object& base, const Object& edit, Object& result, bool root) {
         if (base.fields.size() != edit.fields.size() || base.fields.size() != result.fields.size()) { uncarried = true; return; }
@@ -163,6 +170,7 @@ public:
         for (auto* box : other.touched_)
             if (std::ranges::find(touched_, box) == touched_.end()) touched_.push_back(box);
         appends.insert(appends.end(), other.appends.begin(), other.appends.end());
+        wholes.insert(wholes.end(), other.wholes.begin(), other.wholes.end());
         values += other.values;
         contested += other.contested;
         uncarried |= other.uncarried;
@@ -170,7 +178,7 @@ public:
     }
 
     // Whether the walk saw any change at all.
-    [[nodiscard]] bool changed() const noexcept { return values || uncarried || unread || !appends.empty(); }
+    [[nodiscard]] bool changed() const noexcept { return values || uncarried || unread || !appends.empty() || !wholes.empty(); }
 
     // Entries an edit appended to a list below the root's own: carried once the edit's other
     // changes are known to come across, because they may point into the edit's own document.
@@ -181,6 +189,16 @@ public:
         BoxedReference* box{};   // the innermost box around the list, if any: written afresh
     };
     std::vector<Append> appends;
+
+    // Entries of lists below the root's own that the edit changed in a way that cannot be combined
+    // value by value, while the result still had the base's entry there: taken as the edit has them,
+    // once its other changes are known to come across.
+    struct Whole {
+        Value::Array* list{};
+        std::size_t index{};
+        const Value* source{};
+    };
+    std::vector<Whole> wholes;
 
     std::size_t values{};     // values the edit changed from the base
     std::size_t contested{};  // of those, ones the result already had changed to something else
@@ -231,8 +249,37 @@ private:
             // A list that shrank has entries no longer told apart by place.
             if (after.size() < before->size()) { uncarried = true; return; }
             if (mine.size() < before->size()) { uncarried = true; return; }
-            for (std::size_t index = 0; index < before->size(); ++index)
+            for (std::size_t index = 0; index < before->size(); ++index) {
+                if (!rootList) {
+                    if (taken_ && taken_->contains({&mine, index})) {
+                        // An earlier edit's own entry stands here now: a change this edit made to the
+                        // base's entry has no place in it.
+                        InPlace probe(base_, edit_, match_);
+                        probe.value((*before)[index], after[index], const_cast<Value&>((*before)[index]), false);
+                        if (probe.changed()) uncarried = true;
+                        continue;
+                    }
+                    // An entry of a list below the root's own that the edit changed in a way that
+                    // cannot be combined value by value (a reference pointed elsewhere, its own list
+                    // shortened) comes across whole when the result still has the base's entry there:
+                    // no edit before this one changed it, and one after it that does is kept out.
+                    // A mod that moves buttons from one of the skater page's tile lists to the other
+                    // changes entries that way, and another mod adding a button at the end of the same
+                    // list leaves the entries it moved alone.
+                    InPlace entry(base_, edit_, match_, taken_);
+                    entry.boxes_ = boxes_;
+                    entry.value((*before)[index], after[index], mine[index], false);
+                    if (entry.uncarried && !entry.unread && same_value((*before)[index], mine[index])) {
+                        wholes.push_back({&mine, index, &after[index]});
+                        ++values;
+                        touch();
+                        continue;
+                    }
+                    absorb(std::move(entry));
+                    continue;
+                }
                 value((*before)[index], after[index], mine[index], false);
+            }
             if (!rootList && after.size() > before->size()) {
                 appends.push_back({&mine, &after, before->size(), boxes_.empty() ? nullptr : boxes_.back()});
                 touch();
@@ -291,6 +338,7 @@ private:
     const Document& base_;
     const Document& edit_;
     const std::vector<std::size_t>& match_;
+    const std::set<EntryPlace>* taken_;
     std::vector<std::pair<Value*, const Value*>> changes_;
 };
 
@@ -635,6 +683,8 @@ Document merge_documents(const Document& base, const std::span<const Document* c
     MergeSummary totals;
     // The references the edits so far appended to each root array.
     std::map<std::string, std::set<std::pair<PointerKind, std::int32_t>>, std::less<>> appended;
+    // The list entries an edit so far took whole, where they are in the result.
+    std::set<EntryPlace> taken;
 
     // Where each edit's instances are among the base's, worked out up front: whether an edit's
     // reshaped instance can be taken whole depends on whether any other edit changed it too.
@@ -668,7 +718,7 @@ Document merge_documents(const Document& base, const std::span<const Document* c
         // the base's, in the base's order: carried ones are added behind them,
         // and nothing is sorted until every edit is in.
         const auto& match = matches[index];
-        InPlace changes(base, *edit, match);
+        InPlace changes(base, *edit, match, &taken);
         // An exported instance this edit changed in a way that cannot be combined (a reference
         // pointed elsewhere, a list resized) is taken as the edit has it, when no other edit
         // changed it at all: then nothing of anyone's is lost by doing so. The root is never
@@ -686,7 +736,7 @@ Document merge_documents(const Document& base, const std::span<const Document* c
                 changes.unread |= before.object || after.object;
                 continue;
             }
-            InPlace one(base, *edit, match);
+            InPlace one(base, *edit, match, &taken);
             one.fields(*before.object, *after.object, *result.instances[at].object, at == 0);
             if (one.uncarried) {
                 // An instance an earlier edit took whole no longer has the base's shape in the
@@ -708,6 +758,21 @@ Document merge_documents(const Document& base, const std::span<const Document* c
             totals.contested += changes.contested;
         }
         if (changes.unread) totals.unread.push_back(index);
+
+        // List entries taken whole, before anything grows a list they sit in. What they point at is
+        // found again in the result like an instance taken whole's.
+        if (!changes.uncarried && !changes.wholes.empty()) {
+            detail::Carrier entries(*edit, result);
+            for (std::size_t at = 0; at < match.size(); ++at)
+                if (match[at] != unmatched) entries.alias(match[at], at);
+            for (const auto& entry : changes.wholes) {
+                (*entry.list)[entry.index] = entries.value(*entry.source);
+                taken.insert({entry.list, entry.index});
+            }
+            totals.entries += changes.wholes.size();
+            totals.instances += entries.instances;
+            totals.renumbered += entries.renumbered;
+        }
 
         detail::Carrier mapper(*edit, result);
         std::map<std::string, std::set<std::pair<PointerKind, std::int32_t>>, std::less<>> mine;

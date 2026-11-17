@@ -23,6 +23,7 @@ struct MergeSummary {
     std::size_t values{};      // plain values an edit changed in place, taken from it
     std::size_t contested{};   // of those, values an earlier edit had changed to something else
     std::size_t taken{};       // instances only one edit changed, in a way that cannot be combined, taken whole from it
+    std::size_t entries{};     // the same for entries of lists below the root's own (counted in values too)
     // Edits (indices into `edits`) with a change that did not come across: a reference
     // pointed somewhere else, a list that shrank, an instance gone.
     std::vector<std::size_t> uncarried;
@@ -49,8 +50,9 @@ using CarryImport = std::function<bool(const ImportReference&)>;
 // edits are applied in the order given and the last one wins. A change of any
 // other shape (a reference pointed elsewhere, a list that shrank) is taken with
 // its whole instance when no other edit changed that instance (the root
-// excepted); otherwise it stays as the base had it, and the summary names the
-// edit it was in.
+// excepted), or with its whole entry when it sits in an entry of a list below
+// the root's own that no other edit changed; otherwise it stays as the base had
+// it, and the summary names the edit it was in.
 [[nodiscard]] Document merge_documents(const Document& base,
                                        std::span<const Document* const> edits,
                                        MergeSummary* summary = nullptr,
