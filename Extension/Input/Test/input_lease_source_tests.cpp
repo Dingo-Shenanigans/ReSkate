@@ -1,17 +1,33 @@
 #include "Engine/Game/Input/input_lease_policy.h"
 #include "Extension/Input/native_input_source.h"
+#include "Extension/Input/native_input_capture.h"
+#include "Extension/Input/native_menu_observation.h"
 #include "Extension/Input/input_publication.h"
 #include "Extension/Input/input_source_environment.h"
 #include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <string_view>
+#include <atomic>
+#include <chrono>
+#include <thread>
+#include <Windows.h>
 
 namespace source = dingosdk::native_input_source;
 namespace lease = dingosdk::input_lease;
 namespace {
 source::environment::Facts facts{1000, 1, true, true, true, true};
 unsigned checks{};
+std::atomic<unsigned> sample_calls{};
+std::atomic<bool> threaded_mode{}, stop_poller{}, press_mode{}, capture_writes{}, thread_violation{};
+std::atomic<unsigned> threaded_writes{}, threaded_polls{};
+struct Menu { bool known{}, open{}; };
+void test_tick(std::uintptr_t base, std::uintptr_t client, bool ready, Menu menu = {}) {
+    using namespace dingosdk::native_menu_observation;
+    publish(menu.known ? (menu.open ? State::open : State::closed) : State::unknown, facts.now_ms);
+    source::tick(base, client, ready);
+}
+
 void check(bool value, const char* name) {
     ++checks;
     if (!value) { std::fprintf(stderr, "FAIL %s\n", name); std::exit(1); }
@@ -25,10 +41,13 @@ void report(std::uint32_t user = 0, std::uint32_t packet = 7,
     source::finish(poll, result, raw_known, packet, raw,
         returned_result, returned_known, packet, returned);
 }
-void setup() { source::tick(1, 2, true, {true, false}); report(); }
+void setup() { test_tick(1, 2, true, {true, false}); report(); }
 lease::Handle request(std::uint64_t owner = 1, std::uint32_t user = 0) {
     lease::Handle handle; lease::Reason reason;
-    check(source::lease_request(owner, user, handle, reason), "request accepted");
+    if (!source::lease_request(owner, user, handle, reason) && (reason == lease::Reason::source_unavailable || reason == lease::Reason::source_stale)) {
+        report(user);
+        check(source::lease_request(owner, user, handle, reason), "request accepted after registered poll");
+    } else check(handle.sequence != 0, "request accepted");
     check(handle.sequence && reason == lease::Reason::none, "request nonzero exact handle");
     return handle;
 }
@@ -155,26 +174,27 @@ void environment() {
     facts.interference_clear = false;
     check(state(handle).reason == lease::Reason::interference, "interference stop recorded");
     facts.interference_clear = true; close(handle); report(); handle = request();
-    source::tick(1, 3, true, {true, false});
+    test_tick(1, 3, true, {true, false});
     check(state(handle).reason == lease::Reason::context_changed, "context replacement revokes");
     close(handle); report(); handle = request();
-    source::tick(1, 3, false);
+    test_tick(1, 3, false);
     check(lease::terminal(state(handle).status), "not-ready cleanup retained");
     close(handle);
 }
 void lifetime() {
     setup(); auto handle = request();
     facts.now_ms += 101;
-    source::tick(1, 2, true, {true, false});
+    test_tick(1, 2, true, {true, false});
     check(state(handle).status == lease::Status::expired, "warming stale boundary expires");
-    close(handle); source::tick(1, 2, true, {true, false}); report(); handle = request();
+    close(handle); test_tick(1, 2, true, {true, false}); report(); handle = request();
     const auto admitted = state(handle);
-    for (unsigned i = 0; i < 3; ++i) { facts.now_ms += 79; source::tick(1, 2, true, {true, false}); report(0, i); }
+    for (unsigned i = 0; i < 3; ++i) { facts.now_ms += 79; test_tick(1, 2, true, {true, false}); report(0, i); }
     facts.now_ms = admitted.expires_ms;
     check(state(handle).reason == lease::Reason::deadline, "exact TTL closes despite recent samples");
-    close(handle); source::tick(1, 2, true, {true, false}); report(); handle = request();
+    close(handle); test_tick(1, 2, true, {true, false}); report(); handle = request();
     --facts.now_ms;
-    check(state(handle).reason == lease::Reason::stale_epoch, "wall clock regression closes");
+    check(state(handle).reason != lease::Reason::stale_epoch, "older sample cannot revoke a lease by itself");
+    ++facts.now_ms;
     close(handle);
 }
 void overlap() {
@@ -186,9 +206,12 @@ void overlap() {
     check(source::lease_read(1, handle, sample, reason) && sample.packet == 22, "old disconnect cannot overwrite newer completion");
     close(handle);
     source::Poll predating; source::begin(true, 0, predating);
-    handle = request(); ++facts.now_ms;
-    source::finish(predating, 0, true, 23, {}, 0, true, 23, {});
-    check(!source::lease_read(1, handle, sample, reason), "old original cannot warm newer lease");
+    lease::Handle blocked;
+    check(!source::lease_request(1, 0, blocked, reason) && reason == lease::Reason::busy,
+        "unarmed original blocks admission instead of warming a later lease");
+    ++facts.now_ms; source::finish(predating, 0, true, 23, {}, 0, true, 23, {});
+    report(); handle = request();
+    check(!source::lease_read(1, handle, sample, reason), "admission remains a warming boundary");
     close(handle);
 }
 void capacity() {
@@ -211,6 +234,114 @@ void capacity() {
     close(extra);
     for (std::size_t i = 1; i < handles.size(); ++i) check(source::lease_acknowledge(1, handles[i], reason), "other retained receipts intact");
 }
+void idle_poll() {
+    test_tick(1, 2, true, {true, false});
+    const auto sampled = sample_calls.load();
+    const auto gates = source::gate_entries();
+    for (unsigned i = 0; i < 1000; ++i) {
+        source::Poll poll; source::begin(true, 0, poll);
+        source::finish(poll, 0, true, i, {}, 0, true, i, {});
+    }
+    check(sample_calls.load() == sampled && source::gate_entries() == gates,
+        "unarmed polls take no environment sample or publication gate");
+    source::PublishedAtomic<bool> same{false};
+    same.store(false); (void)same.exchange(false);
+    check(source::gate_entries() == gates, "unchanged publications take no gate");
+    source::Poll pending; source::begin(true, 0, pending);
+    lease::Handle handle; lease::Reason reason;
+    check(!source::lease_request(1, 0, handle, reason) && reason == lease::Reason::busy,
+        "request cannot arm across an unregistered original in flight");
+    source::finish(pending, 0, true, 7, {}, 0, true, 7, {});
+    report();
+    check(source::lease_request(1, 0, handle, reason), "registered poll permits a later request");
+    close(handle);
+}
+struct ThreadBuffer { std::uint32_t packet{}; lease::Pad pad{}; std::uint32_t tail{0xabcddcba}; };
+bool thread_publish(void* output, std::uint32_t packet, const lease::Pad& pad) noexcept {
+    auto& buffer = *static_cast<ThreadBuffer*>(output);
+    if (!source::publication_held() || buffer.tail != 0xabcddcba ||
+        (capture_writes.load(std::memory_order_relaxed) && (pad.buttons & ~std::uint16_t{0x10})))
+        thread_violation.store(true, std::memory_order_relaxed);
+    buffer.packet = packet; buffer.pad = pad;
+    threaded_writes.fetch_add(1, std::memory_order_relaxed);
+    return true;
+}
+void threaded_poll() {
+    threaded_mode.store(true);
+    auto tick = [] {
+        dingosdk::native_menu_observation::publish(dingosdk::native_menu_observation::State::closed, GetTickCount64());
+        source::tick(1, 2, true);
+    };
+    tick();
+    std::thread poller([] {
+        std::uint32_t packet{1};
+        while (!stop_poller.load(std::memory_order_acquire)) {
+            source::Poll poll; source::begin(true, 0, poll);
+            lease::Pad raw{};
+            if (press_mode.load(std::memory_order_acquire)) raw.buttons = 0x1011;
+            ThreadBuffer buffer{packet, raw};
+            const auto result = source::finish_capture(poll, 0, true, packet, raw,
+                0, true, packet, raw, source::publication_revision(), &buffer, &thread_publish);
+            if (result || buffer.tail != 0xabcddcba) thread_violation.store(true);
+            ++packet;
+            threaded_polls.fetch_add(1, std::memory_order_relaxed);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    });
+    lease::Handle handle; lease::Reason reason{}; lease::Snapshot snapshot;
+    dingosdk::input_lease_capture::Reason capture_reason{};
+    dingosdk::input_lease_capture::Receipt receipt;
+    const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    auto wait_for = [&](auto predicate, const char* why) {
+        while (std::chrono::steady_clock::now() < until) {
+            tick();
+            if (predicate()) return;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        (void)source::capture_state(1, handle, receipt);
+        lease::Receipt passive; lease::Reason passive_reason{};
+        (void)source::lease_state(1, handle, passive, passive_reason);
+        std::fprintf(stderr, "timeout: lease=%u capture=%u phase=%u receipt_reason=%u passive=%u passive_reason=%u polls=%u writes=%u violation=%u\n",
+            static_cast<unsigned>(reason), static_cast<unsigned>(capture_reason),
+            static_cast<unsigned>(receipt.phase), static_cast<unsigned>(receipt.reason),
+            static_cast<unsigned>(passive.status), static_cast<unsigned>(passive.reason),
+            threaded_polls.load(), threaded_writes.load(), thread_violation.load());
+        stop_poller.store(true); poller.join(); check(false, why);
+    };
+    wait_for([&] { return source::lease_request(1, 0, handle, reason); }, "threaded lease admission");
+    wait_for([&] { return source::lease_read(1, handle, snapshot, reason); }, "threaded lease sample");
+    wait_for([&] {
+        if (!source::lease_read(1, handle, snapshot, reason)) return false;
+        return source::capture_request(1, handle, snapshot, capture_reason);
+    }, "threaded capture admission");
+    wait_for([&] { return source::capture_state(1, handle, receipt) &&
+        receipt.phase == dingosdk::input_lease_capture::Phase::capturing; }, "threaded capture publication");
+    const auto before_pressed = threaded_writes.load();
+    capture_writes.store(true); press_mode.store(true);
+    wait_for([&] { return threaded_writes.load() > before_pressed + 3; }, "threaded captured writes");
+    press_mode.store(false); capture_writes.store(false);
+    check(source::capture_release(1, handle), "threaded capture release");
+    wait_for([&] { return source::capture_state(1, handle, receipt) &&
+        receipt.phase == dingosdk::input_lease_capture::Phase::complete; }, "threaded handback");
+    stop_poller.store(true); poller.join();
+    check(!thread_violation.load() && threaded_writes.load() > 0,
+        "threaded writes hold publication, keep buffer tail and mask pressed controls except Start");
+    check(source::capture_acknowledge(1, handle), "threaded capture ACK");
+    lease::Receipt passive;
+    check(source::lease_state(1, handle, passive, reason), "threaded passive receipt");
+    check(passive.reason != lease::Reason::stale_epoch, "racing tick and poll clocks never revoke stale epoch");
+    if (!lease::terminal(passive.status)) check(source::lease_release(1, handle, reason), "threaded lease release");
+    check(source::lease_acknowledge(1, handle, reason), "threaded lease ACK");
+    tick();
+    lease::Handle fresh;
+    if (!source::lease_request(2, 0, fresh, reason) && reason == lease::Reason::source_unavailable) {
+        report();
+        check(source::lease_request(2, 0, fresh, reason), "fresh lease after registered cleanup poll");
+    }
+    check(fresh.sequence, "fresh lease after threaded cleanup");
+    check(source::lease_release(2, fresh, reason) && source::lease_acknowledge(2, fresh, reason),
+        "fresh threaded lease cleans");
+}
 void policy() {
     lease::Pad pad; pad.left_x = static_cast<std::int16_t>(lease::left_stick_rest);
     check(lease::neutral(pad), "XInput circular dead-zone boundary accepted");
@@ -227,9 +358,12 @@ void policy() {
 }
 }
 namespace dingosdk::native_input_source::environment {
-Facts sample() noexcept { return facts; }
+Facts sample() noexcept {
+    sample_calls.fetch_add(1, std::memory_order_relaxed);
+    if (threaded_mode.load(std::memory_order_relaxed)) return {GetTickCount64(), GetCurrentThreadId(), true, true, true, true};
+    return facts;
+}
 bool trusted_capture() noexcept { return false; }
-bool preview_report_valid(std::uint64_t, std::uint64_t) noexcept { return false; }
 }
 int main(int argc, char** argv) {
     if (argc != 2) return 2;
@@ -243,6 +377,8 @@ int main(int argc, char** argv) {
     else if (mode == "overlap") overlap();
     else if (mode == "capacity") capacity();
     else if (mode == "policy") policy();
+    else if (mode == "idle_poll") idle_poll();
+    else if (mode == "threaded_poll") threaded_poll();
     else return 2;
     std::printf("PASS %s %u constructed source checks\n", argv[1], checks);
     return 0;

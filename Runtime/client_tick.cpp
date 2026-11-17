@@ -1,4 +1,6 @@
 #include "Extension/Input/native_input_source.h"
+#include "Extension/Input/native_menu_observation.h"
+#include "Extension/UI/Overlay/input_capture.h"
 #include "Extension/Rendering/plugin_effects.h"
 #include "runtime_internal.h"
 #include "Extension/Customization/developer_hoodie.h"
@@ -1217,9 +1219,17 @@ void update_model(std::uintptr_t client, TickState& frame) {
         // Before the plugins tick, so their owned bodies see this tick's client phase (debug_busy: a
         // level request is loading).
         dingosdk::owned_bodies::tick(r.base, client, named_context_ready && !debug_busy);
-        const auto input_menu = dingosdk::multiplayer::sample_game_ui_state(r.base, true);
-        dingosdk::native_input_source::tick(r.base, client, named_context_ready && !debug_busy,
-            {input_menu.available, input_menu.in_menu});
+        // Whether a game menu is open, for the input hooks on the threads the game polls from
+        // (Extension/Input/native_menu_observation.h). Unknown until the game's screen model is found
+        // and while a level loads; a tick that never gets here leaves the last answer to go stale.
+        const auto menu = dingosdk::multiplayer::sample_game_ui_state(r.base);
+        dingosdk::native_menu_observation::publish(
+            named_context_ready && !debug_busy && menu.available
+                ? (menu.in_menu ? dingosdk::native_menu_observation::State::open
+                                : dingosdk::native_menu_observation::State::closed)
+                : dingosdk::native_menu_observation::State::unknown, GetTickCount64());
+        dingosdk::overlay::detail::update_countdown_capture();
+        dingosdk::native_input_source::tick(r.base, client, named_context_ready && !debug_busy);
         frame.input_ready_published = true;
         dingosdk::skater_movement::set_client(client);
         dingosdk::plugins::on_client_tick();

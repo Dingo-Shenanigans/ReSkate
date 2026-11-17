@@ -1,8 +1,9 @@
 #pragma once
 #include "Engine/Game/Input/input_lease.h"
-#include "Engine/Game/Input/plugin_input_policy.h"
 #include <cstdint>
 
+// The first request after idle can report source_unavailable until one registered
+// poll has completed; retrying after that poll may admit the source.
 // Passive observation of one selected raw XInput stream. This service never
 // changes a report; its separate opt-in capture extension owns no native actor or clock.
 namespace dingosdk::native_input_source {
@@ -24,15 +25,10 @@ void lease_release_all(std::uint64_t owner) noexcept;
 
 // Called before plugin dispatch on the verified client thread. Identifiers are
 // equality-only internal context tokens; no native graph is read by this module.
-struct NativeMenu {
-    bool known{}, open{};
-};
-void tick(std::uintptr_t base, std::uintptr_t client, bool ready, NativeMenu menu = {}) noexcept;
-// A missing or stale native menu observation never permits a plugin to take
-// controls away from the player's settings. Polling threads read only this copy.
-bool native_menu_closed(std::uint64_t now_ms) noexcept;
-// A fresh verified client tick observed the native menu, open or closed.
-bool native_menu_observed(std::uint64_t now_ms) noexcept;
+void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept;
+#if defined(DINGOSDK_INPUT_SOURCE_TEST)
+std::uint64_t gate_entries() noexcept;
+#endif
 
 // Existing XInput wrappers own the original call. The stack cookie is noncopyable;
 // abandonment drains exactly its own reservation and cannot issue a sample.
@@ -52,9 +48,10 @@ private:
     friend std::uint32_t finish_capture(Poll&, std::uint32_t, bool, std::uint32_t,
         const input_lease::Pad&, std::uint32_t, bool, std::uint32_t,
         const input_lease::Pad&, std::uint64_t, void*, bool (*)(void*, std::uint32_t, const input_lease::Pad&) noexcept,
-        input::PadAuthorship) noexcept;
+        bool) noexcept;
     std::uint64_t ticket_{};
     std::uint32_t fallback_user_{4};
+    bool unarmed_{};
 };
 void begin(bool outer_game_poll, std::uint32_t user, Poll& poll) noexcept;
 // Raw facts are copied immediately after original, returned facts after existing

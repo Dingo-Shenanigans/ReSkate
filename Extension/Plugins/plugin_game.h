@@ -576,11 +576,9 @@ public:
     virtual std::string room_show(std::string_view /*plugin*/, bool /*on*/, bool /*skater*/) { return unavailable; }
     // The spot on the room's floor where its skater stands.
     virtual std::array<float, 3> room_place() { return {}; }
-    // Only this plugin's owned, visible character preview: `value` -1..1 of one
-    // stick held for up to 300 ms, 0 lets go; 0 left x, 1 left y, 2 right x, 3 right y.
-    // Host input and animation observations expire after 100 ms. Settings, unknown
-    // state, room leave and unload revoke it. Other controls stay physical unless
-    // SDK UI owns input; then only this axis is added to its neutral game report.
+    // The game menu's preview (the skater on the Skaters page, the board on a Board tab) turned by a
+    // stick of a stand-in pad: `value` -1..1 of the stick held for 300 ms (call it every tick), 0 lets
+    // go; `stick` 0 left x, 1 left y, 2 right x, 3 right y. Only while the game's menu is open.
     virtual std::string room_turn(std::string_view /*plugin*/, float /*value*/, int /*stick*/) { return unavailable; }
     struct RoomPose {
         Vec3 position{};

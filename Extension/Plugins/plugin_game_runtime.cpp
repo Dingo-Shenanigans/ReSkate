@@ -2,6 +2,8 @@
 #include "Extension/Input/native_input_source.h"
 #include "Extension/Input/native_input_capture.h"
 #include "Extension/Input/pad_output_publication.h"
+#include "Extension/Input/native_menu_observation.h"
+#include "Engine/Game/Input/plugin_input_policy.h"
 #include "plugin_ui_values.h"
 #include "Extension/Rendering/plugin_effects.h"
 #include "Extension/Objects/placement_physics.h"
@@ -85,7 +87,6 @@
 #include "Extension/UI/Overlay/viewmodel.h"
 #include "Extension/UI/Overlay/scripted_pad.h"
 #include "Engine/Game/Input/pad_output.h"
-#include "Engine/Game/Input/plugin_input_policy.h"
 #include "Engine/Game/Skater/animation_values.h"
 #include "Extension/Skater/grind_target.h"
 #include "Engine/Game/Input/gameplay_options.h"
@@ -1067,8 +1068,6 @@ public:
     }
     std::string hide_pad(std::string_view plugin, const PadHidden& h) override {
         if (!pad_hide::available()) return "hiding pad controls is unavailable for this game build";
-        if ((h.left_trigger || h.right_trigger || h.left_x_grinding || h.right_stick ||
-            h.left_stick_click || h.right_stick_click || h.buttons) && !input_allowed()) return "gameplay input is unavailable";
         pad_hide::hide(plugin, {h.left_trigger, h.right_trigger, h.left_x_grinding, h.right_stick, h.left_stick_click, h.right_stick_click,
             static_cast<std::uint16_t>(h.buttons & ~input::menu_button)});
         return {};
@@ -1266,16 +1265,14 @@ public:
             if (capturer_ == plugin) capturer_.clear();
             return {};
         }
-        if (!input_allowed()) return "gameplay input is unavailable";
         if (!camera_mine(plugin)) return "only while the plugin's camera is shown";
         capturer_ = plugin;
         capture_until_ = GetTickCount64() + 250;
         return {};
     }
     bool capturing() const noexcept {
-        const auto now = GetTickCount64();
-        return native_input_source::native_menu_closed(now) && !capturer_.empty() &&
-            camera_mine(capturer_) && now < capture_until_;
+        return !native_menu_observation::known_open(GetTickCount64()) && !capturer_.empty() &&
+            camera_mine(capturer_) && GetTickCount64() < capture_until_;
     }
     // ---- skater.animation ---------------------------------------------------------------------------
     // The game's own clips, read in the background from the first ask.
@@ -1606,11 +1603,6 @@ public:
         overlay::pad_tick();
         character_room::tick(base, component, component != 0, false);
         const auto room = character_room::phase();
-        const auto menu = multiplayer::sample_game_ui_state(base, true);
-        const bool owned_preview = component && !room_owner_.empty() && room == character_room::Phase::arrived &&
-            menu.available && menu.in_menu &&
-            character_room::is_skaters_page(character_room::menu_buttons(base));
-        overlay::preview_context(room_owner_, owned_preview);
         skater_animation::show_in_room((!room_owner_.empty() && room == character_room::Phase::arrived) ||
                                        (!set_owner_.empty() && set_skater_ && character_room::set_shown()));
     }
@@ -1669,7 +1661,6 @@ public:
         const auto phase = character_room::phase();
         if (room_owner_ == plugin && (phase == character_room::Phase::opening || phase == character_room::Phase::arrived)) return {};
         room_owner_ = plugin;
-        overlay::preview_context({}, false);
         if (quiet && !room_quiet_) {
             room_quiet_ = true;
             room_ui_was_hidden_ = base_ && multiplayer::sample_game_ui_state(base_).ui_hidden;
@@ -1680,7 +1671,6 @@ public:
     }
     void room_leave(std::string_view plugin) override {
         if (room_owner_ != plugin) return;
-        overlay::preview_context({}, false);
         room_owner_.clear();
         skater_animation::show_in_room(false);
         character_room::leave();
@@ -1708,9 +1698,9 @@ public:
         if (!pose) return std::nullopt;
         return RoomPose{pose->place.position, pose->place.rotation, pose->age, pose->sequence};
     }
-    std::string room_turn(std::string_view plugin, float value, int stick) override {
-        if (room_owner_ != plugin) return "it does not own the character preview";
-        if (!overlay::hold_stick(plugin, stick, value, 300)) return "its character preview is not currently visible";
+    std::string room_turn(std::string_view, float value, int stick) override {
+        if (value != 0 && !multiplayer::sample_game_ui_state(base_).in_menu) return "the game's menu is not open";
+        overlay::hold_stick(stick, value, 300);
         return {};
     }
     GameMenu game_menu() override {
@@ -1879,14 +1869,12 @@ public:
         return out;
     }
     void game_buttons(std::string_view plugin, std::uint16_t hidden, std::uint16_t held, bool paused) override {
-        if ((hidden || held || paused) && !input_allowed()) return;
         buttons_owner_ = plugin;
         overlay::hide_game_buttons(hidden);
         overlay::hold_game_buttons(held);
         if (paused) overlay::pause_game_input(true);
     }
     void game_keys(std::string_view plugin, std::vector<std::uint8_t> keys) override {
-        if (!keys.empty() && !input_allowed()) return;
         if (keys.empty() && keys_owner_ != plugin) return;
         keys_owner_ = keys.empty() ? std::string{} : std::string(plugin);
         overlay::hide_game_keys(keys);
@@ -1895,7 +1883,7 @@ public:
         DWORD process{};
         const auto window = GetForegroundWindow();
         const bool focused = window && GetWindowThreadProcessId(window, &process) && process == GetCurrentProcessId();
-        return focused && native_input_source::native_menu_closed(GetTickCount64()) &&
+        return focused && !native_menu_observation::known_open(GetTickCount64()) &&
             !overlay::interface_open() && multiplayer::native_throwdown_gameplay_input_allowed();
     }
     std::string free_camera(std::string_view plugin, bool on) override {

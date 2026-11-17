@@ -2,6 +2,7 @@
 #include "Engine/Game/Input/pad_output.h"
 #include "input_publication.h"
 #include "native_input_source.h"
+#include "native_menu_observation.h"
 
 namespace dingosdk::native_input_source {
 // Take the publication gate before the replacement mutex. Engine state reports
@@ -16,10 +17,13 @@ inline std::string write_pad_output(std::string_view owner, unsigned controller,
 }
 inline std::optional<input::PadOutput> read_pad_output(unsigned controller,
     std::uint64_t now, bool allowed) {
-    PublicationScope publication;
+    PublicationScope publication(publication_needed());
     bool changed{};
-    auto result = input::pad_outputs().read(controller, now, allowed && native_menu_closed(now), &changed);
-    if (changed) publication_changed();
+    auto result = input::pad_outputs().read(controller, now, allowed && !native_menu_observation::known_open(now), &changed);
+    if (changed) {
+        if (publication.owns()) publication_changed();
+        else { PublicationScope changed_scope; publication_changed(); }
+    }
     return result;
 }
 inline void release_pad_output(std::string_view owner) {

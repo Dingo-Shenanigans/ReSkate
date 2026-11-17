@@ -41,7 +41,7 @@ bool owns_menu_cursor(const State&) {
 }
 namespace dingosdk::overlay {
 bool scripted_pad_active() noexcept { unrelated_entry(); }
-bool scripted_pad(DWORD, XINPUT_STATE&, input::PadAuthorship*, bool) noexcept { unrelated_entry(); }
+bool scripted_pad(DWORD, XINPUT_STATE&, bool*) noexcept { unrelated_entry(); }
 bool held_stick(int&, SHORT&) noexcept { unrelated_entry(); }
 }
 namespace dingosdk::multiplayer {

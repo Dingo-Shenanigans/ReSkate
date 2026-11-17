@@ -14,6 +14,13 @@ namespace capture = dingosdk::input_lease_capture;
 namespace {
 source::environment::Facts facts{1000, 1, true, true, true, true};
 unsigned checks{}, writes{};
+struct Menu { bool known{}, open{}; };
+void test_tick(std::uintptr_t base, std::uintptr_t client, bool ready, Menu menu = {}) {
+    using namespace dingosdk::native_menu_observation;
+    publish(menu.known ? (menu.open ? State::open : State::closed) : State::unknown, facts.now_ms);
+    source::tick(base, client, ready);
+}
+
 bool trusted_capture_active{};
 lease::Pad offered_pad{};
 enum class Write { full, refused, partial } write_mode{Write::full};
@@ -33,12 +40,12 @@ bool publish(void* output, std::uint32_t packet, const lease::Pad& pad) noexcept
 Buffer finish(source::Poll& poll, lease::Pad raw = {}, lease::Pad returned = {},
     std::uint32_t result = 0, bool raw_known = true, bool returned_known = true,
     std::uint32_t selected_result = 0, std::uint32_t original_packet = 7,
-    std::uint32_t returned_packet = 7, std::uint64_t revision = 0) {
+    std::uint32_t returned_packet = 7, std::uint64_t revision = 0, bool sdk_written = false) {
     Buffer buffer{returned_packet, returned};
     ++facts.now_ms;
     const auto selected = source::finish_capture(poll, result, raw_known, original_packet, raw,
         selected_result, returned_known, returned_packet, returned,
-        revision ? revision : source::publication_revision(), &buffer, &publish);
+        revision ? revision : source::publication_revision(), &buffer, &publish, sdk_written);
     check(selected == selected_result, "finalizer never invents transport success");
     check(buffer.tail == 0xabcddcba, "publication touches only bounded report destination");
     check(!source::publication_held(), "actual finalizer releases publication gate");
@@ -55,10 +62,19 @@ lease::Snapshot sample(lease::Handle handle, std::uint64_t owner = 1) {
     return snapshot;
 }
 lease::Handle lease_only() {
-    source::tick(1, 2, true, {true, false}); report();
+    test_tick(1, 2, true, {true, false}); report();
     lease::Handle handle; lease::Reason reason;
-    check(source::lease_request(1, 0, handle, reason), "passive owner admitted");
+    if (!source::lease_request(1, 0, handle, reason) && (reason == lease::Reason::source_unavailable || reason == lease::Reason::source_stale)) {
+        report();
+        check(source::lease_request(1, 0, handle, reason), "passive owner admitted after registered poll");
+    } else check(handle.sequence != 0, "passive owner admitted");
     report(); (void)sample(handle); return handle;
+}
+bool request_after_idle(std::uint64_t owner, lease::Handle& handle, lease::Reason& reason) {
+    if (source::lease_request(owner, 0, handle, reason)) return true;
+    if (reason != lease::Reason::source_unavailable && reason != lease::Reason::source_stale) return false;
+    report();
+    return source::lease_request(owner, 0, handle, reason);
 }
 lease::Handle arm() {
     const auto handle = lease_only(); const auto snapshot = sample(handle);
@@ -117,11 +133,13 @@ void denial() {
 }
 void cold_original() {
     source::Poll cold; source::begin(true, 0, cold); // before verified client tick
-    const auto handle = lease_only(); const auto snapshot = sample(handle); capture::Reason reason;
-    check(!source::capture_request(1, handle, snapshot, reason) && reason == capture::Reason::busy,
-        "cold original is included in capture admission drain");
+    test_tick(1, 2, true, {true, false});
+    lease::Handle blocked; lease::Reason lease_reason;
+    check(!source::lease_request(1, 0, blocked, lease_reason) && lease_reason == lease::Reason::busy,
+        "cold original blocks arming until its unregistered callback drains");
     (void)finish(cold);
-    check(source::capture_request(1, handle, snapshot, reason), "drained cold original cannot seed but no longer blocks");
+    const auto handle = lease_only(); const auto snapshot = sample(handle); capture::Reason reason;
+    check(source::capture_request(1, handle, snapshot, reason), "drained cold original cannot seed or block capture");
     close(handle);
 }
 void publication() {
@@ -167,7 +185,7 @@ void interference() {
     const auto menu_packet = std::uint32_t{7} ^ 0x80000000u;
     (void)report({}, {}, 0, true, menu_packet);
     (void)finish(retained, {}, {}, 0, true, true, 0, 7, menu_packet);
-    facts.now_ms += 1100; source::tick(1, 2, true, {true, false});
+    facts.now_ms += 1100; test_tick(1, 2, true, {true, false});
     (void)report({}, {}, 0, true, menu_packet);
     auto receipt = state(handle);
     check(receipt.key == identity && receipt.phase == capture::Phase::releasing && receipt.debt &&
@@ -203,16 +221,18 @@ void replacement() {
 }
 void context_release() {
     const auto handle = start(); const auto identity = state(handle).key;
-    source::tick(1, 2, false);
     lease::Pad physical{}; physical.buttons = 0x1001; physical.left_x = 17000;
+    (void)report(physical, physical); // establish which controls are physically held
+    test_tick(1, 2, false);
     const auto before = writes; const auto buffer = report(physical, physical);
     auto receipt = state(handle);
-    check(buffer.pad == physical && writes == before && receipt.key == identity &&
+    check(!buffer.pad.buttons && !buffer.pad.left_x &&
+        writes == before + 1 && receipt.key == identity &&
         receipt.phase == capture::Phase::releasing && receipt.debt && !receipt.neutral_releases,
-        "loading does not withhold physical controls or erase retained cleanup duty");
+        "unknown menu state masks held controls and retains cleanup duty during loading");
     lease::Snapshot no_authority; lease::Reason reason;
     check(!source::lease_read(1, handle, no_authority, reason), "context cleanup does not authorize a new input sample");
-    source::tick(1, 2, true, {true, false});
+    test_tick(1, 2, true, {true, false});
     (void)report(); receipt = state(handle);
     check(receipt.phase == capture::Phase::complete && !receipt.debt && receipt.neutral_releases == 1,
         "later known-closed gameplay can confirm same-stream cleanup without restoring old authority");
@@ -256,7 +276,7 @@ void replacement_publication() {
         !dingosdk::input::pad_outputs().active(facts.now_ms), "disallowed input clears every replacement behind the publication fence");
 
     check(source::write_pad_output("replacement", 0, replacement, facts.now_ms).empty(), "active-veto fixture publishes");
-    source::tick(1, 2, true, {true, false}); report();
+    test_tick(1, 2, true, {true, false}); report();
     lease::Handle denied; lease::Reason reason;
     check(!source::lease_request(1, 0, denied, reason) && reason == lease::Reason::interference,
         "an active replacement vetoes passive admission even when the staged report equals raw");
@@ -370,37 +390,40 @@ void late_age() {
     const auto receipt = state(handle);
     check(receipt.phase == capture::Phase::releasing && receipt.debt && !receipt.neutral_releases,
         "slow original/filter cannot become fresh merely at finalization");
-    source::tick(1, 2, true, {true, false}); report(); close(handle);
+    test_tick(1, 2, true, {true, false}); report(); close(handle);
 }
 void menu_admission() {
     lease::Handle handle; lease::Reason reason; capture::Reason capture_reason;
-    source::tick(1, 2, true);
+    test_tick(1, 2, true);
     (void)report();
-    check(!source::native_menu_closed(facts.now_ms) && !source::lease_request(1, 0, handle, reason),
+    check(!dingosdk::native_menu_observation::known_closed(facts.now_ms) && !source::lease_request(1, 0, handle, reason),
         "an unavailable native menu model cannot grant control authority");
-    source::tick(1, 2, true, {true, true}); (void)report();
+    test_tick(1, 2, true, {true, true}); (void)report();
     check(!source::lease_request(1, 0, handle, reason), "a known open native menu cannot grant a lease");
     handle = lease_only(); const auto issued = sample(handle);
-    source::tick(1, 2, true);
+    test_tick(1, 2, true);
     check(!source::capture_request(1, handle, issued, capture_reason),
         "an issued sample cannot start capture after native menu state becomes unknown");
-    check(source::lease_acknowledge(1, handle, reason), "unknown-state admission left only a terminal passive record");
-    source::tick(1, 2, true, {true, false});
-    check(source::native_menu_closed(facts.now_ms) && !source::native_menu_closed(facts.now_ms - 1),
+    check(source::lease_release(1, handle, reason) && source::lease_acknowledge(1, handle, reason),
+        "unknown state denies new capture and keeps passive cleanup explicit");
+    test_tick(1, 2, true, {true, false});
+    check(dingosdk::native_menu_observation::known_closed(facts.now_ms) && !dingosdk::native_menu_observation::known_closed(facts.now_ms - 1),
         "legacy consumers cannot accept a menu observation from their future after clock regression");
-    facts.now_ms += lease::maximum_age_ms;
-    check(!source::native_menu_closed(facts.now_ms), "a stalled client cannot leave a permanent menu permit");
+    facts.now_ms += lease::maximum_age_ms + 1;
+    check(!dingosdk::native_menu_observation::known_closed(facts.now_ms), "a stalled client cannot leave a permanent menu permit");
     (void)report();
     check(!source::lease_request(1, 0, handle, reason), "fresh raw input cannot renew a stale native menu observation");
-    source::tick(1, 2, false, {true, false}); (void)report();
+    test_tick(1, 2, false, {true, false}); (void)report();
     check(!source::lease_request(1, 0, handle, reason), "loading cannot grant authority even with an old closed observation");
 }
 void menu_revocation(bool overlay_menu) {
     const auto handle = start(); const auto issued = sample(handle); const auto identity = state(handle).key;
+    lease::Pad held{}; held.buttons = 0x1001; held.left_x = 18000;
+    (void)report(held, held); // record the hold before menu state changes
     source::Poll pending; source::begin(true, 0, pending);
     const auto staged = source::publication_revision(); const auto before = writes;
     if (overlay_menu) facts.menu_closed = false;
-    else source::tick(1, 2, true, {true, true});
+    else test_tick(1, 2, true, {true, true});
     lease::Pad physical{}; physical.buttons = 0x1011; physical.left_trigger = 217;
     physical.left_x = 18000; physical.left_y = -14000; physical.right_x = 22000;
     lease::Reason reason; capture::Reason capture_reason;
@@ -410,16 +433,18 @@ void menu_revocation(bool overlay_menu) {
     }
     const auto buffer = finish(pending, physical, physical, 0, true, true, 0, 7, 7, staged);
     auto receipt = state(handle);
-    check(buffer.pad == physical && buffer.packet == 7 && writes == before,
-        "a menu gets physical sticks, buttons and packet without a capture write, including a staged old callback");
+    check((overlay_menu ? buffer.pad.buttons == dingosdk::input::menu_button && !buffer.pad.left_x &&
+        writes == before + 1 : buffer.pad == physical && buffer.packet == 7 && writes == before),
+        "only a known open native menu gets the physical pad back");
     check(receipt.key == identity && receipt.phase == capture::Phase::releasing && receipt.debt &&
         !receipt.neutral_releases && !receipt.polls_in_flight && !source::capture_acknowledge(1, handle),
         "bypassing menu input does not fabricate handback or discard cleanup debt");
-    facts.menu_closed = true; source::tick(1, 2, true);
+    facts.menu_closed = true; test_tick(1, 2, true);
     const auto unknown = report(physical, physical);
-    check(unknown.pad == physical && writes == before && state(handle).debt,
-        "unknown native menu state continues passing physical input while retaining cleanup");
-    source::tick(1, 2, true, {true, false});
+    check(unknown.pad.buttons == dingosdk::input::menu_button && !unknown.pad.left_x &&
+        state(handle).debt,
+        "unknown native menu state keeps held input masked while retaining cleanup");
+    test_tick(1, 2, true, {true, false});
     lease::Handle replacement;
     check(!source::lease_request(2, 0, replacement, reason), "old cleanup still reserves the stream after menu closure");
     (void)report(); receipt = state(handle);
@@ -428,9 +453,20 @@ void menu_revocation(bool overlay_menu) {
     check(!source::lease_renew(1, handle, issued, reason), "menu closure does not resurrect the revoked lease");
     close(handle);
     (void)report();
-    check(source::lease_request(2, 0, replacement, reason), "a new owner needs fresh admission after confirmed handback");
+    check(request_after_idle(2, replacement, reason), "a new owner needs fresh admission after confirmed handback");
     check(source::lease_release(2, replacement, reason) && source::lease_acknowledge(2, replacement, reason),
         "fresh replacement owns its separate release duty");
+}
+void sdk_authored() {
+    const auto handle = start();
+    lease::Pad physical{}; physical.buttons = 0x1011;
+    lease::Pad walk{}; walk.buttons = 0x0200; walk.left_x = 16000;
+    source::Poll poll; source::begin(true, 0, poll);
+    const auto before = writes;
+    const auto buffer = finish(poll, physical, walk, 0, true, true, 0, 7, 8, 0, true);
+    check(buffer.pad == walk && buffer.packet == 8 && writes == before && state(handle).debt,
+        "a report written by the SDK menu walk keeps its exact buttons and packet");
+    close(handle);
 }
 void menu_button() {
     const auto handle = start(); lease::Pad physical{};
@@ -445,19 +481,21 @@ void menu_button() {
     close(handle);
 }
 void menu_replacement() {
-    source::tick(1, 2, true, {true, false});
+    test_tick(1, 2, true, {true, false});
     dingosdk::input::PadOutput replacement{}; replacement.left_x = -31000; replacement.buttons = 0xffff;
     check(source::write_pad_output("malicious", 0, replacement, facts.now_ms).empty(), "gameplay replacement fixture is published");
-    source::tick(1, 2, true, {true, true});
+    test_tick(1, 2, true, {true, true});
     for (unsigned i = 0; i != 10; ++i) {
         check(source::write_pad_output("malicious", 0, replacement, facts.now_ms).empty(), "internal fixture retries publication");
         check(!source::read_pad_output(0, facts.now_ms, true) && !dingosdk::input::pad_outputs().active(facts.now_ms),
             "the trusted consumer discards every replacement while the native menu is open");
     }
-    source::tick(1, 2, true);
+    test_tick(1, 2, true);
     check(source::write_pad_output("malicious", 0, replacement, facts.now_ms).empty() &&
-        !source::read_pad_output(0, facts.now_ms, true), "unknown native menu state also refuses replacement consumption");
-    source::tick(1, 2, true, {true, false});
+        source::read_pad_output(0, facts.now_ms, true).has_value(),
+        "unknown native menu state retains gameplay replacement behavior");
+    (void)source::read_pad_output(0, facts.now_ms, false);
+    test_tick(1, 2, true, {true, false});
     check(!source::read_pad_output(0, facts.now_ms, true), "closing the menu cannot revive a discarded replacement");
 }
 void menu_staged_restore() {
@@ -465,7 +503,7 @@ void menu_staged_restore() {
     lease::Pad physical{}; physical.buttons = 0x1011; physical.left_x = 20000; physical.right_y = -17000;
     source::Poll staged; source::begin(true, 0, staged);
     const auto revision = source::publication_revision();
-    source::tick(1, 2, true, {true, true});
+    test_tick(1, 2, true, {true, true});
     const auto before = writes;
     const auto restored = finish(staged, physical, {}, 0, true, true, 0, 7, 99, revision);
     check(restored.pad == physical && restored.packet == 7 && writes == before + 1 && state(handle).debt &&
@@ -478,7 +516,7 @@ void menu_staged_restore() {
     check(neutral.pad == lease::Pad{} && neutral.packet == 99 && writes == sdk_before && state(handle).debt,
         "trusted overlay or prompt suppression is never undone by raw menu restoration");
     trusted_capture_active = false;
-    source::tick(1, 2, true, {true, false}); report(); close(handle);
+    test_tick(1, 2, true, {true, false}); report(); close(handle);
 }
 void renewal() {
     const auto handle = start(); const auto issued = sample(handle); facts.now_ms += 37;
@@ -500,19 +538,21 @@ void owner_close() {
     report();
     check(!source::capture_state(1, handle, receipt), "orphan reclaimed only after real release and callback drain");
     report(); lease::Handle next; lease::Reason reason;
-    check(source::lease_request(2, 0, next, reason), "different owner gets only a fresh passive handle after cleanup");
+    check(request_after_idle(2, next, reason), "different owner gets only a fresh passive handle after cleanup");
     check(next.sequence != handle.sequence, "owner cleanup never resets source handle sequence");
     source::lease_release_all(2);
 }
 void held_tail() {
     const auto handle = start(); const auto identity = state(handle).key;
-    check(source::capture_release(1, handle), "release owns the same key throughout physical hold");
     lease::Pad pressed{}; pressed.buttons = 0x1000; pressed.left_trigger = 255; pressed.left_x = 20000;
+    (void)report(pressed, pressed); // the active capture records the physical hold
+    check(source::capture_release(1, handle), "release owns the same key throughout physical hold");
     (void)report(pressed, pressed); facts.now_ms += capture::Capture::maximum_release_ms;
     const auto before_stale = writes;
     const auto stale = report(pressed, pressed); auto receipt = state(handle);
-    check(stale.pad == pressed && writes == before_stale,
-        "an expired menu observation passes held physical controls without another cleanup write");
+    check(!stale.pad.buttons && !stale.pad.left_trigger &&
+        !stale.pad.left_x && writes == before_stale + 1,
+        "an expired menu observation keeps physically held controls masked");
     check(receipt.key == identity && receipt.phase == capture::Phase::releasing && receipt.debt &&
         receipt.quarantined && !receipt.neutral_releases && !source::capture_acknowledge(1, handle),
         "1s keeps physically held capture tail reserved and refuses premature ACK");
@@ -520,7 +560,7 @@ void held_tail() {
     check(source::lease_state(1, handle, passive, reason) && passive.capture_reserved && !passive.source_released &&
         !source::lease_acknowledge(1, handle, reason), "passive ACK cannot bypass tail work");
     // The host must observe the menu closed again before cleanup can own another report.
-    source::tick(1, 2, true, {true, false});
+    test_tick(1, 2, true, {true, false});
     const auto before = receipt.publications; write_mode = Write::partial;
     (void)report(pressed, pressed); receipt = state(handle);
     check(receipt.phase == capture::Phase::releasing && receipt.debt && receipt.quarantined &&
@@ -599,8 +639,8 @@ void post_ack() {
     capture::Receipt absent;
     check(!source::capture_state(1, handle, absent) && !source::capture_release(1, handle) &&
         !source::capture_acknowledge(1, handle), "acknowledged key cannot be resurrected or reused");
-    source::tick(1, 2, true, {true, false}); report(); lease::Handle next; lease::Reason reason;
-    check(source::lease_request(2, 0, next, reason) && next.sequence != key.lease_sequence,
+    test_tick(1, 2, true, {true, false}); report(); lease::Handle next; lease::Reason reason;
+    check(request_after_idle(2, next, reason) && next.sequence != key.lease_sequence,
         "later owner only acquires a fresh monotonic handle");
     source::lease_release_all(2);
 }
@@ -642,7 +682,7 @@ void menu_unknown_callbacks() {
     {
         std::array<source::Poll, 129> calls;
         for (auto& call : calls) source::begin(true, 0, call);
-        source::tick(1, 2, true, {true, true});
+        test_tick(1, 2, true, {true, true});
         lease::Pad physical{0x1011, 190, 171, 22000, -17000, 11000, -23000};
         const auto before = writes;
         const auto passed = finish(calls.back(), physical, physical);
@@ -690,7 +730,6 @@ Facts sample() noexcept {
     return result;
 }
 bool trusted_capture() noexcept { return trusted_capture_active; }
-bool preview_report_valid(std::uint64_t, std::uint64_t) noexcept { return false; }
 }
 int main(int argc, char** argv) {
     if (argc != 2) return 2; const std::string_view mode = argv[1];
@@ -711,6 +750,7 @@ int main(int argc, char** argv) {
     else if (mode == "menu_revocation") menu_revocation(false);
     else if (mode == "overlay_menu") menu_revocation(true);
     else if (mode == "menu_button") menu_button();
+    else if (mode == "sdk_authored") sdk_authored();
     else if (mode == "menu_replacement") menu_replacement();
     else if (mode == "menu_staged_restore") menu_staged_restore();
     else if (mode == "menu_unknown_callbacks") menu_unknown_callbacks(); else return 2;

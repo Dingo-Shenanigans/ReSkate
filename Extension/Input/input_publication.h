@@ -22,6 +22,7 @@ private:
 };
 bool publication_held() noexcept;
 std::uint64_t publication_revision() noexcept;
+bool publication_needed() noexcept;
 // Only internal callers already holding the gate may invalidate publication.
 void publication_changed() noexcept;
 
@@ -35,18 +36,21 @@ public:
     PublishedAtomic& operator=(const PublishedAtomic&) = delete;
     T load(std::memory_order order = std::memory_order_seq_cst) const noexcept { return value_.load(order); }
     void store(T value, std::memory_order order = std::memory_order_seq_cst) noexcept {
-        PublicationScope scope;
+        if (value_.load(std::memory_order_relaxed) == value) return;
+        PublicationScope scope(publication_needed());
         if (value_.exchange(value, order) != value) publication_changed();
     }
     T exchange(T value, std::memory_order order = std::memory_order_seq_cst) noexcept {
-        PublicationScope scope;
+        const auto observed = value_.load(std::memory_order_relaxed);
+        if (observed == value) return observed;
+        PublicationScope scope(publication_needed());
         const auto before = value_.exchange(value, order);
         if (before != value) publication_changed();
         return before;
     }
     bool compare_exchange_strong(T& expected, T desired,
         std::memory_order order = std::memory_order_seq_cst) noexcept {
-        PublicationScope scope;
+        PublicationScope scope(publication_needed());
         const auto before = expected;
         const bool result = value_.compare_exchange_strong(expected, desired, order);
         if (result && before != desired) publication_changed();
