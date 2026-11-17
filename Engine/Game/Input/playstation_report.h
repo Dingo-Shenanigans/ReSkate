@@ -62,13 +62,28 @@ inline PlayStationGamepad playstation_common(const std::uint8_t* sticks, const s
 inline constexpr bool playstation_bluetooth(std::size_t input_report_length) noexcept {
     return input_report_length > 64;
 }
+// A DualSense's report 0x01 is one of two things with the buttons in different places: its
+// 64-byte USB report, or the 10-byte simple report it sends over Bluetooth until full reports are
+// asked for, which Windows pads with zeros to the length of a read. The length of the read says
+// which only while the pad's longest input report is the one expected (64 over USB): a pad that
+// reads longer over USB was taken for Bluetooth, and neutralising it for a menu wrote the D-pad's
+// byte of the USB layout as "up" (a DualSense Edge returned to the session marker for as long as
+// the menu or the chat was open, 2026-11-14). So what is in the report says first: a USB report
+// has its counter, sensors and status after the buttons, and the simple report has only padding
+// there. A report with nothing there goes by the length, as before.
+inline bool dualsense_usb_layout(const std::uint8_t* report, std::size_t size, bool bluetooth) noexcept {
+    if (size < 11) return false;
+    for (std::size_t at = 11; at < std::min<std::size_t>(size, 64); ++at)
+        if (report[at]) return true;
+    return !bluetooth;
+}
 // `report` includes the report id byte, as ReadFile returns it.
 inline std::optional<PlayStationGamepad> parse_playstation_report(PlayStationPad kind, bool bluetooth,
     const std::uint8_t* report, std::size_t size) noexcept {
     if (!report || !size || kind == PlayStationPad::none) return {};
     const auto id = report[0];
     // DualSense USB (0x01) and Bluetooth full (0x31): triggers precede the buttons.
-    if (kind == PlayStationPad::dualsense && ((id == 0x01 && !bluetooth && size >= 11) || (id == 0x31 && size >= 12))) {
+    if (kind == PlayStationPad::dualsense && ((id == 0x01 && dualsense_usb_layout(report, size, bluetooth)) || (id == 0x31 && size >= 12))) {
         const auto* data = report + (id == 0x31 ? 2 : 1);
         return detail::playstation_common(data, data + 7, data[4], data[5]);
     }
@@ -95,7 +110,7 @@ inline bool replace_playstation_report(PlayStationPad kind, bool bluetooth, std:
     // R2 0x08 digital bits) and the two analog triggers.
     std::uint8_t *sticks{}, *shoulder{}, *left{}, *right{};
     const auto id = bytes[0];
-    if (kind == PlayStationPad::dualsense && ((id == 0x01 && !bluetooth) || id == 0x31)) {
+    if (kind == PlayStationPad::dualsense && ((id == 0x01 && dualsense_usb_layout(bytes, size, bluetooth)) || id == 0x31)) {
         auto* data = bytes + (id == 0x31 ? 2 : 1);
         sticks = data; left = data + 4; right = data + 5; shoulder = data + 8;
     } else if (id == 0x01) {
@@ -163,6 +178,52 @@ inline bool refresh_playstation_bluetooth_crc(std::uint8_t* report, std::size_t 
     for (std::size_t i = 0; i < covered; ++i) feed(report[i]);
     crc = ~crc;
     for (std::size_t i = 0; i < 4; ++i) report[covered + i] = static_cast<std::uint8_t>(crc >> (8 * i));
+    return true;
+}
+// Where the hat and face byte, then the shoulder and system byte, of an already identified report are
+// (as parse_playstation_report reads them); null for a report it does not read.
+inline std::uint8_t* playstation_button_bytes(PlayStationPad kind, bool bluetooth, std::uint8_t* report, std::size_t size) noexcept {
+    if (!parse_playstation_report(kind, bluetooth, report, size)) return nullptr;
+    const auto id = report[0];
+    if (kind == PlayStationPad::dualsense && ((id == 0x01 && dualsense_usb_layout(report, size, bluetooth)) || id == 0x31))
+        return report + (id == 0x31 ? 2 : 1) + 7;
+    if (id == 0x01) return report + 5;
+    return report + 7; // DualShock 4 Bluetooth full (0x11)
+}
+// Lets go of the buttons in `hidden` (XINPUT_GAMEPAD_* bits) in a report the game is about to read, as
+// a plugin's reskate.input.game_buttons hides them from XInput: D-pad directions (the hat keeps the
+// rest of a diagonal), the face buttons, L1, R1, Share (Back), Options (Start), L3 and R3. The triggers
+// and sticks stay. Returns whether anything changed (the Bluetooth CRC is then written again).
+inline bool hide_playstation_buttons(PlayStationPad kind, bool bluetooth, std::uint8_t* report, std::size_t size,
+    std::uint16_t hidden) noexcept {
+    if (!hidden) return false;
+    auto* buttons = playstation_button_bytes(kind, bluetooth, report, size);
+    if (!buttons) return false;
+    const std::uint8_t face = buttons[0], shoulder = buttons[1];
+    // The hat as XInput's up 0x1, down 0x2, left 0x4, right 0x8, and back.
+    constexpr std::uint16_t hat_dirs[8]{0x1, 0x1 | 0x8, 0x8, 0x2 | 0x8, 0x2, 0x2 | 0x4, 0x4, 0x1 | 0x4};
+    const unsigned hat = face & 0x0fu;
+    std::uint16_t dirs = hat < 8 ? hat_dirs[hat] : 0;
+    dirs = static_cast<std::uint16_t>(dirs & ~hidden & 0x0fu);
+    unsigned new_hat = 8;
+    for (unsigned i = 0; i < 8; ++i)
+        if (hat_dirs[i] == dirs) new_hat = i;
+    std::uint8_t new_face = static_cast<std::uint8_t>((face & 0xf0u) | (hat < 8 ? new_hat : hat));
+    if (hidden & 0x4000) new_face = static_cast<std::uint8_t>(new_face & ~0x10u); // X        -> Square
+    if (hidden & 0x1000) new_face = static_cast<std::uint8_t>(new_face & ~0x20u); // A        -> Cross
+    if (hidden & 0x2000) new_face = static_cast<std::uint8_t>(new_face & ~0x40u); // B        -> Circle
+    if (hidden & 0x8000) new_face = static_cast<std::uint8_t>(new_face & ~0x80u); // Y        -> Triangle
+    std::uint8_t new_shoulder = shoulder;
+    if (hidden & 0x0100) new_shoulder = static_cast<std::uint8_t>(new_shoulder & ~0x01u); // L1
+    if (hidden & 0x0200) new_shoulder = static_cast<std::uint8_t>(new_shoulder & ~0x02u); // R1
+    if (hidden & 0x0020) new_shoulder = static_cast<std::uint8_t>(new_shoulder & ~0x10u); // Share / Create
+    if (hidden & 0x0010) new_shoulder = static_cast<std::uint8_t>(new_shoulder & ~0x20u); // Options
+    if (hidden & 0x0040) new_shoulder = static_cast<std::uint8_t>(new_shoulder & ~0x40u); // L3
+    if (hidden & 0x0080) new_shoulder = static_cast<std::uint8_t>(new_shoulder & ~0x80u); // R3
+    if (new_face == face && new_shoulder == shoulder) return false;
+    buttons[0] = new_face;
+    buttons[1] = new_shoulder;
+    refresh_playstation_bluetooth_crc(report, size);
     return true;
 }
 // Change one menu-preview stick in an already identified report. Other input,

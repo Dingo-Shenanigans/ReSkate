@@ -72,8 +72,12 @@ void carry(std::optional<carry::Goal> goal, bool push_straightens = false, Shown
 // a place (pose_place.h), before any carry and reach; `weight` 0..1 of the way. Posed in the order
 // given (pose_place::order). Joints 0 and 1 (the skater's world placement) are left alone. It holds
 // for 0.3 s: set it every tick; empty ends it.
+// `still`: the game's animation is held under the pose. The body is kept as it stood when the pose
+// first asked for it (every joint but the two that place the skater), and the pose goes on top of
+// that: nothing of the game's own idle, its fidgets or its breathing, moves a joint the pose leaves
+// alone. Taken again after the pose has been off for half a second.
 using PoseOffset = pose_replay::Entry;
-void pose(std::vector<PoseOffset> offsets, float weight, Shown shown = Shown::everyone);
+void pose(std::vector<PoseOffset> offsets, float weight, Shown shown = Shown::everyone, bool still = false);
 // Where a joint (of the 395) was in the world in the last pose evaluated, after any clip and reach;
 // empty without a skater. Asking keeps that joint read for two seconds, so the first ask comes back
 // empty; at most 32 joints are read at once.
@@ -94,9 +98,13 @@ struct PreviewPose {
     std::uint64_t sequence{};
 };
 std::optional<PreviewPose> preview_pose(bool skater);
+// Internal only: fresh, ownership-checked menu board; never exposed to plugins.
+std::uintptr_t preview_board_entity();
 void watch_room(bool on) noexcept;
 bool room_skater_seen() noexcept;
 void show_in_room(bool on) noexcept;
+// Where the room is: the spot on its floor where its skater stands.
+std::array<float, 3> room_floor_spot() noexcept;
 // Whether the local skater is drawn in the room now. The game takes the room's floor, far under where he
 // is, for a fall and bails him (client_debug.cpp guards him with No Bail meanwhile).
 bool shown_in_room() noexcept;

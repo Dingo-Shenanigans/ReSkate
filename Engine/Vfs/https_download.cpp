@@ -1,6 +1,8 @@
 #include "https_download.h"
+#include "https_trust.h"
 #include "Engine/Core/Platform/clock.h"
 #include <Windows.h>
+#include <wincrypt.h>
 #include <winhttp.h>
 #include <array>
 #include <atomic>
@@ -86,11 +88,14 @@ struct AsyncRequest {
 };
 }
 
-Download get(std::wstring_view url, const std::filesystem::path& destination,
-    std::uint64_t max_bytes, std::uint32_t timeout_seconds, const wchar_t* agent, Watch* watch) {
+namespace {
+// One GET. `builtin_roots`: the second try after Windows refused the server's certificate. Windows'
+// verdict is set aside for the handshake, redirects are not followed, and the answer is used only
+// when the certificate passes chains_to_builtin_root (https_trust.h) for this host; nothing is
+// read from it before that.
+Download get_once(std::wstring_view url, const std::filesystem::path& destination, std::uint64_t max_bytes,
+    std::uint64_t timeout_deadline, const wchar_t* agent, Watch* watch, bool builtin_roots) {
     Download result;
-    const auto started = steady_us();
-    const auto timeout_deadline = started + std::uint64_t{timeout_seconds} * 1000000;
     const auto stop = [&]() -> DWORD {
         if (watch && watch->cancel.load()) return ERROR_CANCELLED;
         const auto external = watch ? watch->deadline_us.load() : 0;
@@ -130,6 +135,14 @@ Download get(std::wstring_view url, const std::filesystem::path& destination,
     DWORD logon = WINHTTP_AUTOLOGON_SECURITY_LEVEL_HIGH;
     if (!WinHttpSetOption(request.value, WINHTTP_OPTION_REDIRECT_POLICY, &redirect, sizeof(redirect)) ||
         !WinHttpSetOption(request.value, WINHTTP_OPTION_AUTOLOGON_POLICY, &logon, sizeof(logon))) return fail(GetLastError());
+    if (builtin_roots) {
+        DWORD ignore = SECURITY_FLAG_IGNORE_UNKNOWN_CA | SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
+                       SECURITY_FLAG_IGNORE_CERT_CN_INVALID | SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
+        DWORD no_redirects = WINHTTP_DISABLE_REDIRECTS;
+        if (!WinHttpSetOption(request.value, WINHTTP_OPTION_SECURITY_FLAGS, &ignore, sizeof(ignore)) ||
+            !WinHttpSetOption(request.value, WINHTTP_OPTION_DISABLE_FEATURE, &no_redirects, sizeof(no_redirects)))
+            return fail(GetLastError());
+    }
     DWORD_PTR context = reinterpret_cast<DWORD_PTR>(&async);
     if (!WinHttpSetOption(request.value, WINHTTP_OPTION_CONTEXT_VALUE, &context, sizeof(context)))
         return fail(GetLastError());
@@ -153,6 +166,14 @@ Download get(std::wstring_view url, const std::filesystem::path& destination,
     async.prepare(WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE);
     if (const auto error = stop()) return fail(error);
     if (const auto error = finish(WinHttpReceiveResponse(async.value, nullptr))) return fail(error);
+    if (builtin_roots) {
+        PCCERT_CONTEXT certificate{};
+        DWORD bytes = sizeof(certificate);
+        const bool trusted = WinHttpQueryOption(async.value, WINHTTP_OPTION_SERVER_CERT_CONTEXT, &certificate, &bytes) &&
+                             chains_to_builtin_root(certificate, host);
+        if (certificate) CertFreeCertificateContext(certificate);
+        if (!trusted) return fail(ERROR_WINHTTP_SECURE_FAILURE);
+    }
     DWORD size = sizeof(result.http_status);
     if (!WinHttpQueryHeaders(async.value, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
                             nullptr, &result.http_status, &size, nullptr)) return fail(GetLastError());
@@ -186,6 +207,17 @@ Download get(std::wstring_view url, const std::filesystem::path& destination,
     output.complete = true;
     result.ok = true;
     return result;
+}
+}
+
+Download get(std::wstring_view url, const std::filesystem::path& destination,
+    std::uint64_t max_bytes, std::uint32_t timeout_seconds, const wchar_t* agent, Watch* watch) {
+    const auto timeout_deadline = steady_us() + std::uint64_t{timeout_seconds} * 1000000;
+    const auto first = get_once(url, destination, max_bytes, timeout_deadline, agent, watch, false);
+    // 12175: Windows refused the certificate. Tried again against ReSkate's own roots, within
+    // the same time limit (a refused first try writes nothing to `destination`).
+    if (first.ok || first.error != ERROR_WINHTTP_SECURE_FAILURE) return first;
+    return get_once(url, destination, max_bytes, timeout_deadline, agent, watch, true);
 }
 
 std::optional<std::uint64_t> content_length(std::wstring_view url, std::uint32_t timeout_seconds,

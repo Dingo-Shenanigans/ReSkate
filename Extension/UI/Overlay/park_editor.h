@@ -33,6 +33,10 @@ struct ParkEditorUI {
     int dragging{-1};
     double queued_at{}, exit_at{}, feedback_until{};
     EditorSurfaceRequest surface_request;
+    // The snap grid laid on the ground (Snap settings, "Show snap grid"), and its last request.
+    bool show_grid{true};
+    EditorGroundRequest ground_request;
+    double next_ground_request{};
     bool surface_mode{true}, surface_confirm{}, surface_valid{};
     float surface_offset{};
     double next_surface_request{};

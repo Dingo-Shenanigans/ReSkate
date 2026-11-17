@@ -1044,8 +1044,248 @@ void submit_refusal_codes_preserve_command_state() {
     service.command_sequence = saved_command_sequence;
 }
 
+// The half-rate order through the service: the clock moves on and the tick reads the next
+// sample before any synchronizer call has taken the command for the sample before it. The
+// service queues that next step's command behind the pending one, refuses a third, and its
+// receipt path expires each by its own deadline. No producer wrapper runs in this fixture; the
+// TwoPending cases below drive the actual produce().
+void the_next_steps_command_queues_behind_a_pending_one_in_the_service() {
+    Fixture f;
+    Sample first_sample;
+    check(read(owner, f.handle, first_sample).empty(), "two-pending fixture could not publish its first sample");
+    f.slot().mailbox = {};
+    const auto saved_command_sequence = service.command_sequence;
+    service.command_sequence = 42;
+    Command command{};
+    command.epoch = first_sample.epoch;
+    command.force = {1, 0, 0};
+    std::uint64_t first{}, second{}, third{999};
+    check(submit(owner, f.handle, command, first).empty() && first == 43, "the first command was refused");
+    test_clock::now = 10016;
+    f.step();
+    Sample next_sample;
+    check(read(owner, f.handle, next_sample).empty() && next_sample.epoch.serial == first_sample.epoch.serial + 1,
+        "two-pending fixture could not publish the next step's sample");
+    command.epoch = next_sample.epoch;
+    const auto queued_behind = submit(owner, f.handle, command, second);
+    check(queued_behind.empty() && second == 44 && service.command_sequence == 44 && f.slot().mailbox.count == 2 &&
+        f.slot().mailbox.pending && f.slot().mailbox.command.epoch == first_sample.epoch,
+        ("the next step's command was refused behind a pending one: " + queued_behind).c_str());
+    Receipt head{}, behind{};
+    check(receipt(owner, f.handle, first, head).empty() && head.outcome == Outcome::queued &&
+        receipt(owner, f.handle, second, behind).empty() && behind.outcome == Outcome::queued &&
+        behind.requested == next_sample.epoch, "two pending commands did not each have a queued receipt");
+    check(submit(owner, f.handle, command, third) == "body command invalid, repeated, stopped, pending or receipt ring full" &&
+        third == 0 && service.command_sequence == 44 && f.slot().mailbox.count == 2, "a third pending command was queued or spent a sequence");
+    // The first's deadline is 100 ms after its submit at 10000, the second's after 10016.
+    test_clock::now = 10100;
+    check(receipt(owner, f.handle, first, head).empty() && head.outcome == Outcome::expired &&
+        receipt(owner, f.handle, second, behind).empty() && behind.outcome == Outcome::queued && f.slot().mailbox.pending &&
+        f.slot().mailbox.command.epoch == next_sample.epoch, "the first command's deadline did not expire it alone");
+    test_clock::now = 10116;
+    check(receipt(owner, f.handle, second, behind).empty() && behind.outcome == Outcome::expired && !f.slot().mailbox.pending &&
+        !f.slot().mailbox.failed && f.slot().mailbox.count == 2, "the second command did not expire on its own deadline");
+    check(acknowledge(owner, f.handle, first).empty() && acknowledge(owner, f.handle, second).empty() && !f.slot().mailbox.count,
+        "two expired commands could not be acknowledged in order");
+    service.command_sequence = saved_command_sequence;
+}
+
 #include "body_prepare_source_fixture.inc"
 #include "body_reuse_source_fixture.inc"
+
+// Two pending commands through the actual produce(), the synchronizer hook's body, with the
+// reuse fixture's recording setters standing in for the native force and torque calls. The
+// first command is submitted at 10000 for the seeded step N; the clock then moves to N+1 at
+// second_at and the second is submitted for N+1 behind it, before any call has taken the first:
+// the half-rate order. Receipt rows are read from the mailbox itself, because the service's
+// receipt() expires commands on its own and these cases are about what produce() does.
+struct TwoPending {
+    ReuseFixture f;
+    Sample first_sample, next_sample;
+    std::uint64_t first{}, second{};
+    NativeHandle incoming{};
+    std::uintptr_t wrapper{};
+    explicit TwoPending(ULONGLONG second_at = 10016) {
+        // The seeded receipt's sequence is the fixture's own, ahead of the service's counter.
+        f.slot().mailbox = {};
+        check(read(owner, f.handle, first_sample).empty(), "two-pending producer fixture could not publish its first sample");
+        Command command;
+        command.epoch = first_sample.epoch;
+        command.force = {0, 10, 0};
+        command.torque = {1, 0, 0};
+        check(submit(owner, f.handle, command, first).empty(), "the first command was refused");
+        incoming = f.slot().body;
+        wrapper = f.slot().anchor.wrappers[0];
+        reuse_native.calls.clear();
+        produce(&incoming, wrapper);
+        check(reuse_native.calls.empty() && f.slot().mailbox.pending, "a command was produced while the clock read its own epoch");
+        test_clock::now = second_at;
+        f.step();
+        check(read(owner, f.handle, next_sample).empty() && next_sample.epoch.serial == first_sample.epoch.serial + 1,
+            "two-pending producer fixture could not publish the next step's sample");
+        command.epoch = next_sample.epoch;
+        command.force = {0, 20, 0};
+        command.torque = {2, 0, 0};
+        const auto why = submit(owner, f.handle, command, second);
+        check(why.empty() && f.slot().mailbox.pending && f.slot().mailbox.next_pending,
+            ("the next step's command was refused behind a pending one: " + why).c_str());
+    }
+    Receipt row(std::uint64_t sequence) {
+        Receipt out;
+        check(f.slot().mailbox.find(sequence, out), "a command's receipt row is gone");
+        return out;
+    }
+    // What the last force and torque setters wrote for the body.
+    V4 force() { return load<V4>(f.pending_force + body_index * sizeof(V4)); }
+    V4 torque() { return load<V4>(f.pending_torque + body_index * sizeof(V4)); }
+    void call() { produce(&incoming, wrapper); }
+};
+
+// The first listed call that reads N+1 applies the first command and only it. Further calls in
+// that step leave the second waiting, and the first call that reads N+2 applies the second.
+void the_producer_applies_two_pending_commands_each_in_its_own_step() {
+    TwoPending t;
+    auto& s = t.f.slot();
+    t.call();
+    check_calls({"force 3", "torque 3"}, "the call that read N+1 did not apply one force and torque pair");
+    check(t.force() == V4{0, 10, 0, 0} && t.torque() == V4{1, 0, 0, 0}, "the call that read N+1 applied something other than the first command");
+    auto a = t.row(t.first), b = t.row(t.second);
+    check(a.outcome == Outcome::applied && a.produced == t.next_sample.epoch && a.force_attempted && a.torque_attempted,
+        "the first command's receipt is not that of a command applied at N+1");
+    check(b.outcome == Outcome::queued && b.requested == t.next_sample.epoch && b.produced == Epoch{} && s.mailbox.pending &&
+        !s.mailbox.next_pending && !s.mailbox.producing && s.mailbox.command.epoch == t.next_sample.epoch,
+        "the second command did not become the pending one with its own queued receipt");
+    t.call();
+    t.call();
+    check_calls({"force 3", "torque 3"}, "the second command was applied in the first command's step");
+    check(t.row(t.second).outcome == Outcome::queued && s.mailbox.pending, "the second command did not wait at its own epoch");
+    test_clock::now = 10033;
+    t.f.step();
+    t.call();
+    t.call();
+    check_calls({"force 3", "torque 3", "force 3", "torque 3"}, "the call that read N+2 did not apply the second command once");
+    check(t.force() == V4{0, 20, 0, 0} && t.torque() == V4{2, 0, 0, 0}, "the call that read N+2 applied something other than the second command");
+    Sample after;
+    check(read(owner, t.f.handle, after).empty() && after.epoch.serial == t.next_sample.epoch.serial + 1,
+        "the step after the second command could not be read");
+    b = t.row(t.second);
+    check(b.outcome == Outcome::applied && b.produced == after.epoch && b.force_attempted && b.torque_attempted && !s.mailbox.pending &&
+        !s.mailbox.failed && s.active && !s.quarantined && !s.reuse_barred, "the second command's receipt is not that of a command applied at N+2");
+    // The ride goes on: the first result is acknowledged and the next sample is commanded.
+    Receipt done;
+    check(receipt(owner, t.f.handle, t.first, done).empty() && done.outcome == Outcome::applied && done.successor_available &&
+        acknowledge(owner, t.f.handle, t.first).empty(), "the first command's result could not be read and acknowledged");
+    Command command;
+    command.epoch = after.epoch;
+    std::uint64_t third{};
+    check(submit(owner, t.f.handle, command, third).empty() && third == t.second + 1, "the ride could not go on after two commands");
+}
+
+// A native setter that faults on the first command stops the second too: it is rejected, the
+// body is quarantined, and no setter runs when the second's own step comes.
+void a_faulting_setter_on_the_first_pending_command_rejects_the_second() {
+    struct Case { const char* fault; bool torque_attempted; std::vector<std::string> calls; };
+    const Case variants[] = {{"force 3", false, {"force 3"}}, {"torque 3", true, {"force 3", "torque 3"}}};
+    for (const auto& c : variants) {
+        TwoPending t;
+        auto& s = t.f.slot();
+        reuse_native.fail_on = c.fault;
+        t.call();
+        const auto a = t.row(t.first), b = t.row(t.second);
+        check_case(a.outcome == Outcome::partial && a.produced == t.next_sample.epoch && a.force_attempted &&
+            a.torque_attempted == c.torque_attempted, c.fault, "the faulted command's receipt does not say what was attempted");
+        check_case(b.outcome == Outcome::rejected && b.produced == Epoch{} && !b.force_attempted && !b.torque_attempted, c.fault,
+            "a failed setter on the first command left the second alive");
+        check_case(s.quarantined && s.reuse_barred && !s.active && s.mailbox.failed && !s.mailbox.pending && !s.mailbox.next_pending &&
+            !s.mailbox.producing, c.fault, "a failed setter did not quarantine the body and stop its inbox");
+        test_clock::now = 10033;
+        t.f.step();
+        t.call();
+        t.call();
+        check_calls(c.calls, "a setter ran after the failure");
+        Receipt told;
+        check_case(receipt(owner, t.f.handle, t.second, told).empty() && told.outcome == Outcome::rejected && told.quarantined, c.fault,
+            "the second command's rejection is not what its receipt reports");
+        Command command;
+        command.epoch = t.next_sample.epoch;
+        ++command.epoch.serial;
+        command.epoch.time += command.epoch.seconds;
+        std::uint64_t third{};
+        check_case(!submit(owner, t.f.handle, command, third).empty() && !third, c.fault, "a quarantined body took another command");
+    }
+}
+
+// produce() expires each pending command by its own deadline before anything else: on any
+// wrapper, with no clock reading, and without going on to checks that cost the body. The first
+// command's deadline is 10100 here and the second's 10150.
+void the_producer_expires_each_pending_command_by_its_own_deadline() {
+    {
+        // A synchronizer call on a wrapper that is not listed takes no clock reading. It still
+        // expires the first command at its deadline, and leaves the second for its own step.
+        TwoPending t(10050);
+        auto& s = t.f.slot();
+        const std::uintptr_t unlisted = 1;
+        check(std::find(s.anchor.wrappers.begin(), s.anchor.wrappers.end(), unlisted) == s.anchor.wrappers.end(), "this case needs an unlisted wrapper");
+        test_clock::now = 10100;
+        produce(&t.incoming, unlisted);
+        const auto a = t.row(t.first);
+        auto b = t.row(t.second);
+        check(a.outcome == Outcome::expired && a.produced == Epoch{} && !a.force_attempted && !a.torque_attempted,
+            "a call on an unlisted wrapper did not expire the first command at its deadline");
+        check(b.outcome == Outcome::queued && s.mailbox.pending && !s.mailbox.next_pending && s.mailbox.command.epoch == t.next_sample.epoch &&
+            s.mailbox.deadline == 10150 && !s.mailbox.failed && s.active && !s.quarantined && reuse_native.calls.empty(),
+            "the first command's deadline did not leave the second pending on its own deadline");
+        test_clock::now = 10110;
+        t.f.step();
+        t.call();
+        b = t.row(t.second);
+        check_calls({"force 3", "torque 3"}, "the second command was not applied in its own step after the first expired");
+        check(b.outcome == Outcome::applied && b.produced.serial == t.next_sample.epoch.serial + 1 && t.force() == V4{0, 20, 0, 0} &&
+            s.active && !s.quarantined, "the second command's own result was not recorded after the first expired");
+    }
+    {
+        // No call came while the clock read N+1. The first listed call reads N+2 after the first
+        // command's deadline: it expires the first and applies the second, in that one call.
+        TwoPending t(10050);
+        auto& s = t.f.slot();
+        test_clock::now = 10100;
+        t.f.step();
+        t.call();
+        const auto a = t.row(t.first), b = t.row(t.second);
+        check_calls({"force 3", "torque 3"}, "the call that expired the first command did not apply the second in its own step");
+        check(a.outcome == Outcome::expired && a.produced == Epoch{} && b.outcome == Outcome::applied &&
+            b.produced.serial == t.next_sample.epoch.serial + 1 && b.force_attempted && b.torque_attempted &&
+            t.force() == V4{0, 20, 0, 0} && t.torque() == V4{2, 0, 0, 0} && !s.mailbox.pending && !s.mailbox.failed && s.active && !s.quarantined,
+            "the first command's expiry and the second's result were not each recorded");
+    }
+    {
+        // Both deadlines pass with no physics step for 250 ms, so the clock is too old to command
+        // by. Both commands expire; the call does not go on to the clock check, whose failure
+        // rejects what is pending and quarantines the body.
+        TwoPending t(10050);
+        auto& s = t.f.slot();
+        test_clock::now = 10300;
+        Epoch stale;
+        check(!command_clock(s, stale), "this case needs a clock too old to command by");
+        t.call();
+        const auto a = t.row(t.first), b = t.row(t.second);
+        check(a.outcome == Outcome::expired && b.outcome == Outcome::expired && b.produced == Epoch{} && reuse_native.calls.empty(),
+            "two commands past their deadlines did not both expire without a setter");
+        check(!s.mailbox.pending && !s.mailbox.next_pending && !s.mailbox.failed && s.active && !s.quarantined && !s.reuse_barred,
+            "two expired commands cost the body its inbox or quarantined it");
+        // The ride goes on when the clock and the client tick move again.
+        t.f.step();
+        tick(t.f.base, t.f.client, true);
+        check(s.active && !s.retained && s.handle == t.f.handle, "the tick after the stall retired the body");
+        Sample after;
+        Command command;
+        std::uint64_t third{};
+        check(read(owner, t.f.handle, after).empty() && acknowledge(owner, t.f.handle, t.first).empty() &&
+            acknowledge(owner, t.f.handle, t.second).empty(), "two expired commands could not be acknowledged after the clock moved");
+        command.epoch = after.epoch;
+        check(submit(owner, t.f.handle, command, third).empty() && third == t.second + 1, "the ride could not go on after two expired commands");
+    }
+}
 
 template<class F> void run(const char* name, F function, unsigned expected_links = 0) {
     function();
@@ -1066,6 +1306,7 @@ int main() {
         run("service_shape_categories_opt_in_shape_bound_and_fenced", service_shape_categories_are_opt_in_shape_bound_and_fenced);
         run("service_named_actor_categories_reasons_and_hit_owners", service_named_actor_categories_reasons_and_hit_owners);
         run("submit_refusal_codes_preserve_command_state", submit_refusal_codes_preserve_command_state);
+        run("the_next_steps_command_queues_behind_a_pending_one_in_the_service", the_next_steps_command_queues_behind_a_pending_one_in_the_service);
         run("deferred_producer_initialization_without_allocation", deferred_initialization_stays_outside_create_and_service_lock, 1);
         run("prepare_cold_queues_only_deferred_setup", prepare_cold_queues_only_deferred_setup);
         run("prepare_deferred_failure_is_terminal_without_retry", prepare_deferred_failure_is_terminal_without_retry, 1);
@@ -1083,6 +1324,9 @@ int main() {
         run("a_failed_setter_bars_reuse_after_a_clean_park", a_failed_setter_bars_reuse_after_a_clean_park);
         run("a_body_parked_too_recently_is_pending_not_allocated", a_body_parked_too_recently_is_pending_not_allocated);
         run("reactivation_writes_hold_the_service_lock", reactivation_writes_hold_the_service_lock);
+        run("the_producer_applies_two_pending_commands_each_in_its_own_step", the_producer_applies_two_pending_commands_each_in_its_own_step);
+        run("a_faulting_setter_on_the_first_pending_command_rejects_the_second", a_faulting_setter_on_the_first_pending_command_rejects_the_second);
+        run("the_producer_expires_each_pending_command_by_its_own_deadline", the_producer_expires_each_pending_command_by_its_own_deadline);
         std::cout << cases << " actual-Service cases, " << checks << " checks passed; native mutations "
                   << test_facts::mutations.load() << '\n';
         return 0;

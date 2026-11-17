@@ -13,7 +13,11 @@
 #include <iterator>
 #include <format>
 
-// The main screen: background, name plate, tiles and the STATUS tile.
+// The main screen: the background with the wordmark over it, and down its right side everything
+// that is acted on: who is playing with the way into the settings beside them, and at its foot
+// MOD MANAGER and PLAY, which says whether it is ready. In the corner opposite PLAY, one tile says
+// where things stand: what the newest release changed; or how far ReSkate is with what it is doing;
+// or what needs the player or went wrong. Over it, a line for the team's announcement.
 namespace dingosdk::launcher_gui::detail {
 namespace {
 
@@ -122,9 +126,6 @@ void rough_rect(ImDrawList* draw, ImVec2 a, ImVec2 b, ImU32 colour, unsigned see
     skate_theme::rough_rect(draw, a, b, colour, seed, g_scale);
 }
 void scribble(ImDrawList* draw, ImVec2 a, ImVec2 b, unsigned seed) { skate_theme::scribble(draw, a, b, seed, g_scale); }
-void progress_bar(ImDrawList* draw, ImVec2 a, ImVec2 b, float fill, float time) {
-    skate_theme::striped_bar(draw, a, b, fill, time, g_scale);
-}
 
 // Loads the signed-in account's Steam picture for the plate, or drops it when Steam is closed or
 // signed out. Only re-decoded when the cached file changes.
@@ -146,30 +147,65 @@ void refresh_steam_avatar(Ui& ui) {
         ui.steam_avatar = g_renderer->upload_texture(pixels, width, height);
 }
 
-// Name plate in the top-left corner, like the HUB's player card.
-void draw_plate(ImDrawList* draw, const Fonts& fonts, ImVec2 position, const std::string& title, const std::string& version,
-                ImTextureID avatar) {
-    const float h = S(46);
-    const float text = std::max(fonts.bold->CalcTextSizeA(fonts.bold->FontSize, FLT_MAX, 0, title.c_str()).x,
-                                fonts.body->CalcTextSizeA(fonts.body->FontSize, FLT_MAX, 0, version.c_str()).x);
-    const float width = std::max(S(300), h + S(28) + text);
-    draw->AddRectFilled(ImVec2(position.x + h, position.y + S(3)), ImVec2(position.x + width, position.y + h - S(3)),
-        rgba(44, 47, 49, 0.94f));
-    if (avatar) {
-        // The player's Steam picture in the tile.
-        draw->AddImage(avatar, position, ImVec2(position.x + h, position.y + h));
+// The plate at the head of the right-hand column: one tile, cut like the others, with who is
+// playing (their Steam picture, a dot for being signed in, their name over the build this is) and,
+// past a line at its far end, the cog that opens the settings. Returns true when the cog was pressed.
+bool account_plate(ImDrawList* draw, const Fonts& fonts, ImVec2 position, ImVec2 size, const std::string& title,
+                   const std::string& version, ImTextureID avatar, bool enabled) {
+    const ImVec2 end(position.x + size.x, position.y + size.y);
+    rough_rect(draw, position, end, color::tile, 11);
+
+    // The settings: the plate's last square.
+    const float cog = size.y;
+    const ImVec2 cog_at(end.x - cog, position.y);
+    bool hovered{};
+    const bool pressed = tile_hit("##settings", cog_at, ImVec2(cog, cog), enabled, hovered);
+    if (hovered) {
+        draw->AddRectFilled(ImVec2(cog_at.x + S(1), position.y + S(4)), ImVec2(end.x - S(4), end.y - S(4)), color::tile_grey);
+        ImGui::SetTooltip("Settings");
+    }
+    draw->AddLine(ImVec2(cog_at.x, position.y + S(12)), ImVec2(cog_at.x, end.y - S(12)), rgba(255, 255, 255, 0.12f));
+    const ImVec2 centre(cog_at.x + cog * 0.5f, position.y + size.y * 0.5f);
+    const ImU32 ink = rgba(255, 255, 255, hovered ? 1.0f : 0.72f);
+    if (g_icon_settings.id) {
+        const float half = S(11);
+        draw->AddImage(g_icon_settings.id, ImVec2(centre.x - half, centre.y - half), ImVec2(centre.x + half, centre.y + half),
+            ImVec2(0, 0), ImVec2(1, 1), ink);
     } else {
-        draw->AddRectFilled(position, ImVec2(position.x + h, position.y + h), color::avatar);
-        // A small deck on the avatar tile.
-        const ImVec2 c(position.x + h * 0.5f, position.y + h * 0.5f);
+        // Without the picture: six teeth round a ring.
+        for (int tooth = 0; tooth < 6; ++tooth) {
+            const float angle = static_cast<float>(tooth) * 1.0471976f;
+            draw->AddLine(ImVec2(centre.x + std::cos(angle) * S(6), centre.y + std::sin(angle) * S(6)),
+                          ImVec2(centre.x + std::cos(angle) * S(10), centre.y + std::sin(angle) * S(10)), ink, S(5));
+        }
+        draw->AddCircle(centre, S(6), ink, 0, S(4));
+    }
+
+    // Who is playing: the picture set into the tile, the dot on its corner.
+    const float inset = S(8), picture = size.y - inset * 2;
+    const ImVec2 at(position.x + inset, position.y + inset), corner(at.x + picture, at.y + picture);
+    if (avatar) {
+        draw->AddImageRounded(avatar, at, corner, ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, S(4));
+    } else {
+        draw->AddRectFilled(at, corner, color::avatar, S(4));
+        // A small deck where the picture would be.
+        const ImVec2 c(at.x + picture * 0.5f, at.y + picture * 0.5f);
         const int start = draw->VtxBuffer.Size;
-        draw->AddRectFilled(ImVec2(c.x - S(15), c.y - S(5.5f)), ImVec2(c.x + S(15), c.y + S(5.5f)), color::text, S(5.5f));
-        for (const float x : {-9.0f, 9.0f}) draw->AddCircleFilled(ImVec2(c.x + S(x), c.y), S(1.8f), color::avatar);
+        draw->AddRectFilled(ImVec2(c.x - S(13), c.y - S(5)), ImVec2(c.x + S(13), c.y + S(5)), color::text, S(5));
+        for (const float x : {-8.0f, 8.0f}) draw->AddCircleFilled(ImVec2(c.x + S(x), c.y), S(1.6f), color::avatar);
         rotate_since(draw, start, -40.0f, c);
     }
-    draw->AddCircleFilled(ImVec2(position.x + S(3), position.y + S(3)), S(5), color::good);
-    draw->AddText(fonts.bold, fonts.bold->FontSize, ImVec2(position.x + h + S(12), position.y + S(5)), color::text, title.c_str());
-    draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(position.x + h + S(12), position.y + S(24)), color::muted, version.c_str());
+    draw->AddCircleFilled(ImVec2(corner.x - S(1), corner.y - S(1)), S(6.5f), color::tile);
+    draw->AddCircleFilled(ImVec2(corner.x - S(1), corner.y - S(1)), S(4.5f), color::good);
+
+    const float text_x = corner.x + S(14);
+    const float block = fonts.bold->FontSize + S(4) + fonts.body->FontSize;
+    const float y = position.y + (size.y - block) * 0.5f;
+    const ImVec4 clip(text_x, position.y, cog_at.x - S(10), end.y);
+    draw->AddText(fonts.bold, fonts.bold->FontSize, ImVec2(text_x, y), color::text, title.c_str(), nullptr, 0, &clip);
+    draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(text_x, y + fonts.bold->FontSize + S(4)), color::muted, version.c_str(),
+                  nullptr, 0, &clip);
+    return pressed;
 }
 
 // The big action tile: blue like skate.'s selected tile, grey and scribbled when locked.
@@ -194,40 +230,115 @@ bool action_tile(ImDrawList* draw, const Fonts& fonts, ImVec2 position, ImVec2 s
     return pressed;
 }
 
-bool settings_tile(ImDrawList* draw, const Fonts& fonts, ImVec2 position, ImVec2 size, bool enabled) {
-    bool hovered{};
-    const bool pressed = tile_hit("##settings", position, size, enabled, hovered);
-    const ImVec2 end(position.x + size.x, position.y + size.y);
-    rough_rect(draw, position, end, color::tile, 3);
-    if (hovered) draw->AddRect(ImVec2(position.x - S(3), position.y - S(3)), ImVec2(end.x + S(3), end.y + S(3)), color::text, 0, 0, S(3));
-    draw->AddText(fonts.tile, fonts.tile->FontSize, ImVec2(position.x + S(18), position.y + (size.y - fonts.tile->FontSize) * 0.5f),
-        color::text, "SETTINGS");
-    // Large faded wheel in the corner, like the icons on the HUB's tiles.
-    const ImVec2 centre(end.x - S(44), position.y + size.y * 0.5f);
-    if (tile_icon(draw, g_icon_settings, centre, S(58), hovered)) return pressed;
-    const ImU32 ink = rgba(255, 255, 255, hovered ? 0.55f : 0.3f);
-    for (int tooth = 0; tooth < 8; ++tooth) {
-        const float angle = static_cast<float>(tooth) * 0.7853982f;
-        draw->AddLine(ImVec2(centre.x + std::cos(angle) * S(14), centre.y + std::sin(angle) * S(14)),
-                      ImVec2(centre.x + std::cos(angle) * S(22), centre.y + std::sin(angle) * S(22)), ink, S(6));
-    }
-    draw->AddCircle(centre, S(15), ink, 0, S(4));
-    draw->AddCircle(centre, S(6), ink, 0, S(3));
-    return pressed;
-}
-
-// A small tile in the bottom-left corner: what each release changed.
-bool changelog_tile(ImDrawList* draw, const Fonts& fonts, ImVec2 position, ImVec2 size, bool enabled) {
+// The tile in the bottom-left corner: what the newest release changed, in its own words (its
+// first line, and what its first few notes lead with), so most never need to open it. It opens the
+// changelogs. Before the notes are here (or offline, where they are never fetched) it only says
+// where it goes.
+bool changelog_tile(ImDrawList* draw, const Fonts& fonts, ImVec2 position, ImVec2 size, bool enabled, const Changelog& log) {
     bool hovered{};
     const bool pressed = tile_hit("##changelog", position, size, enabled, hovered);
     const ImVec2 end(position.x + size.x, position.y + size.y);
     rough_rect(draw, position, end, hovered ? color::tile_grey : color::tile, 9);
+    draw->AddRectFilled(position, ImVec2(position.x + S(4), end.y), color::blue);
     if (hovered) draw->AddRect(ImVec2(position.x - S(3), position.y - S(3)), ImVec2(end.x + S(3), end.y + S(3)), color::text, 0, 0, S(3));
-    const char* label = "CHANGELOGS";
-    const auto extent = fonts.heading->CalcTextSizeA(fonts.heading->FontSize, FLT_MAX, 0, label);
-    draw->AddText(fonts.heading, fonts.heading->FontSize,
-        ImVec2(position.x + (size.x - extent.x) * 0.5f, position.y + (size.y - extent.y) * 0.5f), color::text, label);
+    const float pad = S(20), x = position.x + pad;
+    const ImVec4 clip(x, position.y, end.x - pad - S(34), end.y);
+    if (log.loaded && !log.notes.empty() && !log.texts.empty()) {
+        using Kind = thunderstore::ReadmeLine::Kind;
+        const auto& note = log.notes.front();
+        // Its first line that is more than the release's name, and what its first three notes lead with.
+        std::string headline, leads;
+        int counted = 0;
+        for (const auto& line : log.texts.front().lines) {
+            if (line.kind == Kind::text && headline.empty() && !line.text.empty() && line.text.find(note.tag) == std::string::npos)
+                headline = line.text;
+            if (line.kind == Kind::bullet && counted < 3) {
+                auto stop = line.text.find(". ");
+                auto lead = line.text.substr(0, stop);
+                if (!lead.empty() && lead.back() == '.') lead.pop_back();
+                leads += (leads.empty() ? "" : "   /   ") + lead;
+                ++counted;
+            }
+        }
+        if (headline.empty()) headline = note.title.empty() || note.title == note.tag ? "ReSkate " + note.tag : note.title;
+        const float pill = fonts.caption->FontSize + S(8);
+        const float block = pill + S(8) + fonts.heading->FontSize + (leads.empty() ? 0.0f : S(6) + fonts.body->FontSize);
+        float y = position.y + (size.y - block) * 0.5f;
+        badge(draw, fonts, ImVec2(x, y), "WHAT'S NEW IN " + note.tag, color::blue, color::ink);
+        y += pill + S(8);
+        draw->AddText(fonts.heading, fonts.heading->FontSize, ImVec2(x, y), color::text, headline.c_str(), nullptr, 0, &clip);
+        y += fonts.heading->FontSize + S(6);
+        if (!leads.empty()) draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(x, y), color::muted, leads.c_str(), nullptr, 0, &clip);
+    } else {
+        const float block = fonts.tile->FontSize + S(6) + fonts.body->FontSize;
+        const float y = position.y + (size.y - block) * 0.5f;
+        draw->AddText(fonts.tile, fonts.tile->FontSize, ImVec2(x, y), color::text, "WHAT'S NEW");
+        draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(x, y + fonts.tile->FontSize + S(6)), color::muted,
+                      log.loading ? "Reading what the newest release changed..." : "See what each release changed");
+    }
+    // An arrow at the far end: it goes somewhere.
+    const ImVec2 tip(end.x - pad, position.y + size.y * 0.5f);
+    const ImU32 ink = hovered ? color::text : color::muted;
+    draw->AddLine(ImVec2(tip.x - S(16), tip.y), tip, ink, S(2));
+    draw->AddLine(ImVec2(tip.x - S(6), tip.y - S(6)), tip, ink, S(2));
+    draw->AddLine(ImVec2(tip.x - S(6), tip.y + S(6)), tip, ink, S(2));
     return pressed;
+}
+
+// Whether ReSkate is at work on something that ends by itself: checking, updating, downloading the
+// game, merging the mods, starting Skate. (The STATUS tile is for what needs an answer.)
+bool working(Phase phase) {
+    return phase == Phase::checking || phase == Phase::updating || phase == Phase::downloading || phase == Phase::merging ||
+           phase == Phase::launching;
+}
+
+// While ReSkate is at work, in WHAT'S NEW's place (which nobody reads while they wait): what it is
+// doing, how far it is as a figure and as a bar across the whole tile, and under that the line of
+// detail (the file, the speed). With no figure to give, the bar runs from side to side.
+void progress_tile(ImDrawList* draw, const Fonts& fonts, const State& state, ImVec2 position, ImVec2 size, float time) {
+    const ImVec2 end(position.x + size.x, position.y + size.y);
+    rough_rect(draw, position, end, color::tile, 9);
+    draw->AddRectFilled(position, ImVec2(position.x + S(4), end.y), color::blue);
+    const float pad = S(20), x = position.x + pad, right = end.x - pad;
+    const bool known = state.progress >= 0;
+    const float fill = std::clamp(state.progress, 0.0f, 1.0f);
+
+    // What it is doing, and at the far end how far it is.
+    const auto figure = known ? std::format("{:.0f}%", fill * 100) : std::string();
+    const float figure_width = fonts.tile->CalcTextSizeA(fonts.tile->FontSize, FLT_MAX, 0, figure.c_str()).x;
+    const float top = position.y + S(16);
+    skate_theme::status_icon(draw, ImVec2(x + S(10), top + fonts.heading->FontSize * 0.5f), Icon::busy, time, g_scale);
+    const ImVec4 clip(x + S(28), position.y, right - figure_width - S(16), end.y);
+    draw->AddText(fonts.heading, fonts.heading->FontSize, ImVec2(x + S(28), top), color::text, state.status.c_str(), nullptr, 0, &clip);
+    if (known)
+        draw->AddText(fonts.tile, fonts.tile->FontSize, ImVec2(right - figure_width, top + (fonts.heading->FontSize - fonts.tile->FontSize) * 0.5f),
+                      color::text, figure.c_str());
+
+    // The bar: a dark groove, filled in blue with lighter stripes moving along it.
+    const float bar_tall = S(12);
+    const ImVec2 bar(x, top + fonts.heading->FontSize + S(14)), bar_end(right, bar.y + bar_tall);
+    draw->AddRectFilled(bar, bar_end, rgba(0, 0, 0, 0.55f), bar_tall * 0.5f);
+    const float across = bar_end.x - bar.x;
+    // (Without a figure: a third of the bar, going from one end to the other and back.)
+    const float from = known ? bar.x : bar.x + (across * 0.67f) * (0.5f - 0.5f * std::cos(time * 2.2f));
+    const float to = known ? bar.x + across * fill : from + across * 0.33f;
+    if (to - from > S(2)) {
+        draw->AddRectFilled(ImVec2(from, bar.y), ImVec2(to, bar_end.y), color::blue, bar_tall * 0.5f);
+        draw->PushClipRect(ImVec2(from + S(3), bar.y), ImVec2(to - S(3), bar_end.y), true);
+        const float step = S(22), slide = std::fmod(time * S(40), step);
+        for (float stripe = from - step * 2 + slide; stripe < to; stripe += step) {
+            const ImVec2 corners[]{ImVec2(stripe, bar_end.y), ImVec2(stripe + S(10), bar.y), ImVec2(stripe + S(19), bar.y),
+                                   ImVec2(stripe + S(9), bar_end.y)};
+            draw->AddConvexPolyFilled(corners, 4, rgba(255, 255, 255, 0.16f));
+        }
+        draw->PopClipRect();
+    }
+
+    // What it is on now, under the bar.
+    if (!state.detail.empty()) {
+        const ImVec4 line(x, position.y, right, end.y);
+        draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(x, bar_end.y + S(10)), color::muted, state.detail.c_str(), nullptr, 0, &line);
+    }
 }
 
 // The MODS tile, the biggest after PLAY: a mod browser nobody finds is no use.
@@ -271,108 +382,64 @@ bool mods_tile(ImDrawList* draw, const Fonts& fonts, ImVec2 position, ImVec2 siz
     return pressed;
 }
 
-// The STATUS tile: what ReSkate is doing, or what went wrong and what to do
-// about it. Laid out like the HUB's BOUNTIES tile, with the state in its edge.
-// Returns where the tile ends, so what goes under it starts there.
-float status_tile(const Fonts& fonts, const State& state, ImVec2 position, float width, float time,
-                  const fs::path& logs, bool modal) {
-    auto* draw = ImGui::GetWindowDrawList();
+// In WHAT'S NEW's place while something needs the player (the game is not installed or is out of
+// date, a ReSkate update is ready, mods were left out) or went wrong: what it is and what to do
+// about it, with the tile's edge in the warning colour, or red for a failure. PLAY, beside it,
+// is the answer (INSTALL, UPDATE, RETRY), so this only has to say why. A failure also gets the way
+// to the logs and to copy what happened, for whoever is asked to help. (It was a STATUS tile of
+// its own, up the left side of the picture, saying what PLAY and this corner already say.)
+void state_tile(ImDrawList* draw, const Fonts& fonts, const State& state, ImVec2 position, ImVec2 size, float time,
+                const fs::path& logs, bool modal) {
     const bool failed = state.phase == Phase::failed;
     const auto problem = failed ? launcher_problem::explain(state.status) : launcher_problem::Problem{};
     const std::string headline = failed ? problem.headline : state.status;
     const std::string detail = failed ? problem.advice : state.detail;
+    const ImVec2 end(position.x + size.x, position.y + size.y);
+    rough_rect(draw, position, end, color::tile, 9);
+    draw->AddRectFilled(position, ImVec2(position.x + S(4), end.y), failed ? color::danger : color::warning);
 
-    Icon icon = Icon::busy;
-    ImU32 accent = color::blue;
-    const char* pill = "WORKING";
-    switch (state.phase) {
-    case Phase::ready: icon = Icon::check; accent = color::good; pill = "READY"; break;
-    case Phase::failed: icon = Icon::fail; accent = color::danger; pill = "PROBLEM"; break;
-    case Phase::update_available:
-    case Phase::game_missing:
-    case Phase::game_outdated:
-    case Phase::mods_broken: icon = Icon::warning; accent = color::warning; pill = "ACTION NEEDED"; break;
-    default: break;
-    }
-
-    // The two things worth knowing at a glance, under the rule.
-    struct Fact { Icon icon; std::string text; };
-    std::vector<Fact> facts;
+    // The builds this is about: on hover, and in what Copy details copies.
+    std::string builds;
     if (state.config) {
-        const auto build = state.config->game.build_id.empty() ? state.config->game.manifest_id
-                                                               : state.config->game.build_id;
-        const bool game_ok = state.phase != Phase::game_missing && state.phase != Phase::game_outdated &&
-                             state.phase != Phase::downloading;
-        facts.push_back({game_ok ? Icon::check : Icon::warning, "skate. build " + build});
-        if (update::binary_updates_enabled())
-            facts.push_back({state.phase == Phase::update_available ? Icon::warning : Icon::check,
-                "ReSkate " + state.config->runtime.version});
+        builds = "skate. build " + (state.config->game.build_id.empty() ? state.config->game.manifest_id : state.config->game.build_id);
+        if (update::binary_updates_enabled()) builds += "\nReSkate " + state.config->runtime.version;
     }
 
-    const float pad = S(20), gutter = S(28);
-    const float text_x = position.x + pad + gutter;
-    const float text_width = width - pad * 2 - gutter;
-    const auto headline_size = fonts.heading->CalcTextSizeA(fonts.heading->FontSize, FLT_MAX, text_width, headline.c_str());
-    const auto detail_size = detail.empty() ? ImVec2(0, 0)
-        : fonts.body->CalcTextSizeA(fonts.body->FontSize, FLT_MAX, text_width, detail.c_str());
-
-    float height = S(64) + headline_size.y;
-    if (!detail.empty()) height += S(8) + detail_size.y;
-    if (failed) height += S(12) + S(30);
-    if (state.progress >= 0) height += S(22);
-    if (!facts.empty()) height += S(18) + static_cast<float>(facts.size()) * (fonts.body->FontSize + S(12));
-    height += facts.empty() ? S(20) : S(8);
-
-    const ImVec2 end(position.x + width, position.y + height);
-    rough_rect(draw, position, end, color::tile, 5);
-    // The state is readable before a word of it is: a coloured edge and a pill.
-    draw->AddRectFilled(position, ImVec2(position.x + S(4), end.y), accent);
-    draw->AddText(fonts.tile, fonts.tile->FontSize, ImVec2(position.x + pad, position.y + S(14)), color::text, "STATUS");
-    badge(draw, fonts, ImVec2(end.x - pad - badge_width(fonts, pill),
-        position.y + S(14) + (fonts.tile->FontSize - fonts.caption->FontSize - S(8)) * 0.5f), pill, accent, color::ink);
-
-    float y = position.y + S(64);
-    skate_theme::status_icon(draw, ImVec2(position.x + pad + S(10), y + fonts.heading->FontSize * 0.5f), icon, time, g_scale);
-    draw->AddText(fonts.heading, fonts.heading->FontSize, ImVec2(text_x, y), failed ? color::danger : color::text,
-        headline.c_str(), nullptr, text_width);
-    y += headline_size.y;
+    const float pad = S(20), button_width = S(124), button_tall = S(30);
+    const float buttons_x = end.x - pad - button_width;
+    const float text_x = position.x + pad + S(28), text_end = failed ? buttons_x - S(18) : end.x - pad;
+    const float line = fonts.body->FontSize + S(2);
+    const float detail_tall = detail.empty() ? 0.0f
+        : std::min(fonts.body->CalcTextSizeA(fonts.body->FontSize, FLT_MAX, text_end - text_x, detail.c_str()).y, line * 2);
+    const float block = fonts.heading->FontSize + (detail.empty() ? 0.0f : S(6) + detail_tall);
+    const float y = position.y + (size.y - block) * 0.5f;
+    skate_theme::status_icon(draw, ImVec2(position.x + pad + S(10), y + fonts.heading->FontSize * 0.5f), failed ? Icon::fail : Icon::warning,
+                             time, g_scale);
+    const ImVec4 clip(text_x, position.y, text_end, end.y);
+    draw->AddText(fonts.heading, fonts.heading->FontSize, ImVec2(text_x, y), failed ? color::danger : color::text, headline.c_str(), nullptr, 0,
+                  &clip);
     if (!detail.empty()) {
-        y += S(8);
-        draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(text_x, y), color::muted, detail.c_str(), nullptr,
-            text_width);
-        y += detail_size.y;
+        // Two lines of it at most: the rest is in the logs.
+        const float detail_y = y + fonts.heading->FontSize + S(6);
+        const ImVec4 lines(text_x, detail_y, text_end, detail_y + detail_tall);
+        draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(text_x, detail_y), color::muted, detail.c_str(), nullptr, text_end - text_x, &lines);
     }
+    bool over_buttons = false;
     if (failed) {
-        y += S(12);
+        const float top = position.y + (size.y - button_tall * 2 - S(8)) * 0.5f;
         ImGui::BeginDisabled(modal);
-        ImGui::SetCursorScreenPos(ImVec2(text_x, y));
-        if (ImGui::Button("Open logs", ImVec2(S(104), S(30)))) open_path(logs);
-        ImGui::SameLine(0, S(8));
-        if (ImGui::Button("Copy details", ImVec2(S(116), S(30)))) {
+        ImGui::SetCursorScreenPos(ImVec2(buttons_x, top));
+        if (ImGui::Button("Open logs", ImVec2(button_width, button_tall))) open_path(logs);
+        over_buttons |= ImGui::IsItemHovered();
+        ImGui::SetCursorScreenPos(ImVec2(buttons_x, top + button_tall + S(8)));
+        if (ImGui::Button("Copy details", ImVec2(button_width, button_tall))) {
             // The raw message, not the friendly one: this is for the Discord.
-            std::string report = "ReSkate launcher\n" + state.status + "\n";
-            for (const auto& fact : facts) report += fact.text + "\n";
-            ImGui::SetClipboardText(report.c_str());
+            ImGui::SetClipboardText(("ReSkate launcher\n" + state.status + "\n" + builds + "\n").c_str());
         }
+        over_buttons |= ImGui::IsItemHovered();
         ImGui::EndDisabled();
-        y += S(30);
     }
-    if (state.progress >= 0) {
-        progress_bar(draw, ImVec2(position.x + pad, y + S(6)), ImVec2(end.x - pad, y + S(18)), state.progress, time);
-        y += S(22);
-    }
-    if (!facts.empty()) {
-        y += S(10);
-        draw->AddLine(ImVec2(position.x + pad, y), ImVec2(end.x - pad, y), rgba(255, 255, 255, 0.09f), S(1));
-        y += S(8);
-        for (const auto& fact : facts) {
-            skate_theme::status_icon(draw, ImVec2(position.x + pad + S(10), y + fonts.body->FontSize * 0.5f),
-                fact.icon, time, g_scale);
-            draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(text_x, y), color::muted, fact.text.c_str());
-            y += fonts.body->FontSize + S(12);
-        }
-    }
-    return end.y;
+    if (!builds.empty() && !modal && !over_buttons && ImGui::IsMouseHoveringRect(position, end)) ImGui::SetTooltip("%s", builds.c_str());
 }
 
 // Reads the announcement in the background once it is due (as the launcher starts, then every ten
@@ -426,55 +493,110 @@ void refresh_announcement(Announcement& news, double time) {
     });
 }
 
-// The announcement, under STATUS and down to `bottom` at most: NEWS (or IMPORTANT, in the warning
-// colour), its title and text, the button to its link, and HIDE, which keeps this version hidden.
-// Its text scrolls when it is longer than the room.
-void announcement_card(Launcher& launcher, const Fonts& fonts, Ui& ui, ImVec2 position, float width, float bottom) {
-    auto& news = ui.announcement;
-    if (!news.shown || news.shown->version <= launcher.settings().announcement_hidden) return;
-    const auto& message = *news.shown;
-    const float pad = S(20);
-    const float text_x = position.x + pad, text_width = width - pad * 2;
-    const float title_y = position.y + S(54);
-    const float title_height = fonts.bold->CalcTextSizeA(fonts.bold->FontSize, FLT_MAX, text_width, message.title.c_str()).y;
-    const float link = message.link.empty() ? 0.0f : S(10) + S(32);
-    const float body_room = bottom - (title_y + title_height + S(8)) - link - pad;
-    if (body_room < S(24) && !news.text.lines.empty()) return;   // (no room: a window this small shows none)
+// The announcement there is to show: the one the backend has now. (It could be hidden, when it
+// was a card as tall as the picture; a line is not in anyone's way, and a notice someone hid
+// was a notice they then never saw change.)
+const Announcement::Message* announcement_to_show(const Ui& ui) {
+    const auto& news = ui.announcement;
+    return news.shown ? &*news.shown : nullptr;
+}
 
+// The announcement on the home screen: one line over the corner tile, NEWS (or IMPORTANT, in the
+// warning colour) and its title, which opens it in full (announcement_window). (It was a card
+// with all of its text, as tall as the picture.)
+void announcement_banner(const Fonts& fonts, Ui& ui, ImVec2 position, ImVec2 size, bool enabled) {
+    const auto* message = announcement_to_show(ui);
+    if (!message) return;
     auto* draw = ImGui::GetWindowDrawList();
-    draw->ChannelsSplit(2);
-    draw->ChannelsSetCurrent(1);
-    const ImU32 accent = message.important ? color::warning : color::blue;
-    draw->AddText(fonts.tile, fonts.tile->FontSize, ImVec2(text_x, position.y + S(14)), color::text,
-                  message.important ? "IMPORTANT" : "NEWS");
-    ImGui::SetCursorScreenPos(ImVec2(position.x + width - pad - S(64), position.y + S(12)));
-    if (ImGui::Button("HIDE##announcement", ImVec2(S(64), 0))) {
-        launcher.settings().announcement_hidden = message.version;
-        launcher.save();
+    const ImVec2 end(position.x + size.x, position.y + size.y);
+    bool hovered{};
+    if (tile_hit("##announcement", position, size, enabled, hovered)) ui.news = true;
+    rough_rect(draw, position, end, hovered ? color::tile_grey : color::tile, 13);
+    const ImU32 accent = message->important ? color::warning : color::blue;
+    draw->AddRectFilled(position, ImVec2(position.x + S(4), end.y), accent);
+    if (hovered) draw->AddRect(ImVec2(position.x - S(3), position.y - S(3)), ImVec2(end.x + S(3), end.y + S(3)), color::text, 0, 0, S(3));
+    const float pad = S(20), middle = position.y + size.y * 0.5f;
+    const std::string pill = message->important ? "IMPORTANT" : "NEWS";
+    const float pill_tall = fonts.caption->FontSize + S(8);
+    badge(draw, fonts, ImVec2(position.x + pad, middle - pill_tall * 0.5f), pill, accent, color::ink);
+    const float title_x = position.x + pad + badge_width(fonts, pill) + S(12);
+    const ImVec4 clip(title_x, position.y, end.x - pad - S(34), end.y);
+    draw->AddText(fonts.bold, fonts.bold->FontSize, ImVec2(title_x, middle - fonts.bold->FontSize * 0.5f), color::text, message->title.c_str(),
+                  nullptr, 0, &clip);
+    // An arrow at the far end, as on WHAT'S NEW under it: it opens.
+    const ImVec2 tip(end.x - pad, middle);
+    const ImU32 ink = hovered ? color::text : color::muted;
+    draw->AddLine(ImVec2(tip.x - S(16), tip.y), tip, ink, S(2));
+    draw->AddLine(ImVec2(tip.x - S(6), tip.y - S(6)), tip, ink, S(2));
+    draw->AddLine(ImVec2(tip.x - S(6), tip.y + S(6)), tip, ink, S(2));
+}
+
+// The announcement in full, over the home screen: a panel as tall as what it says, its edge in
+// the announcement's colour, with what kind it is, its title, its text set as the changelogs'
+// notes are, and at its foot the button to its link.
+void announcement_window(const Fonts& fonts, ImVec2 size, Ui& ui) {
+    const auto* message = announcement_to_show(ui);
+    if (!message) {
+        ui.news = false;
+        return;
     }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Hide this announcement. The next one shows when it is posted.");
-    draw->AddText(fonts.bold, fonts.bold->FontSize, ImVec2(text_x, title_y), color::text, message.title.c_str(), nullptr, text_width);
-    float end = title_y + title_height;
-    if (!news.text.lines.empty()) {
-        ImGui::SetCursorScreenPos(ImVec2(text_x, end + S(8)));
-        ImGui::SetNextWindowSizeConstraints(ImVec2(0, 0), ImVec2(FLT_MAX, body_room));
-        ImGui::BeginChild("##announcement_text", ImVec2(text_width, 0), ImGuiChildFlags_AutoResizeY, ImGuiWindowFlags_NoBackground);
-        draw_readme(fonts, news.text);
-        ImGui::EndChild();
-        end = ImGui::GetItemRectMax().y;
+    // How tall it came to the last time it was drawn (its text is wrapped, so only drawing it
+    // says): the panel is that tall, up to what the window has room for, where its text scrolls.
+    static float wanted = 0;
+    static std::uint64_t wanted_for = 0;
+    if (wanted_for != message->version) {
+        wanted_for = message->version;
+        wanted = 0;
     }
-    if (!message.link.empty()) {
-        ImGui::SetCursorScreenPos(ImVec2(text_x, end + S(10)));
+    const float most = size.y - S(80);
+    const auto panel = begin_panel("##announcement_panel", size,
+        ImVec2(std::min(S(640), size.x - S(120)), std::clamp(wanted > 0 ? wanted : S(420), S(220), most)));
+    auto* draw = ImGui::GetWindowDrawList();
+    const ImU32 accent = message->important ? color::warning : color::blue;
+    const ImVec2 corner = ImGui::GetWindowPos();
+    draw->AddRectFilled(corner, ImVec2(corner.x + S(5), corner.y + panel.y), accent);
+
+    // What kind it is, over its title.
+    const std::string pill = message->important ? "IMPORTANT" : "NEWS";
+    badge(draw, fonts, ImGui::GetCursorScreenPos(), pill, accent, color::ink);
+    ImGui::Dummy(ImVec2(0, fonts.caption->FontSize + S(8) + S(4)));
+    ImGui::PushTextWrapPos(0);
+    ImGui::PushFont(fonts.tile);
+    ImGui::TextUnformatted(message->title.c_str());
+    ImGui::PopFont();
+    ImGui::PopTextWrapPos();
+    ImGui::Dummy(ImVec2(0, S(4)));
+    {
+        const ImVec2 line = ImGui::GetCursorScreenPos();
+        draw->AddLine(line, ImVec2(line.x + ImGui::GetContentRegionAvail().x, line.y), color::outline);
+    }
+    ImGui::Dummy(ImVec2(0, S(8)));
+
+    const float footer = ImGui::GetFrameHeight() + S(24) + S(14);
+    const float body_top = ImGui::GetCursorPosY();
+    ImGui::BeginChild("##announcement_body", ImVec2(0, std::max(S(40), panel.y - body_top - footer)), ImGuiChildFlags_NavFlattened);
+    if (ui.announcement.text.lines.empty()) ImGui::TextDisabled("There is no more to it than its title.");
+    else draw_notes(fonts, ui.announcement.text, {}, false);
+    const float body = ImGui::GetCursorPosY();
+    ImGui::EndChild();
+    wanted = body_top + body + S(6) + footer;
+
+    ImGui::SetCursorPosY(panel.y - S(24) - ImGui::GetFrameHeight());
+    bool close = false;
+    if (!message->link.empty()) {
         push_primary_button();
-        if (ImGui::Button((message.link_label + "##announcement_link").c_str(), ImVec2(0, S(32)))) open_url(message.link);
+        if (ImGui::Button((message->link_label + "##announcement_link").c_str())) open_url(message->link);
         pop_primary_button();
-        end = ImGui::GetItemRectMax().y;
+        ImGui::SameLine();
     }
-    const ImVec2 corner(position.x + width, end + pad);
-    draw->ChannelsSetCurrent(0);
-    rough_rect(draw, position, corner, color::tile, 7);
-    draw->AddRectFilled(position, ImVec2(position.x + S(4), corner.y), accent);
-    draw->ChannelsMerge();
+    ImGui::SetCursorPosX(panel.x - S(28) - S(110));
+    // (Blue when there is no link to be that: the panel's one thing to press.)
+    if (message->link.empty()) push_primary_button();
+    close |= ImGui::Button("CLOSE", ImVec2(S(110), 0));
+    if (message->link.empty()) pop_primary_button();
+    default_focus();
+    if (close || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) ui.news = false;
+    ImGui::End();
 }
 
 } // namespace
@@ -519,10 +641,13 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
     check_legal_versions(ui, launcher.settings());
     // The team's announcement for the home screen (offline: none is read).
     if (!launcher.settings().offline) refresh_announcement(ui.announcement, time);
+    // And what the releases changed, for WHAT'S NEW and the changelogs.
+    ui.notes.prereleases = launcher.settings().prereleases;
+    if (!launcher.settings().offline) pump_changelog(ui.notes);
     // A mod dropped on the window opens the Mods panel and installs it.
     {
         std::lock_guard lock(g_dropped_mutex);
-        if (!g_dropped.empty() && !ui.settings && !ui.sign_in && !qr_open && !state.prompt && !mods_panel.installing) {
+        if (!g_dropped.empty() && !ui.settings && !ui.sign_in && !qr_open && !state.prompt) {
             ui.mods = true;
             mods_panel.tab = 0;
             if (!mods_panel.scanned) scan(mods_panel, launcher.session());
@@ -541,7 +666,7 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
             ui.steam_offline = !launcher.settings().offline && !launcher_app::steam_signed_in();
         }
     }
-    const bool modal = ui.settings || ui.changelog || ui.legal.open >= 0 || ui.legal.agreement || ui.mods || ui.sign_in || qr_open || state.prompt.has_value() ||
+    const bool modal = ui.settings || ui.changelog || ui.news || ui.legal.open >= 0 || ui.legal.agreement || ui.mods || ui.sign_in || qr_open || state.prompt.has_value() ||
         ui.steam_offline || state.phase == Phase::mods_broken || ui.mods_update_prompt;
 
     ImGui::SetNextWindowPos(ImVec2(0, 0));
@@ -559,21 +684,20 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
     if (update::binary_updates_enabled() && state.config && !state.config->launcher.version.empty())
         version = "Launcher " + state.config->launcher.version;
     const bool greet = !launcher.settings().offline && !ui.steam_name.empty();
-    draw_plate(draw, fonts, ImVec2(S(50), S(40)), greet ? "Welcome, " + ui.steam_name : std::string("ReSkate"), version,
-        launcher.settings().offline ? ImTextureID{} : ui.steam_avatar);
-    page_title(draw, fonts, ImVec2(S(52), S(88)), "RESKATE");
+    // Down the right side, over the picture, from the foot up: PLAY and MOD MANAGER; and at its
+    // head, who is playing, with the settings' wheel.
+    const float column = S(360), gap = S(14), margin = S(64);
+    const float column_x = size.x - margin - column;
+    const ImVec2 primary_size(column, S(150));
+    const ImVec2 primary(column_x, size.y - S(56) - primary_size.y);
+    const ImVec2 mods_size(column, S(116));
+    const ImVec2 mods_position(primary.x, primary.y - gap - mods_size.y);
+    const ImVec2 plate(column_x, S(52)), plate_size(column, S(58));
+    page_title(draw, fonts, ImVec2(S(56), S(46)), "RESKATE");
 
     window_buttons(draw, window, size);
 
     ImGui::BeginDisabled(modal);
-    const float column = S(360);
-    const ImVec2 primary_size(column, S(160));
-    const ImVec2 primary(size.x - S(64) - column, size.y - S(56) - primary_size.y);
-    // MODS sits directly under PLAY, where the eye already is, and is taller
-    // than SETTINGS so it reads as a place to go rather than a toggle.
-    const ImVec2 mods_size(column, S(116));
-    const ImVec2 mods_position(primary.x, primary.y - S(14) - mods_size.y);
-    const ImVec2 settings(primary.x, mods_position.y - S(14) - S(84));
     const char* label = "PLAY";
     std::string detail;
     bool enabled = !launcher.busy();
@@ -593,10 +717,27 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
     case Phase::ready:
         label = "PLAY";
         // Release builds install the configured runtime before PLAY appears.
-        detail = !state.config ? std::string("Offline")
-               : !update::binary_updates_enabled() ? std::string("ReSkate development build")
-               : state.config->runtime.version.empty() ? std::string("ReSkate")
-               : "ReSkate " + state.config->runtime.version;
+        // That it is ready, and what pressing it starts: the map Skate opens in and how many mods
+        // load. (The STATUS tile, which said it was ready, shows only while there is more to say.)
+        {
+            std::string map = "San Vansterdam";
+            if (const auto& chosen = launcher.settings().start_map; !chosen.empty()) {
+                const auto* known = ui.start_maps ? launcher_start_maps::find_start_map(*ui.start_maps, chosen) : nullptr;
+                map = known ? known->name : std::string();
+            }
+            const auto mods_text = ui.mods_enabled == 1 ? std::string("1 mod") : std::format("{} mods", ui.mods_enabled);
+            detail = !state.config ? std::string("Ready   /   Offline")
+                   : map.empty() ? (ui.mods_enabled ? "Ready   /   " + mods_text : std::string("Ready"))
+                   : ui.mods_enabled ? "Ready   /   " + map + " with " + mods_text : "Ready   /   " + map;
+        }
+        // Not while mods are still coming in: Skate would start on a Mods folder half written.
+        if (mods_panel.installing) {
+            enabled = false;
+            detail = "Waiting for your mods to finish installing";
+        } else if (mods_panel.removal.busy) {
+            enabled = false;
+            detail = "Waiting for your mods to finish uninstalling";
+        }
         break;
     case Phase::launching: label = "LAUNCHING"; enabled = false; break;
     case Phase::failed: label = "RETRY"; break;
@@ -623,7 +764,8 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
     if (action_tile(draw, fonts, primary, primary_size, label, detail, enabled && !modal, secondary, play_mark)) act();
     // A controller starts on PLAY.
     if (!modal) default_focus();
-    if (settings_tile(draw, fonts, settings, ImVec2(column, S(84)), !modal)) ui.settings = true;
+    if (account_plate(draw, fonts, plate, plate_size, greet ? "Welcome, " + ui.steam_name : std::string("ReSkate"), version,
+            launcher.settings().offline ? ImTextureID{} : ui.steam_avatar, !modal)) ui.settings = true;
     if (time - ui.mods_checked > 5 && !ui.mods) {
         std::size_t enabled_mods = 0, installed = 0;
         const auto list = mods::scan_mods(launcher_mods::mods_root(launcher.session().paths.directory).parent_path());
@@ -644,6 +786,7 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
         }
         const auto pending = updates(mods_panel.store, installed_versions(list, true)).size();
         ui.mods_pending = pending;
+        ui.mods_enabled = enabled_mods;
         ui.mods_mark_bad = !dropped.empty();
         ui.mods_mark = !dropped.empty() ? std::string("NOT LOADED")
                      : pending == 1 ? std::string("1 UPDATE")
@@ -660,19 +803,29 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
         mods_panel.scanned = false;
     }
 
-    // Level with PLAY's bottom edge, in the opposite corner.
-    const ImVec2 changelog_size(S(200), S(52));
-    if (changelog_tile(draw, fonts, ImVec2(S(60), size.y - S(56) - changelog_size.y), changelog_size, !modal))
-        ui.changelog = true;
+    // Level with PLAY's bottom edge, in the opposite corner, and as wide as the room up to the column allows.
+    const float left = S(60), left_width = std::min(S(880), column_x - left - S(48));
+    const ImVec2 changelog_size(left_width, S(104));
+    const ImVec2 changelog_position(left, size.y - S(56) - changelog_size.y);
+    // While ReSkate is at work, how far it is takes WHAT'S NEW's place; and so does what needs
+    // the player or went wrong, while anything does.
+    if (working(state.phase)) progress_tile(draw, fonts, state, changelog_position, changelog_size, time);
+    else if (state.phase != Phase::ready)
+        state_tile(draw, fonts, state, changelog_position, changelog_size, time, launcher.session().paths.logs, modal);
+    else if (changelog_tile(draw, fonts, changelog_position, changelog_size, !modal, ui.notes)) ui.changelog = true;
+    // Over it, the announcement, as a line.
+    const ImVec2 banner_size(left_width, S(46));
+    announcement_banner(fonts, ui, ImVec2(left, changelog_position.y - S(12) - banner_size.y), banner_size, !modal);
+    // An important one opens itself the first time it is here, so it is seen once; a line after that.
+    if (const auto* message = announcement_to_show(ui);
+        message && message->important && message->version > launcher.settings().announcement_opened && !modal) {
+        launcher.settings().announcement_opened = message->version;
+        launcher.save();
+        ui.news = true;
+    }
 
     if (enabled && !secondary && !modal &&
         (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false))) act();
-    ImGui::EndDisabled();
-
-    const float status_end = status_tile(fonts, state, ImVec2(S(60), S(200)), S(430), time, launcher.session().paths.logs, modal);
-    // Under it, down to the changelog's top: the announcement.
-    ImGui::BeginDisabled(modal);
-    announcement_card(launcher, fonts, ui, ImVec2(S(60), status_end + S(16)), S(430), size.y - S(56) - changelog_size.y - S(16));
     ImGui::EndDisabled();
 
     if (modal) draw->AddRectFilled(ImVec2(0, 0), size, rgba(4, 6, 9, 0.72f));
@@ -688,10 +841,9 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
     else if (ui.legal.open >= 0) legal_window(fonts, size, ui);
     else if (ui.legal.agreement) legal_agreement_window(launcher, fonts, size, ui, window);
     else if (ui.settings) settings_window(launcher, fonts, size, ui, window);
-    else if (ui.changelog) {
-        ui.notes.prereleases = launcher.settings().prereleases;
-        changelog_window(fonts, size, ui);
-    }
+    else if (ui.news) announcement_window(fonts, size, ui);
+    else if (ui.changelog)
+        changelog_window(fonts, size, ui, update::binary_updates_enabled() && state.config ? state.config->runtime.version : std::string());
     else if (ui.mods) mods_window(launcher, fonts, size, ui, mods_panel, window);
     else if (state.phase == Phase::mods_broken)
         mods_broken_window(launcher, fonts, size, ui, mods_panel, state.mod_problems);

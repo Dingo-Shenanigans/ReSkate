@@ -42,6 +42,19 @@ bool try_set_plugin_cruise(float speed, bool may_slow) noexcept;
 void set_plugin_velocity(const std::array<float, 3>& velocity, bool add) noexcept;
 // Internal result-bearing adapters preserve actual motion-ownership refusal.
 bool try_set_plugin_velocity(const std::array<float, 3>& velocity, bool add) noexcept;
+// A plugin flying the skater it holds (reskate.skater.fly): while noclip is on, each physics step gives
+// the skater this velocity (m/s, in the world) in place of the flight keys', for the next 300 ms, so
+// it is set every tick. `on` false lets go of it at once (the skater hovers, as held).
+void set_plugin_flight(const std::array<float, 3>& velocity, bool on) noexcept;
+// Noclip as a plugin's hold of the skater (reskate.skater.freeze), while `held`: it needs no camera
+// of its own (nothing flies it by the view), so it starts and goes on beside the free camera a
+// plugin's own view is, and neither ends the other. Seen in the game's log on 2026-11-16: with a
+// plugin's view up, every hold was refused ("Noclip needs the normal player camera"), taking the
+// view ended a hold already on, and starting a hold gave the view back; a plugin doing both each
+// tick had them switching each other off.
+void set_noclip_hold(bool held) noexcept;
+// Noclip is on now (read without the lock: for asking again, not for deciding anything exact).
+bool noclip_active() noexcept;
 // Trainer: gravity in the air on the board as a multiple of the game's own (1 leaves the skater alone). Publish every
 // client tick: it expires after 500 ms. `air_gravity_steps` counts the physics steps it acted on.
 // landing: the gravity the game plans landings with, as a multiple of its own (0: the same as factor). timing: 0 the game's

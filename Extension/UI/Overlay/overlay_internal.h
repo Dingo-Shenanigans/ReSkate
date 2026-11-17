@@ -119,6 +119,9 @@ struct State {
     std::atomic<long> look_mouse_x{0}, look_mouse_y{0}, look_wheel_raw{0}, look_wheel_message{0};
     std::atomic<unsigned> raw_mouse_buttons{0}; // physical: 1 left, 2 right, 4 middle
     std::atomic<ULONGLONG> raw_mouse_time{0};
+    // A plugin holds the pointer in the window (read_mouse_look's hold) until this tick count: the
+    // window shows no pointer while it does.
+    std::atomic<ULONGLONG> pointer_held_until{0};
     // The mouse registration in effect has RIDEV_NOLEGACY: Windows does not
     // move the cursor, so the overlay moves it from raw input while it owns it.
     std::atomic<bool> mouse_legacy_blocked{false};
@@ -385,6 +388,12 @@ std::optional<PluginImageUpload> take_plugin_image();
 // id 0: it failed; `later`: the slot was busy, so it waits for another frame.
 void plugin_image_uploaded(const std::string& path, int slot, ImTextureID id, bool later = false);
 void plugin_images_lost();
+// A picture made in memory instead of read from a file (the game's map, game_map.cpp), kept and
+// sent to the GPU with the plugins' own under a name no file has; given again, it takes the place
+// of the one before. False when there is no room. plugin_pixels_id: its id once it is on the GPU
+// (0 until then, and when it has been let go), counted as drawn.
+bool plugin_pixels(const std::string& key, CardPixels pixels);
+ImTextureID plugin_pixels_id(const std::string& key);
 // Thunderstore packages' icons for the pause menu's Mod Manager page (store_icons.cpp), the same way,
 // by their URL, in the SRV heap's slots from store_icon_first_slot on.
 inline constexpr UINT store_icon_first_slot = screen_look_slot + screen_look_slots, store_icon_slots = 64;
@@ -455,4 +464,11 @@ bool draw_home_page(ImDrawList* draw, float u, ImVec2 a, ImVec2 z, bool input, c
 // tab, the Mod Manager's UPDATES.
 void show_friends_tab();
 void show_mod_updates();
+// The pause menu's optional parts, on unless the player turned them off (saved with the profile:
+// "HubFrontPage", "ModManagerBackdrop"): ReSkate's front page over the HUB, and skate.'s Store room
+// behind the Mod Manager. Render thread.
+bool hub_front_page_on();
+void set_hub_front_page_on(bool on);
+bool mod_backdrop_on();
+void set_mod_backdrop_on(bool on);
 }

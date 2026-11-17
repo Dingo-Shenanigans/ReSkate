@@ -2,6 +2,7 @@
 #include "Extension/AnimationStudio/pose_math.h"
 #include <algorithm>
 #include <cmath>
+#include <vector>
 
 namespace dingosdk::carry {
 namespace {
@@ -88,6 +89,8 @@ struct One {
     // The front reached for where it is (no holding it out in front and below the shoulder): the
     // supporting hand's reach.
     bool free{};
+    // Held where it is asked for (the caller's own sweep), not where the aim puts it.
+    bool exact{};
 };
 
 // One arm holding the item (its upper arm and forearm, and the hand when it is worn).
@@ -105,7 +108,7 @@ Held hold_one(std::span<Joint> pose, const One& goal) noexcept {
     // head or tucked against the body would fold the arm up into the face).
     Vec3 front = goal.front;
     float to_own_side = 0.0f;
-    if (!goal.free) {
+    if (!goal.free && !goal.exact) {
         const Vec3 ahead = level_heading(aim);
         const float out = dot(sub(front, s), ahead);
         // Toward the holding hand's own side the arm would stretch across to its full length: it comes
@@ -144,7 +147,10 @@ Held hold_one(std::span<Joint> pose, const One& goal) noexcept {
         const float out_min = (0.24f - 0.06f * up_part) * (1.0f - 0.35f * to_own_side);
         const float out_now = dot(sub(palm_goal, s), forward);
         if (out_now < out_min) palm_goal = add(palm_goal, scaled(forward, out_min - out_now));
-        const float top = s[1] + 0.04f + 0.22f * up_part + side_lift * to_own_side;
+        // (Held where asked (exact), aimed up, the hand may go up in front of the face, as a phone is held
+        // up to film the sky; the aim's own sweep keeps it lower, so the arm never folds up over the shoulder.)
+        const float up_reach = goal.exact ? 0.6f : 0.22f;
+        const float top = s[1] + 0.04f + up_reach * up_part + side_lift * to_own_side;
         if (palm_goal[1] > top) palm_goal[1] = top;
     }
     {
@@ -336,9 +342,129 @@ bool hunch(std::span<Joint> pose, const Vec3& toward, float angle, float look, f
     return true;
 }
 
+namespace {
+// The way the face looks out of the head, in the head joint's own frame. The skeleton has no joint that points
+// where the face looks, so it is measured from the face itself: the face's joints (the leaves under joint 107,
+// not the chain at 255) lie over the front of the head, so from the head to the middle of them, square to the
+// neck, is the way it looks.
+constexpr std::uint16_t face_root = 107, face_first = 108, face_last = 254;
+// The face is fixed in the head, so a way measured once holds for every pose after. Kept, because in some of
+// the game's poses (riding) the face's joints are not posed: all at one point, nothing to measure.
+std::optional<Vec3>& measured_face() {
+    static std::optional<Vec3> face;
+    return face;
+}
+std::optional<Vec3> face_in_head(std::span<const Joint> pose) {
+    std::array<Placed, head_chain.size()> w{};
+    if (!compose(pose, head_chain, w)) return std::nullopt;
+    const Placed& head = w.back();
+    const Vec3 up = unit(sub(head.position, w[w.size() - 2].position), {0, 1, 0});
+    if (pose.size() > face_last) {
+        const Joint& root = pose[face_root];
+        const Vec3 root_at = add(head.position, scaled(rotate(head.rotation, root.position), head.scale));
+        const Quat root_turn = normalised(multiply(head.rotation, root.rotation));
+        std::vector<Vec3> points;
+        points.reserve(face_last - face_first + 1);
+        Vec3 sum{};
+        for (std::uint16_t j = face_first; j <= face_last; ++j) {
+            const Vec3 at = add(root_at, scaled(rotate(root_turn, pose[j].position), head.scale * root.scale[0]));
+            if (!finite(at)) continue;
+            points.push_back(at);
+            sum = add(sum, at);
+        }
+        if (points.size() >= 20) {
+            const Vec3 middle = scaled(sum, 1.0f / static_cast<float>(points.size()));
+            // (A face, spread over the front of the head: not the joints all at one point, unposed.)
+            float spread = 0.0f;
+            for (const auto& at : points) spread = std::max(spread, length(sub(at, middle)));
+            Vec3 forward = sub(middle, head.position);
+            forward = sub(forward, scaled(up, dot(forward, up)));
+            if (spread > 0.02f && length(forward) > 0.01f) {
+                const Vec3 face = unit(rotate(conjugate(head.rotation), forward), {0, 0, 1});
+                measured_face() = face;
+                return face;
+            }
+        }
+    }
+    if (measured_face()) return measured_face();
+    // Never measured yet: from the head as the skeleton stands. Standing, it looks a quarter turn to the left
+    // of the way the hips face (seen in the game: aimed by the hips' way, the head looked fully left of the
+    // point), so that way turned a quarter round, about the neck.
+    std::vector<Joint> standing(pose.begin(), pose.end());
+    for (std::size_t i = 0; i < back_joints.size(); ++i) standing[back_joints[i]].rotation = standing_back[i];
+    if (!compose(standing, head_chain, w)) return std::nullopt;
+    const Quat standing_head = w.back().rotation;
+    const Vec3 neck_up = unit(sub(w.back().position, w[w.size() - 2].position), {0, 1, 0});
+    const Vec3 hips_way = body_facing(standing);
+    const Vec3 left = unit(cross(neck_up, hips_way), hips_way);
+    return unit(rotate(conjugate(standing_head), left), {0, 0, 1});
+}
+// The neck and head turned (Neck, Neck1, Head, a share each, then the head the last of the way) so `face` (in
+// the head's frame) looks at `point`, `weight` of the way. Never further round than a neck turns: about 100
+// degrees either side of the way the hips face (not of where the animation has the head: riding, that is
+// already turned toward the board's nose).
+void look_toward(std::span<Joint> pose, const Vec3& face, const Vec3& point, float weight) {
+    constexpr std::array<float, 3> share{0.3f, 0.25f, 0.45f};
+    constexpr float most_round = 1.75f; // radians either side of the hips' way
+    const float k = std::clamp(weight, 0.0f, 1.0f);
+    const Vec3 hips_way = body_facing(pose);
+    std::array<Placed, head_chain.size()> w{};
+    // The way to look, held within the neck's reach of the hips' way (its height kept).
+    const auto wanted = [&](const Vec3& from) {
+        Vec3 to = unit(sub(point, from), hips_way);
+        Vec3 level{to[0], 0.0f, to[2]};
+        const float flat = length(level);
+        if (flat < 1e-3f) return to;
+        level = scaled(level, 1.0f / flat);
+        const float round = std::atan2(dot(cross(hips_way, level), {0.0f, 1.0f, 0.0f}), dot(hips_way, level));
+        if (std::abs(round) <= most_round) return to;
+        const Vec3 held = rotate(about_up(std::copysign(most_round, round)), hips_way);
+        return unit(add(scaled(held, flat), Vec3{0.0f, to[1], 0.0f}), to);
+    };
+    // The turn as an axis and an angle, so each joint's share is exactly its share of it.
+    const auto turn_of = [&](float& angle) {
+        const Vec3 now = rotate(w.back().rotation, face);
+        const Quat q = arc(now, wanted(w.back().position));
+        const float s = std::sqrt(q[0] * q[0] + q[1] * q[1] + q[2] * q[2]);
+        angle = 2.0f * std::atan2(s, q[3]);
+        return s > 1e-6f ? Vec3{q[0] / s, q[1] / s, q[2] / s} : Vec3{0, 1, 0};
+    };
+    if (!compose(pose, head_chain, w)) return;
+    float angle = 0.0f;
+    const Vec3 axis = turn_of(angle);
+    for (std::size_t i = 0; i < share.size(); ++i) {
+        if (!compose(pose, head_chain, w)) return;
+        const std::size_t at = 7 + i; // Neck, Neck1, Head in head_chain
+        const Quat world = normalised(multiply(anim_studio::axis_angle(axis, angle * share[i] * k), w[at].rotation));
+        pose[head_chain[at]].rotation = local_of(w[at - 1], world);
+    }
+    // (The neck turns the head about itself, so it ends a little off the point: the head takes the rest.)
+    if (k < 0.999f || !compose(pose, head_chain, w)) return;
+    float rest = 0.0f;
+    const Vec3 rest_axis = turn_of(rest);
+    if (rest > 1e-3f) {
+        const std::size_t at = head_chain.size() - 1;
+        const Quat world = normalised(multiply(anim_studio::axis_angle(rest_axis, rest), w[at].rotation));
+        pose[head_chain[at]].rotation = local_of(w[at - 1], world);
+    }
+}
+}
+
 Held carry(std::span<Joint> pose, const Goal& goal) noexcept {
     if (pose.size() <= 343 || !finite(goal.front) || !finite(goal.aim) || !finite(goal.front_from_grip)) return {};
     const float body_weight = std::clamp(goal.weight, 0.0f, 1.0f);
+    // (The face's way in the head, read from the pose as the animation has it, before the body is bent.)
+    std::optional<Vec3> face;
+    if (goal.look_at && finite(*goal.look_at)) face = face_in_head(pose);
+    // (The point moves with the item: held short of `at` (out of reach, kept out of the body), the face looks
+    // where the item really is, not where it was asked to be.)
+    const auto looked = [&](Held held) {
+        if (face && held.valid) {
+            const Vec3 point = goal.exact ? add(*goal.look_at, sub(held.front, goal.front)) : *goal.look_at;
+            look_toward(pose, *face, point, body_weight);
+        }
+        return held;
+    };
     if (std::abs(goal.turn) > 1e-4f && std::isfinite(goal.turn)) {
         // The whole body turned round the upright through the hips: the hips (everything hangs from
         // them) turned in place.
@@ -411,11 +537,14 @@ Held carry(std::span<Joint> pose, const Goal& goal) noexcept {
     first.front_from_grip = goal.front_from_grip;
     first.worn = goal.worn;
     first.weight = goal.weight;
+    first.exact = goal.exact;
     const auto held = hold_one(pose, first);
-    if (!held.valid || !goal.both) return held;
+    if (!held.valid || !goal.both) return looked(held);
     // The other hand to its side, underneath, where the first one put it.
     Vec3 support = support_from_grip;
     if (goal.hand == Hand::left) support[0] = -support[0];
+    // (Moved by the caller: that fixed place suits one item's shape, and a hand on another sits elsewhere.)
+    support = add(support, goal.support);
     const Vec3 point = add(held.item.position, rotate(held.item.rotation, support));
     One other;
     other.hand = goal.hand == Hand::left ? Hand::right : Hand::left;
@@ -424,7 +553,7 @@ Held carry(std::span<Joint> pose, const Goal& goal) noexcept {
     other.free = true;
     other.front = point; // (front_from_grip 0: its grip goes to `point`)
     (void)hold_one(pose, other);
-    return held;
+    return looked(held);
 }
 
 float pushing(std::span<const Joint> pose) noexcept {

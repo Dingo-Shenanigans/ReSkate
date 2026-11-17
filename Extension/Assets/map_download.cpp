@@ -7,6 +7,7 @@
 #include "Engine/Vfs/thunderstore_package.h"
 #include "Extension/Multiplayer/Net/protocol.h"
 #include "Extension/Multiplayer/Session/monotonic_clock.h"
+#include "Extension/Plugins/plugin_server_scope.h"
 #include "Extension/UI/Overlay/overlay.h"
 #include "Launcher/mod_manager.h"
 #include <Windows.h>
@@ -43,6 +44,7 @@ struct Item {
     std::string icon;       // its icon's URL on Thunderstore, for its row on the card
     std::uint64_t bytes{};  // the zip's Content-Length (0: not known)
     bool off{};             // here already, switched off: nothing is downloaded
+    bool was_on{};          // a plugin: here and switched on already, at an older version (the player's own)
     bool merge{};           // once it is in: it has game data, which the live merge applies
 };
 
@@ -372,6 +374,7 @@ bool check_plugin(Item& item, bool first, bool& ready) {
             return true;
         }
         // Here at an older version (or not as a plugin): the new one goes in its place.
+        item.was_on = here->enabled && here->mod.provides_plugin;
         item.have = here->mod.version.empty() ? std::string("an older version") : here->mod.version;
     }
     https::Download result;
@@ -549,6 +552,11 @@ void fetch() {
             }
             if (!continuing()) return;
             if (!vetted(item)) return;
+            // A plugin the server brought, or switched on, is the server's: it runs only on servers
+            // that require it (plugin_server_scope.h). One that was on here already stays the player's.
+            if (item.plugin && !item.was_on && !plugins::server_scope::set(mods_root(), item.folder, true))
+                logging::log(logging::Level::warning, logging::Channel::assets,
+                    "Map download: {} could not be marked as a server's plugin, so it stays on outside the server too.", item.folder);
             any_merge |= item.merge;
             any_switch |= item.off || !item.have.empty();
         }

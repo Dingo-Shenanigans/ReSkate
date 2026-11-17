@@ -6,7 +6,6 @@
 #include "Engine/Resource/bundle_ref_table.h"
 #include "Engine/Resource/ebx_merge.h"
 #include "Engine/Resource/ebx_writer.h"
-#include "Engine/Resource/mesh_set.h"
 #include "Engine/Resource/shader_lookup.h"
 #include "Engine/Core/Platform/path_text.h"
 
@@ -21,8 +20,6 @@
 
 namespace dingosdk::mods::detail {
 namespace {
-// A MeshSet resource: a mesh and its levels of detail.
-constexpr std::uint32_t mesh_set_type = 0x49b156d4;
 // The first bytes of a payload, for a log line: whether they look like a
 // bundle manifest, a compressed block or nothing at all tells a reader what a
 // mod really put where its manifest was expected.
@@ -47,6 +44,7 @@ struct Asset {
     // of it came in, and where the game's copy lists the chunk (merge_chunk_metadata).
     ChunkRecord record;
     const AssetAddition* carried_from{};
+    std::size_t slot{};   // BundleState::slots: what the bundle knows of the asset under this key
 };
 
 // Where one contributor's copy of an asset lives, so conflicting copies can be
@@ -61,17 +59,21 @@ struct Contribution {
     std::uint32_t resourceType{};
 };
 
-// Region files run parallel to the manifest's ebx, then resources, then chunks.
-std::vector<Asset> flatten(const fb::BundleRegion& region, const fb::BinaryBundle& manifest,
+// Region files run parallel to the manifest's ebx, then resources, then chunks. The assets are
+// taken out of `manifest` (their names and metadata move): its lists keep their lengths and each
+// chunk its guid, which is all that is read of them afterwards.
+std::vector<Asset> flatten(const fb::BundleRegion& region, fb::BinaryBundle& manifest,
                            std::size_t first = 0) {
     std::vector<Asset> result;
     result.reserve(manifest.ebx.size() + manifest.resources.size() + manifest.chunks.size());
-    const auto take = [&](const std::vector<fb::BundleAsset>& list) {
-        for (const auto& asset : list) {
+    const auto take = [&](std::vector<fb::BundleAsset>& list) {
+        for (auto& asset : list) {
             const auto index = first + result.size();
             if (index >= region.files.size())
                 throw std::runtime_error("Bundle region has fewer files than its manifest lists");
-            result.push_back({asset, region.files[index]});
+            const auto guid = asset.guid;
+            result.push_back({std::move(asset), region.files[index]});
+            asset.guid = guid;
         }
     };
     take(manifest.ebx);
@@ -80,9 +82,23 @@ std::vector<Asset> flatten(const fb::BundleRegion& region, const fb::BinaryBundl
     return result;
 }
 
-std::string asset_key(const fb::BundleAsset& asset) {
-    return std::to_string(static_cast<int>(asset.kind)) + ':' +
-        (asset.kind == fb::AssetKind::chunk ? asset.guid.string() : ascii_lower(asset.name));
+// What an asset is known by in a bundle: its kind, and its name without case or, for a chunk, its
+// guid. It carries its own hash: one asset is looked up in several tables, and a level's shared
+// bundle has tens of thousands of them, in every copy.
+struct AssetKey {
+    std::string text;
+    std::size_t hash{};
+    AssetKey() = default;
+    explicit AssetKey(std::string value) : text(std::move(value)), hash(std::hash<std::string_view>{}(text)) {}
+    bool operator==(const AssetKey& other) const noexcept { return hash == other.hash && text == other.text; }
+};
+struct AssetKeyHash {
+    std::size_t operator()(const AssetKey& key) const noexcept { return key.hash; }
+};
+template <class Value> using ByAsset = std::unordered_map<AssetKey, Value, AssetKeyHash>;
+
+AssetKey asset_key(const fb::BundleAsset& asset) {
+    return AssetKey(asset_key_text(asset));
 }
 
 constexpr std::string_view item_list_type = "delmaritemcollectionasset";
@@ -107,28 +123,72 @@ struct BundleState {
     // Which of those is the game's own, and the chunks the game's copy lists.
     std::size_t gameMetadata{ChunkRecord::none};
     std::vector<fb::Guid> shippedChunks;
-    // Keyed position of each asset, so replacing one stays constant time: these
-    // bundles hold tens of thousands of entries. Hashed, here and below: the keys
-    // are asset paths that share long beginnings, which an ordered map compares
-    // byte by byte at every step, and nothing reads these in key order.
-    std::unordered_map<std::string, std::size_t> seen;
-    // Each source's copy of an asset, base first; a mod's copy equal to the base's first is left out.
-    std::unordered_map<std::string, std::vector<Contribution>> history;
-    // The base's own sha1 for each asset, so a mod that merely carries an
-    // unchanged copy can be told apart from one that changed it.
-    std::unordered_map<std::string, fb::Sha1> baseSha;
-    // Of each Lua script, every version a mod shipped as its own change (not the game's copy, not
-    // one rewritten to carry another mod's change), and which mod: a later mod shipping another
-    // version means each of those is lost, a conflict.
-    std::unordered_map<std::string, std::vector<std::pair<fb::Sha1, std::string>>> ownChange;
-    // Assets a mod added that a higher-priority mod's different asset of the
-    // same name then replaced: the key, and the sha1 of the copy that went.
-    std::vector<std::pair<std::string, fb::Sha1>> displaced;
+    // What the bundle knows of each asset by its key, whether or not it holds one under it now
+    // (a copy carried whole or a variant's bundle takes assets away again). An asset says which
+    // is its own (Asset::slot), so only finding it for a copy's asset goes by the key, and
+    // mostly not even that (slot_of): these bundles hold tens of thousands of entries, in
+    // every copy. Hashed: the keys are asset paths that share long beginnings, which an ordered
+    // map compares byte by byte at every step, and nothing reads these in key order.
+    struct Slot {
+        static constexpr std::size_t none = static_cast<std::size_t>(-1);
+        std::size_t asset{none};   // its place in `assets`
+        // Each source's copy of the asset, base first; a mod's copy equal to the base's first is left out.
+        std::vector<Contribution> history;
+        // The base's own sha1 for it, so a mod that merely carries an unchanged copy can be
+        // told apart from one that changed it.
+        bool shipped{};
+        fb::Sha1 baseSha;
+        // Of a Lua script, every version a mod shipped as its own change (not the game's copy, not
+        // one rewritten to carry another mod's change), and which mod: a later mod shipping another
+        // version means each of those is lost, a conflict.
+        std::vector<std::pair<fb::Sha1, std::string>> ownChange;
 
-    // Whether `sha1` is the game's first copy of `key`: the copy edits are combined onto.
-    [[nodiscard]] bool matches_game_copy(const std::string& key, const fb::Sha1& sha1) const {
-        const auto copies = history.find(key);
-        return copies != history.end() && copies->second.front().base && copies->second.front().sha1 == sha1;
+        // Whether `sha1` is the game's first copy: the copy edits are combined onto.
+        [[nodiscard]] bool matches_game_copy(const fb::Sha1& sha1) const {
+            return !history.empty() && history.front().base && history.front().sha1 == sha1;
+        }
+    };
+    std::vector<Slot> slots;
+    ByAsset<std::size_t> slotAt;
+    // Assets a mod added that a higher-priority mod's different asset of the
+    // same name then replaced: the slot, and the sha1 of the copy that went.
+    std::vector<std::pair<std::size_t, fb::Sha1>> displaced;
+
+    // The slot of a copy's asset, the `position`th it lists. A copy of a bundle is the game's
+    // with assets added, in the game's order, so its asset is nearly always the one the bundle
+    // holds as far along as the last one found was (`ahead`), and is known by looking at that
+    // one: no key is made. Else by its key, a new slot when the bundle has none for it.
+    std::size_t slot_of(const fb::BundleAsset& asset, std::size_t position, std::ptrdiff_t& ahead) {
+        if (const auto guess = static_cast<std::size_t>(static_cast<std::ptrdiff_t>(position) + ahead); guess < assets.size()) {
+            const auto& held = assets[guess].asset;
+            if (held.kind == asset.kind && (asset.kind == fb::AssetKind::chunk ? held.guid == asset.guid
+                                                                                : same_name(held.name, asset.name)))
+                return assets[guess].slot;
+        }
+        const auto [at, fresh] = slotAt.try_emplace(asset_key(asset), slots.size());
+        if (fresh) slots.emplace_back();
+        if (const auto held = slots[at->second].asset; held != Slot::none)
+            ahead = static_cast<std::ptrdiff_t>(held) - static_cast<std::ptrdiff_t>(position);
+        return at->second;
+    }
+    // The bundle holds none of its assets any more, or others: where each slot's asset is, again.
+    void place_assets() {
+        for (auto& slot : slots) slot.asset = Slot::none;
+        for (std::size_t at = 0; at < assets.size(); ++at) slots[assets[at].slot].asset = at;
+    }
+
+private:
+    // Two asset names without case (ASCII), as asset_key spells them.
+    [[nodiscard]] static bool same_name(std::string_view left, std::string_view right) noexcept {
+        if (left.size() != right.size()) return false;
+        for (std::size_t at = 0; at < left.size(); ++at) {
+            auto a = left[at], b = right[at];
+            if (a == b) continue;
+            if (a >= 'A' && a <= 'Z') a = static_cast<char>(a + ('a' - 'A'));
+            if (b >= 'A' && b <= 'Z') b = static_cast<char>(b + ('a' - 'A'));
+            if (a != b) return false;
+        }
+        return true;
     }
 };
 
@@ -148,20 +208,26 @@ public:
         // A copy that could not be read may be the very one asked about.
         return unsure_ || guids_.contains(guid);
     }
+    // Whether a mod's addition that the bundle holds is known to be the document with this guid. For
+    // an item the player left out of a mod (AssetOverrides::left_out_documents): its entry stays only
+    // when another mod's copy of the item is certainly here, never on a copy that could not be read.
+    [[nodiscard]] bool added(const fb::Guid& guid) {
+        if (!added_) { read(false); added_ = true; }
+        return guids_.contains(guid);
+    }
 
     // The asset that took the place of the one with this guid, when it was a
     // mod's addition another mod's of the same name replaced; null otherwise.
     [[nodiscard]] const Asset* replacement(const fb::Guid& guid) {
         if (!displacedRead_) {
             displacedRead_ = true;
-            for (const auto& [key, sha1] : state_.displaced) {
-                const auto copies = state_.history.find(key);
-                const auto at = state_.seen.find(key);
-                if (copies == state_.history.end() || at == state_.seen.end()) continue;
-                for (const auto& copy : copies->second) {
+            for (const auto& [slot, sha1] : state_.displaced) {
+                const auto& known = state_.slots[slot];
+                if (known.history.empty() || known.asset == BundleState::Slot::none) continue;
+                for (const auto& copy : known.history) {
                     if (copy.sha1 != sha1) continue;
                     try {
-                        displaced_.emplace(fb::ebx::read_file_guid(decode_(copy)), &state_.assets[at->second]);
+                        displaced_.emplace(fb::ebx::read_file_guid(decode_(copy)), &state_.assets[known.asset]);
                     } catch (const std::exception&) {}
                     break;
                 }
@@ -175,16 +241,15 @@ private:
     void read(bool shipped) {
         for (const auto& asset : state_.assets) {
             if (asset.asset.kind != fb::AssetKind::ebx) continue;
-            const auto key = asset_key(asset.asset);
-            if (state_.baseSha.contains(key) != shipped) continue;
+            const auto& known = state_.slots[asset.slot];
+            if (known.shipped != shipped) continue;
             // The copy the bundle keeps. One combined from several mods' is none
             // of theirs, and has the guid of the game's it was combined onto.
             const Contribution* kept{};
-            if (const auto copies = state_.history.find(key); copies != state_.history.end())
-                for (const auto& copy : copies->second) {
-                    if (copy.sha1 == asset.asset.sha1) { kept = &copy; break; }
-                    if (copy.base) kept = &copy;
-                }
+            for (const auto& copy : known.history) {
+                if (copy.sha1 == asset.asset.sha1) { kept = &copy; break; }
+                if (copy.base) kept = &copy;
+            }
             try {
                 if (!kept) throw std::runtime_error("no copy to read");
                 guids_.insert(fb::ebx::read_file_guid(decode_(*kept)));
@@ -466,7 +531,14 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
         // naming an item the bundle does not hold (a pack that kept the entry of an item it no
         // longer ships, 2026-11-04), which passed through whole was a crash on every launch.
         const auto itemList = overrides.item_list_bundles.contains(key);
-        const auto needed = shared || gridBundle || renumber || cooperative || itemList;
+        // The assets of this copy that are not merged: the items the player left out of the mod and
+        // what only they use (AssetOverrides::left_out). The copy is read even where the mod alone
+        // ships the bundle, and its other assets go in as they are.
+        const std::set<std::string, std::less<>>* skipped{};
+        if (contributor)
+            if (const auto mod = overrides.left_out.find(contributor->name); mod != overrides.left_out.end())
+                if (const auto here = mod->second.find(key); here != mod->second.end() && !here->second.empty()) skipped = &here->second;
+        const auto needed = shared || gridBundle || renumber || cooperative || itemList || skipped;
 
         // A mod's payloads have to lie inside the archives it ships. A bundle
         // pointing past the end of one, or into one that is not there, means
@@ -658,14 +730,20 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
             auto manifest = casBacked ? std::move(casManifest) : fb::read_binary_bundle(region.inlineManifest);
             std::size_t removed{};
             std::string example, resizedExample;
-            // What reading this copy found last time, while the mod's files are as they were
-            // (ScanCache): then only what it found is read again. Else all of it, and what it finds
-            // is kept for the next merge, unless something could not be read.
+            // What reading this copy found (ScanCache), before the superbundles were merged or in
+            // an earlier merge while the mod's files are as they were: only that is read again.
+            // One with nothing found for it (it could not all be read then) is read here, on
+            // copies, as the pass over the textures changes what it is given.
             const auto scanKey = ascii_lower(relative) + '|' + key;
-            const auto known = scans.find(modName, scanKey);
-            ScanCache::Bundle found;
-            bool whole = true;
             const std::size_t listed = casBacked ? 1 : 0;   // the region file of the first EBX
+            auto known = scans.find(modName, scanKey);
+            if (!known) {
+                auto copy = manifest;
+                auto files = region.files;
+                auto scan = scan_bundle(store, root, key, copy, files, listed, tocChunks, gameRoot);
+                if (scan.whole) scans.keep(modName, scanKey, scan.found);
+                known = std::move(scan.found);
+            }
             const auto check = [&](std::size_t index) {
                 const auto at = listed + index;
                 if (index >= manifest.ebx.size() || at >= region.files.size()) return;
@@ -677,7 +755,6 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                     auto checked = asset;
                     const auto result = repair_ebx_payload(encoded, checked, gameRoot);
                     if (!result) return;
-                    found.repair.push_back(static_cast<std::uint32_t>(at));
                     // (One that carries another mod's change is that change, not this copy.)
                     if (overridden.contains(at)) return;
                     if (result.listed) {
@@ -700,61 +777,30 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                     removed += result.removed;
                     if (example.empty()) example = asset.name;
                 } catch (const std::exception& error) {
-                    whole = false;
                     report.notes.push_back(modName + ": " + bundle.name + ": " + asset.name +
                         ": its type references could not be checked (" + error.what() + ")");
                 }
             };
-            if (known)
-                for (const auto at : known->repair) check(at - listed);
-            else
-                for (std::size_t index = 0; index < manifest.ebx.size(); ++index) check(index);
+            for (const auto at : known->repair) check(at - listed);
             const auto ebxRepaired = repaired.size();
             // A map's level bundle: its own meshes, every level of detail, for the mesh streaming
-            // pool the runtime gives the map (reskate-map-meshes.json). Each payload once.
+            // pool the runtime gives the map (reskate-map-meshes.json). Each payload once, however
+            // many of the level's bundles list it.
             if (constexpr std::string_view levels = "win32/levels/game/"; key.starts_with(levels) &&
                 key.compare(levels.size(), 19, "dingolevel_reskate_") == 0) {
                 const auto folder = key.substr(levels.size(), key.find('/', levels.size()) - levels.size());
-                const auto resourcesAt = (casBacked ? 1 : 0) + manifest.ebx.size();
-                if (known) {
-                    for (const auto& mesh : known->meshes)
-                        if (countedMeshes.emplace(root.string(), mesh.chunk, mesh.archive, mesh.offset).second)
-                            report.map_meshes[folder] += mesh.bytes;
-                }
-                for (std::size_t index = 0; !known && index < manifest.resources.size(); ++index) {
-                    if (manifest.resources[index].resourceType != mesh_set_type || resourcesAt + index >= region.files.size()) continue;
-                    const auto& file = region.files[resourcesAt + index];
-                    if (!file.location.patch ||
-                        !countedMeshes.emplace(root.string(), file.location.installChunk, file.location.archive, file.offset).second)
-                        continue;
-                    try {
-                        const auto payload = fb::decode_cas(store.read(root, file.location, file.offset, file.size), {gameRoot});
-                        std::size_t lods{};
-                        const auto first = fb::any_mesh_lod_geometry(payload, 0, &lods);
-                        std::uint64_t bytes = std::uint64_t{first.vertex_bytes} + first.index_bytes;
-                        for (std::size_t lod = 1; lod < lods; ++lod) {
-                            const auto geometry = fb::any_mesh_lod_geometry(payload, lod);
-                            bytes += std::uint64_t{geometry.vertex_bytes} + geometry.index_bytes;
-                        }
-                        report.map_meshes[folder] += bytes;
-                        found.meshes.push_back({file.location.installChunk, file.location.archive, file.offset, bytes});
-                    } catch (const std::exception&) {
-                        whole = false;
-                    }
-                }
+                for (const auto& mesh : known->meshes)
+                    if (countedMeshes.emplace(root.string(), mesh.chunk, mesh.archive, mesh.offset).second)
+                        report.map_meshes[folder] += mesh.bytes;
             }
             // Its textures that never stream (mod_merge_textures.cpp): the changed headers go into
             // the merged patch; the chunk is still the mod's, its bundle file narrowed to the tail.
             // A map's own level bundles only (Studio names them after the level).
             if (tocChunks && key.starts_with("win32/levels/game/dingolevel_reskate_")) {
                 auto streamed = stream_resident_textures(store, root, manifest, region.files, casBacked ? 1 : 0, *tocChunks, gameRoot,
-                                                         known ? &known->textures : nullptr);
-                for (auto& [at, encoded] : streamed.headers) {
+                                                         &known->textures);
+                for (auto& [at, encoded] : streamed.headers)
                     repaired[at] = store.write(region.files[at].location.installChunk, manifestArchive, encoded);
-                    found.textures.push_back(static_cast<std::uint32_t>(at));
-                }
-                for (const auto at : streamed.offsets)
-                    found.textures.push_back(static_cast<std::uint32_t>(at));
                 offsetsRepaired = !streamed.offsets.empty();
                 if (!streamed.headers.empty())
                     report.notes.push_back(modName + ": " + bundle.name + ": " + std::to_string(streamed.headers.size()) +
@@ -767,7 +813,6 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
             }
             if (casBacked) casManifest = std::move(manifest);
             else if (!repaired.empty() || offsetsRepaired || resized) region.inlineManifest = fb::write_binary_bundle(manifest);
-            if (!known && whole) scans.keep(modName, scanKey, std::move(found));
             if (ebxRepaired)
                 report.notes.push_back(modName + ": " + bundle.name + ": " + std::to_string(ebxRepaired) +
                     " asset(s) listed " + std::to_string(removed) + " type reference(s) on another fixup's slot, "
@@ -824,12 +869,12 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
             }
             if (!take.empty()) {
                 std::set<std::string, std::less<>> present;
-                for (const auto& asset : casManifest.ebx) present.insert(asset_key(asset));
-                for (const auto& asset : casManifest.resources) present.insert(asset_key(asset));
-                for (const auto& asset : casManifest.chunks) present.insert(asset_key(asset));
+                for (const auto& asset : casManifest.ebx) present.insert(asset_key(asset).text);
+                for (const auto& asset : casManifest.resources) present.insert(asset_key(asset).text);
+                for (const auto& asset : casManifest.chunks) present.insert(asset_key(asset).text);
                 const auto installChunk = region.files.front().location.installChunk;
                 for (const auto* addition : take) {
-                    if (!present.insert(asset_key(addition->asset)).second) continue;
+                    if (!present.insert(asset_key(addition->asset).text).second) continue;
                     try {
                         auto placed = carriedAt.find({installChunk, addition});
                         if (placed == carriedAt.end())
@@ -849,7 +894,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
             }
         }
         // Nothing moved in this bundle: it passes through whole, as before.
-        if (casBacked && !shared && !gridBundle && !cooperative && !itemList && renumbered.empty() && overridden.empty() &&
+        if (casBacked && !shared && !gridBundle && !cooperative && !itemList && !skipped && renumbered.empty() && overridden.empty() &&
             repaired.empty() && !offsetsRepaired && !resized && additions.empty())
             casBacked = false;
 
@@ -954,20 +999,20 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                 state.opaqueBy = isBase ? std::string{} : modName;
                 state.opaqueWhy = manifestFailure;
                 state.files = std::move(region.files);
-                state.assets.clear(); state.seen.clear();
+                state.assets.clear();
+                state.place_assets();
                 state.metadata.clear(); state.shippedChunks.clear();
                 state.gameMetadata = ChunkRecord::none;
             }
             return;
         }
-        const auto manifest = casBacked ? casManifest : fb::read_binary_bundle(region.inlineManifest);
+        auto manifest = casBacked ? std::move(casManifest) : fb::read_binary_bundle(region.inlineManifest);
         auto flat = flatten(region, manifest, casBacked ? 1 : 0);
         if (contributor && contributor->variant_authority.contains(key)) {
             std::set<std::string> retained;
-            for (const auto& asset : flat) retained.insert(asset_key(asset.asset));
-            std::erase_if(state.assets, [&](const auto& asset) { return asset.base && !retained.contains(asset_key(asset.asset)); });
-            state.seen.clear();
-            for (std::size_t at = 0; at < state.assets.size(); ++at) state.seen.emplace(asset_key(state.assets[at].asset), at);
+            for (const auto& asset : flat) retained.insert(asset_key(asset.asset).text);
+            std::erase_if(state.assets, [&](const auto& asset) { return asset.base && !retained.contains(asset_key(asset.asset).text); });
+            state.place_assets();
         }
         if (state.opaque) {
             // A named copy is more useful than an opaque one, so it takes over.
@@ -1020,25 +1065,26 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
         // both change or add under one name is content, a picture or a mesh: the higher mod's is
         // kept and both mods load, as each still works.) ConflictChecker applies the same rule before
         // the merge.
-        const auto own_change = [&](const std::string& key, const Asset& asset, bool rewritten) {
+        const auto own_change = [&](BundleState::Slot& known, const Asset& asset, bool rewritten) {
             if (isBase || rewritten || asset.asset.kind != fb::AssetKind::resource || asset.asset.resourceType != luaScriptResourceType) return;
-            const auto shipped = state.baseSha.find(key);
-            if (shipped == state.baseSha.end() || shipped->second == asset.asset.sha1) return;
-            auto& earlier = state.ownChange[key];
+            if (!known.shipped || known.baseSha == asset.asset.sha1) return;
+            auto& earlier = known.ownChange;
             for (const auto& [sha1, lost] : earlier)
                 if (sha1 != asset.asset.sha1) conflict(report, modName, lost, asset.asset.name);
             earlier.emplace_back(asset.asset.sha1, modName);
         };
+        // Of a mod contributing beside a variant, only the assets admitted for this bundle.
+        const auto projection = contributor ? contributor->variant_projection.find(key) : decltype(contributor->variant_projection.end()){};
+        const auto* admitted = contributor && projection != contributor->variant_projection.end() ? &projection->second : nullptr;
+        std::ptrdiff_t ahead{};   // see BundleState::slot_of
         for (std::size_t position = 0; position < flat.size(); ++position) {
-            if (contributor) {
-                const auto projection = contributor->variant_projection.find(key);
-                if (projection != contributor->variant_projection.end() && !projection->second.contains(asset_key(flat[position].asset)))
-                    continue;
-            }
             auto& entry = flat[position];
+            if (admitted && !admitted->contains(asset_key(entry.asset).text)) continue;
+            if (skipped && skipped->contains(asset_key_text(entry.asset))) continue;
+            entry.slot = state.slot_of(entry.asset, position, ahead);
+            auto& known = state.slots[entry.slot];
             entry.base = isBase;
             entry.mod = owner;
-            auto id = asset_key(entry.asset);
             // A copy rewritten above (another mod's change, renumbered collision)
             // or added from another mod is not this mod's edit and does not lie in
             // this mod's archives: it is in the merged patch. Recorded as a
@@ -1051,9 +1097,9 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
             const bool combinable = !rewritten && (entry.asset.kind == fb::AssetKind::ebx || entry.asset.kind == fb::AssetKind::resource);
             if (const auto original = repairedFrom.find(firstFile + position); original != repairedFrom.end()) {
                 // Repaired above: what this mod changed is its copy as it ships it.
-                state.history[id].push_back({&root, original->second.first, original->second.second,
+                known.history.push_back({&root, original->second.first, original->second.second,
                                              entry.asset.resourceMeta, isBase, entry.asset.resourceId, entry.asset.resourceType});
-            } else if (combinable && !isBase && state.matches_game_copy(id, entry.asset.sha1)) {
+            } else if (combinable && !isBase && known.matches_game_copy(entry.asset.sha1)) {
                 ++report.unchangedCopies;
             } else if (combinable) {
                 // The contributor's own copy still sits at its original offset in
@@ -1062,14 +1108,16 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                 if (placement && unshifted.location.patch)
                     if (const auto* directory = store.find_directory(unshifted.location.installChunk))
                         unshift(*placement, *directory, unshifted.location.archive, unshifted.offset);
-                state.history[id].push_back(
+                known.history.push_back(
                     {&root, unshifted, entry.asset.sha1, entry.asset.resourceMeta, isBase, entry.asset.resourceId, entry.asset.resourceType});
             }
-            if (isBase) state.baseSha.insert_or_assign(id, entry.asset.sha1);
-            const auto at = state.seen.find(id);
-            own_change(id, entry, rewritten);
-            if (at == state.seen.end()) {
-                state.seen.emplace(std::move(id), state.assets.size());
+            if (isBase) {
+                known.shipped = true;
+                known.baseSha = entry.asset.sha1;
+            }
+            own_change(known, entry, rewritten);
+            if (known.asset == BundleState::Slot::none) {
+                known.asset = state.assets.size();
                 state.assets.push_back(std::move(entry));
                 continue;
             }
@@ -1081,9 +1129,8 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                 // never win over a mod that actually changed the asset -- on
                 // priority alone, a map mod's untouched shader tables reverted
                 // a costume mod's, and its clothing rendered wrong.
-                const auto& previous = state.assets[at->second];
-                if (const auto shipped = state.baseSha.find(at->first); shipped != state.baseSha.end() &&
-                    entry.asset.sha1 == shipped->second && previous.asset.sha1 != shipped->second)
+                const auto& previous = state.assets[known.asset];
+                if (known.shipped && entry.asset.sha1 == known.baseSha && previous.asset.sha1 != known.baseSha)
                     continue;
                 // Two mods rewriting one non-EBX asset cannot both be honoured;
                 // say so, because the loser silently loses whatever it shipped.
@@ -1098,14 +1145,14 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                 // (an item list entry is dropped for that further down).
                 if (entry.asset.kind != fb::AssetKind::chunk && !rewritten && previous.mod &&
                     previous.mod != owner && previous.asset.sha1 != entry.asset.sha1 &&
-                    !state.baseSha.contains(at->first)) {
+                    !known.shipped) {
                     auto& [count, example] = replaced[*previous.mod];
                     if (!count++) example = entry.asset.name;
-                    state.displaced.emplace_back(at->first, previous.asset.sha1);
+                    state.displaced.emplace_back(entry.slot, previous.asset.sha1);
                 }
                 // Whichever version is kept, it is still the chunk the game lists there.
                 entry.record.shipped = previous.record.shipped;
-                state.assets[at->second] = std::move(entry);
+                state.assets[known.asset] = std::move(entry);
             }
         }
         for (const auto& [other, clash] : replaced)
@@ -1153,16 +1200,16 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                 const auto refTable = entry.asset.kind == fb::AssetKind::resource &&
                     fb::bundle_ref::is_table(entry.asset.name);
                 if (entry.asset.kind != fb::AssetKind::ebx && !shaderTable && !refTable) continue;
-                const auto found = state.history.find(asset_key(entry.asset));
-                if (found == state.history.end()) continue;
+                const auto& copies = state.slots[entry.slot].history;
+                if (copies.empty()) continue;
                 const Contribution* baseCopy{};
-                for (const auto& contribution : found->second)
+                for (const auto& contribution : copies)
                     if (contribution.base) { baseCopy = &contribution; break; }
                 if (!baseCopy) continue;
                 // Both mods rebuild the whole bundle, so only the assets whose
                 // content actually moved away from the base are contested.
                 std::vector<const Contribution*> edits;
-                for (const auto& contribution : found->second)
+                for (const auto& contribution : copies)
                     if (!contribution.base && contribution.sha1 != baseCopy->sha1)
                         edits.push_back(&contribution);
                 // An item list is looked at even when one mod alone changed it:
@@ -1213,7 +1260,7 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                         // bundle ownership. A base-table union would discard its
                         // custom programs; importing foreign heaps is unsafe.
                         const Contribution* retained = baseCopy;
-                        for (const auto& contribution : found->second)
+                        for (const auto& contribution : copies)
                             if (contribution.sha1 == entry.asset.sha1) retained = &contribution;
                         const auto* selected = retained;
                         auto retainedBytes = decode(*retained);
@@ -1222,27 +1269,37 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                             // Apply identical ownership checks to the winning and
                             // lower-priority custom graphs. Unproved custom heaps
                             // fall back to stock, keeping safe stock aliases usable.
+                            // Of each mod with resources of its own in this bundle: whether the bundle
+                            // keeps every one of them as that mod ships it, and whether shader bytecode
+                            // is among them. Gone through once for all the mods, when first asked: the
+                            // root level has a copy from every map, and going through the bundle for
+                            // each of them was seconds of a merge of a hundred maps (2026-11-14).
+                            struct Delivered {
+                                bool retained{true}, bytecode{};
+                            };
+                            std::optional<std::map<const fs::path*, Delivered>> delivered;
                             const auto usable = [&](const fb::shader::Table& candidate, const Contribution* source) {
                                 if (fb::shader::same_program_graph(candidate, stockTable)) return true;
                                 if (!fb::shader::preserves_stock_programs(candidate, stockTable)) return false;
-                                bool dependenciesRetained = true;
-                                bool bytecodeDelivered = false;
-                                for (const auto& resource : state.assets) {
-                                    if (resource.asset.kind != fb::AssetKind::resource ||
-                                        resource.asset.resourceType == fb::shader::programLookupType ||
-                                        resource.asset.resourceType == fb::shader::textureLookupType ||
-                                        fb::bundle_ref::is_table(resource.asset.name)) continue;
-                                    const auto key = asset_key(resource.asset);
-                                    const auto history = state.history.find(key);
-                                    if (history == state.history.end()) continue;
-                                    for (const auto& copy : history->second) if (!copy.base && copy.root == source->root) {
-                                        if (copy.resourceType == fb::shader::bytecodeType) bytecodeDelivered = true;
-                                        if (copy.sha1 != resource.asset.sha1 || copy.resourceMeta != resource.asset.resourceMeta ||
-                                            copy.resourceId != resource.asset.resourceId || copy.resourceType != resource.asset.resourceType)
-                                            dependenciesRetained = false;
+                                if (!delivered) {
+                                    delivered.emplace();
+                                    for (const auto& resource : state.assets) {
+                                        if (resource.asset.kind != fb::AssetKind::resource ||
+                                            resource.asset.resourceType == fb::shader::programLookupType ||
+                                            resource.asset.resourceType == fb::shader::textureLookupType ||
+                                            fb::bundle_ref::is_table(resource.asset.name)) continue;
+                                        for (const auto& copy : state.slots[resource.slot].history) {
+                                            if (copy.base) continue;
+                                            auto& own = (*delivered)[copy.root];
+                                            if (copy.resourceType == fb::shader::bytecodeType) own.bytecode = true;
+                                            if (copy.sha1 != resource.asset.sha1 || copy.resourceMeta != resource.asset.resourceMeta ||
+                                                copy.resourceId != resource.asset.resourceId || copy.resourceType != resource.asset.resourceType)
+                                                own.retained = false;
+                                        }
                                     }
                                 }
-                                return dependenciesRetained && bytecodeDelivered;
+                                const auto own = delivered->find(source->root);
+                                return own != delivered->end() && own->second.retained && own->second.bytecode;
                             };
                             if (!usable({retainedBytes, retained->resourceMeta}, retained)) {
                                 report.notes.push_back(entry.asset.name + ": custom graph ownership or stock preservation could not be proved; retaining stock programs");
@@ -1309,11 +1366,16 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                         // under its name, or the mod was built on top of a mod that
                         // is not installed) the entry goes: the mod loses that item,
                         // which it had already lost, and the game still starts.
+                        // An item the player left out of its mod goes the same way: its
+                        // asset was not merged from that mod's copy, so its entry stays
+                        // only where another mod's copy of the item is in the bundle.
                         const fb::ebx::CarryImport inBundle = [&](const fb::ebx::ImportReference& item) {
                             // What the game's own list names is the game's to answer for.
-                            return std::ranges::any_of(baseDocument.imports, [&](const fb::ebx::ImportReference& known) {
-                                       return known.fileGuid == item.fileGuid; }) ||
-                                   held.holds(item.fileGuid);
+                            if (std::ranges::any_of(baseDocument.imports, [&](const fb::ebx::ImportReference& known) {
+                                    return known.fileGuid == item.fileGuid; }))
+                                return true;
+                            if (overrides.left_out_documents.contains(item.fileGuid)) return held.added(item.fileGuid);
+                            return held.holds(item.fileGuid);
                         };
                         // Any other list loses an entry only when what it names was in
                         // this bundle and another mod's asset of the same name took its
@@ -1367,7 +1429,14 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                                 ": the merged copy has what this mod added to it, but not its changes to what "
                                 "the game's copy already held");
                         std::map<std::size_t, std::vector<fb::Guid>> left;   // by edit
-                        for (const auto& gone : summary.dropped) left[gone.edit].push_back(gone.target.fileGuid);
+                        std::map<std::size_t, std::size_t> chosen;           // by edit: the items the player left out
+                        for (const auto& gone : summary.dropped) {
+                            if (overrides.left_out_documents.contains(gone.target.fileGuid)) ++chosen[gone.edit];
+                            else left[gone.edit].push_back(gone.target.fileGuid);
+                        }
+                        for (const auto& [index, count] : chosen)
+                            report.notes.push_back(mod_of(index) + ": " + entry.asset.name + ": " + std::to_string(count) +
+                                " item(s) the player left out are not in the list");
                         for (const auto& [index, guids] : left) {
                             // Name the mod whose asset took the item's name, when that is why.
                             const Asset* taken{};
@@ -1407,19 +1476,19 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                         ": kept the highest-priority copy, the edits could not be combined (" +
                         failure.what() + ")");
                     if (entry.mod && !content)
-                        for (const auto& contribution : found->second)
+                        for (const auto& contribution : copies)
                             if (!contribution.base && contribution.sha1 != baseCopy->sha1 && contribution.sha1 != entry.asset.sha1)
                                 conflict(report, *entry.mod, path_utf8(contribution.root->filename()), entry.asset.name);
                 }
             }
 
             if (!grid.payload.empty() && ascii_lower(name) == grid.bundle) {
-                const auto found = state.seen.find(std::to_string(static_cast<int>(fb::AssetKind::ebx)) + ':' + grid.asset);
-                if (found == state.seen.end()) {
+                const auto found = state.slotAt.find(AssetKey(std::to_string(static_cast<int>(fb::AssetKind::ebx)) + ':' + grid.asset));
+                if (found == state.slotAt.end() || state.slots[found->second].asset == BundleState::Slot::none) {
                     report.notes.push_back("material grid: " + grid.asset + " is not in " + name +
                         "; the combined grid was not published");
                 } else {
-                    auto& entry = state.assets[found->second];
+                    auto& entry = state.assets[state.slots[found->second].asset];
                     entry.file = store.write(state.manifestChunk, manifestArchive,
                                              fb::encode_cas(grid.payload, {gameRoot}));
                     entry.asset.sha1 = sha1_of(grid.payload);

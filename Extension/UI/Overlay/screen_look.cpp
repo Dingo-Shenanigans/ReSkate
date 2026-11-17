@@ -6,6 +6,7 @@
 #include <wrl/client.h>
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cctype>
 #include <chrono>
@@ -16,6 +17,7 @@
 #include <numbers>
 #include <optional>
 #include <string>
+#include <thread>
 
 // The graphics and the hand are the Filmer's (neekgate/ReSkate, filmer-zee, filmer_look.cpp); what to
 // draw comes from a plugin (set) instead of the Filmer's settings.
@@ -23,7 +25,7 @@ namespace dingosdk::screen_look {
 namespace {
 using Microsoft::WRL::ComPtr;
 // The shader's cbuffer: nine float4s, then five lines of twelve characters packed four to a uint.
-constexpr std::size_t float_constants = 9 * 4, constant_count = float_constants + 16, text_lines = 5;
+constexpr std::size_t float_constants = 11 * 4, constant_count = float_constants + 16, text_lines = 5;
 // The auto-iris's two 1x1 targets: x the brightness the iris settled to, y this frame's.
 constexpr DXGI_FORMAT iris_format = DXGI_FORMAT_R32G32_FLOAT;
 // When the hand reaches the glass, into its slap.
@@ -136,31 +138,63 @@ bool build_root(ID3D12Device *device) {
     return true;
 }
 
+// The look's three shaders, compiled once on a thread of their own, as soon as the overlay first asks
+// whether a look is wanted (its first frame). They were compiled on the render thread the first time
+// a look was drawn: the big pixel shader takes most of a second, and the game stood still for it
+// (seen 2026-11-16, the first time a plugin's blur or tone came on). Until they are ready a look is
+// simply not drawn yet.
+struct Compiled {
+    std::atomic<int> state{}; // 0 not asked, 1 compiling, 2 ready, 3 failed
+    ComPtr<ID3DBlob> vertex, pixel, iris_pixel;
+    std::string why;
+};
+Compiled &compiled() {
+    static auto *value = new Compiled;
+    return *value;
+}
+void compile_ahead() noexcept {
+    auto &c = compiled();
+    int none = 0;
+    if (!c.state.compare_exchange_strong(none, 1)) return;
+    try {
+        std::thread([] {
+            auto &c = compiled();
+            const auto length = std::strlen(shader_source);
+            const auto one = [&](const char *entry, const char *target, ComPtr<ID3DBlob> &into, const char *what) {
+                ComPtr<ID3DBlob> error;
+                if (SUCCEEDED(D3DCompile(shader_source, length, "screen_look", nullptr, nullptr, entry, target, 0, 0, &into, &error)) && into) return true;
+                c.why = std::string(what) + " did not compile" +
+                        (error ? std::string(": ") + static_cast<const char *>(error->GetBufferPointer()) : std::string("."));
+                return false;
+            };
+            const bool ok = one("vs_main", "vs_5_0", c.vertex, "its vertex shader") && one("ps_main", "ps_5_0", c.pixel, "its pixel shader") &&
+                            one("ps_adapt", "ps_5_0", c.iris_pixel, "its auto-iris shader");
+            c.state.store(ok ? 2 : 3, std::memory_order_release);
+        }).detach();
+    } catch (...) {
+        c.why = "its shaders' thread could not start.";
+        c.state.store(3, std::memory_order_release);
+    }
+}
+
 bool build_pipeline(ID3D12Device *device, DXGI_FORMAT format) {
     auto &g = graphics();
     if (g.pipeline && g.iris_pipeline && g.pipeline_format == format) return true;
     g.pipeline.Reset();
     g.iris_pipeline.Reset();
     if (!build_root(device)) return false;
-    ComPtr<ID3DBlob> vertex, pixel, iris_pixel, error;
-    const auto length = std::strlen(shader_source);
-    if (FAILED(D3DCompile(shader_source, length, "screen_look", nullptr, nullptr, "vs_main", "vs_5_0", 0, 0, &vertex, &error)) || !vertex) {
-        say_failed(std::string("its vertex shader did not compile") +
-                   (error ? std::string(": ") + static_cast<const char *>(error->GetBufferPointer()) : std::string(".")));
+    // (The shaders: compiled ahead. Not ready yet: nothing is drawn this frame.)
+    auto &c = compiled();
+    compile_ahead();
+    const int state = c.state.load(std::memory_order_acquire);
+    if (state == 3) {
+        say_failed(c.why);
         return false;
     }
-    error.Reset();
-    if (FAILED(D3DCompile(shader_source, length, "screen_look", nullptr, nullptr, "ps_main", "ps_5_0", 0, 0, &pixel, &error)) || !pixel) {
-        say_failed(std::string("its pixel shader did not compile") +
-                   (error ? std::string(": ") + static_cast<const char *>(error->GetBufferPointer()) : std::string(".")));
-        return false;
-    }
-    error.Reset();
-    if (FAILED(D3DCompile(shader_source, length, "screen_look", nullptr, nullptr, "ps_adapt", "ps_5_0", 0, 0, &iris_pixel, &error)) || !iris_pixel) {
-        say_failed(std::string("its auto-iris shader did not compile") +
-                   (error ? std::string(": ") + static_cast<const char *>(error->GetBufferPointer()) : std::string(".")));
-        return false;
-    }
+    if (state != 2) return false;
+    const auto &vertex = c.vertex;
+    const auto &pixel = c.pixel;
+    const auto &iris_pixel = c.iris_pixel;
     D3D12_GRAPHICS_PIPELINE_STATE_DESC description{};
     description.pRootSignature = g.root.Get();
     description.VS = {vertex->GetBufferPointer(), vertex->GetBufferSize()};
@@ -394,6 +428,7 @@ void slap() noexcept {
 }
 
 bool pending() noexcept {
+    compile_ahead(); // (once: the overlay asks every frame, from its first)
     auto &a = asked();
     std::lock_guard lock(a.mutex);
     return steady_seconds() < a.until && !graphics().failed;
@@ -439,17 +474,26 @@ bool record(const Target &t) noexcept {
         for (const std::size_t right : {std::size_t{1}, std::size_t{3}, std::size_t{4}})
             if (!lines[right].empty()) lines[right] = right_aligned(lines[right]);
         const bool any_text = std::ranges::any_of(lines, [](const std::string &line) { return !line.empty(); });
+        // An effect's strength as the shader takes it: 0 off, up to 1 in full.
+        const auto on = [](bool enabled, float strength) { return enabled && std::isfinite(strength) ? std::clamp(strength, 0.0f, 1.0f) : 0.0f; };
         std::array<std::uint32_t, constant_count> constants{
             bits(std::clamp(look.bend, 0.0f, 1.0f)), bits(fov * 0.5f), bits(std::tan(fov * 0.5f)), bits(look.bars ? 4.0f / 3.0f : screen_aspect),
-            bits(screen_aspect), bits(look.bars ? 1.0f : 0.0f), bits(look.hood ? 1.0f : 0.0f), bits(static_cast<float>(std::fmod(seconds, 1000.0))),
-            bits(look.grade ? 1.0f : 0.0f), bits(look.scanlines ? 1.0f : 0.0f), bits(look.grain ? 1.0f : 0.0f), bits(look.soft ? 1.0f : 0.0f),
+            bits(screen_aspect), bits(on(look.bars, look.strength.bars)), bits(on(look.hood, look.strength.hood)), bits(static_cast<float>(std::fmod(seconds, 1000.0))),
+            bits(on(look.grade, look.strength.grade)), bits(on(look.scanlines, look.strength.scanlines)), bits(on(look.grain, look.strength.grain)),
+            bits(on(look.soft, look.strength.soft)),
             bits(static_cast<float>(t.transfer)), bits(exposure_at(since)), bits(width), bits(height),
             bits(hand.x), bits(hand.y), bits(hand.angle), bits(hand.size),
-            bits(hand.mirrored ? 1.0f : 0.0f), bits(hand.blur), bits(0.0f), bits(0.0f),
-            bits(2.0f / 150.0f), bits(white), bits(any_text ? 1.0f : 0.0f), bits(0.0f),
-            bits(std::clamp(look.age, 0.0f, 1.0f)), bits(look.dropouts ? 1.0f : 0.0f), bits(look.head_switching ? 1.0f : 0.0f), bits(look.smear ? 1.0f : 0.0f),
+            bits(hand.mirrored ? 1.0f : 0.0f), bits(hand.blur), bits(std::isfinite(look.edge_blur) ? std::clamp(look.edge_blur, 0.0f, 1.0f) : 0.0f),
+            bits(std::isfinite(look.edge_start) ? std::clamp(look.edge_start, 0.0f, 0.95f) : 0.45f),
+            bits(2.0f / 150.0f), bits(white), bits(any_text ? 1.0f : 0.0f), bits(look.tone ? 1.0f : 0.0f),
+            bits(std::clamp(look.age, 0.0f, 1.0f)), bits(on(look.dropouts, look.strength.dropouts)),
+            bits(on(look.head_switching, look.strength.head_switching)), bits(on(look.smear, look.strength.smear)),
             bits(rolling_origin >= 0 ? static_cast<float>(seconds - rolling_origin) : -1.0f), bits(look.tracking ? 1.0f : 0.0f),
-            bits(look.iris ? 1.0f : 0.0f), bits(frame_seconds)};
+            bits(look.iris ? 1.0f : 0.0f), bits(frame_seconds),
+            bits(std::clamp(look.tone_dark[0], 0.0f, 1.0f)), bits(std::clamp(look.tone_dark[1], 0.0f, 1.0f)), bits(std::clamp(look.tone_dark[2], 0.0f, 1.0f)),
+            bits(std::isfinite(look.tone_curve) ? std::clamp(look.tone_curve, 0.2f, 5.0f) : 1.0f),
+            bits(std::clamp(look.tone_bright[0], 0.0f, 1.0f)), bits(std::clamp(look.tone_bright[1], 0.0f, 1.0f)), bits(std::clamp(look.tone_bright[2], 0.0f, 1.0f)),
+            bits(std::isfinite(look.tone_noise) ? std::clamp(look.tone_noise, 0.0f, 1.0f) : 0.0f)};
         for (std::size_t line = 0; line < text_lines; ++line)
             for (std::size_t column = 0; column < text_columns && column < lines[line].size(); ++column) {
                 const auto code = static_cast<unsigned char>(std::toupper(static_cast<unsigned char>(lines[line][column])));
@@ -498,6 +542,13 @@ bool record(const Target &t) noexcept {
     } catch (...) {
         say_failed("an exception was raised while drawing it.");
         return false;
+    }
+}
+
+void warm(ID3D12Device *device, DXGI_FORMAT format) noexcept {
+    try {
+        if (device && !graphics().failed) (void)build_pipeline(device, format);
+    } catch (...) {
     }
 }
 

@@ -248,11 +248,8 @@ void settle_profile(ModsPanel& panel) {
         panel.profiles = profiles::load(panel.root);
         panel.profiles_loaded = true;
     }
+    // (`installing` goes off once collect_install has read the folder again.)
     if (panel.profile_settle.empty() || panel.installing) return;
-    {
-        std::lock_guard lock(panel.mutex);
-        if (panel.finished) return;   // collect_install has not rescanned yet
-    }
     const auto name = std::exchange(panel.profile_settle, {});
     const auto* profile = panel.profiles.find(name);
     if (!profile) return;
@@ -303,13 +300,6 @@ void profile_picture(const Fonts& fonts, ModsPanel& panel, const profiles::Profi
         else draw->AddRectFilled(corner, ImVec2(corner.x + cell, corner.y + cell), rgba(255, 255, 255, 0.04f), S(4));
     }
 }
-
-// A small heading over a line saying what the card is for.
-void card_heading(const Fonts& fonts, ImVec2 at, const char* heading, const char* line) {
-    auto* draw = ImGui::GetWindowDrawList();
-    draw->AddText(fonts.bold, fonts.bold->FontSize, at, color::text, heading);
-    draw->AddText(fonts.caption, fonts.caption->FontSize, ImVec2(at.x, at.y + fonts.bold->FontSize + S(4)), color::muted, line);
-}
 }
 
 void profiles_page(const Fonts& fonts, ModsPanel& panel, HWND window, float height, bool installing) {
@@ -320,89 +310,98 @@ void profiles_page(const Fonts& fonts, ModsPanel& panel, HWND window, float heig
     const profiles::Profile* using_now = nullptr;
     for (const auto& profile : panel.profiles.list)
         if (!using_now && profiles::in_use(profile, panel.list, panel.profiles.keep_others)) using_now = &profile;
-    page_banner(fonts, "PROFILES", nullptr,
-        panel.profiles.keep_others
-            ? "A profile remembers which of your mods are on and in what order. Every mod stays installed once; loading a "
-              "profile switches its mods on and leaves your other mods as they are. Share one as a code or a file, with "
-              "ReSkate or r2modman."
-            : "A profile remembers which of your mods are on and in what order. Every mod stays installed once; loading a "
-              "profile switches the rest off. Share one as a code or a file, with ReSkate or r2modman.",
-        using_now ? "IN USE: " + using_now->name : "NO PROFILE IN USE", using_now ? color::good : color::tile_grey,
-        std::format("{} of {} saved", panel.profiles.list.size(), profiles::max_profiles));
-
-    // ------------------------------------------------ new, and the two ways in, a card each
+    // ------------------------------------------------ how many there are; a new one and the ways in, behind a button each
     {
-        auto* draw = ImGui::GetWindowDrawList();
-        const ImVec2 start = ImGui::GetCursorScreenPos();
-        const float gap = S(12), pad = S(16);
-        const float across = (ImGui::GetContentRegionAvail().x - gap) * 0.5f;
-        const float frame = ImGui::GetFrameHeight();
-        const float heading = fonts.bold->FontSize + S(4) + fonts.caption->FontSize + S(12);
-        const float tall = pad + heading + frame + S(8) + frame + pad;
-        const ImVec2 left = start, right(start.x + across + gap, start.y);
-        card(draw, left, ImVec2(across, tall));
-        card(draw, right, ImVec2(across, tall));
-        card_heading(fonts, ImVec2(left.x + pad, left.y + pad), "NEW PROFILE", "Saves what MY MODS shows now");
-        card_heading(fonts, ImVec2(right.x + pad, right.y + pad), "IMPORT",
-            panel.profile_busy ? "Talking to Thunderstore..." : "A code or a .r2z file, from ReSkate or r2modman");
-        const float inner = across - pad * 2;
-        const float row = start.y + pad + heading;
-
+        const float gap = S(10), create = S(170), import = S(110);
+        ImGui::AlignTextToFramePadding();
+        const auto count = panel.profiles.list.size();
+        ImGui::TextDisabled("%s", panel.profile_busy ? "Talking to Thunderstore..."
+            : count == 0 ? "No profiles yet"
+            : count == 1 ? "1 profile" : std::format("{} profiles", count).c_str());
+        ImGui::SameLine();
+        ImGui::SetCursorPosX(ImGui::GetContentRegionMax().x - create - gap - import);
         ImGui::BeginDisabled(busy);
-        ImGui::SetCursorScreenPos(ImVec2(left.x + pad, row));
-        ImGui::SetNextItemWidth(inner);
-        const bool entered_name = ImGui::InputTextWithHint("##profile_name", "Name for a new profile", panel.profile_name.data(),
-            panel.profile_name.size(), ImGuiInputTextFlags_EnterReturnsTrue);
-        ImGui::SetCursorScreenPos(ImVec2(left.x + pad, row + frame + S(8)));
+        if (ImGui::Button("IMPORT", ImVec2(import, 0))) ImGui::OpenPopup("##profile_import");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("A profile from a code or a .r2z file, from ReSkate or r2modman");
+        const ImVec2 under_import(ImGui::GetItemRectMax().x, ImGui::GetItemRectMax().y + S(6));
+        ImGui::SameLine(0, gap);
         push_primary_button();
-        const bool create = ImGui::Button("SAVE CURRENT MODS", ImVec2(inner, 0)) || entered_name;
+        if (ImGui::Button("+  NEW PROFILE", ImVec2(create, 0))) ImGui::OpenPopup("##profile_new");
         pop_primary_button();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Save what MY MODS shows now as a new profile");
-        if (create) {
-            const auto name = trimmed(panel.profile_name.data());
-            if (!profiles::valid_profile_name(name))
-                say(panel, "Give the profile a name first (up to 48 characters, none of < > : \" / \\ | ? *).", true);
-            else if (panel.profiles.find(name)) say(panel, "A profile named \"" + name + "\" already exists.", true);
-            else {
-                const auto before = panel.profiles.list.size();
-                add_profile(panel, profiles::capture(name, panel.list), "Saved");
-                if (panel.profiles.list.size() > before) {
-                    panel.profiles.active = panel.profiles.list.back().name;
-                    store(panel);
-                    panel.profile_name.fill(0);
+        const ImVec2 under_create(ImGui::GetItemRectMax().x, ImGui::GetItemRectMax().y + S(6));
+        ImGui::EndDisabled();
+
+        // Each opens under its button, its right edge on the button's.
+        const float across = S(360);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(S(16), S(14)));
+        ImGui::SetNextWindowPos(under_create, ImGuiCond_Always, ImVec2(1, 0));
+        ImGui::SetNextWindowSize(ImVec2(across, 0));
+        if (ImGui::BeginPopup("##profile_new")) {
+            ImGui::PushFont(fonts.bold);
+            ImGui::TextUnformatted("NEW PROFILE");
+            ImGui::PopFont();
+            ImGui::TextDisabled("Saves what MY MODS shows now.");
+            ImGui::Dummy(ImVec2(0, S(4)));
+            if (ImGui::IsWindowAppearing() && !ImGui::GetIO().NavVisible) ImGui::SetKeyboardFocusHere();
+            ImGui::SetNextItemWidth(-1);
+            const bool entered_name = ImGui::InputTextWithHint("##profile_name", "Name for the new profile", panel.profile_name.data(),
+                panel.profile_name.size(), ImGuiInputTextFlags_EnterReturnsTrue);
+            push_primary_button();
+            const bool create_now = ImGui::Button("SAVE CURRENT MODS", ImVec2(-1, 0)) || entered_name;
+            pop_primary_button();
+            if (create_now) {
+                const auto name = trimmed(panel.profile_name.data());
+                if (!profiles::valid_profile_name(name))
+                    say(panel, "Give the profile a name first (up to 48 characters, none of < > : \" / \\ | ? *).", true);
+                else if (panel.profiles.find(name)) say(panel, "A profile named \"" + name + "\" already exists.", true);
+                else {
+                    const auto before = panel.profiles.list.size();
+                    add_profile(panel, profiles::capture(name, panel.list), "Saved");
+                    if (panel.profiles.list.size() > before) {
+                        panel.profiles.active = panel.profiles.list.back().name;
+                        store(panel);
+                        panel.profile_name.fill(0);
+                        ImGui::CloseCurrentPopup();
+                    }
                 }
             }
+            ImGui::EndPopup();
         }
-
-        ImGui::SetCursorScreenPos(ImVec2(right.x + pad, row));
-        ImGui::SetNextItemWidth(inner);
-        const bool entered_code = ImGui::InputTextWithHint("##profile_code", "Paste a profile code", panel.profile_code.data(),
-            panel.profile_code.size(), ImGuiInputTextFlags_EnterReturnsTrue);
-        const float half = (inner - S(8)) * 0.5f;
-        ImGui::SetCursorScreenPos(ImVec2(right.x + pad, row + frame + S(8)));
-        if (ImGui::Button("IMPORT CODE", ImVec2(half, 0)) || entered_code) {
-            const auto code = trimmed(panel.profile_code.data());
-            if (!profiles::valid_code(code)) say(panel, "That is not a profile code. Paste the whole code you were given.", true);
-            else {
-                import_code(panel, code);
-                panel.profile_code.fill(0);
+        ImGui::SetNextWindowPos(under_import, ImGuiCond_Always, ImVec2(1, 0));
+        ImGui::SetNextWindowSize(ImVec2(across, 0));
+        if (ImGui::BeginPopup("##profile_import")) {
+            ImGui::PushFont(fonts.bold);
+            ImGui::TextUnformatted("IMPORT A PROFILE");
+            ImGui::PopFont();
+            ImGui::TextDisabled("A code or a .r2z file, from ReSkate or r2modman.");
+            ImGui::Dummy(ImVec2(0, S(4)));
+            if (ImGui::IsWindowAppearing() && !ImGui::GetIO().NavVisible) ImGui::SetKeyboardFocusHere();
+            ImGui::SetNextItemWidth(-1);
+            const bool entered_code = ImGui::InputTextWithHint("##profile_code", "Paste a profile code", panel.profile_code.data(),
+                panel.profile_code.size(), ImGuiInputTextFlags_EnterReturnsTrue);
+            const float half = (ImGui::GetContentRegionAvail().x - S(8)) * 0.5f;
+            push_primary_button();
+            const bool by_code = ImGui::Button("IMPORT CODE", ImVec2(half, 0)) || entered_code;
+            pop_primary_button();
+            if (by_code) {
+                const auto code = trimmed(panel.profile_code.data());
+                if (!profiles::valid_code(code)) say(panel, "That is not a profile code. Paste the whole code you were given.", true);
+                else {
+                    import_code(panel, code);
+                    panel.profile_code.fill(0);
+                    ImGui::CloseCurrentPopup();
+                }
             }
+            ImGui::SameLine(0, S(8));
+            if (ImGui::Button("FROM A FILE...", ImVec2(half, 0))) {
+                ImGui::CloseCurrentPopup();
+                import_file(panel, window);
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pick a .r2z or .r2x file");
+            ImGui::EndPopup();
         }
-        ImGui::SameLine(0, S(8));
-        if (ImGui::Button("IMPORT FILE", ImVec2(half, 0))) import_file(panel, window);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pick a .r2z or .r2x file");
-        ImGui::EndDisabled();
-
-        ImGui::SetCursorScreenPos(ImVec2(start.x, start.y + tall + S(12)));
-        ImGui::BeginDisabled(busy);
-        // The label as far from the box as the settings page has it (an item's spacing, not the inner one).
-        ImGui::PushStyleVar(ImGuiStyleVar_ItemInnerSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, ImGui::GetStyle().ItemInnerSpacing.y));
-        if (ImGui::Checkbox("Keep my other mods on when loading a profile", &panel.profiles.keep_others)) store(panel);
         ImGui::PopStyleVar();
-        ImGui::EndDisabled();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip("On: a profile switches its own mods on and leaves the rest as they are.\n"
-                              "Off: a profile switches every mod it does not list off.");
         ImGui::Dummy(ImVec2(0, S(4)));
     }
 
@@ -411,7 +410,7 @@ void profiles_page(const Fonts& fonts, ModsPanel& panel, HWND window, float heig
     auto* draw = ImGui::GetWindowDrawList();
     if (panel.profiles.list.empty()) {
         ImGui::Dummy(ImVec2(0, S(8)));
-        ImGui::TextDisabled("No profiles yet. Set up MY MODS the way you like, name it above and save it.");
+        ImGui::TextDisabled("Set up MY MODS the way you like, then press NEW PROFILE to save it under a name.");
     }
     // What a card asked for, carried out after the list is drawn: most of it changes the list.
     enum class Ask { none, load, update, code, file, rename, remove } ask{Ask::none};
@@ -450,9 +449,19 @@ void profiles_page(const Fonts& fonts, ModsPanel& panel, HWND window, float heig
         };
         if (current) pill("IN USE", color::good, color::ink);
         else if (last) pill("CHANGED SINCE LOADED", color::warning, color::ink);
-        pill(std::format("{} MODS", profile.mods.size()), color::tile_grey, color::text);
-        pill(std::format("{} ON", on), color::tile_grey, color::text);
-        if (missing) pill(std::format("{} TO DOWNLOAD", missing), color::blue, color::ink);
+        // How many mods it lists and how many of them it turns on, and what loading it would download: in a line.
+        {
+            const auto listed = static_cast<std::size_t>(on) == profile.mods.size()
+                ? std::format("{} {}", profile.mods.size(), profile.mods.size() == 1 ? "mod" : "mods")
+                : std::format("{} {}, {} on", profile.mods.size(), profile.mods.size() == 1 ? "mod" : "mods", on);
+            const float text_y = y + (fonts.caption->FontSize + S(8) - fonts.body->FontSize) * 0.5f;
+            draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(pill_x, text_y), color::text, listed.c_str(), nullptr, 0, &clip);
+            if (missing) {
+                const float after = pill_x + fonts.body->CalcTextSizeA(fonts.body->FontSize, FLT_MAX, 0, listed.c_str()).x;
+                draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(after, text_y), color::blue,
+                    std::format("  /  {} to download", missing).c_str(), nullptr, 0, &clip);
+            }
+        }
         y += fonts.caption->FontSize + S(8) + S(10);
         const auto list = names.empty() ? std::string("Every mod off") : named(names);
         draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(text_x, y), color::muted, list.c_str(), nullptr, 0, &clip);
@@ -513,7 +522,7 @@ void profiles_page(const Fonts& fonts, ModsPanel& panel, HWND window, float heig
     if (ask != Ask::none && asked < panel.profiles.list.size()) {
         const auto profile = panel.profiles.list[asked];   // a copy: the list may change under it
         switch (ask) {
-        case Ask::load: load_profile(panel, profile); break;
+        case Ask::load: panel.profile_load = profile.name; break;   // asked about first (profile_popups)
         case Ask::update: {
             panel.profiles.list[asked] = profiles::capture(profile.name, panel.list);
             panel.profiles.active = profile.name;
@@ -536,6 +545,52 @@ void profiles_page(const Fonts& fonts, ModsPanel& panel, HWND window, float heig
 }
 
 void profile_popups(ModsPanel& panel) {
+    // Loading a profile turns mods on and off and may download many: it says what it will do and
+    // asks, and what it does with the mods it does not list is chosen where it is done.
+    if (!panel.profile_load.empty() && !ImGui::IsPopupOpen("Load profile")) ImGui::OpenPopup("Load profile");
+    ImGui::SetNextWindowSize(ImVec2(S(460), 0));
+    if (ImGui::BeginPopupModal("Load profile", nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove)) {
+        const auto* profile = panel.profiles.find(panel.profile_load);
+        const auto done = [&] {
+            panel.profile_load.clear();
+            ImGui::CloseCurrentPopup();
+        };
+        if (!profile) done();
+        else {
+            const auto on = std::count_if(profile->mods.begin(), profile->mods.end(), [](const auto& mod) { return mod.enabled; });
+            const auto missing = profiles::apply(*profile, panel.list, panel.profiles.keep_others).missing.size();
+            std::size_t others{};
+            for (const auto& entry : panel.list.entries)
+                if (entry.enabled && std::none_of(profile->mods.begin(), profile->mods.end(),
+                        [&](const auto& mod) { return mod.name == entry.mod.name; })) ++others;
+            ImGui::PushTextWrapPos(0);
+            ImGui::Text("Load the profile \"%s\"?", profile->name.c_str());
+            ImGui::TextDisabled("%s", (std::format("It turns on {} {}", on, on == 1 ? "mod" : "mods") +
+                (missing ? std::format(", and downloads {} you do not have.", missing) : std::string("."))).c_str());
+            ImGui::PopTextWrapPos();
+            ImGui::Spacing();
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemInnerSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, ImGui::GetStyle().ItemInnerSpacing.y));
+            const auto keep = others == 0 ? std::string("Keep my other mods on")
+                : std::format("Keep my {} other {} on###keep_others", others, others == 1 ? "mod" : "mods");
+            if (ImGui::Checkbox(keep.c_str(), &panel.profiles.keep_others)) store(panel);
+            ImGui::PopStyleVar();
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("On: a profile switches its own mods on and leaves the rest as they are.\n"
+                                  "Off: a profile switches every mod it does not list off.");
+            ImGui::Spacing();
+            // Escape (and a controller's B) answers Cancel.
+            if (ImGui::Button("Cancel", ImVec2(S(110), 0)) || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) done();
+            ImGui::SameLine();
+            push_primary_button();
+            if (ImGui::Button("LOAD PROFILE", ImVec2(S(150), 0))) {
+                const auto chosen = *profile;   // a copy: loading may change the list it is in
+                done();
+                load_profile(panel, chosen);
+            }
+            pop_primary_button();
+        }
+        ImGui::EndPopup();
+    }
     if (!panel.profile_rename.empty() && !ImGui::IsPopupOpen("Rename profile")) ImGui::OpenPopup("Rename profile");
     if (!panel.profile_delete.empty() && !ImGui::IsPopupOpen("Delete profile")) ImGui::OpenPopup("Delete profile");
     ImGui::SetNextWindowSize(ImVec2(S(440), 0));

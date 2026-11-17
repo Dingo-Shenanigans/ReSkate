@@ -31,6 +31,9 @@ struct DialogSpec;
 namespace dingosdk::overlay {
 // The overlay's menu, console or a dialog has the input (input_capture.cpp).
 bool interface_open() noexcept;
+// Chat, the console, a search box or a box of the Online page is being typed in: the keys held are
+// letters of that text, not anything a plugin should act on.
+bool text_entry_open() noexcept;
 // A plugin dialog (reskate.ui.dialog) is open: the overlay keeps the input while it is.
 void set_plugin_dialog_active(bool active) noexcept;
 // Game input a plugin's game layer holds (input_capture.cpp): pad buttons kept from the game, held
@@ -50,7 +53,10 @@ int take_mouse_wheel() noexcept;
 struct MouseLook {
     long x = 0, y = 0, wheel = 0;
 };
-bool read_mouse_look(MouseLook& look) noexcept;
+// `hold`: the pointer is put back at the middle of the game's window after the read, so that it
+// cannot leave the window (a click then lands on the game, not on what is beside it), and where no
+// raw movement has come the pointer's own movement from there is the look.
+bool read_mouse_look(MouseLook& look, bool hold = false) noexcept;
 // The mouse while a plugin's screen is open (plugin_overlay.cpp): where it is in the window's pixels,
 // its buttons, the wheel's notches since the last read, and whether it is over the screen's panel.
 // False while no plugin screen is open.
@@ -486,6 +492,24 @@ void message_dismiss() noexcept;
 // answer, or the first when `back_is_yes`. A message to say OK to goes over it. Any thread.
 void ask_question(std::string label, std::string title, std::string text, std::string yes, std::string no,
                   std::function<void(bool)> answer, bool back_is_yes = false) noexcept;
+// The plugins waiting for the player's answer, asked about on one card, one after another: each in
+// turn has the whole card, with everything it may do under its categories (`risk`: 0 grey, 1 amber,
+// 2 red, as plugin_approval.h rates them), and the answer to one brings the next up at once. It is
+// the question above with a list behind it, held and answered the same way: the first answer is
+// Keep off, and is what going back gives. `answer` is called for each as it is answered (its place
+// in the list, and whether it was turned on), on whichever thread answers; question_step_back goes
+// to the one before, to be answered again. Any thread.
+struct PluginQuestion {
+    std::string title, author;
+    struct Group {
+        std::string category;
+        int risk{};
+        std::vector<std::string> phrases;
+    };
+    std::vector<Group> can;
+};
+void ask_plugins(std::vector<PluginQuestion> plugins, std::function<void(std::size_t, bool)> answer) noexcept;
+void question_step_back() noexcept;
 bool question_back() noexcept;
 bool question_asking() noexcept;
 void question_pick(bool yes) noexcept;
@@ -659,6 +683,8 @@ void request_depth_probe(const wchar_t *folder) noexcept;
 #endif
 using ParkSurfaceQueue = bool (*)(const EditorSurfaceRequest &);
 void set_park_surface_queue(ParkSurfaceQueue) noexcept;
+using ParkGroundQueue = bool (*)(const EditorGroundRequest &);
+void set_park_ground_queue(ParkGroundQueue) noexcept;
 using ParkPreviewQueue = bool (*)(const EditorPreviewRequest &);
 void set_park_preview_queue(ParkPreviewQueue) noexcept;
 using ParkSelectionQueue = bool (*)(const EditorSelectionRequest &);

@@ -1,5 +1,6 @@
 #include "Engine/Core/Platform/launcher_support.h"
 #include "skate_menu_internal.h"
+#include "overlay_internal.h"
 #include "skate_style.h"
 #include "Extension/UI/skate_theme.h"
 #include "Engine/Core/Profiling/profiler.h"
@@ -39,6 +40,16 @@ void screen_page(SkateMenu& menu, const Model& model, const CallbacksV3& callbac
         debug_request(menu, callbacks, {DebugAction::set_game_ui_hidden, hidden});
     const auto back = dingosdk::launcher::key_name(dingosdk::launcher::overlay_keys().menu) + " always brings ReSkate back.";
     note(back.c_str());
+    end_card();
+
+    // What ReSkate adds to the game's pause menu that a player may rather not have.
+    begin_card(menu, "pause-menu", "PAUSE MENU");
+    bool front = overlay::detail::hub_front_page_on();
+    if (toggle_row(menu, "HUB front page", "ReSkate's news, patch notes and profile over the HUB tab. Off: the HUB as the game shows it.", front))
+        overlay::detail::set_hub_front_page_on(front);
+    bool room = overlay::detail::mod_backdrop_on();
+    if (toggle_row(menu, "Store room behind Mod Manager", "skate.'s Store room behind the Mod Manager tab. Off: the world, dimmed, as on the other tabs.", room))
+        overlay::detail::set_mod_backdrop_on(room);
     end_card();
 
     begin_card(menu, "menu-layout", "MENU LAYOUT");

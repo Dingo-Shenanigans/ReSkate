@@ -158,8 +158,9 @@ void register_world_commands(Commands &registry) {
     registry.add(std::move(load));
     for (std::size_t i = 0; i < world_layers().size(); ++i) {
         const auto &layer = world_layers()[i];
-        // (No command for a layer ReSkate keeps off.)
-        if (world_layer_kept_off(layer.key)) continue;
+        // (A layer ReSkate keeps off has its command too: commands are registered once, before
+        // any level is known, and on a custom map the layer may be switched on (world_layers.h).
+        // On the game's own maps the choice is refused where it is saved.)
         auto mode = argument("default|on|off");
         mode.choices = {"default", "on", "off"};
         auto entry = variable("world " + std::string(layer.key), std::string(layer.detail), Group::world, mode);

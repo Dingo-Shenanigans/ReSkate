@@ -10,6 +10,17 @@ bool private_effect_asset(std::string_view asset, bool decal) noexcept {
         if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '/' || c == '_' || c == '-')) return false;
     return true;
 }
+bool game_effect_asset(std::string_view asset) noexcept {
+    if (asset.empty() || asset.size() > 240 || asset.front() == '/' || asset.back() == '/' ||
+        asset.find("//") != std::string_view::npos || private_effect_asset(asset, false) || private_effect_asset(asset, true)) return false;
+    for (const char c : asset)
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '/' || c == '_' || c == '-' || c == '.')) return false;
+    return true;
+}
+bool game_effect_bundle(std::string_view bundle) noexcept {
+    constexpr std::string_view prefix = "win32/effects/";
+    return bundle.starts_with(prefix) && bundle.size() > prefix.size() && game_effect_asset(bundle);
+}
 bool valid_effect_matrix(const EffectMatrix& m) noexcept {
     for (const float v : m) if (!std::isfinite(v)) return false;
     if (m[3] != 0 || m[7] != 0 || m[11] != 0 || m[15] != 1) return false;

@@ -54,26 +54,11 @@ struct Change {
 
 // `count` pieces of work on up to `threads` threads beside this one, taken in turn.
 void in_parallel(std::size_t count, std::size_t threads, bool background, const std::function<void(std::size_t)>& work) {
-    std::atomic<std::size_t> next{0};
-    const auto run = [&] {
-        for (;;) {
-            const auto mine = next.fetch_add(1);
-            if (mine >= count) return;
-            try {
-                work(mine);
-            } catch (const std::exception&) {}   // a part that fails finds nothing: the merge still checks for itself
-        }
-    };
-    std::vector<std::jthread> workers;
-    try {
-        // Threads of their own, not the system's pool (see the superbundles in mod_merge.cpp).
-        for (std::size_t index = 0; index + 1 < count && index < threads; ++index)
-            workers.emplace_back([&] {
-                if (background) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
-                run();
-            });
-    } catch (const std::system_error&) {} // fewer threads, or none: this one does the rest
-    run();
+    for_each_index(count, threads, background, [&](std::size_t mine) {
+        try {
+            work(mine);
+        } catch (const std::exception&) {}   // a part that fails finds nothing: the merge still checks for itself
+    });
 }
 
 } // namespace

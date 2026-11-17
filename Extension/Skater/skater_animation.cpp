@@ -275,6 +275,7 @@ struct Plan {
     float offsets_weight{1};
     double offsets_until{};
     Shown offsets_shown{};
+    bool offsets_still{};                   // the game's animation held under the pose
 };
 // The game menu's character room (PR 297's studio room): the spot of the menu's skater, how far from
 // it a rig counts as in the room, and the room's floor (measured 2026-10-10 on Stadium 1 and San
@@ -293,6 +294,7 @@ bool room_facing_valid{};
 std::atomic<double> preview_until{};
 struct PreviewSample {
     Joint place;
+    std::uintptr_t entity{};
     double at{-1e9};
     std::uint64_t sequence{};
 };
@@ -326,6 +328,10 @@ struct Live {
     std::vector<NativeBone> bones;
     std::vector<Joint> pose, custom, scratch;
     std::vector<Joint> sent; // the pose the others are sent, when it is not the one drawn (Shown)
+    // A pose that asked for the body held still: the pose the game had when it first asked, and when
+    // it was last used (taken again after half a second without).
+    std::vector<Joint> still;
+    double still_at{-1};
     float carry_push{};      // how much a foot is down pushing, eased (carry's push_straightens)
     // In the room: the placement written for the last render, and the game's own one before it.
     Joint room_written, game_placement;
@@ -367,8 +373,16 @@ void observe_preview(std::uintptr_t animation_interface, bool skater) {
     // The same measured room bounds used by hide_in_room; gameplay rigs are excluded.
     for (std::size_t i = 0; i < 3; ++i)
         if (!(std::abs(place.position[i] - room_spot[i]) < room_reach[i])) return;
+    std::uintptr_t entity{};
+    if (!skater) {
+        try {
+            entity = multiplayer::read_native_board_render_owner(peek, live().base.load(std::memory_order_acquire),
+                animation_interface - addr::native_skater::render_animation_interface_offset);
+        } catch (...) {} // Pose observation remains available when material ownership cannot be proved.
+    }
     std::lock_guard lock(preview_mutex);
     auto& sample = preview_samples[skater ? 1 : 0];
+    sample.entity = entity;
     sample.place = place;
     sample.at = now;
     ++sample.sequence;
@@ -757,6 +771,16 @@ void on_animation(std::uintptr_t component) noexcept {
         }
 
         std::size_t first = 0, last = 0; // [first, last) of l.pose written
+        // A pose over a body held still: every joint but the skater's placement as the game had it
+        // when the pose first asked, so that none of the game's idle shows under it. The whole body
+        // is then written, as a clip's is.
+        if (posing && snap->offsets_still && !in_room) {
+            if (l.still.size() != layout.count || at - l.still_at > 0.5) l.still = l.pose;
+            l.still_at = at;
+            for (std::size_t i = 2; i < layout.count; ++i) l.pose[i] = l.still[i];
+            first = 2;
+            last = layout.count;
+        }
         Joint board_target;
         float board_weight = 0;
         if (clip && t >= 0 && weight > 0) {
@@ -1226,6 +1250,7 @@ std::uint64_t serial{};
 void watch_room(bool on) noexcept { room_watch.store(on, std::memory_order_release); }
 bool room_skater_seen() noexcept { return now_seconds() - room_seen_at.load(std::memory_order_acquire) < 0.5; }
 bool shown_in_room() noexcept { return room_shown.load(std::memory_order_acquire); }
+std::array<float, 3> room_floor_spot() noexcept { return {room_spot[0], room_floor, room_spot[2]}; }
 void show_in_room(bool on) noexcept {
     if (room_shown.exchange(on, std::memory_order_acq_rel) && !on) room_restore_until.store(now_seconds() + 3, std::memory_order_release);
 }
@@ -1272,10 +1297,11 @@ void pause(bool paused) {
 bool playing() noexcept {
     return plan_draft.play.has_value() && finished_serial.load(std::memory_order_acquire) != plan_draft.serial;
 }
-void pose(std::vector<PoseOffset> offsets, float weight, Shown shown) {
+void pose(std::vector<PoseOffset> offsets, float weight, Shown shown, bool still) {
     plan_draft.offsets = std::move(offsets);
     plan_draft.offsets_weight = weight;
     plan_draft.offsets_shown = shown;
+    plan_draft.offsets_still = still;
     plan_draft.offsets_until = plan_draft.offsets.empty() ? 0 : now_seconds() + 0.3;
     publish();
 }
@@ -1299,6 +1325,13 @@ std::optional<PreviewPose> preview_pose(bool skater) {
     const auto& sample = preview_samples[skater ? 1 : 0];
     if (now - sample.at > 0.25) return std::nullopt;
     return PreviewPose{sample.place, now - sample.at, sample.sequence};
+}
+std::uintptr_t preview_board_entity() {
+    const double now = now_seconds();
+    preview_until.store(now + 0.5, std::memory_order_release);
+    std::lock_guard lock(preview_mutex);
+    const auto& sample = preview_samples[0];
+    return now - sample.at <= 0.25 ? sample.entity : 0;
 }
 std::optional<Joint> joint(std::uint16_t index) {
     if (index >= 395) return std::nullopt;

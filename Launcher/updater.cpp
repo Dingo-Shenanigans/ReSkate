@@ -7,7 +7,9 @@
 #include "launcher_update_config.h"
 #include "text_encoding.h"
 #include "Engine/Core/Platform/path_text.h"
+#include "Engine/Vfs/https_trust.h"
 
+#include <wincrypt.h>
 #include <winhttp.h>
 #include <miniz.h>
 
@@ -104,18 +106,51 @@ void http_get(const std::wstring& url, std::uint64_t limit, int timeout_ms,
         if (parts.dwExtraInfoLength) resource.append(parts.lpszExtraInfo, parts.dwExtraInfoLength);
         Internet connection{WinHttpConnect(session.value, host.c_str(), parts.nPort, 0)};
         if (!connection.value) win32("WinHttpConnect");
-        Internet request{WinHttpOpenRequest(connection.value, L"GET", resource.c_str(), nullptr, nullptr,
-                                          WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE)};
-        if (!request.value) win32("WinHttpOpenRequest");
-        DWORD redirects = WINHTTP_DISABLE_REDIRECTS;
-        DWORD logon = WINHTTP_AUTOLOGON_SECURITY_LEVEL_HIGH;
-        if (!WinHttpSetOption(request.value, WINHTTP_OPTION_DISABLE_FEATURE, &redirects, sizeof(redirects)) ||
-            !WinHttpSetOption(request.value, WINHTTP_OPTION_AUTOLOGON_POLICY, &logon, sizeof(logon))) win32("WinHttpSetOption");
+        // `builtin_roots`: the second try after Windows refused the server's certificate (12175), with
+        // its verdict set aside for the handshake; the answer is kept only when the certificate
+        // chains to one of ReSkate's own roots for this host (Engine/Vfs/https_trust.h). Some
+        // players' Windows refused api.reskate.dev's Let's Encrypt chain that their browsers took.
+        const auto open_request = [&](bool builtin_roots) {
+            HINTERNET opened = WinHttpOpenRequest(connection.value, L"GET", resource.c_str(), nullptr, nullptr,
+                                                  WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+            if (!opened) win32("WinHttpOpenRequest");
+            DWORD redirects = WINHTTP_DISABLE_REDIRECTS;
+            DWORD logon = WINHTTP_AUTOLOGON_SECURITY_LEVEL_HIGH;
+            DWORD ignore = SECURITY_FLAG_IGNORE_UNKNOWN_CA | SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
+                           SECURITY_FLAG_IGNORE_CERT_CN_INVALID | SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
+            if (!WinHttpSetOption(opened, WINHTTP_OPTION_DISABLE_FEATURE, &redirects, sizeof(redirects)) ||
+                !WinHttpSetOption(opened, WINHTTP_OPTION_AUTOLOGON_POLICY, &logon, sizeof(logon)) ||
+                (builtin_roots && !WinHttpSetOption(opened, WINHTTP_OPTION_SECURITY_FLAGS, &ignore, sizeof(ignore)))) {
+                const auto error = GetLastError();
+                WinHttpCloseHandle(opened);
+                SetLastError(error);
+                win32("WinHttpSetOption");
+            }
+            return opened;
+        };
         std::wstring headers = L"Cache-Control: no-cache\r\n";
         if (host == L"api.github.com")
             headers += L"X-GitHub-Api-Version: 2022-11-28\r\nAccept: application/vnd.github+json\r\n";
-        if (!WinHttpSendRequest(request.value, headers.c_str(), static_cast<DWORD>(-1L), nullptr, 0, 0, 0) ||
-            !WinHttpReceiveResponse(request.value, nullptr)) win32("HTTPS request");
+        const auto send = [&](HINTERNET opened) {
+            return WinHttpSendRequest(opened, headers.c_str(), static_cast<DWORD>(-1L), nullptr, 0, 0, 0) &&
+                   WinHttpReceiveResponse(opened, nullptr);
+        };
+        Internet request{open_request(false)};
+        if (!send(request.value)) {
+            if (GetLastError() != ERROR_WINHTTP_SECURE_FAILURE) win32("HTTPS request");
+            WinHttpCloseHandle(std::exchange(request.value, nullptr));
+            request.value = open_request(true);
+            if (!send(request.value)) win32("HTTPS request");
+            PCCERT_CONTEXT certificate{};
+            DWORD bytes = sizeof(certificate);
+            const bool trusted = WinHttpQueryOption(request.value, WINHTTP_OPTION_SERVER_CERT_CONTEXT, &certificate, &bytes) &&
+                                 dingosdk::https::chains_to_builtin_root(certificate, host);
+            if (certificate) CertFreeCertificateContext(certificate);
+            if (!trusted) {
+                SetLastError(ERROR_WINHTTP_SECURE_FAILURE);
+                win32("HTTPS request");
+            }
+        }
         DWORD status{}, size = sizeof(status);
         if (!WinHttpQueryHeaders(request.value, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
                 nullptr, &status, &size, nullptr)) win32("WinHttpQueryHeaders");
@@ -554,6 +589,34 @@ ReleaseNote fetch_release_note(bool prereleases) {
     auto notes = parse_release_feed(text);
     if (notes.empty()) fail("The repository has no releases");
     return std::move(notes.front());
+}
+
+std::vector<ReleaseNote> fetch_release_notes(bool prereleases, std::size_t most) {
+    std::vector<ReleaseNote> feed;
+    try {
+        const auto url = std::wstring(L"https://github.com/") + launcher_release_repo + L"/releases.atom";
+        std::string text;
+        http_get(url, 4 * 1024 * 1024, 8000, [&](const char* data, DWORD count) { text.append(data, count); });
+        feed = parse_release_feed(text);
+    } catch (const std::exception& exception) {
+        logging::log(logging::Level::info, logging::Channel::launcher, "The releases feed could not be read ({}).", exception.what());
+    }
+    // The newest as GitHub's API has it (its notes as they were written), which also says which
+    // release that is when pre-releases are not wanted: the feed lists them among the rest.
+    std::vector<ReleaseNote> notes;
+    try {
+        notes.push_back(fetch_release_note(prereleases));
+    } catch (const std::exception&) {
+        if (feed.empty()) throw;
+    }
+    for (auto& note : feed) {
+        if (notes.size() >= most) break;
+        // (Nothing newer than the release in use: a pre-release that is not wanted.)
+        if (!notes.empty() && (note.tag == notes.front().tag || note.date > notes.front().date)) continue;
+        notes.push_back(std::move(note));
+    }
+    if (notes.empty()) fail("The repository has no releases");
+    return notes;
 }
 
 std::string releases_page() { return "https://github.com/" + utf8(launcher_release_repo) + "/releases"; }

@@ -54,8 +54,12 @@ struct ChatBudget {
 // Throwdown messages per sender per 5 s: offers, joins, starts and ~4 scores a second.
 inline constexpr unsigned throwdown_burst = 60;
 // Plugin messages (Extension/Plugins/plugin_wire.h) ride the same packets on a budget of their own:
-// a plugin may send a few a second for a whole session (a drone's place, a game mode's state).
-inline constexpr unsigned plugin_burst = 200;
+// what a player's plugins may send between them, 240 a second (a vehicle's place every frame at
+// 60 to 120 frames a second, with a game mode's state beside it). It was 200 in 5 s, 40 a second:
+// a plugin telling the others where its vehicle is every frame had two messages in three dropped
+// here, with nothing said to it, and the others saw the vehicle stutter. What a plugin can send is
+// already held to 16 KB a second where it is sent (plugin_vm.h).
+inline constexpr unsigned plugin_burst = 1200;
 // The party the echo test shows its mirrored player in (a real lobby has none until its
 // players form one).
 inline constexpr std::uint32_t lobby_party = 1;
@@ -339,7 +343,7 @@ struct Session {
     // Host settings remembered between sessions and game restarts.
     struct HostPreferences {
         bool loaded{}, public_lobby{true}, password_required{}, world_layer_sync{};
-        unsigned capacity = max_players, tps = multiplayer_default_tps;
+        unsigned capacity = multiplayer_lobby_player_limit, tps = multiplayer_default_tps;
         std::string lobby_name;
         MultiplayerDistances distances;
         ObjectPlacement placement = ObjectPlacement::everyone;
@@ -541,6 +545,17 @@ inline void set_next_maps(std::vector<NextMapWanted> maps) {
     if (maps.empty() && next_maps_shared.empty()) return;
     next_maps_shared = std::move(maps);
     next_maps_serial_value.fetch_add(1, std::memory_order_relaxed);
+}
+// The plugins the dedicated server this PC is on requires (session.h: required_plugins), for the
+// plugin host. Said whenever the session's own list is set.
+inline std::mutex required_plugins_mutex;
+inline std::vector<std::string> required_plugins_shared;
+inline std::atomic<unsigned> required_plugins_serial_value{};
+inline void set_required_plugins(const std::vector<std::string> &plugins) {
+    std::lock_guard lock(required_plugins_mutex);
+    if (plugins == required_plugins_shared) return;
+    required_plugins_shared = plugins;
+    required_plugins_serial_value.fetch_add(1, std::memory_order_relaxed);
 }
 // "/p <message>" in a lobby: one line for the local player's party only, relayed by the host.
 std::string send_party_chat(Session &s, std::string_view typed);

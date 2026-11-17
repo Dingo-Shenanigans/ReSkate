@@ -59,6 +59,7 @@ ObjectPersistenceModel local_profile_object_persistence();
 ParkEditorModel local_park_editor();
 void set_park_mod_list_visible(bool visible) noexcept;
 bool queue_local_park_surface(const EditorSurfaceRequest &);
+bool queue_local_park_ground(const EditorGroundRequest &);
 bool queue_local_park_preview(const EditorPreviewRequest &);
 bool queue_local_park_selection(const EditorSelectionRequest &);
 bool queue_local_park_paste(const EditorPasteRequest &);
@@ -106,6 +107,10 @@ enum class LocalTeleportObservation : std::uint8_t {
     manager_null, phase_read_failed, exception, queue_changed, queue_exhausted
 };
 bool try_local_skater_teleport_pending(bool& pending, LocalTeleportObservation& observation) noexcept;
+// Sends a teleport that is waiting, if the game's teleport manager is idle. Every client tick,
+// after the plugins': the features' own update, which also sends it, runs every 500 ms, and a
+// teleport asked for between two of those waited up to half a second before it even started.
+void send_waiting_teleport() noexcept;
 // The highest collision surface straight down at (x, z) between world heights `top` and
 // `bottom`, from the client physics world (the park editor's native ray). Empty when nothing
 // is there yet (collision still streaming) or the query is unavailable. Client update thread.

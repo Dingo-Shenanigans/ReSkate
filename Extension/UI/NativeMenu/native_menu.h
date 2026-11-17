@@ -37,7 +37,11 @@ void open_native_profile() noexcept;
 // While held (asked again at least every 300 ms), the HUB's Back does nothing, so B and Escape close
 // what the front page has open instead of the pause menu. Any thread.
 void hold_hub_back(bool held) noexcept;
+// Whether ReSkate's front page is drawn over the HUB (on unless the player turned it off: the
+// overlay passes the saved choice on). Off, the HUB shows as the game leaves it. Any thread.
+void set_hub_front_page(bool on) noexcept;
 // The game's 3D menu room behind the Mod Manager tab ("off", "cas", "store", "skatepass",
-// "skatepedia"; "store" by default, not saved). Returns what it now does. Any thread.
+// "skatepedia"; "store" by default; the overlay passes the player's saved choice on). Returns what
+// it now does. Any thread.
 std::string set_mod_backdrop(std::string_view choice);
 } // namespace dingosdk::multiplayer

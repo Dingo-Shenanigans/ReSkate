@@ -2,6 +2,7 @@
 #include "Extension/Plugins/plugin_camera.h"
 #include "Extension/Plugins/plugin_ui.h"
 #include "Extension/UI/Overlay/game_images.h"
+#include "Extension/UI/Overlay/game_map.h"
 #include "Extension/UI/Overlay/overlay_internal.h"
 #include "Extension/UI/Overlay/input_capture.h"
 #include "Extension/UI/Overlay/xray_overlay.h"
@@ -15,6 +16,7 @@
 #include <memory>
 #include <chrono>
 #include <mutex>
+#include <span>
 #include <string>
 
 namespace dingosdk::overlay {
@@ -449,6 +451,7 @@ Cover cover(const plugin_ui::Layer& layer, ImVec2 display) {
             break;
         case Kind::image:
         case Kind::game_image:
+        case Kind::game_map:
         case Kind::rough_rect:
             if (p.size() >= 2) add(share(p[0], p[1], display), shape.style.colour);
             break;
@@ -491,6 +494,30 @@ void draw_plugins() {
     const std::array<ImFont*, 5> fonts{s.menu.bold ? s.menu.bold : fallback, s.menu.body ? s.menu.body : fallback,
                                        s.menu.heading ? s.menu.heading : fallback, s.menu.title ? s.menu.title : fallback,
                                        s.menu.title_large ? s.menu.title_large : s.menu.title ? s.menu.title : fallback};
+    // A plugin's text is drawn from the face made nearest the size it is shown at. "bold" and
+    // "heading" are one face made at 17 and 22 pixels, and the menu's larger set and the display face
+    // are the same one bigger: text was always drawn from the 17 or the 22, stretched to its size and
+    // to the window's height, and a 46 pixel title on a tall window was a blur. The smallest face no
+    // smaller than the text is the one to shrink from; text bigger than all of them takes the biggest.
+    // (They are one design, so what d:measure answered from the small face still holds.)
+    const std::array<ImFont*, 5> heavy{s.menu.bold, s.menu.heading, s.menu.bold_large, s.menu.heading_large, s.menu.display};
+    const std::array<ImFont*, 2> light{s.menu.body, s.menu.body_large};
+    const auto sharpest = [&](int style_font, float pixels, ImFont* otherwise) {
+        const auto nearest = [&](std::span<ImFont* const> faces) {
+            ImFont* best{};    // the smallest that is big enough
+            ImFont* biggest{}; // or the biggest there is
+            for (auto* face : faces) {
+                if (!face) continue;
+                if (!biggest || face->FontSize > biggest->FontSize) biggest = face;
+                if (face->FontSize >= pixels * 0.95f && (!best || face->FontSize < best->FontSize)) best = face;
+            }
+            if (!best) best = biggest;
+            return best ? best : otherwise;
+        };
+        if (style_font == 0 || style_font == 2) return nearest(heavy);
+        if (style_font == 1) return nearest(light);
+        return otherwise;
+    };
     auto* draw = ImGui::GetBackgroundDrawList();
     const auto camera = plugin_camera::projector(display.x, display.y);
     // The fonts' advances for d:measure, again whenever the atlas is new.
@@ -532,7 +559,7 @@ void draw_plugins() {
             const auto& p = shape.points;
             auto* font = fonts[static_cast<std::size_t>(std::clamp(style.font, 0, 4))];
             switch (shape.kind) {
-            case Kind::text: text(draw, font, k, at(p[0]), shape); break;
+            case Kind::text: text(draw, sharpest(style.font, style.size * k, font), k, at(p[0]), shape); break;
             case Kind::rect:
                 if (style.fill) draw->AddRectFilled(at(p[0]), at(p[1]), style.colour, style.rounding * k);
                 else draw->AddRect(at(p[0]), at(p[1]), style.colour, style.rounding * k, 0, style.thickness * k);
@@ -581,6 +608,9 @@ void draw_plugins() {
             case Kind::game_image:
                 (void)draw_game_image(draw, shape.text, at(p[0]), at(p[1]), style.colour, static_cast<GameImageFit>(std::clamp(shape.fit, 0, 2)),
                                       shape.edge * k, shape.frame);
+                break;
+            case Kind::game_map:
+                if (p.size() >= 3) (void)draw_game_map(draw, at(p[0]), at(p[1]), p[2][0], p[2][2], shape.radius, shape.turn, style.colour);
                 break;
             case Kind::gradient:
                 if (shape.colours.size() == 4)

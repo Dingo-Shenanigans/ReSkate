@@ -1,4 +1,6 @@
 #include "Engine/Game/World/owned_body.h"
+#include <algorithm>
+#include <cmath>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -305,6 +307,371 @@ void expiry_and_release_keep_their_own_records_while_older_results_wait() {
         "release overwrote old expiry or lost its pending packet");
     check(box.oldest().outcome == Outcome::applied && !box.oldest().successor_available, "release fabricated an older successor");
 }
+// The half-rate order. In some rides the plugin's tick falls between the clock edge and the
+// synchronizer's calls on the body, so the tick that reads sample N+1 still finds its command
+// for N queued (counted in the game on 2026-11-14: no listed call between the edge and the tick,
+// three after it). The inbox holds the command for N+1 behind the one for N, and each is still
+// taken only by a call that reads the step after its own epoch.
+Command after(const Command& previous, std::uint32_t impulse_id = 0) {
+    auto c = previous;
+    c.epoch = next(previous.epoch);
+    c.impulse = impulse_id ? Vec{0, 2, 0} : Vec{};
+    c.impulse_id = impulse_id;
+    return c;
+}
+void the_next_steps_command_queues_behind_a_pending_one() {
+    Mailbox box;
+    const auto first = request(), second = after(first, 2);
+    Command out;
+    check(box.submit(first, first.epoch, 1000), "the command for N was not queued");
+    check(!box.consume(first.epoch, 1001, out) && box.pending, "a call that still read N took the command for N");
+    check(box.submit(second, second.epoch, 1016), "the command for N+1 was refused while the one for N was pending");
+    Receipt head, behind;
+    check(box.count == 2 && box.oldest().sequence == 1 && box.find(1, head) && box.find(2, behind) &&
+        head.outcome == Outcome::queued && behind.outcome == Outcome::queued && head.requested == first.epoch &&
+        behind.requested == second.epoch, "two pending commands did not each keep a queued receipt, in order");
+    const auto third = after(second, 3);
+    check(!box.submit(third, third.epoch, 1017) && box.count == 2 && box.sequence == 2 && box.last_submitted == 101,
+        "a third command was queued behind two, or its refusal spent a sequence");
+    check(box.consume(second.epoch, 1017, out) && out.epoch == first.epoch && out.impulse_id == 1,
+        "the call that read N+1 did not take the command for N");
+    check(!box.consume(second.epoch, 1017, out), "another wrapper took a command while the first was being produced");
+    check(box.finish(true, true, true), "the first command did not finish");
+    check(box.find(1, head) && head.outcome == Outcome::applied && head.produced == second.epoch && box.find(2, behind) &&
+        behind.outcome == Outcome::queued && behind.produced == Epoch{}, "producing the first command changed the second's receipt");
+    check(!box.consume(second.epoch, 1018, out) && box.pending && box.find(2, behind) && behind.outcome == Outcome::queued,
+        "the command for N+1 was taken or dropped by a call that still read N+1");
+    const auto later = next(second.epoch);
+    check(box.consume(later, 1033, out) && out.epoch == second.epoch && out.impulse_id == 2 && box.finish(true, true, true),
+        "the call that read N+2 did not take the command for N+1");
+    check(!box.consume(later, 1034, out) && !box.pending, "a consumed command was replayed");
+    check(box.find(2, behind) && behind.outcome == Outcome::applied && behind.produced == later && box.last_serial == 101 &&
+        box.last_impulse == 2, "the second command's receipt lost its own producer epoch");
+}
+void a_second_pending_command_must_be_for_exactly_the_next_step() {
+    const auto first = request(), exact = after(first, 2);
+    Mailbox queued;
+    check(queued.submit(first, first.epoch, 1000), "the command for N was not queued");
+    for (unsigned field = 0; field < 6; ++field) {
+        auto box = queued;
+        auto wrong = exact;
+        if (field == 0) ++wrong.epoch.world;
+        if (field == 1) ++wrong.epoch.body;
+        if (field == 2) wrong.epoch = next(wrong.epoch); // N+2: the step between would go without a command
+        if (field == 3) wrong.epoch.time += wrong.epoch.seconds; // N+1 by serial, on another time base
+        if (field == 4) wrong.epoch.seconds = std::nextafter(wrong.epoch.seconds, 1.f); // calibrated, but not the same step
+        if (field == 5) wrong.epoch.time = std::nextafter(wrong.epoch.time, 1e9); // one ulp from the first's target
+        check(valid(wrong), "the wrong second command was not a valid command on its own");
+        check(!box.submit(wrong, wrong.epoch, 1016) && box.pending && box.count == 1 && box.sequence == 1 &&
+            box.last_submitted == 100 && box.oldest().outcome == Outcome::queued,
+            "a second command that is not exactly the next step was queued, or its refusal changed the inbox");
+        check(box.submit(exact, exact.epoch, 1016), "a refused second command blocked the exact next step's");
+    }
+    auto box = queued;
+    Command out;
+    check(box.submit(exact, exact.epoch, 1016) && box.consume(exact.epoch, 1017, out), "the first of two commands was not taken at N+1");
+    const auto third = after(exact, 3);
+    check(!box.submit(third, third.epoch, 1018), "a command was queued while another was being produced");
+    check(box.finish(true, true, true) && !box.submit(exact, exact.epoch, 1018), "a submitted serial was queued twice");
+    check(box.submit(third, third.epoch, 1033), "the place behind the pending command did not free when the first was taken");
+    const auto fourth = after(third, 4);
+    check(!box.submit(fourth, fourth.epoch, 1034) && box.count == 3, "a third pending command was queued");
+    // The receipt ring still bounds everything: three unacknowledged results and one pending command fill it.
+    Mailbox full;
+    auto c = request();
+    for (unsigned i = 0; i < 3; ++i) {
+        check(full.submit(c, c.epoch, 0) && full.consume(next(c.epoch), 1, out) && full.finish(true, true, true), "ring fixture failed");
+        c = after(c, c.impulse_id + 1);
+    }
+    check(full.submit(c, c.epoch, 2) && full.count == receipt_capacity, "the fourth row was not reserved");
+    const auto overflow = after(c, c.impulse_id + 1);
+    check(!full.submit(overflow, overflow.epoch, 3) && full.count == receipt_capacity && full.sequence == 4 && full.oldest().sequence == 1,
+        "a second pending command overflowed the receipt ring");
+}
+void release_rejects_both_pending_commands() {
+    const auto first = request(), second = after(first, 2);
+    Command out;
+    Receipt a, b;
+    Mailbox box;
+    check(box.submit(first, first.epoch, 0) && box.submit(second, second.epoch, 16), "two pending commands were not queued");
+    box.cancel();
+    check(box.failed && !box.pending && box.find(1, a) && box.find(2, b) && a.outcome == Outcome::rejected &&
+        b.outcome == Outcome::rejected && a.produced == Epoch{} && b.produced == Epoch{}, "release left one of two pending commands active");
+    check(!box.consume(second.epoch, 17, out) && !box.consume(next(second.epoch), 33, out) && box.find(2, b) &&
+        b.outcome == Outcome::rejected, "a released command was produced");
+    // The stopped ring frees in order, as one rejected row does.
+    check(!box.acknowledge(2) && box.acknowledge(1) && box.acknowledge(2) && !box.count,
+        "two released commands could not be acknowledged in order");
+    const auto third = after(second, 3);
+    check(!box.submit(third, third.epoch, 40), "a released owner admitted later control");
+    // Released while the first is being produced: the first keeps its own result, the second never runs.
+    Mailbox producing;
+    check(producing.submit(first, first.epoch, 0) && producing.submit(second, second.epoch, 16) &&
+        producing.consume(second.epoch, 17, out), "the first of two commands was not taken at N+1");
+    producing.cancel();
+    check(producing.finish(true, true, true) && producing.find(1, a) && a.outcome == Outcome::applied && producing.find(2, b) &&
+        b.outcome == Outcome::rejected && !producing.pending && !producing.consume(next(second.epoch), 33, out),
+        "release during production lost the first result or left the second active");
+    // A native setter that fails on the first stops the second too.
+    Mailbox partial;
+    check(partial.submit(first, first.epoch, 0) && partial.submit(second, second.epoch, 16) &&
+        partial.consume(second.epoch, 17, out) && partial.finish(true, false, false), "the partial fixture was not produced");
+    check(partial.failed && partial.find(1, a) && a.outcome == Outcome::partial && partial.find(2, b) &&
+        b.outcome == Outcome::rejected && !partial.pending && !partial.consume(next(second.epoch), 33, out) &&
+        partial.last_impulse == 1, "a command ran after a native setter failed");
+}
+// A command is only ever produced by a call that reads the step after its own epoch. Each of two
+// pending commands is judged by that rule alone and gets its own receipt. When the first's step
+// was missed the first expires; the second is still taken if, and only if, the clock reads the
+// step after its own epoch. Expiring the second with the first would report a missed step that
+// was not missed, and neither rule can put a command on another step.
+void each_pending_command_gets_its_own_verdict() {
+    const auto first = request(), second = after(first, 2);
+    Command out;
+    Receipt a, b;
+    const auto two = [&](std::uint64_t at, std::uint64_t then) {
+        Mailbox box;
+        check(box.submit(first, first.epoch, at) && box.submit(second, second.epoch, then), "two pending commands were not queued");
+        return box;
+    };
+    // No call read N+1, so the first's step is gone. This call reads N+2, the second's own step.
+    auto skipped = two(1000, 1016);
+    check(skipped.consume(next(second.epoch), 1033, out) && out.epoch == second.epoch && out.impulse_id == 2,
+        "the second command was not taken at the step after its own epoch");
+    check(skipped.find(1, a) && a.outcome == Outcome::expired && a.produced == Epoch{} && !a.force_attempted && !a.torque_attempted,
+        "a first command whose step was skipped was relabelled or produced");
+    check(skipped.finish(true, true, true) && skipped.find(2, b) && b.outcome == Outcome::applied && b.produced == next(second.epoch) &&
+        skipped.last_impulse == 2 && !skipped.pending, "the second command's own result was not recorded");
+    // Two steps on, both steps are gone.
+    auto late = two(1000, 1016);
+    check(!late.consume(next(next(second.epoch)), 1050, out) && !late.pending && late.find(1, a) && late.find(2, b) &&
+        a.outcome == Outcome::expired && b.outcome == Outcome::expired && b.produced == Epoch{} && late.last_impulse == 0,
+        "a command was produced two steps after its epoch");
+    check(!late.acknowledge(2) && late.acknowledge(1) && late.acknowledge(2), "two expired commands were not acknowledged in order");
+    auto again = second;
+    again.epoch = next(next(second.epoch));
+    again.impulse_id = 1;
+    check(late.submit(again, again.epoch, 1050), "unconsumed impulse events could not be republished after both expired");
+    // The first's deadline passes while the clock reads N+1: the second waits there, as it would alone.
+    auto timed = two(1000, 1090);
+    check(!timed.consume(second.epoch, 1100, out) && timed.pending && timed.find(1, a) && a.outcome == Outcome::expired &&
+        timed.find(2, b) && b.outcome == Outcome::queued, "the first command's deadline expired the second, or the second left its step");
+    check(timed.consume(next(second.epoch), 1189, out) && out.epoch == second.epoch && timed.finish(true, true, true),
+        "the second command was not taken inside its own deadline");
+    auto stale = two(1000, 1090);
+    check(!stale.consume(next(second.epoch), 1190, out) && !stale.pending && stale.find(1, a) && a.outcome == Outcome::expired &&
+        stale.find(2, b) && b.outcome == Outcome::expired, "deadline equality admitted the second command");
+    // Another world at the first's step: neither command matches it, and neither is retried.
+    auto moved = two(1000, 1016);
+    auto elsewhere = second.epoch;
+    ++elsewhere.world;
+    check(!moved.consume(elsewhere, 1017, out) && !moved.pending && !moved.failed && moved.find(1, a) && moved.find(2, b) &&
+        a.outcome == Outcome::rejected && b.outcome == Outcome::rejected && !moved.consume(next(second.epoch), 1033, out),
+        "a changed world consumed a pending command or left one retryable");
+}
+// The receipt path and a synchronizer call on an unlisted wrapper have no clock reading to
+// judge a command by, only the time. expire() is their whole verdict: a deadline, never a step.
+void deadlines_alone_expire_each_pending_command_by_its_own() {
+    static_assert(pending_capacity == 2, "the inbox holds the command for N and the one for N+1");
+    const auto first = request(), second = after(first, 2);
+    Command out;
+    Receipt a, b;
+    Mailbox box;
+    check(box.submit(first, first.epoch, 1000) && box.submit(second, second.epoch, 1090), "two pending commands were not queued");
+    box.expire(1099);
+    check(box.pending && box.find(1, a) && box.find(2, b) && a.outcome == Outcome::queued && b.outcome == Outcome::queued &&
+        box.command.epoch == first.epoch, "a command expired before its deadline");
+    box.expire(1100);
+    check(box.pending && !box.failed && box.find(1, a) && box.find(2, b) && a.outcome == Outcome::expired &&
+        b.outcome == Outcome::queued && box.command.epoch == second.epoch && box.deadline == 1190,
+        "the first command's deadline did not expire it alone, or expire gave the second a verdict before its own deadline");
+    check(box.consume(next(second.epoch), 1189, out) && out.epoch == second.epoch && box.finish(true, true, true),
+        "the second command was not produced in its own step after the first expired");
+    Mailbox both;
+    check(both.submit(first, first.epoch, 1000) && both.submit(second, second.epoch, 1090), "two pending commands were not queued");
+    both.expire(1190);
+    check(!both.pending && !both.failed && both.find(1, a) && both.find(2, b) && a.outcome == Outcome::expired &&
+        b.outcome == Outcome::expired && b.produced == Epoch{} && !both.consume(next(second.epoch), 1191, out),
+        "two commands past their deadlines were not both expired");
+    // One pending command, as before: nothing behind it to promote.
+    Mailbox single;
+    check(single.submit(first, first.epoch, 1000), "the command was not queued");
+    single.expire(1100);
+    check(!single.pending && single.oldest().outcome == Outcome::expired && !single.consume(second.epoch, 1101, out),
+        "a single command did not expire at its deadline");
+    Mailbox stopped;
+    check(stopped.submit(first, first.epoch, 1000) && stopped.submit(second, second.epoch, 1016), "two pending commands were not queued");
+    stopped.cancel();
+    stopped.expire(5000);
+    check(stopped.find(1, a) && stopped.find(2, b) && a.outcome == Outcome::rejected && b.outcome == Outcome::rejected,
+        "a released command was relabelled as expired");
+}
+// consume judges by the clock reading it was handed, whatever object the caller read it from.
+// Before expire() existed the service's receipt path passed the pending command's own epoch
+// member (box.command.epoch) to expire it by deadline. Promoting the second command rewrites
+// that member, so a consume that kept a reference to it would go on to judge the second against
+// the second's own epoch, and the second would wait: a verdict against a reading no caller
+// passed. The reading is taken by value, so the member gives exactly what a copy of it gives.
+void consume_judges_by_the_reading_it_was_handed() {
+    const auto first = request(), second = after(first, 2);
+    Command out;
+    Receipt a, b, c, d;
+    const auto two = [&] {
+        Mailbox box;
+        check(box.submit(first, first.epoch, 1000) && box.submit(second, second.epoch, 1090), "two pending commands were not queued");
+        return box;
+    };
+    // One pending command and its own epoch: it waits before its deadline and expires at it.
+    Mailbox single;
+    check(single.submit(first, first.epoch, 1000) && !single.consume(single.command.epoch, 1099, out) && single.pending &&
+        single.oldest().outcome == Outcome::queued, "a command did not wait at a reading of its own epoch");
+    check(!single.consume(single.command.epoch, 1100, out) && !single.pending && !single.failed &&
+        single.oldest().outcome == Outcome::expired, "a command did not expire at its deadline at a reading of its own epoch");
+    // Two pending, the first still in time: the reading is the first's own epoch, and both wait.
+    auto waiting = two();
+    check(!waiting.consume(waiting.command.epoch, 1099, out) && waiting.pending && waiting.next_pending &&
+        waiting.find(1, a) && waiting.find(2, b) && a.outcome == Outcome::queued && b.outcome == Outcome::queued,
+        "two commands did not wait at a reading of the first's epoch");
+    // Two pending, the first past its deadline. The reading is step N both times: once read from
+    // the member the call is about to rewrite, once from a copy.
+    auto member = two(), copied = two();
+    const Epoch reading = copied.command.epoch;
+    const bool by_member = member.consume(member.command.epoch, 1100, out);
+    const bool by_copy = copied.consume(reading, 1100, out);
+    check(member.find(1, a) && member.find(2, b) && copied.find(1, c) && copied.find(2, d), "a receipt row was lost");
+    check(by_member == by_copy && a.outcome == c.outcome && b.outcome == d.outcome && member.pending == copied.pending &&
+        member.failed == copied.failed, "the reading changed under consume when it was read from the pending command itself");
+    // The clock reads N. The first expires by its deadline. The second, measured at N+1 and due
+    // at N+2, is neither waiting at its own epoch nor at its step: it is rejected and never retried.
+    check(!by_member && a.outcome == Outcome::expired && b.outcome == Outcome::rejected && b.produced == Epoch{} &&
+        !member.pending && !member.next_pending && !member.failed && member.last_impulse == 0 &&
+        !member.consume(next(second.epoch), 1101, out), "a reading of step N did not expire the first command and reject the second");
+    check(!member.acknowledge(2) && member.acknowledge(1) && member.acknowledge(2) && !member.count,
+        "the two verdicts could not be acknowledged in order");
+}
+void impulse_events_are_never_replayed_across_two_pending_commands() {
+    auto first = request();
+    first.impulse_id = 5;
+    Command out;
+    // last_impulse moves only when a command is taken, so the pending one's event is compared too.
+    for (const std::uint32_t id : {5U, 4U, 1U}) {
+        Mailbox box;
+        const auto replay = after(first, id);
+        check(box.submit(first, first.epoch, 0) && box.last_impulse == 0 && !box.submit(replay, replay.epoch, 16) && box.count == 1,
+            "the pending command's impulse event was queued again behind it");
+    }
+    Mailbox box;
+    const auto second = after(first, 6);
+    check(box.submit(first, first.epoch, 0) && box.submit(second, second.epoch, 16), "a new impulse event was refused behind a pending one");
+    check(box.consume(second.epoch, 17, out) && out.impulse_id == 5 && box.finish(true, true, true) && box.last_impulse == 5,
+        "the first impulse event was not produced once");
+    const auto replayed = after(second, 6), fresh = after(second, 7);
+    check(!box.submit(replayed, replayed.epoch, 33) && box.submit(fresh, fresh.epoch, 33),
+        "the event now pending first was not compared, or a new event was refused");
+    check(box.consume(fresh.epoch, 34, out) && out.impulse_id == 6 && box.finish(true, true, true) &&
+        box.consume(next(fresh.epoch), 50, out) && out.impulse_id == 7 && box.finish(true, true, true) && box.last_impulse == 7,
+        "three impulse events were not each produced once, in order");
+    // With or without an impulse on either command.
+    auto none = request();
+    none.impulse = {};
+    none.impulse_id = 0;
+    Mailbox plain;
+    const auto with = after(none, 1), without = after(first);
+    check(plain.submit(none, none.epoch, 0) && plain.submit(with, with.epoch, 16), "an impulse was refused behind a command without one");
+    Mailbox mixed;
+    check(mixed.submit(first, first.epoch, 0) && mixed.submit(without, without.epoch, 16), "a command without an impulse was refused behind one with");
+    // An event already produced still bounds the second command when the first carries none.
+    Mailbox earlier;
+    const auto a = request(), b = after(a), old = after(b, 1), next_event = after(b, 2);
+    check(earlier.submit(a, a.epoch, 0) && earlier.consume(b.epoch, 1, out) && earlier.finish(true, true, true) &&
+        earlier.submit(b, b.epoch, 16), "the earlier impulse fixture failed");
+    check(!earlier.submit(old, old.epoch, 33) && earlier.submit(next_event, next_event.epoch, 33),
+        "a produced impulse event was replayed behind a pending command");
+}
+void two_pending_commands_are_acknowledged_in_the_order_they_were_submitted() {
+    Mailbox box;
+    const auto first = request(), second = after(first, 2);
+    Command out;
+    Receipt a, b;
+    check(box.submit(first, first.epoch, 0) && box.submit(second, second.epoch, 16), "two pending commands were not queued");
+    check(!box.acknowledge(1) && !box.acknowledge(2), "a queued command was acknowledged");
+    check(box.consume(second.epoch, 17, out) && box.finish(true, true, true) && !box.acknowledge(1) && !box.acknowledge(2),
+        "an applied result without a successor, or the command queued behind it, was acknowledged");
+    Sample measured;
+    measured.epoch = next(second.epoch);
+    check(box.consume(measured.epoch, 33, out) && box.finish(true, true, true) && box.observe_successor(measured) && box.find(1, a) &&
+        box.find(2, b) && a.successor_available && a.successor.epoch == measured.epoch && !b.successor_available,
+        "the sample the second command was produced in was not the first's successor alone");
+    check(!box.acknowledge(2) && box.acknowledge(1) && !box.acknowledge(2), "the second result was acknowledged before its own successor");
+    measured.epoch = next(measured.epoch);
+    check(box.observe_successor(measured) && box.acknowledge(2) && !box.count, "the second result could not be acknowledged in turn");
+}
+// One frame of a ride as the game orders it, counted there per frame: the clock edge, then either
+// three calls on listed wrappers, the plugin's tick and three more calls (the full-rate order),
+// or the tick and then three calls (the half-rate order).
+struct Ride {
+    Mailbox box;
+    Epoch clock = request().epoch;
+    std::uint64_t now = 1000, first_produced{}, last_produced{};
+    unsigned applied{}, ticked{};
+    std::size_t most_rows{};
+    // The tick reads the sample, acknowledges every finished result and sends one command.
+    void tick() {
+        Sample sample;
+        sample.epoch = clock;
+        (void)box.observe_successor(sample);
+        while (box.count) {
+            const auto head = box.oldest();
+            if (head.outcome == Outcome::queued || (head.outcome == Outcome::applied && !head.successor_available)) break;
+            check(head.outcome == Outcome::applied && head.produced.serial == head.requested.serial + 1 &&
+                head.successor.epoch.serial > head.produced.serial, "a command expired, was rejected or ran on another step");
+            check(box.acknowledge(head.sequence), "a measured result could not be acknowledged");
+        }
+        Command c;
+        c.epoch = clock;
+        c.force = {0, 20, 0};
+        check(box.submit(c, clock, now), "a tick's command was refused");
+        ++ticked;
+        most_rows = (std::max)(most_rows, box.count);
+    }
+    // Three calls on listed wrappers. At most the first takes a command.
+    void synchronize() {
+        for (unsigned call = 0; call < 3; ++call) {
+            Command out;
+            if (!box.consume(clock, now + call, out)) continue;
+            check(out.epoch.serial + 1 == clock.serial && (!last_produced || clock.serial == last_produced + 1),
+                "a step went without its command, or took another step's");
+            last_produced = clock.serial;
+            if (!first_produced) first_produced = clock.serial;
+            ++applied;
+            check(box.finish(true, true, true), "a consumed command did not finish");
+        }
+    }
+    // The calls after a full-rate frame's tick read the epoch that tick just commanded, and wait.
+    void frame(bool tick_first) {
+        clock = next(clock);
+        now += 16;
+        if (!tick_first) synchronize();
+        tick();
+        const auto before = applied;
+        synchronize();
+        check(tick_first || applied == before, "a call after the tick took the command for the step it read");
+    }
+};
+void a_command_is_applied_on_every_step_in_either_order_and_across_flips() {
+    std::size_t full_rate_rows{};
+    for (const std::string_view order : {"ffffffffffff", "hhhhhhhhhhhh", "hhhhffffhhhhffff", "ffffhhhhffffhhhh", "fhfhfhhffhhfhf"}) {
+        Ride ride;
+        const auto start = ride.clock.serial;
+        for (const char kind : order) ride.frame(kind == 'h');
+        check(ride.ticked == order.size() && ride.applied == order.size() - 1 && ride.first_produced == start + 2 &&
+            ride.last_produced == ride.clock.serial, "a ride did not get one command applied on every step after its first");
+        // After each acknowledgement and submit the ring holds what a full-rate ride holds.
+        if (!full_rate_rows) full_rate_rows = ride.most_rows;
+        check(ride.most_rows == full_rate_rows && ride.most_rows == 2 && ride.box.count <= 2,
+            "the receipt ring held more rows than a full-rate ride's");
+    }
+}
 }
 int main() {
     try {
@@ -320,6 +687,15 @@ int main() {
         full_ring_backpressure_reuses_only_acknowledged_slots();
         later_failure_is_selectable_without_waiving_older_successor_proof();
         expiry_and_release_keep_their_own_records_while_older_results_wait();
+        the_next_steps_command_queues_behind_a_pending_one();
+        a_second_pending_command_must_be_for_exactly_the_next_step();
+        release_rejects_both_pending_commands();
+        each_pending_command_gets_its_own_verdict();
+        deadlines_alone_expire_each_pending_command_by_its_own();
+        consume_judges_by_the_reading_it_was_handed();
+        impulse_events_are_never_replayed_across_two_pending_commands();
+        two_pending_commands_are_acknowledged_in_the_order_they_were_submitted();
+        a_command_is_applied_on_every_step_in_either_order_and_across_flips();
         std::cout << "owned body contracts passed\n";
         return 0;
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }

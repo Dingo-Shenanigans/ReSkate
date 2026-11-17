@@ -23,9 +23,27 @@ bool unshift(const ArchivePlacement& placement, std::string_view directory, std:
     return true;
 }
 
+// Opened once each: every superbundle settled appends to the same few files, and opening and
+// closing one for each append was where a merge of many maps waited (3 to 17 seconds of one, by
+// what else the PC was doing: its anti-virus checks a file at every open and close; 2026-11-14).
+struct CasStore::Writers {
+    std::map<std::wstring, std::ofstream> files;
+};
+
 CasStore::CasStore(fs::path baseRoot, fs::path output, const native_db::Node& layout)
-    : GameArchives(std::move(baseRoot), layout), output_(std::move(output)) {
+    : GameArchives(std::move(baseRoot), layout), output_(std::move(output)), writers_(std::make_shared<Writers>()) {
     keep_open();
+}
+
+void CasStore::finish() {
+    if (!writers_) return;
+    std::string failed;
+    for (auto& [path, out] : writers_->files) {
+        out.close();
+        if (out.fail() && failed.empty()) failed = path_utf8(fs::path(path));
+    }
+    writers_->files.clear();
+    if (!failed.empty()) throw std::runtime_error("Cannot append to " + failed);
 }
 
 fs::path CasStore::archive_path(std::uint32_t installChunk, std::uint16_t archive) const {
@@ -47,7 +65,8 @@ std::uint64_t CasStore::append(const fs::path& path, std::span<const std::byte> 
     if (offset + encoded.size() > std::numeric_limits<std::uint32_t>::max())
         throw std::runtime_error("The merged patch's own archive " + path_utf8(path) +
                                  " is full (4 GB); restart Skate so it is built again");
-    std::ofstream out(path, std::ios::binary | std::ios::app);
+    auto& out = writers_->files[path.wstring()];
+    if (!out.is_open()) out.open(path, std::ios::binary | std::ios::app);
     if (!out || !out.write(reinterpret_cast<const char*>(encoded.data()),
                            static_cast<std::streamsize>(encoded.size())))
         throw std::runtime_error("Cannot append to " + path_utf8(path));
@@ -85,6 +104,7 @@ CasStore CasStore::waiting() const {
     copy.offsets_.clear();
     copy.carried_.clear();
     copy.carriedAt_.clear();
+    copy.writers_.reset();
     return copy;
 }
 

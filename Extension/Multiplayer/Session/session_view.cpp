@@ -187,6 +187,18 @@ void publish(Session &s, const NativeFrame *local) {
                                identity_listed(social->local.id, IdentityList::homie);
     if (const auto social = steam_social_snapshot()) {
         const auto mark = identity_mark(social->local.id);
+        {
+            // Said when it changes: which of the backend's lists this game finds its player on, so a
+            // report of a missing tag shows whether the lists or the Steam ID are the problem.
+            static std::string said;
+            const auto now_said = !social->local.id ? std::string("no Steam ID yet")
+                                : mark ? "on the " + std::string(tag_list_name(*mark)) + " list"
+                                       : std::string("on none of the backend's lists");
+            if (now_said != said) {
+                said = now_said;
+                logging::log(logging::Level::info, logging::Channel::runtime, "Identity: Steam ID {} is {}.", social->local.id, now_said);
+            }
+        }
         // The tag shown is the one chosen; the items' styles come from the first list.
         if (const auto tag = identity_tag(social->local.id, own_tag_choice())) {
             std::tie(view.identity_tag_colour, view.identity_tag) = mark_role(*tag);

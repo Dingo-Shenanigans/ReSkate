@@ -150,4 +150,31 @@ bool sync_offboard_flight_velocity(std::uintptr_t base, std::uintptr_t core,
     // not use these accumulators; retain their existing flight target behavior.
     return true;
 }
+bool set_offboard_velocity(std::uintptr_t base, std::uintptr_t core,
+    std::uintptr_t context, std::uintptr_t rig, const std::array<float, 3>& velocity) noexcept {
+    if (!sync_offboard_flight_velocity(base, core, context, rig, velocity)) return false;
+    FlightLastError error;
+    const auto parent = link(core, 0x3b0);
+    const auto active = link(parent, 0x48);
+    for (const auto& state : offboard_ragdoll_states) {
+        if (active != parent + state[0]) continue;
+        if (link(active) != base + state[1]) return false;
+        std::array<float, 3> previous{};
+        const auto address = active + 0x10;
+        if (!memory::read(address, previous)) return false;
+        for (std::size_t i = 0; i < velocity.size(); ++i)
+            if (!std::isfinite(velocity[i]) || std::abs(velocity[i]) > 6000 ||
+                !std::isfinite(previous[i]) || std::abs(previous[i]) > 100000) return false;
+        MEMORY_BASIC_INFORMATION page{};
+        if (!VirtualQuery(reinterpret_cast<const void*>(address), &page, sizeof(page)) ||
+            page.State != MEM_COMMIT || (page.Protect & (PAGE_GUARD | PAGE_NOACCESS)) ||
+            !(page.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_WRITECOPY)) ||
+            page.RegionSize < sizeof(velocity) ||
+            address - reinterpret_cast<std::uintptr_t>(page.BaseAddress) > page.RegionSize - sizeof(velocity)) return false;
+        SIZE_T written{};
+        return WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(address), &velocity,
+            sizeof(velocity), &written) && written == sizeof(velocity);
+    }
+    return true;
+}
 }

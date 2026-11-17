@@ -195,6 +195,19 @@ struct PhysicsApi {
         push_sample(L, b, sample);
         return 1;
     }
+    // What a client of the command inbox may rely on, read before it relies on it. A runtime
+    // whose inbox holds one pending command has no limits function at all, so its absence is the
+    // answer there. pending_commands: submit takes the command for a sample's epoch and, while
+    // that one is still queued, the next sample's behind it. The tables read and receipt return
+    // are unchanged, for callers that allow-list their fields.
+    static int limits(lua_State* L) {
+        (void)plugin(L);
+        if (lua_gettop(L) != 0) luaL_error(L, "limits takes no arguments");
+        lua_createtable(L, 0, 1);
+        lua_pushinteger(L, static_cast<int>(pending_capacity));
+        lua_setfield(L, -2, "pending_commands");
+        return 1;
+    }
     static int submit(lua_State* L) {
         auto& p = plugin(L);
         const auto b = body(L, p, 1);
@@ -444,7 +457,8 @@ void install_physics_api(Plugin&, lua_State* L) {
     // reskate.world is read-only by now; add_functions opens it for the new field and closes it.
     lua_getfield(L, -1, "world");
     add_functions(L, "physics", {{"prepare", PhysicsApi::prepare}, {"create", PhysicsApi::create}, {"read", PhysicsApi::read}, {"submit", PhysicsApi::submit},
-        {"receipt", PhysicsApi::receipt}, {"acknowledge", PhysicsApi::acknowledge}, {"release", PhysicsApi::release}, {"probe_batch", PhysicsApi::probe_batch}});
+        {"receipt", PhysicsApi::receipt}, {"acknowledge", PhysicsApi::acknowledge}, {"release", PhysicsApi::release}, {"probe_batch", PhysicsApi::probe_batch},
+        {"limits", PhysicsApi::limits}});
     lua_pop(L, 1);
 }
 } // namespace dingosdk::plugins

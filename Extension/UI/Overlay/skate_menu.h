@@ -134,6 +134,9 @@ struct SkateMenu {
     ImFont* body_large = nullptr;
     ImFont* bold_large = nullptr;
     ImFont* heading_large = nullptr;
+    // The heading face larger still, for the big text plugins draw (plugin_overlay.cpp): a menu's title
+    // on a tall window is drawn several times the size of the faces above.
+    ImFont* display = nullptr;
     ImFont* title_large = nullptr;
 };
 inline constexpr float large_font_ratio = 30.0f / 17.0f;

@@ -6,6 +6,7 @@ namespace dingosdk::vfs {
 namespace fb = frostbite;
 
 GameTextures::GameTextures(std::filesystem::path gameRoot) : data_(std::move(gameRoot)) {}
+GameTextures::GameTextures(std::filesystem::path gameRoot, const std::filesystem::path& patchRoot) : data_(std::move(gameRoot), patchRoot) {}
 
 const fb::TocDocument& GameTextures::toc(std::string_view name) {
     auto found = tocs_.find(name);

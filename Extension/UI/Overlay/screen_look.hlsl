@@ -10,12 +10,15 @@ cbuffer Look : register(b0)
     float4 L0; // bend 0..1, half angle the bend covers at the frame's top edge (rad), tan(half the game's FOV), frame half width (half heights)
     float4 L1; // screen aspect, 4:3 bars, hood, seconds
     float4 L2; // grade, scanlines, grain, softness
+    // (Each overlaid effect's value is its strength: 0 off, up to 1 in full.)
     float4 L3; // transfer (0 SDR), exposure, output width, output height
     float4 L4; // hand centre x, y (half heights, y down), angle (rad), size (0: no hand)
-    float4 L5; // hand mirrored, hand blur (hand units), unused, unused
-    float4 L6; // text pixel (half heights), text white, text on, unused
+    float4 L5; // hand mirrored, hand blur (hand units), edge blur 0..1, where it starts (0 the middle, 1 the corners)
+    float4 L6; // text pixel (half heights), text white, text on, tone on
     float4 L7; // tape age 0..1, dropouts, head switching, red smear
     float4 L8; // seconds since this clip started recording (tracking; < 0: none), tracking, auto-iris, seconds since the last frame
+    float4 L9; // tone: the colour of black (rgb), the curve
+    float4 L10; // tone: the colour of white (rgb), the noise 0..1
     uint4 T[4]; // five lines of twelve characters, four to a uint: top left, top right, bottom left, bottom right x2
 };
 Texture2D source : register(t0);
@@ -198,10 +201,10 @@ float4 ps_main(Interpolated i) : SV_Target
     float frame = floor(L1.w * 29.97);
     float age = L7.x;
     float2 tape_uv = i.uv;
-    if (L7.z > 0.5 && i.uv.y > 0.972)
+    if (L7.z > 0.0 && i.uv.y > 0.972)
     {
         float k = (i.uv.y - 0.972) / 0.028;
-        tape_uv.x += (hash12(float2(scan, frame)) - 0.3) * 0.04 * k * (0.5 + age);
+        tape_uv.x += (hash12(float2(scan, frame)) - 0.3) * 0.04 * k * (0.5 + age) * L7.z;
     }
     float tracking = 0.0;
     if (L8.y > 0.5 && L8.x >= 0.0 && L8.x < 0.5)
@@ -212,8 +215,9 @@ float4 ps_main(Interpolated i) : SV_Target
     }
     float2 c = tape_uv * 2.0 - 1.0;
     float2 q = float2(c.x * screen_aspect, c.y);
-    // 4:3: black at the sides.
-    if (L1.y > 0.5 && abs(q.x) > L0.w)
+    // 4:3: black at the sides (at part strength, darkened).
+    float bar = (L1.y > 0.0 && abs(q.x) > L0.w) ? L1.y : 0.0;
+    if (bar >= 0.999)
         return float4(0.0, 0.0, 0.0, 1.0);
     bool sdr = L3.x < 0.5;
     // The bend: the MK1 squeezes a wide view into the frame. A point at radius r (half heights) sees
@@ -235,7 +239,7 @@ float4 ps_main(Interpolated i) : SV_Target
     float3 colour = float3(0.0, 0.0, 0.0);
     if (margin >= 0.0)
     {
-        if (L2.w > 0.5)
+        if (L2.w > 0.0)
         {
             // Soft, with the camcorder's sharpening halo; colour bleeds sideways on tape.
             float2 close_tap = texel * sd * 0.6;
@@ -248,14 +252,34 @@ float4 ps_main(Interpolated i) : SV_Target
             float luma = dot(colour, weights);
             float3 mixed = lerp(colour, right, 0.5);
             colour = luma + (mixed - dot(mixed, weights));
+            colour = lerp(fetch(uv), colour, L2.w);
         }
         else
         {
             colour = fetch(uv);
         }
+        // Soft towards the edges: sharp in the middle, blurred more the further out, as a picture
+        // focused on what is in its middle is. Taps on a spiral, as wide as 20 pixels of a 1080 line
+        // picture at the corners in full.
+        if (L5.z > 0.0)
+        {
+            float out_there = smoothstep(L5.w, 1.0, r / length(float2(screen_aspect, 1.0))) * L5.z;
+            if (out_there > 0.002)
+            {
+                float2 reach = texel * (L3.w / 1080.0) * 20.0 * out_there;
+                float3 sum = colour;
+                for (int tap = 0; tap < 24; ++tap)
+                {
+                    float turn = (float)tap * 2.39996323;
+                    float ring = sqrt(((float)tap + 0.5) / 24.0);
+                    sum += fetch(uv + float2(cos(turn), sin(turn)) * ring * reach);
+                }
+                colour = sum / 25.0;
+            }
+        }
         // Reds smear on tape: they trail to the right.
-        if (L7.w > 0.5)
-            colour.r = lerp(colour.r, fetch(uv + float2(texel.x * sd * 4.0, 0.0)).r, 0.3);
+        if (L7.w > 0.0)
+            colour.r = lerp(colour.r, fetch(uv + float2(texel.x * sd * 4.0, 0.0)).r, 0.3 * L7.w);
     }
     // The hand in front of the lens: lit by the scene, then dark and glowing red through the skin
     // once it is pressed over the glass.
@@ -301,9 +325,10 @@ float4 ps_main(Interpolated i) : SV_Target
             colour = lerp(colour, skin, cover);
         }
     }
-    if (sdr && L2.x > 0.5)
+    if (sdr && L2.x > 0.0)
     {
         // The VX's colour: saturated, contrasty, warm, blacks a touch crushed.
+        float3 ungraded = colour;
         colour = saturate(colour);
         float luma = dot(colour, float3(0.299, 0.587, 0.114));
         colour = saturate(lerp(luma.xxx, colour, 1.2));
@@ -311,6 +336,7 @@ float4 ps_main(Interpolated i) : SV_Target
         colour = lerp(colour, curve, 0.4);
         colour *= float3(1.05, 1.01, 0.93);
         colour = saturate((colour - 0.025) / 0.975);
+        colour = lerp(ungraded, colour, L2.x);
     }
     if (sdr)
         colour *= L3.y; // the iris: down while the hand covers it, open too wide for a moment after
@@ -323,11 +349,13 @@ float4 ps_main(Interpolated i) : SV_Target
             colour *= clamp(pow(iris.y / iris.x, 0.75), 0.5, 2.0);
     }
     // The hood: the fisheye's picture ends in a soft dark edge, and darkens towards it.
-    if (L1.z > 0.5)
+    if (L1.z > 0.0)
     {
         float edge = smoothstep(0.0, 0.035, margin);
         float falloff = 1.0 - 0.4 * smoothstep(0.75, 1.85, r * (L0.x > 0.0 ? 1.0 : 0.85));
-        colour *= edge * falloff;
+        colour *= lerp(1.0, edge * falloff, L1.z);
+        if (margin < 0.0)
+            colour = float3(0.0, 0.0, 0.0);
     }
     else if (margin < 0.0)
     {
@@ -356,7 +384,7 @@ float4 ps_main(Interpolated i) : SV_Target
         colour = colour * (1.0 - text.a) + text.rgb;
     }
     // Dropouts: now and then a short white streak where the tape lost its coating (more, the older it is).
-    if (L7.y > 0.5)
+    if (L7.y > 0.0)
     {
         [unroll] for (int k = 0; k < 3; ++k)
         {
@@ -366,13 +394,13 @@ float4 ps_main(Interpolated i) : SV_Target
                 float x0 = hash12(float2(k, frame + 9.7)) * 1.1 - 0.1;
                 float span = 0.04 + 0.25 * hash12(float2(frame * 1.7, k + 2.0));
                 if (abs(i.uv.y - y0) * lines < 1.0 && i.uv.x > x0 && i.uv.x < x0 + span)
-                    colour = lerp(colour, ((0.6 + 0.4 * hash12(float2(i.uv.x * 900.0, frame))) * (sdr ? 1.0 : L6.y)).xxx, 0.85);
+                    colour = lerp(colour, ((0.6 + 0.4 * hash12(float2(i.uv.x * 900.0, frame))) * (sdr ? 1.0 : L6.y)).xxx, 0.85 * L7.y);
             }
         }
     }
     // Head switching: the bottom lines also carry a strip of noise.
-    if (L7.z > 0.5 && i.uv.y > 0.985)
-        colour = lerp(colour, (hash12(float2(i.uv.x * 400.0, frame + scan)) * (sdr ? 0.8 : 0.4 * L6.y)).xxx, 0.35 + 0.3 * age);
+    if (L7.z > 0.0 && i.uv.y > 0.985)
+        colour = lerp(colour, (hash12(float2(i.uv.x * 400.0, frame + scan)) * (sdr ? 0.8 : 0.4 * L6.y)).xxx, (0.35 + 0.3 * age) * L7.z);
     // The tracking band: its picture loses its colour and fills with noise.
     if (tracking > 0.01)
     {
@@ -380,12 +408,22 @@ float4 ps_main(Interpolated i) : SV_Target
         colour = lerp(colour, (grey + (hash12(float2(i.uv.x * 700.0, frame + scan)) - 0.5) * 0.2).xxx, saturate(tracking * 0.5));
     }
     // Interlaced fields: every other line a little darker.
-    if (L2.y > 0.5)
-        colour *= (fmod(scan, 2.0) < 1.0) ? 1.0 : 0.93;
-    if (sdr && L2.z > 0.5)
+    if (L2.y > 0.0)
+        colour *= (fmod(scan, 2.0) < 1.0) ? 1.0 : lerp(1.0, 0.93, L2.y);
+    if (sdr && L2.z > 0.0)
     {
         float n = frac(sin(dot(floor(i.uv * float2(720.0, 480.0)) + frac(L1.w * 37.0) * 91.0, float2(12.9898, 78.233))) * 43758.5453) - 0.5;
-        colour += n * 0.045;
+        colour += n * 0.045 * L2.z;
     }
+    // Tone: the picture by its brightness alone, from the colour given for black to the one given
+    // for white along a curve, with a coarse noise that changes every frame.
+    if (L6.w > 0.5)
+    {
+        float unit = sdr ? 1.0 : L6.y;
+        float level = pow(saturate(dot(colour, float3(0.299, 0.587, 0.114)) / unit), L9.w);
+        level += (hash12(floor(i.uv * float2(640.0, 480.0)) + frac(L1.w * 29.0) * 57.0) - 0.5) * 0.12 * L10.w;
+        colour = lerp(L9.rgb, L10.rgb, saturate(level)) * unit;
+    }
+    colour *= 1.0 - bar;
     return float4(colour, 1.0);
 }

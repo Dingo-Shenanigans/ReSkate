@@ -178,6 +178,27 @@ struct UiApi {
         add(L, plugin, {plugin_ui::Shape::Kind::world_image, {point(L, 3, "the picture's place")}, height, std::move(file), style_of(L, 5)});
         return 0;
     }
+    // d:game_map(top_left, bottom_right, {centre, range, heading, colour}): the game's own map of the
+    // level (the pause screen's) in a box, for a minimap: the part about the world place `centre`,
+    // `range` metres (5 to 2000) from the box's middle to its side, the way `heading` faces upward
+    // (radians, as reskate.skater.heading gives it; 0 when left out). Nothing is drawn where the
+    // level has no map (reskate.world.map() is nil) or while it is being read.
+    static int game_map(lua_State* L) {
+        auto& plugin = drawing(L);
+        luaL_checktype(L, 4, LUA_TTABLE);
+        plugin_ui::Shape shape{plugin_ui::Shape::Kind::game_map, {point(L, 2, "the map's top left"), point(L, 3, "the map's bottom right")}, 0, {}, style_of(L, 4)};
+        lua_getfield(L, 4, "centre");
+        shape.points.push_back(point(L, -1, "the map's centre"));
+        lua_pop(L, 1);
+        if (lua_getfield(L, 4, "range") == LUA_TNIL) luaL_error(L, "a map needs a range: the metres from its middle to its side");
+        shape.radius = finite(L, -1, "range");
+        if (!(shape.radius >= 5 && shape.radius <= 2000)) luaL_error(L, "a range is 5 to 2000 metres");
+        lua_pop(L, 1);
+        if (lua_getfield(L, 4, "heading") != LUA_TNIL) shape.turn = finite(L, -1, "heading");
+        lua_pop(L, 1);
+        add(L, plugin, std::move(shape));
+        return 0;
+    }
     // d:game_image(name, top_left, bottom_right, style): one of the game's own pictures; style.fit
     // "contain" (the default), "shape" or "panel", style.edge a panel's corner size in pixels.
     static int game_image(lua_State* L) {
@@ -887,7 +908,7 @@ void UiApi::install(Plugin& plugin, lua_State* L) {
     using F = UiApi;
     push_functions(L, {{"text", F::text}, {"rect", F::rect}, {"line", F::line}, {"circle", F::circle}, {"poly", F::poly},
                        {"world_text", F::world_text}, {"world_line", F::world_line}, {"world_circle", F::world_circle},
-                       {"image", F::image}, {"world_image", F::world_image}, {"game_image", F::game_image}, {"rough_rect", F::rough_rect}, {"scribble", F::scribble}, {"halftone", F::halftone},
+                       {"image", F::image}, {"world_image", F::world_image}, {"game_image", F::game_image}, {"game_map", F::game_map}, {"rough_rect", F::rough_rect}, {"scribble", F::scribble}, {"halftone", F::halftone},
                        {"clip", F::clip}, {"measure", F::measure},
                        {"gradient", F::gradient}, {"skeleton", F::skeleton}, {"size", F::size}, {"world_to_screen", F::world_to_screen}});
     plugin.draw_table_ = lua_ref(L, -1);

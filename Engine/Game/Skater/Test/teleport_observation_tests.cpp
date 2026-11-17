@@ -18,13 +18,15 @@
 // Unrelated profile/native links below fail closed and must never be invoked.
 #include "Extension/Profile/local_profile_objects.cpp"
 
-namespace profile_source_fixture { unsigned unrelated_calls{}; }
+namespace profile_source_fixture { unsigned unrelated_calls{}, position_sends{}; }
 namespace dingosdk::profile_runtime {
 LocalRuntime& local_runtime() { static LocalRuntime runtime; return runtime; }
 PlacementsRuntime& placements_runtime() { static PlacementsRuntime runtime; return runtime; }
 bool placement_session_ready() { ++profile_source_fixture::unrelated_calls; return false; }
 bool begin_placement_delete(const std::set<std::uint64_t>&) { ++profile_source_fixture::unrelated_calls; return false; }
 bool park_editor_owns_placements() { ++profile_source_fixture::unrelated_calls; return true; }
+// The position dispatch, which upstream's per-tick send (send_waiting_teleport) asks for.
+void update_position_teleport() { ++profile_source_fixture::position_sends; }
 WorldLayersRuntime& world_layers_runtime() {
     ++profile_source_fixture::unrelated_calls;
     static WorldLayersRuntime runtime;
@@ -370,12 +372,16 @@ void production_profile_wiring() {
     const auto completed = actor_observe();
     check(completed.known && !completed.pending && !same_idle(idle, completed),
         "production actor observer gets new idle history after placement dispatch drains");
+    send_waiting_teleport();
+    check(profile_source_fixture::position_sends == 0, "the per-tick send asks for nothing while no position teleport waits");
     {
         auto mutation = queue.mutate();
         mutation.write().set_position({}, std::nullopt, 200);
     }
     check(actor_observe().pending && try_local_skater_teleport_pending(pending) && pending,
         "production actor and dispatch queries both include accepted position work");
+    send_waiting_teleport();
+    check(profile_source_fixture::position_sends == 1, "the per-tick send reaches the position dispatch for a waiting teleport");
     { auto mutation = queue.mutate(); mutation.write().clear_position(); }
     std::promise<void> held, release;
     auto released = release.get_future();

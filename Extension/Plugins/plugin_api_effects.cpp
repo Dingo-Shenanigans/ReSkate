@@ -38,8 +38,15 @@ struct EffectsApi {
         auto& p = caller(L);
         EffectRequest request;
         request.asset = checked_text(L, 1, 240, "effect asset");
-        if (!private_effect_asset(request.asset, decal) || !p.manifest_.effects.contains(request.asset))
-            luaL_error(L, "effects must name a declared private mod asset; stock and store effects are refused");
+        // The mod's own effect, named in its manifest; or, with effects.game, one of the
+        // game's own particle effects (never a decal: those stay the mod's).
+        if (!(private_effect_asset(request.asset, decal) && p.manifest_.effects.contains(request.asset))) {
+            if (decal || !game_effect_asset(request.asset))
+                luaL_error(L, "effects must name a declared private mod asset, or with effects.game one of the game's particle effects");
+            if (!p.has("effects.game"))
+                luaL_error(L, "the game's own effects need the \"effects.game\" permission in reskate-plugin.json");
+            request.game = true;
+        }
         request.transform = matrix(L, 2);
         request.decal = decal;
         if (decal && !lua_isnoneornil(L, 3)) {
@@ -52,7 +59,7 @@ struct EffectsApi {
         }
         const auto full = [&] {
             return std::count_if(p.effect_handles_.begin(), p.effect_handles_.end(),
-                [decal](const auto& h) { return h.second == decal; }) >= (decal ? 2048 : 24);
+                [decal](const auto& h) { return h.second == decal; }) >= (decal ? 2048 : 64);
         };
         // Console/event callbacks can run before the next VM tick.
         if (full()) {
@@ -63,6 +70,23 @@ struct EffectsApi {
         if (!id) { lua_pushnil(L); lua_pushliteral(L, "effect asset or renderer unavailable"); return 2; }
         p.effect_handles_.emplace(id, decal);
         lua_pushnumber(L, static_cast<double>(id));
+        return 1;
+    }
+    // reskate.effects.load(bundle, asset): asks the game for one of its effect bundles.
+    static int load(lua_State* L) {
+        auto& p = caller(L);
+        if (!p.has("effects.game"))
+            luaL_error(L, "reskate.effects.load needs the \"effects.game\" permission in reskate-plugin.json");
+        const auto bundle = checked_text(L, 1, 240, "effect bundle");
+        const auto asset = checked_text(L, 2, 240, "effect asset");
+        if (!game_effect_bundle(bundle)) luaL_error(L, "an effect bundle is one of the game's under win32/effects/");
+        if (!game_effect_asset(asset)) luaL_error(L, "the asset is one of the game's particle effects");
+        switch (p.services_.game().effect_bundle(p.id_, bundle, asset)) {
+        case EffectBundleState::ready: lua_pushliteral(L, "ready"); break;
+        case EffectBundleState::loading: lua_pushliteral(L, "loading"); break;
+        case EffectBundleState::failed: lua_pushliteral(L, "failed"); break;
+        default: lua_pushliteral(L, "unavailable"); break;
+        }
         return 1;
     }
     static int particle(lua_State* L) { return create(L, false); }
@@ -99,6 +123,7 @@ struct EffectsApi {
 void install_effects_api(Plugin&, lua_State* L) {
     add_functions(L, "effects", {{"particle", EffectsApi::particle}, {"decal", EffectsApi::decal},
         {"move", EffectsApi::move}, {"stop", EffectsApi::stop}, {"opacity", EffectsApi::opacity},
-        {"release", EffectsApi::release}, {"clear", EffectsApi::clear}, {"state", EffectsApi::state}});
+        {"release", EffectsApi::release}, {"clear", EffectsApi::clear}, {"state", EffectsApi::state},
+        {"load", EffectsApi::load}});
 }
 }

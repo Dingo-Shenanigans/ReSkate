@@ -2,8 +2,10 @@
 #include "world_layer_catalog.h"
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -26,6 +28,37 @@ inline bool world_layer_kept_off(std::string_view key) noexcept {
     for (const auto kept : world_layers_kept_off)
         if (kept == key) return true;
     return false;
+}
+// A custom map is the exception: a map that carries a level of its own (a level ported from
+// another game build, say) may place its content in one of those layers, an event's decoration
+// in the Isle of Grom's season 5 layer for one. While a custom map is the level being played
+// (the client tick says so), such a layer is offered like any other and "on" is honoured. It is
+// still off until a player or host turns it on, and the game's own maps are as before.
+inline std::atomic<bool> world_layers_custom_level{false};
+inline bool world_layer_withheld(std::string_view key) noexcept {
+    return world_layer_kept_off(key) && !world_layers_custom_level.load(std::memory_order_acquire);
+}
+// What the custom map being played says its layers are (its manifest row's worldLayers): used
+// for a layer the player has left at "default". Set by the client tick, read by the layer poll.
+struct WorldLayerMapDefaults {
+    std::mutex mutex;
+    std::vector<std::pair<std::string, std::string>> choices;
+};
+inline WorldLayerMapDefaults& world_layer_map_defaults() {
+    static WorldLayerMapDefaults defaults;
+    return defaults;
+}
+inline void set_world_layer_map_defaults(const std::vector<std::pair<std::string, std::string>>& choices) {
+    auto& defaults = world_layer_map_defaults();
+    std::lock_guard lock(defaults.mutex);
+    if (defaults.choices != choices) defaults.choices = choices;
+}
+inline std::string world_layer_map_default(std::string_view key) {
+    auto& defaults = world_layer_map_defaults();
+    std::lock_guard lock(defaults.mutex);
+    for (const auto& [layer, mode] : defaults.choices)
+        if (layer == key) return mode;
+    return {};
 }
 // A layer's name as menus show it: its label without the developers' own marks, the words
 // DEV and DTN ("DTN Season 04 Content" is "Season 04 Content").

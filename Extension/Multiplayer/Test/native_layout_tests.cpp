@@ -431,6 +431,26 @@ void board_regression() {
     visual = read_native_board_visual(m, fixture_base, board);
     check(visual.initialized && visual.enabled && visual.meshes == 3,
           "Initialized board meshes not recognized");
+    // Relocate the constructed holder into the board allocation, as observed in both live actors.
+    const auto embedded = board + dingosdk::addr::native_skater::board_embedded_holder_offset;
+    auto render = m;
+    for (const auto& [address, byte] : m.bytes)
+        if (address >= fixture_holder && address < fixture_holder + 0x100)
+            render.bytes[embedded + address - fixture_holder] = byte;
+    render.put(board + 0xf0, embedded);
+    check(read_native_board_render_owner(render, fixture_base, embedded) == board, "Render owner not resolved");
+    for (unsigned test = 0; test < 5; ++test) {
+        auto invalid = render;
+        if (test == 0) invalid.put(board, fixture_base + engine::board_entity_vtable + 8);
+        if (test == 1) invalid.put(board + 0xf0, fixture_holder);
+        if (test == 2) invalid.put(embedded + 0x20, std::uintptr_t{0x120000});
+        if (test == 3) invalid.put(embedded + 0x30, parent + 8);
+        if (test == 4) invalid.put(mesh + 0x18, skater_collection);
+        bool rejected{};
+        try { (void)read_native_board_render_owner(invalid, fixture_base, embedded); }
+        catch (const std::exception&) { rejected = true; }
+        check(rejected, "Unowned render board accepted");
+    }
     for (unsigned test = 0; test < 7; ++test) {
         auto invalid = m;
         if (test == 0)
@@ -816,6 +836,22 @@ void cosmetic_layout_regression() {
         board_only.parts = stand_ins::Parts::board;
         check(!stand_ins::covers(board_only, false) && stand_ins::covers(board_only, true) && stand_ins::covers(first, false),
               "A policy covers the parts it names");
+        // Seeded by the player, not their outfit: changing one item keeps another's stand-in.
+        {
+            stand_ins::Policy roulette;
+            roulette.pick = stand_ins::Pick::random;
+            roulette.seed = 9;
+            const std::uint64_t outfit_a = 111, outfit_b = 222; // the same player before and after a change
+            const auto unchanged = stand_ins::order(roulette, many, stand_ins::who(42, outfit_a), 11, "Mod_Hoodie");
+            const auto changed = stand_ins::order(roulette, many, stand_ins::who(42, outfit_b), 11, "Mod_Hoodie");
+            check(unchanged == changed, "A player's stand-in for one item stays while they change another");
+            bool differs = false;
+            for (std::uint64_t other = 43; other < 60 && !differs; ++other)
+                differs = stand_ins::order(roulette, many, stand_ins::who(other, outfit_a), 11, "Mod_Hoodie") != unchanged;
+            check(differs, "Other players get other stand-ins for the same item");
+            check(stand_ins::who(0, outfit_a) == outfit_a && stand_ins::who(0, outfit_b) != stand_ins::who(0, outfit_a),
+                  "Without a player, the outfit seeds it as before");
+        }
     }
     auto bad = m;
     bad.put(categories, category + 0x100);

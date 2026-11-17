@@ -2,9 +2,10 @@
 #include <string_view>
 
 namespace dingosdk {
-// The release version (DINGOSDK_VERSION); local builds say 0.0.0.
+// The release's build number (DINGOSDK_VERSION): eight digits, the day of the commit it was built
+// from. Local builds say 00000000.
 inline constexpr std::string_view reskate_version = "@reskate_version_escaped@";
-inline constexpr bool reskate_release_build = reskate_version != "0.0.0";
+inline constexpr bool reskate_release_build = reskate_version != "00000000";
 // Set (DINGOSDK_MOD_ID / DINGOSDK_MOD_VERSION) when this is a modified ReSkate build, so crash reports,
 // the log and the start-up notice say so. Empty in ReSkate's own releases.
 inline constexpr std::string_view reskate_mod_id = "@DINGOSDK_MOD_ID@";

@@ -28,6 +28,10 @@ struct State {
     bool timeout{}, callback_error{}, content_length{true}, downgrade{};
     unsigned opens{}, reads{}, closing_callbacks{}, pending_buffer_closes{};
     DWORD redirect{}, request_flags{}, session_flags{};
+    // Sends refused for the server's certificate (12175) before one gets through, and what the
+    // retry set: the security flags it waives in the handshake, and whether redirects are off.
+    unsigned secure_failures{};
+    DWORD security_flags{}, disabled_features{};
     void* pending_buffer{};
     Handle session, connection, request;
     std::string body{"payload"};
@@ -59,6 +63,8 @@ bool failure(Stage stage) {
 }
 HINTERNET WINAPI open(LPCWSTR, DWORD, LPCWSTR, LPCWSTR, DWORD flags) {
     ++state.opens;
+    // A second try opens fresh handles (the fakes are reused, so the first try's are reset).
+    if (state.session.closed) state.session = {}, state.connection = {}, state.request = {};
     state.session_flags = flags;
     return &state.session;
 }
@@ -74,6 +80,8 @@ BOOL WINAPI set_option(HINTERNET handle, DWORD option, LPVOID value, DWORD) {
     if (option == WINHTTP_OPTION_CONTEXT_VALUE)
         static_cast<Handle*>(handle)->context = *static_cast<DWORD_PTR*>(value);
     if (option == WINHTTP_OPTION_REDIRECT_POLICY) state.redirect = *static_cast<DWORD*>(value);
+    if (option == WINHTTP_OPTION_SECURITY_FLAGS) state.security_flags = *static_cast<DWORD*>(value);
+    if (option == WINHTTP_OPTION_DISABLE_FEATURE) state.disabled_features |= *static_cast<DWORD*>(value);
     return TRUE;
 }
 WINHTTP_STATUS_CALLBACK WINAPI set_callback(HINTERNET handle, WINHTTP_STATUS_CALLBACK callback,
@@ -88,6 +96,11 @@ BOOL WINAPI send(HINTERNET, LPCWSTR, DWORD, LPVOID, DWORD, DWORD, DWORD_PTR cont
     state.request.context = context;
     if (pending(Stage::send)) return TRUE;
     if (failure(Stage::send)) return state.callback_error ? TRUE : FALSE;
+    if (state.secure_failures) {
+        --state.secure_failures;
+        SetLastError(ERROR_WINHTTP_SECURE_FAILURE);
+        return FALSE;
+    }
     notify(WINHTTP_CALLBACK_STATUS_SENDREQUEST_COMPLETE);
     return TRUE;
 }
@@ -112,6 +125,11 @@ BOOL WINAPI query(HINTERNET, DWORD query, LPCWSTR, LPVOID value, LPDWORD size, L
     }
     *size = sizeof(DWORD);
     return TRUE;
+}
+// The server's certificate is never handed over here, so a retry can never pass its check.
+BOOL WINAPI query_option(HINTERNET, DWORD, LPVOID, LPDWORD) {
+    SetLastError(ERROR_WINHTTP_INCORRECT_HANDLE_STATE);
+    return FALSE;
 }
 BOOL WINAPI read(HINTERNET, LPVOID buffer, DWORD capacity, LPDWORD count) {
     // The production async path must receive the count through its callback.
@@ -169,6 +187,7 @@ BOOL WINAPI close(HINTERNET handle) {
 #define WinHttpQueryHeaders fake_http::query
 #define WinHttpReadData fake_http::read
 #define WinHttpCloseHandle fake_http::close
+#define WinHttpQueryOption fake_http::query_option
 #include "../https_download.cpp"
 #undef WinHttpOpen
 #undef WinHttpConnect
@@ -181,6 +200,7 @@ BOOL WINAPI close(HINTERNET handle) {
 #undef WinHttpQueryHeaders
 #undef WinHttpReadData
 #undef WinHttpCloseHandle
+#undef WinHttpQueryOption
 
 namespace {
 int failures{};
@@ -321,6 +341,24 @@ int main(int argc, char** argv) {
     result = get();
     check(!result.ok && result.error == ERROR_BAD_LENGTH && removed() && closed(),
           "empty body remains rejected and its created output is removed");
+
+    // A certificate Windows refuses: tried once more, with the handshake's checks waived and no
+    // redirects, and that answer is refused too when the certificate cannot be checked against
+    // ReSkate's own roots (here it never can). Nothing of it reaches the destination.
+    reset(watch);
+    fake_http::state.secure_failures = 1;
+    result = get();
+    check(fake_http::state.opens == 2, "a certificate Windows refuses is tried once more");
+    check((fake_http::state.security_flags & SECURITY_FLAG_IGNORE_UNKNOWN_CA) &&
+              (fake_http::state.disabled_features & WINHTTP_DISABLE_REDIRECTS),
+          "the second try waives Windows' root check and follows no redirect");
+    check(!result.ok && result.error == ERROR_WINHTTP_SECURE_FAILURE && fake_http::state.reads == 0 && removed(),
+          "an answer whose certificate fails ReSkate's own check is refused unread");
+    reset(watch);
+    fake_http::state.fail_at = Stage::send;
+    result = get();
+    check(fake_http::state.opens == 1 && fake_http::state.security_flags == 0,
+          "other failures are not tried again with Windows' checks waived");
 
     reset(watch);
     fake_http::state.stop_at = Stage::send;

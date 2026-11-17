@@ -91,7 +91,7 @@ endif()
 
 # Read access to the installed game's cas archives.
 add_library(dingosdk_game_archives STATIC Engine/Vfs/game_archives.cpp Engine/Vfs/game_bundles.cpp
-    Engine/Vfs/item_thumbnails.cpp Engine/Vfs/game_textures.cpp)
+    Engine/Vfs/item_thumbnails.cpp Engine/Vfs/game_textures.cpp Engine/Vfs/game_map.cpp)
 target_link_libraries(dingosdk_game_archives PUBLIC dingosdk_native_db dingosdk_frostbite)
 
 if(WIN32)
@@ -105,6 +105,11 @@ if(WIN32)
         Engine/Vfs/mod_merge_combine.cpp
         Engine/Vfs/mod_merge_overrides.cpp
         Engine/Vfs/mod_merge_conflicts.cpp
+        Engine/Vfs/mod_merge_layout.cpp
+        Engine/Vfs/mod_merge_left_out.cpp
+        Engine/Vfs/mod_items.cpp
+        Engine/Vfs/mod_vram.cpp
+        Engine/Vfs/mod_merge_scan.cpp
         Engine/Vfs/mod_merge_scan_cache.cpp
         Engine/Vfs/mod_merge_textures.cpp
         Engine/Vfs/mod_merge_grid.cpp
@@ -118,8 +123,11 @@ if(WIN32)
     target_link_libraries(dingosdk_mods PUBLIC dingosdk_json dingosdk_mod_list PRIVATE dingosdk_game_archives dingosdk_native_db dingosdk_frostbite dingosdk_content_cache dingosdk_miniz dingosdk_zstd shell32 bcrypt)
 
     # HTTPS downloads shared by the park preview and content cache packs.
+    # Its check of a server's certificate against ReSkate's own roots, for the launcher's requests too.
+    add_library(dingosdk_https_trust STATIC Engine/Vfs/https_trust.cpp)
+    target_link_libraries(dingosdk_https_trust PUBLIC crypt32)
     add_library(dingosdk_https STATIC Engine/Vfs/https_download.cpp)
-    target_link_libraries(dingosdk_https PUBLIC winhttp)
+    target_link_libraries(dingosdk_https PUBLIC winhttp dingosdk_https_trust)
 endif()
 
 # The live game's content cache: the launcher installs it, the runtime reads
@@ -141,6 +149,7 @@ add_library(dingosdk_plugins STATIC
     Extension/Plugins/plugin_manifest.cpp
     Extension/Plugins/plugin_approval.cpp
     Extension/Plugins/plugin_listing.cpp
+    Extension/Plugins/plugin_server_scope.cpp
     Extension/Plugins/plugin_vm.cpp
     Extension/Plugins/plugin_api.cpp
     Extension/Plugins/plugin_api_ui.cpp
