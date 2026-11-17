@@ -40,6 +40,7 @@ public:
     Poll& operator=(const Poll&) = delete;
     Poll(Poll&&) = delete;
     Poll& operator=(Poll&&) = delete;
+    bool observed() const noexcept { return !unarmed_ && (ticket_ || fallback_user_ < 4); }
 private:
     friend void begin(bool, std::uint32_t, Poll&) noexcept;
     friend void finish(Poll&, std::uint32_t, bool, std::uint32_t,

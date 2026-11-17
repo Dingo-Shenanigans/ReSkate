@@ -19,8 +19,6 @@ bool block_polled_input();
 // SDK menus and prompts keep their own input. Gameplay captures cannot take
 // Start/Options or Escape away from the player.
 bool trusted_polled_capture();
-// Refresh the cached countdown bit once on the client tick.
-void update_countdown_capture();
 // Atomic host-owned flags only; safe under the input publication gate.
 bool trusted_capture_flags() noexcept;
 bool block_polled_key(unsigned key);

@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <string_view>
+#include <Windows.h>
 namespace source = dingosdk::native_input_source;
 namespace lease = dingosdk::input_lease;
 namespace capture = dingosdk::input_lease_capture;
@@ -506,15 +507,23 @@ void menu_staged_restore() {
     test_tick(1, 2, true, {true, true});
     const auto before = writes;
     const auto restored = finish(staged, physical, {}, 0, true, true, 0, 7, 99, revision);
-    check(restored.pad == physical && restored.packet == 7 && writes == before + 1 && state(handle).debt &&
+    check(restored.pad == lease::Pad{} && restored.packet == 99 && writes == before && state(handle).debt &&
         !state(handle).neutral_releases,
-        "a menu race restores an already-filtered candidate with one bounded safety write, without claiming handback");
+        "a menu race leaves the hook chain's filtered report and capture debt intact");
+    check(source::capture_release(1, handle), "capture enters release while menu remains open");
+    source::Poll challenge; source::begin(true, 0, challenge);
+    auto challenge_report = physical;
+    challenge_report.buttons &= ~dingosdk::input::menu_button;
+    const auto challenge_before = writes;
+    const auto challenged = finish(challenge, physical, challenge_report, 0, true, true, 0, 7, 99);
+    check(challenged.pad == challenge_report && challenged.packet == 99 && writes == challenge_before && state(handle).debt,
+        "a releasing capture preserves the challenge panel's hidden Start while the menu is open");
     source::Poll sdk; source::begin(true, 0, sdk);
     trusted_capture_active = true;
     const auto sdk_before = writes;
     const auto neutral = finish(sdk, physical, {}, 0, true, true, 0, 7, 99);
     check(neutral.pad == lease::Pad{} && neutral.packet == 99 && writes == sdk_before && state(handle).debt,
-        "trusted overlay or prompt suppression is never undone by raw menu restoration");
+        "trusted overlay or prompt suppression remains the hook chain's report");
     trusted_capture_active = false;
     test_tick(1, 2, true, {true, false}); report(); close(handle);
 }
@@ -691,8 +700,8 @@ void menu_unknown_callbacks() {
         source::Poll filtered; source::begin(true, 0, filtered);
         const auto restored = finish(filtered, physical, {});
         const auto receipt = state(handle);
-        check(restored.packet == 7 && restored.pad == physical && writes == before + 1,
-            "unknown callbacks restore a filtered menu report with one bounded safety write");
+        check(restored.packet == 7 && restored.pad == lease::Pad{} && writes == before,
+            "unknown callbacks leave a filtered menu report untouched");
         check(receipt.key == identity && receipt.callbacks_unknown && receipt.debt && receipt.quarantined &&
             receipt.polls_in_flight == 128 && !receipt.neutral_releases && receipt.publications == 1 &&
             !source::capture_acknowledge(1, handle),
@@ -724,6 +733,8 @@ void capacity() {
 }
 }
 namespace dingosdk::native_input_source::environment {
+std::uint64_t test_tick_now() noexcept { return facts.now_ms; }
+std::uint32_t test_tick_thread() noexcept { return facts.thread; }
 Facts sample() noexcept {
     auto result = facts;
     result.interference_clear = result.interference_clear && !input::pad_outputs().active(result.now_ms);

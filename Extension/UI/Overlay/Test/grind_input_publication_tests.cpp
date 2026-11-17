@@ -146,6 +146,8 @@ void changes(Setter setter) {
 
 }
 namespace dingosdk::native_input_source::environment {
+std::uint64_t test_tick_now() noexcept { return fixture_now; }
+std::uint32_t test_tick_thread() noexcept { return 1; }
 Facts sample() noexcept { return {fixture_now, 1, true, true, true, true}; }
 bool trusted_capture() noexcept { return false; }
 }

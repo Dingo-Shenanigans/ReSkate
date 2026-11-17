@@ -6,6 +6,7 @@
 #include "Engine/Game/Input/input_lease_policy.h"
 #include "Engine/Game/Input/plugin_input_policy.h"
 #include "native_menu_observation.h"
+#include <Windows.h>
 #include <array>
 #include <atomic>
 #include <limits>
@@ -297,13 +298,19 @@ void publication_changed() noexcept {
 
 void tick(std::uintptr_t base, std::uintptr_t native_client, bool ready) noexcept {
     PublicationScope scope;
-    const auto sampled = sample();
     if (!scope.owns()) return;
     auto& s = state();
+    const bool armed = s.armed.load(std::memory_order_acquire);
+#if defined(DINGOSDK_INPUT_SOURCE_TEST)
+    const auto sampled = armed ? sample() : Sample{publication_revision(),
+        {environment::test_tick_now(), environment::test_tick_thread()}};
+#else
+    const auto sampled = armed ? sample() : Sample{publication_revision(), {GetTickCount64(), GetCurrentThreadId()}};
+#endif
     const bool publication_stable = sampled.revision == s.revision.load(std::memory_order_relaxed);
     const bool changed = base != s.base || native_client != s.client || ready != s.ready ||
         sampled.facts.thread != s.client_thread;
-    const bool menu_open = native_menu_observation::known_open(sampled.facts.now_ms);
+    const bool menu_open = armed && native_menu_observation::known_open(sampled.facts.now_ms);
     if (changed || (menu_open && !s.menu_open)) {
         advance_revision();
         invalidate(changed ? lease::Reason::context_changed : lease::Reason::menu_open);
@@ -316,6 +323,7 @@ void tick(std::uintptr_t base, std::uintptr_t native_client, bool ready) noexcep
     s.base = base; s.client = native_client; s.client_thread = sampled.facts.thread;
     s.ready = ready && base && native_client && sampled.facts.thread && !s.failed;
     s.eligible_at = s.ready ? sampled.facts.now_ms : 0;
+    if (!armed) return;
     // This tick itself owns the context transition above, not an external writer.
     auto current = sampled;
     if (publication_stable) current.revision = s.revision.load(std::memory_order_relaxed);
@@ -567,21 +575,12 @@ std::uint32_t finalize(std::uint64_t ticket, std::uint32_t fallback_user,
     for (const auto& callback : s.callbacks) if (callback.ticket == ticket && ticket) { copied = callback; break; }
     const auto& key = s.capture.state().key;
     const bool trusted_capture = environment::trusted_capture();
-    const auto restore_menu_input = [&]() {
-        // A plugin filter may have run just before the menu opened. Restore its
-        // raw candidate only when trusted SDK UI does not own this report now.
-        // This bounded safety write proves neither handback nor game consumption.
-        if (!trusted_capture && original_result == 0 && raw_known &&
-            returned_result == 0 && returned_known && output && publish &&
-            (raw_packet != returned_packet || raw != candidate))
-            (void)publish(output, raw_packet, raw);
-    };
     if (!copied.ticket) {
         // Capacity/counter failure has no accepted callback record. It never
         // supplies fresh facts or completion, and its unknown duty is not ACKable.
         if (sdk_written) return returned_result;
-        if (native_menu_observation::known_open(current.now_ms)) restore_menu_input();
-        else if (fallback_user < 4 && s.callbacks_unknown && key.user == fallback_user &&
+        if (!native_menu_observation::known_open(current.now_ms) &&
+            fallback_user < 4 && s.callbacks_unknown && key.user == fallback_user &&
             s.sources[fallback_user].connected && s.sources[fallback_user].epoch == key.source_epoch &&
             original_result == 0 && raw_known && output && publish) {
             (void)s.capture.retain_neutralization(key);
@@ -625,7 +624,6 @@ std::uint32_t finalize(std::uint64_t ticket, std::uint32_t fallback_user,
     if (native_menu_observation::known_open(current.now_ms)) {
         // Retained cleanup is not authority to withhold a menu's physical input.
         // Keep its debt and translator history until a later confirmed handback.
-        restore_menu_input();
         drain(ticket);
         return returned_result;
     }

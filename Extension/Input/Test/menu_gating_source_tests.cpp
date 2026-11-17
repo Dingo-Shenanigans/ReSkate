@@ -13,11 +13,14 @@ ULONGLONG fixture_now = 1000;
 ULONGLONG WINAPI fixture_tick_count() noexcept { return fixture_now; }
 bool overlay_owns{};
 bool fixture_script{};
+bool fixture_countdown{};
 WORD fixture_pad_key = VK_PAD_START;
 USHORT fixture_raw_key = VK_ESCAPE;
 }
 #define GetTickCount64 fixture_tick_count
+#define DINGOSDK_INPUT_SOURCE_TEST
 #include "Extension/UI/Overlay/input_capture.cpp"
+#undef DINGOSDK_INPUT_SOURCE_TEST
 #undef GetTickCount64
 
 namespace dingosdk::native_input_source {
@@ -41,7 +44,7 @@ bool interactive_visible(const State&) { return false; }
 bool install(Hook&, void*, void*) { return false; }
 }
 namespace dingosdk::throwdowns::kit {
-Match match() noexcept { return {}; }
+Match match() noexcept { Match value; value.input_lock = fixture_countdown; return value; }
 }
 namespace dingosdk::overlay {
 // The stand-in pad of the character room's walk and reskate.room.turn: RB alone.
@@ -209,6 +212,11 @@ void polled_lanes() {
     overlay::hide_game_keys({});
 }
 void xinput_lanes() {
+    const auto copies = capture::passive_copy_calls.load();
+    XINPUT_STATE idle_xbox{}, idle_front{};
+    assert(capture::captured_xinput<0>(0, &idle_xbox) == ERROR_SUCCESS);
+    assert(capture::captured_front<0>(0, &idle_front) == ERROR_SUCCESS);
+    assert(capture::passive_copy_calls.load() == copies);
     overlay::hide_game_buttons(XINPUT_GAMEPAD_START | XINPUT_GAMEPAD_A);
     const auto verify = [&](menu::State state, std::uint64_t age, bool hide_a) {
         menu::publish(state, fixture_now - age);
@@ -242,6 +250,15 @@ void xinput_lanes() {
         assert(capture::captured_front<0>(0, &front) == ERROR_SUCCESS && front.Gamepad.wButtons == XINPUT_GAMEPAD_RIGHT_SHOULDER);
     }
     fixture_script = false;
+}
+void countdown_without_tick() {
+    fixture_countdown = true;
+    assert(capture::trusted_polled_capture());
+    fixture_countdown = false;
+    XINPUT_STATE output{};
+    assert(capture::captured_xinput<0>(0, &output) == ERROR_SUCCESS);
+    assert(output.Gamepad.wButtons == (XINPUT_GAMEPAD_START | XINPUT_GAMEPAD_A));
+    assert(!capture::trusted_polled_capture());
 }
 void raw_lane() {
     const std::array<std::uint8_t, 2> hidden{'R', VK_ESCAPE};
@@ -316,6 +333,7 @@ int main() {
     directinput_capture(device);
     polled_lanes();
     xinput_lanes();
+    countdown_without_tick();
     raw_lane();
     capture::input_hooks().formats.erase(device);
     hid_options();

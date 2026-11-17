@@ -1228,7 +1228,6 @@ void update_model(std::uintptr_t client, TickState& frame) {
                 ? (menu.in_menu ? dingosdk::native_menu_observation::State::open
                                 : dingosdk::native_menu_observation::State::closed)
                 : dingosdk::native_menu_observation::State::unknown, GetTickCount64());
-        dingosdk::overlay::detail::update_countdown_capture();
         dingosdk::native_input_source::tick(r.base, client, named_context_ready && !debug_busy);
         frame.input_ready_published = true;
         dingosdk::skater_movement::set_client(client);

@@ -237,6 +237,8 @@ void capacity() {
 void idle_poll() {
     test_tick(1, 2, true, {true, false});
     const auto sampled = sample_calls.load();
+    for (unsigned i = 0; i < 1000; ++i) test_tick(1, 2, true, {true, false});
+    check(sample_calls.load() == sampled, "unarmed client ticks do not sample the environment");
     const auto gates = source::gate_entries();
     for (unsigned i = 0; i < 1000; ++i) {
         source::Poll poll; source::begin(true, 0, poll);
@@ -255,6 +257,10 @@ void idle_poll() {
     report();
     check(source::lease_request(1, 0, handle, reason), "registered poll permits a later request");
     close(handle);
+    test_tick(1, 3, true, {true, false});
+    lease::Handle stale;
+    check(!source::lease_request(2, 0, stale, reason) && reason == lease::Reason::source_unavailable,
+        "context changed during an unarmed stretch refuses an old stream");
 }
 struct ThreadBuffer { std::uint32_t packet{}; lease::Pad pad{}; std::uint32_t tail{0xabcddcba}; };
 bool thread_publish(void* output, std::uint32_t packet, const lease::Pad& pad) noexcept {
@@ -285,7 +291,8 @@ void threaded_poll() {
             if (result || buffer.tail != 0xabcddcba) thread_violation.store(true);
             ++packet;
             threaded_polls.fetch_add(1, std::memory_order_relaxed);
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            // No sleep: the poller runs as fast as it can against the client thread's requests.
+            std::this_thread::yield();
         }
     });
     lease::Handle handle; lease::Reason reason{}; lease::Snapshot snapshot;
@@ -358,6 +365,8 @@ void policy() {
 }
 }
 namespace dingosdk::native_input_source::environment {
+std::uint64_t test_tick_now() noexcept { return threaded_mode.load(std::memory_order_relaxed) ? GetTickCount64() : facts.now_ms; }
+std::uint32_t test_tick_thread() noexcept { return threaded_mode.load(std::memory_order_relaxed) ? GetCurrentThreadId() : facts.thread; }
 Facts sample() noexcept {
     sample_calls.fetch_add(1, std::memory_order_relaxed);
     if (threaded_mode.load(std::memory_order_relaxed)) return {GetTickCount64(), GetCurrentThreadId(), true, true, true, true};
