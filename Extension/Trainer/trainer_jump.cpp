@@ -233,7 +233,11 @@ bool start_trick_heights(std::uintptr_t base) noexcept {
             return false;
         }
         h.original.store(reinterpret_cast<SetTrajectory>(original), std::memory_order_release);
-        if (hook_enable(target) != HookOk) return false;
+        {
+            // The trainer may first ask for this hook after gameplay has started.
+            HookBatch batch;
+            if (hook_enable(target) != HookOk) return false;
+        }
         set_physics_step_callback(&raise_step);
         h.ready = true;
         logging::write(logging::Level::info, logging::Channel::skater, "Trainer: no comply and boneless heights ready.");
