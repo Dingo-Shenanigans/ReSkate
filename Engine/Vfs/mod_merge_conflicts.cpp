@@ -195,7 +195,7 @@ Rows decide(const Shared& shared, const std::vector<const Mod*>& mods, ConflictC
                     fb::ebx::MergeSummary summary;
                     (void)fb::ebx::merge_documents(base, edits, &summary);
                     uncombinable = summary.dropped.empty() && !summary.instances && !summary.arrayEntries &&
-                                   (!summary.values || !summary.exact());
+                                   (!summary.changed_in_place() || !summary.exact());
                 }
             } catch (const std::exception&) {
                 uncombinable = true;

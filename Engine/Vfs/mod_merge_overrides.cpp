@@ -678,7 +678,7 @@ AssetOverrides collect_asset_overrides(const std::vector<const Mod*>& mods,
                 fb::ebx::MergeSummary summary;
                 auto combined = fb::ebx::merge_documents(baseDoc, editDocs, &summary);
                 // Changed values alone are only worth a copy that has all of them.
-                if (!summary.instances && !summary.arrayEntries && !(summary.values && summary.exact())) continue;
+                if (!summary.instances && !summary.arrayEntries && !(summary.changed_in_place() && summary.exact())) continue;
                 const auto rebuilt = fb::ebx::write_document(combined);
                 existing->second.sha1 = sha1_of(rebuilt);
                 existing->second.originalSize = rebuilt.size();

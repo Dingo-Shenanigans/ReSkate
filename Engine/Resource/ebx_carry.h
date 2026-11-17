@@ -29,8 +29,13 @@ public:
     // A reference into another partition is an import: the same (file, class)
     // pair the target already lists is reused, anything new is added.
     std::int32_t import(std::int32_t index);
+    // A type the source's EFIX list names, as the target's EFIX slot for it (added when missing):
+    // boxed values and type references count in that list, and each document numbers its own.
+    std::uint32_t fixup_slot(std::uint32_t index);
     [[nodiscard]] std::shared_ptr<Object> object(const Object& source);
     [[nodiscard]] Value value(const Value& source);
+    // A box whose content was read, rebuilt in the target's numbering and marked to be written afresh.
+    [[nodiscard]] BoxedReference boxed(const BoxedReference& source);
 
     std::size_t instances{};
     std::size_t renumbered{};
