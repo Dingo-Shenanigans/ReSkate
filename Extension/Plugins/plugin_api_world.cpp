@@ -80,6 +80,15 @@ struct WorldApi {
         plugin.wipeout_at_ = now;
         return result(L, game_of(plugin).wipeout(static_cast<float>(force)));
     }
+    // skydive(): the game's own skydive for a skater falling on foot, which otherwise stays in a plain
+    // fall until the player makes an air move. It stands for a quarter of a second: asked every tick
+    // for as long as the dive is wanted. On its feet, on the board or once the dive has begun it does
+    // nothing; the game ends the dive itself where the body lands.
+    static int skydive(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "skater.control", "reskate.skater.skydive");
+        return result(L, game_of(plugin).skydive());
+    }
     // skater.xray(on): the x-ray ready (the renderer followed) while on; d:skeleton draws it.
     static int xray(lua_State* L) {
         auto& plugin = plugin_of(L);
@@ -1781,6 +1790,18 @@ struct WorldApi {
             lua_pop(L, 1);
         }
         return result(L, game_of(plugin).skater_pose(plugin.id(), offsets, static_cast<float>(weight), shown, still));
+    }
+    // skater.pose_others(joints, weight): a pose for the other players alone, kept beside pose()'s: a
+    // first-person plugin draws its own arms on its own screen (pose, shown "me") and sends the others
+    // a whole body with this. The same joints table as pose takes; nil lets it go. (A call of its own,
+    // so that a plugin can tell a ReSkate that keeps the two apart: pose with shown "others" on an older
+    // one took the place of the pose drawn.)
+    static int skater_pose_others(lua_State* L) {
+        lua_settop(L, 2);
+        lua_createtable(L, 0, 1);
+        lua_pushstring(L, "others");
+        lua_setfield(L, -2, "shown");
+        return skater_pose(L);
     }
     // skater.joint(joint): {position, rotation, scale} of one of the local skater's joints, or nil.
     static int skater_joint(lua_State* L) {
@@ -3702,8 +3723,8 @@ void WorldApi::install(Plugin& plugin, lua_State* L) {
     lua_pushstring(L, "locked");
     lua_setfield(L, -2, "__metatable");
     lua_setfield(L, LUA_REGISTRYINDEX, "reskate.permissions");
-    add_functions(L, "skater", {{"state", state}, {"noclip", noclip}, {"boost", boost}, {"freeze", freeze}, {"wipeout", wipeout}, {"xray", xray},
-                                {"shape_launch", shape_launch}, {"hide", hide_skater}, {"reach", reach}, {"carry", carry}, {"hand", hand}, {"joint", skater_joint}, {"pose", skater_pose}});
+    add_functions(L, "skater", {{"state", state}, {"noclip", noclip}, {"boost", boost}, {"freeze", freeze}, {"wipeout", wipeout}, {"skydive", skydive}, {"xray", xray},
+                                {"shape_launch", shape_launch}, {"hide", hide_skater}, {"reach", reach}, {"carry", carry}, {"hand", hand}, {"joint", skater_joint}, {"pose", skater_pose}, {"pose_others", skater_pose_others}});
     add_functions(L, "board", {{"motion", board_motion}, {"bones", board_bones}, {"set", board_set}, {"hide", board_hide}, {"clear", board_clear}, {"scale", board_scale},
                                {"park", board_park}, {"fit", board_fit}, {"toss", board_toss}, {"parameters", board_parameters},
                                {"set_parameter", board_set_parameter}, {"clear_parameter", board_clear_parameter}, {"parameter_scopes", board_parameter_scopes}});

@@ -1164,6 +1164,8 @@ public:
     // The skater bails as from a slam of `force` (0.5 to 3); not in a throwdown. While No Bail protects
     // the skater the wipeout is dropped, as any other is.
     virtual std::string wipeout(float /*force*/) { return unavailable; }
+    // The game's skydive for a skater falling on foot; asked every tick.
+    virtual std::string skydive() { return unavailable; }
     // ---- audio: plugins' own sounds, in a level ---------------------------------------------------------
     // Its id, or 0 when the plugin plays 8 already (or there is no level).
     virtual std::uint64_t play_sound(std::string_view /*plugin*/, SoundStart) { return 0; }

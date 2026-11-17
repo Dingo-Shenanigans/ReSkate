@@ -102,5 +102,8 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready) noexcept;
 void before_level_transition(std::uintptr_t base, unsigned next) noexcept;
 void entity_destroyed(std::uintptr_t entity) noexcept;
 
-inline constexpr std::size_t max_per_owner = 512, max_total = 1024;
+// (No limit on how many objects an owner, or all of them, may have. There was one until 2026-11-17,
+// 512 an owner and 1024 in all: a plugin that draws a canopy in 160 pieces, its own gun and the guns
+// of the other players, each some thirty pieces, had to ration them, and Zee had it taken out. What
+// is left to stop a plugin filling the world is the game's own memory.)
 } // namespace dingosdk::world_entities

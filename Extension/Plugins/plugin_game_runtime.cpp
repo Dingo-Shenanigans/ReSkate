@@ -1065,6 +1065,14 @@ public:
         if (!slam.at) return std::nullopt;
         return SlamNews{slam.force, slam.cause, static_cast<double>(GetTickCount64() - slam.at)};
     }
+    std::string skydive() override {
+        if (multiplayer::local_throwdown_active()) return "not while a throwdown runs";
+        if (!input_allowed()) return "gameplay input is unavailable";
+        NoBailSkater skater;
+        if (!no_bail_skater(skater)) return "the local skater is unavailable";
+        no_bail_request_skydive();
+        return {};
+    }
     std::string wipeout(float force) override {
         if (multiplayer::local_throwdown_active()) return "not while a throwdown runs";
         no_bail_request_wipeout(std::clamp(force, 0.5f, 3.0f));
@@ -1412,6 +1420,11 @@ public:
         const auto now = GetTickCount64();
         if (!poser_.empty() && poser_ != plugin && now < pose_at_ + 300) return offsets.empty() ? std::string{} : poser_ + " poses the skater";
         if (offsets.empty()) {
+            // (The others' own pose let go: the pose drawn here stays, and whose it is.)
+            if (shown == Shown::others) {
+                if (poser_ == plugin) skater_animation::pose({}, 1, skater_animation::Shown::others);
+                return {};
+            }
             if (poser_ == plugin) {
                 skater_animation::pose({}, 1);
                 poser_.clear();

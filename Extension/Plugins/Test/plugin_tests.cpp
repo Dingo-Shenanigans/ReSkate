@@ -826,6 +826,10 @@ struct FakeGame final : Game {
         calls.push_back(std::format("wipeout {:.1f}", force));
         return {};
     }
+    std::string skydive() override {
+        calls.push_back("skydive");
+        return {};
+    }
     std::string control(std::string_view action) override { calls.push_back("control " + std::string(action)); return {}; }
     void hide_hud(std::string_view plugin, bool hidden) override { calls.push_back(std::string("hud ") + std::string(plugin) + (hidden ? " on" : " off")); }
     std::vector<CatalogItem> object_catalog() override { return {{"bench_01", "Bench", "Benches"}}; }
@@ -4804,12 +4808,14 @@ void plugins_set_the_flip_speed() {
         reskate.log(tostring(pcall(reskate.skater.flip_speed, 0.5)))
         reskate.log("fly " .. tostring(pcall(reskate.skater.fly, vector.create(0, 1, 0))))
         reskate.log("held " .. tostring(pcall(reskate.skater.held)))
+        reskate.log("skydive " .. tostring(pcall(reskate.skater.skydive)))
     )"}})});
     ticks(host, environment, 1);
     check(environment.logged("[sneaky] false"), "skater.control is needed\n" + environment.all());
     check(!game.called("flip speed sneaky 0.50"), "Nothing reached the game");
     check(environment.logged("[sneaky] held false"), "Asking whether the skater is held needs skater.control\n" + environment.all());
     check(environment.logged("[sneaky] fly false") && !game.called("fly sneaky 0.0 1.0 0.0"), "Flying the skater needs skater.control too\n" + environment.all());
+    check(environment.logged("[sneaky] skydive false") && !game.called("skydive"), "And so does the game's skydive\n" + environment.all());
 }
 
 // What a camera mode needs (the Filmer): an arm that reaches, where the hand is, cruise control, the
@@ -5156,6 +5162,10 @@ void plugins_carry_and_take_a_step_in_the_camera_cycle() {
         assert(not pcall(reskate.skater.carry, {at = vector.create(0, 1, 0), rotation = {0, 0, 0, 1}, crouch = 1}), "a crouch is 0 to 0.6 m")
         assert(not pcall(reskate.skater.carry, {at = vector.create(0, 1, 0), rotation = {0, 0, 0, 1}, shown = "them"}), "shown is everyone, others or me")
         assert(reskate.skater.pose({[48] = {scale = 0}}, 1, {shown = "me"}))
+        -- A pose for the others beside it, in the same tick: a whole body for the others, the arms for me.
+        assert(reskate.skater.pose({[47] = {angles = vector.create(0, 90, 0)}}, 1, {shown = "others"}))
+        assert(reskate.skater.pose_others({[276] = {angles = vector.create(0, 90, 0)}}), "the call of its own for it")
+        assert(not pcall(reskate.skater.pose_others, {[1] = {scale = 0}}), "the same joints as pose takes")
         -- The game's animation held still under a pose.
         assert(reskate.skater.pose({[48] = {scale = 0}}, 1, {still = true}))
         assert(not pcall(reskate.skater.pose, {[48] = {scale = 0}}, 1, {still = "yes"}), "still is true or false")
@@ -5187,6 +5197,8 @@ void plugins_carry_and_take_a_step_in_the_camera_cycle() {
     check(game.called("carry held filmer exact look 0.0 1.2 -0.1"), "Held where asked, the face on it\n" + environment.all());
     check(game.called("pose filmer 1.00 me 48:0.00,0.00,0.00,1.00x0.00") && game.called("reach filmer right 1.0 2.0 3.0 false 1.00 others"),
           "A pose only you see, a reach only the others see\n" + environment.all());
+    check(game.called("pose filmer 1.00 others 47:0.00,0.71,0.00,0.71x1.00"), "And a pose only the others see, asked for beside it\n" + environment.all());
+    check(game.called("pose filmer 1.00 others 276:0.00,0.71,0.00,0.71x1.00"), "By the call of its own as well\n" + environment.all());
     check(game.called("cycle filmer ready") && game.called("cycle filmer active") && game.called("cycle filmer out"), "In the cycle, on, and out");
     check(game.called("nametags filmer off") && game.called("nametags filmer on"), "The nametags held off and given back");
     check(game.called("board hide filmer 2 everyone"), "The board hidden from everyone");
@@ -6872,6 +6884,8 @@ void the_wider_set_reaches_the_game() {
             local again, two = reskate.skater.wipeout(2)
             assert(not again and two:find("four wipeouts a second"), "four wipeouts a second at most")
             assert(not pcall(reskate.skater.wipeout, 10), "a gentle force")
+            assert(reskate.skater.skydive(), "the game's skydive")
+            assert(reskate.skater.skydive(), "asked every tick: no limit of its own")
             reskate.log("physics fine")
         end)
         reskate.on("chat", function(line) reskate.log("chat " .. line.name .. ": " .. line.text) end)
@@ -7002,6 +7016,7 @@ void the_wider_set_reaches_the_game() {
           "and holds its shader parameters\n" + environment.all());
     host.run_console("physics");
     check(environment.logged("[wide] physics fine") && game.called("wipeout 2.0"), "The board's motion reads, and a wipeout is asked for\n" + environment.all());
+    check(game.called("skydive"), "The game's skydive is asked for\n" + environment.all());
     ticks(host, environment, 10);
     const auto screen = std::find_if(environment.panels.begin(), environment.panels.end(), [](const auto& p) { return p.screen; });
     check(screen != environment.panels.end() && screen->title == "Big" && screen->widgets.size() == 2, "Its open screen is built, without the menu");

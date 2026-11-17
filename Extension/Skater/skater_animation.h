@@ -76,11 +76,15 @@ void carry(std::optional<carry::Goal> goal, bool push_straightens = false, Shown
 // first asked for it (every joint but the two that place the skater), and the pose goes on top of
 // that: nothing of the game's own idle, its fidgets or its breathing, moves a joint the pose leaves
 // alone. Taken again after the pose has been off for half a second.
+// A pose for Shown::others is kept beside the one for this screen, and does not replace it: with
+// both set, this screen draws the one (first-person arms, say) and the other players are sent the
+// other (a whole body). While it is live a pose for everyone is this screen's alone. An empty pose
+// for everyone lets both go. `still` is this screen's pose's only.
 using PoseOffset = pose_replay::Entry;
 void pose(std::vector<PoseOffset> offsets, float weight, Shown shown = Shown::everyone, bool still = false);
 // Where a joint (of the 395) was in the world in the last pose evaluated, after any clip and reach;
 // empty without a skater. Asking keeps that joint read for two seconds, so the first ask comes back
-// empty; at most 32 joints are read at once.
+// empty.
 std::optional<anim_studio::Joint> joint(std::uint16_t index);
 // The hand joint's (joint()).
 std::optional<arm_reach::Placed> hand(arm_reach::Hand side);
