@@ -7,6 +7,7 @@
 #include "cursor.h"
 #include "Extension/Throwdowns/throwdown_kit.h"
 #include "Engine/Game/Input/owned_menu_input.h"
+#include "Extension/Input/native_menu_observation.h"
 
 using namespace dingosdk::overlay::detail;
 namespace dingosdk::overlay::detail {
@@ -329,7 +330,9 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wp, LPARAM lp) {
         }
         const bool countdown = game::owned_menu_countdown_capture(
             dingosdk::throwdowns::kit::match().input_lock,challenge_panel_owns_input());
-        const bool freecam_capture = s.freecam_controller_active.load(std::memory_order_relaxed) ||
+        const bool freecam_capture = (s.freecam_controller_active.load(std::memory_order_relaxed) &&
+                                     !native_menu_observation::known_open(GetTickCount64()) &&
+                                     wp != VK_ESCAPE) ||
                                      s.prompt_input_active.load(std::memory_order_relaxed);
         if (countdown || freecam_capture) release_game_buttons(window, previous);
         const bool capture = owns_pointer() || (countdown && wp != VK_ESCAPE && !console_toggle_key(message, wp, lp));
