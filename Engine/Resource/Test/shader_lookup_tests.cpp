@@ -85,6 +85,34 @@ Lookup preserved_lookup(bool extended, const std::map<std::uint64_t, std::vector
     return out;
 }
 
+// A graph of a mod's own, as an authoring tool writes one: the stock heap whole, then a new
+// record array (the stock record, then one of the mod's: the stock record copied, with a list of
+// its own, one number, after the array). Its pointers: the array's, the copy's into the stock
+// heap, the own record's into the stock heap and to its own list.
+Lookup own_graph(std::uint64_t number, const std::map<std::uint64_t, std::vector<std::uint32_t>>& rows) {
+    auto out = preserved_lookup(true, {});
+    const std::uint32_t size = 552;
+    out.resource.resize(544);
+    std::memcpy(out.resource.data() + 376, out.resource.data() + 16, 168);
+    const std::uint32_t one = 1;
+    const std::uint64_t list = 544;
+    std::memcpy(out.resource.data() + 376 + 0x60, &one, 4);
+    std::memcpy(out.resource.data() + 376 + 0x64, &list, 8);
+    append(out.resource, number);
+    for (const std::uint32_t field : {4U, 32U, 224U, 392U, 476U}) append(out.resource, field);
+    append(out.resource, static_cast<std::uint32_t>(rows.size()));
+    for (const auto& [key, values] : rows) {
+        append(out.resource, key);
+        append(out.resource, static_cast<std::uint32_t>(values.size()));
+        for (const auto v : values) append(out.resource, v);
+    }
+    out.meta.clear();
+    append(out.meta, size); append(out.meta, std::uint32_t{20});
+    append(out.meta, static_cast<std::uint32_t>(out.resource.size() - size - 20));
+    append(out.meta, std::uint32_t{});
+    return out;
+}
+
 // The merged rows, read back.
 std::map<std::uint64_t, std::vector<std::uint32_t>> rows_of(const fb::shader::MergedTable& merged) {
     std::size_t at = static_cast<std::size_t>(read<std::uint32_t>(merged.resourceMeta, 0)) + read<std::uint32_t>(merged.resourceMeta, 4);
@@ -233,6 +261,74 @@ int main() {
     const std::vector<fb::shader::Table> corrupt{corruptEdit.table()};
     const auto kept = fb::shader::merge_program_lookup(stock.table(), corrupt, stock.table());
     check(kept.outside == 1 && rows_of(kept).contains(1), "Malformed edits cannot discard an intact retained table");
+    // Two mods with programs of their own in one bundle (a plugin's wall beside a map with its own
+    // shaders): the one not retained has its programs brought into the retained graph, where the
+    // caller vouches for it.
+    {
+        const auto map = own_graph(111, {{1, {0}}, {9, {1}}});
+        const auto wall = own_graph(222, {{1, {0}}, {12, {0}}, {13, {1}}, {14, {0, 1}}});
+        check(fb::shader::preserves_stock_programs(map.table(), stock.table()) && !fb::shader::same_program_graph(map.table(), wall.table()),
+              "Two graphs of their own over one stock heap");
+        const std::vector<fb::shader::Table> both{wall.table()};
+        const bool yes[]{true};
+        const auto left = fb::shader::merge_program_lookup(map.table(), both, stock.table());
+        check(left.outside == 2 && left.imported == 0 && !rows_of(left).contains(13), "Not vouched for, another graph's own programs stay out");
+        const auto grown = fb::shader::merge_program_lookup(map.table(), both, stock.table(), yes);
+        const auto grownRows = rows_of(grown);
+        check(grown.outside == 0 && grown.imported == 1 && grown.added == 3, "Vouched for, its own program is brought in and none of its rows is left out");
+        check(grownRows.at(9) == std::vector<std::uint32_t>{1} && grownRows.at(12) == std::vector<std::uint32_t>{0} &&
+              grownRows.at(13) == std::vector<std::uint32_t>{2} && grownRows.at(14) == (std::vector<std::uint32_t>{0, 2}),
+              "The retained rows keep their numbers and the other graph's own are renumbered after them");
+        const auto heap = read<std::uint32_t>(grown.resourceMeta, 0);
+        const auto count = read<std::uint32_t>(grown.resource, 0);
+        const auto start = static_cast<std::size_t>(read<std::uint64_t>(grown.resource, 4));
+        check(count == 3 && start + 3 * 168 <= heap, "The record array is made anew with three records");
+        check(std::equal(grown.resource.begin() + 12, grown.resource.begin() + 552, map.resource.begin() + 12),
+              "The retained heap is kept byte for byte under it");
+        check(std::equal(grown.resource.begin() + static_cast<std::ptrdiff_t>(start), grown.resource.begin() + static_cast<std::ptrdiff_t>(start + 336),
+                         map.resource.begin() + 208), "The retained records come first, as they were");
+        const auto theirs = start + 336;
+        const auto list = static_cast<std::size_t>(read<std::uint64_t>(grown.resource, theirs + 0x64));
+        check(read<std::uint32_t>(grown.resource, theirs + 0x60) == 1 && list >= 552 && list + 8 <= heap &&
+              read<std::uint64_t>(grown.resource, list) == 222, "The brought-in record points at its own list, moved with it");
+        check(read<std::uint64_t>(grown.resource, theirs + 16) == 192, "And still into the stock heap where it did");
+        const auto retainedList = static_cast<std::size_t>(read<std::uint64_t>(grown.resource, start + 168 + 0x64));
+        check(read<std::uint64_t>(grown.resource, retainedList) == 111, "The retained record's own list is where it was");
+        std::vector<std::uint32_t> fields;
+        for (std::size_t at = heap; at < heap + read<std::uint32_t>(grown.resourceMeta, 4); at += 4) fields.push_back(read<std::uint32_t>(grown.resource, at));
+        const auto has = [&](std::size_t field) { return std::ranges::find(fields, static_cast<std::uint32_t>(field)) != fields.end(); };
+        check(std::ranges::is_sorted(fields) && std::ranges::adjacent_find(fields) == fields.end() && has(4) && has(32) && has(start + 16) &&
+              has(start + 168 + 16) && has(start + 168 + 0x64) && has(theirs + 16) && has(theirs + 0x64),
+              "Every pointer of the new records is one the loader will set");
+        check(fb::shader::preserves_stock_programs({grown.resource, grown.resourceMeta}, stock.table()), "The grown graph still keeps the stock programs whole");
+        check(read<std::uint32_t>(grown.resourceMeta, 8) == grown.resource.size() - heap - read<std::uint32_t>(grown.resourceMeta, 4),
+              "The metadata's sizes match the grown table");
+        check(fb::shader::grown_from({grown.resource, grown.resourceMeta}, map.table()) &&
+              !fb::shader::grown_from({grown.resource, grown.resourceMeta}, wall.table()) &&
+              !fb::shader::grown_from(map.table(), map.table()), "A grown graph is told from the one it grew from, and from no other");
+        // The same graph from two mods is brought in once; a third graph after it.
+        const auto third = own_graph(333, {{1, {0}}, {20, {1}}});
+        const std::vector<fb::shader::Table> three{wall.table(), wall.table(), third.table()};
+        const bool all[]{true, true, true};
+        const auto more = fb::shader::merge_program_lookup(map.table(), three, stock.table(), all);
+        check(more.imported == 2 && read<std::uint32_t>(more.resource, 0) == 4 && rows_of(more).at(13) == std::vector<std::uint32_t>{2} &&
+              rows_of(more).at(20) == std::vector<std::uint32_t>{3} && more.outside == 0, "One graph twice is brought in once, and another after it");
+        const auto last = static_cast<std::size_t>(read<std::uint64_t>(more.resource, 4)) + 3 * 168;
+        check(read<std::uint64_t>(more.resource, static_cast<std::size_t>(read<std::uint64_t>(more.resource, last + 0x64))) == 333,
+              "Each brought-in record has its own list");
+        // A graph that does not read as expected is not brought in, and nothing of the retained one is lost.
+        auto broken = wall;
+        const std::uint64_t astray = 5000;
+        std::memcpy(broken.resource.data() + 376 + 0x64, &astray, 8);
+        const std::vector<fb::shader::Table> bad{broken.table()};
+        const auto refusedOwn = fb::shader::merge_program_lookup(map.table(), bad, stock.table(), yes);
+        check(refusedOwn.imported == 0 && read<std::uint32_t>(refusedOwn.resource, 0) == 2 && rows_of(refusedOwn).at(9) == std::vector<std::uint32_t>{1} &&
+              !rows_of(refusedOwn).contains(13), "A graph with a pointer astray is left out whole");
+        // Onto the game's own table too: nothing retained but the stock.
+        const auto ontoStock = fb::shader::merge_program_lookup(stock.table(), both, stock.table(), yes);
+        check(ontoStock.imported == 1 && ontoStock.outside == 0 && read<std::uint32_t>(ontoStock.resource, 0) == 2 &&
+              rows_of(ontoStock).at(13) == std::vector<std::uint32_t>{1}, "A graph of a mod's own is brought into the game's table as well");
+    }
     if (failures) return 1;
     std::cout << "shader lookup tests passed\n";
     return 0;

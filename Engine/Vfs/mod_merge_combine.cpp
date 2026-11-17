@@ -9,6 +9,7 @@
 #include "Engine/Resource/shader_lookup.h"
 #include "Engine/Core/Platform/path_text.h"
 
+#include <memory>
 #include <algorithm>
 #include <functional>
 #include <map>
@@ -1265,6 +1266,8 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                         const auto* selected = retained;
                         auto retainedBytes = decode(*retained);
                         const fb::shader::Table stockTable{baseBytes, baseCopy->resourceMeta};
+                        // Which edits' own programs may be brought into the retained graph (below).
+                        const auto importable = std::make_unique<bool[]>(edits.size());
                         if (entry.asset.resourceType == fb::shader::programLookupType) {
                             // Apply identical ownership checks to the winning and
                             // lower-priority custom graphs. Unproved custom heaps
@@ -1317,19 +1320,44 @@ fb::TocDocument combine(const fs::path& baseToc, const fs::path& baseRoot,
                                     break;
                                 }
                             }
+                            // Every other mod with programs of its own that passes the same checks
+                            // (the bundle keeps its compiled programs as it ships them) has them
+                            // brought into the retained graph, rather than its materials left out:
+                            // a plugin's wall beside a map with shaders of its own (2026-11-16).
+                            for (std::size_t i = 0; i < edits.size(); ++i) {
+                                const fb::shader::Table candidate{editBytes[i], edits[i]->resourceMeta};
+                                importable[i] = edits[i] != retained && !fb::shader::same_program_graph(candidate, stockTable) &&
+                                                usable(candidate, edits[i]);
+                            }
                         }
                         const fb::shader::Table baseTable =
                             entry.asset.resourceType == fb::shader::programLookupType
                                 ? fb::shader::Table{retainedBytes, retained->resourceMeta}
                                 : fb::shader::Table{baseBytes, baseCopy->resourceMeta};
                         const auto table = entry.asset.resourceType == fb::shader::programLookupType
-                            ? fb::shader::merge_program_lookup(baseTable, tables, {baseBytes, baseCopy->resourceMeta})
+                            ? fb::shader::merge_program_lookup(baseTable, tables, {baseBytes, baseCopy->resourceMeta},
+                                                               {importable.get(), edits.size()})
                             : fb::shader::merge_texture_lookup(baseTable, tables);
-                        if (table.outside)
+                        if (table.imported)
+                            report.notes.push_back(entry.asset.name + ": " + std::to_string(table.imported) +
+                                " shader program(s) of other mods brought into the bundle's shader database");
+                        if (table.outside) {
+                            // Whose programs the bundle keeps, and whose it could not take: a material
+                            // left out is drawn by nothing, and this is the one line that says why
+                            // (a plugin's wall that never showed, 2026-11-16).
+                            std::string whose = retained->base ? "the game's own" : path_utf8(retained->root->filename()) + "'s";
+                            std::string others;
+                            if (entry.asset.resourceType == fb::shader::programLookupType)
+                                for (std::size_t i = 0; i < edits.size(); ++i)
+                                    if (edits[i] != retained && !fb::shader::same_program_graph({editBytes[i], edits[i]->resourceMeta}, baseTable) &&
+                                        !fb::shader::same_program_graph({editBytes[i], edits[i]->resourceMeta}, stockTable))
+                                        others += (others.empty() ? "" : ", ") + path_utf8(edits[i]->root->filename());
                             report.notes.push_back(entry.asset.name + ": " + std::to_string(table.outside) +
                                 " material row(s) left out: their graph or indices do not match the retained "
-                                "bundle shader database");
-                        if (!table.added && !table.removed && retained == selected) {
+                                "bundle shader database (it keeps " + whose + " shader programs" +
+                                (others.empty() ? "" : "; with programs of their own and not kept: " + others) + ")");
+                        }
+                        if (!table.added && !table.removed && !table.imported && retained == selected) {
                             if (table.conflicts) report.notes.push_back(entry.asset.name + ": " + std::to_string(table.conflicts) +
                                 " material row(s) disagreed; retained graph rows win");
                             continue;
