@@ -719,10 +719,12 @@ Document merge_documents(const Document& base, const std::span<const Document* c
         // and nothing is sorted until every edit is in.
         const auto& match = matches[index];
         InPlace changes(base, *edit, match, &taken);
-        // An exported instance this edit changed in a way that cannot be combined (a reference
-        // pointed elsewhere, a list resized) is taken as the edit has it, when no other edit
-        // changed it at all: then nothing of anyone's is lost by doing so. The root is never
-        // taken whole, since the lists on it are where every edit adds its entries.
+        // An instance this edit changed in a way that cannot be combined (a reference pointed
+        // elsewhere, a list resized) is taken as the edit has it, when no other edit changed it at
+        // all: then nothing of anyone's is lost by doing so. That holds for an internal one as for
+        // an exported one: it only gets here when it lined up with the base's (match_instances),
+        // which is also all its values are merged on. The root is never taken whole, since the
+        // lists on it are where every edit adds its entries.
         std::vector<std::size_t> whole;
         for (std::size_t at = 0; at < base.instances.size(); ++at) {
             const auto& before = base.instances[at];
@@ -742,7 +744,7 @@ Document merge_documents(const Document& base, const std::span<const Document* c
                 // An instance an earlier edit took whole no longer has the base's shape in the
                 // result; one this edit left as the base had it is no change of this edit's.
                 if (!changed_by(index, at)) continue;
-                if (at != 0 && before.exported && !changed_by_another(index, at)) {
+                if (at != 0 && !changed_by_another(index, at)) {
                     whole.push_back(at);
                     continue;
                 }

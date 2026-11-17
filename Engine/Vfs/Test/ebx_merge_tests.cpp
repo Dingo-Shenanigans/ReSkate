@@ -6,8 +6,9 @@
 //   * a list grows at its end wherever it is, and what each edit appended comes across;
 //   * an edit that also changed something that cannot be taken (a reference pointed elsewhere, a
 //     list that shrank) has none of its values taken, and the summary names it, unless that change
-//     is in an exported instance no other edit changed: then the instance is taken whole; or in an
-//     entry of a list below the root's own that no other edit changed: then the entry is;
+//     is in an instance no other edit changed (exported, or internal and lined up with the game's):
+//     then the instance is taken whole; or in an entry of a list below the root's own that no other
+//     edit changed: then the entry is;
 //   * an exported instance is found by its guid wherever the edit keeps it, and internal
 //     instances that do not line up are reported as not looked at;
 //   * a reference two edits both append is listed once, and one edit's own repeat is left alone;
@@ -221,6 +222,32 @@ void an_instance_only_one_edit_reshaped(bool alsoChangedElsewhere) {
         const auto detail = read<ebx::PointerReference>(merged, entry, "Detail");
         expect(detail.kind == ebx::PointerKind::internal && merged.instances.at(static_cast<std::size_t>(detail.index)).exported == false,
                label + ": the entry still points at the game's detail");
+        expect(summary.taken == 0 && summary.uncarried == std::vector<std::size_t>{0}, label + ": the summary names the edit");
+    }
+}
+
+// The same for an internal instance, found by its place among the internal ones: a prefab's entities
+// carry no guid, and a mod that points one of them at its own script reshapes it that way.
+void an_internal_instance_only_one_edit_reshaped(bool alsoChangedElsewhere) {
+    const std::string label = alsoChangedElsewhere ? "internal reshaped and contested" : "internal reshaped alone";
+    auto base = game();
+    base.instances[2].object->fields.push_back({1, "Script", outside(0)});
+    auto reshaped = copy(base), plain = copy(base);
+    field(reshaped, 2, "Script") = outside(1);
+    field(reshaped, 2, "Depth") = number(8);
+    field(plain, 0, "Title") = text("plain");
+    if (alsoChangedElsewhere) field(plain, 2, "Depth") = number(4);
+    ebx::MergeSummary summary;
+    auto merged = merge(base, {&reshaped, &plain}, summary);
+    expect(read<std::string>(merged, 0, "Title") == "plain", label + ": the other edit's value is in");
+    const auto script = read<ebx::PointerReference>(merged, 2, "Script");
+    const auto& named = merged.imports.at(static_cast<std::size_t>(script.index)).fileGuid;
+    if (!alsoChangedElsewhere) {
+        expect(named == guid(0x11) && read<std::int64_t>(merged, 2, "Depth") == 8, label + ": the instance is the edit's");
+        expect(summary.taken == 1 && summary.exact(), label + ": one instance taken whole, nothing left out");
+    } else {
+        expect(named == guid(0x10) && read<std::int64_t>(merged, 2, "Depth") == 4,
+               label + ": none of the reshaping edit's changes are taken, the other edit's are");
         expect(summary.taken == 0 && summary.uncarried == std::vector<std::size_t>{0}, label + ": the summary names the edit");
     }
 }
@@ -512,6 +539,8 @@ int main() try {
     for (int kind = 0; kind < 4; ++kind) a_change_that_cannot_be_taken(kind);
     an_instance_only_one_edit_reshaped(false);
     an_instance_only_one_edit_reshaped(true);
+    an_internal_instance_only_one_edit_reshaped(false);
+    an_internal_instance_only_one_edit_reshaped(true);
     a_later_edit_beside_an_instance_taken_whole();
     for (const bool reversed : {false, true})
         for (const bool contested : {false, true}) a_list_entry_only_one_edit_changed(reversed, contested);
