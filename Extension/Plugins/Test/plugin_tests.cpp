@@ -26,6 +26,7 @@
 #include <chrono>
 #include <thread>
 #include <cmath>
+#include <cstring>
 #include <format>
 #include <fstream>
 #include <iostream>
@@ -399,6 +400,33 @@ struct FakeGame final : Game {
     std::optional<MarkerEvents> marker_events(std::string_view plugin) override {
         return std::exchange(marker_feed[std::string(plugin)], {});
     }
+    std::string tod_now = "afternoon";
+    std::string time_of_day_now() override { return tod_now; }
+    std::string world_controls_text() override { return "fog=1\nfog_distance=0.5\n"; }
+    std::vector<std::pair<std::string, std::string>> atmosphere_set;
+    std::string set_atmosphere(const std::vector<std::pair<std::string, std::string>>& values) override {
+        atmosphere_set.insert(atmosphere_set.end(), values.begin(), values.end());
+        return {};
+    }
+    std::optional<std::uint32_t> surface_set;
+    std::uint32_t surface_fields{};
+    std::string skater_surface_sound(std::string_view, std::optional<std::uint32_t> word, std::uint32_t fields) override {
+        surface_set = word;
+        surface_fields = fields;
+        return {};
+    }
+    // Each trainer preset held (its name, and its values) or let go (nullopt).
+    std::vector<std::optional<std::pair<std::string, std::map<std::string, double, std::less<>>>>> trainer_presets;
+    std::string trainer_preset(std::string_view, std::string_view name, std::optional<std::map<std::string, double, std::less<>>> values) override {
+        if (values) trainer_presets.emplace_back(std::pair(std::string(name), std::move(*values)));
+        else trainer_presets.emplace_back(std::nullopt);
+        return {};
+    }
+    std::vector<std::pair<std::string, bool>> chosen_variants; // each choice, and whether it went in now
+    std::string choose_variant(std::string_view, const std::filesystem::path&, std::string_view variant, bool now) override {
+        chosen_variants.emplace_back(std::string(variant), now);
+        return {};
+    }
     std::optional<std::uint32_t> state;
     std::uint64_t wipe{};
     std::vector<std::string> calls;
@@ -733,6 +761,37 @@ struct FakeGame final : Game {
         if (left) return std::nullopt;
         return HandPlace{{1, 2, 3}, {0, 0, 0, 1}};
     }
+    std::string screen_shader(std::string_view plugin, std::optional<ScreenShader> s) override {
+        if (!s) {
+            calls.push_back(std::format("shader {} none", plugin));
+            return {};
+        }
+        calls.push_back(std::format("shader {} {} {} {} {:.2f} {:.2f} {:.2f}", plugin, s->file, static_cast<int>(s->kind), s->bytes ? s->bytes->size() : 0,
+                                    s->values[0], s->values[1], s->values[47]));
+        // As the overlay answers one that took too long on the GPU.
+        if (s->file == "shaders/slow.hlsl") return "it took 9.00 ms a frame on the GPU (at most 3.0)";
+        return {};
+    }
+    std::string world_shader(std::string_view plugin, std::optional<WorldShader> s) override {
+        if (!s) {
+            calls.push_back(std::format("world {} none", plugin));
+            return {};
+        }
+        calls.push_back(std::format("world {} {} {} {} {} {:.2f} {:.2f}", plugin, s->file, static_cast<int>(s->kind), s->bytes ? s->bytes->size() : 0,
+                                    s->heights, s->values[0], s->values[47]));
+        return {};
+    }
+    std::string world_shader_data(std::string_view plugin, std::shared_ptr<const std::string> bytes) override {
+        float first = 0;
+        if (bytes && bytes->size() >= 4) std::memcpy(&first, bytes->data(), 4);
+        calls.push_back(bytes ? std::format("world data {} {} {:.2f}", plugin, bytes->size(), first) : std::format("world data {} none", plugin));
+        return {};
+    }
+    void world_shader_anchor(std::string_view plugin, std::optional<Vec3> at) override {
+        calls.push_back(at ? std::format("world anchor {} {:.1f} {:.1f} {:.1f}", plugin, (*at)[0], (*at)[1], (*at)[2]) : std::format("world anchor {} none", plugin));
+    }
+    std::optional<double> world_shader_cost(std::string_view) override { return 4.5; }
+    double world_shader_clock() override { return 123.25; }
     std::string screen_look(std::string_view plugin, std::optional<ScreenLook> l) override {
         calls.push_back(l ? std::format("look {} {:.2f} {:.0f} {:.2f} {}{}{}{}{}{}{}{}{}{}{} {:.1f} [{}|{}|{}|{}|{}]", plugin, l->bend, l->fov, l->age, l->bars, l->hood,
                                         l->grade, l->soft, l->scanlines, l->grain, l->dropouts, l->head_switching, l->tracking, l->smear, l->iris, l->rolling,
@@ -959,6 +1018,7 @@ struct FakeGame final : Game {
         calls.push_back(std::format("env {} {} {}", kind, key, value));
         return key == "never" ? "refused" : "";
     }
+    std::vector<std::pair<std::string, double>> world_controls() override { return {{"fog", 0}, {"fog_distance", 1.5}, {"clouds", -1}}; }
     std::vector<Destination> destinations() override { return {{"bam", "BAM", "bam"}}; }
     std::vector<LevelInfo> levels() override { return {{"Levels/Game/X/X", "X", true}}; }
     std::string travel(std::string_view kind, std::string_view target) override { calls.push_back(std::format("travel {} {}", kind, target)); return {}; }
@@ -1549,6 +1609,103 @@ Candidate script(const std::string& id, const std::string& main, const std::stri
 }
 
 void running(const Host& host, std::string_view id, const TestEnvironment& environment);
+
+void the_time_of_day_and_world_controls_are_read() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({script("melt", R"(
+        assert(reskate.world.time() == "afternoon")
+        assert(reskate.world.controls_text() == "fog=1\nfog_distance=0.5\n")
+        assert(reskate.world.set_atmosphere({["Fog.Enable"] = 1, ["Fog.FogColor"] = "0,1450,2500"}))
+        assert(not pcall(reskate.world.set_atmosphere, {["Fog.Enable"] = true}), "a value is a number or text")
+    )", R"("world.environment")")});
+    running(host, "melt", environment);
+    TestEnvironment denied_environment;
+    Host denied(denied_environment, Side::client);
+    denied.apply({script("melt-denied", R"(
+        assert(not pcall(reskate.world.time), "needs world.environment")
+        assert(not pcall(reskate.world.controls_text), "needs world.environment")
+        assert(not pcall(reskate.world.set_atmosphere, {["Fog.Enable"] = 0}), "needs world.environment")
+    )")});
+    running(denied, "melt-denied", denied_environment);
+    check(denied_environment.fake.atmosphere_set.empty(), "a plugin without world.environment set no atmosphere");
+}
+
+void the_skater_surface_sound_is_set_for_some_fields() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({script("surface-sound", R"(
+        assert(reskate.skater.surface_sound(0xd60, {1, 3}))
+        assert(not pcall(reskate.skater.surface_sound, 0xd60, {19}), "fields are 1 to 18")
+        assert(not pcall(reskate.skater.surface_sound, 0.5), "a fraction is no surface")
+        assert(not pcall(reskate.skater.surface_sound, -1), "a negative is no surface")
+        assert(not pcall(reskate.skater.surface_sound, 116 * 64), "material slot 116 is past the game's grid")
+        assert(not pcall(reskate.skater.surface_sound, 116 * 524288), "property slot 116 is past the game's grid")
+        assert(not pcall(reskate.skater.surface_sound, 0xffffffff), "a word of every bit names no surface")
+        assert(reskate.skater.surface_sound(115 * 64 + 115 * 524288), "the grid's last slots are surfaces")
+        assert(reskate.skater.surface_sound(0xd60, {1, 3}))
+    )", R"("skater.control")")});
+    running(host, "surface-sound", environment);
+    check(environment.fake.surface_set == 0xd60u && environment.fake.surface_fields == 0b101u,
+          "surface_sound passes the surface word and its fields on");
+    TestEnvironment denied_environment;
+    Host denied(denied_environment, Side::client);
+    denied.apply({script("surface-denied", R"(
+        assert(not pcall(reskate.skater.surface_sound, 7), "needs skater.control")
+    )")});
+    running(denied, "surface-denied", denied_environment);
+    check(!denied_environment.fake.surface_set, "a plugin without skater.control set no surface sound");
+}
+
+void a_variant_can_wait_for_the_next_launch() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({script("variant-chooser", R"(
+        assert(reskate.package.choose("snowskate"))
+        assert(reskate.package.choose("standard", {now = false}))
+        assert(reskate.package.choose("standard", {now = true}))
+        assert(not pcall(reskate.package.choose, "standard", 7), "options are a table")
+    )", R"("variants")")});
+    running(host, "variant-chooser", environment);
+    const std::vector<std::pair<std::string, bool>> expected{{"snowskate", true}, {"standard", false}, {"standard", true}};
+    check(environment.fake.chosen_variants == expected, "choose keeps a variant for the next launch only when now is false");
+    // Without the permission it is refused, for the next launch as well as now.
+    TestEnvironment denied_environment;
+    Host denied(denied_environment, Side::client);
+    denied.apply({script("variant-denied", R"(
+        assert(not pcall(reskate.package.choose, "standard", {now = false}), "needs variants")
+        assert(not pcall(reskate.package.choose, "standard"), "needs variants")
+    )")});
+    running(denied, "variant-denied", denied_environment);
+    check(denied_environment.fake.chosen_variants.empty(), "a plugin without variants chose no variant");
+}
+
+void a_plugin_holds_a_trainer_preset() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({script("preset-holder", R"(
+        assert(reskate.trainer.hold_preset("SnowSkate", {["PhysicsMode.JumpMaxHeight"] = 1.29, ["trick.gravity"] = 1.15}))
+        assert(reskate.trainer.hold_preset(nil))
+        assert(not pcall(reskate.trainer.hold_preset, "", {a = 1}), "a name is needed")
+        assert(not pcall(reskate.trainer.hold_preset, "x", {}), "a value is needed")
+        assert(not pcall(reskate.trainer.hold_preset, "x", {a = "high"}), "values are numbers")
+    )", R"("trainer")")});
+    running(host, "preset-holder", environment);
+    const auto& held = environment.fake.trainer_presets;
+    check(held.size() == 2 && held[0] && held[0]->first == "SnowSkate" && held[0]->second.size() == 2 &&
+              held[0]->second.contains("physicsmode.jumpmaxheight") && held[0]->second.at("trick.gravity") == 1.15 && !held[1],
+          "a preset is held with its values (ids in lower case), then let go");
+
+    // Without the permission it is refused.
+    TestEnvironment denied_environment;
+    Host denied(denied_environment, Side::client);
+    denied.apply({script("preset-denied", R"(
+        local ok, why = pcall(reskate.trainer.hold_preset, "SnowSkate", {a = 1})
+        assert(not ok and why:find("trainer", 1, true), tostring(why))
+    )")});
+    running(denied, "preset-denied", denied_environment);
+    check(denied_environment.fake.trainer_presets.empty(), "a plugin without trainer held a trainer preset");
+}
 
 void traffic_vehicles_are_permissioned_bounded_and_released() {
     using traffic_vehicles::Quaternion;
@@ -5053,6 +5210,161 @@ void plugins_read_frames_and_hold_gameplay_options() {
     check(options.observe("example", true, 1401, false), "stop releases preferences");
 }
 
+// A compiled shader container as a compiler writes one: "DXBC", a hash (zero: not signed), its size, then one part of
+// shader code whose first word is the program's kind and version (pixel shaders are kind 0).
+std::string shader_container(std::string_view code, std::uint32_t version, bool signed_hash = true) {
+    std::string bytes = "DXBC";
+    const auto word = [&](std::uint32_t value) { bytes.append(reinterpret_cast<const char*>(&value), 4); };
+    for (int i = 0; i < 4; ++i) word(signed_hash ? 0x1234567u + static_cast<std::uint32_t>(i) : 0);
+    word(1);  // the container's version
+    word(0);  // its size, below
+    word(1);  // one part
+    word(36); // at 36
+    bytes += code;
+    word(8);  // the part's size: its program header
+    word(version);
+    word(0);
+    const auto size = static_cast<std::uint32_t>(bytes.size());
+    std::memcpy(bytes.data() + 24, &size, 4);
+    return bytes;
+}
+
+void screen_shader_files_are_checked() {
+    using namespace dingosdk::screen_shader;
+    Kind kind{};
+    check(check_file("shaders/look.hlsl", "float4 main() : SV_Target { return 1; }", kind).empty() && kind == Kind::hlsl, "HLSL source is taken");
+    check(check_file("shaders/LOOK.HLSL", "x", kind).empty(), "an extension in capitals too");
+    check(!check_file("shaders/look.hlsl", "", kind).empty(), "not an empty one");
+    check(!check_file("shaders/look.hlsl", std::string("a\0b", 3), kind).empty(), "source is text");
+    check(!check_file("shaders/look.hlsl", std::string(most_source_bytes + 1, 'x'), kind).empty(), "at most 256 KB of source");
+    check(!check_file("shaders/look.txt", "x", kind).empty(), "only .hlsl, .cso, .dxbc or .dxil");
+    check(check_file("shaders/look.dxil", shader_container("DXIL", 0x00000060), kind).empty() && kind == Kind::dxil, "signed DXIL, a pixel shader");
+    check(check_file("shaders/look.cso", shader_container("SHEX", 0x00000050), kind).empty() && kind == Kind::dxbc, "DXBC, a pixel shader");
+    check(check_file("shaders/look.dxil", shader_container("DXIL", 0x00010060), kind).find("not a pixel shader") != std::string::npos,
+          "a vertex shader is refused");
+    check(check_file("shaders/look.dxil", shader_container("DXIL", 0x00000060, false), kind).find("not signed") != std::string::npos,
+          "unsigned DXIL is refused");
+    check(!check_file("shaders/look.cso", shader_container("RDEF", 0x00000050), kind).empty(), "a container with no shader code is refused");
+    auto short_one = shader_container("DXIL", 0x00000060);
+    short_one.pop_back();
+    check(!check_file("shaders/look.dxil", short_one, kind).empty(), "a container whose size is not the file's is refused");
+    check(!check_file("shaders/look.dxil", "not a shader at all, but long enough to be read", kind).empty(), "not a container");
+    auto past = shader_container("DXIL", 0x00000060);
+    const std::uint32_t beyond = 4096; // (not "far": a Windows macro)
+    std::memcpy(past.data() + 32, &beyond, 4);
+    check(!check_file("shaders/look.dxil", past, kind).empty(), "a part past the file's end is refused");
+}
+
+// reskate.screen.shader: the plugin's file read from its package and checked, its values given, nil ending it; refused
+// without "screen.shader".
+void plugins_run_a_screen_shader() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    Host host(environment, Side::client);
+    const std::map<std::string, std::string> files{
+        {manifest_file, manifest(R"("screen.shader")")},
+        {"shaders/tint.hlsl", "float4 main(float4 p : SV_Position, float2 uv : TEXCOORD0) : SV_Target { return reskate_frame.Sample(reskate_linear, uv) * reskate_values[0]; }"},
+        {"shaders/slow.hlsl", "float4 main() : SV_Target { return 0; }"},
+        {"shaders/tint.dxil", shader_container("DXIL", 0x00000060)},
+        {"shaders/vertex.dxil", shader_container("DXIL", 0x00010060)},
+        {"shaders/notes.txt", "not a shader"},
+        {"plugin/main.lua", R"(
+        local values = {}
+        for i = 1, 48 do values[i] = i / 4 end
+        assert(reskate.screen.shader("shaders/tint.hlsl", values))
+        assert(reskate.screen.shader("shaders/tint.dxil", {0.5}))
+        assert(reskate.screen.shader("shaders/tint.hlsl"))
+        assert(reskate.screen.shader(nil))
+        local ok, why = reskate.screen.shader("shaders/slow.hlsl")
+        assert(ok == false and why:find("on the GPU"), tostring(why))
+        local too_many = {}
+        for i = 1, 49 do too_many[i] = 0 end
+        assert(not pcall(reskate.screen.shader, "shaders/tint.hlsl", too_many), "at most 48 values")
+        assert(not pcall(reskate.screen.shader, "shaders/tint.hlsl", {"half"}), "values are numbers")
+        assert(not pcall(reskate.screen.shader, "shaders/tint.hlsl", {0 / 0}), "values are finite")
+        assert(not pcall(reskate.screen.shader, "shaders/vertex.dxil"), "a pixel shader")
+        assert(not pcall(reskate.screen.shader, "shaders/notes.txt"), "a shader file")
+        assert(not pcall(reskate.screen.shader, "shaders/missing.hlsl"), "a file in the package")
+        assert(not pcall(reskate.screen.shader, "../outside.hlsl"), "inside the package")
+        reskate.log("shaded")
+    )"}};
+    host.apply({package("shader", files)});
+    ticks(host, environment, 1);
+    running(host, "shader", environment);
+    check(environment.logged("[shader] shaded"), "A screen shader's calls work\n" + environment.all());
+    const auto hlsl_size = files.at("shaders/tint.hlsl").size(), dxil_size = files.at("shaders/tint.dxil").size();
+    check(game.called(std::format("shader shader shaders/tint.hlsl 0 {} 0.25 0.50 12.00", hlsl_size)),
+          "HLSL reaches the game with its 48 values\n" + environment.all());
+    check(game.called(std::format("shader shader shaders/tint.dxil 2 {} 0.50 0.00 0.00", dxil_size)),
+          "DXIL reaches the game as DXIL, values not given are 0\n" + environment.all());
+    check(game.called("shader shader none"), "nil ends it");
+    check(!game.called("shaders/vertex.dxil") && !game.called("shaders/notes.txt"), "files that are not screen shaders never reach the game");
+    // It needs its permission: "overlay" is not enough.
+    host.apply({package("sneaky", {{manifest_file, manifest(R"("overlay")")}, {"shaders/tint.hlsl", files.at("shaders/tint.hlsl")}, {"plugin/main.lua", R"(
+        reskate.log("shader " .. tostring(pcall(reskate.screen.shader, "shaders/tint.hlsl")) .. " " .. tostring(pcall(reskate.screen.shader, nil)))
+    )"}})});
+    ticks(host, environment, 1);
+    check(environment.logged("[sneaky] shader false false"), "screen.shader is needed\n" + environment.all());
+    check(!game.called("shader sneaky"), "Nothing of a plugin without it reaches the game");
+}
+
+// reskate.world.shader: the plugin's file checked as a screen shader's is, its values and heights, its data as a buffer
+// of float4s, its anchor and its cost; refused without "world.shader" ("screen.shader" is not enough).
+void plugins_run_a_world_shader() {
+    TestEnvironment environment;
+    auto& game = environment.fake;
+    Host host(environment, Side::client);
+    const std::map<std::string, std::string> files{
+        {manifest_file, manifest(R"("world.shader")")},
+        {"shaders/tint.hlsl", "float4 main(float4 p : SV_Position, float2 uv : TEXCOORD0) : SV_Target { return reskate_picture.Sample(reskate_point, uv); }"},
+        {"shaders/tint.dxil", shader_container("DXIL", 0x00000060)},
+        {"shaders/vertex.dxil", shader_container("DXIL", 0x00010060)},
+        {"plugin/main.lua", R"(
+        local values = {}
+        for i = 1, 48 do values[i] = i / 2 end
+        assert(reskate.world.shader("shaders/tint.hlsl", {values = values, heights = true}))
+        assert(reskate.world.shader("shaders/tint.dxil"))
+        local data = buffer.create(32)
+        buffer.writef32(data, 0, 1.5)
+        assert(reskate.world.shader_data(data))
+        assert(reskate.world.shader_data(nil))
+        reskate.world.shader_anchor(vector.create(1, 2, 3))
+        reskate.world.shader_anchor(nil)
+        assert(reskate.world.shader_cost() == 4.5)
+        assert(reskate.world.shader_clock() == 123.25)
+        assert(not pcall(reskate.world.shader_data, buffer.create(20)), "whole float4s")
+        assert(not pcall(reskate.world.shader_data, buffer.create(65536 + 16)), "at most 64 KB")
+        assert(not pcall(reskate.world.shader_data, "not a buffer"), "a buffer")
+        assert(not pcall(reskate.world.shader, "shaders/tint.hlsl", {heights = "yes"}), "heights is true or false")
+        assert(not pcall(reskate.world.shader, "shaders/tint.hlsl", {values = {"a"}}), "values are numbers")
+        assert(not pcall(reskate.world.shader, "shaders/vertex.dxil"), "a pixel shader")
+        assert(not pcall(reskate.world.shader_anchor, "here"), "an anchor is a position")
+        assert(reskate.world.shader(nil))
+        reskate.log("snowed")
+    )"}};
+    host.apply({package("world", files)});
+    ticks(host, environment, 1);
+    running(host, "world", environment);
+    check(environment.logged("[world] snowed"), "A world shader's calls work\n" + environment.all());
+    check(game.called(std::format("world world shaders/tint.hlsl 0 {} true 0.50 24.00", files.at("shaders/tint.hlsl").size())),
+          "HLSL reaches the game with its values and the heights asked for\n" + environment.all());
+    check(game.called(std::format("world world shaders/tint.dxil 2 {} false 0.00 0.00", files.at("shaders/tint.dxil").size())),
+          "DXIL reaches the game as DXIL, with no heights unless asked\n" + environment.all());
+    check(game.called("world data world 32 1.50") && game.called("world data world none"), "Its data as float4s, and none");
+    check(game.called("world anchor world 1.0 2.0 3.0") && game.called("world anchor world none"), "Its anchor, and none");
+    check(game.called("world world none"), "nil ends it");
+    check(!game.called("world data world 20") && !game.called("shaders/vertex.dxil"), "Data and files that are not right never reach the game");
+    host.apply({package("sneaky", {{manifest_file, manifest(R"("screen.shader")")}, {"shaders/tint.hlsl", files.at("shaders/tint.hlsl")}, {"plugin/main.lua", R"(
+        reskate.log("world " .. tostring(pcall(reskate.world.shader, "shaders/tint.hlsl")) .. " " .. tostring(pcall(reskate.world.shader_data, nil)) .. " " ..
+            tostring(pcall(reskate.world.shader_anchor, nil)) .. " " .. tostring(pcall(reskate.world.shader_cost)) .. " " ..
+            tostring(pcall(reskate.world.shader_clock)))
+    )"}})});
+    ticks(host, environment, 1);
+    check(environment.logged("[sneaky] world false false false false false"), "world.shader is needed\n" + environment.all());
+    check(!game.called("world sneaky") && !game.called("world data sneaky") && !game.called("world anchor sneaky"),
+          "Nothing of a plugin without it reaches the game");
+}
+
 void plugins_reach_cruise_and_read_the_mouse() {
     TestEnvironment environment;
     auto& game = environment.fake;
@@ -6908,6 +7220,8 @@ void the_wider_set_reaches_the_game() {
             assert(reskate.objects.remove("42"))
             assert(not pcall(reskate.objects.remove, "not a number"))
             assert(reskate.world.set_time("night") and reskate.world.set_control("fog", 1) and reskate.world.set_park("historic", "skatepark_02"))
+            local controls = reskate.world.controls()
+            assert(controls and controls.fog == 0 and controls.fog_distance == 1.5 and controls.clouds == -1, "the world controls as they are")
             local ok, why = reskate.world.set_time("never")
             assert(not ok and why == "refused")
             assert(#reskate.travel.locations() == 1 and #reskate.travel.levels() == 1)
@@ -7721,6 +8035,10 @@ int main() {
         scratch = std::filesystem::temp_directory_path() / "reskate-plugin-tests";
         std::filesystem::remove_all(scratch);
         run(a_manifest_says_what_a_plugin_is);
+        run(a_variant_can_wait_for_the_next_launch);
+        run(a_plugin_holds_a_trainer_preset);
+        run(the_skater_surface_sound_is_set_for_some_fields);
+        run(the_time_of_day_and_world_controls_are_read);
         run(ui_value_reservations_enforce_limits_and_collisions);
         run(plugins_publish_only_their_own_ui_values);
         run(plugin_approval_follows_the_plugins_own_files);
@@ -7796,6 +8114,9 @@ int main() {
         run(plugins_set_the_flip_speed);
         run(plugins_show_a_viewmodel);
         run(plugins_carry_and_take_a_step_in_the_camera_cycle);
+        run(screen_shader_files_are_checked);
+        run(plugins_run_a_screen_shader);
+        run(plugins_run_a_world_shader);
         run(plugins_read_joints_and_tune_physics);
         run(plugins_type_and_use_the_room);
         run(plugins_read_menu_pose);

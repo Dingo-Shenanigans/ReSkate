@@ -151,7 +151,7 @@ commands and a `Test/` folder.
 | `Trainer/` | trick trainer: waypoints, jumps, landings, presets |
 | `Travel/` | location travel |
 | `UI/` | the in-game UI (see below) |
-| `World/` | level loading, loading screens, time/atmosphere, population, park rotation, world layers, engine guards, native bodies plugins own |
+| `World/` | level loading, loading screens, time/atmosphere (and `time_of_day_lighting`: the shadow and sky caches held off after a change of time), population, park rotation, world layers, engine guards, native bodies plugins own |
 | `AnimationStudio/` | animation core |
 
 ### `Extension/Multiplayer/`

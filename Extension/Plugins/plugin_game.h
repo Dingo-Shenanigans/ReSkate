@@ -11,6 +11,7 @@
 #include "Extension/Skater/pose_place.h"
 #include "Extension/Throwdowns/throwdown_kit.h"
 #include "Extension/UI/score_line.h"
+#include "Extension/UI/Overlay/screen_shader_file.h"
 #include <array>
 #include <cstdint>
 #include <filesystem>
@@ -332,6 +333,16 @@ public:
     virtual std::vector<std::uint64_t> effects_live(std::string_view) { return {}; }
     virtual void effects_clear(std::string_view) {}
     virtual std::pair<bool, std::uint64_t> effects_state() { return {false, 0}; }
+    // The time of day forced on the map now (morning, noon, afternoon, evening, night, weatherday,
+    // weathernight), "default" for the level's own, or empty with no map.
+    virtual std::string time_of_day_now() { return {}; }
+    // The world controls the player has set in ReSkate's menu (fog, sky, wind and the detailed
+    // atmosphere values), one "key=value" a line; those at the level's own are left out.
+    virtual std::string world_controls_text() { return {}; }
+    // Atmosphere values (the detailed fog, sky and wind ones, as world_controls_text names them) set
+    // together, each a value as text or "default" for the level's own; saved in the player's profile
+    // as the menu's are. Empty, or what was refused.
+    virtual std::string set_atmosphere(const std::vector<std::pair<std::string, std::string>>&) { return unavailable; }
 
     virtual std::string object_physics(std::string_view, std::uint64_t, const std::optional<ObjectPhysics>&) { return unavailable; }
     virtual std::string object_velocity(std::string_view, std::uint64_t, const Vec3&) { return unavailable; }
@@ -437,6 +448,10 @@ public:
     // "control" (key: fog, fog_distance, sky_brightness, clouds, wind_strength, wind_direction,
     // traffic, pedestrians; value a number, -1 the default) or "park" (key: a lot, value a layout).
     virtual std::string set_environment(std::string_view, std::string_view, std::string_view) { return unavailable; }
+    // The world controls as the player's profile holds them now (the "control" keys above, -1 each one
+    // left to the level), so a plugin that changes one can put the player's own value back; empty
+    // without a profile.
+    virtual std::vector<std::pair<std::string, double>> world_controls() { return {}; }
     virtual std::vector<Destination> destinations() { return {}; }
     virtual std::vector<LevelInfo> levels() { return {}; }
     // kind "location" (a destination's id) or "level" (a level's asset); a guest is refused.
@@ -800,6 +815,11 @@ public:
     virtual std::vector<CycleNews> take_camera_cycle() { return {}; }
     // Holds the skater where it is (noclip, with no input), while any plugin asks.
     virtual std::string freeze(std::string_view /*plugin*/, bool) { return unavailable; }
+    // The local skater's sounds as on the surface a physics material word names, wherever it is, in the
+    // sound's material fields `fields` (bit i: field i + 1); nothing: each surface its own. One plugin at a time.
+    virtual std::string skater_surface_sound(std::string_view /*plugin*/, std::optional<std::uint32_t>, std::uint32_t /*fields*/ = ~0U) {
+        return unavailable;
+    }
     // ---- the session's authority (plugins' server copies) --------------------------------------------
     // Drops a player from the session; a chat line to everyone; one to one player (a dedicated
     // server's only: a lobby has no private chat); moves a player's skater (their game does the move).
@@ -990,6 +1010,9 @@ public:
     }
     virtual std::vector<Tuning> find_tuning(std::string_view /*text*/, std::size_t /*most*/) { return {}; }
     virtual std::string tune(std::string_view /*plugin*/, std::string_view /*id*/, std::optional<double> /*value*/) { return unavailable; }
+    // The plugin's preset held in the trainer (trainer::plugin_preset): no values lets go. Empty when done, else why not.
+    virtual std::string trainer_preset(std::string_view /*plugin*/, std::string_view /*name*/,
+                                       std::optional<std::map<std::string, double, std::less<>>> /*values*/) { return unavailable; }
     virtual std::string replace_trick(std::string_view /*plugin*/, std::string /*trick*/, std::string /*pop*/, ClipRef, float /*speed*/) {
         return unavailable;
     }
@@ -1090,8 +1113,10 @@ public:
     };
     // Empty when the mod declares no variants.
     virtual std::optional<VariantState> variants(std::string_view /*plugin*/, const std::filesystem::path& /*package*/) { return std::nullopt; }
-    // The variant saved as the mod's choice, the mods applied again and the level loaded again with it.
-    virtual std::string choose_variant(std::string_view /*plugin*/, const std::filesystem::path& /*package*/, std::string_view /*variant*/) {
+    // The variant saved as the mod's choice, and (now) the mods applied again and the level loaded
+    // again with it; without now, it only waits for the next launch.
+    virtual std::string choose_variant(std::string_view /*plugin*/, const std::filesystem::path& /*package*/, std::string_view /*variant*/,
+                                       bool /*now*/ = true) {
         return unavailable;
     }
     // ---- the skater's physics -----------------------------------------------------------------------
@@ -1159,6 +1184,34 @@ public:
         std::array<std::string, 5> text;
     };
     virtual std::string screen_look(std::string_view /*plugin*/, std::optional<ScreenLook>) { return unavailable; }
+    // The plugin's own pixel shader over the game's picture (reskate.screen.shader; Extension/UI/Overlay/screen_shader.h):
+    // `file` its path in the package, `bytes` its content as checked (screen_shader::check_file), `values` the numbers
+    // it is given. None: the plugin's ends. Empty, or why it is not drawn.
+    struct ScreenShader {
+        std::string file;
+        std::shared_ptr<const std::string> bytes;
+        screen_shader::Kind kind{};
+        std::array<float, screen_shader::value_count> values{};
+    };
+    virtual std::string screen_shader(std::string_view /*plugin*/, std::optional<ScreenShader>) { return unavailable; }
+    // The plugin's own pixel shader in the game's lit picture of the world, before its UI (reskate.world.shader;
+    // Extension/UI/Overlay/world_shader.h): as ScreenShader, and whether the ground heights are measured for it. On until
+    // none. Empty, or why it is not drawn.
+    struct WorldShader {
+        std::string file;
+        std::shared_ptr<const std::string> bytes;
+        screen_shader::Kind kind{};
+        std::array<float, screen_shader::value_count> values{};
+        bool heights{};
+    };
+    virtual std::string world_shader(std::string_view /*plugin*/, std::optional<WorldShader>) { return unavailable; }
+    // Its data (float4s, at most 64 KB; none: none), where its near distance is measured (for 300 ms), and its average
+    // time a frame on the GPU (milliseconds), once known.
+    virtual std::string world_shader_data(std::string_view /*plugin*/, std::shared_ptr<const std::string>) { return unavailable; }
+    virtual void world_shader_anchor(std::string_view /*plugin*/, std::optional<Vec3>) {}
+    virtual std::optional<double> world_shader_cost(std::string_view /*plugin*/) { return std::nullopt; }
+    // The world shader's clock (its reskate_clock.x): seconds, from 0 again every 1000.
+    virtual double world_shader_clock() { return 0; }
     // A hand slaps the lens, while this plugin has the look.
     virtual std::string screen_slap(std::string_view /*plugin*/) { return unavailable; }
     // The skater bails as from a slam of `force` (0.5 to 3); not in a throwdown. While No Bail protects

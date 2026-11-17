@@ -416,6 +416,12 @@ private:
         std::uint64_t played{};
     };
     std::map<std::string, CachedWave, std::less<>> waves_;
+    // reskate.screen.shader: shader files by their path in the package, as read and checked once (a few at a time).
+    struct CachedShader {
+        std::shared_ptr<const std::string> bytes;
+        screen_shader::Kind kind{};
+    };
+    std::map<std::string, CachedShader, std::less<>> shader_files_;
     std::size_t wave_bytes_{};
     std::uint64_t wave_plays_{};
     // reskate.animation.preload and reskate.audio.preload: a package file read and decoded on a

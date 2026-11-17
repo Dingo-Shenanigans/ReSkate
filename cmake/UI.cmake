@@ -60,6 +60,9 @@ add_library(dingosdk_overlay STATIC
     Extension/Music/music_page.cpp
     Extension/Trainer/trainer_view.cpp
     Extension/UI/Overlay/screen_look.cpp
+    Extension/UI/Overlay/screen_shader.cpp
+    Extension/UI/Overlay/plugin_shader_compile.cpp
+    Extension/UI/Overlay/world_shader.cpp
     Extension/UI/Overlay/viewmodel.cpp
     Extension/UI/Overlay/viewmodel_model.cpp
 )
