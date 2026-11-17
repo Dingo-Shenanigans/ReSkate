@@ -36,8 +36,8 @@ constexpr std::string_view launch_level_registry = "win32/globals.toc";
 // The root level: its sublevel manager lists every map, and it carries the
 // shader-state tables (material rows) and the material grid maps add to. The
 // renderer prepares the shader tables once, at launch, so the root must not
-// change under it while the game runs: every installed map's root edits go in
-// at launch, disabled ones included, and a live merge keeps them as they are.
+// change under it while the game runs: a live merge keeps the root edits of
+// every map the game has loaded as they are, also of one disabled since.
 constexpr std::string_view root_level = "win32/levels/game/dingolevel_root/dingolevel_root.toc";
 // Superbundles the game mounts once, at launch. The merged patch always carries
 // its own copy of each, even one no enabled mod changes, so a mod enabled or
@@ -107,17 +107,15 @@ MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, co
         std::vector<const Mod*> mods;
         for (const auto& mod : catalog.mods) if (mod.provides_layout) mods.push_back(&mod);
         // With no mod enabled the patch stays, holding the game's own copy of
-        // what it reads at launch (and any disabled mods' archives), so a mod
-        // enabled or added later loads without a restart.
+        // what it reads at launch, so a mod enabled or added later loads
+        // without a restart.
         std::map<const Mod*, RelativeFiles> modFiles;
         for (const auto* mod : mods) modFiles[mod] = scan(mod->directory);
 
         // What the store sells comes from the content cache, which the launcher installs.
         const bool storeKnown = content_cache::installed();
-        // Disabled mods count too: their archives and map registration are placed at launch.
-        auto fingerprint = merge_fingerprint(catalog, mods, modFiles, storeKnown);
-        for (const auto& mod : catalog.inactive)
-            fingerprint += " inactive " + mod.name + " " + mod_fingerprint(mod.directory);
+        // A disabled mod is no part of it: nothing of one is in the patch.
+        const auto fingerprint = merge_fingerprint(catalog, mods, modFiles, storeKnown);
         if (options.live) {
             fs::remove(output / stamp_file, error);
         } else if (auto previous = previous_merge(output, fingerprint);
@@ -210,8 +208,7 @@ MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, co
         // would carry the old build's layout, and the game then waits on the
         // splash for bundles that layout places wrongly.
         auto parsedLayout = vfs::read_layout(catalog.data_root / L"Data" / L"layout.toc");
-        std::vector<const Mod*> layoutSources = mods;
-        if (layoutSources.empty() && !catalog.inactive.empty()) layoutSources.push_back(&catalog.inactive.front());
+        const std::vector<const Mod*>& layoutSources = mods;
         auto& layout = parsedLayout.root;
         const auto baseRoot = catalog.data_root / L"Data";
         const auto gameRoot = catalog.data_root;
@@ -247,15 +244,24 @@ MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, co
         };
 
         // Where every mod's archives go. The launch's merge places the archives
-        // of every installed mod, disabled ones too, and records it: a merge
-        // while the game runs must not move an archive the game may hold open,
-        // so it reuses that record, and a mod disabled at launch can then be
-        // enabled without a restart.
+        // of the enabled mods and records it: a merge while the game runs must
+        // not move an archive the game may hold open, so it reuses that record.
+        //
+        // A disabled mod is not there at all for the launch's merge: none of its
+        // archives are linked or declared, and a disabled map is in neither the
+        // level registry nor the root level (it was, to be ready to enable, and a
+        // map that was off still had its shader rows and surfaces in the game;
+        // 2026-11-14). Enabled while the game runs, it is placed as a mod
+        // installed since launch is. Only a merge while the game runs still
+        // places a disabled mod, and only one the game has loaded (it is in the
+        // record): its archives and its registration stay as the game holds them
+        // until the next launch.
         const auto placementsPath = output / placements_file;
         PlacementRecord record;
         if (options.live) record = read_placements(placementsPath);
         std::vector<const Mod*> placedMods = mods;
-        for (const auto& mod : catalog.inactive) placedMods.push_back(&mod);
+        if (options.live)
+            for (const auto& mod : catalog.inactive) placedMods.push_back(&mod);
         // A mod whose files changed since its archives were placed (updated, or removed and
         // installed again at another version, while the game runs) is forgotten here and so
         // placed again below, as one installed since launch is; the old archives stay where
@@ -273,16 +279,15 @@ MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, co
             }
         for (const auto* mod : placedMods) {
             const bool active = std::find(mods.begin(), mods.end(), mod) != mods.end();
-            if (options.live && !active && !record.mods.contains(mod->name)) continue; // installed since launch, still off
+            if (!active && !record.mods.contains(mod->name)) continue; // never loaded by the running game
             const auto files = active ? modFiles[mod] : scan(mod->directory);
-            if (!active) modFiles[mod] = files; // the material grid plan reads a disabled map's root edits too
+            if (!active) modFiles[mod] = files; // the material grid plan reads its root edits too
             if (active) advance("Linking " + mod->name);
             for (const auto& relative : files.tocs) {
                 // A map registers itself in globals (its level description and
                 // the root's on-demand entry), which the game reads only at
-                // launch. A disabled map's globals go in too, so enabling it
-                // later only needs what is read at each load; while its level
-                // and root TOCs are left out it cannot load.
+                // launch. One the game loaded and that was disabled since keeps
+                // that registration; with its level TOCs left out it cannot load.
                 if (!active && !(mod->provides_levels &&
                                  (ascii_lower(relative) == launch_level_registry || ascii_lower(relative) == root_level)))
                     continue;
@@ -370,16 +375,10 @@ MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, co
                     spot.offset = append_file(mod->directory / path, inside(output, path));
                 }
                 placements[mod].at.emplace(std::pair{directory, number}, spot);
-                // A disabled mod's archives are read by no TOC yet, so nothing
-                // else declares them; the engine only accepts archives
-                // declared at launch.
-                if (!active)
-                    for (const auto chunk : store.chunks_in(directory)) used.emplace(chunk, spot.archive);
                 if (spot.archive != number || spot.offset)
                     report.notes.push_back(mod->name + ": " + directory + "/cas_" +
                         std::to_string(number) + " placed as cas_" + std::to_string(spot.archive) +
-                        (spot.offset ? " at byte " + std::to_string(spot.offset) : std::string{}) +
-                        (active ? "" : " (disabled, ready to enable)"));
+                        (spot.offset ? " at byte " + std::to_string(spot.offset) : std::string{}));
                 ++report.archives;
             }
             placements[mod].fingerprint = mod_fingerprint(mod->directory);
@@ -421,8 +420,8 @@ MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, co
         }
         std::vector<std::string> rootNames;
         for (const auto* mod : rootMods) rootNames.push_back(mod->name);
-        // Unchanged since the root was last written (only maps enabled or
-        // disabled that were installed at launch): the file stays, byte for byte.
+        // Unchanged since the root was last written (only maps the game has
+        // loaded enabled or disabled): the file stays, byte for byte.
         const bool keepRoot = options.live && rootNames == record.root && !rootNames.empty() &&
                               fs::exists(output / fs::path(root_level), error);
         record.root = rootNames;
@@ -451,8 +450,8 @@ MergeReport merge_mods(const Catalog& supplied, const MergeObserver& observe, co
                 if (mod->name == name)
                     for (auto& chunk : chunks) store.shift(chunk.location, chunk.offset, &placements[mod]);
         lap("asset overrides");
-        // The count above missed the root level when only a disabled map brings it, and
-        // that is merged too: from here each superbundle is a step, then the layout.
+        // The count above missed the root level when only a map disabled since it was loaded
+        // brings it, and that is merged too: from here each superbundle is a step, then the layout.
         progress.total = progress.done + superbundles.size() + 2;
 
         // Each superbundle is merged by itself: it reads the game's and the mods' files and

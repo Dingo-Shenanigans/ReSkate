@@ -12,8 +12,9 @@
 // The engine re-reads the root level, customization, buildkititems and each
 // destination's superbundle TOC at every load, and opens an archive only when
 // it first reads from it (sharing it with writers). The launch's merge places
-// every installed mod's archives, disabled ones included, so a live merge
-// only rewrites TOCs and appends manifests; a superbundle the game did not
+// the enabled mods' archives, so for those a live merge only rewrites TOCs and
+// appends manifests; a mod enabled since (it was disabled at launch, or was
+// installed later) has its archives appended to the patch's own, and a superbundle the game did not
 // know at launch is registered with it and listed under its install chunk.
 // Globals and items are read once at launch; the merged patch always carries
 // its own copy of both, which a live apply hands to the game in memory, so
@@ -58,8 +59,7 @@ Progress progress();
 std::string status();
 // Folder names of the mods in effect now: the launch's, or the last live apply's.
 std::vector<std::string> applied_mods();
-// True when the launch's merge placed this mod's archives (enabled or not),
-// so it can be enabled without a restart.
+// True when the launch's merge placed this mod's archives: it was enabled then.
 bool placed_at_launch(const std::string& name);
 // Whether a mod folder holds maps and nothing else: level bundles and the two files maps
 // register themselves in (its layout and globals). Reads the folder; not cached.

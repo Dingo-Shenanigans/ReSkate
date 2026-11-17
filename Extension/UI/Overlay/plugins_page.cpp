@@ -339,8 +339,11 @@ void plugin_row(SkateMenu& menu, const plugins::Installed& plugin, bool has_page
     } else {
         row.detail = by;
         if (!kinds.empty()) row.detail += (row.detail.empty() ? "" : " \xc2\xb7 ") + kinds;
-        row.tag = on ? "ON" : "OFF";
-        if (on) row.tag_fill = st::blue, row.tag_ink = st::white;
+        // A server's own plugin that is on waits for a server that requires it: SERVER, not ON.
+        const bool waits = on && plugin.server_only && !plugin.required;
+        if (plugin.server_only) row.detail += std::string(row.detail.empty() ? "" : " \xc2\xb7 ") + "Only on servers that require it";
+        row.tag = waits ? "SERVER" : on ? "ON" : "OFF";
+        if (on && !waits) row.tag_fill = st::blue, row.tag_ink = st::white;
         if (has_page) row.side = "Page \xe2\x80\xba";
         row.hint = has_page ? "A opens its page. X turns it on or off. Y shows what it may do." : "A shows what it may do. X turns it on or off.";
     }
@@ -387,20 +390,77 @@ void plugin_row(SkateMenu& menu, const plugins::Installed& plugin, bool has_page
         const int answer = row_actions(menu, "answer", {{"TURN ON", true, true, "Let it run."}, {"KEEP OFF", true, false, "It stays off."}});
         if (answer >= 0) plugins::set_enabled(plugin.id, answer == 0);
     } else {
+        if (plugin.server_only)
+            note(plugin.required ? "A server brought this plugin here. It runs because the server you are on requires it, and stops when you leave."
+                                 : "A server brought this plugin here. It runs only while you are on a server that requires it.");
         const RowButton turn{on ? "TURN OFF" : "TURN ON", true, !on, on ? "Stop it." : "Let it run."};
-        const int action = has_page ? row_actions(menu, "switch", {turn, {"OPEN PAGE", true, false, "Its page, in place of this list."}})
-                                    : row_actions(menu, "switch", {turn});
+        // Where it runs: a server's own can be kept as the player's, and one of the player's left to servers.
+        const RowButton where = plugin.server_only ? RowButton{"RUN EVERYWHERE", true, false, "Keep it as your own: it runs off servers too."}
+                                                   : RowButton{"SERVERS ONLY", true, false, "It runs only on servers that require it."};
+        const int action = has_page ? row_actions(menu, "switch", {turn, where, {"OPEN PAGE", true, false, "Its page, in place of this list."}})
+                                    : row_actions(menu, "switch", {turn, where});
         if (action == 0) plugins::set_enabled(plugin.id, !on);
-        if (action == 1) {
+        if (action == 1) plugins::set_server_only(plugin.id, !plugin.server_only);
+        if (action == 2) {
             menu.plugin_page = plugin.id;
             open.clear();
         }
     }
 }
 
+// PLUGINS' LIMITS: how strict ReSkate is with plugins on this PC (plugins::LimitChoices). The limits
+// keep the game smooth; a player with a heavy plugin that is being stopped can trade some of that
+// for it here. They are theirs to set, and no plugin's.
+void plugin_limits(SkateMenu& menu) {
+    auto choices = plugins::limit_choices();
+    const auto before = choices;
+    begin_card(menu, "plugin-limits-time", "SLOW PLUGINS", "A plugin is given a few milliseconds of every frame. One that takes more, five seconds running, is stopped.");
+    toggle_row(menu, "Stop slow plugins", "Off, a plugin is never stopped for being slow: the game may run slower with it.", choices.stop_slow);
+    {
+        constexpr std::array<double, 4> times{6, 10, 16, 25};
+        int chosen = 0;
+        for (std::size_t i = 0; i < times.size(); ++i)
+            if (choices.tick_ms >= times[i] - 0.5) chosen = static_cast<int>(i);
+        field(menu, "Time allowed", "How long a plugin may take a frame, on average, before it is stopped. 6 ms is ReSkate's own; a frame at 60 a second is 16.7 ms.");
+        if (choice(menu, "plugin-limit-time", chosen, {"6 ms (strict)", "10 ms", "16 ms", "25 ms (loose)"}, choices.stop_slow))
+            choices.tick_ms = times[static_cast<std::size_t>(std::clamp(chosen, 0, 3))];
+    }
+    end_card();
+    begin_card(menu, "plugin-limits-errors", "FAILING PLUGINS", "A plugin that raises more than five errors in ten seconds is stopped.");
+    toggle_row(menu, "Stop plugins that keep failing", "Off, a plugin goes on however often it fails: its errors are still written to the log.", choices.stop_errors);
+    end_card();
+    begin_card(menu, "plugin-limits-memory", "MEMORY", "How much memory one plugin may use.");
+    {
+        constexpr std::array<int, 4> sizes{128, 256, 512, 1024};
+        int chosen = 0;
+        for (std::size_t i = 0; i < sizes.size(); ++i)
+            if (choices.memory_mb >= sizes[i]) chosen = static_cast<int>(i);
+        field(menu, "Memory allowed", "A plugin that asks for more than this is stopped.");
+        if (choice(menu, "plugin-limit-memory", chosen, {"128 MB", "256 MB", "512 MB", "1 GB"}))
+            choices.memory_mb = sizes[static_cast<std::size_t>(std::clamp(chosen, 0, 3))];
+    }
+    end_card();
+    if (!(choices == before) && !plugins::set_limit_choices(choices)) warn("That could not be saved.");
+    const plugins::LimitChoices defaults;
+    if (!(choices == defaults)) {
+        if (button_row(menu, "plugin-limits-reset", {{"BACK TO RESKATE'S OWN", true, false, "Every limit as ReSkate sets it."}}) == 0)
+            plugins::set_limit_choices(defaults);
+    }
+    note("These are yours to set, on this PC only: no plugin can change them. A plugin that hangs the game for a whole second is "
+         "always stopped, and a plugin already stopped starts again when it is turned off and on. Plugins a lobby's host runs for "
+         "everyone keep ReSkate's own limits.");
+}
+
 // PLUGINS' list: plugin developer mode, then every installed plugin, a row each, down one column.
 void plugin_list(SkateMenu& menu, const std::vector<plugin_ui::PageEntry>& pages) {
     ImGui::BeginChild("plugin-list", ImVec2(0, page_body_height(menu)), ImGuiChildFlags_NavFlattened);
+    static int list_tab = 0;
+    category_tabs(menu, list_tab, {"INSTALLED", "LIMITS"}, "plugin-list-tabs");
+    if (list_tab == 1) {
+        plugin_limits(menu);
+        ImGui::EndChild();
+        return;
+    }
     page_prompts("Open page", "On / off", "Permissions");
     bool developer = plugins::developer_mode();
     if (toggle_row(menu, "Plugin dev mode", "Updates to plugins you already approved won't ask again.", developer))

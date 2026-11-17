@@ -73,7 +73,7 @@ int main() {
           "The other variant, the pack's own layout or another deck model was not set aside");
     check(!listed(catalog.mods, "Pack") && !listed(catalog.mods, "OtherDeck") && listed(catalog.mods, "Plain") && listed(catalog.mods, "Odd"),
           "The wrong mods load");
-    check(listed(catalog.inactive, "Pack#standard"), "A set-aside variant's archives are not placed, so it cannot be switched to live");
+    check(listed(catalog.inactive, "Pack#standard"), "A set-aside variant is not among the mods that do not load, so it cannot be switched to live");
     check(std::ranges::any_of(catalog.notes, [](const std::string &n) { return n.find("Odd") != std::string::npos && n.find("variants") != std::string::npos; }),
           "A malformed declaration made no note");
 

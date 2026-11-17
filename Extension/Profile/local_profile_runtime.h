@@ -97,6 +97,10 @@ bool teleport_local_skater_transform(const std::array<float,16>& transform,
     std::optional<bool> on_board = std::nullopt);
 // Includes the queued request and the native streaming/ground-check transition.
 bool local_skater_teleport_pending();
+// Sends a teleport that is waiting, if the game's teleport manager is idle. Every client tick,
+// after the plugins': the features' own update, which also sends it, runs every 500 ms, and a
+// teleport asked for between two of those waited up to half a second before it even started.
+void send_waiting_teleport() noexcept;
 // The highest collision surface straight down at (x, z) between world heights `top` and
 // `bottom`, from the client physics world (the park editor's native ray). Empty when nothing
 // is there yet (collision still streaming) or the query is unavailable. Client update thread.

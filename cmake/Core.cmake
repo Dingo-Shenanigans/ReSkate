@@ -91,7 +91,7 @@ endif()
 
 # Read access to the installed game's cas archives.
 add_library(dingosdk_game_archives STATIC Engine/Vfs/game_archives.cpp Engine/Vfs/game_bundles.cpp
-    Engine/Vfs/item_thumbnails.cpp Engine/Vfs/game_textures.cpp)
+    Engine/Vfs/item_thumbnails.cpp Engine/Vfs/game_textures.cpp Engine/Vfs/game_map.cpp)
 target_link_libraries(dingosdk_game_archives PUBLIC dingosdk_native_db dingosdk_frostbite)
 
 if(WIN32)
@@ -108,6 +108,7 @@ if(WIN32)
         Engine/Vfs/mod_merge_layout.cpp
         Engine/Vfs/mod_merge_left_out.cpp
         Engine/Vfs/mod_items.cpp
+        Engine/Vfs/mod_vram.cpp
         Engine/Vfs/mod_merge_scan.cpp
         Engine/Vfs/mod_merge_scan_cache.cpp
         Engine/Vfs/mod_merge_textures.cpp
@@ -148,6 +149,7 @@ add_library(dingosdk_plugins STATIC
     Extension/Plugins/plugin_manifest.cpp
     Extension/Plugins/plugin_approval.cpp
     Extension/Plugins/plugin_listing.cpp
+    Extension/Plugins/plugin_server_scope.cpp
     Extension/Plugins/plugin_vm.cpp
     Extension/Plugins/plugin_api.cpp
     Extension/Plugins/plugin_api_ui.cpp

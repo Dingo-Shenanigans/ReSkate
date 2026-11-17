@@ -103,7 +103,10 @@ CustomLevelManifest parse(std::string_view text) {
     result.present = true;
     std::set<std::string, std::less<>> assets;
     for (const auto& row : rows) {
-        exact_fields(row, {"asset", "displayName", "startPoints"}, "custom-level row");
+        // worldLayers is optional: a row is its three fields, or those and worldLayers.
+        const bool declares_layers = row.is_object() && row.contains("worldLayers");
+        if (declares_layers) exact_fields(row, {"asset", "displayName", "startPoints", "worldLayers"}, "custom-level row");
+        else exact_fields(row, {"asset", "displayName", "startPoints"}, "custom-level row");
         const auto& asset = row.at("asset");
         const auto& display_name = row.at("displayName");
         const auto& points = row.at("startPoints");
@@ -130,6 +133,25 @@ CustomLevelManifest parse(std::string_view text) {
         }
         if (level.start_points.size() == 1)
             level.manifest_start_point = level.start_points.front().name;
+        // The layers the map is made to be played with: {"<layer key>": "on" | "off"}. A map
+        // whose content sits in one of the game's seasonal layers says so here, and the layer
+        // is then on (or off) while the player's own choice for it is "default". The keys are
+        // the world layer catalog's, which is read from the level data when the game runs, so
+        // only their shape is checked here; a key the catalog does not hold does nothing.
+        if (declares_layers) {
+            const auto& layers = row.at("worldLayers");
+            if (!layers.is_object() || layers.size() > 64)
+                throw std::runtime_error("custom-level worldLayers must be an object of at most 64 layers");
+            for (const auto& [key, mode] : layers.items()) {
+                const bool plain = !key.empty() && key.size() <= 96 && std::all_of(key.begin(), key.end(), [](char value) {
+                    return (value >= 'a' && value <= 'z') || (value >= '0' && value <= '9') || value == '_';
+                });
+                if (!plain) throw std::runtime_error("custom-level worldLayers key is not a world layer key");
+                if (!mode.is_string() || (mode.string() != "on" && mode.string() != "off"))
+                    throw std::runtime_error("custom-level worldLayers value must be \"on\" or \"off\"");
+                level.world_layers.emplace_back(key, mode.string());
+            }
+        }
         result.levels.push_back(std::move(level));
     }
     return result;
@@ -213,6 +235,7 @@ WorldCatalog merge_custom_levels(WorldCatalog native, const CustomLevelManifest&
         if (found != native.levels.end()) {
             found->display_name = declared.display_name;
             found->custom = true;
+            found->world_layers = declared.world_layers;
             found->manifest_start_point = declared.manifest_start_point;
             for (const auto& point : declared.start_points) {
                 const auto exists = std::ranges::any_of(found->start_points, [&](const StartPointInfo& native_point) {

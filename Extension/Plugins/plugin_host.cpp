@@ -132,6 +132,12 @@ void Host::publish_chat_commands() {
     environment_.game().set_chat_commands(std::move(list));
 }
 
+void Host::set_limits(const Limits& limits) {
+    limits_ = limits;
+    for (auto& [id, entry] : entries_)
+        if (entry.plugin) entry.plugin->set_limits(limits);
+}
+
 void Host::apply(const std::vector<Candidate>& found) {
     std::map<std::string, const Candidate*, std::less<>> wanted;
     for (const auto& candidate : found) wanted.emplace(candidate.id, &candidate);

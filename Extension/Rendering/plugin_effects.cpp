@@ -2,6 +2,7 @@
 #include "effect_receivers.h"
 #include "effect_draw_budget.h"
 #include "effect_asset.h"
+#include "Engine/Core/Log/logging.h"
 #include "Extension/Decals/native_decals.h"
 #include "Extension/Skater/no_bail.h"
 #include "Engine/Game/Abi/native_data.h"
@@ -15,6 +16,7 @@
 #include <atomic>
 #include <cstring>
 #include <map>
+#include <memory>
 #include <mutex>
 
 namespace dingosdk::effects {
@@ -30,9 +32,19 @@ struct Entry {
     std::uint64_t expires{};
     bool stopped{}, retired{};
 };
+// One of the game's effect bundles asked for this level. The name outlives the load: the
+// engine keeps the pointer it was given until the load is done.
+struct Bundle {
+    std::string name;
+    const char* names[1]{};
+    std::uint64_t handle{};
+    plugins::EffectBundleState state{plugins::EffectBundleState::loading};
+};
 struct State {
     std::mutex mutex;
     std::map<std::uint64_t, Entry> entries;
+    std::map<std::string, std::unique_ptr<Bundle>, std::less<>> bundles;
+    bool loads_checked{}, loads_valid{};
     std::map<std::string, AssetLookup, std::less<>> assets;
     Receivers receivers;
     DrawBudget budget;
@@ -110,6 +122,33 @@ std::uintptr_t asset(State& s, const std::string& name) {
 #ifndef DINGOSDK_EFFECT_ASSET
 #define DINGOSDK_EFFECT_ASSET(s, name) asset(s, name)
 #endif
+// Ends every bundle load the level is leaving behind: a done one is ended (which frees its
+// job), a running one cancelled, as the level does with its own (4647ec0). What a load brought
+// in stays in Game and goes when the level unloads it.
+void finish_loads(State& s) {
+    if (s.loads_valid)
+        for (auto& [name, bundle] : s.bundles) {
+            if (!bundle->handle) continue;
+            if (function<bool(*)(std::uint64_t)>(s, fx::bundle_load_done.rva)(bundle->handle))
+                (void)function<bool(*)(std::uint64_t)>(s, fx::bundle_load_end.rva)(bundle->handle);
+            else function<void(*)(std::uint64_t)>(s, fx::bundle_load_cancel.rva)(bundle->handle);
+            bundle->handle = 0;
+        }
+    s.bundles.clear();
+}
+// Loads that finished since the last tick: ended, and their effects looked for afresh.
+void poll_loads(State& s) {
+    bool finished = false;
+    for (auto& [name, bundle] : s.bundles) {
+        if (!bundle->handle || !function<bool(*)(std::uint64_t)>(s, fx::bundle_load_done.rva)(bundle->handle)) continue;
+        const bool ok = function<bool(*)(std::uint64_t)>(s, fx::bundle_load_end.rva)(bundle->handle);
+        bundle->handle = 0;
+        bundle->state = ok ? plugins::EffectBundleState::ready : plugins::EffectBundleState::failed;
+        logging::log(logging::Level::info, logging::Channel::runtime, "Effects: the game {} {}.", ok ? "loaded" : "could not load", name);
+        finished = true;
+    }
+    if (finished) s.assets.clear();   // a lookup that missed waits two seconds before it looks again
+}
 bool replaying(std::uintptr_t base) {
     namespace r = addr::replay_activity;
     const auto client = pointer(base + r::client), manager = pointer(client + r::manager);
@@ -140,6 +179,9 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, bool noclip, b
         // change still releases particles, but decals also require their realm.
         if (!playing || current != s.service || manager != s.manager || world != s.world || skater.entity != s.entity)
             reset(s);
+        // Another world without the transition having been seen: its loads are not this one's.
+        if (world != s.world && !s.bundles.empty()) finish_loads(s);
+        poll_loads(s);
         s.service = current; s.manager = manager; s.world = world; s.entity = skater.entity;
         s.allowed = playing && world && current && manager;
         if (!s.allowed) return;
@@ -169,21 +211,22 @@ void before_level_transition(unsigned next) noexcept {
     auto& s = state();
     if (next == 3 || next == 14 || next == 22 || next == 24 || next == 25) {
         s.suspended = true;
-        try { std::lock_guard lock(s.mutex); reset(s); } catch (...) {}
+        try { std::lock_guard lock(s.mutex); reset(s); finish_loads(s); } catch (...) {}
     } else if (next == 13 || next == 21) s.suspended = false;
 }
 std::uint64_t create(std::string_view plugin, const plugins::EffectRequest& r) {
     auto& s = state(); std::lock_guard lock(s.mutex);
-    if (!usable(s) || !plugins::private_effect_asset(r.asset, r.decal) || !plugins::valid_effect_matrix(r.transform) ||
+    const bool named = r.game ? !r.decal && plugins::game_effect_asset(r.asset) : plugins::private_effect_asset(r.asset, r.decal);
+    if (!usable(s) || !named || !plugins::valid_effect_matrix(r.transform) ||
         !(r.lift >= 0 && r.lift <= 1)) return 0;
     const auto total = std::count_if(s.entries.begin(), s.entries.end(), [&](const auto& e) {
         return (e.second.decal.id != 0) == r.decal;
     });
-    if (total >= (r.decal ? 4096 : 64)) return 0;
+    if (total >= (r.decal ? 4096 : 192)) return 0;
     const auto mine = std::count_if(s.entries.begin(), s.entries.end(), [&](const auto& e) {
         return e.second.owner == plugin && (e.second.decal.id != 0) == r.decal;
     });
-    if (mine >= (r.decal ? 2048 : 24)) return 0;
+    if (mine >= (r.decal ? 2048 : 64)) return 0;
     const auto found = DINGOSDK_EFFECT_ASSET(s, r.asset);
     if (!asset_is_resident(found) || !asset_type_matches(found, r.decal)) return 0;
     Entry e; e.owner = plugin; e.expires = GetTickCount64() + 600000;
@@ -210,10 +253,52 @@ std::uint64_t create(std::string_view plugin, const plugins::EffectRequest& r) {
     const auto id = ++s.serial;
     s.entries.emplace(id, std::move(e)); return id;
 }
+plugins::EffectBundleState load_bundle(std::string_view, std::string_view bundle, std::string_view effect) {
+    using enum plugins::EffectBundleState;
+    auto& s = state(); std::lock_guard lock(s.mutex);
+    if (!usable(s) || !plugins::game_effect_bundle(bundle) || !plugins::game_effect_asset(effect)) return unavailable;
+    // Already in Game (the map has it, or an earlier load brought it): nothing to load.
+    const auto found = DINGOSDK_EFFECT_ASSET(s, std::string(effect));
+    if (asset_is_resident(found) && asset_type_matches(found, false)) return ready;
+    if (const auto known = s.bundles.find(bundle); known != s.bundles.end()) return known->second->state;
+    if (s.bundles.size() >= 16) return unavailable;
+    if (!s.loads_checked) {
+        s.loads_checked = true; s.loads_valid = true;
+        for (const auto& f : {fx::bundle_load_begin, fx::bundle_load_done, fx::bundle_load_end, fx::bundle_load_cancel}) {
+            std::array<unsigned char, 32> bytes{};
+            s.loads_valid = memory::read(s.base + f.rva, bytes) && bytes == f.bytes && s.loads_valid;
+        }
+    }
+    // The level must have its Game compartment up, as an effect's lookup needs too.
+    if (!s.loads_valid || !pointer(s.base + addr::engine::domain_owners + sizeof(std::uintptr_t) * fx::resident_compartment))
+        return unavailable;
+    auto entry = std::make_unique<Bundle>();
+    entry->name = std::string(bundle);
+    entry->names[0] = entry->name.c_str();
+    using Begin = std::uint64_t*(*)(std::uint64_t*, std::uint16_t, const char* const*, std::uint32_t, void*, std::uint32_t, std::uint32_t);
+    function<Begin>(s, fx::bundle_load_begin.rva)(&entry->handle, fx::resident_compartment, entry->names, 1, nullptr, 0, 0);
+    // The game names its bundles without the platform folder its files have them under (a
+    // level's own list reads characters/..., not win32/characters/...; seen in game: every
+    // win32/... name was refused). Asked for again by that name.
+    if (constexpr std::string_view platform = "win32/"; !entry->handle && entry->name.starts_with(platform)) {
+        entry->names[0] = entry->name.c_str() + platform.size();
+        function<Begin>(s, fx::bundle_load_begin.rva)(&entry->handle, fx::resident_compartment, entry->names, 1, nullptr, 0, 0);
+    }
+    // No handle: the game has no bundle of that name. Kept, so it is not asked for again.
+    if (!entry->handle) entry->state = failed;
+    logging::log(logging::Level::info, logging::Channel::runtime, "Effects: {} {}.",
+        entry->handle ? "asked the game for" : "the game has no bundle named", entry->name);
+    const auto result = entry->state;
+    s.bundles.emplace(entry->name, std::move(entry));
+    return result;
+}
 void move(std::string_view plugin, std::uint64_t id, const Matrix& matrix) {
     if (!plugins::valid_effect_matrix(matrix)) return;
     auto& s = state(); std::lock_guard lock(s.mutex);
     if (auto* e = owned(s, plugin, id)) {
+        // (Moved, it is in use: its ten minutes start again. One carried along with something for
+        // longer than that used to vanish while it was still being moved.)
+        e->expires = GetTickCount64() + 600000;
         if (e->particle) { alignas(16) const auto m = matrix; function<void(*)(std::uintptr_t*, const float*)>(s, fx::move.rva)(&e->particle, m.data()); }
         else if (!e->receiver[0]) decal::set_transform(s.base, s.manager, e->decal.id, matrix);
     }

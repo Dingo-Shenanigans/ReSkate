@@ -168,6 +168,11 @@ std::optional<MultiplayerLobby> read_server_tags(std::string_view tags, std::uin
     return row;
 }
 
+bool server_listing_gone(bool internet_listed, unsigned missed, std::uint64_t unlisted_us) noexcept {
+    constexpr std::uint64_t minute = 60000000;
+    return unlisted_us > 15 * minute || (internet_listed && missed >= 2 && unlisted_us > 5 * minute);
+}
+
 SteamServerBrowser::~SteamServerBrowser() { release(); }
 void SteamServerBrowser::release() {
     for (auto &search : searches_) {
@@ -222,6 +227,7 @@ void SteamServerBrowser::read(std::uint64_t now) {
             auto &entry = found_[row->id];
             entry.search = search_;
             entry.listed = now;
+            entry.missed = 0;
             if (!search.internet) entry.lan = true;
             // A direct answer is live; the tags come from Steam's master list, which
             // can lag behind a change of map.
@@ -246,16 +252,18 @@ void SteamServerBrowser::read(std::uint64_t now) {
     // Servers named with bad words, or with characters a server name cannot have, are
     // never shown (a server refuses such a name too, but anyone can list one).
     std::vector<MultiplayerLobby> rows;
+    hidden_.clear();
     for (const auto &[id, entry] : found_) {
         if (!valid_server_name(entry.row.name) || text::contains_bad_words(entry.row.name)) continue;
         if (blocked_server(id) || (server_tokens_required() && !persistent_server_steam_id(id) && !entry.lan)) continue;
-        const bool replaced = std::any_of(found_.begin(), found_.end(), [&](const auto &other) {
+        const auto replaced = std::find_if(found_.begin(), found_.end(), [&](const auto &other) {
             const bool kept = persistent_server_steam_id(id), other_kept = persistent_server_steam_id(other.first);
             return (kept != other_kept ? other_kept : other.first > id) && std::any_of(entry.addresses.begin(), entry.addresses.end(), [&](const auto &a) {
                 return std::find(other.second.addresses.begin(), other.second.addresses.end(), a) != other.second.addresses.end();
             });
         });
-        if (!replaced) rows.push_back(entry.row);
+        if (replaced == found_.end()) rows.push_back(entry.row);
+        else hidden_.push_back(entry.row.name + " (the same address as " + replaced->second.row.name + ")");
     }
     rows_ = std::move(rows);
 }
@@ -274,15 +282,31 @@ void SteamServerBrowser::tick(std::uint64_t now) {
     }) || now - started_ > 15000000;
     if (done) {
         release();
-        // An internet list with servers in it is the whole truth: what it left out is gone.
-        // An empty one is Steam not answering (see the header), and it has stayed that way for
-        // minutes for a player who searched often: keep what was listed in the last quarter
-        // of an hour. A server that closed meanwhile only fails to join.
+        // Steam's list is not the whole truth. An empty one is Steam not answering (see the
+        // header), and one with servers in it can still leave out a server that is up: on
+        // 2026-11-16 two searches ten minutes apart each listed 113 of the same 114 servers and
+        // left out a different official one, and the next search, ten seconds on, left the same
+        // one out again. So a server a search did not list stays until server_listing_gone says
+        // otherwise. A server that closed meanwhile only fails to join.
         const auto before = found_.size();
-        std::erase_if(found_, [&](const auto &entry) {
-            return entry.second.search != search_ && (internet_listed_ || now - entry.second.listed > 900000000);
+        std::string kept;
+        std::erase_if(found_, [&](auto &entry) {
+            auto &server = entry.second;
+            if (server.search == search_) return false;
+            if (internet_listed_) ++server.missed;
+            if (server_listing_gone(internet_listed_, server.missed, now - server.listed)) return true;
+            kept += (kept.empty() ? "" : "; ") + server.row.name;
+            return false;
         });
-        if (found_.size() != before) read(now);
+        // Rows again: a server gone can uncover one it replaced, and the log below names what is hidden.
+        if (found_.size() != before || !kept.empty()) read(now);
+        if (!kept.empty())
+            logging::log(logging::Level::info, logging::Channel::runtime, "Server browser: kept from an earlier search, not in this one: {}.", kept);
+        if (!hidden_.empty()) {
+            std::string hidden;
+            for (const auto &entry : hidden_) hidden += (hidden.empty() ? "" : "; ") + entry;
+            logging::log(logging::Level::info, logging::Channel::runtime, "Server browser: not shown, replaced by another server: {}.", hidden);
+        }
         std::string list;
         for (const auto &row : rows_)
             list += (list.empty() ? ": " : "; ") + row.name + (official_server(row.id) ? " [official]" : "") + " (" + row.map + ", " + std::to_string(row.players) + "/" +

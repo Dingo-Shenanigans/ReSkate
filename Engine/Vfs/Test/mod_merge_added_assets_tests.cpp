@@ -459,6 +459,60 @@ std::map<std::string, Bytes> snapshot(const fs::path& folder) {
     return files;
 }
 
+// A disabled mod is not there for the launch's merge: the patch is, file for file, the one built
+// without it. The merge used to link a disabled mod's archives into the patch and declare them,
+// and to merge a disabled map's level registry (globals) and root level, so that it could be
+// enabled while the game runs; a map that was switched off then still had its shader rows and
+// surfaces in the game (2026-11-14). Nor does it decide whether the patch is built again.
+void a_disabled_mod_is_not_there() {
+    const auto build = [](Fixture& fixture, bool with_disabled) {
+        fixture.add("music", false, shared_toc, {}, music_assets(), music_resources());
+        if (with_disabled) {
+            // A map, which registers itself in the game's level registry, and a mod that is not one.
+            fixture.add("offmap", true, "globals.toc", {"Win32/levels/test/offmap"}, game_copy());
+            fixture.add("offmusic", false, shared_toc, {}, music_assets(), music_resources());
+            for (int count = 0; count < 2; ++count) {
+                fixture.catalog.inactive.push_back(std::move(fixture.catalog.mods.back()));
+                fixture.catalog.mods.pop_back();
+            }
+        }
+        return mods::merge_mods(fixture.catalog);
+    };
+    Fixture without("disabled-without"), with("disabled-with");
+    const auto alone = build(without, false);
+    const auto report = build(with, true);
+    expect(alone.issue.empty() && alone.built && report.issue.empty() && report.built,
+           "a disabled mod: the merge builds the patch\n" + describe(report));
+    const auto patch = with.catalog.root / mods::generated_folder;
+    const auto expected = snapshot(without.catalog.root / mods::generated_folder);
+    const auto built = snapshot(patch);
+    expect(built.size() == expected.size(), "a disabled mod: the patch holds the files it holds without that mod (" +
+           std::to_string(built.size()) + " for " + std::to_string(expected.size()) + ")");
+    for (const auto& [file, bytes] : expected) {
+        const auto same = built.find(file);
+        if (same == built.end()) {
+            expect(false, "a disabled mod: the patch has " + file + " as it has without that mod");
+            continue;
+        }
+        const std::string_view text(reinterpret_cast<const char*>(same->second.data()), same->second.size());
+        // (The stamp and the placements have each enabled mod's files in them, by their times.)
+        if (file == "reskate-merge.stamp" || file == "reskate-placements.json")
+            expect(text.find("offmap") == std::string_view::npos && text.find("offmusic") == std::string_view::npos,
+                   "a disabled mod: " + file + " does not name it");
+        else
+            expect(same->second == bytes, "a disabled mod: " + file + " is as it is without that mod");
+    }
+    expect(report.archives == alone.archives, "a disabled mod: none of its archives are in the patch");
+    for (const auto& note : report.notes)
+        expect(note.find("offmap") == std::string::npos && note.find("offmusic") == std::string::npos,
+               "a disabled mod: the merge has nothing to say of it (" + note + ")");
+
+    // Its files changing is no reason to build the patch again.
+    write(with.catalog.root / "offmap" / "Win32" / "pkg" / "cas_02.cas", Bytes(16));
+    const auto again = mods::merge_mods(with.catalog);
+    expect(again.built && again.reused, "a disabled mod: the patch is kept when only that mod's files changed\n" + describe(again));
+}
+
 // The music mod with a resident list, its Win32 folder a junction to a store elsewhere (a test
 // root linking a mod's folders to an install's did this). Its files are where the folder shows
 // them, Win32/...: the paths fs::relative gives through the link (../../../store/...) made the
@@ -1320,6 +1374,7 @@ int main(int argc, char** argv) try {
     every_placement_lands_in_an_archive();
     a_mod_archive_numbered_like_a_placeholder();
     two_merges_write_the_same_bytes();
+    a_disabled_mod_is_not_there();
     a_listed_size_the_payload_does_not_have();
     carried_chunk_keeps_the_records_in_step();
     streamed_world_texture_chunk_gets_its_logical_offset();

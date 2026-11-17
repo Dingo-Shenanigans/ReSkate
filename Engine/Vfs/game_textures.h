@@ -15,6 +15,8 @@ class GameTextures {
 public:
     // `gameRoot` is the folder with Skate.exe.
     explicit GameTextures(std::filesystem::path gameRoot);
+    // With a patch layer over the game's data (game_bundles.h: the merged mods').
+    GameTextures(std::filesystem::path gameRoot, const std::filesystem::path& patchRoot);
 
     // The texture `name` in `bundle` of the superbundle `toc`, fitted into a `side` x `side`
     // square with its aspect kept: decoded from its smallest mip that still covers it, then

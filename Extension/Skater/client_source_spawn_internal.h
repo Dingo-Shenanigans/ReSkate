@@ -199,6 +199,8 @@ struct SourceTrial {
     SourceCameraMode camera_mode{};
     SourceCameraTransform camera_transform{};
 };
+// A plugin holds the skater (set_noclip_hold): noclip needs no camera and outlasts camera changes.
+bool noclip_held() noexcept;
 struct SourceState {
     std::mutex initialization_mutex;
     std::atomic<bool> initialized{};

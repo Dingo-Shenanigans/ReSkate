@@ -31,6 +31,9 @@ struct DialogSpec;
 namespace dingosdk::overlay {
 // The overlay's menu, console or a dialog has the input (input_capture.cpp).
 bool interface_open() noexcept;
+// Chat, the console, a search box or a box of the Online page is being typed in: the keys held are
+// letters of that text, not anything a plugin should act on.
+bool text_entry_open() noexcept;
 // A plugin dialog (reskate.ui.dialog) is open: the overlay keeps the input while it is.
 void set_plugin_dialog_active(bool active) noexcept;
 // Game input a plugin's game layer holds (input_capture.cpp): pad buttons kept from the game, held
@@ -50,7 +53,10 @@ int take_mouse_wheel() noexcept;
 struct MouseLook {
     long x = 0, y = 0, wheel = 0;
 };
-bool read_mouse_look(MouseLook& look) noexcept;
+// `hold`: the pointer is put back at the middle of the game's window after the read, so that it
+// cannot leave the window (a click then lands on the game, not on what is beside it), and where no
+// raw movement has come the pointer's own movement from there is the look.
+bool read_mouse_look(MouseLook& look, bool hold = false) noexcept;
 // The mouse while a plugin's screen is open (plugin_overlay.cpp): where it is in the window's pixels,
 // its buttons, the wheel's notches since the last read, and whether it is over the screen's panel.
 // False while no plugin screen is open.

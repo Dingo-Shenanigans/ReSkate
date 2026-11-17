@@ -1,4 +1,6 @@
 #include "session_internal.h"
+#include "skater_copy.h"
+#include "Extension/Multiplayer/Remote/native_cosmetics.h"
 #include "Extension/Throwdowns/throwdown_kit.h"
 #include "Extension/Skater/skater_push.h"
 #include "Extension/Throwdowns/throwdown_lab.h"
@@ -166,6 +168,7 @@ void stop(Session &s, std::string reason) {
     s.map_label.clear();
     s.map_package.clear();
     s.required_plugins.clear();
+    session_detail::set_required_plugins(s.required_plugins);
     s.plugins_ready = s.fetching_with_map = false;
     s.fetching_since = 0;
     s.map_fetch_deadline = 0;
@@ -460,6 +463,99 @@ Pose out_of_sight(Pose pose) {
     offset_pose(pose, {0.0f, -2000.0f, 0.0f});
     return pose;
 }
+// A skater a plugin draws somewhere else (reskate.session.place): the whole pose turned and moved as
+// one piece, so that the joint named (or where it stands) is at the place asked for. What is in the
+// world's frame moves (the root, the skater's placement joint 1, the board entity and the board rig's
+// anchor, as offset_pose has them); the joints under those follow by themselves.
+Pose placed_by(Pose pose, const plugin_feed::Placement &placement) {
+    using namespace anim_studio;
+    auto anchor = pose.root.position;
+    if (placement.joint && *placement.joint < pose.skater.size()) {
+        std::vector<Joint> joints;
+        joints.reserve(pose.skater.size());
+        for (const auto &t : pose.skater) joints.push_back({t.scale, t.rotation, t.position});
+        if (const auto at = world(joints, *placement.joint); finite(at)) anchor = at.position;
+    }
+    const Quat turn = placement.rotation ? normalised(multiply(*placement.rotation, conjugate(pose.root.rotation))) : Quat{0, 0, 0, 1};
+    const auto move = [&](Transform &t) {
+        const auto arm = rotate(turn, Vec3{t.position[0] - anchor[0], t.position[1] - anchor[1], t.position[2] - anchor[2]});
+        for (std::size_t i = 0; i < 3; ++i) t.position[i] = placement.position[i] + arm[i];
+        t.rotation = normalised(multiply(turn, t.rotation));
+    };
+    move(pose.root);
+    if (pose.skater.size() > 1) move(pose.skater[1]);
+    if (!pose.board.empty()) move(pose.board.front());
+    if (pose.board.size() > 2) move(pose.board[2]);
+    // Without their board: it goes where a hidden skater goes, far below the world.
+    if (!placement.board) {
+        if (!pose.board.empty()) pose.board.front().position[1] -= 2000.0f;
+        if (pose.board.size() > 2) pose.board[2].position[1] -= 2000.0f;
+    }
+    return valid_pose(pose) ? pose : Pose{};
+}
+// The local skater's copy (skater_copy.h): the last slot, which a player has only in a full session.
+constexpr std::size_t copy_slot = max_remote_players - 1;
+struct CopyState {
+    std::mutex mutex;
+    std::string owner;                 // under mutex
+    std::optional<SkaterCopy> wanted;  // under mutex
+    std::atomic<bool> shown{};
+    // Client thread:
+    bool made{};
+    std::uint64_t dressed_generation{}, next_look{};
+    std::optional<Appearance> dressed;
+    std::string status;
+};
+CopyState &copy_state() { static auto *value = new CopyState; return *value; }
+// Client thread, every tick. `session`: one is on, and the copy is not drawn.
+void tick_skater_copy(std::uintptr_t base, std::uintptr_t client, bool ready, bool session) {
+    auto &c = copy_state();
+    std::optional<SkaterCopy> wanted;
+    {
+        std::lock_guard lock(c.mutex);
+        wanted = c.wanted;
+    }
+    const PeerScope scope(copy_slot);
+    const auto drop = [&] {
+        if (c.made) remove_remote(base);
+        c.made = false;
+        c.dressed.reset();
+        c.dressed_generation = 0;
+        c.shown.store(false, std::memory_order_release);
+    };
+    if (!wanted || session || !ready) return drop();
+    try {
+        const auto local = capture_local(base, client, true);
+        if (!local.ready) return drop();
+        plugin_feed::Placement placement;
+        placement.position = wanted->position;
+        placement.rotation = wanted->rotation;
+        placement.board = wanted->board;
+        const auto pose = placed_by(local.pose, placement);
+        if (pose.skater.empty()) return drop();
+        const bool visible = show_remote(base, client, local, pose, c.status);
+        c.made = c.made || visible || remote_skater_entity() != 0;
+        c.shown.store(visible, std::memory_order_release);
+        if (!visible) return;
+        // Its outfit: the local skater's, looked at twice a second, put on when the actor is new or it changed.
+        const auto now = now_us();
+        const auto generation = remote_skater_generation();
+        if (now < c.next_look && generation == c.dressed_generation) return;
+        c.next_look = now + 500000;
+        auto look = capture_cosmetics(base, local, c.status);
+        if (!look) return;
+        if (generation == c.dressed_generation && c.dressed && *c.dressed == *look) return;
+        update_remote_cosmetics(base, local, *look, 2ULL, c.status);
+        c.dressed = std::move(look);
+        c.dressed_generation = generation;
+    } catch (const std::exception &error) {
+        if (c.status != error.what()) {
+            c.status = error.what();
+            logging::log(logging::Level::warning, logging::Channel::runtime, "Skater copy: {}", c.status);
+        }
+        drop();
+    }
+}
 // How often a player's pose is sampled for their skater, from how far they are from both the
 // local skater and the camera: every frame within 200 m, 20 Hz past it, 10 Hz past 350 m, and
 // every frame again once back inside 190 m. Between samples the skater keeps its pose, which
@@ -554,9 +650,10 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
     };
     // Who is talking, as last published for the UI (10 Hz), without copying the voice model.
     const auto &voices = s.view.voice.players;
-    const auto label = [&](const Peer &p) {
+    // (at: where their skater is drawn, when a plugin draws it somewhere else.)
+    const auto label = [&](const Peer &p, const Pose *at = nullptr) {
         NametagPlayer tag;
-        tag.head = p.render_pose.root.position;
+        tag.head = (at ? *at : p.render_pose).root.position;
         tag.head[1] += 1.0f;
         tag.name = p.member.name.empty() ? s.transport.name(p.member.id) : p.member.name;
         // The same role colour and badge the player's chat lines get.
@@ -637,7 +734,8 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
         const bool everyone = s.player_distance >= player_distance_unlimited;
         for (auto &p : active_peers(s)) {
             if (!p.member.id || (dedicated_host(s) && p.member.id == s.host_id)) continue;
-            p.shown_wanted = everyone || !p.placed ||
+            // (One a plugin draws somewhere else is drawn there, however far off they stand.)
+            p.shown_wanted = everyone || !p.placed || plugin_feed::placement_of(p.member.id) ||
                              nearest_distance(p, local, view) <= s.player_distance * (p.visible ? 1.15f : 1.f);
         }
     }
@@ -691,11 +789,23 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
                 const bool hidden = throwdown_relay_hides(p.member.id) || hidden_here(p.member.id);
                 const auto spot = hidden ? std::nullopt
                                          : throwdown_relay_celebration_offset(p.member.id, p.render_pose.root.position);
+                // Drawn where a plugin has them (reskate.session.place): the skater shown moves, and
+                // their name, map marker and spectate position with it. Their sound stays where they
+                // are, and they are solid nowhere.
+                auto elsewhere = hidden || spot ? std::nullopt : plugin_feed::placement_of(p.member.id);
+                Pose placed;
+                if (elsewhere) {
+                    placed = placed_by(p.render_pose, *elsewhere);
+                    if (placed.skater.empty()) elsewhere.reset();
+                }
                 p.visible = show_remote(s.base, client, local,
-                                        hidden ? out_of_sight(p.render_pose) : spot ? moved_by(p.render_pose, *spot) : p.render_pose,
+                                        hidden ? out_of_sight(p.render_pose)
+                                        : spot ? moved_by(p.render_pose, *spot)
+                                        : elsewhere ? placed : p.render_pose,
                                         p.native_status);
                 const auto distance = nearest_distance(p, local, view);
-                p.far_interval = p.visible && !hidden ? far_sample_interval(p, distance) : 0;
+                // (Placed, they are drawn every frame: the place may move every frame.)
+                p.far_interval = p.visible && !hidden && !elsewhere ? far_sample_interval(p, distance) : 0;
                 p.next_far_sample = now + p.far_interval;
                 // The native work a far player's skater may skip (puppet_cost.cpp).
                 if (p.visible) note_remote_distance(distance);
@@ -705,7 +815,7 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
                 const float reach2 = (at[0] - me[0]) * (at[0] - me[0]) + (at[1] - me[1]) * (at[1] - me[1]) +
                                      (at[2] - me[2]) * (at[2] - me[2]);
                 update_remote_collision(s.base, local.context, p.render_pose,
-                                        p.visible && !hidden && s.mode != Mode::echo && s.local_player_collision &&
+                                        p.visible && !hidden && !elsewhere && s.mode != Mode::echo && s.local_player_collision &&
                                             p.player_collision && reach2 < 40.f * 40.f,
                                         now);
                 if (p.visible && hidden) {
@@ -723,12 +833,13 @@ void render(Session &s, std::uintptr_t client, const NativeFrame &local, std::ui
                     apply_cosmetics(p, spawning);
                     // The spectate camera follows this every frame; the map and
                     // indicators below only need network-rate updates.
-                    update_party_position(hidden_here(p.member.id)?nullptr:&p.render_pose);
-                    if (labels && !hidden_here(p.member.id)) label(p);
+                    const Pose &drawn = elsewhere ? placed : p.render_pose;
+                    update_party_position(hidden_here(p.member.id)?nullptr:&drawn);
+                    if (labels && !hidden_here(p.member.id)) label(p, &drawn);
                     if(hidden_here(p.member.id)) {
                         update_player_ui(s.base,nullptr,{});p.ui_visible=false;
                     } else if (!p.ui_visible || now >= p.next_ui_update) {
-                        update_player_ui(s.base, &p.render_pose, p.member.name);
+                        update_player_ui(s.base, &drawn, p.member.name);
                         p.ui_visible = true;
                         p.next_ui_update = now + network_tick_us;
                     }
@@ -1221,6 +1332,7 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, std::string_vi
                 catch(...) {}
             }
             relay_throwdowns(s, ready, &solo);
+            tick_skater_copy(base, client, ready && !map_name.empty() && solo.ready, false);
             if (competition_stock_physics() && solo.ready) {
                 physics_tuning::prepare();physics_tuning::enforce(base,solo.entity,{});
             } else if (!competition_stock_physics()) physics_tuning::release(base);
@@ -1234,6 +1346,8 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, std::string_vi
             }
             return;
         }
+        // (In a session the local skater's copy is not drawn: its slot may be a player's.)
+        tick_skater_copy(base, client, false, true);
         // Both queued joins and completed browser joins set join_started inside
         // command(). An earlier frame timestamp would underflow timeout checks.
         const auto now = now_us();
@@ -1379,4 +1493,23 @@ void tick(std::uintptr_t base, std::uintptr_t client, bool ready, std::string_vi
         publish(s);
     }
 }
+std::string set_skater_copy(std::string_view owner, std::optional<SkaterCopy> copy) {
+    auto &c = copy_state();
+    std::lock_guard lock(c.mutex);
+    if (!copy) {
+        if (c.owner == owner) {
+            c.owner.clear();
+            c.wanted.reset();
+        }
+        return {};
+    }
+    if (!c.owner.empty() && c.owner != owner) return c.owner + " has the skater's copy";
+    if (session().mode != Mode::off) return "not in a session: every skater there may be a player's";
+    for (const auto v : copy->position)
+        if (!std::isfinite(v) || std::abs(v) > 1e6f) return "a copy's place is finite";
+    c.owner = owner;
+    c.wanted = copy;
+    return {};
+}
+bool skater_copy_shown() noexcept { return copy_state().shown.load(std::memory_order_acquire); }
 } // namespace dingosdk::multiplayer

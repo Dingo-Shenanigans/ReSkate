@@ -87,6 +87,16 @@ constexpr bool movement_due(bool changed, bool solid, bool attached, std::uint64
     return changed && (!solid || attached || now >= moved + 16);
 }
 
+// A solid object that stands by itself and has collision of its own is made again where it is
+// moved to, not moved: the game's MoveSpatialEntity moves what is drawn and leaves a static
+// collision shape where the object was made (seen in game: a plugin's vehicle parked somewhere
+// new, with its collision still at the old place). Made again at most every `remake_wait_ms`:
+// an object that moves every frame is not for standing on, and making one is not free.
+inline constexpr std::uint64_t remake_wait_ms = 100;
+constexpr bool collision_stays(bool solid, bool attached, std::uintptr_t physics_component) noexcept {
+    return solid && !attached && physics_component != 0;
+}
+
 // A body is an object's own when its owner keeps the physics component the object's entity holds.
 // An exact instance, so a second object of the same blueprint in the box is not taken for it. An
 // object with no component owns nothing, and neither does an owner that keeps none.

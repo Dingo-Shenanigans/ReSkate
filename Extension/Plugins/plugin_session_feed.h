@@ -181,6 +181,40 @@ inline void release_hidden(const std::string& plugin) {
     std::erase_if(detail::hidden, [&](const auto& item) { return item.first == plugin; });
 }
 
+// Another player's skater drawn somewhere else on this screen (reskate.session.place): the whole
+// skater, board with it, turned to `rotation` (left out: as it is) and moved so that `joint` (left out:
+// where it stands) is at `position`. Their name and map marker go with it. Only what is drawn
+// here changes: where the player is, for everything else and for everyone else, stays as their
+// game sent it. At most 64 are kept.
+struct Placement {
+    std::array<float, 3> position{};
+    std::optional<std::array<float, 4>> rotation;
+    std::optional<std::uint16_t> joint;
+    bool board{true}; // false: their board is not drawn
+};
+namespace detail {
+inline std::map<std::pair<std::string, std::uint64_t>, Placement> placements; // (plugin, player)
+}
+inline bool place(const std::string& plugin, std::uint64_t player, std::optional<Placement> placement) {
+    std::lock_guard lock(detail::mutex);
+    if (!placement) detail::placements.erase({plugin, player});
+    else if (detail::placements.size() < 64 || detail::placements.contains({plugin, player})) detail::placements[{plugin, player}] = *placement;
+    else return false;
+    return true;
+}
+// Where a plugin draws this player (the first, when several do).
+inline std::optional<Placement> placement_of(std::uint64_t player) {
+    std::lock_guard lock(detail::mutex);
+    if (detail::placements.empty()) return std::nullopt;
+    for (const auto& [key, placement] : detail::placements)
+        if (key.second == player) return placement;
+    return std::nullopt;
+}
+inline void release_placements(const std::string& plugin) {
+    std::lock_guard lock(detail::mutex);
+    std::erase_if(detail::placements, [&](const auto& item) { return item.first.first == plugin; });
+}
+
 // What another player wears, as their game sent it: the item names of their skater and of their
 // board (reskate.session.outfit). The session publishes each once it arrives or changes, and
 // keeps only the players still in it.

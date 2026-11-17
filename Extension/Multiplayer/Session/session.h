@@ -92,6 +92,12 @@ void set_map_package_lookup(MapPackageLookup lookup) noexcept;
 using PluginCheck = std::vector<std::string> (*)(const std::vector<std::string> &required);
 using LevelCheck = bool (*)(std::string_view asset);
 void set_plugin_check(PluginCheck plugins, LevelCheck levels) noexcept;
+// The plugins the dedicated server this PC is on, or is joining, requires, from when it says so
+// (its map offer) until the session ends; none anywhere else. The plugin host runs a plugin a
+// server brought here only while it is among them (Extension/Plugins/plugin_server_scope.h).
+// Thread-safe; the serial changes whenever the list does.
+std::vector<std::string> required_plugins();
+unsigned required_plugins_serial() noexcept;
 // The session's chat lines for the overlay. Thread-safe and cheap: callable every frame.
 MultiplayerChat chat();
 // A chat line only this player sees, from a plugin: shown under the plugin's name with a

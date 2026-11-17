@@ -26,6 +26,18 @@ bool loose_files_session_enabled(const std::filesystem::path& game_directory);
 // ReSkate.settings.json cannot be read or written.
 bool plugin_developer_mode(const std::filesystem::path& game_directory);
 void set_plugin_developer_mode(const std::filesystem::path& game_directory, bool on);
+// How strict ReSkate is with plugins on this PC, in the same file ("plugin_limits"): the player's
+// own choice (the menu's PLUGINS, LIMITS). What is not there, or is not a value it can be, is the
+// default. Throws as plugin developer mode does.
+struct PluginLimits {
+    bool stop_slow{true};   // a plugin that takes too long a tick for five seconds is stopped
+    double tick_ms{6};      // how long a tick that is: 6 to 50
+    bool stop_errors{true}; // a plugin with more than five errors in ten seconds is stopped
+    int memory_mb{128};     // the memory a plugin may use: 128 to 1024
+    bool operator==(const PluginLimits&) const = default;
+};
+PluginLimits plugin_limits(const std::filesystem::path& game_directory);
+void set_plugin_limits(const std::filesystem::path& game_directory, const PluginLimits& limits);
 std::filesystem::path data_directory(const std::filesystem::path& game_directory,
     const std::vector<std::wstring>& game_arguments);
 

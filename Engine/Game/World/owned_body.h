@@ -11,6 +11,9 @@ namespace dingosdk::owned_body {
 using Vec = std::array<float, 3>;
 using Quaternion = std::array<float, 4>; // Hamilton XYZW
 inline constexpr std::size_t maximum_capsules = 8, retained_capacity = 8, receipt_capacity = 4;
+// Commands one body's inbox holds before the synchronizer has taken any: the one for the
+// measured step N and, behind it, the one for step N+1.
+inline constexpr std::size_t pending_capacity = 2;
 inline constexpr double native_seconds = 1.0 / 60.0;
 inline constexpr std::uint64_t command_lifetime_ms = 100;
 inline constexpr float maximum_force = 40000, maximum_torque = 4000, maximum_impulse = 600;
@@ -139,6 +142,14 @@ inline bool valid(const Command& value) noexcept {
 // External synchronization owns this fixed inbox and receipt ring. A receipt is reserved
 // before publication, and consumption precedes the first setter. Older unacknowledged
 // results cannot overwrite a new packet or prevent consecutive native-step commands.
+//
+// The inbox holds pending_capacity commands. In some rides the client's tick falls between the
+// physics clock edge and the synchronizer's calls on the body (counted in the game on
+// 2026-11-14: no listed synchronizer call between the edge and the tick, three after it, in
+// every frame of such a ride), so the tick that reads sample N+1 still finds its command for N
+// pending. The command for N+1 then waits behind it: command, deadline and inbox are the first
+// pending command's, the next_ members the second's. Each is taken only by a call that reads
+// the step after its own epoch, keeps its own deadline and receipt, and gets its own verdict.
 struct Mailbox {
     Command command{};
     std::array<Receipt, receipt_capacity> receipts{};
@@ -147,6 +158,22 @@ struct Mailbox {
     std::uint32_t last_impulse{};
     Epoch last_requested{};
     bool pending{}, producing{}, failed{};
+    Command next_command{};
+    std::size_t next_inbox{};
+    std::uint64_t next_deadline{};
+    bool next_pending{};
+
+    // The one clock reading at which a command measured at this epoch is produced.
+    static Epoch target_of(Epoch epoch) noexcept { ++epoch.serial; epoch.time += epoch.seconds; return epoch; }
+    // The second pending command becomes the first, with its own deadline and receipt row.
+    void advance() noexcept {
+        if (!next_pending) return;
+        command = next_command;
+        deadline = next_deadline;
+        inbox = next_inbox;
+        pending = true;
+        next_pending = false;
+    }
 
     Receipt oldest() const noexcept { return count ? receipts[head] : Receipt{}; }
     bool find(std::uint64_t selected, Receipt& out) const noexcept {
@@ -167,49 +194,80 @@ struct Mailbox {
     }
     // The service supplies globally unique IDs across its bodies. Zero keeps a local
     // sequence for standalone users of this contract, including the portable fixture.
+    // Behind a pending command only the command for exactly the next step is taken: the epoch
+    // the pending one will be produced at, so the clock already reads the pending one's step.
+    // Its impulse event is compared with the pending one's too, because last_impulse moves only
+    // when a command is produced.
     bool submit(const Command& value, const Epoch& observed, std::uint64_t now, std::uint64_t assigned = 0) noexcept {
-        if (failed || pending || producing || count == receipts.size() || !valid(value) || value.epoch != observed ||
+        if (failed || producing || next_pending || count == receipts.size() || !valid(value) || value.epoch != observed ||
             value.epoch.serial <= last_submitted || (value.impulse_id && value.impulse_id <= last_impulse) ||
             sequence == std::numeric_limits<std::uint64_t>::max() || now > std::numeric_limits<std::uint64_t>::max() - command_lifetime_ms ||
             (last_submitted && (value.epoch.world != last_requested.world || value.epoch.body != last_requested.body ||
                 value.epoch.time <= last_requested.time || value.epoch.seconds != last_requested.seconds))) return false;
+        if (pending && (value.epoch != target_of(command.epoch) || (value.impulse_id && value.impulse_id <= command.impulse_id))) return false;
         if (!assigned) assigned = sequence + 1;
         if (assigned <= sequence) return false;
-        command = value;
-        deadline = now + command_lifetime_ms;
-        pending = true;
+        const auto row = (head + count) % receipts.size();
+        if (pending) {
+            next_command = value;
+            next_deadline = now + command_lifetime_ms;
+            next_inbox = row;
+            next_pending = true;
+        } else {
+            command = value;
+            deadline = now + command_lifetime_ms;
+            inbox = row;
+            pending = true;
+        }
         last_submitted = value.epoch.serial;
         last_requested = value.epoch;
         sequence = assigned;
-        inbox = (head + count) % receipts.size();
         ++count;
-        auto& record = receipts[inbox];
+        auto& record = receipts[row];
         record = {};
         record.outcome = Outcome::queued;
         record.sequence = sequence;
         record.requested = value.epoch;
         return true;
     }
-    bool consume(const Epoch& current, std::uint64_t now, Command& out) noexcept {
-        if (!pending || failed) return false;
-        auto& record = receipts[inbox];
-        Epoch target = command.epoch;
-        ++target.serial;
-        target.time += target.seconds;
-        if (now >= deadline || current.serial > target.serial) {
+    // A command is produced only by a call that reads the step after its own epoch. When the
+    // first pending command ends here without being produced, the second is judged at once by
+    // the same rule against the same clock: it is never expired for the first's missed step, and
+    // never produced at any reading but its own target.
+    // The reading is taken by value. advance() rewrites command, and a caller may have read the
+    // epoch it passes from command itself; by reference the reading would then change under the
+    // loop to the second command's own epoch, and the second would be judged against that.
+    bool consume(Epoch current, std::uint64_t now, Command& out) noexcept {
+        while (pending && !failed) {
+            auto& record = receipts[inbox];
+            const Epoch target = target_of(command.epoch);
+            if (now >= deadline || current.serial > target.serial) record.outcome = Outcome::expired;
+            else if (current == command.epoch) return false;
+            else if (current != target) record.outcome = Outcome::rejected;
+            else {
+                out = command;
+                pending = false;
+                producing = true;
+                last_serial = command.epoch.serial;
+                record.produced = current;
+                if (command.impulse_id) last_impulse = command.impulse_id;
+                return true;
+            }
             pending = false;
-            record.outcome = Outcome::expired;
-            return false;
+            advance();
         }
-        if (current == command.epoch) return false;
-        if (current != target) { pending = false; record.outcome = Outcome::rejected; return false; }
-        out = command;
-        pending = false;
-        producing = true;
-        last_serial = command.epoch.serial;
-        record.produced = current;
-        if (command.impulse_id) last_impulse = command.impulse_id;
-        return true;
+        return false;
+    }
+    // Deadlines alone, for a caller with no clock reading to offer: each pending command
+    // expires by its own. Such a caller must not hand consume the pending command's own epoch
+    // in place of a reading: consume would take it for the clock, and past the first command's
+    // deadline it would reject the second for not being at its epoch or its step.
+    void expire(std::uint64_t now) noexcept {
+        while (pending && !failed && now >= deadline) {
+            pending = false;
+            receipts[inbox].outcome = Outcome::expired;
+            advance();
+        }
     }
     bool finish(bool force_attempted, bool torque_attempted, bool complete) noexcept {
         if (!producing) return false;
@@ -219,11 +277,13 @@ struct Mailbox {
         record.torque_attempted = torque_attempted;
         record.outcome = complete ? Outcome::applied : force_attempted || torque_attempted ? Outcome::partial : Outcome::rejected;
         if (!complete) { failed = true; cancel(); }
+        else advance();
         return true;
     }
     void cancel() noexcept {
         failed = true;
         if (pending) { pending = false; receipts[inbox].outcome = Outcome::rejected; }
+        if (next_pending) { next_pending = false; receipts[next_inbox].outcome = Outcome::rejected; }
     }
     bool observe_successor(const Sample& value) noexcept {
         bool attached{};
