@@ -399,71 +399,42 @@ Row make_row(Hud& h, const Context& c, Address type, const std::string& name, st
     }
     return row;
 }
-// The trick list as `wanted` (newest first): only the rows that are new are made, at the front, as
-// the game's list takes a new row, and those that fall off the end are destroyed once the list no
-// longer holds them.
-void show_rows(Hud& h, const Context& c, const std::vector<std::string>& wanted,
-    const std::vector<std::uint64_t>& wanted_ids, double now) {
-    std::vector<std::string> shown;
-    std::vector<std::uint64_t> shown_ids;
-    for (const auto& row : h.rows) {
-        shown.push_back(row.name);
-        shown_ids.push_back(row.trick_id);
+// What a row is in the game, for update_rows (score_line.h): a model of the row type with its name,
+// and a stack item bound to it. The list holds the items' bytes.
+struct RowOps {
+    Hud& h;
+    const Context& c;
+    double now{};
+    Address type{};
+    bool can_make() {
+        type = row_type_now(h, c, now);
+        return type && h.row_blueprint;
     }
-    const auto generation = owner().generation();
-    const auto fresh = fresh_rows(shown, wanted, shown_ids, wanted_ids, h.rows_restart ? 0 : h.rows_generation, generation);
-    if (!fresh && shown.size() == wanted.size()) {
-        // The list already is what is wanted: nothing is made, retired or written. The cache still
-        // takes the owner generation, so rows that lined up by name across one are not asked about again.
-        h.rows_generation = generation;
-        h.rows_restart = false;
-        return;
-    }
-    const auto type = fresh ? row_type_now(h, c, now) : h.row_type;
-    if (fresh && (!type || !h.row_blueprint)) {
-        if (!std::exchange(h.said_rows, true))
-            logging::write(logging::Level::info, logging::Channel::ui,
-                h.row_blueprint ? "Score line: skate.'s trick list rows are not loaded yet; a line shows without its trick names until they are."
-                                : "Score line: skate.'s trick list row widget is not loaded; a line shows without its trick names.");
-        return;
-    }
-    std::vector<Row> next;
-    try {
-        for (std::size_t index = 0; index < fresh; ++index)
-            next.push_back(make_row(h, c, type, wanted[index], trick_id_at(wanted_ids, index)));
-    } catch (...) {
-        for (auto& row : next) {
-            destroy_quietly(c, row.item);
-            destroy_quietly(c, row.model);
-        }
-        throw;
-    }
-    const auto made = next.size();
-    const auto kept = wanted.size() - fresh;
-    for (std::size_t index = 0; index < kept; ++index) next.push_back(h.rows[index]);
-    std::vector<std::byte> bytes;
-    try {
-        for (const auto& row : next) {
+    Row make(const std::string& name, std::uint64_t trick_id) { return make_row(h, c, type, name, trick_id); }
+    void write(const std::vector<Row>& rows) {
+        std::vector<std::byte> bytes;
+        for (const auto& row : rows) {
             const auto item = bytes_of(c, row.item);
             bytes.insert(bytes.end(), item.begin(), item.end());
         }
-        c.array(h.fields.rows, bytes, static_cast<unsigned>(next.size()));
-    } catch (...) {
-        for (std::size_t index = 0; index < made; ++index) {
-            destroy_quietly(c, next[index].item);
-            destroy_quietly(c, next[index].model);
-        }
-        throw;
+        c.array(h.fields.rows, bytes, static_cast<unsigned>(rows.size()));
     }
-    for (std::size_t index = kept; index < h.rows.size(); ++index) {
-        destroy_quietly(c, h.rows[index].item);
-        destroy_quietly(c, h.rows[index].model);
+    void retire(Row& row) noexcept {
+        destroy_quietly(c, row.item);
+        destroy_quietly(c, row.model);
     }
-    h.rows = std::move(next);
-    // Only a successful native list write advances the cache. An unavailable UI pass retries the
-    // latest identities against the rows that actually remained in the model.
-    h.rows_generation = generation;
-    h.rows_restart = false;
+};
+// The trick list as `wanted` (newest first): only the rows that are new are made, at the front, as
+// the game's list takes a new row, and those that fall off the end are destroyed once the list no
+// longer holds them. Only a list write that went through advances the cache.
+void show_rows(Hud& h, const Context& c, const std::vector<std::string>& wanted,
+    const std::vector<std::uint64_t>& wanted_ids, double now) {
+    RowOps ops{h, c, now};
+    if (update_rows(h.rows, h.rows_generation, h.rows_restart, wanted, wanted_ids, owner().generation(), ops) != RowsUpdate::waiting) return;
+    if (!std::exchange(h.said_rows, true))
+        logging::write(logging::Level::info, logging::Channel::ui,
+            h.row_blueprint ? "Score line: skate.'s trick list rows are not loaded yet; a line shows without its trick names until they are."
+                            : "Score line: skate.'s trick list row widget is not loaded; a line shows without its trick names.");
 }
 
 // Our trick list emptied, then its rows destroyed. Rows the list still holds are not destroyed (they

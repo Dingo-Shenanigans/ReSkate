@@ -1,9 +1,11 @@
 // A plugin's own line in skate.'s score HUD (Extension/UI/score_line.h), apart from the game: one
 // plugin's line at a time on a 500 ms lease, the yield to skate.'s own line, the take-out that is
-// never dropped, the game's root picked over ours and copied only while idle, a new line's rows, and
+// never dropped, the game's root picked over ours and copied only while idle, a new line's rows, the
+// HUD's row pass over a recorded list (what is made, written and retired, and in which order), and
 // what a line writes.
 #include "Extension/UI/score_line.h"
 #include "Extension/UI/own_ui_writes.h"
+#include <algorithm>
 #include <cstdint>
 #include <iostream>
 #include <optional>
@@ -173,15 +175,86 @@ void row_identities_distinguish_equal_names() {
     check(look_of(line, 400).trick_ids == std::vector<std::uint64_t>{0, 0}, "legacy identities were not absent");
 }
 
-// A constructed UI drain reads only the latest request. An unavailable registry calls nothing,
-// leaving the last successful row cache and its owner generation intact, as the HUD does.
+// What the HUD's own row pass (update_rows) gives the game's list. A row here is only a number; the
+// list records each write, which rows are alive, and whether one was retired while the list held it.
+struct ListRow {
+    std::string name;
+    std::uint64_t trick_id{};
+    unsigned serial{};
+};
+bool has(const std::vector<unsigned>& serials, unsigned serial) {
+    return std::find(serials.begin(), serials.end(), serial) != serials.end();
+}
+struct FakeList {
+    std::vector<ListRow> rows; // the HUD's cache, newest first
+    std::uint64_t generation{};
+    bool restart{};
+    std::vector<unsigned> listed;              // the rows the list holds now
+    std::vector<std::vector<unsigned>> writes; // each list write, in order
+    std::vector<unsigned> alive, retired;
+    std::size_t made{}, make_calls{};
+    unsigned next_serial{};
+    bool ready{true}, fail_write{};
+    std::optional<std::size_t> fail_make_at; // the make call, counted from 0, that throws
+    bool retired_while_listed{}, wrote_a_retired_row{};
+
+    bool can_make() const { return ready; }
+    ListRow make(const std::string& name, std::uint64_t trick_id) {
+        const auto call = make_calls++;
+        if (fail_make_at && *fail_make_at == call) throw std::runtime_error("a row was not made");
+        ListRow row{name, trick_id, ++next_serial};
+        alive.push_back(row.serial);
+        ++made;
+        return row;
+    }
+    void write(const std::vector<ListRow>& next) {
+        if (fail_write) throw std::runtime_error("the list was not written");
+        std::vector<unsigned> serials;
+        for (const auto& row : next) {
+            if (!has(alive, row.serial)) wrote_a_retired_row = true;
+            serials.push_back(row.serial);
+        }
+        listed = serials;
+        writes.push_back(std::move(serials));
+    }
+    void retire(ListRow& row) noexcept {
+        if (has(listed, row.serial)) retired_while_listed = true;
+        std::erase(alive, row.serial);
+        retired.push_back(row.serial);
+    }
+    // As the HUD's clear_rows: the list emptied, then its rows destroyed.
+    void clear() {
+        listed.clear();
+        for (auto& row : rows) retire(row);
+        rows.clear();
+        generation = 0;
+    }
+    RowsUpdate update(const Look& look, std::uint64_t owner_generation) {
+        return update_rows(rows, generation, restart, look.rows, look.trick_ids, owner_generation, *this);
+    }
+    std::vector<std::string> names() const {
+        std::vector<std::string> out;
+        for (const auto& row : rows) out.push_back(row.name);
+        return out;
+    }
+    std::vector<std::uint64_t> ids() const {
+        std::vector<std::uint64_t> out;
+        for (const auto& row : rows) out.push_back(row.trick_id);
+        return out;
+    }
+};
+
+// A constructed UI drain reads only the latest request and runs the HUD's own row pass over a
+// FakeList. An unavailable registry calls nothing, leaving the last successful row cache and its
+// owner generation intact, as the HUD does.
 struct RowDrain {
+    FakeList list;
     std::vector<std::string> names;
     std::vector<std::uint64_t> ids;
-    std::uint64_t generation{};
-    std::size_t made{};
+    std::uint64_t& generation = list.generation;
+    bool& restart = list.restart;
+    std::size_t& made = list.made;
     LineStart start;
-    bool restart{};
     std::size_t drain(LineOwner& owner, double now, bool available = true, bool row_update_reached = true) {
         if (!available) return 0;
         const auto* line = owner.current(now);
@@ -192,18 +265,13 @@ struct RowDrain {
         if (start.shown(line->closed)) {
             // A line that starts again empties the HUD's list (clear_rows), whatever its rows carry.
             restart = true;
-            names.clear();
-            ids.clear();
+            list.clear();
         }
-        const auto look = look_of(*line, 400);
-        const auto fresh = fresh_rows(names, look.rows, ids, look.trick_ids, restart ? 0 : generation, owner.generation());
-        if (!row_update_reached) return 0;
-        made += fresh;
-        names = look.rows;
-        ids = look.trick_ids;
-        generation = owner.generation();
-        restart = false;
-        return fresh;
+        const auto before = list.made;
+        if (row_update_reached) list.update(look_of(*line, 400), owner.generation());
+        names = list.names();
+        ids = list.ids();
+        return list.made - before;
     }
 };
 
@@ -248,8 +316,9 @@ void missed_ui_drains_keep_each_retained_identity() {
     append_identified_row(line, 7);
     owner.ask("sample-line", line, 112);
     check(shown.drain(owner, 112, false) == 0 && shown.ids == before, "another failed drain changed its cache");
-    // No four-row trim request is needed: the latest five still contain both unseen identities.
-    check(shown.drain(owner, 128) == 2 && shown.made == 7 && shown.ids == std::vector<std::uint64_t>{7, 6, 5, 4, 3},
+    // No four-row trim request is needed: the latest five still contain both unseen identities. Both
+    // come in at once, into a list that was full, so it is written one row short of full.
+    check(shown.drain(owner, 128) == 2 && shown.made == 7 && shown.ids == std::vector<std::uint64_t>{7, 6, 5, 4},
         "coalesced equal names lost or duplicated retained additions");
     check(shown.drain(owner, 144) == 0 && shown.made == 7, "idle recovery duplicated rows");
 }
@@ -360,6 +429,140 @@ void name_only_rows_survive_unseen_owner_boundaries() {
     }
 }
 
+// The sixth and seventh of seven equal names, where the list is full. skate.'s widget does not draw
+// a list of five replaced by another of five, so the list is never written at the count it has: the
+// seven writes hold 1, 2, 3, 4, 5, 4 and 5 rows, as the launch that kept the names on screen wrote
+// them. Each write is the whole list, the new row first and then the rows it keeps, which are the
+// rows they were. A row that fell off is retired only after the write that dropped it.
+void a_full_list_changes_its_count_with_each_new_row() {
+    LineOwner owner;
+    FakeList list;
+    Line line;
+    const std::size_t counts[] = {1, 2, 3, 4, 5, 4, 5};
+    for (unsigned id = 1; id <= 7; ++id) {
+        append_identified_row(line, id);
+        const auto now = static_cast<double>(id) * 16;
+        check(owner.ask("sample-line", line, now).empty(), "an identified row was refused");
+        const auto before = list.listed;
+        check(list.update(look_of(*owner.current(now), 400), owner.generation()) == RowsUpdate::written, "a new row did not write the list");
+        const auto count = counts[id - 1];
+        check(list.writes.size() == id && list.listed.size() == count, "a new row did not write the list once, at the count it should have");
+        check(list.listed.size() != before.size(), "a list was replaced at the count it already had");
+        check(list.listed.front() == id, "the new row is not first in the list");
+        for (std::size_t index = 1; index < count; ++index)
+            check(list.listed[index] == before[index - 1], "a row the list keeps was remade or moved");
+        auto alive = list.alive, listed = list.listed;
+        std::sort(alive.begin(), alive.end());
+        std::sort(listed.begin(), listed.end());
+        check(alive == listed, "the rows alive are not the rows the list holds");
+        check(!list.retired_while_listed && !list.wrote_a_retired_row, "a row was retired before the write that dropped it");
+        // The same line again, with the list full or one short of it, is left as it is.
+        check(list.update(look_of(*owner.current(now + 1), 400), owner.generation()) == RowsUpdate::unchanged && list.writes.size() == id,
+            "an unchanged line wrote the list again");
+    }
+    check(list.retired == std::vector<unsigned>{2, 1}, "the rows retired are not the two that fell off");
+    check(list.made == 7 && list.ids() == std::vector<std::uint64_t>{7, 6, 5, 4, 3}, "seven equal names did not leave the newest five rows");
+}
+
+// Names alone fill the list the same way: the sixth different name is written as four rows.
+void a_full_list_of_names_alone_changes_its_count_too() {
+    FakeList list;
+    Look look;
+    look.rows = {"E", "D", "C", "B", "A"};
+    check(list.update(look, 1) == RowsUpdate::written && list.listed.size() == 5, "five names did not fill the list");
+    look.rows = {"F", "E", "D", "C", "B"};
+    check(list.update(look, 1) == RowsUpdate::written && list.names() == std::vector<std::string>{"F", "E", "D", "C"} && list.made == 6,
+        "a sixth name was written at the count the list already had");
+    // A lease that lapsed unseen changes the generation and nothing else for names alone.
+    check(list.update(look, 2) == RowsUpdate::unchanged && list.writes.size() == 2 && list.generation == 2, "the short full list was written again");
+    look.rows = {"G", "F", "E", "D", "C"};
+    check(list.update(look, 2) == RowsUpdate::written && list.names() == look.rows && list.made == 7 && !list.retired_while_listed,
+        "the seventh name did not bring the list back to five rows");
+}
+
+// A list write that fails leaves the list, the rows and their cache as they were: only the row made
+// for that write goes, and the next pass makes it again.
+void a_failed_list_write_keeps_the_rows_it_had() {
+    LineOwner owner;
+    FakeList list;
+    Line line;
+    for (unsigned id = 1; id <= 5; ++id) {
+        append_identified_row(line, id);
+        owner.ask("sample-line", line, id * 16.0);
+        list.update(look_of(*owner.current(id * 16.0), 400), owner.generation());
+    }
+    const auto listed = list.listed;
+    const auto generation = list.generation;
+    append_identified_row(line, 6);
+    owner.ask("sample-line", line, 96);
+    const auto look = look_of(*owner.current(96), 400);
+    list.fail_write = true;
+    bool threw{};
+    try {
+        list.update(look, owner.generation());
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    check(threw, "a failed list write was not passed on");
+    check(list.listed == listed && list.ids() == std::vector<std::uint64_t>{5, 4, 3, 2, 1} && list.generation == generation,
+        "a failed list write changed the rows or their cache");
+    check(list.retired == std::vector<unsigned>{6} && list.alive.size() == 5, "a failed list write did not retire exactly the row made for it");
+    list.fail_write = false;
+    check(list.update(look, owner.generation()) == RowsUpdate::written && list.ids() == std::vector<std::uint64_t>{6, 5, 4, 3},
+        "the pass after a failed write did not bring the list up to date");
+    check(list.retired == std::vector<unsigned>{6, 2, 1} && !list.retired_while_listed, "the pass after a failed write retired the wrong rows");
+}
+
+// A row that cannot be made stops the pass: the rows it had made go, and nothing is written.
+void a_row_that_cannot_be_made_writes_nothing() {
+    FakeList list;
+    Look look;
+    look.rows = {"Second action", "First action"};
+    look.trick_ids = {2, 1};
+    list.fail_make_at = 1;
+    bool threw{};
+    try {
+        list.update(look, 1);
+    } catch (const std::runtime_error&) {
+        threw = true;
+    }
+    check(threw && list.writes.empty() && list.rows.empty(), "a pass that could not make a row wrote the list");
+    check(list.alive.empty() && list.retired == std::vector<unsigned>{1}, "a row made before the one that failed was left alive");
+    list.fail_make_at.reset();
+    check(list.update(look, 1) == RowsUpdate::written && list.listed.size() == 2, "the rows were not made once they could be");
+}
+
+// Until the game has made a row of its own, none of ours can be made: the pass waits without a write
+// and without advancing its cache, so the rows come in once they can. A list that only loses its
+// oldest row needs no new one, and is written while none can be made.
+void rows_wait_until_one_can_be_made() {
+    FakeList list;
+    list.ready = false;
+    Look look;
+    look.rows = {"Second action", "First action"};
+    check(list.update(look, 3) == RowsUpdate::waiting && list.writes.empty() && !list.made && !list.generation, "a pass that cannot make a row did not wait");
+    list.ready = true;
+    check(list.update(look, 3) == RowsUpdate::written && list.generation == 3 && list.names() == look.rows, "the waiting rows never came in");
+    list.ready = false;
+    look.rows = {"Second action"};
+    check(list.update(look, 3) == RowsUpdate::written && list.listed == std::vector<unsigned>{1} && list.retired == std::vector<unsigned>{2},
+        "a list that lost its oldest row was not written without it");
+}
+
+// Names alone are not written again across an owner generation; the same names with identities are.
+void unchanged_names_are_not_written_again() {
+    FakeList list;
+    Look look;
+    look.rows = {"Second action", "First action"};
+    look.trick_ids = {0, 0};
+    list.update(look, 1);
+    check(list.update(look, 2) == RowsUpdate::unchanged && list.writes.size() == 1 && list.made == 2 && list.generation == 2,
+        "rows sent by name alone were written again across an owner generation");
+    look.trick_ids = {2, 1};
+    check(list.update(look, 3) == RowsUpdate::written && list.made == 4 && list.retired.size() == 2 && !list.retired_while_listed,
+        "identified rows did not start again under a new owner generation");
+}
+
 // Ours is a copy of the game's root, so it is made only while nothing of the game's line is in it
 // (after a level load GameLine has seen nothing, so this is what holds the first copy back).
 void the_games_root_is_copied_only_while_idle() {
@@ -425,6 +628,12 @@ int main() {
         owner_and_closed_boundaries_survive_a_missed_drain();
         a_deferred_row_update_keeps_its_pending_generation();
         name_only_rows_survive_unseen_owner_boundaries();
+        a_full_list_changes_its_count_with_each_new_row();
+        a_full_list_of_names_alone_changes_its_count_too();
+        a_failed_list_write_keeps_the_rows_it_had();
+        a_row_that_cannot_be_made_writes_nothing();
+        rows_wait_until_one_can_be_made();
+        unchanged_names_are_not_written_again();
         the_games_root_is_copied_only_while_idle();
         a_new_line_starts_its_rows_again();
         a_line_looks_like_the_games();

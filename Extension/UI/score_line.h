@@ -14,7 +14,7 @@
 // score_line_hud.h shows the line with them.
 namespace dingosdk::score_line {
 // What a plugin may pass: the trick list keeps at most 5 rows on this build (the widget draws the
-// newest 3), and a name is at most 63 bytes.
+// newest 3; a full list holds 4 or 5 of them, see update_rows), and a name is at most 63 bytes.
 inline constexpr std::size_t most_tricks = 5;
 inline constexpr std::size_t most_trick_bytes = 63;
 inline constexpr double most_points = 999'999'999;
@@ -241,6 +241,84 @@ inline std::size_t fresh_rows(const std::vector<std::string>& shown, const std::
         if (same) return fresh;
     }
     return wanted.size();
+}
+
+// What one pass over a HUD's rows did.
+enum class RowsUpdate {
+    unchanged, // the list already is what is wanted: nothing was made, written or retired
+    waiting,   // a new row cannot be made yet: nothing was made, written or retired, and the cache is as it was
+    written,   // the list was written once and now holds what is wanted
+};
+// A HUD's rows (newest first) brought to `wanted` through `ops`, which is what a row is in the game:
+//   bool ops.can_make()                      whether a new row can be made now
+//   Row  ops.make(name, id)                  a new row, which has a `name` and a `trick_id` (may throw)
+//   void ops.write(const std::vector<Row>&)  the whole list written once (may throw)
+//   void ops.retire(Row&) noexcept           a row the list does not hold, destroyed
+// Only the rows that are new are made, at the front, as the game's list takes a new row. A row that
+// fell off the end is retired only after the write that dropped it. When a row cannot be made or the
+// write fails, the rows this pass made are retired, the rows and their cache stay as they were, so a
+// later pass tries the latest identities against the rows the list really holds, and the error goes
+// on to the caller. The HUD's pass is this function (score_line_hud.cpp), so its tests run it too.
+//
+// A full list never takes a new row at the count it already has. skate.'s widget does not draw a
+// list of five that is replaced by another list of five: in the launches of 2026-11-08 the sixth and
+// seventh equal names left five live rows with the right names, keys and Transition in the list and
+// nothing on screen, also when each item was written on its own, while a list written as 5, 4, 5
+// rows kept its names up. So a new row into a full list is written with the list one row shorter,
+// and the row after it brings the list back to full. The widget draws the newest three, so the row
+// left out is never one it draws. Why the widget does this is not known.
+template <class Row, class Ops>
+RowsUpdate update_rows(std::vector<Row>& rows, std::uint64_t& rows_generation, bool& rows_restart,
+    const std::vector<std::string>& wanted, const std::vector<std::uint64_t>& wanted_ids, std::uint64_t generation, Ops& ops) {
+    std::vector<std::string> shown;
+    std::vector<std::uint64_t> shown_ids;
+    for (const auto& row : rows) {
+        shown.push_back(row.name);
+        shown_ids.push_back(row.trick_id);
+    }
+    const auto shown_generation = rows_restart ? 0 : rows_generation;
+    const auto fresh = fresh_rows(shown, wanted, shown_ids, wanted_ids, shown_generation, generation);
+    bool settled = !fresh && shown.size() == wanted.size();
+    if (!settled && wanted.size() == most_tricks && shown.size() + 1 == most_tricks) {
+        // The full list one row short, as the rule above left it: that is this list until a new row.
+        auto newest = wanted;
+        newest.pop_back();
+        auto newest_ids = wanted_ids;
+        if (newest_ids.size() > newest.size()) newest_ids.resize(newest.size());
+        settled = !fresh_rows(shown, newest, shown_ids, newest_ids, shown_generation, generation);
+    }
+    if (settled) {
+        // The cache still takes the owner generation, so rows that lined up by name across one are
+        // not asked about again.
+        rows_generation = generation;
+        rows_restart = false;
+        return RowsUpdate::unchanged;
+    }
+    auto count = wanted.size();
+    if (fresh && count == most_tricks && shown.size() == most_tricks) --count;
+    const auto make = std::min(fresh, count);
+    if (make && !ops.can_make()) return RowsUpdate::waiting;
+    std::vector<Row> next;
+    try {
+        for (std::size_t index = 0; index < make; ++index) next.push_back(ops.make(wanted[index], trick_id_at(wanted_ids, index)));
+    } catch (...) {
+        for (auto& row : next) ops.retire(row);
+        throw;
+    }
+    const auto made = next.size();
+    const auto kept = count - make;
+    for (std::size_t index = 0; index < kept; ++index) next.push_back(rows[index]);
+    try {
+        ops.write(next);
+    } catch (...) {
+        for (std::size_t index = 0; index < made; ++index) ops.retire(next[index]);
+        throw;
+    }
+    for (std::size_t index = kept; index < rows.size(); ++index) ops.retire(rows[index]);
+    rows = std::move(next);
+    rows_generation = generation;
+    rows_restart = false;
+    return RowsUpdate::written;
 }
 
 // What a line writes into the SDK's own ScoringHUDViewModel, as the game's own line looks.
