@@ -34,6 +34,11 @@ if(DINGOSDK_BUILD_PARK_EDITOR_TESTS)
     enable_testing()
     add_executable(dingosdk_park_randomization_tests Engine/Game/World/Test/park_randomization_tests.cpp)
     add_test(NAME park_randomization COMMAND dingosdk_park_randomization_tests)
+    # The pending pose used by placement_physics.cpp must survive client sampling until its
+    # server dispatch and later readback. The command policy is portable; no game is needed.
+    add_executable(dingosdk_placement_pose_tests Extension/Objects/Test/placement_pose_tests.cpp)
+    target_include_directories(dingosdk_placement_pose_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME placement_pose COMMAND dingosdk_placement_pose_tests)
 endif()
 if(DINGOSDK_BUILD_PARK_EDITOR_TESTS AND WIN32)
     enable_testing()
