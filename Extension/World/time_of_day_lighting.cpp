@@ -11,7 +11,7 @@ Hold& hold() { static auto* value = new Hold; return *value; } // the settings m
 
 void time_layer_changed(std::uint64_t now) noexcept { changed.store(now ? now : 1, std::memory_order_relaxed); }
 
-void tick(std::uint64_t now) noexcept {
+void tick(std::uint64_t now, bool in_play) noexcept {
     try {
         auto& h = hold();
         const auto at = changed.load(std::memory_order_relaxed);
@@ -21,7 +21,8 @@ void tick(std::uint64_t now) noexcept {
             [](const char* name) { return named_setting_value(name); },
             [](const char* name, const std::string& value) {
                 return !change_named_setting(name, value, false).starts_with("error: ");
-            });
+            },
+            !in_play);
         if (was != h.holding())
             logging::log(logging::Level::info, logging::Channel::world, "Time of day: the shadow and sky caches are {}.",
                 h.holding() ? "off while the new time's light is worked out" : "back as they were");
