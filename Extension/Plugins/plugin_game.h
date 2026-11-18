@@ -4,6 +4,9 @@
 #include "plugin_wave.h"
 #include "plugin_object_physics.h"
 #include "plugin_skater_movement.h"
+#include "plugin_picture.h"
+#include "plugin_zip_file.h"
+#include "plugin_ui.h"
 #include "Extension/World/traffic_vehicles.h"
 #include "Engine/Core/Json/json.h"
 #include "Engine/Game/World/body_query.h"
@@ -752,6 +755,27 @@ public:
     virtual std::string files_read(std::string_view /*plugin*/, std::string_view /*path*/, std::string& /*text*/) { return unavailable; }
     virtual std::string files_write(std::string_view /*plugin*/, std::string_view /*path*/, std::string_view /*text*/) { return unavailable; }
     virtual std::string files_remove(std::string_view /*plugin*/, std::string_view /*path*/) { return unavailable; }
+    // Where a file of the data folder is on disk, and a number that changes when it is written again
+    // (0: there is no such file), for what reads it elsewhere (the overlay's pictures). Empty when
+    // found, else why not.
+    virtual std::string files_place(std::string_view /*plugin*/, std::string_view /*path*/, std::filesystem::path& /*file*/, std::uint64_t& /*stamp*/) {
+        return unavailable;
+    }
+    // A file or a folder there: its size (0 for a folder), when it was written (seconds since 1970) and
+    // which it is. "not found" when there is none.
+    struct FileInfo {
+        std::uint64_t size{};
+        double modified{};
+        bool folder{};
+    };
+    virtual std::string files_info(std::string_view /*plugin*/, std::string_view /*path*/, FileInfo&) { return unavailable; }
+    // A file or a folder moved (in place of a file there, never of a folder), a file copied, a file's
+    // time set, files and folders put in the Recycle Bin (all or none), and a file's SHA-256 in hex.
+    virtual std::string files_move(std::string_view /*plugin*/, std::string_view /*from*/, std::string_view /*to*/) { return unavailable; }
+    virtual std::string files_copy(std::string_view /*plugin*/, std::string_view /*from*/, std::string_view /*to*/) { return unavailable; }
+    virtual std::string files_touch(std::string_view /*plugin*/, std::string_view /*path*/, double /*modified*/) { return unavailable; }
+    virtual std::string files_recycle(std::string_view /*plugin*/, const std::vector<std::string>& /*paths*/) { return unavailable; }
+    virtual std::string files_hash(std::string_view /*plugin*/, std::string_view /*path*/, std::string& /*digest*/) { return unavailable; }
     // The data folder (or a folder in it) opened in the player's file manager.
     virtual std::string files_reveal(std::string_view /*plugin*/, std::string_view /*folder*/) { return unavailable; }
     // The same, for a file up to `most` bytes (an animation clip's, say).
@@ -760,6 +784,35 @@ public:
     }
     virtual std::string files_write_bytes(std::string_view plugin, std::string_view path, std::string_view bytes, std::size_t /*most*/) {
         return files_write(plugin, path, bytes);
+    }
+    // ---- a zip that is a file of the data folder (plugin_zip_file.h; reskate.zip.list, reskate.files.unzip) ----
+    // Its files, read from its directory alone: nothing is unpacked. Empty when read, else why not.
+    virtual std::string zip_list(std::string_view /*plugin*/, std::string_view /*path*/, std::vector<zip_file::Entry>& /*entries*/) { return unavailable; }
+    // The request's files unpacked off this thread into its folder, all of them or none. Why it cannot
+    // be started, or an empty text: then `job` says how it went once it is done (the plugin's next tick
+    // calls back with it), and a job that is abandoned meanwhile stops and removes what it wrote.
+    virtual std::string files_unzip(std::string_view /*plugin*/, zip_file::Request, std::shared_ptr<zip_file::Job>) { return unavailable; }
+    // ---- picture: a picture composed from drawing steps (plugin_picture.h; reskate.picture) -----------
+    // The request drawn off this thread and written as a PNG at its path in the data folder, whole or
+    // not at all. Why it cannot be started, or an empty text: then `job` says how it went once it is
+    // done (the plugin's next tick calls back with it).
+    virtual std::string picture_make(std::string_view /*plugin*/, picture::Request, std::shared_ptr<picture::Job>) { return unavailable; }
+    // How wide a line of text is in a font of the plugin's package, in pixels, as a text step lays
+    // it out; nothing when the font cannot be read.
+    virtual std::optional<double> picture_text_width(std::string_view /*plugin*/, const picture::File& /*font*/, std::string_view /*text*/, float /*size*/) {
+        return std::nullopt;
+    }
+    // The size in pixels of a picture of the package or of the data folder; nothing for one a step
+    // would not draw.
+    virtual std::optional<std::pair<std::uint32_t, std::uint32_t>> picture_size(std::string_view /*plugin*/, const picture::File&) { return std::nullopt; }
+    // ---- a plugin's own fonts (its manifest's "fonts"; style.font in a drawn text) -----------------------
+    // The metrics of a font file of the plugin's package, for d:measure and d:glyph, as the overlay
+    // draws a text in it: each character's advance, with no kerning (plugin_ui.h's FontMetrics, `own`).
+    // `path` is the font's in the package and `file` where that is on disk. Nothing when the font
+    // cannot be read: the plugin's texts in it are then set in "body". Asked once a font a load.
+    virtual std::shared_ptr<const plugin_ui::detail::FontMetrics> plugin_font_metrics(std::string_view /*plugin*/, std::string_view /*path*/,
+                                                                                      const std::filesystem::path& /*file*/) {
+        return nullptr;
     }
     // ---- ui.dialog -----------------------------------------------------------------------------------
     // One dialog at a time over the game; the same id again updates it (what was typed is kept).
@@ -974,6 +1027,7 @@ public:
         Vec3 scale{1, 1, 1}; // each of its own axes
         Vec3 offset{}; // added to its position, in its parent's frame
         std::optional<pose_place::Place> place; // set instead of added, after the above
+        std::optional<Vec3> scale_to;           // its scale set to this, not multiplied
         bool keep_children{};                   // its children stay where they were in the world
     };
     // The joints come in the order they are posed in (pose_place::order).
@@ -997,6 +1051,13 @@ public:
         float scale{1};
     };
     virtual std::optional<JointPlace> skater_joint(std::uint64_t /*player*/, std::uint16_t /*joint*/) { return std::nullopt; }
+    // The local skater's whole pose as the game animated it in its last update, before anything of a
+    // plugin's: 10 floats a joint (scale x y z, rotation x y z w, position x y z, each joint in its
+    // parent's frame: a clip file's joint). Empty without a skater, and on the first ask: asking keeps it
+    // read for two seconds.
+    virtual std::vector<float> skater_local_pose() { return {}; }
+    // The same pose as it last went to the renderer: after the game's body physics, before a plugin's pose.
+    virtual std::vector<float> skater_drawn_pose() { return {}; }
     // The physics tuning's values, as the trainer has them (Extension/Trainer/trainer.h): read,
     // found by words, and set over the player's own while the plugin keeps them (never saved).
     struct Tuning {
@@ -1072,6 +1133,24 @@ public:
     };
     virtual std::optional<std::array<BoardBone, 16>> board_bones() { return std::nullopt; }
     virtual std::string board_set(std::string_view /*plugin*/, int, const BoardBone&, bool /*world*/) { return unavailable; }
+    // The whole local board drawn with its deck's mount at a place, `weight` of the way from where the game has
+    // it (Extension/Skater/skater_animation.h board_mount): in the world, or in the skater's placement frame.
+    // Held 0.3 s; nothing ends it. One plugin at a time.
+    struct BoardMount {
+        Vec3 position{};
+        std::array<float, 4> rotation{0, 0, 0, 1};
+        bool with_skater{};
+        float weight{1};
+        // Bones under the deck's mount (3 to 15) placed in their parent's frame while the board is mounted;
+        // the others ride the deck as they stood when the board was taken.
+        struct Bone {
+            int bone{};
+            std::optional<Vec3> position;
+            std::optional<std::array<float, 4>> rotation;
+        };
+        std::vector<Bone> bones;
+    };
+    virtual std::string board_mount(std::string_view /*plugin*/, std::optional<BoardMount>) { return unavailable; }
     // `everyone`: hidden from the other players too, not only on this screen.
     virtual std::string board_hide(std::string_view /*plugin*/, int, bool /*everyone*/) { return unavailable; }
     virtual void board_clear(std::string_view /*plugin*/, int /*bone, -1: all*/) {}

@@ -28,12 +28,15 @@ namespace dingosdk::plugins {
 enum class LogLevel { info, warn, error };
 
 struct Limits {
-    std::size_t memory = 128u << 20;    // the VM's heap (64 MB until 2.1.4)
-    double call_ms = 50;                // one call into the plugin (load, a handler, a command): past it, said...
+    std::size_t memory = 512u << 20;    // the VM's heap (64 MB until 2.1.4, 128 MB until 2.1.5: an editor that holds
+                                        // a library's catalogue and the clips it works on in Lua)
+    double call_ms = 100;               // one call into the plugin (load, a handler, a command): past it, said
+                                        // (50 ms until 2.1.5)...
     double hang_ms = 1000;              // ...and past this, stopped as a hang
     double io_ms = 250;                 // ReSkate's own reading and compiling in one call, kept out of call_ms up to this
     double unload_ms = 20;              // its unload handlers, together
-    double tick_ms = 6;                 // the average time a tick, over a window of 1 s...
+    double tick_ms = 16;                // the average time a tick, over a window of 1 s (6 ms until 2.1.5: a plugin
+                                        // with screens of its own drawn in Lua takes more)...
     int over_windows = 5;               // ...over it this many windows in a row stops it
     int errors = 5;                     // more errors than this...
     double error_window_ms = 10'000;    // ...in this long stops it
@@ -48,10 +51,16 @@ struct Limits {
     int raycasts_per_tick = 64;
     float raycast_metres = 1000;        // the longest ray
     int teleports_per_second = 2;
-    std::size_t shapes = 4000;          // drawn each frame
-    std::size_t shape_text_bytes = 64u << 10;
-    std::size_t images = 32; // different pictures a plugin draws
-    std::size_t clip_bytes = 48u << 20; // the clips a plugin holds, as poses (40 bytes a joint a frame)
+    int file_calls_per_second = 2000;   // reskate.files and the calls that write files (64 until 2.1.5: a plugin that
+                                        // keeps a library of files moves a few hundred in one save)
+    // (4000 shapes, 64 KB of text and 32 pictures until 2.1.5: a plugin that draws a whole editor or a
+    // shop of its own, every control and cover its own shapes, passed all three.)
+    std::size_t shapes = 24000;         // drawn each frame
+    std::size_t shape_text_bytes = 512u << 10;
+    std::size_t mesh_corners = 200000;  // the corners of a frame's meshes together (d:mesh)
+    std::size_t images = 4096; // different pictures a plugin draws
+    std::size_t clip_bytes = 256u << 20; // the clips a plugin holds, as poses (40 bytes a joint a frame; 48 MB until
+                                         // 2.1.5: an editor holds the clip it edits, its base and a few to compare)
     // Different waves a plugin holds at once, each at most 30 s, and their decoded samples together
     // (48 kHz mono 16-bit, so 30 s is about 2.9 MB). Past either, the wave played longest ago that
     // no sound still plays is let go; only when every one is still playing is a new one refused.
@@ -75,9 +84,11 @@ struct Limits {
     std::size_t listeners = 64;         // on_plugin handlers
     std::size_t event_bytes = 64u << 10; // an emitted event's data, as JSON
     std::size_t events_per_tick = 64;   // emitted by one plugin
-    int http_per_minute = 10;
-    int http_in_flight = 4;
-    std::size_t http_body_bytes = 64u << 10;
+    // (10 a minute, 4 waiting and a 64 KB body until 2.1.5: a plugin that shows a shop's pictures, or sends
+    // what a player made, passed all three.)
+    int http_per_minute = 240;
+    int http_in_flight = 8;
+    std::size_t http_body_bytes = 8u << 20;
     std::size_t http_url_bytes = 2048;
 };
 
@@ -133,12 +144,31 @@ struct SessionState {
 struct HttpRequest {
     std::uint64_t id{};
     std::string plugin, method, host, path, body, content_type;
+    // Its own headers, as the API checked them (name, value), sent as they are.
+    std::vector<std::pair<std::string, std::string>> headers;
+    // Where the answer's body goes in place of memory (a file of the plugin's own folders, as the game
+    // placed it): written beside it as "<file>.part" and moved into place when whole. `resume`: a part
+    // left by a request that broke off is gone on with, when the server still has the same file.
+    std::filesystem::path to_file;
+    bool resume{};
+    std::uint64_t most = 1u << 20; // the answer's body, at most
+    int timeout_ms = 10000;        // each step of it: connecting, sending, each wait for more
+    // Redirects followed (at most 5), each to a host of `domains` only; its own headers are not sent on
+    // to another host.
+    bool follow{};
+    std::vector<std::string> domains;
 };
 struct HttpResponse {
     std::uint64_t id{};
     std::string plugin;
     int status{};          // 0 when it failed
     std::string body, error;
+    std::vector<std::pair<std::string, std::string>> headers; // the answer's, names in lower case
+};
+// How far a request's answer has come (reskate.http.progress): bytes so far, and in all when the
+// server said (0: not known).
+struct HttpProgress {
+    std::uint64_t received{}, total{};
 };
 // A mod in the Mods folder: its folder, the name it gives itself, whether it is on, and the author
 // and version its manifest declares (empty when it names none).
@@ -190,6 +220,10 @@ public:
     virtual bool emit(std::string_view source, std::string_view event, Json data) = 0;
     // net.http: false when it cannot be sent now (the answer comes as Plugin::http_done).
     virtual bool http(HttpRequest request) = 0;
+    // How far a request of this plugin's has come; nothing once it is answered. And giving one up: its
+    // answer then says so.
+    virtual std::optional<HttpProgress> http_progress(std::string_view /*plugin*/, std::uint64_t /*id*/) { return std::nullopt; }
+    virtual void http_cancel(std::string_view /*plugin*/, std::uint64_t /*id*/) {}
     // The wider set's game (plugin_game.h).
     virtual Game& game() = 0;
     // Whether this is the session's authority: plugins' server copies, on the lobby's host or the
@@ -290,6 +324,7 @@ public:
     State state() const noexcept { return state_; }
     const std::string& reason() const noexcept { return reason_; }
     std::size_t memory() const noexcept { return memory_; }
+    void collect_when_nearly_full();
     double tick_ms() const noexcept { return last_window_ms_; }
     // Its limits from now on (the player's own choice of how strict: Host::set_limits).
     void set_limits(const Limits& limits) noexcept { limits_ = limits; }
@@ -297,6 +332,14 @@ public:
     // function): the name, its arguments as help shows them, and its help.
     std::vector<CommandInfo> commands() const;
     bool has(std::string_view permission) const { return manifest_.permissions.contains(permission); }
+    // Its own fonts (the manifest's "fonts"). The number a text's style carries for the one at `path`
+    // in the package (plugin_ui::own_fonts on), or 0 for a path the manifest does not list.
+    int font_number(std::string_view path) const noexcept;
+    // That font's metrics, asked of the game the first time a text names it. None for a font that
+    // cannot be read, which is said once: its texts are then set in "body".
+    const plugin_ui::detail::FontMetrics* font_metrics(int number);
+    // Where the fonts are on disk, for what draws its shapes (plugin_ui::Layer::fonts); none without any.
+    const std::shared_ptr<const std::vector<std::string>>& font_files() const noexcept { return font_files_; }
     // Over a limit or stopped: the API refuses every call until the VM is closed.
     bool halted() const noexcept { return halt_ != Halt::none || memory_exceeded_; }
 
@@ -313,6 +356,8 @@ private:
     friend struct PhysicsApi;
     friend struct EffectsApi;
     friend struct ViewmodelApi;
+    friend struct FilesApi;
+    friend struct PictureApi;
     friend Game& game_of(Plugin& plugin); // plugin_api.h
     std::uint64_t instance_{};
     struct Subcommand { std::string name, args, help; };
@@ -370,6 +415,7 @@ private:
     std::size_t memory_{};
     Halt halt_{Halt::none};
     bool memory_exceeded_{};
+    std::size_t collected_floor_{}; // what the VM still held after its garbage was last collected whole (collect_when_nearly_full)
     Clock::time_point deadline_{};  // past it, the call is stopped
     Clock::time_point slow_after_{}; // past it, the call is said (Plugin::call)
     std::optional<std::string> slow_at_; // where the script was when it passed slow_after_
@@ -400,9 +446,25 @@ private:
     int teleports_{};
     std::vector<plugin_ui::Shape> shapes_;
     std::size_t shape_text_{};
+    std::uint32_t marks_{}; // d:mark's numbers this frame, from 1
+    std::size_t mesh_corners_{}; // d:mesh's corners this frame
     bool drawing_{};
     double shapes_warned_at_{-1e9}; // the drawing limit is said at most every 10 s
     std::map<std::string, std::string, std::less<>> image_files_; // a picture's path in the package, and its file
+    // A data folder's picture ("data:<path>"): its name for the overlay (its file and a stamp, so one
+    // written again is drawn again), and when the file was last looked at.
+    struct DataImage {
+        std::string name;
+        double checked{-1e9};
+    };
+    std::map<std::string, DataImage, std::less<>> data_images_;
+    // Its own fonts, in the manifest's order: each one's metrics once a text has named it.
+    struct OwnFont {
+        bool asked{};
+        std::shared_ptr<const plugin_ui::detail::FontMetrics> metrics;
+    };
+    std::vector<OwnFont> fonts_;
+    std::shared_ptr<const std::vector<std::string>> font_files_;
     // skater.animation: clips by their path in the package, or "rec:<n>" for a recording, and the
     // bytes they hold (at most limits_.clip_bytes).
     std::map<std::string, std::shared_ptr<const anim_studio::Clip>, std::less<>> clips_;
@@ -440,6 +502,25 @@ private:
         std::shared_ptr<Preloaded> result;
     };
     std::vector<Preload> preloads_;
+    // reskate.picture.make: the pictures being drawn, each with the job the game fills in and the
+    // function a tick calls once it is done (deliver_pictures, plugin_api_picture.cpp); and how many
+    // were started this second.
+    struct PictureGoing {
+        int callback{}; // a ref, or 0
+        std::shared_ptr<picture::Job> job;
+    };
+    std::vector<PictureGoing> pictures_;
+    double picture_second_{};
+    int picture_starts_{};
+    // The fonts its texts named, each by its path in the package: where it is on disk.
+    std::map<std::string, std::filesystem::path, std::less<>> picture_fonts_;
+    // reskate.files.unzip: the zips being unpacked, each with the job the game fills in and the
+    // function a tick calls once it is done (deliver_unzips, plugin_api_files.cpp).
+    struct UnzipGoing {
+        int callback{}; // a ref, or 0
+        std::shared_ptr<zip_file::Job> job;
+    };
+    std::vector<UnzipGoing> unzips_;
     double wave_second_{};
     int wave_starts_{};
     int draw_table_{}, ui_table_{};

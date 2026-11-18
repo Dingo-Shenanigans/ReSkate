@@ -19,9 +19,12 @@
 #include "Engine/Game/Input/gameplay_options.h"
 #ifdef _WIN32 // reads memory as the game does (Engine/Core/Platform/memory.h)
 #include "Engine/Game/Skater/animation_values.h"
+#include "Extension/Plugins/plugin_font.h" // Windows reads a plugin's fonts
 #endif
+#include "Extension/UI/Overlay/glyph_pages.h"
 #include "Extension/Customization/board_material.h"
 #include "Extension/Localization/text_overrides.h"
+#include "miniz.h" // the tests pack the zips they hand the unpacker
 #include <algorithm>
 #include <chrono>
 #include <thread>
@@ -477,6 +480,18 @@ struct FakeGame final : Game {
         calls.push_back(std::format("board {} {} {:.1f} {}", plugin, bone, value.position[1], world ? "world" : "local"));
         return {};
     }
+    std::string board_mount(std::string_view plugin, std::optional<BoardMount> mount) override {
+        calls.push_back(mount ? std::format("board mount {} {:.2f},{:.2f},{:.2f} r{:.2f},{:.2f},{:.2f},{:.2f} {} {:.2f}", plugin, mount->position[0],
+                                            mount->position[1], mount->position[2], mount->rotation[0], mount->rotation[1], mount->rotation[2],
+                                            mount->rotation[3], mount->with_skater ? "skater" : "world", mount->weight)
+                              : std::format("board mount {} none", plugin));
+        if (mount)
+            for (const auto& bone : mount->bones)
+                calls.push_back(std::format("board mount bone {} {}{}", bone.bone,
+                                            bone.position ? std::format("at {:.2f},{:.2f},{:.2f}", (*bone.position)[0], (*bone.position)[1], (*bone.position)[2]) : std::string("held"),
+                                            bone.rotation ? std::format(" r{:.2f},{:.2f},{:.2f},{:.2f}", (*bone.rotation)[0], (*bone.rotation)[1], (*bone.rotation)[2], (*bone.rotation)[3]) : std::string()));
+        return {};
+    }
     std::string board_hide(std::string_view plugin, int bone, bool everyone) override {
         calls.push_back(std::format("board hide {} {}{}", plugin, bone, everyone ? " everyone" : ""));
         return {};
@@ -686,6 +701,15 @@ struct FakeGame final : Game {
         return {};
     }
     std::string skater_pose(std::string_view plugin, const std::vector<JointOffset>& offsets, float weight, Shown shown, bool still) override {
+        // A whole pose (every joint from 2 set): its size and one joint of it, not 393 of them.
+        if (offsets.size() > 200 && offsets[5].place && offsets[5].scale_to) {
+            const auto& o = offsets[5]; // joint 7
+            calls.push_back(std::format("pose {} {:.2f} whole {} from {} to {}: {} p{:.2f},{:.2f},{:.2f} r{:.2f},{:.2f},{:.2f},{:.2f} s{:.2f},{:.2f},{:.2f}", plugin,
+                                        weight, offsets.size(), offsets.front().joint, offsets.back().joint, o.joint, (*o.place->position)[0],
+                                        (*o.place->position)[1], (*o.place->position)[2], (*o.place->rotation)[0], (*o.place->rotation)[1],
+                                        (*o.place->rotation)[2], (*o.place->rotation)[3], (*o.scale_to)[0], (*o.scale_to)[1], (*o.scale_to)[2]));
+            return {};
+        }
         std::string text = std::format("pose {} {:.2f}", plugin, weight);
         if (shown != Shown::everyone) text += std::format(" {}", shown_name(shown));
         if (still) text += " still";
@@ -703,6 +727,7 @@ struct FakeGame final : Game {
                 if (pl.position) text += std::format(" p{:.2f},{:.2f},{:.2f}", (*pl.position)[0], (*pl.position)[1], (*pl.position)[2]);
                 if (pl.rotation) text += std::format(" r{:.2f},{:.2f},{:.2f},{:.2f}", (*pl.rotation)[0], (*pl.rotation)[1], (*pl.rotation)[2], (*pl.rotation)[3]);
             }
+            if (o.scale_to) text += std::format(" s={:.2f},{:.2f},{:.2f}", (*o.scale_to)[0], (*o.scale_to)[1], (*o.scale_to)[2]);
             if (o.keep_children) text += " keep";
         }
         calls.push_back(text);
@@ -869,6 +894,21 @@ struct FakeGame final : Game {
     std::string tune(std::string_view plugin, std::string_view id, std::optional<double> value) override {
         calls.push_back(value ? std::format("tune {} {} {:.2f}", plugin, id, *value) : std::format("tune {} {} none", plugin, id));
         return {};
+    }
+    // 395 joints: joint j has scale 1, no turn, and stands j / 100 m along x from its parent.
+    bool has_local_pose = true;
+    std::vector<float> skater_local_pose() override {
+        std::vector<float> out;
+        if (!has_local_pose) return out;
+        for (int j = 0; j < 395; ++j) out.insert(out.end(), {1, 1, 1, 0, 0, 0, 1, static_cast<float>(j) / 100, 0, 0});
+        return out;
+    }
+    // The same, as drawn: the game's body physics has lifted every joint 5 cm since.
+    std::vector<float> skater_drawn_pose() override {
+        std::vector<float> out;
+        if (!has_local_pose) return out;
+        for (int j = 0; j < 395; ++j) out.insert(out.end(), {1, 1, 1, 0, 0, 0, 1, static_cast<float>(j) / 100, 0.05f, 0});
+        return out;
     }
     std::optional<JointPlace> skater_joint(std::uint64_t player, std::uint16_t joint) override {
         if (player == 7 || joint == 300) return std::nullopt;
@@ -1234,7 +1274,7 @@ struct FakeGame final : Game {
     // A plugin's data folder, as a map by "<plugin>/<path>".
     std::map<std::string, std::string> files;
     std::string files_list(std::string_view plugin, std::string_view folder, std::vector<std::string>& names) override {
-        const auto prefix = std::string(plugin) + "/" + (folder.empty() ? "" : std::string(folder) + "/");
+        const auto prefix = std::string(plugin) + "/" + (folder.empty() ? "" : std::string(folder) + (folder.ends_with(':') ? "" : "/"));
         for (const auto& [path, text] : files) {
             if (!path.starts_with(prefix)) continue;
             auto rest = path.substr(prefix.size());
@@ -1255,6 +1295,162 @@ struct FakeGame final : Game {
     }
     std::string files_remove(std::string_view plugin, std::string_view path) override {
         return files.erase(std::string(plugin) + "/" + std::string(path)) ? std::string{} : std::string("not found");
+    }
+    // The rest of reskate.files over the same made-up files: times kept beside them, a hash that says
+    // what it hashed, and a Recycle Bin that holds what went in.
+    std::map<std::string, double> file_times;
+    std::vector<std::string> recycled;
+    bool recycle_bin_full{};
+    std::string files_info(std::string_view plugin, std::string_view path, FileInfo& found) override {
+        const auto key = std::string(plugin) + "/" + std::string(path);
+        if (const auto file = files.find(key); file != files.end()) {
+            found = {file->second.size(), file_times.contains(key) ? file_times[key] : 1000.0, false};
+            return {};
+        }
+        for (const auto& [name, text] : files)
+            if (name.starts_with(key + "/")) {
+                found = {0, 1000.0, true};
+                return {};
+            }
+        return "not found";
+    }
+    std::string files_move(std::string_view plugin, std::string_view from, std::string_view to) override {
+        const auto found = files.find(std::string(plugin) + "/" + std::string(from));
+        if (found == files.end()) return "not found";
+        files[std::string(plugin) + "/" + std::string(to)] = found->second;
+        files.erase(found);
+        return {};
+    }
+    std::string files_copy(std::string_view plugin, std::string_view from, std::string_view to) override {
+        const auto found = files.find(std::string(plugin) + "/" + std::string(from));
+        if (found == files.end()) return "not found";
+        files[std::string(plugin) + "/" + std::string(to)] = found->second;
+        return {};
+    }
+    std::string files_touch(std::string_view plugin, std::string_view path, double modified) override {
+        const auto key = std::string(plugin) + "/" + std::string(path);
+        if (!files.contains(key)) return "not found";
+        file_times[key] = modified;
+        return {};
+    }
+    std::string files_recycle(std::string_view plugin, const std::vector<std::string>& paths) override {
+        if (recycle_bin_full) return "they could not be put in the Recycle Bin";
+        for (const auto& path : paths)
+            if (!files.contains(std::string(plugin) + "/" + path)) return path + ": not found";
+        for (const auto& path : paths) {
+            files.erase(std::string(plugin) + "/" + path);
+            recycled.push_back(path);
+        }
+        return {};
+    }
+    std::string files_hash(std::string_view plugin, std::string_view path, std::string& digest) override {
+        const auto found = files.find(std::string(plugin) + "/" + std::string(path));
+        if (found == files.end()) return "not found";
+        digest = "hash of " + found->second;
+        return {};
+    }
+    // A data file's place: a made-up path, and a stamp that follows what the file holds.
+    std::string files_place(std::string_view plugin, std::string_view path, std::filesystem::path& file, std::uint64_t& stamp) override {
+        const auto found = files.find(std::string(plugin) + "/" + std::string(path));
+        file = std::filesystem::path("data") / std::string(plugin) / std::string(path);
+        stamp = found == files.end() ? 0 : std::hash<std::string>{}(found->second) | 1;
+        return {};
+    }
+    // reskate.picture: the requests as they came, each one's job done at once (or kept, for the test
+    // to finish), a text half its size wide a byte, and a picture's size by where it is.
+    std::vector<picture::Request> pictures;
+    std::vector<std::shared_ptr<picture::Job>> picture_jobs;
+    bool pictures_wait{};
+    std::string picture_refusal, picture_failure;
+    std::string picture_make(std::string_view plugin, picture::Request request, std::shared_ptr<picture::Job> job) override {
+        if (!picture_refusal.empty()) return picture_refusal;
+        calls.push_back(std::format("picture {} {} {}x{} steps {}", plugin, request.path, request.width, request.height, request.steps.size()));
+        pictures.push_back(std::move(request));
+        picture_jobs.push_back(job);
+        if (!pictures_wait) {
+            job->why = picture_failure;
+            job->done = true;
+        }
+        return {};
+    }
+    // A zip that is a file: what each made-up zip holds, by "<plugin>/<path>"; and the requests to
+    // unpack one as they came, each one's job done at once (or kept, for the test to finish). A zip
+    // that unpacks writes each file's name as its content into the made-up files.
+    std::map<std::string, std::vector<zip_file::Entry>> zips;
+    std::vector<zip_file::Request> unzips;
+    std::vector<std::shared_ptr<zip_file::Job>> unzip_jobs;
+    bool unzips_wait{};
+    std::string unzip_refusal, unzip_failure;
+    std::string zip_list(std::string_view plugin, std::string_view path, std::vector<zip_file::Entry>& entries) override {
+        const auto key = std::string(plugin) + "/" + std::string(path);
+        calls.push_back("zip list " + key);
+        if (!files.contains(key)) return "not found";
+        const auto found = zips.find(key);
+        if (found == zips.end()) return "it is not a zip";
+        entries = found->second;
+        return {};
+    }
+    std::string files_unzip(std::string_view plugin, zip_file::Request request, std::shared_ptr<zip_file::Job> job) override {
+        if (!unzip_refusal.empty()) return unzip_refusal;
+        const auto zip = zips.find(std::string(plugin) + "/" + request.zip);
+        if (zip == zips.end()) return "not found";
+        calls.push_back(std::format("unzip {} {} to {} only {} overwrite {}", plugin, request.zip, request.folder,
+                                    request.all ? std::string("all") : std::to_string(request.only.size()), request.overwrite));
+        if (!unzips_wait) {
+            job->why = unzip_failure;
+            if (unzip_failure.empty())
+                for (const auto& entry : zip->second) {
+                    if (!request.all && std::find(request.only.begin(), request.only.end(), entry.name) == request.only.end()) continue;
+                    const auto between = request.folder.empty() || request.folder.ends_with(':') ? "" : "/";
+                    files[std::string(plugin) + "/" + request.folder + between + entry.name] = entry.name;
+                    ++job->count;
+                }
+            job->done = true;
+        }
+        unzips.push_back(std::move(request));
+        unzip_jobs.push_back(std::move(job));
+        return {};
+    }
+    std::optional<double> picture_text_width(std::string_view, const picture::File& font, std::string_view text, float size) override {
+        if (font.name.find("missing") != std::string::npos) return std::nullopt;
+        return static_cast<double>(text.size()) * size * 0.5;
+    }
+    // A plugin's own fonts as the fake reads them, at a size of 20: one named "unreadable" cannot be
+    // read; one named "digits" has the digits (14 wide) and a colon (6) and nothing else; any other has
+    // every character to 127 (8 wide, in a box) and an e with an acute accent (9).
+    std::vector<std::string> font_asks;
+    std::shared_ptr<const plugin_ui::detail::FontMetrics> plugin_font_metrics(std::string_view plugin, std::string_view path,
+                                                                              const std::filesystem::path& file) override {
+        font_asks.push_back(std::format("{} {}", plugin, path));
+        std::error_code error;
+        if (path.find("unreadable") != std::string_view::npos || !std::filesystem::is_regular_file(file, error)) return nullptr;
+        auto metrics = std::make_shared<plugin_ui::detail::FontMetrics>();
+        metrics->own = true;
+        metrics->size = 20;
+        metrics->ascent = 16;
+        if (path.find("digits") != std::string_view::npos) {
+            metrics->lacks.fill(true);
+            for (int c = '0'; c <= ':'; ++c) {
+                metrics->lacks[static_cast<std::size_t>(c - 32)] = false;
+                metrics->advance[static_cast<std::size_t>(c - 32)] = c == ':' ? 6.0f : 14.0f;
+                metrics->box[static_cast<std::size_t>(c - 32)] = {2, 2, 12, 16};
+            }
+        } else {
+            metrics->advance.fill(8);
+            metrics->box.fill({1, 3, 7, 16});
+            metrics->lacks[127 - 32] = true;
+            metrics->wide = {{0xe9, 9.0f}};
+        }
+        return metrics;
+    }
+    std::optional<std::pair<std::uint32_t, std::uint32_t>> picture_size(std::string_view plugin, const picture::File& file) override {
+        if (!file.data.empty()) {
+            if (!files.contains(std::string(plugin) + "/" + file.data)) return std::nullopt;
+            return std::pair<std::uint32_t, std::uint32_t>{64, 32};
+        }
+        std::error_code error;
+        if (!std::filesystem::is_regular_file(file.file, error)) return std::nullopt;
+        return std::pair<std::uint32_t, std::uint32_t>{256, 128};
     }
     std::optional<DialogSpec> dialog;
     std::string dialog_open(std::string_view plugin, const DialogSpec& spec) override {
@@ -1560,6 +1756,13 @@ struct TestEnvironment final : Environment {
         return true;
     }
     std::vector<HttpResponse> take_http_responses() override { return std::exchange(responses, {}); }
+    std::map<std::uint64_t, HttpProgress> http_going;
+    std::vector<std::uint64_t> http_cancelled;
+    std::optional<HttpProgress> http_progress(std::string_view, std::uint64_t id) override {
+        const auto found = http_going.find(id);
+        return found == http_going.end() ? std::nullopt : std::optional<HttpProgress>(found->second);
+    }
+    void http_cancel(std::string_view, std::uint64_t id) override { http_cancelled.push_back(id); }
     FakeGame fake;
     Game& game() override { return fake; }
     Teleport teleport(std::string_view, const Vec3& position, float heading, std::optional<bool> on_board = std::nullopt) override {
@@ -3878,6 +4081,8 @@ void a_permission_must_be_declared() {
         assert(reskate.strings.hash("ID_MENU_PLAY"):sub(1, 1) == "#", "a hash is computed freely")
         ok, err = pcall(reskate.board.scale, 6, 1.5)
         assert(not ok and err:find("needs the \"board\" permission"), err)
+        ok, err = pcall(reskate.board.mount, {position = vector.create(0, 0, 0)})
+        assert(not ok and err:find("needs the \"board\" permission"), err)
         ok, err = pcall(reskate.input.joysticks)
         assert(not ok and err:find("needs the \"input\" permission"), err)
         ok, err = pcall(reskate.input.joystick, 1)
@@ -4289,12 +4494,24 @@ void a_runaway_plugin_is_stopped_and_the_rest_go_on() {
         script("loop", "while true do end"),
         script("catches", "while true do pcall(function() while true do end end) end"),
         script("tick_loop", R"(reskate.on("tick", function() while true do end end))"),
-        script("memory", R"(local t = {} while true do t[#t + 1] = string.rep("x", 8000000) end)"),
+        // (100 MB a tick: 512 MB cannot be filled inside one call's 100 ms. Buffers, each its own: Luau keeps one
+        // copy of a string however often it is made, so a table of the same long string holds 100 MB, and was
+        // only ever stopped for the copies it had let go of.)
+        script("memory", R"(local t = {} reskate.on("tick", function() t[#t + 1] = buffer.create(100000000) end))"),
         script("memory_caught", R"(
-            pcall(function() local t = {} while true do t[#t + 1] = string.rep("y", 8000000) end end)
-            reskate.log("survived the memory bomb")
+            local t = {}
+            reskate.on("tick", function()
+                local ok = pcall(function() t[#t + 1] = buffer.create(100000000) end)
+                if not ok then reskate.log("survived the memory bomb") end
+            end)
         )"),
-        script("huge", R"(local s = string.rep("x", 200000000))"),
+        // 250 MB held, and 100 MB made and let go of every tick: never more than 350 MB at once.
+        script("churn", R"(
+            local held = buffer.create(250000000)
+            local last
+            reskate.on("tick", function() last = string.rep("z", 100000000) end)
+        )"),
+        script("huge", R"(local s = string.rep("x", 600000000))"),
         script("buffer", R"(local b = buffer.create(1e9))"),
         script("errors", R"(reskate.on("tick", function() error("boom") end))"),
         script("timers", R"(
@@ -4306,13 +4523,12 @@ void a_runaway_plugin_is_stopped_and_the_rest_go_on() {
         script("coroutines", R"(while true do coroutine.wrap(function() end)() end)"),
         script("slow_unload", R"(reskate.on("unload", function() while true do end end))"),
     });
-    for (const auto* id : {"loop", "catches"}) stopped(host, id, "ran longer than 50 ms");
+    for (const auto* id : {"loop", "catches"}) stopped(host, id, "ran longer than 100 ms");
     stopped(host, "coroutines", ""); // its time or its memory, whichever runs out first
-    for (const auto* id : {"memory", "memory_caught", "huge", "buffer"}) stopped(host, id, "more than 128 MB");
-    check(!environment.logged("survived the memory bomb"), "A memory bomb cannot be caught and carried on from");
+    for (const auto* id : {"huge", "buffer"}) stopped(host, id, "more than 512 MB");
     running(host, "tick_loop", environment);
     ticks(host, environment, 1);
-    stopped(host, "tick_loop", "the tick handler ran longer than 50 ms (at plugin/main.lua:1");
+    stopped(host, "tick_loop", "the tick handler ran longer than 100 ms (at plugin/main.lua:1");
     check(environment.logged("[tick_loop] stopped: the tick handler"), "A stop is logged, which the console shows");
     ticks(host, environment, 4); // five errors, with the tick above
     running(host, "errors", environment);
@@ -4324,6 +4540,9 @@ void a_runaway_plugin_is_stopped_and_the_rest_go_on() {
         [](const auto& line) { return line.starts_with("[chatty] line "); });
     check(chatty == 50, "50 lines a second, and the rest left out: " + std::to_string(chatty));
     ticks(host, environment, 30);
+    for (const auto* id : {"memory", "memory_caught"}) stopped(host, id, "more than 512 MB");
+    check(!environment.logged("survived the memory bomb"), "A memory bomb cannot be caught and carried on from");
+    running(host, "churn", environment); // what it let go of is collected before it counts against it
     running(host, "bystander", environment);
     check(environment.logged("bystander ticked 30"), "The others go on ticking");
     const auto unloading = std::chrono::steady_clock::now();
@@ -4343,14 +4562,14 @@ void the_player_sets_how_strict_the_limits_are() {
     lenient.tick_ms = std::numeric_limits<double>::infinity();
     lenient.errors = std::numeric_limits<int>::max();
     Host host(environment, Side::client, lenient);
-    host.apply({script("busy", R"(reskate.on("tick", function() local s = os.clock() while os.clock() - s < 0.008 do end end))"),
+    host.apply({script("busy", R"(reskate.on("tick", function() local s = os.clock() while os.clock() - s < 0.020 do end end))"),
         script("faulty", R"(reskate.on("tick", function() error("again") end))")});
     ticks(host, environment, 60 * 7);
     running(host, "busy", environment);
     running(host, "faulty", environment);
-    // Allowed 10 ms a tick, 8 ms is within it.
+    // Allowed 25 ms a tick, 20 ms is within it.
     Limits longer;
-    longer.tick_ms = 10;
+    longer.tick_ms = 25;
     host.set_limits(longer);
     ticks(host, environment, 60 * 7);
     running(host, "busy", environment);
@@ -4358,18 +4577,18 @@ void the_player_sets_how_strict_the_limits_are() {
     // ReSkate's own again: the one running is held to them from then on.
     host.set_limits({});
     ticks(host, environment, 60 * 7);
-    stopped(host, "busy", "ms a tick for 5 s, over its 6 ms");
+    stopped(host, "busy", "ms a tick for 5 s, over its 16 ms");
 }
 
 void a_plugin_over_its_time_budget_is_stopped() {
     TestEnvironment environment;
     Host host(environment, Side::client);
-    // 8 ms a tick is over the 6 ms budget; 3 ms, which a slow PC could take for a fair plugin, is not.
-    host.apply({script("busy", R"(reskate.on("tick", function() local s = os.clock() while os.clock() - s < 0.008 do end end))"),
+    // 20 ms a tick is over the 16 ms budget; 3 ms, which a slow PC could take for a fair plugin, is not.
+    host.apply({script("busy", R"(reskate.on("tick", function() local s = os.clock() while os.clock() - s < 0.020 do end end))"),
         script("steady", R"(reskate.on("tick", function() local s = os.clock() while os.clock() - s < 0.003 do end end))"),
         script("light", R"(reskate.on("tick", function() local s = 0 for i = 1, 100 do s += i end end))")});
     ticks(host, environment, 60 * 7);
-    stopped(host, "busy", "ms a tick for 5 s, over its 6 ms");
+    stopped(host, "busy", "ms a tick for 5 s, over its 16 ms");
     running(host, "steady", environment);
     running(host, "light", environment);
 }
@@ -4487,6 +4706,10 @@ void the_skater_can_be_read_moved_and_the_world_probed() {
     host.apply({script("bare", R"(
         local ok, err = pcall(reskate.skater.get)
         assert(not ok and err:find("skater.read"), err)
+        ok, err = pcall(reskate.skater.read_pose)
+        assert(not ok and err:find("skater.read"), err)
+        ok, err = pcall(reskate.skater.pose, buffer.create(395 * 40))
+        assert(not ok and err:find("skater.animation"), err)
         ok, err = pcall(reskate.skater.teleport, vector.create(0, 0, 0))
         assert(not ok and err:find("skater.teleport"), err)
         ok, err = pcall(reskate.world.raycast, vector.create(0, 1, 0), vector.create(0, -1, 0))
@@ -4687,6 +4910,1493 @@ void plugins_draw_pictures() {
     check(environment.layers[0].shapes[1].kind == plugin_ui::Shape::Kind::world_image && environment.layers[0].shapes[1].radius == 1.5f &&
               environment.layers[0].shapes[1].style.uv[2] == 0.5f && environment.layers[0].shapes[1].style.uv[3] == 0.25f,
           "and in the world, so many metres tall, a part of it");
+}
+
+// The drawing a plugin with screens of its own needs: lines that stay open, triangles of its own (through
+// a picture or not), what was drawn turned, moved and faded after, a letter's own measure, and
+// pictures out of its data folder. None of it is one plugin's: a chart, a compass, a label on a slant.
+void plugins_draw_meshes_marks_and_data_pictures() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    const std::string main = R"(
+        local V = vector.create
+        reskate.on("draw", function(d)
+            -- A chart's line: open, not back to its first point.
+            d:poly({V(0, 50, 0), V(20, 10, 0), V(40, 30, 0), V(60, 5, 0)}, {closed = false, thickness = 3})
+            d:poly({V(0, 0, 0), V(10, 0, 0), V(0, 10, 0)})
+            -- A compass needle: two triangles in their own colours.
+            d:mesh({100, 100, 0, 0, 0xff0000ff,  110, 140, 0, 0, 0xff0000ff,  90, 140, 0, 0, 0x800000ff,  100, 180, 0, 0, 0xffffffff},
+                   {1, 2, 3, 2, 4, 3})
+            -- A picture cut to a triangle.
+            d:mesh({0, 0, 0, 0, 0xffffffff,  64, 0, 1, 0, 0xffffffff,  32, 64, 0.5, 1, 0xffffff80}, {1, 2, 3}, {image = "icons/flag.png"})
+            assert(not pcall(d.mesh, d, {0, 0, 0, 0}, {1, 2, 3}), "five numbers a corner")
+            assert(not pcall(d.mesh, d, {0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 2, 2, 0, 0, 1}, {1, 2, 4}), "a triangle of its own corners")
+            assert(not pcall(d.mesh, d, {0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 2, 2, 0, 0, 1}, {1, 2}), "three corners a triangle")
+            assert(not pcall(d.mesh, d, {0, 0, 0, 0, 1, 1, 1, 0, 0, 1, 2, 2, 0, 0, 1}, {1, 2, 3}, {image = "../x.png"}), "its own pictures")
+            -- A label on a slant: what was drawn since the mark, turned about its middle.
+            local label = d:mark()
+            d:rect(V(200, 200, 0), V(300, 230, 0), {fill = true})
+            d:text(V(210, 205, 0), "SALE")
+            d:adjust(label, {rotate = math.rad(-4), about = V(250, 215, 0)})
+            -- A list's rows, faded at the ends of its box, and a card sliding in.
+            local rows = d:mark()
+            d:text(V(10, 400, 0), "a row")
+            d:adjust(rows, {fade = {top = 390, bottom = 600, band = 20, taller = 100}, offset = V(0, 12, 0), alpha = 0.5})
+            assert(label == 1 and rows == 2, "marks are numbered from 1 each frame")
+            assert(not pcall(d.adjust, d, 3, {alpha = 1}), "only a mark of this frame")
+            assert(not pcall(d.adjust, d, rows, {alpha = 2}), "alpha 0 to 1")
+            assert(not pcall(d.adjust, d, rows, {rotate = 1}), "a turn is about a point")
+            -- A letter's own measure, and a text with letters past ASCII.
+            local h = d:glyph("H", {font = "heading", size = 40})
+            assert(h and math.abs(h.advance - 24) < 0.01 and h.top == 8 and h.bottom == 32 and h.left == 2 and h.right == 22, "a letter's box")
+            assert(d:glyph("\u{416}", {font = "heading", size = 40}).advance == 30, "a Cyrillic letter's advance")
+            assert(d:measure("\u{416}\u{416}", {font = "heading", size = 40}).x == 60, "measured by its letters, not its bytes")
+            assert(d:measure("H\u{e9}", {font = "heading", size = 40}).x == 24 + 20, "one the font lacks is as wide as ?")
+            -- A picture the plugin wrote into its data folder, drawn again when it is written again.
+            d:image("data:covers/mine.png", V(0, 0, 0), V(32, 32, 0))
+            d:image("data:covers/none.png", V(0, 0, 0), V(32, 32, 0))
+            assert(not pcall(d.image, d, "data:../other/x.png", V(0, 0, 0), V(1, 1, 0)), "only its own data folder")
+            assert(not pcall(d.image, d, "data:notes.txt", V(0, 0, 0), V(1, 1, 0)), "only pictures")
+            reskate.log("drew")
+        end)
+        reskate.console.command("repaint", "x", function() reskate.files.write("covers/mine.png", "another") end)
+    )";
+    // A font as the overlay hands it over: 20 pixels, every letter 12 wide in a box, and a Cyrillic one.
+    plugin_ui::detail::FontMetrics metrics;
+    metrics.size = 20;
+    metrics.advance.fill(12);
+    metrics.advance['?' - 32] = 10;
+    metrics.box.fill({1, 4, 11, 16});
+    metrics.wide = {{0x416, 15.0f}};
+    plugin_ui::set_font(2, metrics);
+    plugin_ui::set_display(1920, 1080);
+    environment.fake.files["shapes/covers/mine.png"] = "a png";
+    host.apply({package("shapes", {{manifest_file, manifest(R"("overlay", "files", "console")")}, {"plugin/main.lua", main},
+                                   {"icons/flag.png", "not really a png"}}),
+                script("plain", R"(
+        reskate.on("draw", function(d)
+            local ok, why = pcall(d.image, d, "data:covers/mine.png", vector.create(0, 0, 0), vector.create(1, 1, 0))
+            assert(not ok and why:find("files"), why)
+            reskate.log("refused")
+        end)
+    )", R"("overlay")")});
+    ticks(host, environment, 1);
+    running(host, "shapes", environment);
+    check(environment.logged("[shapes] drew"), "A plugin draws lines, triangles and adjusted shapes\n" + environment.all());
+    check(environment.logged("[plain] refused"), "A data folder's picture needs the files permission\n" + environment.all());
+    using Kind = plugin_ui::Shape::Kind;
+    const plugin_ui::Layer* layer{};
+    for (const auto& one : environment.layers) if (one.plugin == "shapes") layer = &one;
+    check(layer && layer->shapes.size() == 12, "Each is one shape\n" + environment.all());
+    const auto& shapes = layer->shapes;
+    check(shapes[0].kind == Kind::poly && shapes[0].fit == 1 && shapes[1].fit == 0, "A polygon's outline can stay open");
+    check(shapes[2].kind == Kind::mesh && shapes[2].points.size() == 4 && shapes[2].indices == std::vector<std::uint16_t>{0, 1, 2, 1, 3, 2} &&
+              shapes[2].colours[2] == 0xff000080 && shapes[2].text.empty(), "A mesh is its corners, colours and triangles");
+    check(shapes[3].kind == Kind::mesh && shapes[3].text.ends_with("flag.png") && shapes[3].uvs[2] == std::array<float, 2>{0.5f, 1.0f},
+          "and can go through a picture of the package");
+    check(shapes[4].kind == Kind::mark && shapes[4].seed == 1 && shapes[7].kind == Kind::adjust && shapes[7].seed == 1 &&
+              std::abs(shapes[7].turn + 0.0698132f) < 1e-5f && shapes[7].points[0][0] == 250 && shapes[7].alpha == 1 && shapes[7].fit == 0,
+          "What was drawn since a mark is turned about a point");
+    check(shapes[10].kind == Kind::adjust && shapes[10].seed == 2 && shapes[10].fit == 3 && shapes[10].edge == 20 &&
+              shapes[10].points[2] == plugin_ui::Vec3{390, 600, 100} && shapes[10].points[1][1] == 12 && shapes[10].alpha == 0.5f,
+          "or moved, faded, and faded out at the ends of a box");
+    check(shapes[11].kind == Kind::image && shapes[11].text.find("mine.png|") != std::string::npos,
+          "A data folder's picture is drawn by its file and a stamp, and one that is not there is not drawn");
+    const auto first = shapes[11].text;
+    host.run_console("repaint");
+    environment.now += 600;
+    ticks(host, environment, 1);
+    for (const auto& one : environment.layers) if (one.plugin == "shapes") layer = &one;
+    check(layer->shapes.size() == 12 && layer->shapes[11].text != first && layer->shapes[11].text.find("mine.png|") != std::string::npos,
+          "Written again, it is another picture\n" + environment.all());
+    plugin_ui::set_font(2, {});
+}
+
+// Fonts of a plugin's own: its manifest names the font files of its package that its texts may be
+// drawn in.
+void a_manifest_names_its_fonts() {
+    const auto with = [](const std::string& fonts) { return R"({"api": 1, "entry": "plugin/main.lua", "permissions": ["overlay"], "fonts": )" + fonts + "}"; };
+    const auto read = parse_manifest(with(R"(["fonts/Display-Regular.ttf", "fonts/Digits.OTF", "fonts/Display-Regular.ttf"])"));
+    check(read.fonts == std::vector<std::string>{"fonts/Display-Regular.ttf", "fonts/Digits.OTF"}, "A manifest's fonts are read, each once");
+    check(parse_manifest(manifest()).fonts.empty() && parse_manifest(with("[]")).fonts.empty(), "and a manifest need have none");
+    check(parse_manifest(R"({"api": 1, "entry": "plugin/main.lua", "fonts": ["a.ttf"]})").fonts.size() == 1, "Fonts need no permission of their own");
+    const auto refused = [&](const std::string& fonts, std::string_view because) {
+        try {
+            (void)parse_manifest(with(fonts));
+        } catch (const std::exception& error) {
+            check(std::string(error.what()).find(because) != std::string::npos, "Refused for \"" + std::string(error.what()) + "\", not " + std::string(because));
+            return;
+        }
+        throw std::runtime_error("Fonts that should be refused were read: " + fonts);
+    };
+    refused(R"(["1.ttf", "2.ttf", "3.ttf", "4.ttf", "5.ttf", "6.ttf", "7.ttf", "8.ttf", "9.ttf"])", "at most 8 font files");
+    refused(R"("fonts/Display-Regular.ttf")", "a list of at most 8 font files");
+    refused(R"([7])", "a list of font files");
+    refused(R"(["fonts/notes.txt"])", "\"fonts/notes.txt\" in \"fonts\" must be a .ttf or .otf file");
+    refused(R"(["fonts/Display.woff2"])", ".ttf or .otf");
+    refused(R"(["../other/Display.ttf"])", "\"../other/Display.ttf\" in \"fonts\" must be a path inside the mod folder");
+    refused(R"(["C:/Windows/Fonts/arial.ttf"])", "inside the mod folder");
+    refused(R"(["fonts\\Display.ttf"])", "inside the mod folder");
+
+    // That each is a file of the package, and not a huge one, is checked with the folder in hand.
+    const auto there = package("fonts_there", {{manifest_file, with(R"(["fonts/Display-Regular.ttf"])")}, {"plugin/main.lua", ""},
+                                               {"fonts/Display-Regular.ttf", "a font"}});
+    check(check_manifest_files(parse_manifest(with(R"(["fonts/Display-Regular.ttf"])")), there.directory).empty(), "A font that is in the package passes");
+    check(check_manifest_files(parse_manifest(with(R"(["fonts/Gone.ttf"])")), there.directory) == "\"fonts/Gone.ttf\" in \"fonts\" is not a file in the mod folder",
+          "One that is not there is refused");
+    std::filesystem::create_directories(there.directory / "fonts" / "Folder.ttf");
+    check(!check_manifest_files(parse_manifest(with(R"(["fonts/Folder.ttf"])")), there.directory).empty(), "and a folder by a font's name");
+    write(there.directory / "fonts" / "Huge.ttf", std::string(maximum_font_bytes + 1, 'x'));
+    check(check_manifest_files(parse_manifest(with(R"(["fonts/Huge.ttf"])")), there.directory) == "\"fonts/Huge.ttf\" in \"fonts\" is larger than 8 MB",
+          "and one larger than 8 MB");
+    write(there.directory / "fonts" / "Empty.ttf", "");
+    check(check_manifest_files(parse_manifest(with(R"(["fonts/Empty.ttf"])")), there.directory).find("cannot be read") != std::string::npos, "and an empty one");
+
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({there, package("fonts_gone", {{manifest_file, with(R"(["fonts/Gone.ttf"])")}, {"plugin/main.lua", ""}})});
+    running(host, "fonts_there", environment);
+    stopped(host, "fonts_gone", "\"fonts/Gone.ttf\" in \"fonts\" is not a file in the mod folder");
+}
+
+// A plugin draws and measures text in a font of its own, exactly as in one of the menus' fonts: any
+// plugin with screens of its own wants its own face on them.
+void plugins_draw_text_in_their_own_fonts() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    const std::string main = R"(
+        local V = vector.create
+        local display = "fonts/Display-Regular.ttf"
+        reskate.on("draw", function(d)
+            d:text(V(100, 100, 0), "WELCOME", {font = display, size = 40, align = "right", colour = "#ff8000"})
+            -- Measured by the font's own advances (8 a letter at its size of 20), not a menu font's (10).
+            assert(d:measure("WELCOME", {font = display, size = 40}).x == 7 * 16, "measured in its own font")
+            assert(d:measure("WELCOME", {font = "body", size = 40}).x == 7 * 20, "the menus' fonts measure as they did")
+            assert(d:measure("WELCOME", {size = 40}).x == d:measure("WELCOME", {font = "bold", size = 40}).x, "and bold is still the one when none is named")
+            local s = d:glyph("S", {font = display, size = 40})
+            assert(s.advance == 16 and s.left == 2 and s.top == 6 and s.right == 14 and s.bottom == 32, "a letter's box in its own font")
+            -- UTF-8: an accented letter the font has is its own (9), and one it lacks is drawn in body, so measured there (15).
+            assert(d:glyph("\u{e9}", {font = display, size = 40}).advance == 18, "an accented letter of its own")
+            assert(d:glyph("\u{416}", {font = display, size = 40}).advance == 30, "a letter it lacks is body's")
+            assert(d:measure("S\u{e9}\u{416}", {font = display, size = 40}).x == 16 + 18 + 30, "measured by its letters, each in the font that draws it")
+            -- Wrapped as the menus' fonts are: "AA AA" is 40 wide, and the third word would pass 50.
+            local wrapped = d:measure("AA AA AA", {font = display, size = 20, wrap = 50})
+            assert(wrapped.x == 40 and wrapped.y == 40, "wrapped to two lines")
+            d:text(V(10, 300, 0), "AA AA AA", {font = display, size = 20, wrap = 50})
+            -- In the world, and turned and faded with what else was drawn since a mark.
+            d:world_text(V(0, 1, -10), "over there", {font = display})
+            local label = d:mark()
+            d:text(V(210, 205, 0), "SALE", {font = display, size = 30})
+            d:adjust(label, {rotate = math.rad(-4), about = V(250, 215, 0), alpha = 0.5})
+            -- A font file the manifest does not name is refused, whether or not it is in the package.
+            local ok, why = pcall(d.text, d, V(0, 0, 0), "x", {font = "fonts/Other.ttf"})
+            assert(not ok and why:find("a font file is named in the manifest's \"fonts\" first", 1, true), why)
+            ok, why = pcall(d.measure, d, "x", {font = "../elsewhere/Display-Regular.ttf"})
+            assert(not ok and why:find("named in the manifest's \"fonts\" first", 1, true), why)
+            ok, why = pcall(d.text, d, V(0, 0, 0), "x", {font = "comic"})
+            assert(not ok and why:find("font is", 1, true), why)
+            -- One the game cannot read is body: drawn so, and measured so.
+            d:text(V(0, 500, 0), "plain", {font = "fonts/unreadable.ttf", size = 20})
+            assert(d:measure("plain", {font = "fonts/unreadable.ttf", size = 20}).x == 50, "a font that cannot be read measures as body")
+            assert(d:glyph("p", {font = "fonts/unreadable.ttf", size = 20}).advance == 10, "letter by letter too")
+            reskate.log("drew")
+        end)
+    )";
+    plugin_ui::detail::FontMetrics body;
+    body.size = 20;
+    body.advance.fill(10);
+    body.box.fill({1, 4, 9, 16});
+    body.wide = {{0x416, 15.0f}};
+    plugin_ui::set_font(0, body);
+    plugin_ui::set_font(1, body);
+    plugin_ui::set_display(1920, 1080);
+    const std::string fonts = R"({"api": 1, "entry": "plugin/main.lua", "permissions": ["overlay"], "fonts": ["fonts/Display-Regular.ttf", "fonts/unreadable.ttf"]})";
+    const std::string unseen = R"({"api": 1, "entry": "plugin/main.lua", "fonts": ["fonts/Display-Regular.ttf"]})";
+    host.apply({package("signs", {{manifest_file, fonts}, {"plugin/main.lua", main}, {"fonts/Display-Regular.ttf", "a font"}, {"fonts/unreadable.ttf", "not one"},
+                                  {"fonts/Other.ttf", "a font the manifest does not name"}}),
+                // A font is no way round the permission drawing needs: without it there is no draw handler to draw in.
+                package("unseen", {{manifest_file, unseen}, {"fonts/Display-Regular.ttf", "a font"}, {"plugin/main.lua", R"(
+        local ok, why = pcall(reskate.on, "draw", function(d) d:text(vector.create(0, 0, 0), "x", {font = "fonts/Display-Regular.ttf"}) end)
+        assert(not ok and why:find("overlay"), why)
+        reskate.log("refused")
+    )"}})});
+    ticks(host, environment, 3);
+    running(host, "signs", environment);
+    running(host, "unseen", environment);
+    check(environment.logged("[signs] drew"), "A plugin draws and measures text in its own font\n" + environment.all());
+    check(environment.logged("[unseen] refused"), "Drawing in a font still needs the overlay permission\n" + environment.all());
+    using Kind = plugin_ui::Shape::Kind;
+    check(environment.layers.size() == 1 && environment.layers[0].plugin == "signs", "Only the plugin that may draw has a layer\n" + environment.all());
+    const auto& layer = environment.layers[0];
+    check(layer.fonts && layer.fonts->size() == 2 && (*layer.fonts)[0].ends_with("Display-Regular.ttf") &&
+              std::filesystem::path((*layer.fonts)[0]).is_absolute() && (*layer.fonts)[1].ends_with("unreadable.ttf"),
+          "The layer says where the plugin's fonts are, in its manifest's order");
+    const auto& shapes = layer.shapes;
+    check(shapes.size() == 7, "Each text is one shape\n" + environment.all());
+    check(shapes[0].kind == Kind::text && shapes[0].text == "WELCOME" && shapes[0].style.font == plugin_ui::own_fonts && shapes[0].style.size == 40 &&
+              shapes[0].style.align == 2 && shapes[0].style.colour == 0xff0080ff,
+          "A text carries its font's number, and its style as any text does");
+    check(shapes[1].style.font == plugin_ui::own_fonts && shapes[1].style.wrap == 50, "wrapped too");
+    check(shapes[2].kind == Kind::world_text && shapes[2].style.font == plugin_ui::own_fonts, "and in the world");
+    check(shapes[3].kind == Kind::mark && shapes[4].kind == Kind::text && shapes[4].style.font == plugin_ui::own_fonts && shapes[5].kind == Kind::adjust &&
+              shapes[5].alpha == 0.5f,
+          "It is adjusted with whatever else was drawn since a mark");
+    check(shapes[6].text == "plain" && shapes[6].style.font == 1, "A text in a font that cannot be read is body's");
+    const auto said = std::count_if(environment.logs.begin(), environment.logs.end(),
+                                    [](const auto& line) { return line.find("the font fonts/unreadable.ttf cannot be read") != std::string::npos; });
+    check(said == 1, "which is said once\n" + environment.all());
+    check(environment.fake.font_asks == std::vector<std::string>{"signs fonts/Display-Regular.ttf", "signs fonts/unreadable.ttf"},
+          "The game is asked for a font's metrics once, however often it is drawn");
+    // What the overlay sets a text with is what measured it: each character's place adds up to its width.
+    const auto metrics = environment.fake.plugin_font_metrics("signs", "fonts/Display-Regular.ttf", std::filesystem::path((*layer.fonts)[0]));
+    struct Placed {
+        std::uint32_t code;
+        float x;
+        int line;
+        bool own;
+    };
+    std::vector<Placed> placed;
+    const auto extent = plugin_ui::set_text(*metrics, &body, 20, "AA AA \xd0\x96", 50,
+                                            [&](std::uint32_t code, float x, int line, bool own) { placed.push_back({code, x, line, own}); });
+    check(extent == plugin_ui::measure(*metrics, 20, "AA AA \xd0\x96", 50) && extent == std::array<float, 2>{40, 40}, "A set text is as big as it measured");
+    check(placed.size() == 6 && placed[0].x == 0 && placed[0].own && placed[2].code == ' ' && placed[2].x == 16 && placed[4].x == 32 && placed[4].line == 0 &&
+              placed[5].code == 0x416 && placed[5].x == 0 && placed[5].line == 1 && !placed[5].own,
+          "Each character has its place: a wrapped word starts its line without its space, and one the font lacks is body's");
+    plugin_ui::set_font(0, {});
+    plugin_ui::set_font(1, {});
+}
+
+// A use that is not a menu: a speedometer's digits in a seven-segment face, kept to the right of a
+// box by measuring them, and a clock whose digits each sit in a cell so they do not shuffle about.
+void a_plugin_sets_a_speedometer_in_its_own_digits() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    const std::string main = R"(
+        local V = vector.create
+        local digits = {font = "fonts/digits.otf", size = 60, shadow = false}
+        local speed, time = 42, "1:07"
+        reskate.on("draw", function(d)
+            -- The speed ends at x = 1800 whatever its digits are: the text starts its own width before it.
+            local text = tostring(speed)
+            local wide = d:measure(text, digits).x
+            assert(wide == #text * 42, "each digit is 14 wide at 20, so 42 at 60")
+            d:text(V(1800 - wide, 900, 0), text, digits)
+            d:text(V(1808, 930, 0), "km/h", {font = "body", size = 20})
+            -- The clock: every character in a cell as wide as a digit, the colon in the middle of its own.
+            local cell = d:glyph("0", digits).advance
+            assert(cell == 42 and d:glyph(":", digits).advance == 18, "a digit's and the colon's advance")
+            local x = 1800 - #time * cell
+            for i = 1, #time do
+                local c = time:sub(i, i)
+                d:text(V(x + (cell - d:glyph(c, digits).advance) / 2, 820, 0), c, digits)
+                x += cell
+            end
+            -- A face of digits alone still measures a letter: body draws it.
+            assert(d:measure("42 km", digits).x == 2 * 42 + 3 * 30, "what the face lacks is measured in body")
+            speed += 965
+        end)
+    )";
+    plugin_ui::detail::FontMetrics body;
+    body.size = 20;
+    body.advance.fill(10);
+    plugin_ui::set_font(1, body);
+    plugin_ui::set_display(1920, 1080);
+    const std::string manifest_text = R"({"api": 1, "entry": "plugin/main.lua", "permissions": ["overlay"], "fonts": ["fonts/digits.otf"]})";
+    host.apply({package("speedo", {{manifest_file, manifest_text}, {"plugin/main.lua", main}, {"fonts/digits.otf", "a font"}})});
+    ticks(host, environment, 1);
+    running(host, "speedo", environment);
+    check(environment.layers.size() == 1 && environment.layers[0].shapes.size() == 6, "The speed, its unit and the clock's four characters\n" + environment.all());
+    const auto* shapes = &environment.layers[0].shapes;
+    check((*shapes)[0].text == "42" && (*shapes)[0].points[0][0] == 1800 - 84 && (*shapes)[0].style.font == plugin_ui::own_fonts && !(*shapes)[0].style.shadow,
+          "Two digits start two digits' width before the box's edge");
+    check((*shapes)[1].text == "km/h" && (*shapes)[1].style.font == 1, "The unit beside them is in a menu font");
+    check((*shapes)[2].text == "1" && (*shapes)[2].points[0][0] == 1800 - 4 * 42 && (*shapes)[3].text == ":" && (*shapes)[3].points[0][0] == 1800 - 3 * 42 + 12 &&
+              (*shapes)[5].text == "7" && (*shapes)[5].points[0][0] == 1800 - 42,
+          "The clock's characters are each in their cell");
+    ticks(host, environment, 1);
+    running(host, "speedo", environment);
+    shapes = &environment.layers[0].shapes;
+    check((*shapes)[0].text == "1007" && (*shapes)[0].points[0][0] == 1800 - 4 * 42, "Four digits start four digits' width before it: the number stays against the edge");
+    check(environment.fake.font_asks.size() == 1, "and the font was read once");
+    plugin_ui::set_font(1, {});
+}
+
+// The glyph pages behind those texts, as far as they are sums (Extension/UI/Overlay/glyph_pages.h):
+// the size glyphs are made at, where they go on a page, and which pages make way.
+void glyph_pages_are_sized_filled_and_let_go() {
+    namespace pages = dingosdk::overlay::glyph_pages;
+    // Sizes: every 2 pixels to 32, every 4 to 96, every 8 to 256, never smaller than the text.
+    check(pages::size_for(18) == 18 && pages::size_for(18.2f) == 20 && pages::size_for(31.5f) == 32 && pages::size_for(32) == 32, "Up to 32 pixels, every 2");
+    check(pages::size_for(33) == 36 && pages::size_for(36) == 36 && pages::size_for(95.1f) == 96, "then every 4 up to 96");
+    check(pages::size_for(97) == 104 && pages::size_for(250) == 256 && pages::size_for(256) == 256, "then every 8 up to 256");
+    check(pages::size_for(2.7f) == 8 && pages::size_for(0) == 8 && pages::size_for(-1) == 8 && pages::size_for(800) == 256, "and no smaller than 8 or larger than 256");
+    int sizes = 0, last = 0;
+    for (float pixels = 8; pixels <= 256; pixels += 0.25f) {
+        const int made = pages::size_for(pixels);
+        check(static_cast<float>(made) >= pixels && static_cast<float>(made) < pixels * 1.25f + 0.01f, "A glyph is made no smaller than it is drawn, and at most a quarter larger");
+        check(made >= last, "A larger text is never made smaller");
+        if (made != last) ++sizes;
+        last = made;
+    }
+    check(sizes == 13 + 16 + 20, "Text from 8 to 256 pixels is made at 49 sizes");
+
+    // Places: boxes on a page do not touch each other or its edge, and the page grows as they need.
+    struct Box {
+        int x, y, w, h;
+    };
+    pages::Shelves shelves;
+    std::vector<Box> boxes;
+    check(shelves.height == pages::least_page_height, "A page starts small");
+    std::uint32_t seed = 12345;
+    const auto next = [&](int low, int high) {
+        seed = seed * 1664525u + 1013904223u;
+        return low + static_cast<int>((seed >> 8) % static_cast<std::uint32_t>(high - low + 1));
+    };
+    int heights = 0, before = shelves.height;
+    for (;;) {
+        const int w = next(3, 40), h = next(8, 48);
+        const auto place = shelves.find(w, h);
+        if (!place) break;
+        check(place->height >= shelves.height && place->height <= pages::most_page_height && (place->height & (place->height - 1)) == 0,
+              "A page grows by doubling, to at most 1024");
+        shelves.take(*place, w, h);
+        check(place->x >= 1 && place->y >= 1 && place->x + w + 1 <= pages::page_width && place->y + h + 1 <= shelves.height, "A box is on the page, a pixel inside its edge");
+        boxes.push_back({place->x, place->y, w, h});
+        if (shelves.height != before) ++heights;
+        before = shelves.height;
+    }
+    check(heights == 4 && shelves.height == pages::most_page_height, "The page doubled from 64 to 1024 as it filled");
+    long long area = 0;
+    for (const auto& box : boxes) area += static_cast<long long>(box.w) * box.h;
+    check(boxes.size() > 800 && area * 2 > static_cast<long long>(pages::page_width) * pages::most_page_height,
+          std::format("and held more than half its area in glyphs before it was full: {} boxes, {} pixels", boxes.size(), area));
+    // (Each against its neighbours on the page: sorted by row, a box is compared with those that could reach it.)
+    std::sort(boxes.begin(), boxes.end(), [](const Box& a, const Box& b) { return a.y != b.y ? a.y < b.y : a.x < b.x; });
+    for (std::size_t i = 0; i < boxes.size(); ++i)
+        for (std::size_t j = i + 1; j < boxes.size() && boxes[j].y <= boxes[i].y + boxes[i].h; ++j) {
+            const auto& a = boxes[i];
+            const auto& b = boxes[j];
+            const bool apart = a.x + a.w + 1 <= b.x || b.x + b.w + 1 <= a.x || a.y + a.h + 1 <= b.y || b.y + b.h + 1 <= a.y;
+            check(apart, "Two boxes are a pixel apart at least");
+        }
+    pages::Shelves fresh;
+    check(!fresh.find(0, 5) && !fresh.find(5, 0) && !fresh.find(pages::page_width - 1, 5) && !fresh.find(5, pages::most_page_height - 1),
+          "A box with no size, or too large for any page, has no place");
+    const auto widest = fresh.find(pages::page_width - 2, pages::most_page_height - 2);
+    check(widest && widest->x == 1 && widest->y == 1 && widest->height == pages::most_page_height, "The largest box a page takes fills it");
+    const auto unchanged = fresh.find(10, 10);
+    check(unchanged && unchanged->height == pages::least_page_height && fresh.x == 1 && fresh.y == 1, "Asking where a box would go moves nothing");
+
+    // Letting go: the pages drawn from longest ago, never one drawn from in the last frame, and only as many as it takes.
+    const std::size_t mb = 1u << 20;
+    const std::vector<pages::Held> held{{4 * mb, 10.0}, {4 * mb, 3.0}, {2 * mb, 7.0}, {4 * mb, 20.0}, {1 * mb, 5.0}};
+    check(pages::make_room(held, mb, 16 * mb, 20.0) == std::vector<std::size_t>{}, "With room, nothing goes");
+    check(pages::make_room(held, 2 * mb, 16 * mb, 20.0) == std::vector<std::size_t>{1}, "Without, the page drawn from longest ago goes");
+    check(pages::make_room(held, 8 * mb, 16 * mb, 20.0) == (std::vector<std::size_t>{1, 4, 2}), "then the next oldest, as many as it takes");
+    check(pages::make_room(held, 12 * mb, 16 * mb, 20.0) == (std::vector<std::size_t>{1, 4, 2, 0}), "down to the pages of the last frame");
+    check(!pages::make_room(held, 13 * mb, 16 * mb, 20.0), "A page drawn from in the last frame never goes: then there is no room");
+    check(pages::make_room(held, 13 * mb, 16 * mb, 21.0) == (std::vector<std::size_t>{1, 4, 2, 0, 3}), "Once it is no longer drawn it can");
+    check(!pages::make_room(held, 17 * mb, 16 * mb, 100.0) && pages::make_room({}, 16 * mb, 16 * mb, 0.0) == std::vector<std::size_t>{},
+          "and more than the whole cap never fits");
+    check(pages::bytes_of(pages::most_page_height) == 4 * mb && pages::most_bytes == 64 * mb, "A full page is 4 MB on the GPU, and all of them at most 64 MB");
+}
+
+// Files a plugin manages: a file's size and time, copies and moves, the Recycle Bin, a hash; a folder
+// beside the game it was granted by name; and hashes and zips of bytes it holds. A route planner's
+// routes, a replay tool's recordings: nothing here is one plugin's.
+void plugins_manage_files_and_granted_folders() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    const std::string main = R"(
+        local files = reskate.files
+        assert(files.write("notes/a.txt", "one"))
+        local i = files.info("notes/a.txt")
+        assert(i.size == 3 and i.folder == false and i.modified == 1000, "a file's size and time")
+        assert(files.info("notes").folder == true, "a folder")
+        local none, why = files.info("nothing.txt")
+        assert(none == nil and why == "not found")
+        assert(files.touch("notes/a.txt", 1234) and files.info("notes/a.txt").modified == 1234, "a file's time set")
+        assert(files.copy("notes/a.txt", "notes/b.txt") and files.read("notes/b.txt") == "one", "a copy")
+        assert(files.move("notes/b.txt", "kept/c.txt") and files.read("notes/b.txt") == nil and files.read("kept/c.txt") == "one", "a move")
+        assert(files.hash("kept/c.txt") == "hash of one", "a file's hash")
+        local ok, said = files.recycle({"notes/a.txt", "gone.txt"})
+        assert(not ok and said == "gone.txt: not found" and files.read("notes/a.txt") == "one", "all or none go to the Recycle Bin")
+        assert(files.recycle({"notes/a.txt", "kept/c.txt"}) and files.read("notes/a.txt") == nil, "to the Recycle Bin")
+        assert(not pcall(files.info, "../other/x.txt") and not pcall(files.move, "a.txt", "../x.txt") and not pcall(files.recycle, {"C:/x"}),
+               "only inside its folders")
+        assert(not pcall(files.touch, "notes/a.txt", -1), "a time since 1970")
+        -- A folder beside the game the manifest names.
+        assert(files.write("My Routes:park/loop.json", "{}") and files.read("My Routes:park/loop.json") == "{}", "a granted folder")
+        assert(#files.list("My Routes:") == 1 and files.list("My Routes:park")[1] == "loop.json", "listed")
+        assert(files.copy("My Routes:park/loop.json", "copy.json") and files.read("copy.json") == "{}", "between a granted folder and the data folder")
+        assert(not pcall(files.read, "Other:x.txt"), "only a folder the manifest names")
+        assert(not pcall(files.read, "My Routes:../x.txt") and not pcall(files.read, "My Routes:a:b"), "only inside it")
+        assert(not pcall(files.read, "My Routes:"), "a file call names a file")
+        -- Bytes it holds: hashes, and a zip's files.
+        assert(reskate.hash.sha256("abc") == "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad", "SHA-256")
+        assert(reskate.hash.crc32("123456789") == 0xCBF43926, "CRC-32")
+        local function stored(name, data)
+            local crc = reskate.hash.crc32(data)
+            local head = string.pack("<I4I2I2I2I2I2I4I4I4I2I2", 0x04034b50, 20, 0, 0, 0, 0, crc, #data, #data, #name, 0) .. name
+            local entry = string.pack("<I4I2I2I2I2I2I2I4I4I4I2I2I2I2I2I4I4", 0x02014b50, 20, 20, 0, 0, 0, 0, crc, #data, #data, #name, 0, 0, 0, 0, 0, 0) .. name
+            return head .. data .. entry .. string.pack("<I4I2I2I2I2I4I4I2", 0x06054b50, 0, 0, 1, 1, #entry, #head + #data, 0)
+        end
+        local entries = reskate.zip.entries(stored("tricks/a.txt", "hello"))
+        assert(#entries == 1 and entries[1].name == "tricks/a.txt" and entries[1].bytes == "hello", "a zip's files")
+        local bad = stored("a.txt", "hello")
+        bad = string.sub(bad, 1, 35) .. "J" .. string.sub(bad, 37)
+        local nothing, reason = reskate.zip.entries(bad)
+        assert(nothing == nil and reason == "a.txt in it is damaged", reason)
+        assert(reskate.zip.entries("not a zip") == nil, "only a zip")
+        reskate.log("managed")
+    )";
+    host.apply({package("keeper", {{manifest_file, R"({"api": 1, "entry": "plugin/main.lua", "permissions": ["files", "files.folders"], "folders": ["My Routes"]})"},
+                                   {"plugin/main.lua", main}}),
+                script("plain", R"(
+        local ok, why = pcall(reskate.files.read, "My Routes:park/loop.json")
+        assert(not ok and why:find("files"), why)
+        ok, why = pcall(reskate.files.info, "a.txt")
+        assert(not ok and why:find("files"), why)
+        assert(reskate.hash.crc32("") == 0, "hashes need no permission")
+        reskate.log("refused")
+    )"), script("half", R"(
+        local ok, why = pcall(reskate.files.read, "My Routes:park/loop.json")
+        assert(not ok and why:find("files.folders", 1, true), why)
+        ok, why = pcall(reskate.files.list, "My Routes:")
+        assert(not ok and why:find("files.folders", 1, true), why)
+        reskate.log("its own folder only")
+    )", R"("files")")});
+    running(host, "keeper", environment);
+    check(environment.logged("[half] its own folder only"), "With files alone a plugin reaches no folder beside the game\n" + environment.all());
+    check(environment.logged("[keeper] managed"), "A plugin manages its files and a granted folder\n" + environment.all());
+    check(environment.logged("[plain] refused"), "A granted folder needs files.folders, and the rest needs files\n" + environment.all());
+    check(environment.fake.recycled == std::vector<std::string>{"notes/a.txt", "kept/c.txt"}, "What it recycled went to the Recycle Bin");
+    check(environment.fake.files.contains("keeper/My Routes:park/loop.json"), "A granted folder's path reaches the game with its folder");
+    const auto refused = [](const std::string& text, std::string_view because) {
+        try {
+            (void)parse_manifest(text);
+        } catch (const std::exception& error) {
+            return std::string_view(error.what()).find(because) != std::string_view::npos;
+        }
+        return false;
+    };
+    check(refused(R"({"api": 1, "entry": "plugin/main.lua", "permissions": ["files", "files.folders"], "folders": ["Mods"]})", "none of the game's"),
+          "A plugin is not granted the Mods folder");
+    for (const auto* name : {"Data", "logs", "..", "a/b", ".hidden", "con", "nul.txt", "x:y", ""})
+        check(!granted_folder_name(name), std::string("Not a folder to grant: ") + name);
+    check(granted_folder_name("My Routes") && granted_folder_name("Replays-2"), "A plain name is");
+    check(refused(R"({"api": 1, "entry": "plugin/main.lua", "permissions": ["files"], "folders": ["My Routes"]})", "files.folders"),
+          "Folders need their permission");
+    const auto groups = permission_groups(parse_manifest(R"({"api": 1, "entry": "plugin/main.lua", "permissions": ["files", "files.folders"], "folders": ["My Routes"]})"));
+    check(std::any_of(groups.begin(), groups.end(), [](const auto& group) {
+              return group.category == "FILES" && group.risk == Risk::red &&
+                     std::find(group.phrases.begin(), group.phrases.end(), "Read and write files in folders beside the game (My Routes)") != group.phrases.end();
+          }), "The player is told which folders, in red");
+}
+
+// Pictures a plugin composes into files: drawing steps, checked and handed to the game, which draws
+// them off the plugin's thread and says how each went in a later tick; a text measured as a step
+// draws it; a picture's size. A postcard, a score card, a map's thumbnail: nothing here is one plugin's.
+void plugins_compose_pictures_from_steps() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    const std::string painter = R"(
+        local P = reskate.picture
+        local function said(name) return function(ok, why) reskate.log(name .. " " .. tostring(ok) .. " " .. tostring(why)) end end
+        -- A postcard: paper, a photo over it, a shade, a label on a slant, a mark in the corner.
+        assert(P.make("cards/one.png", 512, 512, {
+            {kind = "fill", colour = {0.1, 0.2, 0.3}},
+            {kind = "tile", picture = "art/paper.png", texel = 4},
+            {kind = "image", picture = "data:shots/a.jpg", fit = "cover", focus = 0.25, alpha = 0.9},
+            {kind = "image", picture = "art/badge.png", x = 10, y = 20, w = 64, h = 32},
+            {kind = "gradient", y0 = 300, y1 = 512, colour = {0, 0, 0}, a0 = 0, a1 = 0.8},
+            {kind = "layer", w = 420, h = 120, cx = 256, cy = 400, angle = -0.07, steps = {
+                {kind = "poly", points = {{0, 8}, {420, 0}, {410, 120}, {6, 112}}, colour = {1, 1, 1, 1}},
+                {kind = "poly", points = {{0, 0}, {10, 0}, {10, 10}}, picture = "art/paper.png", texel = 2},
+                {kind = "text", font = "fonts/hand.ttf", text = "Hello", size = 48, x = 210, y = 78, colour = {0, 0, 0}, align = "center"},
+            }},
+            {kind = "poly", points = {{0, 0}, {50, 0}, {25, 40}}, colour = {1, 0, 0, 0.5}},
+            {kind = "text", font = "fonts/hand.ttf", text = "corner", size = 12, x = 500, y = 500, colour = {1, 1, 1}, align = "right"},
+        }, said("one")))
+
+        -- What is not a picture to draw is an error that says what is wrong with it.
+        local function refused(why, path, width, height, steps)
+            local ok, message = pcall(P.make, path, width, height, steps)
+            assert(not ok and message:find(why, 1, true), why .. ": " .. tostring(message))
+        end
+        local function step_refused(why, step) refused(why, "cards/no.png", 64, 64, {step}) end
+        refused(".png", "cards/one.jpg", 64, 64, {})
+        refused("data folder", "../one.png", 64, 64, {})
+        refused("2048", "cards/no.png", 0, 64, {})
+        refused("2048", "cards/no.png", 64, 4096, {})
+        refused("2048", "cards/no.png", 64.5, 64, {})
+        refused("a step is a table", "cards/no.png", 64, 64, {"fill"})
+        step_refused("kind", {kind = "blur"})
+        step_refused("needs colour", {kind = "fill"})
+        step_refused("each 0 to 1", {kind = "fill", colour = {2, 0, 0}})
+        step_refused("each 0 to 1", {kind = "fill", colour = {1, 0}})
+        step_refused("not a finite", {kind = "image", picture = "art/badge.png", x = 0 / 0, y = 0, w = 1, h = 1})
+        step_refused("not a finite", {kind = "image", picture = "art/badge.png", x = 0, y = math.huge, w = 1, h = 1})
+        step_refused("million", {kind = "image", picture = "art/badge.png", x = 1e9, y = 0, w = 1, h = 1})
+        step_refused("needs w", {kind = "image", picture = "art/badge.png", x = 0, y = 0, h = 1})
+        step_refused("fit", {kind = "image", picture = "art/badge.png", fit = "contain"})
+        step_refused("alpha is 0 to 1", {kind = "image", picture = "art/badge.png", fit = "cover", alpha = 2})
+        step_refused("needs picture", {kind = "tile"})
+        step_refused(".png or .jpg", {kind = "tile", picture = "art/paper.gif"})
+        step_refused("package", {kind = "tile", picture = "../other/paper.png"})
+        step_refused("data folder", {kind = "tile", picture = "data:../other/a.png"})
+        step_refused("texel", {kind = "tile", picture = "art/paper.png", texel = 0})
+        step_refused("a1 is 0 to 1", {kind = "gradient", y0 = 0, y1 = 8, colour = {0, 0, 0}, a0 = 0, a1 = 1.5})
+        local triangle = {kind = "poly", points = {{0, 0}, {8, 0}, {8, 8}}, colour = {1, 1, 1}}
+        step_refused("\"poly\" and \"text\"", {kind = "layer", w = 8, h = 8, cx = 4, cy = 4, steps = {{kind = "layer", w = 8, h = 8, cx = 4, cy = 4, steps = {triangle}}}})
+        step_refused("\"poly\" and \"text\"", {kind = "layer", w = 8, h = 8, cx = 4, cy = 4, steps = {{kind = "fill", colour = {0, 0, 0}}}})
+        step_refused("4096", {kind = "layer", w = 5000, h = 8, cx = 4, cy = 4, steps = {triangle}})
+        step_refused("needs steps", {kind = "layer", w = 8, h = 8, cx = 4, cy = 4})
+        step_refused("at least 3 points", {kind = "poly", points = {{0, 0}, {8, 8}}, colour = {1, 1, 1}})
+        step_refused("{x, y}", {kind = "poly", points = {{0, 0}, {8, 8}, {1, "a"}}, colour = {1, 1, 1}})
+        step_refused("{x, y}", {kind = "poly", points = {{0, 0}, {8, 8}, {1, 0 / 0}}, colour = {1, 1, 1}})
+        step_refused("needs colour", {kind = "poly", points = {{0, 0}, {8, 0}, {8, 8}}})
+        local words = {kind = "text", font = "fonts/hand.ttf", text = "x", size = 12, x = 0, y = 0, colour = {1, 1, 1}}
+        local function text_refused(why, field, value)
+            local step = {}
+            for name, given in words do step[name] = given end
+            step[field] = value
+            step_refused(why, step)
+        end
+        text_refused("512 bytes", "text", string.rep("a", 513))
+        text_refused(".ttf or .otf", "font", "fonts/hand.woff")
+        text_refused("package", "font", "../other/hand.ttf")
+        text_refused("align", "align", "middle")
+        text_refused("size", "size", 0)
+        text_refused("needs text", "text", nil)
+
+        -- At its limits a picture is still drawn; one step or one point past them it is not, and a
+        -- layer's own steps count.
+        local steps, ring = {}, {}
+        for i = 1, 255 do steps[i] = {kind = "fill", colour = {0, 0, 0}} end
+        for i = 1, 20000 do ring[i] = {32 + 30 * math.cos(i), 32 + 30 * math.sin(i)} end
+        steps[256] = {kind = "poly", points = ring, colour = {1, 1, 1}}
+        assert(P.make("cards/full.png", 64, 64, steps))
+        steps[257] = {kind = "fill", colour = {0, 0, 0}}
+        refused("256 steps", "cards/no.png", 64, 64, steps)
+        steps[257] = nil
+        steps[255] = {kind = "layer", w = 8, h = 8, cx = 4, cy = 4, steps = {triangle}}
+        refused("256 steps", "cards/no.png", 64, 64, steps)
+        ring[20001] = {0, 0}
+        step_refused("20000 points", {kind = "poly", points = ring, colour = {1, 1, 1}})
+
+        -- Four a second, and the fifth is told so (it is not an error: it can be asked again).
+        assert(P.make("cards/three.png", 8, 8, {}))
+        assert(P.make("My Routes:cards/four.png", 8, 8, {}, said("four")))
+        local ok, why = P.make("cards/five.png", 8, 8, {})
+        assert(ok == false and why == "more than 4 pictures in a second", tostring(why))
+
+        -- A text is measured as it is drawn, and a picture says its size.
+        assert(P.text_width("fonts/hand.ttf", "Hello", 20) == 50, "a text's width")
+        local none, because = P.text_width("fonts/missing.ttf", "Hello", 20)
+        assert(none == nil and because == "the font cannot be read", tostring(because))
+        assert(not pcall(P.text_width, "fonts/hand.woff", "x", 20) and not pcall(P.text_width, "../other/hand.ttf", "x", 20), "a font of its package")
+        assert(not pcall(P.text_width, "fonts/hand.ttf", "x", 0) and not pcall(P.text_width, "fonts/hand.ttf", string.rep("a", 513), 20), "a size, a line")
+        local w, h = P.size("art/paper.png")
+        assert(w == 256 and h == 128, "a package picture's size")
+        w, h = P.size("data:shots/a.jpg")
+        assert(w == 64 and h == 32, "a data folder picture's size")
+        local nothing, reason = P.size("art/none.png")
+        assert(nothing == nil and reason:find("PNG"), tostring(reason))
+        assert(not pcall(P.size, "notes.txt") and not pcall(P.size, "data:../other/a.png"), "a picture of its own")
+
+        reskate.console.command("paint", "x", function(args)
+            local started, said_why = P.make("cards/" .. args[1] .. ".png", 8, 8, {}, said(args[1]))
+            reskate.log("asked " .. args[1] .. " " .. tostring(started) .. " " .. tostring(said_why))
+        end)
+        reskate.log("painted")
+    )";
+    // Not a square with a label: a score card, wide and short, its number against the right edge and a
+    // caption set left of it by the number's measure; and a map's thumbnail with a route over it,
+    // written into a folder beside the game.
+    const std::string scorer = R"(
+        local P = reskate.picture
+        local font, score = "fonts/digits.otf", "12,340"
+        local wide = P.text_width(font, score, 64)
+        assert(P.make("cards/score.png", 600, 200, {
+            {kind = "fill", colour = {0.05, 0.05, 0.08}},
+            {kind = "gradient", y0 = 100, y1 = 200, colour = {1, 1, 1}, a0 = 0, a1 = 0.15},
+            {kind = "text", font = font, text = score, size = 64, x = 580, y = 130, colour = {1, 1, 1}, align = "right"},
+            {kind = "text", font = font, text = "BEST RUN", size = 20, x = 580 - wide - 16, y = 130, colour = {1, 1, 1, 0.6}, align = "right"},
+        }, function(ok) reskate.log("score card " .. tostring(ok)) end))
+        assert(P.make("My Routes:thumbs/loop.png", 256, 256, {
+            {kind = "image", picture = "data:maps/park.png", x = 0, y = 0, w = 256, h = 256},
+            {kind = "poly", points = {{40, 200}, {90, 60}, {200, 80}, {210, 190}, {204, 192}, {195, 86}, {94, 67}, {46, 202}}, colour = {1, 0.8, 0, 0.9}},
+        }))
+        reskate.log("scored")
+    )";
+    const std::string folders = R"({"api": 1, "entry": "plugin/main.lua", "permissions": ["files", "files.folders", "console"], "folders": ["My Routes"]})";
+    environment.fake.files["painter/shots/a.jpg"] = "a photo";
+    host.apply({package("painter", {{manifest_file, folders}, {"plugin/main.lua", painter}, {"art/paper.png", "paper"}, {"art/badge.png", "badge"},
+                                    {"fonts/hand.ttf", "a font"}, {"notes.txt", "x"}}),
+                package("scorer", {{manifest_file, folders}, {"plugin/main.lua", scorer}, {"fonts/digits.otf", "a font"}}),
+                package("plain", {{manifest_file, manifest()}, {"art/paper.png", "paper"}, {"fonts/hand.ttf", "a font"}, {"plugin/main.lua", R"(
+        local P = reskate.picture
+        local ok, why = pcall(P.make, "a.png", 8, 8, {})
+        assert(not ok and why:find("files"), why)
+        ok, why = pcall(P.size, "data:shots/a.jpg")
+        assert(not ok and why:find("files"), why)
+        assert(P.text_width("fonts/hand.ttf", "Hello", 20) == 50, "measuring needs no permission")
+        assert(P.size("art/paper.png") == 256, "nor does the size of its own picture")
+        reskate.log("refused")
+    )"}}),
+                script("half", R"(
+        local ok, why = pcall(reskate.picture.make, "My Routes:a.png", 8, 8, {})
+        assert(not ok and why:find("files.folders", 1, true), why)
+        reskate.log("its own folder only")
+    )", R"("files")")});
+    running(host, "painter", environment);
+    check(environment.logged("[painter] painted"), "A plugin composes pictures\n" + environment.all());
+    check(environment.logged("[scorer] scored"), "A plugin composes a score card and a thumbnail\n" + environment.all());
+    check(environment.logged("[plain] refused"), "Writing a picture needs the files permission, measuring does not\n" + environment.all());
+    check(environment.logged("[half] its own folder only"), "A picture in a folder beside the game needs files.folders\n" + environment.all());
+    auto& fake = environment.fake;
+    check(!fake.called("picture plain") && !fake.called("picture half") && !fake.called("no.png") && !fake.called("five.png"),
+          "A picture that was refused never reaches the game");
+    check(!environment.logged("one true"), "Nothing is called back in the call that asked");
+    ticks(host, environment, 1);
+    check(environment.logged("[painter] one true nil") && environment.logged("[painter] four true nil") && environment.logged("[scorer] score card true"),
+          "A tick later each picture's function hears how it went\n" + environment.all());
+
+    using Kind = picture::Step::Kind;
+    const auto same_file = [](const std::filesystem::path& a, const std::filesystem::path& b) { return a.lexically_normal() == b.lexically_normal(); };
+    const auto request = [&](std::string_view path) -> const picture::Request& {
+        const auto found = std::find_if(fake.pictures.begin(), fake.pictures.end(), [&](const auto& one) { return one.path == path; });
+        check(found != fake.pictures.end(), "The game was asked for " + std::string(path));
+        return *found;
+    };
+    const auto& card = request("cards/one.png");
+    check(card.width == 512 && card.height == 512 && card.steps.size() == 8, "The steps reach the game as given, in order");
+    check(card.steps[0].kind == Kind::fill && card.steps[0].colour == picture::Colour{0.1f, 0.2f, 0.3f, 1.0f}, "A fill, opaque when it gives no alpha");
+    check(card.steps[1].kind == Kind::tile && card.steps[1].picture.name == "art/paper.png" && card.steps[1].picture.data.empty() &&
+              same_file(card.steps[1].picture.file, scratch / "mods" / "painter" / "art" / "paper.png") && card.steps[1].texel == 4,
+          "A tiled picture of the package, by its file");
+    check(card.steps[2].kind == Kind::image && card.steps[2].cover && card.steps[2].focus == 0.25f && card.steps[2].alpha == 0.9f &&
+              card.steps[2].picture.data == "shots/a.jpg" && card.steps[2].picture.file.empty(),
+          "A picture of the data folder filling the canvas, by its path there");
+    check(card.steps[3].kind == Kind::image && !card.steps[3].cover && card.steps[3].x == 10 && card.steps[3].y == 20 && card.steps[3].w == 64 &&
+              card.steps[3].h == 32 && card.steps[3].alpha == 1,
+          "A picture in a box");
+    check(card.steps[4].kind == Kind::gradient && card.steps[4].y0 == 300 && card.steps[4].y1 == 512 && card.steps[4].a0 == 0 && card.steps[4].a1 == 0.8f,
+          "A gradient's rows and alphas");
+    const auto& layer = card.steps[5];
+    check(layer.kind == Kind::layer && layer.w == 420 && layer.h == 120 && layer.x == 256 && layer.y == 400 && layer.angle == -0.07f && layer.steps.size() == 3,
+          "A layer's size, middle, angle and steps");
+    check(layer.steps[0].kind == Kind::poly && layer.steps[0].points.size() == 4 && layer.steps[0].points[2] == std::array<float, 2>{410, 120} &&
+              layer.steps[0].colour == picture::Colour{1, 1, 1, 1},
+          "A polygon's points and colour");
+    check(layer.steps[1].kind == Kind::poly && layer.steps[1].picture.name == "art/paper.png" && layer.steps[1].texel == 2 && layer.steps[1].colour.a == 0,
+          "A polygon filled with a picture falls back to nothing when it names no colour");
+    check(layer.steps[2].kind == Kind::text && layer.steps[2].font.name == "fonts/hand.ttf" &&
+              same_file(layer.steps[2].font.file, scratch / "mods" / "painter" / "fonts" / "hand.ttf") && layer.steps[2].text == "Hello" &&
+              layer.steps[2].size == 48 &&
+              layer.steps[2].x == 210 && layer.steps[2].y == 78 && layer.steps[2].align == picture::Align::center,
+          "A text's font, size, place and alignment");
+    check(card.steps[6].kind == Kind::poly && card.steps[6].colour == picture::Colour{1, 0, 0, 0.5f} && card.steps[7].kind == Kind::text &&
+              card.steps[7].align == picture::Align::right,
+          "Polygons and texts go on the canvas too");
+    const auto& full = request("cards/full.png");
+    check(full.steps.size() == 256 && full.steps[255].points.size() == 20000, "A picture at its limits reaches the game whole");
+    check(request("My Routes:cards/four.png").steps.empty(), "A granted folder's path reaches the game with its folder");
+
+    const auto& score = request("cards/score.png");
+    check(score.width == 600 && score.height == 200 && score.steps.size() == 4 && score.steps[1].kind == Kind::gradient &&
+              score.steps[2].align == picture::Align::right && score.steps[2].x == 580 && score.steps[3].x == 580 - 192 - 16 &&
+              score.steps[3].colour.a == 0.6f,
+          "A score card: a number against the right edge and a caption set by its measure");
+    const auto& thumb = request("My Routes:thumbs/loop.png");
+    check(thumb.steps.size() == 2 && thumb.steps[0].picture.data == "maps/park.png" && thumb.steps[1].points.size() == 8,
+          "A map's thumbnail: its picture and a route over it");
+
+    // At most eight are being drawn at once; each is heard of when it is done, not before.
+    fake.pictures_wait = true;
+    for (int round = 0; round < 2; ++round) {
+        environment.now += 1100;
+        for (const char* name : {"a", "b", "c", "d"}) host.run_console("paint " + std::string(name) + std::to_string(round));
+    }
+    environment.now += 1100;
+    host.run_console("paint late");
+    check(environment.logged("asked d1 true nil") && environment.logged("asked late false it draws 8 pictures already"),
+          "A ninth picture waits for one of the eight\n" + environment.all());
+    ticks(host, environment, 2);
+    check(!environment.logged("[painter] a0 true"), "A picture still being drawn is not called back");
+    fake.picture_jobs.back()->done = true;
+    ticks(host, environment, 1);
+    check(environment.logged("[painter] d1 true nil") && !environment.logged("[painter] a0 true"), "The one that is done is, whatever the order");
+    for (const auto& job : fake.picture_jobs) job->done = true;
+    ticks(host, environment, 1);
+    check(environment.logged("[painter] a0 true nil") && environment.logged("[painter] c1 true nil"), "and the rest when they are\n" + environment.all());
+    // One the game could not write says so in its function; one it cannot start, in the call.
+    fake.pictures_wait = false;
+    fake.picture_failure = "the file cannot be written";
+    environment.now += 1100;
+    host.run_console("paint torn");
+    ticks(host, environment, 1);
+    check(environment.logged("[painter] torn false the file cannot be written"), "A picture that could not be written says why\n" + environment.all());
+    fake.picture_failure.clear();
+    fake.picture_refusal = "the folder holds 50000 files already";
+    host.run_console("paint crowded");
+    check(environment.logged("asked crowded false the folder holds 50000 files already"), "One that cannot be started says why at once\n" + environment.all());
+    running(host, "painter", environment);
+}
+
+// Zips that are files: a plugin lists one from its directory and has it unpacked into a folder, off
+// its thread, hearing how it went a tick later. A set of level layouts shipped as one file, a
+// download, a backup put back: nothing here is one plugin's.
+void plugins_list_and_unpack_zip_files() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    auto& fake = environment.fake;
+    const std::string folders = R"({"api": 1, "entry": "plugin/main.lua", "permissions": ["files", "files.folders", "console"], "folders": ["My Routes"]})";
+    const std::string levels = R"(
+        local files, zip = reskate.files, reskate.zip
+        local function said(name)
+            return function(ok, why, count) reskate.log(name .. " " .. tostring(ok) .. " " .. tostring(why) .. " " .. tostring(count)) end
+        end
+        -- A zip of level layouts in the data folder: what it holds, without unpacking it.
+        local entries = assert(zip.list("layouts.zip"))
+        assert(#entries == 3 and entries[1].name == "layouts/bowl.json" and entries[1].size == 1200 and entries[1].packed == 300 and
+               entries[1].crc == 0xCBF43926 and entries[3].name == "readme.txt", "a zip file's list")
+        assert(#assert(zip.list("My Routes:shared/more.zip")) == 1, "a zip of a granted folder")
+        local none, why = zip.list("nothing.zip")
+        assert(none == nil and why == "not found", tostring(why))
+        none, why = zip.list("notes.txt")
+        assert(none == nil and why == "it is not a zip", tostring(why))
+        none, why = zip.list("crowded.zip")
+        assert(none == nil and why == "it holds more than 4096 files", tostring(why))
+        assert(not pcall(zip.list, "../other/a.zip") and not pcall(zip.list) and not pcall(zip.list, "nul.zip") and not pcall(zip.list, "Other:a.zip"),
+               "a zip of its own folders")
+
+        -- One layout out of it, by its name there; and all of it into a folder beside the game, over
+        -- what is there.
+        assert(files.unzip("layouts.zip", "current", said("one"), {only = {"layouts/bowl.json"}}))
+        assert(files.unzip("layouts.zip", "My Routes:shared", said("all"), {overwrite = true}))
+        -- Two at once, and the third is told so (it is not an error: it can be asked again).
+        local ok, because = files.unzip("layouts.zip", "third")
+        assert(ok == false and because == "it unpacks 2 zips already", tostring(because))
+
+        -- What is not a zip to unpack is an error that says what is wrong with it.
+        local function refused(reason, ...)
+            local fine, message = pcall(files.unzip, ...)
+            assert(not fine and message:find(reason, 1, true), reason .. ": " .. tostring(message))
+        end
+        refused("data folder", "../a.zip", "x")
+        refused("data folder", "layouts.zip", "../x")
+        refused("folders", "layouts.zip", "C:/x")
+        refused("device", "layouts.zip", "x/nul")
+        refused("folders", "layouts.zip", "Other:x")
+        refused("function", "layouts.zip", "x", "said")
+        refused("table", "layouts.zip", "x", nil, "all")
+        refused("list of names", "layouts.zip", "x", nil, {only = "layouts/bowl.json"})
+        refused("list of names", "layouts.zip", "x", nil, {only = {1}})
+        refused("1 to 4096 names", "layouts.zip", "x", nil, {only = {}})
+        local many = {}
+        for i = 1, 4097 do many[i] = "f" .. i end
+        refused("1 to 4096 names", "layouts.zip", "x", nil, {only = many})
+        refused("longer than 512", "layouts.zip", "x", nil, {only = {string.rep("a", 513)}})
+
+        reskate.console.command("unpack", "x", function(args)
+            local started, said_why = files.unzip("layouts.zip", args[1], said(args[1]), {overwrite = true})
+            reskate.log("asked " .. args[1] .. " " .. tostring(started) .. " " .. tostring(said_why))
+        end)
+        reskate.log("listed")
+    )";
+    // Two more plugins that unpack, for what all plugins may have going together.
+    const auto other = [&](const std::string& id, const std::string& command) {
+        fake.files[id + "/saves.zip"] = "PK";
+        fake.zips[id + "/saves.zip"] = {{"slot1.sav", 10, 10, 1}};
+        return script(id, R"(
+        reskate.console.command(")" + command + R"(", "x", function(args)
+            local started, why = reskate.files.unzip("saves.zip", args[1], function(ok, because, count)
+                reskate.log(args[1] .. " " .. tostring(ok) .. " " .. tostring(because) .. " " .. tostring(count))
+            end)
+            reskate.log("asked " .. args[1] .. " " .. tostring(started) .. " " .. tostring(why))
+        end)
+    )", R"("files", "console")");
+    };
+    fake.files["levels/layouts.zip"] = "PK";
+    fake.zips["levels/layouts.zip"] = {{"layouts/bowl.json", 1200, 300, 0xCBF43926u}, {"layouts/plaza.json", 900, 250, 2}, {"readme.txt", 40, 40, 3}};
+    fake.files["levels/My Routes:shared/more.zip"] = "PK";
+    fake.zips["levels/My Routes:shared/more.zip"] = {{"extra.json", 5, 5, 4}};
+    fake.files["levels/notes.txt"] = "not a zip";
+    fake.files["levels/crowded.zip"] = "PK";
+    fake.zips["levels/crowded.zip"].resize(4097);
+    host.apply({package("levels", {{manifest_file, folders}, {"plugin/main.lua", levels}}), other("second", "unpack2"), other("third", "unpack3"),
+                script("plain", R"(
+        local ok, why = pcall(reskate.zip.list, "a.zip")
+        assert(not ok and why:find("files"), why)
+        ok, why = pcall(reskate.files.unzip, "a.zip", "x")
+        assert(not ok and why:find("files"), why)
+        assert(reskate.zip.entries("not a zip") == nil, "a zip it holds as bytes needs no permission")
+        reskate.log("refused")
+    )"),
+                script("half", R"(
+        local ok, why = pcall(reskate.files.unzip, "a.zip", "My Routes:x")
+        assert(not ok and why:find("files.folders", 1, true), why)
+        ok, why = pcall(reskate.zip.list, "My Routes:a.zip")
+        assert(not ok and why:find("files.folders", 1, true), why)
+        reskate.log("its own folder only")
+    )", R"("files")")});
+    running(host, "levels", environment);
+    check(environment.logged("[levels] listed"), "A plugin lists and unpacks zip files\n" + environment.all());
+    check(environment.logged("[plain] refused"), "A zip file needs the files permission, a zip held as bytes does not\n" + environment.all());
+    check(environment.logged("[half] its own folder only"), "A zip in a folder beside the game needs files.folders\n" + environment.all());
+    check(fake.called("zip list levels/layouts.zip") && fake.called("zip list levels/My Routes:shared/more.zip"),
+          "The game is asked for a zip's list by its path, a granted folder's with its folder");
+    check(!fake.called("zip list plain") && !fake.called("unzip plain") && !fake.called("unzip half") && !fake.called("to third") && !fake.called("to x "),
+          "What was refused never reaches the game");
+    check(fake.unzips.size() == 2 && fake.unzips[0].zip == "layouts.zip" && fake.unzips[0].folder == "current" && !fake.unzips[0].all &&
+              fake.unzips[0].only == std::vector<std::string>{"layouts/bowl.json"} && !fake.unzips[0].overwrite,
+          "One named file of a zip reaches the game as asked");
+    check(fake.unzips[1].folder == "My Routes:shared" && fake.unzips[1].all && fake.unzips[1].only.empty() && fake.unzips[1].overwrite,
+          "and a whole zip into a granted folder, over what is there");
+    check(!environment.logged("one true"), "Nothing is called back in the call that asked");
+    ticks(host, environment, 1);
+    check(environment.logged("[levels] one true nil 1") && environment.logged("[levels] all true nil 3"),
+          "A tick later each zip's function hears how it went, and how many files\n" + environment.all());
+    check(fake.files.contains("levels/current/layouts/bowl.json") && !fake.files.contains("levels/current/readme.txt") &&
+              fake.files.contains("levels/My Routes:shared/readme.txt"),
+          "The files are where they were asked for");
+
+    // Two for a plugin and four for all of them; each is heard of when it is done, not before.
+    fake.unzips.clear();
+    fake.unzip_jobs.clear();
+    fake.unzips_wait = true;
+    const auto job = [&](std::string_view folder) {
+        for (std::size_t i = 0; i < fake.unzips.size(); ++i)
+            if (fake.unzips[i].folder == folder) return fake.unzip_jobs[i];
+        throw std::runtime_error("no zip is being unpacked into " + std::string(folder));
+    };
+    // (As the thread that unpacked one lets go of it.)
+    const auto let_go = [&](std::string_view folder) {
+        for (std::size_t i = 0; i < fake.unzips.size(); ++i)
+            if (fake.unzips[i].folder == folder) {
+                fake.unzips.erase(fake.unzips.begin() + static_cast<std::ptrdiff_t>(i));
+                fake.unzip_jobs.erase(fake.unzip_jobs.begin() + static_cast<std::ptrdiff_t>(i));
+                return;
+            }
+    };
+    for (const char* name : {"a", "b", "c"}) host.run_console("unpack " + std::string(name));
+    check(environment.logged("asked b true nil") && environment.logged("asked c false it unpacks 2 zips already"),
+          "A plugin's third zip waits for one of its two\n" + environment.all());
+    host.run_console("unpack2 d");
+    host.run_console("unpack2 e");
+    host.run_console("unpack3 f");
+    check(environment.logged("asked e true nil") && environment.logged("asked f false 4 zips are being unpacked already"),
+          "and a fifth for all plugins waits for one of the four\n" + environment.all());
+    ticks(host, environment, 2);
+    check(!environment.logged("[levels] a ") && !environment.logged("[second] d "), "A zip still being unpacked is not called back");
+    job("e")->done = true;
+    ticks(host, environment, 1);
+    check(environment.logged("[second] e true nil 0") && !environment.logged("[second] d "), "The one that is done is, whatever the order");
+    let_go("e");
+    host.run_console("unpack3 f");
+    check(environment.logged("asked f true nil"), "and then there is room for another\n" + environment.all());
+    // One that could not be unpacked says why in its function; one that cannot start, in the call.
+    job("a")->why = "layouts/bowl.json in it is damaged";
+    job("a")->done = true;
+    ticks(host, environment, 1);
+    check(environment.logged("[levels] a false layouts/bowl.json in it is damaged 0"), "A zip that could not be unpacked says why\n" + environment.all());
+    let_go("a");
+    fake.unzip_refusal = "that folder is being unpacked into already";
+    host.run_console("unpack g");
+    check(environment.logged("asked g false that folder is being unpacked into already"), "One that cannot be started says why at once\n" + environment.all());
+    fake.unzip_refusal.clear();
+
+    // A plugin that is loaded again while its zip is unpacked: the unpack is told to stop, and what
+    // it says afterwards reaches nobody.
+    const auto left = job("b");
+    for (const char* name : {"d", "f"}) job(name)->done = true;
+    ticks(host, environment, 1);
+    fake.unzips.clear();
+    fake.unzip_jobs.clear();
+    fake.unzips_wait = false;
+    check(!left->abandoned && zip_file::Job::alive() == 1, "A zip being unpacked goes on while its plugin runs");
+    check(host.reload("levels") == "Plugin levels reloaded.", "The plugin loads again\n" + environment.all());
+    check(left->abandoned.load(), "A plugin that stops tells its unpack to stop");
+    left->done = true;
+    ticks(host, environment, 2);
+    running(host, "levels", environment);
+    check(!environment.logged("[levels] b "), "and is not called with how it went\n" + environment.all());
+}
+
+// A zip packed as the tests need one: stored or deflated files, folders, a file whose CRC is wrong,
+// and one whose directory says it unpacks to more than it does.
+struct Packed {
+    std::string name, data;
+    bool deflate{}, damaged{};
+    std::uint32_t claims{}; // the size it says it unpacks to, when not its data's
+};
+std::string zip_of(const std::vector<Packed>& files) {
+    std::string out, directory;
+    const auto u16 = [](std::string& to, std::size_t value) {
+        to.push_back(static_cast<char>(value & 0xff));
+        to.push_back(static_cast<char>((value >> 8) & 0xff));
+    };
+    const auto u32 = [&](std::string& to, std::size_t value) {
+        u16(to, value & 0xffff);
+        u16(to, (value >> 16) & 0xffff);
+    };
+    for (const auto& file : files) {
+        std::string body = file.data;
+        if (file.deflate) {
+            std::size_t length = 0;
+            void* packed = tdefl_compress_mem_to_heap(file.data.data(), file.data.size(), &length, TDEFL_DEFAULT_MAX_PROBES);
+            check(packed != nullptr, "The test's zip is packed");
+            body.assign(static_cast<const char*>(packed), length);
+            mz_free(packed);
+        }
+        const std::size_t crc = mz_crc32(MZ_CRC32_INIT, reinterpret_cast<const unsigned char*>(file.data.data()), file.data.size()) ^ (file.damaged ? 1u : 0u);
+        const std::size_t method = file.deflate ? 8 : 0, size = file.claims ? file.claims : file.data.size(), offset = out.size();
+        u32(out, 0x04034b50);
+        for (const std::size_t value : {std::size_t{20}, std::size_t{0}, method, std::size_t{0}, std::size_t{0}}) u16(out, value);
+        for (const std::size_t value : {crc, body.size(), size}) u32(out, value);
+        u16(out, file.name.size());
+        u16(out, 0);
+        out += file.name + body;
+        u32(directory, 0x02014b50);
+        for (const std::size_t value : {std::size_t{20}, std::size_t{20}, std::size_t{0}, method, std::size_t{0}, std::size_t{0}}) u16(directory, value);
+        for (const std::size_t value : {crc, body.size(), size}) u32(directory, value);
+        u16(directory, file.name.size());
+        for (int i = 0; i < 4; ++i) u16(directory, 0); // no extra field or comment, disk 0, no attributes
+        u32(directory, file.name.ends_with('/') ? 0x10 : 0);
+        u32(directory, offset);
+        directory += file.name;
+    }
+    const auto start = out.size();
+    out += directory;
+    u32(out, 0x06054b50);
+    for (const std::size_t value : {std::size_t{0}, std::size_t{0}, files.size(), files.size()}) u16(out, value);
+    u32(out, directory.size());
+    u32(out, start);
+    u16(out, 0);
+    return out;
+}
+
+// The reader itself, without a plugin: zips packed here are listed and unpacked on disk, and what is
+// written, and what is refused, is looked at.
+void the_zip_reader_lists_and_unpacks_a_file() {
+    const auto root = scratch / "zips";
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root);
+    const auto read = [](const std::filesystem::path& file) {
+        std::ifstream in(file, std::ios::binary);
+        return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    };
+    const auto files_in = [](const std::filesystem::path& folder) {
+        std::vector<std::string> names;
+        std::error_code error;
+        if (std::filesystem::exists(folder, error))
+            for (const auto& entry : std::filesystem::recursive_directory_iterator(folder))
+                if (entry.is_regular_file()) names.push_back(entry.path().lexically_relative(folder).generic_string());
+        std::sort(names.begin(), names.end());
+        return names;
+    };
+    int zips = 0;
+    const auto zip_file_of = [&](const std::vector<Packed>& files) {
+        const auto file = root / std::format("{}.zip", ++zips);
+        write(file, zip_of(files));
+        return file;
+    };
+    // Unpacks `zip` into the folder `name` under the root, which has room for `room` more files.
+    std::size_t count = 0;
+    const auto unpack = [&](const std::filesystem::path& zip, const std::string& name, zip_file::Request request = {}, std::size_t room = 1000) {
+        request.folder = name;
+        return zip_file::unpack(request, {zip, root, root / name, room}, count);
+    };
+    const auto only = [](std::vector<std::string> names) {
+        zip_file::Request request;
+        request.all = false;
+        request.only = std::move(names);
+        return request;
+    };
+    zip_file::Request over;
+    over.overwrite = true;
+
+    // A zip of stored and deflated files, a folder of its own and an empty file.
+    std::string long_text;
+    for (int i = 0; i < 4000; ++i) long_text += "{\"x\": " + std::to_string(i % 7) + "}, ";
+    const auto good = zip_file_of({{"readme.txt", "hello"}, {"levels/", ""}, {"levels/park/bowl.json", long_text, true}, {"levels/empty.bin", ""}});
+    std::vector<zip_file::Entry> entries;
+    check(zip_file::list(good, entries).empty() && entries.size() == 3, "A zip file's list leaves its folders out");
+    check(entries[0].name == "readme.txt" && entries[0].size == 5 && entries[0].packed == 5 &&
+              entries[0].crc == mz_crc32(MZ_CRC32_INIT, reinterpret_cast<const unsigned char*>("hello"), 5),
+          "A stored file's name, size and CRC");
+    check(entries[1].name == "levels/park/bowl.json" && entries[1].size == long_text.size() && entries[1].packed < long_text.size() / 4 &&
+              entries[2].name == "levels/empty.bin" && entries[2].size == 0,
+          "A deflated file's size unpacked and packed, in the zip's order");
+    check(unpack(good, "a").empty() && count == 3, "A zip unpacks");
+    check(files_in(root / "a") == std::vector<std::string>{"levels/empty.bin", "levels/park/bowl.json", "readme.txt"} && read(root / "a" / "readme.txt") == "hello" &&
+              read(root / "a" / "levels" / "park" / "bowl.json") == long_text && read(root / "a" / "levels" / "empty.bin").empty(),
+          "to its files, each under its own name, and nothing beside them");
+    // A file that is there is an error before anything is written, unless it may be replaced.
+    write(root / "a" / "readme.txt", "mine");
+    std::filesystem::remove(root / "a" / "levels" / "empty.bin");
+    check(unpack(good, "a") == "readme.txt is there already" && count == 0 && read(root / "a" / "readme.txt") == "mine" &&
+              !std::filesystem::exists(root / "a" / "levels" / "empty.bin"),
+          "A file that is there already stops the unpack before it writes anything");
+    check(unpack(good, "a", over).empty() && count == 3 && read(root / "a" / "readme.txt") == "hello" && std::filesystem::exists(root / "a" / "levels" / "empty.bin"),
+          "With overwrite it is replaced");
+    // One named file of it, as a plugin takes one layout out of a set.
+    check(unpack(good, "b", only({"levels/park/bowl.json"})).empty() && count == 1 && files_in(root / "b") == std::vector<std::string>{"levels/park/bowl.json"},
+          "Only the files named are unpacked");
+    check(unpack(good, "c", only({"readme.txt", "levels/none.json"})) == "levels/none.json is not in it" && !std::filesystem::exists(root / "c"),
+          "A name the zip does not hold is an error, and nothing is written");
+    std::filesystem::create_directories(root / "b" / "readme.txt");
+    check(unpack(good, "b", over) == "readme.txt: a folder is there", "A file is not unpacked over a folder");
+    check(unpack(good, "d", {}, 2) == "the folder has room for 2 more files, and these are 3" && !std::filesystem::exists(root / "d"),
+          "A zip of more files than the folder has room for is not unpacked");
+    check(unpack(good, "d", only({"readme.txt"}), 1).empty(), "One that fits is");
+
+    // A name that could leave the folder, or that a file here may not have: nothing is written.
+    for (const char* name : {"../evil.txt", "/evil.txt", "C:/evil.txt", "sub\\evil.txt", "sub/../../evil.txt", "nul.txt", "sub/CON", "./evil.txt", "sub//evil.txt",
+                             "trailing.", "caf\xc3\xa9.txt", "half.unpacking.tmp"}) {
+        const auto bad = zip_file_of({{"fine.txt", "fine"}, {name, "evil"}});
+        check(unpack(bad, "e") == std::string(name) + " in it is not a name a file here may have" && !std::filesystem::exists(root / "e"),
+              std::string("A zip with a name a file may not have writes nothing: ") + name);
+        check(zip_file::list(bad, entries).empty() && entries.size() == 2 && entries[1].name == name, "Its list still says what it holds");
+        // (The files a plugin names are the ones checked, so it can take the rest of such a zip.)
+        check(unpack(bad, "e", only({"fine.txt"})).empty() && read(root / "e" / "fine.txt") == "fine", "The other files of it can be taken by name");
+        check(unpack(bad, "e2", only({name})) == std::string(name) + " in it is not a name a file here may have" && !std::filesystem::exists(root / "e2"),
+              "but never the one with such a name");
+        std::filesystem::remove_all(root / "e");
+    }
+    check(!std::filesystem::exists(scratch / "evil.txt") && !std::filesystem::exists(root / "evil.txt") && !std::filesystem::exists(root / "sub"),
+          "Nothing was written outside the folder");
+    check(unpack(zip_file_of({{std::string(190, 'n') + ".txt", "x"}}), "longer-than-a-path").find("not a name a file here may have") != std::string::npos,
+          "A name too long for a data path is refused");
+    check(unpack(zip_file_of({{"a.txt", "1"}, {"A.TXT", "2"}}), "f") == "A.TXT is in it twice" && !std::filesystem::exists(root / "f"),
+          "Two files that Windows takes for one are refused");
+
+    // A damaged file: the unpack stops, and what it wrote is removed, the folders it made too.
+    const auto torn = zip_file_of({{"first.txt", "one"}, {"deep/second.bin", long_text, true, true}, {"third.txt", "three"}});
+    check(unpack(torn, "g") == "deep/second.bin in it is damaged" && count == 0 && !std::filesystem::exists(root / "g"),
+          "A file that does not match its CRC stops the unpack, and nothing of it stays");
+    write(root / "h" / "first.txt", "old");
+    check(unpack(torn, "h", over) == "deep/second.bin in it is damaged" && files_in(root / "h") == std::vector<std::string>{"first.txt"} &&
+              read(root / "h" / "first.txt") == "old" && !std::filesystem::exists(root / "h" / "deep"),
+          "What was there before a damaged zip is as it was");
+    check(unpack(zip_file_of({{"stored.bin", "abcdef", false, true}}), "g") == "stored.bin in it is damaged", "A stored file is checked too");
+    check(unpack(zip_file_of({{"a", "file"}, {"a/b.txt", "under it"}}), "i") == "a in it is a file and a folder" && !std::filesystem::exists(root / "i"),
+          "A zip that names a file and a folder alike is refused");
+
+    // The caps, by what the zip says of itself.
+    check(unpack(zip_file_of({{"big.bin", "x", true, false, 600u << 20}}), "j") == "big.bin in it is larger than 512 MB", "A file of more than 512 MB");
+    std::vector<Packed> heavy;
+    for (int i = 0; i < 5; ++i) heavy.push_back({std::format("part{}.bin", i), "x", true, false, 500u << 20});
+    check(unpack(zip_file_of(heavy), "j") == "it unpacks to more than 2 GB" && !std::filesystem::exists(root / "j"), "A zip of more than 2 GB in all");
+    std::vector<Packed> crowd;
+    for (int i = 0; i < 4097; ++i) crowd.push_back({std::format("f{}.txt", i), ""});
+    const auto crowded = zip_file_of(crowd);
+    check(zip_file::list(crowded, entries) == "it holds more than 4096 files" && entries.empty() && unpack(crowded, "j") == "it holds more than 4096 files",
+          "A zip of more than 4096 files is neither listed nor unpacked");
+    crowd.pop_back();
+    check(zip_file::list(zip_file_of(crowd), entries).empty() && entries.size() == 4096, "One of 4096 is");
+
+    // What is not a zip.
+    write(root / "text.zip", "hello, this is not a zip at all");
+    check(zip_file::list(root / "text.zip", entries) == "it is not a zip" && unpack(root / "text.zip", "j") == "it is not a zip", "A file that is not a zip");
+    check(zip_file::list(root / "none.zip", entries) == "not found" && unpack(root / "none.zip", "j") == "not found", "A file that is not there");
+    auto cut = zip_of({{"readme.txt", "hello"}});
+    cut.resize(cut.size() - 8);
+    write(root / "cut.zip", cut);
+    check(zip_file::list(root / "cut.zip", entries) == "it is not a zip", "A zip cut short");
+
+    // An unpack that is told to stop writes nothing; and one on a thread of its own says how it went.
+    const std::atomic<bool> stop{true};
+    zip_file::Request all;
+    all.folder = "k";
+    check(zip_file::unpack(all, {good, root, root / "k", 1000}, count, &stop) == "it was stopped" && !std::filesystem::exists(root / "k"),
+          "An unpack that is stopped leaves nothing");
+    const int before = zip_file::Job::alive();
+    {
+        auto job = std::make_shared<zip_file::Job>();
+        check(zip_file::Job::alive() == before + 1, "The zips being unpacked are counted");
+        check(zip_file::unpack_later(all, {good, root, root / "k", 1000}, job).empty(), "An unpack starts on a thread of its own");
+        for (int i = 0; i < 2000 && !job->done; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        check(job->done && job->why.empty() && job->count == 3 && read(root / "k" / "levels" / "park" / "bowl.json") == long_text,
+              "and says how it went when it is done: " + job->why);
+        // (The thread lets go of the job a moment after it says it is done.)
+        for (int i = 0; i < 2000 && job.use_count() > 1; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    check(zip_file::Job::alive() == before, "and no longer once it is let go of");
+}
+
+#ifdef _WIN32
+// The renderer itself, without a plugin: what it writes is read again and looked at, a pixel at a time.
+void the_picture_renderer_draws_what_it_is_told() {
+    using Kind = picture::Step::Kind;
+    const auto folder = scratch / "pictures";
+    std::filesystem::create_directories(folder);
+    const auto made = [&](const picture::Request& request, const std::string& name) {
+        const auto why = picture::make(request, folder / name);
+        check(why.empty(), name + " is drawn: " + why);
+        check(!std::filesystem::exists(folder / (name + ".tmp")), "Nothing is left beside " + name);
+        std::ifstream in(folder / name, std::ios::binary);
+        const std::string bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        picture::Pixels pixels;
+        check(picture::decode(bytes, pixels) && pixels.width == static_cast<std::uint32_t>(request.width) &&
+                  pixels.height == static_cast<std::uint32_t>(request.height),
+              name + " is a PNG of the size asked for");
+        for (std::size_t i = 3; i < pixels.rgba.size(); i += 4) check(pixels.rgba[i] == 255, name + " is opaque");
+        return pixels;
+    };
+    const auto at = [](const picture::Pixels& pixels, int x, int y) {
+        const auto* p = pixels.rgba.data() + (static_cast<std::size_t>(y) * pixels.width + static_cast<std::size_t>(x)) * 4;
+        return std::array<int, 3>{p[0], p[1], p[2]};
+    };
+    const auto is = [](const std::array<int, 3>& pixel, int r, int g, int b, int slack = 2) {
+        return std::abs(pixel[0] - r) <= slack && std::abs(pixel[1] - g) <= slack && std::abs(pixel[2] - b) <= slack;
+    };
+    const auto fill = [](picture::Colour colour) {
+        picture::Step step;
+        step.kind = Kind::fill;
+        step.colour = colour;
+        return step;
+    };
+    const auto poly = [](std::vector<std::array<float, 2>> points, picture::Colour colour) {
+        picture::Step step;
+        step.kind = Kind::poly;
+        step.points = std::move(points);
+        step.colour = colour;
+        return step;
+    };
+    const auto named = [&](const std::string& name) { return picture::File{name, folder / name, {}}; };
+    const picture::Colour red{1, 0, 0, 1}, green{0, 1, 0, 1}, blue{0, 0, 1, 1}, yellow{1, 1, 0, 1}, white{1, 1, 1, 1}, black{0, 0, 0, 1};
+
+    // A fill, a polygon that goes round twice (a square and a smaller one inside it, one outline), a
+    // triangle whose slanted edge cuts pixels in half, and a layer turned a quarter clockwise.
+    picture::Request shapes;
+    shapes.width = shapes.height = 64;
+    shapes.steps.push_back(fill(blue));
+    shapes.steps.push_back(poly({{8, 8}, {40, 8}, {40, 40}, {8, 40}, {8, 8}, {16, 16}, {32, 16}, {32, 32}, {16, 32}, {16, 16}}, red));
+    shapes.steps.push_back(poly({{48, 8}, {60, 8}, {48, 20}}, red));
+    picture::Step layer;
+    layer.kind = Kind::layer;
+    layer.w = 20;
+    layer.h = 10;
+    layer.x = 32;
+    layer.y = 52;
+    layer.angle = 1.5707963f;
+    layer.steps.push_back(poly({{0, 0}, {20, 0}, {20, 10}, {0, 10}}, green));
+    layer.steps.push_back(poly({{0, 0}, {4, 0}, {4, 10}, {0, 10}}, yellow));
+    shapes.steps.push_back(layer);
+    const auto drawn = made(shapes, "shapes.png");
+    check(is(at(drawn, 50, 50), 0, 0, 255) && is(at(drawn, 2, 2), 0, 0, 255), "Outside every shape the fill shows");
+    check(is(at(drawn, 10, 30), 255, 0, 0) && is(at(drawn, 36, 12), 255, 0, 0) && is(at(drawn, 8, 8), 255, 0, 0) && is(at(drawn, 39, 39), 255, 0, 0),
+          "Inside the polygon its colour does, to its edge");
+    check(is(at(drawn, 24, 24), 0, 0, 255) && is(at(drawn, 17, 30), 0, 0, 255), "Where its outline goes round twice it is not filled: even-odd");
+    check(is(at(drawn, 7, 20), 0, 0, 255) && is(at(drawn, 40, 20), 0, 0, 255), "and nothing past its edge");
+    check(is(at(drawn, 50, 10), 255, 0, 0) && is(at(drawn, 58, 18), 0, 0, 255) && is(at(drawn, 53, 14), 128, 0, 128, 16),
+          "A slanted edge is smoothed: a pixel it halves is half the polygon's colour");
+    check(is(at(drawn, 32, 50), 0, 255, 0) && is(at(drawn, 32, 60), 0, 255, 0) && is(at(drawn, 24, 52), 0, 0, 255) && is(at(drawn, 40, 52), 0, 0, 255),
+          "A layer turned a quarter stands where it lay");
+    check(is(at(drawn, 32, 43), 255, 255, 0) && is(at(drawn, 30, 45), 255, 255, 0), "and clockwise: its left end is at the top");
+
+    // Pictures the renderer made, read again by it: tiled, stretched, and filling a canvas.
+    picture::Request checker;
+    checker.width = checker.height = 2;
+    checker.steps = {fill(white), poly({{0, 0}, {1, 0}, {1, 1}, {0, 1}}, black), poly({{1, 1}, {2, 1}, {2, 2}, {1, 2}}, black)};
+    const auto squares = made(checker, "checker.png");
+    check(is(at(squares, 0, 0), 0, 0, 0) && is(at(squares, 1, 0), 255, 255, 255) && is(at(squares, 0, 1), 255, 255, 255) && is(at(squares, 1, 1), 0, 0, 0),
+          "A polygon on whole pixels fills them and no others");
+    check(picture::size_of(folder / "checker.png") == std::pair<std::uint32_t, std::uint32_t>{2, 2}, "A picture's size is read from its file");
+    write(folder / "notes.png", "not a picture");
+    picture::Pixels none;
+    check(!picture::size_of(folder / "notes.png") && !picture::size_of(folder / "nothing.png") && !picture::decode("not a picture", none),
+          "and what is not a PNG or a JPEG has none");
+
+    picture::Request tiled;
+    tiled.width = tiled.height = 16;
+    picture::Step tile;
+    tile.kind = Kind::tile;
+    tile.picture = named("checker.png");
+    tile.texel = 4;
+    tiled.steps = {fill(red), tile};
+    const auto tiles = made(tiled, "tiled.png");
+    check(is(at(tiles, 1, 1), 0, 0, 0) && is(at(tiles, 3, 3), 0, 0, 0) && is(at(tiles, 5, 1), 255, 255, 255) && is(at(tiles, 5, 5), 0, 0, 0) &&
+              is(at(tiles, 9, 1), 0, 0, 0) && is(at(tiles, 9, 5), 255, 255, 255) && is(at(tiles, 15, 15), 0, 0, 0),
+          "A tiled picture repeats from the top left, four pixels to a texel, the nearest");
+
+    picture::Request stretched;
+    stretched.width = stretched.height = 16;
+    picture::Step image;
+    image.kind = Kind::image;
+    image.picture = named("checker.png");
+    image.w = image.h = 16;
+    stretched.steps = {fill(red), image};
+    const auto smooth = made(stretched, "stretched.png");
+    check(is(at(smooth, 0, 0), 0, 0, 0) && is(at(smooth, 15, 0), 255, 255, 255) && is(at(smooth, 0, 15), 255, 255, 255) && is(at(smooth, 15, 15), 0, 0, 0),
+          "A stretched picture's edge texels reach its edges");
+    check(is(at(smooth, 7, 0), 112, 112, 112, 6) && at(smooth, 5, 0)[0] < at(smooth, 7, 0)[0] && at(smooth, 7, 0)[0] < at(smooth, 9, 0)[0],
+          "and between two texels it is blended");
+    image.x = 4;
+    image.y = 4;
+    image.w = image.h = 8;
+    image.alpha = 0.5f;
+    stretched.steps = {fill(red), image};
+    const auto faded = made(stretched, "faded.png");
+    check(is(at(faded, 2, 2), 255, 0, 0) && is(at(faded, 13, 8), 255, 0, 0) && is(at(faded, 4, 4), 128, 0, 0, 3) && is(at(faded, 11, 4), 255, 128, 128, 3),
+          "A picture in a box is drawn only there, over what is under it by its alpha");
+
+    picture::Request halves;
+    halves.width = 4;
+    halves.height = 2;
+    halves.steps = {fill(red), poly({{2, 0}, {4, 0}, {4, 2}, {2, 2}}, green)};
+    made(halves, "halves.png");
+    picture::Request filled;
+    filled.width = filled.height = 16;
+    picture::Step whole;
+    whole.kind = Kind::image;
+    whole.picture = named("halves.png");
+    whole.cover = true;
+    whole.focus = 0;
+    filled.steps = {fill(blue), whole};
+    check(is(at(made(filled, "left.png"), 8, 8), 255, 0, 0) && is(at(made(filled, "left.png"), 4, 12), 255, 0, 0),
+          "A picture filling the canvas keeps its shape: with its focus at 0 its left shows");
+    filled.steps[1].focus = 1;
+    check(is(at(made(filled, "right.png"), 8, 8), 0, 255, 0) && is(at(made(filled, "right.png"), 12, 4), 0, 255, 0), "and at 1 its right");
+
+    // A picture that is not there draws nothing, and a polygon naming one falls back to its colour.
+    picture::Request absent;
+    absent.width = absent.height = 8;
+    tile.picture = named("nothing.png");
+    auto patch = poly({{0, 0}, {4, 0}, {4, 4}, {0, 4}}, yellow);
+    patch.picture = named("nothing.png");
+    absent.steps = {fill(blue), tile, patch};
+    const auto without = made(absent, "absent.png");
+    check(is(at(without, 6, 6), 0, 0, 255) && is(at(without, 2, 2), 255, 255, 0), "A step whose picture cannot be read draws nothing, or its colour");
+
+    // A gradient: the colour over each row, its alpha going evenly from one end to the other.
+    picture::Request shaded;
+    shaded.width = 8;
+    shaded.height = 200;
+    picture::Step shade;
+    shade.kind = Kind::gradient;
+    shade.colour = white;
+    shade.y0 = 50;
+    shade.y1 = 150;
+    shade.a0 = 0;
+    shade.a1 = 1;
+    shaded.steps = {fill(black), shade};
+    const auto ramp = made(shaded, "shaded.png");
+    check(is(at(ramp, 4, 20), 0, 0, 0) && is(at(ramp, 4, 180), 0, 0, 0) && is(at(ramp, 4, 100), 129, 129, 129, 3) && is(at(ramp, 4, 149), 254, 254, 254, 3) &&
+              is(at(ramp, 4, 50), 1, 1, 1, 2),
+          "A gradient shades its own rows and no others");
+
+    // What is not a request to draw is refused whole.
+    std::string png;
+    picture::Request wrong = shapes;
+    wrong.width = 0;
+    check(!picture::render(wrong, png).empty(), "A picture has a size");
+    wrong = shapes;
+    wrong.steps[3].steps.push_back(layer);
+    check(!picture::render(wrong, png).empty(), "A layer holds no layer");
+    wrong = shapes;
+    wrong.steps[1].points[0][0] = std::numeric_limits<float>::infinity();
+    check(!picture::render(wrong, png).empty(), "A point is finite");
+    check(!picture::make(shapes, folder / "no such folder" / "a.png").empty() && !std::filesystem::exists(folder / "no such folder"),
+          "A picture that cannot be written leaves nothing");
+
+    // Text, in a font Windows reads from a file of ours: where there is one to copy.
+    const std::filesystem::path arial = "C:/Windows/Fonts/arial.ttf";
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(arial, error)) return;
+    std::filesystem::copy_file(arial, folder / "plain.ttf", std::filesystem::copy_options::overwrite_existing);
+    const auto font = folder / "plain.ttf";
+    const auto width = picture::text_width(font, "12,340", 64);
+    const auto doubled = picture::text_width(font, "12,340", 128);
+    check(width && *width > 100 && *width < 400 && doubled && std::abs(*doubled - *width * 2) < 1, "A text has a width, and twice it at twice the size");
+    check(picture::text_width(font, "12,340 12,340", 64).value_or(0) > *width * 2 && picture::text_width(font, "", 64) == 0.0,
+          "A longer text is wider, and none has no width");
+    check(!picture::text_width(folder / "notes.png", "x", 64) && !picture::text_width(folder / "nothing.ttf", "x", 64), "What is not a font measures nothing");
+    picture::Request card;
+    card.width = 600;
+    card.height = 200;
+    picture::Step number;
+    number.kind = Kind::text;
+    number.font = named("plain.ttf");
+    number.text = "12,340";
+    number.size = 64;
+    number.x = 580;
+    number.y = 130;
+    number.colour = white;
+    number.align = picture::Align::right;
+    card.steps = {fill(black), number};
+    const auto bright = [&](const picture::Pixels& pixels, int left, int right) {
+        int count = 0;
+        for (int y = 0; y < 200; ++y)
+            for (int x = std::max(left, 0); x < std::min(right, 600); ++x) count += at(pixels, x, y)[0] > 128;
+        return count;
+    };
+    const int start = 580 - static_cast<int>(*width);
+    const auto right = made(card, "right.png");
+    check(bright(right, start - 2, 582) > 500 && !bright(right, 0, start - 4) && !bright(right, 584, 600), "A text set to the right ends at its x");
+    int lowest = 0;
+    for (int y = 0; y < 200; ++y)
+        if (at(right, 560, y)[0] > 128) lowest = y;
+    check(lowest >= 126 && lowest <= 131, "and its digits stand on its baseline");
+    card.steps[1].align = picture::Align::left;
+    card.steps[1].x = 20;
+    const auto left = made(card, "left-text.png");
+    check(bright(left, 18, 22 + static_cast<int>(*width)) > 500 && !bright(left, 0, 16) && !bright(left, 26 + static_cast<int>(*width), 600),
+          "one set to the left starts there");
+    card.steps[1].align = picture::Align::center;
+    card.steps[1].x = 300;
+    const auto middle = made(card, "middle-text.png");
+    check(bright(middle, 300 - static_cast<int>(*width) / 2 - 2, 300 + static_cast<int>(*width) / 2 + 2) > 500 &&
+              !bright(middle, 0, 300 - static_cast<int>(*width) / 2 - 4) && !bright(middle, 300 + static_cast<int>(*width) / 2 + 4, 600),
+          "and one centred has its middle there");
+    card.steps[1].font = named("nothing.ttf");
+    check(!bright(made(card, "no-font.png"), 0, 600), "A text whose font cannot be read draws nothing");
+}
+
+// A plugin's own font as Windows reads it (plugin_font.h): the metrics its texts are measured by, and
+// the glyphs they are drawn with. Where there is a font file to copy.
+void windows_reads_a_fonts_metrics_and_glyphs() {
+    namespace font = dingosdk::plugins::font;
+    const auto folder = scratch / "fonts";
+    std::filesystem::create_directories(folder);
+    write(folder / "notes.ttf", "not a font at all");
+    check(!font::metrics(folder / "notes.ttf") && !font::metrics(folder / "nothing.ttf") && !font::known_metrics(folder / "notes.ttf"),
+          "What is not a font has no metrics");
+    std::vector<font::Coverage> glyphs;
+    const std::uint32_t capital[] = {'H'};
+    check(!font::rasterise(folder / "notes.ttf", 32, capital, 1022, glyphs) && glyphs.empty(), "and no glyphs");
+    const std::filesystem::path arial = "C:/Windows/Fonts/arial.ttf";
+    std::error_code error;
+    if (!std::filesystem::is_regular_file(arial, error)) return;
+    const auto file = folder / "plain.ttf";
+    std::filesystem::copy_file(arial, file, std::filesystem::copy_options::overwrite_existing);
+    const auto m = font::metrics(file);
+    check(m && m->own && m->size == 1 && m->ascent > 0.6f && m->ascent < 1, "A font's metrics are at size 1, a line's height, its baseline most of the way down");
+    const auto of = [](char c) { return static_cast<std::size_t>(c - 32); };
+    check(!m->lacks[of('H')] && !m->lacks[of(' ')] && m->lacks[127 - 32], "It has its letters and its space, and no glyph for what has none");
+    check(m->advance[of('H')] > 0.5f && m->advance[of('H')] < 0.8f && m->advance[of('i')] < m->advance[of('W')] && m->advance[of(' ')] > 0.1f,
+          "Each character has its own advance");
+    for (char c = '0'; c <= '9'; ++c) check(m->advance[of(c)] == m->advance[of('0')], "and the digits one advance, so a number does not shuffle");
+    const auto& box = m->box[of('H')];
+    check(box[0] > 0 && box[2] < m->advance[of('H')] && box[1] > 0.05f && box[1] < 0.4f && std::abs(box[3] - m->ascent) < 0.005f,
+          "A capital's box is inside its advance and stands on the baseline");
+    check(m->box[of(' ')] == std::array<float, 4>{} && m->box[of('g')][3] > m->ascent + 0.1f && m->box[of('g')][1] > box[1],
+          "A space has no box, and a g starts lower and hangs below the line");
+    check(plugin_ui::has_glyph(*m, 0xe9) && plugin_ui::has_glyph(*m, 0x416) && !plugin_ui::has_glyph(*m, 0xe000) && !plugin_ui::has_glyph(*m, 9) &&
+              std::is_sorted(m->wide.begin(), m->wide.end()) && m->wide.size() > 500,
+          "The characters past ASCII it has are known: accents and Cyrillic, not a private one");
+    check(font::known_metrics(file) == m && font::metrics(file) == m, "A file is read once");
+    float sum = 0;
+    for (const char c : std::string_view("12,340")) sum += m->advance[of(c)] * 64;
+    check(std::abs(plugin_ui::measure(*m, 64, "12,340", 0)[0] - sum) < 0.01f && plugin_ui::measure(*m, 64, "12,340", 0)[1] == 64,
+          "A text is as wide as its characters' advances, with no kerning, and a line high");
+
+    // Its glyphs: grey coverage, each in the box its metrics gave.
+    const std::uint32_t codes[] = {'H', ' ', 0xe000, 'g', 0x416};
+    check(font::rasterise(file, 100, codes, 1022, glyphs) && glyphs.size() == 5, "Glyphs are made for the characters asked for, in their order");
+    using Kind = font::Coverage::Kind;
+    const auto h = glyphs[0];
+    check(h.kind == Kind::drawn && h.code == 'H' && h.grey.size() == static_cast<std::size_t>(h.width) * static_cast<std::size_t>(h.height), "A letter is a box of greys");
+    check(std::abs(static_cast<float>(h.left) - box[0] * 100) < 1.5f && std::abs(static_cast<float>(h.top) - (box[1] - m->ascent) * 100) < 1.5f &&
+              std::abs(static_cast<float>(h.width) - (box[2] - box[0]) * 100) < 2.5f && std::abs(static_cast<float>(h.height) - (box[3] - box[1]) * 100) < 2.5f,
+          std::format("drawn where its metrics said it would be: {} {} {}x{} against {} {} {}x{}", h.left, h.top, h.width, h.height, box[0] * 100,
+                      (box[1] - m->ascent) * 100, (box[2] - box[0]) * 100, (box[3] - box[1]) * 100));
+    const auto inked = std::count_if(h.grey.begin(), h.grey.end(), [](std::uint8_t grey) { return grey > 200; });
+    const auto clear = std::count(h.grey.begin(), h.grey.end(), std::uint8_t{0});
+    check(inked * 5 > static_cast<long long>(h.grey.size()) && clear * 5 > static_cast<long long>(h.grey.size()), "its strokes solid and the space between them clear");
+    check(glyphs[1].kind == Kind::blank && glyphs[1].grey.empty(), "A space has nothing to draw");
+    check(glyphs[2].kind == Kind::missing && glyphs[2].code == 0xe000, "A character the font lacks is missing");
+    check(glyphs[3].kind == Kind::drawn && glyphs[3].top + glyphs[3].height > 10 && glyphs[4].kind == Kind::drawn, "A g hangs below the baseline, and a Cyrillic letter is drawn");
+    check(font::rasterise(file, 100, capital, 20, glyphs) && glyphs.size() == 1 && glyphs[0].kind == Kind::missing, "A glyph too large to keep is missing");
+    check(font::rasterise(file, 50, capital, 1022, glyphs) && std::abs(glyphs[0].height * 2 - h.height) <= 2, "At half the size it is half as tall");
+
+    // The file written again is another font: read again, and measured as that one.
+    const std::filesystem::path mono = "C:/Windows/Fonts/consola.ttf";
+    if (!std::filesystem::is_regular_file(mono, error)) return;
+    std::filesystem::copy_file(mono, file, std::filesystem::copy_options::overwrite_existing);
+    const auto again = font::metrics(file);
+    check(again && again != m && again->advance[of('i')] == again->advance[of('W')] && font::known_metrics(file) == again,
+          "A font file written again is read again");
+}
+#endif
+
+// Web requests with what a plugin that talks to a service needs: its own headers, the other methods,
+// an answer written to a file and gone on with, a longer wait, redirects to its own hosts, the answer's
+// headers, how far a download has come, and giving one up. A leaderboard, a route sharing site, a
+// pack of pictures: nothing here is one plugin's.
+void plugins_make_richer_web_requests() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    const std::string main = R"(
+        local sent = {}
+        local function ask(request)
+            return reskate.http.request(request, function(status, body, err, headers)
+                table.insert(sent, {status = status, body = body, err = err, headers = headers})
+            end)
+        end
+        local upload = ask({url = "https://api.example.com/v1/routes/7", method = "PUT", body = "{}", content_type = "application/json",
+                            headers = {["X-Api-Version"] = "2", Accept = "application/json"}, timeout = 120})
+        local download = ask({url = "https://cdn.example.com/packs/7.zip", to_file = "downloads/7.zip", resume = true, most = 200 * 1048576, follow = true})
+        assert(upload == 1 and download == 2)
+        for _, bad in {
+            {url = "https://api.example.com/x", method = "CONNECT"},
+            {url = "https://api.example.com/x", headers = {Host = "evil.example.org"}},
+            {url = "https://api.example.com/x", headers = {Cookie = "a=b"}},
+            {url = "https://api.example.com/x", headers = {["Proxy-Authorization"] = "x"}},
+            {url = "https://api.example.com/x", headers = {["Bad Name"] = "x"}},
+            {url = "https://api.example.com/x", headers = {Accept = "a\r\nHost: evil"}},
+            {url = "https://api.example.com/x", to_file = "../outside.zip"},
+            {url = "https://api.example.com/x", resume = true},
+            {url = "https://api.example.com/x", most = 64 * 1048576},
+            {url = "https://api.example.com/x", timeout = 0},
+        } do
+            assert(not pcall(ask, bad), "refused: " .. reskate.json.encode(bad))
+        end
+        reskate.console.command("going", "x", function()
+            local p = reskate.http.progress(2)
+            reskate.log(p and string.format("going %d of %d", p.received, p.total) or "not going")
+            assert(reskate.http.progress(99) == nil)
+            reskate.http.cancel(2)
+            reskate.http.cancel(99)
+        end)
+        reskate.console.command("answers", "x", function()
+            for _, a in sent do reskate.log(string.format("answer %d %q %s etag %s", a.status, a.body, tostring(a.err), tostring(a.headers.etag))) end
+        end)
+    )";
+    host.apply({package("client", {{manifest_file, R"({"api": 1, "entry": "plugin/main.lua", "permissions": ["net.http", "files", "console"],
+                                                     "domains": ["api.example.com", "cdn.example.com"]})"}, {"plugin/main.lua", main}}),
+                package("fileless", {{manifest_file, R"({"api": 1, "entry": "plugin/main.lua", "permissions": ["net.http"], "domains": ["api.example.com"]})"},
+                                     {"plugin/main.lua", R"(
+        local ok, why = pcall(reskate.http.request, {url = "https://api.example.com/x", to_file = "x.bin"}, function() end)
+        assert(not ok and why:find("files"), why)
+        reskate.log("no file")
+    )"}})});
+    running(host, "client", environment);
+    check(environment.logged("[fileless] no file"), "An answer goes to a file only with the files permission\n" + environment.all());
+    check(environment.requests.size() == 2, "The requests it may make are made\n" + environment.all());
+    const auto& upload = environment.requests[0];
+    check(upload.method == "PUT" && upload.body == "{}" && upload.timeout_ms == 120000 && upload.headers.size() == 2 && upload.to_file.empty() &&
+              upload.most == (1u << 20) && !upload.follow && upload.domains.empty(),
+          "A request carries its method, its headers and its wait");
+    const bool versioned = std::any_of(upload.headers.begin(), upload.headers.end(), [](const auto& h) { return h.first == "X-Api-Version" && h.second == "2"; });
+    check(versioned, "its headers as it wrote them");
+    const auto& download = environment.requests[1];
+    check(download.to_file == std::filesystem::path("data") / "client" / "downloads/7.zip" && download.resume && download.follow &&
+              download.most == 200ull * 1048576 && download.domains == std::vector<std::string>{"api.example.com", "cdn.example.com"},
+          "An answer goes to a file of its data folder, and redirects only to its own hosts");
+    environment.http_going[2] = {1500, 4000};
+    host.run_console("going");
+    check(environment.logged("[client] going 1500 of 4000") && environment.http_cancelled == std::vector<std::uint64_t>{2},
+          "It reads how far a download has come and gives up its own only\n" + environment.all());
+    environment.responses.push_back({1, "client", 200, "saved", {}, {{"etag", "\"v7\""}, {"content-type", "application/json"}}});
+    environment.responses.push_back({2, "client", 0, {}, "it was given up", {}});
+    ticks(host, environment, 1);
+    host.run_console("answers");
+    check(environment.logged("[client] answer 200 \"saved\" nil etag \"v7\"") && environment.logged("[client] answer 0 \"\" it was given up etag nil"),
+          "An answer comes with its headers\n" + environment.all());
 }
 
 void plugins_draw_the_games_map() {
@@ -5562,10 +7272,47 @@ void plugins_read_joints_and_tune_physics() {
         assert(not pcall(reskate.skater.pose, {head = {}}, 2), "weight 0 to 1")
         assert(not pcall(reskate.skater.pose, {head = {}, [103] = {}}), "a joint once")
         local many = {}
-        for j = 2, 129 do many[j] = {scale = 1} end
-        assert(reskate.skater.pose(many), "128 joints")
-        many[130] = {scale = 1}
-        assert(not pcall(reskate.skater.pose, many), "at most 128 joints")
+        for j = 2, 394 do many[j] = {scale = 1} end
+        assert(reskate.skater.pose(many), "every joint that can be posed")
+        assert(reskate.skater.pose(nil))
+        -- A scale that is set, not multiplied: with a place, and on its own.
+        assert(reskate.skater.pose({head = {place = {position = vector.create(0, 0.1, 0), scale = 2}}, [44] = {place = {scale = vector.create(1, 2, 3)}}}))
+        assert(not pcall(reskate.skater.pose, {head = {place = {scale = 11}}}), "a place's scale is 0 to 10")
+        assert(not pcall(reskate.skater.pose, {head = {place = {scale = vector.create(1, -1, 1)}}}), "on each axis")
+        -- The whole pose as the game animated it, and a whole pose set: a photo mode holds the skater as he
+        -- stood, his head turned to the camera.
+        local pose = reskate.skater.read_pose()
+        assert(pose and buffer.len(pose) == 395 * 40, "395 joints of 40 bytes")
+        assert(math.abs(buffer.readf32(pose, 7 * 40 + 28) - 0.07) < 1e-6 and buffer.readf32(pose, 7 * 40) == 1 and buffer.readf32(pose, 7 * 40 + 24) == 1)
+        buffer.writef32(pose, 7 * 40 + 12, 0)  -- joint 7: turned half round about y, twice as tall, a little higher
+        buffer.writef32(pose, 7 * 40 + 16, 2)  -- (a rotation of any length is brought to 1)
+        buffer.writef32(pose, 7 * 40 + 20, 0)
+        buffer.writef32(pose, 7 * 40 + 24, 0)
+        buffer.writef32(pose, 7 * 40 + 4, 2)
+        buffer.writef32(pose, 7 * 40 + 32, 0.5)
+        assert(reskate.skater.pose(pose, 0.75, {shown = "me"}))
+        -- The pose as it went to the screen, after the game's body physics: how far the physics lifted the
+        -- hips since the animation, for a plugin that shows it; and the pose a delta is worked out against.
+        local drawn = reskate.skater.read_pose("drawn")
+        assert(drawn and buffer.len(drawn) == 395 * 40, "the drawn pose is 395 joints too")
+        assert(math.abs(buffer.readf32(drawn, 7 * 40 + 32) - buffer.readf32(reskate.skater.read_pose("animated"), 7 * 40 + 32) - 0.05) < 1e-6,
+            "the hips stand 5 cm higher drawn than animated")
+        assert(not pcall(reskate.skater.read_pose, "tomorrow"), "animated or drawn")
+        local short = buffer.create(3 * 40)
+        for j = 0, 2 do buffer.writef32(short, j * 40 + 24, 1) end
+        assert(reskate.skater.pose(short), "a pose of the first joints only")
+        assert(not pcall(reskate.skater.pose, buffer.create(41)), "40 bytes a joint")
+        assert(not pcall(reskate.skater.pose, buffer.create(396 * 40)), "at most 395 joints")
+        assert(not pcall(reskate.skater.pose, buffer.create(10 * 40)), "a rotation of no length")
+        local broken = reskate.skater.read_pose()
+        buffer.writef32(broken, 9 * 40 + 28, 0 / 0)
+        assert(not pcall(reskate.skater.pose, broken), "a number that is not finite")
+        buffer.writef32(broken, 9 * 40 + 28, 101)
+        assert(not pcall(reskate.skater.pose, broken), "within 100 m of its parent")
+        buffer.writef32(broken, 9 * 40 + 28, 0)
+        buffer.writef32(broken, 9 * 40, 11)
+        assert(not pcall(reskate.skater.pose, broken), "a scale of 0 to 10")
+        assert(reskate.skater.pose(nil))
         -- Set to a place: a link of a chain relative to another joint, one in the skater's frame keeping
         -- its children where they were, one in the world.
         assert(reskate.skater.pose({[49] = {place = {position = vector.create(0, 0, -0.1), relative_to = 278}},
@@ -5606,6 +7353,12 @@ void plugins_read_joints_and_tune_physics() {
               game.called("pose order tuner 42 103 278 49"),
           "Joints set to places: in their parent's frame, another joint's, the world and the skater's, the children kept; "
           "each posed after the joint it is placed relative to\n" + environment.all());
+    check(game.called("pose tuner 1.00 44:0.00,0.00,0.00,1.00x1.00 s=1.00,2.00,3.00 103:0.00,0.00,0.00,1.00x1.00 place@parent p0.00,0.10,0.00 s=2.00,2.00,2.00"),
+          "A scale that is set rather than multiplied, with a place and on its own\n" + environment.all());
+    check(game.called("pose tuner 0.75 whole 393 from 2 to 394: 7 p0.07,0.50,0.00 r0.00,1.00,0.00,0.00 s1.00,2.00,1.00"),
+          "The whole pose read, changed and set: every joint from 2, its rotation brought to a length of 1\n" + environment.all());
+    check(game.called("pose tuner 1.00 2:0.00,0.00,0.00,1.00x1.00 place@parent p0.00,0.00,0.00 r0.00,0.00,0.00,1.00 s=0.00,0.00,0.00"),
+          "A pose of the first joints sets only those\n" + environment.all());
     check(game.called("setting tuner Camera.Height 1.5") && game.called("setting tuner Chat.Show true") &&
               game.called("setting tuner Render.Mode fast") && game.called("setting tuner Camera.Height none"),
           "Game settings held and let go\n" + environment.all());
@@ -6959,7 +8712,7 @@ void web_requests_go_only_to_listed_domains() {
                            "https://api.example.com/a b", "ftp://api.example.com/"} do
                 assert(not pcall(reskate.http.request, {url = bad}, function() end), bad)
             end
-            assert(not pcall(reskate.http.request, {url = "https://api.example.com/", method = "DELETE"}, function() end))
+            assert(not pcall(reskate.http.request, {url = "https://api.example.com/", method = "CONNECT"}, function() end))
             reskate.log("web fine")
         end)
         reskate.console.command("many", "x", function()
@@ -6975,7 +8728,7 @@ void web_requests_go_only_to_listed_domains() {
     ticks(host, environment, 1);
     check(environment.logged("[web] answer 200 hello nil"), "and the answer comes back\n" + environment.all());
     host.run_console("many");
-    check(environment.logged("many more than 4 web requests waiting"), "4 waiting at most\n" + environment.all());
+    check(environment.logged("many more than 8 web requests waiting"), "8 waiting at most\n" + environment.all());
 }
 
 
@@ -7166,6 +8919,22 @@ void the_wider_set_reaches_the_game() {
             assert(reskate.board.set(12, {position = vector.create(0, 2, 0), rotation = {0, 0, 0, 2}, space = "world"}))
             assert(not pcall(reskate.board.set, 1, {position = vector.create(0, 0, 0)}), "bone 1 places the board")
             assert(reskate.board.hide(3))
+            -- The whole board somewhere: held out in front of the skater, turned on its side, as a plugin that
+            -- has him carry it would; in the world, halfway there; and let go.
+            assert(reskate.board.mount({position = vector.create(0, 1.1, 0.4), rotation = {0, 0, 2, 0}, relative_to = "skater"}))
+            assert(reskate.board.mount({position = vector.create(5, -69, 2)}, 0.5))
+            assert(reskate.board.mount(nil))
+            -- A board laid on a stand with its front truck turned: a bone under the mount placed with it.
+            assert(reskate.board.mount({position = vector.create(1, 2, 3), bones = {[4] = {rotation = {0, 2, 0, 0}}, [9] = {position = vector.create(0, -0.05, 0.2)}}}))
+            assert(reskate.board.mount(nil))
+            assert(not pcall(reskate.board.mount, {position = vector.create(0, 0, 0), bones = {[2] = {rotation = {0, 0, 0, 1}}}}), "bones 3 to 15")
+            assert(not pcall(reskate.board.mount, {position = vector.create(0, 0, 0), bones = {[16] = {rotation = {0, 0, 0, 1}}}}), "bones 3 to 15")
+            assert(not pcall(reskate.board.mount, {position = vector.create(0, 0, 0), bones = {[4] = {}}}), "a position or a rotation")
+            assert(not pcall(reskate.board.mount, {position = vector.create(0, 0, 0), bones = {[4] = {position = vector.create(0, 5, 0)}}}), "within 2 m")
+            assert(not pcall(reskate.board.mount, {position = vector.create(0, 0, 0), relative_to = "moon"}), "the world or the skater")
+            assert(not pcall(reskate.board.mount, {position = vector.create(0, 30, 0), relative_to = "skater"}), "within 20 m of him")
+            assert(not pcall(reskate.board.mount, {position = vector.create(0, 0, 0)}, 2), "a weight is 0 to 1")
+            assert(not pcall(reskate.board.mount, {rotation = {0, 0, 0, 1}}), "a mount has a position")
             reskate.board.park({12, 13, 14, 15})
             assert(reskate.board.scale(6, 1.5) and reskate.board.scale(7, vector.create(1, 2, 3)) and reskate.board.scale(10))
             assert(not pcall(reskate.board.scale, 1, 2), "bone 1 places the board")
@@ -7325,6 +9094,10 @@ void the_wider_set_reaches_the_game() {
               game.called("board park wide 4") && game.called("board toss wide 2 3 -2") && game.called("board scale wide 6 1.5 1.5 1.5") &&
               game.called("board scale wide 7 1.0 2.0 3.0") && game.called("board scale wide 10 none"),
           "A plugin changes what is drawn of the board\n" + environment.all());
+    check(game.called("board mount wide 0.00,1.10,0.40 r0.00,0.00,1.00,0.00 skater 1.00") &&
+              game.called("board mount wide 5.00,-69.00,2.00 r0.00,0.00,0.00,1.00 world 0.50") && game.called("board mount wide none") &&
+              game.called("board mount bone 4 held r0.00,1.00,0.00,0.00") && game.called("board mount bone 9 at 0.00,-0.05,0.20"),
+          "The whole board placed under the skater, in the world at a weight, and let go\n" + environment.all());
     check(game.called("board parameter wide 1 873f48af36e50d59 colour 1.0") && game.called("board parameter wide 0 841c7d74837f1d39 number 2.5") &&
               game.called("board parameter clear wide 1 8c46cd354b18a9e2") && game.called("board parameter clear wide -1 all"),
           "and holds its shader parameters\n" + environment.all());
@@ -8098,6 +9871,20 @@ int main() {
         run(tricks_reach_plugins_that_ask_for_them);
         run(plugins_draw_on_the_overlay);
         run(plugins_draw_pictures);
+        run(plugins_draw_meshes_marks_and_data_pictures);
+        run(a_manifest_names_its_fonts);
+        run(plugins_draw_text_in_their_own_fonts);
+        run(a_plugin_sets_a_speedometer_in_its_own_digits);
+        run(glyph_pages_are_sized_filled_and_let_go);
+        run(plugins_manage_files_and_granted_folders);
+        run(plugins_compose_pictures_from_steps);
+        run(plugins_list_and_unpack_zip_files);
+        run(the_zip_reader_lists_and_unpacks_a_file);
+#ifdef _WIN32
+        run(the_picture_renderer_draws_what_it_is_told);
+        run(windows_reads_a_fonts_metrics_and_glyphs);
+#endif
+        run(plugins_make_richer_web_requests);
         run(plugins_draw_the_games_map);
         run(plugins_place_world_entities);
         run(plugins_place_set_pieces);

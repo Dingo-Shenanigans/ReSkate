@@ -174,7 +174,8 @@ struct CaptureApi {
             lua_pop(L, 1);
         }
         lua_pop(L, 1);
-        if (!within(plugin.services_.now_ms(), plugin.files_second_, plugin.file_calls_, 64)) return result(L, "more than 64 file calls in a second");
+        if (!within(plugin.services_.now_ms(), plugin.files_second_, plugin.file_calls_, plugin.limits_.file_calls_per_second))
+            return result(L, "more than " + std::to_string(plugin.limits_.file_calls_per_second) + " file calls in a second");
         return result(L, game_of(plugin).capture_save(plugin.id(), request));
     }
 

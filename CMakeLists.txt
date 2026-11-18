@@ -487,7 +487,8 @@ if(DINGOSDK_BUILD_PLUGIN_TESTS)
     # run without Windows.
     add_executable(dingosdk_plugin_tests Extension/Plugins/Test/plugin_tests.cpp)
     target_include_directories(dingosdk_plugin_tests PRIVATE "${PROJECT_SOURCE_DIR}")
-    target_link_libraries(dingosdk_plugin_tests PRIVATE dingosdk_plugins)
+    # (miniz: the tests pack the zips they hand the unpacker.)
+    target_link_libraries(dingosdk_plugin_tests PRIVATE dingosdk_plugins dingosdk_miniz)
     if(NOT WIN32)
         # The Linux plugins library leaves out finding plugins among the mods; the tests need it.
         target_sources(dingosdk_plugin_tests PRIVATE Extension/Plugins/plugin_discovery.cpp Engine/Vfs/mod_list.cpp)

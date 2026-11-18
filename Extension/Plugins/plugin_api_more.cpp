@@ -115,8 +115,11 @@ struct MoreApi {
     }
 
     // ---- net.http ------------------------------------------------------------------------------
-    // request({url = "https://host/path", method = "GET" | "POST", body = "...", content_type = "..."},
-    // function(status, body, error)): to a host its manifest's "domains" lists, HTTPS only.
+    // request({url = "https://host/path", method, body, content_type, headers, to_file, resume, most, timeout,
+    // follow}, function(status, body, error, headers)): to a host its manifest's "domains" lists, HTTPS only.
+    // `headers`: its own, {name = value}. `to_file`: a path in its data folder the answer's body is
+    // written to (the callback's body is then empty), `resume` going on with one that broke off. `most`:
+    // the answer's size at most. `timeout`: seconds. `follow`: redirects followed, to its domains only.
     static int http_request(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "net.http", "reskate.http.request");
@@ -128,7 +131,8 @@ struct MoreApi {
         lua_getfield(L, 1, "method");
         const std::string method = lua_isnil(L, -1) ? "GET" : luaL_checkstring(L, -1);
         lua_pop(L, 1);
-        if (method != "GET" && method != "POST") luaL_error(L, "a web request's method is \"GET\" or \"POST\"");
+        static constexpr std::string_view methods[] = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"};
+        if (!one_of(methods, method)) luaL_error(L, "a web request's method is GET, POST, PUT, PATCH, DELETE or HEAD");
         lua_getfield(L, 1, "body");
         const std::string body = lua_isnil(L, -1) ? std::string{} : checked_text(L, -1, plugin.limits_.http_body_bytes, "a web request's body");
         lua_pop(L, 1);
@@ -152,6 +156,52 @@ struct MoreApi {
         const auto& domains = plugin.manifest().domains;
         if (std::find(domains.begin(), domains.end(), host) == domains.end())
             luaL_error(L, "%s is not in reskate-plugin.json's \"domains\"", host.c_str());
+        HttpRequest request{0, plugin.id(), method, host, path, body, type};
+        // Its own headers: plain names and printable values. The ones the connection itself decides, or
+        // that would name another host or carry what ReSkate keeps out of a request, are not a plugin's.
+        if (lua_getfield(L, 1, "headers") != LUA_TNIL) {
+            luaL_checktype(L, -1, LUA_TTABLE);
+            static constexpr std::string_view kept[] = {"host", "content-length", "content-type", "connection", "transfer-encoding", "upgrade",
+                                                        "cookie", "user-agent", "expect", "te", "trailer", "keep-alive", "proxy-authorization",
+                                                        "proxy-connection", "range", "if-range"};
+            lua_pushnil(L);
+            while (lua_next(L, -2)) {
+                if (lua_type(L, -2) != LUA_TSTRING || lua_type(L, -1) != LUA_TSTRING) luaL_error(L, "headers are names and their values, both text");
+                std::string name = lua_tostring(L, -2), lower;
+                const std::string value = checked_text(L, -1, 4096, "a header's value");
+                if (name.empty() || name.size() > 64) luaL_error(L, "a header's name is 1 to 64 characters");
+                for (const char c : name) {
+                    const bool plain = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_';
+                    if (!plain) luaL_error(L, "a header's name is letters, digits, - and _");
+                    lower += static_cast<char>(c >= 'A' && c <= 'Z' ? c + 32 : c);
+                }
+                if (one_of(kept, lower) || lower.starts_with("proxy-") || lower.starts_with("sec-"))
+                    luaL_error(L, "the header %s is not a plugin's to set", name.c_str());
+                for (const char c : value)
+                    if (c < 0x20 || c > 0x7e) luaL_error(L, "a header's value is printable text");
+                if (request.headers.size() >= 16) luaL_error(L, "a web request has at most 16 headers");
+                request.headers.emplace_back(std::move(name), value);
+                lua_pop(L, 1);
+            }
+        }
+        lua_pop(L, 1);
+        request.resume = flag_option(L, 1, "resume", false);
+        request.follow = flag_option(L, 1, "follow", false);
+        if (request.follow) request.domains = plugin.manifest().domains;
+        request.timeout_ms = static_cast<int>(number_option(L, 1, "timeout", 10, 1, 600, "timeout is 1 to 600 seconds") * 1000);
+        if (lua_getfield(L, 1, "to_file") != LUA_TNIL) {
+            need(L, plugin, "files", "a web request's to_file");
+            const auto inside = data_path(L, -1, false);
+            std::uint64_t stamp = 0;
+            if (const auto why = game_of(plugin).files_place(plugin.id(), inside, request.to_file, stamp); !why.empty())
+                luaL_error(L, "to_file: %s", why.c_str());
+            // (To a file: up to 1 GB, 64 MB when it does not say.)
+            request.most = static_cast<std::uint64_t>(number_option(L, 1, "most", 64.0 * 1048576, 1, 1024.0 * 1048576, "most is 1 byte to 1 GB for a file"));
+        } else {
+            if (request.resume) luaL_error(L, "resume is for an answer that goes to a file (to_file)");
+            request.most = static_cast<std::uint64_t>(number_option(L, 1, "most", 1048576, 1, 32.0 * 1048576, "most is 1 byte to 32 MB for an answer kept in memory"));
+        }
+        lua_pop(L, 1);
         const double now = plugin.services_.now_ms();
         std::erase_if(plugin.http_sent_, [&](double at) { return now - at >= 60000; });
         if (static_cast<int>(plugin.http_sent_.size()) >= plugin.limits_.http_per_minute)
@@ -159,7 +209,8 @@ struct MoreApi {
         if (static_cast<int>(plugin.http_pending_.size()) >= plugin.limits_.http_in_flight)
             luaL_error(L, "more than %d web requests waiting for an answer", plugin.limits_.http_in_flight);
         const auto id = plugin.next_http_++;
-        if (!plugin.services_.http({id, plugin.id(), method, host, path, body, type})) {
+        request.id = id;
+        if (!plugin.services_.http(std::move(request))) {
             lua_pushnil(L);
             lua_pushstring(L, "web requests cannot be made now");
             return 2;
@@ -170,6 +221,31 @@ struct MoreApi {
         lua_pop(L, 1);
         lua_pushinteger(L, static_cast<int>(id));
         return 1;
+    }
+
+    // progress(id): {received, total} bytes of a request still going on (total 0 while the server has not
+    // said), or nil once it is answered. cancel(id): gives it up; its callback then gets "it was given up".
+    static int http_progress(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "net.http", "reskate.http.progress");
+        const double id = luaL_checknumber(L, 1);
+        const auto found = id >= 1 && plugin.http_pending_.contains(static_cast<std::uint64_t>(id))
+                               ? plugin.services_.http_progress(plugin.id(), static_cast<std::uint64_t>(id)) : std::nullopt;
+        if (!found) {
+            lua_pushnil(L);
+            return 1;
+        }
+        lua_createtable(L, 0, 2);
+        field_number(L, "received", static_cast<double>(found->received));
+        field_number(L, "total", static_cast<double>(found->total));
+        return 1;
+    }
+    static int http_cancel(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "net.http", "reskate.http.cancel");
+        const double id = luaL_checknumber(L, 1);
+        if (id >= 1 && plugin.http_pending_.contains(static_cast<std::uint64_t>(id))) plugin.services_.http_cancel(plugin.id(), static_cast<std::uint64_t>(id));
+        return 0;
     }
 
 // spatialize_music(nil | false | {active = true, left = 0..4, right = 0..4, lpf = 0.04..1, lpf_l, lpf_r,
@@ -222,6 +298,6 @@ void MoreApi::install(Plugin& plugin, lua_State* L) {
     // The reskate table is on top of the stack.
     using F = MoreApi;
     add_functions(L, {{"expose", F::expose}, {"require_plugin", F::require_plugin}, {"emit", F::emit}, {"on_plugin", F::on_plugin}, {"spatialize_music", F::music_spatialize}});
-    add_functions(L, "http", {{"request", F::http_request}});
+    add_functions(L, "http", {{"request", F::http_request}, {"progress", F::http_progress}, {"cancel", F::http_cancel}});
 }
 }

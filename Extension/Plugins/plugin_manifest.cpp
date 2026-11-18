@@ -61,14 +61,37 @@ namespace {
 // Extension/Multiplayer/Session/skater_copy.h): this game's alone, never in a session, nothing sent.
 // "replay" grants nothing yet: no API checks it. It stays known so a manifest that lists it still
 // loads (an unknown permission refuses the whole manifest).
-constexpr std::array<std::string_view, 69> permissions{
+constexpr std::array<std::string_view, 70> permissions{
     "console", "storage", "overlay", "menu", "ui.screen", "input", "input.write", "hud", "events.tricks", "events.skater",
     "skater.read", "skater.teleport", "skater.control", "skater.animation", "trainer", "camera",
     "world.raycast", "world.vehicles", "world.physics", "world.physics.observe", "world.physics.reuse", "world.objects", "world.entities", "world.environment", "world.ai", "travel", "session.read",
     "session.skaters", "session.nametags", "net.session", "net.http", "voice.control", "chat.read",
     "chat.send", "chat.local", "chat.commands", "server", "server.parks", "throwdowns", "replay", "music", "progression.read", "settings.read", "audio.ui", "audio", "outfit", "board", "mods.read",
     "events.physics", "game.speed", "files", "variants", "settings.write", "room", "capture", "effects", "events.physics.geometry", "viewmodel", "strings", "outfit.stand_ins",
-    "objects.physics", "marker.read", "ui.models", "hud.score", "effects.game", "screen.shader", "world.shader", "world.sets", "skater.copy"};
+    "objects.physics", "marker.read", "ui.models", "hud.score", "effects.game", "screen.shader", "world.shader", "world.sets", "skater.copy",
+    "files.folders"};
+// "files.folders" reads and writes files in folders beside the game that the manifest's "folders" names
+// (reskate.files with "<folder>:<path>"): for files a player keeps, shares or brings from another tool,
+// where a data folder under Mods would hide them. Never one of the game's or ReSkate's own folders.
+}
+
+bool granted_folder_name(std::string_view name) noexcept {
+    if (name.empty() || name.size() > 64 || name.front() == '.' || name.front() == ' ' || name.back() == '.' || name.back() == ' ') return false;
+    std::string lower;
+    for (const char c : name) {
+        const bool plain = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == ' ' || c == '.' || c == '_' || c == '-';
+        if (!plain) return false;
+        lower += static_cast<char>(c >= 'A' && c <= 'Z' ? c + 32 : c);
+    }
+    if (lower.find("..") != std::string::npos) return false;
+    // The game's and ReSkate's own, and what Windows keeps for devices.
+    static constexpr std::array<std::string_view, 25> kept{"data", "mods", "moddata", "logs", "patch", "update", "__installer", "support", "engine",
+        "core", "win32", "win64", "easyanticheat", "eaanticheat", "installer", "reskate", "plugins", "crashes", "cache", "profiles",
+        "con", "prn", "aux", "nul", "steam_settings"};
+    const auto base = std::string_view(lower).substr(0, lower.find('.'));
+    if (std::find(kept.begin(), kept.end(), lower) != kept.end() || std::find(kept.begin(), kept.end(), base) != kept.end()) return false;
+    if (base.size() == 4 && (base.starts_with("com") || base.starts_with("lpt")) && base[3] >= '0' && base[3] <= '9') return false;
+    return true;
 }
 
 bool known_permission(std::string_view name) noexcept {
@@ -92,6 +115,22 @@ std::string safe_relative_path(std::string_view path) {
         start = end + 1;
     }
     return std::string(path);
+}
+
+bool names_a_device(std::string_view path) noexcept {
+    std::size_t start = 0;
+    while (start <= path.size()) {
+        const auto end = std::min(path.find('/', start), path.size());
+        // (What comes before a name's first dot is what Windows looks at.)
+        const auto base = path.substr(start, std::min(path.find('.', start), end) - start);
+        const auto begins = [&](std::string_view word) {
+            return std::equal(word.begin(), word.end(), base.begin(), [](char w, char c) { return (c >= 'A' && c <= 'Z' ? c + 32 : c) == w; });
+        };
+        if (base.size() == 3 && (begins("con") || begins("prn") || begins("aux") || begins("nul"))) return true;
+        if (base.size() == 4 && (begins("com") || begins("lpt")) && base[3] >= '0' && base[3] <= '9') return true;
+        start = end + 1;
+    }
+    return false;
 }
 
 const char* side_name(Side side) noexcept {
@@ -185,6 +224,17 @@ Manifest parse_manifest(std::string_view text) {
         if (!result.domains.empty() && !result.permissions.contains("net.http"))
             throw std::runtime_error("\"domains\" is for web requests: add the \"net.http\" permission too");
     }
+    if (json.contains("folders")) {
+        const auto& list = json.at("folders");
+        if (!list.is_array() || list.size() > 4) throw std::runtime_error("\"folders\" must be a list of at most 4 folder names");
+        for (const auto& item : list) {
+            if (!item.is_string() || !granted_folder_name(item.string()))
+                throw std::runtime_error("\"folders\" names folders beside the game: 1 to 64 letters, digits, spaces, . _ and -, and none of the game's or ReSkate's own");
+            if (std::find(result.folders.begin(), result.folders.end(), item.string()) == result.folders.end()) result.folders.push_back(item.string());
+        }
+        if (!result.folders.empty() && !result.permissions.contains("files.folders"))
+            throw std::runtime_error("\"folders\" keeps files beside the game: add the \"files.folders\" permission too");
+    }
     if (json.contains("content")) {
         const auto& list = json.at("content");
         if (!list.is_array() || list.size() > 8) throw std::runtime_error("\"content\" must be a list of at most 8 folder names");
@@ -200,7 +250,40 @@ Manifest parse_manifest(std::string_view text) {
         if (!result.content.empty() && !result.permissions.contains("mods.read"))
             throw std::runtime_error("\"content\" reads other mods' folders: add the \"mods.read\" permission too");
     }
+    // Fonts for its drawn texts. No permission of their own: a text is drawn under the permission
+    // drawing needs already. (That each is a file is check_manifest_files's, which has the folder.)
+    if (json.contains("fonts")) {
+        const auto& list = json.at("fonts");
+        if (!list.is_array() || list.size() > maximum_fonts) throw std::runtime_error("\"fonts\" must be a list of at most 8 font files");
+        for (const auto& item : list) {
+            if (!item.is_string()) throw std::runtime_error("\"fonts\" must be a list of font files, such as \"fonts/Display-Regular.ttf\"");
+            const auto path = safe_relative_path(item.string());
+            if (path.empty())
+                throw std::runtime_error("\"" + item.string() + "\" in \"fonts\" must be a path inside the mod folder, with / between folders and no ..");
+            std::string lower = path;
+            for (auto& c : lower) if (c >= 'A' && c <= 'Z') c = static_cast<char>(c + 32);
+            if (!lower.ends_with(".ttf") && !lower.ends_with(".otf")) throw std::runtime_error("\"" + path + "\" in \"fonts\" must be a .ttf or .otf file");
+            if (std::find(result.fonts.begin(), result.fonts.end(), path) == result.fonts.end()) result.fonts.push_back(path);
+        }
+    }
     return result;
+}
+
+std::string check_manifest_files(const Manifest& manifest, const std::filesystem::path& directory) {
+    std::error_code code;
+    const auto root = std::filesystem::weakly_canonical(directory, code);
+    for (const auto& font : manifest.fonts) {
+        const auto file = directory / std::filesystem::path(font);
+        const auto missing = "\"" + font + "\" in \"fonts\" is not a file in the mod folder";
+        if (code || !std::filesystem::is_regular_file(file, code) || code) return missing;
+        // (Once more with links and junctions followed, as a path a plugin names is checked.)
+        const auto inside = std::filesystem::weakly_canonical(file, code).lexically_relative(root);
+        if (code || inside.empty() || *inside.begin() == "..") return missing;
+        const auto size = std::filesystem::file_size(file, code);
+        if (code || size == 0) return "\"" + font + "\" in \"fonts\" cannot be read";
+        if (size > maximum_font_bytes) return "\"" + font + "\" in \"fonts\" is larger than 8 MB";
+    }
+    return {};
 }
 
 namespace {

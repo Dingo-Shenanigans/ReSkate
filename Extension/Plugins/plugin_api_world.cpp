@@ -1169,7 +1169,7 @@ struct WorldApi {
             lua_pushlstring(L, name.data() + 5, name.size() - 5);
             const auto path = data_path(L, lua_gettop(L), false);
             lua_pop(L, 1);
-            if (const auto why = game_of(plugin).files_read_bytes(plugin.id(), path, bytes, 8u << 20); !why.empty()) error = why;
+            if (const auto why = game_of(plugin).files_read_bytes(plugin.id(), path, bytes, 64u << 20); !why.empty()) error = why;
         } else {
             bytes = read_package_file(package_file(L, plugin, name), 8u << 20, error);
         }
@@ -1236,12 +1236,13 @@ struct WorldApi {
         return result(L, game_of(plugin).play_clip(plugin.id(), std::move(clip), speed, blend, loop, at, paused, floor));
     }
     // game_clips(containing): the names of the game's own animations that contain it (all with none), at
-    // most 2000, each played as "game:<name>"; nil and why while they are still read.
+    // most 40000 (2000 until 2.1.5: the game has about 16,000), each played as "game:<name>"; nil and why
+    // while they are still read.
     static int animation_game_clips(lua_State* L) {
         auto& plugin = animating(L, "reskate.animation.game_clips");
         const auto containing = lua_isnoneornil(L, 1) ? std::string{} : checked_text(L, 1, 64, "a part of a name");
         std::string why;
-        const auto names = game_of(plugin).game_clip_names(containing, 2000, why);
+        const auto names = game_of(plugin).game_clip_names(containing, 40000, why);
         if (!why.empty()) return failed(L, why);
         push_texts(L, names);
         return 1;
@@ -1595,15 +1596,16 @@ struct WorldApi {
         keep_clip(L, plugin, name.empty() ? "clip:" + std::to_string(++plugin.recordings_) : "edit:" + name, std::move(clip));
         return 1;
     }
-    // save(clip, path): the clip as a clip file (FAS3) in the plugin's data folder, at most 8 MB.
+    // save(clip, path): the clip as a clip file (FAS3) in the plugin's data folder, at most 64 MB (8 MB until
+    // 2.1.5), as any file there.
     static int animation_save(lua_State* L) {
         auto& plugin = animating(L, "reskate.animation.save");
         need(L, plugin, "files", "reskate.animation.save");
         const auto clip = clip_at(L, plugin, 1);
         const auto path = data_path(L, 2, false);
         const auto bytes = anim_studio::clip_bytes(*clip);
-        if (bytes.size() > (8u << 20)) return result(L, "a clip file is at most 8 MB");
-        return result(L, game_of(plugin).files_write_bytes(plugin.id(), path, std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()), 8u << 20));
+        if (bytes.size() > (64u << 20)) return result(L, "a clip file is at most 64 MB");
+        return result(L, game_of(plugin).files_write_bytes(plugin.id(), path, std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size()), 64u << 20));
     }
     static int animation_trick(lua_State* L) {
         auto& plugin = animating(L, "reskate.animation.trick");
@@ -1828,12 +1830,41 @@ struct WorldApi {
     // skater.pose({[joint] = {rotation = {x, y, z, w} | angles = vector (degrees), scale = n, offset = vector,
     // place = {...}, keep_children = true}, ...}, weight): joints turned in their own frame, scaled and
     // moved on top of the animation, or set to a place (place_of), for 0.3 s; nil ends it. keep_children:
-    // the joint's children stay where they were in the world.
+    // the joint's children stay where they were in the world. A place's `scale` sets the joint's scale
+    // where the joint's own `scale` multiplies it.
+    // skater.pose(buffer, weight): a whole pose (as read_pose gives one: 40 bytes a joint, 2 to 395
+    // joints): every joint from 2 is set to it, scale, rotation and position in its parent's frame.
     static int skater_pose(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "skater.animation", "reskate.skater.pose");
         std::vector<Game::JointOffset> offsets;
-        if (!lua_isnoneornil(L, 1)) {
+        if (lua_isbuffer(L, 1)) {
+            std::size_t size = 0;
+            const auto* bytes = static_cast<const char*>(lua_tobuffer(L, 1, &size));
+            if (size % 40 != 0 || size < 3 * 40 || size > 395 * 40) luaL_error(L, "a whole pose is 40 bytes a joint, for 3 to 395 joints");
+            offsets.reserve(size / 40 - 2);
+            for (std::size_t joint = 2; joint < size / 40; ++joint) {
+                std::array<float, 10> v;
+                std::memcpy(v.data(), bytes + joint * 40, 40);
+                for (const auto f : v)
+                    if (!std::isfinite(f)) luaL_error(L, "joint %d of the pose has a number that is not finite", static_cast<int>(joint));
+                const double length = std::sqrt(double{v[3]} * v[3] + double{v[4]} * v[4] + double{v[5]} * v[5] + double{v[6]} * v[6]);
+                if (!(length > 1e-4)) luaL_error(L, "joint %d of the pose has a rotation of no length", static_cast<int>(joint));
+                for (std::size_t a = 0; a < 3; ++a) {
+                    if (!(v[a] >= 0 && v[a] <= 10)) luaL_error(L, "joint %d of the pose has a scale outside 0 to 10", static_cast<int>(joint));
+                    if (std::abs(v[7 + a]) > 100) luaL_error(L, "joint %d of the pose is more than 100 m from its parent", static_cast<int>(joint));
+                }
+                Game::JointOffset o;
+                o.joint = static_cast<std::uint16_t>(joint);
+                o.scale_to = Vec3{v[0], v[1], v[2]};
+                pose_place::Place place;
+                place.rotation = anim_studio::Quat{static_cast<float>(v[3] / length), static_cast<float>(v[4] / length), static_cast<float>(v[5] / length),
+                                                   static_cast<float>(v[6] / length)};
+                place.position = anim_studio::Vec3{v[7], v[8], v[9]};
+                o.place = place;
+                offsets.push_back(o); // (in joint order: a joint's parent comes before it in the skeleton)
+            }
+        } else if (!lua_isnoneornil(L, 1)) {
             luaL_checktype(L, 1, LUA_TTABLE);
             lua_pushnil(L);
             while (lua_next(L, 1)) {
@@ -1871,7 +1902,28 @@ struct WorldApi {
                 }
                 lua_pop(L, 1);
                 lua_getfield(L, at, "place");
-                if (!lua_isnil(L, -1)) o.place = place_of(L, lua_gettop(L));
+                if (!lua_isnil(L, -1)) {
+                    // Its scale, set (the joint's own `scale` multiplies what the animation has).
+                    luaL_checktype(L, -1, LUA_TTABLE);
+                    lua_getfield(L, -1, "scale");
+                    if (lua_isnumber(L, -1)) {
+                        const double s = lua_tonumber(L, -1);
+                        if (!(s >= 0 && s <= 10)) luaL_error(L, "a place's scale is 0 to 10");
+                        o.scale_to = Vec3{static_cast<float>(s), static_cast<float>(s), static_cast<float>(s)};
+                    } else if (!lua_isnil(L, -1)) {
+                        o.scale_to = position_of(L, lua_gettop(L), "a place's scale");
+                        for (const auto v : *o.scale_to)
+                            if (!(v >= 0 && v <= 10)) luaL_error(L, "a place's scale is 0 to 10 on each axis");
+                    }
+                    lua_pop(L, 1);
+                    // (A place of only a scale has no position or rotation to hand on.)
+                    lua_getfield(L, -1, "position");
+                    lua_getfield(L, -2, "rotation");
+                    lua_getfield(L, -3, "angles");
+                    const bool placed = !lua_isnil(L, -1) || !lua_isnil(L, -2) || !lua_isnil(L, -3);
+                    lua_pop(L, 3);
+                    if (placed || !o.scale_to) o.place = place_of(L, lua_gettop(L));
+                }
                 lua_pop(L, 1);
                 lua_getfield(L, at, "keep_children");
                 if (!lua_isnil(L, -1)) {
@@ -1881,8 +1933,9 @@ struct WorldApi {
                 lua_pop(L, 1);
                 if (std::any_of(offsets.begin(), offsets.end(), [&](const auto& e) { return e.joint == o.joint; }))
                     luaL_error(L, "joint %d is posed twice", static_cast<int>(o.joint));
-                // An avatar with its proportions and its own physics bones (tail, ears) needs about 70.
-                if (offsets.size() >= 128) luaL_error(L, "at most 128 joints are posed at once");
+                // (128 until 2.1.5: an avatar with its proportions and its own physics bones needs about 70,
+                // a pose worked out joint by joint all of them.)
+                if (offsets.size() >= 393) luaL_error(L, "at most 393 joints are posed at once");
                 offsets.push_back(o);
                 lua_pop(L, 1);
             }
@@ -1927,6 +1980,21 @@ struct WorldApi {
         lua_pushstring(L, "others");
         lua_setfield(L, -2, "shown");
         return skater_pose(L);
+    }
+    // skater.read_pose(when): the local skater's whole pose as the game animated it this update ("animated",
+    // the default), or as it last went to the screen, after the game's body physics ("drawn"), before any
+    // plugin's clip or pose: a buffer of 40 bytes a joint (10 floats: scale, rotation x y z w, position,
+    // in the parent's frame, as a clip file holds a joint), or nil.
+    static int skater_read_pose(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "skater.read", "reskate.skater.read_pose");
+        const std::string when = lua_isnoneornil(L, 1) ? "animated" : luaL_checkstring(L, 1);
+        if (when != "animated" && when != "drawn") luaL_argerror(L, 1, "\"animated\" or \"drawn\"");
+        const auto pose = when == "drawn" ? game_of(plugin).skater_drawn_pose() : game_of(plugin).skater_local_pose();
+        if (pose.empty()) return 0;
+        void* out = lua_newbuffer(L, pose.size() * sizeof(float));
+        std::memcpy(out, pose.data(), pose.size() * sizeof(float));
+        return 1;
     }
     // skater.joint(joint): {position, rotation, scale} of one of the local skater's joints, or nil.
     static int skater_joint(lua_State* L) {
@@ -2218,6 +2286,64 @@ struct WorldApi {
         lua_pop(L, 1);
         if (!one_of(spaces, space)) luaL_argerror(L, 2, "space is \"local\" or \"world\"");
         return result(L, game_of(plugin).board_set(plugin.id(), bone, value, space == "world"));
+    }
+    // board.mount({position, rotation, relative_to = "world" | "skater", bones = {[bone] = {position, rotation}}} or nil,
+    // weight): the whole board drawn with its deck's mount there, `weight` of the way from where the game has it, for
+    // 0.3 s; nil ends it. `bones`: bones under the mount (3 to 15) placed in their parent's frame meanwhile.
+    static int board_mount(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "board", "reskate.board.mount");
+        if (lua_isnoneornil(L, 1)) return result(L, game_of(plugin).board_mount(plugin.id(), std::nullopt));
+        luaL_checktype(L, 1, LUA_TTABLE);
+        Game::BoardMount mount;
+        lua_getfield(L, 1, "position");
+        mount.position = position_of(L, lua_gettop(L), "a mount's position");
+        lua_pop(L, 1);
+        lua_getfield(L, 1, "rotation");
+        if (!lua_isnil(L, -1)) mount.rotation = quaternion_at(L, lua_gettop(L));
+        lua_pop(L, 1);
+        lua_getfield(L, 1, "relative_to");
+        const std::string frame = lua_isnil(L, -1) ? "world" : luaL_checkstring(L, -1);
+        lua_pop(L, 1);
+        if (frame != "world" && frame != "skater") luaL_argerror(L, 1, "relative_to is \"world\" or \"skater\"");
+        mount.with_skater = frame == "skater";
+        // (Under the skater it is a place about his body; in the world, anywhere a board's bone may be.)
+        const double reach = std::sqrt(double{mount.position[0]} * mount.position[0] + double{mount.position[1]} * mount.position[1] +
+                                     double{mount.position[2]} * mount.position[2]);
+        if (mount.with_skater && reach > 20) luaL_argerror(L, 1, "a mount under the skater is within 20 m of him");
+        lua_getfield(L, 1, "bones");
+        if (!lua_isnil(L, -1)) {
+            luaL_checktype(L, -1, LUA_TTABLE);
+            const int bones = lua_gettop(L);
+            lua_pushnil(L);
+            while (lua_next(L, bones) != 0) {
+                Game::BoardMount::Bone bone;
+                const double index = lua_isnumber(L, -2) ? lua_tonumber(L, -2) : -1;
+                if (!(index >= 3 && index <= 15) || index != std::floor(index)) luaL_argerror(L, 1, "a mount's bones are numbered 3 to 15");
+                bone.bone = static_cast<int>(index);
+                luaL_checktype(L, -1, LUA_TTABLE);
+                const int entry = lua_gettop(L);
+                lua_getfield(L, entry, "position");
+                if (!lua_isnil(L, -1)) {
+                    bone.position = position_of(L, lua_gettop(L), "a bone's position");
+                    // (In its parent's frame: a part of a board, never further from its parent than a board is long.)
+                    for (const float v : *bone.position)
+                        if (std::fabs(v) > 2) luaL_argerror(L, 1, "a mount's bone is within 2 m of its parent");
+                }
+                lua_pop(L, 1);
+                lua_getfield(L, entry, "rotation");
+                if (!lua_isnil(L, -1)) bone.rotation = quaternion_at(L, lua_gettop(L));
+                lua_pop(L, 1);
+                if (!bone.position && !bone.rotation) luaL_argerror(L, 1, "a mount's bone has a position, a rotation or both");
+                mount.bones.push_back(bone);
+                lua_pop(L, 1);
+            }
+        }
+        lua_pop(L, 1);
+        const double weight = luaL_optnumber(L, 2, 1);
+        if (!(weight >= 0 && weight <= 1)) luaL_argerror(L, 2, "a weight is 0 to 1");
+        mount.weight = static_cast<float>(weight);
+        return result(L, game_of(plugin).board_mount(plugin.id(), mount));
     }
     static int board_hide(lua_State* L) {
         auto& plugin = plugin_of(L);
@@ -3966,8 +4092,9 @@ void WorldApi::install(Plugin& plugin, lua_State* L) {
     lua_setfield(L, -2, "__metatable");
     lua_setfield(L, LUA_REGISTRYINDEX, "reskate.permissions");
     add_functions(L, "skater", {{"state", state}, {"surface_sound", surface_sound}, {"noclip", noclip}, {"boost", boost}, {"freeze", freeze}, {"wipeout", wipeout}, {"skydive", skydive}, {"xray", xray},
-                                {"shape_launch", shape_launch}, {"hide", hide_skater}, {"reach", reach}, {"carry", carry}, {"hand", hand}, {"joint", skater_joint}, {"pose", skater_pose}, {"pose_others", skater_pose_others}});
-    add_functions(L, "board", {{"motion", board_motion}, {"bones", board_bones}, {"set", board_set}, {"hide", board_hide}, {"clear", board_clear}, {"scale", board_scale},
+                                {"shape_launch", shape_launch}, {"hide", hide_skater}, {"reach", reach}, {"carry", carry}, {"hand", hand}, {"joint", skater_joint}, {"pose", skater_pose}, {"pose_others", skater_pose_others},
+                                {"read_pose", skater_read_pose}});
+    add_functions(L, "board", {{"motion", board_motion}, {"bones", board_bones}, {"set", board_set}, {"mount", board_mount}, {"hide", board_hide}, {"clear", board_clear}, {"scale", board_scale},
                                {"park", board_park}, {"fit", board_fit}, {"toss", board_toss}, {"parameters", board_parameters},
                                {"set_parameter", board_set_parameter}, {"clear_parameter", board_clear_parameter}, {"parameter_scopes", board_parameter_scopes}});
     add_functions(L, "camera", {{"look", camera_look}, {"set", camera_set}, {"follow", camera_follow}, {"release", camera_release}, {"held", camera_held}, {"get", camera_get}, {"cycle", camera_cycle}});

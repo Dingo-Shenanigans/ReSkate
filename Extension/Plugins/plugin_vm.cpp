@@ -80,6 +80,35 @@ Plugin::Plugin(std::string id, std::filesystem::path directory, Manifest manifes
       services_(services), limits_(limits) {
     const auto entry = std::filesystem::path(manifest_.entry);
     code_root_ = entry.has_parent_path() ? entry.parent_path().generic_string() : std::string{};
+    if (!manifest_.fonts.empty()) {
+        std::vector<std::string> files;
+        for (const auto& font : manifest_.fonts) {
+            const auto utf8 = (directory_ / std::filesystem::path(font)).u8string();
+            files.emplace_back(utf8.begin(), utf8.end());
+        }
+        fonts_.resize(files.size());
+        font_files_ = std::make_shared<const std::vector<std::string>>(std::move(files));
+    }
+}
+
+int Plugin::font_number(std::string_view path) const noexcept {
+    const auto found = std::find(manifest_.fonts.begin(), manifest_.fonts.end(), path);
+    return found == manifest_.fonts.end() ? 0 : plugin_ui::own_fonts + static_cast<int>(found - manifest_.fonts.begin());
+}
+
+const plugin_ui::detail::FontMetrics* Plugin::font_metrics(int number) {
+    const auto index = static_cast<std::size_t>(number - plugin_ui::own_fonts);
+    if (number < plugin_ui::own_fonts || index >= fonts_.size()) return nullptr;
+    auto& font = fonts_[index];
+    if (!font.asked) {
+        font.asked = true;
+        const Untimed untimed{*this}; // reading the font is ReSkate's work, not the plugin's time
+        const auto& path = manifest_.fonts[index];
+        font.metrics = services_.game().plugin_font_metrics(id_, path, directory_ / std::filesystem::path(path));
+        if (font.metrics && !(font.metrics->size > 0)) font.metrics.reset();
+        if (!font.metrics) log(LogLevel::warn, "the font " + path + " cannot be read: text in it is drawn in \"body\"");
+    }
+    return font.metrics.get();
 }
 
 Plugin::~Plugin() { close(); }
@@ -158,6 +187,13 @@ bool Plugin::load(std::string entry) {
         stop("its VM could not be created");
         return false;
     }
+    // Luau starts a collection when the heap is twice what was held after the last one, and works through it
+    // at twice the rate the script allocates: a plugin holding 450 MB had up to 2.5 times that allocated before
+    // its garbage was freed, and was stopped for 1024 MB it did not hold (Animator Studio with two packs
+    // loaded, 2026-11-17). A collection starts at 1.3 times what is held and runs at four times the rate: about
+    // 1.55 times at most. A plugin holding little pays nothing it can measure.
+    lua_gc(L_, LUA_GCSETGOAL, 130);
+    lua_gc(L_, LUA_GCSETSTEPMUL, 400);
     auto* callbacks = lua_callbacks(L_);
     callbacks->userdata = this;
     callbacks->interrupt = &Plugin::interrupt;
@@ -343,6 +379,10 @@ void Plugin::close() {
     listeners_.clear();
     http_pending_.clear();
     preloads_.clear(); // (a read still going hands its result to nobody)
+    pictures_.clear(); // (and a picture still being drawn is written all the same)
+    // (A zip still being unpacked is told to stop: it removes what it wrote, and calls nobody.)
+    for (const auto& going : unzips_) going.job->abandoned.store(true, std::memory_order_relaxed);
+    unzips_.clear();
     screens_.clear();
     open_screen_.clear();
     binds_.clear();
@@ -455,8 +495,20 @@ void Plugin::prune_effects() {
     });
 }
 
+// Between a plugin's calls: past three quarters of its memory, its garbage is collected whole, so that it is
+// stopped for what it holds and not for what it has let go of and Luau has not got round to freeing. (Luau
+// cannot collect inside an allocation, which is where the limit is met.) Not again until it has grown by an
+// eighth of its memory over what it still held after the last time: a plugin that does hold that much is not
+// collected whole every tick.
+void Plugin::collect_when_nearly_full() {
+    if (!L_ || calls_ > 0 || memory_ < limits_.memory / 4 * 3 || memory_ < collected_floor_ + limits_.memory / 8) return;
+    lua_gc(L_, LUA_GCCOLLECT, 0);
+    collected_floor_ = memory_;
+}
+
 void Plugin::tick(double dt_ms) {
     if (state_ != State::running) return;
+    collect_when_nearly_full();
     ++tick_number_;
     raycasts_ = 0;
     native_casts_ = {};
@@ -465,6 +517,8 @@ void Plugin::tick(double dt_ms) {
     effect_calls_ = 0;
     prune_effects();
     deliver_preloads(*this);
+    deliver_pictures(*this);
+    deliver_unzips(*this);
     const double now = services_.now_ms();
     std::vector<int> due;
     for (const auto& [id, timer] : timers_)
@@ -549,6 +603,8 @@ void Plugin::run_chat_command(const std::string& name, const std::string& argume
 void Plugin::draw() {
     shapes_.clear();
     shape_text_ = 0;
+    marks_ = 0;
+    mesh_corners_ = 0;
     if (state_ != State::running || !has("overlay") || !handlers_.contains("draw")) return;
     drawing_ = true;
     fire_with("draw", [&](lua_State* L) {
@@ -675,7 +731,13 @@ void Plugin::http_done(const HttpResponse& response) {
     lua_pushlstring(L_, response.body.data(), response.body.size());
     if (response.error.empty()) lua_pushnil(L_);
     else lua_pushlstring(L_, response.error.data(), response.error.size());
-    call(3, "its web request's callback", limits_.call_ms);
+    // The answer's headers by their names in lower case (the last of a name that came twice).
+    lua_createtable(L_, 0, static_cast<int>(response.headers.size()));
+    for (const auto& [name, value] : response.headers) {
+        lua_pushlstring(L_, value.data(), value.size());
+        lua_setfield(L_, -2, name.c_str());
+    }
+    call(4, "its web request's callback", limits_.call_ms);
 }
 
 void Plugin::skater_changed(const char* state, const char* previous) {

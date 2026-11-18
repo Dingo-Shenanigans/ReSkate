@@ -184,6 +184,14 @@ The Luau plugin host. A plugin is a folder in `Mods/` with a `reskate-plugin.jso
 - `plugin_api*.cpp` — the `reskate.*` API (game, world, physics, UI, more); `plugin_game*`, `plugin_camera`, `plugin_joystick`.
 - `Test/` — the host tests, and in `Test/fixtures/` the plugins they load.
 - `plugin_ui`, `plugin_sound`, `plugin_wave`, `plugin_http`, `plugin_session_feed`, `plugin_wire` — pages, audio, HTTP, multiplayer messages.
+- `plugin_picture`, `plugin_api_picture` — [`reskate.picture`](https://docs.reskate.dev/plugins/api/picture): a picture composed
+  from drawing steps and written as a PNG, drawn off the client thread (WIC for pictures, DirectWrite for fonts; Windows only).
+- `plugin_zip_file` — a zip that is a file of a plugin's data folder ([`reskate.zip.list`, `reskate.files.unzip`](https://docs.reskate.dev/plugins/api/files)):
+  listed from its directory alone, and unpacked off the client thread, each file streamed to disk and checked against its CRC.
+- `plugin_font`, `plugin_font_directwrite` — [a plugin's own fonts](https://docs.reskate.dev/plugins/api/overlay#your-own-fonts) (its
+  manifest's `fonts`), read by DirectWrite alone (Windows only): the loader `reskate.picture`'s texts share, a font's metrics for
+  `d:measure`, and its glyphs as coverage for the texts drawn in it. `Extension/UI/Overlay/plugin_fonts` keeps those glyphs on
+  pages (`glyph_pages.h`: their sizes, places and budget) that go to the GPU as plugins' pictures do, and draws the text.
 - `plugin_server_scope` — the plugins a dedicated server brought here, which run only on servers that require them.
 - `plugin_commands` — the `plugin` console command.
 - `plugin_effects`, `plugin_api_effects` — the permission, asset declarations and Lua calls for

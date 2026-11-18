@@ -86,6 +86,8 @@ constexpr Capability capabilities[] = {
     {"audio", "SOUND", Risk::grey, "Play, stop and adjust sounds"},
     {"audio.ui", "SOUND", Risk::grey, "Play interface sounds"},
     {"files", "FILES", Risk::amber, "Read and write files in its own data folder"},
+    // Red: files outside the Mods folder, where the player's own things may be.
+    {"files.folders", "FILES", Risk::red, "Read and write files in folders beside the game"},
     {"room", "GAME", Risk::red, "Open and control the character room, where others see your skater"},
     {"game.speed", "GAME", Risk::amber, "Control slow motion and the speed of the game"},
     {"replay", "GAME", Risk::grey, "Use replays"},
@@ -216,6 +218,11 @@ std::vector<PermissionGroup> permission_groups(const Manifest& manifest) {
     for (const auto& capability : capabilities) {
         if (!manifest.permissions.contains(capability.permission)) continue;
         auto text = std::string(capability.phrase);
+        if (capability.permission == "files.folders" && !manifest.folders.empty()) {
+            text += " (";
+            for (const auto& folder : manifest.folders) text += (&folder == &manifest.folders.front() ? "" : ", ") + folder;
+            text += ')';
+        }
         if (capability.permission == "net.http" && !manifest.domains.empty()) {
             text += " (";
             for (const auto& domain : manifest.domains) text += (&domain == &manifest.domains.front() ? "" : ", ") + domain;

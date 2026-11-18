@@ -70,7 +70,15 @@ plugin_ui::Style style_of(lua_State* L, int index) {
         else if (font == "heading") style.font = 2;
         else if (font == "title") style.font = 3;
         else if (font == "title_large") style.font = 4;
-        else luaL_error(L, "font is \"bold\", \"body\", \"heading\", \"title\" or \"title_large\"");
+        else if (font.find_first_of("./") != std::string::npos) {
+            // A font file of the plugin's own package, which its manifest's "fonts" names: the style
+            // carries its number there. Its metrics are asked for now, so whatever draws the text has
+            // them; one that cannot be read is "body" from here on, measured and drawn alike.
+            auto& plugin = plugin_of(L);
+            style.font = plugin.font_number(font);
+            if (!style.font) luaL_error(L, "a font file is named in the manifest's \"fonts\" first");
+            if (!plugin.font_metrics(style.font)) style.font = 1;
+        } else luaL_error(L, "font is \"bold\", \"body\", \"heading\", \"title\", \"title_large\" or a font file of the manifest's \"fonts\"");
     }
     lua_pop(L, 1);
     // A picture's source rectangle, {u0, v0, u1, v1} from 0 to 1: one glyph of a font atlas, a tile.
@@ -146,9 +154,36 @@ struct UiApi {
         add(L, plugin, {kind, {point(L, 2, "the circle's centre")}, radius, {}, style_of(L, 4)});
         return 0;
     }
-    // A picture of the package's own (PNG or JPG), as the overlay loads it: its file's full path.
+    // A picture of the package's own (PNG or JPG), as the overlay loads it: its file's full path. Or,
+    // "data:<path>", one in the plugin's data folder (a cover it made, an icon it downloaded): its
+    // file's full path, "|" and a stamp, looked at again twice a second, so a file written again shows.
     static std::string image_file(lua_State* L, Plugin& plugin, int index) {
-        const auto path = checked_text(L, index, 200, "a picture's path");
+        index = lua_absindex(L, index);
+        const auto path = checked_text(L, index, 206, "a picture's path");
+        if (path.starts_with("data:")) {
+            need(L, plugin, "files", "a data: picture");
+            const double now = plugin.services_.now_ms();
+            auto& image = plugin.data_images_[path];
+            if (now - image.checked < 500) return image.name;
+            if (plugin.data_images_.size() > plugin.limits_.images) {
+                plugin.data_images_.erase(path);
+                luaL_error(L, "a plugin draws at most %d different pictures", static_cast<int>(plugin.limits_.images));
+            }
+            auto extension = std::filesystem::path(path).extension().string();
+            std::transform(extension.begin(), extension.end(), extension.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+            if (extension != ".png" && extension != ".jpg" && extension != ".jpeg") {
+                plugin.data_images_.erase(path);
+                luaL_error(L, "a picture is a .png or .jpg file");
+            }
+            const auto inside = data_path(L, index, path.substr(5), false);
+            std::filesystem::path file;
+            std::uint64_t stamp = 0;
+            image.checked = now;
+            // (One that is not there, or not yet, has no name: nothing is drawn for it.)
+            if (!game_of(plugin).files_place(plugin.id(), inside, file, stamp).empty() || !stamp) return image.name = {};
+            const auto utf8 = file.u8string();
+            return image.name = std::string(utf8.begin(), utf8.end()) + "|" + std::to_string(stamp);
+        }
         if (const auto found = plugin.image_files_.find(path); found != plugin.image_files_.end()) return found->second;
         if (plugin.image_files_.size() >= plugin.limits_.images)
             luaL_error(L, "a plugin draws at most %d different pictures", static_cast<int>(plugin.limits_.images));
@@ -165,6 +200,7 @@ struct UiApi {
     static int image(lua_State* L) {
         auto& plugin = drawing(L);
         auto file = image_file(L, plugin, 2);
+        if (file.empty()) return 0; // a data folder's picture that is not there
         add(L, plugin, {plugin_ui::Shape::Kind::image, {point(L, 3, "a picture's top left"), point(L, 4, "a picture's bottom right")}, 0,
                         std::move(file), style_of(L, 5)});
         return 0;
@@ -173,6 +209,7 @@ struct UiApi {
     static int world_image(lua_State* L) {
         auto& plugin = drawing(L);
         auto file = image_file(L, plugin, 2);
+        if (file.empty()) return 0;
         const float height = finite(L, 4, "the picture's height");
         if (!(height > 0 && height <= 1000)) luaL_argerror(L, 4, "a height is more than 0 and at most 1000 metres");
         add(L, plugin, {plugin_ui::Shape::Kind::world_image, {point(L, 3, "the picture's place")}, height, std::move(file), style_of(L, 5)});
@@ -289,8 +326,149 @@ struct UiApi {
             shape.points.push_back(point(L, -1, "a polygon's point"));
             lua_pop(L, 1);
         }
+        // style.closed = false: an outline that does not go back to its first point (a line through
+        // the points: an arc, a graph's curve). A filled polygon is always closed.
+        if (lua_istable(L, 3)) {
+            if (lua_getfield(L, 3, "closed") != LUA_TNIL && !lua_toboolean(L, -1)) shape.fit = 1;
+            lua_pop(L, 1);
+        }
         add(L, plugin, std::move(shape));
         return 0;
+    }
+    // d:mesh(corners, triangles, style): triangles of the plugin's own, for a shape no other call draws
+    // (a torn edge, a ribbon, a picture cut to a shape). `corners` is a flat list of numbers, five a
+    // corner: x, y (the window's pixels), u, v (its place in the picture, 0 to 1) and its colour
+    // (0xRRGGBBAA). `triangles` is a flat list of corner numbers from 1, three a triangle.
+    // style.image: a picture of the package (or "data:" and one of the data folder), drawn through the
+    // corners' u and v and tinted by their colours; without one the triangles are their colours alone.
+    static int mesh(lua_State* L) {
+        auto& plugin = drawing(L);
+        luaL_checktype(L, 2, LUA_TTABLE);
+        luaL_checktype(L, 3, LUA_TTABLE);
+        const int numbers = lua_objlen(L, 2), triangles = lua_objlen(L, 3);
+        if (numbers < 15 || numbers % 5 != 0 || numbers / 5 > 8192) luaL_argerror(L, 2, "a mesh has 3 to 8192 corners, five numbers each: x, y, u, v, colour");
+        if (triangles < 3 || triangles % 3 != 0 || triangles > 3 * 16384) luaL_argerror(L, 3, "a mesh has 1 to 16384 triangles, three corner numbers each");
+        const int corners = numbers / 5;
+        plugin.mesh_corners_ += static_cast<std::size_t>(corners);
+        if (plugin.mesh_corners_ > plugin.limits_.mesh_corners) {
+            if (const double now = plugin.services_.now_ms(); now - plugin.shapes_warned_at_ >= 10000) {
+                plugin.shapes_warned_at_ = now;
+                plugin.log(LogLevel::warn, "more than " + std::to_string(plugin.limits_.mesh_corners) + " mesh corners in a frame: the rest are left out");
+            }
+            return 0;
+        }
+        plugin_ui::Shape shape{plugin_ui::Shape::Kind::mesh};
+        if (lua_istable(L, 4)) {
+            const bool pictured = lua_getfield(L, 4, "image") != LUA_TNIL;
+            if (pictured) shape.text = image_file(L, plugin, -1);
+            lua_pop(L, 1);
+            if (pictured && shape.text.empty()) return 0; // a data folder's picture that is not there
+        }
+        shape.points.reserve(static_cast<std::size_t>(corners));
+        shape.uvs.reserve(static_cast<std::size_t>(corners));
+        shape.colours.reserve(static_cast<std::size_t>(corners));
+        for (int i = 0; i < corners; ++i) {
+            float value[4];
+            for (int j = 0; j < 4; ++j) {
+                lua_rawgeti(L, 2, i * 5 + j + 1);
+                value[j] = finite(L, -1, "a mesh corner");
+                lua_pop(L, 1);
+            }
+            lua_rawgeti(L, 2, i * 5 + 5);
+            shape.colours.push_back(colour_of(L, -1));
+            lua_pop(L, 1);
+            shape.points.push_back({value[0], value[1], 0});
+            shape.uvs.push_back({value[2], value[3]});
+        }
+        shape.indices.reserve(static_cast<std::size_t>(triangles));
+        for (int i = 1; i <= triangles; ++i) {
+            lua_rawgeti(L, 3, i);
+            const double corner = luaL_checknumber(L, -1);
+            if (!(corner >= 1 && corner <= corners) || corner != std::floor(corner)) luaL_error(L, "a triangle names a corner the mesh does not have");
+            shape.indices.push_back(static_cast<std::uint16_t>(corner - 1));
+            lua_pop(L, 1);
+        }
+        add(L, plugin, std::move(shape));
+        return 0;
+    }
+    // d:mark(): a place in this frame's drawing, as a number, for d:adjust.
+    static int mark(lua_State* L) {
+        auto& plugin = drawing(L);
+        if (plugin.marks_ >= 4096) luaL_error(L, "at most 4096 marks in a frame");
+        plugin_ui::Shape shape{plugin_ui::Shape::Kind::mark};
+        shape.seed = ++plugin.marks_;
+        add(L, plugin, std::move(shape));
+        lua_pushnumber(L, plugin.marks_);
+        return 1;
+    }
+    // d:adjust(mark, {rotate, about, offset, alpha, fade}): everything drawn since the mark, turned
+    // `rotate` radians about the point `about`, then moved by `offset`, and its opacity multiplied by
+    // `alpha` (0 to 1): a label drawn tilted, a card that slides in as it fades in. `fade` =
+    // {top, bottom, band, taller} fades it out towards a top and a bottom edge (the window's y, either
+    // left out for none) over `band` pixels (at 1080 lines; 18 when left out), as a scrolled list fades
+    // at its ends in place of cutting its rows; shapes taller than `taller` pixels (at 1080 lines)
+    // are left as they are, so the sheet behind a list does not fade with its rows.
+    static int adjust(lua_State* L) {
+        auto& plugin = drawing(L);
+        const double number = luaL_checknumber(L, 2);
+        if (!(number >= 1 && number <= plugin.marks_) || number != std::floor(number)) luaL_argerror(L, 2, "not a mark of this frame (d:mark)");
+        luaL_checktype(L, 3, LUA_TTABLE);
+        plugin_ui::Shape shape{plugin_ui::Shape::Kind::adjust, {plugin_ui::Vec3{}, plugin_ui::Vec3{}, plugin_ui::Vec3{}}};
+        shape.seed = static_cast<std::uint32_t>(number);
+        if (lua_getfield(L, 3, "rotate") != LUA_TNIL) shape.turn = finite(L, -1, "rotate");
+        lua_pop(L, 1);
+        if (lua_getfield(L, 3, "about") != LUA_TNIL) shape.points[0] = point(L, -1, "about");
+        else if (shape.turn != 0) luaL_error(L, "rotate needs about: the point it turns round");
+        lua_pop(L, 1);
+        if (lua_getfield(L, 3, "offset") != LUA_TNIL) shape.points[1] = point(L, -1, "offset");
+        lua_pop(L, 1);
+        if (lua_getfield(L, 3, "alpha") != LUA_TNIL) {
+            shape.alpha = finite(L, -1, "alpha");
+            if (!(shape.alpha >= 0 && shape.alpha <= 1)) luaL_error(L, "alpha is 0 to 1");
+        }
+        lua_pop(L, 1);
+        if (lua_getfield(L, 3, "fade") != LUA_TNIL) {
+            luaL_checktype(L, -1, LUA_TTABLE);
+            const int fade = lua_absindex(L, -1);
+            shape.edge = 18;
+            if (lua_getfield(L, fade, "top") != LUA_TNIL) shape.points[2][0] = finite(L, -1, "fade.top"), shape.fit |= 1;
+            lua_pop(L, 1);
+            if (lua_getfield(L, fade, "bottom") != LUA_TNIL) shape.points[2][1] = finite(L, -1, "fade.bottom"), shape.fit |= 2;
+            lua_pop(L, 1);
+            if (lua_getfield(L, fade, "band") != LUA_TNIL) shape.edge = std::clamp(finite(L, -1, "fade.band"), 1.0f, 2000.0f);
+            lua_pop(L, 1);
+            if (lua_getfield(L, fade, "taller") != LUA_TNIL) shape.points[2][2] = std::clamp(finite(L, -1, "fade.taller"), 0.0f, 100000.0f);
+            lua_pop(L, 1);
+        }
+        lua_pop(L, 1);
+        add(L, plugin, std::move(shape));
+        return 0;
+    }
+    // d:glyph(character, style): how one character is drawn in style.font at style.size: its advance and
+    // its drawn box from the text's top left, in the window's pixels, for setting type by a letter's own
+    // shape (a label centred on its capitals, letters set round a circle). nil until the fonts are known.
+    static int glyph(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        need(L, plugin, "overlay", "d:glyph");
+        const auto text = checked_text(L, 2, 8, "a character");
+        if (text.empty()) luaL_argerror(L, 2, "a character");
+        const auto style = style_of(L, 3);
+        std::size_t at = 0;
+        const auto code = plugin_ui::next_code_point(text, at);
+        const float pixels = style.size * plugin_ui::display()[1] / 1080.0f;
+        const auto* own = plugin.font_metrics(style.font); // (none for one of the menus' fonts)
+        const auto found = own ? plugin_ui::glyph(*own, pixels, code) : plugin_ui::glyph(style.font, pixels, code);
+        if (!found) {
+            lua_pushnil(L);
+            return 1;
+        }
+        lua_createtable(L, 0, 5);
+        field_number(L, "advance", found->advance);
+        field_number(L, "left", found->box[0]);
+        field_number(L, "top", found->box[1]);
+        field_number(L, "right", found->box[2]);
+        field_number(L, "bottom", found->box[3]);
+        return 1;
     }
     static int size(lua_State* L) {
         auto& plugin = plugin_of(L);
@@ -377,7 +555,8 @@ struct UiApi {
         const auto text = checked_text(L, 2, 500, "a measured text");
         const auto style = style_of(L, 3);
         const float k = plugin_ui::display()[1] / 1080.0f;
-        const auto size = plugin_ui::measure(style.font, style.size * k, text, style.wrap * k);
+        const auto* own = plugin.font_metrics(style.font); // (none for one of the menus' fonts)
+        const auto size = own ? plugin_ui::measure(*own, style.size * k, text, style.wrap * k) : plugin_ui::measure(style.font, style.size * k, text, style.wrap * k);
         lua_pushvector(L, size[0], size[1], 0);
         return 1;
     }
@@ -909,7 +1088,7 @@ void UiApi::install(Plugin& plugin, lua_State* L) {
     push_functions(L, {{"text", F::text}, {"rect", F::rect}, {"line", F::line}, {"circle", F::circle}, {"poly", F::poly},
                        {"world_text", F::world_text}, {"world_line", F::world_line}, {"world_circle", F::world_circle},
                        {"image", F::image}, {"world_image", F::world_image}, {"game_image", F::game_image}, {"game_map", F::game_map}, {"rough_rect", F::rough_rect}, {"scribble", F::scribble}, {"halftone", F::halftone},
-                       {"clip", F::clip}, {"measure", F::measure},
+                       {"clip", F::clip}, {"measure", F::measure}, {"mark", F::mark}, {"adjust", F::adjust}, {"glyph", F::glyph}, {"mesh", F::mesh},
                        {"gradient", F::gradient}, {"skeleton", F::skeleton}, {"size", F::size}, {"world_to_screen", F::world_to_screen}});
     plugin.draw_table_ = lua_ref(L, -1);
     lua_pop(L, 1);
