@@ -8,10 +8,10 @@ struct Settings {
     std::map<std::string, std::string> values{{held_settings[0], "1"}, {held_settings[1], "1"}};
     bool readable = true;
     int writes = 0;
-    void step(Hold& h, std::uint64_t now, std::uint64_t changed) {
+    void step(Hold& h, std::uint64_t now, std::uint64_t changed, bool may_put_back = true) {
         h.step(now, changed,
             [&](const char* name) -> std::optional<std::string> { if (!readable) return {}; return values.at(name); },
-            [&](const char* name, const std::string& value) { values[name] = value; ++writes; return true; });
+            [&](const char* name, const std::string& value) { values[name] = value; ++writes; return true; }, may_put_back);
     }
 };
 int main() {
@@ -66,6 +66,17 @@ int main() {
         later.readable = true;
         later.step(h4, 1000 + hold_ms + 1, 1000);
         check(!h4.holding() && later.values[held_settings[0]] == "1", "put back once they can be read");
+
+        Settings play;
+        Hold h5;
+        play.step(h5, 1000, 1000, false);
+        check(h5.holding(), "taken in play too");
+        play.step(h5, 1000 + hold_ms, 1000, false);
+        play.step(h5, 1000 + hold_ms * 10, 1000, false);
+        check(h5.holding() && play.values[held_settings[0]] == "0", "not put back while a level is played");
+        play.step(h5, 1000 + hold_ms * 11, 1000, true);
+        check(!h5.holding() && play.values[held_settings[0]] == "1" && play.values[held_settings[1]] == "1",
+              "put back once no level is played");
         std::puts("Time of day lighting checks passed."); return 0;
     } catch (const std::exception& e) { std::fprintf(stderr, "%s\n", e.what()); return 1; }
 }

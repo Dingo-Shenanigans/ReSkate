@@ -618,7 +618,7 @@ void update_model(std::uintptr_t client, TickState& frame) {
     dingosdk::refresh_named_settings(settings_wanted);
     apply_throwdown_modes();
     apply_performance_settings();
-    dingosdk::time_of_day_lighting::tick(settings_now);
+    dingosdk::time_of_day_lighting::tick(settings_now, state == 13 || state == 21); // (13, 21: a level played)
     dingosdk::world_shader::measure_heights(&dingosdk::local_ground_height); // a world shader's ground heights
     apply_local_connection_timeouts();
     dingosdk::job_spin::apply_default();
