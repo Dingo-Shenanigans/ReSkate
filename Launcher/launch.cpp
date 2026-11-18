@@ -2,6 +2,7 @@
 #include "Engine/Core/Debug/trace.h"
 #include "Engine/Core/Platform/launcher_support.h"
 #include "Engine/Core/Platform/startup_failure.h"
+#include "Engine/Core/Platform/user_data_paths.h"
 #include "Engine/Vfs/initfs.h"
 #include "Engine/Vfs/content_cache_install.h"
 #include "Engine/Vfs/world_layer_scan.h"
@@ -838,11 +839,8 @@ DWORD start_game(const Session& session, const launcher::LaunchOptions& options,
     // Park thumbnails are read from the game's own data now; the pack older
     // launchers downloaded is no longer used.
     {
-        std::array<wchar_t, 32768> local{};
-        const auto length = GetEnvironmentVariableW(L"LOCALAPPDATA", local.data(), static_cast<DWORD>(local.size()));
         std::error_code ignored;
-        if (length && length < local.size())
-            fs::remove(fs::path(local.data()) / L"ReSkate" / L"profiles" / L"offline" / L"ReSkate-Object-Previews.bin", ignored);
+        fs::remove(user_data::root() / L"profiles" / L"offline" / L"ReSkate-Object-Previews.bin", ignored);
     }
     // Catalogues (item names, challenges, entitlements) are read from the live
     // game's content cache for this build, installed once into Local AppData.

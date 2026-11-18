@@ -26,10 +26,12 @@
 #include <Windows.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstring>
 #include <fstream>
 #include <iostream>
+#include <optional>
 #include <stdexcept>
 
 namespace fs = std::filesystem;
@@ -225,14 +227,55 @@ void rules() {
 
 // ------------------------------------------------------------- the choices kept
 
+struct Environment {
+    const wchar_t* name;
+    std::optional<std::wstring> saved;
+    explicit Environment(const wchar_t* key) : name(key) {
+        std::array<wchar_t, 32768> value{};
+        SetLastError(ERROR_SUCCESS);
+        const auto length = GetEnvironmentVariableW(name, value.data(), static_cast<DWORD>(value.size()));
+        if (!length && GetLastError() == ERROR_ENVVAR_NOT_FOUND) return;
+        if (length >= value.size()) throw std::runtime_error("Test environment value is too long");
+        saved = std::wstring(value.data(), length);
+    }
+    ~Environment() { SetEnvironmentVariableW(name, saved ? saved->c_str() : nullptr); }
+    void set(const wchar_t* value) const {
+        if (!SetEnvironmentVariableW(name, value)) throw std::runtime_error("Cannot set test environment");
+    }
+};
+struct ChoiceFixture {
+    const fs::path root = fs::current_path() /
+        ("reskate-item-choice-" + std::to_string(GetCurrentProcessId()) + "-" + std::to_string(GetTickCount64()));
+    ChoiceFixture() {
+        // An existing directory belongs to somebody else, even if its name looks like an old test.
+        if (!fs::create_directory(root)) throw std::runtime_error("Cannot create an exclusive item-choice fixture");
+    }
+    ~ChoiceFixture() {
+        std::error_code error;
+        fs::remove_all(root, error);
+        check(!error, "the owned item-choice fixture is removed");
+    }
+};
+std::string choice_bytes(const fs::path& path) {
+    std::ifstream file(path, std::ios::binary);
+    if (!file) throw std::runtime_error("Cannot read item-choice fixture");
+    return {std::istreambuf_iterator<char>(file), {}};
+}
+void write_choice_fixture(const fs::path& path, const std::string& text) {
+    fs::create_directories(path.parent_path());
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    file << text;
+    file.flush();
+    if (!file) throw std::runtime_error("Cannot write item-choice fixture");
+}
 void choices() {
-    wchar_t temp[MAX_PATH]{};
-    GetTempPathW(MAX_PATH, temp);
-    const auto root = fs::path(temp) / ("reskate-item-choice-" + std::to_string(GetCurrentProcessId()));
-    std::error_code error;
-    fs::remove_all(root, error);
+    const ChoiceFixture fixture;
+    const auto& root = fixture.root;
+    const Environment local(L"LOCALAPPDATA"), selected(L"RESKATE_DATA_ROOT");
     // The choices go to %LOCALAPPDATA%\ReSkate\items-left-out.json: here, the test's own folder.
-    SetEnvironmentVariableW(L"LOCALAPPDATA", (root / "appdata").wstring().c_str());
+    local.set((root / "appdata").c_str());
+    // A test launched from an isolated profile must never write to that inherited profile.
+    selected.set(nullptr);
     check(items_left_out().empty(), "with no file, nothing is left out");
     check(save_items_left_out("Some-Pack", {"own_a", "Own_B"}), "a choice is kept");
     check(items_left_out("some-pack") == std::set<std::string>{"own_a", "own_b"}, "and read again by the folder's name in any case, the keys lower-case");
@@ -247,7 +290,33 @@ void choices() {
     }
     check(items_left_out().empty(), "an unreadable file leaves nothing out");
     check(save_items_left_out("Fresh", {"own_d"}) && items_left_out("fresh") == std::set<std::string>{"own_d"}, "and is written again by the next choice");
-    fs::remove_all(root, error);
+
+    const auto normal_file = root / "appdata" / "ReSkate" / "items-left-out.json";
+    const auto selected_root = root / "selected";
+    const auto selected_file = selected_root / "items-left-out.json";
+    const std::string normal_canary = "{\"normal-only\":[\"normal_item\"]}\n";
+    write_choice_fixture(normal_file, normal_canary);
+    write_choice_fixture(selected_file, "{\"selected-only\":[\"selected_item\"]}\n");
+    selected.set(selected_root.c_str());
+    check(items_left_out() == ItemsLeftOut{{"selected-only", {"selected_item"}}},
+          "a selected root reads its own item choices without importing the normal profile");
+    check(save_items_left_out("Isolated-Pack", {"own_private"}), "a selected root saves an item choice");
+    check(items_left_out() == ItemsLeftOut{{"isolated-pack", {"own_private"}}, {"selected-only", {"selected_item"}}},
+          "a saved choice is read back beside the selected root's earlier choice");
+    const auto selected_bytes = choice_bytes(selected_file);
+    check(selected_bytes.find("own_private") != std::string::npos,
+          "the public save wrote the selected file on disk");
+    check(choice_bytes(normal_file) == normal_canary, "selected reads and writes leave normal item-choice bytes unchanged");
+
+    // An overlapping requested root is refused, rather than falling back to the normal profile.
+    selected.set(normal_file.parent_path().c_str());
+    check(items_left_out().empty(), "an invalid selected root cannot read normal item choices");
+    check(!save_items_left_out("Refused-Pack", {"must_not_write"}), "an invalid selected root refuses an item-choice write");
+    check(choice_bytes(normal_file) == normal_canary && choice_bytes(selected_file) == selected_bytes,
+          "a refused selected root changes neither normal nor selected item-choice bytes");
+    selected.set(nullptr);
+    check(items_left_out() == ItemsLeftOut{{"normal-only", {"normal_item"}}},
+          "normal item choices are read again only after the override is removed");
 }
 
 // ------------------------------------------------------------------ real mods
