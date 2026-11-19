@@ -18,7 +18,9 @@ void play_pad(std::vector<PadStep> steps);
 // The game thread calls this once a game tick.
 void pad_tick() noexcept;
 // True when it wrote the script's pad to `state`.
-bool scripted_pad(DWORD user, XINPUT_STATE &state) noexcept;
+bool scripted_pad(DWORD user, XINPUT_STATE &state, bool* sdk_written = nullptr) noexcept;
+// Read-only availability check for passive input leases.
+bool scripted_pad_active() noexcept;
 // One stick of the stand-in pad held at `value` (-1..1) for `milliseconds` more, the pad otherwise
 // neutral, for turning the game menu's preview (reskate.room.turn); 0 lets go. `stick`: 0 left x,
 // 1 left y, 2 right x, 3 right y. A script playing (play_pad) comes first. Any thread.

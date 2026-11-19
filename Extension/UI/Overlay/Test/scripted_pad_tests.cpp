@@ -1,8 +1,15 @@
 #include "Extension/UI/Overlay/scripted_pad.h"
+#include "Extension/Input/input_publication.h"
 #include <cstdio>
 #include <chrono>
 #include <thread>
 #include <stdexcept>
+namespace dingosdk::native_input_source {
+PublicationScope::PublicationScope(bool) noexcept {}
+PublicationScope::~PublicationScope() {}
+bool publication_needed() noexcept { return false; }
+void publication_changed() noexcept {}
+}
 using namespace dingosdk::overlay;
 static void check(bool value, const char* why) { if (!value) throw std::runtime_error(why); }
 int main() {

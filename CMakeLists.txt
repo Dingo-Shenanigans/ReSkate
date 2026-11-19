@@ -474,6 +474,10 @@ endif()
 option(DINGOSDK_BUILD_PLUGIN_TESTS "Build plugin host regression tests" OFF)
 if(DINGOSDK_BUILD_PLUGIN_TESTS)
     enable_testing()
+    add_executable(dingosdk_native_menu_observation_tests
+        Extension/Input/Test/native_menu_observation_tests.cpp Extension/Input/native_menu_observation.cpp)
+    target_include_directories(dingosdk_native_menu_observation_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME native_menu_observation COMMAND dingosdk_native_menu_observation_tests)
     # The owned-body contracts behind reskate.world.physics (Engine/Game/World): definitions, the
     # command mailbox, ray batches and their budget, hit identity, measured contact and shape
     # categories, over constructed values and fake memory.
@@ -506,8 +510,62 @@ if(DINGOSDK_BUILD_PLUGIN_TESTS)
     add_executable(dingosdk_viewmodel_tests Extension/UI/Overlay/Test/viewmodel_model_tests.cpp Extension/UI/Overlay/viewmodel_model.cpp)
     target_include_directories(dingosdk_viewmodel_tests PRIVATE "${PROJECT_SOURCE_DIR}")
     add_test(NAME viewmodel COMMAND dingosdk_viewmodel_tests "${PROJECT_SOURCE_DIR}/contrib/plugins/fps/viewmodel/pistol.rsvm")
+    add_executable(dingosdk_input_lease_source_tests
+        Extension/Input/Test/input_lease_source_tests.cpp
+        Extension/Input/native_input_source.cpp Extension/Input/native_menu_observation.cpp)
+    target_include_directories(dingosdk_input_lease_source_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_compile_definitions(dingosdk_input_lease_source_tests PRIVATE DINGOSDK_INPUT_SOURCE_TEST)
+    foreach(mode admission raw cleanup publication environment lifetime overlap capacity policy idle_poll threaded_poll)
+        add_test(NAME input_lease_source_${mode}
+            COMMAND dingosdk_input_lease_source_tests ${mode})
+        if(mode STREQUAL "threaded_poll")
+            set_tests_properties(input_lease_source_${mode} PROPERTIES TIMEOUT 30)
+        else()
+            set_tests_properties(input_lease_source_${mode} PROPERTIES TIMEOUT 10)
+        endif()
+    endforeach()
+    add_executable(dingosdk_input_capture_source_tests
+        Extension/Input/Test/input_capture_source_tests.cpp
+        Extension/Input/native_input_source.cpp Extension/Input/native_menu_observation.cpp)
+    target_include_directories(dingosdk_input_capture_source_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_compile_definitions(dingosdk_input_capture_source_tests PRIVATE DINGOSDK_INPUT_SOURCE_TEST)
+    foreach(mode denial cold_original publication late_drain interference replacement context_release staged_aba failed_write transport raw_final late_age renewal owner_close capacity
+        held_tail handback_collision handback_partial handback_race post_ack replacement_no_write
+        packet_only_failure handback_equal_pad menu_admission menu_revocation overlay_menu menu_button menu_replacement menu_staged_restore menu_unknown_callbacks sdk_authored)
+        add_test(NAME input_capture_source_${mode}
+            COMMAND dingosdk_input_capture_source_tests ${mode})
+        set_tests_properties(input_capture_source_${mode} PROPERTIES TIMEOUT 10)
+    endforeach()
 endif()
 if(DINGOSDK_BUILD_PLUGIN_TESTS AND WIN32)
+    add_executable(dingosdk_pad_hide_menu_tests Extension/Skater/Test/pad_hide_menu_tests.cpp
+        Extension/Skater/pad_hide.cpp Extension/Input/native_menu_observation.cpp)
+    target_include_directories(dingosdk_pad_hide_menu_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    add_test(NAME pad_hide_menu COMMAND dingosdk_pad_hide_menu_tests)
+    # Exercise the actual stick exports and HID neutralization with the native input broker.
+    # Unused overlay entry points are discarded; the fixture cannot install hooks or draw UI.
+    add_executable(dingosdk_grind_input_publication_tests
+        Extension/UI/Overlay/Test/grind_input_publication_tests.cpp
+        Extension/UI/Overlay/Test/grind_input_publication_stubs.cpp
+        Extension/Input/native_input_source.cpp Extension/Input/native_menu_observation.cpp)
+    target_include_directories(dingosdk_grind_input_publication_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_include_directories(dingosdk_grind_input_publication_tests SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/External/imgui")
+    target_compile_definitions(dingosdk_grind_input_publication_tests PRIVATE DINGOSDK_INPUT_SOURCE_TEST)
+    target_link_libraries(dingosdk_grind_input_publication_tests PRIVATE dxguid dingosdk_imgui)
+    target_compile_options(dingosdk_grind_input_publication_tests PRIVATE /Gy /Gw)
+    target_link_options(dingosdk_grind_input_publication_tests PRIVATE /OPT:REF /INCREMENTAL:NO)
+    foreach(mode turn_idle lean_idle both_idle turn_changes lean_changes)
+        add_test(NAME grind_input_publication_${mode} COMMAND dingosdk_grind_input_publication_tests ${mode})
+        set_tests_properties(grind_input_publication_${mode} PROPERTIES TIMEOUT 10)
+    endforeach()
+    add_executable(dingosdk_menu_gating_source_tests
+        Extension/Input/Test/menu_gating_source_tests.cpp Extension/Input/native_menu_observation.cpp)
+    target_include_directories(dingosdk_menu_gating_source_tests PRIVATE "${PROJECT_SOURCE_DIR}")
+    target_include_directories(dingosdk_menu_gating_source_tests SYSTEM PRIVATE "${PROJECT_SOURCE_DIR}/External/imgui")
+    target_link_libraries(dingosdk_menu_gating_source_tests PRIVATE dxguid dingosdk_imgui)
+    target_compile_options(dingosdk_menu_gating_source_tests PRIVATE /Gy /Gw)
+    target_link_options(dingosdk_menu_gating_source_tests PRIVATE /OPT:REF /INCREMENTAL:NO)
+    add_test(NAME menu_gating_source COMMAND dingosdk_menu_gating_source_tests)
     # The owned-body service itself (Extension/World/owned_bodies.cpp), over a constructed local
     # client, physics world and TLS: ray batches, measured contact, presets, categories,
     # preparation and re-activating a parked body. The test includes owned_bodies.cpp once and defines the hook, No Bail, session

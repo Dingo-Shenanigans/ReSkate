@@ -1,4 +1,5 @@
 #include "scripted_pad.h"
+#include "Extension/Input/input_publication.h"
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -35,8 +36,10 @@ void advance(State &s, std::chrono::steady_clock::time_point now) {
 } // namespace
 
 void play_pad(std::vector<PadStep> steps) {
+    native_input_source::PublicationScope publication(native_input_source::publication_needed());
     auto &s = state();
     std::lock_guard lock(s.mutex);
+    native_input_source::publication_changed();
     s.steps = std::move(steps);
     s.current = 0;
     s.ticks = 0;
@@ -44,13 +47,16 @@ void play_pad(std::vector<PadStep> steps) {
     s.active = !s.steps.empty();
 }
 void pad_tick() noexcept {
+    native_input_source::PublicationScope publication(native_input_source::publication_needed());
     auto &s = state();
     std::lock_guard lock(s.mutex);
-    if (s.active) advance(s, std::chrono::steady_clock::now());
+    if (s.active) { native_input_source::publication_changed(); advance(s, std::chrono::steady_clock::now()); }
 }
 void hold_stick(int stick, float value, unsigned milliseconds) noexcept {
+    native_input_source::PublicationScope publication(native_input_source::publication_needed());
     auto &s = state();
     std::lock_guard lock(s.mutex);
+    native_input_source::publication_changed();
     s.stick = stick < 0 || stick > 3 ? 2 : stick;
     s.value = static_cast<SHORT>(std::lround(std::clamp(value, -1.0f, 1.0f) * 32767.0f));
     s.held_until = value == 0 ? std::chrono::steady_clock::time_point{}
@@ -105,7 +111,8 @@ void wake_controller_reads() noexcept {
         return TRUE;
     }, 0);
 }
-bool scripted_pad(DWORD user, XINPUT_STATE &output) noexcept {
+bool scripted_pad(DWORD user, XINPUT_STATE &output, bool* sdk_written) noexcept {
+    if (sdk_written) *sdk_written = false;
     auto &s = state();
     if (user != 0) return false;
     std::lock_guard lock(s.mutex);
@@ -116,6 +123,7 @@ bool scripted_pad(DWORD user, XINPUT_STATE &output) noexcept {
         SHORT* axes[] = {&output.Gamepad.sThumbLX, &output.Gamepad.sThumbLY, &output.Gamepad.sThumbRX, &output.Gamepad.sThumbRY};
         *axes[s.stick] = s.value;
         output.dwPacketNumber = ++s.packet;
+        if (sdk_written) *sdk_written = true;
         return true;
     }
     // With no game ticks, time alone moves the script on.
@@ -128,6 +136,14 @@ bool scripted_pad(DWORD user, XINPUT_STATE &output) noexcept {
     output.Gamepad = done ? XINPUT_GAMEPAD{} : s.steps[s.current].pad;
     output.dwPacketNumber = ++s.packet;
     ++s.reads;
+    if (sdk_written) *sdk_written = true;
     return true;
+}
+bool scripted_pad_active() noexcept {
+    auto& s = state();
+    std::lock_guard lock(s.mutex);
+    const auto now = std::chrono::steady_clock::now();
+    return (s.active && !(s.current + 1 == s.steps.size() && now - s.done_at > linger)) ||
+        now < s.held_until;
 }
 } // namespace dingosdk::overlay
