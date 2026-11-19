@@ -12,6 +12,7 @@
 #include "Extension/UI/NativeMenu/native_menu_data.h"
 #include "Extension/UI/NativeMenu/native_menu_lifetime.h"
 #include "Extension/UI/Overlay/overlay.h"
+#include "Extension/World/character_room.h"
 #include "Engine/Core/Text/hex.h"
 #include <Windows.h>
 #include <algorithm>
@@ -938,6 +939,18 @@ void update(std::uintptr_t base) noexcept {
         s.favorites.load();
         if (first_favorites) publish_favorites(s.favorites, sh);
         const bool in_menu = multiplayer::sample_game_ui_state(base).in_menu;
+        // The Skaters page shows no item grid. A grid of a page the player has backed out of can keep its
+        // model and its highlight while that page stays loaded, so it would still count as open there and
+        // the overlay would keep the search, the filters and the highlighted item's mod card on screen.
+        // Read before the model lock below (the page check takes it itself).
+        static ULONGLONG next_page_check{};
+        static bool skaters_page{};
+        if (!in_menu) {
+            skaters_page = false;
+        } else if (now >= next_page_check) {
+            skaters_page = character_room::is_skaters_page(character_room::menu_buttons(base));
+            next_page_check = now + 120;
+        }
         md::Address ui{}, manager{};
         if (!memory::read(base + addr::engine::ui_manager, ui) || !ui || !memory::read(ui + 0x140, manager) || !manager) return;
         if (manager != s.manager) {
@@ -1030,7 +1043,7 @@ void update(std::uintptr_t base) noexcept {
         static ULONGLONG menu_since{};
         if (!in_menu) menu_since = 0;
         else if (!menu_since) menu_since = now;
-        if (!menu_since || now - menu_since < 1000) active = nullptr, focused = nullptr;
+        if (!menu_since || now - menu_since < 1000 || skaters_page) active = nullptr, focused = nullptr;
         if (active) s.last_open = now;
         s.open = active != nullptr;
         if (s.open) quiet_notices(s, context);
