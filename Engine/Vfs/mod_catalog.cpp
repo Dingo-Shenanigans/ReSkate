@@ -392,16 +392,27 @@ std::filesystem::path engine_data_root() noexcept {
 void reconcile_variant_additions(Catalog& catalog) {
     for (bool changed = true; changed;) {
         changed = false;
-        std::set<std::string> present;
+        std::set<std::string> present, left_out;
         for (const auto& mod : catalog.mods) present.insert(mod.name);
+        for (const auto& mod : catalog.excluded) left_out.insert(ascii_lower(mod.name));
         for (std::size_t i = catalog.mods.size(); i-- > 0;) {
             const auto& mod = catalog.mods[i];
-            const bool orphan = std::ranges::any_of(mod.variant_projection, [&](const auto& projection) {
+            // A variant goes with the mod that holds it when that mod is left out (a conflict, a
+            // failed merge, another game build). A variant's files are often only half of what it
+            // needs: a shaped-deck pack's variant carries the deck meshes and the mod the assets that
+            // own them. A variant that stayed in loaded meshes with no owner, and the game crashed as
+            // the skater spawned (Skate.exe+0x3f59860, 2026-11-19). (A mod set aside because its own
+            // files bring what its variants replace is not left out: its variant loads in its place.)
+            const auto owner = variant_owner(mod.name);
+            const bool owner_out = !owner.empty() && left_out.contains(ascii_lower(owner));
+            const bool orphan = owner_out || std::ranges::any_of(mod.variant_projection, [&](const auto& projection) {
                 const auto target = mod.variant_targets.find(projection.first);
                 return target == mod.variant_targets.end() || !present.contains(target->second);
             });
             if (!orphan) continue;
-            catalog.notes.push_back("Variants: " + mod.name + " is set aside because its verified variant no longer loads");
+            catalog.notes.push_back("Variants: " + mod.name + (owner_out
+                ? " is set aside because " + owner + " is left out"
+                : std::string(" is set aside because its verified variant no longer loads")));
             catalog.set_aside.push_back(mod.name);
             catalog.inactive.push_back(std::move(catalog.mods[i]));
             catalog.mods.erase(catalog.mods.begin() + static_cast<std::ptrdiff_t>(i));

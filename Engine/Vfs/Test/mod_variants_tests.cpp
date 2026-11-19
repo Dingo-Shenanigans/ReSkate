@@ -110,6 +110,20 @@ int main() {
         check(permitted.variant_additions.accept.empty() && permitted.variant_additions.contribute.empty(),
               "Malformed cooperation grants neither side, even after a valid first field");
     }
+    // A variant goes with its mod when the mod is left out (a conflict, a failed merge): alone, its
+    // meshes would load without the assets in the mod that own them.
+    {
+        mods::Catalog left;
+        left.mods.resize(2);
+        left.mods[0].name = "Shaped#standard";
+        left.mods[1].name = "Plain";
+        left.excluded.resize(1);
+        left.excluded[0].name = "Shaped";
+        mods::reconcile_variant_additions(left);
+        check(left.mods.size() == 1 && left.mods[0].name == "Plain" &&
+                  std::ranges::find(left.set_aside, std::string("Shaped#standard")) != left.set_aside.end(),
+              "A left-out mod's variant still loads");
+    }
     fs::remove_all(root);
-    std::cout << "Mod variants: order, choice, fallback, set aside, disabled and malformed passed.\n";
+    std::cout << "Mod variants: order, choice, fallback, set aside, disabled, malformed and left-out owners passed.\n";
 }
