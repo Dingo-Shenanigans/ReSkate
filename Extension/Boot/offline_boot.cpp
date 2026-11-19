@@ -326,6 +326,12 @@ bool start_offline_boot(std::uintptr_t base) noexcept {
     }
 }
 
+bool offline_boot_active(std::uintptr_t base) noexcept {
+    PreserveError preserve;
+    const auto& state = offline_boot_state();
+    return state.gate.load(std::memory_order_acquire) == GateStatus::active && state.base == base;
+}
+
 void set_local_profile_event_provider(std::uintptr_t base, bool active) noexcept {
     auto& state = offline_boot_state();
     if (state.base == base) state.local_profile_events.store(active, std::memory_order_release);
