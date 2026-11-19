@@ -40,7 +40,7 @@ std::uint32_t cosmetic_hash(std::string_view value) {
 
 // A name of up to 255 characters, read in place (memory::peek_cstring). It was read a character
 // at a time through ReadProcessMemory: a system call each, some 100 for a name, for every one of
-// up to 8192 items and their categories when the catalog is walked, which is done on the client
+// up to profile::installed_item_limit items and their categories when the catalog is walked, which is done on the client
 // thread under native_mutex (2026-10-15).
 bool cosmetic_text(std::uintptr_t p, std::string& value) {
     value.clear();
@@ -97,6 +97,23 @@ bool installed_item_owned(const profile::Snapshot& snapshot, std::string_view ke
     return saved != inventory->end() && saved->is_boolean() && saved->get<bool>();
 }
 
+namespace {
+// Why the item catalog could not be read, once per reason a session, as a warning. Without the
+// catalog no saved outfit loads (catalog_not_ready) and the skater stays in the game's defaults,
+// so a player's log has to say what stopped it and which item.
+bool catalog_unreadable(const char* reason, const dingosdk::Json& detail = dingosdk::Json::object()) noexcept {
+    try {
+        static std::set<std::string> seen;
+        if (seen.size() < 16 && seen.insert(reason).second) {
+            dingosdk::Json event{{"event", "local_cosmetic_catalog_rejected"}, {"reason", reason}};
+            for (const auto& [name, value] : detail.items()) event[name] = value;
+            dingosdk::logging::event(dingosdk::logging::Channel::customization, event.dump().c_str());
+        }
+    } catch (...) {}
+    return false;
+}
+}
+
 bool refresh_cosmetic_catalog() {
     auto& s = local_runtime(); auto& c = cosmetic_runtime();
     std::uintptr_t manager{}, vtable{}, buckets{};
@@ -105,32 +122,42 @@ bool refresh_cosmetic_catalog() {
     if (!read(s.base + addr::engine::cosmetics_manager, manager) || !manager || !read(manager, vtable) ||
         vtable != s.base + addr::engine::cosmetics_manager_vtable || !read(manager + 0xa8, ready) || ready != 1 ||
         !read(manager + 0x30, buckets) || !read(manager + 0x38, bucket_count) ||
-        !read(manager + 0x3c, count) || !count || count > 8192 || !bucket_count || bucket_count > 16384)
+        !read(manager + 0x3c, count) || !count || !bucket_count)
         return false;
+    if (count > profile::installed_item_limit || bucket_count > 4 * profile::installed_item_limit)
+        return catalog_unreadable("too_many_items", {{"items", count}, {"buckets", bucket_count},
+            {"most", profile::installed_item_limit}});
     if (c.item_manager == manager && c.item_count == count && !c.items.empty()) return true;
     std::map<std::string, CosmeticItemInfo, std::less<>> items;
     std::set<std::uintptr_t> seen;
     for (std::uint32_t bucket = 0; bucket < bucket_count; ++bucket) {
         std::uintptr_t node{};
-        if (!read(buckets + bucket * 8ULL, node)) return false;
+        if (!read(buckets + bucket * 8ULL, node)) return catalog_unreadable("bucket_unreadable", {{"bucket", bucket}});
         while (node) {
-            if (seen.size() >= count || !seen.insert(node).second) return false;
+            if (seen.size() >= count || !seen.insert(node).second)
+                return catalog_unreadable("more_entries_than_items", {{"items", count}});
             std::uintptr_t asset{}, key_ptr{}, categories{};
             std::uint32_t hash{}, asset_hash{}, category_count{};
-            if (!read(node, hash) || !read(node + 8, asset)) return false;
+            if (!read(node, hash) || !read(node + 8, asset)) return catalog_unreadable("entry_unreadable");
             asset &= ~std::uintptr_t{4};
             std::string key;
-            if (!read(asset + 0x38, key_ptr) || !cosmetic_text(key_ptr, key) || key.empty() ||
-                !read(asset + 0x48, asset_hash) || hash != asset_hash || hash != cosmetic_hash(key) ||
-                !read(asset + 0x20, categories) || !cosmetic_array(categories, 8, 32, category_count)) return false;
+            if (!read(asset + 0x38, key_ptr) || !cosmetic_text(key_ptr, key) || key.empty())
+                return catalog_unreadable("item_key_unreadable", {{"hash", hash}});
+            if (!read(asset + 0x48, asset_hash) || hash != asset_hash || hash != cosmetic_hash(key))
+                return catalog_unreadable("item_hash_mismatch", {{"item", key}, {"hash", hash}, {"asset_hash", asset_hash},
+                    {"key_hash", cosmetic_hash(key)}});
+            if (!read(asset + 0x20, categories) || !cosmetic_array(categories, 8, 32, category_count))
+                return catalog_unreadable("item_categories_unreadable", {{"item", key}, {"categories", category_count}, {"most", 32}});
             CosmeticItemInfo info{hash, {}, {}, 0};
-            if (!read(asset + 0x4c, info.sort_priority)) return false;
+            if (!read(asset + 0x4c, info.sort_priority)) return catalog_unreadable("item_unreadable", {{"item", key}});
             for (std::uint32_t i = 0; i < category_count; ++i) {
                 std::uintptr_t category{}, name_ptr{}; std::uint32_t category_hash{}; std::string name;
-                if (!read(categories + i * 8ULL, category)) return false;
+                if (!read(categories + i * 8ULL, category))
+                    return catalog_unreadable("item_category_unreadable", {{"item", key}, {"category", i}});
                 category &= ~std::uintptr_t{4};
                 if (!read(category + 0x28, name_ptr) || !cosmetic_text(name_ptr, name) ||
-                    !read(category + 0x38, category_hash) || category_hash != cosmetic_hash(name)) return false;
+                    !read(category + 0x38, category_hash) || category_hash != cosmetic_hash(name))
+                    return catalog_unreadable("item_category_unreadable", {{"item", key}, {"category", i}, {"name", name}});
                 info.build_kit |= name == "bkobjects";
                 if (info.category.empty()) info.category = name;
                 info.categories.push_back(category_hash);
@@ -141,12 +168,14 @@ bool refresh_cosmetic_catalog() {
                 if (start != std::string::npos && end != std::string::npos && end > start + 1)
                     info.category = key.substr(start + 1, end - start - 1);
             }
-            if (!items.emplace(key, std::move(info)).second) return false;
-            if (!read(node + 0x10, node)) return false;
+            if (items.contains(key)) return catalog_unreadable("duplicate_item_key", {{"item", key}});
+            items.emplace(key, std::move(info));
+            if (!read(node + 0x10, node)) return catalog_unreadable("entry_unreadable", {{"item", key}});
         }
     }
     std::uintptr_t current{}, current_buckets{}; std::uint32_t current_count{};
-    if (seen.size() != count || !read(s.base + addr::engine::cosmetics_manager, current) || current != manager ||
+    if (seen.size() != count) return catalog_unreadable("item_count_mismatch", {{"items", count}, {"found", seen.size()}});
+    if (!read(s.base + addr::engine::cosmetics_manager, current) || current != manager ||
         !read(manager + 0x30, current_buckets) || current_buckets != buckets ||
         !read(manager + 0x3c, current_count) || current_count != count) return false;
     const auto& catalogs = content_cache::catalogs();
@@ -167,9 +196,11 @@ bool refresh_cosmetic_catalog() {
     c.items = std::move(items); c.item_count = count; c.item_manager = manager;
     ++c.items_generation;
     std::ostringstream event;
-    event << "{\"event\":\"local_cosmetic_catalog\",\"installed\":" << items.size() - objects
-          << ",\"objects\":" << objects << '}';
-    dingosdk::logging::event(dingosdk::logging::Channel::customization, event.str().c_str());
+    // (c.items: items was moved from above.) At info, so a player's log shows how many items
+    // the installed packs come to.
+    event << "{\"event\":\"local_cosmetic_catalog\",\"installed\":" << c.items.size() - objects
+          << ",\"objects\":" << objects << ",\"most\":" << profile::installed_item_limit << '}';
+    dingosdk::logging::event(dingosdk::logging::Channel::customization, event.str().c_str(), dingosdk::logging::Level::info);
     return true;
 }
 
