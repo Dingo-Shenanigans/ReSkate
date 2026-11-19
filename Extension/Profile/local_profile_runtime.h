@@ -97,6 +97,16 @@ bool teleport_local_skater_transform(const std::array<float,16>& transform,
     std::optional<bool> on_board = std::nullopt);
 // Includes the queued request and the native streaming/ground-check transition.
 bool local_skater_teleport_pending();
+// Native callbacks never wait for profile mutation. False means unknown, with
+// pending left true; callers must refuse until a fresh idle read succeeds.
+bool try_local_skater_teleport_pending(bool& pending) noexcept;
+// A failed try-lock is distinct from an inactive profile or an unreadable
+// native transition. It does not establish why the mutex was unavailable.
+enum class LocalTeleportObservation : std::uint8_t {
+    not_attempted, known, lock_refused, inactive, manager_read_failed,
+    manager_null, phase_read_failed, exception, queue_changed, queue_exhausted
+};
+bool try_local_skater_teleport_pending(bool& pending, LocalTeleportObservation& observation) noexcept;
 // Sends a teleport that is waiting, if the game's teleport manager is idle. Every client tick,
 // after the plugins': the features' own update, which also sends it, runs every 500 ms, and a
 // teleport asked for between two of those waited up to half a second before it even started.

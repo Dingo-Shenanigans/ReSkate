@@ -13,10 +13,15 @@ inline constexpr float max_speed = 120.f;
 bool valid(const Vec3& velocity) noexcept;
 // Replaces any pending push; an invalid velocity only cancels it.
 void request(const Vec3& velocity) noexcept;
+// Result-bearing publication for adapters: false leaves an existing request
+// untouched while another action owns motion. Invalid input still cancels.
+bool try_request(const Vec3& velocity) noexcept;
 // The skater is still getting back on the board: the pending push waits two seconds more.
 void wait() noexcept;
+bool try_wait() noexcept;
 void reset() noexcept;
 void hold(bool on) noexcept;
+bool try_hold(bool on) noexcept;
 bool holding() noexcept;
 // A push is waiting for its physics step.
 bool pending() noexcept;

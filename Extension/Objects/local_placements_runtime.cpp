@@ -11,6 +11,7 @@
 #include "Extension/Skater/no_bail.h"
 #include "Extension/Throwdowns/throwdown_kit.h"
 #include "Extension/Throwdowns/throwdown_relay.h"
+#include "Extension/Skater/native_actions.h"
 #include "Extension/World/local_world_layers.h"
 #include <algorithm>
 #include <atomic>
@@ -105,7 +106,9 @@ void placement_reset_session() {
     auto& r = placements_runtime();
     r.creation.reset();
     r.creates.clear();
-    r.tracked.clear(); r.restore.clear(); r.late_restores.clear(); r.resizes.clear(); r.inflight.reset(); r.rows.clear(); r.teleport_token = 0; r.status.clear();
+    r.tracked.clear(); r.restore.clear(); r.late_restores.clear(); r.resizes.clear(); r.inflight.reset(); r.rows.clear();
+    { auto queue = r.teleport_queue.mutate(); queue.write().teleport_token = 0; }
+    r.status.clear();
     r.map.clear(); r.map_context = 0; r.next_poll = 0; r.map_since = 0; r.map_generation = 0;
     r.restore_failed = false;
     r.clearing = false; r.clear_entities.clear();
@@ -595,7 +598,8 @@ bool begin_placement_delete(const std::set<std::uint64_t>& tokens) {
     for (const auto& row : r.rows) if (tokens.contains(row.token)) {
         if (row.saved_id) saved_ids.insert(row.saved_id);
         if (row.entity) r.clear_entities.insert(row.entity);
-        if (row.token == r.teleport_token) r.teleport_token = 0;
+        { auto queue = r.teleport_queue.mutate();
+          if (row.token == queue.read().teleport_token) queue.write().teleport_token = 0; }
     }
     auto& layout = r.document.maps[r.map];
     std::erase_if(layout, [&](const auto& x) { return saved_ids.contains(x.id); });
@@ -618,6 +622,8 @@ std::array<float, 16> placement_teleport_transform(const profile::PlacedObject& 
 
 std::uint32_t send_placement_teleport(std::uintptr_t manager, const profile::PlacedObject& object) {
     auto& r = placements_runtime();
+    auto dispatch = r.teleport_queue.mutate();
+    dispatch.begin_dispatch();
     alignas(16) const auto transform = placement_teleport_transform(object);
     alignas(16) std::array<std::uint64_t, 2> transition{};
     r.transition_ctor(transition.data());
@@ -626,65 +632,97 @@ std::uint32_t send_placement_teleport(std::uintptr_t manager, const profile::Pla
 }
 
 void update_position_teleport() {
+    actor_control::IdleCall writer;
+    // Denial must retain accepted work, including the original queue deadline.
+    // This marker spans the native transition constructor, call and teardown.
+    if (!skater_action::enter_motion_writer(writer)) return;
     auto& r = placements_runtime();
-    if (!r.position_teleport) return;
-    if (GetTickCount64() > r.position_teleport_at + 5000) {
-        r.position_teleport.reset();
-        r.position_teleport_on_board.reset();
+    bool dropped{}, equipment_kept{};
+    std::array<float, 3> at{};
+    std::uint32_t request{};
+    {
+        auto queue = r.teleport_queue.mutate();
+        if (!queue.read().position_teleport) return;
+        if (GetTickCount64() > queue.read().position_teleport_at + 5000) {
+            queue.write().clear_position();
+            dropped = true;
+        } else {
+            std::uintptr_t manager{}; std::uint32_t state{};
+            if (!r.teleport || !r.transition_ctor || !r.transition_destroy || !placement_client_channel() ||
+                !read(local_runtime().base + addr::local_placements::teleport_manager, manager) || !manager ||
+                !read(manager, state) || state != 0) return;
+            alignas(16) const auto transform = *queue.read().position_teleport;
+            const auto on_board = queue.read().position_teleport_on_board;
+            at = {transform[12], transform[13], transform[14]};
+            queue.begin_dispatch();
+            queue.write().clear_position();
+            // Keep the dispatch busy from before the clear through transition
+            // destruction, including same-thread native callbacks. Preserve the
+            // native flag's complete facing basis. The teleport manager still
+            // handles streaming, ground checks and physics reset.
+            alignas(16) std::array<std::uint64_t, 2> transition{};
+            r.transition_ctor(transition.data());
+            struct Destroy { decltype(r.transition_destroy) call; void* value; ~Destroy() { call(value); } } destroy{r.transition_destroy, transition.data()};
+            // The local teleport manager works in offline play. RequestTeleport's
+            // social/player lookup can reject the same local skater with UINT32_MAX.
+            // The session tick prepares the validated skater's native board option
+            // before this queued move, so this path also starts a plugin's match on the board.
+            if (on_board.has_value()) {
+                NoBailSkater owner;
+                const auto match = dingosdk::throwdowns::kit::match();
+                const bool offboard = !match.input_lock && (multiplayer::throwdown_relay_waits_offboard() || match.offboard);
+                // When the board option cannot be set (a match's own lock, No Bail's protection holding the
+                // board, which it renews every tick while No Bail is on, or a lost race), the move still
+                // happens with the board as it is: the plugin was told it was queued, and the move is
+                // already off the queue.
+                equipment_kept = (match.input_lock && !*on_board) || (offboard && *on_board) ||
+                    !no_bail_skater(owner) || !prepare_teleport_equipment(owner, *on_board);
+            }
+            request = r.teleport(manager, transform.data(), 1, transition.data());
+        }
+    }
+    if (dropped) {
         dingosdk::logging::write(dingosdk::logging::Level::warning, dingosdk::logging::Channel::objects,
                                  "Teleport dropped: the skater was busy for 5 s (a bail, a menu or an activity).");
         return;
     }
-    std::uintptr_t manager{}; std::uint32_t state{};
-    if (!r.teleport || !r.transition_ctor || !r.transition_destroy || !placement_client_channel() ||
-        !read(local_runtime().base + addr::local_placements::teleport_manager, manager) || !manager ||
-        !read(manager, state) || state != 0) return;
-    alignas(16) const auto transform = *r.position_teleport;
-    const auto on_board = r.position_teleport_on_board;
-    const std::array<float,3> at{transform[12],transform[13],transform[14]};
-    r.position_teleport.reset();
-    r.position_teleport_on_board.reset();
-    // Preserve the native flag's complete facing basis. The teleport manager
-    // still handles streaming, ground checks and physics reset.
-    alignas(16) std::array<std::uint64_t, 2> transition{};
-    r.transition_ctor(transition.data());
-    struct Destroy { decltype(r.transition_destroy) call; void* value; ~Destroy() { call(value); } } destroy{r.transition_destroy, transition.data()};
-    // The local teleport manager works in offline play. RequestTeleport's
-    // social/player lookup can reject the same local skater with UINT32_MAX.
-    // The session tick prepares the validated skater's native board option
-    // before this queued move, so this path also starts a plugin's match on the board.
-    if (on_board.has_value()) {
-        NoBailSkater owner;
-        const auto match = dingosdk::throwdowns::kit::match();
-        const bool offboard = !match.input_lock && (multiplayer::throwdown_relay_waits_offboard() || match.offboard);
-        // When the board option cannot be set (a match's own lock, No Bail's protection holding the
-        // board, which it renews every tick while No Bail is on, or a lost race), the move still
-        // happens with the board as it is: the plugin was told it was queued, and the move is
-        // already off the queue.
-        if ((match.input_lock && !*on_board) || (offboard && *on_board) ||
-            !no_bail_skater(owner) || !prepare_teleport_equipment(owner, *on_board))
-            dingosdk::logging::event(dingosdk::logging::Channel::objects,
-                "{\"event\":\"position_teleport_equipment_kept\"}");
-    }
-    const auto request = r.teleport(manager, transform.data(), 1, transition.data());
+    // Logged after the queue scope, so the queue's observers are not refused while a line is written.
+    if (equipment_kept)
+        dingosdk::logging::event(dingosdk::logging::Channel::objects,
+            "{\"event\":\"position_teleport_equipment_kept\"}");
     dingosdk::logging::event(dingosdk::logging::Channel::objects, dingosdk::Json{{"event", "position_teleport_requested"},
         {"x", at[0]}, {"y", at[1]}, {"z", at[2]}, {"request", request}}.dump().c_str());
 }
 
 void update_placement_teleport() {
+    actor_control::IdleCall writer;
+    // Keep accepted object teleports pending while another service owns motion.
+    // The existing recursive profile/queue scopes and native ABI stay intact.
+    if (!skater_action::enter_motion_writer(writer)) return;
     auto& r = placements_runtime();
-    if (!r.teleport_token) return;
-    const auto row = std::find_if(r.rows.begin(), r.rows.end(), [&](const auto& x) { return x.token == r.teleport_token; });
-    if (row == r.rows.end() || !profile::valid_placed_object(row->object)) { r.teleport_token = 0; return; }
-    if (GetTickCount64() > r.teleport_queued_at + 5000) {
-        r.teleport_token = 0; r.status = "Teleport unavailable. Finish the current activity and try again."; return;
+    std::uint64_t token{};
+    std::uint32_t request{};
+    bool expired{};
+    {
+        auto queue = r.teleport_queue.mutate();
+        if (!queue.read().teleport_token) return;
+        const auto row = std::find_if(r.rows.begin(), r.rows.end(), [&](const auto& x) { return x.token == queue.read().teleport_token; });
+        if (row == r.rows.end() || !profile::valid_placed_object(row->object)) { queue.write().teleport_token = 0; return; }
+        if (GetTickCount64() > queue.read().teleport_queued_at + 5000) {
+            queue.write().teleport_token = 0;
+            expired = true;
+        } else {
+            std::uintptr_t manager{}; std::uint32_t state{};
+            if (!placement_client_channel() || !read(local_runtime().base + addr::local_placements::teleport_manager, manager) || !manager ||
+                !read(manager, state) || state != 0) return;
+            const auto object = row->object;
+            token = queue.read().teleport_token;
+            queue.begin_dispatch();
+            queue.write().teleport_token = 0;
+            request = send_placement_teleport(manager, object);
+        }
     }
-    std::uintptr_t manager{}; std::uint32_t state{};
-    if (!placement_client_channel() || !read(local_runtime().base + addr::local_placements::teleport_manager, manager) || !manager ||
-        !read(manager, state) || state != 0) return;
-    const auto object = row->object;
-    const auto token = r.teleport_token; r.teleport_token = 0;
-    const auto request = send_placement_teleport(manager, object);
+    if (expired) { r.status = "Teleport unavailable. Finish the current activity and try again."; return; }
     r.status = "Teleport requested. Close the menu to resume skating.";
     dingosdk::logging::event(dingosdk::logging::Channel::objects, dingosdk::Json{{"event", "local_placement_teleport_requested"}, {"map", r.map}, {"row", token}, {"request", request}}.dump().c_str());
 }

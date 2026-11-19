@@ -35,10 +35,13 @@ void set_push_speed(std::uintptr_t client, std::uintptr_t entity, float factor, 
 // up to `speed` (m/s; 0 off, at most 30), and with `may_slow` eased down to it when not pushing. Rides
 // on the trainer's skater and expiry (set_push_speed); it expires after 300 ms, so set it every tick.
 void set_plugin_cruise(float speed, bool may_slow) noexcept;
+bool try_set_plugin_cruise(float speed, bool may_slow) noexcept;
 // A plugin's velocity (reskate.skater.set_velocity): the board's bodies set to `velocity` (or it added
 // to theirs) by the next physics step with the local skater on its board, on the ground or in the air,
 // within 500 ms; dropped after. A new one replaces one still waiting.
 void set_plugin_velocity(const std::array<float, 3>& velocity, bool add) noexcept;
+// Internal result-bearing adapters preserve actual motion-ownership refusal.
+bool try_set_plugin_velocity(const std::array<float, 3>& velocity, bool add) noexcept;
 // A plugin flying the skater it holds (reskate.skater.fly): while noclip is on, each physics step gives
 // the skater this velocity (m/s, in the world) in place of the flight keys', for the next 300 ms, so
 // it is set every tick. `on` false lets go of it at once (the skater hovers, as held).
