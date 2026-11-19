@@ -4,6 +4,7 @@
 #include "Engine/Game/Build/addresses.h"
 #include "Engine/Game/Build/20260929/engine.h"
 #include "Engine/Game/Build/20260929/native_cosmetics.h"
+#include "Extension/Customization/local_customization.h"
 #include <algorithm>
 #include <cstring>
 #include <map>
@@ -123,7 +124,8 @@ template <class Read> struct CosmeticMemory {
               "Cosmetic catalog is not ready.");
         const auto buckets = ptr(manager, 0x30);
         const auto size = get<std::uint32_t>(manager, 0x38), total = get<std::uint32_t>(manager, 0x3c);
-        check(size && size <= 16384 && total && total <= 8192, "Cosmetic catalog exceeds bounds.");
+        check(size && size <= 4 * profile::installed_item_limit && total && total <= profile::installed_item_limit,
+              "Cosmetic catalog exceeds bounds.");
         auto node = ptr(buckets, (hash % size) * 8ULL);
         for (std::uint32_t visited = 0; node && visited < total; ++visited, node = ptr(node, 0x10)) {
             if (get<std::uint32_t>(node) != hash)
@@ -146,7 +148,8 @@ template <class Read> struct CosmeticMemory {
               "Cosmetic catalog is not ready.");
         const auto buckets = ptr(manager, 0x30);
         const auto size = get<std::uint32_t>(manager, 0x38), total = get<std::uint32_t>(manager, 0x3c);
-        check(size && size <= 16384 && total && total <= 8192, "Cosmetic catalog exceeds bounds.");
+        check(size && size <= 4 * profile::installed_item_limit && total && total <= profile::installed_item_limit,
+              "Cosmetic catalog exceeds bounds.");
         std::vector<Item> out;
         out.reserve(total);
         for (std::uint32_t bucket = 0; bucket < size; ++bucket)
