@@ -1,6 +1,9 @@
 #include "pad_hide.h"
 #include "launches.h"
 #include "Extension/UI/Overlay/overlay.h"
+#include "Extension/Input/native_menu_observation.h"
+#include "Engine/Game/Input/plugin_input_policy.h"
+#include <Windows.h>
 #include <atomic>
 #include <map>
 #include <mutex>
@@ -20,6 +23,7 @@ Control& control() {
 }
 // Any thread the game polls its pad from.
 void filter_pad(unsigned, overlay::GamepadValues& pad) noexcept {
+    if (native_menu_observation::known_open(GetTickCount64())) return;
     auto& c = control();
     if (c.lt.load(std::memory_order_acquire)) pad.left_trigger = 0;
     if (c.rt.load(std::memory_order_acquire)) pad.right_trigger = 0;
@@ -27,7 +31,7 @@ void filter_pad(unsigned, overlay::GamepadValues& pad) noexcept {
     if (c.right_stick.load(std::memory_order_acquire)) pad.right_x = pad.right_y = 0;
     if (c.l3.load(std::memory_order_acquire)) pad.buttons &= static_cast<std::uint16_t>(~0x0040u); // XINPUT_GAMEPAD_LEFT_THUMB
     if (c.r3.load(std::memory_order_acquire)) pad.buttons &= static_cast<std::uint16_t>(~0x0080u); // XINPUT_GAMEPAD_RIGHT_THUMB
-    pad.buttons &= static_cast<std::uint16_t>(~c.buttons.load(std::memory_order_acquire));
+    pad.buttons &= static_cast<std::uint16_t>(~(c.buttons.load(std::memory_order_acquire) & ~input::menu_button));
 }
 void publish(Control& c) {
     Hidden all;

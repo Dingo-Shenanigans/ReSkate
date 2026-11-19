@@ -134,6 +134,7 @@ commands and a `Test/` folder.
 | `Assets/` | live mods (apply without restart), loose files, mod layers, multiplayer map download, map icons |
 | `Console/` | built-in console commands, perf commands, memory ledger |
 | `Customization/` | cosmetics catalog, item browser, local customization, player card |
+| `Input/` | whether a game menu is open, published once a tick for the input hooks (`native_menu_observation`): what plugins hide from the game is given back while one is |
 | `Multiplayer/` | Steam lobbies, sessions, parties, voice and text chat (see below) |
 | `Localization/` | the game's text as plugins change it (`reskate.strings`): the string-override store |
 | `Music/` | local music, playlists and artwork, external players: Spotify, YouTube Music, Plex |

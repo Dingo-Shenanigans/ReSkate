@@ -1,4 +1,6 @@
 #include "plugin_game_runtime.h"
+#include "Extension/Input/native_menu_observation.h"
+#include "Engine/Game/Input/plugin_input_policy.h"
 #include "plugin_ui_values.h"
 #include "Extension/Rendering/plugin_effects.h"
 #include "Extension/Objects/placement_physics.h"
@@ -1277,7 +1279,8 @@ public:
     }
     std::string hide_pad(std::string_view plugin, const PadHidden& h) override {
         if (!pad_hide::available()) return "hiding pad controls is unavailable for this game build";
-        pad_hide::hide(plugin, {h.left_trigger, h.right_trigger, h.left_x_grinding, h.right_stick, h.left_stick_click, h.right_stick_click, h.buttons});
+        pad_hide::hide(plugin, {h.left_trigger, h.right_trigger, h.left_x_grinding, h.right_stick, h.left_stick_click, h.right_stick_click,
+            static_cast<std::uint16_t>(h.buttons & ~input::menu_button)});
         return {};
     }
     std::optional<Vec3> board_spin() override { return skater_events::board_spin(); }
@@ -1487,7 +1490,8 @@ public:
         return {};
     }
     bool capturing() const noexcept {
-        return !capturer_.empty() && camera_mine(capturer_) && GetTickCount64() < capture_until_;
+        return !native_menu_observation::known_open(GetTickCount64()) && !capturer_.empty() &&
+            camera_mine(capturer_) && GetTickCount64() < capture_until_;
     }
     // ---- skater.animation ---------------------------------------------------------------------------
     // The game's own clips, read in the background from the first ask.
@@ -2139,7 +2143,8 @@ public:
         DWORD process{};
         const auto window = GetForegroundWindow();
         const bool focused = window && GetWindowThreadProcessId(window, &process) && process == GetCurrentProcessId();
-        return focused && !overlay::interface_open() && multiplayer::native_throwdown_gameplay_input_allowed();
+        return focused && !native_menu_observation::known_open(GetTickCount64()) &&
+            !overlay::interface_open() && multiplayer::native_throwdown_gameplay_input_allowed();
     }
     std::string free_camera(std::string_view plugin, bool on) override {
         if (on) free_camera_owner_ = plugin;
