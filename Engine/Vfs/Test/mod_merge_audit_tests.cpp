@@ -698,6 +698,7 @@ struct Audit {
         section("Every mod against the patch");
         std::map<std::string, bool> shaderOwners;
         std::size_t shaderCopies{}, differentGraphs{};
+        std::size_t grownGraphs{};
         std::map<std::string, Contested> found;   // by bundle name, asset and what the patch has
         std::size_t bundles{}, assets{}, chunks{}, byName{};
         for (std::size_t index = 0; index < catalog.mods.size(); ++index) {
@@ -749,9 +750,17 @@ struct Audit {
                                 const auto retained = shader_graph(1, kept);
                                 const auto contributor = shader_graph(static_cast<int>(index + 2), entry);
                                 ++shaderCopies;
+                                // (Or the contributor's graph with other mods' programs brought into
+                                // it by the merge: its own heap kept whole under them.)
+                                const auto grown = [&](int from, const Entry& under) {
+                                    const auto mergedBytes = payload(place(1, kept.file));
+                                    const auto underBytes = payload(place(from, under.file));
+                                    return fb::shader::grown_from({mergedBytes, kept.asset->resourceMeta}, {underBytes, under.asset->resourceMeta});
+                                };
                                 if (retained == contributor) owned = true;
+                                else if (grown(static_cast<int>(index + 2), entry)) { owned = true; ++grownGraphs; }
                                 else ++differentGraphs;
-                                if (shipped && retained == shader_graph(0, *shipped)) owned = true;
+                                if (shipped && (retained == shader_graph(0, *shipped) || grown(0, *shipped))) owned = true;
                             } catch (const std::exception& error) {
                                 fail("shader graph", identity + ": " + error.what());
                             }
@@ -780,7 +789,7 @@ struct Audit {
             if (!owned) fail("shader ownership", identity + ": graph matches no contributor to this bundle");
         std::cout << shaderOwners.size() << " shader table(s), " << shaderCopies
                   << " contributor copies checked; " << differentGraphs
-                  << " copies use a different graph (not imported)\n";
+                  << " copies use a different graph, " << grownGraphs << " are the one the merged graph grew from\n";
         for (auto& [key, record] : found) contested.push_back(std::move(record));
     }
 

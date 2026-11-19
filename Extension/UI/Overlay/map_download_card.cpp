@@ -57,7 +57,7 @@ ImTextureID card_icon() { return image_is_atlas.load() ? ImTextureID{} : image.l
 // Straight-alpha RGBA, at most 512 pixels a side (an icon is 256). With `side`, scaled to a
 // square of that many pixels (the vote's pictures share one texture). With `banner`, a picture up
 // to 4096 pixels a side scaled to no wider than that, its shape kept (a news post's picture).
-bool decode(const std::string& bytes, detail::CardPixels& out, UINT side = 0, UINT banner = 0) {
+bool decode(const std::string& bytes, detail::CardPixels& out, UINT side = 0, UINT banner = 0, UINT most_side = 0) {
     const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     bool ok{};
     {
@@ -68,7 +68,7 @@ bool decode(const std::string& bytes, detail::CardPixels& out, UINT side = 0, UI
         ComPtr<IWICFormatConverter> converter;
         ComPtr<IWICBitmapScaler> scaler;
         UINT width{}, height{};
-        const UINT largest = banner ? 4096U : side ? 2048U : 512U;
+        const UINT largest = most_side ? most_side : banner ? 4096U : side ? 2048U : 512U;
         // (Set once the size is known: the square, or the banner's width and the height that keeps its shape.)
         UINT scaled_width = side, scaled_height = side;
         const auto scaled = [&] {
@@ -118,6 +118,7 @@ void set_map_download_icon(const std::string& png) noexcept {
 namespace dingosdk::overlay::detail {
 bool decode_picture(const std::string& png, CardPixels& out, UINT side) { return decode(png, out, side); }
 bool decode_banner(const std::string& bytes, CardPixels& out, UINT most_width) { return decode(bytes, out, 0, most_width); }
+bool decode_picture_within(const std::string& bytes, CardPixels& out, UINT most_side) { return decode(bytes, out, 0, 0, most_side); }
 bool take_card_pixels(CardPixels& out) {
     std::lock_guard lock(image_mutex);
     if (!waiting) return false;

@@ -4,6 +4,12 @@
 
 // Remote skater sound.
 namespace dingosdk::game::build::v20260929::native_audio {
+// The physics material slots the root level's material grid has (MaterialIndexMap, slots 0 to 115: the
+// same on every install; Engine/Resource/material_grid.h). A packed material word (bits 0-5 flags, 6-18 the
+// material slot, 19-31 the property slot) with a slot past them is read from whatever memory follows them,
+// and the game crashes on contact, so a plugin's surface sound (reskate.skater.surface_sound) may name only
+// these. A Studio map's own surfaces are appended after them (slot 116 on) and are not offered.
+inline constexpr std::uint32_t material_slots = 116;
 // Skater sound component submit (handle, frame). Hooked to capture local sound.
 inline constexpr std::uintptr_t submit = 0x44a370;
 inline constexpr std::array<unsigned char, 17> submit_prefix{

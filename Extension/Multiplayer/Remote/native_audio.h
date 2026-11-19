@@ -11,4 +11,12 @@ void reset_audio() noexcept;
 std::string native_audio_status();
 std::uint64_t captured_audio_frames() noexcept;
 std::uint64_t played_audio_frames() noexcept;
+// The local skater's surface sound: the material words in `fields` of its sound updates (bit i:
+// audio_material_offsets[i]) take this word's material and property slots, keeping their own flags
+// (0: each surface its own sound). Others in a session hear it too: they hear what the skater's
+// sound updates say.
+void set_surface_sound(std::uint32_t word, std::uint32_t fields = ~0U) noexcept;
+// Whether a surface sound has been set in this run: only then is the local skater's sound followed outside a
+// session (prepare_audio_capture) and read before it is passed on.
+bool surface_sound_used() noexcept;
 } // namespace dingosdk::multiplayer

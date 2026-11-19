@@ -53,9 +53,9 @@ bool set_developer_mode(bool on) noexcept;
 // set_limit_choices when it could not be saved. Any thread.
 struct LimitChoices {
     bool stop_slow{true};
-    double tick_ms{6};      // 6 to 50
+    double tick_ms{16};     // 6 to 50 (6 the default until 2.1.5)
     bool stop_errors{true};
-    int memory_mb{128};     // 128 to 1024
+    int memory_mb{512};     // 128 to 1024 (128 the default until 2.1.5)
     bool operator==(const LimitChoices&) const = default;
 };
 LimitChoices limit_choices();

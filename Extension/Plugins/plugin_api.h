@@ -43,9 +43,21 @@ void install_effects_api(Plugin& plugin, lua_State* L);
 // A rigged, animated model in front of the camera (plugin_api_viewmodel.cpp).
 void install_viewmodel_api(Plugin& plugin, lua_State* L);
 void install_object_physics_api(Plugin& plugin, lua_State* L);
+// A file's size and time, moving, copying, the Recycle Bin, a file's hash and a zip file unpacked
+// (reskate.files), and the base set's reskate.hash and reskate.zip (plugin_api_files.cpp).
+void install_files_api(Plugin& plugin, lua_State* L);
+// A picture composed from drawing steps and written as a PNG, a text measured as one draws it, and a
+// picture's size (reskate.picture, plugin_api_picture.cpp).
+void install_picture_api(Plugin& plugin, lua_State* L);
 // The clips and sounds read since the last tick (reskate.animation.preload, reskate.audio.preload,
 // plugin_api_world.cpp), handed into the plugin's own and called back. Plugin::tick.
 void deliver_preloads(Plugin& plugin);
+// The pictures drawn since the last tick (reskate.picture.make), each one's function called with how
+// it went. Plugin::tick.
+void deliver_pictures(Plugin& plugin);
+// The zips unpacked since the last tick (reskate.files.unzip), each one's function called with how it
+// went. Plugin::tick.
+void deliver_unzips(Plugin& plugin);
 
 // ---- adding to the reskate table ---------------------------------------------------------------
 // A new part of the API is a file of `static int name(lua_State*)` functions and an install_*_api
@@ -120,7 +132,11 @@ std::string checked_text(lua_State* L, int index, std::size_t most, const char* 
 const char* text_problem(std::string_view text);
 // A path in the plugin's data folder (reskate.files): relative, inside it, no name Windows keeps
 // for a device. `folder`: nil or "" is the folder itself, and a "/" at the end is fine.
+// "<folder>:<path>" is a path in a folder beside the game that the manifest's "folders" names (with
+// the files.folders permission): it comes back with its "<folder>:" in front, for the game to place.
 std::string data_path(lua_State* L, int index, bool folder);
+// The same for a path already read from the argument at `index` (the part after a "data:").
+std::string data_path(lua_State* L, int index, std::string path, bool folder);
 // A vector argument, finite and within 100 km of the map's centre.
 Vec3 position_of(lua_State* L, int index, const char* what);
 // A player: a string of the SteamID64's digits ("7656..."), a player table ({id = ...}), or a whole

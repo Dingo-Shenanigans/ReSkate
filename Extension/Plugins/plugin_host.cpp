@@ -49,6 +49,8 @@ void Host::load(Entry& entry) {
             if (!error.empty()) throw std::runtime_error(std::string(manifest_file) + " " + error);
             manifest = parse_manifest(text);
         }
+        // (The files it names, its fonts, are on disk whichever way its manifest was read.)
+        if (auto why = check_manifest_files(manifest, entry.candidate.directory); !why.empty()) throw std::runtime_error(why);
     } catch (const std::exception& error) {
         entry.failure = error.what();
         environment_.log(LogLevel::warn, std::format("Plugin {} was not loaded: {}", id, entry.failure));
@@ -524,7 +526,7 @@ void Host::draw_and_build() {
         collect(entry);
         if (entry.plugin) {
             auto shapes = entry.plugin->take_shapes();
-            if (!shapes.empty()) layers.push_back({id, std::move(shapes)});
+            if (!shapes.empty()) layers.push_back({id, std::move(shapes), entry.plugin->font_files()});
         }
     }
     environment_.publish_layers(std::move(layers));

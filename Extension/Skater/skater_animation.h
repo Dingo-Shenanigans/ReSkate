@@ -76,12 +76,47 @@ void carry(std::optional<carry::Goal> goal, bool push_straightens = false, Shown
 // first asked for it (every joint but the two that place the skater), and the pose goes on top of
 // that: nothing of the game's own idle, its fidgets or its breathing, moves a joint the pose leaves
 // alone. Taken again after the pose has been off for half a second.
+// A pose for Shown::others is kept beside the one for this screen, and does not replace it: with
+// both set, this screen draws the one (first-person arms, say) and the other players are sent the
+// other (a whole body). While it is live a pose for everyone is this screen's alone. An empty pose
+// for everyone lets both go. `still` is this screen's pose's only.
 using PoseOffset = pose_replay::Entry;
 void pose(std::vector<PoseOffset> offsets, float weight, Shown shown = Shown::everyone, bool still = false);
 // Where a joint (of the 395) was in the world in the last pose evaluated, after any clip and reach;
 // empty without a skater. Asking keeps that joint read for two seconds, so the first ask comes back
-// empty; at most 32 joints are read at once.
+// empty.
 std::optional<anim_studio::Joint> joint(std::uint16_t index);
+// The local skater's whole pose (each of the 395 joints in its parent's frame) as the game animated it in
+// the last update, before any clip, pose, carry or reach here; empty without a skater. Asking keeps it
+// read for two seconds, so the first ask comes back empty. Client thread.
+std::vector<anim_studio::Joint> local_pose();
+// The same pose as it was last handed to the renderer: after the game's body physics (the feet put on the
+// board, the hips as the skater pops), before any pose of ours went on it. Asked the same way.
+std::vector<anim_studio::Joint> drawn_pose();
+// The local board drawn whole with its deck's mount at a place (its trucks and wheels riding it, as they
+// stood when it was taken), `weight` 0..1 of the way from where the game has it, worked out as the board
+// goes to the renderer: what a clip with a board does, for a plugin that works the board's place out
+// itself. The place is in the world, or in the skater's placement frame (`with_skater`: it then goes with
+// him as he moves, and in the character room stands where he is drawn). It holds for 0.3 s: set it every
+// tick; none ends it. A clip that has a board of its own goes first.
+struct BoardMount {
+    anim_studio::Joint place;
+    bool with_skater{};
+    float weight{1};
+    // Bones under the deck's mount placed in their parent's frame (a truck turned, set at rest): the others
+    // ride the deck as they stood when the board was taken.
+    struct Bone {
+        std::uint8_t bone{};
+        std::optional<std::array<float, 3>> position;
+        std::optional<std::array<float, 4>> rotation;
+    };
+    std::vector<Bone> bones;
+};
+void board_mount(std::optional<BoardMount> mount);
+// The local board's 16 bones as the game had them before a mount went on in the render of
+// `animation_interface` that has just run on this thread (board_pose.cpp reads the board for plugins after
+// it): false when no mount went on. Taken once.
+bool take_board_before_mount(std::uintptr_t animation_interface, std::array<anim_studio::Joint, 16>& out) noexcept;
 // The hand joint's (joint()).
 std::optional<arm_reach::Placed> hand(arm_reach::Hand side);
 // The game menu's character room (Extension/World/character_room.h). While the walk looks for it,

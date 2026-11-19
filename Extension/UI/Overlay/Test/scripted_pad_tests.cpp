@@ -29,6 +29,21 @@ int main() {
         hold_stick(2, 1, 10000);
         hold_stick(2, 0, 10000);
         check(!held_stick(axis, value) && !scripted_pad(0, pad), "Cancellation releases both routes");
+        // The room walk's press reaches a PlayStation pad the game reads itself, is counted when the game reads it, and keeps
+        // the stand-in connected while it plays (XInputGetCapabilities answers for it then).
+        WORD buttons{};
+        check(!scripted_buttons(buttons) && !stand_in_connected(), "No script: no native buttons and no stand-in");
+        const auto before = script_reads();
+        XINPUT_GAMEPAD rb{};
+        rb.wButtons = XINPUT_GAMEPAD_RIGHT_SHOULDER;
+        play_pad({{0, rb}, {9, XINPUT_GAMEPAD{}}, {24, XINPUT_GAMEPAD{}}});
+        check(stand_in_connected(), "A playing script is a connected stand-in");
+        check(scripted_buttons(buttons) && buttons == XINPUT_GAMEPAD_RIGHT_SHOULDER, "A native read gets the script's RB");
+        check(scripted_pad(0, pad) && pad.Gamepad.wButtons == XINPUT_GAMEPAD_RIGHT_SHOULDER, "XInput gets the same press");
+        check(script_reads() == before + 2, "Both reads of the script are counted");
+        check(!scripted_pad(2, pad) && script_reads() == before + 2, "Another player's read is not the stand-in's");
+        std::this_thread::sleep_for(std::chrono::milliseconds(2700));
+        check(!scripted_buttons(buttons) && !stand_in_connected(), "The stand-in goes once the script has lingered");
         std::puts("scripted pad tests passed");
         return 0;
     } catch (const std::exception& e) {

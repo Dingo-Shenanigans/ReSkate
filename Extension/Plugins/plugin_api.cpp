@@ -271,20 +271,29 @@ std::string checked_text(lua_State* L, int index, std::size_t most, const char* 
 }
 std::string data_path(lua_State* L, int index, bool folder) {
     if (folder && lua_isnoneornil(L, index)) return {};
-    auto path = checked_text(L, index, 200, "a data path");
+    return data_path(L, index, checked_text(L, index, 200, "a data path"), folder);
+}
+std::string data_path(lua_State* L, int index, std::string path, bool folder) {
+    // "<folder>:<path>": a folder beside the game the manifest names, the rest a path inside it.
+    if (const auto colon = path.find(':'); colon != std::string::npos) {
+        auto& plugin = plugin_of(L);
+        const auto name = path.substr(0, colon);
+        need(L, plugin, "files.folders", "a path in a folder beside the game");
+        const auto& folders = plugin.manifest().folders;
+        if (std::find(folders.begin(), folders.end(), name) == folders.end())
+            luaL_error(L, "\"%s\" is not in reskate-plugin.json's \"folders\"", name.c_str());
+        auto rest = path.substr(colon + 1);
+        while (rest.ends_with('/')) rest.pop_back();
+        if (rest.empty()) {
+            if (!folder) luaL_argerror(L, index, "a path inside the folder");
+            return name + ":";
+        }
+        return name + ":" + data_path(L, index, std::move(rest), false);
+    }
     while (folder && path.ends_with('/')) path.pop_back();
     if (folder && path.empty()) return {};
     if (safe_relative_path(path).empty()) luaL_argerror(L, index, "a path inside the plugin's data folder (no .., no drive, / between folders)");
-    std::size_t start = 0;
-    while (start <= path.size()) {
-        const auto end = std::min(path.find('/', start), path.size());
-        std::string base(path.substr(start, std::min(path.find('.', start), end) - start));
-        for (auto& c : base) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        static constexpr std::array<std::string_view, 4> devices{"con", "prn", "aux", "nul"};
-        const bool numbered = base.size() == 4 && (base.starts_with("com") || base.starts_with("lpt")) && base[3] >= '0' && base[3] <= '9';
-        if (numbered || std::find(devices.begin(), devices.end(), base) != devices.end()) luaL_argerror(L, index, "a name Windows keeps for a device");
-        start = end + 1;
-    }
+    if (names_a_device(path)) luaL_argerror(L, index, "a name Windows keeps for a device");
     return path;
 }
 Vec3 position_of(lua_State* L, int index, const char* what) {
@@ -530,13 +539,21 @@ struct ApiFunctions {
             if (!value->empty()) field_text(L, field, *value);
         return 1;
     }
-    // choose(name): that variant of the plugin's own mod in the game: kept as the choice, the mods
-    // applied again and the level loaded again with it. true, or false and why not.
+    // choose(name[, {now = false}]): that variant of the plugin's own mod in the game: kept as the
+    // choice, the mods applied again and the level loaded again with it. With now = false it is only
+    // kept, for the game's next launch; the variant in play stays. true, or false and why not.
     static int choose(lua_State* L) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "variants", "reskate.package.choose");
         const std::string name = luaL_checkstring(L, 1);
-        return result(L, game_of(plugin).choose_variant(plugin.id(), plugin.directory(), name));
+        bool now = true;
+        if (!lua_isnoneornil(L, 2)) {
+            luaL_checktype(L, 2, LUA_TTABLE);
+            lua_getfield(L, 2, "now");
+            if (!lua_isnil(L, -1)) now = lua_toboolean(L, -1) != 0;
+            lua_pop(L, 1);
+        }
+        return result(L, game_of(plugin).choose_variant(plugin.id(), plugin.directory(), name, now));
     }
     static int list(lua_State* L) {
         auto& plugin = plugin_of(L);
@@ -952,6 +969,8 @@ void Api::install(Plugin& plugin, lua_State* L) {
     install_viewmodel_api(plugin, L);
     install_object_physics_api(plugin, L);
     install_values_api(plugin, L);
+    install_files_api(plugin, L);
+    install_picture_api(plugin, L);
     readonly();
     lua_setglobal(L, "reskate");
     lua_pushcfunction(L, ApiFunctions::print, "print");

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstring>
 #include <map>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -194,6 +195,110 @@ bool same_values(const std::vector<std::uint32_t>& values, const Table& table, c
            std::memcmp(values.data(), table.resource.data() + row.at, static_cast<std::size_t>(row.values) * 4) == 0;
 }
 
+// A program heap as it is laid out: its size, its record array, and the fields the loader turns
+// into pointers (each inside the heap, each holding a place inside it). Throws on anything else.
+struct Heap {
+    std::uint32_t size{}, count{};
+    std::uint64_t start{};
+    std::vector<std::uint32_t> fields;      // in order, none twice
+};
+Heap heap_of(const Table& table) {
+    (void)lookup_offset(table);
+    Heap heap;
+    heap.size = read<std::uint32_t>(table.resourceMeta, 0);
+    const auto bytes = read<std::uint32_t>(table.resourceMeta, 4);
+    if (heap.size < 12 || bytes % 4) throw std::runtime_error("program heap layout");
+    heap.count = read<std::uint32_t>(table.resource, 0);
+    heap.start = read<std::uint64_t>(table.resource, 4);
+    if (heap.start < 12 || heap.start > heap.size || static_cast<std::uint64_t>(heap.count) * 168 > heap.size - heap.start)
+        throw std::runtime_error("program records lie outside their heap");
+    for (std::size_t at = 0; at < bytes; at += 4) {
+        const auto field = read<std::uint32_t>(table.resource, static_cast<std::size_t>(heap.size) + at);
+        if (field > heap.size || heap.size - field < 8 || read<std::uint64_t>(table.resource, field) > heap.size)
+            throw std::runtime_error("relocation bounds");
+        heap.fields.push_back(field);
+    }
+    std::ranges::sort(heap.fields);
+    if (std::adjacent_find(heap.fields.begin(), heap.fields.end()) != heap.fields.end())
+        throw std::runtime_error("duplicate relocation");
+    if (!std::binary_search(heap.fields.begin(), heap.fields.end(), 4U)) throw std::runtime_error("the record array is not a pointer");
+    return heap;
+}
+// Every record's lists lie in the heap, and each one that has entries is reached by a pointer.
+bool records_sound(const Table& table) {
+    try {
+        const auto heap = heap_of(table);
+        struct Array { std::size_t count, pointer, stride; };
+        constexpr Array arrays[]{{0x0c,0x10,16},{0x18,0x1c,8},{0x30,0x34,16},{0x3c,0x40,6},{0x48,0x4c,8},{0x54,0x58,2},{0x60,0x64,8}};
+        for (std::uint32_t i = 0; i < heap.count; ++i) for (const auto& array : arrays) {
+            const auto record = static_cast<std::size_t>(heap.start + i * 168ULL);
+            const auto items = read<std::uint32_t>(table.resource, record + array.count);
+            const auto pointer = read<std::uint64_t>(table.resource, record + array.pointer);
+            if (pointer > heap.size || static_cast<std::uint64_t>(items) * array.stride > heap.size - pointer ||
+                (items && !std::binary_search(heap.fields.begin(), heap.fields.end(), static_cast<std::uint32_t>(record + array.pointer)))) return false;
+        }
+        return true;
+    } catch (const std::exception&) { return false; }
+}
+// The retained graph while other graphs' programs are brought into it (merge_program_lookup).
+struct Grown {
+    std::vector<std::byte> heap;
+    std::vector<std::uint32_t> fields;
+    std::uint32_t count{};
+    std::uint64_t start{};
+};
+template <typename Type> void put(std::vector<std::byte>& bytes, std::size_t at, Type value) {
+    if (at > bytes.size() || sizeof(value) > bytes.size() - at) throw std::out_of_range("Shader lookup write exceeds its payload");
+    std::memcpy(bytes.data() + at, &value, sizeof(value));
+}
+// Brings `edit`'s own programs (its records from the stock's count on) into `grown`. Both keep
+// the stock heap whole, so a pointer into it means the same place in either; everything the edit
+// added lies after it and is copied as one piece, each pointer in the piece that points into the
+// piece moved with it. Returns the number its first own record has in the grown graph.
+std::uint32_t bring_in(Grown& grown, const Table& edit, const Table& stock) {
+    const auto stockSize = read<std::uint32_t>(stock.resourceMeta, 0);
+    const auto stockCount = read<std::uint32_t>(stock.resource, 0);
+    const auto theirs = heap_of(edit);
+    if (theirs.count <= stockCount || theirs.start < stockSize || theirs.size <= stockSize)
+        throw std::runtime_error("the edit adds no programs after the stock heap");
+    const auto own = theirs.count - stockCount;
+    const auto at = (grown.heap.size() + 15) & ~std::size_t{15};
+    const auto moved = static_cast<std::uint64_t>(at) - stockSize;
+    if (at + (theirs.size - stockSize) + (static_cast<std::uint64_t>(grown.count) + own) * 168 + 64 > 0x7fffffffULL)
+        throw std::runtime_error("the grown program heap is too large");
+    grown.heap.resize(at);
+    grown.heap.insert(grown.heap.end(), edit.resource.begin() + stockSize, edit.resource.begin() + theirs.size);
+    for (const auto field : theirs.fields) {
+        if (field < stockSize) continue;
+        const auto to = read<std::uint64_t>(edit.resource, field);
+        if (to >= stockSize) put(grown.heap, static_cast<std::size_t>(field + moved), to + moved);
+        grown.fields.push_back(static_cast<std::uint32_t>(field + moved));
+    }
+    // The record array anew: the grown graph's records as they are, then the edit's own.
+    const auto table = (grown.heap.size() + 7) & ~std::size_t{7};
+    const auto mine = static_cast<std::size_t>(grown.count) * 168;
+    const auto first = static_cast<std::size_t>(theirs.start) + static_cast<std::size_t>(stockCount) * 168;
+    std::vector<std::byte> records(grown.heap.begin() + static_cast<std::ptrdiff_t>(grown.start),
+                                   grown.heap.begin() + static_cast<std::ptrdiff_t>(grown.start + mine));
+    records.insert(records.end(), grown.heap.begin() + static_cast<std::ptrdiff_t>(first + moved),
+                   grown.heap.begin() + static_cast<std::ptrdiff_t>(first + moved + static_cast<std::size_t>(own) * 168));
+    grown.heap.resize(table);
+    grown.heap.insert(grown.heap.end(), records.begin(), records.end());
+    const auto held = grown.fields;
+    for (const auto field : held)
+        if (field >= grown.start && field < grown.start + mine)
+            grown.fields.push_back(static_cast<std::uint32_t>(table + (field - grown.start)));
+    for (const auto field : theirs.fields)
+        if (field >= first && field < first + static_cast<std::size_t>(own) * 168)
+            grown.fields.push_back(static_cast<std::uint32_t>(table + mine + (field - first)));
+    const auto number = grown.count;
+    grown.count += own;
+    grown.start = table;
+    put(grown.heap, 0, grown.count);
+    put(grown.heap, 4, static_cast<std::uint64_t>(table));
+    return number;
+}
+
 TextureRows read_texture_rows(const Table& table) {
     if (table.resource.size() % 16)
         throw std::runtime_error("Texture lookup does not have its native layout");
@@ -214,6 +319,22 @@ bool same_program_graph(const Table& candidate, const Table& other) {
     catch (const std::exception&) { return false; }
 }
 
+bool grown_from(const Table& grown, const Table& retained) {
+    try {
+        const auto big = heap_of(grown), small = heap_of(retained);
+        if (big.size <= small.size || big.count <= small.count) return false;
+        if (!std::equal(retained.resource.begin() + 12, retained.resource.begin() + small.size, grown.resource.begin() + 12) ||
+            !std::equal(retained.resourceMeta.begin() + 12, retained.resourceMeta.end(), grown.resourceMeta.begin() + 12)) return false;
+        for (const auto field : small.fields)
+            if (!std::binary_search(big.fields.begin(), big.fields.end(), field)) return false;
+        const auto records = static_cast<std::ptrdiff_t>(small.count) * 168;
+        return std::equal(retained.resource.begin() + static_cast<std::ptrdiff_t>(small.start),
+                          retained.resource.begin() + static_cast<std::ptrdiff_t>(small.start) + records,
+                          grown.resource.begin() + static_cast<std::ptrdiff_t>(big.start)) &&
+               records_sound(grown);
+    } catch (const std::exception&) { return false; }
+}
+
 bool only_stock_aliases(const Table& candidate, const Table& stock) {
     try {
         if (!same_graph(candidate, stock)) return false;
@@ -232,7 +353,8 @@ bool only_stock_aliases(const Table& candidate, const Table& stock) {
     } catch (const std::exception&) { return false; }
 }
 
-MergedTable merge_program_lookup(const Table& base, const std::span<const Table> edits, const Table& stock) {
+MergedTable merge_program_lookup(const Table& base, const std::span<const Table> edits, const Table& stock,
+                                 const std::span<const bool> importable) {
     const auto start = lookup_offset(base);
     const auto records = read<std::uint32_t>(base.resource, 0); // the base blob's record count
     auto rows = read_program_rows(base);
@@ -248,7 +370,12 @@ MergedTable merge_program_lookup(const Table& base, const std::span<const Table>
             ++merged.removed;
         } else ++at;
     }
-    for (const auto& edit : edits) {
+    // The retained graph with other graphs' programs brought in (bring_in), made when the first
+    // is; and which edits' are in it already, so that two copies of one graph are brought in once.
+    std::optional<Grown> grown;
+    std::vector<std::pair<const Table*, std::uint32_t>> brought;
+    for (std::size_t editIndex = 0; editIndex < edits.size(); ++editIndex) {
+        const auto& edit = edits[editIndex];
         try {
             // Indices have meaning only within their owning graph. Keep the selected
             // bundle's heap and relocations verbatim: importing another graph can
@@ -256,6 +383,53 @@ MergedTable merge_program_lookup(const Table& base, const std::span<const Table>
             const bool sameGraph = same_graph(base, edit);
             const bool stockGraph = stockPreserved && (same_graph(stock, edit) || preserves_stock(edit, stock));
             const auto available = sameGraph ? records : stockRecords;
+            // (But for an edit the caller vouches for: its own programs come into the retained
+            // graph, and its rows are renumbered. Any doubt about it: its rows as before.)
+            if (!sameGraph && stockGraph && editIndex < importable.size() && importable[editIndex] &&
+                read<std::uint32_t>(edit.resource, 0) > stockRecords) {
+                std::optional<std::uint32_t> number;
+                for (const auto& [other, at] : brought)
+                    if (same_graph(*other, edit)) number = at;
+                if (!number) {
+                    auto next = grown;
+                    try {
+                        if (!next) {
+                            const auto mine = heap_of(base);
+                            next.emplace();
+                            next->heap.assign(base.resource.begin(), base.resource.begin() + mine.size);
+                            next->fields = mine.fields;
+                            next->count = mine.count;
+                            next->start = mine.start;
+                        }
+                        number = bring_in(*next, edit, stock);
+                        grown = std::move(next);
+                        brought.emplace_back(&edit, *number);
+                        merged.imported += read<std::uint32_t>(edit.resource, 0) - stockRecords;
+                    } catch (const std::exception&) { number.reset(); }
+                }
+                if (number) {
+                    const auto theirs = read<std::uint32_t>(edit.resource, 0);
+                    for (auto& [key, values] : read_program_rows(edit)) {
+                        bool outside{};
+                        for (auto& value : values) {
+                            if (value >= theirs) outside = true;
+                            else if (value >= stockRecords) value = *number + (value - stockRecords);
+                        }
+                        if (const auto held = baseRows.find(key); held != baseRows.end()) {
+                            if (held->second != values) ++merged.conflicts;
+                            continue;
+                        }
+                        if (outside) {
+                            ++merged.outside;
+                            continue;
+                        }
+                        const auto [row, inserted] = rows.try_emplace(key, values);
+                        if (inserted) ++merged.added;
+                        else if (row->second != values) ++merged.conflicts;
+                    }
+                    continue;
+                }
+            }
             const auto listed = list_program_rows(edit);
             if (listed.repeated) {
                 for (const auto& [key, values] : read_program_rows(edit)) {
@@ -305,17 +479,35 @@ MergedTable merge_program_lookup(const Table& base, const std::span<const Table>
         }
     }
 
-    merged.resource.assign(base.resource.begin(),
-                           base.resource.begin() + static_cast<std::ptrdiff_t>(start));
+    merged.resourceMeta.assign(base.resourceMeta.begin(), base.resourceMeta.end());
+    auto rowsAt = start;
+    if (grown) {
+        // The grown heap, then every pointer's place in order, then the rows.
+        merged.resource = std::move(grown->heap);
+        const auto heapSize = static_cast<std::uint32_t>(merged.resource.size());
+        std::ranges::sort(grown->fields);
+        grown->fields.erase(std::unique(grown->fields.begin(), grown->fields.end()), grown->fields.end());
+        for (const auto field : grown->fields) append(merged.resource, field);
+        const auto fieldBytes = static_cast<std::uint32_t>(grown->fields.size() * 4);
+        std::memcpy(merged.resourceMeta.data(), &heapSize, sizeof(heapSize));
+        std::memcpy(merged.resourceMeta.data() + 4, &fieldBytes, sizeof(fieldBytes));
+        rowsAt = merged.resource.size();
+    } else {
+        merged.resource.assign(base.resource.begin(),
+                               base.resource.begin() + static_cast<std::ptrdiff_t>(start));
+    }
     append(merged.resource, static_cast<std::uint32_t>(rows.size()));
     for (const auto& [key, values] : rows) {
         append(merged.resource, key);
         append(merged.resource, static_cast<std::uint32_t>(values.size()));
         for (const auto value : values) append(merged.resource, value);
     }
-    merged.resourceMeta.assign(base.resourceMeta.begin(), base.resourceMeta.end());
-    const auto size = static_cast<std::uint32_t>(merged.resource.size() - start);
+    const auto size = static_cast<std::uint32_t>(merged.resource.size() - rowsAt);
     std::memcpy(merged.resourceMeta.data() + 8, &size, sizeof(size));
+    // (A grown graph that does not read back whole is not handed to the game: the merge again,
+    // with nothing brought in.)
+    if (grown && !(records_sound({merged.resource, merged.resourceMeta}) && preserves_stock({merged.resource, merged.resourceMeta}, stock)))
+        return merge_program_lookup(base, edits, stock, {});
     return merged;
 }
 

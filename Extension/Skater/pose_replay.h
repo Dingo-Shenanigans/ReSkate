@@ -13,6 +13,7 @@ struct Entry {
     anim_studio::Vec3 scale{1, 1, 1}; // each of its own axes
     anim_studio::Vec3 offset{}; // added in the parent's frame
     std::optional<pose_place::Place> place; // resolved after the offsets
+    std::optional<anim_studio::Vec3> scale_to; // its scale set to this (not multiplied), after the offsets
     bool keep_children{}; // direct children keep their current world transforms
 };
 struct Range {

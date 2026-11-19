@@ -152,7 +152,7 @@ struct InputCaptureHooks {
     std::map<OVERLAPPED*, HidRead> hid_reads;
     Hook register_raw;
     Hook async_key, key, keyboard, raw_data, raw_buffer, capture, release_capture, cursor, show_cursor, physical_cursor, cursor_position;
-    std::array<Hook, 5> xinput_state, xinput_extended, xinput_keystroke;
+    std::array<Hook, 5> xinput_state, xinput_extended, xinput_keystroke, xinput_capabilities;
     // Hooks other programs put in front of those, hooked in turn (keep_xinput_capture_first).
     static constexpr std::size_t front_slots = 8;
     std::array<Hook, front_slots> xinput_front;
@@ -254,6 +254,8 @@ void hide_hid_dpad(const InputCaptureHooks::HidRead& read, DWORD size) {
 void hide_hid_buttons(const InputCaptureHooks::HidRead& read, DWORD size) {
     const auto hidden = gameplay_hidden_buttons();
     if (!hidden || overlay_input_access || !read.buffer || size > read.capacity || read.kind == PlayStationPad::none) return;
+    // A playing script's presses (the room walk's) pass, as they do on XInput, where the scripted pad is answered first.
+    if (stand_in_connected()) return;
     (void)hide_playstation_buttons(read.kind, playstation_bluetooth(size), static_cast<std::uint8_t*>(read.buffer), size, hidden);
 }
 // The gamepad filter (DingoSDKOverlaySetGamepadFilter) on the game's own native PlayStation
@@ -309,6 +311,21 @@ void handle_hid(const InputCaptureHooks::HidRead& read, DWORD size) noexcept {
                 if (!reported.exchange(true)) logging::write(logging::Level::info, logging::Channel::input,
                     "Menu preview stick hold reached a native PlayStation HID read.");
             }
+        }
+    }
+    // A scripted press (the character room's walk: RB from page to page) reaches a PlayStation pad the game reads itself too,
+    // as it reaches XInput, ahead of any hold: such a player's game never polls XInput, so the walk's presses went nowhere and
+    // the room did not open.
+    WORD scripted{};
+    if (!overlay_input_access && read.buffer && size <= read.capacity && scripted_buttons(scripted)) {
+        auto* bytes = static_cast<std::uint8_t*>(read.buffer);
+        const bool bluetooth = playstation_bluetooth(size);
+        if (auto pad = parse_playstation_report(read.kind, bluetooth, bytes, size)) {
+            pad->buttons = scripted;
+            if (replace_playstation_report(read.kind, bluetooth, bytes, size, *pad)) refresh_playstation_bluetooth_crc(bytes, size);
+            static std::atomic<bool> reported{};
+            if (!reported.exchange(true)) logging::write(logging::Level::info, logging::Channel::input,
+                "A scripted pad press reached a native PlayStation HID read.");
         }
     }
 }
@@ -1036,6 +1053,23 @@ DWORD WINAPI captured_xinput(DWORD user, XINPUT_STATE* output) {
     return result;
 }
 template<std::size_t I>
+DWORD WINAPI captured_capabilities(DWORD user, DWORD flags, XINPUT_CAPABILITIES* output) {
+    const auto result = original<DWORD(WINAPI*)(DWORD, DWORD, XINPUT_CAPABILITIES*)>(input_hooks().xinput_capabilities[I])(user, flags, output);
+    // The stand-in pad is connected while a script plays (the character room's walk): a game that has no controller reads
+    // only pads it has seen arrive (scripted_pad.h, wake_controller_reads).
+    if (result != ERROR_SUCCESS && user == 0 && output && stand_in_connected()) {
+        *output = {};
+        output->Type = XINPUT_DEVTYPE_GAMEPAD;
+        output->SubType = XINPUT_DEVSUBTYPE_GAMEPAD;
+        output->Gamepad.wButtons = 0xF3FF;
+        output->Gamepad.bLeftTrigger = output->Gamepad.bRightTrigger = 0xFF;
+        output->Gamepad.sThumbLX = output->Gamepad.sThumbLY = output->Gamepad.sThumbRX = output->Gamepad.sThumbRY = static_cast<SHORT>(0xFFC0);
+        output->Vibration.wLeftMotorSpeed = output->Vibration.wRightMotorSpeed = 0xFF;
+        return ERROR_SUCCESS;
+    }
+    return result;
+}
+template<std::size_t I>
 DWORD WINAPI captured_keystroke(DWORD user, DWORD reserved, PXINPUT_KEYSTROKE output) {
     const auto result = original<DWORD(WINAPI*)(DWORD, DWORD, PXINPUT_KEYSTROKE)>(
         input_hooks().xinput_keystroke[I])(user, reserved, output);
@@ -1368,6 +1402,8 @@ bool install_input_capture() {
         reinterpret_cast<void*>(captured_xinput<2, true>), reinterpret_cast<void*>(captured_xinput<3, true>), reinterpret_cast<void*>(captured_xinput<4, true>)};
     const std::array<void*, 5> strokes{reinterpret_cast<void*>(captured_keystroke<0>), reinterpret_cast<void*>(captured_keystroke<1>),
         reinterpret_cast<void*>(captured_keystroke<2>), reinterpret_cast<void*>(captured_keystroke<3>), reinterpret_cast<void*>(captured_keystroke<4>)};
+    const std::array<void*, 5> capabilities{reinterpret_cast<void*>(captured_capabilities<0>), reinterpret_cast<void*>(captured_capabilities<1>),
+        reinterpret_cast<void*>(captured_capabilities<2>), reinterpret_cast<void*>(captured_capabilities<3>), reinterpret_cast<void*>(captured_capabilities<4>)};
     const std::array names{L"xinput1_4.dll", L"xinput1_3.dll", L"xinput9_1_0.dll", L"xinput1_2.dll", L"xinput1_1.dll"};
     std::vector<void*> seen;
     for (std::size_t i = 0; i < names.size(); ++i) {
@@ -1382,6 +1418,11 @@ bool install_input_capture() {
         if (!hook_export(h.xinput_state[i], "XInputGetState", states[i]) ||
             !hook_export(h.xinput_extended[i], MAKEINTRESOURCEA(100), extended[i]) ||
             !hook_export(h.xinput_keystroke[i], "XInputGetKeystroke", strokes[i])) return false;
+        // Answers as XInput does, except for the stand-in pad while a script plays (captured_capabilities). Not needed for
+        // the rest of the capture, so one that cannot be hooked is said and passed over.
+        if (!hook_export(h.xinput_capabilities[i], "XInputGetCapabilities", capabilities[i]))
+            dingosdk::logging::printf(dingosdk::logging::Level::warning, dingosdk::logging::Channel::input,
+                "XInputGetCapabilities is not hooked (module %zu): the character room's walk may not reach a game with no controller.", i);
     }
     const auto direct = LoadLibraryExW(L"dinput8.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
     if (direct) {

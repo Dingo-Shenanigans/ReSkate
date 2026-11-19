@@ -25,4 +25,16 @@ bool scripted_pad(DWORD user, XINPUT_STATE &state) noexcept;
 void hold_stick(int stick, float value, unsigned milliseconds) noexcept;
 // Snapshot the same expiring hold for native controller reads. Scripts retain priority.
 bool held_stick(int& stick, SHORT& value) noexcept;
+// The script's buttons now (XInput's layout), for a native PlayStation pad read: a player whose PlayStation pad the game reads
+// itself (HID) never polls XInput, so a press on the stand-in reached nobody. False when no script plays.
+bool scripted_buttons(WORD& buttons) noexcept;
+// A script is playing (and lingering): the stand-in answers as a connected pad (XInputGetCapabilities too).
+bool stand_in_connected() noexcept;
+// How many times the game has read a playing script, by XInput or a native PlayStation read: a press that was never read
+// never reached the game (no controller connected, so skate. polls none).
+std::uint64_t script_reads() noexcept;
+// Asks the game to look for controllers again, as Windows does when one is plugged in (WM_DEVICECHANGE,
+// DBT_DEVNODES_CHANGED to its windows). skate. reads XInput only once it has seen a pad arrive: with none connected it never
+// read the stand-in, until something was plugged in. Any thread.
+void wake_controller_reads() noexcept;
 } // namespace dingosdk::overlay

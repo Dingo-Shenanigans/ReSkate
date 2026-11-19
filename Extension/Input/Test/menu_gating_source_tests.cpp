@@ -39,6 +39,13 @@ bool scripted_pad(DWORD, XINPUT_STATE& output) noexcept {
     return true;
 }
 bool held_stick(int&, SHORT&) noexcept { return false; }
+// The same script as a native PlayStation read gets it, and its stand-in answering as a connected pad.
+bool scripted_buttons(WORD& buttons) noexcept {
+    if (!fixture_script) return false;
+    buttons = XINPUT_GAMEPAD_RIGHT_SHOULDER;
+    return true;
+}
+bool stand_in_connected() noexcept { return fixture_script; }
 }
 namespace dingosdk::multiplayer {
 bool native_throwdown_gameplay_input_allowed() noexcept { return true; }

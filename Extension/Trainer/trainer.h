@@ -238,6 +238,10 @@ std::string plugin_tune(std::string_view owner, std::string_view id, std::option
 // Flip tricks in the air turn at `factor` times their speed (with the player's own flip speed) for the next
 // `hold_ms`, so a plugin calls it every tick; 1 lets go. Every plugin's factors multiply. Empty when done, else why not.
 std::string plugin_flip_speed(std::string_view owner, float factor, unsigned hold_ms);
-// Lets go of this plugin's values and flip speed.
+// A plugin's preset (name -> its values, by tuning id or setting key), held: every other preset and change is
+// off while it holds and the player cannot change them; the player's own come back, as they were, when it lets
+// go (no values). Nothing of it is saved or put among the player's presets. Empty when done, else why not.
+std::string plugin_preset(std::string_view owner, std::string_view name, std::optional<std::map<std::string, double, std::less<>>> values);
+// Lets go of this plugin's values, preset and flip speed.
 void release_plugin_tunes(std::string_view owner);
 } // namespace dingosdk::trainer

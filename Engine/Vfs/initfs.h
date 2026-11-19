@@ -31,9 +31,9 @@ void set_plugin_developer_mode(const std::filesystem::path& game_directory, bool
 // default. Throws as plugin developer mode does.
 struct PluginLimits {
     bool stop_slow{true};   // a plugin that takes too long a tick for five seconds is stopped
-    double tick_ms{6};      // how long a tick that is: 6 to 50
+    double tick_ms{16};     // how long a tick that is: 6 to 50 (6 the default until 2.1.5)
     bool stop_errors{true}; // a plugin with more than five errors in ten seconds is stopped
-    int memory_mb{128};     // the memory a plugin may use: 128 to 1024
+    int memory_mb{512};     // the memory a plugin may use: 128 to 1024 (128 the default until 2.1.5)
     bool operator==(const PluginLimits&) const = default;
 };
 PluginLimits plugin_limits(const std::filesystem::path& game_directory);
