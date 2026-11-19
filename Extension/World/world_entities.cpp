@@ -605,11 +605,6 @@ std::string set(std::string_view owner, std::uint32_t id, std::string asset, con
     auto& s = state();
     std::lock_guard lock(s.mutex);
     const Key key{std::string(owner), id};
-    if (!s.wanted.contains(key)) {
-        const auto mine = std::count_if(s.wanted.begin(), s.wanted.end(), [&](const auto& w) { return w.first.first == owner; });
-        if (static_cast<std::size_t>(mine) >= max_per_owner) return std::format("at most {} objects", max_per_owner);
-        if (s.wanted.size() >= max_total) return "the world holds as many objects as ReSkate keeps";
-    }
     s.wanted[key] = {std::move(asset), matrix, hidden, attach, solid};
     return {};
 }

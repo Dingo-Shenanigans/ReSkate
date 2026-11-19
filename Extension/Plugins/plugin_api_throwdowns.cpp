@@ -107,7 +107,8 @@ struct KitApi {
     static Plugin& files_call(lua_State* L, const char* what) {
         auto& plugin = plugin_of(L);
         need(L, plugin, "files", what);
-        if (!within(plugin.services_.now_ms(), plugin.files_second_, plugin.file_calls_, 64)) luaL_error(L, "more than 64 file calls in a second");
+        if (!within(plugin.services_.now_ms(), plugin.files_second_, plugin.file_calls_, plugin.limits_.file_calls_per_second))
+            luaL_error(L, "more than %d file calls in a second", plugin.limits_.file_calls_per_second);
         return plugin;
     }
     // list(folder?): the names in it, folders ending in "/"; or nil, why.
@@ -128,13 +129,14 @@ struct KitApi {
         lua_pushlstring(L, text.data(), text.size());
         return 1;
     }
-    // write(path, text): at most 1 MB a file and 1000 files; the folders it names are made.
+    // write(path, text): at most 512 MB a file (64 MB until 2.1.5: a pack a plugin downloads and opens can be
+    // that big) and 50000 files; the folders it names are made.
     static int files_write(lua_State* L) {
         auto& plugin = files_call(L, "reskate.files.write");
         const auto path = data_path(L, 1, false);
         std::size_t length = 0;
         const char* text = luaL_checklstring(L, 2, &length);
-        if (length > files_most_bytes) return result(L, "a file is at most 1 MB");
+        if (length > files_most_bytes) return result(L, "a file is at most 512 MB");
         return result(L, game_of(plugin).files_write(plugin.id(), path, std::string_view(text, length)));
     }
     // remove(path): a file, or a folder with nothing in it.
@@ -334,7 +336,7 @@ struct KitApi {
         return result(L, game_of(plugin).skater_hold(plugin.id(), lua_toboolean(L, 1) != 0));
     }
 
-    static constexpr std::size_t files_most_bytes = 1u << 20;
+    static constexpr std::size_t files_most_bytes = 512u << 20;
     static void install(Plugin& plugin, lua_State* L);
 };
 

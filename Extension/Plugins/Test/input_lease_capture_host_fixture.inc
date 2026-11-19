@@ -143,13 +143,13 @@ void selected_stream_capture_host_fixture_v1(){
     unsigned groups{};
     const auto prompt=approval_prompt(permission_groups(parse_manifest(manifest(permission))));
     // One INPUT summary capitalizes only its first action: lease then capture.
-    check(prompt.find("Reserve and read one observed controller stream, without capturing or changing input")!=std::string::npos &&
-        prompt.find("capture one selected controller stream, with neutral-release cleanup")!=std::string::npos &&
+    check(prompt.find("Read one controller's input as the game gets it")!=std::string::npos &&
+        prompt.find("keep one controller's input from the game")!=std::string::npos &&
         prompt.find("bind keys")==std::string::npos && prompt.find("Bind keys")==std::string::npos &&
         prompt.find("Record your screen")==std::string::npos && prompt.find("record your screen")==std::string::npos,
         "combined lease/capture approval misrepresented permission scope");
     const auto capture_prompt=approval_prompt(permission_groups(parse_manifest(manifest(R"("input.capture")"))));
-    check(capture_prompt.find("Capture one selected controller stream, with neutral-release cleanup")!=std::string::npos &&
+    check(capture_prompt.find("Keep one controller's input from the game")!=std::string::npos &&
         capture_prompt.find("bind keys")==std::string::npos && capture_prompt.find("Bind keys")==std::string::npos &&
         capture_prompt.find("Record your screen")==std::string::npos && capture_prompt.find("record your screen")==std::string::npos,
         "capture-only approval omitted its title or claimed unrelated input/screen access");

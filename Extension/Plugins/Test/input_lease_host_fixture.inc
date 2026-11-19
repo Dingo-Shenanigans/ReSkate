@@ -135,7 +135,7 @@ void passive_input_lease_host_fixture_v1() {
     const std::string permission = R"("input.lease")";
     unsigned groups{};
     const auto prompt = approval_prompt(permission_groups(parse_manifest(manifest(permission))));
-    check(prompt.find("Reserve and read one observed controller stream, without capturing or changing input") != std::string::npos &&
+    check(prompt.find("Read one controller's input as the game gets it") != std::string::npos &&
           prompt.find("bind keys") == std::string::npos && prompt.find("Bind keys") == std::string::npos,
           "passive-only approval claimed a generic input binding or omitted its reservation");
     // 1. Permission precedes malformed arguments and backend access. Generic

@@ -421,7 +421,7 @@ void plugin_limits(SkateMenu& menu) {
         int chosen = 0;
         for (std::size_t i = 0; i < times.size(); ++i)
             if (choices.tick_ms >= times[i] - 0.5) chosen = static_cast<int>(i);
-        field(menu, "Time allowed", "How long a plugin may take a frame, on average, before it is stopped. 6 ms is ReSkate's own; a frame at 60 a second is 16.7 ms.");
+        field(menu, "Time allowed", "How long a plugin may take a frame, on average, before it is stopped. 16 ms is ReSkate's own; a frame at 60 a second is 16.7 ms.");
         if (choice(menu, "plugin-limit-time", chosen, {"6 ms (strict)", "10 ms", "16 ms", "25 ms (loose)"}, choices.stop_slow))
             choices.tick_ms = times[static_cast<std::size_t>(std::clamp(chosen, 0, 3))];
     }

@@ -43,6 +43,8 @@ namespace dingosdk::overlay {
 bool scripted_pad_active() noexcept { unrelated_entry(); }
 bool scripted_pad(DWORD, XINPUT_STATE&, bool*) noexcept { unrelated_entry(); }
 bool held_stick(int&, SHORT&) noexcept { unrelated_entry(); }
+bool scripted_buttons(WORD&) noexcept { unrelated_entry(); }
+bool stand_in_connected() noexcept { unrelated_entry(); }
 }
 namespace dingosdk::multiplayer {
 bool native_throwdown_gameplay_input_allowed() noexcept { unrelated_entry(); }

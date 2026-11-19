@@ -212,7 +212,7 @@ struct State {
     // The icon of the mod the highlighted item is from (item_browser_overlay.cpp), in the fourth.
     ComPtr<ID3D12Resource> mod_icon_texture, mod_icon_upload;
     // Plugins' pictures (plugin_images.cpp), from the fifth slot on.
-    std::array<ComPtr<ID3D12Resource>, 16> plugin_textures, plugin_uploads;
+    std::array<ComPtr<ID3D12Resource>, 96> plugin_textures, plugin_uploads; // plugin_image_slots
     // Thunderstore icons for the Mod Manager page (store_icons.cpp), after the screen look's slots.
     std::array<ComPtr<ID3D12Resource>, 64> store_textures, store_uploads; // store_icon_slots
     ComPtr<ID3D12GraphicsCommandList> commands;
@@ -375,6 +375,8 @@ void card_image_uploaded(ImTextureID texture, unsigned serial);
 void card_image_lost();
 // Decodes a PNG to RGBA; with `side`, scaled to a square of that many pixels.
 bool decode_picture(const std::string& png, CardPixels& out, UINT side);
+// Decodes a picture of at most `most_side` pixels a side to RGBA, as it is (a plugin's picture).
+bool decode_picture_within(const std::string& bytes, CardPixels& out, UINT most_side);
 // Decodes a picture to RGBA no wider than `most_width` pixels, its shape kept (a news post's picture).
 bool decode_banner(const std::string& bytes, CardPixels& out, UINT most_width);
 // The menu's map pictures (menu_map_pictures.cpp), the same way, in the SRV heap's third slot.
@@ -386,9 +388,11 @@ bool take_mod_icon_pixels(CardPixels& pixels);
 // Plugins' pictures (plugin_images.cpp): the SRV heap's slots from plugin_image_first_slot on. A
 // draw asks for a picture by its file (its id once on the GPU, 0 until then); the render thread
 // takes one decoded picture a frame to upload and says where it went.
-inline constexpr UINT plugin_image_first_slot = 4, plugin_image_slots = 16;
+inline constexpr UINT plugin_image_first_slot = 4, plugin_image_slots = 96;
 // Then the screen look's three (screen_look.h): its copy of the frame and the auto-iris's two targets.
 inline constexpr UINT screen_look_slot = plugin_image_first_slot + plugin_image_slots, screen_look_slots = 3;
+// Then a plugin's screen shader's one (screen_shader.h): its copy of the frame.
+inline constexpr UINT screen_shader_slot = screen_look_slot + screen_look_slots, screen_shader_slots = 1;
 ImTextureID plugin_image(const std::string& path, ImVec2& size);
 struct PluginImageUpload {
     std::string path;
@@ -405,9 +409,15 @@ void plugin_images_lost();
 // (0 until then, and when it has been let go), counted as drawn.
 bool plugin_pixels(const std::string& key, CardPixels pixels);
 ImTextureID plugin_pixels_id(const std::string& key);
+// For pictures that are made again and again under new names (a page of glyphs, plugin_fonts.cpp):
+// whether one is still on its way to the GPU (false once it is there, and for one that failed or was
+// let go), and letting one go at once, its slot free for the next picture, rather than when it has
+// been idle for a while.
+bool plugin_pixels_waiting(const std::string& key);
+void plugin_pixels_drop(const std::string& key);
 // Thunderstore packages' icons for the pause menu's Mod Manager page (store_icons.cpp), the same way,
 // by their URL, in the SRV heap's slots from store_icon_first_slot on.
-inline constexpr UINT store_icon_first_slot = screen_look_slot + screen_look_slots, store_icon_slots = 64;
+inline constexpr UINT store_icon_first_slot = screen_shader_slot + screen_shader_slots, store_icon_slots = 64;
 ImTextureID store_icon(const std::string& url);
 // The same, and whether it is still on its way (`loading`: asked for and neither there nor failed),
 // so a page can show it loading rather than as missing.
@@ -435,6 +445,7 @@ ImTextureID made_icon(const std::string& key, IconMaker make);
 bool mod_apply_card_pending();
 void draw_mod_apply_card();
 static_assert(std::tuple_size_v<decltype(State::store_textures)> == store_icon_slots);
+static_assert(std::tuple_size_v<decltype(State::plugin_textures)> == plugin_image_slots);
 void mod_icon_uploaded(ImTextureID texture, unsigned serial);
 void mod_icon_lost();
 // Game debug text (game_text_overlay.cpp): polled every presented frame.

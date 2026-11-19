@@ -191,7 +191,12 @@ Eclipse read_eclipse(std::span<const std::byte> bytes) {
                                 const auto least = read<float>(bytes, at + (kind == 1 ? 16 : 12) + d * 4);
                                 const auto most = read<float>(bytes, at + (kind == 1 ? 32 : 16) + d * 4);
                                 const float share = format ? big16(payload, p) / 65535.0F : read<std::uint8_t>(payload, p) / 255.0F;
-                                value[d] = least + share * (most - least);
+                                // A vector channel's second three numbers are how far its values reach from the
+                                // first three, not where they end: taken as an end, every joint that moves in a
+                                // clip (the hips, the feet's targets, the board) stood up to a metre and a half
+                                // from where the game has it. Measured against Animator Studio's own decoder
+                                // (its "native-piec-v1-extent"), whose clips are the game's, 2026-11-17.
+                                value[d] = kind == 1 ? least + share * most : least + share * (most - least);
                             }
                         }
                     }
@@ -662,28 +667,64 @@ Clip Library::load(std::string_view asked) const {
         for (int up_to = placement_joint; up_to >= 0; up_to = d.rig.parents[static_cast<std::size_t>(up_to)]) up = compose(pose[static_cast<std::size_t>(up_to)], up);
         board_y.push_back(up.position[1]);
     }
-    // The pop is the board's first low point (the tail strikes); the landing its deepest low point
-    // between a quarter and about 0.85 s later (at 60 a second). Its height is
-    // smoothed over five frames, as numpy's convolve "same" does (nothing past the ends).
-    std::vector<float> smooth(board_y.size());
-    for (std::size_t i = 0; i < board_y.size(); ++i) {
-        float sum = 0;
-        for (std::size_t j = i >= 2 ? i - 2 : 0; j <= std::min(i + 2, board_y.size() - 1); ++j) sum += board_y[j];
-        smooth[i] = sum / 5.0f;
+    // The pop and the landing, as Animator Studio's library marks a game clip (its trick_marks), from the
+    // board's own joint: the pop is where the board first tips (its rotation more than 6 degrees from
+    // the first frame's, and 0.05 s on), or for a board that never tips its height's first low point;
+    // the landing is the height's deepest low point between a quarter and 0.85 s after the pop. The
+    // height is smoothed over five frames. (ReSkate marked the pop by the board's height in the world
+    // alone until 2026-11-17, with the positions read wrongly: see read_eclipse.)
+    (void)board_y;
+    const auto board = [&](std::size_t f) -> const Joint& { return clip.frames[f * skeleton_joints + d.rig.board]; };
+    const float length = clip.times.back() - clip.times.front();
+    const auto place = [&](float takeoff, float landing) {
+        if (frames < 8) return std::pair{takeoff, landing};
+        const auto& rest = board(0).rotation;
+        for (std::size_t i = 1; i < frames; ++i) {
+            const auto& q = board(i).rotation;
+            const float dot = std::abs(rest[0] * q[0] + rest[1] * q[1] + rest[2] * q[2] + rest[3] * q[3]);
+            if (!std::isfinite(dot) || 2 * std::acos(std::clamp(dot, 0.0f, 1.0f)) * 57.2957795f <= 6.0f) continue;
+            const float pop = clip.times[i] + 0.05f;
+            if (pop < takeoff - 0.04f && pop < length - 0.3f) takeoff = pop;
+            break;
+        }
+        std::vector<float> smooth(frames, 0.0f);
+        for (std::size_t i = 2; i + 2 < frames; ++i) {
+            float sum = 0;
+            for (std::size_t j = i - 2; j <= i + 2; ++j) sum += board(j).position[1];
+            smooth[i] = sum / 5;
+        }
+        std::optional<std::size_t> deepest;
+        for (std::size_t i = 3; i + 3 < frames; ++i) {
+            if (clip.times[i] < takeoff + 0.25f - 1e-3f || clip.times[i] > takeoff + 0.85f + 1e-3f) continue;
+            if (!(smooth[i] <= smooth[i - 1] && smooth[i] < smooth[i + 1])) continue;
+            if (!deepest || smooth[i] < smooth[*deepest]) deepest = i;
+        }
+        if (deepest && std::isfinite(smooth[*deepest]) && (landing < 0 || std::abs(clip.times[*deepest] - landing) > 0.05f)) landing = clip.times[*deepest];
+        return std::pair{takeoff, landing};
+    };
+    auto marks = place(length, -1.0f);
+    if (!(marks.first < length - 1e-6f)) {
+        // The board never tips: the first low of its height (rounded: flat stretches stay flat).
+        std::vector<double> y(frames), smooth(frames);
+        for (std::size_t f = 0; f < frames; ++f) y[f] = std::round(static_cast<double>(board(f).position[1]) * 1e5) / 1e5;
+        for (std::size_t i = 0; i < frames; ++i) {
+            double sum = 0;
+            for (int k = -2; k <= 2; ++k) {
+                const auto near_frame = static_cast<std::ptrdiff_t>(i) + k;
+                if (near_frame >= 0 && near_frame < static_cast<std::ptrdiff_t>(frames)) sum += y[static_cast<std::size_t>(near_frame)];
+            }
+            smooth[i] = sum / 5;
+        }
+        std::size_t takeoff = 0;
+        for (std::size_t i = 2; i + 2 < frames; ++i)
+            if (smooth[i] <= smooth[i - 1] && smooth[i] < smooth[i + 1]) {
+                takeoff = i;
+                break;
+            }
+        marks = place(clip.times[takeoff], -1.0f);
     }
-    std::vector<std::size_t> lows;
-    for (std::size_t i = 2; i + 2 < smooth.size(); ++i)
-        if (smooth[i] <= smooth[i - 1] && smooth[i] < smooth[i + 1]) lows.push_back(i);
-    if (!lows.empty()) {
-        const std::size_t takeoff = lows.front();
-        const auto per_frame = fps / 60.0;
-        const std::size_t from = takeoff + static_cast<std::size_t>(15 * per_frame), to = std::min(frames - 1, takeoff + static_cast<std::size_t>(51 * per_frame));
-        std::optional<std::size_t> landing;
-        for (const auto i : lows)
-            if (i >= from && i <= to && (!landing || smooth[i] < smooth[*landing])) landing = i;
-        clip.takeoff = clip.times[takeoff];
-        clip.landing = clip.times[landing.value_or(std::min(frames - 1, takeoff + static_cast<std::size_t>(27 * per_frame)))];
-    }
+    clip.takeoff = marks.first;
+    clip.landing = marks.second;
     return clip;
 }
 

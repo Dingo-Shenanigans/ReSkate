@@ -53,6 +53,7 @@ class SteamServerBrowser {
         std::uint64_t search{}, listed{}; // the search that last listed it, and when
         bool lan{};                       // answered on the player's own network
         unsigned missed{};                // internet lists with servers in them that left it out, in a row
+        std::string listed_at;            // for the log: the address, game port and query port Steam lists it at
     };
     void *servers_{};
     std::vector<Search> searches_; // the internet and LAN lists

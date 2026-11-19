@@ -46,6 +46,8 @@ Range apply_entries(std::span<Joint> pose, std::span<const Entry> entries, float
             j.position[a] += entry.offset[a] * w;
         }
         if (entry.place) pose_place::apply(pose, entry.joint, *entry.place, w);
+        if (entry.scale_to)
+            for (std::size_t a = 0; a < 3; ++a) j.scale[a] += (std::max((*entry.scale_to)[a], pose_offset::smallest_scale) - j.scale[a]) * w;
         if (entry.keep_children) {
             pose_place::put_back(pose, entry.joint, kept);
             for (const auto& k : kept) mark(k.joint);

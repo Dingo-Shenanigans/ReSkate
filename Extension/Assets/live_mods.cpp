@@ -452,6 +452,10 @@ void apply_now() {
     // Where the time went, step by step, as the launch's merge logs it.
     for (const auto &note : report.notes)
         if (note.starts_with("Merge times:")) logging::log(logging::Level::info, logging::Channel::assets, "Live mods: {}", note);
+    // And which variant of each mod is in the game now, as the launch's merge says it: a variant chosen
+    // while the game ran left no trace of whether it went in (2026-11-11).
+    for (const auto &note : catalog.notes)
+        if (note.starts_with("Variants:")) logging::log(logging::Level::info, logging::Channel::assets, "Live mods: {}", note);
     const auto elapsed = static_cast<double>(GetTickCount64() - started) / 1000.0;
     set_status("applied " + std::to_string(catalog.mods.size()) + " mod(s) in " + std::to_string(elapsed).substr(0, 4) + "s; " +
                    (needed ? "reloading the level"

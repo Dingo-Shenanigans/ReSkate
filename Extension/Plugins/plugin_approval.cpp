@@ -69,8 +69,8 @@ constexpr Capability capabilities[] = {
     {"world.vehicles", "WORLD", Risk::red, "Take over nearby traffic vehicles and move them"},
     {"camera", "CAMERA", Risk::amber, "Control the camera"},
     {"input", "INPUT", Risk::amber, "Bind your keys, pads and mouse, and read text input"},
-    {"input.lease", "INPUT", Risk::amber, "Reserve and read one observed controller stream, without capturing or changing input"},
-    {"input.capture", "INPUT", Risk::red, "Capture one selected controller stream, with neutral-release cleanup"},
+    {"input.lease", "INPUT", Risk::amber, "Read one controller's input as the game gets it"},
+    {"input.capture", "INPUT", Risk::red, "Keep one controller's input from the game"},
     {"input.write", "INPUT", Risk::amber, "Replace your controller input while you play"},
     // Red: it can relabel anything the game shows, its store's buttons and prices included.
     {"strings", "SCREEN", Risk::red, "Change the text the game shows, in its menus and its store"},
@@ -79,6 +79,8 @@ constexpr Capability capabilities[] = {
     {"hud", "SCREEN", Risk::amber, "Hide your HUD and change the trick ticker"},
     {"hud.score", "SCREEN", Risk::amber, "Show its own tricks and points in skate.'s score HUD"},
     {"overlay", "SCREEN", Risk::amber, "Draw on your screen, with screen effects, toasts and x-ray view"},
+    {"screen.shader", "SCREEN", Risk::red, "Run its own shader on your graphics card, over your whole screen"},
+    {"world.shader", "SCREEN", Risk::red, "Run its own shader on your graphics card, drawing into the game's world"},
     {"ui.screen", "SCREEN", Risk::grey, "Open its own screens and dialogs"},
     {"ui.models", "SCREEN", Risk::grey, "Send numbers to its own mod's menus and HUD"},
     {"menu", "SCREEN", Risk::grey, "Edit the game's menu and add its own menu page"},
@@ -86,6 +88,8 @@ constexpr Capability capabilities[] = {
     {"audio", "SOUND", Risk::grey, "Play, stop and adjust sounds"},
     {"audio.ui", "SOUND", Risk::grey, "Play interface sounds"},
     {"files", "FILES", Risk::amber, "Read and write files in its own data folder"},
+    // Red: files outside the Mods folder, where the player's own things may be.
+    {"files.folders", "FILES", Risk::red, "Read and write files in folders beside the game"},
     {"room", "GAME", Risk::red, "Open and control the character room, where others see your skater"},
     {"game.speed", "GAME", Risk::amber, "Control slow motion and the speed of the game"},
     {"replay", "GAME", Risk::grey, "Use replays"},
@@ -216,6 +220,11 @@ std::vector<PermissionGroup> permission_groups(const Manifest& manifest) {
     for (const auto& capability : capabilities) {
         if (!manifest.permissions.contains(capability.permission)) continue;
         auto text = std::string(capability.phrase);
+        if (capability.permission == "files.folders" && !manifest.folders.empty()) {
+            text += " (";
+            for (const auto& folder : manifest.folders) text += (&folder == &manifest.folders.front() ? "" : ", ") + folder;
+            text += ')';
+        }
         if (capability.permission == "net.http" && !manifest.domains.empty()) {
             text += " (";
             for (const auto& domain : manifest.domains) text += (&domain == &manifest.domains.front() ? "" : ", ") + domain;
@@ -306,8 +315,8 @@ std::string approval_prompt(const std::vector<PermissionGroup>& groups) {
             actions.push_back("control the camera");
         } else if (group.category == "INPUT") {
             if (has("input")) actions.push_back("bind keys, pads, and mouse, and read text input");
-            if (has("input.lease")) actions.push_back("reserve and read one observed controller stream, without capturing or changing input");
-            if (has("input.capture")) actions.push_back("capture one selected controller stream, with neutral-release cleanup");
+            if (has("input.lease")) actions.push_back("read one controller's input as the game gets it");
+            if (has("input.capture")) actions.push_back("keep one controller's input from the game");
             if (has("input.write")) actions.push_back("replace your controller input while you play");
         } else if (group.category == "SCREEN") {
             if (has("strings")) actions.push_back("change the text the game shows, in its menus and its store");
@@ -316,6 +325,8 @@ std::string approval_prompt(const std::vector<PermissionGroup>& groups) {
             if (has("hud")) actions.push_back("hide your HUD or change the trick ticker");
             if (has("hud.score")) actions.push_back("show its own tricks and points in skate.'s score HUD (they never count)");
             if (has("overlay")) actions.push_back("draw on screen, including screen effects");
+            if (has("screen.shader")) actions.push_back("run its own shader over your whole screen");
+            if (has("world.shader")) actions.push_back("run its own shader drawing into the game's world");
             if (has("ui.screen")) actions.push_back("open plugin screens and dialogs");
             if (has("ui.models")) actions.push_back("send numbers to its own mod's menus and HUD");
             if (has("menu")) actions.push_back("edit the game's menu and add menu pages");

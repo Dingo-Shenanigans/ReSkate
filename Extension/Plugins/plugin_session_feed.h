@@ -116,11 +116,13 @@ inline std::map<std::pair<std::uint64_t, std::uint16_t>, JointPlace> joints;
 }
 
 // Where a joint of another player is (joint_place), asked for by the plugins' side. Asking keeps it
-// published for two seconds, so the first ask comes back empty; at most 64 are kept.
+// published for two seconds, so the first ask comes back empty. (As many as are asked for: there was
+// a limit of 64 until 2026-11-17, which a plugin drawing a gun in each player's hands and a parachute's
+// harness on each body ran out of at ten players.)
 inline std::optional<JointPlace> joint_place(std::uint64_t player, std::uint16_t joint) {
     std::lock_guard lock(detail::mutex);
     const std::pair key{player, joint};
-    if (detail::joints_asked.size() < 64 || detail::joints_asked.contains(key)) detail::joints_asked[key] = std::chrono::steady_clock::now();
+    detail::joints_asked[key] = std::chrono::steady_clock::now();
     const auto at = detail::joints.find(key);
     if (at == detail::joints.end()) return std::nullopt;
     return at->second;
