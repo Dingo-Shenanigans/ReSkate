@@ -365,5 +365,38 @@ int main() {
             check(written[i].first == old_written[i].first && same_joint(written[i].second.before, old_written[i].second.before) &&
                   same_joint(written[i].second.after, old_written[i].second.after), "a refused batch preserves every before/after history value");
     }
+    // A scale that is set, not multiplied: whatever the joint's scale was, it is the one asked for at
+    // full weight and halfway there at half, with a place or without one, and a whole pose set joint
+    // by joint (every joint from 2, in its parent's frame) is that pose.
+    {
+        auto pose = made_up_pose();
+        pose[103].scale = {2, 2, 2};
+        pose_replay::Entry head; head.joint = 103; head.scale_to = Vec3{0.5f, 1, 3};
+        auto full = pose;
+        pose_replay::apply(full, std::span(&head, 1), 1);
+        check(near(full[103].scale, {0.5f, 1, 3}) && near(full[103].position, pose[103].position), "a scale is set, the rest left alone");
+        auto half = pose;
+        pose_replay::apply(half, std::span(&head, 1), 0.5f);
+        check(near(half[103].scale, {1.25f, 1.5f, 2.5f}), "halfway to it at half the weight");
+        auto wanted = made_up_pose();
+        for (std::size_t i = 2; i < wanted.size(); ++i) {
+            wanted[i].position = {0.02f, 0.03f * static_cast<float>(i % 3), -0.01f};
+            wanted[i].rotation = anim_studio::axis_angle({1, 0, 0}, 0.02f * static_cast<float>(i % 9));
+            wanted[i].scale = {1, 1.5f, 1};
+        }
+        std::vector<pose_replay::Entry> whole;
+        for (std::size_t i = 2; i < wanted.size(); ++i) {
+            pose_replay::Entry e; e.joint = static_cast<std::uint16_t>(i);
+            e.place = Place{wanted[i].position, wanted[i].rotation, Frame::parent};
+            e.scale_to = wanted[i].scale;
+            whole.push_back(e);
+        }
+        auto set = pose;
+        const auto range = pose_replay::apply(set, whole, 1);
+        bool same = range.first == 2 && range.last == set.size();
+        for (std::size_t i = 2; i < set.size() && same; ++i)
+            same = near(set[i].position, wanted[i].position) && near(set[i].rotation, wanted[i].rotation) && near(set[i].scale, wanted[i].scale);
+        check(same && near(set[1].position, pose[1].position), "a whole pose set joint by joint is that pose, the placement left alone");
+    }
     std::cout << "pose_place tests passed\n";
 }

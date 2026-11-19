@@ -229,6 +229,10 @@ void SteamServerBrowser::read(std::uint64_t now) {
             entry.listed = now;
             entry.missed = 0;
             if (!search.internet) entry.lan = true;
+            if (search.internet || entry.listed_at.empty())
+                entry.listed_at = std::to_string(item->ip >> 24) + "." + std::to_string((item->ip >> 16) & 255) + "." +
+                                  std::to_string((item->ip >> 8) & 255) + "." + std::to_string(item->ip & 255) + ":" +
+                                  std::to_string(item->connection_port) + " query " + std::to_string(item->query_port);
             // A direct answer is live; the tags come from Steam's master list, which
             // can lag behind a change of map.
             const bool answered = item->had_successful_response;
@@ -295,7 +299,7 @@ void SteamServerBrowser::tick(std::uint64_t now) {
             if (server.search == search_) return false;
             if (internet_listed_) ++server.missed;
             if (server_listing_gone(internet_listed_, server.missed, now - server.listed)) return true;
-            kept += (kept.empty() ? "" : "; ") + server.row.name;
+            kept += (kept.empty() ? "" : "; ") + server.row.name + " (" + server.listed_at + ")";
             return false;
         });
         // Rows again: a server gone can uncover one it replaced, and the log below names what is hidden.
@@ -307,6 +311,16 @@ void SteamServerBrowser::tick(std::uint64_t now) {
             for (const auto &entry : hidden_) hidden += (hidden.empty() ? "" : "; ") + entry;
             logging::log(logging::Level::info, logging::Channel::runtime, "Server browser: not shown, replaced by another server: {}.", hidden);
         }
+        // Where Steam lists each official server. Steam keeps one listing for a public address and
+        // query port: two servers that share them take turns in the list (seen 2026-11-15: of three
+        // official servers, two were never listed in the same search and never both missing).
+        std::string official;
+        for (const auto &[id, entry] : found_)
+            if (official_server(id))
+                official += (official.empty() ? "" : "; ") + entry.row.name + " at " + entry.listed_at +
+                            (entry.search == search_ ? "" : " (not in this search)");
+        if (!official.empty())
+            logging::log(logging::Level::info, logging::Channel::runtime, "Server browser: official servers listed at: {}.", official);
         std::string list;
         for (const auto &row : rows_)
             list += (list.empty() ? ": " : "; ") + row.name + (official_server(row.id) ? " [official]" : "") + " (" + row.map + ", " + std::to_string(row.players) + "/" +

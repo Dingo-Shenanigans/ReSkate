@@ -13,14 +13,19 @@
 #include <set>
 #include <thread>
 
-// Pictures plugins draw (reskate.overlay's d:image), from files in their own packages: the plugin
-// host checked each path is inside its package. One worker thread decodes them (WIC, at most 512
-// pixels a side and 2 MB a file); the render thread uploads one a frame into the SRV heap's plugin
-// slots, and a picture not drawn for 2 s gives its slot up when another needs it.
+// Pictures plugins draw (reskate.overlay's d:image), from files in their own packages and data
+// folders: the plugin host checked each path is inside one of them. One worker thread decodes them
+// (WIC, at most 4096 pixels a side and 16 MB a file); the render thread uploads one a frame into the
+// SRV heap's plugin slots, and a picture not drawn for 2 s gives its slot up when another needs it.
+// A picture's name here is its file's path, and for one that can change (a data folder's) a "|" and
+// a stamp after it, so a file written again is another picture.
 namespace dingosdk::overlay::detail {
 namespace {
-constexpr std::size_t most_pictures = 32;      // known at once, decoded or waiting
-constexpr std::uintmax_t most_file_bytes = 2 * 1024 * 1024;
+constexpr std::size_t most_pictures = 256;     // known at once, decoded or waiting
+constexpr std::uintmax_t most_file_bytes = 16 * 1024 * 1024;
+constexpr UINT most_side = 4096;
+// What the pictures on the GPU may hold together, as RGBA: past it, one waits for an idle one to go.
+constexpr std::uint64_t most_gpu_bytes = 768ull * 1024 * 1024;
 constexpr double idle_seconds = 2;
 
 struct Entry {
@@ -60,16 +65,17 @@ void decode_loop() {
         CardPixels pixels;
         const char* why = nullptr;
         try {
-            const std::filesystem::path file(std::u8string(path.begin(), path.end()));
+            const auto name = std::string_view(path).substr(0, path.rfind('|'));
+            const std::filesystem::path file(std::u8string(name.begin(), name.end()));
             std::error_code code;
             const auto size = std::filesystem::file_size(file, code);
             if (code) why = "the file cannot be read";
-            else if (size > most_file_bytes) why = "it is larger than 2 MB";
+            else if (size > most_file_bytes) why = "it is larger than 16 MB";
             else {
                 std::ifstream in(file, std::ios::binary);
                 std::string bytes(static_cast<std::size_t>(size), '\0');
                 if (!in.read(bytes.data(), static_cast<std::streamsize>(bytes.size()))) why = "the file cannot be read";
-                else if (!decode_picture(bytes, pixels, 0)) why = "it is not a PNG or JPG of at most 512 x 512 pixels";
+                else if (!decode_picture_within(bytes, pixels, most_side)) why = "it is not a PNG or JPG of at most 4096 x 4096 pixels";
             }
         } catch (...) {
             why = "the file cannot be read";
@@ -107,7 +113,7 @@ ImTextureID plugin_image(const std::string& path, ImVec2& size) {
                     oldest = it;
             }
             if (oldest == c.entries.end()) {
-                warn_once(c, path, "plugins draw more than 32 pictures at once");
+                warn_once(c, path, "plugins draw more than 256 pictures at once");
                 return {};
             }
             c.entries.erase(oldest);
@@ -161,6 +167,23 @@ ImTextureID plugin_pixels_id(const std::string& key) {
     return found->second.stage == Entry::Stage::uploaded ? found->second.id : ImTextureID{};
 }
 
+bool plugin_pixels_waiting(const std::string& key) {
+    auto& c = cache();
+    std::lock_guard lock(c.mutex);
+    const auto found = c.entries.find(key);
+    if (found == c.entries.end()) return false;
+    found->second.drawn = steady_seconds(); // (wanted still: it is not the idle one that makes room)
+    return found->second.stage == Entry::Stage::decoded || found->second.stage == Entry::Stage::waiting;
+}
+
+void plugin_pixels_drop(const std::string& key) {
+    auto& c = cache();
+    std::lock_guard lock(c.mutex);
+    // (Its texture stays in its slot until the next picture takes the slot, which waits for the
+    // frames that may still sample it, as for any picture here.)
+    c.entries.erase(key);
+}
+
 std::optional<PluginImageUpload> take_plugin_image() {
     auto& c = cache();
     std::lock_guard lock(c.mutex);
@@ -212,6 +235,13 @@ std::optional<PluginImageUpload> take_plugin_image() {
         else break; // (no slot for a plugin's picture this frame: the next would find none either)
     }
     if (waiting == c.entries.end()) return std::nullopt;
+    // The memory the pictures on the GPU hold: one more than fits waits (its slot stays free).
+    std::uint64_t held = 0;
+    for (const auto& [name, entry] : c.entries)
+        if (entry.slot >= 0) held += static_cast<std::uint64_t>(entry.pixels.width) * entry.pixels.height * 4;
+    if (held + static_cast<std::uint64_t>(waiting->second.pixels.width) * waiting->second.pixels.height * 4 > most_gpu_bytes &&
+        give_up(all, true) < 0)
+        return std::nullopt;
     waiting->second.slot = slot;
     waiting->second.stage = Entry::Stage::waiting; // until plugin_image_uploaded
     return PluginImageUpload{waiting->first, slot, waiting->second.pixels};

@@ -6,6 +6,8 @@
 #include "Extension/UI/Overlay/game_images.h"
 #include "plugin_overlay.h"
 #include "screen_look.h"
+#include "screen_shader.h"
+#include "world_shader.h"
 #include "viewmodel.h"
 #include "park_previews.h"
 #include "chat_emotes.h"
@@ -103,6 +105,8 @@ void destroy_graphics() {
     for (auto& upload : s.store_uploads) upload.Reset();
     store_icons_lost();
     screen_look::release();
+    screen_shader::release();
+    world_shader::release();
     viewmodel::release();
     s.commands.Reset(); s.rtvs.Reset(); s.srvs.Reset(); s.fence.Reset(); s.device.Reset();
     if (s.fence_event) CloseHandle(s.fence_event);
@@ -381,6 +385,7 @@ bool setup_graphics() {
     dingosdk::overlay::watch_draws(s.commands.Get());
     dingosdk::overlay::watch_addresses(s.commands.Get());
     install_depth_tap(s.commands.Get());
+    world_shader::install(s.device.Get(), s.queue.Get(), s.commands.Get());
     s.fence->SetName(L"ReSkate overlay fence");
     s.fence_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     if (!s.fence_event) return false;
@@ -785,6 +790,11 @@ void render(IDXGISwapChain* presented, UINT flags) {
             return;
         }
     }
+    // A plugin's world shader (reskate.world.shader): the game's next frame begins after this present.
+    if (s.swapchain) {
+        DXGI_SWAP_CHAIN_DESC world_chain{};
+        if (SUCCEEDED(s.swapchain->GetDesc(&world_chain))) world_shader::present(world_chain.BufferDesc.Width, world_chain.BufferDesc.Height);
+    }
     // Keep swapchain/window selection, initialization, stop and resize/fence
     // handling alive while hidden, but do no per-frame UI or backbuffer work --
     // beyond the loaded toast, which draws nothing that takes input.
@@ -803,6 +813,8 @@ void render(IDXGISwapChain* presented, UINT flags) {
     const bool grab_frame = frame_grab_pending() || depth_tap_pending() || depth_probe_pending();
     // A plugin's screen look is drawn under every frame it asks for (reskate.screen.look).
     const bool look_frame = screen_look::pending();
+    // And a plugin's own screen shader (reskate.screen.shader).
+    const bool shader_frame = screen_shader::pending();
     // And a plugin's viewmodel (reskate.viewmodel), or its pictures still going up to the GPU.
     const bool viewmodel_frame = viewmodel::pending();
     if (trainer_open_requested()) s.visible.store(true);
@@ -824,7 +836,7 @@ void render(IDXGISwapChain* presented, UINT flags) {
         // Hidden, the overlay still draws while a notice or chat line is on screen.
         if (s.loaded_notice_posted && !notices_pending() && !chat_frame && !game_text_frame && !skate_hud_frame &&
             !nametag_frame && !plugins_frame && !item_browser_frame && !perf_frame && !hub_frame && !map_download_frame && !mod_apply_frame && !look_frame &&
-            !viewmodel_frame && !grab_frame) return;
+            !shader_frame && !viewmodel_frame && !grab_frame) return;
     } else if (!s.ui_was_interactive) {
         s.ui_was_interactive = true;
         s.last_model = {}; // Reopening immediately reads fresh state.
@@ -944,6 +956,31 @@ void render(IDXGISwapChain* presented, UINT flags) {
             return fence ? fence->GetCompletedValue() : std::uint64_t{0};
         };
         (void)viewmodel::record(target);
+    }
+    if (shader_frame) {
+        // A plugin's own shader, first: the look (a camcorder) over what it drew, then ImGui. It leaves the back
+        // buffer in PRESENT, as it found it.
+        ID3D12DescriptorHeap* shader_heaps[] = {s.srvs.Get()};
+        s.commands->SetDescriptorHeaps(1, shader_heaps);
+        screen_shader::Target shader;
+        shader.device = s.device.Get();
+        shader.commands = s.commands.Get();
+        shader.buffer = frame.buffer.Get();
+        shader.rtv = frame.rtv;
+        shader.srvs = s.srvs.Get();
+        shader.slot = screen_shader_slot;
+        shader.format = frame.buffer->GetDesc().Format;
+        shader.transfer = output_transfer;
+        shader.white_nits = output_white_nits;
+        UINT64 ticks = 0;
+        if (SUCCEEDED(s.queue->GetTimestampFrequency(&ticks))) shader.timestamp_frequency = ticks;
+        shader.fence = s.next_fence + 1; // what this frame's commands signal (below)
+        shader.gpu_done = [] {
+            const auto& fence = state().fence;
+            return fence ? fence->GetCompletedValue() : std::uint64_t{0};
+        };
+        shader.wait_idle = [] { return completed(state().next_fence, render_fence_timeout_ms); };
+        (void)screen_shader::record(shader);
     }
     if (look_frame) {
         // Drawn first, so ImGui draws over it. It leaves the back buffer in PRESENT, as it found it.

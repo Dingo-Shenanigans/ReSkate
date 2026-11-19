@@ -34,6 +34,7 @@ add_library(dingosdk_overlay STATIC
     Extension/UI/Overlay/game_map.cpp
     Extension/UI/Overlay/xray_overlay.cpp
     Extension/UI/Overlay/plugin_images.cpp
+    Extension/UI/Overlay/plugin_fonts.cpp
     Extension/UI/Overlay/store_icons.cpp
     Extension/UI/Overlay/menu_map_pictures.cpp
     Extension/UI/Overlay/skate_menu_skater.cpp
@@ -60,6 +61,9 @@ add_library(dingosdk_overlay STATIC
     Extension/Music/music_page.cpp
     Extension/Trainer/trainer_view.cpp
     Extension/UI/Overlay/screen_look.cpp
+    Extension/UI/Overlay/screen_shader.cpp
+    Extension/UI/Overlay/plugin_shader_compile.cpp
+    Extension/UI/Overlay/world_shader.cpp
     Extension/UI/Overlay/viewmodel.cpp
     Extension/UI/Overlay/viewmodel_model.cpp
 )
@@ -67,7 +71,7 @@ add_library(dingosdk_overlay STATIC
 if(DINGOSDK_DEV_TOOLS)
     target_sources(dingosdk_overlay PRIVATE Extension/UI/Overlay/depth_probe.cpp)
 endif()
-target_link_libraries(dingosdk_overlay PUBLIC dingosdk_logging dingosdk_profiler dingosdk_imgui dingosdk_hooks dingosdk_console_core dxguid PRIVATE dingosdk_playstation_input shell32 dingosdk_game_archives dingosdk_mods dingosdk_json windowscodecs ole32)
+target_link_libraries(dingosdk_overlay PUBLIC dingosdk_logging dingosdk_profiler dingosdk_imgui dingosdk_hooks dingosdk_console_core dxguid PRIVATE dingosdk_playstation_input shell32 dingosdk_game_archives dingosdk_mods dingosdk_json windowscodecs ole32 dingosdk_plugin_font)
 
 # The screen look's shader (reskate.screen.look) is built into the DLL as text and compiled when it is
 # first drawn. The build checks it with the Windows SDK's fxc when there is one, so a shader that would

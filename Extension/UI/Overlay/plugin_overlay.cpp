@@ -8,6 +8,7 @@
 #include "Extension/UI/Overlay/xray_overlay.h"
 #include "Extension/UI/Overlay/overlay.h"
 #include "Extension/UI/Overlay/skate_style.h"
+#include "Extension/UI/Overlay/plugin_fonts.h"
 #include <algorithm>
 #include <array>
 #include <map>
@@ -484,6 +485,9 @@ ImU32 dimmed(ImU32 colour, float by) {
 }
 
 void draw_plugins() {
+    // (The glyph pages of plugins' own fonts are kept up whether or not anything is drawn this frame:
+    // those of a plugin that has gone are let go.)
+    detail::own_fonts_begin();
     const auto layers = frame();
     if (!layers || layers->empty()) return;
     const auto display = ImGui::GetIO().DisplaySize;
@@ -528,7 +532,15 @@ void draw_plugins() {
             auto* font = fonts[static_cast<std::size_t>(i)];
             plugin_ui::detail::FontMetrics m;
             m.size = font->FontSize;
-            for (int c = 32; c < 128; ++c) m.advance[static_cast<std::size_t>(c - 32)] = font->GetCharAdvance(static_cast<ImWchar>(c));
+            for (int c = 32; c < 128; ++c) {
+                m.advance[static_cast<std::size_t>(c - 32)] = font->GetCharAdvance(static_cast<ImWchar>(c));
+                if (const auto* glyph = font->FindGlyphNoFallback(static_cast<ImWchar>(c)); glyph && glyph->Visible)
+                    m.box[static_cast<std::size_t>(c - 32)] = {glyph->X0, glyph->Y0, glyph->X1, glyph->Y1};
+            }
+            // The characters past ASCII the face has (accents, Cyrillic), for d:measure.
+            for (const auto& glyph : font->Glyphs)
+                if (glyph.Codepoint >= 128) m.wide.emplace_back(glyph.Codepoint, glyph.AdvanceX);
+            std::sort(m.wide.begin(), m.wide.end());
             plugin_ui::set_font(i, m);
         }
     }
@@ -543,7 +555,17 @@ void draw_plugins() {
         glare.shown = allowed;
         const float dim = over.light > allowed && over.light > 0 ? allowed / over.light : 1.0f;
         if (over.hidden >= named_cover) covering.push_back(layer.plugin);
+        // The plugin's own fonts (its manifest's "fonts"), each found once a layer. One that cannot
+        // be read is none here: its texts are "body"'s, as the plugin measured them.
+        std::array<detail::OwnFont*, 8> layer_fonts{};
+        if (layer.fonts)
+            for (std::size_t i = 0; i < layer_fonts.size() && i < layer.fonts->size(); ++i) layer_fonts[i] = detail::own_font((*layer.fonts)[i]);
         int clips = 0;
+        // Where each of the layer's marks is in the list (d:mark), for d:adjust: by its number.
+        struct MarkAt {
+            int vertex{}, index{}, command{};
+        };
+        std::vector<MarkAt> marks;
         plugin_ui::Shape held;
         for (const auto& source : layer.shapes) {
             // (Copied only while it is being dimmed.)
@@ -557,9 +579,18 @@ void draw_plugins() {
             const auto& shape = *drawn;
             const auto& style = shape.style;
             const auto& p = shape.points;
-            auto* font = fonts[static_cast<std::size_t>(std::clamp(style.font, 0, 4))];
+            // A text in a font of the plugin's own is drawn from that font's glyph pages (plugin_fonts.h),
+            // "body" filling in; where the font cannot be had the whole text is "body"'s.
+            const bool own_style = style.font >= plugin_ui::own_fonts;
+            const auto own_index = static_cast<std::size_t>(own_style ? style.font - plugin_ui::own_fonts : 0);
+            auto* own_font = own_style && own_index < layer_fonts.size() ? layer_fonts[own_index] : nullptr;
+            const int menu_font = own_style ? 1 : style.font;
+            auto* font = fonts[static_cast<std::size_t>(std::clamp(menu_font, 0, 4))];
             switch (shape.kind) {
-            case Kind::text: text(draw, sharpest(style.font, style.size * k, font), k, at(p[0]), shape); break;
+            case Kind::text:
+                if (own_font) detail::draw_own_text(draw, *own_font, sharpest(1, style.size * k, font), k, at(p[0]), shape);
+                else text(draw, sharpest(menu_font, style.size * k, font), k, at(p[0]), shape);
+                break;
             case Kind::rect:
                 if (style.fill) draw->AddRectFilled(at(p[0]), at(p[1]), style.colour, style.rounding * k);
                 else draw->AddRect(at(p[0]), at(p[1]), style.colour, style.rounding * k, 0, style.thickness * k);
@@ -570,11 +601,100 @@ void draw_plugins() {
                 std::vector<ImVec2> points;
                 for (const auto& point : p) points.push_back(at(point));
                 if (style.fill) draw->AddConvexPolyFilled(points.data(), static_cast<int>(points.size()), style.colour);
-                else draw->AddPolyline(points.data(), static_cast<int>(points.size()), style.colour, ImDrawFlags_Closed, style.thickness * k);
+                else draw->AddPolyline(points.data(), static_cast<int>(points.size()), style.colour, shape.fit == 1 ? ImDrawFlags_None : ImDrawFlags_Closed,
+                                       style.thickness * k);
+                break;
+            }
+            case Kind::mesh: {
+                // Triangles of the plugin's own, through a picture of its own or in their colours alone.
+                const auto corners = shape.points.size();
+                if (corners < 3 || shape.colours.size() != corners || shape.uvs.size() != corners || shape.indices.size() < 3) break;
+                ImTextureID picture{};
+                if (!shape.text.empty()) {
+                    ImVec2 size;
+                    picture = detail::plugin_image(shape.text, size);
+                    if (!picture) break; // not on the GPU yet
+                    draw->PushTextureID(picture);
+                }
+                const auto white = ImGui::GetFontTexUvWhitePixel();
+                draw->PrimReserve(static_cast<int>(shape.indices.size()), static_cast<int>(corners));
+                const auto first = static_cast<ImDrawIdx>(draw->_VtxCurrentIdx);
+                for (const auto index : shape.indices) draw->PrimWriteIdx(static_cast<ImDrawIdx>(first + (index < corners ? index : 0)));
+                for (std::size_t i = 0; i < corners; ++i)
+                    draw->PrimWriteVtx(at(p[i]), picture ? ImVec2(shape.uvs[i][0], shape.uvs[i][1]) : white, shape.colours[i]);
+                if (picture) draw->PopTextureID();
+                break;
+            }
+            case Kind::mark:
+                if (shape.seed >= 1 && shape.seed <= 4096) {
+                    if (marks.size() < shape.seed) marks.resize(shape.seed);
+                    marks[shape.seed - 1] = {draw->VtxBuffer.Size, draw->IdxBuffer.Size, std::max(0, draw->CmdBuffer.Size - 1)};
+                }
+                break;
+            case Kind::adjust: {
+                // Everything drawn since the mark: turned, moved, faded, and faded out towards an edge.
+                if (shape.seed < 1 || shape.seed > marks.size() || p.size() < 3) break;
+                const auto from = marks[shape.seed - 1];
+                const int count = draw->VtxBuffer.Size - from.vertex;
+                if (count <= 0) break;
+                const float cosine = std::cos(shape.turn), sine = std::sin(shape.turn);
+                const bool turned = shape.turn != 0, moved = p[1][0] != 0 || p[1][1] != 0;
+                const float alpha = std::clamp(shape.alpha, 0.0f, 1.0f);
+                // Which corners are in a triangle no taller than `taller`: only those fade at an edge.
+                const bool edges = (shape.fit & 3) != 0;
+                const float band = std::max(1.0f, shape.edge * k), taller = p[2][2] * k;
+                static std::vector<std::uint8_t> sizes; // render thread only: 1 in a small triangle, 2 in a tall one
+                if (edges) {
+                    sizes.assign(static_cast<std::size_t>(count), 0);
+                    for (int c = from.command; c < draw->CmdBuffer.Size; ++c) {
+                        const ImDrawCmd& command = draw->CmdBuffer[c];
+                        if (command.UserCallback) continue;
+                        const unsigned begin = std::max(command.IdxOffset, static_cast<unsigned>(from.index)), end = command.IdxOffset + command.ElemCount;
+                        for (unsigned i = begin; i + 3 <= end && static_cast<int>(i) + 3 <= draw->IdxBuffer.Size; i += 3) {
+                            int corner[3];
+                            float low = FLT_MAX, high = -FLT_MAX;
+                            bool inside = true;
+                            for (int j = 0; j < 3; ++j) {
+                                corner[j] = static_cast<int>(command.VtxOffset + draw->IdxBuffer[static_cast<int>(i) + j]) - from.vertex;
+                                if (corner[j] < 0 || corner[j] >= count) inside = false;
+                                else {
+                                    const float y = draw->VtxBuffer[from.vertex + corner[j]].pos.y;
+                                    low = std::min(low, y), high = std::max(high, y);
+                                }
+                            }
+                            if (!inside) continue;
+                            const std::uint8_t kind = taller > 0 && high - low > taller ? 2 : 1;
+                            for (const int one : corner) sizes[static_cast<std::size_t>(one)] |= kind;
+                        }
+                    }
+                }
+                for (int i = 0; i < count; ++i) {
+                    auto& vertex = draw->VtxBuffer[from.vertex + i];
+                    float share = alpha;
+                    if (edges && sizes[static_cast<std::size_t>(i)] == 1) {
+                        // (Where it was drawn: a list fades at its box's edges, wherever it is moved to after.)
+                        float t = 1;
+                        if (shape.fit & 1) t = std::min(t, (vertex.pos.y - p[2][0]) / band);
+                        if (shape.fit & 2) t = std::min(t, (p[2][1] - vertex.pos.y) / band);
+                        share *= std::clamp(t, 0.0f, 1.0f);
+                    }
+                    if (turned) {
+                        const float x = vertex.pos.x - p[0][0], y = vertex.pos.y - p[0][1];
+                        vertex.pos = ImVec2(p[0][0] + x * cosine - y * sine, p[0][1] + x * sine + y * cosine);
+                    }
+                    if (moved) vertex.pos.x += p[1][0], vertex.pos.y += p[1][1];
+                    if (share < 1) {
+                        const auto old = static_cast<float>(vertex.col >> IM_COL32_A_SHIFT & 0xff);
+                        vertex.col = (vertex.col & ~IM_COL32_A_MASK) | (static_cast<ImU32>(old * share) << IM_COL32_A_SHIFT);
+                    }
+                }
                 break;
             }
             case Kind::world_text:
-                if (const auto on = camera ? camera->project(p[0]) : std::nullopt) text(draw, font, k, ImVec2((*on)[0], (*on)[1]), shape);
+                if (const auto on = camera ? camera->project(p[0]) : std::nullopt) {
+                    if (own_font) detail::draw_own_text(draw, *own_font, sharpest(1, style.size * k, font), k, ImVec2((*on)[0], (*on)[1]), shape);
+                    else text(draw, font, k, ImVec2((*on)[0], (*on)[1]), shape);
+                }
                 break;
             case Kind::world_line: {
                 const auto a = camera ? camera->project(p[0]) : std::nullopt;
@@ -641,6 +761,7 @@ void draw_plugins() {
         }
         for (; clips > 0; --clips) draw->PopClipRect();
     }
+    detail::own_fonts_end(); // (the glyphs this frame's texts lacked are asked for)
     // Who is over the screen, on top of anything a plugin draws (they draw behind the overlay's own
     // windows), so a player knows which mod it is and how to stop it.
     if (!covering.empty()) {

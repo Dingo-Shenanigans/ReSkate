@@ -5,6 +5,7 @@
 #include "Extension/AnimationStudio/pose_math.h"
 #include "Extension/Multiplayer/Remote/native_pose_layout.h"
 #include "Extension/Multiplayer/Remote/native_skater.h"
+#include "Extension/Skater/skater_animation.h"
 #include <Windows.h>
 #include <algorithm>
 #include <atomic>
@@ -430,6 +431,12 @@ void on_render_pose(std::uintptr_t animation_interface) noexcept {
         for (int b = 0; b < bones; ++b)
             drawn[b] = {{lanes[b].position[0], lanes[b].position[1], lanes[b].position[2]}, Quat{lanes[b].rotation},
                         {lanes[b].scale[0], lanes[b].scale[1], lanes[b].scale[2]}};
+        // A plugin's whole-board mount (reskate.board.mount) went on before this ran: what a plugin reads is
+        // the board as the game had it, as it is for the bones set here.
+        if (std::array<anim_studio::Joint, 16> before; skater_animation::take_board_before_mount(animation_interface, before))
+            for (int b = 1; b < bones; ++b)
+                drawn[b] = {{before[b].position[0], before[b].position[1], before[b].position[2]}, before[b].rotation,
+                            {before[b].scale[0], before[b].scale[1], before[b].scale[2]}};
         s.drawn = drawn;
         s.drawn_holder = holder;
         // Sizes are set rather than multiplied, so a pose that comes by twice is not sized twice.

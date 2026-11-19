@@ -72,6 +72,8 @@ public:
     // net.http, made off the client thread: false when it cannot start; answers come back later.
     virtual bool http_request(HttpRequest) { return false; }
     virtual std::vector<HttpResponse> take_http_responses() { return {}; }
+    virtual std::optional<HttpProgress> http_progress(std::string_view /*plugin*/, std::uint64_t /*id*/) { return std::nullopt; }
+    virtual void http_cancel(std::string_view /*plugin*/, std::uint64_t /*id*/) {}
     // The wider set's game (plugin_game.h); none by default.
     virtual Game& game() {
         static Game none;
@@ -163,6 +165,8 @@ private:
     std::string exposed(std::string_view target, std::vector<std::string>& names) override;
     bool emit(std::string_view source, std::string_view event, Json data) override;
     bool http(HttpRequest request) override { return environment_.http_request(std::move(request)); }
+    std::optional<HttpProgress> http_progress(std::string_view plugin, std::uint64_t id) override { return environment_.http_progress(plugin, id); }
+    void http_cancel(std::string_view plugin, std::uint64_t id) override { environment_.http_cancel(plugin, id); }
     Game& game() override { return environment_.game(); }
     bool authority() override { return side_ == Side::server; }
     // What the game did since the last tick, to the plugins with the permission for it.

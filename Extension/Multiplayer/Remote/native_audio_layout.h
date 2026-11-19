@@ -1,5 +1,6 @@
 #pragma once
 #include "Extension/Multiplayer/Net/protocol.h"
+#include "Engine/Game/Build/20260929/native_audio.h"
 #include <algorithm>
 #include <cstring>
 #include <stdexcept>
@@ -26,7 +27,7 @@ inline constexpr std::array<std::uint16_t, 18> audio_material_offsets{
 // A Studio map's surfaces are appended after them, numbered by each install's own set of map mods,
 // so the same word names another surface, or one past the end of the grid, on the other side
 // (Skate.exe+0x41da7b and +0x6fc93b, a remote skater on a Studio map's surface; 2026-10-25).
-inline constexpr std::uint32_t base_material_slots = 116;
+inline constexpr std::uint32_t base_material_slots = game::build::v20260929::native_audio::material_slots;
 // A material word as every install reads it the same: one of the map's own surfaces becomes the
 // grid's default (0), as a sound on that surface cannot be named portably.
 inline std::uint32_t portable_material(std::uint32_t word) noexcept {

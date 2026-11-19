@@ -210,6 +210,8 @@ public:
     }
     std::vector<plugin_ui::Action> take_actions() override { return server_ ? std::vector<plugin_ui::Action>{} : plugin_ui::take_actions(); }
     bool http_request(HttpRequest request) override { return http::start(std::move(request)); }
+    std::optional<HttpProgress> http_progress(std::string_view plugin, std::uint64_t id) override { return http::progress(plugin, id); }
+    void http_cancel(std::string_view plugin, std::uint64_t id) override { http::cancel(plugin, id); }
     Game& game() override { return real_game(base, storage_); }
     std::vector<HttpResponse> take_http_responses() override { return http::take(); }
 
