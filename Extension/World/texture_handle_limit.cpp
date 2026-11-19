@@ -1,15 +1,20 @@
 #include "texture_handle_limit.h"
 #include "Engine/Core/Hooks/hooks.h"
+#include "Engine/Core/Hooks/patches.h"
 #include "Engine/Core/Log/logging.h"
 #include "Engine/Core/Platform/memory.h"
 #include "Engine/Game/Build/addresses.h"
+#include "Engine/Game/Build/supported_build.h"
 #include "Engine/Game/Build/20260929/texture_streaming.h"
 #include "Extension/UI/Overlay/overlay.h"
 #include <Windows.h>
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstdlib>
 #include <cstring>
+#include <limits>
+#include <span>
 #include <string>
 
 namespace dingosdk::texture_handle_limit {
@@ -18,8 +23,17 @@ namespace ts = addr::texture_streaming;
 using Constructor = void* (*)(void* manager, void* arena);
 Constructor original{};
 std::uintptr_t image{};
-std::atomic<bool> installed{}, raised{};
+std::atomic<bool> installed{}, raised{}, soft_full{};
 std::atomic<unsigned> lists_moved{};
+constexpr std::size_t stub_page_bytes = 0x1000;
+#if defined(DINGOSDK_DEV_TOOLS)
+std::atomic<bool> high_test{};
+// Where the test switch starts the slots from the bottom: past bit 15, so every streamed texture
+// gets a handle the game's stock checks would have called invalid.
+constexpr std::uint32_t high_test_start = 0x8000;
+// The slot it starts from this run: the file may name another (high_test_slot).
+std::atomic<std::uint32_t> high_start{high_test_start};
+#endif
 
 std::uint32_t stock_value(const ts::Site& site) noexcept {
     std::uint32_t value{};
@@ -60,9 +74,44 @@ __declspec(noinline) void say_made(bool moved) noexcept {
                 std::size(ts::lists) - lists_moved.load(), std::size(ts::lists), ts::stock_count);
     } catch (...) {}
 }
+#if defined(DINGOSDK_DEV_TOOLS)
+// texture_limit_high_test.txt (development builds): nothing has a slot yet, so the bottom's count
+// and its search start can begin at 0x8000. Every streamed texture then gets a handle past bit 15 (the top's already
+// do), which shows at once whether a check of the game's still reads bit 15 as "no handle": that
+// texture would stay blurry. The slots below stay empty for the session.
+bool start_high(std::uintptr_t manager) noexcept {
+    __try {
+        auto* bottom = reinterpret_cast<std::uint32_t*>(manager + ts::taken_from_bottom);
+        auto* hint = reinterpret_cast<std::uint32_t*>(manager + ts::bottom_hint);
+        if (*bottom != 0 || *hint != 0) return false;
+        *bottom = high_start.load();
+        *hint = high_start.load();
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+__declspec(noinline) void say_high(bool started) noexcept {
+    try {
+        if (started)
+            logging::log(logging::Level::warning, logging::Channel::runtime,
+                "Texture streaming: texture_limit_high_test.txt is there; streamed textures take slots from {} up (a test of "
+                "16-bit handles: the {} below stay empty).", high_start.load(), high_start.load());
+        else
+            logging::log(logging::Level::warning, logging::Channel::runtime,
+                "Texture streaming: texture_limit_high_test.txt is there, but the manager had handed out slots already; no test.");
+    } catch (...) {}
+}
+#endif
 void* made(void* manager, void* arena) {
     auto* result = original(manager, arena);
-    if (raised.load() && result) say_made(move_lists(reinterpret_cast<std::uintptr_t>(result)));
+    if (raised.load() && result) {
+        const auto at = reinterpret_cast<std::uintptr_t>(result);
+        say_made(move_lists(at));
+#if defined(DINGOSDK_DEV_TOOLS)
+        if (high_test.load()) say_high(start_high(at));
+#endif
+    }
     return result;
 }
 
@@ -118,17 +167,128 @@ bool hook(std::uintptr_t base, const game::build::Fingerprint& print, void* repl
     return true;
 }
 
-// "texture_limit_stock.txt" beside the game: the limit is left as the game has it (to compare).
-bool stock_asked() noexcept {
+// A file of this name beside the game.
+std::wstring game_file(const wchar_t* name) {
     wchar_t path[MAX_PATH]{};
     const auto size = GetModuleFileNameW(nullptr, path, MAX_PATH);
-    if (!size || size >= MAX_PATH) return false;
+    if (!size || size >= MAX_PATH) return {};
     std::wstring file(path, size);
     const auto slash = file.find_last_of(L"/\\");
-    if (slash == std::wstring::npos) return false;
+    if (slash == std::wstring::npos) return {};
     file.resize(slash + 1);
-    file += L"texture_limit_stock.txt";
-    return GetFileAttributesW(file.c_str()) != INVALID_FILE_ATTRIBUTES;
+    return file + name;
+}
+bool beside_game(const wchar_t* name) noexcept {
+    try {
+        const auto file = game_file(name);
+        return !file.empty() && GetFileAttributesW(file.c_str()) != INVALID_FILE_ATTRIBUTES;
+    } catch (...) { return false; }
+}
+#if defined(DINGOSDK_DEV_TOOLS)
+// texture_limit_high_test.txt may hold the slot to start from (decimal, or hex with 0x): 49152, say,
+// runs the bottom into the top's slots, to see what a full table does. Empty or not a slot: 0x8000.
+std::uint32_t high_test_slot() noexcept {
+    try {
+        const auto file = game_file(L"texture_limit_high_test.txt");
+        const auto handle = CreateFileW(file.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+        if (handle == INVALID_HANDLE_VALUE) return high_test_start;
+        char text[32]{};
+        DWORD read{};
+        const bool ok = ReadFile(handle, text, sizeof(text) - 1, &read, nullptr);
+        CloseHandle(handle);
+        if (!ok || !read) return high_test_start;
+        char* end{};
+        const auto value = std::strtoul(text, &end, 0);
+        return end != text && value > 0 && value < ts::raised_count - 1 ? static_cast<std::uint32_t>(value) : high_test_start;
+    } catch (...) { return high_test_start; }
+}
+#endif
+// "texture_limit_stock.txt" beside the game: the limit is left as the game has it (to compare).
+bool stock_asked() noexcept { return beside_game(L"texture_limit_stock.txt"); }
+
+// The wide handle rows (texture_streaming.h): each written over its stock bytes, all or none. They
+// go in before the count is raised and change nothing below 0x8000, where bit 15 is only ever set
+// in 0xffff: the masks keep the same index and the checks give the same answer.
+bool wide_sites_match(std::uintptr_t base) noexcept {
+    for (const auto& site : ts::wide_sites) {
+        std::array<std::uint8_t, 8> now{};
+        if (site.size > now.size() || !memory::peek_bytes(base + site.rva, now.data(), site.size) ||
+            std::memcmp(now.data(), site.stock, site.size) != 0)
+            return false;
+    }
+    return true;
+}
+bool write_wide_sites(std::uintptr_t base) noexcept {
+    std::size_t written{};
+    for (const auto& site : ts::wide_sites) {
+        if (patch_code("texture streaming: 16-bit handle", base + site.rva, std::span(site.stock, site.size),
+                std::span(site.wide, site.size)) != HookOk)
+            break;
+        ++written;
+    }
+    if (written == std::size(ts::wide_sites)) return true;
+    // A refused or failed write: the ones before it go back, and the one that failed too (a failed
+    // write may have written some of it).
+    for (std::size_t i = 0; i <= written && i < std::size(ts::wide_sites); ++i) {
+        const auto& site = ts::wide_sites[i];
+        (void)patch_code_restore(base + site.rva, std::span(site.stock, site.size));
+    }
+    return false;
+}
+
+bool rel32(std::uintptr_t next_instruction, std::uintptr_t target, std::int32_t& displacement) noexcept {
+    const auto delta = static_cast<std::int64_t>(target) - static_cast<std::int64_t>(next_instruction);
+    if (delta < std::numeric_limits<std::int32_t>::min() || delta > std::numeric_limits<std::int32_t>::max()) return false;
+    displacement = static_cast<std::int32_t>(delta);
+    return true;
+}
+
+// When the table is full, the batch's loop goes on to its next texture instead of taking a slot
+// past the table (texture_streaming.h, full_check).
+bool skip_when_full(std::uintptr_t base) noexcept {
+    std::array<std::uint8_t, ts::next_texture_bytes.size()> next{};
+    if (!memory::peek(base + ts::next_texture, next) || next != ts::next_texture_bytes) return false;
+    const auto status = patch_code_jump("texture streaming: full table", base + ts::full_check, ts::full_check_bytes,
+        base + ts::next_texture);
+    if (status == HookOk) return true;
+    if (status != HookBytesDiffer && status != HookOutOfReach) (void)patch_code_restore(base + ts::full_check, ts::full_check_bytes);
+    return false;
+}
+
+// The run-time allocator looks at the top first (texture_streaming.h, runtime_take):
+//   cmp r8d, [rsi + taken_from_top] / jae leave / lea eax, [r8 + 1] / mov edx, r8d / jmp resume
+bool guard_runtime_take(std::uintptr_t base) noexcept {
+    std::array<std::uint8_t, ts::runtime_resume_bytes.size()> resume{};
+    std::array<std::uint8_t, ts::runtime_leave_bytes.size()> leave{};
+    if (!memory::peek(base + ts::runtime_resume, resume) || resume != ts::runtime_resume_bytes ||
+        !memory::peek(base + ts::runtime_leave, leave) || leave != ts::runtime_leave_bytes)
+        return false;
+    auto* const stub = static_cast<std::uint8_t*>(memory::allocate_near_image(base, supported_build::game_image_size, stub_page_bytes));
+    if (!stub) return false;
+    const auto at = reinterpret_cast<std::uintptr_t>(stub);
+    std::array<std::uint8_t, 25> code{0x44, 0x3b, 0x86, 0, 0, 0, 0, 0x0f, 0x83, 0, 0, 0, 0,
+        0x41, 0x8d, 0x40, 0x01, 0x41, 0x8b, 0xd0, 0xe9, 0, 0, 0, 0};
+    std::memcpy(code.data() + 3, &ts::taken_from_top, 4);
+    std::int32_t to_leave{}, to_resume{};
+    if (!rel32(at + 13, base + ts::runtime_leave, to_leave) || !rel32(at + 25, base + ts::runtime_resume, to_resume)) {
+        VirtualFree(stub, 0, MEM_RELEASE);
+        return false;
+    }
+    std::memcpy(code.data() + 9, &to_leave, 4);
+    std::memcpy(code.data() + 21, &to_resume, 4);
+    std::memset(stub, 0xcc, stub_page_bytes);
+    std::memcpy(stub, code.data(), code.size());
+    DWORD previous{};
+    if (!VirtualProtect(stub, stub_page_bytes, PAGE_EXECUTE_READ, &previous) ||
+        !FlushInstructionCache(GetCurrentProcess(), stub, stub_page_bytes)) {
+        VirtualFree(stub, 0, MEM_RELEASE);
+        return false;
+    }
+    const auto status = patch_code_jump("texture streaming: run-time slot", base + ts::runtime_take, ts::runtime_take_bytes, at);
+    if (status == HookOk) return true;
+    if (status != HookBytesDiffer && status != HookOutOfReach) (void)patch_code_restore(base + ts::runtime_take, ts::runtime_take_bytes);
+    VirtualFree(stub, 0, MEM_RELEASE);
+    return false;
 }
 
 void say(logging::Level level, const char* text) noexcept {
@@ -173,9 +333,18 @@ bool install(std::uintptr_t base) noexcept {
         first = std::min(first, base + rewrite.rva);
         last = std::max(last, base + rewrite.rva + now.size());
     }
+    if (!wide_sites_match(base)) {
+        say(logging::Level::warning, "this build's handle checks differ; the game keeps its own limit of streamed textures.");
+        return false;
+    }
     std::uintptr_t manager{};
     if (!memory::peek(base + ts::manager, manager) || manager) {
         say(logging::Level::warning, "the game had made its manager already; it keeps its own limit of streamed textures.");
+        return false;
+    }
+    // A handle's index takes all 16 bits before there are more slots than 15 bits hold.
+    if (!write_wide_sites(base)) {
+        say(logging::Level::warning, "the handle checks could not be written; the game keeps its own limit of streamed textures.");
         return false;
     }
     const auto target = reinterpret_cast<void*>(base + ts::constructor.rva);
@@ -206,6 +375,20 @@ bool install(std::uintptr_t base) noexcept {
                          hook(base, ts::sort_wanted, reinterpret_cast<void*>(&sorted), reinterpret_cast<void**>(&original_sort));
     if (!guarded)
         say(logging::Level::error, "the limit was raised but a function with room for 20480 on its stack could not be hooked; past 20480 the game may crash.");
+    // At the limit a texture goes without a slot instead of the game freezing. Both allocators or
+    // neither counts: one left as it was still freezes the game.
+    const bool skips = skip_when_full(base);
+    const bool takes = guard_runtime_take(base);
+    soft_full.store(skips && takes);
+    if (skips && takes)
+        say(logging::Level::info, "when every slot is taken, a new texture goes without one (no sharp mips) instead of the game "
+            "freezing; a map loading then may not finish.");
+    else
+        say(logging::Level::warning, "the full-table guards could not be written; at the limit the game still freezes.");
+#if defined(DINGOSDK_DEV_TOOLS)
+    high_test.store(beside_game(L"texture_limit_high_test.txt"));
+    if (high_test.load()) high_start.store(high_test_slot());
+#endif
     if (hook_enable(target) != HookOk)
         say(logging::Level::error, "the limit was raised but the constructor's hook did not start; the manager's lists keep 20480 entries.");
     return true;
@@ -214,6 +397,7 @@ bool install(std::uintptr_t base) noexcept {
 Use use() noexcept {
     Use result;
     result.limit = raised.load() ? ts::raised_count : ts::stock_count;
+    result.soft_full = soft_full.load();
     std::uintptr_t manager{};
     std::uint32_t bottom{}, top{};
     if (!image || !memory::peek(image + ts::manager, manager) || !manager || !memory::peek(manager + ts::taken_from_bottom, bottom) ||
@@ -243,17 +427,28 @@ void tick() noexcept {
         }
         if (state.taken >= state.limit && !full) {
             full = true;
-            logging::log(logging::Level::error, logging::Channel::runtime,
-                "Texture streaming: all {} streamed textures are in use; the game hangs when it needs one more.", state.limit);
-            overlay::notify(overlay::NoticeLevel::error, "Too many textures loaded",
-                "The game is out of room for textures and may freeze. Uninstall some mods to play safely.");
+            if (state.soft_full) {
+                logging::log(logging::Level::error, logging::Channel::runtime,
+                    "Texture streaming: all {} streamed textures are in use; new ones load without their sharp mips until some are "
+                    "freed, and a map loading now may not finish.", state.limit);
+                overlay::notify(overlay::NoticeLevel::error, "Too many textures loaded",
+                    "The game is out of room for textures: new ones look blurry or blank, and a map may not finish loading. "
+                    "Uninstall some mods.");
+            } else {
+                logging::log(logging::Level::error, logging::Channel::runtime,
+                    "Texture streaming: all {} streamed textures are in use; the game hangs when it needs one more.", state.limit);
+                overlay::notify(overlay::NoticeLevel::error, "Too many textures loaded",
+                    "The game is out of room for textures and may freeze. Uninstall some mods to play safely.");
+            }
         } else if (percent >= 90 && !warned) {
             warned = true;
-            logging::log(logging::Level::warning, logging::Channel::runtime,
-                "Texture streaming: {} of {} streamed textures in use ({}%); the game hangs at the limit.", state.taken, state.limit, percent);
+            logging::log(logging::Level::warning, logging::Channel::runtime, "Texture streaming: {} of {} streamed textures in use ({}%); {}",
+                state.taken, state.limit, percent,
+                state.soft_full ? "past the limit new ones load blurry or blank." : "the game hangs at the limit.");
             overlay::notify(overlay::NoticeLevel::warning, "Close to the texture limit",
                 std::to_string(state.taken) + " of " + std::to_string(state.limit) +
-                    " textures are loaded, and the game freezes at the limit. Do not install any more mods, or uninstall some.");
+                    (state.soft_full ? " textures are loaded; past the limit new ones look blurry or blank. Do not install any more mods, or uninstall some."
+                                     : " textures are loaded, and the game freezes at the limit. Do not install any more mods, or uninstall some."));
         } else if (percent < 80) {
             warned = full = false; // told again the next time it comes close
         }

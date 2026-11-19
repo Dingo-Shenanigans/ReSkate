@@ -55,11 +55,18 @@ inline constexpr Fingerprint constructor{0x3e5b350, {
 inline constexpr std::uintptr_t stack_check_failed = 0x546be9c;
 inline constexpr std::array<unsigned char, 8> stack_check_failed_bytes{0xb9, 0x02, 0x00, 0x00, 0x00, 0xcd, 0x29, 0xc3};
 inline constexpr std::uint32_t stock_count = 0x5000;
-// The most the 15-bit index allows, a multiple of four (the floats are reset sixteen bytes at
-// a time) and short of 0x7fff, which with the index's high bit set would read as no handle.
-inline constexpr std::uint32_t raised_count = 0x7ffc;
+// Bit 15 of a handle is only ever the game's "no handle": 0xffff is the one handle with it set
+// (the setters store a slot index or 0xffff, and nothing tests the bit on its own; a sweep of the
+// whole build, 2026-11-19). The game masks the index with 0x7fff and calls a handle valid when
+// (h & 0x7fff) == h; with those instructions rewritten (wide_sites below) the index is the whole
+// u16 and 0xffff stays the one invalid handle. So the most is short of 0xffff and a multiple of
+// four (the floats are reset sixteen bytes at a time). It is the end of the road: the renderer's
+// own texture ids are 16-bit too (texture_handles.h) and run out a little past it.
+inline constexpr std::uint32_t raised_count = 0xfffc;
 inline constexpr std::uint32_t slot_size = 0x58;
 inline constexpr std::uint32_t taken_from_bottom = 0x1e0498, taken_from_top = 0x1e049c;
+// Where the next search for a free slot from the bottom starts (the allocators below).
+inline constexpr std::uint32_t bottom_hint = 0x1e04a0;
 
 inline constexpr std::uint32_t stock_size = 0x24e780;
 inline constexpr std::uint32_t stock_slots = 0x28498, stock_floats = 0x1e0500;
@@ -142,6 +149,56 @@ struct Site {
 inline constexpr Site sites[]{
 #include "texture_streaming_sites.inc"
 };
+// 16-bit slot indices (wide handles). Every instruction that treats bit 15 of a handle as part of
+// "no handle" changes in place, same length:
+// - the index masks in the manager, and 0x7fff -> and 0xffff;
+// - the validity checks, (h & 0x7fff) == h -> h != 0xffff: the mask constant becomes 0xffff, the
+//   compare is made against the mask (or the and becomes that compare), and jne becomes je. The
+//   compiler keeps the mask in a register through a loop and loads it again after calls; each of
+//   those loads is a row too.
+// The checks are in the passes that work out which mip each texture of a mesh wants and in the
+// renderer's fill: with one missed, a texture with a handle past 0x7fff is skipped there and never
+// streams in sharp. Found by a sweep of the whole build for 0x7fff (the masks, the checks with the
+// mask in the instruction or in a register loaded above it) and for any test of bit 15 after a
+// handle is read (none); 2026-11-19.
+struct Wide {
+    std::uint32_t rva;
+    std::uint8_t size;
+    std::uint8_t stock[8], wide[8];
+};
+inline constexpr Wide wide_sites[]{
+#include "texture_streaming_wide.inc"
+};
+
+// When the slots from the bottom and the top meet, FUN_143e72660 writes its message and takes a
+// slot past the table (above). Instead its per-texture loop goes on to the next texture
+// (`next_texture`, where the game itself goes for a texture it is done with, from 0x3e72f64):
+// the texture keeps "no handle", as every texture has before it is given one, and is drawn with
+// the mips its bundle holds. Nothing jumps into the two instructions the jump covers. Seen in game
+// (2026-11-19, the table full during the first map load): no freeze, the game stays responsive and
+// closes cleanly, but that load waits on the textures left without a slot and does not finish.
+//   xor r9d, r9d / lea rdx, [rbp + 0x110]   (the message's start)  ->  jmp next_texture
+inline constexpr std::uint32_t full_check = 0x3e72c3c;
+inline constexpr std::array<std::uint8_t, 10> full_check_bytes{0x45, 0x33, 0xc9, 0x48, 0x8d, 0x95, 0x10, 0x01, 0x00, 0x00};
+inline constexpr std::uint32_t next_texture = 0x3e73507; // mov esi, [rsp + 0x48] (the loop's index)
+inline constexpr std::array<std::uint8_t, 4> next_texture_bytes{0x8b, 0x74, 0x24, 0x48};
+
+// FUN_143e68ca0 makes a texture at run time (through the renderer's slot 0xe0) and gives it a slot
+// from the bottom without looking at the top at all: when the two meet it hands out a slot an
+// on-demand texture holds. A stub checks first; when there is no room it goes to the function's
+// end (unlock, return the texture), and the texture keeps "no handle".
+//   lea eax, [r8 + 1] / mov edx, r8d   ->  jmp stub, nop, nop
+//   stub: cmp r8d, [rsi + taken_from_top] / jae runtime_leave / lea eax, [r8 + 1] / mov edx, r8d /
+//         jmp runtime_resume
+// r8d is the count taken from the bottom and rsi the manager there. Only the je at 0x3e68f33 jumps
+// to the covered bytes, and to their start.
+inline constexpr std::uint32_t runtime_take = 0x3e68f57;
+inline constexpr std::array<std::uint8_t, 7> runtime_take_bytes{0x41, 0x8d, 0x40, 0x01, 0x41, 0x8b, 0xd0};
+inline constexpr std::uint32_t runtime_resume = 0x3e68f5e; // mov [rsi + taken_from_bottom], eax
+inline constexpr std::array<std::uint8_t, 6> runtime_resume_bytes{0x89, 0x86, 0x98, 0x04, 0x1e, 0x00};
+inline constexpr std::uint32_t runtime_leave = 0x3e6907f;  // test rbx, rbx (the unlock), then return r14
+inline constexpr std::array<std::uint8_t, 3> runtime_leave_bytes{0x48, 0x85, 0xdb};
+
 constexpr std::uint32_t raised(Value value, std::uint32_t stock) {
     switch (value) {
     case Value::slot: return stock - stock_slots + raised_slots;
