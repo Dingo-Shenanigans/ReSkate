@@ -125,8 +125,10 @@ void measure_heights(GroundTop ground_top) noexcept;
 // Client thread, every tick: whether the world is being played now (a level in play, no game menu open). The shader
 // is drawn only once that has held for two seconds, never on the front page, in menus or while a level loads. `in_menu`:
 // a game menu is why not (the shader goes a quarter of a second later); otherwise (the game not ready a moment) it goes
-// only after 2.5 s.
-void allow(bool playing, bool in_menu = false) noexcept;
+// only after 2.5 s. `replay_editor`: the replay editor is open, where the picture is the world's too, and the frames of
+// a video it exports get the shader as the screen does (each is drawn from the world's picture on a list of its own,
+// before the screen's batch: the shader goes into that picture there).
+void allow(bool playing, bool in_menu = false, bool replay_editor = false) noexcept;
 
 // Render thread (the overlay), with its graphics: the device, the game's queue and the queues' table (through the
 // overlay's own). Nothing is hooked until a plugin first asks for a world shader.

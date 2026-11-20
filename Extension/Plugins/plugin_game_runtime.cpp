@@ -2305,7 +2305,7 @@ public:
         // replay editor, whose picture is the world, though the game counts it a menu.
         const bool replay = base && multiplayer::replay_editor_open(base);
         const bool in_menu = base && multiplayer::sample_game_ui_state(base).in_menu;
-        world_shader::allow(base && ((ready && !in_menu) || replay), in_menu && !replay);
+        world_shader::allow(base && ((ready && !in_menu) || replay), in_menu && !replay, replay);
         if (multiplayer::party_spectating()) {
             // Spectate has the lease now, and gives the game's camera back itself.
             camera_shown_ = camera_releasing_ = false;

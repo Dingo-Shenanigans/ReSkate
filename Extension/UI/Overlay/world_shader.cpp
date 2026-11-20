@@ -163,6 +163,7 @@ void refuse(Program& program, std::string_view name, std::string why) {
 }
 std::atomic<bool> wanted{};
 std::atomic<bool> allowed{};     // the world has been in play for a moment (allow)
+std::atomic<bool> in_replay_editor{}; // the replay editor is open (allow): its exports draw video frames (Notes::video_frame)
 // The calls followed on the game's lists while a world shader is on (each list's, counted in as it is next reset):
 // what the following costs the game's recording threads, which the GPU's budget does not see. Said with the cost.
 std::atomic<std::uint64_t> followed_calls{};
@@ -197,6 +198,14 @@ struct Notes {
     bool drawn_inside{}; // the plugin's shader was drawn on this list itself (draw_inside)
     std::size_t inside_slot{}; // and in which of the draws inside (inside_ring)
     const char* inside_why{}; // why it was not, where it was looked at
+    // A replay export's video frame was made a render target on this list: an 8-bit picture of the game's own, a copy
+    // source until now (its readback for the encoder). Each frame of a video is drawn there from the world's picture,
+    // which the game finishes on the same list right after (traced 2026-11-20: the video frame from COPY_SOURCE to
+    // RENDER_TARGET, the R11G11B10 scene from RENDER_TARGET to being read, the video frame to being read and back to
+    // COPY_SOURCE, all on one list of a batch before the screen's). That next picture of the kind locked onto is the
+    // video's: the shader is drawn inside the list into it, or the video went without it (drawn into the picture only
+    // later, before the screen's batch: every frame of an export came out without the shader).
+    bool video_frame{};
 };
 struct Shared {
     std::mutex mutex;
@@ -2255,7 +2264,8 @@ void measure_heights(GroundTop ground_top) noexcept {
         ++a.heights_version;
     } catch (...) {}
 }
-void allow(bool playing, bool in_menu) noexcept {
+void allow(bool playing, bool in_menu, bool replay_editor) noexcept {
+    in_replay_editor.store(replay_editor, std::memory_order_relaxed);
     const std::uint64_t now = GetTickCount64();
     static std::uint64_t last_allowed{}; // when the shader was last allowed
     static std::uint64_t stopped_since{}; // when the level stopped being in play (0: it is)
@@ -2517,6 +2527,18 @@ void on_barrier(ID3D12GraphicsCommandList* list, const D3D12_RESOURCE_BARRIER& b
         // The frame's last list (Notes::composite): the screen made a render target, and the finished
         // scene's float picture moved from being written to being read on the same list.
         if (list->GetType() == D3D12_COMMAND_LIST_TYPE_DIRECT && b.Flags == D3D12_RESOURCE_BARRIER_FLAG_NONE) {
+            // A replay export's video frame made a render target (Notes::video_frame). Only in the replay editor.
+            if (b.Transition.StateBefore == D3D12_RESOURCE_STATE_COPY_SOURCE && (b.Transition.StateAfter & D3D12_RESOURCE_STATE_RENDER_TARGET) &&
+                in_replay_editor.load(std::memory_order_relaxed)) {
+                const auto d = resource->GetDesc();
+                if (d.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && d.MipLevels == 1 && d.DepthOrArraySize == 1 && d.SampleDesc.Count == 1 &&
+                    (d.Format == DXGI_FORMAT_B8G8R8A8_UNORM || d.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB)) {
+                    auto& s = shared();
+                    std::lock_guard lock(s.mutex);
+                    s.notes[list].video_frame = true;
+                    return;
+                }
+            }
             const bool to_screen = b.Transition.StateBefore == D3D12_RESOURCE_STATE_PRESENT && (b.Transition.StateAfter & D3D12_RESOURCE_STATE_RENDER_TARGET);
             const bool finished = (b.Transition.StateBefore & (D3D12_RESOURCE_STATE_RENDER_TARGET | D3D12_RESOURCE_STATE_UNORDERED_ACCESS)) &&
                                   (b.Transition.StateAfter & D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) &&
@@ -2559,7 +2581,12 @@ void on_barrier(ID3D12GraphicsCommandList* list, const D3D12_RESOURCE_BARRIER& b
                         const auto depth_state = n.depth_state_known ? n.depth_state : s.depth_state;
                         const bool depth_done = (n.depth_state_known || s.depth_state_known) && (depth_state & D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) &&
                                                 !(depth_state & D3D12_RESOURCE_STATE_DEPTH_WRITE);
-                        if (s.locked && kind == s.locked && final_one && !n.drawn_inside) {
+                        // Or the picture a replay export's video frame is drawn from next on this list (Notes::video_frame),
+                        // whichever picture of the kind it is: the game took the pictures of an export's frames in turn, one
+                        // every fifth or ninth frame that the screen had not taken lately (2026-11-20).
+                        const bool video_one = s.locked && kind == s.locked && n.video_frame;
+                        if (video_one) n.video_frame = false;
+                        if (s.locked && kind == s.locked && (final_one || video_one) && !n.drawn_inside) {
                             n.inside_why = s.drawn || s.inside_frame == s.frame ? "already drawn this frame"
                                          : !depth_done ? "the depth not done"
                                          : s.unsafe || n.unsafe || s.depth_elsewhere ? "a split or aliasing barrier, or another queue"
