@@ -270,6 +270,7 @@ struct Shared {
     // Ours: the picture's copy, the target's view, our views, our lists.
     ComPtr<ID3D12Resource> picture;
     D3D12_RESOURCE_DESC picture_desc{};
+    DXGI_FORMAT picture_source{DXGI_FORMAT_UNKNOWN}; // the game's picture's format the copy is made from (shown: not the copy's own)
     // What the GPU may still be using when it is replaced: kept until the fence passes the value the
     // last list that could use it signals. Freed at once, a frame in flight read freed memory and the
     // whole picture came out in stripes (2026-11-11).
@@ -882,9 +883,11 @@ bool upload_tables(Shared& s) {
 
 // The picture's copy's mips (set's `mips`), each drawn from the one above by ps_down, on `list`: mip 0 is in
 // PIXEL_SHADER_RESOURCE, the others in COPY_DEST, and all of them are in PIXEL_SHADER_RESOURCE after. `views` is the
-// part's first view (write_views); `move(subresource, from, to)` puts a barrier for one of the copy's mips on the list.
+// part's first view (write_views) and `constants` its constants (each pass binds every root argument its shaders read:
+// one left unset is whatever the GPU finds there); `move(subresource, from, to)` puts a barrier for one of the copy's mips
+// on the list.
 template <class Move>
-void make_mips(Shared& s, ID3D12GraphicsCommandList* list, D3D12_GPU_DESCRIPTOR_HANDLE views, Move move) {
+void make_mips(Shared& s, ID3D12GraphicsCommandList* list, D3D12_GPU_DESCRIPTOR_HANDLE views, D3D12_GPU_VIRTUAL_ADDRESS constants, Move move) {
     if (s.picture_mips < 2 || !s.down_pipeline) return;
     const UINT step = s.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     auto target = s.targets->GetCPUDescriptorHandleForHeapStart();
@@ -893,6 +896,7 @@ void make_mips(Shared& s, ID3D12GraphicsCommandList* list, D3D12_GPU_DESCRIPTOR_
     list->SetDescriptorHeaps(1, heaps);
     list->SetGraphicsRootSignature(s.root.Get());
     list->SetPipelineState(s.down_pipeline.Get());
+    list->SetGraphicsRootConstantBufferView(0, constants);
     list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     for (UINT mip = 1; mip < s.picture_mips; ++mip) {
         const UINT w = std::max<UINT>(1, static_cast<UINT>(s.picture_desc.Width >> mip)), h = std::max<UINT>(1, s.picture_desc.Height >> mip);
@@ -915,8 +919,9 @@ void make_mips(Shared& s, ID3D12GraphicsCommandList* list, D3D12_GPU_DESCRIPTOR_
     }
 }
 // The game's picture as the screen shows it into our copy's first mip (set's `shown`): ps_shown, its table the part's raw
-// block. The game's picture is in PIXEL_SHADER_RESOURCE, the copy's first mip in RENDER_TARGET.
-void draw_shown(Shared& s, ID3D12GraphicsCommandList* list, D3D12_GPU_DESCRIPTOR_HANDLE views) {
+// block and its constants the part's (reskate_display says whether the tables are up). The game's picture is in
+// PIXEL_SHADER_RESOURCE, the copy's first mip in RENDER_TARGET.
+void draw_shown(Shared& s, ID3D12GraphicsCommandList* list, D3D12_GPU_DESCRIPTOR_HANDLE views, D3D12_GPU_VIRTUAL_ADDRESS constants) {
     const UINT step = s.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     auto target = s.targets->GetCPUDescriptorHandleForHeapStart();
     target.ptr += SIZE_T{s.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV)} * mip_target;
@@ -930,6 +935,7 @@ void draw_shown(Shared& s, ID3D12GraphicsCommandList* list, D3D12_GPU_DESCRIPTOR
     list->SetDescriptorHeaps(1, heaps);
     list->SetGraphicsRootSignature(s.root.Get());
     list->SetPipelineState(s.shown_pipeline.Get());
+    list->SetGraphicsRootConstantBufferView(0, constants);
     list->SetGraphicsRootDescriptorTable(1, table);
     const D3D12_VIEWPORT viewport{0, 0, static_cast<float>(s.picture_desc.Width), static_cast<float>(s.picture_desc.Height), 0, 1};
     const D3D12_RECT scissor{0, 0, static_cast<LONG>(s.picture_desc.Width), static_cast<LONG>(s.picture_desc.Height)};
@@ -1339,7 +1345,7 @@ bool build_resources(Shared& s, const D3D12_RESOURCE_DESC& colour, bool mips, bo
     if (shown && !build_single(s, "ps_shown", view_format, s.shown_pipeline)) return false;
     if (levels > 1 && !build_single(s, "ps_down", view_format, s.down_pipeline, &s.down_format)) return false;
     if (!s.picture || s.picture_desc.Width != colour.Width || s.picture_desc.Height != colour.Height || s.picture_desc.Format != format ||
-        s.picture_mips != levels || s.picture_shown != shown) {
+        s.picture_source != colour.Format || s.picture_mips != levels || s.picture_shown != shown) {
         if (s.picture) s.retiring.push_back({s.fence_value, s.picture});
         s.picture.Reset();
         D3D12_HEAP_PROPERTIES heap{};
@@ -1358,6 +1364,7 @@ bool build_resources(Shared& s, const D3D12_RESOURCE_DESC& colour, bool mips, bo
             return false;
         }
         s.picture_desc = desc;
+        s.picture_source = colour.Format;
         s.picture_mips = levels;
         s.picture_shown = shown;
         s.last_drawn_frame = ~std::uint64_t{0};
@@ -1883,26 +1890,26 @@ bool record_shader(Shared& s) {
     auto table = s.views->GetGPUDescriptorHandleForHeapStart();
     table.ptr += UINT64{view_step} * views_each * at;
     const auto copy_mip = [&](UINT mip, D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to) { transition(list, s.picture.Get(), from, to, mip); };
+    const auto upload = s.upload->GetGPUVirtualAddress() + at * upload_slice; // (filled below, before the list runs)
     if (s.picture_shown) {
         // Through the display mapping (ps_shown), reading the game's picture where it is.
         transition(list, s.colour, before, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         copy_mip(0, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_RENDER_TARGET);
-        draw_shown(s, list, table);
+        draw_shown(s, list, table, upload);
         copy_mip(0, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        make_mips(s, list, table, copy_mip);
+        make_mips(s, list, table, upload, copy_mip);
         transition(list, s.colour, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
     } else {
         transition(list, s.colour, before, D3D12_RESOURCE_STATE_COPY_SOURCE);
         copy_picture(s, list, s.colour);
         transition(list, s.picture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
                    s.picture_mips > 1 ? 0 : D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
-        make_mips(s, list, table, copy_mip);
+        make_mips(s, list, table, upload, copy_mip);
         transition(list, s.colour, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
     }
 
     const float width = static_cast<float>(colour_desc.Width), height = static_cast<float>(colour_desc.Height);
     fill_slice(s, a, slice, s.data_uploaded[at], s.heights_uploaded[at], camera, projector->focal, width, height, have_last);
-    const auto upload = s.upload->GetGPUVirtualAddress() + at * upload_slice;
     ID3D12DescriptorHeap* heaps[] = {s.views.Get()};
     list->SetDescriptorHeaps(1, heaps);
     list->SetGraphicsRootSignature(s.root.Get());
@@ -2230,7 +2237,8 @@ bool draw_inside(Shared& s, ID3D12GraphicsCommandList* list, ID3D12Resource* pic
     if (known == list_states.end() || !known->second.complete || !latest_reset(list, known->second.reset)) return false;
     if (s.depth_copied_frame > s.frame || s.frame - s.depth_copied_frame > 6) return false;
     const auto desc = picture->GetDesc();
-    if (desc.Width != s.picture_desc.Width || desc.Height != s.picture_desc.Height || desc.Format != s.picture_desc.Format ||
+    // A picture of the kind the copy is made from (as shown, the copy is 16-bit float: not the game's format).
+    if (desc.Width != s.picture_desc.Width || desc.Height != s.picture_desc.Height || desc.Format != s.picture_source ||
         !(desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET))
         return false;
     const float width = static_cast<float>(desc.Width), height = static_cast<float>(desc.Height);
@@ -2302,6 +2310,7 @@ bool draw_inside(Shared& s, ID3D12GraphicsCommandList* list, ID3D12Resource* pic
     };
     auto table = s.views->GetGPUDescriptorHandleForHeapStart();
     table.ptr += UINT64{view_step} * first_view;
+    const auto upload = s.upload->GetGPUVirtualAddress() + part * upload_slice;
     if (s.picture_shown) {
         // (The raw block's t0 is the game's picture this draw goes into: its view made for this picture.)
         D3D12_SHADER_RESOURCE_VIEW_DESC game_view{};
@@ -2314,19 +2323,18 @@ bool draw_inside(Shared& s, ID3D12GraphicsCommandList* list, ID3D12Resource* pic
         s.device->CreateShaderResourceView(picture, &game_view, raw);
         move(picture, before, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         move_mip(0, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_RENDER_TARGET);
-        draw_shown(s, list, table);
+        draw_shown(s, list, table, upload);
         move_mip(0, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        make_mips(s, list, table, move_mip);
+        make_mips(s, list, table, upload, move_mip);
         move(picture, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
     } else {
         move(picture, before, D3D12_RESOURCE_STATE_COPY_SOURCE);
         copy_picture(s, list, picture);
         if (s.picture_mips > 1) move_mip(0, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         else move(s.picture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        make_mips(s, list, table, move_mip);
+        make_mips(s, list, table, upload, move_mip);
         move(picture, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
     }
-    const auto upload = s.upload->GetGPUVirtualAddress() + part * upload_slice;
     ID3D12DescriptorHeap* heaps[] = {s.views.Get()};
     list->SetDescriptorHeaps(1, heaps);
     list->SetGraphicsRootSignature(s.root.Get());
