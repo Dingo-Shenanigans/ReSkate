@@ -1206,6 +1206,18 @@ public:
     std::optional<std::pair<std::uint32_t, std::uint32_t>> picture_size(std::string_view plugin, const picture::File& file) override {
         return picture::size_of(file.data.empty() ? file.file : data_picture(plugin, file.data));
     }
+    std::optional<picture::Pixels> picture_pixels(std::string_view plugin, const picture::File& file) override {
+        const auto path = file.data.empty() ? file.file : data_picture(plugin, file.data);
+        std::error_code error;
+        const auto size = std::filesystem::file_size(path, error);
+        if (error || size == 0 || size > picture::most_picture_bytes) return std::nullopt;
+        std::ifstream in(path, std::ios::binary);
+        std::string bytes(static_cast<std::size_t>(size), '\0');
+        if (!in.read(bytes.data(), static_cast<std::streamsize>(bytes.size()))) return std::nullopt;
+        picture::Pixels pixels;
+        if (!picture::decode(bytes, pixels)) return std::nullopt;
+        return pixels;
+    }
     // A plugin's own font: DirectWrite reads it (plugin_font.h), once a file, and the overlay sets its
     // texts by the same metrics (Extension/UI/Overlay/plugin_fonts.cpp).
     std::shared_ptr<const plugin_ui::detail::FontMetrics> plugin_font_metrics(std::string_view, std::string_view, const std::filesystem::path& file) override {

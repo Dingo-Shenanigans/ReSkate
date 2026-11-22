@@ -1447,6 +1447,11 @@ struct FakeGame final : Game {
         }
         return metrics;
     }
+    // A picture's pixels: two, opaque red and clear, for any picture there is.
+    std::optional<picture::Pixels> picture_pixels(std::string_view plugin, const picture::File& file) override {
+        if (!picture_size(plugin, file)) return std::nullopt;
+        return picture::Pixels{2, 1, {255, 0, 0, 255, 0, 0, 0, 0}};
+    }
     std::optional<std::pair<std::uint32_t, std::uint32_t>> picture_size(std::string_view plugin, const picture::File& file) override {
         if (!file.data.empty()) {
             if (!files.contains(std::string(plugin) + "/" + file.data)) return std::nullopt;
@@ -5597,6 +5602,13 @@ void plugins_compose_pictures_from_steps() {
         assert(w == 64 and h == 32, "a data folder picture's size")
         local nothing, reason = P.size("art/none.png")
         assert(nothing == nil and reason:find("PNG"), tostring(reason))
+        local pw, ph, px = P.pixels("art/paper.png")
+        assert(pw == 2 and ph == 1 and buffer.len(px) == 8 and buffer.readu8(px, 0) == 255 and buffer.readu8(px, 3) == 255 and
+            buffer.readu8(px, 7) == 0, "a picture's pixels, red, green, blue and alpha")
+        assert(P.pixels("data:shots/a.jpg") == 2, "a data folder picture's too")
+        local no_pixels, no_why = P.pixels("art/none.png")
+        assert(no_pixels == nil and no_why:find("PNG"), tostring(no_why))
+        assert(not pcall(P.pixels, "notes.txt") and not pcall(P.pixels, "data:../other/a.png"), "pixels of a picture of its own")
         assert(not pcall(P.size, "notes.txt") and not pcall(P.size, "data:../other/a.png"), "a picture of its own")
 
         reskate.console.command("paint", "x", function(args)

@@ -805,6 +805,8 @@ public:
     // The size in pixels of a picture of the package or of the data folder; nothing for one a step
     // would not draw.
     virtual std::optional<std::pair<std::uint32_t, std::uint32_t>> picture_size(std::string_view /*plugin*/, const picture::File&) { return std::nullopt; }
+    // A picture file's pixels, decoded (picture::decode): nothing for a file that is not a PNG or JPEG it decodes.
+    virtual std::optional<picture::Pixels> picture_pixels(std::string_view /*plugin*/, const picture::File&) { return std::nullopt; }
     // ---- a plugin's own fonts (its manifest's "fonts"; style.font in a drawn text) -----------------------
     // The metrics of a font file of the plugin's package, for d:measure and d:glyph, as the overlay
     // draws a text in it: each character's advance, with no kerning (plugin_ui.h's FontMetrics, `own`).

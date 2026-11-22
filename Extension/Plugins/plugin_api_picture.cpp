@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstring>
 #include <format>
 #include <optional>
 
@@ -333,11 +334,34 @@ struct PictureApi {
         lua_pushnumber(L, found->second);
         return 2;
     }
+    // pixels(picture): its pixels as Windows decodes them (a PNG or JPEG of at most 4096 x 4096): its width, its height
+    // and a buffer of width x height x 4 bytes, row after row from the top, each pixel's red, green, blue and alpha (8
+    // bits each, the colour multiplied by alpha); or nil and why. For a plugin that reads a picture of its own (a mask, a
+    // map, an overlay's see-through middle); the buffer counts towards the plugin's memory. A package's picture needs no
+    // permission; a "data:" one is a file call.
+    static int pixels(lua_State* L) {
+        auto& plugin = plugin_of(L);
+        const auto file = picture_file(L, plugin, 1);
+        if (!file.data.empty() && !within(plugin.services_.now_ms(), plugin.files_second_, plugin.file_calls_, plugin.limits_.file_calls_per_second))
+            luaL_error(L, "more than %d file calls in a second", plugin.limits_.file_calls_per_second);
+        std::optional<picture::Pixels> found;
+        {
+            const Plugin::Untimed untimed{plugin}; // reading and decoding it
+            found = game_of(plugin).picture_pixels(plugin.id(), file);
+        }
+        if (!found || found->rgba.size() != std::size_t{found->width} * found->height * 4)
+            return failed(L, "it is not a PNG or JPG of at most 4096 x 4096 pixels");
+        lua_pushnumber(L, found->width);
+        lua_pushnumber(L, found->height);
+        void* bytes = lua_newbuffer(L, found->rgba.size());
+        if (!found->rgba.empty()) std::memcpy(bytes, found->rgba.data(), found->rgba.size());
+        return 3;
+    }
 };
 
 void install_picture_api(Plugin&, lua_State* L) {
     using P = PictureApi;
-    add_functions(L, "picture", {{"make", P::make}, {"text_width", P::text_width}, {"size", P::size}});
+    add_functions(L, "picture", {{"make", P::make}, {"text_width", P::text_width}, {"size", P::size}, {"pixels", P::pixels}});
 }
 void deliver_pictures(Plugin& plugin) { PictureApi::deliver(plugin); }
 }
