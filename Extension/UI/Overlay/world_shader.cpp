@@ -107,8 +107,9 @@ constexpr UINT64 measure_slice = UINT64{measure_pitch};
 // behind; with eight a frame now and then found none free and went without the snow (2026-11-11).
 constexpr std::size_t allocator_count = 16;
 // The draws inside the game's own lists (draw_inside): each its own part of the upload buffer and its own views, after
-// the allocators'. Four: the GPU is done with one by the time it comes round again.
-constexpr std::size_t inside_ring = 4;
+// the allocators'. A slot is used again only once the list it was drawn into has run (Shared::inside_keep); eight, as a
+// replay export draws inside every frame and the game has a few frames' lists in flight.
+constexpr std::size_t inside_ring = 8;
 // The measurements' slots in the readback buffer: one each allocator's list, then one each draw inside a game's list.
 constexpr std::size_t measure_slots = allocator_count + inside_ring;
 // A smaller screen-shaped depth takes the world's place only once the one known has been missed this many presents
@@ -192,6 +193,7 @@ void refuse(Program& program, std::string_view name, std::string why) {
 std::atomic<bool> wanted{};
 std::atomic<bool> mips_wanted{}; // the plugin's shader reads the picture's mips (set's `mips`)
 std::atomic<bool> shown_wanted{}; // and the picture as the screen shows it (set's `shown`)
+std::atomic<bool> frame_wanted{}; // drawn into a replay export's own video frames (set's `frame`; draw_frame)
 std::atomic<bool> allowed{};     // the world has been in play for a moment (allow)
 std::atomic<bool> in_replay_editor{}; // the replay editor is open (allow): its exports draw video frames (Notes::video_frame)
 // The calls followed on the game's lists while a world shader is on (each list's, counted in as it is next reset):
@@ -236,10 +238,16 @@ struct Notes {
     // video's: the shader is drawn inside the list into it, or the video went without it (drawn into the picture only
     // later, before the screen's batch: every frame of an export came out without the shader).
     bool video_frame{};
+    bool video_made{}; // a video frame was made on this list (not taken back as video_frame is)
+    bool frame_drawn{}; // the shader was drawn into that frame (draw_frame)
+    std::size_t frame_slot{}; // and in which of the draws inside (inside_ring)
 };
 struct Shared {
     std::mutex mutex;
     std::unordered_map<ID3D12GraphicsCommandList*, Notes> notes;
+    // The frame the last replay export's video frame was made in (draw_frame: while they go on, nothing is drawn into the
+    // world's picture for them).
+    std::uint64_t video_frame_seen{};
     ID3D12CommandQueue* queue{};
     ID3D12Device* device{};
     // The frame: the screen's size, the main depth buffer (last seen), the world colour.
@@ -271,6 +279,13 @@ struct Shared {
     ComPtr<ID3D12Resource> picture;
     D3D12_RESOURCE_DESC picture_desc{};
     DXGI_FORMAT picture_source{DXGI_FORMAT_UNKNOWN}; // the game's picture's format the copy is made from (shown: not the copy's own)
+    // A replay export's video frame's copy as shown (draw_frame): 16-bit float, the frame's size, its mips when wanted; and
+    // the pass that makes it (ps_frame: the frame's sRGB undone).
+    ComPtr<ID3D12Resource> frame_copy;
+    D3D12_RESOURCE_DESC frame_desc{};
+    UINT frame_mips{1};
+    ComPtr<ID3D12PipelineState> frame_pipeline;
+    bool said_frame{};
     // What the GPU may still be using when it is replaced: kept until the fence passes the value the
     // last list that could use it signals. Freed at once, a frame in flight read freed memory and the
     // whole picture came out in stripes (2026-11-11).
@@ -328,6 +343,12 @@ struct Shared {
     // A draw inside a game's list: the fence value once its list has run (set when the list is submitted, ~0 before).
     std::array<UINT64, inside_ring> inside_fence{};
     std::size_t inside_last_slot{};
+    // What each draw inside a game's list reads (the picture's copy, our copy of the depth, the plugin's pictures, the
+    // tables), held until that list has run: the game records lists ahead and submits them later, so one replaced after
+    // the draw was recorded (the picture resized: a picture shape, an export at another size) and let go on our fence
+    // was gone before the game's list read it, and the GPU faulted (2026-11-22). And the frame each slot was drawn into.
+    std::array<std::vector<ComPtr<ID3D12Pageable>>, inside_ring> inside_keep;
+    std::array<std::uint64_t, inside_ring> inside_drawn_frame{};
     // The picture's brightness (reskate_light): the last measured, and eased over about half a second, and when.
     float light_raw{}, light{};
     bool light_known{};
@@ -574,6 +595,7 @@ void STDMETHODCALLTYPE hooked_execute(ID3D12CommandQueue* queue, UINT count, ID3
             if (found == s.notes.end()) continue;
             const auto& n = found->second;
             if (n.drawn_inside) inside_submitted[n.inside_slot] = any_inside = true;
+            if (n.frame_drawn) inside_submitted[n.frame_slot] = any_inside = true;
             if (n.depth_state_known) {
                 s.depth_state_known = true;
                 s.depth_state = n.depth_state;
@@ -709,6 +731,20 @@ float ps_measure(Interpolated input) : SV_Target {
 }
 )hlsl";
 
+// A copy a shader reads as t0 (write_views, make_mips, draw_shown): the world's picture's (Shared::picture) or a replay
+// export's video frame's (Shared::frame_copy); and the picture it is made from as shown (the raw block's t0).
+struct CopyOf {
+    ID3D12Resource* copy{};
+    D3D12_RESOURCE_DESC desc{};
+    UINT mips{1};
+    DXGI_FORMAT format{};
+    bool shown{};
+    ID3D12Resource* raw{};
+    DXGI_FORMAT raw_format{};
+};
+CopyOf picture_copy(Shared& s, ID3D12Resource* raw) {
+    return {s.picture.Get(), s.picture_desc, s.picture_mips, s.picture_format, s.picture_shown, raw, s.colour_format};
+}
 // The plugin's pictures' views (t4 to t7), from `first` on: each one on the GPU whose upload has run, else an empty view
 // (the shader reads 0 there). Under the mutex.
 void write_image_views(Shared& s, D3D12_CPU_DESCRIPTOR_HANDLE first, UINT step) {
@@ -745,14 +781,14 @@ void write_table_views(Shared& s, D3D12_CPU_DESCRIPTOR_HANDLE first, UINT step) 
 // A part's views (an allocator's, or a draw inside a game's list's), from `first` on: the picture's copy with all its mips
 // (t0), our copy of the depth (t1), the plugin's pictures (t4 to t7), the display mapping's tables (t8, t9), then each of
 // the copy's mips alone (make_mips reads them). Under asked()'s lock.
-void write_views(Shared& s, D3D12_CPU_DESCRIPTOR_HANDLE first, UINT step) {
+void write_views(Shared& s, D3D12_CPU_DESCRIPTOR_HANDLE first, UINT step, const CopyOf& c) {
     auto view = first;
     D3D12_SHADER_RESOURCE_VIEW_DESC picture_view{};
-    picture_view.Format = s.picture_format;
+    picture_view.Format = c.format;
     picture_view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     picture_view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    picture_view.Texture2D.MipLevels = s.picture_mips;
-    s.device->CreateShaderResourceView(s.picture.Get(), &picture_view, view);
+    picture_view.Texture2D.MipLevels = c.mips;
+    s.device->CreateShaderResourceView(c.copy, &picture_view, view);
     view.ptr += step;
     D3D12_SHADER_RESOURCE_VIEW_DESC depth_view{};
     depth_view.Format = depth_copy_format;
@@ -767,18 +803,19 @@ void write_views(Shared& s, D3D12_CPU_DESCRIPTOR_HANDLE first, UINT step) {
     view.ptr += SIZE_T{step} * table_views;
     for (UINT mip = 0; mip < most_mips; ++mip, view.ptr += step) {
         D3D12_SHADER_RESOURCE_VIEW_DESC one = picture_view;
-        one.Texture2D.MostDetailedMip = mip < s.picture_mips ? mip : 0;
+        one.Texture2D.MostDetailedMip = mip < c.mips ? mip : 0;
         one.Texture2D.MipLevels = 1;
-        s.device->CreateShaderResourceView(mip < s.picture_mips ? s.picture.Get() : nullptr, &one, view);
+        s.device->CreateShaderResourceView(mip < c.mips ? c.copy : nullptr, &one, view);
     }
-    // The raw block: the game's picture itself as t0 (ps_shown reads it), the depth, the pictures and the tables again.
-    if (!s.picture_shown) return;
+    // The raw block: the game's picture itself as t0 (ps_shown and ps_frame read it), the depth, the pictures and the
+    // tables again.
+    if (!c.shown) return;
     D3D12_SHADER_RESOURCE_VIEW_DESC game_view{};
-    game_view.Format = s.colour_format;
+    game_view.Format = c.raw_format;
     game_view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
     game_view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
     game_view.Texture2D.MipLevels = 1;
-    s.device->CreateShaderResourceView(s.colour, &game_view, view);
+    s.device->CreateShaderResourceView(c.raw, &game_view, view);
     view.ptr += step;
     s.device->CreateShaderResourceView(s.depth_copy.Get(), &depth_view, view);
     view.ptr += step;
@@ -887,8 +924,9 @@ bool upload_tables(Shared& s) {
 // one left unset is whatever the GPU finds there); `move(subresource, from, to)` puts a barrier for one of the copy's mips
 // on the list.
 template <class Move>
-void make_mips(Shared& s, ID3D12GraphicsCommandList* list, D3D12_GPU_DESCRIPTOR_HANDLE views, D3D12_GPU_VIRTUAL_ADDRESS constants, Move move) {
-    if (s.picture_mips < 2 || !s.down_pipeline) return;
+void make_mips(Shared& s, ID3D12GraphicsCommandList* list, const CopyOf& c, D3D12_GPU_DESCRIPTOR_HANDLE views, D3D12_GPU_VIRTUAL_ADDRESS constants,
+               Move move) {
+    if (c.mips < 2 || !s.down_pipeline) return;
     const UINT step = s.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     auto target = s.targets->GetCPUDescriptorHandleForHeapStart();
     target.ptr += SIZE_T{s.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV)} * mip_target;
@@ -898,14 +936,14 @@ void make_mips(Shared& s, ID3D12GraphicsCommandList* list, D3D12_GPU_DESCRIPTOR_
     list->SetPipelineState(s.down_pipeline.Get());
     list->SetGraphicsRootConstantBufferView(0, constants);
     list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    for (UINT mip = 1; mip < s.picture_mips; ++mip) {
-        const UINT w = std::max<UINT>(1, static_cast<UINT>(s.picture_desc.Width >> mip)), h = std::max<UINT>(1, s.picture_desc.Height >> mip);
+    for (UINT mip = 1; mip < c.mips; ++mip) {
+        const UINT w = std::max<UINT>(1, static_cast<UINT>(c.desc.Width >> mip)), h = std::max<UINT>(1, c.desc.Height >> mip);
         move(mip, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_RENDER_TARGET);
         D3D12_RENDER_TARGET_VIEW_DESC target_view{};
-        target_view.Format = s.picture_format;
+        target_view.Format = c.format;
         target_view.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
         target_view.Texture2D.MipSlice = mip;
-        s.device->CreateRenderTargetView(s.picture.Get(), &target_view, target);
+        s.device->CreateRenderTargetView(c.copy, &target_view, target);
         auto table = views; // the mip above, alone, as t0
         table.ptr += UINT64{step} * (block_views + mip - 1);
         list->SetGraphicsRootDescriptorTable(1, table);
@@ -921,24 +959,25 @@ void make_mips(Shared& s, ID3D12GraphicsCommandList* list, D3D12_GPU_DESCRIPTOR_
 // The game's picture as the screen shows it into our copy's first mip (set's `shown`): ps_shown, its table the part's raw
 // block and its constants the part's (reskate_display says whether the tables are up). The game's picture is in
 // PIXEL_SHADER_RESOURCE, the copy's first mip in RENDER_TARGET.
-void draw_shown(Shared& s, ID3D12GraphicsCommandList* list, D3D12_GPU_DESCRIPTOR_HANDLE views, D3D12_GPU_VIRTUAL_ADDRESS constants) {
+void draw_shown(Shared& s, ID3D12GraphicsCommandList* list, const CopyOf& c, D3D12_GPU_DESCRIPTOR_HANDLE views, D3D12_GPU_VIRTUAL_ADDRESS constants,
+                ID3D12PipelineState* pipeline) {
     const UINT step = s.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     auto target = s.targets->GetCPUDescriptorHandleForHeapStart();
     target.ptr += SIZE_T{s.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV)} * mip_target;
     D3D12_RENDER_TARGET_VIEW_DESC target_view{};
-    target_view.Format = s.picture_format;
+    target_view.Format = c.format;
     target_view.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
-    s.device->CreateRenderTargetView(s.picture.Get(), &target_view, target);
+    s.device->CreateRenderTargetView(c.copy, &target_view, target);
     auto table = views;
     table.ptr += UINT64{step} * raw_block;
     ID3D12DescriptorHeap* heaps[] = {s.views.Get()};
     list->SetDescriptorHeaps(1, heaps);
     list->SetGraphicsRootSignature(s.root.Get());
-    list->SetPipelineState(s.shown_pipeline.Get());
+    list->SetPipelineState(pipeline);
     list->SetGraphicsRootConstantBufferView(0, constants);
     list->SetGraphicsRootDescriptorTable(1, table);
-    const D3D12_VIEWPORT viewport{0, 0, static_cast<float>(s.picture_desc.Width), static_cast<float>(s.picture_desc.Height), 0, 1};
-    const D3D12_RECT scissor{0, 0, static_cast<LONG>(s.picture_desc.Width), static_cast<LONG>(s.picture_desc.Height)};
+    const D3D12_VIEWPORT viewport{0, 0, static_cast<float>(c.desc.Width), static_cast<float>(c.desc.Height), 0, 1};
+    const D3D12_RECT scissor{0, 0, static_cast<LONG>(c.desc.Width), static_cast<LONG>(c.desc.Height)};
     list->RSSetViewports(1, &viewport);
     list->RSSetScissorRects(1, &scissor);
     list->OMSetRenderTargets(1, &target, FALSE, nullptr);
@@ -1124,9 +1163,11 @@ Compiled& compiled() { static auto* value = new Compiled; return *value; }
 // after the rest of builtin_source), as each value of it is.
 constexpr const char* builtin_shown = R"hlsl(
 float4 ps_shown(Interpolated input) : SV_Target { return float4(reskate_shown(picture.Load(int3(int2(input.position.xy), 0)).rgb), 1.0); }
+// A replay export's video frame as the screen shows it, its sRGB undone (draw_frame).
+float4 ps_frame(Interpolated input) : SV_Target { return float4(reskate_srgb_to_linear(picture.Load(int3(int2(input.position.xy), 0)).rgb), 1.0); }
 )hlsl";
 constexpr std::pair<const char*, const char*> builtin_entries[]{
-    {"vs_main", "vs_5_0"}, {"ps_measure", "ps_5_0"}, {"ps_depth", "ps_5_0"}, {"ps_down", "ps_5_0"}, {"ps_shown", "ps_5_0"}};
+    {"vs_main", "vs_5_0"}, {"ps_measure", "ps_5_0"}, {"ps_depth", "ps_5_0"}, {"ps_down", "ps_5_0"}, {"ps_shown", "ps_5_0"}, {"ps_frame", "ps_5_0"}};
 void start_compiling() {
     auto& c = compiled();
     int idle = 0;
@@ -1875,7 +1916,7 @@ bool record_shader(Shared& s) {
     const UINT view_step = s.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     auto view = s.views->GetCPUDescriptorHandleForHeapStart();
     view.ptr += SIZE_T{view_step} * views_each * at; // this allocator's own views
-    write_views(s, view, view_step);
+    write_views(s, view, view_step, picture_copy(s, s.colour));
     // Last frame's camera counts only if the shader was drawn on the frame before this one.
     const bool have_last = s.last_drawn_frame + 1 == s.frame;
     // The target: the picture.
@@ -1895,16 +1936,16 @@ bool record_shader(Shared& s) {
         // Through the display mapping (ps_shown), reading the game's picture where it is.
         transition(list, s.colour, before, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         copy_mip(0, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_RENDER_TARGET);
-        draw_shown(s, list, table, upload);
+        draw_shown(s, list, picture_copy(s, s.colour), table, upload, s.shown_pipeline.Get());
         copy_mip(0, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        make_mips(s, list, table, upload, copy_mip);
+        make_mips(s, list, picture_copy(s, s.colour), table, upload, copy_mip);
         transition(list, s.colour, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
     } else {
         transition(list, s.colour, before, D3D12_RESOURCE_STATE_COPY_SOURCE);
         copy_picture(s, list, s.colour);
         transition(list, s.picture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
                    s.picture_mips > 1 ? 0 : D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
-        make_mips(s, list, table, upload, copy_mip);
+        make_mips(s, list, picture_copy(s, s.colour), table, upload, copy_mip);
         transition(list, s.colour, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
     }
 
@@ -2250,7 +2291,15 @@ bool draw_inside(Shared& s, ID3D12GraphicsCommandList* list, ID3D12Resource* pic
     if (found == a.programs.end() || found->second->state != Program::State::ready) return false;
     auto* const pipeline = plugin_pipeline(s, a.key, *found->second, a.name, s.colour_format);
     if (!pipeline) return false;
-    const std::size_t slot = s.inside_next;
+    // A slot whose last draw's list has run (or was never submitted, long ago): its views, constants and held resources are
+    // rewritten. None free: not drawn inside this time.
+    const UINT64 completed = s.fence ? s.fence->GetCompletedValue() : 0;
+    const auto slot_free = [&](std::size_t k) {
+        return s.inside_keep[k].empty() || (s.inside_fence[k] != ~UINT64{0} && completed >= s.inside_fence[k]) || s.frame - s.inside_drawn_frame[k] >= 30;
+    };
+    std::size_t slot = s.inside_next;
+    for (std::size_t tried = 0; tried < inside_ring && !slot_free(slot); ++tried) slot = (slot + 1) % inside_ring;
+    if (!slot_free(slot)) return false;
     s.inside_next = (slot + 1) % inside_ring;
     // This slot's last measurements, once the game's list they were in has run (its fence); until then none taken here.
     // Only the picture's brightness: the near distance is not taken from a draw inside a game's list, whose depth copy can
@@ -2279,7 +2328,7 @@ bool draw_inside(Shared& s, ID3D12GraphicsCommandList* list, ID3D12Resource* pic
     const UINT first_view = views_each * static_cast<UINT>(part);
     auto view = s.views->GetCPUDescriptorHandleForHeapStart();
     view.ptr += SIZE_T{view_step} * first_view;
-    write_views(s, view, view_step);
+    write_views(s, view, view_step, picture_copy(s, picture));
     // The target: the picture (the RTV heap's second slot).
     D3D12_RENDER_TARGET_VIEW_DESC target_view{};
     target_view.Format = s.colour_format;
@@ -2312,27 +2361,19 @@ bool draw_inside(Shared& s, ID3D12GraphicsCommandList* list, ID3D12Resource* pic
     table.ptr += UINT64{view_step} * first_view;
     const auto upload = s.upload->GetGPUVirtualAddress() + part * upload_slice;
     if (s.picture_shown) {
-        // (The raw block's t0 is the game's picture this draw goes into: its view made for this picture.)
-        D3D12_SHADER_RESOURCE_VIEW_DESC game_view{};
-        game_view.Format = s.colour_format;
-        game_view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-        game_view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-        game_view.Texture2D.MipLevels = 1;
-        auto raw = s.views->GetCPUDescriptorHandleForHeapStart();
-        raw.ptr += SIZE_T{view_step} * (first_view + raw_block);
-        s.device->CreateShaderResourceView(picture, &game_view, raw);
+        // (The raw block's t0 is the game's picture this draw goes into: write_views made its view for this picture.)
         move(picture, before, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         move_mip(0, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_RENDER_TARGET);
-        draw_shown(s, list, table, upload);
+        draw_shown(s, list, picture_copy(s, picture), table, upload, s.shown_pipeline.Get());
         move_mip(0, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        make_mips(s, list, table, upload, move_mip);
+        make_mips(s, list, picture_copy(s, picture), table, upload, move_mip);
         move(picture, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
     } else {
         move(picture, before, D3D12_RESOURCE_STATE_COPY_SOURCE);
         copy_picture(s, list, picture);
         if (s.picture_mips > 1) move_mip(0, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         else move(s.picture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-        make_mips(s, list, table, upload, move_mip);
+        make_mips(s, list, picture_copy(s, picture), table, upload, move_mip);
         move(picture, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
     }
     ID3D12DescriptorHeap* heaps[] = {s.views.Get()};
@@ -2355,7 +2396,18 @@ bool draw_inside(Shared& s, ID3D12GraphicsCommandList* list, ID3D12Resource* pic
         s.measure_waiting[measured_at] = true;
         s.measure_anchored[measured_at] = false; // (its near distance's points are not read)
         s.measure_fresh[measured_at] = false;
-        s.inside_fence[slot] = ~UINT64{0}; // set when its list is submitted
+    }
+    s.inside_fence[slot] = ~UINT64{0}; // set when its list is submitted
+    s.inside_drawn_frame[slot] = s.frame;
+    {
+        auto& keep = s.inside_keep[slot];
+        keep.clear();
+        keep.push_back(s.picture);
+        keep.push_back(s.depth_copy);
+        for (const auto& g : s.images)
+            if (g.texture) keep.push_back(g.texture);
+        for (const auto& t : s.tables)
+            if (t.texture) keep.push_back(t.texture);
     }
     s.inside_last_slot = slot;
     move(picture, D3D12_RESOURCE_STATE_RENDER_TARGET, before);
@@ -2363,6 +2415,162 @@ bool draw_inside(Shared& s, ID3D12GraphicsCommandList* list, ID3D12Resource* pic
     restore(list, known->second);
     drawing_inside = false;
     s.last_drawn_frame = s.frame;
+    return true;
+}
+
+// ---- drawn into a replay export's own video frames (set's `frame`) -------------------------------------------------
+// A shader that grades or bends the finished picture can be drawn into each of an export's video frames as the game finishes
+// it, on the list that films it, rather than into the world's picture: the game makes the video's frames in ways of its
+// own (with a picture shape, from a scene finished before the frame on that list, post-processed and scaled to the video's
+// size: drawn into the world's picture, the video went without it on most frames, 2026-11-22), and the frame is where they
+// all end. t0 is the frame as the screen shows it (its sRGB undone), with mips when wanted; reskate_display.x is 2 and
+// reskate_unshown writes the screen's sRGB back. Drawn as draw_inside draws: in the game's list, its state put back after.
+bool build_frame_copy(Shared& s, const D3D12_RESOURCE_DESC& frame) {
+    const UINT levels = mips_wanted.load() ? mips_for(frame.Width, frame.Height) : 1;
+    if (s.frame_copy && s.frame_desc.Width == frame.Width && s.frame_desc.Height == frame.Height && s.frame_mips == levels) return true;
+    if (s.frame_copy) s.retiring.push_back({s.fence_value, s.frame_copy});
+    s.frame_copy.Reset();
+    D3D12_HEAP_PROPERTIES heap{};
+    heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+    D3D12_RESOURCE_DESC desc{};
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+    desc.Width = frame.Width;
+    desc.Height = frame.Height;
+    desc.DepthOrArraySize = 1;
+    desc.MipLevels = static_cast<UINT16>(levels);
+    desc.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+    desc.SampleDesc.Count = 1;
+    desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+    if (FAILED(s.device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&s.frame_copy)))) {
+        s.frame_copy.Reset();
+        return false;
+    }
+    s.frame_desc = desc;
+    s.frame_mips = levels;
+    return true;
+}
+bool draw_frame(Shared& s, ID3D12GraphicsCommandList* list, ID3D12Resource* frame, D3D12_RESOURCE_STATES before,
+                void(STDMETHODCALLTYPE* barrier)(ID3D12GraphicsCommandList*, UINT, const D3D12_RESOURCE_BARRIER*)) {
+    if (!barrier || !following() || s.failed || !s.device || !s.depth_copy || !s.root || !s.upload_cpu || !s.views || !s.targets) return false;
+    const auto known = list_states.find(list);
+    if (known == list_states.end() || !known->second.complete || !latest_reset(list, known->second.reset)) return false;
+    const auto desc = frame->GetDesc();
+    if (desc.Format != DXGI_FORMAT_B8G8R8A8_UNORM || !(desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET)) return false;
+    if (!build_frame_copy(s, desc) || !build_single(s, "ps_frame", DXGI_FORMAT_R16G16B16A16_FLOAT, s.frame_pipeline)) return false;
+    if (s.frame_mips > 1 && !build_single(s, "ps_down", DXGI_FORMAT_R16G16B16A16_FLOAT, s.down_pipeline, &s.down_format)) return false;
+    const float width = static_cast<float>(desc.Width), height = static_cast<float>(desc.Height);
+    const auto projector = camera_now(s, width, height);
+    if (!projector) return false;
+    auto& a = asked();
+    std::lock_guard asked_lock(a.mutex);
+    const auto found = a.programs.find(a.key);
+    if (found == a.programs.end() || found->second->state != Program::State::ready) return false;
+    auto* const pipeline = plugin_pipeline(s, a.key, *found->second, a.name, DXGI_FORMAT_B8G8R8A8_UNORM);
+    if (!pipeline) return false;
+    // A slot whose last draw's list has run, as draw_inside takes one.
+    const UINT64 completed = s.fence ? s.fence->GetCompletedValue() : 0;
+    const auto slot_free = [&](std::size_t k) {
+        return s.inside_keep[k].empty() || (s.inside_fence[k] != ~UINT64{0} && completed >= s.inside_fence[k]) || s.frame - s.inside_drawn_frame[k] >= 30;
+    };
+    std::size_t slot = s.inside_next;
+    for (std::size_t tried = 0; tried < inside_ring && !slot_free(slot); ++tried) slot = (slot + 1) % inside_ring;
+    if (!slot_free(slot)) return false;
+    s.inside_next = (slot + 1) % inside_ring;
+    const std::size_t measured_at = s.allocators.size() + slot;
+    if (s.measure_waiting[measured_at]) {
+        if (s.inside_fence[slot] != ~UINT64{0} && completed >= s.inside_fence[slot]) take_light(s, s.measure_cpu + measured_at * measure_slice);
+        s.measure_waiting[measured_at] = false;
+    }
+    const auto camera = picture_camera(s, *projector);
+    const std::size_t part = s.allocators.size() + slot;
+    std::uint8_t* const slice = s.upload_cpu + part * upload_slice;
+    fill_slice(s, a, slice, s.inside_data_uploaded[slot], s.inside_heights_uploaded[slot], camera, projector->focal, width, height, false);
+    // reskate_display: an export's video frame (2: the screen's sRGB), the copy's mips, as shown.
+    float display[4]{};
+    std::memcpy(display, slice + 92 * sizeof(float), sizeof(display));
+    display[0] = 2.0f;
+    display[2] = static_cast<float>(s.frame_mips);
+    display[3] = 1.0f;
+    std::memcpy(slice + 92 * sizeof(float), display, sizeof(display));
+    const CopyOf c{s.frame_copy.Get(), s.frame_desc, s.frame_mips, DXGI_FORMAT_R16G16B16A16_FLOAT, true, frame, DXGI_FORMAT_B8G8R8A8_UNORM};
+    const UINT view_step = s.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    const UINT first_view = views_each * static_cast<UINT>(part);
+    auto view = s.views->GetCPUDescriptorHandleForHeapStart();
+    view.ptr += SIZE_T{view_step} * first_view;
+    write_views(s, view, view_step, c);
+    D3D12_RENDER_TARGET_VIEW_DESC target_view{};
+    target_view.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    target_view.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+    auto target = s.targets->GetCPUDescriptorHandleForHeapStart();
+    target.ptr += SIZE_T{s.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV)};
+    s.device->CreateRenderTargetView(frame, &target_view, target);
+
+    drawing_inside = true;
+    const auto move = [&](ID3D12Resource* resource, D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to) {
+        if (from == to) return;
+        D3D12_RESOURCE_BARRIER b{};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition.pResource = resource;
+        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        b.Transition.StateBefore = from;
+        b.Transition.StateAfter = to;
+        barrier(list, 1, &b); // straight to the game's list, past the depth tap
+    };
+    const auto move_mip = [&](UINT mip, D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to) {
+        D3D12_RESOURCE_BARRIER b{};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition.pResource = s.frame_copy.Get();
+        b.Transition.Subresource = mip;
+        b.Transition.StateBefore = from;
+        b.Transition.StateAfter = to;
+        barrier(list, 1, &b);
+    };
+    auto table = s.views->GetGPUDescriptorHandleForHeapStart();
+    table.ptr += UINT64{view_step} * first_view;
+    const auto upload = s.upload->GetGPUVirtualAddress() + part * upload_slice;
+    move(frame, before, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    move_mip(0, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    draw_shown(s, list, c, table, upload, s.frame_pipeline.Get());
+    move_mip(0, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    make_mips(s, list, c, table, upload, move_mip);
+    move(frame, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    ID3D12DescriptorHeap* heaps[] = {s.views.Get()};
+    list->SetDescriptorHeaps(1, heaps);
+    list->SetGraphicsRootSignature(s.root.Get());
+    list->SetPipelineState(pipeline);
+    list->SetGraphicsRootConstantBufferView(0, upload);
+    list->SetGraphicsRootDescriptorTable(1, table);
+    list->SetGraphicsRootShaderResourceView(2, upload + data_offset);
+    list->SetGraphicsRootShaderResourceView(3, upload + heights_offset);
+    const D3D12_VIEWPORT viewport{0, 0, width, height, 0, 1};
+    const D3D12_RECT scissor{0, 0, static_cast<LONG>(desc.Width), static_cast<LONG>(desc.Height)};
+    list->RSSetViewports(1, &viewport);
+    list->RSSetScissorRects(1, &scissor);
+    list->OMSetRenderTargets(1, &target, FALSE, nullptr);
+    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    list->DrawInstanced(3, 1, 0, 0);
+    s.inside_fence[slot] = ~UINT64{0}; // set when its list is submitted
+    s.inside_drawn_frame[slot] = s.frame;
+    {
+        auto& keep = s.inside_keep[slot];
+        keep.clear();
+        keep.push_back(s.frame_copy);
+        keep.push_back(s.depth_copy);
+        for (const auto& g : s.images)
+            if (g.texture) keep.push_back(g.texture);
+        for (const auto& t : s.tables)
+            if (t.texture) keep.push_back(t.texture);
+    }
+    s.inside_last_slot = slot;
+    move(frame, D3D12_RESOURCE_STATE_RENDER_TARGET, before);
+    move(s.frame_copy.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
+    restore(list, known->second);
+    drawing_inside = false;
+    if (!s.said_frame) {
+        s.said_frame = true;
+        logging::printf(logging::Level::info, logging::Channel::graphics, "World shader: drawn into a replay export's own video frames (%llux%u).",
+                        static_cast<unsigned long long>(desc.Width), desc.Height);
+    }
     return true;
 }
 
@@ -2493,7 +2701,7 @@ static void compile(std::shared_ptr<Program> program, std::string name, std::sha
 }
 
 std::string set(std::string_view owner, std::string_view name, std::shared_ptr<const std::string> bytes, Kind kind,
-                const std::array<float, value_count>& values, bool heights, bool mips, bool shown) noexcept {
+                const std::array<float, value_count>& values, bool heights, bool mips, bool shown, bool frame) noexcept {
     try {
         if (!bytes) return "it has no content";
         auto& a = asked();
@@ -2524,6 +2732,7 @@ std::string set(std::string_view owner, std::string_view name, std::shared_ptr<c
             mips_wanted.store(mips);
             a.shown = shown;
             shown_wanted.store(shown);
+            frame_wanted.store(frame && shown);
             for (std::size_t i = 0; i < value_count; ++i) a.values[i] = std::isfinite(values[i]) ? values[i] : 0.0f;
         }
         if (start) compile(std::move(start), std::string(name), std::move(bytes));
@@ -2548,6 +2757,7 @@ void clear(std::string_view owner) noexcept {
     mips_wanted.store(false);
     a.shown = false;
     shown_wanted.store(false);
+    frame_wanted.store(false);
     a.cost_ms.reset();
 }
 std::string set_image(std::string_view owner, std::size_t slot, std::string_view name, std::shared_ptr<const std::string> bytes) noexcept {
@@ -2997,6 +3207,9 @@ void release() noexcept {
         s.picture_mips = 1;
         s.picture_shown = false;
         s.shown_pipeline.Reset();
+        s.frame_copy.Reset();
+        s.frame_pipeline.Reset();
+        s.frame_mips = 1;
         s.image_list.Reset();
         s.image_allocator.Reset();
         s.image_list_fence = 0;
@@ -3011,6 +3224,8 @@ void release() noexcept {
         s.measure_fresh = {};
         s.measure_anchored = {};
         s.inside_fence = {};
+        for (auto& keep : s.inside_keep) keep.clear();
+        s.inside_drawn_frame = {};
         s.light_known = s.far_known = false;
         s.light = s.light_raw = s.far_light = 0;
         s.timer_heap.Reset();
@@ -3079,7 +3294,27 @@ void on_barrier(ID3D12GraphicsCommandList* list, const D3D12_RESOURCE_BARRIER& b
                     (d.Format == DXGI_FORMAT_B8G8R8A8_UNORM || d.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB)) {
                     auto& s = shared();
                     std::lock_guard lock(s.mutex);
-                    s.notes[list].video_frame = true;
+                    auto& n = s.notes[list];
+                    n.video_frame = n.video_made = true;
+                    s.video_frame_seen = s.frame;
+                    return;
+                }
+            }
+            // That frame finished (made to be read, on the list that made it): in frame mode the shader is drawn into it
+            // here, before the game's barrier (draw_frame).
+            if ((b.Transition.StateBefore & D3D12_RESOURCE_STATE_RENDER_TARGET) && !(b.Transition.StateAfter & D3D12_RESOURCE_STATE_RENDER_TARGET) &&
+                frame_wanted.load(std::memory_order_relaxed) && in_replay_editor.load(std::memory_order_relaxed)) {
+                const auto d = resource->GetDesc();
+                if (d.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D && d.MipLevels == 1 && d.DepthOrArraySize == 1 && d.SampleDesc.Count == 1 &&
+                    d.Format == DXGI_FORMAT_B8G8R8A8_UNORM) {
+                    auto& s = shared();
+                    std::lock_guard lock(s.mutex);
+                    auto& n = s.notes[list];
+                    if (n.video_made && !n.frame_drawn) {
+                        n.frame_drawn = draw_frame(s, list, resource, b.Transition.StateBefore, original);
+                        if (n.frame_drawn) n.frame_slot = s.inside_last_slot;
+                        ++s.outcomes[n.frame_drawn ? "drawn into an export's video frame" : "an export's video frame not drawn into"];
+                    }
                     return;
                 }
             }
@@ -3130,7 +3365,9 @@ void on_barrier(ID3D12GraphicsCommandList* list, const D3D12_RESOURCE_BARRIER& b
                         // every fifth or ninth frame that the screen had not taken lately (2026-11-20).
                         const bool video_one = s.locked && kind == s.locked && n.video_frame;
                         if (video_one) n.video_frame = false;
-                        if (s.locked && kind == s.locked && (final_one || video_one) && !n.drawn_inside) {
+                        // (In frame mode an export's frames are drawn into themselves: nothing in the scene for them.)
+                        const bool frames_own = frame_wanted.load(std::memory_order_relaxed) && s.frame - s.video_frame_seen <= 30;
+                        if (s.locked && kind == s.locked && (final_one || video_one) && !n.drawn_inside && !frames_own) {
                             n.inside_why = s.drawn || s.inside_frame == s.frame ? "already drawn this frame"
                                          : !depth_done ? "the depth not done"
                                          : s.unsafe || n.unsafe || s.depth_elsewhere ? "a split or aliasing barrier, or another queue"

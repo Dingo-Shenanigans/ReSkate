@@ -153,6 +153,8 @@ float3 reskate_shown(float3 picture) { return reskate_shown_log(log2(max(picture
 // The curve's answer first (Newton from below the root), then the inverse table, then two Gauss-Newton steps on the
 // mapping itself in sRGB, each kept only when it comes closer.
 float3 reskate_unshown(float3 shown) {
+    // Drawn into a replay export's own video frame (reskate_display.x 2): the screen's sRGB, as the frame holds it.
+    [branch] if (reskate_display.x > 1.5) return reskate_linear_to_srgb(saturate(shown));
     const float3 d = clamp(shown, 1e-7, 0.99995);
     const float3 t = log2(d / (1.0 - d));
     float3 x = max((t - reskate_dm_t0) / reskate_dm_s1, (t - reskate_dm_t0 - (reskate_dm_s1 - reskate_dm_s2) * reskate_dm_x0) / reskate_dm_s2);
@@ -221,7 +223,7 @@ inline constexpr std::size_t value_count = screen_shader::value_count;
 // Empty, or why it is not drawn (another plugin's is on; it did not compile, the driver refused it, or it took too long
 // on the GPU, which keeps the same file off for the rest of the run).
 std::string set(std::string_view owner, std::string_view name, std::shared_ptr<const std::string> bytes, Kind kind,
-                const std::array<float, value_count>& values, bool heights, bool mips = false, bool shown = false) noexcept;
+                const std::array<float, value_count>& values, bool heights, bool mips = false, bool shown = false, bool frame = false) noexcept;
 void clear(std::string_view owner = {}) noexcept;
 // The owner's data (t2): float4s, at most most_data_bytes; kept until replaced. Empty, or why not.
 std::string set_data(std::string_view owner, std::shared_ptr<const std::string> bytes) noexcept;

@@ -1375,6 +1375,7 @@ public:
         bool heights{};
         bool mips{};  // the picture's copy (t0) with its mips
         bool shown{}; // and as the screen shows it, through the display mapping
+        bool export_frame{}; // in a replay export, drawn into the video's own frames (with shown)
     };
     virtual std::string world_shader(std::string_view /*plugin*/, std::optional<WorldShader>) { return unavailable; }
     // Its data (float4s, at most 64 KB; none: none), where its near distance is measured (for 300 ms), and its average

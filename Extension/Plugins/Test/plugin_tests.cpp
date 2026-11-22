@@ -803,7 +803,8 @@ struct FakeGame final : Game {
             return {};
         }
         calls.push_back(std::format("world {} {} {} {} {} {:.2f} {:.2f}{}", plugin, s->file, static_cast<int>(s->kind), s->bytes ? s->bytes->size() : 0,
-                                    s->heights, s->values[0], s->values[47], std::string(s->mips ? " mips" : "") + (s->shown ? " shown" : "")));
+                                    s->heights, s->values[0], s->values[47],
+                                    std::string(s->mips ? " mips" : "") + (s->shown ? " shown" : "") + (s->export_frame ? " frame" : "")));
         return {};
     }
     std::string world_shader_image(std::string_view plugin, int slot, std::string_view name, std::shared_ptr<const std::string> bytes) override {
@@ -7155,6 +7156,9 @@ void plugins_run_a_world_shader() {
         assert(not pcall(reskate.world.shader, "shaders/tint.hlsl", {heights = "yes"}), "heights is true or false")
         assert(reskate.world.shader("shaders/tint.dxil", {mips = true}))
         assert(reskate.world.shader("shaders/tint.dxil", {mips = true, shown = true}))
+        assert(reskate.world.shader("shaders/tint.dxil", {mips = true, shown = true, export_frame = true}))
+        assert(not pcall(reskate.world.shader, "shaders/tint.dxil", {export_frame = true}), "export_frame needs shown")
+        assert(not pcall(reskate.world.shader, "shaders/tint.dxil", {shown = true, export_frame = 1}), "export_frame is true or false")
         assert(not pcall(reskate.world.shader, "shaders/tint.hlsl", {shown = "yes"}), "shown is true or false")
         assert(not pcall(reskate.world.shader, "shaders/tint.hlsl", {mips = 1}), "mips is true or false")
         assert(not pcall(reskate.world.shader, "shaders/tint.hlsl", {values = {"a"}}), "values are numbers")
@@ -7181,6 +7185,8 @@ void plugins_run_a_world_shader() {
           "The picture's mips are asked for when the plugin wants them\n" + environment.all());
     check(game.called(std::format("world world shaders/tint.dxil 2 {} false 0.00 0.00 mips shown", files.at("shaders/tint.dxil").size())),
           "and the picture as shown\n" + environment.all());
+    check(game.called(std::format("world world shaders/tint.dxil 2 {} false 0.00 0.00 mips shown frame", files.at("shaders/tint.dxil").size())),
+          "export_frame reaches the game");
     check(game.called("world data world 32 1.50") && game.called("world data world none"), "Its data as float4s, and none");
     check(game.called("world anchor world 1.0 2.0 3.0") && game.called("world anchor world none"), "Its anchor, and none");
     check(game.called(std::format("world image world 0 images/hood.png {}", files.at("images/hood.png").size())) && game.called("world image world 3 none"),

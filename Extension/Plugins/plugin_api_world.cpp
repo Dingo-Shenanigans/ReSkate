@@ -4002,6 +4002,15 @@ struct WorldApi {
             if (!lua_isnil(L, -1) && lua_type(L, -1) != LUA_TBOOLEAN) luaL_error(L, "a world shader's shown is true or false");
             shader.shown = lua_toboolean(L, -1) != 0;
             lua_pop(L, 1);
+            // export_frame = true (with shown): in a replay export, drawn into the video's own frames as the game finishes
+            // them (as the screen shows them: reskate_display.x is 2 and reskate_unshown writes the screen's sRGB), not into
+            // the world's picture; for a shader that grades or bends the finished picture. The game makes a video's frames
+            // its own ways (a picture shape scales them), and the frame is where they all end.
+            lua_getfield(L, 2, "export_frame");
+            if (!lua_isnil(L, -1) && lua_type(L, -1) != LUA_TBOOLEAN) luaL_error(L, "a world shader's export_frame is true or false");
+            shader.export_frame = lua_toboolean(L, -1) != 0;
+            lua_pop(L, 1);
+            if (shader.export_frame && !shader.shown) luaL_error(L, "a world shader's export_frame needs shown = true");
         }
         const auto& file = shader_file(L, plugin, path, "world shader");
         shader.bytes = file.bytes;
