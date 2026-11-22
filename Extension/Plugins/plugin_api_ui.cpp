@@ -70,7 +70,12 @@ plugin_ui::Style style_of(lua_State* L, int index) {
         else if (font == "heading") style.font = 2;
         else if (font == "title") style.font = 3;
         else if (font == "title_large") style.font = 4;
-        else if (font.find_first_of("./") != std::string::npos) {
+        else if (const auto face = std::find(plugin_ui::game_faces.begin(), plugin_ui::game_faces.end(), font); face != plugin_ui::game_faces.end()) {
+            // One of the game's own faces (read from the game: until it is, the text is drawn in "body").
+            auto& plugin = plugin_of(L);
+            style.font = plugin.game_font_number(static_cast<std::size_t>(face - plugin_ui::game_faces.begin()));
+            if (!plugin.font_metrics(style.font)) style.font = 1;
+        } else if (font.find_first_of("./") != std::string::npos) {
             // A font file of the plugin's own package, which its manifest's "fonts" names: the style
             // carries its number there. Its metrics are asked for now, so whatever draws the text has
             // them; one that cannot be read is "body" from here on, measured and drawn alike.
@@ -78,7 +83,8 @@ plugin_ui::Style style_of(lua_State* L, int index) {
             style.font = plugin.font_number(font);
             if (!style.font) luaL_error(L, "a font file is named in the manifest's \"fonts\" first");
             if (!plugin.font_metrics(style.font)) style.font = 1;
-        } else luaL_error(L, "font is \"bold\", \"body\", \"heading\", \"title\", \"title_large\" or a font file of the manifest's \"fonts\"");
+        } else luaL_error(L, "font is \"bold\", \"body\", \"heading\", \"title\", \"title_large\", one of the game's \"game_label\", "
+                             "\"game_value\" and \"game_title\", or a font file of the manifest's \"fonts\"");
     }
     lua_pop(L, 1);
     // A picture's source rectangle, {u0, v0, u1, v1} from 0 to 1: one glyph of a font atlas, a tile.
@@ -235,6 +241,22 @@ struct UiApi {
         lua_pop(L, 1);
         add(L, plugin, std::move(shape));
         return 0;
+    }
+    // d:game_image_size(name): one of the game's own pictures' width and height in pixels as ReSkate keeps it (what its
+    // fitting keeps the shape of), once it has been read from the game; nil before, or when it is not there.
+    static int game_image_size(lua_State* L) {
+        auto& plugin = drawing(L);
+        const auto name = checked_text(L, 2, 40, "a game picture's name");
+        if (std::find(plugin_ui::game_images.begin(), plugin_ui::game_images.end(), name) == plugin_ui::game_images.end())
+            luaL_error(L, "%s is not one of the game's pictures (d:game_image names them)", name.c_str());
+        const auto size = plugin.services_.game().game_image_size(name);
+        if (!size) {
+            lua_pushnil(L);
+            return 1;
+        }
+        lua_pushinteger(L, (*size)[0]);
+        lua_pushinteger(L, (*size)[1]);
+        return 2;
     }
     // d:game_image(name, top_left, bottom_right, style): one of the game's own pictures; style.fit
     // "contain" (the default), "shape" or "panel", style.edge a panel's corner size in pixels.
@@ -1087,7 +1109,7 @@ void UiApi::install(Plugin& plugin, lua_State* L) {
     using F = UiApi;
     push_functions(L, {{"text", F::text}, {"rect", F::rect}, {"line", F::line}, {"circle", F::circle}, {"poly", F::poly},
                        {"world_text", F::world_text}, {"world_line", F::world_line}, {"world_circle", F::world_circle},
-                       {"image", F::image}, {"world_image", F::world_image}, {"game_image", F::game_image}, {"game_map", F::game_map}, {"rough_rect", F::rough_rect}, {"scribble", F::scribble}, {"halftone", F::halftone},
+                       {"image", F::image}, {"world_image", F::world_image}, {"game_image", F::game_image}, {"game_image_size", F::game_image_size}, {"game_map", F::game_map}, {"rough_rect", F::rough_rect}, {"scribble", F::scribble}, {"halftone", F::halftone},
                        {"clip", F::clip}, {"measure", F::measure}, {"mark", F::mark}, {"adjust", F::adjust}, {"glyph", F::glyph}, {"mesh", F::mesh},
                        {"gradient", F::gradient}, {"skeleton", F::skeleton}, {"size", F::size}, {"world_to_screen", F::world_to_screen}});
     plugin.draw_table_ = lua_ref(L, -1);

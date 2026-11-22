@@ -36,4 +36,16 @@ inline int export_kilobits(int quality, int width, int height, double fps) {
 // GPU the game does not render on.
 // An MP4 export is encoded at the chosen Quality (above).
 bool start(std::uintptr_t base) noexcept;
+
+// The replay editor's export as it runs, from the frames its encoder takes (any thread). Each frame is one frame of the
+// export's frame rate further into the replay. A new export begins when a frame comes after none for three seconds.
+struct Running {
+    bool running{};          // a frame was encoded in the last two seconds
+    std::uint64_t session{}; // which export: counted up from 1
+    std::uint64_t frames{};  // encoded so far in it
+    std::uint64_t began_ms{}; // when its first frame was encoded (GetTickCount64)
+    int width{}, height{};   // its MP4 setup's size: 0 for a WebM export (it has none), or while none is known
+    float fps{};             // and frame rate
+};
+Running running() noexcept;
 }

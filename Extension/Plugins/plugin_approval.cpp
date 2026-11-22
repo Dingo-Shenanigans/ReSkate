@@ -61,6 +61,7 @@ constexpr Capability capabilities[] = {
     {"world.environment", "WORLD", Risk::red, "Change the time of day, world controls and parks"},
     {"world.entities", "WORLD", Risk::amber, "Spawn objects that only you see"},
     {"world.sets", "WORLD", Risk::grey, "Place the game's studio lights and backdrops, for you only"},
+    {"world.lights", "WORLD", Risk::grey, "Make lights of its own in the game's world, for you only"},
     {"skater.copy", "WORLD", Risk::grey, "Show a copy of your skater somewhere else, for you only"},
     {"world.ai", "WORLD", Risk::amber, "Spawn and clear AI skaters"},
     {"effects", "WORLD", Risk::amber, "Draw particle effects and decals in the world"},
@@ -78,6 +79,7 @@ constexpr Capability capabilities[] = {
     {"hud.score", "SCREEN", Risk::amber, "Show its own tricks and points in skate.'s score HUD"},
     {"overlay", "SCREEN", Risk::amber, "Draw on your screen, with screen effects, toasts and x-ray view"},
     {"screen.shader", "SCREEN", Risk::red, "Run its own shader on your graphics card, over your whole screen"},
+    {"screen.shape", "SCREEN", Risk::amber, "Change the shape of the game's picture and window (black around it)"},
     {"world.shader", "SCREEN", Risk::red, "Run its own shader on your graphics card, drawing into the game's world"},
     {"ui.screen", "SCREEN", Risk::grey, "Open its own screens and dialogs"},
     {"ui.models", "SCREEN", Risk::grey, "Send numbers to its own mod's menus and HUD"},
@@ -90,7 +92,8 @@ constexpr Capability capabilities[] = {
     {"files.folders", "FILES", Risk::red, "Read and write files in folders beside the game"},
     {"room", "GAME", Risk::red, "Open and control the character room, where others see your skater"},
     {"game.speed", "GAME", Risk::amber, "Control slow motion and the speed of the game"},
-    {"replay", "GAME", Risk::grey, "Use replays"},
+    {"replay", "GAME", Risk::grey, "Read the replay editor and put back its camera keyframes"},
+    {"videos", "GAME", Risk::amber, "Move the videos you export into a folder you pick"},
     {"variants", "GAME", Risk::grey, "Choose which variant of its mod your game loads"},
     {"progression.read", "GAME", Risk::grey, "Read your progression"},
     {"mods.read", "GAME", Risk::grey, "Read your installed mods and their content"},
@@ -303,6 +306,7 @@ std::string approval_prompt(const std::vector<PermissionGroup>& groups) {
             if (has("world.environment")) actions.push_back("change parks, world controls, and time of day");
             if (has("world.entities")) actions.push_back("spawn objects visible only to you");
             if (has("world.sets")) actions.push_back("place the game's studio lights and backdrops");
+            if (has("world.lights")) actions.push_back("make its own lights");
             if (has("skater.copy")) actions.push_back("show a copy of your skater somewhere else");
             if (has("world.ai")) actions.push_back("spawn or clear AI skaters");
             if (has("effects")) actions.push_back("draw particle effects and decals");
@@ -322,6 +326,7 @@ std::string approval_prompt(const std::vector<PermissionGroup>& groups) {
             if (has("hud.score")) actions.push_back("show its own tricks and points in skate.'s score HUD (they never count)");
             if (has("overlay")) actions.push_back("draw on screen, including screen effects");
             if (has("screen.shader")) actions.push_back("run its own shader over your whole screen");
+            if (has("screen.shape")) actions.push_back("reshape the game's picture");
             if (has("world.shader")) actions.push_back("run its own shader drawing into the game's world");
             if (has("ui.screen")) actions.push_back("open plugin screens and dialogs");
             if (has("ui.models")) actions.push_back("send numbers to its own mod's menus and HUD");
@@ -335,7 +340,8 @@ std::string approval_prompt(const std::vector<PermissionGroup>& groups) {
         } else if (group.category == "GAME") {
             if (has("game.speed")) actions.push_back("control game speed and slow motion");
             if (has("room")) actions.push_back("open and control the character room, where others see your skater");
-            if (has("replay")) actions.push_back("use replays");
+            if (has("replay")) actions.push_back("read the replay editor");
+            if (has("videos")) actions.push_back("move your videos to a folder you pick");
             if (has("variants")) actions.push_back("choose variants for its mod");
             if (has("progression.read")) actions.push_back("read progression");
             if (has("mods.read")) actions.push_back("read installed mods and their content");

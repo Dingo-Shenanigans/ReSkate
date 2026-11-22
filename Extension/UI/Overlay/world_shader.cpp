@@ -1,4 +1,6 @@
 #include "world_shader.h"
+#include "display_mapping_table.h"
+#include "overlay_internal.h"
 #include "screen_shader_vs_dxil.h"
 #include "plugin_shader_compile.h"
 #include "Engine/Core/Hooks/hooks.h"
@@ -33,18 +35,30 @@ using Microsoft::WRL::ComPtr;
 
 // Slots of the D3D12 interfaces' tables (d3d12.h's declaration order).
 constexpr std::size_t queue_execute = 10;
-// The cbuffer (prelude): 22 float4s, in a part of its own of the upload buffer.
-constexpr std::size_t cbuffer_floats = 23 * 4; // (the prelude's cbuffer: reskate_light last)
+// The cbuffer (prelude): 24 float4s, in a part of its own of the upload buffer.
+constexpr std::size_t cbuffer_floats = 24 * 4; // (the prelude's cbuffer: reskate_display last)
 constexpr UINT64 cbuffer_bytes = 512;
 // Our copy of the game's depth, taken as soon as the game has finished it each frame (snapshot_depth):
 // read at the shader's moment the game's own had sometimes been used for something else by then, and
 // the snow vanished for a frame or came out in stripes (2026-11-11).
 constexpr DXGI_FORMAT depth_copy_format = DXGI_FORMAT_R32_FLOAT;
 // Each command allocator's own shader views in our heap (a list in flight reads its own): the
-// picture's copy and our depth copy. Each frame's cover is drawn afresh: blended with last frame's,
-// found with the camera as the client last read it (a frame apart from the GPU's at times), everything
-// that moved left an outline of itself in the snow (2026-11-10).
-constexpr UINT views_each = 2;
+// picture's copy and our depth copy, then the plugin's pictures (t4 to t7, set_image), the display mapping's tables (t8,
+// t9), and each of the picture's mips alone (make_mips draws each from the one above). Each frame's cover is drawn
+// afresh: blended with last frame's, found with the camera as the client last read it (a frame apart from the GPU's
+// at times), everything that moved left an outline of itself in the snow (2026-11-10).
+constexpr UINT table_views = 2;
+constexpr UINT most_mips = 15; // a picture up to 16384 pixels a side
+constexpr UINT block_views = 2 + static_cast<UINT>(image_count) + table_views; // a table's: t0, t1, t4 to t9
+// Then, for the picture as shown (set's `shown`), a block like the first with the game's picture itself as t0: the pass
+// that copies it through the display mapping reads it there, and the tables.
+constexpr UINT raw_block = block_views + most_mips;
+constexpr UINT views_each = raw_block + block_views;
+// Past the last part's views: a mip's table starts at the mip above it, and the root signature's ranges read on from there.
+constexpr UINT views_spare = 2 + static_cast<UINT>(image_count) + table_views;
+// The render target views' heap: the picture, the picture drawn inside a game's list, a mip being made, (1 free), our
+// depth copy, the measurements.
+constexpr UINT mip_target = 2;
 // The world is found with the camera of 1.15 frames before this one (between the two before, blended): the
 // camera is read as the shader is drawn, and the game is about that far ahead of its picture by then. With this
 // frame's, world-fixed things swam as the camera moved. Tried in the game (2026-11-13): two frames before was better
@@ -115,6 +129,16 @@ struct Program {
     std::string why;  // refused: why (said to the plugin, and once in the log)
 };
 
+// A picture of the plugin's for its shader (set_image): decoded on a thread of its own, then put on the GPU once.
+struct Image {
+    enum class State : std::uint8_t { decoding, ready, failed } state{State::decoding};
+    std::string name;
+    std::uint64_t key{};             // its file and content (key_of)
+    std::vector<unsigned char> rgba; // 8 bits a channel, red first, alpha not multiplied in
+    std::uint32_t width{}, height{};
+    std::uint64_t version{};         // which picture this is (Asked::images_made): the GPU's copy follows it
+};
+
 // What a plugin asked for (client thread), and every shader's program, under the mutex.
 struct Asked {
     std::mutex mutex;
@@ -124,6 +148,10 @@ struct Asked {
     bool heights{};
     std::shared_ptr<const std::string> data;
     std::uint64_t data_version{};
+    std::array<std::shared_ptr<Image>, image_count> images{};
+    std::uint64_t images_made{};
+    bool mips{};  // the picture's copy with its mips (set's `mips`)
+    bool shown{}; // and as the screen shows it (set's `shown`)
     std::optional<std::array<float, 3>> anchor;
     std::uint64_t anchor_until{}; // set_anchor holds for 300 ms
     std::map<std::uint64_t, std::shared_ptr<Program>> programs;
@@ -162,6 +190,8 @@ void refuse(Program& program, std::string_view name, std::string why) {
     logging::write(logging::Level::warning, logging::Channel::graphics, std::format("World shader {} is off for this run: {}.", name, program.why));
 }
 std::atomic<bool> wanted{};
+std::atomic<bool> mips_wanted{}; // the plugin's shader reads the picture's mips (set's `mips`)
+std::atomic<bool> shown_wanted{}; // and the picture as the screen shows it (set's `shown`)
 std::atomic<bool> allowed{};     // the world has been in play for a moment (allow)
 std::atomic<bool> in_replay_editor{}; // the replay editor is open (allow): its exports draw video frames (Notes::video_frame)
 // The calls followed on the game's lists while a world shader is on (each list's, counted in as it is next reset):
@@ -256,6 +286,29 @@ struct Shared {
     std::uint64_t last_drawn_frame{~std::uint64_t{0}};
     ComPtr<ID3D12DescriptorHeap> views, targets;
     ComPtr<ID3D12RootSignature> root;
+    // The plugin's pictures on the GPU (t4 to t7): each put there by a list of ours of its own, read by the shader only
+    // once the fence has passed the value that list signals (`ready`); until then, and for a slot with none, an empty view.
+    struct GpuImage {
+        ComPtr<ID3D12Resource> texture;
+        std::uint64_t version{}; // Image::version of what it holds (0: none)
+        UINT64 ready{};
+    };
+    std::array<GpuImage, image_count> images{};
+    // The game's display mapping's tables (t8, t9: display_mapping_table.h), put on the GPU once by the pictures' list.
+    std::array<GpuImage, table_views> tables{};
+    bool tables_failed{};
+    // The picture's copy's mips (1: none), and the pipeline that makes each from the one above, for the copy's format.
+    UINT picture_mips{1};
+    ComPtr<ID3D12PipelineState> down_pipeline;
+    DXGI_FORMAT down_format{DXGI_FORMAT_UNKNOWN};
+    // The copy as the screen shows it (set's `shown`): 16-bit float, made by ps_shown from the game's picture.
+    bool picture_shown{};
+    DXGI_FORMAT picture_format{DXGI_FORMAT_UNKNOWN}; // the copy's views' format: the game's picture's, or the shown one's
+    ComPtr<ID3D12PipelineState> shown_pipeline;
+    int transfer{}; // what the screen is (present): 0 SDR, 1 scRGB, 2 HDR10
+    ComPtr<ID3D12CommandAllocator> image_allocator;
+    ComPtr<ID3D12GraphicsCommandList> image_list;
+    UINT64 image_list_fence{}; // what the last of its uploads signals: the allocator is free again once passed
     // The plugin's shader's pipelines, by its program and the picture's format.
     std::map<std::pair<std::uint64_t, DXGI_FORMAT>, ComPtr<ID3D12PipelineState>> pipelines;
     // Eight: the GPU runs frames behind, and with three every other frame found none free (2026-11-10).
@@ -576,12 +629,13 @@ void STDMETHODCALLTYPE hooked_execute(ID3D12CommandQueue* queue, UINT count, ID3
 }
 
 // ---- drawing ----------------------------------------------------------------------------------------
-void transition(ID3D12GraphicsCommandList* list, ID3D12Resource* resource, D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to) {
+void transition(ID3D12GraphicsCommandList* list, ID3D12Resource* resource, D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to,
+                UINT subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES) {
     if (from == to) return;
     D3D12_RESOURCE_BARRIER barrier{};
     barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     barrier.Transition.pResource = resource;
-    barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+    barrier.Transition.Subresource = subresource;
     barrier.Transition.StateBefore = from;
     barrier.Transition.StateAfter = to;
     list->ResourceBarrier(1, &barrier); // our own list: the hook passes it on (it is not the game's)
@@ -593,10 +647,13 @@ constexpr const char* builtin_source = R"hlsl(
 cbuffer ReSkateWorld : register(b0) {
     float4 right_focal; float4 up_width; float4 back_height; float4 eye_near;
     float4 last_right; float4 last_up; float4 last_back; float4 last_eye;
-    float4 anchor; float4 clock; float4 values[12]; float4 light;
+    float4 anchor; float4 clock; float4 values[12]; float4 light; float4 reskate_display;
 };
 Texture2D<float4> picture : register(t0);
 Texture2D<float> depth : register(t1);
+Texture3D<float4> reskate_shown_table : register(t8);
+Texture3D<float4> reskate_unshown_table : register(t9);
+SamplerState reskate_linear : register(s0);
 struct Interpolated { float4 position : SV_Position; float2 uv : TEXCOORD0; };
 Interpolated vs_main(uint id : SV_VertexID) {
     Interpolated o;
@@ -607,6 +664,8 @@ Interpolated vs_main(uint id : SV_VertexID) {
 }
 // The game's depth into ours (t1 is the game's own here).
 float ps_depth(Interpolated input) : SV_Target { return depth.Load(int3(int2(input.position.xy), 0)); }
+// One of the picture's mips from the one above it (t0, that mip alone): each pixel the average of the four under it.
+float4 ps_down(Interpolated input) : SV_Target { return picture.SampleLevel(reskate_linear, input.uv, 0); }
 float depth_at(int2 p) {
     p = clamp(p, int2(0, 0), int2(up_width.w, back_height.w) - 1);
     return depth.Load(int3(p, 0));
@@ -649,17 +708,369 @@ float ps_measure(Interpolated input) : SV_Target {
 }
 )hlsl";
 
+// The plugin's pictures' views (t4 to t7), from `first` on: each one on the GPU whose upload has run, else an empty view
+// (the shader reads 0 there). Under the mutex.
+void write_image_views(Shared& s, D3D12_CPU_DESCRIPTOR_HANDLE first, UINT step) {
+    const UINT64 done = s.fence ? s.fence->GetCompletedValue() : 0;
+    D3D12_SHADER_RESOURCE_VIEW_DESC view{};
+    view.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    view.Texture2D.MipLevels = 1;
+    for (std::size_t i = 0; i < image_count; ++i, first.ptr += step) {
+        const auto& g = s.images[i];
+        s.device->CreateShaderResourceView(g.texture && g.ready <= done ? g.texture.Get() : nullptr, &view, first);
+    }
+}
+
+// Whether the display mapping's tables are on the GPU (reskate_display.y). Under the mutex.
+bool tables_ready(Shared& s) {
+    const UINT64 done = s.fence ? s.fence->GetCompletedValue() : 0;
+    for (const auto& t : s.tables)
+        if (!t.texture || t.ready > done) return false;
+    return true;
+}
+// The display mapping's tables' views (t8, t9), from `first` on: empty until their upload has run.
+void write_table_views(Shared& s, D3D12_CPU_DESCRIPTOR_HANDLE first, UINT step) {
+    const bool ready = tables_ready(s);
+    D3D12_SHADER_RESOURCE_VIEW_DESC view{};
+    view.Format = DXGI_FORMAT_R16G16B16A16_UNORM;
+    view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE3D;
+    view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    view.Texture3D.MipLevels = 1;
+    for (std::size_t i = 0; i < table_views; ++i, first.ptr += step)
+        s.device->CreateShaderResourceView(ready ? s.tables[i].texture.Get() : nullptr, &view, first);
+}
+// A part's views (an allocator's, or a draw inside a game's list's), from `first` on: the picture's copy with all its mips
+// (t0), our copy of the depth (t1), the plugin's pictures (t4 to t7), the display mapping's tables (t8, t9), then each of
+// the copy's mips alone (make_mips reads them). Under asked()'s lock.
+void write_views(Shared& s, D3D12_CPU_DESCRIPTOR_HANDLE first, UINT step) {
+    auto view = first;
+    D3D12_SHADER_RESOURCE_VIEW_DESC picture_view{};
+    picture_view.Format = s.picture_format;
+    picture_view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    picture_view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    picture_view.Texture2D.MipLevels = s.picture_mips;
+    s.device->CreateShaderResourceView(s.picture.Get(), &picture_view, view);
+    view.ptr += step;
+    D3D12_SHADER_RESOURCE_VIEW_DESC depth_view{};
+    depth_view.Format = depth_copy_format;
+    depth_view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    depth_view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    depth_view.Texture2D.MipLevels = 1;
+    s.device->CreateShaderResourceView(s.depth_copy.Get(), &depth_view, view);
+    view.ptr += step;
+    write_image_views(s, view, step);
+    view.ptr += SIZE_T{step} * image_count;
+    write_table_views(s, view, step);
+    view.ptr += SIZE_T{step} * table_views;
+    for (UINT mip = 0; mip < most_mips; ++mip, view.ptr += step) {
+        D3D12_SHADER_RESOURCE_VIEW_DESC one = picture_view;
+        one.Texture2D.MostDetailedMip = mip < s.picture_mips ? mip : 0;
+        one.Texture2D.MipLevels = 1;
+        s.device->CreateShaderResourceView(mip < s.picture_mips ? s.picture.Get() : nullptr, &one, view);
+    }
+    // The raw block: the game's picture itself as t0 (ps_shown reads it), the depth, the pictures and the tables again.
+    if (!s.picture_shown) return;
+    D3D12_SHADER_RESOURCE_VIEW_DESC game_view{};
+    game_view.Format = s.colour_format;
+    game_view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+    game_view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    game_view.Texture2D.MipLevels = 1;
+    s.device->CreateShaderResourceView(s.colour, &game_view, view);
+    view.ptr += step;
+    s.device->CreateShaderResourceView(s.depth_copy.Get(), &depth_view, view);
+    view.ptr += step;
+    write_image_views(s, view, step);
+    view.ptr += SIZE_T{step} * image_count;
+    write_table_views(s, view, step);
+}
+
+// The display mapping's tables put on the GPU (present, under the mutex): once, by the pictures' list, before any picture.
+// False while that list is busy, or until they are up.
+bool upload_tables(Shared& s) {
+    if (s.tables_failed || (s.tables[0].texture && s.tables[1].texture)) return true;
+    if (!s.device || !s.queue || !s.fence) return false;
+    if (s.image_list_fence > s.fence->GetCompletedValue()) return false;
+    namespace table = display_mapping;
+    const std::array<int, table_views> sides{table::forward_size, table::inverse_size};
+    const std::array<const std::uint16_t*, table_views> sources{table::forward, table::inverse};
+    std::array<D3D12_RESOURCE_DESC, table_views> descs{};
+    std::array<D3D12_PLACED_SUBRESOURCE_FOOTPRINT, table_views> layouts{};
+    std::array<UINT, table_views> rows{};
+    std::array<UINT64, table_views> row_bytes{}, sizes{};
+    UINT64 offset = 0;
+    for (std::size_t i = 0; i < table_views; ++i) {
+        auto& d = descs[i];
+        d.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE3D;
+        d.Width = static_cast<UINT64>(sides[i]);
+        d.Height = static_cast<UINT>(sides[i]);
+        d.DepthOrArraySize = static_cast<UINT16>(sides[i]);
+        d.MipLevels = 1;
+        d.Format = DXGI_FORMAT_R16G16B16A16_UNORM;
+        d.SampleDesc.Count = 1;
+        s.device->GetCopyableFootprints(&d, 0, 1, offset, &layouts[i], &rows[i], &row_bytes[i], &sizes[i]);
+        offset = (layouts[i].Offset + sizes[i] + D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT - 1) & ~UINT64{D3D12_TEXTURE_DATA_PLACEMENT_ALIGNMENT - 1};
+    }
+    D3D12_HEAP_PROPERTIES gpu{};
+    gpu.Type = D3D12_HEAP_TYPE_DEFAULT;
+    D3D12_HEAP_PROPERTIES upload{};
+    upload.Type = D3D12_HEAP_TYPE_UPLOAD;
+    D3D12_RESOURCE_DESC b{};
+    b.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    b.Width = offset;
+    b.Height = 1;
+    b.DepthOrArraySize = 1;
+    b.MipLevels = 1;
+    b.SampleDesc.Count = 1;
+    b.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    std::array<ComPtr<ID3D12Resource>, table_views> textures;
+    ComPtr<ID3D12Resource> staging;
+    void* cpu{};
+    bool made = SUCCEEDED(s.device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &b, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+                                                            IID_PPV_ARGS(&staging))) &&
+                SUCCEEDED(staging->Map(0, nullptr, &cpu)) && cpu;
+    for (std::size_t i = 0; made && i < table_views; ++i)
+        made = SUCCEEDED(s.device->CreateCommittedResource(&gpu, D3D12_HEAP_FLAG_NONE, &descs[i], D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                                                           IID_PPV_ARGS(&textures[i])));
+    if (!made) {
+        s.tables_failed = true;
+        logging::write(logging::Level::warning, logging::Channel::graphics,
+                       "World shader: the display mapping's tables could not be put on the GPU; reskate_shown uses a curve a channel.");
+        return true;
+    }
+    for (std::size_t i = 0; i < table_views; ++i) {
+        const std::size_t side = static_cast<std::size_t>(sides[i]), row = side * 4; // RGBA16: four values a texel
+        for (std::size_t z = 0; z < side; ++z)
+            for (std::size_t y = 0; y < rows[i]; ++y)
+                std::memcpy(static_cast<std::uint8_t*>(cpu) + layouts[i].Offset + (z * rows[i] + y) * layouts[i].Footprint.RowPitch,
+                            sources[i] + (z * side + y) * row, row * sizeof(std::uint16_t));
+    }
+    staging->Unmap(0, nullptr);
+    if (!s.image_allocator &&
+        (FAILED(s.device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&s.image_allocator))) ||
+         FAILED(s.device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, s.image_allocator.Get(), nullptr, IID_PPV_ARGS(&s.image_list))) ||
+         FAILED(s.image_list->Close()))) {
+        s.image_allocator.Reset();
+        s.image_list.Reset();
+        return false;
+    }
+    if (FAILED(s.image_allocator->Reset()) || FAILED(s.image_list->Reset(s.image_allocator.Get(), nullptr))) return false;
+    for (std::size_t i = 0; i < table_views; ++i) {
+        D3D12_TEXTURE_COPY_LOCATION to{}, from{};
+        to.pResource = textures[i].Get();
+        to.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        from.pResource = staging.Get();
+        from.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        from.PlacedFootprint = layouts[i];
+        s.image_list->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
+        transition(s.image_list.Get(), textures[i].Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    }
+    if (FAILED(s.image_list->Close())) return false;
+    ID3D12CommandList* lists[] = {s.image_list.Get()};
+    original_execute.load()(s.queue, 1, lists);
+    s.queue->Signal(s.fence.Get(), ++s.fence_value);
+    s.retiring.push_back({s.fence_value, staging});
+    for (std::size_t i = 0; i < table_views; ++i) {
+        s.tables[i].texture = std::move(textures[i]);
+        s.tables[i].ready = s.fence_value;
+        s.tables[i].version = 1;
+    }
+    s.image_list_fence = s.fence_value;
+    return false; // (the list is busy with them this frame)
+}
+
+// The picture's copy's mips (set's `mips`), each drawn from the one above by ps_down, on `list`: mip 0 is in
+// PIXEL_SHADER_RESOURCE, the others in COPY_DEST, and all of them are in PIXEL_SHADER_RESOURCE after. `views` is the
+// part's first view (write_views); `move(subresource, from, to)` puts a barrier for one of the copy's mips on the list.
+template <class Move>
+void make_mips(Shared& s, ID3D12GraphicsCommandList* list, D3D12_GPU_DESCRIPTOR_HANDLE views, Move move) {
+    if (s.picture_mips < 2 || !s.down_pipeline) return;
+    const UINT step = s.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    auto target = s.targets->GetCPUDescriptorHandleForHeapStart();
+    target.ptr += SIZE_T{s.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV)} * mip_target;
+    ID3D12DescriptorHeap* heaps[] = {s.views.Get()};
+    list->SetDescriptorHeaps(1, heaps);
+    list->SetGraphicsRootSignature(s.root.Get());
+    list->SetPipelineState(s.down_pipeline.Get());
+    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    for (UINT mip = 1; mip < s.picture_mips; ++mip) {
+        const UINT w = std::max<UINT>(1, static_cast<UINT>(s.picture_desc.Width >> mip)), h = std::max<UINT>(1, s.picture_desc.Height >> mip);
+        move(mip, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        D3D12_RENDER_TARGET_VIEW_DESC target_view{};
+        target_view.Format = s.picture_format;
+        target_view.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+        target_view.Texture2D.MipSlice = mip;
+        s.device->CreateRenderTargetView(s.picture.Get(), &target_view, target);
+        auto table = views; // the mip above, alone, as t0
+        table.ptr += UINT64{step} * (block_views + mip - 1);
+        list->SetGraphicsRootDescriptorTable(1, table);
+        const D3D12_VIEWPORT viewport{0, 0, static_cast<float>(w), static_cast<float>(h), 0, 1};
+        const D3D12_RECT scissor{0, 0, static_cast<LONG>(w), static_cast<LONG>(h)};
+        list->RSSetViewports(1, &viewport);
+        list->RSSetScissorRects(1, &scissor);
+        list->OMSetRenderTargets(1, &target, FALSE, nullptr);
+        list->DrawInstanced(3, 1, 0, 0);
+        move(mip, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    }
+}
+// The game's picture as the screen shows it into our copy's first mip (set's `shown`): ps_shown, its table the part's raw
+// block. The game's picture is in PIXEL_SHADER_RESOURCE, the copy's first mip in RENDER_TARGET.
+void draw_shown(Shared& s, ID3D12GraphicsCommandList* list, D3D12_GPU_DESCRIPTOR_HANDLE views) {
+    const UINT step = s.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    auto target = s.targets->GetCPUDescriptorHandleForHeapStart();
+    target.ptr += SIZE_T{s.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV)} * mip_target;
+    D3D12_RENDER_TARGET_VIEW_DESC target_view{};
+    target_view.Format = s.picture_format;
+    target_view.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+    s.device->CreateRenderTargetView(s.picture.Get(), &target_view, target);
+    auto table = views;
+    table.ptr += UINT64{step} * raw_block;
+    ID3D12DescriptorHeap* heaps[] = {s.views.Get()};
+    list->SetDescriptorHeaps(1, heaps);
+    list->SetGraphicsRootSignature(s.root.Get());
+    list->SetPipelineState(s.shown_pipeline.Get());
+    list->SetGraphicsRootDescriptorTable(1, table);
+    const D3D12_VIEWPORT viewport{0, 0, static_cast<float>(s.picture_desc.Width), static_cast<float>(s.picture_desc.Height), 0, 1};
+    const D3D12_RECT scissor{0, 0, static_cast<LONG>(s.picture_desc.Width), static_cast<LONG>(s.picture_desc.Height)};
+    list->RSSetViewports(1, &viewport);
+    list->RSSetScissorRects(1, &scissor);
+    list->OMSetRenderTargets(1, &target, FALSE, nullptr);
+    list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    list->DrawInstanced(3, 1, 0, 0);
+}
+// The game's picture into our copy: the whole of it, or its first mip when the copy has mips.
+void copy_picture(Shared& s, ID3D12GraphicsCommandList* list, ID3D12Resource* from_picture) {
+    if (s.picture_mips < 2) {
+        list->CopyResource(s.picture.Get(), from_picture);
+        return;
+    }
+    D3D12_TEXTURE_COPY_LOCATION to{}, from{};
+    to.pResource = s.picture.Get();
+    to.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    to.SubresourceIndex = 0;
+    from.pResource = from_picture;
+    from.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+    from.SubresourceIndex = 0;
+    list->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
+}
+
+// The plugin's pictures put on the GPU as they change (present, under the mutex), one a frame: each by our own list,
+// submitted on the game's queue at once; a picture replaced stays until its new one is decoded, then goes as the GPU is
+// done with it. A slot cleared lets its picture go.
+void upload_images(Shared& s) {
+    if (!s.device || !s.queue || !s.fence) return;
+    struct Wanted {
+        std::shared_ptr<Image> image;
+        Image::State state{};
+        std::uint64_t version{};
+    };
+    std::array<Wanted, image_count> wanted_now{};
+    {
+        auto& a = asked();
+        std::lock_guard lock(a.mutex);
+        for (std::size_t i = 0; i < image_count; ++i)
+            if (const auto& image = a.images[i]) wanted_now[i] = {image, image->state, image->version};
+    }
+    const UINT64 done = s.fence->GetCompletedValue();
+    for (std::size_t i = 0; i < image_count; ++i) {
+        auto& g = s.images[i];
+        const auto& w = wanted_now[i];
+        if (!w.image || w.state == Image::State::failed) {
+            if (g.texture) s.retiring.push_back({s.fence_value, g.texture});
+            g = {};
+            continue;
+        }
+        if (w.state != Image::State::ready || g.version == w.version) continue;
+        if (s.image_list_fence > done) return; // the last upload still running: the next frame
+        const auto& image = *w.image;
+        D3D12_HEAP_PROPERTIES gpu{};
+        gpu.Type = D3D12_HEAP_TYPE_DEFAULT;
+        D3D12_RESOURCE_DESC t{};
+        t.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        t.Width = image.width;
+        t.Height = image.height;
+        t.DepthOrArraySize = 1;
+        t.MipLevels = 1;
+        t.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+        t.SampleDesc.Count = 1;
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
+        UINT rows{};
+        UINT64 row_bytes{}, total{};
+        s.device->GetCopyableFootprints(&t, 0, 1, 0, &footprint, &rows, &row_bytes, &total);
+        D3D12_HEAP_PROPERTIES upload{};
+        upload.Type = D3D12_HEAP_TYPE_UPLOAD;
+        D3D12_RESOURCE_DESC b{};
+        b.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        b.Width = total;
+        b.Height = 1;
+        b.DepthOrArraySize = 1;
+        b.MipLevels = 1;
+        b.SampleDesc.Count = 1;
+        b.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        ComPtr<ID3D12Resource> texture, staging;
+        void* cpu{};
+        if (FAILED(s.device->CreateCommittedResource(&gpu, D3D12_HEAP_FLAG_NONE, &t, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&texture))) ||
+            FAILED(s.device->CreateCommittedResource(&upload, D3D12_HEAP_FLAG_NONE, &b, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&staging))) ||
+            FAILED(staging->Map(0, nullptr, &cpu)) || !cpu) {
+            logging::printf(logging::Level::warning, logging::Channel::graphics, "World shader: the picture %s could not be put on the GPU.", image.name.c_str());
+            g.version = w.version; // not tried again until it changes
+            continue;
+        }
+        for (UINT row = 0; row < rows; ++row)
+            std::memcpy(static_cast<std::uint8_t*>(cpu) + footprint.Offset + std::uint64_t{row} * footprint.Footprint.RowPitch,
+                        image.rgba.data() + std::size_t{row} * image.width * 4, std::size_t{image.width} * 4);
+        staging->Unmap(0, nullptr);
+        if (!s.image_allocator &&
+            (FAILED(s.device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&s.image_allocator))) ||
+             FAILED(s.device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, s.image_allocator.Get(), nullptr, IID_PPV_ARGS(&s.image_list))) ||
+             FAILED(s.image_list->Close()))) {
+            s.image_allocator.Reset();
+            s.image_list.Reset();
+            return;
+        }
+        if (FAILED(s.image_allocator->Reset()) || FAILED(s.image_list->Reset(s.image_allocator.Get(), nullptr))) return;
+        D3D12_TEXTURE_COPY_LOCATION to{}, from{};
+        to.pResource = texture.Get();
+        to.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        from.pResource = staging.Get();
+        from.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        from.PlacedFootprint = footprint;
+        s.image_list->CopyTextureRegion(&to, 0, 0, 0, &from, nullptr);
+        transition(s.image_list.Get(), texture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        if (FAILED(s.image_list->Close())) return;
+        ID3D12CommandList* lists[] = {s.image_list.Get()};
+        original_execute.load()(s.queue, 1, lists);
+        s.queue->Signal(s.fence.Get(), ++s.fence_value);
+        if (g.texture) s.retiring.push_back({s.fence_value, g.texture});
+        s.retiring.push_back({s.fence_value, staging});
+        g.texture = std::move(texture);
+        g.version = w.version;
+        g.ready = s.fence_value;
+        s.image_list_fence = s.fence_value;
+        return;
+    }
+}
+
 bool build_root(Shared& s) {
     if (s.root) return true;
-    D3D12_DESCRIPTOR_RANGE range{};
-    range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
-    range.NumDescriptors = 2; // t0 the picture, t1 the depth
+    std::array<D3D12_DESCRIPTOR_RANGE, 3> ranges{};
+    ranges[0].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    ranges[0].NumDescriptors = 2; // t0 the picture, t1 the depth
+    ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    ranges[1].NumDescriptors = static_cast<UINT>(image_count); // t4 to t7 the plugin's pictures, after them in the table
+    ranges[1].BaseShaderRegister = 4;
+    ranges[1].OffsetInDescriptorsFromTableStart = 2;
+    ranges[2].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+    ranges[2].NumDescriptors = table_views; // t8 and t9 the display mapping's tables, after the pictures
+    ranges[2].BaseShaderRegister = 8;
+    ranges[2].OffsetInDescriptorsFromTableStart = 2 + static_cast<UINT>(image_count);
     std::array<D3D12_ROOT_PARAMETER, 4> parameters{};
     parameters[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV; // b0
     parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
-    parameters[1].DescriptorTable.NumDescriptorRanges = 1;
-    parameters[1].DescriptorTable.pDescriptorRanges = &range;
+    parameters[1].DescriptorTable.NumDescriptorRanges = static_cast<UINT>(ranges.size());
+    parameters[1].DescriptorTable.pDescriptorRanges = ranges.data();
     parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     parameters[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV; // t2: the plugin's data
     parameters[2].Descriptor.ShaderRegister = 2;
@@ -674,7 +1085,7 @@ bool build_root(Shared& s) {
         sampler.AddressU = sampler.AddressV = sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
         sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_ALWAYS;
         sampler.BorderColor = D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK;
-        sampler.MaxLOD = 0.0f;
+        sampler.MaxLOD = D3D12_FLOAT32_MAX; // (the picture's copy has mips when asked for)
         sampler.ShaderRegister = i;
         sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     }
@@ -703,7 +1114,13 @@ struct Compiled {
     std::atomic<int> state{}; // 0 not started, 1 compiling, 2 ready, 3 failed
 };
 Compiled& compiled() { static auto* value = new Compiled; return *value; }
-constexpr std::pair<const char*, const char*> builtin_entries[]{{"vs_main", "vs_5_0"}, {"ps_measure", "ps_5_0"}, {"ps_depth", "ps_5_0"}};
+// The game's picture as the screen shows it (set's `shown`): through the display mapping (world_shader.h display_functions,
+// after the rest of builtin_source), as each value of it is.
+constexpr const char* builtin_shown = R"hlsl(
+float4 ps_shown(Interpolated input) : SV_Target { return float4(reskate_shown(picture.Load(int3(int2(input.position.xy), 0)).rgb), 1.0); }
+)hlsl";
+constexpr std::pair<const char*, const char*> builtin_entries[]{
+    {"vs_main", "vs_5_0"}, {"ps_measure", "ps_5_0"}, {"ps_depth", "ps_5_0"}, {"ps_down", "ps_5_0"}, {"ps_shown", "ps_5_0"}};
 void start_compiling() {
     auto& c = compiled();
     int idle = 0;
@@ -712,9 +1129,10 @@ void start_compiling() {
         std::thread([] {
             auto& done = compiled();
             std::map<std::string, ComPtr<ID3DBlob>> made;
+            const std::string source = std::string(builtin_source) + display_functions + builtin_shown;
             for (const auto& [entry, target] : builtin_entries) {
                 ComPtr<ID3DBlob> blob, error;
-                if (FAILED(D3DCompile(builtin_source, std::strlen(builtin_source), "world_shader", nullptr, nullptr, entry, target, 0, 0, &blob, &error)) ||
+                if (FAILED(D3DCompile(source.data(), source.size(), "world_shader", nullptr, nullptr, entry, target, 0, 0, &blob, &error)) ||
                     !blob) {
                     std::lock_guard lock(done.mutex);
                     done.error = std::string(entry) + (error ? std::string(": ") + static_cast<const char*>(error->GetBufferPointer()) : "");
@@ -770,9 +1188,11 @@ ComPtr<ID3D12PipelineState> make_pipeline(Shared& s, D3D12_SHADER_BYTECODE verte
     if (FAILED(s.device->CreateGraphicsPipelineState(&description, IID_PPV_ARGS(&pipeline)))) return nullptr;
     return pipeline;
 }
-// A built-in pipeline (ps_depth, ps_measure) of one target in `format`.
-bool build_single(Shared& s, const char* entry, DXGI_FORMAT format, ComPtr<ID3D12PipelineState>& pipeline) {
-    if (pipeline) return true;
+// A built-in pipeline (ps_depth, ps_measure, ps_down) of one target in `format`; `made_for`, when given, keeps the
+// format it was made for, and it is made again for another.
+bool build_single(Shared& s, const char* entry, DXGI_FORMAT format, ComPtr<ID3D12PipelineState>& pipeline, DXGI_FORMAT* made_for = nullptr) {
+    if (pipeline && (!made_for || *made_for == format)) return true;
+    pipeline.Reset();
     if (!build_root(s)) return false;
     const auto vertex = builtin(s, "vs_main"), pixel = builtin(s, entry);
     if (!vertex || !pixel) return false;
@@ -781,6 +1201,7 @@ bool build_single(Shared& s, const char* entry, DXGI_FORMAT format, ComPtr<ID3D1
         say_failed(std::string("their pipeline for ") + entry + " was refused.");
         return false;
     }
+    if (made_for) *made_for = format;
     return true;
 }
 bool build_depth_pipeline(Shared& s) { return build_single(s, "ps_depth", depth_copy_format, s.depth_pipeline); }
@@ -838,11 +1259,11 @@ bool build_list(Shared& s) {
         s.upload_cpu = static_cast<std::uint8_t*>(cpu);
         D3D12_DESCRIPTOR_HEAP_DESC views{};
         views.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-        views.NumDescriptors = views_each * static_cast<UINT>(s.allocators.size() + inside_ring);
+        views.NumDescriptors = views_each * static_cast<UINT>(s.allocators.size() + inside_ring) + views_spare;
         views.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         D3D12_DESCRIPTOR_HEAP_DESC targets{};
         targets.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-        targets.NumDescriptors = 5; // the picture, the picture drawn inside a game's list, (2 free), our depth copy, the measurements
+        targets.NumDescriptors = 5; // the picture, the picture drawn inside a game's list, a mip (mip_target), (1 free), our depth copy, the measurements
         if (FAILED(s.device->CreateDescriptorHeap(&views, IID_PPV_ARGS(&s.views))) || FAILED(s.device->CreateDescriptorHeap(&targets, IID_PPV_ARGS(&s.targets)))) {
             say_failed("no descriptor heaps.");
             return false;
@@ -901,11 +1322,24 @@ bool build_list(Shared& s) {
     return true;
 }
 
+// How many mips a picture of this size has, down to one pixel (at most most_mips).
+UINT mips_for(UINT64 width, UINT height) {
+    UINT mips = 1;
+    for (UINT64 side = std::max<UINT64>(width, height); side > 1 && mips < most_mips; side /= 2) ++mips;
+    return mips;
+}
 // Our own list, heaps, the picture's copy: made the first time, and the copy again when the
-// picture changes size or format.
-bool build_resources(Shared& s, const D3D12_RESOURCE_DESC& colour) {
+// picture changes size or format, or its mips are asked for or not.
+bool build_resources(Shared& s, const D3D12_RESOURCE_DESC& colour, bool mips, bool shown) {
     if (!build_list(s)) return false;
-    if (!s.picture || s.picture_desc.Width != colour.Width || s.picture_desc.Height != colour.Height || s.picture_desc.Format != colour.Format) {
+    const UINT levels = mips ? mips_for(colour.Width, colour.Height) : 1;
+    // The copy as shown is 16-bit float (ps_shown draws it); else the game's picture's own format, copied as it is.
+    const DXGI_FORMAT format = shown ? DXGI_FORMAT_R16G16B16A16_FLOAT : colour.Format;
+    const DXGI_FORMAT view_format = shown ? DXGI_FORMAT_R16G16B16A16_FLOAT : s.colour_format;
+    if (shown && !build_single(s, "ps_shown", view_format, s.shown_pipeline)) return false;
+    if (levels > 1 && !build_single(s, "ps_down", view_format, s.down_pipeline, &s.down_format)) return false;
+    if (!s.picture || s.picture_desc.Width != colour.Width || s.picture_desc.Height != colour.Height || s.picture_desc.Format != format ||
+        s.picture_mips != levels || s.picture_shown != shown) {
         if (s.picture) s.retiring.push_back({s.fence_value, s.picture});
         s.picture.Reset();
         D3D12_HEAP_PROPERTIES heap{};
@@ -915,16 +1349,20 @@ bool build_resources(Shared& s, const D3D12_RESOURCE_DESC& colour) {
         desc.Width = colour.Width;
         desc.Height = colour.Height;
         desc.DepthOrArraySize = 1;
-        desc.MipLevels = 1;
-        desc.Format = colour.Format;
+        desc.MipLevels = static_cast<UINT16>(levels);
+        desc.Format = format;
         desc.SampleDesc.Count = 1;
+        if (levels > 1 || shown) desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET; // its mips, or all of it, are drawn
         if (FAILED(s.device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&s.picture)))) {
             say_failed("no copy of the world's picture could be made.");
             return false;
         }
         s.picture_desc = desc;
+        s.picture_mips = levels;
+        s.picture_shown = shown;
         s.last_drawn_frame = ~std::uint64_t{0};
     }
+    s.picture_format = view_format;
     return true;
 }
 // Whether this device lets a view read a typed resource in another format of its family.
@@ -1267,6 +1705,11 @@ void fill_slice(Shared& s, Asked& a, std::uint8_t* slice, std::uint64_t& data_up
     constants[89] = s.light_known ? s.light_raw : 0.0f;
     constants[90] = s.light_known ? 1.0f : 0.0f;
     constants[91] = s.far_known ? s.far_light : 0.0f;
+    // reskate_display: an SDR screen (the tables are what it shows), the tables on the GPU, the copy's mips.
+    constants[92] = s.transfer == 0 ? 1.0f : 0.0f;
+    constants[93] = tables_ready(s) ? 1.0f : 0.0f;
+    constants[94] = static_cast<float>(s.picture_mips);
+    constants[95] = s.picture_shown ? 1.0f : 0.0f;
     std::memcpy(slice, constants.data(), sizeof(constants));
     s.last_camera = camera;
 }
@@ -1326,7 +1769,8 @@ bool record_shader(Shared& s) {
     }
     if (std::abs(projector->focal - s.last_focal) > s.last_focal * 0.01f) s.focal_changed_frame = s.frame;
     s.last_focal = projector->focal;
-    if (!build_resources(s, colour_desc) || !build_single(s, "ps_measure", DXGI_FORMAT_R32_FLOAT, s.measure_pipeline)) return false;
+    if (!build_resources(s, colour_desc, mips_wanted.load(), shown_wanted.load()) || !build_single(s, "ps_measure", DXGI_FORMAT_R32_FLOAT, s.measure_pipeline))
+        return false;
     // What was replaced and the GPU has finished with goes now.
     if (s.fence) {
         const UINT64 done = s.fence->GetCompletedValue();
@@ -1419,23 +1863,12 @@ bool record_shader(Shared& s) {
     const bool anchored = a.anchor && now < a.anchor_until;
     // This allocator's part of the upload buffer.
     std::uint8_t* const slice = s.upload_cpu + at * upload_slice;
-    // Views: the picture's copy as the target's format reads it, and our copy of the depth.
+    // Views: the picture's copy as the target's format reads it, our copy of the depth, the plugin's pictures, the display
+    // mapping's tables and the copy's mips (write_views).
     const UINT view_step = s.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     auto view = s.views->GetCPUDescriptorHandleForHeapStart();
     view.ptr += SIZE_T{view_step} * views_each * at; // this allocator's own views
-    D3D12_SHADER_RESOURCE_VIEW_DESC picture_view{};
-    picture_view.Format = s.colour_format;
-    picture_view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    picture_view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    picture_view.Texture2D.MipLevels = 1;
-    s.device->CreateShaderResourceView(s.picture.Get(), &picture_view, view);
-    view.ptr += view_step;
-    D3D12_SHADER_RESOURCE_VIEW_DESC depth_view{};
-    depth_view.Format = depth_copy_format;
-    depth_view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    depth_view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    depth_view.Texture2D.MipLevels = 1;
-    s.device->CreateShaderResourceView(s.depth_copy.Get(), &depth_view, view);
+    write_views(s, view, view_step);
     // Last frame's camera counts only if the shader was drawn on the frame before this one.
     const bool have_last = s.last_drawn_frame + 1 == s.frame;
     // The target: the picture.
@@ -1447,10 +1880,25 @@ bool record_shader(Shared& s) {
 
     auto* list = s.list.Get();
     const auto before = s.colour_state;
-    transition(list, s.colour, before, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    list->CopyResource(s.picture.Get(), s.colour);
-    transition(list, s.picture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-    transition(list, s.colour, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    auto table = s.views->GetGPUDescriptorHandleForHeapStart();
+    table.ptr += UINT64{view_step} * views_each * at;
+    const auto copy_mip = [&](UINT mip, D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to) { transition(list, s.picture.Get(), from, to, mip); };
+    if (s.picture_shown) {
+        // Through the display mapping (ps_shown), reading the game's picture where it is.
+        transition(list, s.colour, before, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        copy_mip(0, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        draw_shown(s, list, table);
+        copy_mip(0, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        make_mips(s, list, table, copy_mip);
+        transition(list, s.colour, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    } else {
+        transition(list, s.colour, before, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        copy_picture(s, list, s.colour);
+        transition(list, s.picture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+                   s.picture_mips > 1 ? 0 : D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES);
+        make_mips(s, list, table, copy_mip);
+        transition(list, s.colour, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    }
 
     const float width = static_cast<float>(colour_desc.Width), height = static_cast<float>(colour_desc.Height);
     fill_slice(s, a, slice, s.data_uploaded[at], s.heights_uploaded[at], camera, projector->focal, width, height, have_last);
@@ -1460,8 +1908,6 @@ bool record_shader(Shared& s) {
     list->SetGraphicsRootSignature(s.root.Get());
     list->SetPipelineState(pipeline);
     list->SetGraphicsRootConstantBufferView(0, upload);
-    auto table = s.views->GetGPUDescriptorHandleForHeapStart();
-    table.ptr += UINT64{view_step} * views_each * at;
     list->SetGraphicsRootDescriptorTable(1, table);
     list->SetGraphicsRootShaderResourceView(2, upload + data_offset);
     list->SetGraphicsRootShaderResourceView(3, upload + heights_offset);
@@ -1819,24 +2265,13 @@ bool draw_inside(Shared& s, ID3D12GraphicsCommandList* list, ID3D12Resource* pic
     const std::size_t part = s.allocators.size() + slot; // the upload buffer's parts after the allocators'
     std::uint8_t* const slice = s.upload_cpu + part * upload_slice;
     fill_slice(s, a, slice, s.inside_data_uploaded[slot], s.inside_heights_uploaded[slot], camera, projector->focal, width, height, have_last);
-    // Views: the picture's copy and our copy of the depth, in this draw's own two after the allocators'.
+    // Views: the picture's copy, our copy of the depth, the plugin's pictures, the tables and the mips (write_views), in this
+    // draw's own after the allocators'.
     const UINT view_step = s.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     const UINT first_view = views_each * static_cast<UINT>(part);
     auto view = s.views->GetCPUDescriptorHandleForHeapStart();
     view.ptr += SIZE_T{view_step} * first_view;
-    D3D12_SHADER_RESOURCE_VIEW_DESC picture_view{};
-    picture_view.Format = s.colour_format;
-    picture_view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    picture_view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    picture_view.Texture2D.MipLevels = 1;
-    s.device->CreateShaderResourceView(s.picture.Get(), &picture_view, view);
-    view.ptr += view_step;
-    D3D12_SHADER_RESOURCE_VIEW_DESC depth_view{};
-    depth_view.Format = depth_copy_format;
-    depth_view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-    depth_view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-    depth_view.Texture2D.MipLevels = 1;
-    s.device->CreateShaderResourceView(s.depth_copy.Get(), &depth_view, view);
+    write_views(s, view, view_step);
     // The target: the picture (the RTV heap's second slot).
     D3D12_RENDER_TARGET_VIEW_DESC target_view{};
     target_view.Format = s.colour_format;
@@ -1856,18 +2291,47 @@ bool draw_inside(Shared& s, ID3D12GraphicsCommandList* list, ID3D12Resource* pic
         b.Transition.StateAfter = to;
         barrier(list, 1, &b); // straight to the game's list, past the depth tap
     };
-    move(picture, before, D3D12_RESOURCE_STATE_COPY_SOURCE);
-    list->CopyResource(s.picture.Get(), picture);
-    move(s.picture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
-    move(picture, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    const auto move_mip = [&](UINT mip, D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to) {
+        D3D12_RESOURCE_BARRIER b{};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition.pResource = s.picture.Get();
+        b.Transition.Subresource = mip;
+        b.Transition.StateBefore = from;
+        b.Transition.StateAfter = to;
+        barrier(list, 1, &b);
+    };
+    auto table = s.views->GetGPUDescriptorHandleForHeapStart();
+    table.ptr += UINT64{view_step} * first_view;
+    if (s.picture_shown) {
+        // (The raw block's t0 is the game's picture this draw goes into: its view made for this picture.)
+        D3D12_SHADER_RESOURCE_VIEW_DESC game_view{};
+        game_view.Format = s.colour_format;
+        game_view.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        game_view.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        game_view.Texture2D.MipLevels = 1;
+        auto raw = s.views->GetCPUDescriptorHandleForHeapStart();
+        raw.ptr += SIZE_T{view_step} * (first_view + raw_block);
+        s.device->CreateShaderResourceView(picture, &game_view, raw);
+        move(picture, before, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        move_mip(0, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        draw_shown(s, list, table);
+        move_mip(0, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        make_mips(s, list, table, move_mip);
+        move(picture, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    } else {
+        move(picture, before, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        copy_picture(s, list, picture);
+        if (s.picture_mips > 1) move_mip(0, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        else move(s.picture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        make_mips(s, list, table, move_mip);
+        move(picture, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
+    }
     const auto upload = s.upload->GetGPUVirtualAddress() + part * upload_slice;
     ID3D12DescriptorHeap* heaps[] = {s.views.Get()};
     list->SetDescriptorHeaps(1, heaps);
     list->SetGraphicsRootSignature(s.root.Get());
     list->SetPipelineState(pipeline);
     list->SetGraphicsRootConstantBufferView(0, upload);
-    auto table = s.views->GetGPUDescriptorHandleForHeapStart();
-    table.ptr += UINT64{view_step} * first_view;
     list->SetGraphicsRootDescriptorTable(1, table);
     list->SetGraphicsRootShaderResourceView(2, upload + data_offset);
     list->SetGraphicsRootShaderResourceView(3, upload + heights_offset);
@@ -2004,7 +2468,7 @@ static void compile(std::shared_ptr<Program> program, std::string name, std::sha
         // DXBC. It was DXBC with the older compiler always, which took 65 s on a large shader (2026-11-15).
         plugin_shader_compile::Result made;
         try {
-            made = plugin_shader_compile::compile_pixel_shader(std::string(prelude) + *bytes, name);
+            made = plugin_shader_compile::compile_pixel_shader(prelude() + *bytes, name);
         } catch (...) {
             made.error = "an exception was raised";
         }
@@ -2021,7 +2485,7 @@ static void compile(std::shared_ptr<Program> program, std::string name, std::sha
 }
 
 std::string set(std::string_view owner, std::string_view name, std::shared_ptr<const std::string> bytes, Kind kind,
-                const std::array<float, value_count>& values, bool heights) noexcept {
+                const std::array<float, value_count>& values, bool heights, bool mips, bool shown) noexcept {
     try {
         if (!bytes) return "it has no content";
         auto& a = asked();
@@ -2043,11 +2507,15 @@ std::string set(std::string_view owner, std::string_view name, std::shared_ptr<c
             }
             if (program->state == Program::State::refused) return program->why;
             if (a.owner != owner || a.key != key) a.cost_ms.reset();
-            if (a.owner != owner) a.data.reset(), a.anchor.reset();
+            if (a.owner != owner) a.data.reset(), a.anchor.reset(), a.images = {};
             a.owner = std::string(owner);
             a.name = std::string(name);
             a.key = key;
             a.heights = heights;
+            a.mips = mips;
+            mips_wanted.store(mips);
+            a.shown = shown;
+            shown_wanted.store(shown);
             for (std::size_t i = 0; i < value_count; ++i) a.values[i] = std::isfinite(values[i]) ? values[i] : 0.0f;
         }
         if (start) compile(std::move(start), std::string(name), std::move(bytes));
@@ -2066,8 +2534,63 @@ void clear(std::string_view owner) noexcept {
     a.owner.clear();
     a.data.reset();
     a.anchor.reset();
+    a.images = {};
     a.heights = false;
+    a.mips = false;
+    mips_wanted.store(false);
+    a.shown = false;
+    shown_wanted.store(false);
     a.cost_ms.reset();
+}
+std::string set_image(std::string_view owner, std::size_t slot, std::string_view name, std::shared_ptr<const std::string> bytes) noexcept {
+    try {
+        if (slot >= image_count) return "a world shader has pictures 0 to 3";
+        auto& a = asked();
+        std::shared_ptr<Image> start; // a picture to decode, outside the lock
+        {
+            std::lock_guard lock(a.mutex);
+            if (!wanted.load() || a.owner != owner) return "the plugin has no world shader on";
+            if (!bytes || bytes->empty()) {
+                a.images[slot].reset();
+                return {};
+            }
+            if (bytes->size() > most_image_bytes) return "a world shader's picture is at most 16 MB";
+            const std::uint64_t key = key_of(name, *bytes);
+            if (const auto& kept = a.images[slot]; kept && kept->key == key) {
+                if (kept->state == Image::State::failed) return "it is not a picture of at most 4096 x 4096 pixels (PNG, JPEG or BMP)";
+                return {}; // the same picture: kept as it is
+            }
+            start = std::make_shared<Image>();
+            start->name = std::string(name);
+            start->key = key;
+            start->version = ++a.images_made;
+            a.images[slot] = start;
+        }
+        // Decoded on a thread of its own: a big picture takes a while, and the plugin's call does not wait for it.
+        std::thread([start, bytes = std::move(bytes)] {
+            overlay::detail::CardPixels pixels;
+            bool decoded = false;
+            try {
+                decoded = overlay::detail::decode_picture_within(*bytes, pixels, most_image_side) && pixels.width && pixels.height;
+            } catch (...) {}
+            auto& a = asked();
+            std::lock_guard lock(a.mutex);
+            if (decoded) {
+                start->rgba = std::move(pixels.rgba);
+                start->width = pixels.width;
+                start->height = pixels.height;
+                start->state = Image::State::ready;
+            } else {
+                start->state = Image::State::failed;
+                logging::write(logging::Level::warning, logging::Channel::graphics,
+                               std::format("World shader: the picture {} is not one of at most {} x {} pixels it can read.", start->name,
+                                           most_image_side, most_image_side));
+            }
+        }).detach();
+        return {};
+    } catch (...) {
+        return "it could not be taken";
+    }
 }
 std::string set_data(std::string_view owner, std::shared_ptr<const std::string> bytes) noexcept {
     auto& a = asked();
@@ -2316,7 +2839,7 @@ void install(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D12GraphicsComm
     if (wanted.load()) ensure_hooks(); // one asked for before the overlay's graphics were up
 }
 
-void present(std::uint32_t width, std::uint32_t height) noexcept {
+void present(std::uint32_t width, std::uint32_t height, int transfer) noexcept {
     try {
         auto& s = shared();
         std::lock_guard lock(s.mutex);
@@ -2355,6 +2878,8 @@ void present(std::uint32_t width, std::uint32_t height) noexcept {
                            "World shader: the world's last drawing was in the frame's last batch, so the shader had no place before post-processing.");
         }
         s.width = width, s.height = height;
+        s.transfer = transfer;
+        if (upload_tables(s)) upload_images(s);
         if (const auto t = now_us(); s.last_present_us && t > s.last_present_us && t - s.last_present_us < 200000) {
             const double step = static_cast<double>(t - s.last_present_us);
             s.frame_us = s.frame_us > 0 ? s.frame_us + (step - s.frame_us) * 0.1 : step;
@@ -2456,6 +2981,17 @@ void release() noexcept {
         s.fence.Reset();
         s.fence_value = 0;
         s.picture.Reset();
+        s.images = {}; // (put on the GPU again as the shader is drawn again)
+        s.tables = {}; // (and the tables)
+        s.tables_failed = false;
+        s.down_pipeline.Reset();
+        s.down_format = DXGI_FORMAT_UNKNOWN;
+        s.picture_mips = 1;
+        s.picture_shown = false;
+        s.shown_pipeline.Reset();
+        s.image_list.Reset();
+        s.image_allocator.Reset();
+        s.image_list_fence = 0;
         s.retiring.clear(); // the overlay waits for the GPU before it tears down
         s.depth_copy.Reset();
         s.depth_pipeline.Reset();

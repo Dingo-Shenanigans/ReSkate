@@ -19,11 +19,15 @@ namespace ui = addr::ui_textures;
 namespace theme = dingosdk::skate_theme;
 
 // The pictures, by the names plugins give them.
-enum Picture : std::size_t { loading_board = 13, first_icon = 14, picture_count = 31 };
+enum Picture : std::size_t { loading_board = 13, first_icon = 14, first_prompt = 31, picture_count = 93 };
 constexpr std::array<std::string_view, picture_count> names{
     "stopwatch", "wipeout", "wipeout_broken", "spread_eagle", "airtime", "gap_height", "flaming_wheel", "roll",
     "thrasher", "brush_bar", "rough_tile", "scratches", "streak", "loading_board",
-    "cas_tops", "cas_bottoms", "cas_shoes", "cas_outfit", "cas_fullbody", "cas_headwear", "cas_headaccessories", "cas_eyewear", "cas_handwear", "cas_socks", "cas_deck", "cas_trucks", "cas_wheels", "cas_gripcolor", "cas_grippattern", "cas_sticker", "cas_decorator_vfxcosmetic"};
+    "cas_tops", "cas_bottoms", "cas_shoes", "cas_outfit", "cas_fullbody", "cas_headwear", "cas_headaccessories", "cas_eyewear", "cas_handwear", "cas_socks", "cas_deck", "cas_trucks", "cas_wheels", "cas_gripcolor", "cas_grippattern", "cas_sticker", "cas_decorator_vfxcosmetic",
+    "xbox_a", "xbox_b", "xbox_x", "xbox_y", "xbox_lb", "xbox_rb", "xbox_lt", "xbox_rt", "xbox_l3", "xbox_r3", "xbox_view", "xbox_menu", "xbox_dpad", "xbox_dpad_up", "xbox_dpad_down", "xbox_dpad_left", "xbox_dpad_right", "xbox_dpad_vertical", "xbox_dpad_horizontal", "ps_cross", "ps_circle", "ps_square", "ps_triangle", "ps_l1", "ps_r1", "ps_l2", "ps_r2", "ps_l3", "ps_r3", "ps4_touchpad", "ps4_options", "ps5_touchpad", "ps5_options", "ps_dpad", "ps_dpad_up", "ps_dpad_down", "ps_dpad_left", "ps_dpad_right", "ps_dpad_vertical", "ps_dpad_horizontal", "key", "key_enter", "key_esc", "key_tab", "key_space", "key_up", "key_down", "key_left", "key_right", "mouse_left", "mouse_wheel", "prompt_and", "replay_camera", "replay_zoom", "condition_frame", "replay_effects", "show", "spotlight", "gamepad", "settings", "replay_save", "warning"};
+static_assert(ui::prompts.size() == picture_count - first_prompt);
+// The prompts are read at most this big (their squares are 108 pixels, the D-pads' 256; their visible parts smaller).
+constexpr std::uint32_t prompt_side = 128;
 // The customization menu's category icons (the pictures from first_icon on): its tabs', white on clear,
 // in the bundle with the rest of the core game assets, which is looked for among the game's TOCs.
 // (Pull request 269, the player's own item tabs.)
@@ -43,6 +47,9 @@ constexpr std::array<Source, first_icon> sources{{
     {&ui::streak, 512}, {&ui::loading_board[0], 1152, false, true},
 }};
 using Images = std::array<std::optional<frostbite::Image>, picture_count>;
+// Each picture's size as it is kept (0 while it is not), for plugins laying them out: any thread.
+std::mutex sizes_mutex;
+std::array<std::array<int, 2>, picture_count> sizes{};
 
 struct Reads {
     std::mutex mutex;
@@ -72,6 +79,29 @@ frostbite::Image cut(const frostbite::Image& image, const ui::Region& region, bo
         if (brightness) p[3] = std::max({p[0], p[1], p[2]});
         p[0] = p[1] = p[2] = 255;
     }
+    return result;
+}
+// A prompt's visible part: the clear margin round it dropped, a pixel of it kept for the filtering at its edge.
+frostbite::Image visible_part(frostbite::Image image) {
+    if (!image.width || !image.height || image.rgba.size() != std::size_t{image.width} * image.height * 4) return image;
+    std::uint32_t x0 = image.width, y0 = image.height, x1 = 0, y1 = 0;
+    for (std::uint32_t y = 0; y < image.height; ++y)
+        for (std::uint32_t x = 0; x < image.width; ++x)
+            if (image.rgba[(std::size_t{y} * image.width + x) * 4 + 3] > 24) {
+                x0 = std::min(x0, x);
+                y0 = std::min(y0, y);
+                x1 = std::max(x1, x + 1);
+                y1 = std::max(y1, y + 1);
+            }
+    if (x1 <= x0 || y1 <= y0) return image;
+    x0 = x0 > 0 ? x0 - 1 : 0;
+    y0 = y0 > 0 ? y0 - 1 : 0;
+    x1 = std::min(image.width, x1 + 1);
+    y1 = std::min(image.height, y1 + 1);
+    frostbite::Image result{x1 - x0, y1 - y0, std::vector<std::uint8_t>(std::size_t{x1 - x0} * (y1 - y0) * 4)};
+    for (std::uint32_t y = y0; y < y1; ++y)
+        std::memcpy(result.rgba.data() + std::size_t{y - y0} * result.width * 4, image.rgba.data() + (std::size_t{y} * image.width + x0) * 4,
+                    std::size_t{result.width} * 4);
     return result;
 }
 
@@ -118,6 +148,29 @@ Images decode() {
             logging::log(logging::Level::warning, logging::Channel::graphics, "The menu's category icons: {} of {} found.", found, wanted.size());
     } catch (const std::exception& error) {
         logging::log(logging::Level::warning, logging::Channel::graphics, "The menu's category icons are unavailable: {}.", error.what());
+    }
+    try {
+        vfs::GameTextures textures(xray::game_folder());
+        std::size_t missing{};
+        for (std::size_t i = 0; i < ui::prompts.size(); ++i) {
+            const auto& texture = ui::prompts[i];
+            try {
+                result[first_prompt + i] = visible_part(textures.read(texture.toc, texture.bundle, texture.name, prompt_side));
+            } catch (const std::exception& error) {
+                ++missing;
+                logging::log(logging::Level::debug, logging::Channel::graphics, "The game's picture {} is unavailable: {}.", texture.name, error.what());
+            }
+        }
+        if (missing) logging::log(logging::Level::warning, logging::Channel::graphics, "The game's button prompts and icons: {} of {} found.",
+                                  ui::prompts.size() - missing, ui::prompts.size());
+    } catch (const std::exception& error) {
+        logging::log(logging::Level::warning, logging::Channel::graphics, "The game's button prompts are unavailable: {}.", error.what());
+    }
+    {
+        std::lock_guard lock(sizes_mutex);
+        for (std::size_t index = 0; index < picture_count; ++index)
+            sizes[index] = result[index] ? std::array<int, 2>{static_cast<int>(result[index]->width), static_cast<int>(result[index]->height)}
+                                         : std::array<int, 2>{};
     }
     return result;
 }
@@ -184,7 +237,7 @@ bool draw_shape(ImDrawList* draw, Picture picture, ImVec2 min, ImVec2 max, ImU32
 bool draw_panel(ImDrawList* draw, Picture picture, ImVec2 min, ImVec2 max, float edge, ImU32 tint) {
     Found found;
     if (!find(picture, found)) return false;
-    const float slice = sources[picture].texture->slice;
+    const float slice = picture >= first_prompt ? ui::prompts[picture - first_prompt].slice : sources[picture].texture->slice;
     const float edge_x = std::clamp(edge, 0.0f, (max.x - min.x) * 0.5f), edge_y = std::clamp(edge, 0.0f, (max.y - min.y) * 0.5f);
     const float uv_x = slice * (found.uv1.x - found.uv0.x), uv_y = slice * (found.uv1.y - found.uv0.y);
     const std::array<float, 4> xs{min.x, min.x + edge_x, max.x - edge_x, max.x}, ys{min.y, min.y + edge_y, max.y - edge_y, max.y};
@@ -271,6 +324,8 @@ bool draw_game_image(ImDrawList* draw, std::string_view name, ImVec2 min, ImVec2
     if (at == names.end()) return false;
     const auto picture = static_cast<Picture>(at - names.begin());
     if (picture == loading_board) return draw_image(draw, picture, min, max, tint, frame); // a flipbook's frame, fitted
+    if (picture >= first_prompt && fit == GameImageFit::panel && ui::prompts[picture - first_prompt].slice > 0)
+        return draw_panel(draw, picture, min, max, edge, tint);                            // the blank key, drawn wide
     if (picture >= first_icon) return draw_image(draw, picture, min, max, tint, 0);        // an icon: always fitted
     switch (fit) {
     case GameImageFit::contain: return draw_image(draw, picture, min, max, tint, 0);
@@ -278,5 +333,14 @@ bool draw_game_image(ImDrawList* draw, std::string_view name, ImVec2 min, ImVec2
     case GameImageFit::panel: return draw_panel(draw, picture, min, max, edge, tint);
     }
     return false;
+}
+
+std::optional<std::array<int, 2>> game_image_size(std::string_view name) noexcept {
+    const auto at = std::find(names.begin(), names.end(), name);
+    if (at == names.end()) return std::nullopt;
+    std::lock_guard lock(sizes_mutex);
+    const auto& size = sizes[static_cast<std::size_t>(at - names.begin())];
+    if (size[0] <= 0 || size[1] <= 0) return std::nullopt;
+    return size;
 }
 }

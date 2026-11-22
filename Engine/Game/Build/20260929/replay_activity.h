@@ -11,4 +11,9 @@ inline constexpr std::uintptr_t lease = 8, lease_manager = 0x10, lease_vtable = 
 // Backend +88 -> 6123b0 -> 41a6960 reads the playhead at 718ffd0 when
 // 7726468 is nonzero. Backend +90 -> 6254b0 -> 41a9f40 writes this time.
 inline constexpr std::uintptr_t playing = 0x7726468, playhead = 0x718ffd0;
+// In the session manager (client + manager), the replay the editor has: its footage on the replay's clock (doubles at
+// +0x70 and +0x78: the game's add of a key keeps a key's time within them), and its chunks (+0xa0 to +0xa8: 0x18 bytes
+// each, the clock from and to as doubles, then the share of the whole timeline they fill as floats; Skate.exe 0x610090
+// maps the timeline to the clock through them).
+inline constexpr std::uintptr_t replay_from = 0x70, replay_to = 0x78, chunks_begin = 0xa0, chunks_end = 0xa8, chunk_size = 0x18;
 }

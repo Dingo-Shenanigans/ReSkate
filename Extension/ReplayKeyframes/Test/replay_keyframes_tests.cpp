@@ -2,6 +2,7 @@
 // at any smoothness it meets every key, at 1 its speed and acceleration carry on through the keys, and a
 // framing segment rewritten for the game's own spline plays the tangents it was given.
 // (The game's spline is copied here term for term, so these run without it.)
+#include "Extension/ReplayKeyframes/replay_clock.h"
 #include "Extension/ReplayKeyframes/replay_curve.h"
 #include "Extension/ReplayKeyframes/replay_settings.h"
 #include <cmath>
@@ -227,6 +228,30 @@ void settings_are_kept_as_left() {
 }
 } // namespace
 
+// The replay editor's clock (replay_clock.h): a timeline through its chunks both ways, the trimmed bar, an export's time by
+// its frames, and the run of the keyframe player's plays.
+void the_clock_follows_the_replays_chunks() {
+    Timeline t;
+    t.known = true;
+    t.start = 10, t.length = 20;
+    check(near(share_of(t, 15), 0.25, 1e-6) && near(clock_at_share(t, 0.5), 20, 1e-9), "One stretch: shares and clock alike");
+    // Two chunks: 10..20 fills the first half, 40..50 the second (the footage between is gone).
+    t.chunks = {{10, 20, 0, 0.5f}, {40, 50, 0.5f, 1}};
+    check(near(share_of(t, 45), 0.75, 1e-6) && share_of(t, 30) < 0, "Through the chunks; none between them");
+    check(near(clock_at_share(t, 0.25), 15, 1e-6) && near(clock_at_share(t, 0.75), 45, 1e-6), "and back to the clock");
+    check(clock_at_share(t, 1.5) == 50 && clock_at_share(t, -1) == 10, "past the ends, the ends");
+    // Trimmed to the second half: the bar shows it alone.
+    t.shown_from = 0.5f, t.shown_to = 1;
+    check(near(share_of(t, 45), 0.5, 1e-6) && share_of(t, 15) < 0, "The trimmed bar shows the trim; the rest is off it");
+    // An export of the trim from its start, 2.5 s of frames in: the whole replay is 20 s of footage over its shares.
+    t.trim_from = 0.5f, t.trim_to = 1;
+    check(near(time_by_frames(t, 99, 2.5), 42.5, 1e-6), "An export's time by its frames, through the chunks from the trim's start");
+    Timeline unknown;
+    check(near(time_by_frames(unknown, 7, 1.5), 8.5, 1e-9), "with no timeline, on from the clock");
+    check(next_streak(3, 1.0, 1.0 + 1.0 / 240) == 4 && next_streak(3, 1.0, 1.0) == 4, "a play a frame on (slow motion or held) runs on");
+    check(next_streak(3, 5.0, 4.0) == 0 && next_streak(3, 1.0, 2.0) == 0, "a jump back, or of over half a second, starts again");
+}
+
 int main() {
     try {
         blends_run_from_the_games_tangent_to_the_smooth_one();
@@ -234,6 +259,7 @@ int main() {
         straight_lines_stay_straight();
         a_framing_segment_plays_as_meant();
         settings_are_kept_as_left();
+        the_clock_follows_the_replays_chunks();
         std::cout << "replay keyframes tests passed\n";
         return 0;
     } catch (const std::exception& error) {
