@@ -4011,6 +4011,12 @@ struct WorldApi {
             shader.export_frame = lua_toboolean(L, -1) != 0;
             lua_pop(L, 1);
             if (shader.export_frame && !shader.shown) luaL_error(L, "a world shader's export_frame needs shown = true");
+            // depth = false: the shader reads no depth (t1 may be empty), so it is drawn on frames whose depth is not found
+            // too (scrubbing the replay editor, the game draws a smaller one for a while). heights need the depth.
+            lua_getfield(L, 2, "depth");
+            if (!lua_isnil(L, -1) && lua_type(L, -1) != LUA_TBOOLEAN) luaL_error(L, "a world shader's depth is true or false");
+            shader.depth = lua_isnil(L, -1) || lua_toboolean(L, -1) != 0;
+            lua_pop(L, 1);
         }
         const auto& file = shader_file(L, plugin, path, "world shader");
         shader.bytes = file.bytes;

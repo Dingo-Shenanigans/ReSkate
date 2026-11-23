@@ -194,6 +194,7 @@ std::atomic<bool> wanted{};
 std::atomic<bool> mips_wanted{}; // the plugin's shader reads the picture's mips (set's `mips`)
 std::atomic<bool> shown_wanted{}; // and the picture as the screen shows it (set's `shown`)
 std::atomic<bool> frame_wanted{}; // drawn into a replay export's own video frames (set's `frame`; draw_frame)
+std::atomic<bool> depth_wanted{true}; // the shader reads the world's depth (set's `depth`): without it, drawn whether it is found or not
 std::atomic<bool> allowed{};     // the world has been in play for a moment (allow)
 std::atomic<bool> in_replay_editor{}; // the replay editor is open (allow): its exports draw video frames (Notes::video_frame)
 // The calls followed on the game's lists while a world shader is on (each list's, counted in as it is next reset):
@@ -1786,17 +1787,20 @@ std::optional<plugin_camera::Projector> camera_now(Shared& s, float width, float
 
 bool record_shader(Shared& s) {
     s.why = "nothing to draw into";
-    if (s.failed || !s.colour || !s.main_depth) return false;
+    // (A shader that reads no depth is drawn whether the world's depth is found or not: scrubbing the replay editor, the
+    // game drew a smaller depth for seconds, and every such shader went with it, 2026-11-23.)
+    const bool depth_needed = depth_wanted.load(std::memory_order_relaxed);
+    if (s.failed || !s.colour || (depth_needed && !s.main_depth)) return false;
     // Our copy of the game's depth, taken this frame as soon as the game had finished it. Else the last frame's, still
     // there, up to six frames old: a frame now and then had none (the depth not readable when its batch went).
-    if (!s.depth_copy || s.depth_copied_frame > s.frame || s.frame - s.depth_copied_frame > 6) {
+    if (depth_needed && (!s.depth_copy || s.depth_copied_frame > s.frame || s.frame - s.depth_copied_frame > 6)) {
         s.why = "no copy of this frame's depth";
         return false;
     }
-    if (s.depth_copied_frame != s.frame) ++s.outcomes["drawn with the last frame's depth"];
+    if (depth_needed && s.depth_copied_frame != s.frame) ++s.outcomes["drawn with the last frame's depth"];
     const auto colour_desc = s.colour->GetDesc();
     s.why = "the picture and depth differ in size, shape or state";
-    if (colour_desc.Width != s.depth_width || colour_desc.Height != s.depth_height) return false;
+    if (depth_needed && (colour_desc.Width != s.depth_width || colour_desc.Height != s.depth_height)) return false;
     // Ours draws into it: a picture made only for compute (no render target views) is left alone.
     if (!(colour_desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET)) {
         if (!s.said_target) {
@@ -2276,12 +2280,13 @@ void restore(ID3D12GraphicsCommandList* list, const ListState& st) {
 // the game's own barrier is about to move to being read). Under s's lock, on the game's recording thread. True when drawn.
 bool draw_inside(Shared& s, ID3D12GraphicsCommandList* list, ID3D12Resource* picture, D3D12_RESOURCE_STATES before,
                  void(STDMETHODCALLTYPE* barrier)(ID3D12GraphicsCommandList*, UINT, const D3D12_RESOURCE_BARRIER*)) {
-    if (!barrier || !following() || s.failed || !s.device || !s.locked || !s.picture || !s.depth_copy || !s.root || !s.upload_cpu || !s.views ||
+    const bool depth_needed = depth_wanted.load(std::memory_order_relaxed);
+    if (!barrier || !following() || s.failed || !s.device || !s.locked || !s.picture || (depth_needed && !s.depth_copy) || !s.root || !s.upload_cpu || !s.views ||
         !s.targets)
         return false;
     const auto known = list_states.find(list);
     if (known == list_states.end() || !known->second.complete || !latest_reset(list, known->second.reset)) return false;
-    if (s.depth_copied_frame > s.frame || s.frame - s.depth_copied_frame > 6) return false;
+    if (depth_needed && (s.depth_copied_frame > s.frame || s.frame - s.depth_copied_frame > 6)) return false;
     const auto desc = picture->GetDesc();
     // A picture of the kind the copy is made from (as shown, the copy is 16-bit float: not the game's format).
     if (desc.Width != s.picture_desc.Width || desc.Height != s.picture_desc.Height || desc.Format != s.picture_source ||
@@ -2456,7 +2461,9 @@ bool build_frame_copy(Shared& s, const D3D12_RESOURCE_DESC& frame) {
 }
 bool draw_frame(Shared& s, ID3D12GraphicsCommandList* list, ID3D12Resource* frame, D3D12_RESOURCE_STATES before,
                 void(STDMETHODCALLTYPE* barrier)(ID3D12GraphicsCommandList*, UINT, const D3D12_RESOURCE_BARRIER*)) {
-    if (!barrier || !following() || s.failed || !s.device || !s.depth_copy || !s.root || !s.upload_cpu || !s.views || !s.targets) return false;
+    if (!barrier || !following() || s.failed || !s.device || (depth_wanted.load(std::memory_order_relaxed) && !s.depth_copy) || !s.root || !s.upload_cpu ||
+        !s.views || !s.targets)
+        return false;
     const auto known = list_states.find(list);
     if (known == list_states.end() || !known->second.complete || !latest_reset(list, known->second.reset)) return false;
     const auto desc = frame->GetDesc();
@@ -2706,7 +2713,7 @@ static void compile(std::shared_ptr<Program> program, std::string name, std::sha
 }
 
 std::string set(std::string_view owner, std::string_view name, std::shared_ptr<const std::string> bytes, Kind kind,
-                const std::array<float, value_count>& values, bool heights, bool mips, bool shown, bool frame) noexcept {
+                const std::array<float, value_count>& values, bool heights, bool mips, bool shown, bool frame, bool depth) noexcept {
     try {
         if (!bytes) return "it has no content";
         auto& a = asked();
@@ -2738,6 +2745,7 @@ std::string set(std::string_view owner, std::string_view name, std::shared_ptr<c
             a.shown = shown;
             shown_wanted.store(shown);
             frame_wanted.store(frame && shown);
+            depth_wanted.store(depth || heights);
             for (std::size_t i = 0; i < value_count; ++i) a.values[i] = std::isfinite(values[i]) ? values[i] : 0.0f;
         }
         if (start) compile(std::move(start), std::string(name), std::move(bytes));
@@ -2763,6 +2771,7 @@ void clear(std::string_view owner) noexcept {
     a.shown = false;
     shown_wanted.store(false);
     frame_wanted.store(false);
+    depth_wanted.store(true);
     a.cost_ms.reset();
 }
 std::string set_image(std::string_view owner, std::size_t slot, std::string_view name, std::shared_ptr<const std::string> bytes) noexcept {

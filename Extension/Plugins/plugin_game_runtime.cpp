@@ -1609,7 +1609,7 @@ public:
             return {};
         }
         return world_shader::set(plugin, shader->file, shader->bytes, shader->kind, shader->values, shader->heights, shader->mips, shader->shown,
-                                 shader->export_frame);
+                                 shader->export_frame, shader->depth);
     }
     std::string world_shader_data(std::string_view plugin, std::shared_ptr<const std::string> bytes) override {
         return world_shader::set_data(plugin, std::move(bytes));

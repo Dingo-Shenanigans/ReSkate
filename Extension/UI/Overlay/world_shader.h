@@ -228,7 +228,8 @@ inline constexpr std::size_t value_count = screen_shader::value_count;
 // Empty, or why it is not drawn (another plugin's is on; it did not compile, the driver refused it, or it took too long
 // on the GPU, which keeps the same file off for the rest of the run).
 std::string set(std::string_view owner, std::string_view name, std::shared_ptr<const std::string> bytes, Kind kind,
-                const std::array<float, value_count>& values, bool heights, bool mips = false, bool shown = false, bool frame = false) noexcept;
+                const std::array<float, value_count>& values, bool heights, bool mips = false, bool shown = false, bool frame = false,
+                bool depth = true) noexcept;
 void clear(std::string_view owner = {}) noexcept;
 // The owner's data (t2): float4s, at most most_data_bytes; kept until replaced. Empty, or why not.
 std::string set_data(std::string_view owner, std::shared_ptr<const std::string> bytes) noexcept;
