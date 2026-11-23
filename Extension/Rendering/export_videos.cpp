@@ -144,7 +144,9 @@ std::vector<Video> list() {
         const auto written = it->last_write_time(one);
         if (!one)
             video.written = std::chrono::duration<double>(std::chrono::clock_cast<std::chrono::system_clock>(written).time_since_epoch()).count();
-        video.ready = !s.moving.contains(video.name) && let_go(it->path());
+        // Only one written lately can still be the game's (opening every video alone took most of a second with fifty).
+        const double age = std::chrono::duration<double>(std::chrono::system_clock::now().time_since_epoch()).count() - video.written;
+        video.ready = !s.moving.contains(video.name) && (age > 120.0 || let_go(it->path()));
         s.listed.push_back(std::move(video));
         if (s.listed.size() >= 500) break;
     }
