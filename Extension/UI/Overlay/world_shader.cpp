@@ -687,8 +687,13 @@ Interpolated vs_main(uint id : SV_VertexID) {
 }
 // The game's depth into ours (t1 is the game's own here).
 float ps_depth(Interpolated input) : SV_Target { return depth.Load(int3(int2(input.position.xy), 0)); }
-// One of the picture's mips from the one above it (t0, that mip alone): each pixel the average of the four under it.
-float4 ps_down(Interpolated input) : SV_Target { return picture.SampleLevel(reskate_linear, input.uv, 0); }
+// One of the picture's mips from the one above it (t0, that mip alone): each pixel the average of the four under it (of
+// a side with an odd number of pixels, the last row or column is left out, as a mip chain of boxes has it).
+float4 ps_down(Interpolated input) : SV_Target {
+    const int2 p = int2(input.position.xy) * 2;
+    return 0.25 * (picture.Load(int3(p, 0)) + picture.Load(int3(p + int2(1, 0), 0)) + picture.Load(int3(p + int2(0, 1), 0)) +
+                   picture.Load(int3(p + int2(1, 1), 0)));
+}
 float depth_at(int2 p) {
     p = clamp(p, int2(0, 0), int2(up_width.w, back_height.w) - 1);
     return depth.Load(int3(p, 0));

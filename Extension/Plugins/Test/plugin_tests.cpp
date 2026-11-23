@@ -7132,7 +7132,7 @@ void plugins_run_a_world_shader() {
     auto& game = environment.fake;
     Host host(environment, Side::client);
     const std::map<std::string, std::string> files{
-        {manifest_file, manifest(R"("world.shader")")},
+        {manifest_file, manifest(R"("world.shader", "files")")},
         {"shaders/tint.hlsl", "float4 main(float4 p : SV_Position, float2 uv : TEXCOORD0) : SV_Target { return reskate_picture.Sample(reskate_point, uv); }"},
         {"shaders/tint.dxil", shader_container("DXIL", 0x00000060)},
         {"shaders/vertex.dxil", shader_container("DXIL", 0x00010060)},
@@ -7170,6 +7170,11 @@ void plugins_run_a_world_shader() {
         assert(not pcall(reskate.world.shader_image, -1, nil), "pictures 0 to 3")
         assert(not pcall(reskate.world.shader_image, 1, "images/missing.png"), "a file in the package")
         assert(not pcall(reskate.world.shader_image, 1, "../outside.png"), "inside the package")
+        assert(reskate.files.write("overlays/hood.png", "PNG bytes"))
+        assert(reskate.world.shader_image(2, "data:overlays/hood.png"), "a picture of the data folder")
+        local none, none_why = reskate.world.shader_image(2, "data:overlays/missing.png")
+        assert(not none and none_why:find("cannot be read"), tostring(none_why))
+        assert(not pcall(reskate.world.shader_image, 2, "data:../outside.png"), "inside the data folder")
         assert(reskate.world.shader(nil))
         reskate.log("snowed")
     )"}};

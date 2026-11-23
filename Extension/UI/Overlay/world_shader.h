@@ -153,8 +153,11 @@ float3 reskate_shown(float3 picture) { return reskate_shown_log(log2(max(picture
 // The curve's answer first (Newton from below the root), then the inverse table, then two Gauss-Newton steps on the
 // mapping itself in sRGB, each kept only when it comes closer.
 float3 reskate_unshown(float3 shown) {
+    float3 result;
     // Drawn into a replay export's own video frame (reskate_display.x 2): the screen's sRGB, as the frame holds it.
-    [branch] if (reskate_display.x > 1.5) return reskate_linear_to_srgb(saturate(shown));
+    [branch] if (reskate_display.x > 1.5) {
+        result = reskate_linear_to_srgb(saturate(shown));
+    } else {
     const float3 d = clamp(shown, 1e-7, 0.99995);
     const float3 t = log2(d / (1.0 - d));
     float3 x = max((t - reskate_dm_t0) / reskate_dm_s1, (t - reskate_dm_t0 - (reskate_dm_s1 - reskate_dm_s2) * reskate_dm_x0) / reskate_dm_s2);
@@ -190,7 +193,9 @@ float3 reskate_unshown(float3 shown) {
             }
         }
     }
-    return exp2(x) * (1.0 - step(shown, 0.0));
+    result = exp2(x) * (1.0 - step(shown, 0.0));
+    }
+    return result;
 }
 )hlsl";
 // The whole prelude: the bindings, the display mapping's functions, then the plugin's own lines, numbered from 1.

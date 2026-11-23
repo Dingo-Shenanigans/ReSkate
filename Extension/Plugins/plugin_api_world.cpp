@@ -4034,7 +4034,9 @@ struct WorldApi {
     }
     // world.shader_image(slot, file | nil): one of the plugin's pictures for its world shader, `slot` 0 to 3 (its
     // reskate_image0 to reskate_image3, t4 to t7): a PNG, JPEG or BMP file of its package, at most 4096 pixels a side and
-    // 16 MB; kept until replaced, nil clears it. The same file again is kept as it is, so it may be called every tick. The
+    // 16 MB; kept until replaced, nil clears it. The same file again is kept as it is, so it may be called every tick. Or
+    // "data:<path>", a picture of its data folder or of a folder beside the game its manifest names (a player's own,
+    // "data:<folder>:<path>"; the files permission, a file call): read again at each call, so called when it changes. The
     // shader reads 0 there until the picture is decoded and on the GPU, a frame or two on. True, or false and why not.
     static int world_shader_image(lua_State* L) {
         auto& plugin = plugin_of(L);
@@ -4043,6 +4045,21 @@ struct WorldApi {
         if (slot < 0 || slot >= static_cast<lua_Integer>(screen_shader::world_image_count)) luaL_argerror(L, 1, "a world shader's pictures are 0 to 3");
         if (lua_isnoneornil(L, 2)) return result(L, game_of(plugin).world_shader_image(plugin.id(), static_cast<int>(slot), {}, nullptr));
         const std::string path = luaL_checkstring(L, 2);
+        if (path.starts_with("data:")) {
+            need(L, plugin, "files", "a data: picture for the world shader");
+            if (!within(plugin.services_.now_ms(), plugin.files_second_, plugin.file_calls_, plugin.limits_.file_calls_per_second))
+                luaL_error(L, "more than %d file calls in a second", plugin.limits_.file_calls_per_second);
+            const auto data = data_path(L, 2, path.substr(5), false);
+            std::string bytes;
+            std::string why;
+            {
+                const Plugin::Untimed untimed{plugin}; // reading it
+                why = game_of(plugin).files_read(plugin.id(), data, bytes);
+            }
+            if (!why.empty()) return result(L, "the picture " + path + " cannot be read: " + why);
+            if (bytes.empty() || bytes.size() > screen_shader::world_image_most_bytes) return result(L, "the picture " + path + " is empty or over 16 MB");
+            return result(L, game_of(plugin).world_shader_image(plugin.id(), static_cast<int>(slot), path, std::make_shared<const std::string>(std::move(bytes))));
+        }
         auto found = plugin.shader_images_.find(path);
         if (found == plugin.shader_images_.end()) {
             const Plugin::Untimed untimed{plugin}; // reading it
