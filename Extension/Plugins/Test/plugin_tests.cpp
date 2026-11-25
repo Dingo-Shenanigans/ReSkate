@@ -983,6 +983,9 @@ struct FakeGame final : Game {
         const auto probe = world_probe(from, to);
         return {cast_count && cast_count == probe_cast_cost ? probe : WorldProbe{}, cast_count};
     }
+    CountedProbe world_trace_bounded(const Vec3& from, const Vec3& to, unsigned allowed) override {
+        return world_probe_bounded(from, to, allowed);
+    }
     // The counted queries' native cost per ray (batch rays, world.probe), and the native casts
     // they spent. world.pick and world.raycast are not counted.
     unsigned query_cast_cost{1}, probe_cast_cost{1}, native_casts{};
@@ -4698,6 +4701,63 @@ void plugins_distinguish_clear_unavailable_and_hit_world_probes() {
     game.probe_result = {};
     check(host.run_console("surface unavailable") && game.probes == before_budget + 33, "A new tick renews the query budget");
     running(host, "surface", environment);
+}
+
+void world_traces_measure_normals_without_exposing_native_state() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({script("bare-trace", R"(
+        local ok, why = pcall(reskate.world.trace, vector.create(1, 2, 3), vector.create(1, -2, 3))
+        assert(not ok and why:find("world.raycast"))
+    )"), script("trace", R"(
+        local a, b = vector.create(1, 2, 3), vector.create(1, -2, 3)
+        reskate.console.command("trace", "x", function(args)
+            local r = reskate.world.trace(a, b)
+            assert(r.status == args[1], r.status)
+            assert(r.body == nil and r.world == nil and r.surface_velocity == nil)
+            if r.status == "hit" then
+                assert(r.position == vector.create(1, 0, 3) and r.fraction == .5)
+                assert(r.normal_available == (args[2] == "normal"))
+                assert(r.normal == (if args[2] == "normal" then vector.create(0, 1, 0) else nil))
+                assert(reskate.world.probe(a, b).normal == nil, "old probe contract")
+            else
+                assert(r.normal == nil and r.normal_available == nil and r.position == nil)
+            end
+        end)
+        reskate.console.command("trace-bad", "x", function()
+            assert(not pcall(reskate.world.trace, a, b, {}))
+            assert(not pcall(reskate.world.trace, vector.create(0/0, 0, 0), b))
+            assert(not pcall(reskate.world.trace, a, vector.create(1001, 0, 0)))
+            assert(reskate.world.trace(a, a).status == "unavailable")
+        end)
+        reskate.console.command("trace-budget", "x", function()
+            for i = 1, 32 do reskate.world.trace(a, b) end
+            for i = 1, 32 do reskate.world.probe(a, b) end
+            local ok, why = pcall(reskate.world.trace, a, b)
+            assert(not ok and why:find("more than 64 raycasts"))
+        end)
+    )", R"("console", "world.raycast")")});
+    auto& game = environment.fake;
+    check(game.probes == 0, "Trace permission denial never casts");
+    check(host.run_console("trace unavailable"), "Missing trace backend is unavailable");
+    game.probe_result = {true, false, {}, 0};
+    check(host.run_console("trace clear"), "A successful trace miss is clear");
+    game.probe_result = {true, true, {1, 0, 3}, .5f, {0, 1, 0}, true};
+    check(host.run_console("trace hit normal"), "Trace returns the measured unit normal");
+    for (const Vec3 normal : {Vec3{}, Vec3{0, 2, 0}, Vec3{0, std::numeric_limits<float>::quiet_NaN(), 0}}) {
+        game.probe_result.normal = normal;
+        check(host.run_console("trace hit"), "Malformed normals are not exposed as contact geometry");
+    }
+    game.probe_result.normal_available = false;
+    check(host.run_console("trace hit"), "A normal-less hit remains a hit");
+    game.probe_result.position = {3, 0, 1};
+    check(host.run_console("trace unavailable"), "Malformed hit geometry cannot become clear");
+    const auto before = game.probes;
+    check(host.run_console("trace-bad") && game.probes == before, "Bad trace inputs never cast");
+    ticks(host, environment, 1);
+    check(host.run_console("trace-budget"), "Trace and probe share the ray and native cast budgets");
+    running(host, "bare-trace", environment);
+    running(host, "trace", environment);
 }
 
 void the_skater_can_be_read_moved_and_the_world_probed() {
@@ -9868,6 +9928,7 @@ int main() {
         run(the_skater_can_be_read_moved_and_the_world_probed);
         run(teleport_equipment_choices_keep_permissions_and_host_limits);
         run(plugins_distinguish_clear_unavailable_and_hit_world_probes);
+        run(world_traces_measure_normals_without_exposing_native_state);
         run(tricks_reach_plugins_that_ask_for_them);
         run(plugins_draw_on_the_overlay);
         run(plugins_draw_pictures);
