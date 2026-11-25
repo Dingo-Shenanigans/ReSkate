@@ -35,18 +35,44 @@ void vector_field(lua_State* L, int index, const char* name, float low, float hi
 
 struct ViewmodelApi {
     static Plugin& caller(lua_State* L, const char* what) { return permitted(L, "viewmodel", what); }
-    // load(path): reads the package's .rsvm file (and the pictures it names, beside it) in the
-    // background; info().status says when it is ready.
-    static int load(lua_State* L) {
-        auto& plugin = caller(L, "reskate.viewmodel.load");
-        const auto path = checked_text(L, 1, 200, "a viewmodel's path");
+    static std::filesystem::path model_path(lua_State* L, Plugin& plugin, int index) {
+        const auto path = checked_text(L, index, 200, "a viewmodel's path");
         auto extension = std::filesystem::path(path).extension().string();
         for (auto& c : extension) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         if (extension != ".rsvm") luaL_error(L, "a viewmodel is a .rsvm file (contrib/viewmodel_export.py makes one)");
         const auto file = package_file(L, plugin, path);
         std::error_code code;
         if (!std::filesystem::is_regular_file(file, code)) luaL_error(L, "\"%s\" is not a file in the plugin's package", path.c_str());
-        return result(L, game_of(plugin).viewmodel_load(plugin.id(), file));
+        return file;
+    }
+    // load(path, {append = {path, ...}}): each static attachment uses pictures beside its own file.
+    static int load(lua_State* L) {
+        auto& plugin = caller(L, "reskate.viewmodel.load");
+        const auto file = model_path(L, plugin, 1);
+        std::vector<std::filesystem::path> attachments;
+        if (!lua_isnoneornil(L, 2)) {
+            luaL_checktype(L, 2, LUA_TTABLE);
+            lua_getfield(L, 2, "append");
+            if (!lua_isnil(L, -1)) {
+                luaL_checktype(L, -1, LUA_TTABLE);
+                const int count = lua_objlen(L, -1);
+                if (count > 8) luaL_error(L, "a viewmodel accepts up to 8 attachments");
+                lua_pushnil(L);
+                while (lua_next(L, -2)) {
+                    const double key = lua_tonumber(L, -2);
+                    if (lua_type(L, -2) != LUA_TNUMBER || !(key >= 1 && key <= count && key == std::floor(key)))
+                        luaL_error(L, "append is a list of package paths");
+                    lua_pop(L, 1);
+                }
+                for (int i = 1; i <= count; ++i) {
+                    lua_rawgeti(L, -1, i);
+                    attachments.push_back(model_path(L, plugin, -1));
+                    lua_pop(L, 1);
+                }
+            }
+            lua_pop(L, 1);
+        }
+        return result(L, game_of(plugin).viewmodel_load(plugin.id(), file, attachments));
     }
     static int unload(lua_State* L) {
         auto& plugin = caller(L, "reskate.viewmodel.unload");
@@ -62,8 +88,9 @@ struct ViewmodelApi {
             lua_pushnil(L);
             return 1;
         }
-        lua_createtable(L, 0, 4);
+        lua_createtable(L, 0, 5);
         field_text(L, "status", found->status);
+        field_bool(L, "render_ready", found->render_ready);
         if (!found->why.empty()) field_text(L, "why", found->why);
         lua_createtable(L, static_cast<int>(found->clips.size()), 0);
         for (std::size_t i = 0; i < found->clips.size(); ++i) {
@@ -105,6 +132,12 @@ struct ViewmodelApi {
         return result(L, game_of(plugin).viewmodel_show(plugin.id(), std::nullopt));
     }
     // play(clip, {loop = false, speed = 1, fade = 0.1}): from its start, faded in over what played.
+    static int seek(lua_State* L) {
+        auto& plugin = caller(L, "reskate.viewmodel.seek");
+        const double seconds = luaL_checknumber(L, 1);
+        if (!std::isfinite(seconds) || seconds < 0) luaL_argerror(L, 1, "expected finite nonnegative seconds");
+        return result(L, game_of(plugin).viewmodel_seek(plugin.id(), seconds));
+    }
     static int play(lua_State* L) {
         auto& plugin = caller(L, "reskate.viewmodel.play");
         const auto clip = checked_text(L, 1, 120, "a clip's name");
@@ -133,7 +166,7 @@ struct ViewmodelApi {
             lua_pushnil(L);
             return 1;
         }
-        lua_createtable(L, 0, 4);
+        lua_createtable(L, 0, 5);
         lua_pushlstring(L, now->clip.data(), now->clip.size());
         lua_setfield(L, -2, "clip");
         lua_pushnumber(L, now->time);
@@ -153,7 +186,7 @@ struct ViewmodelApi {
             lua_pushnil(L);
             return 1;
         }
-        lua_createtable(L, 0, 4);
+        lua_createtable(L, 0, 5);
         push_position(L, found->position);
         lua_setfield(L, -2, "position");
         push_position(L, found->x);
@@ -169,6 +202,6 @@ struct ViewmodelApi {
 void install_viewmodel_api(Plugin&, lua_State* L) {
     add_functions(L, "viewmodel", {{"load", ViewmodelApi::load}, {"unload", ViewmodelApi::unload}, {"info", ViewmodelApi::info},
                                    {"show", ViewmodelApi::show}, {"hide", ViewmodelApi::hide}, {"play", ViewmodelApi::play},
-                                   {"stop", ViewmodelApi::stop}, {"state", ViewmodelApi::state}, {"bone", ViewmodelApi::bone}});
+                                   {"seek", ViewmodelApi::seek}, {"stop", ViewmodelApi::stop}, {"state", ViewmodelApi::state}, {"bone", ViewmodelApi::bone}});
 }
 } // namespace dingosdk::plugins

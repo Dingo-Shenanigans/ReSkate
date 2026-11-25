@@ -834,9 +834,10 @@ struct FakeGame final : Game {
     }
     // One plugin's viewmodel at a time, as the real one.
     std::string viewmodeler;
-    std::string viewmodel_load(std::string_view plugin, const std::filesystem::path& file) override {
+    std::string viewmodel_load(std::string_view plugin, const std::filesystem::path& file, const std::vector<std::filesystem::path>& attachments) override {
         if (!viewmodeler.empty() && viewmodeler != plugin) return viewmodeler + " has the viewmodel";
         viewmodeler = plugin;
+        for (const auto& path : attachments) calls.push_back("attachment " + path.filename().string());
         calls.push_back(std::format("viewmodel load {} {}", plugin, file.filename().string()));
         return {};
     }
@@ -847,13 +848,18 @@ struct FakeGame final : Game {
     }
     std::optional<ViewmodelInfo> viewmodel_info(std::string_view plugin) override {
         if (viewmodeler != plugin) return std::nullopt;
-        return ViewmodelInfo{"ready", "", {{"FPS_Pistol_Fire", 0.25}, {"FPS_Pistol_Idle", 2}}, {"Root", "Rif_end"}};
+        return ViewmodelInfo{"ready", "", {{"FPS_Pistol_Fire", 0.25}, {"FPS_Pistol_Idle", 2}}, {"Root", "Rif_end"}, true};
     }
     std::string viewmodel_show(std::string_view plugin, std::optional<ViewmodelLook> l) override {
         if (viewmodeler != plugin) return "this plugin has no viewmodel loaded";
         calls.push_back(l ? std::format("viewmodel show {} {:.2f} {:.2f} {:.2f} {:.0f} {:.0f} {:.0f} {:.0f} {:.1f} {:.1f}", plugin, l->offset[0], l->offset[1],
                                         l->offset[2], l->yaw, l->pitch, l->roll, l->fov, l->ambient, l->brightness)
                           : std::format("viewmodel hide {}", plugin));
+        return {};
+    }
+    std::string viewmodel_seek(std::string_view plugin, double time) override {
+        if (viewmodeler != plugin) return "no viewmodel";
+        calls.push_back(std::format("seek {} {}", plugin, time));
         return {};
     }
     std::string viewmodel_play(std::string_view plugin, std::string_view clip, bool loop, float speed, float fade) override {
@@ -6600,7 +6606,11 @@ void plugins_show_a_viewmodel() {
         assert(not pcall(reskate.viewmodel.load, "plugin/main.lua"), "a viewmodel is a .rsvm file")
         assert(not pcall(reskate.viewmodel.load, "../other/gun.rsvm"), "inside the package")
         assert(not pcall(reskate.viewmodel.load, "missing.rsvm"), "a file that is there")
+        assert(not pcall(reskate.viewmodel.load, "gun/pistol.rsvm", {append={"../other.rsvm"}}))
+        assert(not pcall(reskate.viewmodel.load, "gun/pistol.rsvm", {append={bad="gun/pistol.rsvm"}}))
         assert(reskate.viewmodel.load("gun/pistol.rsvm"))
+        assert(reskate.viewmodel.load("gun/pistol.rsvm", {append={"gun/pistol.rsvm"}}))
+        assert(reskate.viewmodel.info().render_ready)
         local info = reskate.viewmodel.info()
         assert(info.status == "ready" and #info.clips == 2 and info.clips[1].name == "FPS_Pistol_Fire" and info.clips[1].duration == 0.25, "its clips")
         assert(info.bones[2] == "Rif_end", "its bones")
@@ -6610,6 +6620,8 @@ void plugins_show_a_viewmodel() {
         assert(not pcall(reskate.viewmodel.show, {sky = 2}), "colours are vectors")
         assert(reskate.viewmodel.play("FPS_Pistol_Fire", {speed = 1.5, fade = 0.05}))
         assert(reskate.viewmodel.play("FPS_Pistol_Idle", {loop = true}))
+        assert(reskate.viewmodel.seek(0.125))
+        assert(not pcall(reskate.viewmodel.seek, -1))
         local ok, why = reskate.viewmodel.play("Dance")
         assert(not ok and why:find("no clip"), "a clip it does not have")
         assert(not pcall(reskate.viewmodel.play, "FPS_Pistol_Fire", {speed = 20}), "speed 0 to 10")
@@ -6625,8 +6637,8 @@ void plugins_show_a_viewmodel() {
     host.apply({package("shooter", {{manifest_file, manifest(R"("viewmodel")")}, {"plugin/main.lua", main}, {"gun/pistol.rsvm", "RSVM"}})});
     ticks(host, environment, 1);
     running(host, "shooter", environment);
-    check(environment.logged("[shooter] armed"), "A viewmodel's calls work\n" + environment.all());
-    check(game.called("viewmodel load shooter pistol.rsvm") && game.called("viewmodel show shooter 0.02 -0.01 0.03 0 4 -2 55 0.8 1.2") &&
+    check(environment.logged("[shooter] armed") && game.called("seek shooter 0.125"), "A viewmodel's calls work\n" + environment.all());
+    check(game.called("attachment pistol.rsvm") && game.called("viewmodel load shooter pistol.rsvm") && game.called("viewmodel show shooter 0.02 -0.01 0.03 0 4 -2 55 0.8 1.2") &&
               game.called("viewmodel play shooter FPS_Pistol_Fire false 1.5 0.05") && game.called("viewmodel play shooter FPS_Pistol_Idle true 1.0 0.10") &&
               game.called("viewmodel stop shooter") && game.called("viewmodel hide shooter"),
           "Loaded, shown where asked, played, stopped and hidden\n" + environment.all());
@@ -6640,12 +6652,12 @@ void plugins_show_a_viewmodel() {
     check(environment.logged("[rival] false shooter has the viewmodel"), "One plugin's viewmodel at a time\n" + environment.all());
     // Without the permission, none of it.
     host.apply({package("sneaky", {{manifest_file, manifest()}, {"plugin/main.lua", R"(
-        reskate.log(tostring(pcall(reskate.viewmodel.load, "gun.rsvm")) .. " " .. tostring(pcall(reskate.viewmodel.show, {})) .. " " ..
+        reskate.log(tostring(pcall(reskate.viewmodel.load, "gun.rsvm", {append={"gun.rsvm"}})) .. " " .. tostring(pcall(reskate.viewmodel.show, {})) .. " " ..
             tostring(pcall(reskate.viewmodel.play, "FPS_Pistol_Fire")) .. " " .. tostring(pcall(reskate.viewmodel.bone, "Rif_end")) .. " " ..
-            tostring(pcall(reskate.viewmodel.info)))
+            tostring(pcall(reskate.viewmodel.info)) .. " " .. tostring(pcall(reskate.viewmodel.seek, 0)))
     )"}, {"gun.rsvm", "RSVM"}})});
     ticks(host, environment, 1);
-    check(environment.logged("[sneaky] false false false false false"), "viewmodel is needed\n" + environment.all());
+    check(environment.logged("[sneaky] false false false false false false"), "viewmodel is needed\n" + environment.all());
     check(game.viewmodeler.empty(), "Given up when its plugin stops\n" + environment.all());
 }
 

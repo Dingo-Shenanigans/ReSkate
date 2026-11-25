@@ -1598,10 +1598,10 @@ public:
     std::optional<double> world_shader_cost(std::string_view plugin) override { return world_shader::cost_ms(plugin); }
     double world_shader_clock() override { return world_shader::clock_seconds(); }
     // ---- viewmodel -----------------------------------------------------------------------------------
-    std::string viewmodel_load(std::string_view plugin, const std::filesystem::path& file) override {
+    std::string viewmodel_load(std::string_view plugin, const std::filesystem::path& file, const std::vector<std::filesystem::path>& attachments) override {
         if (!viewmodeler_.empty() && viewmodeler_ != plugin) return viewmodeler_ + " has the viewmodel";
         viewmodeler_ = plugin;
-        viewmodel::load(file);
+        viewmodel::load(file, attachments);
         return {};
     }
     void viewmodel_unload(std::string_view plugin) override {
@@ -1617,6 +1617,7 @@ public:
         out.why = now.why;
         for (const auto& clip : now.clips) out.clips.emplace_back(clip.name, clip.duration);
         out.bones = now.bones;
+        out.render_ready = now.render_ready;
         return out;
     }
     std::string viewmodel_show(std::string_view plugin, std::optional<ViewmodelLook> look) override {
@@ -1637,6 +1638,10 @@ public:
     std::string viewmodel_play(std::string_view plugin, std::string_view clip, bool loop, float speed, float fade) override {
         if (viewmodeler_ != plugin) return "this plugin has no viewmodel loaded";
         return viewmodel::play(clip, {-1, loop, speed, fade});
+    }
+    std::string viewmodel_seek(std::string_view plugin, double seconds) override {
+        if (viewmodeler_ != plugin) return "this plugin has no viewmodel loaded";
+        return viewmodel::seek(seconds);
     }
     void viewmodel_stop(std::string_view plugin) override {
         if (viewmodeler_ == plugin) viewmodel::stop();

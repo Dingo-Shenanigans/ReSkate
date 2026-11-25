@@ -1339,13 +1339,14 @@ public:
     // ---- viewmodel: a rigged, animated model in front of the camera (Extension/UI/Overlay/viewmodel.h) --
     // One plugin's at a time: the one that loaded it, until it unloads it or stops. Its file (.rsvm,
     // from contrib/viewmodel_export.py) and pictures are read in the background.
-    virtual std::string viewmodel_load(std::string_view /*plugin*/, const std::filesystem::path& /*file*/) { return unavailable; }
+    virtual std::string viewmodel_load(std::string_view /*plugin*/, const std::filesystem::path& /*file*/, const std::vector<std::filesystem::path>& /*attachments*/) { return unavailable; }
     virtual void viewmodel_unload(std::string_view /*plugin*/) {}
     struct ViewmodelInfo {
         std::string status;  // "loading", "ready" or "failed"
         std::string why;
         std::vector<std::pair<std::string, double>> clips; // name, seconds
         std::vector<std::string> bones;
+        bool render_ready{};
     };
     virtual std::optional<ViewmodelInfo> viewmodel_info(std::string_view /*plugin*/) { return std::nullopt; }
     // Where and how it is drawn, for the next 300 ms (view space: x right, y up, z forward, metres).
@@ -1356,6 +1357,7 @@ public:
         float ambient{0.6f}, brightness{1};
     };
     virtual std::string viewmodel_show(std::string_view /*plugin*/, std::optional<ViewmodelLook>) { return unavailable; }
+    virtual std::string viewmodel_seek(std::string_view, double) { return "no viewmodel"; }
     virtual std::string viewmodel_play(std::string_view /*plugin*/, std::string_view /*clip*/, bool /*loop*/, float /*speed*/, float /*fade*/) {
         return unavailable;
     }
