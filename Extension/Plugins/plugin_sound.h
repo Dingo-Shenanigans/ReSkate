@@ -16,6 +16,8 @@ namespace dingosdk::plugin_sound {
 struct Voice {
     std::shared_ptr<const plugins::StreamWave> stream;
     plugins::MusicLoop music_loop;
+    bool clear{};
+    plugins::MusicLoop sample_range;
     std::string owner;
     std::shared_ptr<const plugins::Wave> wave; // empty: the motor
     float volume{1}, pitch{1};

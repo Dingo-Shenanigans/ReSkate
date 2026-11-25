@@ -2876,12 +2876,16 @@ struct WorldApi {
             lua_getfield(L, 2, "stream");
             if (!lua_isnil(L, -1)) stream = luaL_checkboolean(L, -1) != 0;
             lua_pop(L, 1);
+            lua_getfield(L, 2, "clear");
+            if (!lua_isnil(L, -1)) start.clear = luaL_checkboolean(L, -1) != 0;
+            lua_pop(L, 1);
         }
         if (stream && what == "motor") luaL_error(L, "a stream plays a packaged PCM WAVE");
-        if (stream && start.position) luaL_error(L, "streamed music plays at the listener");
+        if ((stream || start.clear) && start.position) luaL_error(L, "direct audio plays at the listener");
+        if (start.clear && what == "motor") luaL_error(L, "clear playback requires a packaged sound");
         if (!stream && what != "motor") start.wave = wave_at(L, plugin, what);
         if (!within(plugin.services_.now_ms(), plugin.wave_second_, plugin.wave_starts_, 60)) return result(L, "more than 60 sounds in a second");
-        if (stream) {
+        if (stream || start.clear) {
             const auto seconds = [&](const char* key) -> std::optional<double> {
                 lua_getfield(L, 2, key);
                 std::optional<double> value;
@@ -2893,18 +2897,21 @@ struct WorldApi {
                 lua_pop(L, 1);
                 return value;
             };
-            const auto from = seconds("loop_from"), length = seconds("loop_length");
-            if ((from || length) && !start.loop) luaL_error(L, "loop points require loop=true");
-            std::string why;
-            start.stream = open_stream_wave(package_file(L, plugin, what), why);
-            if (!start.stream) return result(L, why);
-            if (from || length) {
-                const auto frames = static_cast<std::uint32_t>(start.stream->frames());
-                const auto at = static_cast<std::uint32_t>(std::llround(from.value_or(0) * start.stream->rate));
-                if (at >= frames) return result(L, "loop starts outside the track");
-                const auto count = length ? static_cast<std::uint32_t>(std::llround(*length * start.stream->rate)) : frames - at;
-                if (!count || count > frames - at) return result(L, "loop length is outside the track");
-                start.music_loop = {at, count};
+            const auto from = seconds(stream ? "loop_from" : "from"), length = seconds(stream ? "loop_length" : "length");
+            if (stream) {
+                if ((from || length) && !start.loop) luaL_error(L, "loop points require loop=true");
+                std::string why;
+                start.stream = open_stream_wave(package_file(L, plugin, what), why);
+                if (!start.stream) return result(L, why);
+            }
+            if (!stream || from || length) {
+                const auto rate = stream ? start.stream->rate : wave_rate;
+                const auto frames = static_cast<std::uint32_t>(stream ? start.stream->frames() : start.wave->samples.size());
+                const auto at = static_cast<std::uint32_t>(std::llround(from.value_or(0) * rate));
+                if (at >= frames) return result(L, "range starts outside the sound");
+                const auto count = length ? static_cast<std::uint32_t>(std::llround(*length * rate)) : frames - at;
+                if (!count || count > frames - at) return result(L, "range length is outside the sound");
+                (stream ? start.music_loop : start.sample_range) = {at, count};
             }
             start.listener = true;
         }

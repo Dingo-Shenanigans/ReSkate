@@ -9,5 +9,6 @@ struct DestroySource {
     void operator()(IXAudio2SourceVoice* voice) const noexcept { voice->DestroyVoice(); }
 };
 using MusicSource = std::unique_ptr<IXAudio2SourceVoice, DestroySource>;
-MusicSource play_music(const plugins::StreamWave& wave, bool loop, plugins::MusicLoop region, float volume, float pitch);
+MusicSource play_pcm(std::span<const std::byte> samples, unsigned channels, unsigned rate, bool loop,
+                     plugins::MusicLoop region, float volume, float pitch);
 }

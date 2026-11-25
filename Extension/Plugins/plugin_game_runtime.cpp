@@ -1310,6 +1310,8 @@ public:
         voice.wave = std::move(sound.wave);
         voice.stream = std::move(sound.stream);
         voice.music_loop = sound.music_loop;
+        voice.clear = sound.clear;
+        voice.sample_range = sound.sample_range;
         voice.volume = sound.volume;
         voice.pitch = sound.pitch;
         voice.range = sound.range;

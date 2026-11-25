@@ -22,23 +22,24 @@ struct Output {
 };
 }
 
-MusicSource play_music(const plugins::StreamWave& wave, bool loop, plugins::MusicLoop region, float volume, float pitch) {
+MusicSource play_pcm(std::span<const std::byte> samples, unsigned channels, unsigned rate, bool loop,
+                     plugins::MusicLoop region, float volume, float pitch) {
     thread_local Output output;
     if (!output.ready()) return {};
     WAVEFORMATEX format{};
     format.wFormatTag = WAVE_FORMAT_PCM;
-    format.nChannels = static_cast<WORD>(wave.channels);
-    format.nSamplesPerSec = wave.rate;
+    format.nChannels = static_cast<WORD>(channels);
+    format.nSamplesPerSec = rate;
     format.wBitsPerSample = 16;
-    format.nBlockAlign = static_cast<WORD>(wave.channels * 2);
-    format.nAvgBytesPerSec = wave.rate * format.nBlockAlign;
+    format.nBlockAlign = static_cast<WORD>(channels * 2);
+    format.nAvgBytesPerSec = rate * format.nBlockAlign;
     IXAudio2SourceVoice* raw{};
     if (FAILED(output.engine->CreateSourceVoice(&raw, &format, 0, 4.0f))) return {};
     MusicSource source(raw);
     XAUDIO2_BUFFER buffer{};
     buffer.Flags = XAUDIO2_END_OF_STREAM;
-    buffer.pAudioData = wave.pcm.data();
-    buffer.AudioBytes = static_cast<UINT32>(wave.pcm.size());
+    buffer.pAudioData = reinterpret_cast<const BYTE*>(samples.data());
+    buffer.AudioBytes = static_cast<UINT32>(samples.size());
     buffer.LoopCount = loop ? XAUDIO2_LOOP_INFINITE : 0;
     buffer.LoopBegin = region.first;
     buffer.LoopLength = region.frames;

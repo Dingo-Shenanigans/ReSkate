@@ -73,12 +73,17 @@ std::uint64_t start(Voice voice) {
     if (voice.stream) {
         unsigned total = 0, owned = 0;
         for (const auto& [key, active] : p.voices) {
-            if (!active.music) continue;
+            if (!active.voice.stream) continue;
             ++total;
             if (active.voice.owner == voice.owner) ++owned;
         }
         if (owned >= 2 || total >= 8) return 0;
-        playing.music = play_music(*voice.stream, voice.loop, voice.music_loop, voice.volume, voice.pitch);
+        playing.music = play_pcm(std::as_bytes(voice.stream->pcm), voice.stream->channels, voice.stream->rate,
+                                 voice.loop, voice.music_loop, voice.volume, voice.pitch);
+        if (!playing.music) return 0;
+    } else if (voice.clear && voice.wave) {
+        const auto samples = std::span(voice.wave->samples).subspan(voice.sample_range.first, voice.sample_range.frames);
+        playing.music = play_pcm(std::as_bytes(samples), 1, plugins::wave_rate, voice.loop, {}, voice.volume, voice.pitch);
         if (!playing.music) return 0;
     }
     playing.voice = std::move(voice);

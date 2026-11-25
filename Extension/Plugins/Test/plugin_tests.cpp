@@ -1227,6 +1227,10 @@ struct FakeGame final : Game {
     bool hold_waves{}; // keep each sound's wave, as a voice still playing does
     std::vector<std::shared_ptr<const Wave>> held_waves;
     std::uint64_t play_sound(std::string_view plugin, SoundStart sound) override {
+        if (sound.clear && sound.wave) {
+            calls.push_back(std::format("clear {} {} {}", plugin, sound.sample_range.first, sound.sample_range.frames));
+            return ++sound_ids;
+        }
         if (sound.stream) {
             calls.push_back(std::format("music {} {} {} {} {} {}", plugin, sound.stream->rate, sound.stream->frames(), sound.loop,
                                         sound.music_loop.first, sound.music_loop.frames));
@@ -7974,6 +7978,10 @@ void plugins_play_their_own_sounds() {
             assert(reskate.audio.set(motor, {throttle = 0.9, position = "skater"}))
             assert(reskate.audio.playing(beep))
             reskate.audio.stop(beep)
+            assert(reskate.audio.play("sounds/beep.wav", {clear=true, from=0.125, length=0.25}))
+            assert(reskate.audio.play("sounds/beep.wav", {clear=true, loop=true}))
+            assert(not reskate.audio.play("sounds/beep.wav", {clear=true, from=0.6}))
+            assert(not reskate.audio.play("sounds/beep.wav", {clear=true, length=0}))
             assert(not pcall(reskate.audio.play, "notes.txt"), "a wave")
             assert(not pcall(reskate.audio.play, "../x/beep.wav"), "its own package")
             assert(not pcall(reskate.audio.play, "sounds/beep.wav", {volume = 3}), "a sane volume")
@@ -7991,6 +7999,8 @@ void plugins_play_their_own_sounds() {
     running(host, "noisy", environment);
     host.run_console("noise");
     check(environment.logged("[noisy] sounded"), "A plugin plays its own sounds\n" + environment.all());
+    check(environment.fake.called("clear noisy 6000 12000") && environment.fake.called("clear noisy 0 24000"),
+          "Direct playback uses the selected slice or the entire decoded sound");
     check(environment.logged("[noisy] burst: more than 60 sounds in a second"), "sixty a second, and the next is refused\n" + environment.all());
     for (const auto* call : {"sound noisy 24000 0.50 2.00 true at 1 2 3", "sound noisy motor 1.00 1.00 false", "sound noisy 24000 0.25 1.00 false at listener",
                              "change noisy 2 0.9 skater", "stop sound noisy 1"})

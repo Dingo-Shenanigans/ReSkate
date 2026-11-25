@@ -103,6 +103,8 @@ struct StickDevice {
 struct SoundStart {
     std::shared_ptr<const StreamWave> stream;
     MusicLoop music_loop;
+    bool clear{};
+    MusicLoop sample_range; // Decoded short sound, in 48 kHz frames.
     std::shared_ptr<const Wave> wave;
     float volume{1}, pitch{1}, range{40}, throttle{}, speed{};
     bool loop{};
