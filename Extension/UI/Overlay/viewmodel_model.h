@@ -31,7 +31,8 @@ namespace dingosdk::viewmodel {
 using Affine = std::array<float, 12>;
 inline constexpr Affine identity{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
 inline constexpr std::size_t max_bones = 256; // Four u8 joint indices per vertex.
-inline constexpr unsigned max_materials = 256;
+inline constexpr unsigned max_materials = 512;
+inline constexpr unsigned max_parts = 4096;
 
 struct Vertex {
     float position[3], normal[3], tangent[4], uv[2];
@@ -57,6 +58,8 @@ struct Part {
     std::uint32_t material{}, first{}, count{};
     std::string name;
     Affine transform{identity};
+    std::array<float, 3> centre{};
+    int bone_hint{-1};
 };
 struct Clip {
     std::string name;
@@ -101,7 +104,7 @@ public:
         int clip{-1};
         bool loop{true};
         float speed{1};
-        double fade{0.1};  // seconds the clip before it is faded out over
+        double fade{0.1}; bool restart{true};  // seconds the clip before it is faded out over
     };
     // From `now` (seconds, any clock the caller keeps to).
     void play(const Model& model, const Play& play, double now);

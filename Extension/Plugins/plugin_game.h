@@ -1326,6 +1326,7 @@ public:
     virtual std::optional<bool> gameplay_option(std::string_view) { return std::nullopt; }
     virtual std::string hold_gameplay_option(std::string_view, std::string_view, std::optional<bool>) { return unavailable; }
     virtual std::optional<PadInput> gamepad(int /*controller*/ = -1) { return std::nullopt; }
+    virtual std::string rumble_pad(std::string_view, float, float, unsigned) { return unavailable; }
     virtual std::string write_pad(std::string_view /*plugin*/, unsigned /*controller*/, std::optional<PadInput>) { return unavailable; }
     // The first controller (a radio first), or with device >= 0 that one (StickDevice::device).
     // Neither ever waits on Windows: a thread of ReSkate's reads the controllers.
@@ -1339,7 +1340,9 @@ public:
     // ---- viewmodel: a rigged, animated model in front of the camera (Extension/UI/Overlay/viewmodel.h) --
     // One plugin's at a time: the one that loaded it, until it unloads it or stops. Its file (.rsvm,
     // from contrib/viewmodel_export.py) and pictures are read in the background.
-    virtual std::string viewmodel_load(std::string_view /*plugin*/, const std::filesystem::path& /*file*/, const std::vector<std::filesystem::path>& /*attachments*/) { return unavailable; }
+    virtual std::string viewmodel_load(std::string_view /*plugin*/, const std::filesystem::path& /*file*/, const std::vector<std::filesystem::path>& /*attachments*/ = {}) { return unavailable; }
+    virtual std::string viewmodel_prepare(std::string_view /*plugin*/, const std::filesystem::path& /*file*/, const std::vector<std::filesystem::path>& /*attachments*/) { return unavailable; }
+    virtual std::string viewmodel_activate_prepared(std::string_view /*plugin*/) { return unavailable; }
     virtual void viewmodel_unload(std::string_view /*plugin*/) {}
     struct ViewmodelInfo {
         std::string status;  // "loading", "ready" or "failed"
@@ -1347,21 +1350,67 @@ public:
         std::vector<std::pair<std::string, double>> clips; // name, seconds
         std::vector<std::string> bones;
         bool render_ready{};
+        std::string prepared_status,prepared_why;
+        bool prepared_ready{};
+        std::string display_status,display_why;
     };
     virtual std::optional<ViewmodelInfo> viewmodel_info(std::string_view /*plugin*/) { return std::nullopt; }
     // Where and how it is drawn, for the next 300 ms (view space: x right, y up, z forward, metres).
     struct ViewmodelLook {
+        struct Reflection {
+            struct PortalView { Vec3 eye{}, forward{0,0,1}, up{0,1,0}, exit{}, normal{0,0,1}; };
+            std::vector<PortalView> portal_views;
+            Vec3 position{},normal{0,1,0},tint{1,1,1};
+            std::vector<std::string> parts;
+            float time{},distortion{.01f},strength{.6f},texture_scale{1};
+        };
+        std::optional<Reflection> reflection;
+        struct Inset {
+            Vec3 position{},forward{0,0,1},up{0,1,0};
+            Vec3 centre{1,1,0},radius{.2f,.2f,0},projection_offset{};
+            float fov{60},background_alpha{.35f};
+            std::vector<std::string> hidden_bones,hidden_materials;
+        };
+        std::optional<Inset> inset;
         Vec3 offset{};
         float yaw{}, pitch{}, roll{}, fov{60};
         Vec3 light{-0.35f, 0.75f, -0.55f}, light_colour{1.0f, 0.96f, 0.9f}, sky{0.55f, 0.62f, 0.75f}, ground{0.32f, 0.29f, 0.26f};
         float ambient{0.6f}, brightness{1};
+        std::array<float,3> fog{}, fog_colour{};
+        std::vector<std::string> fog_exempt_parts;
+        std::vector<std::pair<std::string, std::array<float, 12>>> transforms;
+        std::vector<std::pair<std::string, float>> opacities;
+        // Known visible surface points in view space, for matching the scene's depth projection.
+        std::vector<std::array<float, 3>> depth_points;
+        std::optional<std::array<float,12>> pose_transform;
+        std::vector<std::pair<std::string,std::array<float,12>>> part_transforms;
+        std::vector<std::string> hidden_parts;
+        std::vector<std::pair<std::string,std::array<float,3>>> part_effects;
+        std::vector<std::pair<std::string,std::array<float,3>>> material_colours;
+        std::optional<std::array<float,3>> view_position, backdrop;
+        std::array<float,3> view_forward{0,0,1}, view_up{0,1,0};
+        float view_fov{60};
+        bool scene_depth{};
+        bool scene_clear{}; // caller verified this object is unobstructed with world queries
+        std::optional<std::array<float, 3>> contact_position;
+        std::array<float, 3> contact_normal{0,1,0};
+        float contact_margin{0.08f};
+        std::optional<std::array<float, 3>> world_position;
+        std::array<float, 3> world_forward{0,0,1}, world_up{0,1,0};
     };
     virtual std::string viewmodel_show(std::string_view /*plugin*/, std::optional<ViewmodelLook>) { return unavailable; }
-    virtual std::string viewmodel_seek(std::string_view, double) { return "no viewmodel"; }
-    virtual std::string viewmodel_play(std::string_view /*plugin*/, std::string_view /*clip*/, bool /*loop*/, float /*speed*/, float /*fade*/) {
+    struct ViewmodelDisplay {
+        Vec3 position{},forward{0,0,1},up{0,1,0};
+        std::string material;
+        std::vector<Vec3> depth_points;
+        bool live{},scene_clear{};
+    };
+    virtual std::string viewmodel_display(std::string_view,const std::filesystem::path&,std::optional<ViewmodelDisplay>) {return unavailable;}
+    virtual std::string viewmodel_play(std::string_view /*plugin*/, std::string_view /*clip*/, bool /*loop*/, float /*speed*/, float /*fade*/, bool /*restart*/ = true) {
         return unavailable;
     }
     virtual void viewmodel_stop(std::string_view /*plugin*/) {}
+    virtual std::string viewmodel_seek(std::string_view /*plugin*/, double /*seconds*/) { return unavailable; }
     struct ViewmodelState {
         std::string clip;
         double time{}, duration{};

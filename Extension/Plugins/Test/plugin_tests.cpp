@@ -834,36 +834,63 @@ struct FakeGame final : Game {
     }
     // One plugin's viewmodel at a time, as the real one.
     std::string viewmodeler;
+    std::string prepared_model;
+    bool prepared_ready{};
+    std::string viewmodel_prepare(std::string_view plugin,const std::filesystem::path& file,const std::vector<std::filesystem::path>&) override {
+        if (!viewmodeler.empty()&&viewmodeler!=plugin) return "another plugin owns the model";
+        if (!file.empty()) viewmodeler=plugin;
+        prepared_model=file.filename().string();prepared_ready=false;return {};
+    }
+    std::string viewmodel_activate_prepared(std::string_view plugin) override {
+        if (viewmodeler!=plugin||prepared_model.empty()||!prepared_ready) return "prepared model not ready or not owned";
+        calls.push_back("activated "+prepared_model);prepared_model.clear();prepared_ready=false;return {};
+    }
     std::string viewmodel_load(std::string_view plugin, const std::filesystem::path& file, const std::vector<std::filesystem::path>& attachments) override {
+        if (!attachments.empty()) calls.push_back("attached model");
         if (!viewmodeler.empty() && viewmodeler != plugin) return viewmodeler + " has the viewmodel";
         viewmodeler = plugin;
-        for (const auto& path : attachments) calls.push_back("attachment " + path.filename().string());
         calls.push_back(std::format("viewmodel load {} {}", plugin, file.filename().string()));
         return {};
     }
     void viewmodel_unload(std::string_view plugin) override {
         if (viewmodeler != plugin) return;
         viewmodeler.clear();
+        prepared_model.clear();prepared_ready=false;
         calls.push_back(std::format("viewmodel unload {}", plugin));
     }
     std::optional<ViewmodelInfo> viewmodel_info(std::string_view plugin) override {
         if (viewmodeler != plugin) return std::nullopt;
-        return ViewmodelInfo{"ready", "", {{"FPS_Pistol_Fire", 0.25}, {"FPS_Pistol_Idle", 2}}, {"Root", "Rif_end"}, true};
+        ViewmodelInfo out{"ready", "", {{"FPS_Pistol_Fire", 0.25}, {"FPS_Pistol_Idle", 2}}, {"Root", "Rif_end"}};
+        out.render_ready=true;
+        out.prepared_status=prepared_model.empty()?"none":prepared_ready?"ready":"loading";out.prepared_ready=prepared_ready;
+        return out;
+    }
+    std::string viewmodel_seek(std::string_view plugin, double seconds) override {
+        if (viewmodeler != plugin) return "this plugin has no viewmodel loaded";
+        calls.push_back(std::format("viewmodel seek {} {:.2f}",plugin,seconds));
+        return {};
     }
     std::string viewmodel_show(std::string_view plugin, std::optional<ViewmodelLook> l) override {
         if (viewmodeler != plugin) return "this plugin has no viewmodel loaded";
+        if (l && l->world_position) calls.push_back("world placement");
+        if (l && l->scene_clear) calls.push_back("verified clear");
+        if (l && l->material_colours==std::vector<std::pair<std::string,Vec3>>{{"Glass",{.25f,.5f,1}}}) calls.push_back("material colours");
+        if (l && l->reflection && l->reflection->parts==std::vector<std::string>{"Water/0"} &&
+            l->reflection->position==Vec3{0,-2,0} && l->reflection->time==5 &&
+            l->reflection->normal==Vec3{0,1,0}) calls.push_back("bounded reflection");
+        if (l && l->fog==std::array<float,3>{1,10,4} && l->fog_colour==std::array<float,3>{.25f,.5f,.75f} && l->fog_exempt_parts==std::vector<std::string>{"Sky/0"}) calls.push_back("bounded fog");
         calls.push_back(l ? std::format("viewmodel show {} {:.2f} {:.2f} {:.2f} {:.0f} {:.0f} {:.0f} {:.0f} {:.1f} {:.1f}", plugin, l->offset[0], l->offset[1],
                                         l->offset[2], l->yaw, l->pitch, l->roll, l->fov, l->ambient, l->brightness)
                           : std::format("viewmodel hide {}", plugin));
         return {};
     }
-    std::string viewmodel_seek(std::string_view plugin, double time) override {
-        if (viewmodeler != plugin) return "no viewmodel";
-        calls.push_back(std::format("seek {} {}", plugin, time));
-        return {};
+    std::string viewmodel_display(std::string_view plugin,const std::filesystem::path& file,std::optional<ViewmodelDisplay> look) override {
+        if (viewmodeler!=plugin) return "this plugin has no viewmodel loaded";
+        calls.push_back(look?"world display "+file.filename().string():"world display hidden");return {};
     }
-    std::string viewmodel_play(std::string_view plugin, std::string_view clip, bool loop, float speed, float fade) override {
+    std::string viewmodel_play(std::string_view plugin, std::string_view clip, bool loop, float speed, float fade, bool restart) override {
         if (viewmodeler != plugin) return "this plugin has no viewmodel loaded";
+        if (!restart) calls.push_back("continuous clip");
         if (clip != "FPS_Pistol_Fire" && clip != "FPS_Pistol_Idle") return "the viewmodel has no clip \"" + std::string(clip) + "\"";
         calls.push_back(std::format("viewmodel play {} {} {} {:.1f} {:.2f}", plugin, clip, loop, speed, fade));
         return {};
@@ -1201,6 +1228,10 @@ struct FakeGame final : Game {
     std::string current_trick() override { return "kickflip"; }
     std::optional<FlightInput> flight_input(std::string_view) override { return FlightInput{1, 0, 0.5f, 3, 4, true}; }
     std::optional<PadInput> pad = PadInput{0.25f, 0, 0, 0, 0, 1, 0x1000, false};
+    std::string rumble_pad(std::string_view plugin, float low, float high, unsigned ms) override {
+        calls.push_back(std::format("rumble {} {:.2f} {:.2f} {}", plugin, low, high, ms));
+        return {};
+    }
     std::optional<PadInput> gamepad(int controller) override { read_controller = controller; return pad; }
     std::optional<bool> gameplay_option(std::string_view name) override { return name == "example" ? std::optional<bool>{true} : std::nullopt; }
     std::string hold_gameplay_option(std::string_view, std::string_view name, std::optional<bool>) override { return name == "example" ? "" : "unknown option"; }
@@ -4894,7 +4925,7 @@ void plugins_draw_pictures() {
     Host host(environment, Side::client);
     const std::string main = R"(
         reskate.on("draw", function(d)
-            d:image("icons/flag.png", vector.create(0, 0, 0), vector.create(64, 64, 0), {colour = 0xffffff80})
+            d:image("icons/flag.png", vector.create(0, 0, 0), vector.create(64, 64, 0), {colour = 0xffffff80,rotation=45})
             d:world_image("icons/flag.png", vector.create(0, 2, -10), 1.5, {uv = {0, 0, 0.5, 0.25}})
             assert(not pcall(d.image, d, "icons/flag.png", vector.create(0, 0, 0), vector.create(1, 1, 0), {uv = {0, 0, 2, 1}}), "uv 0 to 1")
             assert(not pcall(d.image, d, "notes.txt", vector.create(0, 0, 0), vector.create(1, 1, 0)), "only pictures")
@@ -4911,7 +4942,7 @@ void plugins_draw_pictures() {
     check(environment.logged("[pictures] drew") && environment.layers.size() == 1 && environment.layers[0].shapes.size() == 2,
           "A plugin draws pictures from its package\n" + environment.all());
     const auto& picture = environment.layers[0].shapes[0];
-    check(picture.kind == plugin_ui::Shape::Kind::image && picture.text.ends_with("flag.png") && picture.style.colour == 0x80ffffff,
+    check(picture.kind == plugin_ui::Shape::Kind::image && picture.text.ends_with("flag.png") && picture.style.colour == 0x80ffffff && picture.style.rotation==45,
           "as the picture's file, tinted");
     check(environment.layers[0].shapes[1].kind == plugin_ui::Shape::Kind::world_image && environment.layers[0].shapes[1].radius == 1.5f &&
               environment.layers[0].shapes[1].style.uv[2] == 0.5f && environment.layers[0].shapes[1].style.uv[3] == 0.25f,
@@ -6596,6 +6627,63 @@ void plugins_have_what_a_prop_hunt_needs() {
 
 // A viewmodel (a shooter's arms and gun): loaded from the package, shown with a placement, its clips
 // played, a bone read back; one plugin's at a time, given up when it stops, and only with the permission.
+void plugins_prepare_only_their_own_package_models() {
+    TestEnvironment environment;Host owner(environment,Side::client);
+    owner.apply({package("prepare-owner",{{manifest_file,manifest(R"("viewmodel", "console")")},
+        {"model.rsvm","RSVM"},{"next.rsvm","RSVM"},{"plugin/main.lua",R"(
+            assert(reskate.viewmodel.load('model.rsvm'))
+            assert(reskate.viewmodel.prepare('next.rsvm',{append={'model.rsvm'}}))
+            assert(reskate.viewmodel.info().prepared_status=='loading')
+            assert(not reskate.viewmodel.activate_prepared(),'CPU completion is not GPU completion')
+            assert(not pcall(reskate.viewmodel.prepare,'../foreign.rsvm'))
+            assert(not pcall(reskate.viewmodel.prepare,'missing.rsvm'))
+            assert(not pcall(reskate.viewmodel.prepare,'next.rsvm',{append={'../foreign.rsvm'}}))
+            reskate.console.command('activate-test','x',function()
+                assert(reskate.viewmodel.info().prepared_ready)
+                assert(reskate.viewmodel.activate_prepared())
+                assert(reskate.viewmodel.prepare('next.rsvm'))
+                assert(reskate.viewmodel.prepare(nil))
+                assert(reskate.viewmodel.info().prepared_status=='none')
+            end)
+        )"}})});
+    running(owner,"prepare-owner",environment);
+    Host other(environment,Side::client);
+    other.apply({script("prepare-other",R"(
+        assert(not reskate.viewmodel.prepare(nil),'foreign cancellation is refused')
+        assert(not reskate.viewmodel.activate_prepared(),'foreign activation is refused')
+    )",R"("viewmodel")"),script("prepare-denied",R"(
+        assert(not pcall(reskate.viewmodel.prepare,nil))
+        assert(not pcall(reskate.viewmodel.activate_prepared))
+    )")});
+    running(other,"prepare-other",environment);running(other,"prepare-denied",environment);
+    check(environment.fake.prepared_model=="next.rsvm","foreign plugin changed the preparation slot");
+    environment.fake.prepared_ready=true;owner.run_console("activate-test");running(owner,"prepare-owner",environment);
+    check(std::find(environment.fake.calls.begin(),environment.fake.calls.end(),"activated next.rsvm")!=environment.fake.calls.end(),
+          "owned GPU-ready model was not activated");
+}
+void plugins_seek_only_their_own_animations() {
+    TestEnvironment environment;Host owner(environment,Side::client);
+    owner.apply({package("seek-owner",{{manifest_file,manifest(R"("viewmodel")")},{"model.rsvm","RSVM"},
+        {"plugin/main.lua",R"(
+            assert(reskate.viewmodel.load('model.rsvm'))
+            assert(reskate.viewmodel.seek(1.25))
+            for _,bad in {-1,86401,0/0,math.huge} do assert(not pcall(reskate.viewmodel.seek,bad)) end
+        )"}})});
+    running(owner,"seek-owner",environment);
+    check(std::find(environment.fake.calls.begin(),environment.fake.calls.end(),"viewmodel seek seek-owner 1.25")!=environment.fake.calls.end(),
+          "seek did not reach the owned model");
+    Host other(environment,Side::client);
+    other.apply({script("seek-other",R"(assert(not reskate.viewmodel.seek(.5),'foreign model must not be seekable'))",R"("viewmodel")"),
+        script("seek-denied",R"(
+            assert(not pcall(reskate.viewmodel.seek,.5),'seek requires viewmodel permission')
+            local ok,why=pcall(reskate.viewmodel.show,{inset={}})
+            assert(not ok and why:find('viewmodel'),'secondary view requires viewmodel permission')
+            ok,why=pcall(reskate.viewmodel.show,{reflection={}})
+            assert(not ok and why:find('viewmodel'),'reflection requires viewmodel permission')
+            assert(not pcall(reskate.viewmodel.show,{material_colours={Glass=vector.create(1,0,0)}}),'material tint requires viewmodel permission')
+        )")});
+    running(other,"seek-other",environment);running(other,"seek-denied",environment);
+}
 void plugins_show_a_viewmodel() {
     TestEnvironment environment;
     auto& game = environment.fake;
@@ -6606,22 +6694,91 @@ void plugins_show_a_viewmodel() {
         assert(not pcall(reskate.viewmodel.load, "plugin/main.lua"), "a viewmodel is a .rsvm file")
         assert(not pcall(reskate.viewmodel.load, "../other/gun.rsvm"), "inside the package")
         assert(not pcall(reskate.viewmodel.load, "missing.rsvm"), "a file that is there")
-        assert(not pcall(reskate.viewmodel.load, "gun/pistol.rsvm", {append={"../other.rsvm"}}))
-        assert(not pcall(reskate.viewmodel.load, "gun/pistol.rsvm", {append={bad="gun/pistol.rsvm"}}))
         assert(reskate.viewmodel.load("gun/pistol.rsvm"))
-        assert(reskate.viewmodel.load("gun/pistol.rsvm", {append={"gun/pistol.rsvm"}}))
-        assert(reskate.viewmodel.info().render_ready)
+        assert(reskate.viewmodel.show({fog=vector.create(1,10,4),fog_colour=vector.create(.25,.5,.75),fog_exempt_parts={"Sky/0"}}))
+        assert(not pcall(reskate.viewmodel.show,{fog=vector.create(10,1,4)}),"increasing fog distances")
+        assert(not pcall(reskate.viewmodel.show,{fog=vector.create(1,10,8)}),"bounded fog curve")
+        assert(not pcall(reskate.viewmodel.show,{fog_colour=vector.create(0/0,0,0)}),"finite fog colour")
+        local names={};for i=1,4097 do names[i]="Sky/"..i end
+        assert(not pcall(reskate.viewmodel.show,{fog_exempt_parts=names}),"bounded fog part list")
+        assert(not pcall(reskate.viewmodel.load,"gun/pistol.rsvm",{append={"../outside.rsvm"}}),"attachment stays inside package")
+        assert(not pcall(reskate.viewmodel.load,"gun/pistol.rsvm",{append={"missing.rsvm"}}),"attachment must exist")
+        assert(not pcall(reskate.viewmodel.load,"gun/pistol.rsvm",{append=table.create(9,"gun/pistol.rsvm")}),"bounded attachment count")
+        assert(reskate.viewmodel.load("gun/pistol.rsvm",{append={"gun/pistol.rsvm"}}))
+        local affine={1,0,0,0,0,1,0,0,0,0,1,0}
+        assert(reskate.viewmodel.show({pose_transform=affine,part_transforms={Slide=affine},hidden_parts={"Magazine"},backdrop=vector.create(.1,.2,.3),
+            world={position=vector.create(1,2,3),camera={position=vector.create(0,2,0),forward=vector.create(0,0,1),up=vector.create(0,1,0),fov=60}}}))
+        assert(not pcall(reskate.viewmodel.show,{pose_transform={1,2}}),"bounded body pose")
+        assert(not pcall(reskate.viewmodel.show,{part_transforms={Slide={1,0,0,0,0,1,0,0,0,0,0/0,0}}}),"finite named part pose")
+        assert(not pcall(reskate.viewmodel.show,{world={camera={forward=vector.create(0,1,0),up=vector.create(0,1,0)}}}),"paired camera axes independent")
+        assert(not pcall(reskate.viewmodel.show,{backdrop=vector.create(2,0,0)}),"bounded backdrop colour")
+        assert(reskate.viewmodel.show({part_effects={Slide=vector.create(.5,.2,-.3)}}))
+        assert(not pcall(reskate.viewmodel.show,{part_effects={Slide=vector.create(2,0,0)}}),"bounded part opacity")
+        assert(not pcall(reskate.viewmodel.show,{part_effects={Slide=vector.create(1,0/0,0)}}),"finite texture scroll")
+        assert(not pcall(reskate.viewmodel.show,{part_effects={Slide={1,0,0}}}),"part effects are vectors")
+        assert(reskate.viewmodel.show({material_colours={Glass=vector.create(.25,.5,1)}}))
+        for _,c in {vector.create(0/0,0,0),vector.create(-1,0,0),vector.create(0,2,0)} do
+            assert(not pcall(reskate.viewmodel.show,{material_colours={Glass=c}}),"finite bounded material colour")
+        end
+        assert(not pcall(reskate.viewmodel.show,{material_colours={Glass={1,1,1}}}),"material colours use vectors")
+        local colours={};for i=1,129 do colours[tostring(i)]=vector.create(1,1,1) end
+        assert(not pcall(reskate.viewmodel.show,{material_colours=colours}),"bounded material colour count")
+        assert(not pcall(reskate.viewmodel.load, "gun/pistol.rsvm", {append={bad="gun/pistol.rsvm"}}))
         local info = reskate.viewmodel.info()
+        assert(info.render_ready)
         assert(info.status == "ready" and #info.clips == 2 and info.clips[1].name == "FPS_Pistol_Fire" and info.clips[1].duration == 0.25, "its clips")
         assert(info.bones[2] == "Rif_end", "its bones")
         assert(reskate.viewmodel.show({offset = vector.create(0.02, -0.01, 0.03), pitch = 4, roll = -2, fov = 55, ambient = 0.8, brightness = 1.2}))
+        assert(reskate.viewmodel.show({world={position=vector.create(-2000,40,-3000),forward=vector.create(0,0,1),up=vector.create(0,1,0)},depth_points={vector.create(-2000,0,-3000)}}))
+        assert(not pcall(reskate.viewmodel.show,{world={forward=vector.create(0,1,0),up=vector.create(0,1,0)}}),"independent world axes")
+        assert(not pcall(reskate.viewmodel.show,{world={position=vector.create(0/0,0,0)}}),"finite world position")
         assert(not pcall(reskate.viewmodel.show, {fov = 170}), "a lens of 20 to 120 degrees")
         assert(not pcall(reskate.viewmodel.show, {offset = vector.create(0, 0, 9)}), "within 5 m of the eye")
         assert(not pcall(reskate.viewmodel.show, {sky = 2}), "colours are vectors")
+        assert(reskate.viewmodel.show({transforms={Muzzle={1,0,0,.1,0,1,0,.2,0,0,1,.3}},opacities={glass=.5},
+            scene_depth=true,depth_points={vector.create(1,0,2),vector.create(0,0,4),vector.create(-1,0,6)}}))
+        assert(not pcall(reskate.viewmodel.show, {transforms={Muzzle={1,2}}}), "a complete affine transform")
+        assert(not pcall(reskate.viewmodel.show, {transforms={Muzzle={1,0,0,0,0,1,0,0,0,0,0/0,0}}}), "finite transform")
+        assert(not pcall(reskate.viewmodel.show, {opacities={glass=2}}), "bounded opacity")
+        assert(not pcall(reskate.viewmodel.show, {depth_points={vector.create(0,0,-1)}}), "depth is in front of camera")
+        local world={position=vector.create(0,1,4)}
+        assert(reskate.viewmodel.show({world=world,scene_clear=true}))
+        local camera={position=vector.create(0,10,0),forward=vector.create(0,-1,0),up=vector.create(0,0,1)}
+        world.camera=camera
+        local reflection={position=vector.create(0,-2,0),normal=vector.create(0,1,0),parts={"Water/0"},time=5}
+        assert(reskate.viewmodel.show({world=world,reflection=reflection}),"owned planar reflection")
+        assert(not pcall(reskate.viewmodel.show,{reflection=reflection}),"reflection needs an owned world camera")
+        for _,bad in {0/0,math.huge,-1} do
+            reflection.time=bad
+            assert(not pcall(reskate.viewmodel.show,{world=world,reflection=reflection}),"finite nonnegative reflection time")
+        end
+        reflection.time=5;reflection.normal=vector.create(0,0,0)
+        assert(not pcall(reskate.viewmodel.show,{world=world,reflection=reflection}),"nonzero reflection normal")
+        reflection.normal=vector.create(0,1,0);reflection.parts={}
+        assert(not pcall(reskate.viewmodel.show,{world=world,reflection=reflection}),"reflection requires named parts")
+        reflection.parts=table.create(65,"Water/0")
+        assert(not pcall(reskate.viewmodel.show,{world=world,reflection=reflection}),"bounded reflection parts")
+        reflection.parts={"Water/0"};reflection.distortion=.1
+        assert(not pcall(reskate.viewmodel.show,{world=world,reflection=reflection}),"bounded reflection distortion")
+        local inset={position=camera.position,forward=camera.forward,up=camera.up,centre=vector.create(1,.9,0),radius=vector.create(.1,.2,0),
+            projection_offset=vector.create(.8,-.6,0),hidden_bones={"Backdrop"},hidden_materials={"Glass"}}
+        assert(reskate.viewmodel.show({world=world,inset=inset}),"bounded secondary view")
+        assert(not pcall(reskate.viewmodel.show,{inset=inset}),"inset requires world camera")
+        inset.radius=vector.create(0,.2,0)
+        assert(not pcall(reskate.viewmodel.show,{world=world,inset=inset}),"positive clipping radii")
+        inset.radius=vector.create(.1,.2,0);inset.forward=inset.up
+        assert(not pcall(reskate.viewmodel.show,{world=world,inset=inset}),"independent inset camera axes")
+        inset.forward=camera.forward;inset.position=vector.create(0/0,0,0)
+        assert(not pcall(reskate.viewmodel.show,{world=world,inset=inset}),"finite inset position")
+        assert(not pcall(reskate.viewmodel.show,{scene_clear=true}), "verified visibility requires world coordinates")
+        assert(reskate.viewmodel.show({world=world,contact={position=vector.create(0,0,4),normal=vector.create(0,1,0),margin=.08}}))
+        assert(not pcall(reskate.viewmodel.show,{contact={}}), "contact requires world coordinates")
+        assert(not pcall(reskate.viewmodel.show,{world=world,contact={normal=vector.create(0,0,0)}}), "nonzero contact normal")
+        assert(not pcall(reskate.viewmodel.show,{world=world,contact={margin=.3}}), "contact relief bounded to 20 cm")
+        assert(not pcall(reskate.viewmodel.show,{world=world,contact={position=vector.create(0/0,0,0)}}), "finite contact point")
         assert(reskate.viewmodel.play("FPS_Pistol_Fire", {speed = 1.5, fade = 0.05}))
         assert(reskate.viewmodel.play("FPS_Pistol_Idle", {loop = true}))
-        assert(reskate.viewmodel.seek(0.125))
-        assert(not pcall(reskate.viewmodel.seek, -1))
+        assert(reskate.viewmodel.play("FPS_Pistol_Idle", {loop=true,speed=1.2,restart=false}))
         local ok, why = reskate.viewmodel.play("Dance")
         assert(not ok and why:find("no clip"), "a clip it does not have")
         assert(not pcall(reskate.viewmodel.play, "FPS_Pistol_Fire", {speed = 20}), "speed 0 to 10")
@@ -6632,13 +6789,19 @@ void plugins_show_a_viewmodel() {
         assert(reskate.viewmodel.bone("Nope") == nil)
         reskate.viewmodel.stop()
         assert(reskate.viewmodel.hide())
+        assert(reskate.viewmodel.display('gun/pistol.rsvm',{position=vector.create(1,2,3),material='Screen',live=true,depth_points={vector.create(0,0,4)}}))
+        assert(not pcall(reskate.viewmodel.display,'gun/pistol.rsvm',{material='Screen',position=vector.create(0/0,0,0)}),'finite display placement')
+        assert(not pcall(reskate.viewmodel.display,'gun/pistol.rsvm',{material='Screen',forward=vector.create(0,1,0)}),'independent display axes')
+        assert(not pcall(reskate.viewmodel.display,'../outside.rsvm',{material='Screen'}),'display files stay in the package')
+        assert(not pcall(reskate.viewmodel.display,'gun/pistol.rsvm',{material='Screen',depth_points={vector.create(0/0,0,0)}}),'finite display calibration')
+        assert(reskate.viewmodel.display(nil))
         reskate.log("armed")
     )";
     host.apply({package("shooter", {{manifest_file, manifest(R"("viewmodel")")}, {"plugin/main.lua", main}, {"gun/pistol.rsvm", "RSVM"}})});
     ticks(host, environment, 1);
     running(host, "shooter", environment);
-    check(environment.logged("[shooter] armed") && game.called("seek shooter 0.125"), "A viewmodel's calls work\n" + environment.all());
-    check(game.called("attachment pistol.rsvm") && game.called("viewmodel load shooter pistol.rsvm") && game.called("viewmodel show shooter 0.02 -0.01 0.03 0 4 -2 55 0.8 1.2") &&
+    check(environment.logged("[shooter] armed"), "A viewmodel's calls work\n" + environment.all());
+    check(game.called("material colours") && game.called("world display pistol.rsvm") && game.called("world display hidden") && game.called("bounded reflection") && game.called("bounded fog") && game.called("continuous clip") && game.called("verified clear") && game.called("world placement") && game.called("viewmodel load shooter pistol.rsvm") && game.called("viewmodel show shooter 0.02 -0.01 0.03 0 4 -2 55 0.8 1.2") &&
               game.called("viewmodel play shooter FPS_Pistol_Fire false 1.5 0.05") && game.called("viewmodel play shooter FPS_Pistol_Idle true 1.0 0.10") &&
               game.called("viewmodel stop shooter") && game.called("viewmodel hide shooter"),
           "Loaded, shown where asked, played, stopped and hidden\n" + environment.all());
@@ -6652,9 +6815,9 @@ void plugins_show_a_viewmodel() {
     check(environment.logged("[rival] false shooter has the viewmodel"), "One plugin's viewmodel at a time\n" + environment.all());
     // Without the permission, none of it.
     host.apply({package("sneaky", {{manifest_file, manifest()}, {"plugin/main.lua", R"(
-        reskate.log(tostring(pcall(reskate.viewmodel.load, "gun.rsvm", {append={"gun.rsvm"}})) .. " " .. tostring(pcall(reskate.viewmodel.show, {})) .. " " ..
+        reskate.log(tostring(pcall(reskate.viewmodel.load, "gun.rsvm")) .. " " .. tostring(pcall(reskate.viewmodel.show, {})) .. " " ..
             tostring(pcall(reskate.viewmodel.play, "FPS_Pistol_Fire")) .. " " .. tostring(pcall(reskate.viewmodel.bone, "Rif_end")) .. " " ..
-            tostring(pcall(reskate.viewmodel.info)) .. " " .. tostring(pcall(reskate.viewmodel.seek, 0)))
+            tostring(pcall(reskate.viewmodel.info)) .. ' ' .. tostring(pcall(reskate.viewmodel.display,nil)))
     )"}, {"gun.rsvm", "RSVM"}})});
     ticks(host, environment, 1);
     check(environment.logged("[sneaky] false false false false false false"), "viewmodel is needed\n" + environment.all());
@@ -9042,6 +9205,9 @@ void the_wider_set_reaches_the_game() {
             assert(reskate.input.joystick(1).name == "Pad" and reskate.input.joystick(5) == nil, "a chosen controller")
             assert(not pcall(reskate.input.joystick, -1) and not pcall(reskate.input.joystick, 1.5), "a controller's number")
             assert(reskate.input.capture(true))
+            assert(reskate.input.rumble(0.25, 0.5, 115))
+            assert(not pcall(reskate.input.rumble, 0/0, 0, 10))
+            assert(not pcall(reskate.input.rumble, 1, 1, 251))
             reskate.camera.release()
             assert(reskate.skater.freeze(true))
             assert(reskate.throwdowns.state().active == false)
@@ -9071,7 +9237,7 @@ void the_wider_set_reaches_the_game() {
     for (const auto* call : {"control noclip_on", "control boost_up", "hud wide on", "place 0 bench_01 5.0", "move 42  6.0", "delete 42",
                              "env tod night", "env control fog 1", "env park historic skatepark_02", "travel location bam", "ai spawn 2",
                              "ai clear", "tag wide 7 IT ff0000ff", "voice 7 0.0", "chat hello all", "notice wide note 5 ff00ff00", "camera wide 0.0 5.0 0.0 back 0.00 0.00 -1.00 fov 70",
-                             "camera wide 0.0 5.0 0.0 back -0.00 -0.00 1.00 fov 80", "capture wide on",
+                             "camera wide 0.0 5.0 0.0 back -0.00 -0.00 1.00 fov 80", "capture wide on", "rumble wide 0.25 0.50 115",
                              "camera release wide", "freeze wide on", "host wide ThrowdownSkate 2 players max 4", "music next"})
         check(game.called(call), std::string("The game was asked: ") + call);
     check(environment.teleports.size() == 1, "The save point teleports back");
@@ -9912,6 +10078,8 @@ int main() {
         run(plugins_reach_cruise_and_read_the_mouse);
         run(plugins_set_the_flip_speed);
         run(plugins_show_a_viewmodel);
+        run(plugins_prepare_only_their_own_package_models);
+        run(plugins_seek_only_their_own_animations);
         run(plugins_carry_and_take_a_step_in_the_camera_cycle);
         run(screen_shader_files_are_checked);
         run(plugins_run_a_screen_shader);

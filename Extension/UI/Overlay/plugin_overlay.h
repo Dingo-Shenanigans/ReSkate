@@ -1,4 +1,5 @@
 #pragma once
+#include "viewmodel.h"
 // The overlay's side of plugins (Extension/Plugins/plugin_ui.h): the shapes each plugin drew this
 // tick, on the background draw list under ReSkate's own menus and chat, taking no input. World
 // shapes are projected through the camera as the frame is drawn.
@@ -7,6 +8,7 @@ namespace dingosdk::overlay {
 // closed), then the drawing.
 bool plugins_pending();
 void draw_plugins();
+void render_viewmodel_surface(const viewmodel::Target& target);
 // A plugin's open full-screen screen (reskate.ui.screen), over everything, with the input while it
 // shows (State::plugin_screen_visible, set by plugins_pending). Esc closes it.
 void draw_plugin_screen();

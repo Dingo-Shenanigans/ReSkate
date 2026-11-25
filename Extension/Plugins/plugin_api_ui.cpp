@@ -57,6 +57,8 @@ plugin_ui::Style style_of(lua_State* L, int index) {
     lua_pop(L, 1);
     if (field("thickness")) style.thickness = std::clamp(finite(L, -1, "thickness"), 0.5f, 40.0f);
     lua_pop(L, 1);
+    if (field("rotation")) style.rotation=std::clamp(finite(L,-1,"rotation"),-360.0f,360.0f);
+    lua_pop(L,1);
     if (field("rounding")) style.rounding = std::clamp(finite(L, -1, "rounding"), 0.0f, 200.0f);
     lua_pop(L, 1);
     if (field("fill")) style.fill = lua_toboolean(L, -1) != 0;

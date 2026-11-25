@@ -29,6 +29,7 @@ DingoSDK's owning value model is in `Engine/Core/Json/json.h` and
 The ImGui local vendor patch is `imgui/backends/imgui_impl_dx12.cpp`: font upload
 checks resource/command failures, bounds its GPU wait to five seconds, propagates
 failure, and retains submitted resources on timeout to avoid premature release.
+The DX12 backend also draws plugin overlays into SDR world-display textures and restores the swapchain pipeline afterwards.
 Detours has a local patch in `detours/src/detours.cpp`: transaction thread and
 operation records use `VirtualAlloc`/`VirtualFree` instead of the shared heap.
 Enlistment and cleanup can run while another thread owns the heap lock and is

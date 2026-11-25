@@ -56,6 +56,8 @@ IMGUI_IMPL_API void     ImGui_ImplDX12_RenderDrawData(ImDrawData* draw_data, ID3
 // primaries with the ST.2084 (PQ) curve (a 10-bit HDR target). `white_nits`: how bright white
 // is drawn in 1 and 2. Read at each ImGui_ImplDX12_RenderDrawData.
 IMGUI_IMPL_API void     ImGui_ImplDX12_SetOutputTransfer(int mode, float white_nits);
+// [ReSkate] A second, SDR RGBA8 target for an in-world display.
+IMGUI_IMPL_API void     ImGui_ImplDX12_RenderSurfaceDrawData(ImDrawData* draw_data, ID3D12GraphicsCommandList* command_list);
 // [ReSkate] Whether the pipeline made by the last ImGui_ImplDX12_CreateDeviceObjects() applies that transfer. False when
 // D3DCompile() or the driver could not build the HDR-aware shader and ImGui's stock (SDR) one is drawing instead.
 IMGUI_IMPL_API bool     ImGui_ImplDX12_HasOutputTransfer();

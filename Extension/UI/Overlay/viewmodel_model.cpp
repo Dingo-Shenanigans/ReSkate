@@ -78,7 +78,7 @@ std::optional<Model> parse(std::string_view bytes, std::string& why) {
     };
     if (r.bad) return bad("it ends in its header");
     if (bones == 0 || bones > max_bones) return bad("a viewmodel has 1 to " + std::to_string(max_bones) + " bones, and this has " + std::to_string(bones));
-    if (materials == 0 || materials > max_materials) return bad("a viewmodel has 1 to 256 materials");
+    if (materials == 0 || materials > max_materials) return bad("a viewmodel has 1 to 512 materials");
     if (parts == 0 || parts > 4096) return bad("a viewmodel has 1 to 4096 parts");
     if (vertices == 0 || vertices > 1'000'000) return bad("a viewmodel has 1 to 1000000 vertices");
     if (indices == 0 || indices % 3 != 0 || indices > 3'000'000) return bad("a viewmodel's indices are whole triangles, at most 1000000");
@@ -150,6 +150,20 @@ std::optional<Model> parse(std::string_view bytes, std::string& why) {
     r.take(model.indices.data(), std::size_t{indices} * 4);
     for (const auto index : model.indices)
         if (index >= vertices) return bad("a triangle uses a vertex the model does not have");
+    for (auto& part:model.parts) {
+        std::array<float,3> low{1e30f,1e30f,1e30f},high{-1e30f,-1e30f,-1e30f};
+        bool first=true,mixed=false;
+        for (std::size_t i=part.first;i<part.first+part.count;i+=std::max<std::size_t>(1,part.count/256)) {
+            const auto& vertex=model.vertices[model.indices[i]];
+            for (int c=0;c<3;++c) {low[c]=std::min(low[c],vertex.position[c]);high[c]=std::max(high[c],vertex.position[c]);}
+            for (int j=0;j<4;++j) if (vertex.weights[j]) {
+                if (first) {part.bone_hint=vertex.joints[j];first=false;}
+                else if (part.bone_hint!=vertex.joints[j]) mixed=true;
+            }
+        }
+        if (mixed) part.bone_hint=-1;
+        if (part.count) for (int c=0;c<3;++c) part.centre[c]=(low[c]+high[c])*.5f;
+    }
     model.clips.resize(clips);
     const std::size_t per_frame = std::size_t{bones} * 12;
     for (auto& clip : model.clips) {
@@ -207,6 +221,7 @@ bool append_model(Model& base, Model addition, std::string& why) {
     for (auto& index : addition.indices)
         index += static_cast<std::uint32_t>(vertices);
     for (auto& part : addition.parts) {
+        if (part.bone_hint >= 0) part.bone_hint += static_cast<int>(bones);
         part.material += static_cast<std::uint32_t>(materials);
         part.first += static_cast<std::uint32_t>(indices);
     }
@@ -264,6 +279,12 @@ void sample(const Model& model, const Clip& clip, double seconds, bool loop, std
 
 void Animator::play(const Model& model, const Play& play, double now) {
     if (play.clip < 0 || play.clip >= static_cast<int>(model.clips.size())) return;
+    if (!play.restart && current_.play.clip == play.clip && current_.play.loop == play.loop) {
+        current_.offset = time_of(model,current_,now);
+        current_.started = now;
+        current_.play.speed = std::clamp(play.speed,0.0f,10.0f);
+        return;
+    }
     // The clip playing now fades out (from where it is, not from the start of its own fade).
     if (current_.play.clip >= 0) {
         previous_ = current_;

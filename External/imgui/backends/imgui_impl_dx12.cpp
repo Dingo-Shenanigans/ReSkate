@@ -77,6 +77,7 @@ struct ImGui_ImplDX12_Data
     ID3D12Device*               pd3dDevice;
     ID3D12RootSignature*        pRootSignature;
     ID3D12PipelineState*        pPipelineState;
+    ID3D12PipelineState*        pSurfacePipelineState; // [ReSkate] SDR world display
     ID3D12CommandQueue*         pCommandQueue;
     bool                        commandQueueOwned;
     DXGI_FORMAT                 RTVFormat;
@@ -696,6 +697,13 @@ bool    ImGui_ImplDX12_CreateDeviceObjects()
             psoDesc.PS = { pixelShaderBlob->GetBufferPointer(), pixelShaderBlob->GetBufferSize() };
             if (bd->pd3dDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&bd->pPipelineState)) != S_OK)
                 bd->pPipelineState = nullptr;
+            if (bd->pPipelineState && i == 0)
+            {
+                const auto format = psoDesc.RTVFormats[0];
+                psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+                bd->pd3dDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&bd->pSurfacePipelineState));
+                psoDesc.RTVFormats[0] = format;
+            }
             pixelShaderBlob->Release();
             g_ReSkateOutputTransferAvailable = bd->pPipelineState != nullptr && i == 0;
         }
@@ -718,6 +726,7 @@ void    ImGui_ImplDX12_InvalidateDeviceObjects()
     bd->commandQueueOwned = false;
     SafeRelease(bd->pRootSignature);
     SafeRelease(bd->pPipelineState);
+    SafeRelease(bd->pSurfacePipelineState);
 
     // Free SRV descriptor used by texture
     ImGuiIO& io = ImGui::GetIO();
@@ -851,5 +860,19 @@ void ImGui_ImplDX12_NewFrame()
 }
 
 //-----------------------------------------------------------------------------
+
+// [ReSkate] Reuse the backend's upload ring, with a separately typed target pipeline.
+void ImGui_ImplDX12_RenderSurfaceDrawData(ImDrawData* draw_data, ID3D12GraphicsCommandList* commands)
+{
+    auto* bd = ImGui_ImplDX12_GetBackendData();
+    if (!bd || !bd->pSurfacePipelineState) return;
+    const auto pipeline = bd->pPipelineState;
+    const float transfer = g_ReSkateOutputTransfer[0], white = g_ReSkateOutputTransfer[1];
+    bd->pPipelineState = bd->pSurfacePipelineState;
+    ImGui_ImplDX12_SetOutputTransfer(0,80);
+    ImGui_ImplDX12_RenderDrawData(draw_data,commands);
+    ImGui_ImplDX12_SetOutputTransfer((int)transfer,white);
+    bd->pPipelineState = pipeline;
+}
 
 #endif // #ifndef IMGUI_DISABLE
