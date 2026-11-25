@@ -1227,6 +1227,15 @@ struct FakeGame final : Game {
     bool hold_waves{}; // keep each sound's wave, as a voice still playing does
     std::vector<std::shared_ptr<const Wave>> held_waves;
     std::uint64_t play_sound(std::string_view plugin, SoundStart sound) override {
+        if (sound.clear && sound.wave) {
+            calls.push_back(std::format("clear {} {} {}", plugin, sound.sample_range.first, sound.sample_range.frames));
+            return ++sound_ids;
+        }
+        if (sound.stream) {
+            calls.push_back(std::format("music {} {} {} {} {} {}", plugin, sound.stream->rate, sound.stream->frames(), sound.loop,
+                                        sound.music_loop.first, sound.music_loop.frames));
+            return ++sound_ids;
+        }
         calls.push_back(std::format("sound {} {} {:.2f} {:.2f} {}{}", plugin, sound.wave ? std::to_string(sound.wave->samples.size()) : "motor", sound.volume,
                                     sound.pitch, sound.loop, sound.position ? std::format(" at {} {} {}", (*sound.position)[0], (*sound.position)[1], (*sound.position)[2]) : sound.listener ? " at listener" : ""));
         if (hold_waves && sound.wave) held_waves.push_back(std::move(sound.wave));
@@ -7969,6 +7978,10 @@ void plugins_play_their_own_sounds() {
             assert(reskate.audio.set(motor, {throttle = 0.9, position = "skater"}))
             assert(reskate.audio.playing(beep))
             reskate.audio.stop(beep)
+            assert(reskate.audio.play("sounds/beep.wav", {clear=true, from=0.125, length=0.25}))
+            assert(reskate.audio.play("sounds/beep.wav", {clear=true, loop=true}))
+            assert(not reskate.audio.play("sounds/beep.wav", {clear=true, from=0.6}))
+            assert(not reskate.audio.play("sounds/beep.wav", {clear=true, length=0}))
             assert(not pcall(reskate.audio.play, "notes.txt"), "a wave")
             assert(not pcall(reskate.audio.play, "../x/beep.wav"), "its own package")
             assert(not pcall(reskate.audio.play, "sounds/beep.wav", {volume = 3}), "a sane volume")
@@ -7986,10 +7999,42 @@ void plugins_play_their_own_sounds() {
     running(host, "noisy", environment);
     host.run_console("noise");
     check(environment.logged("[noisy] sounded"), "A plugin plays its own sounds\n" + environment.all());
+    check(environment.fake.called("clear noisy 6000 12000") && environment.fake.called("clear noisy 0 24000"),
+          "Direct playback uses the selected slice or the entire decoded sound");
     check(environment.logged("[noisy] burst: more than 60 sounds in a second"), "sixty a second, and the next is refused\n" + environment.all());
     for (const auto* call : {"sound noisy 24000 0.50 2.00 true at 1 2 3", "sound noisy motor 1.00 1.00 false", "sound noisy 24000 0.25 1.00 false at listener",
                              "change noisy 2 0.9 skater", "stop sound noisy 1"})
         check(environment.fake.called(call), std::string("The game was asked: ") + call + "\n" + environment.all());
+}
+
+void plugins_stream_packaged_music() {
+    TestEnvironment environment;
+    Host host(environment, Side::client);
+    host.apply({package("music", {{manifest_file, manifest(R"("console", "audio")")}, {"music.wav", wave_file(8000, 4000)},
+        {"plugin/main.lua", R"(
+            reskate.console.command("track", "x", function()
+                assert(not pcall(reskate.audio.play, "../music.wav", {stream=true}))
+                assert(not pcall(reskate.audio.play, "motor", {stream=true}))
+                local id, why = reskate.audio.play("music.wav", {stream=true, loop=true, loop_from=0.125, loop_length=0.25})
+                if id then
+                    assert(reskate.audio.playing(id))
+                    assert(reskate.audio.set(id, {volume=0.3}))
+                    reskate.audio.stop(id)
+                else
+                    assert(why == "file-backed audio is available on Windows clients")
+                end
+                reskate.log("checked track")
+            end)
+        )"}}), script("quiet", R"(
+            local ok, why = pcall(reskate.audio.play, "music.wav", {stream=true})
+            assert(not ok and string.find(tostring(why), 'needs the "audio" permission', 1, true))
+            reskate.log("permission checked")
+        )", "")});
+    host.run_console("track");
+    check(environment.logged("permission checked") && environment.logged("checked track"), environment.all());
+#if defined(_WIN32)
+    check(environment.fake.called("music music 8000 4000 true 1000 2000") && environment.fake.called("stop sound music 1"), environment.all());
+#endif
 }
 
 void plugins_play_any_number_of_different_sounds() {
@@ -9921,6 +9966,7 @@ int main() {
         run(plugins_play_their_own_sounds);
         run(plugins_play_ima_adpcm_sounds);
         run(plugins_play_any_number_of_different_sounds);
+        run(plugins_stream_packaged_music);
         run(plugins_have_menu_panels);
         run(plugins_have_pages);
         run(plugins_spatialize_the_station);

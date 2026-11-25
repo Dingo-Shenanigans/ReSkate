@@ -2,6 +2,7 @@
 #include "plugin_ui_values.h"
 #include "plugin_effects.h"
 #include "plugin_wave.h"
+#include "plugin_stream_wave.h"
 #include "plugin_object_physics.h"
 #include "plugin_skater_movement.h"
 #include "plugin_picture.h"
@@ -100,6 +101,10 @@ struct StickDevice {
 };
 // A sound a plugin plays (reskate.audio): its wave, or the motor synth when it has none.
 struct SoundStart {
+    std::shared_ptr<const StreamWave> stream;
+    MusicLoop music_loop;
+    bool clear{};
+    MusicLoop sample_range; // Decoded short sound, in 48 kHz frames.
     std::shared_ptr<const Wave> wave;
     float volume{1}, pitch{1}, range{40}, throttle{}, speed{};
     bool loop{};

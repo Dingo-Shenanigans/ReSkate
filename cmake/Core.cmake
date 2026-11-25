@@ -180,6 +180,7 @@ add_library(dingosdk_plugins STATIC
     Extension/Skater/pose_offset.cpp
     Extension/Skater/pose_place.cpp
     Extension/Skater/pose_replay.cpp
+    Extension/Plugins/plugin_stream_wave.cpp
     Extension/Plugins/plugin_wave.cpp)
 target_link_libraries(dingosdk_plugins PUBLIC dingosdk_json dingosdk_console_core PRIVATE dingosdk_luau dingosdk_launcher_support dingosdk_miniz)
 if(WIN32)

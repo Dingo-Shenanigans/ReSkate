@@ -474,6 +474,10 @@ endif()
 option(DINGOSDK_BUILD_PLUGIN_TESTS "Build plugin host regression tests" OFF)
 if(DINGOSDK_BUILD_PLUGIN_TESTS)
     enable_testing()
+    if(WIN32)
+        add_executable(dingosdk_stream_wave_tests Extension/Plugins/Test/stream_wave_tests.cpp Extension/Plugins/plugin_stream_wave.cpp)
+        add_test(NAME stream_wave COMMAND dingosdk_stream_wave_tests)
+    endif()
     # The owned-body contracts behind reskate.world.physics (Engine/Game/World): definitions, the
     # command mailbox, ray batches and their budget, hit identity, measured contact and shape
     # categories, over constructed values and fake memory.
