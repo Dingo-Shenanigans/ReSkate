@@ -48,6 +48,7 @@ void show(const Look& look) noexcept;
 void hide() noexcept;
 // Plays a clip by name (from the start), faded in over what played; empty when it played.
 std::string play(std::string_view clip, const Animator::Play& play);
+std::string seek(double seconds);
 void stop() noexcept;
 struct State {
     std::string clip;  // empty: nothing playing

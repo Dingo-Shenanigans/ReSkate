@@ -105,6 +105,12 @@ struct ViewmodelApi {
         return result(L, game_of(plugin).viewmodel_show(plugin.id(), std::nullopt));
     }
     // play(clip, {loop = false, speed = 1, fade = 0.1}): from its start, faded in over what played.
+    static int seek(lua_State* L) {
+        auto& plugin = caller(L, "reskate.viewmodel.seek");
+        const double seconds = luaL_checknumber(L, 1);
+        if (!std::isfinite(seconds) || seconds < 0) luaL_argerror(L, 1, "expected finite nonnegative seconds");
+        return result(L, game_of(plugin).viewmodel_seek(plugin.id(), seconds));
+    }
     static int play(lua_State* L) {
         auto& plugin = caller(L, "reskate.viewmodel.play");
         const auto clip = checked_text(L, 1, 120, "a clip's name");
@@ -169,6 +175,6 @@ struct ViewmodelApi {
 void install_viewmodel_api(Plugin&, lua_State* L) {
     add_functions(L, "viewmodel", {{"load", ViewmodelApi::load}, {"unload", ViewmodelApi::unload}, {"info", ViewmodelApi::info},
                                    {"show", ViewmodelApi::show}, {"hide", ViewmodelApi::hide}, {"play", ViewmodelApi::play},
-                                   {"stop", ViewmodelApi::stop}, {"state", ViewmodelApi::state}, {"bone", ViewmodelApi::bone}});
+                                   {"seek", ViewmodelApi::seek}, {"stop", ViewmodelApi::stop}, {"state", ViewmodelApi::state}, {"bone", ViewmodelApi::bone}});
 }
 } // namespace dingosdk::plugins

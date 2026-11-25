@@ -416,7 +416,7 @@ ImTextureID store_icon(const std::string& url, bool& loading);
 // pixels, its shape kept: `size` is its size in pixels once it is there.
 ImTextureID news_picture(const std::string& url, ImVec2& size);
 // Then a viewmodel's pictures (viewmodel.h): three for each of its at most eight materials.
-inline constexpr UINT viewmodel_first_slot = store_icon_first_slot + store_icon_slots, viewmodel_slots = 24;
+inline constexpr UINT viewmodel_first_slot = store_icon_first_slot + store_icon_slots, viewmodel_slots = 256 * 3;
 struct StoreIconUpload {
     std::string url;
     int slot{};

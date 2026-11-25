@@ -167,6 +167,7 @@ void read_in_background(std::filesystem::path file, std::uint64_t serial) {
     }
     if (ok) {
         loaded->pictures.resize(loaded->model.materials.size() * 3);
+        std::size_t picture_bytes_held = 0;
         for (std::size_t m = 0; ok && m < loaded->model.materials.size(); ++m) {
             const auto& material = loaded->model.materials[m];
             const std::array<const std::string*, 3> names{&material.albedo, &material.normal, &material.surface};
@@ -190,6 +191,12 @@ void read_in_background(std::filesystem::path file, std::uint64_t serial) {
                 }
                 picture.srgb = k == 0;
                 make_levels(picture);
+                picture_bytes_held += picture.rgba.size();
+                if (picture_bytes_held > (512ull << 20)) {
+                    why = "the model's decoded pictures exceed 512 MiB";
+                    ok = false;
+                    break;
+                }
             }
         }
     }
@@ -635,6 +642,12 @@ std::string play(std::string_view clip, const Animator::Play& play) {
     auto asked = play;
     asked.clip = index;
     s.animator.play(s.loaded->model, asked, steady_seconds());
+    return {};
+}
+std::string seek(double seconds) {
+    auto& s = shared();
+    std::lock_guard lock(s.mutex);
+    if (!s.loaded || !s.animator.seek(seconds, steady_seconds())) return "no clip is playing";
     return {};
 }
 void stop() noexcept {

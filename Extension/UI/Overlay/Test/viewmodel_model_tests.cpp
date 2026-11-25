@@ -37,10 +37,11 @@ struct Options {
     std::uint8_t joint{1};
     std::uint32_t index{2};
     bool extra{};
+    unsigned version{1};
 };
 std::string small_model(Options o = {}) {
     std::string f = "RSVM";
-    put<std::uint32_t>(f, 1);
+    put<std::uint32_t>(f, o.version);
     for (const std::uint32_t count : {2u, 1u, 1u, 3u, 3u, 1u}) put(f, count);
     put_text(f, "Root");
     put<std::int16_t>(f, -1);
@@ -54,7 +55,18 @@ std::string small_model(Options o = {}) {
     put_text(f, "");
     put(f, 0.4f);
     put(f, 0.5f);
+    if (o.version >= 2) {
+        put(f, 0.75f);
+        put<std::uint8_t>(f, 1);
+    }
+    if (o.version == 4)
+        for (int layer = 0; layer < 3; ++layer)
+            for (float setting : {1.f, 2.f, 0.25f, 16777215.f}) put(f, setting);
     for (const std::uint32_t v : {0u, 0u, 3u}) put(f, v);
+    if (o.version >= 3) {
+        put_text(f, "piece");
+        put_affine(f, moved(1, 2, 3));
+    }
     for (int i = 0; i < 3; ++i) {
         Vertex v{};
         v.position[0] = static_cast<float>(i);
@@ -64,7 +76,8 @@ std::string small_model(Options o = {}) {
         v.tangent[3] = 1;
         v.joints[0] = o.joint;
         v.weights[0] = 255;
-        f.append(reinterpret_cast<const char*>(&v), sizeof v);
+        v.uv2[0] = 0.25f;
+        f.append(reinterpret_cast<const char*>(&v), o.version == 4 ? 76 : o.version == 3 ? 60 : 56);
     }
     for (const std::uint32_t i : {0u, 1u, o.index}) put(f, i);
     put_text(f, "Fire");
@@ -104,7 +117,7 @@ void refuses_broken_files() {
     expect(!parse(small_model({.joint = 7}), why) && why.find("bone") != std::string::npos, "weighted to a bone it does not have");
     expect(!parse(small_model({.index = 9}), why) && why.find("vertex") != std::string::npos, "a triangle with a vertex it does not have");
     auto version = small_model();
-    version[4] = 2;
+    version[4] = 5;
     expect(!parse(version, why) && why.find("version") != std::string::npos, "another version");
     auto huge = small_model();
     const std::uint32_t lots = 4'000'000'000u;
@@ -191,6 +204,29 @@ void reads_an_exported_model(const char* path) {
 } // namespace
 
 int main(int argc, char** argv) {
+    for (unsigned version : {2u, 3u, 4u}) {
+        std::string why;
+        const auto model = parse(small_model({.version = version}), why);
+        expect(model && model->materials[0].opacity == 0.75f, "extended material");
+        if (!model) continue;
+        if (version >= 3) expect(model->parts[0].transform == moved(1, 2, 3), "named part transform");
+        if (version == 4) expect(model->vertices[1].uv2[0] == 0.25f && model->materials[0].layers[2][1] == 2, "third texture layer");
+        Animator clock;
+        clock.play(*model, {0, false, 0, 0}, 0);
+        clock.seek(0.15, 1);
+        std::array<Affine, 2> skin{};
+        clock.pose(*model, 10, skin);
+        expect(near(skin[1][3], 1.5f), "fractional seek holds at zero playback speed");
+        clock.seek(0.05, 11);
+        clock.pose(*model, 12, skin);
+        expect(near(skin[1][3], 0.5f), "rewind");
+        clock.play(*model, {0, true, 1, 0.2}, 12);
+        expect(clock.seek(0.15, 12), "seek during a crossfade");
+        clock.pose(*model, 12, skin);
+        expect(near(skin[1][3], 1.5f), "exact pose replaces the crossfade");
+        clock.pose(*model, 12.1, skin);
+        expect(near(skin[1][3], 0.5f), "loop advances from the requested time");
+    }
     reads_a_model_and_samples_its_clip();
     refuses_broken_files();
     fades_between_clips();

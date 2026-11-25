@@ -11,7 +11,7 @@ cbuffer frame : register(b1) {
     float4 sky;         // rgb the ambient from above, w the brightness of the whole
     float4 ground;      // rgb the ambient from below, w unused
     float4 output;      // x the transfer (0 SDR, 1 scRGB, 2 HDR10), y white in nits
-    float4 bones[128 * 3];
+    float4 bones[256 * 3];
 };
 cbuffer material : register(b0) {
     float4 surface_default; // x roughness, y specular, z has pictures (1 colour, 2 normal, 4 surface), w unused

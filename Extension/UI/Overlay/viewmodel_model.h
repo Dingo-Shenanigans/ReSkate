@@ -14,26 +14,32 @@
 // frames and blending; no rig maths happens here.
 //
 // The .rsvm file, little-endian (a "short string" is a u8 length then that many bytes of UTF-8):
-//   "RSVM", u32 version (1)
+//   "RSVM", u32 version (1 to 4)
 //   u32 bones, materials, parts, vertices, indices, clips
 //   bones:     short string name, i16 parent (-1 none), f32[12] bind (the bone at rest, 3 rows of 4)
 //   materials: short string name, albedo, normal, surface (pictures beside the file, "" none),
 //              f32 roughness, f32 specular (used where there is no surface picture)
+//              v2+ adds f32 opacity and u8 face/material flags. v4 adds three f32[4] layer records.
 //   parts:     u32 material, u32 first index, u32 index count
+//              v3+ adds a short name and a default affine transform.
 //   vertices:  f32 position[3], normal[3], tangent[4] (w the bitangent's sign), uv[2]; u8 joints[4], weights[4]
+//              v3+ adds RGBA8 colour. v4 adds two more f32[2] UV sets.
 //   indices:   u32 each, three a triangle
 //   clips:     short string name, f32 frames a second, u32 frames, f32[frames][bones][12] skin matrices
 namespace dingosdk::viewmodel {
 // Three rows of a 4x4 whose last row is 0 0 0 1: out = m * (x, y, z, 1).
 using Affine = std::array<float, 12>;
 inline constexpr Affine identity{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
-inline constexpr std::size_t max_bones = 128;
+inline constexpr std::size_t max_bones = 256; // Four u8 joint indices per vertex.
+inline constexpr unsigned max_materials = 256;
 
 struct Vertex {
     float position[3], normal[3], tangent[4], uv[2];
     std::uint8_t joints[4], weights[4];
+    std::uint8_t colour[4]{255, 255, 255, 255}; // v3
+    float uv1[2]{}, uv2[2]{}; // v4
 };
-static_assert(sizeof(Vertex) == 56);
+static_assert(sizeof(Vertex) == 76);
 
 struct Bone {
     std::string name;
@@ -42,10 +48,14 @@ struct Bone {
 };
 struct Material {
     std::string name, albedo, normal, surface;
-    float roughness{0.5f}, specular{0.5f};
+    float roughness{0.5f}, specular{0.5f}, opacity{1};
+    std::uint8_t faces{};
+    std::array<std::array<float, 4>, 3> layers{}; // v4 coordinate, combine, intensity and tint
 };
 struct Part {
     std::uint32_t material{}, first{}, count{};
+    std::string name;
+    Affine transform{identity};
 };
 struct Clip {
     std::string name;
@@ -91,6 +101,7 @@ public:
     };
     // From `now` (seconds, any clock the caller keeps to).
     void play(const Model& model, const Play& play, double now);
+    bool seek(double seconds, double now) noexcept;
     void stop() noexcept { current_ = {}; previous_ = {}; }
     struct State {
         int clip{-1};
@@ -104,7 +115,7 @@ public:
 private:
     struct Running {
         Play play;
-        double started{};
+        double started{}, offset{};
     };
     static double time_of(const Model& model, const Running& running, double now) noexcept;
     Running current_, previous_;

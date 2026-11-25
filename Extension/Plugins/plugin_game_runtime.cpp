@@ -1638,6 +1638,10 @@ public:
         if (viewmodeler_ != plugin) return "this plugin has no viewmodel loaded";
         return viewmodel::play(clip, {-1, loop, speed, fade});
     }
+    std::string viewmodel_seek(std::string_view plugin, double seconds) override {
+        if (viewmodeler_ != plugin) return "this plugin has no viewmodel loaded";
+        return viewmodel::seek(seconds);
+    }
     void viewmodel_stop(std::string_view plugin) override {
         if (viewmodeler_ == plugin) viewmodel::stop();
     }
